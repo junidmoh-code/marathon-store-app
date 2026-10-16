@@ -170,7 +170,7 @@ async function main() {
   }
 
   // ── D. ROWS ────────────────────────────────────────────────────────────────
-  const rowPlan = [];
+  const rowPlan = [], kept = [];
   for (const pid of bags) {
     const p = products[pid];
     for (const loc of rowLocs) {
@@ -180,15 +180,22 @@ async function main() {
         const eligible = loc === "hub2" || (SHOPS.includes(loc) && !!stock[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0);
         if (eligible) for (const s of p.sizes.map(String)) desired[engine.encodeSizeKey(s)] = { ...NUMBERS };
       }
+      // AN EXPLICIT 0 IS KEPT. It is Junid's "not at this shop" — the location
+      // does not carry that bag, which is exactly what the policy's own scope
+      // ("every location that carries paper bags") leaves out. Clearing it would
+      // re-arm the shop: on a sized legacy bag the size run takes over, on a
+      // one-size bag the moment a cell appears.
       const rows = [], remove = [], expected = {};
+      for (const [k, cur] of Object.entries(live)) if (isObj(cur) && cur.target === 0) kept.push({ pid, name: p.name, loc, sizeKey: k, row: cur });
       for (const [k, want] of Object.entries(desired)) {
         const cur = isObj(live[k]) ? live[k] : null;
+        if (cur && cur.target === 0) continue;
         if (cur && cur.target === want.target && cur.minQty === want.minQty && cur.reorderPoint === want.reorderPoint) continue;
         rows.push({ sizeKey: k, ...want });
         expected[k] = cur;
       }
       for (const [k, cur] of Object.entries(live)) {
-        if (k in desired || !isObj(cur)) continue;
+        if (k in desired || !isObj(cur) || cur.target === 0) continue;
         remove.push(k);
         expected[k] = cur;
       }
@@ -201,6 +208,8 @@ async function main() {
     for (const k of e.remove) log(`   clear ${e.loc.padEnd(11)} ${k.padEnd(2)} ${fmtRow(e.expected[k]).padEnd(32)} ${e.name}`);
     for (const r of e.rows) log(`   set   ${e.loc.padEnd(11)} ${r.sizeKey.padEnd(2)} ${fmtRow(e.expected[r.sizeKey]).padEnd(20)} → 50/10   ${e.name}`);
   }
+  for (const k of kept) log(`   keep  ${k.loc.padEnd(11)} ${k.sizeKey.padEnd(2)} 0 ("not at this shop")              ${k.name}`);
+  report.steps.keptSwitchOffs = kept;
   report.steps.rows = rowPlan.map(({ pid, name, loc, rows, remove, expected }) => ({ pid, name, loc, rows, remove, before: expected }));
   if (EXECUTE) {
     let ok = 0;
