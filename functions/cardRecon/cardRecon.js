@@ -58,7 +58,7 @@ const {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX,
   parseSlipTimestamp, parseRandsToCents,
-  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, emptyReprintOpensAt, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, emptyReprintOpensAt, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS, MAX_REPRINT_REVISIONS, sastDayIndexOf,
   dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload, formatCents,
   hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal, anchorDeclaredWindow,
@@ -558,7 +558,10 @@ async function readBatchKeysFor(db, storeId, tid, batchNo) {
   const keys = [];
   // Bounded like resolveBatchWrite's own revision cap (CodeRabbit, PR #494):
   // an unexpected longer chain stops probing here and the resolver refuses.
-  for (let rev = 1; rev <= MAX_REVISIONS; rev++) {
+  // Up to the RE-PRINT ceiling, the higher of the two caps: an idle till's
+  // chain of empty re-prints runs past the correction cap (see
+  // MAX_REPRINT_REVISIONS). Every other chain stops at its first gap long before.
+  for (let rev = 1; rev <= MAX_REPRINT_REVISIONS; rev++) {
     const key = rev === 1 ? String(batchNo) : `${batchNo}-r${rev}`;
     const exists = (await db.ref(`${base}/${key}/batchKey`).once("value")).exists();
     if (!exists) break;
@@ -639,6 +642,7 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
   let comparison = null;
   // Where a later-day re-print of an empty batch opens — see emptyReprintOpensAt.
   let reprintOpensAt = null;
+  let typedMetByReport = false;
   if (existingKeys.length && !correction) {
     const recorded = await readRecordedLinesFor(db, storeId, tid, existingKeys);
     // Only asked when there is nothing to compare against — the one case where
@@ -646,10 +650,21 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
     const recordedSlip = recorded.length ? null : await readRecordedSlipFor(db, storeId, tid, existingKeys);
     comparison = comparePriorCapture(recorded, lines || [], { recordedEmptyBatch: isSettledEmptyBatch(recordedSlip) });
     reprintOpensAt = recorded.length ? null : emptyReprintOpensAt(recordedSlip, incoming);
+    // A STAFF SLIP'S FILING NUMBER MET BY THE MACHINE'S OWN REPORT. A typed
+    // total is filed under the next number after the terminal's highest
+    // (planTypedCapture), so on a machine that also reports — by email, or a
+    // manager's photo — the real report of that number arrives on top of it.
+    // The real report is the better evidence and takes over as a later report
+    // of the batch; the typed record and its photo are kept beneath it.
+    if (!recorded.length && recordedSlip && recordedSlip.format === "typed"
+        && incoming && incoming.format !== "typed") {
+      typedMetByReport = true;
+    }
   }
   const write = resolveBatchWrite({
     existingKeys, batchNo, correction,
-    extends: comparison ? comparison.relation === "extends" || reprintOpensAt !== null : false,
+    extends: comparison ? comparison.relation === "extends" || reprintOpensAt !== null || typedMetByReport : false,
+    maxRevisions: reprintOpensAt !== null ? MAX_REPRINT_REVISIONS : MAX_REVISIONS,
   });
   if (write.ok && reprintOpensAt !== null) return { existingKeys, comparison, write, reprintOpensAt };
   // ── A TOTALS-ONLY RECORD OF A BATCH THAT WAS STILL OPEN ──────────────────
@@ -798,7 +813,13 @@ async function readLastBatchFor(db, storeId, tid) {
     .filter((r) => r && typeof r === "object" && Number.isInteger(Number(r.batchNo)));
   if (!rows.length) return { batchNo: null, openedAt: null, closedAt: null, typed: false };
   const highest = Math.max(...rows.map((r) => Number(r.batchNo)));
-  const ofHighest = rows.filter((r) => Number(r.batchNo) === highest);
+  // EVERY REVISION OF THE HIGHEST BATCH, not the two the range happened to
+  // return: within one batchNo the children sort by KEY, and "545-r10" sorts
+  // before "545-r2", so a chain of ten or more would hide its latest report.
+  // equalTo on the indexed batchNo is that one batch's records, never more.
+  const all = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}`).orderByChild("batchNo").equalTo(highest).once("value")).val();
+  const ofHighest = Object.values(all || {}).filter((r) => r && typeof r === "object");
+  if (!ofHighest.length) ofHighest.push(...rows.filter((r) => Number(r.batchNo) === highest));
   const closes = ofHighest.map((r) => Number(r.slip && r.slip.closedAt)).filter(Number.isFinite);
   const latest = ofHighest.find((r) => Number(r.slip && r.slip.closedAt) === Math.max(...closes)) || ofHighest[0];
   const opened = Number(latest.slip && latest.slip.openedAt);
@@ -1164,6 +1185,7 @@ async function handleExtract(db, request, opts = {}) {
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
     correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
+    incoming: extraction,
   });
   if (!write.ok) return reject(write.reason);
 
@@ -1471,7 +1493,9 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
       extraction.openedFrom = "previous-report";
     }
     verdict.warnings = [
-      `The terminal re-printed batch #${batchNo} on a later day with no card taken since its last report — recorded as R0.00 for this day, as a later report of the same batch.`,
+      opened !== null
+        ? `The terminal re-printed batch #${batchNo} on a later day with no card taken since its last report — recorded as R0.00 for this day, as a later report of the same batch.`
+        : `The terminal re-printed batch #${batchNo} more than 7 days after its last report — recorded as R0.00 for this day, but its window could not reach back to that report.`,
       ...verdict.warnings,
     ];
   }
@@ -1884,12 +1908,36 @@ async function handleSlip(db, request, deps = {}) {
     throw new HttpsError("permission-denied", "This account can only send the slip for its own till.");
   }
   const decoded = data.photos.map(decodePhoto);
+  // A PHOTO, not any bytes: the screen always sends a JPEG (slipPhoto.js), and
+  // it is stored as one and read by the slip reader.
+  if (!decoded.every((d) => d.buffer.length > 3 && d.buffer[0] === 0xff && d.buffer[1] === 0xd8 && d.buffer[2] === 0xff)) {
+    throw new HttpsError("invalid-argument", "That is not a photo. Take a photo of the slip.");
+  }
+  // TODAY'S REPORT FROM THE MACHINE ITSELF IS ALREADY IN. On a terminal that
+  // also reports (by email, or a manager's photo), a typed slip after that
+  // report would be filed as the NEXT batch over a window of minutes, and read
+  // as a day's takings too many. The machine's report is the better evidence;
+  // the person is told it is in and nothing is recorded. A typed record from
+  // today (Junid's, or their own earlier slip) is replaced instead — see
+  // handleTypedCapture.
+  const last = await readLastBatchFor(db, terminal.storeId, picked);
+  if (!last.typed && Number.isFinite(last.closedAt) && sastDayIndexOf(last.closedAt) === sastDayIndexOf(nowMs)) {
+    return reject("Today's report for this till is already in from the card machine — nothing more is needed. Thank you.");
+  }
   const drafted = await handleTypedCapture(db, request, {
     picked, terminal, nowMs, slip: { photos: decoded, bucket: deps.bucket || null },
   });
   if (!drafted || drafted.ok !== true) return drafted;
   const done = await handleSubmit(db, { auth: request.auth, data: { action: "submit", draftId: drafted.draftId } });
-  if (!done || done.ok !== true) return done;
+  if (!done || done.ok !== true) {
+    // Nothing was recorded, so the stored photo is evidence of nothing — remove
+    // it rather than leave an orphan per refused attempt.
+    const bucket = deps.bucket || admin.storage().bucket(STORAGE_BUCKET);
+    for (let i = 0; i < decoded.length; i++) {
+      try { await bucket.file(`${PHOTO_STORAGE_PREFIX}/${drafted.draftId}/photo-${i}.jpg`).delete(); } catch { /* best effort */ }
+    }
+    return done;
+  }
   console.log(`cardBatchCapture: slip recorded picked=${picked} key=${done.batchKey} by=${uid}`);
   // THE PHOTO IS READ IN THE BACKGROUND, only to tell Junid when the slip says
   // something other than what was typed. Queued AFTER the record exists, and a
@@ -1965,7 +2013,7 @@ async function writePhotoRead(db, job, read, nowMs) {
   if (!(await db.ref(`${base}/batchKey`).once("value")).exists()) return; // deleted (a test record) — nothing to annotate
   const typed = Number.isInteger(job.typedCents) ? job.typedCents : null;
   const readCents = read && Number.isInteger(read.readCents) ? read.readCents : null;
-  await db.ref(`${base}/photoRead`).set({
+  const photoRead = {
     // "read" — a total came off the photo; "no-total" — the photo read but
     // printed no total the reader could find (blurry, or a slip that does not
     // print one); "unread" — the reader never answered.
@@ -1977,7 +2025,11 @@ async function writePhotoRead(db, job, read, nowMs) {
     model: (read && read.model) || null,
     reason: read && read.reason ? String(read.reason).slice(0, 300) : null,
     at: nowMs,
-  });
+  };
+  // On the record as it stands, inside a transaction: a record deleted between
+  // the check above and this write stays deleted (null in, null out — the
+  // cold-null rule), rather than coming back as a lone photoRead.
+  await db.ref(base).transaction((cur) => (cur === null ? null : { ...cur, photoRead }));
 }
 
 // ─── RECEIVED: THE SLIP IS KEPT, THE READ HAPPENS LATER ──────────────────────

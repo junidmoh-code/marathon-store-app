@@ -33,9 +33,9 @@ const NOW = SAST("2026-10-16T18:30:00");
 
 // The last batch on Marathon Till 2 as recorded live: #544, photographed.
 const B544 = { batchKey: "544", batchNo: 544, revision: 1, capturedVia: "photo",
-  slip: { openedAt: SAST("2026-10-15T17:02:11"), closedAt: SAST("2026-10-16T16:59:43"), totalCents: 2137500, format: "printed", windowSource: "printed" } };
+  slip: { openedAt: SAST("2026-10-14T17:02:11"), closedAt: SAST("2026-10-15T16:59:43"), totalCents: 2137500, format: "printed", windowSource: "printed" } };
 
-const PHOTO = { base64: Buffer.from("not really a jpeg, but bytes").toString("base64") };
+const PHOTO = { base64: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("a jpeg, as far as the header goes")]).toString("base64") };
 function world(extra = {}) {
   return makeFakeDb({
     config: { cardTerminals: TERMINALS },
@@ -179,4 +179,26 @@ test("every action except 'slip' still sits behind card_recon", () => {
   for (const a of ["receive", "notices", "noticeSent", "version", "extract", "typed", "submit"]) {
     assert.ok(handler.indexOf(`action === "${a}"`) > gate, `${a} is behind card_recon`);
   }
+});
+
+test("not a photo: bytes that are not a JPEG are refused before anything is stored", async () => {
+  const db = world();
+  const b = bucket();
+  await assert.rejects(() => handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: MT2, photos: [{ base64: Buffer.from("%PDF-1.4 hello").toString("base64") }], declaredTotal: "1.00" } },
+    { now: () => NOW, bucket: b }), (e) => e.code === "invalid-argument");
+  assert.deepEqual(b.saved, []);
+});
+
+test("the machine's own report for today is already in: told so, nothing recorded, no photo kept", async () => {
+  // Marathon Till 2's photographed #544 closed at 16:59 today; a slip at 18:30
+  // would otherwise be filed as #545 over 90 minutes and read as a day's takings too many.
+  const today = { ...B544, slip: { ...B544.slip, openedAt: SAST("2026-10-15T17:02:11"), closedAt: SAST("2026-10-16T16:59:43") } };
+  const db = world({ card_batches: { pe: { [MT2]: { 544: today } } } });
+  const b = bucket();
+  const out = await slip(db, YASMIN, MT2, "21,375.00", b);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /already in from the card machine/);
+  assert.doesNotMatch(out.reason, /R\s?\d/, "no figure in the answer");
+  assert.deepEqual(Object.keys(await batches(db, "pe", MT2)), ["544"]);
+  assert.deepEqual(b.saved, []);
 });

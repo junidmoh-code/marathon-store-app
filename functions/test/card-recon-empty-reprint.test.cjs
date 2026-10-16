@@ -154,3 +154,20 @@ test("emptyReprintOpensAt: the SA day decides, at midnight SAST, not UTC", () =>
   assert.equal(emptyReprintOpensAt({ ...slip, totalCents: 5 }, empty(SAST(2026, 10, 15, 9, 0, 0))), null, "on file is not R0");
   assert.equal(emptyReprintOpensAt(null, empty(SAST(2026, 10, 15, 9, 0, 0))), null);
 });
+
+test("an idle till's re-print chain runs past the correction cap — the 25th quiet evening is still recorded", async () => {
+  const chain = { 91: B91, 92: B92 };
+  let closed = B92.slip.closedAt;
+  for (let r = 2; r <= 24; r++) {
+    const printed = closed + 24 * 3600 * 1000 - 1;
+    chain[`92-r${r}`] = { ...B92, batchKey: `92-r${r}`, revision: r, autoSuperseded: true, supersedes: r === 2 ? "92" : `92-r${r - 1}`,
+      slip: { ...B92.slip, openedAt: closed, printedAt: printed, closedAt: printed + 1 } };
+    closed = printed + 1;
+  }
+  const db = makeFakeDb({ config: { cardTerminals: TERMINALS }, card_batches: { pe: { [TID]: chain } } });
+  const d = new Date(closed + 24 * 3600 * 1000 + 2 * 3600 * 1000);
+  const print = `${String(d.getUTCDate()).padStart(2, "0")}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${d.getUTCFullYear()} 16:50:00`;
+  const { extract, submit } = await viaEmail(db, batch92(print));
+  assert.equal(extract.ok, true, extract.reason);
+  assert.equal(submit.batchKey, "92-r25");
+});

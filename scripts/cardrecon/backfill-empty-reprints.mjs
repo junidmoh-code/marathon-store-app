@@ -48,7 +48,7 @@ const DATABASE_URL = "https://marathon-club-default-rtdb.europe-west1.firebaseda
 const CALLABLE_URL = "https://europe-west1-marathon-club.cloudfunctions.net/cardBatchCapture";
 // The project's PUBLIC web API key — the same constant the poller uses.
 const FIREBASE_WEB_API_KEY = "AIzaSyAA3r3arlTQvouidDWY0OE-Y2t5ZUF8kCo";
-const MAX_REVISIONS = 20;
+const MAX_REVISIONS = 400; // the re-print ceiling (MAX_REPRINT_REVISIONS) — the server applies the caps
 
 // .env lives in the checkout that holds the poller — this one, or (from a git
 // worktree) the main checkout.

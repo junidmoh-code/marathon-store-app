@@ -21,8 +21,8 @@ const YASMIN = { uid: "u-yasmin", token: { email: "yasmin@marathon.internal" } }
 const SAST = (s) => Date.parse(`${s}+02:00`);
 const NOW = SAST("2026-10-16T18:30:00");
 const B544 = { batchKey: "544", batchNo: 544, revision: 1, capturedVia: "photo",
-  slip: { openedAt: SAST("2026-10-15T17:02:11"), closedAt: SAST("2026-10-16T16:59:43"), totalCents: 2137500, format: "printed", windowSource: "printed" } };
-const PHOTO = { base64: Buffer.from("jpeg bytes").toString("base64") };
+  slip: { openedAt: SAST("2026-10-14T17:02:11"), closedAt: SAST("2026-10-15T16:59:43"), totalCents: 2137500, format: "printed", windowSource: "printed" } };
+const PHOTO = { base64: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("jpeg bytes")]).toString("base64") };
 
 function world(extra = {}) {
   return makeFakeDb({
@@ -143,4 +143,18 @@ test("a deleted record (a test) is not annotated by a late check", async () => {
   await db.ref(`card_batches/pe/${MT2}/545`).set(null);
   await run(db, job.jobId, { ocr: reads("R5.00") });
   assert.equal(await node(db, `card_batches/pe/${MT2}/545`), null);
+});
+
+test("the machine's real report of the slip's filing number takes over as a later report; the slip is kept beneath it", async () => {
+  const { resolveWriteFor } = require("../cardRecon/cardRecon.js");
+  const db = world();
+  await send(db, "21,000.00");                        // filed as #545, typed
+  const real = { format: "printed", windowSource: "printed", emptyBatch: false, totalCents: 2100000, printedAt: NOW + 3600000 };
+  const { write } = await resolveWriteFor(db, { storeId: "pe", tid: MT2, batchNo: "545", correction: false, lines: [], totalCents: 2100000, incoming: real });
+  assert.equal(write.ok, true, write.reason);
+  assert.equal(write.key, "545-r2");
+  assert.equal(write.autoSuperseded, true);
+  // …but a second TYPED entry is not a real report, and is not let through this way.
+  const again = await resolveWriteFor(db, { storeId: "pe", tid: MT2, batchNo: "545", correction: false, lines: [], totalCents: 1, incoming: { format: "typed" } });
+  assert.equal(again.write.ok, false);
 });

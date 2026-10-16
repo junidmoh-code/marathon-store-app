@@ -382,7 +382,7 @@ function comparePriorCapture(recorded, incoming, opts = {}) {
   return { relation: "extends", added, reason: null };
 }
 
-function resolveBatchWrite({ existingKeys, batchNo, correction, extends: extendsPrior = false }) {
+function resolveBatchWrite({ existingKeys, batchNo, correction, extends: extendsPrior = false, maxRevisions = MAX_REVISIONS }) {
   const keys = Array.isArray(existingKeys) ? existingKeys : [];
   const revisions = keys
     .map((k) => {
@@ -406,7 +406,7 @@ function resolveBatchWrite({ existingKeys, batchNo, correction, extends: extends
     return { ok: false, reason: `Batch #${batchNo} for this terminal is already captured. If the earlier capture was wrong, resubmit as a correction — both records are kept.` };
   }
   const revision = highest + 1;
-  if (revision > MAX_REVISIONS) {
+  if (revision > maxRevisions) {
     return { ok: false, reason: `Batch #${batchNo} already has ${highest} captures — this is not a correction chain any more. Talk to the owner.` };
   }
   return {
@@ -510,6 +510,13 @@ const MAX_LONG_BATCH_MS = 31 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Corrections are rare, deliberate acts; a chain this long is something else.
 const MAX_REVISIONS = 20;
+// AN IDLE TILL'S RE-PRINTS ARE NOT A CORRECTION CHAIN. A terminal that takes no
+// card re-prints its last empty batch every evening (emptyReprintOpensAt), and
+// each later-day copy is a revision of that batch — Marathon Till 3's #92 went
+// to r3 in three quiet days. At the correction cap it would be refused again
+// within three weeks, and the two apps would disagree about that till once
+// more. A year of quiet evenings is the ceiling for that chain alone.
+const MAX_REPRINT_REVISIONS = 400;
 
 /**
  * Validate one parsed extraction (already through parseSlipTimestamp /
@@ -1176,7 +1183,7 @@ function readPdfPayload(base64, maxBytes) {
 module.exports = {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX, SAST_OFFSET_MS,
-  MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_LONG_BATCH_MS, MAX_REVISIONS,
+  MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_LONG_BATCH_MS, MAX_REVISIONS, MAX_REPRINT_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
   normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, emptyReprintOpensAt, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
   planTypedCapture, sastDayIndexOf,

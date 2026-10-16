@@ -21,7 +21,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { resolveBatchWrite, normaliseBatchNo, MAX_REVISIONS } = require("../lib/card-recon.cjs");
+const { resolveBatchWrite, normaliseBatchNo, MAX_REVISIONS, MAX_REPRINT_REVISIONS } = require("../lib/card-recon.cjs");
 const { readBatchKeysFor } = require("../cardRecon/cardRecon.js");
 
 // A database that answers from a map of paths and REMEMBERS EVERY PATH ASKED.
@@ -104,13 +104,16 @@ test("the probe walks a high number's revision chain and stops at the first gap"
 
 test("the probe is bounded — it cannot walk for ever on a strange node", async () => {
   const present = {};
-  for (let r = 1; r <= 50; r++) present[`card_batches/pe/67325636/${r === 1 ? "57" : `57-r${r}`}/batchKey`] = true;
+  // Bounded at the RE-PRINT ceiling since 16 Oct 2026: an idle till's chain of
+  // daily empty re-prints legitimately runs past the correction cap.
+  for (let r = 1; r <= MAX_REPRINT_REVISIONS + 50; r++) present[`card_batches/pe/67325636/${r === 1 ? "57" : `57-r${r}`}/batchKey`] = true;
   const db = fakeDb(present);
   const keys = await readBatchKeysFor(db, "pe", "67325636", "57");
-  assert.equal(keys.length, MAX_REVISIONS);
-  assert.equal(db.read.length, MAX_REVISIONS);
-  // …and the resolver refuses rather than minting revision 21.
-  const w = resolveBatchWrite({ existingKeys: keys, batchNo: "57", correction: true });
+  assert.equal(keys.length, MAX_REPRINT_REVISIONS);
+  assert.equal(db.read.length, MAX_REPRINT_REVISIONS);
+  // …and a CORRECTION is still refused at the correction cap, not minted as revision 21.
+  const twenty = keys.slice(0, MAX_REVISIONS);
+  const w = resolveBatchWrite({ existingKeys: twenty, batchNo: "57", correction: true });
   assert.equal(w.ok, false);
   assert.match(w.reason, /not a correction chain any more/);
 });
