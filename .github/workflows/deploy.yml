@@ -15,6 +15,12 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # FULL HISTORY: the hosting predeploy (scripts/deploy-preflight.mjs)
+          # refuses unless the live build's commit is in this checkout and
+          # behind HEAD. The default shallow clone holds one commit, so every
+          # deploy was refused "the live build's commit is unknown".
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
