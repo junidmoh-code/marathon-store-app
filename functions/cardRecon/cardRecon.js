@@ -1891,9 +1891,93 @@ async function handleSlip(db, request, deps = {}) {
   const done = await handleSubmit(db, { auth: request.auth, data: { action: "submit", draftId: drafted.draftId } });
   if (!done || done.ok !== true) return done;
   console.log(`cardBatchCapture: slip recorded picked=${picked} key=${done.batchKey} by=${uid}`);
-  if (deps.afterRecord) await deps.afterRecord({ terminal, picked, batchKey: done.batchKey });
+  // THE PHOTO IS READ IN THE BACKGROUND, only to tell Junid when the slip says
+  // something other than what was typed. Queued AFTER the record exists, and a
+  // failure to queue never un-sends the slip: the record and its photo stand.
+  try {
+    await queueSlipCheck(db, { terminal, picked, batchKey: done.batchKey, nowMs: (deps.now || Date.now)() });
+  } catch (err) {
+    console.error(`cardBatchCapture: slip check not queued for ${picked}/${done.batchKey}: ${err && err.message}`);
+  }
   // "Sent" — and nothing about the figure, the batch or how it compares.
   return { ok: true, received: true };
+}
+
+// ─── THE STAFF SLIP'S PHOTO, READ IN THE BACKGROUND ──────────────────────────
+// A "check" job on the same queue the received photos use (card_batch_jobs →
+// cardBatchReadJob on arrival, cardBatchReadRetry behind it), with the same
+// retries for an overloaded reader. What it does with the answer is the whole
+// difference: it records NOTHING new. It writes what the reader made of the
+// slip's total beside the typed one on the batch already recorded
+// (`photoRead`), so Junid's report can say "typed R X, slip reads R Y". A read
+// that finds no total, or never succeeds, is said there too, quietly — it is
+// not an error, raises no Unread row and sends no email: the typed total is the
+// record, and the photo is on it either way.
+async function queueSlipCheck(db, { terminal, picked, batchKey, nowMs }) {
+  const rec = (await db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${picked}/${batchKey}`).once("value")).val();
+  const photos = rec ? (Array.isArray(rec.photos) ? rec.photos : Object.values(rec.photos || {})).filter(Boolean) : [];
+  if (!rec || !photos.length) return null;
+  const jobRef = db.ref(JOBS_PATH).push();
+  const job = {
+    jobId: jobRef.key,
+    mode: "check",
+    pickedTid: picked,
+    storeId: terminal.storeId,
+    tillId: terminal.tillId,
+    label: terminal.label || null,
+    batchKey,
+    typedCents: rec.slip ? rec.slip.totalCents : null,
+    by: rec.submittedBy ? rec.submittedBy.uid : null,
+    photoPaths: photos,
+    receivedAt: nowMs,
+    dayYmd: sastDayYmd(nowMs),
+    status: "queued",
+    attempts: 0,
+    refusedReads: 0,
+    dueAt: nowMs + 2 * 60 * 1000,
+  };
+  job.dueKey = dueKey(job.dueAt, job.jobId);
+  await db.ref().update({ [`${JOBS_PATH}/${job.jobId}`]: job, [`${DUE_PATH}/${job.dueKey}`]: job.jobId });
+  return job.jobId;
+}
+
+/** One OCR read of a check job's photo: the total the slip prints, or null. Throws what the reader throws. */
+async function checkJobOnce(db, job, photos, deps = {}) {
+  const ocr = await (deps.ocr || ((p) => runSlipOcr(p, geminiApiKey.value())))(photos);
+  const rate = OCR_RATES[ocr.model] || { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD };
+  const costUSD = +(((ocr.tokensIn || 0) / 1e6) * rate.in + ((ocr.tokensOut || 0) / 1e6) * rate.out).toFixed(6);
+  try {
+    await db.ref(`aiAssistant/usage/${new Date().toISOString().slice(0, 10)}`).push({
+      at: Date.now(), kind: "cardSlipCheck", by: job.by || null, model: ocr.model || null, attempts: ocr.attempts || 1,
+      photos: photos.length, tokensIn: ocr.tokensIn || 0, tokensOut: ocr.tokensOut || 0, costUSD,
+    });
+  } catch (err) { console.warn("cardSlipCheck: usage log failed:", err.message); }
+  const ex = ocr.parsed ? toExtraction(ocr.parsed) : null;
+  const readCents = ex && Number.isInteger(ex.totalCents) ? ex.totalCents : null;
+  // The TID it read, compared only — a slip from another machine is worth a word.
+  const tid = ex && ex.tid ? ex.tid : null;
+  return { kind: "recorded", batchKey: job.batchKey, read: { readCents, tidMatches: tid ? tid === job.pickedTid : null, model: ocr.model || null } };
+}
+
+/** What the photo said, beside the typed figure, on the recorded batch — never a new record. */
+async function writePhotoRead(db, job, read, nowMs) {
+  const base = `${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${job.batchKey}`;
+  if (!(await db.ref(`${base}/batchKey`).once("value")).exists()) return; // deleted (a test record) — nothing to annotate
+  const typed = Number.isInteger(job.typedCents) ? job.typedCents : null;
+  const readCents = read && Number.isInteger(read.readCents) ? read.readCents : null;
+  await db.ref(`${base}/photoRead`).set({
+    // "read" — a total came off the photo; "no-total" — the photo read but
+    // printed no total the reader could find (blurry, or a slip that does not
+    // print one); "unread" — the reader never answered.
+    status: read && read.status === "unread" ? "unread" : readCents === null ? "no-total" : "read",
+    readCents,
+    typedCents: typed,
+    differs: readCents !== null && typed !== null && readCents !== typed,
+    tidMatches: read && typeof read.tidMatches === "boolean" ? read.tidMatches : null,
+    model: (read && read.model) || null,
+    reason: read && read.reason ? String(read.reason).slice(0, 300) : null,
+    at: nowMs,
+  });
 }
 
 // ─── RECEIVED: THE SLIP IS KEPT, THE READ HAPPENS LATER ──────────────────────
@@ -2072,10 +2156,15 @@ async function processReadJob(db, jobId, deps = {}) {
     [`${DUE_PATH}/${job.dueKey}`]: jobId,
   });
 
+  // A STAFF SLIP'S CHECK reads the photo for Junid's eyes only (writePhotoRead)
+  // and records nothing; every other job reads and records a batch.
+  const check = job.mode === "check";
   let outcome;
   try {
     const photos = await (deps.loadPhotos || loadJobPhotos)(job.photoPaths);
-    outcome = classifyRun(await (deps.read || readJobOnce)(db, job, photos));
+    outcome = check
+      ? await (deps.check || checkJobOnce)(db, job, photos, deps)
+      : classifyRun(await (deps.read || readJobOnce)(db, job, photos));
   } catch (err) {
     console.error(`cardBatchReadJob: job ${jobId} run failed: ${err && err.message}`);
     outcome = classifyRun({ thrown: err });
@@ -2084,14 +2173,19 @@ async function processReadJob(db, jobId, deps = {}) {
   const t = now();
   const { final, patch } = nextStep(job, outcome, t);
   const done = { ...job, ...patch };
+  if (check) {
+    // Never an Unread row and never an email: the typed total IS the record.
+    if (final === "recorded") await writePhotoRead(db, done, outcome.read, t);
+    if (final === "unread") await writePhotoRead(db, done, { status: "unread", reason: outcome.reason }, t);
+  }
   // THE CONSEQUENCES FIRST, THEN "FINISHED". Both are idempotent (a marker
   // merges; a notice is queued only while the marker has none). If this run
   // dies between them, the job is still "reading" under its lease, the sweep
   // takes it again when the lease lapses, and they are simply done again —
   // where the other order would leave a finished job and a day nobody hears
   // about. (Sonnet architect review, #707.)
-  if (final === "unread") await markJobUnread(db, done, outcome, t);
-  if (final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
+  if (!check && final === "unread") await markJobUnread(db, done, outcome, t);
+  if (!check && final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
   const updates = { [`${DUE_PATH}/${job.dueKey}`]: null };
   for (const [k, v] of Object.entries(patch)) updates[`${JOBS_PATH}/${jobId}/${k}`] = v;
   updates[`${JOBS_PATH}/${jobId}/prevDueKey`] = null;
