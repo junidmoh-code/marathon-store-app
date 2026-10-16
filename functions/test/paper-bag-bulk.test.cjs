@@ -178,3 +178,11 @@ test("a sized legacy paper bag on an L row: Hub 2 holds 0 L, Central 234 → 50"
   const plan = computeRefillPlan(snap({ targets, stock }));
   assert.deepEqual(qtyFor(plan, "sized", "hub2"), [50]);
 });
+
+test("a paper bag on a number with NO ask-at is not a bulk cell: ordinary top-up, capped at the source", () => {
+  // A product row of keep 5 with no ask-at (an eager row) — the full-top-up
+  // rule is about the min/max policy, not about every paper-bag number.
+  const targets = { hub2: { keyed: { _: { target: 5, minQty: 3, source: "policy_target" } } } };
+  const plan = computeRefillPlan(snap({ targets, stock: hub2Stock("keyed", 0, 2) }));
+  assert.deepEqual(qtyFor(plan, "keyed", "hub2"), [2]);
+});
