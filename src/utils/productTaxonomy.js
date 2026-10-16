@@ -338,8 +338,28 @@ export function needsAssignment(product) {
   return !!(product && product.id) && !isAssigned(product) && !isLegacySneaker(product);
 }
 
-/** The effective category key for a product, applying the legacy-sneaker rule. */
+// ── PAPER BAGS (Junid, 16 Oct 2026) ──────────────────────────────────────────
+// Paper bags have their own category, "paper-bags", and ONE refill policy. A
+// record keyed to it is a paper bag; so is one whose NAME says paper bag /
+// paperbag and that sits under Bags, Packaging or no category — where every
+// paper bag was filed before the category existed, and where staff still file
+// new ones. That is what lets a new paper bag inherit the policy with no
+// per-product arming. A product keyed to anything else is never touched.
+// Mirrors functions/lib/refill-engine.cjs isPaperBag; pinned equal by
+// functions/test/policy-category-key.test.cjs.
+export const PAPER_BAG_KEY = "paper-bags";
+const PAPER_BAG_NAME = /paper\s*-?\s*bag/i;
+const PAPER_BAG_FILED_UNDER = new Set(["", "bags", "packaging"]);
+export function isPaperBag(product) {
+  if (!product || typeof product !== "object") return false;
+  const key = typeof product.categoryKey === "string" ? product.categoryKey.trim() : "";
+  if (key === PAPER_BAG_KEY) return true;
+  return PAPER_BAG_FILED_UNDER.has(key) && typeof product.name === "string" && PAPER_BAG_NAME.test(product.name);
+}
+
+/** The effective category key for a product, applying the paper-bag and legacy-sneaker rules. */
 export function effectiveCategoryKey(product) {
+  if (isPaperBag(product)) return PAPER_BAG_KEY;
   if (isAssigned(product)) return product.categoryKey.trim();
   if (isLegacySneaker(product)) return "sneakers";
   return null;

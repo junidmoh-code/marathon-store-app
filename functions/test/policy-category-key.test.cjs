@@ -138,17 +138,34 @@ test("CONTRACT: policyCategoryKey equals the app's effectiveCategoryKey on a fuz
   let s = 20260915;
   const r = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
   const pick = (a) => a[Math.floor(r() * a.length)];
-  const KEYS = ["sneakers", "slides", "soccer-boots", "", "  ", "  sneakers ", null, undefined, 7];
+  const KEYS = ["sneakers", "slides", "soccer-boots", "", "  ", "  sneakers ", null, undefined, 7, "bags", " bags ", "packaging", "paper-bags", "belts"];
   const CATS = ["Footwear", "Clothing", "footwear", "", null, undefined];
   const SUBS = ["Sneakers", "sneakers", "Soccer Boots", "Boots", "", null, undefined];
-  let legacyHits = 0;
-  for (let i = 0; i < 5000; i++) {
-    const p = r() < 0.05 ? pick([null, undefined, "x", 3]) : { categoryKey: pick(KEYS), category: pick(CATS), subcategory: pick(SUBS) };
+  // Paper-bag names as they are typed live, near misses, and non-strings.
+  const NAMES = ["Paper bag boss white medium", "Dior paperbag (big size)", "Armani exchange paper bag (big size)", "PAPER-BAG test",
+    "Boss back bag", "Louis Vuitton Keepall bag", "Paper", "bag paper", "", null, undefined, 5];
+  let legacyHits = 0, paperHits = 0, notPaperUnderBags = 0;
+  for (let i = 0; i < 16000; i++) {
+    const p = r() < 0.05 ? pick([null, undefined, "x", 3]) : { categoryKey: pick(KEYS), category: pick(CATS), subcategory: pick(SUBS), name: pick(NAMES) };
     const a = policyCategoryKey(p), b = effectiveCategoryKey(p);
     assert.equal(a, b, `record ${JSON.stringify(p)}: engine ${a} vs app ${b}`);
     if (a === "sneakers" && !(typeof p?.categoryKey === "string" && p.categoryKey.trim())) legacyHits++;
+    if (a === "paper-bags" && p?.categoryKey !== "paper-bags") paperHits++;
+    if (a === "bags") notPaperUnderBags++;
   }
   assert.ok(legacyHits > 50, `the fuzz must actually exercise the legacy pair (hit ${legacyHits} times)`);
+  assert.ok(paperHits > 200, `the fuzz must actually exercise the paper-bag name rule (hit ${paperHits} times)`);
+  assert.ok(notPaperUnderBags > 100, `…and handbags that stay Bags (hit ${notPaperUnderBags} times)`);
+});
+
+test("the paper-bag rule never reaches a product keyed to another category", () => {
+  assert.equal(policyCategoryKey({ categoryKey: "belts", name: "Paper bag belt" }), "belts");
+  assert.equal(policyCategoryKey({ categoryKey: "perfumes", name: "Dior paperbag gift set" }), "perfumes");
+  assert.equal(policyCategoryKey({ categoryKey: "bags", name: "Louis Vuitton Keepall bag" }), "bags");
+  assert.equal(policyCategoryKey({ categoryKey: "bags", name: "Paper bag Gucci green M" }), "paper-bags");
+  assert.equal(policyCategoryKey({ categoryKey: "packaging", name: "Karl paper bag " }), "paper-bags");
+  assert.equal(policyCategoryKey({ categoryKey: "paper-bags", name: "anything" }), "paper-bags");
+  assert.equal(policyCategoryKey({ name: "Timberland paperbag" }), "paper-bags", "keyless too");
 });
 
 // ── 2. THE PLAN: arming by the map, quantities only ──────────────────────────
