@@ -50,6 +50,8 @@ import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
 import EnginePolicyCard from "./components/stock/EnginePolicyCard";
 import CardReconScreen from "./components/cardrecon/CardReconScreen";
+import CardSlipScreen from "./components/cardrecon/CardSlipScreen";
+import { hasSlipScope } from "./components/cardrecon/slipScope";
 import NewArrivalsScreen from "./components/newArrivals/NewArrivalsScreen";
 import { newArrivalsApi } from "./components/newArrivals/newArrivalsApi";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
@@ -409,7 +411,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", TV_AD: "tv_ad", STOCK_AUDIT: "stock_audit" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", CARD_SLIP: "card_slip", TV_AD: "tv_ad", STOCK_AUDIT: "stock_audit" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -3148,6 +3150,16 @@ const RoleIcons = {
       <circle cx="10" cy="18" r="2"/>
     </svg>
   ),
+  card_slip: (
+    // A torn-off till slip: a paper strip with a zigzag tear at the foot and
+    // three printed lines — the one thing this tile asks for.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 2.5h12v18l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5-2 1.5z"/>
+      <line x1="9" y1="7.5" x2="15" y2="7.5"/>
+      <line x1="9" y1="11" x2="15" y2="11"/>
+      <line x1="9" y1="14.5" x2="12.5" y2="14.5"/>
+    </svg>
+  ),
   card_recon: (
     // A payment card: rounded rectangle with its magstripe band. The only
     // rounded-rect-with-a-bar in the set — checked against Display (screen on a
@@ -3516,6 +3528,12 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // against the POS tender ledger. Dedicated per-user permission; the
       // figure is OCR'd from the slip, never typed.
       hasPermission(ROLE_TO_PERMISSION[ROLES.CARD_RECON]) && { key:"card_recon", icon:RoleIcons.card_recon, name:"Card Recon", desc:"Batch slip capture · variance", onClick:()=>onSelect(ROLES.CARD_RECON) },
+      // Card Slip — ONE till's daily slip (photo + the card total it prints),
+      // for an account Junid has given that till (/users/{uid}/cardSlipTills).
+      // Not a permission in the catalogue: the scope is a list of tills, and
+      // the cardBatchCapture callable refuses every till outside it. GATE 1 of
+      // 2; the route gate below is the twin.
+      hasSlipScope(homePerm) && { key:"card_slip", icon:RoleIcons.card_slip, name:"Card Slip", desc:"Send today's card slip for your till", onClick:()=>onSelect(ROLES.CARD_SLIP) },
       tvAdVisible && { key:"tv_ad", icon:RoleIcons.tv_ad, name:"TV Ad", desc:"Overlay creative · schedule", onClick:()=>onSelect(ROLES.TV_AD) },
       // AI Studio — super-admin sees every tool; `photo_generation` sees the
       // Photo Studio and NOTHING else (the view filters its own tool list, and
@@ -20605,6 +20623,8 @@ function AppInner() {
     // must not strand the user on a view they can no longer read.
     if (role === ROLES.SOCIAL && !socialRouteOpen) { setRole(null); return; }
     if (role === ROLES.TV_AD && !tvAdRouteOpen) { setRole(null); return; }
+    // A slip scope taken away drops a persisted Card Slip role home.
+    if (role === ROLES.CARD_SLIP && !hasSlipScope(permRecord)) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
   }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, stockAuditRouteOpen, shopifyRouteOpen, socialRouteOpen, tvAdRouteOpen, aiStudioRouteOpen, permRecord]);
@@ -20985,6 +21005,8 @@ function AppInner() {
     ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />
     : <AdminSignInScreen onCancel={() => setRole(null)} />;
   else if (role === ROLES.CARD_RECON) view = guard(ROLES.CARD_RECON, <CardReconScreen onExit={() => setRole(null)} />);
+  // GATE 2 of 2 for Card Slip: the per-till scope on the person's own record.
+  else if (role === ROLES.CARD_SLIP) view = hasSlipScope(permRecord) ? <CardSlipScreen onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
