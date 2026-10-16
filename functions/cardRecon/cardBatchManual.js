@@ -33,13 +33,15 @@ const {
 } = require("../lib/card-recon.cjs");
 const { computeExpectedCard } = require("../lib/card-expected.cjs");
 const { placementAt } = require("../lib/card-terminal-placements.cjs");
+const { SUPPORTING_FIELD, carriedSlips, authorityOf } = require("../lib/card-supporting-slips.cjs");
+const sastDayYmdOf = (ms) => (Number.isFinite(ms) ? new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(0, 10) : null);
 const { mayEnterManually, planManualEntry } = require("../lib/card-manual-entry.cjs");
 const {
   MANUAL_AUDIT_PATH, unreadPath, resolveUnreadMarker, isDayYmd, sastDayStartMs,
 } = require("../lib/card-unread.cjs");
 const { JOBS_PATH, DUE_PATH, dueKey } = require("../lib/card-read-jobs.cjs");
 // The capture path's own duplicate guard — the same function its submit calls.
-const { resolveWriteFor } = require("./cardRecon.js");
+const { resolveWriteFor, syncCarried, readLastBatchFor } = require("./cardRecon.js");
 
 if (!admin.apps.length) {
   admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
@@ -70,7 +72,7 @@ async function revisionKeys(db, storeId, tid, batchNo) {
 
 async function handleManualEntry(db, request, deps = {}) {
   const now = deps.now || Date.now;
-  const input = request.data || {};
+  let input = request.data || {};
   const tid = normaliseTid(input.tid);
   if (!tid) return reject("Pick the till first.");
   // This one terminal's row, never the whole registry.
@@ -79,6 +81,18 @@ async function handleManualEntry(db, request, deps = {}) {
   const storeId = row.storeId; // the FILING key
   const nowMs = now();
 
+  // A STAFF SLIP IS ALREADY THE DAY'S RECORD: Junid's figure outranks it and
+  // replaces it, keeping it beside his (lib/card-supporting-slips.cjs) — a
+  // new batch number beside it would count the day twice. (Fable spec review, #731.)
+  let staffReplaced = null;
+  if (!input.replaces) {
+    const last = await readLastBatchFor(db, storeId, tid);
+    if (last.record && authorityOf(last.record) === "staff" && last.record.slip
+        && sastDayYmdOf(Number(last.record.slip.closedAt)) === input.dayYmd) {
+      staffReplaced = last.key;
+      input = { ...input, replaces: last.key };
+    }
+  }
   let replaced = null, replacedIsLatest = true;
   if (input.replaces !== undefined && input.replaces !== null && input.replaces !== "") {
     if (typeof input.replaces !== "string" || !KEY_RE.test(input.replaces)) return reject("That batch key is not one this report wrote.");
@@ -110,7 +124,9 @@ async function handleManualEntry(db, request, deps = {}) {
     prevBatchNo: prev && Number.isInteger(Number(prev.batchNo)) ? Number(prev.batchNo) : null,
   });
   if (!plan.ok) return plan;
-  const { extraction, batchNo, correction, warnings, manual } = plan;
+  const { extraction, batchNo, correction, manual } = plan;
+  const warnings = [...plan.warnings,
+    ...(staffReplaced ? [`A staff slip (${staffReplaced}) was already the record for ${manual.dayYmd}; this entry replaces it, and the staff slip is kept beside it.`] : [])];
 
   const verdict = validateExtraction(extraction, { summaryOnly: true, source: "manual", declaredTotal: true });
   if (!verdict.ok) return reject(verdict.reason);
@@ -175,11 +191,22 @@ async function handleManualEntry(db, request, deps = {}) {
     },
   };
 
+  // Junid's figure outranks a staff slip, and keeps it beside him
+  // (lib/card-supporting-slips.cjs): a same-day staff slip this corrects, and
+  // any slip already supporting it, move onto this record.
+  const carried = write.supersedes
+    ? carriedSlips((await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${write.supersedes}`).once("value")).val(), write.supersedes, record)
+    : null;
+  if (carried) record[SUPPORTING_FIELD] = carried;
+
   const txn = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${write.key}`).transaction((cur) => {
     if (cur !== null) return undefined; // exists → abort, never overwrite
     return JSON.parse(JSON.stringify(record));
   });
   if (!txn.committed) return reject(`Batch #${batchNo} was captured by something else a moment ago — reload the report.`);
+  // A staff slip attached to the record this corrects while Junid was typing
+  // is brought across too (cardRecon.js attachSupportingSlip does the same from its side).
+  if (write.supersedes) await syncCarried(db, `${CARD_BATCHES_PATH}/${storeId}/${tid}`, write.supersedes, write.key);
 
   // ── THE AUDIT TRAIL ──────────────────────────────────────────────────────
   // The record carries `manual.original` too; this is the list of every hand

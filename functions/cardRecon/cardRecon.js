@@ -75,6 +75,7 @@ const { loadNetwork } = require("../lib/network-load.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
 const { tillAt } = require("../lib/card-terminal-placements.cjs");
 const { SLIP_SCOPE_FIELD, readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
+const { SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, shouldAttach, authorityOf, buildSupportingSlip, carriedSlips, sameDaySuccessors } = require("../lib/card-supporting-slips.cjs");
 const {
   JOBS_PATH, DUE_PATH, JOB_PHOTO_PREFIX, dueKey, dueCutoff, claimJob, classifyRun, nextStep, unreadReason,
 } = require("../lib/card-read-jobs.cjs");
@@ -643,6 +644,7 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
   // Where a later-day re-print of an empty batch opens — see emptyReprintOpensAt.
   let reprintOpensAt = null;
   let typedMetByReport = false;
+  let lateOverTyped = false;
   if (existingKeys.length && !correction) {
     const recorded = await readRecordedLinesFor(db, storeId, tid, existingKeys);
     // Only asked when there is nothing to compare against — the one case where
@@ -659,6 +661,15 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
     if (!recorded.length && recordedSlip && recordedSlip.format === "typed"
         && incoming && incoming.format !== "typed") {
       typedMetByReport = true;
+      // …unless the report is of an EARLIER day: yesterday's report arriving
+      // late meets today's slip only because the slip took the next number.
+      // It is recorded as the slip's REPLACEMENT (not a later report, which
+      // would put yesterday's money on today), and the slip is kept beside it
+      // (lib/card-supporting-slips.cjs inherits). (Fable spec review, #731.)
+      if (Number.isFinite(incoming.closedAt) && Number.isFinite(recordedSlip.closedAt)
+          && sastDayIndexOf(incoming.closedAt) < sastDayIndexOf(recordedSlip.closedAt)) {
+        lateOverTyped = true;
+      }
     }
     // THE SAME BATCH, RE-PRINTED UNCHANGED ON A LATER DAY. A terminal whose last
     // batch had sales and which takes nothing more may re-print that batch at
@@ -677,8 +688,8 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
     }
   }
   const write = resolveBatchWrite({
-    existingKeys, batchNo, correction,
-    extends: comparison ? comparison.relation === "extends" || reprintOpensAt !== null || typedMetByReport : false,
+    existingKeys, batchNo, correction: correction || lateOverTyped,
+    extends: lateOverTyped ? false : comparison ? comparison.relation === "extends" || reprintOpensAt !== null || typedMetByReport : false,
     maxRevisions: reprintOpensAt !== null ? MAX_REPRINT_REVISIONS : MAX_REVISIONS,
   });
   if (write.ok && reprintOpensAt !== null) return { existingKeys, comparison, write, reprintOpensAt };
@@ -826,19 +837,31 @@ async function readLastBatchFor(db, storeId, tid) {
     .limitToLast(2).once("value");
   const rows = Object.values(snap.val() || {})
     .filter((r) => r && typeof r === "object" && Number.isInteger(Number(r.batchNo)));
-  if (!rows.length) return { batchNo: null, openedAt: null, closedAt: null, typed: false };
+  if (!rows.length) return { batchNo: null, openedAt: null, closedAt: null, typed: false, key: null, record: null };
   const highest = Math.max(...rows.map((r) => Number(r.batchNo)));
   // EVERY REVISION OF THE HIGHEST BATCH, not the two the range happened to
   // return: within one batchNo the children sort by KEY, and "545-r10" sorts
   // before "545-r2", so a chain of ten or more would hide its latest report.
   // equalTo on the indexed batchNo is that one batch's records, never more.
   const all = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}`).orderByChild("batchNo").equalTo(highest).once("value")).val();
-  const ofHighest = Object.values(all || {}).filter((r) => r && typeof r === "object");
-  if (!ofHighest.length) ofHighest.push(...rows.filter((r) => Number(r.batchNo) === highest));
+  // Keyed: the record in force is what a staff slip is attached to.
+  const ofHighest = Object.entries(all || {}).filter(([, r]) => r && typeof r === "object")
+    .map(([key, r]) => ({ ...r, batchKey: r.batchKey || key }));
+  if (!ofHighest.length) {
+    ofHighest.push(...Object.entries(snap.val() || {})
+      .filter(([, r]) => r && typeof r === "object" && Number(r.batchNo) === highest)
+      .map(([key, r]) => ({ ...r, batchKey: r.batchKey || key })));
+  }
   const closes = ofHighest.map((r) => Number(r.slip && r.slip.closedAt)).filter(Number.isFinite);
-  const latest = ofHighest.find((r) => Number(r.slip && r.slip.closedAt) === Math.max(...closes)) || ofHighest[0];
+  // The latest close wins; at the same close, the higher revision (a
+  // correction keeps the close of what it corrects — a manual entry may).
+  const latest = ofHighest
+    .filter((r) => !closes.length || Number(r.slip && r.slip.closedAt) === Math.max(...closes))
+    .sort((a, b) => (Number(a.revision) || 1) - (Number(b.revision) || 1)).at(-1) || ofHighest[0];
   const opened = Number(latest.slip && latest.slip.openedAt);
   return {
+    key: latest.batchKey,
+    record: latest,
     batchNo: highest,
     // Where the record in force STARTED — what a correction must start from,
     // since it replaces that record's figure for the same trading period.
@@ -1860,6 +1883,12 @@ async function handleSubmit(db, request) {
     } : null,
   });
 
+  // A STAFF SLIP THIS RECORD TAKES OVER FROM stays beside it, as a supporting
+  // slip — the machine's report of its filing number, or Junid's correction,
+  // outranks it but must not hide what was typed (lib/card-supporting-slips.cjs).
+  const carried = await carriedSlipsFor(db, terminal.storeId, extraction.tid, write.supersedes, record);
+  if (carried) record[SUPPORTING_FIELD] = carried;
+
   const txn = await tidRef.child(write.key).transaction((cur) => {
     if (cur !== null) return undefined; // exists → abort, never overwrite
     return JSON.parse(JSON.stringify(record));
@@ -1867,6 +1896,9 @@ async function handleSubmit(db, request) {
   if (!txn.committed) {
     return reject(`Batch #${batchNo} for this terminal was captured by someone else a moment ago.`);
   }
+  // A slip attached to the superseded record between the read above and this
+  // write is brought across now (attachSupportingSlip does the same from its side).
+  if (write.supersedes) await syncCarried(db, `${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`, write.supersedes, write.key);
   await draftRef.remove().catch(() => {});
 
   // CAPTURE ONLY — an acknowledgement, not a verdict. The manager learns that
@@ -1883,6 +1915,13 @@ async function handleSubmit(db, request) {
     linesCaptured: record.linesCaptured,
     warnings: draft.warnings || [],
   };
+}
+
+/** The supporting slips a new record inherits from the one it supersedes (one read), or null. */
+async function carriedSlipsFor(db, storeId, tid, supersedesKey, successor) {
+  if (!supersedesKey) return null;
+  const prev = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${supersedesKey}`).once("value")).val();
+  return carriedSlips(prev, supersedesKey, successor);
 }
 
 // ─── ONE TILL'S DAILY SLIP, FROM THE PERSON GIVEN THAT TILL ─────────────────
@@ -1931,16 +1970,17 @@ async function handleSlip(db, request, deps = {}) {
   if (!decoded.every((d) => d.buffer.length > 3 && d.buffer[0] === 0xff && d.buffer[1] === 0xd8 && d.buffer[2] === 0xff)) {
     throw new HttpsError("invalid-argument", "That is not a photo. Take a photo of the slip.");
   }
-  // TODAY'S REPORT FROM THE MACHINE ITSELF IS ALREADY IN. On a terminal that
-  // also reports (by email, or a manager's photo), a typed slip after that
-  // report would be filed as the NEXT batch over a window of minutes, and read
-  // as a day's takings too many. The machine's report is the better evidence;
-  // the person is told it is in and nothing is recorded. A typed record from
-  // today (Junid's, or their own earlier slip) is replaced instead — see
-  // handleTypedCapture.
+  // A BETTER FIGURE FOR TODAY IS ALREADY IN — the machine's own report (by
+  // email, or a manager's photo) or Junid's (typed, or a manual entry). The
+  // slip is NEVER refused for that (Junid, 16 Oct 2026): it is attached to
+  // that record as a supporting slip, photo and typed total, and the record's
+  // figure stays the one the verdict uses. Filing it as the next batch instead
+  // would read as a day's takings too many. Their own earlier slip today is
+  // corrected instead (handleTypedCapture); nothing today, and the slip is the
+  // day's record. Precedence: machine report > Junid > staff typed.
   const last = await readLastBatchFor(db, terminal.storeId, picked);
-  if (!last.typed && Number.isFinite(last.closedAt) && sastDayIndexOf(last.closedAt) === sastDayIndexOf(nowMs)) {
-    return reject("Today's report for this till is already in from the card machine — nothing more is needed. Thank you.");
+  if (shouldAttach(last, nowMs)) {
+    return attachSupportingSlip(db, request, { terminal, picked, inForce: last, photos: decoded, nowMs, bucket: deps.bucket });
   }
   const drafted = await handleTypedCapture(db, request, {
     picked, terminal, nowMs, slip: { photos: decoded, bucket: deps.bucket || null },
@@ -1969,6 +2009,108 @@ async function handleSlip(db, request, deps = {}) {
   return { ok: true, received: true };
 }
 
+/**
+ * A STAFF SLIP KEPT BESIDE A BETTER FIGURE — see lib/card-supporting-slips.cjs.
+ * The photo is stored first, under its own id; then the slip goes onto the
+ * record in force at {record}/supportingSlips/{slipId}, in ONE transaction on
+ * that record: a record deleted meanwhile stays deleted (null in, null out),
+ * and the record's own figures are never touched. Then — because a better
+ * figure may have taken over from that record while this was in flight — the
+ * slip is copied along its same-day successors (propagateSlips), and every
+ * writer of a successor does the same from its side (syncCarried), so the slip
+ * always ends up on the record Junid sees. The reply is "Sent", nothing more.
+ */
+async function attachSupportingSlip(db, request, { terminal, picked, inForce, photos, nowMs, bucket: bucketDep = null }) {
+  const declared = readDeclaredTotal(request.data && request.data.declaredTotal);
+  if (declared.err) return reject(declared.err);
+  const tidPath = `${CARD_BATCHES_PATH}/${terminal.storeId}/${picked}`;
+  const recordPath = `${tidPath}/${inForce.key}`;
+  const slipId = db.ref(`${recordPath}/${SUPPORTING_FIELD}`).push().key;
+  const bucket = bucketDep || admin.storage().bucket(STORAGE_BUCKET);
+  const paths = [];
+  const cleanup = async () => {
+    for (const path of paths) { try { await bucket.file(path).delete(); } catch { /* best effort */ } }
+  };
+  let full = false;
+  try {
+    for (let i = 0; i < photos.length; i++) {
+      const path = `${PHOTO_STORAGE_PREFIX}/slip-${slipId}/photo-${i}.jpg`;
+      paths.push(path);
+      await bucket.file(path).save(photos[i].buffer, {
+        resumable: false,
+        contentType: "image/jpeg",
+        metadata: { cacheControl: "private, max-age=31536000, immutable" },
+      });
+    }
+    const entry = JSON.parse(JSON.stringify(buildSupportingSlip({
+      slipId, cents: declared.cents, photos: paths,
+      byUid: request.auth.uid, byEmail: request.auth.token?.email || null, nowMs,
+    })));
+    const txn = await db.ref(recordPath).transaction((cur) => {
+      if (cur === null) return null; // cold-null: never invent a record
+      const have = cur[SUPPORTING_FIELD] || {};
+      full = Object.keys(have).length >= MAX_SUPPORTING_SLIPS;
+      if (full) return undefined;
+      return { ...cur, [SUPPORTING_FIELD]: { ...have, [slipId]: entry } };
+    });
+    const after = txn.committed && txn.snapshot ? txn.snapshot.val() : null;
+    const kept = !!(after && after[SUPPORTING_FIELD] && after[SUPPORTING_FIELD][slipId]);
+    if (!kept) {
+      await cleanup();
+      return reject(full
+        ? "This till's slip has already been sent many times today — nothing more was kept. Tell Junid."
+        : "This till's record changed while the slip was being sent — nothing was kept. Send it again.");
+    }
+  } catch (err) {
+    await cleanup();
+    throw err;
+  }
+  await propagateSlips(db, tidPath, inForce.key);
+  console.log(`cardBatchCapture: slip attached picked=${picked} key=${inForce.key} slip=${slipId} (${authorityOf(inForce.record)} figure in force) by=${request.auth.uid}`);
+  try {
+    await queueSlipCheck(db, { terminal, picked, batchKey: inForce.key, nowMs, slip: { slipId, cents: declared.cents, photos: paths, by: request.auth.uid } });
+  } catch (err) {
+    console.error(`cardBatchCapture: slip check not queued for ${picked}/${inForce.key}/${slipId}: ${err && err.message}`);
+  }
+  return { ok: true, received: true };
+}
+
+/** Every record of the batch `key` belongs to — one indexed equalTo(batchNo) read. */
+async function batchRevisions(db, tidPath, key) {
+  const batchNo = Number(String(key).split("-")[0]);
+  if (!Number.isInteger(batchNo)) return {};
+  return (await db.ref(tidPath).orderByChild("batchNo").equalTo(batchNo).once("value")).val() || {};
+}
+
+/**
+ * Bring the slips carried from `fromKey` onto `toKey` (its same-day successor):
+ * any slip missing there is added, and a slip there without a photo read gets
+ * the source's. Never removes or rewrites what is there; never invents a record.
+ */
+async function syncCarried(db, tidPath, fromKey, toKey) {
+  if (!fromKey || !toKey || fromKey === toKey) return;
+  const from = (await db.ref(`${tidPath}/${fromKey}`).once("value")).val();
+  if (!from) return;
+  await db.ref(`${tidPath}/${toKey}`).transaction((cur) => {
+    if (cur === null) return null;
+    const want = carriedSlips(from, fromKey, cur);
+    if (!want) return undefined;
+    const have = { ...(cur[SUPPORTING_FIELD] || {}) };
+    let changed = false;
+    for (const [id, s] of Object.entries(want)) {
+      if (!have[id]) { have[id] = s; changed = true; } else if (!have[id].photoRead && s.photoRead) { have[id] = { ...have[id], photoRead: s.photoRead }; changed = true; }
+    }
+    return changed ? JSON.parse(JSON.stringify({ ...cur, [SUPPORTING_FIELD]: have })) : undefined;
+  });
+}
+
+/** Copy the slips on `fromKey` along its same-day successors, oldest first. */
+async function propagateSlips(db, tidPath, fromKey) {
+  const chain = sameDaySuccessors(await batchRevisions(db, tidPath, fromKey), fromKey);
+  let prev = fromKey;
+  for (const next of chain) { await syncCarried(db, tidPath, prev, next); prev = next; }
+}
+
 // ─── THE STAFF SLIP'S PHOTO, READ IN THE BACKGROUND ──────────────────────────
 // A "check" job on the same queue the received photos use (card_batch_jobs →
 // cardBatchReadJob on arrival, cardBatchReadRetry behind it), with the same
@@ -1979,10 +2121,13 @@ async function handleSlip(db, request, deps = {}) {
 // that finds no total, or never succeeds, is said there too, quietly — it is
 // not an error, raises no Unread row and sends no email: the typed total is the
 // record, and the photo is on it either way.
-async function queueSlipCheck(db, { terminal, picked, batchKey, nowMs }) {
-  const rec = (await db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${picked}/${batchKey}`).once("value")).val();
-  const photos = rec ? (Array.isArray(rec.photos) ? rec.photos : Object.values(rec.photos || {})).filter(Boolean) : [];
-  if (!rec || !photos.length) return null;
+async function queueSlipCheck(db, { terminal, picked, batchKey, nowMs, slip = null }) {
+  // A SUPPORTING slip carries its own photo and figure; a slip that is the
+  // record is read off the record.
+  const rec = slip ? null : (await db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${picked}/${batchKey}`).once("value")).val();
+  const photos = slip ? slip.photos.slice()
+    : rec ? (Array.isArray(rec.photos) ? rec.photos : Object.values(rec.photos || {})).filter(Boolean) : [];
+  if ((!slip && !rec) || !photos.length) return null;
   const jobRef = db.ref(JOBS_PATH).push();
   const job = {
     jobId: jobRef.key,
@@ -1992,8 +2137,9 @@ async function queueSlipCheck(db, { terminal, picked, batchKey, nowMs }) {
     tillId: terminal.tillId,
     label: terminal.label || null,
     batchKey,
-    typedCents: rec.slip ? rec.slip.totalCents : null,
-    by: rec.submittedBy ? rec.submittedBy.uid : null,
+    slipId: slip ? slip.slipId : null,
+    typedCents: slip ? slip.cents : rec.slip ? rec.slip.totalCents : null,
+    by: slip ? slip.by : rec.submittedBy ? rec.submittedBy.uid : null,
     photoPaths: photos,
     receivedAt: nowMs,
     dayYmd: sastDayYmd(nowMs),
@@ -2046,8 +2192,19 @@ async function writePhotoRead(db, job, read, nowMs) {
   };
   // On the record as it stands, inside a transaction: a record deleted between
   // the check above and this write stays deleted (null in, null out — the
-  // cold-null rule), rather than coming back as a lone photoRead.
-  await db.ref(base).transaction((cur) => (cur === null ? null : { ...cur, photoRead }));
+  // cold-null rule), rather than coming back as a lone photoRead. A
+  // SUPPORTING slip's read goes on that slip, never on the record's figures.
+  const at = job.slipId ? `${base}/${SUPPORTING_FIELD}/${job.slipId}` : base;
+  await db.ref(at).transaction((cur) => (cur === null ? null : { ...cur, photoRead }));
+  // …and on the copies carried to the records that took over since the slip
+  // was queued (a machine report, Junid's correction): the read is the same
+  // slip's, and the card Junid sees is the successor's.
+  const tidPath = `${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}`;
+  const carriedId = job.slipId || `rec-${job.batchKey}`;
+  for (const key of sameDaySuccessors(await batchRevisions(db, tidPath, job.batchKey), job.batchKey)) {
+    await db.ref(`${tidPath}/${key}/${SUPPORTING_FIELD}/${carriedId}`)
+      .transaction((cur) => (cur === null ? null : { ...cur, photoRead }));
+  }
 }
 
 // ─── RECEIVED: THE SLIP IS KEPT, THE READ HAPPENS LATER ──────────────────────
@@ -2539,6 +2696,9 @@ exports.cardBatchReadRetry = onSchedule(
 // Exported for tests (pure-ish seams).
 exports.handleReceive = handleReceive;
 exports.handleSlip = handleSlip;
+exports.carriedSlipsFor = carriedSlipsFor;
+exports.syncCarried = syncCarried;
+exports.handleTypedCapture = handleTypedCapture;
 // The extract → submit pair, for the email-pipeline tests (fake RTDB + bucket).
 exports.handleExtract = handleExtract;
 exports.handleSubmit = handleSubmit;

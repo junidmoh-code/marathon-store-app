@@ -315,7 +315,7 @@ test("a terminal with nothing recorded reads as nothing, never as batch 0", () =
   const q = { orderByChild: () => q, startAt: () => q, endAt: () => q, limitToLast: () => q,
               once: async () => ({ val: () => null }) };
   return readLastBatchFor({ ref: () => q }, "trophy", TID).then((last) => {
-    assert.deepEqual(last, { batchNo: null, openedAt: null, closedAt: null, typed: false });
+    assert.deepEqual(last, { batchNo: null, openedAt: null, closedAt: null, typed: false, key: null, record: null });
   });
 });
 
