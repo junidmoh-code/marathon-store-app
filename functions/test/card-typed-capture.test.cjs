@@ -298,7 +298,9 @@ test("the highest batch is read from the rows, not assumed to be the last one", 
     "487": { batchNo: 487, slip: { openedAt: 30, closedAt: 40, format: "typed" } },
     "487-r2": { batchNo: 487, slip: { openedAt: 30, closedAt: 55, format: "typed" } },
   };
+  // equalTo(batchNo): every revision of one batch, as the indexed read returns them.
   const q = { orderByChild: () => q, startAt: () => q, endAt: () => q, limitToLast: () => q,
+              equalTo: (v) => ({ once: async () => ({ val: () => Object.fromEntries(Object.entries(rows).filter(([, r]) => r.batchNo === v)) }) }),
               once: async () => ({ val: () => rows }) };
   return readLastBatchFor({ ref: () => q }, "trophy", TID).then((last) => {
     assert.equal(last.batchNo, 487);
@@ -314,5 +316,19 @@ test("a terminal with nothing recorded reads as nothing, never as batch 0", () =
               once: async () => ({ val: () => null }) };
   return readLastBatchFor({ ref: () => q }, "trophy", TID).then((last) => {
     assert.deepEqual(last, { batchNo: null, openedAt: null, closedAt: null, typed: false });
+  });
+});
+
+test("a chain of ten revisions: the latest is found though its KEY sorts first (\"487-r10\" < \"487-r2\")", () => {
+  const { readLastBatchFor } = require("../cardRecon/cardRecon.js");
+  const all = { "487": { batchNo: 487, slip: { openedAt: 30, closedAt: 40, format: "typed" } } };
+  for (let r = 2; r <= 10; r++) all[`487-r${r}`] = { batchNo: 487, slip: { openedAt: 30, closedAt: 40 + r, format: "typed" } };
+  // What limitToLast(2) actually returns by key order: r8 and r9 — not r10.
+  const lastTwo = { "487-r8": all["487-r8"], "487-r9": all["487-r9"] };
+  const q = { orderByChild: () => q, startAt: () => q, endAt: () => q, limitToLast: () => q,
+              equalTo: (v) => ({ once: async () => ({ val: () => Object.fromEntries(Object.entries(all).filter(([, r]) => r.batchNo === v)) }) }),
+              once: async () => ({ val: () => lastTwo }) };
+  return readLastBatchFor({ ref: () => q }, "trophy", TID).then((last) => {
+    assert.equal(last.closedAt, 50, "487-r10's close, the record in force");
   });
 });
