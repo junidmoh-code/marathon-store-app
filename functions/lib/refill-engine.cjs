@@ -465,7 +465,49 @@ function passThroughExcluded(product) {
   return isFootwear(product) || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(product));
 }
 
+// ═══ PAPER BAGS (Junid, 16 Oct 2026) ═════════════════════════════════════════
+// Paper bags are packaging, bought and handed out in bulk: ONE category policy
+// (keep 50, ask at 10) governs every one of them, and a request is always the
+// FULL top-up. They used to share the Bags category with handbags, so a paper
+// bag created under Bags (all 14 on 16 Oct were) followed the handbag numbers —
+// Hub 2 keep 4, ask at 0 — and raised x1–x4.
+//
+// THE IDENTITY. A record keyed "paper-bags" is a paper bag. So is one whose
+// name says paper bag / paperbag and whose key is Bags or Packaging — the only
+// two places paper bags have ever been filed (59 live records, 16 Oct: 52
+// Bags, 7 Packaging, no name match anywhere else, no handbag matching). A
+// keyless record is NOT folded in: Add Product has required a key since #280,
+// and a keyless "paperbag waist" garment must never become packaging.
+// The name rule is what lets a NEW paper bag inherit the policy the moment it
+// exists, whichever of those it was filed under, with no per-product arming.
+// It never reaches a product keyed to any other category.
+//
+// Kept in lockstep with src/utils/productTaxonomy.js isPaperBag /
+// effectiveCategoryKey; pinned equal by test/policy-category-key.test.cjs.
+const PAPER_BAG_KEY = "paper-bags";
+const PAPER_BAG_NAME = /paper\s*-?\s*bag/i;
+const PAPER_BAG_FILED_UNDER = new Set(["bags", "packaging"]);
+function isPaperBag(product) {
+  if (!product || typeof product !== "object") return false;
+  const key = typeof product.categoryKey === "string" ? product.categoryKey.trim() : "";
+  if (key === PAPER_BAG_KEY) return true;
+  return PAPER_BAG_FILED_UNDER.has(key) && typeof product.name === "string" && PAPER_BAG_NAME.test(product.name);
+}
+
+// A FULL-TOP-UP cell: a paper bag on a min/max (ask-at) number. Its request is
+// keep − (on hand + inbound), whole: never capped at the source's free stock or
+// at maxUnitsPerIntent, never resized down to the source, never withdrawn
+// because the source is short or empty. Fulfilment sends what is there and the
+// remainder stays open (RefillQueue's partial send). A paper bag with no ask-at
+// is not a bulk cell and keeps the ordinary rule. Every other product is
+// untouched by construction — test/paper-bag-parity.test.cjs runs the
+// pre-change engine beside this one over random non-paper-bag snapshots.
+function fullTopUpCell(product, t) {
+  return !!t && t.reorderPoint != null && isPaperBag(product);
+}
+
 function policyCategoryKey(product) {
+  if (isPaperBag(product)) return PAPER_BAG_KEY;
   const key = typeof product?.categoryKey === "string" ? product.categoryKey.trim() : "";
   if (key) return key;
   if (product && product.category === "Footwear" && product.subcategory === "Sneakers") return "sneakers";
@@ -974,6 +1016,9 @@ function computeRefillPlan(snapshot) {
 
   // ── reconcile: close locks whose intent finished; flag stale ones (L6) ─────
   const closes = [];
+  // Paper-bag shop legs that Hub 2 sent SHORT (see the fulfilled close below):
+  // dest|pid|sizeKey → the deficit loop re-raises the gap past the ask-at line.
+  const shortSent = new Set();
   const resizes = [];   // owner approval 2026-07-13: open requests track reality, not history
   // PLAN-SIDE OBSERVABILITY (2026-07-28). PR #286 instrumented the APPLY drops,
   // but this suppression happens during PLANNING and reported nothing at all —
@@ -1153,9 +1198,15 @@ function computeRefillPlan(snapshot) {
         const needGone = unresolvedOurs && ((!entry.passThrough && !trustedCell(dest, pid, sizeKey)) || (ptNeed != null
           ? ptNeed <= 0
           : (!t || t.target <= 0 || t.target - destHave - otherInbound <= 0)));
+        // A full-top-up (paper-bag) request is the whole gap and its remainder
+        // stays open until it is sent (Junid, 16 Oct 2026): it is exempt from
+        // the two source-driven withdrawals below and from the source cap in
+        // the resize. needGone still applies — stock that arrived by any route
+        // still withdraws a request it satisfied.
+        const bulk = unresolvedOurs && !entry.passThrough && fullTopUpCell(products?.[pid], t);
         // Certainly-unfillable PURGE (owner rule 2026-07-13): zero stock
         // anywhere upstream → withdrawn; staff never see unpickable requests.
-        const unfillable = unresolvedOurs && networkQtyOf(pid, size, dest) - destHave <= 0;
+        const unfillable = unresolvedOurs && !bulk && networkQtyOf(pid, size, dest) - destHave <= 0;
         // ACTIONABLE-ONLY withdraw (owner v9, 2026-07-13): an open engine
         // request whose SOURCE can no longer fulfil it (sold out / never had
         // it) leaves the working queue — staff must never scroll past work
@@ -1206,7 +1257,7 @@ function computeRefillPlan(snapshot) {
           continue;
         }
         const sourceLoc = entry.source || srcOf(dest, pid);
-        const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
+        const sourceEmpty = unresolvedOurs && !bulk && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
         // A claimed request (a pick in progress) is never planned for
         // withdrawal — needGone and unfillable included; the apply re-checks
@@ -1232,6 +1283,20 @@ function computeRefillPlan(snapshot) {
           });
         } else if (orderIsOurs && order.clothingRefillStatus != null) {
           const wasFulfilled = order.clothingRefillStatus === "available";
+          // A SHOP LEG SENT SHORT, on a paper bag (Junid, 16 Oct 2026: "the
+          // remainder stays open"). A shop leg's fulfilment closes its R###
+          // order with whatever was typed (App.jsx: clothingRefilledQty), so
+          // there is no open line left to carry the remainder the way a Hub 2
+          // request carries it. The deficit loop re-raises the gap in this
+          // same plan instead — past the ask-at line, which would otherwise
+          // hold it back because the units that DID arrive lift the shelf
+          // above 10. Every short send is noted; only a full-top-up (paper-bag)
+          // cell ever reads the note (the deficit loop's `shortRemainder`).
+          if (wasFulfilled) {
+            const sent = Number(order.clothingRefilledQty);
+            const asked = Number(order.qty) || lockQty(entry);
+            if (Number.isFinite(sent) && sent < asked) shortSent.add(`${dest}|${pid}|${sizeKey}`);
+          }
           closes.push({
             dest, pid, sizeKey, refillId: entry.refillId,
             reason: wasFulfilled ? "fulfilled" : "cancelled",
@@ -1293,6 +1358,10 @@ function computeRefillPlan(snapshot) {
           const availForMe = Math.max(srcHave2 - ((sourceReserved.get(srcKey2) || 0) - ownQty), 0);
           let expected = Math.min(desired, availForMe);
           if (expected === 0 && desired > 0) expected = Math.min(desired, ownQty);
+          // A full-top-up request is trued to the GAP — down when stock lands
+          // (a partial send leaves exactly the remainder), up when the shelf
+          // sells further — and never to the source's stock or the unit cap.
+          if (bulk) expected = Math.max((t?.target || 0) - destHave - otherInbound, 0);
           if (expected > 0 && expected !== ownQty) {
             bump(sourceReserved, srcKey2, expected - ownQty);   // thread the decision
             resizes.push({ dest, pid, sizeKey, refillId: entry.refillId || null, orderId: orderIsOurs ? entry.orderId : null, from: ownQty, to: expected });
@@ -2012,7 +2081,12 @@ function computeRefillPlan(snapshot) {
         // `!= null` is deliberate: reorderPoint 0 is a legitimate row meaning
         // "ask only when the shelf is empty", and a truthiness test would treat
         // it as absent and silently restore eager top-up.
-        if (t.reorderPoint != null && have > t.reorderPoint) continue;
+        // A full-top-up (paper-bag) cell reads the line on on hand + inbound,
+        // Junid's own words for it. Identical in effect — a cell with anything
+        // inbound never asks again below — but stated as the rule is stated.
+        const bulk = fullTopUpCell(products?.[pid], t);
+        const shortRemainder = bulk && shortSent.has(`${dest}|${pid}|${sizeKey}`);
+        if (t.reorderPoint != null && (bulk ? have + inb : have) > t.reorderPoint && !shortRemainder) continue;
 
         belowTarget.push({ loc: dest, pid, size, have: q, target: t.target, inbound: inb, deficit });
 
@@ -2161,7 +2235,11 @@ function computeRefillPlan(snapshot) {
         // in THIS scan — two stores can never be sent after one physical unit.
         const srcKey = `${src}|${pid}|${sizeKey}`;
         const srcAvail = avail(cellQty(stock, src, pid, size)) - (sourceReserved.get(srcKey) || 0);
-        if (srcAvail <= 0) {
+        // A shop leg's remainder after a short send (shortSent) is raised even
+        // with Hub 2 empty: it is the open remainder of a request already
+        // made, and a bulk request stays open on an empty source (reconcile
+        // exempts it) until Hub 2's own top-up from Central lands.
+        if (srcAvail <= 0 && !shortRemainder) {
           const upstreamOfSrc = routes[src];   // e.g. central for hub2-sourced legs
           const upstreamAvail = upstreamOfSrc ? avail(cellQty(stock, upstreamOfSrc, pid, size)) : 0;
           // "Chain is flowing" must be TRUE, not hopeful: stock already on its
@@ -2231,7 +2309,10 @@ function computeRefillPlan(snapshot) {
           continue;
         }
 
-        const qty = Math.min(deficit, srcAvail, maxUnits);
+        // A full-top-up cell asks for the whole gap, whatever the source holds;
+        // it reserves the whole gap too, exactly as its lock will on every
+        // later scan, so a second destination waits behind it.
+        const qty = bulk ? deficit : Math.min(deficit, srcAvail, maxUnits);
         bump(sourceReserved, srcKey, qty);   // claim the units within this scan
         intents.push({
           dest, source: src, productId: pid, size, sizeKey,
@@ -2355,7 +2436,17 @@ function computeRefillPlan(snapshot) {
     errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
     return false;
   });
-  const clothingIntents = routedIntents.filter((i) => !isFootwearIntent(i));
+  // ── PAPER BAGS GET THEIR OWN CAP TOO (Junid, 16 Oct 2026) ─────────────────
+  // Same reasoning as footwear, and the same promise: a paper-bag top-up wave
+  // (51 requests on the first scan, modelled live) must not take a single slot
+  // of the 75 clothing shares, or clothing requests would be delayed by a
+  // policy that is not theirs. Paper bags are dealt from their own list under
+  // maxPaperBagIntentsPerRun (default 75) and appended; clothing's deal is the
+  // one it would be with no paper bag in the catalogue.
+  const isPaperBagIntent = (i) => isPaperBag(products?.[i.productId]);
+  const clothingIntents = routedIntents.filter((i) => !isFootwearIntent(i) && !isPaperBagIntent(i));
+  const paperBagIntents = routedIntents.filter((i) => !isFootwearIntent(i) && isPaperBagIntent(i));
+  const maxPaperBagIntents = Math.max(1, num(config?.maxPaperBagIntentsPerRun) || 75);
   const footwearIntents = routedIntents.filter(isFootwearIntent);
   const maxFootwearIntents = Math.max(1, num(config?.maxFootwearIntentsPerRun) || 25);
   // THE CAP IS MARATHON'S FIRST. The destinations config.routes names
@@ -2374,7 +2465,8 @@ function computeRefillPlan(snapshot) {
   };
   const plannedClothing = dealMarathonFirst(clothingIntents, maxIntents);
   const plannedFootwear = dealMarathonFirst(footwearIntents, maxFootwearIntents);
-  const plannedIntents = [...plannedClothing, ...plannedFootwear];
+  const plannedPaperBags = dealMarathonFirst(paperBagIntents, maxPaperBagIntents);
+  const plannedIntents = [...plannedClothing, ...plannedFootwear, ...plannedPaperBags];
   // ═══ A ROUTED-ROUND COUNT DISPUTE STAYS ON RECOUNT NEEDED (2026-09-23) ═════
   // A DISPUTED pass-through lands at the hub, and that arrival is — correctly
   // — what lifts the shop's reject streak so the shop can ask again. But the
@@ -2485,6 +2577,9 @@ function computeRefillPlan(snapshot) {
   }
   if (footwearIntents.length > maxFootwearIntents) {
     errors.push(`circuit breaker (footwear): ${footwearIntents.length} intents computed, capped to ${maxFootwearIntents}`);
+  }
+  if (paperBagIntents.length > maxPaperBagIntents) {
+    errors.push(`circuit breaker (paper bags): ${paperBagIntents.length} intents computed, capped to ${maxPaperBagIntents}`);
   }
 
   // ── inventory intelligence (plan §Inventory Intelligence — CLOTHING ONLY) ───
@@ -2983,6 +3078,13 @@ function computeRefillPlan(snapshot) {
       footwearIntentsPlanned: plannedFootwear.length,
       throttled: clothingIntents.length > maxIntents,
       footwearThrottled: footwearIntents.length > maxFootwearIntents,
+      // Only when a paper bag asked for anything, so a plan with none is the
+      // same object it always was (the Section 2 snapshot hashes the plan).
+      ...(paperBagIntents.length ? {
+        paperBagIntentsComputed: paperBagIntents.length,
+        paperBagIntentsPlanned: plannedPaperBags.length,
+        paperBagThrottled: paperBagIntents.length > maxPaperBagIntents,
+      } : {}),
     },
     stats: { managedCells, footwearManagedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
     exceptions: {
@@ -3068,4 +3170,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { walledRoutes, networkRouting, computeRefillPlan, maskUntrustedStock, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor, passThroughExcluded };
+module.exports = { isPaperBag, PAPER_BAG_KEY, walledRoutes, networkRouting, computeRefillPlan, maskUntrustedStock, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor, passThroughExcluded };
