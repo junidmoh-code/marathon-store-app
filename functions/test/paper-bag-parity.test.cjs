@@ -126,6 +126,7 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 const shape = (plan) => JSON.parse(JSON.stringify({
   intents: plan.intents, resizes: plan.resizes, closes: plan.closes,
   satisfiedClosures: plan.satisfiedClosures, exceptions: plan.exceptions, stats: plan.stats,
+  policy: plan.policy, errors: plan.errors,
 }));
 
 test("PARITY: 1,500 random snapshots with no paper bag → identical plans before and after", () => {

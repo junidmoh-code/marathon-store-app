@@ -1290,13 +1290,12 @@ function computeRefillPlan(snapshot) {
           // request carries it. The deficit loop re-raises the gap in this
           // same plan instead — past the ask-at line, which would otherwise
           // hold it back because the units that DID arrive lift the shelf
-          // above 10. Paper bags on an ask-at number only.
+          // above 10. Every short send is noted; only a full-top-up (paper-bag)
+          // cell ever reads the note (the deficit loop's `shortRemainder`).
           if (wasFulfilled) {
             const sent = Number(order.clothingRefilledQty);
             const asked = Number(order.qty) || lockQty(entry);
-            if (Number.isFinite(sent) && sent < asked && fullTopUpCell(products?.[pid], resolveTarget(ctx, dest, pid, size))) {
-              shortSent.add(`${dest}|${pid}|${sizeKey}`);
-            }
+            if (Number.isFinite(sent) && sent < asked) shortSent.add(`${dest}|${pid}|${sizeKey}`);
           }
           closes.push({
             dest, pid, sizeKey, refillId: entry.refillId,
@@ -3079,9 +3078,13 @@ function computeRefillPlan(snapshot) {
       footwearIntentsPlanned: plannedFootwear.length,
       throttled: clothingIntents.length > maxIntents,
       footwearThrottled: footwearIntents.length > maxFootwearIntents,
-      paperBagIntentsComputed: paperBagIntents.length,
-      paperBagIntentsPlanned: plannedPaperBags.length,
-      paperBagThrottled: paperBagIntents.length > maxPaperBagIntents,
+      // Only when a paper bag asked for anything, so a plan with none is the
+      // same object it always was (the Section 2 snapshot hashes the plan).
+      ...(paperBagIntents.length ? {
+        paperBagIntentsComputed: paperBagIntents.length,
+        paperBagIntentsPlanned: plannedPaperBags.length,
+        paperBagThrottled: paperBagIntents.length > maxPaperBagIntents,
+      } : {}),
     },
     stats: { managedCells, footwearManagedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
     exceptions: {
