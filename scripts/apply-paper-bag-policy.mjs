@@ -297,7 +297,16 @@ async function main() {
       }
       const close = { dest: c.dest, pid: c.pid, sizeKey: c.sizeKey, refillId: c.refillId, reason: CANCEL_REASON, cancelReason: CANCEL_REASON, rrStatus: "cancelled" };
       const res = await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => closeRequestTxn(cur, close, startedAt));
-      if (!(res && res.committed) || res.snapshot.val()?.status !== "cancelled") { log(`   ! ${c.refillId} request did not cancel — lock kept`); continue; }
+      if (!(res && res.committed) || res.snapshot.val()?.status !== "cancelled") {
+        // The order went first (it decides) but the request would not cancel —
+        // a pick landed in the gap. Put the exact order back, only into an
+        // empty slot, so the request and its order never disagree.
+        if (c.orderId && c.order) {
+          const back = await db.ref(`orders/${c.orderId}`).transaction((cur) => (cur === null ? c.order : undefined));
+          log(`   ! ${c.refillId} request did not cancel — lock kept, order ${back.committed ? "restored" : "NOT restored (slot taken)"}`);
+        } else log(`   ! ${c.refillId} request did not cancel — lock kept`);
+        continue;
+      }
       const lockPath = `refill_engine/open/${c.dest}/${c.pid}/${c.sizeKey}`;
       const lr = await db.ref(lockPath).transaction((cur) => (cur === null ? null : cur.refillId === c.refillId ? null : undefined));
       if (!lr.committed) log(`   ! ${c.refillId} lock now belongs to another request — left`);
