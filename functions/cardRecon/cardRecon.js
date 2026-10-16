@@ -74,6 +74,7 @@ const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, t
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
 const { tillAt } = require("../lib/card-terminal-placements.cjs");
+const { SLIP_SCOPE_FIELD, readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
 const {
   JOBS_PATH, DUE_PATH, JOB_PHOTO_PREFIX, dueKey, dueCutoff, claimJob, classifyRun, nextStep, unreadReason,
 } = require("../lib/card-read-jobs.cjs");
@@ -308,6 +309,28 @@ async function assertEmailIntake(request) {
     throw new HttpsError("unavailable", "Could not check permissions. Try again.");
   }
   if (!granted) throw new HttpsError("permission-denied", "This identity may not capture emailed slips.");
+}
+
+// ── ONE TILL'S SLIP: THE PER-TILL SCOPE (lib/card-slip-scope.cjs) ─────────────
+// The gate on action "slip", INSTEAD of `card_recon`: the account may send the
+// daily slip for the tills in /users/{uid}/cardSlipTills and for nothing else.
+// The till is where the terminal stands AT THIS MOMENT (its placement, else its
+// registry row) — a machine moved to another till is that till's from then on.
+// FAIL CLOSED, like the gates above: a scope that cannot be read refuses.
+// Junid passes, as he does every other gate here.
+async function slipScopeAllowsNow(db, request, terminal, nowMs) {
+  if (request.auth?.token?.email === ADMIN_EMAIL) return true;
+  const uid = request.auth?.uid;
+  if (!uid) return false;
+  let raw;
+  try {
+    raw = (await db.ref(`users/${uid}/${SLIP_SCOPE_FIELD}`).once("value")).val();
+  } catch (err) {
+    console.error("slipScope: scope read failed:", err && err.message);
+    throw new HttpsError("unavailable", "Could not check which till this account sends. Try again.");
+  }
+  const here = tillAt(terminal, nowMs);
+  return slipScopeAllows(readSlipScope(raw), { storeId: here.storeId || terminal.storeId, tillId: here.tillId || terminal.tillId });
 }
 
 // What the poller may tell us about where a file came from. Recorded on the
@@ -809,19 +832,28 @@ async function readLastBatchFor(db, storeId, tid) {
  * be captured this way at all, and every such record says in its warnings that
  * no paper exists behind it.
  */
-async function handleTypedCapture(db, request, { picked, terminal }) {
-  const correction = !!request.data?.correction;
+async function handleTypedCapture(db, request, { picked, terminal, slip = null, nowMs = Date.now() }) {
+  let correction = !!request.data?.correction;
   const last = await readLastBatchFor(db, terminal.storeId, picked);
-  const plan = planTypedCapture({
+  const planFor = (asCorrection) => planTypedCapture({
     tid: picked,
     totalText: request.data?.declaredTotal,
-    nowMs: Date.now(),
+    nowMs,
     lastBatchNo: last.batchNo,
     lastOpenedAt: last.openedAt,
     lastClosedAt: last.closedAt,
     lastWasTyped: last.typed,
-    correction,
+    correction: asCorrection,
   });
+  let plan = planFor(correction);
+  // A STAFF SLIP SENT TWICE IN ONE BATCH WINDOW IS A CORRECTION, never a
+  // refusal and never a second batch (Junid, 16 Oct 2026): the person has no
+  // "replace" button and must not need one. Same number, a new revision,
+  // the same window as the entry it replaces — both kept.
+  if (!plan.ok && slip && plan.code === "typed-today") {
+    correction = true;
+    plan = planFor(true);
+  }
   if (!plan.ok) return reject(plan.reason);
   const { extraction, batchNo } = plan;
 
@@ -845,8 +877,11 @@ async function handleTypedCapture(db, request, { picked, terminal }) {
   // that out from the absence of a photo path.
   const who = request.auth.token?.email || request.auth.uid;
   const warnings = [
-    `The total (${formatCents(extraction.totalCents)}) was typed in by ${who}. This machine is set to typed entry: there is no slip photo and no emailed report behind this figure, and nothing can be checked against paper afterwards.`,
+    slip
+      ? `The total (${formatCents(extraction.totalCents)}) was typed in by ${who} from the slip, with a photo of the slip attached. The server did not read it off the slip — the photo is read in the background and any difference is shown here.`
+      : `The total (${formatCents(extraction.totalCents)}) was typed in by ${who}. This machine is set to typed entry: there is no slip photo and no emailed report behind this figure, and nothing can be checked against paper afterwards.`,
     `Batch #${batchNo} is this record's filing number, not a number read off the machine — a typed capture never sees the terminal's own batch number.`,
+    ...(slip && correction ? [`This replaces the total sent earlier today for batch #${batchNo}; both are kept.`] : []),
     ...plan.warnings,
     ...verdict.warnings,
   ];
@@ -856,6 +891,22 @@ async function handleTypedCapture(db, request, { picked, terminal }) {
   const userDraftsRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${request.auth.uid}`);
   const draftRef = userDraftsRef.push();
   const draftId = draftRef.key;
+  // THE SLIP PHOTO, STORED BEFORE ANYTHING IS RECORDED and immutably, under
+  // the draft's fresh id — the same place and shape as every photographed
+  // slip, so the owner's report opens it like any other.
+  const photoPaths = [];
+  if (slip) {
+    const bucket = slip.bucket || admin.storage().bucket(STORAGE_BUCKET);
+    for (let i = 0; i < slip.photos.length; i++) {
+      const path = `${PHOTO_STORAGE_PREFIX}/${draftId}/photo-${i}.jpg`;
+      await bucket.file(path).save(slip.photos[i].buffer, {
+        resumable: false,
+        contentType: "image/jpeg",
+        metadata: { cacheControl: "private, max-age=31536000, immutable" },
+      });
+      photoPaths.push(path);
+    }
+  }
   await draftRef.set({
     by: request.auth.uid,
     byEmail: request.auth.token?.email || null,
@@ -865,7 +916,11 @@ async function handleTypedCapture(db, request, { picked, terminal }) {
     summaryOnly: true,
     correction,
     warnings,
-    photoPaths: [],
+    photoPaths,
+    // A STAFF SLIP: a typed total WITH its photo, sent under the per-till
+    // scope rather than as Junid. Submit re-checks that scope, and that there
+    // is exactly the one photo, before it records.
+    slipSubmit: !!slip,
     // The flag submit re-checks against the registry before it records — a
     // draft cannot talk its own way out of needing a photograph.
     typedOnly: true,
@@ -1571,14 +1626,25 @@ async function handleSubmit(db, request) {
   // till. (Read fresh for the same reason the terminal mapping is — a draft is
   // never allowed to vouch for itself.)
   const typedOnly = draft.typedOnly === true;
+  // A STAFF SLIP (action "slip"): a typed total WITH exactly one photo, sent
+  // under the per-till scope. The scope is read again HERE, as the registry is
+  // — a till taken off the account between the two halves stops the record.
+  const slipSubmit = typedOnly && draft.slipSubmit === true;
+  const draftPhotos = Array.isArray(draft.photoPaths) ? draft.photoPaths.filter(Boolean)
+    : Object.values(draft.photoPaths || {}).filter(Boolean);
   if (typedOnly) {
     const row = (await db.ref(`${CARD_TERMINALS_PATH}/${extraction.tid}`).once("value")).val();
     const intact = !!declaredTotal && Number.isInteger(declaredTotal.cents)
       && declaredTotal.cents === extraction.totalCents
       && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
       && extraction.format === "typed"
-      && (!Array.isArray(draft.photoPaths) || draft.photoPaths.length === 0);
-    if (!mayDeclareTotal(request.auth?.token) || !row || !typesTotal(row) || isRetiredTerminal(row) || !intact) {
+      && (slipSubmit
+        ? draftPhotos.length === 1 && draftPhotos.every((p) => typeof p === "string" && p.startsWith(`${PHOTO_STORAGE_PREFIX}/${draftId}/`))
+        : draftPhotos.length === 0);
+    const allowed = !!row && (slipSubmit
+      ? await slipScopeAllowsNow(db, request, row, Date.now())
+      : mayDeclareTotal(request.auth?.token) && typesTotal(row));
+    if (!allowed || isRetiredTerminal(row) || !intact) {
       await draftRef.remove().catch(() => {});
       return reject("This typed total could not be verified against the machine it was typed for — nothing was recorded. Try again.");
     }
@@ -1718,7 +1784,7 @@ async function handleSubmit(db, request) {
     extraction, terminal, tid: extraction.tid, match, reconciledByTotals,
     batchKey: write.key, revision: write.revision, supersedes: write.supersedes,
     autoSuperseded: !!write.autoSuperseded,
-    photoPaths: draft.photoPaths,
+    photoPaths: slipSubmit ? draftPhotos : draft.photoPaths,
     summaryOnly: !!draft.summaryOnly,
     // The draft's warnings PLUS anything only now can know. Deduped, because
     // extract computed the straddle too and the same sentence twice on one
@@ -1746,6 +1812,9 @@ async function handleSubmit(db, request) {
       byUid: request.auth.uid,
       byEmail: request.auth.token?.email || null,
       at: Date.now(),
+      // A staff slip says so: typed by the person given that till, with the
+      // photo on the record beside it (capturedVia stays "typed").
+      ...(slipSubmit ? { via: "staff-slip" } : {}),
     } : null,
   });
 
@@ -1772,6 +1841,59 @@ async function handleSubmit(db, request) {
     linesCaptured: record.linesCaptured,
     warnings: draft.warnings || [],
   };
+}
+
+// ─── ONE TILL'S DAILY SLIP, FROM THE PERSON GIVEN THAT TILL ─────────────────
+// Junid, 16 Oct 2026: Yasmin sends Marathon PE Till 2's slip, Amanda Trophy
+// Till 2's. What they send is a photo of the speedpoint slip and the card
+// TOTAL it prints, typed (0 when nothing was taken on card). What they get
+// back is "Sent" — no expected figure, no variance, no verdict, the same
+// capture-only rule as every manager screen.
+//
+// NOT A NEW CAPTURE PATH. It is the typed-total capture (handleTypedCapture
+// → planTypedCapture → validateExtraction → the draft → handleSubmit), with
+// the photo stored on the record and two differences, both server-side:
+//   • the gate is the PER-TILL SCOPE (slipScopeAllowsNow), not `card_recon`
+//     and not "Junid only" — refused for any till outside it;
+//   • a second slip for the same batch is recorded as a correction (a new
+//     revision of that batch), never refused and never dropped.
+// The verdict on the record is the owner's report's (matcher.js, R5
+// tolerance), and the photo is read in the background (a "check" job) only to
+// tell Junid when it disagrees with the typed figure — never to block.
+const SLIP_PHOTOS = 1;
+async function handleSlip(db, request, deps = {}) {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
+  const data = request.data || {};
+  const picked = normaliseTid(data.pickedTid);
+  if (!picked) throw new HttpsError("invalid-argument", "This account's till could not be found. Ask Junid.");
+  if (!Array.isArray(data.photos) || data.photos.length !== SLIP_PHOTOS) {
+    throw new HttpsError("invalid-argument", "Take one photo of the slip.");
+  }
+  if (!hasDeclaredTotal(data.declaredTotal)) {
+    throw new HttpsError("invalid-argument", "Type the card total on the slip — 0 if there were no card sales.");
+  }
+  // One registry row, never the registry.
+  const terminal = (await db.ref(`${CARD_TERMINALS_PATH}/${picked}`).once("value")).val();
+  if (!terminal || !terminal.storeId || !terminal.tillId) {
+    return reject("This till's card machine is not set up yet — nothing was recorded. Tell Junid.");
+  }
+  if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
+  const nowMs = (deps.now || Date.now)();
+  if (!(await slipScopeAllowsNow(db, request, terminal, nowMs))) {
+    throw new HttpsError("permission-denied", "This account can only send the slip for its own till.");
+  }
+  const decoded = data.photos.map(decodePhoto);
+  const drafted = await handleTypedCapture(db, request, {
+    picked, terminal, nowMs, slip: { photos: decoded, bucket: deps.bucket || null },
+  });
+  if (!drafted || drafted.ok !== true) return drafted;
+  const done = await handleSubmit(db, { auth: request.auth, data: { action: "submit", draftId: drafted.draftId } });
+  if (!done || done.ok !== true) return done;
+  console.log(`cardBatchCapture: slip recorded picked=${picked} key=${done.batchKey} by=${uid}`);
+  if (deps.afterRecord) await deps.afterRecord({ terminal, picked, batchKey: done.batchKey });
+  // "Sent" — and nothing about the figure, the batch or how it compares.
+  return { ok: true, received: true };
 }
 
 // ─── RECEIVED: THE SLIP IS KEPT, THE READ HAPPENS LATER ──────────────────────
@@ -2132,9 +2254,18 @@ exports.cardBatchCapture = onCall(
     memory: "512MiB",
   },
   async (request) => {
-    await assertCardRecon(request);
     const db = admin.database();
     const action = request.data?.action;
+    // ── ONE TILL'S SLIP — the per-till scope is its gate, not card_recon ──
+    // Before the card_recon check, because the people it is for do not hold
+    // card_recon and must not need to; handleSlip refuses everyone outside
+    // their own till. Every other action below still requires card_recon.
+    if (action === "slip") {
+      const out = await handleSlip(db, request);
+      if (out && out.ok === false) console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
+      return out;
+    }
+    await assertCardRecon(request);
     // ── THE MANAGER'S SUBMIT: kept, queued, "Received" — see handleReceive ──
     if (action === "receive") {
       const out = await handleReceive(db, request);
@@ -2205,7 +2336,7 @@ exports.cardBatchCapture = onCall(
       const out = await handleSubmit(db, request);
       return out && typeof out === "object" ? { ...out, parserVersion: PARSER_VERSION } : out;
     }
-    throw new HttpsError("invalid-argument", "action must be 'receive', 'extract', 'typed', 'submit' or 'version'.");
+    throw new HttpsError("invalid-argument", "action must be 'receive', 'slip', 'extract', 'typed', 'submit' or 'version'.");
   },
 );
 
@@ -2243,6 +2374,7 @@ exports.cardBatchReadRetry = onSchedule(
 
 // Exported for tests (pure-ish seams).
 exports.handleReceive = handleReceive;
+exports.handleSlip = handleSlip;
 // The extract → submit pair, for the email-pipeline tests (fake RTDB + bucket).
 exports.handleExtract = handleExtract;
 exports.handleSubmit = handleSubmit;

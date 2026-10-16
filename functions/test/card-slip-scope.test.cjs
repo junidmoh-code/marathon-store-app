@@ -1,0 +1,182 @@
+// ─── ONE TILL'S DAILY SLIP: THE PER-TILL SCOPE ───────────────────────────────
+// Junid, 16 Oct 2026: Yasmin sends Marathon PE Till 2's card slip, Amanda
+// Trophy Till 2's — each ONE till, a photo and the card total, nothing back.
+// The scope lives at /users/{uid}/cardSlipTills/{storeId}/{tillId} and the
+// callable is what enforces it (lib/card-slip-scope.cjs, action "slip").
+//
+// The registry shapes are the live ones (16 Oct 2026), with made-up TIDs: no
+// terminal is named in what ships.
+"use strict";
+
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
+const { handleSlip, handleSubmit } = require("../cardRecon/cardRecon.js");
+const { readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
+
+const MT2 = "0000AA2X";   // Marathon Till 2 — pe/till-2
+const TT2 = "0000BB2Y";   // Trophy Till 2 — trophy/till-2, typed entry
+const MT3 = "67000003";   // Marathon Till 3 — pe/till-3
+const placed = (storeId, tillId, label, from = 1789733243057) => ({ [`at-${from}`]: { effectiveFrom: from, storeId, tillId, label } });
+const TERMINALS = {
+  [MT2]: { storeId: "pe", tillId: "till-2", label: "Marathon Till 2", placements: placed("pe", "till-2", "Marathon Till 2") },
+  [TT2]: { storeId: "trophy", tillId: "till-2", label: "Trophy Till 2", capture: "typed", placements: placed("trophy", "till-2", "Trophy Till 2") },
+  [MT3]: { storeId: "pe", tillId: "till-3", label: "Marathon Till 3", placements: placed("pe", "till-3", "Marathon Till 3") },
+};
+const YASMIN = { uid: "u-yasmin", token: { email: "yasmin@marathon.internal" } };
+const AMANDA = { uid: "u-amanda", token: { email: "amanda@marathon.internal" } };
+const MANAGER = { uid: "u-manager", token: { email: "manager@marathon.internal" } };
+const SAST = (s) => Date.parse(`${s}+02:00`);
+const NOW = SAST("2026-10-16T18:30:00");
+
+// The last batch on Marathon Till 2 as recorded live: #544, photographed.
+const B544 = { batchKey: "544", batchNo: 544, revision: 1, capturedVia: "photo",
+  slip: { openedAt: SAST("2026-10-15T17:02:11"), closedAt: SAST("2026-10-16T16:59:43"), totalCents: 2137500, format: "printed", windowSource: "printed" } };
+
+const PHOTO = { base64: Buffer.from("not really a jpeg, but bytes").toString("base64") };
+function world(extra = {}) {
+  return makeFakeDb({
+    config: { cardTerminals: TERMINALS },
+    users: {
+      [YASMIN.uid]: { posAccess: { storeIds: ["pe"] }, stockRole: "pos", cardSlipTills: { pe: { "till-2": true } } },
+      [AMANDA.uid]: { posAccess: { storeIds: ["trophy"] }, cardSlipTills: { trophy: { "till-2": true } } },
+      [MANAGER.uid]: { permFlags: { card_recon: true } },
+    },
+    card_batches: { pe: { [MT2]: { 544: B544 } } },
+    ...extra,
+  });
+}
+const bucket = () => ({ saved: [], file(p) { const self = this; return { save: async () => { self.saved.push(p); } }; } });
+const slip = (db, auth, tid, total, b = bucket(), now = NOW) =>
+  handleSlip(db, { auth, data: { action: "slip", pickedTid: tid, photos: [PHOTO], declaredTotal: total } }, { now: () => now, bucket: b });
+const batches = async (db, store, tid) => (await db.ref(`card_batches/${store}/${tid}`).once("value")).val() || {};
+
+test("readSlipScope takes exactly { store: { till: true } } and nothing else", () => {
+  assert.deepEqual(readSlipScope({ pe: { "till-2": true } }), ["pe/till-2"]);
+  assert.deepEqual(readSlipScope({ pe: { "till-2": true, "till-3": false, "till-1": "yes" }, trophy: { "till-2": true } }), ["pe/till-2", "trophy/till-2"]);
+  for (const bad of [null, undefined, true, "pe/till-2", ["pe/till-2"], { pe: true }, { pe: ["till-2"] }, { "pe/x": { a: true } }, { pe: { "../till": true } }]) {
+    assert.deepEqual(readSlipScope(bad), [], JSON.stringify(bad));
+  }
+  assert.equal(slipScopeAllows(["pe/till-2"], { storeId: "pe", tillId: "till-2" }), true);
+  assert.equal(slipScopeAllows(["pe/till-2"], { storeId: "pe", tillId: "till-3" }), false);
+  assert.equal(slipScopeAllows(["pe/till-2"], { storeId: "trophy", tillId: "till-2" }), false);
+  assert.equal(slipScopeAllows([], { storeId: "pe", tillId: "till-2" }), false);
+  assert.equal(slipScopeAllows(["pe/till-2"], null), false);
+});
+
+test("Yasmin sends Marathon Till 2's slip: recorded, and all she gets back is 'received'", async () => {
+  const db = world();
+  const b = bucket();
+  const out = await slip(db, YASMIN, MT2, "21,375.00", b);
+  assert.deepEqual(out, { ok: true, received: true }, "no figure, no batch, no verdict travels back");
+  const rec = (await batches(db, "pe", MT2))["545"];
+  assert.ok(rec, "filed as the next batch after #544");
+  assert.equal(rec.capturedVia, "typed");
+  assert.equal(rec.slip.format, "typed");
+  assert.equal(rec.slip.totalCents, 2137500);
+  assert.equal(rec.slip.openedAt, B544.slip.closedAt, "the window runs from the last settlement");
+  assert.equal(rec.slip.closedAt, NOW);
+  assert.equal(rec.declaredTotal.cents, 2137500);
+  assert.equal(rec.declaredTotal.via, "staff-slip");
+  assert.equal(rec.declaredTotal.byUid, YASMIN.uid);
+  assert.equal(rec.declaredTotal.byEmail, "yasmin@marathon.internal");
+  assert.ok(Number.isFinite(rec.declaredTotal.at));
+  assert.deepEqual(rec.submittedBy, { uid: YASMIN.uid, email: "yasmin@marathon.internal" });
+  const photos = Array.isArray(rec.photos) ? rec.photos : Object.values(rec.photos);
+  assert.equal(photos.length, 1);
+  assert.match(photos[0], /^cardRecon\/[A-Za-z0-9_-]+\/photo-0\.jpg$/);
+  assert.deepEqual(b.saved, photos, "the photo stored is the photo on the record");
+  assert.ok(rec.warnings.some((w) => /typed in by yasmin@marathon\.internal from the slip, with a photo/.test(w)));
+});
+
+test("a typed 0 is a R0.00 record", async () => {
+  const db = world();
+  assert.deepEqual(await slip(db, YASMIN, MT2, "0"), { ok: true, received: true });
+  assert.equal((await batches(db, "pe", MT2))["545"].slip.totalCents, 0);
+});
+
+test("Yasmin is refused for every other till, and nothing is written", async () => {
+  for (const tid of [TT2, MT3]) {
+    const db = world();
+    const b = bucket();
+    await assert.rejects(() => slip(db, YASMIN, tid, "100.00", b), (e) => e.code === "permission-denied", tid);
+    assert.deepEqual(b.saved, [], "no photo stored");
+    assert.deepEqual(await batches(db, TERMINALS[tid].storeId, tid), tid === MT2 ? { 544: B544 } : {}, "no record");
+    assert.equal((await db.ref(`card_batch_drafts/${YASMIN.uid}`).once("value")).val(), null, "no draft");
+  }
+});
+
+test("Amanda sends Trophy Till 2's and is refused Marathon Till 2's", async () => {
+  const db = world();
+  assert.deepEqual(await slip(db, AMANDA, TT2, "2,500.00"), { ok: true, received: true });
+  assert.equal(Object.values(await batches(db, "trophy", TT2))[0].slip.totalCents, 250000);
+  await assert.rejects(() => slip(db, AMANDA, MT2, "1.00"), (e) => e.code === "permission-denied");
+});
+
+test("the scope follows the TILL: a machine moved off the till is no longer hers to send", async () => {
+  const moved = { ...TERMINALS, [MT2]: { ...TERMINALS[MT2], placements: {
+    ...TERMINALS[MT2].placements, ...placed("pe", "till-1", "Marathon Till 1", SAST("2026-10-16T09:00:00")) } } };
+  const db = world({ config: { cardTerminals: moved } });
+  await assert.rejects(() => slip(db, YASMIN, MT2, "1.00"), (e) => e.code === "permission-denied");
+});
+
+test("card_recon is not this scope: a manager without a till list is refused; no sign-in is refused", async () => {
+  const db = world();
+  await assert.rejects(() => slip(db, MANAGER, MT2, "1.00"), (e) => e.code === "permission-denied");
+  await assert.rejects(() => slip(db, { uid: undefined }, MT2, "1.00"), (e) => e.code === "permission-denied");
+});
+
+test("both the photo and the number are required, and a mangled number is refused in words", async () => {
+  const db = world();
+  const call = (data) => handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: MT2, ...data } }, { now: () => NOW, bucket: bucket() });
+  await assert.rejects(() => call({ photos: [], declaredTotal: "1.00" }), (e) => e.code === "invalid-argument");
+  await assert.rejects(() => call({ photos: [PHOTO, PHOTO], declaredTotal: "1.00" }), (e) => e.code === "invalid-argument");
+  await assert.rejects(() => call({ photos: [PHOTO] }), (e) => e.code === "invalid-argument");
+  await assert.rejects(() => call({ photos: [PHOTO], declaredTotal: "" }), (e) => e.code === "invalid-argument");
+  const bent = await call({ photos: [PHOTO], declaredTotal: "12abc" });
+  assert.equal(bent.ok, false);
+  assert.match(bent.reason, /is not an amount/);
+  assert.deepEqual(await batches(db, "pe", MT2), { 544: B544 });
+});
+
+test("a scope taken away between the two halves stops the record", async () => {
+  // The same correction draft, twice: recorded while the till is hers, refused
+  // once it is not. (handleSlip submits at once; the gap is where a revoke lands.)
+  const db = world();
+  assert.deepEqual(await slip(db, YASMIN, MT2, "5.00"), { ok: true, received: true });
+  const rec545 = (await batches(db, "pe", MT2))["545"];
+  const draft = async () => {
+    const ref = db.ref(`card_batch_drafts/${YASMIN.uid}`).push();
+    await ref.set({
+      by: YASMIN.uid, createdAt: NOW, expiresAt: Date.now() + 60000, pickedTid: MT2, summaryOnly: true, correction: true,
+      photoPaths: [`cardRecon/${ref.key}/photo-0.jpg`], slipSubmit: true, typedOnly: true,
+      extraction: { ...rec545.slip, tid: MT2, batchNo: "545", lines: [], format: "typed", mid: null },
+      terminal: { storeId: "pe", tillId: "till-2", label: "Marathon Till 2" },
+      declaredTotal: { cents: rec545.slip.totalCents, byUid: YASMIN.uid },
+    });
+    return ref.key;
+  };
+  const kept = await handleSubmit(db, { auth: YASMIN, data: { action: "submit", draftId: await draft() } });
+  assert.equal(kept.ok, true, kept.reason);
+  assert.equal(kept.batchKey, "545-r2");
+  await db.ref(`users/${YASMIN.uid}/cardSlipTills`).set(null);
+  const out = await handleSubmit(db, { auth: YASMIN, data: { action: "submit", draftId: await draft() } });
+  assert.equal(out.ok, false);
+  assert.equal((await batches(db, "pe", MT2))["545-r3"], undefined);
+});
+
+test("every action except 'slip' still sits behind card_recon", () => {
+  const code = fs.readFileSync(path.join(__dirname, "../cardRecon/cardRecon.js"), "utf8").replace(/^\s*\/\/.*$/gm, "");
+  const handler = code.slice(code.indexOf("exports.cardBatchCapture = onCall("));
+  const gate = handler.indexOf("await assertCardRecon(request);");
+  const slipAt = handler.indexOf('if (action === "slip")');
+  assert.ok(gate > 0 && slipAt > 0 && slipAt < gate, "slip is dispatched before the card_recon gate");
+  // Nothing else is dispatched before the gate.
+  const before = handler.slice(0, gate);
+  assert.equal((before.match(/action === "/g) || []).length, 1, "only 'slip' is handled ahead of card_recon");
+  for (const a of ["receive", "notices", "noticeSent", "version", "extract", "typed", "submit"]) {
+    assert.ok(handler.indexOf(`action === "${a}"`) > gate, `${a} is behind card_recon`);
+  }
+});

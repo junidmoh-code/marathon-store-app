@@ -1075,7 +1075,9 @@ function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastOpene
   const typedToday = hasPrior && lastWasTyped && Number.isFinite(lastClosedAt)
     && sastDayIndexOf(lastClosedAt) === sastDayIndexOf(nowMs);
   if (typedToday && !correction) {
-    return { ok: false, reason: `A total for this machine has already been typed in today (batch #${lastBatchNo}). If that figure was wrong, submit this one as a replacement — both are kept.` };
+    // `code` lets a caller that always replaces (a staff slip sent twice —
+    // cardBatchCapture's "slip" action) ask again as a correction.
+    return { ok: false, code: "typed-today", reason: `A total for this machine has already been typed in today (batch #${lastBatchNo}). If that figure was wrong, submit this one as a replacement — both are kept.` };
   }
   if (correction && !typedToday) {
     return { ok: false, reason: "There is no typed total for this machine today to replace. Submit it normally." };
