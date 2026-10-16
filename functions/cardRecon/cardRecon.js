@@ -58,7 +58,7 @@ const {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX,
   parseSlipTimestamp, parseRandsToCents,
-  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, emptyReprintOpensAt, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS, MAX_REPRINT_REVISIONS, sastDayIndexOf,
   dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload, formatCents,
   hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal, anchorDeclaredWindow,
@@ -74,6 +74,7 @@ const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, t
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
 const { tillAt } = require("../lib/card-terminal-placements.cjs");
+const { SLIP_SCOPE_FIELD, readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
 const {
   JOBS_PATH, DUE_PATH, JOB_PHOTO_PREFIX, dueKey, dueCutoff, claimJob, classifyRun, nextStep, unreadReason,
 } = require("../lib/card-read-jobs.cjs");
@@ -310,6 +311,28 @@ async function assertEmailIntake(request) {
   if (!granted) throw new HttpsError("permission-denied", "This identity may not capture emailed slips.");
 }
 
+// ── ONE TILL'S SLIP: THE PER-TILL SCOPE (lib/card-slip-scope.cjs) ─────────────
+// The gate on action "slip", INSTEAD of `card_recon`: the account may send the
+// daily slip for the tills in /users/{uid}/cardSlipTills and for nothing else.
+// The till is where the terminal stands AT THIS MOMENT (its placement, else its
+// registry row) — a machine moved to another till is that till's from then on.
+// FAIL CLOSED, like the gates above: a scope that cannot be read refuses.
+// Junid passes, as he does every other gate here.
+async function slipScopeAllowsNow(db, request, terminal, nowMs) {
+  if (request.auth?.token?.email === ADMIN_EMAIL) return true;
+  const uid = request.auth?.uid;
+  if (!uid) return false;
+  let raw;
+  try {
+    raw = (await db.ref(`users/${uid}/${SLIP_SCOPE_FIELD}`).once("value")).val();
+  } catch (err) {
+    console.error("slipScope: scope read failed:", err && err.message);
+    throw new HttpsError("unavailable", "Could not check which till this account sends. Try again.");
+  }
+  const here = tillAt(terminal, nowMs);
+  return slipScopeAllows(readSlipScope(raw), { storeId: here.storeId || terminal.storeId, tillId: here.tillId || terminal.tillId });
+}
+
 // What the poller may tell us about where a file came from. Recorded on the
 // batch so a figure's provenance is never a guess — and SANITISED here, because
 // it is the one part of an emailed capture that is attacker-supplied text (a
@@ -535,7 +558,10 @@ async function readBatchKeysFor(db, storeId, tid, batchNo) {
   const keys = [];
   // Bounded like resolveBatchWrite's own revision cap (CodeRabbit, PR #494):
   // an unexpected longer chain stops probing here and the resolver refuses.
-  for (let rev = 1; rev <= MAX_REVISIONS; rev++) {
+  // Up to the RE-PRINT ceiling, the higher of the two caps: an idle till's
+  // chain of empty re-prints runs past the correction cap (see
+  // MAX_REPRINT_REVISIONS). Every other chain stops at its first gap long before.
+  for (let rev = 1; rev <= MAX_REPRINT_REVISIONS; rev++) {
     const key = rev === 1 ? String(batchNo) : `${batchNo}-r${rev}`;
     const exists = (await db.ref(`${base}/${key}/batchKey`).once("value")).exists();
     if (!exists) break;
@@ -571,6 +597,17 @@ async function readRecordedLinesFor(db, storeId, tid, keys) {
 }
 
 /**
+ * The slip of the capture in force for this batch (its highest revision), or
+ * null — one small read, asked only when the line comparison has nothing to go
+ * on.
+ */
+async function readRecordedSlipFor(db, storeId, tid, keys) {
+  if (!keys.length) return null;
+  const snap = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${keys[keys.length - 1]}/slip`).once("value");
+  return snap.val() || null;
+}
+
+/**
  * Is the capture in force for this batch a SETTLED EMPTY BATCH?
  *
  * Read from the record's own slip, never inferred from the line count: an empty
@@ -585,13 +622,7 @@ async function readRecordedLinesFor(db, storeId, tid, keys) {
  * and a gate that trusts one field is a gate that opens when that field is
  * mangled by a hand edit or a half-written record.
  */
-async function recordedIsEmptyBatch(db, storeId, tid, keys) {
-  if (!keys.length) return false;
-  const key = keys[keys.length - 1];
-  const snap = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${key}/slip`).once("value");
-  const slip = snap.val() || {};
-  return slip.windowSource === "empty-batch" && slip.totalCents === 0;
-}
+const isSettledEmptyBatch = (slip) => !!slip && slip.windowSource === "empty-batch" && slip.totalCents === 0;
 
 /**
  * Decide the write for a batch, reading what is already recorded.
@@ -606,22 +637,51 @@ async function recordedIsEmptyBatch(db, storeId, tid, keys) {
  * one for a report that disagrees with the record, which is a thing somebody
  * has to look at.
  */
-async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, totalCents = null }) {
+async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, totalCents = null, incoming = null }) {
   const existingKeys = await readBatchKeysFor(db, storeId, tid, batchNo);
   let comparison = null;
+  // Where a later-day re-print of an empty batch opens — see emptyReprintOpensAt.
+  let reprintOpensAt = null;
+  let typedMetByReport = false;
   if (existingKeys.length && !correction) {
     const recorded = await readRecordedLinesFor(db, storeId, tid, existingKeys);
     // Only asked when there is nothing to compare against — the one case where
     // the answer can change the relation, and one read saved on every other.
-    const recordedEmptyBatch = recorded.length
-      ? false
-      : await recordedIsEmptyBatch(db, storeId, tid, existingKeys);
-    comparison = comparePriorCapture(recorded, lines || [], { recordedEmptyBatch });
+    const recordedSlip = recorded.length ? null : await readRecordedSlipFor(db, storeId, tid, existingKeys);
+    comparison = comparePriorCapture(recorded, lines || [], { recordedEmptyBatch: isSettledEmptyBatch(recordedSlip) });
+    reprintOpensAt = recorded.length ? null : emptyReprintOpensAt(recordedSlip, incoming);
+    // A STAFF SLIP'S FILING NUMBER MET BY THE MACHINE'S OWN REPORT. A typed
+    // total is filed under the next number after the terminal's highest
+    // (planTypedCapture), so on a machine that also reports — by email, or a
+    // manager's photo — the real report of that number arrives on top of it.
+    // The real report is the better evidence and takes over as a later report
+    // of the batch; the typed record and its photo are kept beneath it.
+    if (!recorded.length && recordedSlip && recordedSlip.format === "typed"
+        && incoming && incoming.format !== "typed") {
+      typedMetByReport = true;
+    }
+    // THE SAME BATCH, RE-PRINTED UNCHANGED ON A LATER DAY. A terminal whose last
+    // batch had sales and which takes nothing more may re-print that batch at
+    // the next evening's settlement: every line identical, a later PRINT time.
+    // That is the empty re-print's case with lines in it — the machine saying,
+    // on that day, that nothing was added — and it is recorded the same way: a
+    // later report of the batch, adding R0.00 on its own day. The PRINT time
+    // decides, so a photo taken today of yesterday's printout is still a re-send.
+    if (comparison.relation === "identical" && incoming && Number.isFinite(incoming.printedAt)) {
+      const slip = await readRecordedSlipFor(db, storeId, tid, existingKeys);
+      if (slip && Number.isFinite(slip.closedAt) && incoming.printedAt > slip.closedAt
+          && sastDayIndexOf(incoming.printedAt) > sastDayIndexOf(slip.closedAt)
+          && Number.isInteger(incoming.totalCents) && incoming.totalCents === slip.totalCents) {
+        reprintOpensAt = slip.closedAt;
+      }
+    }
   }
   const write = resolveBatchWrite({
     existingKeys, batchNo, correction,
-    extends: comparison ? comparison.relation === "extends" : false,
+    extends: comparison ? comparison.relation === "extends" || reprintOpensAt !== null || typedMetByReport : false,
+    maxRevisions: reprintOpensAt !== null ? MAX_REPRINT_REVISIONS : MAX_REVISIONS,
   });
+  if (write.ok && reprintOpensAt !== null) return { existingKeys, comparison, write, reprintOpensAt };
   // ── A TOTALS-ONLY RECORD OF A BATCH THAT WAS STILL OPEN ──────────────────
   // A batch recorded from its totals alone (card-recon-pdf.cjs →
   // emailedTotalsOnly) has no lines, so a later, fuller report of the same
@@ -768,7 +828,13 @@ async function readLastBatchFor(db, storeId, tid) {
     .filter((r) => r && typeof r === "object" && Number.isInteger(Number(r.batchNo)));
   if (!rows.length) return { batchNo: null, openedAt: null, closedAt: null, typed: false };
   const highest = Math.max(...rows.map((r) => Number(r.batchNo)));
-  const ofHighest = rows.filter((r) => Number(r.batchNo) === highest);
+  // EVERY REVISION OF THE HIGHEST BATCH, not the two the range happened to
+  // return: within one batchNo the children sort by KEY, and "545-r10" sorts
+  // before "545-r2", so a chain of ten or more would hide its latest report.
+  // equalTo on the indexed batchNo is that one batch's records, never more.
+  const all = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}`).orderByChild("batchNo").equalTo(highest).once("value")).val();
+  const ofHighest = Object.values(all || {}).filter((r) => r && typeof r === "object");
+  if (!ofHighest.length) ofHighest.push(...rows.filter((r) => Number(r.batchNo) === highest));
   const closes = ofHighest.map((r) => Number(r.slip && r.slip.closedAt)).filter(Number.isFinite);
   const latest = ofHighest.find((r) => Number(r.slip && r.slip.closedAt) === Math.max(...closes)) || ofHighest[0];
   const opened = Number(latest.slip && latest.slip.openedAt);
@@ -802,19 +868,28 @@ async function readLastBatchFor(db, storeId, tid) {
  * be captured this way at all, and every such record says in its warnings that
  * no paper exists behind it.
  */
-async function handleTypedCapture(db, request, { picked, terminal }) {
-  const correction = !!request.data?.correction;
+async function handleTypedCapture(db, request, { picked, terminal, slip = null, nowMs = Date.now() }) {
+  let correction = !!request.data?.correction;
   const last = await readLastBatchFor(db, terminal.storeId, picked);
-  const plan = planTypedCapture({
+  const planFor = (asCorrection) => planTypedCapture({
     tid: picked,
     totalText: request.data?.declaredTotal,
-    nowMs: Date.now(),
+    nowMs,
     lastBatchNo: last.batchNo,
     lastOpenedAt: last.openedAt,
     lastClosedAt: last.closedAt,
     lastWasTyped: last.typed,
-    correction,
+    correction: asCorrection,
   });
+  let plan = planFor(correction);
+  // A STAFF SLIP SENT TWICE IN ONE BATCH WINDOW IS A CORRECTION, never a
+  // refusal and never a second batch (Junid, 16 Oct 2026): the person has no
+  // "replace" button and must not need one. Same number, a new revision,
+  // the same window as the entry it replaces — both kept.
+  if (!plan.ok && slip && plan.code === "typed-today") {
+    correction = true;
+    plan = planFor(true);
+  }
   if (!plan.ok) return reject(plan.reason);
   const { extraction, batchNo } = plan;
 
@@ -838,8 +913,11 @@ async function handleTypedCapture(db, request, { picked, terminal }) {
   // that out from the absence of a photo path.
   const who = request.auth.token?.email || request.auth.uid;
   const warnings = [
-    `The total (${formatCents(extraction.totalCents)}) was typed in by ${who}. This machine is set to typed entry: there is no slip photo and no emailed report behind this figure, and nothing can be checked against paper afterwards.`,
+    slip
+      ? `The total (${formatCents(extraction.totalCents)}) was typed in by ${who} from the slip, with a photo of the slip attached. The server did not read it off the slip — the photo is read in the background and any difference is shown here.`
+      : `The total (${formatCents(extraction.totalCents)}) was typed in by ${who}. This machine is set to typed entry: there is no slip photo and no emailed report behind this figure, and nothing can be checked against paper afterwards.`,
     `Batch #${batchNo} is this record's filing number, not a number read off the machine — a typed capture never sees the terminal's own batch number.`,
+    ...(slip && correction ? [`This replaces the total sent earlier today for batch #${batchNo}; both are kept.`] : []),
     ...plan.warnings,
     ...verdict.warnings,
   ];
@@ -849,6 +927,22 @@ async function handleTypedCapture(db, request, { picked, terminal }) {
   const userDraftsRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${request.auth.uid}`);
   const draftRef = userDraftsRef.push();
   const draftId = draftRef.key;
+  // THE SLIP PHOTO, STORED BEFORE ANYTHING IS RECORDED and immutably, under
+  // the draft's fresh id — the same place and shape as every photographed
+  // slip, so the owner's report opens it like any other.
+  const photoPaths = [];
+  if (slip) {
+    const bucket = slip.bucket || admin.storage().bucket(STORAGE_BUCKET);
+    for (let i = 0; i < slip.photos.length; i++) {
+      const path = `${PHOTO_STORAGE_PREFIX}/${draftId}/photo-${i}.jpg`;
+      await bucket.file(path).save(slip.photos[i].buffer, {
+        resumable: false,
+        contentType: "image/jpeg",
+        metadata: { cacheControl: "private, max-age=31536000, immutable" },
+      });
+      photoPaths.push(path);
+    }
+  }
   await draftRef.set({
     by: request.auth.uid,
     byEmail: request.auth.token?.email || null,
@@ -858,7 +952,11 @@ async function handleTypedCapture(db, request, { picked, terminal }) {
     summaryOnly: true,
     correction,
     warnings,
-    photoPaths: [],
+    photoPaths,
+    // A STAFF SLIP: a typed total WITH its photo, sent under the per-till
+    // scope rather than as Junid. Submit re-checks that scope, and that there
+    // is exactly the one photo, before it records.
+    slipSubmit: !!slip,
     // The flag submit re-checks against the registry before it records — a
     // draft cannot talk its own way out of needing a photograph.
     typedOnly: true,
@@ -1102,6 +1200,7 @@ async function handleExtract(db, request, opts = {}) {
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
     correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
+    incoming: extraction,
   });
   if (!write.ok) return reject(write.reason);
 
@@ -1391,11 +1490,33 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   // that the totals-only warning already says better.
   verdict.warnings = read.warnings;
   const batchNo = normaliseBatchNo(extraction.batchNo);
-  const { write } = await resolveWriteFor(db, {
+  const { write, reprintOpensAt } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
     correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
+    incoming: extraction,
   });
   if (!write.ok) return reject(write.reason);
+  // ── AN EMPTY BATCH RE-PRINTED ON A LATER DAY — that day's report ──────────
+  // See emptyReprintOpensAt. Its window runs from the report on file to this
+  // print, so a card leg rung in between is this day's variance, never lost.
+  // Bounded by the same 7-day cap as any empty batch; past it, the window
+  // computed above stands (and the POS report anchors it the same way).
+  if (reprintOpensAt !== null) {
+    // An EMPTY batch has no span of its own, so its window is the report on
+    // file → this print. A batch with lines keeps the window its lines give;
+    // the report's own day is still told apart by the POS report (it adds R0).
+    const opened = extraction.emptyBatch === true ? emptyBatchOpenedAt(reprintOpensAt, extraction.printedAt) : null;
+    if (opened !== null) {
+      extraction.openedAt = opened;
+      extraction.openedFrom = "previous-report";
+    }
+    verdict.warnings = [
+      opened !== null || extraction.emptyBatch !== true
+        ? `The terminal re-printed batch #${batchNo} on a later day with no card taken since its last report — recorded as R0.00 for this day, as a later report of the same batch.`
+        : `The terminal re-printed batch #${batchNo} more than 7 days after its last report — recorded as R0.00 for this day, but its window could not reach back to that report.`,
+      ...verdict.warnings,
+    ];
+  }
 
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
@@ -1547,14 +1668,25 @@ async function handleSubmit(db, request) {
   // till. (Read fresh for the same reason the terminal mapping is — a draft is
   // never allowed to vouch for itself.)
   const typedOnly = draft.typedOnly === true;
+  // A STAFF SLIP (action "slip"): a typed total WITH exactly one photo, sent
+  // under the per-till scope. The scope is read again HERE, as the registry is
+  // — a till taken off the account between the two halves stops the record.
+  const slipSubmit = typedOnly && draft.slipSubmit === true;
+  const draftPhotos = Array.isArray(draft.photoPaths) ? draft.photoPaths.filter(Boolean)
+    : Object.values(draft.photoPaths || {}).filter(Boolean);
   if (typedOnly) {
     const row = (await db.ref(`${CARD_TERMINALS_PATH}/${extraction.tid}`).once("value")).val();
     const intact = !!declaredTotal && Number.isInteger(declaredTotal.cents)
       && declaredTotal.cents === extraction.totalCents
       && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
       && extraction.format === "typed"
-      && (!Array.isArray(draft.photoPaths) || draft.photoPaths.length === 0);
-    if (!mayDeclareTotal(request.auth?.token) || !row || !typesTotal(row) || isRetiredTerminal(row) || !intact) {
+      && (slipSubmit
+        ? draftPhotos.length === 1 && draftPhotos.every((p) => typeof p === "string" && p.startsWith(`${PHOTO_STORAGE_PREFIX}/${draftId}/`))
+        : draftPhotos.length === 0);
+    const allowed = !!row && (slipSubmit
+      ? await slipScopeAllowsNow(db, request, row, Date.now())
+      : mayDeclareTotal(request.auth?.token) && typesTotal(row));
+    if (!allowed || isRetiredTerminal(row) || !intact) {
       await draftRef.remove().catch(() => {});
       return reject("This typed total could not be verified against the machine it was typed for — nothing was recorded. Try again.");
     }
@@ -1684,6 +1816,9 @@ async function handleSubmit(db, request) {
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
     correction: !!draft.correction, lines: extraction.lines, totalCents: extraction.totalCents,
+    // The same answer extract gave: an empty batch re-printed on a later day
+    // is a later report of it (emptyReprintOpensAt), on either side.
+    incoming: extraction,
   });
   if (!write.ok) return reject(write.reason);
 
@@ -1691,7 +1826,7 @@ async function handleSubmit(db, request) {
     extraction, terminal, tid: extraction.tid, match, reconciledByTotals,
     batchKey: write.key, revision: write.revision, supersedes: write.supersedes,
     autoSuperseded: !!write.autoSuperseded,
-    photoPaths: draft.photoPaths,
+    photoPaths: slipSubmit ? draftPhotos : draft.photoPaths,
     summaryOnly: !!draft.summaryOnly,
     // The draft's warnings PLUS anything only now can know. Deduped, because
     // extract computed the straddle too and the same sentence twice on one
@@ -1719,6 +1854,9 @@ async function handleSubmit(db, request) {
       byUid: request.auth.uid,
       byEmail: request.auth.token?.email || null,
       at: Date.now(),
+      // A staff slip says so: typed by the person given that till, with the
+      // photo on the record beside it (capturedVia stays "typed").
+      ...(slipSubmit ? { via: "staff-slip" } : {}),
     } : null,
   });
 
@@ -1745,6 +1883,171 @@ async function handleSubmit(db, request) {
     linesCaptured: record.linesCaptured,
     warnings: draft.warnings || [],
   };
+}
+
+// ─── ONE TILL'S DAILY SLIP, FROM THE PERSON GIVEN THAT TILL ─────────────────
+// Junid, 16 Oct 2026: Yasmin sends Marathon PE Till 2's slip, Amanda Trophy
+// Till 2's. What they send is a photo of the speedpoint slip and the card
+// TOTAL it prints, typed (0 when nothing was taken on card). What they get
+// back is "Sent" — no expected figure, no variance, no verdict, the same
+// capture-only rule as every manager screen.
+//
+// NOT A NEW CAPTURE PATH. It is the typed-total capture (handleTypedCapture
+// → planTypedCapture → validateExtraction → the draft → handleSubmit), with
+// the photo stored on the record and two differences, both server-side:
+//   • the gate is the PER-TILL SCOPE (slipScopeAllowsNow), not `card_recon`
+//     and not "Junid only" — refused for any till outside it;
+//   • a second slip for the same batch is recorded as a correction (a new
+//     revision of that batch), never refused and never dropped.
+// The verdict on the record is the owner's report's (matcher.js, R5
+// tolerance), and the photo is read in the background (a "check" job) only to
+// tell Junid when it disagrees with the typed figure — never to block.
+const SLIP_PHOTOS = 1;
+async function handleSlip(db, request, deps = {}) {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
+  const data = request.data || {};
+  const picked = normaliseTid(data.pickedTid);
+  if (!picked) throw new HttpsError("invalid-argument", "This account's till could not be found. Ask Junid.");
+  if (!Array.isArray(data.photos) || data.photos.length !== SLIP_PHOTOS) {
+    throw new HttpsError("invalid-argument", "Take one photo of the slip.");
+  }
+  if (!hasDeclaredTotal(data.declaredTotal)) {
+    throw new HttpsError("invalid-argument", "Type the card total on the slip — 0 if there were no card sales.");
+  }
+  // One registry row, never the registry.
+  const terminal = (await db.ref(`${CARD_TERMINALS_PATH}/${picked}`).once("value")).val();
+  if (!terminal || !terminal.storeId || !terminal.tillId) {
+    return reject("This till's card machine is not set up yet — nothing was recorded. Tell Junid.");
+  }
+  if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
+  const nowMs = (deps.now || Date.now)();
+  if (!(await slipScopeAllowsNow(db, request, terminal, nowMs))) {
+    throw new HttpsError("permission-denied", "This account can only send the slip for its own till.");
+  }
+  const decoded = data.photos.map(decodePhoto);
+  // A PHOTO, not any bytes: the screen always sends a JPEG (slipPhoto.js), and
+  // it is stored as one and read by the slip reader.
+  if (!decoded.every((d) => d.buffer.length > 3 && d.buffer[0] === 0xff && d.buffer[1] === 0xd8 && d.buffer[2] === 0xff)) {
+    throw new HttpsError("invalid-argument", "That is not a photo. Take a photo of the slip.");
+  }
+  // TODAY'S REPORT FROM THE MACHINE ITSELF IS ALREADY IN. On a terminal that
+  // also reports (by email, or a manager's photo), a typed slip after that
+  // report would be filed as the NEXT batch over a window of minutes, and read
+  // as a day's takings too many. The machine's report is the better evidence;
+  // the person is told it is in and nothing is recorded. A typed record from
+  // today (Junid's, or their own earlier slip) is replaced instead — see
+  // handleTypedCapture.
+  const last = await readLastBatchFor(db, terminal.storeId, picked);
+  if (!last.typed && Number.isFinite(last.closedAt) && sastDayIndexOf(last.closedAt) === sastDayIndexOf(nowMs)) {
+    return reject("Today's report for this till is already in from the card machine — nothing more is needed. Thank you.");
+  }
+  const drafted = await handleTypedCapture(db, request, {
+    picked, terminal, nowMs, slip: { photos: decoded, bucket: deps.bucket || null },
+  });
+  if (!drafted || drafted.ok !== true) return drafted;
+  const done = await handleSubmit(db, { auth: request.auth, data: { action: "submit", draftId: drafted.draftId } });
+  if (!done || done.ok !== true) {
+    // Nothing was recorded, so the stored photo is evidence of nothing — remove
+    // it rather than leave an orphan per refused attempt.
+    const bucket = deps.bucket || admin.storage().bucket(STORAGE_BUCKET);
+    for (let i = 0; i < decoded.length; i++) {
+      try { await bucket.file(`${PHOTO_STORAGE_PREFIX}/${drafted.draftId}/photo-${i}.jpg`).delete(); } catch { /* best effort */ }
+    }
+    return done;
+  }
+  console.log(`cardBatchCapture: slip recorded picked=${picked} key=${done.batchKey} by=${uid}`);
+  // THE PHOTO IS READ IN THE BACKGROUND, only to tell Junid when the slip says
+  // something other than what was typed. Queued AFTER the record exists, and a
+  // failure to queue never un-sends the slip: the record and its photo stand.
+  try {
+    await queueSlipCheck(db, { terminal, picked, batchKey: done.batchKey, nowMs: (deps.now || Date.now)() });
+  } catch (err) {
+    console.error(`cardBatchCapture: slip check not queued for ${picked}/${done.batchKey}: ${err && err.message}`);
+  }
+  // "Sent" — and nothing about the figure, the batch or how it compares.
+  return { ok: true, received: true };
+}
+
+// ─── THE STAFF SLIP'S PHOTO, READ IN THE BACKGROUND ──────────────────────────
+// A "check" job on the same queue the received photos use (card_batch_jobs →
+// cardBatchReadJob on arrival, cardBatchReadRetry behind it), with the same
+// retries for an overloaded reader. What it does with the answer is the whole
+// difference: it records NOTHING new. It writes what the reader made of the
+// slip's total beside the typed one on the batch already recorded
+// (`photoRead`), so Junid's report can say "typed R X, slip reads R Y". A read
+// that finds no total, or never succeeds, is said there too, quietly — it is
+// not an error, raises no Unread row and sends no email: the typed total is the
+// record, and the photo is on it either way.
+async function queueSlipCheck(db, { terminal, picked, batchKey, nowMs }) {
+  const rec = (await db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${picked}/${batchKey}`).once("value")).val();
+  const photos = rec ? (Array.isArray(rec.photos) ? rec.photos : Object.values(rec.photos || {})).filter(Boolean) : [];
+  if (!rec || !photos.length) return null;
+  const jobRef = db.ref(JOBS_PATH).push();
+  const job = {
+    jobId: jobRef.key,
+    mode: "check",
+    pickedTid: picked,
+    storeId: terminal.storeId,
+    tillId: terminal.tillId,
+    label: terminal.label || null,
+    batchKey,
+    typedCents: rec.slip ? rec.slip.totalCents : null,
+    by: rec.submittedBy ? rec.submittedBy.uid : null,
+    photoPaths: photos,
+    receivedAt: nowMs,
+    dayYmd: sastDayYmd(nowMs),
+    status: "queued",
+    attempts: 0,
+    refusedReads: 0,
+    dueAt: nowMs + 2 * 60 * 1000,
+  };
+  job.dueKey = dueKey(job.dueAt, job.jobId);
+  await db.ref().update({ [`${JOBS_PATH}/${job.jobId}`]: job, [`${DUE_PATH}/${job.dueKey}`]: job.jobId });
+  return job.jobId;
+}
+
+/** One OCR read of a check job's photo: the total the slip prints, or null. Throws what the reader throws. */
+async function checkJobOnce(db, job, photos, deps = {}) {
+  const ocr = await (deps.ocr || ((p) => runSlipOcr(p, geminiApiKey.value())))(photos);
+  const rate = OCR_RATES[ocr.model] || { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD };
+  const costUSD = +(((ocr.tokensIn || 0) / 1e6) * rate.in + ((ocr.tokensOut || 0) / 1e6) * rate.out).toFixed(6);
+  try {
+    await db.ref(`aiAssistant/usage/${new Date().toISOString().slice(0, 10)}`).push({
+      at: Date.now(), kind: "cardSlipCheck", by: job.by || null, model: ocr.model || null, attempts: ocr.attempts || 1,
+      photos: photos.length, tokensIn: ocr.tokensIn || 0, tokensOut: ocr.tokensOut || 0, costUSD,
+    });
+  } catch (err) { console.warn("cardSlipCheck: usage log failed:", err.message); }
+  const ex = ocr.parsed ? toExtraction(ocr.parsed) : null;
+  const readCents = ex && Number.isInteger(ex.totalCents) ? ex.totalCents : null;
+  // The TID it read, compared only — a slip from another machine is worth a word.
+  const tid = ex && ex.tid ? ex.tid : null;
+  return { kind: "recorded", batchKey: job.batchKey, read: { readCents, tidMatches: tid ? tid === job.pickedTid : null, model: ocr.model || null } };
+}
+
+/** What the photo said, beside the typed figure, on the recorded batch — never a new record. */
+async function writePhotoRead(db, job, read, nowMs) {
+  const base = `${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${job.batchKey}`;
+  if (!(await db.ref(`${base}/batchKey`).once("value")).exists()) return; // deleted (a test record) — nothing to annotate
+  const typed = Number.isInteger(job.typedCents) ? job.typedCents : null;
+  const readCents = read && Number.isInteger(read.readCents) ? read.readCents : null;
+  const photoRead = {
+    // "read" — a total came off the photo; "no-total" — the photo read but
+    // printed no total the reader could find (blurry, or a slip that does not
+    // print one); "unread" — the reader never answered.
+    status: read && read.status === "unread" ? "unread" : readCents === null ? "no-total" : "read",
+    readCents,
+    typedCents: typed,
+    differs: readCents !== null && typed !== null && readCents !== typed,
+    tidMatches: read && typeof read.tidMatches === "boolean" ? read.tidMatches : null,
+    model: (read && read.model) || null,
+    reason: read && read.reason ? String(read.reason).slice(0, 300) : null,
+    at: nowMs,
+  };
+  // On the record as it stands, inside a transaction: a record deleted between
+  // the check above and this write stays deleted (null in, null out — the
+  // cold-null rule), rather than coming back as a lone photoRead.
+  await db.ref(base).transaction((cur) => (cur === null ? null : { ...cur, photoRead }));
 }
 
 // ─── RECEIVED: THE SLIP IS KEPT, THE READ HAPPENS LATER ──────────────────────
@@ -1923,10 +2226,15 @@ async function processReadJob(db, jobId, deps = {}) {
     [`${DUE_PATH}/${job.dueKey}`]: jobId,
   });
 
+  // A STAFF SLIP'S CHECK reads the photo for Junid's eyes only (writePhotoRead)
+  // and records nothing; every other job reads and records a batch.
+  const check = job.mode === "check";
   let outcome;
   try {
     const photos = await (deps.loadPhotos || loadJobPhotos)(job.photoPaths);
-    outcome = classifyRun(await (deps.read || readJobOnce)(db, job, photos));
+    outcome = check
+      ? await (deps.check || checkJobOnce)(db, job, photos, deps)
+      : classifyRun(await (deps.read || readJobOnce)(db, job, photos));
   } catch (err) {
     console.error(`cardBatchReadJob: job ${jobId} run failed: ${err && err.message}`);
     outcome = classifyRun({ thrown: err });
@@ -1935,14 +2243,19 @@ async function processReadJob(db, jobId, deps = {}) {
   const t = now();
   const { final, patch } = nextStep(job, outcome, t);
   const done = { ...job, ...patch };
+  if (check) {
+    // Never an Unread row and never an email: the typed total IS the record.
+    if (final === "recorded") await writePhotoRead(db, done, outcome.read, t);
+    if (final === "unread") await writePhotoRead(db, done, { status: "unread", reason: outcome.reason }, t);
+  }
   // THE CONSEQUENCES FIRST, THEN "FINISHED". Both are idempotent (a marker
   // merges; a notice is queued only while the marker has none). If this run
   // dies between them, the job is still "reading" under its lease, the sweep
   // takes it again when the lease lapses, and they are simply done again —
   // where the other order would leave a finished job and a day nobody hears
   // about. (Sonnet architect review, #707.)
-  if (final === "unread") await markJobUnread(db, done, outcome, t);
-  if (final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
+  if (!check && final === "unread") await markJobUnread(db, done, outcome, t);
+  if (!check && final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
   const updates = { [`${DUE_PATH}/${job.dueKey}`]: null };
   for (const [k, v] of Object.entries(patch)) updates[`${JOBS_PATH}/${jobId}/${k}`] = v;
   updates[`${JOBS_PATH}/${jobId}/prevDueKey`] = null;
@@ -2105,9 +2418,18 @@ exports.cardBatchCapture = onCall(
     memory: "512MiB",
   },
   async (request) => {
-    await assertCardRecon(request);
     const db = admin.database();
     const action = request.data?.action;
+    // ── ONE TILL'S SLIP — the per-till scope is its gate, not card_recon ──
+    // Before the card_recon check, because the people it is for do not hold
+    // card_recon and must not need to; handleSlip refuses everyone outside
+    // their own till. Every other action below still requires card_recon.
+    if (action === "slip") {
+      const out = await handleSlip(db, request);
+      if (out && out.ok === false) console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
+      return out;
+    }
+    await assertCardRecon(request);
     // ── THE MANAGER'S SUBMIT: kept, queued, "Received" — see handleReceive ──
     if (action === "receive") {
       const out = await handleReceive(db, request);
@@ -2178,7 +2500,7 @@ exports.cardBatchCapture = onCall(
       const out = await handleSubmit(db, request);
       return out && typeof out === "object" ? { ...out, parserVersion: PARSER_VERSION } : out;
     }
-    throw new HttpsError("invalid-argument", "action must be 'receive', 'extract', 'typed', 'submit' or 'version'.");
+    throw new HttpsError("invalid-argument", "action must be 'receive', 'slip', 'extract', 'typed', 'submit' or 'version'.");
   },
 );
 
@@ -2216,6 +2538,7 @@ exports.cardBatchReadRetry = onSchedule(
 
 // Exported for tests (pure-ish seams).
 exports.handleReceive = handleReceive;
+exports.handleSlip = handleSlip;
 // The extract → submit pair, for the email-pipeline tests (fake RTDB + bucket).
 exports.handleExtract = handleExtract;
 exports.handleSubmit = handleSubmit;

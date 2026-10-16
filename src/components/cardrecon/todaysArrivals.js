@@ -177,17 +177,18 @@ export function refusedArrivals(intakeNode, dayKey, dayOf) {
   return out;
 }
 
-// ─── A TILL THAT TOOK NO CARD TODAY IS CLEAN, WITH NOTHING TO WAIT FOR ──────
-// Junid, 15 Oct 2026: "if the till didn't have any card transaction, say clean
-// by default because there is nothing to compare." A report from such a till
-// can only ever say R0.00 against R0.00 in the POS, so the screen does not
-// wait for one: the till counts as clean the moment the day shows no card leg
-// on it, and a report that does come in later changes nothing.
+// ─── A TILL THAT TOOK NO CARD TODAY STILL WAITS FOR ITS REPORT ──────────────
+// Junid, 15 Oct 2026, asked for a till with no card legs in POS to count as
+// clean with nothing to wait for. Junid, 16 Oct 2026, overrode it: "never
+// auto-mark a till clean when NO slip has arrived, even if POS card takings are
+// R0 — card money taken but not rung up would be hidden." A machine can take a
+// card the till never rang; only the machine's own report (or a slip stating
+// R0) can say it took nothing. And a tick here with "awaiting a slip" in
+// Junid's Card Recon is the two apps disagreeing about the same till.
 //
-// The POS is the authority here, read as the day's card legs per till — the
-// same /pos/paymentEvents rows the reconciliation itself counts. A single card
-// leg (a sale or a refund) means there is something to compare, and the till
-// waits for its report like any other.
+// So "no-card" is kept as a FACT for the card (no card sale in POS today —
+// the report still counts, and 0 is a fine answer), and it WAITS like any
+// other till until its report is in. Only "in" is clean.
 
 /**
  * Which tills ("storeId/tillId") took a card payment in these events.
@@ -206,8 +207,8 @@ export function tillsWithCardLegs(events) {
 /**
  * Each card's state for the day, and the line at the top of the screen.
  *
- *   "in"      its report is in (recorded, or a re-send of the batch on file)
- *   "no-card" no card leg on its till today — clean, nothing to wait for
+ *   "in"      its report is in (recorded, or a re-send of the batch on file) — clean
+ *   "no-card" no card leg in POS today, report not in yet — still waiting
  *   "waiting" card was taken and the report has not come yet
  *
  * Until the day's payments have loaded (`cardTills` null) nobody is called
@@ -224,7 +225,8 @@ export function daySummary(cards, { arrived, cardTills }) {
     else if (cardTills && !cardTills.has(`${t.storeId}/${t.tillId}`)) state = "no-card";
     else state = "waiting";
     byTid.set(t.tid, state);
-    if (state === "waiting") waiting++; else clean++;
+    // Only a report that is IN is clean; "no-card" waits (Junid, 16 Oct 2026).
+    if (state === "in") clean++; else waiting++;
   }
   const total = byTid.size;
   const line = !total ? ""

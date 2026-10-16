@@ -77,9 +77,8 @@ import { ref as dbRef, onValue, query, orderByChild, limitToLast, startAt } from
 import { httpsCallable } from "firebase/functions";
 import { database, functions, auth } from "../../firebase";
 import { ADMIN_EMAIL } from "../PermissionsContext";
-import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../shopify/imageDecode";
-import { planPhotoIntake, payloadRefusal } from "./photoIntake";
-import { describeCallableError, describeDecodeError } from "./captureFailure";
+import { describeCallableError } from "./captureFailure";
+import { preparePhoto } from "./slipPhoto";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
 import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture, tillsWithCardLegs, daySummary } from "./todaysArrivals";
 import { captureCards, cardsBySection, takesPhoto, typesTotal } from "./terminalRegistry";
@@ -88,11 +87,6 @@ import TerminalSettings from "./TerminalSettings";
 import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
-
-// Slip photos need legible 8pt thermal print, so the downscale budget is wider
-// than the label reader's 1024px. ~2000px keeps a full receipt column sharp and
-// a JPEG comfortably under the callable's per-photo ceiling.
-const MAX_PHOTO_DIM = 2000;
 
 // A bounded tail, never the whole node: /card_batch_intake grows by a row per
 // message for ever, and this runs on a handset on shop wifi. The tail has to
@@ -106,37 +100,6 @@ const INTAKE_FEED_SIZE = 60;
 // The day key has to move on its own — a phone left on the counter through
 // midnight must clear its ticks without being touched.
 const DAY_ROLL_MS = 60 * 1000;
-
-/**
- * A picked file → a ~2000px JPEG, whatever the phone handed over.
- *
- * DECODING GOES THROUGH THE SHARED DECODER, not FileReader + `new Image()`: an
- * iPhone's library stores HEIC and `new Image()` cannot decode it outside
- * Safari, so the naive path fails on exactly the phones this exists for.
- * decodeImageFile falls back to a lazily-imported wasm decoder and resizes
- * DURING decode where the browser supports it — on a phone, the difference
- * between one upload and three. The resize is gated on the picture's own
- * PIXELS, so a heavy but modest-resolution file is never upscaled on the way in.
- */
-async function downscalePhoto(file) {
-  const decoded = await decodeImageFile(file, MAX_PHOTO_DIM);
-  try {
-    const { source, width, height } = decoded;
-    // decodeImageFile may already have resized during decode; scale from what
-    // it actually returned rather than assuming it did or did not.
-    const scale = Math.min(1, MAX_PHOTO_DIM / Math.max(width, height));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(width * scale);
-    canvas.height = Math.round(height * scale);
-    canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
-    const jpeg = canvas.toDataURL("image/jpeg", 0.88);
-    return { base64: jpeg.split(",")[1] || "" };
-  } finally {
-    // An ImageBitmap holds its pixels outside the JS heap; the collector is in
-    // no hurry, and this runs on cheap handsets.
-    decoded.release();
-  }
-}
 
 // ── SKIN ─────────────────────────────────────────────────────────────────────
 // Its own, not the old screen's: that palette was built for a stack of dense
@@ -169,7 +132,7 @@ const T = {
   summary: { fontSize: 15, fontWeight: 600, color: "rgba(233,238,255,.72)", marginTop: 10, letterSpacing: "-0.1px" },
   summaryDone: { color: "#54D97F" },
   // Under a card whose till took no card today.
-  noCard: { fontSize: 13, color: "rgba(84,217,127,.75)", margin: "-4px 4px 0" },
+  noCard: { fontSize: 13, color: "rgba(233,238,255,.45)", margin: "-4px 4px 0" },
   tick: { width: 27, height: 27, borderRadius: 999, background: "rgba(52,199,89,.16)", color: "#54D97F",
           display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800 },
   camera: { opacity: 0.3, display: "block" },
@@ -467,35 +430,8 @@ export default function CardReconScreen({ onExit }) {
     }
   };
 
-  /**
-   * A picked file → a sendable photo, or a sentence saying why not. Shared by
-   * both paths, so a typed-total photo is decoded, downscaled and size-checked
-   * exactly like any other.
-   */
-  const preparePhoto = async (files) => {
-    // The decision about what is usable stays in the tested pure module, cap 1:
-    // a non-photo is refused BY NAME rather than as "that doesn't look like a
-    // photo" about a photo.
-    const { take, refusal } = planPhotoIntake({
-      current: [], files, cap: 1, replace: true,
-      isImage: isAcceptedImageFile, describe: describePickedFile,
-    });
-    if (refusal) return { refusal };
-    let photo;
-    try {
-      photo = await downscalePhoto(take[0]);
-    } catch (err) {
-      // The decoder writes its own sentences for a person — an unsupported or
-      // Apple-format photo is named as such rather than parenthesised into a
-      // raw message. See captureFailure.js.
-      const failure = describeDecodeError(err);
-      console.error(failure.logLine, err);
-      return { refusal: failure.message };
-    }
-    // Refused HERE rather than as a transport error nobody can read.
-    const tooBig = payloadRefusal([photo]);
-    return tooBig ? { refusal: tooBig } : { photo };
-  };
+  // A picked file → a sendable photo, or a sentence saying why not: slipPhoto.js,
+  // shared with the one-till slip screen.
 
   // The ordinary capture: the pick IS the send — nothing stands in between.
   const onPick = (tid) => async (e) => {
@@ -623,10 +559,11 @@ export default function CardReconScreen({ onExit }) {
           const group = cardGroups.length > 1 ? cardGroups.find((g) => g.cards[0] === t) : null;
           const state = work[t.tid] || {};
           const busy = state.phase === "busy";
-          // DONE = its report is in, OR its till took no card today — there is
-          // nothing to compare, so nothing to wait for.
+          // DONE = its report is in. A till with no card sale in POS is NOT
+          // done: the machine's report (or a slip saying R0) still has to say
+          // so — Junid, 16 Oct 2026. It only gets a quiet note.
           const noCard = summary.byTid.get(t.tid) === "no-card";
-          const done = arrived.has(t.tid) || noCard;
+          const done = arrived.has(t.tid);
           // AN EMAIL-ONLY TILL HAS NO CAMERA — set in the terminal settings.
           // Its card is the tick and nothing else: no input, nothing to tap.
           const camera = takesPhoto(t);
@@ -642,7 +579,7 @@ export default function CardReconScreen({ onExit }) {
               {busy ? <span style={T.working}>{state.sending ? "Sending…" : "Reading…"}</span>
                 /* A photo is RECEIVED, not yet read — the tick says so, and
                    says nothing about whether it read (that is Junid's). */
-                : done ? <span style={T.tick} aria-label={received.has(t.tid) ? "today's slip is received" : noCard && !arrived.has(t.tid) ? "no card sales today — clean" : "today's report is in"}>✓</span>
+                : done ? <span style={T.tick} aria-label={received.has(t.tid) ? "today's slip is received" : "today's report is in"}>✓</span>
                 /* Quiet on purpose: a till with nothing in raises no alarm,
                    only the hint that a photo is what it takes. Drawn rather
                    than typed — an emoji renders as a grey smudge at this
@@ -674,7 +611,7 @@ export default function CardReconScreen({ onExit }) {
                 <div style={{ ...cardStyle, ...T.cardStatic }}>{face}</div>
               )}
               {noCard && !busy && state.phase !== "failed" && (
-                <div style={T.noCard}>No card sales today — clean, nothing to reconcile.</div>
+                <div style={T.noCard}>No card sales in POS today — its report still counts (R0 is fine).</div>
               )}
               {state.phase === "received" && <div style={T.received} role="status">Received</div>}
               {state.phase === "failed" && <div style={T.fail}>{state.reason}</div>}

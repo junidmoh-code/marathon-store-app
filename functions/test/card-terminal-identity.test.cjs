@@ -281,7 +281,9 @@ test("the HAND capture path refuses a retired terminal at extract AND at submit"
   // reason: the gap between the two calls is where a retirement lands.
   // SIX since 7 Oct 2026: the background RECEIVE refuses one too, before the
   // photo is stored — it runs the same setup gates the photo extract does.
-  assert.equal(guards.length, 6, "receive, photo extract, picked-PDF extract, submit and the typed path's two each refuse a retired terminal");
+  // SEVEN since 16 Oct 2026: a staff member's one-till SLIP refuses at its own
+  // dispatch, before the photo is stored; its submit is the typed path's.
+  assert.equal(guards.length, 7, "receive, slip, photo extract, picked-PDF extract, submit and the typed path's two each refuse a retired terminal");
   assert.match(code, /retiredCaptureRefusal\(/, "and the refusal is the shared sentence, not a second wording");
   // The submit guard must sit against the registry as it stands NOW, not
   // against the terminal the draft remembers — the draft's copy was taken

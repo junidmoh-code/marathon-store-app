@@ -15,7 +15,11 @@ import { fileURLToPath } from "node:url";
 import { planPhotoIntake, mergeIntake, payloadRefusal, MAX_PAYLOAD_BYTES, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SOURCE = readFileSync(resolve(here, "CardReconScreen.jsx"), "utf8");
+// The capture screen AND the photo module both screens share (slipPhoto.js,
+// 16 Oct 2026): the decode path moved out of the screen so the one-till slip
+// screen takes the same one, and the scan follows it rather than losing it.
+const SOURCE = ["CardReconScreen.jsx", "slipPhoto.js"]
+  .map((f) => readFileSync(resolve(here, f), "utf8")).join("\n");
 
 // STRIP COMMENTS LINE-WISE, not with /\/\*[\s\S]*?\*\//.
 //
@@ -349,8 +353,11 @@ describe("the payload pre-flight", () => {
     // After the downscale, not before it: refusing the file a phone camera
     // produced would refuse every capture, since that file is the reason the
     // downscale exists.
-    const from = code.indexOf("const preparePhoto =");
-    const body = code.slice(from, code.indexOf("\n  };", from));
+    // In slipPhoto.js since 16 Oct 2026 (an exported function, shared by both
+    // capture screens) — the scan follows it there.
+    const from = code.indexOf("export async function preparePhoto(");
+    expect(from, "preparePhoto has moved — this scan must follow it").toBeGreaterThan(-1);
+    const body = code.slice(from, code.indexOf("\n}\n", from));
     expect(body).toMatch(/payloadRefusal\(\[photo\]\)/);
     expect(body.indexOf("downscalePhoto"), "…and after it")
       .toBeLessThan(body.indexOf("payloadRefusal"));

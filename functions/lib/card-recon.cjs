@@ -186,6 +186,43 @@ function emptyBatchOpenedAt(prevClosedAt, printedAt) {
 }
 
 /**
+ * AN EMPTY BATCH THE TERMINAL RE-PRINTS ON A LATER DAY IS THAT DAY'S REPORT.
+ *
+ * A terminal with nothing to settle does not open a new batch number. At its
+ * daily settlement it re-prints the LAST batch instead — same number, R0.00,
+ * and that day's print time. Marathon Till 3 printed "Batch 92 … Total ZAR
+ * 0.00" on 14 Oct 16:51, again on 15 Oct 16:48 and again on 16 Oct 16:57. The
+ * second and third are the bank saying, on that day, that no card was taken on
+ * the machine since the last report.
+ *
+ * Filed as "already captured", that statement was lost: the store app ticked
+ * the till (a re-send is the terminal reporting), while /card_batches had
+ * nothing closing on 15 or 16 Oct, so Junid's Card Recon showed "awaiting a
+ * slip" for the same till on the same day. The two apps disagreed about one
+ * batch (16 Oct 2026).
+ *
+ * So a re-print is recorded as a LATER REPORT OF THE SAME BATCH — the shape a
+ * batch left open across days already has ({no}-r2, autoSuperseded) — running
+ * from the record in force's close to this print. Narrowly:
+ *   • the record in force is a settled empty batch (empty-batch window, R0);
+ *   • this report is itself an empty batch: R0, no lines;
+ *   • it was printed on a LATER SA day than the record in force closed.
+ * Two prints on the same day stay one report; the second is still a re-send.
+ *
+ * @returns {number|null} where the new report's window opens (the record in
+ *   force's close), or null when this is not such a re-print.
+ */
+function emptyReprintOpensAt(recordedSlip, incoming) {
+  if (!recordedSlip || recordedSlip.windowSource !== "empty-batch" || recordedSlip.totalCents !== 0) return null;
+  if (!incoming || incoming.emptyBatch !== true || incoming.totalCents !== 0) return null;
+  if (Array.isArray(incoming.lines) && incoming.lines.length) return null;
+  const closed = Number(recordedSlip.closedAt), printed = Number(incoming.printedAt);
+  if (!Number.isFinite(closed) || !Number.isFinite(printed) || printed <= closed) return null;
+  if (sastDayIndexOf(printed) <= sastDayIndexOf(closed)) return null;
+  return closed;
+}
+
+/**
  * Merchant ids print with leading zeros and are stored the same way, but a
  * terminal registered by hand may carry one form and the slip the other.
  * Compared as DIGITS ONLY with leading zeros dropped, so "000000004977890" and
@@ -345,7 +382,7 @@ function comparePriorCapture(recorded, incoming, opts = {}) {
   return { relation: "extends", added, reason: null };
 }
 
-function resolveBatchWrite({ existingKeys, batchNo, correction, extends: extendsPrior = false }) {
+function resolveBatchWrite({ existingKeys, batchNo, correction, extends: extendsPrior = false, maxRevisions = MAX_REVISIONS }) {
   const keys = Array.isArray(existingKeys) ? existingKeys : [];
   const revisions = keys
     .map((k) => {
@@ -369,7 +406,7 @@ function resolveBatchWrite({ existingKeys, batchNo, correction, extends: extends
     return { ok: false, reason: `Batch #${batchNo} for this terminal is already captured. If the earlier capture was wrong, resubmit as a correction — both records are kept.` };
   }
   const revision = highest + 1;
-  if (revision > MAX_REVISIONS) {
+  if (revision > maxRevisions) {
     return { ok: false, reason: `Batch #${batchNo} already has ${highest} captures — this is not a correction chain any more. Talk to the owner.` };
   }
   return {
@@ -473,6 +510,13 @@ const MAX_LONG_BATCH_MS = 31 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Corrections are rare, deliberate acts; a chain this long is something else.
 const MAX_REVISIONS = 20;
+// AN IDLE TILL'S RE-PRINTS ARE NOT A CORRECTION CHAIN. A terminal that takes no
+// card re-prints its last empty batch every evening (emptyReprintOpensAt), and
+// each later-day copy is a revision of that batch — Marathon Till 3's #92 went
+// to r3 in three quiet days. At the correction cap it would be refused again
+// within three weeks, and the two apps would disagree about that till once
+// more. A year of quiet evenings is the ceiling for that chain alone.
+const MAX_REPRINT_REVISIONS = 400;
 
 /**
  * Validate one parsed extraction (already through parseSlipTimestamp /
@@ -1038,7 +1082,9 @@ function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastOpene
   const typedToday = hasPrior && lastWasTyped && Number.isFinite(lastClosedAt)
     && sastDayIndexOf(lastClosedAt) === sastDayIndexOf(nowMs);
   if (typedToday && !correction) {
-    return { ok: false, reason: `A total for this machine has already been typed in today (batch #${lastBatchNo}). If that figure was wrong, submit this one as a replacement — both are kept.` };
+    // `code` lets a caller that always replaces (a staff slip sent twice —
+    // cardBatchCapture's "slip" action) ask again as a correction.
+    return { ok: false, code: "typed-today", reason: `A total for this machine has already been typed in today (batch #${lastBatchNo}). If that figure was wrong, submit this one as a replacement — both are kept.` };
   }
   if (correction && !typedToday) {
     return { ok: false, reason: "There is no typed total for this machine today to replace. Submit it normally." };
@@ -1137,9 +1183,9 @@ function readPdfPayload(base64, maxBytes) {
 module.exports = {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX, SAST_OFFSET_MS,
-  MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_LONG_BATCH_MS, MAX_REVISIONS,
+  MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_LONG_BATCH_MS, MAX_REVISIONS, MAX_REPRINT_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
-  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, emptyReprintOpensAt, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
   planTypedCapture, sastDayIndexOf,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
