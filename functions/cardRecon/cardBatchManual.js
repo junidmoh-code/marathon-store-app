@@ -33,6 +33,7 @@ const {
 } = require("../lib/card-recon.cjs");
 const { computeExpectedCard } = require("../lib/card-expected.cjs");
 const { placementAt } = require("../lib/card-terminal-placements.cjs");
+const { SUPPORTING_FIELD, carriedSlips } = require("../lib/card-supporting-slips.cjs");
 const { mayEnterManually, planManualEntry } = require("../lib/card-manual-entry.cjs");
 const {
   MANUAL_AUDIT_PATH, unreadPath, resolveUnreadMarker, isDayYmd, sastDayStartMs,
@@ -174,6 +175,14 @@ async function handleManualEntry(db, request, deps = {}) {
       closedAt: Number.isFinite(input.closedAt) ? input.closedAt : null,
     },
   };
+
+  // Junid's figure outranks a staff slip, and keeps it beside him
+  // (lib/card-supporting-slips.cjs): a same-day staff slip this corrects, and
+  // any slip already supporting it, move onto this record.
+  const carried = write.supersedes
+    ? carriedSlips((await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${write.supersedes}`).once("value")).val(), write.supersedes, extraction.closedAt)
+    : null;
+  if (carried) record[SUPPORTING_FIELD] = carried;
 
   const txn = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${write.key}`).transaction((cur) => {
     if (cur !== null) return undefined; // exists → abort, never overwrite

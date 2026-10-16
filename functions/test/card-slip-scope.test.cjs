@@ -189,16 +189,21 @@ test("not a photo: bytes that are not a JPEG are refused before anything is stor
   assert.deepEqual(b.saved, []);
 });
 
-test("the machine's own report for today is already in: told so, nothing recorded, no photo kept", async () => {
-  // Marathon Till 2's photographed #544 closed at 16:59 today; a slip at 18:30
-  // would otherwise be filed as #545 over 90 minutes and read as a day's takings too many.
+test("the machine's own report for today is already in: the slip is NEVER refused — it is kept beside the report", async () => {
+  // Marathon Till 2's photographed #544 closed at 16:59 today. Junid, 16 Oct
+  // 2026: the staff slip is accepted and stored as a supporting slip on #544;
+  // the machine's report stays the figure. She is told only "received".
   const today = { ...B544, slip: { ...B544.slip, openedAt: SAST("2026-10-15T17:02:11"), closedAt: SAST("2026-10-16T16:59:43") } };
   const db = world({ card_batches: { pe: { [MT2]: { 544: today } } } });
   const b = bucket();
   const out = await slip(db, YASMIN, MT2, "21,375.00", b);
-  assert.equal(out.ok, false);
-  assert.match(out.reason, /already in from the card machine/);
-  assert.doesNotMatch(out.reason, /R\s?\d/, "no figure in the answer");
-  assert.deepEqual(Object.keys(await batches(db, "pe", MT2)), ["544"]);
-  assert.deepEqual(b.saved, []);
+  assert.deepEqual(out, { ok: true, received: true });
+  const recs = await batches(db, "pe", MT2);
+  assert.deepEqual(Object.keys(recs), ["544"], "not filed as another batch");
+  assert.equal(recs["544"].slip.totalCents, today.slip.totalCents, "the machine's figure is untouched");
+  const [s] = Object.values(recs["544"].supportingSlips);
+  assert.equal(s.cents, 2137500);
+  assert.equal(s.byEmail, "yasmin@marathon.internal");
+  assert.equal(b.saved.length, 1);
+  assert.deepEqual(s.photos, b.saved);
 });
