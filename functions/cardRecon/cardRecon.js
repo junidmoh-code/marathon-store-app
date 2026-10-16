@@ -58,7 +58,7 @@ const {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX,
   parseSlipTimestamp, parseRandsToCents,
-  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, emptyReprintOpensAt, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload, formatCents,
   hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal, anchorDeclaredWindow,
@@ -571,6 +571,17 @@ async function readRecordedLinesFor(db, storeId, tid, keys) {
 }
 
 /**
+ * The slip of the capture in force for this batch (its highest revision), or
+ * null — one small read, asked only when the line comparison has nothing to go
+ * on.
+ */
+async function readRecordedSlipFor(db, storeId, tid, keys) {
+  if (!keys.length) return null;
+  const snap = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${keys[keys.length - 1]}/slip`).once("value");
+  return snap.val() || null;
+}
+
+/**
  * Is the capture in force for this batch a SETTLED EMPTY BATCH?
  *
  * Read from the record's own slip, never inferred from the line count: an empty
@@ -585,13 +596,7 @@ async function readRecordedLinesFor(db, storeId, tid, keys) {
  * and a gate that trusts one field is a gate that opens when that field is
  * mangled by a hand edit or a half-written record.
  */
-async function recordedIsEmptyBatch(db, storeId, tid, keys) {
-  if (!keys.length) return false;
-  const key = keys[keys.length - 1];
-  const snap = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${key}/slip`).once("value");
-  const slip = snap.val() || {};
-  return slip.windowSource === "empty-batch" && slip.totalCents === 0;
-}
+const isSettledEmptyBatch = (slip) => !!slip && slip.windowSource === "empty-batch" && slip.totalCents === 0;
 
 /**
  * Decide the write for a batch, reading what is already recorded.
@@ -606,22 +611,24 @@ async function recordedIsEmptyBatch(db, storeId, tid, keys) {
  * one for a report that disagrees with the record, which is a thing somebody
  * has to look at.
  */
-async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, totalCents = null }) {
+async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, totalCents = null, incoming = null }) {
   const existingKeys = await readBatchKeysFor(db, storeId, tid, batchNo);
   let comparison = null;
+  // Where a later-day re-print of an empty batch opens — see emptyReprintOpensAt.
+  let reprintOpensAt = null;
   if (existingKeys.length && !correction) {
     const recorded = await readRecordedLinesFor(db, storeId, tid, existingKeys);
     // Only asked when there is nothing to compare against — the one case where
     // the answer can change the relation, and one read saved on every other.
-    const recordedEmptyBatch = recorded.length
-      ? false
-      : await recordedIsEmptyBatch(db, storeId, tid, existingKeys);
-    comparison = comparePriorCapture(recorded, lines || [], { recordedEmptyBatch });
+    const recordedSlip = recorded.length ? null : await readRecordedSlipFor(db, storeId, tid, existingKeys);
+    comparison = comparePriorCapture(recorded, lines || [], { recordedEmptyBatch: isSettledEmptyBatch(recordedSlip) });
+    reprintOpensAt = recorded.length ? null : emptyReprintOpensAt(recordedSlip, incoming);
   }
   const write = resolveBatchWrite({
     existingKeys, batchNo, correction,
-    extends: comparison ? comparison.relation === "extends" : false,
+    extends: comparison ? comparison.relation === "extends" || reprintOpensAt !== null : false,
   });
+  if (write.ok && reprintOpensAt !== null) return { existingKeys, comparison, write, reprintOpensAt };
   // ── A TOTALS-ONLY RECORD OF A BATCH THAT WAS STILL OPEN ──────────────────
   // A batch recorded from its totals alone (card-recon-pdf.cjs →
   // emailedTotalsOnly) has no lines, so a later, fuller report of the same
@@ -1391,11 +1398,28 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   // that the totals-only warning already says better.
   verdict.warnings = read.warnings;
   const batchNo = normaliseBatchNo(extraction.batchNo);
-  const { write } = await resolveWriteFor(db, {
+  const { write, reprintOpensAt } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
     correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
+    incoming: extraction,
   });
   if (!write.ok) return reject(write.reason);
+  // ── AN EMPTY BATCH RE-PRINTED ON A LATER DAY — that day's report ──────────
+  // See emptyReprintOpensAt. Its window runs from the report on file to this
+  // print, so a card leg rung in between is this day's variance, never lost.
+  // Bounded by the same 7-day cap as any empty batch; past it, the window
+  // computed above stands (and the POS report anchors it the same way).
+  if (reprintOpensAt !== null) {
+    const opened = emptyBatchOpenedAt(reprintOpensAt, extraction.printedAt);
+    if (opened !== null) {
+      extraction.openedAt = opened;
+      extraction.openedFrom = "previous-report";
+    }
+    verdict.warnings = [
+      `The terminal re-printed batch #${batchNo} on a later day with no card taken since its last report — recorded as R0.00 for this day, as a later report of the same batch.`,
+      ...verdict.warnings,
+    ];
+  }
 
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
@@ -1684,6 +1708,9 @@ async function handleSubmit(db, request) {
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
     correction: !!draft.correction, lines: extraction.lines, totalCents: extraction.totalCents,
+    // The same answer extract gave: an empty batch re-printed on a later day
+    // is a later report of it (emptyReprintOpensAt), on either side.
+    incoming: extraction,
   });
   if (!write.ok) return reject(write.reason);
 
