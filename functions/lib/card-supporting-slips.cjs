@@ -35,8 +35,8 @@ const isStaffSlipRecord = (rec) => !!rec && !!rec.declaredTotal && rec.declaredT
  * report), "junid" (a total he typed, or a manual entry) or "staff" (a staff
  * slip)? The precedence is machine > junid > staff.
  */
-// Junid's sign-in — the same address the server's mayDeclareTotal checks.
-const JUNID_EMAIL = "gunidmoh@gmail.com";
+// Junid's sign-in — THE one constant mayDeclareTotal checks (Fable review, #731).
+const { DECLARED_TOTAL_EMAIL: JUNID_EMAIL } = require("./card-recon.cjs");
 
 function authorityOf(rec) {
   if (!rec) return null;
@@ -90,15 +90,28 @@ function buildSupportingSlip({ slipId, cents, photos, byUid, byEmail, nowMs, fro
 }
 
 /**
- * The supporting slips a NEW record inherits from the one it supersedes: the
- * superseded record's own supporting slips, and — when it was itself a staff
- * slip — that slip, now beside the better figure. Only on the SAME SAST day:
- * a later-day report of a long batch is a different day's settlement and its
- * slips are that day's. Returns a map keyed by slipId, or null.
+ * Does `successor` inherit the slips of the record it supersedes? A record
+ * that REPLACES it — a person's correction, or a report recorded as its
+ * replacement — always does, whatever the day: it stands in its place. A
+ * LATER REPORT of a batch left open (autoSuperseded) is a different day's
+ * settlement unless it closes the same SAST day, and the slips stay with
+ * their own day.
  */
-function carriedSlips(superseded, supersededKey, newClosedAt) {
-  if (!superseded || !superseded.slip) return null;
-  if (!sameSastDay(Number(superseded.slip.closedAt), Number(newClosedAt))) return null;
+function inherits(superseded, successor) {
+  if (!superseded || !superseded.slip || !successor) return false;
+  if (successor.autoSuperseded !== true) return true;
+  return sameSastDay(Number(superseded.slip.closedAt), Number(successor.slip && successor.slip.closedAt));
+}
+
+/**
+ * The supporting slips a NEW record inherits from the one it supersedes (see
+ * inherits): the superseded record's own supporting slips, and — when it was
+ * itself a staff slip — that slip, now beside the better figure. `successor`
+ * is the new record, or { slip: { closedAt }, autoSuperseded } before it is
+ * written. Returns a map keyed by slipId, or null.
+ */
+function carriedSlips(superseded, supersededKey, successor) {
+  if (!inherits(superseded, successor)) return null;
   const out = { ...(superseded[SUPPORTING_FIELD] || {}) };
   if (isStaffSlipRecord(superseded) && Number.isInteger(superseded.slip.totalCents)) {
     const slipId = `rec-${supersededKey}`;
@@ -117,8 +130,9 @@ function carriedSlips(superseded, supersededKey, newClosedAt) {
 }
 
 /**
- * The same-day records that took over from `fromKey`, oldest first, following
- * `supersedes` — the chain a slip on `fromKey` must also sit on. `revisions` is
+ * The records that took over from `fromKey` and inherit its slips (inherits),
+ * oldest first, following `supersedes` — the chain a slip on `fromKey` must
+ * also sit on. `revisions` is
  * every record of that batch ({batchKey: record}, one equalTo(batchNo) read).
  */
 function sameDaySuccessors(revisions, fromKey) {
@@ -129,7 +143,7 @@ function sameDaySuccessors(revisions, fromKey) {
   for (let guard = 0; atRec && guard < 1000; guard++) {
     const next = all.filter(([, r]) => r.supersedes === at)
       .sort((a, b) => (Number(a[1].revision) || 1) - (Number(b[1].revision) || 1)).at(-1);
-    if (!next || !sameSastDay(Number(atRec.slip && atRec.slip.closedAt), Number(next[1].slip && next[1].slip.closedAt))) break;
+    if (!next || !inherits(atRec, next[1])) break;
     out.push(next[0]);
     [at, atRec] = next;
   }
@@ -138,5 +152,5 @@ function sameDaySuccessors(revisions, fromKey) {
 
 module.exports = {
   SUPPORTING_FIELD, STAFF_SLIP_VIA, JUNID_EMAIL, MAX_SUPPORTING_SLIPS, sameDaySuccessors,
-  sameSastDay, isStaffSlipRecord, authorityOf, shouldAttach, buildSupportingSlip, carriedSlips, photosOf,
+  sameSastDay, inherits, isStaffSlipRecord, authorityOf, shouldAttach, buildSupportingSlip, carriedSlips, photosOf,
 };

@@ -644,6 +644,7 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
   // Where a later-day re-print of an empty batch opens — see emptyReprintOpensAt.
   let reprintOpensAt = null;
   let typedMetByReport = false;
+  let lateOverTyped = false;
   if (existingKeys.length && !correction) {
     const recorded = await readRecordedLinesFor(db, storeId, tid, existingKeys);
     // Only asked when there is nothing to compare against — the one case where
@@ -660,6 +661,15 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
     if (!recorded.length && recordedSlip && recordedSlip.format === "typed"
         && incoming && incoming.format !== "typed") {
       typedMetByReport = true;
+      // …unless the report is of an EARLIER day: yesterday's report arriving
+      // late meets today's slip only because the slip took the next number.
+      // It is recorded as the slip's REPLACEMENT (not a later report, which
+      // would put yesterday's money on today), and the slip is kept beside it
+      // (lib/card-supporting-slips.cjs inherits). (Fable spec review, #731.)
+      if (Number.isFinite(incoming.closedAt) && Number.isFinite(recordedSlip.closedAt)
+          && sastDayIndexOf(incoming.closedAt) < sastDayIndexOf(recordedSlip.closedAt)) {
+        lateOverTyped = true;
+      }
     }
     // THE SAME BATCH, RE-PRINTED UNCHANGED ON A LATER DAY. A terminal whose last
     // batch had sales and which takes nothing more may re-print that batch at
@@ -678,8 +688,8 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
     }
   }
   const write = resolveBatchWrite({
-    existingKeys, batchNo, correction,
-    extends: comparison ? comparison.relation === "extends" || reprintOpensAt !== null || typedMetByReport : false,
+    existingKeys, batchNo, correction: correction || lateOverTyped,
+    extends: lateOverTyped ? false : comparison ? comparison.relation === "extends" || reprintOpensAt !== null || typedMetByReport : false,
     maxRevisions: reprintOpensAt !== null ? MAX_REPRINT_REVISIONS : MAX_REVISIONS,
   });
   if (write.ok && reprintOpensAt !== null) return { existingKeys, comparison, write, reprintOpensAt };
@@ -1876,7 +1886,7 @@ async function handleSubmit(db, request) {
   // A STAFF SLIP THIS RECORD TAKES OVER FROM stays beside it, as a supporting
   // slip — the machine's report of its filing number, or Junid's correction,
   // outranks it but must not hide what was typed (lib/card-supporting-slips.cjs).
-  const carried = await carriedSlipsFor(db, terminal.storeId, extraction.tid, write.supersedes, extraction.closedAt);
+  const carried = await carriedSlipsFor(db, terminal.storeId, extraction.tid, write.supersedes, record);
   if (carried) record[SUPPORTING_FIELD] = carried;
 
   const txn = await tidRef.child(write.key).transaction((cur) => {
@@ -1908,10 +1918,10 @@ async function handleSubmit(db, request) {
 }
 
 /** The supporting slips a new record inherits from the one it supersedes (one read), or null. */
-async function carriedSlipsFor(db, storeId, tid, supersedesKey, newClosedAt) {
+async function carriedSlipsFor(db, storeId, tid, supersedesKey, successor) {
   if (!supersedesKey) return null;
   const prev = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${supersedesKey}`).once("value")).val();
-  return carriedSlips(prev, supersedesKey, newClosedAt);
+  return carriedSlips(prev, supersedesKey, successor);
 }
 
 // ─── ONE TILL'S DAILY SLIP, FROM THE PERSON GIVEN THAT TILL ─────────────────
@@ -2083,7 +2093,7 @@ async function syncCarried(db, tidPath, fromKey, toKey) {
   if (!from) return;
   await db.ref(`${tidPath}/${toKey}`).transaction((cur) => {
     if (cur === null) return null;
-    const want = carriedSlips(from, fromKey, Number(cur.slip && cur.slip.closedAt));
+    const want = carriedSlips(from, fromKey, cur);
     if (!want) return undefined;
     const have = { ...(cur[SUPPORTING_FIELD] || {}) };
     let changed = false;

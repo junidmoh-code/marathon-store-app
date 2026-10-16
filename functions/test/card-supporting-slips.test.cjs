@@ -72,19 +72,23 @@ test("attach only to TODAY's better figure: never to their own slip (a correctio
   assert.equal(shouldAttach({ key: null, record: null }, NOW), false);
 });
 
-test("carried forward: the same day's staff slip, and slips already beside it — never across days", () => {
+test("carried forward: a replacement inherits always; a later-day report of an open batch never does", () => {
   const staff = { ...M544, batchKey: "545", capturedVia: "typed", photos: ["cardRecon/d1/photo-0.jpg"],
     declaredTotal: { cents: 2137500, via: "staff-slip", byUid: "u-yasmin", byEmail: "yasmin@marathon.internal", at: NOW },
     photoRead: { status: "read", readCents: 2137000, differs: true },
     supportingSlips: { a: { slipId: "a", cents: 5 } } };
-  const out = carriedSlips(staff, "545", NOW + 3600000);
+  const sameDayReport = { autoSuperseded: true, slip: { closedAt: NOW + 3600000 } };
+  const out = carriedSlips(staff, "545", sameDayReport);
   assert.deepEqual(Object.keys(out).sort(), ["a", "rec-545"]);
   assert.equal(out["rec-545"].cents, 2137500);
   assert.equal(out["rec-545"].fromKey, "545");
   assert.deepEqual(out["rec-545"].photos, ["cardRecon/d1/photo-0.jpg"]);
   assert.equal(out["rec-545"].photoRead.readCents, 2137000);
-  assert.equal(carriedSlips(staff, "545", NOW + 24 * 3600000), null, "a later day's report keeps its own slips");
-  assert.equal(carriedSlips(M544, "544", NOW), null, "nothing to carry from a machine report without slips");
+  assert.equal(carriedSlips(staff, "545", { autoSuperseded: true, slip: { closedAt: NOW + 24 * 3600000 } }), null,
+    "a later day's report of an open batch keeps its own day's slips");
+  assert.ok(carriedSlips(staff, "545", { autoSuperseded: false, slip: { closedAt: NOW - 24 * 3600000 } })["rec-545"],
+    "a replacement stands in its place, whatever the day");
+  assert.equal(carriedSlips(M544, "544", sameDayReport), null, "nothing to carry from a machine report without slips");
 });
 
 // ── 1. the machine's report is in ────────────────────────────────────────────
@@ -303,4 +307,44 @@ test("a deleted record is never brought back by a slip", async () => {
   assert.equal(out.ok, false);
   assert.equal(await node(db, `card_batches/pe/${MT2}/544`), null);
   assert.deepEqual(b.deleted, b.saved);
+});
+
+// ── spec review fixes (Fable, #731) ──────────────────────────────────────────
+
+test("yesterday's report arrives LATE, after today's staff slip took its number: recorded as the slip's replacement, the slip kept beside it", async () => {
+  // #543 is the last on file (14 Oct → 15 Oct); yesterday's report never came in.
+  const M543 = { ...M544, batchKey: "543", batchNo: 543, slip: { ...M544.slip, openedAt: SAST("2026-10-14T16:57:00"), closedAt: SAST("2026-10-15T17:02:11") } };
+  const db = world({ pe: { [MT2]: { 543: M543 } } });
+  await slip(db, YASMIN, MT2, "21,375.00");               // today, filed as #544 (typed)
+  assert.equal((await node(db, `card_batches/pe/${MT2}/544`)).declaredTotal.via, "staff-slip");
+  // …then the machine's real #544, which closed YESTERDAY (16 Oct is today).
+  const late = { format: "printed", windowSource: "printed", emptyBatch: false, totalCents: 1910500,
+    openedAt: SAST("2026-10-15T17:02:11"), closedAt: SAST("2026-10-15T23:30:00"), printedAt: SAST("2026-10-15T23:30:00") };
+  const { write } = await resolveWriteFor(db, { storeId: "pe", tid: MT2, batchNo: "544", correction: false, lines: [], totalCents: 1910500, incoming: late });
+  assert.equal(write.ok, true, write.reason);
+  assert.equal(write.supersedes, "544");
+  assert.equal(write.autoSuperseded, false, "a replacement, not a later report that would put yesterday's money on today");
+  const carried = await carriedSlipsFor(db, "pe", MT2, write.supersedes, { autoSuperseded: write.autoSuperseded, slip: { closedAt: late.closedAt } });
+  assert.deepEqual([carried["rec-544"].cents, carried["rec-544"].byUid], [2137500, "u-yasmin"], "her slip is never lost");
+});
+
+test("Junid's NEW manual entry on a day whose record is a staff slip replaces it (no second batch, no double count) and keeps the slip", async () => {
+  const db = world({ trophy: { [TT2]: { 499: T499 } } });
+  await slip(db, AMANDA, TT2, "2,400.00");                // #500 — her slip is the day's record
+  const out = await handleManualEntry(db, { auth: JUNID, data: { tid: TT2, dayYmd: "2026-10-16", reason: "no-slip", batchNo: "501", total: "2,500.00" } },
+    { now: () => NOW + 600000, computeExpectedCard: async (d, q) => ({ cardCents: 250000, legs: 1, byKind: null, cashiers: [], query: q }) });
+  assert.equal(out.ok, true, out.reason);
+  assert.equal(out.batchKey, "500-r2");
+  assert.equal(out.supersedes, "500");
+  const recs = await node(db, `card_batches/trophy/${TT2}`);
+  assert.deepEqual(Object.keys(recs).sort(), ["499", "500", "500-r2"], "no #501 beside her #500");
+  const s = recs["500-r2"].supportingSlips["rec-500"];
+  assert.deepEqual([s.cents, s.byEmail], [240000, "amanda@marathon.internal"]);
+  assert.ok(recs["500-r2"].warnings.some((w) => /staff slip \(500\) was already the record/.test(w)));
+});
+
+test("Junid is the one constant mayDeclareTotal checks", () => {
+  const { JUNID_EMAIL } = require("../lib/card-supporting-slips.cjs");
+  const { DECLARED_TOTAL_EMAIL } = require("../lib/card-recon.cjs");
+  assert.equal(JUNID_EMAIL, DECLARED_TOTAL_EMAIL);
 });
