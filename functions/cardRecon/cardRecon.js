@@ -660,6 +660,21 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
         && incoming && incoming.format !== "typed") {
       typedMetByReport = true;
     }
+    // THE SAME BATCH, RE-PRINTED UNCHANGED ON A LATER DAY. A terminal whose last
+    // batch had sales and which takes nothing more may re-print that batch at
+    // the next evening's settlement: every line identical, a later PRINT time.
+    // That is the empty re-print's case with lines in it — the machine saying,
+    // on that day, that nothing was added — and it is recorded the same way: a
+    // later report of the batch, adding R0.00 on its own day. The PRINT time
+    // decides, so a photo taken today of yesterday's printout is still a re-send.
+    if (comparison.relation === "identical" && incoming && Number.isFinite(incoming.printedAt)) {
+      const slip = await readRecordedSlipFor(db, storeId, tid, existingKeys);
+      if (slip && Number.isFinite(slip.closedAt) && incoming.printedAt > slip.closedAt
+          && sastDayIndexOf(incoming.printedAt) > sastDayIndexOf(slip.closedAt)
+          && Number.isInteger(incoming.totalCents) && incoming.totalCents === slip.totalCents) {
+        reprintOpensAt = slip.closedAt;
+      }
+    }
   }
   const write = resolveBatchWrite({
     existingKeys, batchNo, correction,
@@ -1487,13 +1502,16 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   // Bounded by the same 7-day cap as any empty batch; past it, the window
   // computed above stands (and the POS report anchors it the same way).
   if (reprintOpensAt !== null) {
-    const opened = emptyBatchOpenedAt(reprintOpensAt, extraction.printedAt);
+    // An EMPTY batch has no span of its own, so its window is the report on
+    // file → this print. A batch with lines keeps the window its lines give;
+    // the report's own day is still told apart by the POS report (it adds R0).
+    const opened = extraction.emptyBatch === true ? emptyBatchOpenedAt(reprintOpensAt, extraction.printedAt) : null;
     if (opened !== null) {
       extraction.openedAt = opened;
       extraction.openedFrom = "previous-report";
     }
     verdict.warnings = [
-      opened !== null
+      opened !== null || extraction.emptyBatch !== true
         ? `The terminal re-printed batch #${batchNo} on a later day with no card taken since its last report — recorded as R0.00 for this day, as a later report of the same batch.`
         : `The terminal re-printed batch #${batchNo} more than 7 days after its last report — recorded as R0.00 for this day, but its window could not reach back to that report.`,
       ...verdict.warnings,

@@ -132,7 +132,7 @@ const T = {
   summary: { fontSize: 15, fontWeight: 600, color: "rgba(233,238,255,.72)", marginTop: 10, letterSpacing: "-0.1px" },
   summaryDone: { color: "#54D97F" },
   // Under a card whose till took no card today.
-  noCard: { fontSize: 13, color: "rgba(84,217,127,.75)", margin: "-4px 4px 0" },
+  noCard: { fontSize: 13, color: "rgba(233,238,255,.45)", margin: "-4px 4px 0" },
   tick: { width: 27, height: 27, borderRadius: 999, background: "rgba(52,199,89,.16)", color: "#54D97F",
           display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800 },
   camera: { opacity: 0.3, display: "block" },
@@ -559,10 +559,11 @@ export default function CardReconScreen({ onExit }) {
           const group = cardGroups.length > 1 ? cardGroups.find((g) => g.cards[0] === t) : null;
           const state = work[t.tid] || {};
           const busy = state.phase === "busy";
-          // DONE = its report is in, OR its till took no card today — there is
-          // nothing to compare, so nothing to wait for.
+          // DONE = its report is in. A till with no card sale in POS is NOT
+          // done: the machine's report (or a slip saying R0) still has to say
+          // so — Junid, 16 Oct 2026. It only gets a quiet note.
           const noCard = summary.byTid.get(t.tid) === "no-card";
-          const done = arrived.has(t.tid) || noCard;
+          const done = arrived.has(t.tid);
           // AN EMAIL-ONLY TILL HAS NO CAMERA — set in the terminal settings.
           // Its card is the tick and nothing else: no input, nothing to tap.
           const camera = takesPhoto(t);
@@ -578,7 +579,7 @@ export default function CardReconScreen({ onExit }) {
               {busy ? <span style={T.working}>{state.sending ? "Sending…" : "Reading…"}</span>
                 /* A photo is RECEIVED, not yet read — the tick says so, and
                    says nothing about whether it read (that is Junid's). */
-                : done ? <span style={T.tick} aria-label={received.has(t.tid) ? "today's slip is received" : noCard && !arrived.has(t.tid) ? "no card sales today — clean" : "today's report is in"}>✓</span>
+                : done ? <span style={T.tick} aria-label={received.has(t.tid) ? "today's slip is received" : "today's report is in"}>✓</span>
                 /* Quiet on purpose: a till with nothing in raises no alarm,
                    only the hint that a photo is what it takes. Drawn rather
                    than typed — an emoji renders as a grey smudge at this
@@ -610,7 +611,7 @@ export default function CardReconScreen({ onExit }) {
                 <div style={{ ...cardStyle, ...T.cardStatic }}>{face}</div>
               )}
               {noCard && !busy && state.phase !== "failed" && (
-                <div style={T.noCard}>No card sales today — clean, nothing to reconcile.</div>
+                <div style={T.noCard}>No card sales in POS today — its report still counts (R0 is fine).</div>
               )}
               {state.phase === "received" && <div style={T.received} role="status">Received</div>}
               {state.phase === "failed" && <div style={T.fail}>{state.reason}</div>}

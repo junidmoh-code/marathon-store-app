@@ -171,3 +171,35 @@ test("an idle till's re-print chain runs past the correction cap — the 25th qu
   assert.equal(extract.ok, true, extract.reason);
   assert.equal(submit.batchKey, "92-r25");
 });
+
+// ── A BATCH WITH SALES, RE-PRINTED UNCHANGED ON A LATER DAY ──────────────────
+// Till 3 #59's emailed report shape (29 Aug 2026, printed 16:26:31). If the
+// machine takes nothing more and re-prints #59 at the next evening's
+// settlement, every line is the same and only the print time moves. That day
+// reported R0 too.
+test("a batch with sales re-printed unchanged on a later day: a later report (adds R0); same day is still a re-send", async () => {
+  const { emailedLines, makeSlipPdfPaged } = require("./fixtures/makeSlipPdf.cjs");
+  const pdf = (printedAt) => makeSlipPdfPaged(emailedLines({ printedAt }).lines, { perPage: 60 });
+  const viaPdf = async (db, bytes) => {
+    n += 1;
+    const extract = await handleExtract(db, { auth: POLLER, data: { action: "extract", channel: "email", pdf: { base64: bytes.toString("base64") },
+      intake: { messageId: `<reprint-${n}@fnb>`, from: "FNB", subject: "Banking Report", filename: "x.pdf", receivedAt: 1 } } }, { bucket: bucket() });
+    if (!extract.ok) return { extract };
+    return { extract, submit: await handleSubmit(db, { auth: POLLER, data: { action: "submit", draftId: extract.draftId } }) };
+  };
+  const db = makeFakeDb({ config: { cardTerminals: TERMINALS } });
+  const first = await viaPdf(db, pdf("29-08-2026 16:26:31"));
+  assert.equal(first.extract.ok, true, first.extract.reason);
+  assert.equal(first.submit.ok, true, first.submit.reason);
+  const sameDay = await viaPdf(db, pdf("29-08-2026 16:40:00"));
+  assert.equal(sameDay.extract.ok, false);
+  assert.match(sameDay.extract.reason, /already captured/);
+  const nextDay = await viaPdf(db, pdf("30-08-2026 16:30:00"));
+  assert.equal(nextDay.extract.ok, true, nextDay.extract.reason);
+  assert.equal(nextDay.submit.batchKey, "59-r2");
+  const r1 = (await db.ref(`card_batches/pe/${TID}/59`).once("value")).val();
+  const r2 = (await db.ref(`card_batches/pe/${TID}/59-r2`).once("value")).val();
+  assert.equal(r2.autoSuperseded, true);
+  assert.equal(r2.slip.totalCents, r1.slip.totalCents, "the same total: this day adds nothing");
+  assert.equal(r2.slip.openedAt, r1.slip.openedAt, "a batch with lines keeps its own window");
+});

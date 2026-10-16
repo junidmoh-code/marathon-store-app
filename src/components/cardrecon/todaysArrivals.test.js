@@ -247,7 +247,7 @@ describe("a re-send of a batch already on file is the terminal reporting, not fa
   });
 });
 
-describe("a till that took no card today is clean, and is not waited for", () => {
+describe("a till that took no card today still waits for its report — never clean without one (Junid, 16 Oct 2026)", () => {
   const cards = [
     { tid: "A", storeId: "pe", tillId: "till-1" }, { tid: "B", storeId: "pe", tillId: "till-2" },
     { tid: "C", storeId: "pe", tillId: "till-3" }, { tid: "D", storeId: "trophy", tillId: "till-1" },
@@ -265,15 +265,22 @@ describe("a till that took no card today is clean, and is not waited for", () =>
     expect([...tillsWithCardLegs(events)].sort()).toEqual(["pe/till-1", "pe/till-2", "pine/till-1", "trophy/till-1"]);
   });
 
-  it("says 'Waiting for 4 · 2 clean' before any report is in", () => {
+  it("says 'Waiting for 6' before any report is in — a till with no card sales is not clean yet", () => {
     const s = daySummary(cards, { arrived: new Set(), cardTills: tillsWithCardLegs(events) });
-    expect(s.line).toBe("Waiting for 4 · 2 clean");
+    expect(s.line).toBe("Waiting for 6 · 0 clean");
+    expect(s.clean).toBe(0);
     expect(s.byTid.get("C")).toBe("no-card");
     expect(s.byTid.get("E")).toBe("no-card");
   });
 
-  it("says 'All 6 clean' once the four are in — without the two zero-card reports", () => {
+  it("the four with card are in: still waiting for the two zero-card tills' reports", () => {
     const s = daySummary(cards, { arrived: new Set(["A", "B", "D", "F"]), cardTills: tillsWithCardLegs(events) });
+    expect(s.line).toBe("Waiting for 2 · 4 clean");
+    expect(s.byTid.get("C")).toBe("no-card");
+  });
+
+  it("'All 6 clean' only once every report is in, the R0 ones included", () => {
+    const s = daySummary(cards, { arrived: new Set(["A", "B", "C", "D", "E", "F"]), cardTills: tillsWithCardLegs(events) });
     expect(s.line).toBe("All 6 clean");
     expect(s.waiting).toBe(0);
   });
