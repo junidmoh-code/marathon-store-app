@@ -2085,7 +2085,7 @@ async function logStaffSlip(db, request, { kind, terminal, picked, nowMs, photos
     const here = tillAt(terminal, nowMs);
     const ref = db.ref(staffSlipDayPath({ storeId: terminal.storeId, tid: picked, dayYmd })).push();
     await ref.set(staffSlipEntry({
-      kind, storeId: terminal.storeId, tid: picked, tillId: here.tillId || terminal.tillId,
+      kind, storeId: terminal.storeId, tid: picked, placeStoreId: here.storeId || terminal.storeId, tillId: here.tillId || terminal.tillId,
       label: here.label || terminal.label || null, dayYmd, at: nowMs,
       byUid: request.auth.uid, byEmail: request.auth.token?.email || null, photos, batchKey, slipId,
     }));
@@ -2405,7 +2405,7 @@ async function handleReceive(db, request, deps = {}) {
   // till as sent — with the photo — while it waits to be read.
   const logged = deps.staffSlip ? {
     [`${staffSlipDayPath({ storeId: terminal.storeId, tid: picked, dayYmd })}/${jobId}`]: staffSlipEntry({
-      kind: "received", storeId: terminal.storeId, tid: picked, tillId: job.placeTillId,
+      kind: "received", storeId: terminal.storeId, tid: picked, placeStoreId: job.placeStoreId, tillId: job.placeTillId,
       label: job.label, dayYmd, at: nowMs, byUid: request.auth.uid, byEmail: token.email || null,
       photos: photoPaths, jobId,
     }),

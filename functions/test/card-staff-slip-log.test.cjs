@@ -90,6 +90,7 @@ test("Yasmin's photo at 16:24: a receipt, and the log entry is written with the 
   assert.equal(entry.byEmail, "yasmin@marathon.internal");
   assert.equal(entry.at, now);
   assert.equal(entry.tillId, "till-2");
+  assert.equal(entry.placeStoreId, "pe");
   assert.deepEqual(entry.photos, b.saved, "the photo Junid opens is the photo stored");
   const job = await node(db, `card_batch_jobs/${entry.jobId}`);
   assert.equal(job.status, "queued", "the log names the job that will read it");
@@ -129,7 +130,7 @@ test("Amanda at 15:43, before the batch closes: filed against the batch closing 
   assert.equal(rec.slip.printedAt, now, "when she sent it is kept");
   assert.ok(rec.warnings.some((w) => /FNB cut-off \(18:50 on 2026-10-17\); the slip was sent at 15:43/.test(w)));
   const [entry] = await log(db, "trophy", TT2, "2026-10-17");
-  assert.deepEqual([entry.kind, entry.batchKey, entry.byUid], ["record", "501", AMANDA.uid]);
+  assert.deepEqual([entry.kind, entry.batchKey, entry.byUid, entry.placeStoreId, entry.tillId], ["record", "501", AMANDA.uid, "trophy", "till-2"]);
   assert.deepEqual(entry.photos, Array.isArray(rec.photos) ? rec.photos : Object.values(rec.photos));
   assert.deepEqual((await tills(db, AMANDA, now)).tills.map((t) => t.sent), [{ at: now }]);
   // The next day's slip opens where the bank's batch did.

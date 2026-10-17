@@ -67,11 +67,13 @@ function staffSlipDayPath({ storeId, tid, dayYmd }) {
  * (a photo waiting to be read: `jobId`). No figure is copied here — the
  * figure stays on the record, where the verdict reads it.
  */
-function staffSlipEntry({ kind, storeId, tid, tillId = null, label = null, dayYmd, at, byUid, byEmail = null,
+function staffSlipEntry({ kind, storeId, tid, placeStoreId = null, tillId = null, label = null, dayYmd, at, byUid, byEmail = null,
                           photos = [], batchKey = null, slipId = null, jobId = null }) {
   if (!KINDS.has(kind)) throw new Error(`card-staff-slip-log: unknown kind ${kind}`);
   return {
-    kind, storeId, tid, tillId: tillId || null, label: label || null, dayYmd,
+    // storeId is where the terminal's batches are FILED (the path); the till
+    // it stood on when the slip came is placeStoreId + tillId.
+    kind, storeId, tid, placeStoreId: placeStoreId || storeId, tillId: tillId || null, label: label || null, dayYmd,
     at, byUid: byUid || null, byEmail: byEmail || null,
     photos: (Array.isArray(photos) ? photos : []).filter((p) => typeof p === "string" && p),
     batchKey: batchKey || null, slipId: slipId || null, jobId: jobId || null,
