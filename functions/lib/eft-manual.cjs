@@ -145,3 +145,97 @@ module.exports = {
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
 };
+
+// ─── THE LOG — how often the hatch is used, and where each entry went ───────
+// /eft_manual_entries/{logKey}: one record per manual entry, written when
+// Junid enters it and UPDATED as the pool record moves (settle, attach,
+// release, markUsed, reverse) — so one list answers "how many did I type this
+// week, and were they all spent?" without walking the pool. The log key is
+// the entry's server moment (zero-padded epoch ms) + the pool key, so
+// orderByKey() lists newest-last with NO index (no rule change needed) and
+// the settle can address the row from the pool record alone.
+const MANUAL_LIST_LIMIT = 60;
+
+function manualLogKeyOf(at, poolKey) {
+  return `${String(at).padStart(13, "0")}_${poolKey}`;
+}
+
+/** The row written at entry time. */
+function manualLogRecord(record, key) {
+  const m = record.manualEntry ?? {};
+  return {
+    key,
+    entryId: m.entryId ?? null,
+    at: m.at ?? record.at ?? null,
+    by: m.by ?? MANUAL_ENTRY_BY,
+    uid: m.uid ?? null,
+    email: m.email ?? null,
+    reference: record.reference ?? null,
+    amountCents: Number.isInteger(record.amountCents) ? record.amountCents : null,
+    note: m.note ?? null,
+    status: "unmatched",
+  };
+}
+
+/**
+ * What a lifecycle event changes on the row. `record` is the pool record as
+ * COMMITTED by that event's transaction (decision.value); the patch is an
+ * update(), so earlier fields stay.
+ *   settle   used — who consumed it, where, for whom, how much
+ *   attach   the sale's identity lands
+ *   release  the sale failed — back to waiting
+ *   markUsed settled by hand outside the POS
+ *   reverse  the owner unwound it — back to waiting, count kept
+ * @returns {object|null} null when the record is not a manual entry
+ */
+function manualLogEventPatch(event, record, now) {
+  if (!isManualEntry(record)) return null;
+  const u = record.used ?? {};
+  switch (event) {
+    case "settle":
+      return {
+        status: "used", usedAt: Number.isInteger(u.at) ? u.at : now,
+        cashierUid: u.cashierUid ?? null, cashierName: u.cashierName ?? null,
+        storeId: u.storeId ?? null, tillId: u.tillId ?? null,
+        customerId: u.customerId ?? null, customerName: u.customerName ?? null,
+        appliedCents: Number.isInteger(u.appliedCents) ? u.appliedCents : null,
+        saleId: null, receiptNumber: null,
+      };
+    case "attach":
+      return { saleId: u.sale?.saleId ?? null, receiptNumber: u.sale?.receiptNumber ?? null, attachedAt: now };
+    case "release":
+      return { status: "unmatched", releasedAt: now, saleId: null, receiptNumber: null };
+    case "markUsed":
+      return {
+        status: "used-outside-pos", usedAt: Number.isInteger(u.at) ? u.at : now,
+        cashierUid: u.cashierUid ?? null, cashierName: u.cashierName ?? null,
+        reason: u.outsidePos?.reason ?? null, storeId: null, tillId: null, saleId: null, receiptNumber: null,
+      };
+    case "reverse":
+      return {
+        status: "unmatched", reversedAt: now,
+        reversals: record.reversals && typeof record.reversals === "object" ? Object.keys(record.reversals).length : 1,
+      };
+    default:
+      return null;
+  }
+}
+
+/** The owner's review list: newest first, with counts for the window. */
+function manualLogView(node) {
+  const rows = Object.entries(node ?? {})
+    .map(([logKey, r]) => ({ logKey, ...r }))
+    .filter((r) => r && typeof r === "object" && Number.isInteger(r.amountCents))
+    .sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+  const counts = { entered: rows.length, used: 0, waiting: 0, outsidePos: 0 };
+  for (const r of rows) {
+    if (r.status === "used") counts.used++;
+    else if (r.status === "used-outside-pos") counts.outsidePos++;
+    else counts.waiting++;
+  }
+  return { entries: rows, counts, limit: MANUAL_LIST_LIMIT };
+}
+
+Object.assign(module.exports, {
+  MANUAL_LIST_LIMIT, manualLogKeyOf, manualLogRecord, manualLogEventPatch, manualLogView,
+});

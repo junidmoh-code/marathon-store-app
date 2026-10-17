@@ -49,10 +49,40 @@ owner's tab and the review screen print it too. A bank-confirmed payment
 answering a search when a manual entry for the same reference and amount was
 already spent carries `manualTwin` — the till warns before a second spend.
 
-## Log
+## Log — how often the hatch is used
 
-Every entry and every consumption is logged at `/eft_manual_entries`
-(see the log section, commit 3) so Junid can see how often the hatch is used.
+`/eft_manual_entries/{logKey}`, one row per entry, `logKey` = zero-padded
+entry time + pool key (so `orderByKey()` lists in time order with **no
+index**, and the settle can address the row from the pool record alone).
+
+| when | row |
+|---|---|
+| entry | `{ key, entryId, at, by: "Junid", uid, email, reference, amountCents, note, status: "unmatched" }` |
+| settle | `status: "used"`, `usedAt`, `cashierUid/Name`, `storeId`, `tillId`, `customerId/Name`, `appliedCents` |
+| attach | `saleId`, `receiptNumber`, `attachedAt` |
+| release | back to `"unmatched"`, `releasedAt` |
+| markUsed | `"used-outside-pos"`, `reason` |
+| reverse | back to `"unmatched"`, `reversedAt`, `reversals` |
+
+Written by `eftPoolSettle` / `eftPoolReverse` after their transaction commits
+(best effort, never a reason to fail the settle), with log markers
+`EFT_MANUAL_ENTRY`, `EFT_MANUAL_SETTLE`, `EFT_MANUAL_ATTACH`,
+`EFT_MANUAL_RELEASE`, `EFT_MANUAL_MARKUSED`, `EFT_MANUAL_REVERSE`.
+
+Junid reads it with `eftPoolManualEntry { action: "list" }` (owner only; the
+newest 60 by key order, with counts entered / used / waiting / outside-POS)
+from the phone's manual-entry sheet. Optional rule if the node should also be
+readable from the console-side owner tab (not needed by the build):
+
+```json
+"eft_manual_entries": {
+  ".read": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+  ".write": "false"
+}
+```
+
+When the counts show the hatch idle for weeks, enforcement has settled and
+the button can be retired.
 
 ## Deploy
 

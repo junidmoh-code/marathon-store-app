@@ -123,7 +123,9 @@ const {
   enforcedStoresOf, enforcementUpdateOf, enforcementStatusOf, enforcementBreachOf, breachScanNext,
 } = require("../lib/eft-enforce.cjs");
 const {
-  MANUAL_ENTRY_BY, manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
+  MANUAL_ENTRY_BY, MANUAL_LOG_PATH, MANUAL_LIST_LIMIT,
+  manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
+  manualLogKeyOf, manualLogRecord, manualLogEventPatch, manualLogView,
 } = require("../lib/eft-manual.cjs");
 const { issuingStamp } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
@@ -286,6 +288,28 @@ function refusalToError(decision) {
   // failed-precondition: the till should refresh its search and tell the
   // cashier the sentence — these are states of the payment, not bugs.
   return new HttpsError("failed-precondition", decision.message, { code: decision.code });
+}
+
+/**
+ * THE MANUAL-ENTRY LOG follows the pool record. After a lifecycle transaction
+ * commits on a record Junid typed by hand, its /eft_manual_entries row is
+ * patched with what happened (lib/eft-manual.cjs manualLogEventPatch) and a
+ * marker is logged, so Junid can review how often the hatch is used and
+ * whether every entry was spent. Best effort, never a reason to fail the
+ * settle: the pool record is the truth; the log is the review.
+ */
+async function logManualLifecycle(event, key, decision, now) {
+  const record = decision?.value;
+  if (!decision?.ok || decision.already || !isManualEntry(record)) return;
+  const patch = manualLogEventPatch(event, record, now);
+  if (!patch) return;
+  try {
+    await admin.database().ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(record.manualEntry.at, key)}`).update(patch);
+    const u = record.used ?? {};
+    console.log(`EFT_MANUAL_${event.toUpperCase()}: ${key} ${record.reference ?? ""} ${record.amountCents}c${event === "settle" ? ` by ${u.cashierName ?? u.cashierUid} at ${u.storeId ?? "?"}/${u.tillId ?? "?"} for ${u.customerName ?? u.customerId ?? "?"}` : ""}${event === "attach" ? ` sale ${u.sale?.saleId} slip ${u.sale?.receiptNumber ?? "—"}` : ""}`);
+  } catch (e) {
+    console.error(`EFT_MANUAL_LOG_FAILED: ${event} on ${key} —`, e?.message || e);
+  }
 }
 
 // ─── THE REMAINDER'S FOLLOW-UP IO ────────────────────────────────────────────
@@ -638,6 +662,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       console.error(`eftPoolSettle: markUsed ${key} — fingerprint claim failed (the sibling check still covers the tail):`, e?.message || e);
     }
     console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid}) — ${reason}`);
+    await logManualLifecycle("markUsed", key, decision, now);
     // WHAT WAS ACTUALLY STAMPED travels back, so a caller repainting a card in
     // place shows the record rather than its own guess at it. Without this the
     // phone screen had to invent a name and a moment, and they could differ
@@ -673,6 +698,8 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   if (!decision.ok) throw refusalToError(decision);
   // Access changes on money records should be findable in the function log.
   console.log(`eftPoolSettle: ${action} ${key} by ${uid} (${attemptId})${decision.already ? " [already]" : ""}`);
+  // A record Junid typed by hand: its log row follows (never fails the call).
+  await logManualLifecycle(action, key, decision, now);
   // An attach finishes its remainder — mint the customer's store credit, or
   // hold the difference visibly. Re-run on a RETRIED attach too (`already`),
   // which is exactly what repairs a crash between the stamp and the IO.
@@ -727,6 +754,13 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
   const now = Date.now();
   const actor = { uid: request.auth.uid, email: request.auth.token.email, name: MANUAL_ENTRY_BY };
 
+  // THE REVIEW LIST: the newest entries and what became of each — by key
+  // order (no index needed), one bounded page, never the node.
+  if (data.action === "list") {
+    const snap = await db.ref(MANUAL_LOG_PATH).orderByKey().limitToLast(MANUAL_LIST_LIMIT).once("value");
+    return { ok: true, ...manualLogView(snap.val()) };
+  }
+
   const input = manualEntryInputCheck(data);
   if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
   const key = manualEntryKeyOf(input.entryId);
@@ -760,6 +794,12 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
   // Create-if-absent: two racing submits of one entryId write exactly one.
   const res = await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => (cur === null ? record : undefined));
   const already = res && res.committed === false;
+  // THE LOG ROW — by the writer that committed the record (its `at` is the
+  // row's key), create-only, so a racing retry can neither add a second row
+  // nor reset one the settle has already moved to "used".
+  if (!already) {
+    await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(now, key)}`).transaction((cur) => (cur === null ? manualLogRecord(record, key) : undefined));
+  }
   console.log(`EFT_MANUAL_ENTRY: ${key} ${input.reference} ${input.amountCents}c by ${MANUAL_ENTRY_BY} (${actor.uid})${input.note ? ` — ${input.note}` : ""}${already ? " [already]" : ""}`);
   return { ok: true, already, key, reference: input.reference, amountCents: input.amountCents, at: now, by: MANUAL_ENTRY_BY, status: "unmatched" };
 });
@@ -794,6 +834,7 @@ exports.eftPoolReverse = onCall(RUNTIME, async (request) => {
     await admin.database().ref(`pos/storeCreditQueue/${reversedRemainder.creditId}`).remove();
   }
   const creditStands = reversedRemainder?.status === "issued" ? reversedRemainder.creditId : null;
+  await logManualLifecycle("reverse", key, decision, at);
   console.log(`eftPoolReverse: ${key} reversed by owner — ${reason}${creditStands ? ` (store credit ${creditStands} STANDS — remove it separately if wrong)` : ""}`);
   return { ok: true, creditStands };
 });
