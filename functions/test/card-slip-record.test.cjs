@@ -8,6 +8,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const { assertSent } = require("./helpers/slip-receipt.cjs");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
 const { handleSlip, processReadJob } = require("../cardRecon/cardRecon.js");
 const { MAX_READ_ATTEMPTS } = require("../lib/card-read-jobs.cjs");
@@ -34,6 +35,8 @@ function world(extra = {}) {
 }
 const bucket = () => ({ file() { return { save: async () => {} }; } });
 const send = (db, total, now = NOW) => handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: MT2, photos: [PHOTO], declaredTotal: total } }, { now: () => now, bucket: bucket() });
+// The Unread rows and the notices to Junid — the staff-slip log beside them is not one.
+const unreadOrNotice = async (db) => { const o = (await db.ref("card_batch_overrides").once("value")).val() || {}; delete o.staff_slips; return Object.keys(o).length ? o : null; };
 const node = async (db, p) => (await db.ref(p).once("value")).val();
 const jobs = async (db) => Object.values((await node(db, "card_batch_jobs")) || {});
 // The reader, faked at its seam: what Gemini would have returned for the slip.
@@ -72,7 +75,7 @@ test("the slip reads R21,370 against a typed R21,375: flagged on the record, not
   assert.equal(pr.differs, true);
   assert.equal(pr.tidMatches, true);
   assert.deepEqual(Object.keys(await node(db, `card_batches/pe/${MT2}`)).sort(), ["544", "545"], "the check never records a batch");
-  assert.equal(await node(db, "card_batch_overrides"), null, "no Unread row, no email");
+  assert.equal(await unreadOrNotice(db), null, "no Unread row, no email");
   assert.equal((await node(db, `card_batch_jobs/${job.jobId}`)).status, "recorded");
 });
 
@@ -96,7 +99,7 @@ test("a blurry photo (no total read) is not an error and not a flag", async () =
   const pr = await node(db, `card_batches/pe/${MT2}/545/photoRead`);
   assert.equal(pr.status, "no-total");
   assert.equal(pr.differs, false);
-  assert.equal(await node(db, "card_batch_overrides"), null);
+  assert.equal(await unreadOrNotice(db), null);
 });
 
 test("a reader that never answers: retried like any photo, then 'unread' on the record — still no Unread row, no email", async () => {
@@ -115,14 +118,14 @@ test("a reader that never answers: retried like any photo, then 'unread' on the 
   const pr = await node(db, `card_batches/pe/${MT2}/545/photoRead`);
   assert.equal(pr.status, "unread");
   assert.equal(pr.differs, false);
-  assert.equal(await node(db, "card_batch_overrides"), null, "the typed total is the record — nothing for Junid to enter");
+  assert.equal(await unreadOrNotice(db), null, "the typed total is the record — nothing for Junid to enter");
   assert.equal((await node(db, `card_batches/pe/${MT2}/545`)).slip.totalCents, 100000, "the record is untouched");
 });
 
 test("sent twice in one batch window: the second is a correction (545-r2), both kept, each checked", async () => {
   const db = world();
-  assert.deepEqual(await send(db, "100.00"), { ok: true, received: true });
-  assert.deepEqual(await send(db, "120.00", NOW + 10 * 60 * 1000), { ok: true, received: true });
+  assertSent(await send(db, "100.00"));
+  assertSent(await send(db, "120.00", NOW + 10 * 60 * 1000));
   const recs = await node(db, `card_batches/pe/${MT2}`);
   assert.deepEqual(Object.keys(recs).sort(), ["544", "545", "545-r2"]);
   assert.equal(recs["545"].slip.totalCents, 10000, "the first is kept");

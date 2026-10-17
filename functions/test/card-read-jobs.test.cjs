@@ -20,6 +20,7 @@ process.env.FIREBASE_DATABASE_EMULATOR_HOST = "127.0.0.1:9";
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const { assertSent } = require("./helpers/slip-receipt.cjs");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
 const {
   JOBS_PATH, DUE_PATH, RETRY_DELAYS_MS, MAX_READ_ATTEMPTS, MAX_REFUSED_READS, REFUSED_RETRY_MS, LEASE_MS,
@@ -126,7 +127,7 @@ test("a refused read is tried three times in all, then handed to Junid", () => {
 test("RECEIVED: the photo is stored, a job is queued, and the answer is {ok, received} — nothing else", async () => {
   const db = world();
   const { out, bucket, jobId, jobs } = await received(db);
-  assert.deepEqual(out, { ok: true, received: true });
+  assertSent(out);
   const job = jobs[jobId];
   assert.equal(job.status, "queued");
   assert.equal(job.pickedTid, "0000HP1X");

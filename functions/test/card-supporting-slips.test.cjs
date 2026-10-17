@@ -7,6 +7,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const { assertSent } = require("./helpers/slip-receipt.cjs");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
 const { handleSlip, handleSubmit, handleTypedCapture, processReadJob, resolveWriteFor, carriedSlipsFor } = require("../cardRecon/cardRecon.js");
 const { handleManualEntry } = require("../cardRecon/cardBatchManual.js");
@@ -47,6 +48,8 @@ function world(batches) {
 const bucket = () => ({ saved: [], deleted: [], file(p) { const self = this; return { save: async () => { self.saved.push(p); }, delete: async () => { self.deleted.push(p); } }; } });
 const slip = (db, auth, tid, total, now = NOW, b = bucket()) =>
   handleSlip(db, { auth, data: { action: "slip", pickedTid: tid, photos: [PHOTO], declaredTotal: total } }, { now: () => now, bucket: b });
+// The Unread rows and the notices to Junid — the staff-slip log beside them is not one.
+const unreadOrNotice = async (db) => { const o = (await db.ref("card_batch_overrides").once("value")).val() || {}; delete o.staff_slips; return Object.keys(o).length ? o : null; };
 const node = async (db, p) => (await db.ref(p).once("value")).val();
 const junidTypes = async (db, total, { correction = false, now = NOW } = {}) => {
   const drafted = await handleTypedCapture(db, { auth: JUNID, data: { declaredTotal: total, correction } }, { picked: TT2, terminal: TERMINALS[TT2], nowMs: now });
@@ -96,7 +99,7 @@ test("carried forward: a replacement inherits always; a later-day report of an o
 test("Yasmin after Marathon Till 2's own report today: kept beside #544, nothing replaced, 'received' only", async () => {
   const db = world({ pe: { [MT2]: { 544: M544 } } });
   const b = bucket();
-  assert.deepEqual(await slip(db, YASMIN, MT2, "21,300.00", NOW, b), { ok: true, received: true });
+  assertSent(await slip(db, YASMIN, MT2, "21,300.00", NOW, b));
   const recs = await node(db, `card_batches/pe/${MT2}`);
   assert.deepEqual(Object.keys(recs), ["544"]);
   assert.equal(recs["544"].slip.totalCents, 2137500, "the machine's report stays the figure");
@@ -125,7 +128,7 @@ test("her slip's photo is read in the background and the read goes on HER slip, 
   assert.equal(rec.photoRead, undefined, "the machine's record is not annotated");
   const pr = rec.supportingSlips[job.slipId].photoRead;
   assert.deepEqual([pr.status, pr.readCents, pr.typedCents, pr.differs], ["read", 2137500, 2130000, true]);
-  assert.equal(await node(db, "card_batch_overrides"), null, "no Unread row");
+  assert.equal(await unreadOrNotice(db), null, "no Unread row");
 });
 
 test("two slips beside the same report are both kept", async () => {
@@ -143,7 +146,7 @@ test("Amanda after Junid typed Trophy Till 2 today: kept beside his #500, never 
   const db = world({ trophy: { [TT2]: { 499: T499 } } });
   const mine = await junidTypes(db, "2,500.00", { now: SAST("2026-10-16T17:51:00") });
   assert.equal(mine.ok, true, mine.reason);
-  assert.deepEqual(await slip(db, AMANDA, TT2, "2,400.00"), { ok: true, received: true });
+  assertSent(await slip(db, AMANDA, TT2, "2,400.00"));
   const recs = await node(db, `card_batches/trophy/${TT2}`);
   assert.deepEqual(Object.keys(recs).sort(), ["499", "500"], "no 500-r2: his figure is not replaced");
   assert.equal(recs["500"].slip.totalCents, 250000);
@@ -154,7 +157,7 @@ test("Amanda after Junid typed Trophy Till 2 today: kept beside his #500, never 
 test("Yasmin after Junid's manual entry for today: kept beside it", async () => {
   const manual = { ...M544, capturedVia: "manual", declaredTotal: { cents: 2137500, byUid: "junid", byEmail: "gunidmoh@gmail.com", at: NOW - 3600000 } };
   const db = world({ pe: { [MT2]: { 544: manual } } });
-  assert.deepEqual(await slip(db, YASMIN, MT2, "21,375.00"), { ok: true, received: true });
+  assertSent(await slip(db, YASMIN, MT2, "21,375.00"));
   const recs = await node(db, `card_batches/pe/${MT2}`);
   assert.deepEqual(Object.keys(recs), ["544"]);
   assert.equal(Object.values(recs["544"].supportingSlips)[0].cents, 2137500);
@@ -162,7 +165,7 @@ test("Yasmin after Junid's manual entry for today: kept beside it", async () => 
 
 test("Amanda first, then Junid corrects: his figure takes over and her slip moves beside it", async () => {
   const db = world({ trophy: { [TT2]: { 499: T499 } } });
-  assert.deepEqual(await slip(db, AMANDA, TT2, "2,400.00"), { ok: true, received: true });
+  assertSent(await slip(db, AMANDA, TT2, "2,400.00"));
   assert.equal((await node(db, `card_batches/trophy/${TT2}/500`)).declaredTotal.via, "staff-slip", "her slip is the day's record while nothing better is in");
   const mine = await junidTypes(db, "2,500.00", { correction: true, now: NOW + 600000 });
   assert.equal(mine.ok, true, mine.reason);
@@ -232,7 +235,7 @@ test("a better figure lands while the slip is in flight: the slip still ends up 
       }
     },
   });
-  assert.deepEqual(await slip(db, YASMIN, MT2, "21,300.00"), { ok: true, received: true });
+  assertSent(await slip(db, YASMIN, MT2, "21,300.00"));
   assert.equal(injected, true);
   const recs = await node(db, `card_batches/pe/${MT2}`);
   const onR1 = Object.values(recs["544"].supportingSlips || {});

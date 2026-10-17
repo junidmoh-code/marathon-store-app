@@ -75,7 +75,7 @@ const { loadNetwork } = require("../lib/network-load.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
 const { tillAt } = require("../lib/card-terminal-placements.cjs");
 const { SLIP_SCOPE_FIELD, readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
-const { SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, shouldAttach, authorityOf, buildSupportingSlip, carriedSlips, sameDaySuccessors } = require("../lib/card-supporting-slips.cjs");
+const { SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, shouldAttach, authorityOf, isStaffSlipRecord, buildSupportingSlip, carriedSlips, sameDaySuccessors } = require("../lib/card-supporting-slips.cjs");
 const {
   JOBS_PATH, DUE_PATH, JOB_PHOTO_PREFIX, dueKey, dueCutoff, claimJob, classifyRun, nextStep, unreadReason,
 } = require("../lib/card-read-jobs.cjs");
@@ -83,6 +83,7 @@ const {
   NOTICES_PATH, NOTIFY_TO, sastDayYmd, unreadPath, noticeKey,
   addUnreadFailure, resolveUnreadMarker, noticeRecord,
 } = require("../lib/card-unread.cjs");
+const { slipTradingDay, batchCloseOf, staffSlipDayPath, staffSlipEntry, latestStaffSlip } = require("../lib/card-staff-slip-log.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -852,6 +853,13 @@ async function readLastBatchFor(db, storeId, tid) {
       .filter(([, r]) => r && typeof r === "object" && Number(r.batchNo) === highest)
       .map(([key, r]) => ({ ...r, batchKey: r.batchKey || key })));
   }
+  // A STAFF SLIP NEVER OUTRANKS THE MACHINE'S OWN REPORT of the same batch
+  // (precedence machine > Junid > staff): its close is the 18:50 cut-off, a
+  // stated time, and must not win "latest close" against a real report that
+  // printed 18:49:58. (Sonnet review, #743.)
+  if (ofHighest.some((r) => !isStaffSlipRecord(r))) {
+    for (let i = ofHighest.length - 1; i >= 0; i--) if (isStaffSlipRecord(ofHighest[i])) ofHighest.splice(i, 1);
+  }
   const closes = ofHighest.map((r) => Number(r.slip && r.slip.closedAt)).filter(Number.isFinite);
   // The latest close wins; at the same close, the higher revision (a
   // correction keeps the close of what it corrects — a manual entry may).
@@ -894,6 +902,11 @@ async function readLastBatchFor(db, storeId, tid) {
 async function handleTypedCapture(db, request, { picked, terminal, slip = null, nowMs = Date.now() }) {
   let correction = !!request.data?.correction;
   const last = await readLastBatchFor(db, terminal.storeId, picked);
+  // A STAFF SLIP IS FILED AGAINST ITS BATCH, not the minute it was sent
+  // (Junid, 17 Oct 2026): the batch closes at the FNB cut-off of the slip's
+  // trading day, so a slip sent at 16:24 still covers that batch's card sales
+  // until 18:50, and the next batch opens where the bank's does.
+  const closeAtMs = slip ? batchCloseOf(slipTradingDay(nowMs)) : null;
   const planFor = (asCorrection) => planTypedCapture({
     tid: picked,
     totalText: request.data?.declaredTotal,
@@ -903,6 +916,7 @@ async function handleTypedCapture(db, request, { picked, terminal, slip = null, 
     lastClosedAt: last.closedAt,
     lastWasTyped: last.typed,
     correction: asCorrection,
+    closeAtMs,
   });
   let plan = planFor(correction);
   // A STAFF SLIP SENT TWICE IN ONE BATCH WINDOW IS A CORRECTION, never a
@@ -940,6 +954,7 @@ async function handleTypedCapture(db, request, { picked, terminal, slip = null, 
       ? `The total (${formatCents(extraction.totalCents)}) was typed in by ${who} from the slip, with a photo of the slip attached. The server did not read it off the slip — the photo is read in the background and any difference is shown here.`
       : `The total (${formatCents(extraction.totalCents)}) was typed in by ${who}. This machine is set to typed entry: there is no slip photo and no emailed report behind this figure, and nothing can be checked against paper afterwards.`,
     `Batch #${batchNo} is this record's filing number, not a number read off the machine — a typed capture never sees the terminal's own batch number.`,
+    ...(slip ? [`Filed against the batch that closes at the FNB cut-off (${sastClock(extraction.closedAt)} on ${slipTradingDay(nowMs)}); the slip was sent at ${sastClock(nowMs)}.`] : []),
     ...(slip && correction ? [`This replaces the total sent earlier today for batch #${batchNo}; both are kept.`] : []),
     ...plan.warnings,
     ...verdict.warnings,
@@ -1958,6 +1973,7 @@ async function handleSlipTills(db, request, deps = {}) {
     db.ref(CARD_TERMINALS_PATH).once("value").then((s) => s.val() || {}),
   ]);
   const scope = readSlipScope(rawScope);
+  const dayYmd = slipTradingDay(nowMs);
   const tills = [];
   for (const [tid, row] of Object.entries(terminals)) {
     if (!row || !row.storeId || !row.tillId || isRetiredTerminal(row)) continue;
@@ -1965,12 +1981,28 @@ async function handleSlipTills(db, request, deps = {}) {
     const storeId = here.storeId || row.storeId;
     const tillId = here.tillId || row.tillId;
     if (!slipScopeAllows(scope, { storeId, tillId })) continue;
-    tills.push({ tid, storeId, tillId, label: here.label || row.label || `${storeId} · ${tillId}`, typed: typesTotal(row) });
+    tills.push({ tid, filedStoreId: row.storeId, storeId, tillId, label: here.label || row.label || `${storeId} · ${tillId}`, typed: typesTotal(row) });
   }
+  // TODAY'S SLIP IS IN — one leaf per till (their own tills only), from the
+  // log every accepted staff slip writes. When it arrived, never a figure.
+  // A log that cannot be read leaves `sent` unknown (undefined), never "no".
+  // Each read is bounded (CodeRabbit, #743): one slow read leaves its own
+  // till unknown and never holds the answer for the others.
+  const within = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`no answer in ${ms} ms`)), ms).unref?.())]);
+  await Promise.all(tills.map(async (t) => {
+    try {
+      const last = latestStaffSlip((await within(db.ref(staffSlipDayPath({ storeId: t.filedStoreId, tid: t.tid, dayYmd })).once("value"), deps.readMs || SLIP_TILLS_READ_MS)).val());
+      t.sent = last ? { at: Number(last.at) } : null;
+    } catch (err) {
+      console.warn(`slipTills: staff slip log unread for ${t.tid}: ${err && err.message}`);
+    }
+    delete t.filedStoreId;
+  }));
   tills.sort((a, b) => String(a.label).localeCompare(String(b.label)));
-  return { ok: true, tills };
+  return { ok: true, tills, dayYmd };
 }
 
+const SLIP_TILLS_READ_MS = 4000;
 const SLIP_PHOTOS = 1;
 async function handleSlip(db, request, deps = {}) {
   const uid = request.auth?.uid;
@@ -2001,7 +2033,7 @@ async function handleSlip(db, request, deps = {}) {
     if (typesTotal(terminal)) {
       throw new HttpsError("invalid-argument", "Type the card total on the slip — 0 if there were no card sales.");
     }
-    return handleReceive(db, request, deps);
+    return handleReceive(db, request, { ...deps, staffSlip: true });
   }
   const decoded = data.photos.map(decodePhoto);
   // A PHOTO, not any bytes: the screen always sends a JPEG (slipPhoto.js), and
@@ -2036,6 +2068,10 @@ async function handleSlip(db, request, deps = {}) {
     return done;
   }
   console.log(`cardBatchCapture: slip recorded picked=${picked} key=${done.batchKey} by=${uid}`);
+  const receipt = await logStaffSlip(db, request, {
+    kind: "record", terminal, picked, nowMs, batchKey: done.batchKey,
+    photos: decoded.map((_, i) => `${PHOTO_STORAGE_PREFIX}/${drafted.draftId}/photo-${i}.jpg`),
+  });
   // THE PHOTO IS READ IN THE BACKGROUND, only to tell Junid when the slip says
   // something other than what was typed. Queued AFTER the record exists, and a
   // failure to queue never un-sends the slip: the record and its photo stand.
@@ -2045,7 +2081,33 @@ async function handleSlip(db, request, deps = {}) {
     console.error(`cardBatchCapture: slip check not queued for ${picked}/${done.batchKey}: ${err && err.message}`);
   }
   // "Sent" — and nothing about the figure, the batch or how it compares.
-  return { ok: true, received: true };
+  return { ok: true, received: true, receipt };
+}
+
+/**
+ * The staff-slip log entry (lib/card-staff-slip-log.cjs) for a slip already
+ * kept — the record or the supporting slip is the write that counts, so a log
+ * that fails to write is said in the log and never un-sends the slip. Returns
+ * the receipt the phone shows "Sent" against: when, and for which day.
+ */
+async function logStaffSlip(db, request, { kind, terminal, picked, nowMs, photos, batchKey = null, slipId = null }) {
+  const dayYmd = slipTradingDay(nowMs);
+  // Twice, then said loudly: the slip itself is kept either way.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const here = tillAt(terminal, nowMs);
+      const ref = db.ref(staffSlipDayPath({ storeId: terminal.storeId, tid: picked, dayYmd })).push();
+      await ref.set(staffSlipEntry({
+        kind, storeId: terminal.storeId, tid: picked, placeStoreId: here.storeId || terminal.storeId, tillId: here.tillId || terminal.tillId,
+        label: here.label || terminal.label || null, dayYmd, at: nowMs,
+        byUid: request.auth.uid, byEmail: request.auth.token?.email || null, photos, batchKey, slipId,
+      }));
+      break;
+    } catch (err) {
+      console.error(`cardBatchCapture: staff slip log not written for ${picked}/${dayYmd} (attempt ${attempt}): ${err && err.message}`);
+    }
+  }
+  return { at: nowMs, dayYmd };
 }
 
 /**
@@ -2083,7 +2145,7 @@ async function attachSupportingSlip(db, request, { terminal, picked, inForce, ph
     }
     const entry = JSON.parse(JSON.stringify(buildSupportingSlip({
       slipId, cents: declared.cents, photos: paths,
-      byUid: request.auth.uid, byEmail: request.auth.token?.email || null, nowMs,
+      byUid: request.auth.uid, byEmail: request.auth.token?.email || null, nowMs, dayYmd: slipTradingDay(nowMs),
     })));
     const txn = await db.ref(recordPath).transaction((cur) => {
       if (cur === null) return null; // cold-null: never invent a record
@@ -2106,12 +2168,13 @@ async function attachSupportingSlip(db, request, { terminal, picked, inForce, ph
   }
   await propagateSlips(db, tidPath, inForce.key);
   console.log(`cardBatchCapture: slip attached picked=${picked} key=${inForce.key} slip=${slipId} (${authorityOf(inForce.record)} figure in force) by=${request.auth.uid}`);
+  const receipt = await logStaffSlip(db, request, { kind: "supporting", terminal, picked, nowMs, photos: paths, batchKey: inForce.key, slipId });
   try {
     await queueSlipCheck(db, { terminal, picked, batchKey: inForce.key, nowMs, slip: { slipId, cents: declared.cents, photos: paths, by: request.auth.uid } });
   } catch (err) {
     console.error(`cardBatchCapture: slip check not queued for ${picked}/${inForce.key}/${slipId}: ${err && err.message}`);
   }
-  return { ok: true, received: true };
+  return { ok: true, received: true, receipt };
 }
 
 /** Every record of the batch `key` belongs to — one indexed equalTo(batchNo) read. */
@@ -2294,7 +2357,7 @@ async function handleReceive(db, request, deps = {}) {
   const nowMs = (deps.now || Date.now)();
   // THE TRADING DAY. A slip photographed after midnight is the evening's batch
   // (no shop opens before 06:00 SAST), so it is filed on the day before.
-  const dayYmd = sastDayYmd(nowMs - (sastHour(nowMs) < 6 ? 7 * 60 * 60 * 1000 : 0));
+  const dayYmd = slipTradingDay(nowMs);
   // A CEILING, not a gate a manager meets: one slip a day per till, retaken a
   // few times at most. Past it the photos are not stored — and Junid already
   // has the earlier ones. (Sonnet review, #707: every received photo can cost
@@ -2352,9 +2415,20 @@ async function handleReceive(db, request, deps = {}) {
     dueAt: nowMs + 2 * 60 * 1000,
   };
   job.dueKey = dueKey(job.dueAt, jobId);
+  // A STAFF SLIP (action "slip") is logged IN THE SAME WRITE as its job: the
+  // queue has no client read, so this entry is how Junid's report shows the
+  // till as sent — with the photo — while it waits to be read.
+  const logged = deps.staffSlip ? {
+    [`${staffSlipDayPath({ storeId: terminal.storeId, tid: picked, dayYmd })}/${jobId}`]: staffSlipEntry({
+      kind: "received", storeId: terminal.storeId, tid: picked, placeStoreId: job.placeStoreId, tillId: job.placeTillId,
+      label: job.label, dayYmd, at: nowMs, byUid: request.auth.uid, byEmail: token.email || null,
+      photos: photoPaths, jobId,
+    }),
+  } : {};
   await db.ref().update({
     [`${JOBS_PATH}/${jobId}`]: job,
     [`${DUE_PATH}/${job.dueKey}`]: jobId,
+    ...logged,
   });
   } catch (err) {
     // Nothing was kept, so the photo must not count against the day's ceiling.
@@ -2362,13 +2436,13 @@ async function handleReceive(db, request, deps = {}) {
       .transaction((cur) => (Number.isInteger(cur) && cur > 0 ? cur - 1 : cur)).catch(() => {});
     throw err;
   }
-  console.log(`cardBatchCapture: received picked=${picked} job=${jobId} photos=${photoPaths.length}`);
-  return { ok: true, received: true };
+  console.log(`cardBatchCapture: received picked=${picked} job=${jobId} photos=${photoPaths.length}${deps.staffSlip ? ` (staff slip by=${request.auth.uid})` : ""}`);
+  return { ok: true, received: true, receipt: { at: nowMs, dayYmd } };
 }
 
 const JOBS_COUNT_PATH = "card_batch_jobs_count";
 const MAX_JOBS_PER_TILL_DAY = 8;
-const sastHour = (ms) => new Date(ms + 2 * 60 * 60 * 1000).getUTCHours();
+const sastClock = (ms) => new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(11, 16);
 
 /** A job's stored photos, as the base64 the extract path reads. */
 async function loadJobPhotos(paths) {

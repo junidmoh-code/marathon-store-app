@@ -92,6 +92,7 @@ const server = new Map(); // uid → { tills, live }
 const serverListeners = new Map(); // uid → Set
 const inFlight = new Map(); // uid → Promise
 let slipTillsFn = null;
+let generation = 0; // bumped by _resetSlipTerminals: an older ask's answer is dropped
 
 function cachedTills(uid) {
   try {
@@ -110,10 +111,14 @@ export function peekServerTills(uid) {
   return c ? { tills: c, live: false } : null;
 }
 
-export function fetchServerTills(uid) {
+// force: ask again even though this session already has the answer — after a
+// slip is sent, so "today's slip is in" is the server's word, not the phone's.
+export function fetchServerTills(uid, { force = false } = {}) {
   if (!uid) return Promise.resolve(null);
-  if (server.get(uid)?.live) return Promise.resolve(server.get(uid));
-  if (inFlight.has(uid)) return inFlight.get(uid);
+  if (!force && server.get(uid)?.live) return Promise.resolve(server.get(uid));
+  // A forced ask never rides on one that started before the send.
+  if (!force && inFlight.has(uid)) return inFlight.get(uid);
+  const gen = generation;
   const p = (async () => {
     try {
       if (!slipTillsFn) {
@@ -121,8 +126,8 @@ export function fetchServerTills(uid) {
         slipTillsFn = httpsCallable(functions, "cardBatchCapture", { timeout: 30000 });
       }
       const { data } = await slipTillsFn({ action: "slipTills" });
-      if (data?.ok !== true || !Array.isArray(data.tills)) return null;
-      const v = { tills: data.tills, live: true };
+      if (data?.ok !== true || !Array.isArray(data.tills) || gen !== generation) return null;
+      const v = { tills: data.tills, dayYmd: typeof data.dayYmd === "string" ? data.dayYmd : null, live: true };
       server.set(uid, v);
       try { globalThis.localStorage?.setItem(TILLS_KEY(uid), JSON.stringify(data.tills)); } catch { /* fine */ }
       for (const l of serverListeners.get(uid) || []) l(v);
@@ -130,7 +135,7 @@ export function fetchServerTills(uid) {
     } catch {
       return null; // the registry listen still answers, just later
     } finally {
-      inFlight.delete(uid);
+      if (inFlight.get(uid) === p) inFlight.delete(uid);
     }
   })();
   inFlight.set(uid, p);
@@ -164,4 +169,5 @@ export function _resetSlipTerminals() {
   serverListeners.clear();
   inFlight.clear();
   slipTillsFn = null;
+  generation++;
 }

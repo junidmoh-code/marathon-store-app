@@ -23,6 +23,15 @@
 // a figure. Sending twice is fine:
 // the second is recorded as a correction of the first, never dropped.
 //
+// "SENT" IS THE SERVER'S WORD, NEVER THE PHONE'S (Junid, 17 Oct 2026 — Yasmin
+// believed Marathon PE Till 2's slip had gone; it never reached the server).
+// "Sent — thank you" appears only when the reply carries the server's receipt
+// (when it kept the slip, for which trading day); anything else — a refusal,
+// a dropped connection, a reply without a receipt — is "Not sent — try
+// again", with the reason. And the till itself says whether today's slip is
+// in, from the server's own log (cardBatchCapture "slipTills"), so a phone
+// that was closed mid-send, or reopened tomorrow, shows the truth.
+//
 // THE NUMBER BOX is the app's typed-total pattern (inputMode "decimal" — the
 // phone's own number pad), the same field Junid's typed total uses.
 
@@ -31,13 +40,16 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { serverNowMs } from "../../utils/serverTime";
-import { describeCallableError } from "./captureFailure";
+import { describeCallableError, receiptOf } from "./captureFailure";
 import { preparePhoto } from "./slipPhoto";
 import { slipTills } from "./slipScope";
-import { peekSlipTerminals, subscribeSlipTerminals, isSlipTerminalsLive, peekServerTills, subscribeServerTills } from "./slipTerminals";
+import { peekSlipTerminals, subscribeSlipTerminals, isSlipTerminalsLive, peekServerTills, subscribeServerTills, fetchServerTills } from "./slipTerminals";
 import { FONT } from "./cardReconStyles";
 
-const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
+// Two minutes, not five: the server keeps a slip in about a second, so a send
+// still going after two is a connection that has died — and the person should
+// be told "Not sent" while they are still standing there, not five minutes on.
+const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 120000 });
 
 const S = {
   page: { minHeight: "100vh", background: "#05070D", color: "#E9EEFF", fontFamily: FONT,
@@ -77,11 +89,23 @@ const S = {
            fontSize: 14, fontWeight: 600, color: "rgba(233,238,255,.6)", minHeight: 44, marginTop: 4 },
   fail: { fontSize: 14, lineHeight: 1.5, color: "#FFB3B3", background: "rgba(255,107,107,.07)",
           border: "1px solid rgba(255,107,107,.28)", borderRadius: 14, padding: "12px 14px" },
+  failTitle: { display: "block", fontSize: 16, fontWeight: 700, color: "#FF8A8A", marginBottom: 2 },
+  sentAt: { fontSize: 14, color: "rgba(233,238,255,.6)" },
+  status: { fontSize: 14, fontWeight: 600, margin: "-4px 2px 10px" },
+  statusIn: { color: "#54D97F" },
+  statusOut: { color: "rgba(233,238,255,.5)" },
   quiet: { fontSize: 14, color: "rgba(233,238,255,.45)", lineHeight: 1.55, marginTop: 28 },
 };
 
 const dayLabel = (ms) => new Date(ms).toLocaleDateString("en-ZA", {
   timeZone: "Africa/Johannesburg", weekday: "long", day: "numeric", month: "long" });
+const clockOf = (ms) => new Date(ms).toLocaleTimeString("en-ZA", {
+  timeZone: "Africa/Johannesburg", hour: "2-digit", minute: "2-digit", hour12: false });
+// THE TRADING DAY, as the server files slips (functions/lib/card-staff-slip-log.cjs):
+// before 06:00 SAST it is still the evening before.
+const SAST_MS = 2 * 60 * 60 * 1000;
+const tradingDayMs = (ms) => (new Date(ms + SAST_MS).getUTCHours() < 6 ? ms - 7 * 60 * 60 * 1000 : ms);
+const ymdOf = (ms) => new Date(ms + SAST_MS).toISOString().slice(0, 10);
 
 /** A refusal always reads as a sentence. */
 const reasonOf = (r) => (typeof r?.reason === "string" && r.reason.trim())
@@ -102,34 +126,55 @@ export default function CardSlipScreen({ onExit }) {
   // The same answer over HTTP, which no big download can queue in front of.
   const [serverTills, setServerTills] = useState(() => peekServerTills(uid));
   useEffect(() => subscribeServerTills(uid, setServerTills), [uid]);
+  // The clock is read again every minute while the screen is open, so the
+  // date, and whether the server's answer is today's, follow 06:00.
+  const [, setTick] = useState(0);
+  useEffect(() => { const id = setInterval(() => setTick((n) => n + 1), 60000); return () => clearInterval(id); }, []);
   const nowMs = serverNowMs();
   const fromRegistry = useMemo(() => (terminals === null ? null : slipTills(terminals, permRecord, nowMs)), [terminals, permRecord, nowMs]);
   // Live registry first; else the server's live answer; else whatever this
   // device last knew. Submit is open once EITHER live answer is in.
   const tills = live ? fromRegistry : serverTills?.live ? serverTills.tills : (serverTills?.tills ?? fromRegistry);
   const confirmed = live || serverTills?.live === true;
+  // TODAY'S SLIP IS IN — only from the server's live answer this session; the
+  // device copy may be yesterday's. undefined = not known (yet).
+  // An answer for another trading day (the screen left open past 06:00) says
+  // nothing about today: it is set aside and the server asked again.
+  const todayYmd = ymdOf(tradingDayMs(nowMs));
+  const answerIsToday = serverTills?.live === true && (!serverTills.dayYmd || serverTills.dayYmd === todayYmd);
+  const sentByTid = useMemo(() => {
+    if (!answerIsToday) return {};
+    return Object.fromEntries((serverTills.tills || []).filter((t) => t && t.sent !== undefined).map((t) => [t.tid, t.sent]));
+  }, [serverTills, answerIsToday]);
+  const day = tradingDayMs(nowMs);
+  const recheck = () => { if (uid) fetchServerTills(uid, { force: true }); };
+  const stale = serverTills?.live === true && !!serverTills.dayYmd && serverTills.dayYmd !== todayYmd;
+  useEffect(() => { if (stale && uid) fetchServerTills(uid, { force: true }); }, [stale, uid]);
 
   return (
     <div style={S.page}>
       <button onClick={onExit} style={S.back}>← Home</button>
       <h1 style={S.h1}>Card slip</h1>
-      <div style={S.day}>{dayLabel(nowMs)}</div>
+      <div style={S.day}>{dayLabel(day)}</div>
       {tills === null && <div style={S.quiet}>Loading…</div>}
       {tills !== null && tills.length === 0 && (
         <div style={S.quiet}>Your till's card machine isn't set up here yet. Tell Junid.</div>
       )}
-      {(tills || []).map((t) => <TillSlip key={t.tid} till={t} live={confirmed} />)}
+      {(tills || []).map((t) => <TillSlip key={t.tid} till={t} live={confirmed} sent={sentByTid[t.tid]} onSent={recheck} />)}
     </div>
   );
 }
 
 // live: the till drawn is confirmed by the live registry. Until then the form
 // can be filled in (photo, total) but not sent.
-function TillSlip({ till, live = true }) {
+// sent: the server's answer for today — { at } when today's slip is in, null
+// when it is not, undefined when not known.
+function TillSlip({ till, live = true, sent, onSent = () => {} }) {
   const [photo, setPhoto] = useState(null);          // { base64 } once attached
   const [text, setText] = useState("");
   const [phase, setPhase] = useState("form");         // form | attaching | sending | sent
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(null);           // why the last send was NOT sent
+  const [receipt, setReceipt] = useState(null);       // the server's { at, dayYmd } for "Sent"
   // Only the LATEST pick may land: a slow decode of an earlier photo must never
   // replace the one picked after it.
   const attachSeq = useRef(0);
@@ -164,25 +209,44 @@ function TillSlip({ till, live = true }) {
         action: "slip", pickedTid: till.tid, photos: [{ base64: photo.base64 }],
         ...(needsFigure ? { declaredTotal: figure } : {}),
       });
-      if (!data?.ok) { setPhase("form"); setError(reasonOf(data)); return; }
+      const kept = receiptOf(data);
+      if (!kept) {
+        // A refusal in the server's words; an "ok" with no receipt is not a
+        // slip the server has said it kept, so it is not "Sent" either.
+        if (data?.ok === true) console.error("cardBatchCapture slip: ok without a receipt", data);
+        setPhase("form");
+        setError(data?.ok === true ? "The server did not confirm it kept the slip." : reasonOf(data));
+        return;
+      }
+      setReceipt(kept);
       setPhoto(null);
       setText("");
       setPhase("sent");
+      onSent();
     } catch (err) {
       const online = typeof navigator === "undefined" ? true : navigator.onLine !== false;
       const failure = describeCallableError(err, { online });
       console.error(failure.logLine, err);
       setPhase("form");
       setError(failure.message);
+      // The upload may still have landed after the phone gave up: ask the
+      // server, so "Today's slip is in" says so before she sends it twice.
+      onSent();
     }
   };
 
   return (
     <section aria-label={`Card slip for ${till.label}`}>
       <div style={S.till}>{till.label}</div>
-      {phase === "sent" ? (
+      {phase !== "sent" && sent !== undefined && (
+        <div style={{ ...S.status, ...(sent ? S.statusIn : S.statusOut) }} role="status" data-testid="slip-today">
+          {sent ? `✓ Today's slip is in — sent at ${clockOf(sent.at)}.` : "No slip sent yet today."}
+        </div>
+      )}
+      {phase === "sent" && receipt ? (
         <div style={S.sent} role="status" data-testid="slip-sent">
           <div style={S.sentTitle}>Sent — thank you</div>
+          <div style={S.sentAt}>Received at {clockOf(receipt.at)}</div>
           <button type="button" style={S.again} onClick={() => setPhase("form")}>Send it again</button>
         </div>
       ) : (
@@ -228,7 +292,12 @@ function TillSlip({ till, live = true }) {
                 : "Checking your till… one moment."}
             </div>
           )}
-          {error && <div style={S.fail} role="alert">{error}</div>}
+          {error && (
+            <div style={S.fail} role="alert" data-testid="slip-not-sent">
+              <strong style={S.failTitle}>Not sent — try again</strong>
+              {error}
+            </div>
+          )}
         </div>
       )}
     </section>

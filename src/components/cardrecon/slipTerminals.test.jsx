@@ -30,6 +30,9 @@ globalThis.document = { createElement: () => ({ getContext: () => ({ drawImage: 
 const mem = new Map();
 globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
 
+// Warm the modules slipTerminals.js imports lazily: a cold first import can
+// outlast a test, and its answer then belongs to no test at all.
+await Promise.all([import("firebase/functions"), import("../../firebase")]);
 const mod = await import("./slipTerminals");
 const CardSlipScreen = (await import("./CardSlipScreen")).default;
 const textOf = (n) => [].concat(n.props.children).filter((c) => typeof c === "string").join("");
@@ -151,7 +154,8 @@ describe("the home screen wires the prefetch", async () => {
 
 describe("the till list over HTTP — nothing on the socket can queue in front of it", () => {
   const MINE = [{ tid: "0000AA2X", storeId: "pe", tillId: "till-2", label: "Marathon Till 2", typed: false }];
-  const flush = async () => { for (let i = 0; i < 10; i++) await act(async () => { await Promise.resolve(); await new Promise((r) => setTimeout(r, 0)); }); };
+  // ~200 ms: the till list arrives after a dynamic import, which takes longer under a parallel run.
+  const flush = async () => { for (let i = 0; i < 20; i++) await act(async () => { await Promise.resolve(); await new Promise((r) => setTimeout(r, 10)); }); };
 
   it("the server's answer alone draws the form and opens Submit — the registry listen never answered", async () => {
     fn.tills = MINE;
