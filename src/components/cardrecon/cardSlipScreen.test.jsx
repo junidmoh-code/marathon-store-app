@@ -33,7 +33,8 @@ vi.mock("firebase/functions", () => ({
     return { data: calls.reply ? calls.reply(payload) : SENT };
   },
 }));
-vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => Date.parse("2026-10-16T18:00:00+02:00") }));
+const clock = vi.hoisted(() => ({ now: null }));
+vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => clock.now ?? Date.parse("2026-10-16T18:00:00+02:00") }));
 vi.mock("../shopify/imageDecode", () => ({
   decodeImageFile: vi.fn(async (file) => ({ source: { file }, width: 1000, height: 2000, release: () => {} })),
   isAcceptedImageFile: () => true, describePickedFile: () => "",
@@ -64,6 +65,7 @@ beforeEach(() => {
   _resetSlipTerminals(); // every test opens its own registry read
   calls.length = 0; calls.fail = null; calls.reply = null; calls.tills = null; calls.tillAsks = 0; reads.length = 0;
   perms.user = null;
+  clock.now = null;
   perms.permRecord = { displayName: "yasmin", stockRole: "pos", cardSlipTills: { pe: { "till-2": true } } };
   globalThis.document = { createElement: () => ({ getContext: () => ({ drawImage: () => {} }), toDataURL: () => "data:image/jpeg;base64,QUJDRA==" }) };
 });
@@ -200,6 +202,13 @@ describe("whether today's slip is in — the server's word, not the phone's", ()
       const t = render(); // the server never answers in this test
       expect(everyString(t)).not.toMatch(/Today's slip is in|No slip sent yet/);
     } finally { delete globalThis.localStorage; }
+  });
+
+  it("after midnight, before the server answers, the page is already the evening's day", () => {
+    clock.now = Date.parse("2026-10-17T00:30:00+02:00");
+    expect(everyString(render())).toMatch(/Friday, 16 October/);
+    clock.now = Date.parse("2026-10-17T06:00:00+02:00");
+    expect(everyString(render())).toMatch(/Saturday, 17 October/);
   });
 
   it("after midnight the page is still the evening's day", async () => {
