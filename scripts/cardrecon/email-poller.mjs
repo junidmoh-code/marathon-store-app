@@ -56,7 +56,10 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import nodemailer from "nodemailer";
 import { deliverNotices } from "./noticeCore.mjs";
-import { verdictMail, failedCheck, EFT_VERDICT_TO, EFT_VERDICT_FROM_NAME } from "./verdictMailCore.mjs";
+import {
+  verdictMail, failedCheck, eftVerdict, shouldSendVerdict, parseVerdictMode,
+  EFT_VERDICT_TO, EFT_VERDICT_FROM_NAME,
+} from "./verdictMailCore.mjs";
 
 import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
@@ -240,6 +243,8 @@ function config() {
     // FIX 7a: the FULL numbers, so every digit a document prints is checked.
     eftAccounts: parseAllowedAccounts(env.EFT_ALLOWED_ACCOUNTS),
     eftAccountsConfigured: !!String(env.EFT_ALLOWED_ACCOUNTS ?? "").trim(),
+    // Junid's verdict emails: "all" (default) or "rejected" — verdictMailCore.
+    verdictMode: parseVerdictMode(env.EFT_VERDICT_EMAILS),
     dryRun: process.argv.includes("--dry-run"),
   };
 }
@@ -573,6 +578,8 @@ async function run() {
     });
     verdictSend = (mail) => transport.sendMail(mail);
     verdictFrom = cfg.user;
+    verdictMode = cfg.verdictMode.mode;
+    if (cfg.verdictMode.warning) console.warn(`⚠ ${cfg.verdictMode.warning}`);
   }
 
   // ── RE-RUN WHAT AN OLDER PARSER REFUSED — before the scan, so the scan
@@ -1079,9 +1086,10 @@ const MAX_EFT_PDFS = 8;
 // truth and stands regardless. NEVER throws into the reader.
 let verdictSend = null;
 let verdictFrom = null;
+let verdictMode = "all";
 
 async function emailVerdict(record, poolKey) {
-  if (!verdictSend) return;
+  if (!verdictSend || !shouldSendVerdict(eftVerdict(record), verdictMode)) return;
   let mail = null;
   try {
     mail = verdictMail(record, { poolKey });

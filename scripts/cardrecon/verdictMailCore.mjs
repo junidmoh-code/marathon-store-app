@@ -26,6 +26,35 @@ import { clip } from "./intakeCore.mjs";
 export const EFT_VERDICT_TO = "gunidmoh@gmail.com";
 export const EFT_VERDICT_FROM_NAME = "Marathon EFT confirmer";
 
+// Every subject starts with this, so one Gmail filter (subject:"[EFT confirmer]")
+// files them all into a folder.
+export const EFT_VERDICT_SUBJECT_PREFIX = "[EFT confirmer]";
+
+// ── DIALLING IT BACK ─────────────────────────────────────────────────────────
+// EFT_VERDICT_EMAILS in the mini's .env: "all" (the default — every verdict)
+// or "rejected" (REJECTED only; APPROVED emails stop). A value this does not
+// understand falls back to ALL with a warning: a typo should cost Junid extra
+// emails, never a rejection he did not hear about — and it must never stop
+// the poller, which would stop the payments.
+export const EFT_VERDICT_MODE_ENV_VAR = "EFT_VERDICT_EMAILS";
+export const VERDICT_MODES = ["all", "rejected"];
+
+/** @returns {{mode:"all"|"rejected", warning:string|null}} */
+export function parseVerdictMode(raw) {
+  const v = String(raw ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (!v || v === "all") return { mode: "all", warning: null };
+  if (v === "rejected" || v === "rejectedonly") return { mode: "rejected", warning: null };
+  return {
+    mode: "all",
+    warning: `${EFT_VERDICT_MODE_ENV_VAR} reads "${oneLine(raw, 40)}", which is not "all" or "rejected" — sending every verdict.`,
+  };
+}
+
+/** Whether this verdict is emailed under this mode. */
+export function shouldSendVerdict(verdict, mode) {
+  return mode === "rejected" ? verdict === "REJECTED" : true;
+}
+
 // The checks, in the order the confirmer runs them, named the way Junid reads
 // them. Every outcome eftPoolRecord / applyFingerprintHold / unknownBankRecord
 // can write is here; anything else is reported as REJECTED with its raw
@@ -115,7 +144,7 @@ export function verdictMail(record, { poolKey } = {}) {
   const bank = bankName(record);
   const amount = formatRands(record?.amountCents);
   const subject = oneLine([
-    verdict,
+    `${EFT_VERDICT_SUBJECT_PREFIX} ${verdict}`,
     verdict === "REJECTED" ? failedCheck(record) : null,
     [amount, bank].filter(Boolean).join(" · "),
   ].filter(Boolean).join(" — "), 200);
