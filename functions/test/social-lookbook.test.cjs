@@ -72,6 +72,12 @@ describe("price and photo resolver", () => {
     assert.equal(lb.guessSlot("Sneaker Cream Black Grey"), "sneakers");
     assert.equal(lb.guessSlot("Pants raw cargo jean"), "bottoms");
     assert.equal(lb.guessSlot("Beanie ribbed"), "hat");
+    assert.equal(lb.guessSlot("Suit jacket brown FF1070"), null);
+    assert.equal(lb.guessSlot("Zip-hoodie and joggers tracksuit in warm tan fleece"), null);
+    assert.equal(lb.guessSlot("Knit wool-blend raglan sweater"), "jacket");
+    assert.equal(lb.guessSlot("Textured knit runner in orange"), "sneakers");
+    assert.equal(lb.guessSlot("Ribbed-knit short-sleeve polo with contrast tipping"), "tee");
+    assert.equal(lb.guessSlot("Cropped bomber jacket silhouette in washed sand beige"), "jacket");
   });
 });
 

@@ -33,9 +33,9 @@ const LOOKBOOK_SLOTS = [
   { slot: "hat",      label: "hat",      keys: ["caps-beanies", "fitted-caps", "visors"],
     guess: /\b(cap|caps|beanie|bucket|visor|fitted|snapback|hat)\b/i, anchor: { x: 0.58, y: 0.135 } },
   { slot: "jacket",   label: "jacket",   keys: ["jackets", "hoodies"],
-    guess: /\b(jacket|hoodie|hooded|puffer|windbreaker|windrunner|anorak|bomber|zip)\b/i, anchor: { x: 0.53, y: 0.29 } },
+    guess: /\b(jackets?|hoodies?|puffer|windbreaker|windrunner|anorak|bomber|sweaters?|pullover|cardigan|quarter-zip)\b/i, anchor: { x: 0.53, y: 0.29 } },
   { slot: "tee",      label: "tee",      keys: ["t-shirts", "golf-t-shirts"],
-    guess: /\b(t-shirt|tee|t|polo|golf|short-sleeve)\b/i, anchor: { x: 0.60, y: 0.34 } },
+    guess: /\b(t-shirts?|tees?|t|polo|henley|shirt|top)\b/i, anchor: { x: 0.60, y: 0.34 } },
   { slot: "bottoms",  label: "bottoms",  keys: ["shorts", "pants", "jeans"],
     guess: /\b(shorts?|pants|jeans?|cargo|trousers?|joggers?|chinos?)\b/i, anchor: { x: 0.55, y: 0.54 } },
   { slot: "bag",      label: "bag",      keys: ["bags"],
@@ -63,10 +63,28 @@ function lookbookSlot(product) {
 }
 
 /** The slot a storefront title SUGGESTS, for read ordering only. Pure. */
+// Never a lookbook row, whatever else the title says: a suit jacket is
+// categorised "suits" and a tracksuit is top AND bottom. Reading them first
+// starved the jacket slot on the first live dry run (2026-10-17).
+const NOT_A_ROW = /\b(suit|suits|tracksuits?|two-piece|set)\b/i;
+
 function guessSlot(cleanName) {
   const name = String(cleanName || "");
-  for (const s of LOOKBOOK_SLOTS) if (s.guess.test(name)) return s.slot;
-  return null;
+  if (NOT_A_ROW.test(name)) return null;
+  // The catalogue's titles are "<adjectives> <noun> in <colour> with <detail>",
+  // so the noun is the LAST slot word before the first in/with/and/on/for:
+  // "Textured knit runner in orange" is a runner, not a knit.
+  const head = name.split(/\s+(?:in|with|and|on|for)\s+/i)[0];
+  const lastHit = (text) => {
+    let best = null, at = -1;
+    for (const s of LOOKBOOK_SLOTS) {
+      const re = new RegExp(s.guess.source, "gi");
+      let m;
+      while ((m = re.exec(text))) if (m.index >= at) { at = m.index; best = s.slot; }
+    }
+    return best;
+  };
+  return lastHit(head) || lastHit(name);
 }
 
 /**
