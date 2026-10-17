@@ -420,10 +420,13 @@ const PLAUSIBLE_Y = {
 };
 function anchorsFor(rows, visionAnchors = {}, head = null) {
   const out = {};
-  // A hat is on the head. A vision answer that puts it more than a head-height
-  // away from the head it also reported is the less reliable of the two.
-  if (head && visionAnchors && visionAnchors.hat && Math.abs(visionAnchors.hat.y - head.y) > 0.09) {
-    visionAnchors = { ...visionAnchors, hat: { x: head.x, y: Math.max(0.02, head.y - 0.035) } };
+  // A hat is on the head.
+  // On the first real poster the face was located to the cell every time and
+  // the beanie wandered a cell above or below it, so a hat more than 0.03 from
+  // "0.04 above the face" is put there.
+  const HAT_ABOVE_FACE = 0.04;
+  if (head && visionAnchors && visionAnchors.hat && Math.abs(visionAnchors.hat.y - (head.y - HAT_ABOVE_FACE)) > 0.03) {
+    visionAnchors = { ...visionAnchors, hat: { x: head.x, y: Math.max(0.02, head.y - HAT_ABOVE_FACE) } };
   }
   // The category spots are a TEMPLATE of a body from head (y 0.16) to feet
   // (y 0.82) centred at x 0.58, the composition the prompt asks for. The model
@@ -438,9 +441,15 @@ function anchorsFor(rows, visionAnchors = {}, head = null) {
     const k = (feet - head.y) / (T_FEET - T_HEAD);
     return { x: Math.min(0.98, Math.max(0.08, fixed.x + (head.x - T_X))), y: head.y + (fixed.y - T_HEAD) * k };
   };
+  // Two items answered with the same spot (the vest "found" on the bag that
+  // covers it, spec review L13): the bag keeps it, the other item goes to its
+  // place on the body.
+  const near = (a, b) => a && b && Math.hypot(a.x - b.x, a.y - b.y) < 0.09;   // the same or a neighbouring grid cell
+  const bagV = visionAnchors && visionAnchors.bag;
   for (const r of rows || []) {
     const fixed = place(SLOT_BY_KEY.get(r.slot).anchor);
-    const v = visionAnchors && visionAnchors[r.slot];
+    let v = visionAnchors && visionAnchors[r.slot];
+    if (r.slot !== "bag" && near(v, bagV)) v = null;
     const band = PLAUSIBLE_Y[r.slot];
     out[r.slot] = v && v.y >= band[0] && v.y <= band[1] && v.x >= 0.08 && v.x <= 0.98
       ? { x: v.x, y: v.y, source: "vision" }

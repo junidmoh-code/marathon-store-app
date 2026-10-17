@@ -25,7 +25,7 @@ const fs = require("fs");
 const path = require("path");
 const type = require("./lookbook-type.cjs");
 const { splitName } = require("./social-design.cjs");
-const { formatRand } = require("./social-lookbook.cjs");
+const { formatRand, guessSlot } = require("./social-lookbook.cjs");
 
 const PAPER = "#E9E6DF";
 const INK = "#141414";
@@ -203,19 +203,33 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx }) {
   rows.forEach((r, i) => {
     const box = P.rows[i];
     thumbs.push({ slot: r.slot, x: Math.round(px0), y: Math.round(box.cy - P.thumb / 2), size: P.thumb });
-    const { brand, rest } = splitName(r.displayName);
-    const bFit = type.wrap(brand, { font: "archivo", weight: 800, size: 19, minSize: 14, letterSpacing: 1, maxWidth: textW, maxLines: 1 });
-    const nFit = type.wrap(rest || brand, { font: "archivo", weight: 500, size: 12.5, minSize: 10, letterSpacing: 0.8, maxWidth: textW, maxLines: 3 });
+    // A brand line only for a real brand. "Jacket brown" has none, and must
+    // not be set as brand JACKET over name BROWN (spec review L18): the
+    // whole name goes on the bold line instead.
+    const split = splitName(r.displayName);
+    // splitName falls back to the first word; a first word that is itself a
+    // category ("Jacket", "Pants", "Cap") is not a brand.
+    const known = Boolean(split.rest) && !guessSlot(split.brand);
+    const brand = known ? split.brand : String(r.displayName || "").toUpperCase();
+    const rest = known ? split.rest : "";
+    const bFit = type.wrap(brand, { font: "archivo", weight: 800, size: 19, minSize: 14, letterSpacing: 1, maxWidth: textW, maxLines: known ? 1 : 2 });
+    const nFit = type.wrap(rest, { font: "archivo", weight: 500, size: 12.5, minSize: 10, letterSpacing: 0.8, maxWidth: textW, maxLines: 3 });
     const bCap = type.capHeight("archivo", bFit.size, 800);
     const nCap = type.capHeight("archivo", nFit.size, 500);
     const nLead = nFit.size * 1.38;
     const priceSize = 22, pCap = type.capHeight("archivo", priceSize, 800);
-    const blockH = bCap + 10 + nCap + nLead * (nFit.lines.length - 1) + 14 + pCap;
+    const bLead = bFit.size * 1.25;
+    const hasName = nFit.lines.length > 0;
+    const blockH = bCap + bLead * (bFit.lines.length - 1) + (hasName ? 10 + nCap + nLead * (nFit.lines.length - 1) : 0) + 14 + pCap;
     let y = box.cy - blockH / 2 + bCap;
-    for (const line of bFit.lines) out.push(T(line, { font: "archivo", weight: 800, size: bFit.size, letterSpacing: 1, x: textX, y, fill: INK }));
-    y += 10 + nCap;
-    nFit.lines.forEach((line, j) => out.push(T(line, { font: "archivo", weight: 500, size: nFit.size, letterSpacing: 0.8, x: textX, y: y + j * nLead, fill: "#3a3a3a" })));
-    y += nLead * (nFit.lines.length - 1) + 14 + pCap;
+    bFit.lines.forEach((line, j) => out.push(T(line, { font: "archivo", weight: 800, size: bFit.size, letterSpacing: 1, x: textX, y: y + j * bLead, fill: INK })));
+    y += bLead * (bFit.lines.length - 1);
+    if (hasName) {
+      y += 10 + nCap;
+      nFit.lines.forEach((line, j) => out.push(T(line, { font: "archivo", weight: 500, size: nFit.size, letterSpacing: 0.8, x: textX, y: y + j * nLead, fill: "#3a3a3a" })));
+      y += nLead * (nFit.lines.length - 1);
+    }
+    y += 14 + pCap;
     out.push(T(r.priceText, { font: "archivo", weight: 800, size: priceSize, letterSpacing: 0.4, x: textX, y, fill: INK }));
     if (i < rows.length - 1) {
       const ry = box.top + box.h;

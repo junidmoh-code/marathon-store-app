@@ -248,7 +248,7 @@ describe("hero prompt and the no-text check", () => {
   test("a hat reported far from the head snaps to just above the head", () => {
     const a = lb.anchorsFor(rows, { hat: { x: 0.5, y: 0.12 } }, { x: 0.52, y: 0.24 });
     assert.equal(a.hat.x, 0.52);
-    assert.ok(Math.abs(a.hat.y - 0.205) < 1e-9);
+    assert.ok(Math.abs(a.hat.y - 0.20) < 1e-9);
   });
 });
 
