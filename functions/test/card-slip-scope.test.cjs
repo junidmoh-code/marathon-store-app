@@ -268,3 +268,11 @@ test("a typed total on a photo-only till still works (an old screen still open o
   assert.deepEqual(out, { ok: true, received: true });
   assert.ok((await batches(db, "pe", MT2))["545"]);
 });
+
+test("with Yasmin's live record (destShop marathon-pe, POS cashier) the photo-only slip passes the section check too", async () => {
+  const db = world();
+  await db.ref(`users/${YASMIN.uid}`).update({ destShop: "marathon-pe", role: "store_assistant", permissions: ["store_assistant", "place_orders"] });
+  const out = await handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: MT2, photos: [PHOTO] } }, { now: () => NOW, bucket: bucket() });
+  assert.deepEqual(out, { ok: true, received: true });
+  assert.equal(Object.keys(await jobs(db)).length, 1);
+});
