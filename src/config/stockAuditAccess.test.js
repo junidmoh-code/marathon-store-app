@@ -62,3 +62,12 @@ describe("auditStoresForViewer", () => {
     expect(auditStoresForViewer(STORES_FOR_SCOPE, "pe")).toEqual([]);
   });
 });
+
+describe("the Stock Audit route hands the screen the viewer's shop", () => {
+  it("App passes myShop (the destShop scope the order feed uses) to StockAuditView", () => {
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    expect(src).toMatch(/<StockAuditView products=\{products\} myShop=\{myShop\}/);
+    // …and that myShop is the destShop scope, owner excepted.
+    expect(src).toMatch(/const myShop = isSuperAdmin \? null : \(permRecord\?\.destShop \|\| null\);/);
+  });
+});
