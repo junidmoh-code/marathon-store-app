@@ -701,7 +701,7 @@ firebase deploy --only functions:socialStillAutopilot,functions:socialHealthScan
 | still (07:00): current, or a lookbook that passes first time | 1 |
 | **normal day** | **3 of 4** |
 | lookbook hero fails the text check | no regeneration (it would leave the fallback no unit) → current style: **4 of 4** |
-| a reel needed a billed retry first | the still still gets its unit; a lookbook failure then posts nothing, logged and paged |
+| a reel needed a billed retry first (3 spent) | the lookbook would leave the fallback nothing, so it is skipped (gate `cap`) and the current style takes the 4th unit |
 
 "Regenerate once" only happens when one unit would still be left for the
 fallback. On a normal day that is never. A failed lookbook must not cost the
