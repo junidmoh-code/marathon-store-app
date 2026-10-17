@@ -765,10 +765,14 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
   if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
   const key = manualEntryKeyOf(input.entryId);
 
-  // A RETRY of the same form submit finds its own record: answer it as done.
+  // A RETRY of the same form submit finds its own record: answer it as done
+  // — and make sure its log row exists (a retry after a crash between the
+  // row and the record, or the reverse, must leave both standing).
   const existing = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
   if (existing) {
     if (isManualEntry(existing) && existing.manualEntry.entryId === input.entryId) {
+      await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(existing.manualEntry.at, key)}`)
+        .transaction((cur) => (cur === null ? manualLogRecord(existing, key) : undefined));
       return { ok: true, already: true, key, reference: existing.reference, amountCents: existing.amountCents, at: existing.manualEntry.at, by: MANUAL_ENTRY_BY, status: existing.status };
     }
     throw new HttpsError("already-exists", "That entry id is taken by another record — reload and try again.", { code: "key-taken" });
@@ -791,14 +795,20 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
   if (claim?.holder !== key) {
     throw new HttpsError("aborted", "The entry's fingerprint is held by another record — try again.", { code: "fingerprint-held" });
   }
+  // THE LOG ROW FIRST, create-only, keyed by this entry's moment. Before the
+  // record, so a cashier settling the instant the record lands patches a row
+  // that exists (an update() on an absent row would create a partial one the
+  // review list cannot show). A racing submit of the same entryId that loses
+  // the record transaction below leaves a row the retry branch tolerates.
+  await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(now, key)}`).transaction((cur) => (cur === null ? manualLogRecord(record, key) : undefined));
   // Create-if-absent: two racing submits of one entryId write exactly one.
   const res = await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => (cur === null ? record : undefined));
   const already = res && res.committed === false;
-  // THE LOG ROW — by the writer that committed the record (its `at` is the
-  // row's key), create-only, so a racing retry can neither add a second row
-  // nor reset one the settle has already moved to "used".
-  if (!already) {
-    await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(now, key)}`).transaction((cur) => (cur === null ? manualLogRecord(record, key) : undefined));
+  if (already) {
+    // The other submit's record stands, with ITS moment; this attempt's
+    // row (if it won the row race with a different `now`) is removed.
+    const winner = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+    if (winner?.manualEntry?.at !== now) await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(now, key)}`).remove();
   }
   console.log(`EFT_MANUAL_ENTRY: ${key} ${input.reference} ${input.amountCents}c by ${MANUAL_ENTRY_BY} (${actor.uid})${input.note ? ` — ${input.note}` : ""}${already ? " [already]" : ""}`);
   return { ok: true, already, key, reference: input.reference, amountCents: input.amountCents, at: now, by: MANUAL_ENTRY_BY, status: "unmatched" };
@@ -964,7 +974,11 @@ exports.eftRemainderScan = onSchedule(
         if (!/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) continue;
         const breach = enforcementBreachOf(saleId, sale, enforced);
         if (!breach) continue;
-        await db.ref(`${EFT_BREACH_PATH}/${saleId}`).set({ ...breach, flaggedAt: now });
+        // CREATE-ONLY: the window slides, so the same sale is read again on
+        // later runs — the first sighting's record and its one log line
+        // stand; a re-read neither rewrites flaggedAt nor re-alerts.
+        const res = await db.ref(`${EFT_BREACH_PATH}/${saleId}`).transaction((cur) => (cur === null ? { ...breach, flaggedAt: now } : undefined));
+        if (!res?.committed) continue;
         breaches++;
         console.error(`EFT_ENFORCEMENT_BREACH: sale ${saleId} (${breach.receiptNumber ?? "no slip"}) at ${breach.storeId}/${breach.tillId ?? "?"} by ${breach.cashierName ?? "?"} — ${breach.eftCents}c of EFT with no pool payment`);
       }

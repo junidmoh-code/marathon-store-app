@@ -138,7 +138,9 @@ function enforcementBreachOf(saleId, sale, enforcedStores) {
  */
 function breachScanNext({ state, now, maxSeen, full }) {
   const since = Number.isInteger(state?.sinceMs) ? state.sinceMs : now - BREACH_SCAN_WINDOW_MS;
-  if (full && Number.isInteger(maxSeen)) return { sinceMs: Math.max(since, maxSeen + 1), at: now, drained: false };
+  // From maxSeen itself, not maxSeen + 1: sales sharing that millisecond
+  // must not be skipped, and a re-read is idempotent (create-only record).
+  if (full && Number.isInteger(maxSeen)) return { sinceMs: Math.max(since, maxSeen), at: now, drained: false };
   return { sinceMs: Math.max(since, now - BREACH_SCAN_WINDOW_MS), at: now, drained: true };
 }
 

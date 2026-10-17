@@ -84,7 +84,7 @@ test("the scan window slides two hours, and drains from the last seen sale when 
   const first = breachScanNext({ state: null, now, maxSeen: null, full: false });
   assert.equal(first.sinceMs, now - BREACH_SCAN_WINDOW_MS);
   const full = breachScanNext({ state: { sinceMs: now - BREACH_SCAN_WINDOW_MS }, now, maxSeen: now - 1000, full: true });
-  assert.equal(full.sinceMs, now - 999, "continues after the last seen sale");
+  assert.equal(full.sinceMs, now - 1000, "continues FROM the last seen sale — a shared millisecond is never skipped");
   assert.equal(full.drained, false);
   const slid = breachScanNext({ state: { sinceMs: now - 10 * BREACH_SCAN_WINDOW_MS }, now, maxSeen: now - 5000, full: false });
   assert.equal(slid.sinceMs, now - BREACH_SCAN_WINDOW_MS, "a drained run slides the window up to now − 2h");
@@ -114,7 +114,11 @@ const fakeAdmin = {
         set: async (v) => { db.sets[path] = v; },
         remove: async () => { delete db.sets[path]; },
         update: async () => {},
-        transaction: async (fn) => { const out = fn(db.reads[path] ?? null); return { committed: out !== undefined }; },
+        transaction: async (fn) => {
+          const out = fn(db.reads[path] ?? null);
+          if (out !== undefined) { (db.tx ??= {})[path] = out; db.txWrites = (db.txWrites ?? 0) + 1; }
+          return { committed: out !== undefined };
+        },
       };
       return chain;
     },
@@ -178,9 +182,16 @@ test("the scan flags a plain-EFT sale at Trophy, leaves Pine's alone, reads one 
   assert.deepEqual(salesQuery.cs.map((c) => c[0]), ["orderByChild", "startAt", "limitToFirst"], "indexed, windowed, paged — never the node");
   assert.equal(salesQuery.cs[0][1], "createdAt");
   assert.equal(salesQuery.cs[2][1], BREACH_SCAN_PAGE);
-  assert.ok(db.sets["eft_enforcement_breaches/S-trophy"], "the Trophy sale is a breach");
-  assert.equal(db.sets["eft_enforcement_breaches/S-trophy"].eftCents, 50000);
-  assert.equal(db.sets["eft_enforcement_breaches/S-pine"], undefined, "Pine keeps the old way");
-  assert.equal(db.sets["eft_enforcement_breaches/S-matched"], undefined, "a matched payment is fine");
+  assert.ok(db.tx["eft_enforcement_breaches/S-trophy"], "the Trophy sale is a breach");
+  assert.equal(db.tx["eft_enforcement_breaches/S-trophy"].eftCents, 50000);
+  assert.equal(db.tx["eft_enforcement_breaches/S-pine"], undefined, "Pine keeps the old way");
+  assert.equal(db.tx["eft_enforcement_breaches/S-matched"], undefined, "a matched payment is fine");
   assert.ok(Number.isInteger(db.sets["eft_enforcement_scan"].sinceMs), "the cursor is kept");
+  // The window slides, so the sale is read again — the record is CREATE-ONLY:
+  // the first sighting stands and no second record (or alert) is written.
+  const first = db.tx["eft_enforcement_breaches/S-trophy"];
+  db.reads["eft_enforcement_breaches/S-trophy"] = first;
+  db.txWrites = 0;
+  await eftRemainderScan();
+  assert.equal(db.txWrites, 0, "a re-read breach is not rewritten");
 });
