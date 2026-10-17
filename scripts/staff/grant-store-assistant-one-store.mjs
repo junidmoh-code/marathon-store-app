@@ -79,7 +79,16 @@ for (const g of GRANTS) {
   const rec = (await db.ref(`users/${user.uid}`).once("value")).val() || {};
   if (rec.posAccess?.isActive === false) fail(`${email}: POS access is switched off.`);
   const posStores = asList(rec.posAccess?.storeIds);
-  if (!posStores.includes(shop.posId)) fail(`${email} has POS access to [${posStores.join(", ")}], not to ${shop.name} ("${shop.posId}").`);
+  // EXACTLY that one shop at the POS: destShop also scopes the POS's /orders
+  // reads (the live rule), so a cashier who also works another shop's till
+  // would lose order lookups there. An empty list means "every store".
+  if (!posStores.length) fail(`${email} has POS access to every store; a one-store scope would break their POS order lookups elsewhere.`);
+  if (posStores.length !== 1 || posStores[0] !== shop.posId) fail(`${email} has POS access to [${posStores.join(", ")}], not to ${shop.name} ("${shop.posId}") alone.`);
+  // stockRole is kept for the POS, but admin / warehouse would keep the store
+  // app's Stock, Health, Shopify and TV Ad screens open: stop and ask instead.
+  if (rec.stockRole && !["pos", "store"].includes(rec.stockRole)) fail(`${email} has stockRole "${rec.stockRole}", which opens stock screens beyond Store Assistant. Not changed.`);
+  // The POS's Card Recon tab reads permFlags.card_recon: never drop it unseen.
+  if (asList(rec.permissions).includes("card_recon") || rec.permFlags?.card_recon) fail(`${email} holds card_recon (the POS's Card Recon tab). Not changed.`);
   if (rec.cardSlipTills?.[g.till.storeId]?.[g.till.tillId] !== true) fail(`${email}: the Card Slip scope ${g.till.storeId}/${g.till.tillId} is missing — run scripts/cardrecon/grant-card-slip-tills.mjs first.`);
 
   const patch = { role: ROLE, permissions: [...want], permFlags: permFlagsFor(want), destShop: g.shopId };
