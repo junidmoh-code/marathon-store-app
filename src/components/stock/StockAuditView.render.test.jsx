@@ -86,6 +86,45 @@ const text = (t) => JSON.stringify(t.toJSON());
 const mount = () => { let t; act(() => { t = TestRenderer.create(<StockAuditView onExit={() => {}} products={PRODUCTS} />); }); return t; };
 const tap = (t, needle) => act(() => { buttonWith(t, needle).props.onClick(); });
 
+describe("StockAuditView — a one-shop account (destShop) audits its own shop only (owner, 2026-10-17)", () => {
+  const mountFor = (myShop) => { let t; act(() => { t = TestRenderer.create(<StockAuditView onExit={() => {}} products={PRODUCTS} myShop={myShop} />); }); return t; };
+
+  it("a Marathon PE assistant sees PE's Audit list and no Trophy chip, and never subscribes to Trophy", () => {
+    SUBSCRIBED.length = 0;
+    const t = mountFor("marathon-pe");
+    tap(t, "Audit");
+    expect(buttonWith(t, "Marathon PE")).toBeTruthy();
+    expect(buttonWith(t, "Trophy")).toBeUndefined();
+    expect(text(t)).toContain("Nike Tee Black");
+    expect(SUBSCRIBED.some((p) => p.includes("/trophy/"))).toBe(false);
+  });
+
+  it("a Trophy assistant opens on Trophy's list with no PE chip, and never subscribes to PE's", () => {
+    SUBSCRIBED.length = 0;
+    const t = mountFor("trophy");
+    tap(t, "Audit");
+    expect(buttonWith(t, "Trophy")).toBeTruthy();
+    expect(buttonWith(t, "Marathon PE")).toBeUndefined();
+    expect(text(t)).not.toContain("Nike Tee Black");
+    expect(SUBSCRIBED.some((p) => p.includes("/marathon-pe/"))).toBe(false);
+  });
+
+  it("the hubs are shared back stock: both stay on the Out of Stock tab", () => {
+    const t = mountFor("trophy");
+    expect(buttonWith(t, "Hub 1")).toBeTruthy();
+    expect(buttonWith(t, "Hub 2")).toBeTruthy();
+  });
+
+  it("a shop that is not an audit shop gets no shop list at all, never the full one", () => {
+    SUBSCRIBED.length = 0;
+    const t = mountFor("marathon-pine");
+    tap(t, "Audit");
+    expect(buttonWith(t, "Marathon PE")).toBeUndefined();
+    expect(buttonWith(t, "Trophy")).toBeUndefined();
+    expect(SUBSCRIBED.some((p) => /stockAudit\/(marathon-pe|trophy)\//.test(p))).toBe(false);
+  });
+});
+
 describe("StockAuditView", () => {
   it("opens on the hub tab: one line carrying the answer, the size, and what the hub believed", () => {
     const t = mount();

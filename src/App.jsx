@@ -20949,7 +20949,7 @@ function AppInner() {
   else if (role === ROLES.STOCK_AUDIT) view = stockAuditRouteOpen
     // `products` is the list App already streams for every screen — the row
     // photos come off it, so a picture costs the audit snapshot nothing.
-    ? <StockAuditView products={products} onExit={() => setRole(null)} />
+    ? <StockAuditView products={products} myShop={myShop} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;

@@ -46,3 +46,19 @@ describe("stockAuditVisibleForViewer", () => {
     expect(line).not.toContain("isSuperAdmin");
   });
 });
+
+// Owner, 2026-10-17: a one-shop account (destShop) audits its own shop only.
+import { auditStoresForViewer, AUDIT_STORES as STORES_FOR_SCOPE } from "./stockAudit";
+describe("auditStoresForViewer", () => {
+  it("no destShop: every audit shop, as before", () => {
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, null).map((s) => s.id)).toEqual(STORES_FOR_SCOPE.map((s) => s.id));
+  });
+  it("destShop: that shop and nothing else", () => {
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, "marathon-pe").map((s) => s.id)).toEqual(["marathon-pe"]);
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, "trophy").map((s) => s.id)).toEqual(["trophy"]);
+  });
+  it("a destShop that is not an audit shop: none, never the full list", () => {
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, "marathon-pine")).toEqual([]);
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, "pe")).toEqual([]);
+  });
+});

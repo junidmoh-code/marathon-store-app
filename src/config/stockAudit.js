@@ -29,6 +29,16 @@ export const auditStoresOf = (network) =>
   storesOf(network || SEED_REGISTRY, { liveOnly: true }).map((l) => ({ id: l.id, label: l.name }));
 export const AUDIT_STORES = auditStoresOf(SEED_REGISTRY);
 
+// An account scoped to one shop (/users/{uid}/destShop, the same field the
+// /orders read rule and the Store Assistant screen scope by) audits that shop
+// and no other (owner, 2026-10-17: a PE assistant never sees Trophy's shelves,
+// and the other way round). No destShop = every audit shop, as before. A
+// destShop that is not an audit shop yields none, never the full list.
+export function auditStoresForViewer(stores, destShop) {
+  if (!destShop) return stores;
+  return stores.filter((s) => s.id === destShop);
+}
+
 // The hubs this audit covers. Hub 3 serves Pine, which is out of scope for the
 // whole feature. Matches AUDIT_HUBS in functions/lib/stock-audit.cjs — the
 // writer and the reader must agree on the set, or a chip would open a node
