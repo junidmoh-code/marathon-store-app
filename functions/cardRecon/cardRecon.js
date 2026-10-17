@@ -1941,6 +1941,36 @@ async function carriedSlipsFor(db, storeId, tid, supersedesKey, successor) {
 // The verdict on the record is the owner's report's (matcher.js, R5
 // tolerance), and the photo is read in the background (a "check" job) only to
 // tell Junid when it disagrees with the typed figure — never to block.
+// ─── WHICH TILLS ARE MINE — over HTTP, not the database socket ───────────────
+// Junid, 17 Oct 2026: on a shop phone the Card Slip screen took ~47 s to open,
+// because its 2 KB registry listen queued on the one RTDB connection behind
+// the app's ~6 MB first load (products, orders). A callable is its own HTTP
+// request, so nothing queues in front of it. It answers ONLY the caller's own
+// tills (their per-till scope, resolved against where each machine stands
+// now): the machine id, the label and whether its total is typed. Never a
+// figure, never another till.
+async function handleSlipTills(db, request, deps = {}) {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
+  const nowMs = (deps.now || Date.now)();
+  const [rawScope, terminals] = await Promise.all([
+    db.ref(`users/${uid}/${SLIP_SCOPE_FIELD}`).once("value").then((s) => s.val()),
+    db.ref(CARD_TERMINALS_PATH).once("value").then((s) => s.val() || {}),
+  ]);
+  const scope = readSlipScope(rawScope);
+  const tills = [];
+  for (const [tid, row] of Object.entries(terminals)) {
+    if (!row || !row.storeId || !row.tillId || isRetiredTerminal(row)) continue;
+    const here = tillAt(row, nowMs);
+    const storeId = here.storeId || row.storeId;
+    const tillId = here.tillId || row.tillId;
+    if (!slipScopeAllows(scope, { storeId, tillId })) continue;
+    tills.push({ tid, storeId, tillId, label: here.label || row.label || `${storeId} · ${tillId}`, typed: typesTotal(row) });
+  }
+  tills.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+  return { ok: true, tills };
+}
+
 const SLIP_PHOTOS = 1;
 async function handleSlip(db, request, deps = {}) {
   const uid = request.auth?.uid;
@@ -2590,6 +2620,7 @@ exports.cardBatchCapture = onCall(
     // Before the card_recon check, because the people it is for do not hold
     // card_recon and must not need to; handleSlip refuses everyone outside
     // their own till. Every other action below still requires card_recon.
+    if (action === "slipTills") return handleSlipTills(db, request);
     if (action === "slip") {
       const out = await handleSlip(db, request);
       if (out && out.ok === false) console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
@@ -2705,6 +2736,7 @@ exports.cardBatchReadRetry = onSchedule(
 // Exported for tests (pure-ish seams).
 exports.handleReceive = handleReceive;
 exports.handleSlip = handleSlip;
+exports.handleSlipTills = handleSlipTills;
 exports.carriedSlipsFor = carriedSlipsFor;
 exports.syncCarried = syncCarried;
 exports.handleTypedCapture = handleTypedCapture;

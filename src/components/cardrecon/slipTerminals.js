@@ -81,9 +81,75 @@ export function subscribeSlipTerminals(cb) {
   return () => listeners.delete(cb);
 }
 
-/** Home screen: open the subscription early for an account with a Card Slip scope. */
-export function usePrefetchSlipTerminals(enabled) {
+// ─── "WHICH TILLS ARE MINE", OVER HTTP (Junid, 17 Oct 2026) ─────────────────
+// Measured on a phone-like line, the registry LISTEN above still waited ~47 s:
+// it shares the one RTDB socket with the app's ~6 MB first load. The callable
+// (cardBatchCapture action "slipTills") is its own HTTPS request, so nothing
+// queues in front of it, and it answers only this person's tills — so it is
+// kept per person on the device. Whichever answers first draws the screen.
+const TILLS_KEY = (uid) => `cardSlip.tills.v1.${uid}`;
+const server = new Map(); // uid → { tills, live }
+const serverListeners = new Map(); // uid → Set
+const inFlight = new Map(); // uid → Promise
+let slipTillsFn = null;
+
+function cachedTills(uid) {
+  try {
+    const v = JSON.parse(globalThis.localStorage?.getItem(TILLS_KEY(uid)) ?? "null");
+    return Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** { tills, live } for this person: live = the server answered this session. */
+export function peekServerTills(uid) {
+  if (!uid) return null;
+  if (server.has(uid)) return server.get(uid);
+  const c = cachedTills(uid);
+  return c ? { tills: c, live: false } : null;
+}
+
+export function fetchServerTills(uid) {
+  if (!uid) return Promise.resolve(null);
+  if (server.get(uid)?.live) return Promise.resolve(server.get(uid));
+  if (inFlight.has(uid)) return inFlight.get(uid);
+  const p = (async () => {
+    try {
+      if (!slipTillsFn) {
+        const [{ httpsCallable }, { functions }] = await Promise.all([import("firebase/functions"), import("../../firebase")]);
+        slipTillsFn = httpsCallable(functions, "cardBatchCapture", { timeout: 30000 });
+      }
+      const { data } = await slipTillsFn({ action: "slipTills" });
+      if (data?.ok !== true || !Array.isArray(data.tills)) return null;
+      const v = { tills: data.tills, live: true };
+      server.set(uid, v);
+      try { globalThis.localStorage?.setItem(TILLS_KEY(uid), JSON.stringify(data.tills)); } catch { /* fine */ }
+      for (const l of serverListeners.get(uid) || []) l(v);
+      return v;
+    } catch {
+      return null; // the registry listen still answers, just later
+    } finally {
+      inFlight.delete(uid);
+    }
+  })();
+  inFlight.set(uid, p);
+  return p;
+}
+
+export function subscribeServerTills(uid, cb) {
+  if (!uid) return () => {};
+  if (!serverListeners.has(uid)) serverListeners.set(uid, new Set());
+  serverListeners.get(uid).add(cb);
+  if (server.has(uid)) cb(server.get(uid));
+  fetchServerTills(uid);
+  return () => serverListeners.get(uid)?.delete(cb);
+}
+
+/** Home screen: start both reads early for an account with a Card Slip scope. */
+export function usePrefetchSlipTerminals(enabled, uid) {
   useEffect(() => (enabled ? subscribeSlipTerminals(() => {}) : undefined), [enabled]);
+  useEffect(() => { if (enabled && uid) fetchServerTills(uid); }, [enabled, uid]);
 }
 
 /** Tests only. */
@@ -94,4 +160,8 @@ export function _resetSlipTerminals() {
   retry = null;
   latest = undefined;
   listeners.clear();
+  server.clear();
+  serverListeners.clear();
+  inFlight.clear();
+  slipTillsFn = null;
 }

@@ -12,10 +12,15 @@ vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (r, ok, err) => { const s = { path: r.path, ok, err, closed: false }; live.subs.push(s); return () => { s.closed = true; }; },
 }));
-vi.mock("firebase/functions", () => ({ httpsCallable: () => async () => ({ data: { ok: true, received: true } }) }));
+const fn = vi.hoisted(() => ({ tills: null, calls: [] }));
+vi.mock("firebase/functions", () => ({ httpsCallable: () => async (p) => {
+  fn.calls.push(p.action);
+  if (p.action === "slipTills") return fn.tills ? { data: { ok: true, tills: fn.tills } } : new Promise(() => {});
+  return { data: { ok: true, received: true } };
+} }));
 vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => Date.parse("2026-10-17T18:00:00+02:00") }));
 const perms = vi.hoisted(() => ({ permRecord: null }));
-vi.mock("../PermissionsContext", () => ({ usePermissions: () => perms, ADMIN_EMAIL: "x" }));
+vi.mock("../PermissionsContext", () => ({ usePermissions: () => ({ ...perms, user: { uid: perms.uid ?? "u-yasmin" } }), ADMIN_EMAIL: "x" }));
 vi.mock("../shopify/imageDecode", () => ({
   decodeImageFile: vi.fn(async (file) => ({ source: { file }, width: 1000, height: 2000, release: () => {} })),
   isAcceptedImageFile: () => true, describePickedFile: () => "",
@@ -35,6 +40,8 @@ beforeEach(() => {
   live.subs.length = 0;
   mem.clear();
   perms.permRecord = { cardSlipTills: { pe: { "till-2": true } } };
+  perms.uid = "u-yasmin";
+  fn.tills = null; fn.calls.length = 0;
 });
 
 describe("the Card Slip registry, ready before the tap", () => {
@@ -138,6 +145,46 @@ describe("the home screen wires the prefetch", async () => {
   const { readFileSync } = await import("node:fs");
   it("RoleSelector starts the registry read for a Card Slip account", () => {
     const src = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
-    expect(src).toMatch(/usePrefetchSlipTerminals\(hasSlipScope\(homePerm\)\);/);
+    expect(src).toMatch(/usePrefetchSlipTerminals\(hasSlipScope\(homePerm\), homeUser\?\.uid\);/);
+  });
+});
+
+describe("the till list over HTTP — nothing on the socket can queue in front of it", () => {
+  const MINE = [{ tid: "0000AA2X", storeId: "pe", tillId: "till-2", label: "Marathon Till 2", typed: false }];
+  const flush = async () => { for (let i = 0; i < 10; i++) await act(async () => { await Promise.resolve(); await new Promise((r) => setTimeout(r, 0)); }); };
+
+  it("the server's answer alone draws the form and opens Submit — the registry listen never answered", async () => {
+    fn.tills = MINE;
+    let t;
+    act(() => { t = TestRenderer.create(<CardSlipScreen onExit={() => {}} />); });
+    await flush();
+    expect(allText(t)).toMatch(/Marathon Till 2/);
+    const file = t.root.findAll((n) => n.type === "input" && n.props.type === "file")[0];
+    await act(async () => { await file.props.onChange({ target: { files: [{ name: "slip.jpg" }], value: "" } }); });
+    const submit = t.root.findAll((n) => n.type === "button" && /^(Submit|Sending…)$/.test(textOf(n)))[0];
+    expect(submit.props.disabled).toBe(false);
+    expect(live.subs.every((s) => s.ok)).toBe(true); // the listen is still open, unanswered
+  });
+
+  it("kept on the device PER PERSON: Amanda on the same phone never sees Yasmin's till", async () => {
+    fn.tills = MINE;
+    act(() => { TestRenderer.create(<CardSlipScreen onExit={() => {}} />); });
+    await flush();
+    expect(JSON.parse(mem.get("cardSlip.tills.v1.u-yasmin"))).toEqual(MINE);
+    mod._resetSlipTerminals(); live.subs.length = 0; fn.tills = null;
+    perms.uid = "u-amanda"; perms.permRecord = { cardSlipTills: { trophy: { "till-2": true } } };
+    let t;
+    act(() => { t = TestRenderer.create(<CardSlipScreen onExit={() => {}} />); });
+    await flush();
+    expect(allText(t)).not.toMatch(/Marathon Till 2/);
+  });
+
+  it("the home prefetch and the screen share ONE call", async () => {
+    fn.tills = MINE;
+    const P = () => { mod.usePrefetchSlipTerminals(true, "u-yasmin"); return null; };
+    act(() => { TestRenderer.create(<P />); });
+    act(() => { TestRenderer.create(<CardSlipScreen onExit={() => {}} />); });
+    await flush();
+    expect(fn.calls.filter((c) => c === "slipTills")).toHaveLength(1);
   });
 });
