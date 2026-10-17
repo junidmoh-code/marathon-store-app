@@ -54,12 +54,21 @@ She also remembers typing a total. That box has not existed for Marathon PE Till
   - Junid's correction never closes before the record it corrects.
   - His manual entry may keep a cut-off close that is still ahead.
 
+- **Review fixes:**
+  - A staff record never outranks the machine's own report of the same batch, even when the report closed at 18:49:58.
+  - A staff slip sent after a later close (a report at 19:00, the slip at 19:30) closes when it is sent, so its window never runs backwards.
+  - The log write is retried once.
+  - Each log read in `slipTills` is bounded, so a slow read leaves only that till unknown.
+
 ### Store app: the Card Slip screen
 
 - **"Sent — thank you" only with the server's receipt.** Anything else shows **"Not sent — try again"** with the reason: a refusal, a dropped connection, a reply without a receipt.
 - **The send gives up after 2 minutes, not 5**, so the person hears "Not sent" while still standing there.
 - **The till says whether today's slip is in**: "✓ Today's slip is in — sent at 16:24", or "No slip sent yet today". This comes from the server's live answer, never from the phone's copy, which may be yesterday's. The server is asked again after every send.
-- The page shows the trading day: after midnight, it still shows the evening's date.
+- The page shows the trading day: after midnight, it still shows the evening's date. It re-reads the clock every minute.
+- **A send that fails or times out still asks the server again.** If the upload landed after the phone gave up, the till says "✓ Today's slip is in" before she sends it twice.
+- An answer from another trading day (a screen left open past 06:00) never claims anything about today. The server is asked again.
+- A receipt must carry both its time and its day before "Sent" is shown.
 
 ### POS (marathon-pos-app): Card Recon, desk and phone
 
@@ -73,6 +82,8 @@ The POS reads the log by day key per terminal, never the whole node:
 - When the batch lands, its card takes over and carries the log. A staff photo that went to the reader after the machine's report was already in still opens there.
 - Card money on a day whose staff slip is in reads **"SLIP SENT BY STAFF – NOT RECORDED YET"**, never "No slip for 2+ days".
 - A supporting slip is compared on its trading day (`dayYmd`).
+- A staff slip still not a batch after a day, with no Unread row, turns red. A batch whose 18:50 cut-off hasn't come yet says its comparison isn't final.
+- Known edge, unchanged: just after midnight the POS also shows the new calendar day's "awaiting tonight" rows, as it always has for every till.
 
 ## Today's records
 
