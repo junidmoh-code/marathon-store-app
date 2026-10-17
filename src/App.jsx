@@ -3344,7 +3344,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // (owner spec 2026-08-08), not a separate class of Source work.
   const restockToday = useRestockLogRaw(today);
   // Card Slip: start its ~2 KB registry read now, so the screen is ready at the tap.
-  usePrefetchSlipTerminals(hasSlipScope(homePerm));
+  usePrefetchSlipTerminals(hasSlipScope(homePerm), homeUser?.uid);
   const sourceBadge = (restockToday || []).length;
   // assistant badge = today's placed orders. A wall-walk display request
   // (displayRequestCore.js) is a warehouse task, not a placed order.

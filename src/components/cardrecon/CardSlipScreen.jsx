@@ -34,7 +34,7 @@ import { serverNowMs } from "../../utils/serverTime";
 import { describeCallableError } from "./captureFailure";
 import { preparePhoto } from "./slipPhoto";
 import { slipTills } from "./slipScope";
-import { peekSlipTerminals, subscribeSlipTerminals, isSlipTerminalsLive } from "./slipTerminals";
+import { peekSlipTerminals, subscribeSlipTerminals, isSlipTerminalsLive, peekServerTills, subscribeServerTills } from "./slipTerminals";
 import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
@@ -89,7 +89,8 @@ const reasonOf = (r) => (typeof r?.reason === "string" && r.reason.trim())
   : "The slip was not sent, and no reason came back. Try again.";
 
 export default function CardSlipScreen({ onExit }) {
-  const { permRecord } = usePermissions();
+  const { permRecord, user } = usePermissions();
+  const uid = user?.uid || null;
 
   // The registry: which machine stands at this account's till. Drawn at once
   // from what the home screen already fetched (or this device's last copy),
@@ -98,19 +99,26 @@ export default function CardSlipScreen({ onExit }) {
   // Live = this session has heard the registry itself, not only the device copy.
   const [live, setLive] = useState(() => isSlipTerminalsLive());
   useEffect(() => subscribeSlipTerminals((v) => { setTerminals(v); setLive(isSlipTerminalsLive()); }), []);
+  // The same answer over HTTP, which no big download can queue in front of.
+  const [serverTills, setServerTills] = useState(() => peekServerTills(uid));
+  useEffect(() => subscribeServerTills(uid, setServerTills), [uid]);
   const nowMs = serverNowMs();
-  const tills = useMemo(() => slipTills(terminals, permRecord, nowMs), [terminals, permRecord, nowMs]);
+  const fromRegistry = useMemo(() => (terminals === null ? null : slipTills(terminals, permRecord, nowMs)), [terminals, permRecord, nowMs]);
+  // Live registry first; else the server's live answer; else whatever this
+  // device last knew. Submit is open once EITHER live answer is in.
+  const tills = live ? fromRegistry : serverTills?.live ? serverTills.tills : (serverTills?.tills ?? fromRegistry);
+  const confirmed = live || serverTills?.live === true;
 
   return (
     <div style={S.page}>
       <button onClick={onExit} style={S.back}>← Home</button>
       <h1 style={S.h1}>Card slip</h1>
       <div style={S.day}>{dayLabel(nowMs)}</div>
-      {terminals === null && <div style={S.quiet}>Loading…</div>}
-      {terminals !== null && tills.length === 0 && (
+      {tills === null && <div style={S.quiet}>Loading…</div>}
+      {tills !== null && tills.length === 0 && (
         <div style={S.quiet}>Your till's card machine isn't set up here yet. Tell Junid.</div>
       )}
-      {tills.map((t) => <TillSlip key={t.tid} till={t} live={live} />)}
+      {(tills || []).map((t) => <TillSlip key={t.tid} till={t} live={confirmed} />)}
     </div>
   );
 }

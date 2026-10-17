@@ -23,6 +23,7 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("firebase/functions", () => ({
   httpsCallable: () => async (payload) => {
+    if (payload.action === "slipTills") return new Promise(() => {}); // the registry fixture answers these tests
     calls.push(payload);
     if (calls.fail) throw calls.fail;
     return { data: calls.reply ? calls.reply(payload) : { ok: true, received: true } };

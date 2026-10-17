@@ -13,7 +13,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
-const { handleSlip, handleSubmit } = require("../cardRecon/cardRecon.js");
+const { handleSlip, handleSubmit, handleSlipTills } = require("../cardRecon/cardRecon.js");
 const { readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
 
 const MT2 = "0000AA2X";   // Marathon Till 2 — pe/till-2
@@ -165,7 +165,7 @@ test("a scope taken away between the two halves stops the record", async () => {
   assert.equal((await batches(db, "pe", MT2))["545-r3"], undefined);
 });
 
-test("every action except 'slip' still sits behind card_recon", () => {
+test("every action except 'slip' and 'slipTills' (own tills only, read-only) still sits behind card_recon", () => {
   const code = fs.readFileSync(path.join(__dirname, "../cardRecon/cardRecon.js"), "utf8").replace(/^\s*\/\/.*$/gm, "");
   const handler = code.slice(code.indexOf("exports.cardBatchCapture = onCall("));
   const gate = handler.indexOf("await assertCardRecon(request);");
@@ -173,7 +173,7 @@ test("every action except 'slip' still sits behind card_recon", () => {
   assert.ok(gate > 0 && slipAt > 0 && slipAt < gate, "slip is dispatched before the card_recon gate");
   // Nothing else is dispatched before the gate.
   const before = handler.slice(0, gate);
-  assert.equal((before.match(/action === "/g) || []).length, 1, "only 'slip' is handled ahead of card_recon");
+  assert.deepEqual((before.match(/action === "([a-zA-Z]+)"/g) || []).sort(), ['action === "slip"', 'action === "slipTills"'], "only 'slip' and 'slipTills' are handled ahead of card_recon");
   for (const a of ["receive", "notices", "noticeSent", "version", "extract", "typed", "submit"]) {
     assert.ok(handler.indexOf(`action === "${a}"`) > gate, `${a} is behind card_recon`);
   }
@@ -275,4 +275,18 @@ test("with Yasmin's live record (destShop marathon-pe, POS cashier) the photo-on
   const out = await handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: MT2, photos: [PHOTO] } }, { now: () => NOW, bucket: bucket() });
   assert.deepEqual(out, { ok: true, received: true });
   assert.equal(Object.keys(await jobs(db)).length, 1);
+});
+
+// ─── "Which tills are mine" over HTTP (Junid, 17 Oct 2026: the screen took
+// ~47 s on a phone, queued behind the app's first load on the socket). ────────
+test("slipTills: each person gets ONLY their own till — id, label, typed — and nothing else", async () => {
+  const db = world();
+  const y = await handleSlipTills(db, { auth: YASMIN, data: { action: "slipTills" } }, { now: () => NOW });
+  assert.deepEqual(y, { ok: true, tills: [{ tid: MT2, storeId: "pe", tillId: "till-2", label: "Marathon Till 2", typed: false }] });
+  const a = await handleSlipTills(db, { auth: AMANDA, data: { action: "slipTills" } }, { now: () => NOW });
+  assert.deepEqual(a.tills.map((t) => [t.tid, t.typed]), [[TT2, true]]);
+  const m = await handleSlipTills(db, { auth: MANAGER, data: { action: "slipTills" } }, { now: () => NOW });
+  assert.deepEqual(m, { ok: true, tills: [] }, "card_recon is not a till scope");
+  assert.doesNotMatch(JSON.stringify(y), /total|cents|batch|variance/i);
+  await assert.rejects(() => handleSlipTills(db, { auth: null, data: {} }), (e) => e.code === "permission-denied");
 });
