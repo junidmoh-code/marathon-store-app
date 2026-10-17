@@ -3586,7 +3586,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       { k: "To restock", v: sourceBadge, warn: sourceBadge > 0, role: ROLES.SOURCE },
       // "Returns" stat removed with the tile — it linked into the same module and
       // would have been the one remaining door to a screen with nothing to do.
-    ];
+    // A one-shop account (destShop) without Source doesn't see "To restock":
+    // it counts /restock_log across EVERY shop (owner, 2026-10-17: a PE
+    // assistant sees nothing of Trophy). The order figures are already theirs
+    // alone — they come off the destShop-scoped order feed.
+    ].filter((s) => !(s.role === ROLES.SOURCE && homePerm?.destShop && !hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])));
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, position:"relative" }}>
         <div style={{ position:"absolute", inset:0, pointerEvents:"none", background:"radial-gradient(1200px 560px at 84% -12%, rgba(60,110,255,.12), transparent 58%), radial-gradient(900px 520px at 4% 0%, rgba(127,90,240,.09), transparent 52%)" }} />
