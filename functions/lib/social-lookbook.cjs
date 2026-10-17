@@ -25,22 +25,23 @@ const { fitsWith } = require("./social-select.cjs");
 // products are worth reading first. The record's categoryKey decides the slot.
 //
 // `anchor` is where the model-side dot of the leader line sits when the vision
-// check gives no position for the item. It is a fraction of the hero panel, and
-// the hero prompt pins the composition (full length, centred, head near the
-// top, feet near the bottom) so these land on the body.
+// check gives no position for the item. It is a fraction of the generated photo, and
+// the hero prompt pins the composition (full length, body at 58% of the
+// width, head ~12% from the top, feet ~15% above the bottom) so these land on
+// the body. Rows are head to toe and so are these, so the lines never cross.
 const LOOKBOOK_SLOTS = [
   { slot: "hat",      label: "hat",      keys: ["caps-beanies", "fitted-caps", "visors"],
-    guess: /\b(cap|caps|beanie|bucket|visor|fitted|snapback|hat)\b/i, anchor: { x: 0.50, y: 0.075 } },
+    guess: /\b(cap|caps|beanie|bucket|visor|fitted|snapback|hat)\b/i, anchor: { x: 0.58, y: 0.135 } },
   { slot: "jacket",   label: "jacket",   keys: ["jackets", "hoodies"],
-    guess: /\b(jacket|hoodie|hooded|puffer|windbreaker|windrunner|anorak|bomber|zip)\b/i, anchor: { x: 0.44, y: 0.27 } },
+    guess: /\b(jacket|hoodie|hooded|puffer|windbreaker|windrunner|anorak|bomber|zip)\b/i, anchor: { x: 0.53, y: 0.29 } },
   { slot: "tee",      label: "tee",      keys: ["t-shirts", "golf-t-shirts"],
-    guess: /\b(t-shirt|tee|t|polo|golf|short-sleeve)\b/i, anchor: { x: 0.52, y: 0.35 } },
+    guess: /\b(t-shirt|tee|t|polo|golf|short-sleeve)\b/i, anchor: { x: 0.60, y: 0.34 } },
   { slot: "bottoms",  label: "bottoms",  keys: ["shorts", "pants", "jeans"],
-    guess: /\b(shorts?|pants|jeans?|cargo|trousers?|joggers?|chinos?)\b/i, anchor: { x: 0.46, y: 0.56 } },
+    guess: /\b(shorts?|pants|jeans?|cargo|trousers?|joggers?|chinos?)\b/i, anchor: { x: 0.55, y: 0.54 } },
   { slot: "bag",      label: "bag",      keys: ["bags"],
-    guess: /\b(bag|backpack|crossbody|sling|pouch|tote|duffel|messenger)\b/i, anchor: { x: 0.30, y: 0.50 } },
+    guess: /\b(bag|backpack|crossbody|sling|pouch|tote|duffel|messenger)\b/i, anchor: { x: 0.72, y: 0.58 } },
   { slot: "sneakers", label: "sneakers", keys: ["sneakers"],
-    guess: /\b(sneakers?|low-top|mid-top|high-top|trainers?|runners?)\b/i, anchor: { x: 0.50, y: 0.93 } },
+    guess: /\b(sneakers?|low-top|mid-top|high-top|trainers?|runners?)\b/i, anchor: { x: 0.58, y: 0.82 } },
 ];
 const SLOT_KEYS = LOOKBOOK_SLOTS.map((s) => s.slot);
 const SLOT_BY_KEY = new Map(LOOKBOOK_SLOTS.map((s) => [s.slot, s]));
@@ -296,13 +297,13 @@ function buildHeroPrompt(rows) {
   return [
     "Editorial fashion photograph, portrait orientation.",
     "A male model, full length, head to toe in frame, standing upright and relaxed, facing the camera at a slight three-quarter angle, arms loose at his sides.",
-    "Composition: the model is centred horizontally; the top of his head is about 6% below the top edge and his shoes rest about 4% above the bottom edge. Nothing crops him.",
+    "Composition: the model's body is centred at about 58% of the frame width (slightly right of centre); the top of his head is about 12% below the top edge and his shoes rest on the paving about 15% above the bottom edge, with open paving below them. Nothing crops him.",
     "Location: he stands on large pale stone paving slabs in a lush garden — tall palm trees and dense tropical greenery behind him, a weathered stone bench to one side.",
     "Light: soft overcast daylight, no hard shadows. Grade: muted, editorial, slightly desaturated greens, natural skin tones.",
     "He wears the complete outfit below, every garment reproduced faithfully from its attached reference photo — same colour, fabric, cut, graphics and logos as the real item:",
     garments,
     "Any item not listed is plain and unbranded (or absent).",
-    "Keep the left third of the frame calm and uncluttered — foliage and paving only.",
+    "Keep the upper-left of the frame calm and uncluttered — soft foliage and sky only — and the bottom 15% plain paving.",
     "No text, no logos other than those on the garments, no captions, no watermark. No lettering, signage, numbers, borders, frames or graphic overlays of any kind.",
   ].join("\n");
 }
@@ -317,16 +318,16 @@ function buildHeroCheckPrompt(rows) {
   return [
     "You are checking an AI-generated fashion photograph before it is published.",
     "1. Does the image contain ANY text, letters, numbers, captions, watermarks, signatures, signage or graphic overlays that are NOT physically printed or embroidered on the model's clothing, shoes, hat or bag? Brand logos and wordmarks ON the garments do not count. Everything else counts, however small.",
-    `2. For each of these items worn by the model, give the point at its visual centre as fractions of the image width and height (0..1, origin top-left): ${items}. Use null for an item you cannot see.`,
+    `2. For each of these items worn by the model, give the point at its visual centre as fractions of the image width and height (0..1, origin top-left): ${items}. Use null for an item you cannot see. Also give "head": the centre of the model's head.`,
     "Answer with ONLY a JSON object, no prose:",
-    '{"text_found": true|false, "text_seen": "what you saw, or empty", "items": {"<slot>": {"x": 0.0, "y": 0.0} | null}}',
+    '{"text_found": true|false, "text_seen": "what you saw, or empty", "head": {"x": 0.0, "y": 0.0}, "items": {"<slot>": {"x": 0.0, "y": 0.0} | null}}',
   ].join("\n");
 }
 
 /**
  * The vision answer, read strictly. Anything that cannot be read FAILS the
  * gate: "I could not tell whether there was text" is not a pass. Pure.
- * @returns { ok, hasText, seen, anchors: { slot: {x,y} }, reason }
+ * @returns { ok, hasText, seen, anchors: { slot: {x,y} }, head: {x,y}|null, reason }
  */
 function readHeroCheck(text, rows) {
   const s = String(text || "");
@@ -344,9 +345,11 @@ function readHeroCheck(text, rows) {
     if (Number.isFinite(x) && Number.isFinite(y) && x >= 0 && x <= 1 && y >= 0 && y <= 1) anchors[r.slot] = { x, y };
   }
   const seen = typeof v.text_seen === "string" ? v.text_seen.slice(0, 200) : "";
+  const hx = Number(v.head && v.head.x), hy = Number(v.head && v.head.y);
+  const head = Number.isFinite(hx) && Number.isFinite(hy) && hx > 0 && hx < 1 && hy > 0 && hy < 0.5 ? { x: hx, y: hy } : null;
   return v.text_found
-    ? { ok: false, hasText: true, seen, anchors, reason: `the hero contains text${seen ? `: ${seen}` : ""}` }
-    : { ok: true, hasText: false, seen, anchors, reason: null };
+    ? { ok: false, hasText: true, seen, anchors, head, reason: `the hero contains text${seen ? `: ${seen}` : ""}` }
+    : { ok: true, hasText: false, seen, anchors, head, reason: null };
 }
 
 /**
@@ -355,8 +358,8 @@ function readHeroCheck(text, rows) {
  * bottom quarter, and so on). Otherwise the slot's fixed anchor is used. Pure.
  */
 const PLAUSIBLE_Y = {
-  hat: [0, 0.25], jacket: [0.12, 0.55], tee: [0.15, 0.6],
-  bottoms: [0.4, 0.85], bag: [0.25, 0.8], sneakers: [0.75, 1],
+  hat: [0.02, 0.25], jacket: [0.15, 0.5], tee: [0.18, 0.55],
+  bottoms: [0.4, 0.75], bag: [0.3, 0.8], sneakers: [0.65, 0.95],
 };
 function anchorsFor(rows, visionAnchors = {}) {
   const out = {};

@@ -216,7 +216,7 @@ describe("hero prompt and the no-text check", () => {
     const a = lb.anchorsFor(rows, { hat: { x: 0.52, y: 0.08 }, sneakers: { x: 0.5, y: 0.2 } });
     assert.equal(a.hat.source, "vision");
     assert.equal(a.sneakers.source, "category");
-    assert.equal(a.sneakers.y, 0.93);
+    assert.equal(a.sneakers.y, 0.82);
   });
 });
 
