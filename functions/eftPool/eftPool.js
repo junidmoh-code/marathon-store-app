@@ -56,6 +56,28 @@
 //                   with no bank id is refused unless the owner released it.
 //                   The settle transaction re-derives the fingerprint from the
 //                   value it commits.
+//   eftEnforcementStatus  ENFORCEMENT (Junid, 17 Oct 2026). At an ENFORCED
+//                   store — Trophy and Marathon PE by default — the till closes
+//                   its "EFT without matching" path: an EFT sale must consume a
+//                   confirmed pool payment through the settle above. The set is
+//                   the /eft_enforcement node (lib/eft-enforce.cjs), read here
+//                   for the till (any active POS identity) and WRITTEN here by
+//                   the owner alone ("set") — no deploy to add or remove a
+//                   store. eftRemainderScan walks new sales and flags any EFT
+//                   leg with no pool key at an enforced store
+//                   (/eft_enforcement_breaches, EFT_ENFORCEMENT_BREACH).
+//   eftPoolManualEntry  JUNID'S ESCAPE HATCH (lib/eft-manual.cjs). The owner
+//                   account ALONE — not managers, not eftReview holders;
+//                   isOwner() checked here, never the UI — types a customer
+//                   reference and an amount, and a SPENDABLE pool record is
+//                   created: reader "manual", stamped manualEntry {by:
+//                   "Junid", uid, email, at: server time}, a synthetic
+//                   fingerprint claimed create-only at entry. A cashier finds
+//                   and consumes it through the ordinary search/settle above
+//                   — single-use by the same transaction — and every surface
+//                   marks it "manually entered by Junid". Idempotent per
+//                   entryId; a second entry of the same reference and amount
+//                   is refused.
 //   eftPoolReverse  owner-only: unwind a completed settlement. Both records
 //                   survive — the settlement moves to `reversals` on the pool
 //                   record; the sale at /pos/sales is not touched. An issued
@@ -73,7 +95,7 @@
 //
 // DEPLOY BY NAME (functions/ is shared with marathon-pos-app — a bare
 // --only functions would redeploy every function in the project):
-//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan
+//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry
 
 "use strict";
 
@@ -96,6 +118,16 @@ const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
   ledgerApplyDecision, buildUnallocatedRecord,
 } = require("../lib/eft-credit.cjs");
+const {
+  EFT_ENFORCEMENT_PATH, EFT_BREACH_PATH, EFT_ENFORCEMENT_SCAN_PATH, BREACH_SCAN_PAGE, BREACH_SCAN_WINDOW_MS,
+  enforcedStoresOf, enforcementUpdateOf, enforcementStatusOf, enforcementBreachOf, breachScanNext,
+} = require("../lib/eft-enforce.cjs");
+const {
+  MANUAL_ENTRY_BY, MANUAL_LOG_PATH, MANUAL_LIST_LIMIT,
+  manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
+  bankTwinOfEntry, manualTwinSettleCheck,
+  manualLogKeyOf, manualLogRecord, manualLogEventPatch, manualLogView,
+} = require("../lib/eft-manual.cjs");
 const { issuingStamp } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 
@@ -241,6 +273,13 @@ async function checkPaymentFingerprint(key, now) {
     console.warn(`eftPoolSettle: ${check.code} on ${key} — refused before settle`);
     throw refusalToError(check);
   }
+  // A bank record whose MANUAL twin (Junid's hand entry of the same money)
+  // was already spent: a different fingerprint, the same payment. Refused.
+  const twin = manualTwinSettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
+  if (!twin.ok) {
+    console.warn(`eftPoolSettle: ${twin.code} on ${key} — refused before settle`);
+    throw refusalToError(twin);
+  }
   if (!check.fingerprint) return null; // owner-released no-bank-id payment
   let claim = null;
   await db.ref(`${EFT_FINGERPRINT_PATH}/${check.fingerprint}`)
@@ -257,6 +296,31 @@ function refusalToError(decision) {
   // failed-precondition: the till should refresh its search and tell the
   // cashier the sentence — these are states of the payment, not bugs.
   return new HttpsError("failed-precondition", decision.message, { code: decision.code });
+}
+
+/**
+ * THE MANUAL-ENTRY LOG follows the pool record. After a lifecycle transaction
+ * commits on a record Junid typed by hand, its /eft_manual_entries row is
+ * patched with what happened (lib/eft-manual.cjs manualLogEventPatch) and a
+ * marker is logged, so Junid can review how often the hatch is used and
+ * whether every entry was spent. Best effort, never a reason to fail the
+ * settle: the pool record is the truth; the log is the review.
+ */
+async function logManualLifecycle(event, key, decision, now, { record: known = null } = {}) {
+  // A retried attach (`already`) carries no value — the record is read so
+  // a row left without its sale by a crash between the transaction and the
+  // first patch still gets it (the patch is an idempotent update).
+  const record = decision?.value ?? (decision?.already && event === "attach" ? known : null);
+  if (!decision?.ok || !isManualEntry(record)) return;
+  const patch = manualLogEventPatch(event, record, now);
+  if (!patch) return;
+  try {
+    await admin.database().ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(record.manualEntry.at, key)}`).update(patch);
+    const u = record.used ?? {};
+    console.log(`EFT_MANUAL_${event.toUpperCase()}: ${key} ${record.reference ?? ""} ${record.amountCents}c${event === "settle" ? ` by ${u.cashierName ?? u.cashierUid} at ${u.storeId ?? "?"}/${u.tillId ?? "?"} for ${u.customerName ?? u.customerId ?? "?"}` : ""}${event === "attach" ? ` sale ${u.sale?.saleId} slip ${u.sale?.receiptNumber ?? "—"}` : ""}`);
+  } catch (e) {
+    console.error(`EFT_MANUAL_LOG_FAILED: ${event} on ${key} —`, e?.message || e);
+  }
 }
 
 // ─── THE REMAINDER'S FOLLOW-UP IO ────────────────────────────────────────────
@@ -609,6 +673,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       console.error(`eftPoolSettle: markUsed ${key} — fingerprint claim failed (the sibling check still covers the tail):`, e?.message || e);
     }
     console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid}) — ${reason}`);
+    await logManualLifecycle("markUsed", key, decision, now);
     // WHAT WAS ACTUALLY STAMPED travels back, so a caller repainting a card in
     // place shows the record rather than its own guess at it. Without this the
     // phone screen had to invent a name and a moment, and they could differ
@@ -644,6 +709,10 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   if (!decision.ok) throw refusalToError(decision);
   // Access changes on money records should be findable in the function log.
   console.log(`eftPoolSettle: ${action} ${key} by ${uid} (${attemptId})${decision.already ? " [already]" : ""}`);
+  // A record Junid typed by hand: its log row follows (never fails the call).
+  await logManualLifecycle(action, key, decision, now, {
+    record: action === "attach" && decision.already ? (await admin.database().ref(`${EFT_POOL_PATH}/${key}`).once("value")).val() : null,
+  });
   // An attach finishes its remainder — mint the customer's store credit, or
   // hold the difference visibly. Re-run on a RETRIED attach too (`already`),
   // which is exactly what repairs a crash between the stamp and the IO.
@@ -659,6 +728,122 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     }
   }
   return { ok: true, already: decision.already === true, remainder };
+});
+
+// ─── ENFORCEMENT — which stores must match every EFT sale ────────────────────
+// Read: any active POS identity (the till asks on the payment screen and
+// caches the answer; with no answer it falls back to the built-in default,
+// never to "not enforced"). Write ("set"): the OWNER ALONE — a cashier must
+// not be able to take their own store off the list.
+exports.eftEnforcementStatus = onCall(RUNTIME, async (request) => {
+  await assertPosIdentity(request);
+  const data = request.data ?? {};
+  const db = admin.database();
+  if (data.action === "set") {
+    if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid can change which stores enforce EFT matching.");
+    const update = enforcementUpdateOf(data, { at: Date.now(), by: ADMIN_EMAIL });
+    if (!update.ok) throw new HttpsError("invalid-argument", update.message, { code: update.code });
+    // MERGE, never replace: switching Pine on must not silently switch Trophy
+    // off. A node that does not exist yet starts from the DEFAULT set, so the
+    // first edit does not wipe it either. (Spec review, this PR.)
+    const before = (await db.ref(EFT_ENFORCEMENT_PATH).once("value")).val();
+    const base = before?.stores && typeof before.stores === "object" ? before.stores
+      : Object.fromEntries(enforcedStoresOf(null).map((id) => [id, true]));
+    const merged = { stores: { ...base, ...update.value.stores }, updatedAt: update.value.updatedAt, updatedBy: update.value.updatedBy };
+    await db.ref(EFT_ENFORCEMENT_PATH).set(merged);
+    console.log(`EFT_ENFORCEMENT_SET: ${JSON.stringify(merged.stores)} by owner (was ${JSON.stringify(base)})`);
+    return { ok: true, ...enforcementStatusOf(merged, null) };
+  }
+  if (data.action === "listBreaches") {
+    // JUNID'S VIEW OF THE SCAN'S FINDINGS — the newest breach records by key
+    // order (sale ids are push keys: chronological), one bounded page.
+    if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid can list enforcement breaches.");
+    const snap = await db.ref(EFT_BREACH_PATH).orderByKey().limitToLast(50).once("value");
+    const breaches = Object.entries(snap.val() ?? {}).map(([saleId, b]) => ({ saleId, ...b })).sort((a, b) => (b.flaggedAt ?? 0) - (a.flaggedAt ?? 0));
+    return { ok: true, breaches, limit: 50 };
+  }
+  const node = (await db.ref(EFT_ENFORCEMENT_PATH).once("value")).val();
+  const storeId = typeof data.storeId === "string" ? data.storeId.slice(0, 40) : null;
+  return { ok: true, ...enforcementStatusOf(node, storeId) };
+});
+
+// ─── MANUAL ENTRY — Junid alone ──────────────────────────────────────────────
+// THE LOCK IS HERE. isOwner() is the admin email AND a verified Google
+// sign-in; nothing on the POS access record (role, eftReview, individual)
+// grants this, so a manager, an EFT reviewer or a shared till login is refused
+// before anything is read. The record it creates is consumed ONLY through
+// eftPoolSettle's ordinary settle (customer confirmed, consume-once).
+exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
+  if (!isOwner(request)) {
+    throw new HttpsError("permission-denied", "Only Junid can enter an EFT payment by hand.", { code: "owner-only" });
+  }
+  const data = request.data ?? {};
+  const db = admin.database();
+  const now = Date.now();
+  const actor = { uid: request.auth.uid, email: request.auth.token.email, name: MANUAL_ENTRY_BY };
+
+  // THE REVIEW LIST: the newest entries and what became of each — by key
+  // order (no index needed), one bounded page, never the node.
+  if (data.action === "list") {
+    const snap = await db.ref(MANUAL_LOG_PATH).orderByKey().limitToLast(MANUAL_LIST_LIMIT).once("value");
+    return { ok: true, ...manualLogView(snap.val()) };
+  }
+
+  const input = manualEntryInputCheck(data);
+  if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
+  const key = manualEntryKeyOf(input.entryId);
+
+  // A RETRY of the same form submit finds its own record: answer it as done
+  // — and make sure its log row exists (a retry after a crash between the
+  // row and the record, or the reverse, must leave both standing).
+  const existing = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+  if (existing) {
+    if (isManualEntry(existing) && existing.manualEntry.entryId === input.entryId) {
+      await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(existing.manualEntry.at, key)}`)
+        .transaction((cur) => (cur === null ? manualLogRecord(existing, key) : undefined));
+      return { ok: true, already: true, key, reference: existing.reference, amountCents: existing.amountCents, at: existing.manualEntry.at, by: MANUAL_ENTRY_BY, status: existing.status };
+    }
+    throw new HttpsError("already-exists", "That entry id is taken by another record — reload and try again.", { code: "key-taken" });
+  }
+  // The SAME money typed twice would be two spendable records: refused while
+  // the earlier entry is in the pool tail (used or waiting).
+  const tail = await readPoolTail();
+  const bankTwin = bankTwinOfEntry(input, Object.entries(tail));
+  if (bankTwin) {
+    throw new HttpsError("failed-precondition", `The bank's own notification for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} is already in the pool, unused — the cashier can use that one. No manual entry is needed.`, { code: "bank-twin-waiting", key: bankTwin.key });
+  }
+  const dup = manualDuplicateOf(input, Object.entries(tail));
+  if (dup) {
+    const state = dup.record.status === "used" ? "has already been used" : "is already in the pool, waiting";
+    throw new HttpsError("failed-precondition", `A manual entry for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} ${state}. If this is a second, separate payment, give it a different reference.`, { code: "already-entered", key: dup.key });
+  }
+
+  const record = manualEntryRecord({ ...input, key, actor, at: now });
+  // The fingerprint claim FIRST, create-only — the same order the poller
+  // keeps, so the settle's claimHolderCheck finds this very record holding it.
+  const fp = paymentFingerprint(record);
+  let claim = null;
+  await db.ref(`${EFT_FINGERPRINT_PATH}/${fp}`).transaction(fingerprintClaimStep(key, now, (d) => { claim = d; }));
+  if (claim?.holder !== key) {
+    throw new HttpsError("aborted", "The entry's fingerprint is held by another record — try again.", { code: "fingerprint-held" });
+  }
+  // THE LOG ROW FIRST, create-only, keyed by this entry's moment. Before the
+  // record, so a cashier settling the instant the record lands patches a row
+  // that exists (an update() on an absent row would create a partial one the
+  // review list cannot show). A racing submit of the same entryId that loses
+  // the record transaction below leaves a row the retry branch tolerates.
+  await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(now, key)}`).transaction((cur) => (cur === null ? manualLogRecord(record, key) : undefined));
+  // Create-if-absent: two racing submits of one entryId write exactly one.
+  const res = await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => (cur === null ? record : undefined));
+  const already = res && res.committed === false;
+  if (already) {
+    // The other submit's record stands, with ITS moment; this attempt's
+    // row (if it won the row race with a different `now`) is removed.
+    const winner = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+    if (winner?.manualEntry?.at !== now) await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(now, key)}`).remove();
+  }
+  console.log(`EFT_MANUAL_ENTRY: ${key} ${input.reference} ${input.amountCents}c by ${MANUAL_ENTRY_BY} (${actor.uid})${input.note ? ` — ${input.note}` : ""}${already ? " [already]" : ""}`);
+  return { ok: true, already, key, reference: input.reference, amountCents: input.amountCents, at: now, by: MANUAL_ENTRY_BY, status: "unmatched" };
 });
 
 // ─── REVERSE — the owner alone ───────────────────────────────────────────────
@@ -691,6 +876,7 @@ exports.eftPoolReverse = onCall(RUNTIME, async (request) => {
     await admin.database().ref(`pos/storeCreditQueue/${reversedRemainder.creditId}`).remove();
   }
   const creditStands = reversedRemainder?.status === "issued" ? reversedRemainder.creditId : null;
+  await logManualLifecycle("reverse", key, decision, at);
   console.log(`eftPoolReverse: ${key} reversed by owner — ${reason}${creditStands ? ` (store credit ${creditStands} STANDS — remove it separately if wrong)` : ""}`);
   return { ok: true, creditStands };
 });
@@ -798,6 +984,40 @@ exports.eftRemainderScan = onSchedule(
         console.error(`EFT_SALE_CHECK_STUCK: ${key} could not be checked —`, err?.message || err);
       }
     }
-    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged, backfilled }));
+    // ENFORCEMENT BREACHES: new regular sales at an enforced store whose EFT
+    // leg names no pool payment — a till that let the plain path through. A
+    // bounded indexed page (createdAt is indexed on /pos/sales), a sliding
+    // two-hour window, an idempotent record per sale; never the node.
+    let breaches = 0;
+    try {
+      const [enfSnap, stateSnap] = await Promise.all([
+        db.ref(EFT_ENFORCEMENT_PATH).once("value"),
+        db.ref(EFT_ENFORCEMENT_SCAN_PATH).once("value"),
+      ]);
+      const enforced = enforcedStoresOf(enfSnap.val());
+      const state = stateSnap.val() || {};
+      const from = Number.isInteger(state.sinceMs) ? state.sinceMs : now - BREACH_SCAN_WINDOW_MS;
+      const snap = await db.ref("pos/sales").orderByChild("createdAt").startAt(from).limitToFirst(BREACH_SCAN_PAGE).once("value");
+      const page = snap.val() || {};
+      let maxSeen = null, count = 0;
+      for (const [saleId, sale] of Object.entries(page)) {
+        count++;
+        if (Number.isInteger(sale?.createdAt) && (maxSeen === null || sale.createdAt > maxSeen)) maxSeen = sale.createdAt;
+        if (!/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) continue;
+        const breach = enforcementBreachOf(saleId, sale, enforced);
+        if (!breach) continue;
+        // CREATE-ONLY: the window slides, so the same sale is read again on
+        // later runs — the first sighting's record and its one log line
+        // stand; a re-read neither rewrites flaggedAt nor re-alerts.
+        const res = await db.ref(`${EFT_BREACH_PATH}/${saleId}`).transaction((cur) => (cur === null ? { ...breach, flaggedAt: now } : undefined));
+        if (!res?.committed) continue;
+        breaches++;
+        console.error(`EFT_ENFORCEMENT_BREACH: sale ${saleId} (${breach.receiptNumber ?? "no slip"}) at ${breach.storeId}/${breach.tillId ?? "?"} by ${breach.cashierName ?? "?"} — ${breach.eftCents}c of EFT with no pool payment`);
+      }
+      await db.ref(EFT_ENFORCEMENT_SCAN_PATH).set(breachScanNext({ state: { sinceMs: from }, now, maxSeen, full: count >= BREACH_SCAN_PAGE }));
+    } catch (err) {
+      console.error("EFT_ENFORCEMENT_SCAN_STUCK:", err?.message || err);
+    }
+    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged, backfilled, breaches }));
   },
 );

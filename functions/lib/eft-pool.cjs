@@ -39,6 +39,7 @@
 "use strict";
 
 const { paymentFingerprint } = require("./eft-fingerprint.cjs");
+const { isManualEntry, isPaymentTwin } = require("./eft-manual.cjs");
 
 const EFT_POOL_PATH = "eft_pool";
 
@@ -104,7 +105,36 @@ function publicEftView(key, record) {
     reversals: record.reversals && typeof record.reversals === "object"
       ? Object.keys(record.reversals).length
       : 0,
+    // MANUALLY ENTERED BY JUNID (lib/eft-manual.cjs): who and when, so the
+    // till marks it and it is never mistaken for a bank-confirmed payment.
+    manualEntry: isManualEntry(record)
+      ? { by: record.manualEntry.by ?? "Junid", at: Number.isInteger(record.manualEntry.at) ? record.manualEntry.at : null }
+      : null,
   };
+}
+
+/**
+ * The answer's TWIN — a bank-confirmed payment with a manual entry of the
+ * same money, or a manual entry whose bank notification has arrived
+ * (isPaymentTwin, either direction). The row is warned either way; if the
+ * twin was already SPENT the settle refuses this record outright
+ * (manualTwinSettleCheck) — one sum is never paid twice.
+ * @returns {{kind:"manual"|"bank", status:"used"|"unmatched", at:number|null, receiptNumber:string|null}|null}
+ */
+function manualTwinOf(record, payments) {
+  if (!record || record.status !== "unmatched") return null;
+  let waiting = null;
+  for (const [, other] of payments ?? []) {
+    if (!isPaymentTwin(record, other)) continue;
+    const kind = isManualEntry(other) ? "manual" : "bank";
+    if (other.status === "used") {
+      return { kind, status: "used", at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
+    }
+    if (other.status === "unmatched" && !waiting) {
+      waiting = { kind, status: "unmatched", at: kind === "manual" ? (Number.isInteger(other.manualEntry?.at) ? other.manualEntry.at : null) : (other.at ?? null), receiptNumber: null };
+    }
+  }
+  return waiting;
 }
 
 // ─── NORMALISATION AND NEAR-MISS ─────────────────────────────────────────────
@@ -226,7 +256,14 @@ function searchEftPool(poolTail, query) {
   const candidates = collapseCopies(exact.length ? exact : hits, payments);
   if (!candidates.length) return { results: [], searched };
   const unmatched = candidates.filter((h) => h.record.status === "unmatched");
+  // A MANUAL ENTRY AND ITS BANK TWIN, both waiting (the notification landed
+  // after Junid typed it): one payment, not an ambiguity. The bank's record
+  // is the answer, and the row warns about the waiting manual one.
+  const bankOnly = unmatched.filter((h) => !isManualEntry(h.record));
+  const twinPair = unmatched.length > 1 && bankOnly.length === 1
+    && unmatched.every((h) => h === bankOnly[0] || isPaymentTwin(bankOnly[0].record, h.record));
   const pick = unmatched.length === 1 ? unmatched[0]
+    : twinPair ? bankOnly[0]
     : unmatched.length === 0 && candidates.length === 1 ? candidates[0]
     : null;
   if (!pick) return { results: [], searched, ambiguous: true };
@@ -234,6 +271,8 @@ function searchEftPool(poolTail, query) {
   // A NEAR match never echoes the stored reference: a cashier probing with
   // typo'd guesses must not learn another customer's reference from it.
   if (pick.on === "near") view.reference = null;
+  const twin = manualTwinOf(pick.record, payments);
+  if (twin) view.manualTwin = twin;
   return { results: [view], searched };
 }
 
@@ -244,6 +283,7 @@ module.exports = {
   EFT_MIN_QUERY,
   NEAR_MISS_MIN_LENGTH,
   publicEftView,
+  manualTwinOf,
   payerInitials,
   normaliseText,
   osaDistance,
