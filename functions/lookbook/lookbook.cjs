@@ -25,7 +25,7 @@
 "use strict";
 
 const lookbook = require("../lib/social-lookbook.cjs");
-const { renderLookbookPoster } = require("../lib/lookbook-render.cjs");
+const { renderLookbookPoster, cutout: defaultCutout, gridOverlay } = require("../lib/lookbook-render.cjs");
 const { loadLookbookCandidates, loadRecentLookbookPids } = require("./load.cjs");
 
 /**
@@ -34,7 +34,7 @@ const { loadLookbookCandidates, loadRecentLookbookPids } = require("./load.cjs")
  *   fetchImage(url) → { buffer, contentType },
  *   generateHero(parts) → { buffer, mime, costUSD, engine },   // 9:16
  *   inlineImagePart(buffer, contentType) → part,
- *   checkHero(buffer, mime, prompt) → text,                   // vision answer
+ *   checkHero(buffer, mime, prompt) → text,                   // a vision answer (text check, then locate)
  *   claimUnit() → { ok, why, count, cap },
  *   releaseUnit() → Promise,                                  // unbilled 5xx only
  *   isUnbilledError(message) → boolean,
@@ -55,22 +55,34 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } =
     loadLookbookCandidates(db, { nowMs }),
     loadRecentLookbookPids(db),
   ]);
+  // A row needs a photo that downloads AND cuts out cleanly. One that fails
+  // either is excluded and its slot re-picked, never drawn badly and never a
+  // reason to stall: the next product in the slot is tried.
+  const cut = deps.cutout || defaultCutout;
   const exclude = new Set(used);
+  const ready = new Map();          // pid → { thumb, contentType, cutout }
   let picked = null;
-  for (let round = 0; round < 3; round++) {
+  for (let round = 0; round < 8; round++) {
     const p = lookbook.pickLookbookOutfit(candidates, { recent, used: exclude });
     if (p.reason) return { ok: false, gate: "outfit", reason: p.reason, costUSD, attempts };
-    const photos = await Promise.all(p.rows.map(async (r) => {
-      try { return await deps.fetchImage(r.photoUrl); } catch (e) { log(`lookbook: photo for ${r.pid} failed (${e && e.message}) — skipping it`); return null; }
+    const fresh = p.rows.filter((r) => !ready.has(r.pid));
+    await Promise.all(fresh.map(async (r) => {
+      try {
+        const img = await deps.fetchImage(r.photoUrl);
+        const c = await cut(img.buffer);
+        if (!c || !c.png) { log(`lookbook: ${r.pid} photo does not cut out cleanly (${(c && c.tried || []).join(", ")}) — skipping it`); exclude.add(r.pid); return; }
+        ready.set(r.pid, { thumb: img.buffer, contentType: img.contentType, cutout: c });
+      } catch (e) {
+        log(`lookbook: photo for ${r.pid} failed (${e && e.message}) — skipping it`);
+        exclude.add(r.pid);
+      }
     }));
-    const bad = p.rows.filter((_, i) => !photos[i]);
-    if (!bad.length) {
-      picked = { ...p, rows: p.rows.map((r, i) => ({ ...r, thumb: photos[i].buffer, contentType: photos[i].contentType })) };
+    if (p.rows.every((r) => ready.has(r.pid))) {
+      picked = { ...p, rows: p.rows.map((r) => ({ ...r, ...ready.get(r.pid) })) };
       break;
     }
-    for (const r of bad) exclude.add(r.pid);
   }
-  if (!picked) return { ok: false, gate: "outfit", reason: "product photos could not be fetched for a full outfit", costUSD, attempts };
+  if (!picked) return { ok: false, gate: "outfit", reason: "no full outfit with photos that download and cut out cleanly", costUSD, attempts };
   const rows = picked.rows;
 
   // ── 2. THE HERO, with the real garments attached ───────────────────────
@@ -80,7 +92,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } =
     parts.push({ text: `REFERENCE ${i + 1} — ${r.slot.toUpperCase()}: ${r.displayName}. He wears exactly this item:` });
     parts.push(deps.inlineImagePart(r.thumb, r.contentType || "image/jpeg"));
   });
-  const checkPrompt = lookbook.buildHeroCheckPrompt(rows);
+  const checkPrompt = lookbook.buildHeroCheckPrompt();
 
   let hero = null, check = null, engine = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -111,18 +123,26 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } =
     engine = gen.engine || null;
     let answer = "";
     try { answer = await deps.checkHero(gen.buffer, gen.mime || "image/png", checkPrompt); } catch (e) { answer = ""; log(`lookbook: text check failed: ${e && e.message}`); }
-    check = lookbook.readHeroCheck(answer, rows);
+    check = lookbook.readHeroCheck(answer);
     attempts.push({ attempt, engine, costUSD: gen.costUSD || 0, textOk: check.ok, seen: check.seen || null, reason: check.reason });
     if (check.ok) { hero = gen; break; }
     log(`lookbook: attempt ${attempt} failed the text check — ${check.reason}`);
   }
   if (!hero) return { ok: false, gate: "text", reason: `the hero failed the no-text check twice (${check.reason})`, costUSD, attempts, rows };
 
-  // ── 3. THE POSTER ──────────────────────────────────────────────────────
-  const anchors = lookbook.anchorsFor(rows, check.anchors);
+  // ── 3. WHERE THE GARMENTS ARE (for the dots) ───────────────────────────
+  // Best effort: an unanswered locate leaves the dots on the category spots.
+  let located = { anchors: {}, head: null };
   try {
-    const poster = await renderLookbookPoster({ hero: hero.buffer, rows, anchors, subject: check.head });
-    return { ok: true, rows, total: poster.total, poster, costUSD, engine, attempts, check, anchors, hero, prompt };
+    const gridded = await gridOverlay(hero.buffer, lookbook.GRID);
+    located = lookbook.readLocate(await deps.checkHero(gridded, "image/jpeg", lookbook.buildLocatePrompt(rows)), rows);
+  } catch (e) { log(`lookbook: locate failed (${e && e.message}) — dots on the category spots`); }
+
+  // ── 4. THE POSTER ──────────────────────────────────────────────────────
+  const anchors = lookbook.anchorsFor(rows, located.anchors, located.head);
+  try {
+    const poster = await renderLookbookPoster({ hero: hero.buffer, rows, anchors, subject: located.head });
+    return { ok: true, rows, total: poster.total, poster, costUSD, engine, attempts, check, located, anchors, hero, prompt };
   } catch (e) {
     return { ok: false, gate: "render", reason: `the poster could not be rendered: ${String(e && e.message).slice(0, 160)}`, costUSD, attempts, rows };
   }

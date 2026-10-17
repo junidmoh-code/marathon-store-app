@@ -274,41 +274,121 @@ function grain(w, h, seed = 20241017) {
 }
 
 // ── PRODUCT CUT-OUTS ─────────────────────────────────────────────────────────
-// The New Arrivals studio's own background removal (greyMatte: a flood of the
-// light background from the edges, no model call). Accepted only when the
-// result looks like a product (between 4% and 92% of the frame kept).
-// Otherwise the photo is placed with a MULTIPLY blend, under which a white or
-// light-grey backdrop takes the paper's colour and disappears.
-let cutoutModule = null;
-async function cutout(buffer) {
+// Two mattes the repo already uses, best first:
+//   1. @imgly/background-removal-node: the local ONNX matte the Mac mini's
+//      group poster runs (marathon-group-poster src/cutout.mjs, IoU 0.99 on
+//      Junid's real items). The shop's photos are taken on the mesh display
+//      wall, and only a segmentation model can take that away. It is imported
+//      lazily, so no other function in this codebase loads it.
+//   2. greyMatte from the New Arrivals studio: a flood of a plain light
+//      background, no model.
+// A matte is accepted only when it looks like a product: 4%–92% of the frame
+// kept, touching at most two of the image's edges. makeLookbook treats a photo
+// no matte accepts as NOT an approved photo and picks the next product in the
+// slot. The MULTIPLY placement below is only for callers that pass no cut-out.
+let greyModule = null;
+async function imglyMatte(buffer) {
   const sharp = require("sharp");
-  try {
-    cutoutModule = cutoutModule || await import("../newArrivals/studio/cutout.mjs");
-    const small = await sharp(buffer).rotate().resize(700, 700, { fit: "inside", withoutEnlargement: true }).toBuffer();
-    const png = await cutoutModule.greyMatte(small);
-    const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
-    let kept = 0;
-    for (let i = 3; i < data.length; i += 4) if (data[i] > 127) kept++;
-    const frac = kept / (info.width * info.height);
-    if (frac < 0.04 || frac > 0.92) return { png: null, method: "multiply", coverage: frac };
-    const trimmed = await sharp(png).trim({ threshold: 1 }).png().toBuffer();
-    return { png: trimmed, method: "greyMatte", coverage: frac };
-  } catch (e) {
-    return { png: null, method: "multiply", reason: String(e && e.message) };
+  const { removeBackground } = await import("@imgly/background-removal-node");
+  const png = await sharp(buffer).png().toBuffer();
+  // publicPath defaults to node_modules/ under the process's CWD, which is not
+  // where a Cloud Function or a script started elsewhere has it. Point it at
+  // the package's own dist/, where its weights ship.
+  const publicPath = `file://${path.dirname(require.resolve("@imgly/background-removal-node"))}/`;
+  const blob = await removeBackground(new Blob([png], { type: "image/png" }), { publicPath, model: "medium", output: { format: "image/png", quality: 1 } });
+  return Buffer.from(await blob.arrayBuffer());
+}
+async function greyMatte(buffer) {
+  greyModule = greyModule || await import("../newArrivals/studio/cutout.mjs");
+  return greyModule.greyMatte(buffer);
+}
+// What a matte kept: the share of the frame, and how many image edges the kept
+// region touches. A product photographed on a wall is a shape in the middle; a
+// cluttered phone photo (bags, plastic, another product) runs off the edges.
+async function measureMatte(png) {
+  const sharp = require("sharp");
+  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const w = info.width, h = info.height;
+  let kept = 0, left = w, right = -1, top = h, bottom = -1;
+  for (let i = 0; i < w * h; i++) {
+    if (data[i * 4 + 3] <= 127) continue;
+    kept++;
+    const x = i % w, y = (i - x) / w;
+    if (x < left) left = x; if (x > right) right = x; if (y < top) top = y; if (y > bottom) bottom = y;
   }
+  const m = 2;
+  const edges = kept ? [left <= m, top <= m, right >= w - 1 - m, bottom >= h - 1 - m].filter(Boolean).length : 0;
+  return { coverage: kept / (w * h), edges };
 }
 
-async function thumbLayer(buffer, size) {
+// Faint matte ghosts (a hint of the mesh wall left at 10–30% alpha) are cleared,
+// and so are detached scraps: a hanger pole or a price-gun tag beside the
+// product. Pieces under a quarter of the largest piece go (the New Arrivals
+// studio's own components()); a shoe's box, which is a real part of the
+// product shot, is usually bigger than that and stays.
+async function clearGhosts(png) {
   const sharp = require("sharp");
-  const c = await cutout(buffer);
-  if (c.png) {
+  greyModule = greyModule || await import("../newArrivals/studio/cutout.mjs");
+  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const w = info.width, h = info.height;
+  for (let i = 3; i < data.length; i += 4) if (data[i] < 96) data[i] = 0;
+  const { labels, comps } = greyModule.components(data, w, h);
+  if (comps.length > 1) {
+    const keep = new Set(comps.filter((c) => c.area >= comps[0].area * 0.25).map((c) => c.id));
+    for (let i = 0; i < w * h; i++) if (data[i * 4 + 3] && !keep.has(labels[i])) data[i * 4 + 3] = 0;
+  }
+  return sharp(data, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
+}
+
+async function cutout(buffer, { mattes = [["imgly", imglyMatte], ["greyMatte", greyMatte]] } = {}) {
+  const sharp = require("sharp");
+  const small = await sharp(buffer).rotate().resize(900, 900, { fit: "inside", withoutEnlargement: true }).toBuffer();
+  const tried = [];
+  for (const [method, matte] of mattes) {
+    try {
+      const png = await clearGhosts(await matte(small));
+      const { coverage, edges } = await measureMatte(png);
+      tried.push(`${method}:${coverage.toFixed(2)}/${edges}e`);
+      if (coverage < 0.04 || coverage > 0.92 || edges >= 3) continue;
+      const trimmed = await sharp(png).trim({ threshold: 1 }).png().toBuffer();
+      return { png: trimmed, method, coverage };
+    } catch (e) {
+      tried.push(`${method}:error ${String(e && e.message).slice(0, 60)}`);
+    }
+  }
+  return { png: null, method: "multiply", tried };
+}
+
+async function thumbLayer(row, size) {
+  const sharp = require("sharp");
+  const c = row.cutout !== undefined ? row.cutout : (row.thumb ? await cutout(row.thumb) : { png: null });
+  if (c && c.png) {
     const fitted = await sharp(c.png).resize(size, size, { fit: "inside" }).png().toBuffer();
     const m = await sharp(fitted).metadata();
     return { input: fitted, dx: Math.round((size - m.width) / 2), dy: Math.round((size - m.height) / 2), method: c.method };
   }
-  const fitted = await sharp(buffer).rotate().resize(size, size, { fit: "inside" }).flatten({ background: "#ffffff" }).png().toBuffer();
+  if (!row.thumb) return null;
+  const fitted = await sharp(row.thumb).rotate().resize(size, size, { fit: "inside" }).flatten({ background: "#ffffff" }).png().toBuffer();
   const m = await sharp(fitted).metadata();
   return { input: fitted, dx: Math.round((size - m.width) / 2), dy: Math.round((size - m.height) / 2), blend: "multiply", method: "multiply" };
+}
+
+// ── THE LOCATE GRID ──────────────────────────────────────────────────────────
+// A copy of the hero with social-lookbook's GRID drawn over it, labelled on all
+// four edges, for the vision model to name cells on. Never published.
+async function gridOverlay(buffer, grid) {
+  const sharp = require("sharp");
+  const base = await sharp(buffer).resize(1080, 1920, { fit: "inside" }).jpeg({ quality: 88 }).toBuffer();
+  const { width: w, height: h } = await sharp(base).metadata();
+  const cw = w / grid.cols, ch = h / grid.rows;
+  const out = [];
+  for (let c = 1; c < grid.cols; c++) out.push(`<line x1="${f1(c * cw)}" y1="0" x2="${f1(c * cw)}" y2="${h}" stroke="#ff2" stroke-opacity="0.75" stroke-width="1.5"/>`);
+  for (let r = 1; r < grid.rows; r++) out.push(`<line x1="0" y1="${f1(r * ch)}" x2="${w}" y2="${f1(r * ch)}" stroke="#ff2" stroke-opacity="0.75" stroke-width="1.5"/>`);
+  const label = (t, x, y) => `<rect x="${f1(x - 13)}" y="${f1(y - 13)}" width="26" height="26" fill="#000" fill-opacity="0.6"/>` +
+    type.textPath(t, { font: "archivo", weight: 700, size: 15, x, y: y + 5.5, anchor: "middle", fill: "#ff2" }).svg;
+  for (let c = 0; c < grid.cols; c++) { const L = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[c]; out.push(label(L, (c + 0.5) * cw, 14), label(L, (c + 0.5) * cw, h - 14)); }
+  for (let r = 0; r < grid.rows; r++) out.push(label(String(r + 1), 14, (r + 0.5) * ch), label(String(r + 1), w - 14, (r + 0.5) * ch));
+  return sharp(base).composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">${out.join("")}</svg>`) }]).jpeg({ quality: 88 }).toBuffer();
 }
 
 /**
@@ -363,8 +443,10 @@ async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null }
   const sizes = new Set([MASTER, FEED_LAYOUT].map((c) => panelLayout(rows.length, c.h).thumb));
   const prepared = await Promise.all(rows.map(async (r) => {
     const thumbLayers = {};
-    for (const size of sizes) thumbLayers[size] = r.thumb ? await thumbLayer(r.thumb, size) : null;
-    return { ...r, thumbLayers };
+    // One matte per product, shared by both canvases.
+    const row = r.cutout !== undefined || !r.thumb ? r : { ...r, cutout: await cutout(r.thumb) };
+    for (const size of sizes) thumbLayers[size] = await thumbLayer(row, size);
+    return { ...row, thumbLayers };
   }));
   const master = await renderCanvas({ hero, rows: prepared, total, anchors, subject, W: MASTER.w, H: MASTER.h });
   const feedNative = await renderCanvas({ hero, rows: prepared, total, anchors, subject, W: FEED_LAYOUT.w, H: FEED_LAYOUT.h });
@@ -387,6 +469,6 @@ async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null }
 }
 
 module.exports = {
-  renderLookbookPoster, buildPosterSvg, panelLayout, heroFrame, cutout,
+  renderLookbookPoster, buildPosterSvg, panelLayout, heroFrame, cutout, gridOverlay,
   PAPER, HERO_FRAC, MASTER, FEED, FEED_LAYOUT, STORY,
 };

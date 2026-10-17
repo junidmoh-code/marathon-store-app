@@ -3,8 +3,11 @@
 //   · Nano Banana Pro (gemini-3-pro-image) through lib/gemini-image.cjs, with
 //     the same Pro → Flash fallback on an unbilled 5xx that generateSocialScene
 //     makes (7 Oct 2026), at 9:16 / 2K;
-//   · the vision model the pipeline already pays for (claude-haiku-4-5,
-//     REORDER_MODEL in index.js) for the no-text check;
+//   · a vision model the pipeline already pays for, for the no-text check and
+//     the garment positions: claude-sonnet-4-6 (CHAT_MODEL in index.js, the
+//     caption model). claude-haiku-4-5 was tried first and placed the hat a
+//     head-height above the beanie on the first real poster (2026-10-17);
+//     about a cent more per poster buys dots that land on the garments.
 //   · the day's generation cap: social_generation_budget/{saDate}/count,
 //     reserved through social-budget's reserveGeneration and released through
 //     social-recovery's releaseGeneration. The same counter, the same

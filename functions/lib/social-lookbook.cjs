@@ -331,43 +331,82 @@ function buildHeroPrompt(rows) {
 // lettering that is NOT printed on the clothing (a caption, a watermark, a
 // sign, numbers, a frame)? And roughly where is each listed item? The second
 // answer places the dots. The first is the gate.
-function buildHeroCheckPrompt(rows) {
-  const items = (rows || []).map((r) => `"${r.slot}"`).join(", ");
+const WHERE = {
+  hat: "the hat itself, on the head",
+  jacket: "the outer layer (jacket, hoodie or sweater), on the chest or upper arm",
+  tee: "the top worn under or as the main layer, at the middle of the torso",
+  bottoms: "the trousers, jeans or shorts, on the thigh",
+  bag: "the BODY of the bag (not its strap, not the hand)",
+  sneakers: "the shoes, on the nearer shoe",
+};
+function buildHeroCheckPrompt() {
   return [
     "You are checking an AI-generated fashion photograph before it is published.",
-    "1. Does the image contain ANY text, letters, numbers, captions, watermarks, signatures, signage or graphic overlays that are NOT physically printed or embroidered on the model's clothing, shoes, hat or bag? Brand logos and wordmarks ON the garments do not count. Everything else counts, however small.",
-    `2. For each of these items worn by the model, give the point at its visual centre as fractions of the image width and height (0..1, origin top-left): ${items}. Use null for an item you cannot see. Also give "head": the centre of the model's head.`,
+    "Does the image contain ANY text, letters, numbers, captions, watermarks, signatures, signage or graphic overlays that are NOT physically printed or embroidered on the model's clothing, shoes, hat or bag? Brand logos and wordmarks ON the garments do not count. Everything else counts, however small.",
     "Answer with ONLY a JSON object, no prose:",
-    '{"text_found": true|false, "text_seen": "what you saw, or empty", "head": {"x": 0.0, "y": 0.0}, "items": {"<slot>": {"x": 0.0, "y": 0.0} | null}}',
+    '{"text_found": true|false, "text_seen": "what you saw, or empty"}',
   ].join("\n");
 }
 
-/**
- * The vision answer, read strictly. Anything that cannot be read FAILS the
- * gate: "I could not tell whether there was text" is not a pass. Pure.
- * @returns { ok, hasText, seen, anchors: { slot: {x,y} }, head: {x,y}|null, reason }
- */
-function readHeroCheck(text, rows) {
+// ── WHERE EACH GARMENT IS: A LABELLED GRID, NOT RAW NUMBERS ─────────────────
+// Asked for x/y fractions, the vision model put the same beanie at y 0.12,
+// 0.21 and 0.17 on three looks at one picture. Asked for a CELL on a grid
+// drawn over a copy of the picture, it answers what it can see. The grid copy
+// is used for this question only. The text check above looks at the clean
+// picture, so the grid's own labels can never fail it.
+const GRID = { cols: 12, rows: 20 };
+const COL_LETTERS = "ABCDEFGHIJKL";
+function buildLocatePrompt(rows) {
+  const items = (rows || []).map((r) => `"${r.slot}": ${WHERE[r.slot]}`).join("; ");
+  return [
+    `This photograph has a grid drawn over it: columns ${COL_LETTERS[0]}–${COL_LETTERS[GRID.cols - 1]} from left to right, rows 1–${GRID.rows} from top to bottom, labelled on the edges.`,
+    `For each item the model is wearing, name the ONE grid cell that contains its visual centre. Items: ${items}. Also "head": the centre of the model's face.`,
+    "Use null for anything you cannot see. Answer with ONLY a JSON object, no prose:",
+    '{"head": "F5", "items": {"<slot>": "G9" | null}}',
+  ].join("\n");
+}
+
+/** "G9" → the cell's centre as fractions, or null. Pure. */
+function cellCentre(cell) {
+  const m = /^\s*([A-Za-z])\s*(\d{1,2})\s*$/.exec(String(cell || ""));
+  if (!m) return null;
+  const c = COL_LETTERS.indexOf(m[1].toUpperCase()), r = Number(m[2]) - 1;
+  if (c < 0 || r < 0 || r >= GRID.rows) return null;
+  return { x: (c + 0.5) / GRID.cols, y: (r + 0.5) / GRID.rows };
+}
+
+/** The locate answer → { anchors, head }. Anything unreadable is simply absent. Pure. */
+function readLocate(text, rows) {
   const s = String(text || "");
   const a = s.indexOf("{"), b = s.lastIndexOf("}");
-  if (a === -1 || b <= a) return { ok: false, hasText: true, seen: "", anchors: {}, reason: "the text check gave no JSON answer" };
-  let v;
-  try { v = JSON.parse(s.slice(a, b + 1)); } catch { return { ok: false, hasText: true, seen: "", anchors: {}, reason: "the text check answer was not valid JSON" }; }
-  if (typeof v.text_found !== "boolean") return { ok: false, hasText: true, seen: "", anchors: {}, reason: "the text check did not say whether text was found" };
+  let v = {};
+  if (a !== -1 && b > a) { try { v = JSON.parse(s.slice(a, b + 1)); } catch { v = {}; } }
   const anchors = {};
   const items = v.items && typeof v.items === "object" ? v.items : {};
   for (const r of rows || []) {
-    const p = items[r.slot];
-    if (!p || typeof p !== "object") continue;
-    const x = Number(p.x), y = Number(p.y);
-    if (Number.isFinite(x) && Number.isFinite(y) && x >= 0 && x <= 1 && y >= 0 && y <= 1) anchors[r.slot] = { x, y };
+    const p = cellCentre(items[r.slot]);
+    if (p) anchors[r.slot] = p;
   }
+  const head = cellCentre(v.head);
+  return { anchors, head: head && head.y < 0.5 ? head : null };
+}
+
+/**
+ * The text check's answer, read strictly. Anything that cannot be read FAILS
+ * the gate: "I could not tell whether there was text" is not a pass. Pure.
+ * @returns { ok, hasText, seen, reason }
+ */
+function readHeroCheck(text) {
+  const s = String(text || "");
+  const a = s.indexOf("{"), b = s.lastIndexOf("}");
+  if (a === -1 || b <= a) return { ok: false, hasText: true, seen: "", reason: "the text check gave no JSON answer" };
+  let v;
+  try { v = JSON.parse(s.slice(a, b + 1)); } catch { return { ok: false, hasText: true, seen: "", reason: "the text check answer was not valid JSON" }; }
+  if (typeof v.text_found !== "boolean") return { ok: false, hasText: true, seen: "", reason: "the text check did not say whether text was found" };
   const seen = typeof v.text_seen === "string" ? v.text_seen.slice(0, 200) : "";
-  const hx = Number(v.head && v.head.x), hy = Number(v.head && v.head.y);
-  const head = Number.isFinite(hx) && Number.isFinite(hy) && hx > 0 && hx < 1 && hy > 0 && hy < 0.5 ? { x: hx, y: hy } : null;
   return v.text_found
-    ? { ok: false, hasText: true, seen, anchors, head, reason: `the hero contains text${seen ? `: ${seen}` : ""}` }
-    : { ok: true, hasText: false, seen, anchors, head, reason: null };
+    ? { ok: false, hasText: true, seen, reason: `the hero contains text${seen ? `: ${seen}` : ""}` }
+    : { ok: true, hasText: false, seen, reason: null };
 }
 
 /**
@@ -379,15 +418,33 @@ const PLAUSIBLE_Y = {
   hat: [0.02, 0.25], jacket: [0.15, 0.5], tee: [0.18, 0.55],
   bottoms: [0.4, 0.75], bag: [0.3, 0.8], sneakers: [0.65, 0.95],
 };
-function anchorsFor(rows, visionAnchors = {}) {
+function anchorsFor(rows, visionAnchors = {}, head = null) {
   const out = {};
+  // A hat is on the head. A vision answer that puts it more than a head-height
+  // away from the head it also reported is the less reliable of the two.
+  if (head && visionAnchors && visionAnchors.hat && Math.abs(visionAnchors.hat.y - head.y) > 0.09) {
+    visionAnchors = { ...visionAnchors, hat: { x: head.x, y: Math.max(0.02, head.y - 0.035) } };
+  }
+  // The category spots are a TEMPLATE of a body from head (y 0.16) to feet
+  // (y 0.82) centred at x 0.58, the composition the prompt asks for. The model
+  // does not always stand there (the first real hero put him ~10% lower), so
+  // when the head is known the template is stretched onto the real body: head
+  // to the vision feet, or to the same body height below the head.
+  const T_HEAD = 0.16, T_FEET = SLOT_BY_KEY.get("sneakers").anchor.y, T_X = 0.58;
+  const feetV = visionAnchors && visionAnchors.sneakers;
+  const place = (fixed) => {
+    if (!head) return fixed;
+    const feet = feetV && feetV.y > head.y + 0.3 ? feetV.y : Math.min(0.97, head.y + (T_FEET - T_HEAD));
+    const k = (feet - head.y) / (T_FEET - T_HEAD);
+    return { x: Math.min(0.98, Math.max(0.08, fixed.x + (head.x - T_X))), y: head.y + (fixed.y - T_HEAD) * k };
+  };
   for (const r of rows || []) {
-    const fixed = SLOT_BY_KEY.get(r.slot).anchor;
+    const fixed = place(SLOT_BY_KEY.get(r.slot).anchor);
     const v = visionAnchors && visionAnchors[r.slot];
     const band = PLAUSIBLE_Y[r.slot];
     out[r.slot] = v && v.y >= band[0] && v.y <= band[1] && v.x >= 0.08 && v.x <= 0.98
       ? { x: v.x, y: v.y, source: "vision" }
-      : { ...fixed, source: "category" };
+      : { x: fixed.x, y: fixed.y, source: head ? "body" : "category" };
   }
   return out;
 }
@@ -399,4 +456,5 @@ module.exports = {
   recentLookbookPids, pickLookbookOutfit, historyEntry,
   parseStillFormats, advanceRotation, formatForSeq, stillCalendar,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, anchorsFor,
+  GRID, buildLocatePrompt, cellCentre, readLocate,
 };

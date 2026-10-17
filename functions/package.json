@@ -13,6 +13,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
     "@google-cloud/secret-manager": "^6.2.0",
+    "@imgly/background-removal-node": "1.4.5",
     "cors": "^2.8.6",
     "firebase-admin": "^12.0.0",
     "firebase-functions": "^6.0.0",
@@ -22,5 +23,10 @@
     "pdfjs-dist": "^5.4.296",
     "sharp": "^0.33.5"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "@imgly/background-removal-node": {
+      "sharp": "$sharp"
+    }
+  }
 }

@@ -28,7 +28,8 @@ function seed({ withHat = true } = {}) {
 
 let IMG;
 const img = async () => IMG || (IMG = await sharp({ create: { width: 360, height: 640, channels: 3, background: "#6b7" } }).jpeg().toBuffer());
-const CLEAN = JSON.stringify({ text_found: false, text_seen: "", head: { x: 0.58, y: 0.16 }, items: { hat: { x: 0.58, y: 0.13 } } });
+const CLEAN = JSON.stringify({ text_found: false, text_seen: "" });
+const LOCATED = JSON.stringify({ head: "G3", items: { hat: "G2", sneakers: "G17" } });
 const DIRTY = JSON.stringify({ text_found: true, text_seen: "VOGUE", items: {} });
 
 function deps(db, over = {}) {
@@ -39,7 +40,7 @@ function deps(db, over = {}) {
     fetchImage: async () => ({ buffer: await img(), contentType: "image/jpeg" }),
     inlineImagePart: (b, t) => ({ inline_data: { mime_type: t, data: "x" } }),
     generateHero: async () => { calls.gen++; return { buffer: await img(), mime: "image/jpeg", costUSD: 0.134, engine: "nbpro" }; },
-    checkHero: async () => { calls.check++; return CLEAN; },
+    checkHero: async (_b, _m, prompt) => { calls.check++; return /grid/.test(prompt) ? LOCATED : CLEAN; },
     claimUnit: async () => {
       const r = await counter().transaction((c) => socialBudget.reserveGeneration(c, 4));
       return r.committed ? { ok: true, cap: 4 } : { ok: false, cap: 4, why: "cap" };
@@ -47,6 +48,7 @@ function deps(db, over = {}) {
     releaseUnit: async () => { calls.released++; await counter().transaction((c) => (typeof c === "number" && c > 0 ? c - 1 : c === null ? 0 : undefined)); },
     unitsLeft: async () => 4 - ((await counter().once("value")).val() || 0),
     isUnbilledError: (m) => /HTTP 5\d\d/.test(m),
+    cutout: async (buf) => ({ png: await sharp(buf).png().toBuffer(), method: "fake" }),
     ...over,
   };
   d.calls = calls;
@@ -69,6 +71,8 @@ describe("makeLookbook", () => {
     assert.match(sentParts[1].text, /^REFERENCE 1 — HAT:/);
     assert.ok(sentParts[2].inline_data);
     assert.equal(r.anchors.hat.source, "vision");
+    assert.deepEqual(r.located.head, { x: 6.5 / 12, y: 2.5 / 20 });
+    assert.equal(r.anchors.jacket.source, "body");
   });
 
   test("no eligible outfit: the outfit gate, nothing claimed, nothing generated", async () => {
@@ -84,7 +88,7 @@ describe("makeLookbook", () => {
   test("text found, budget allows a retry that still leaves the fallback a unit: regenerates once", async () => {
     const db = seed();
     let n = 0;
-    const d = deps(db, { checkHero: async () => (++n === 1 ? DIRTY : CLEAN) });
+    const d = deps(db, { checkHero: async (_b, _m, p) => (/grid/.test(p) ? LOCATED : ++n === 1 ? DIRTY : CLEAN) });
     const r = await makeLookbook(db, d, { nowMs: NOW });
     assert.equal(r.ok, true);
     assert.equal(d.calls.gen, 2);
@@ -139,6 +143,20 @@ describe("makeLookbook", () => {
       assert.equal(r.gate, "generate");
       assert.equal(d.calls.released, released, msg);
     }
+  });
+
+  test("a photo that does not cut out cleanly is not an approved photo: the next product in the slot is used", async () => {
+    const db = seed();
+    let bad = 0;
+    const d = deps(db, {
+      fetchImage: async (url) => ({ buffer: await img(), contentType: "image/jpeg", url }),
+      cutout: async () => (++bad === 3 ? { png: null, tried: ["imgly:0.01/0e"] } : { png: await sharp(await img()).png().toBuffer(), method: "fake" }),
+    });
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.ok, true, r.reason);
+    // t1 was the third photo fetched (hat, jacket, tee...) and failed: t2 replaces it
+    assert.equal(r.rows.find((x) => x.slot === "tee").pid, "t2");
+    assert.equal(d.calls.gen, 1);
   });
 
   test("a product photo that will not download is replaced, not fatal", async () => {

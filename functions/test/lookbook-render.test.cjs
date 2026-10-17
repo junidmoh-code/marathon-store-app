@@ -17,7 +17,7 @@ const ROWS = async () => [
 
 describe("renderLookbookPoster", () => {
   test("three exports at the exact sizes, total summed from the rows", async () => {
-    const out = await R.renderLookbookPoster({ hero: await hero(), rows: await ROWS(), anchors: { hat: { x: 0.58, y: 0.13 } } });
+    const out = await R.renderLookbookPoster({ hero: await hero(), rows: (await ROWS()).map((r) => ({ ...r, cutout: null })), anchors: { hat: { x: 0.58, y: 0.13 } } });
     for (const [k, w, h] of [["master", 1200, 1800], ["feed", 1080, 1350], ["story", 1080, 1920]]) {
       const m = await sharp(out[k].buffer).metadata();
       assert.equal(m.width, w, k); assert.equal(m.height, h, k);
@@ -28,18 +28,18 @@ describe("renderLookbookPoster", () => {
 
   test("a photo that is all background falls back to multiply rather than an empty cut-out", async () => {
     const out = await R.renderLookbookPoster({ hero: await hero(), rows: await ROWS() });
-    assert.equal(out.cutouts.hat, "greyMatte");
+    assert.notEqual(out.cutouts.hat, "multiply");
     assert.equal(out.cutouts.sneakers, "multiply");
   });
 
   test("the story is the master letterboxed on the paper colour", async () => {
-    const out = await R.renderLookbookPoster({ hero: await hero(), rows: await ROWS() });
+    const out = await R.renderLookbookPoster({ hero: await hero(), rows: (await ROWS()).map((r) => ({ ...r, cutout: null })) });
     const { data } = await sharp(out.story.buffer).extract({ left: 500, top: 10, width: 1, height: 1 }).raw().toBuffer({ resolveWithObject: true });
     for (const [c, want] of [[data[0], 0xE9], [data[1], 0xE6], [data[2], 0xDF]]) assert.ok(Math.abs(c - want) <= 3);
   });
 
   test("deterministic: the same inputs give the same bytes", async () => {
-    const rows = await ROWS(); const h = await hero();
+    const rows = (await ROWS()).map((r) => ({ ...r, cutout: null })); const h = await hero();
     const a = await R.renderLookbookPoster({ hero: h, rows });
     const b = await R.renderLookbookPoster({ hero: h, rows });
     assert.ok(a.master.buffer.equals(b.master.buffer));
@@ -47,6 +47,17 @@ describe("renderLookbookPoster", () => {
 
   test("refuses to draw a poster with no rows", async () => {
     await assert.rejects(R.renderLookbookPoster({ hero: await hero(), rows: [] }));
+  });
+});
+
+describe("cut-out acceptance", () => {
+  test("a product shape in the middle is accepted; a frame of clutter is not", async () => {
+    const centred = await grey('<rect x="120" y="120" width="160" height="160" fill="#c22"/>');
+    const ok = await R.cutout(centred, { mattes: [["fake", async (b) => sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400"><rect x="120" y="120" width="160" height="160" fill="#000"/></svg>')).png().toBuffer()]] });
+    assert.equal(ok.method, "fake");
+    const edgeToEdge = await R.cutout(centred, { mattes: [["fake", async () => sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400"><rect x="0" y="0" width="400" height="200" fill="#000"/><rect x="0" y="200" width="60" height="200" fill="#000"/></svg>')).png().toBuffer()]] });
+    assert.equal(edgeToEdge.png, null);
+    assert.match(edgeToEdge.tried[0], /3e|4e/);
   });
 });
 

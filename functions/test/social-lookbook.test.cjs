@@ -209,13 +209,24 @@ describe("hero prompt and the no-text check", () => {
     assert.doesNotMatch(p, /R\d/);   // never a price in the prompt
   });
 
-  test("text found fails; unreadable fails; clean passes with anchors", () => {
-    assert.equal(lb.readHeroCheck('{"text_found": true, "text_seen": "VOGUE", "items": {}}', rows).ok, false);
-    assert.equal(lb.readHeroCheck("I think it is fine", rows).ok, false);
-    assert.equal(lb.readHeroCheck('{"text_found": "no"}', rows).ok, false);
-    const ok = lb.readHeroCheck('```json\n{"text_found": false, "text_seen": "", "items": {"hat": {"x": 0.5, "y": 0.07}, "sneakers": {"x": 2, "y": 0.9}}}\n```', rows);
-    assert.equal(ok.ok, true);
-    assert.deepEqual(ok.anchors, { hat: { x: 0.5, y: 0.07 } });
+  test("text found fails; unreadable fails; clean passes", () => {
+    assert.equal(lb.readHeroCheck('{"text_found": true, "text_seen": "VOGUE"}').ok, false);
+    assert.equal(lb.readHeroCheck("I think it is fine").ok, false);
+    assert.equal(lb.readHeroCheck('{"text_found": "no"}').ok, false);
+    assert.equal(lb.readHeroCheck('```json\n{"text_found": false, "text_seen": ""}\n```').ok, true);
+  });
+
+  test("the text check never sees the grid; the locate prompt names every row", () => {
+    assert.doesNotMatch(lb.buildHeroCheckPrompt(), /grid/i);
+    const p = lb.buildLocatePrompt(rows);
+    for (const r of rows) assert.ok(p.includes(`"${r.slot}"`));
+  });
+
+  test("grid cells read back as cell centres; nonsense is absent, not a guess", () => {
+    const l = lb.readLocate('{"head": "F3", "items": {"hat": "f2", "tee": "Z9", "bag": null, "sneakers": "G21"}}', rows);
+    assert.deepEqual(l.head, { x: 5.5 / 12, y: 2.5 / 20 });
+    assert.deepEqual(Object.keys(l.anchors), ["hat"]);
+    assert.deepEqual(lb.readLocate("no idea", rows), { anchors: {}, head: null });
   });
 
   test("dots: vision where plausible, the category spot otherwise", () => {
@@ -223,6 +234,21 @@ describe("hero prompt and the no-text check", () => {
     assert.equal(a.hat.source, "vision");
     assert.equal(a.sneakers.source, "category");
     assert.equal(a.sneakers.y, 0.82);
+  });
+
+  test("with a known head, the category spots follow the real body", () => {
+    const a = lb.anchorsFor(rows, { hat: { x: 0.46, y: 0.21 }, sneakers: { x: 0.47, y: 0.93 } }, { x: 0.46, y: 0.27 });
+    assert.equal(a.jacket.source, "body");
+    // jacket template 0.29 on a 0.16..0.82 body → 0.27 + (0.13 / 0.66) × 0.66
+    assert.ok(Math.abs(a.jacket.y - 0.40) < 1e-9);
+    assert.ok(Math.abs(a.jacket.x - 0.41) < 1e-9);
+    assert.ok(a.bottoms.y > 0.6 && a.bottoms.y < 0.7);
+  });
+
+  test("a hat reported far from the head snaps to just above the head", () => {
+    const a = lb.anchorsFor(rows, { hat: { x: 0.5, y: 0.12 } }, { x: 0.52, y: 0.24 });
+    assert.equal(a.hat.x, 0.52);
+    assert.ok(Math.abs(a.hat.y - 0.205) < 1e-9);
   });
 });
 
