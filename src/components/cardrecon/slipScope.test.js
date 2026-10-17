@@ -51,7 +51,7 @@ describe("the client reads a scope exactly as the server does", () => {
 describe("which till's slip an account sends", () => {
   it("Yasmin (pe/till-2) gets Marathon Till 2, and only that", () => {
     const tills = slipTills(REGISTRY, { cardSlipTills: { pe: { "till-2": true } } }, NOW);
-    expect(tills).toEqual([{ tid: "0000AA2X", storeId: "pe", tillId: "till-2", label: "Marathon Till 2" }]);
+    expect(tills).toEqual([{ tid: "0000AA2X", typed: false, storeId: "pe", tillId: "till-2", label: "Marathon Till 2" }]);
   });
 
   it("Amanda (trophy/till-2) gets Trophy Till 2, and only that", () => {

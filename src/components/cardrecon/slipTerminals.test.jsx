@@ -107,8 +107,7 @@ describe("the Card Slip registry, ready before the tap", () => {
     const submit = () => t.root.findAll((n) => n.type === "button" && /^(Submit|Sending…)$/.test(textOf(n)))[0];
     const file = t.root.findAll((n) => n.type === "input" && n.props.type === "file")[0];
     await act(async () => { await file.props.onChange({ target: { files: [{ name: "slip.jpg" }], value: "" } }); });
-    act(() => { t.root.find((n) => n.type === "input" && n.props.inputMode === "decimal").props.onChange({ target: { value: "0" } }); });
-    // photo and total are both in: only the live confirmation is missing
+    // the photo is in (Marathon Till 2 is photo-only): only the live confirmation is missing
     expect(submit().props.disabled).toBe(true);
     expect(allText(t)).toMatch(/Checking your till/);
     act(() => { live.subs[0].ok({ val: () => ESTATE }); });

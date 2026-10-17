@@ -16,8 +16,11 @@
 // names, with the machine standing at it now. The server refuses any other
 // till (cardBatchCapture, action "slip"); this screen only draws one.
 //
-// BOTH ARE REQUIRED. Submit stays off until there is a photo AND a figure, and
-// says which one it is waiting for. "0" is a figure. Sending twice is fine:
+// WHAT IS REQUIRED (Junid, 17 Oct 2026): a typed-total till (Trophy Till 2 —
+// its printer puts no total on the paper) needs the photo AND the figure;
+// every other till (Marathon PE Till 2) needs the PHOTO ONLY, and the total is
+// read off it on the server. Submit says what it is still waiting for. "0" is
+// a figure. Sending twice is fine:
 // the second is recorded as a correction of the first, never dropped.
 //
 // THE NUMBER BOX is the app's typed-total pattern (inputMode "decimal" — the
@@ -139,7 +142,10 @@ function TillSlip({ till, live = true }) {
 
   const figure = text.trim();
   const busy = phase === "sending" || phase === "attaching";
-  const canSend = !!photo && figure !== "" && !busy && live;
+  // A typed-total till (Trophy Till 2) needs the photo AND the figure; every
+  // other till needs the photo only — its total is read off it.
+  const needsFigure = till.typed === true;
+  const canSend = !!photo && (!needsFigure || figure !== "") && !busy && live;
 
   const submit = async () => {
     if (!canSend) return;
@@ -147,7 +153,8 @@ function TillSlip({ till, live = true }) {
     setPhase("sending");
     try {
       const { data } = await cardBatchCaptureFn({
-        action: "slip", pickedTid: till.tid, photos: [{ base64: photo.base64 }], declaredTotal: figure,
+        action: "slip", pickedTid: till.tid, photos: [{ base64: photo.base64 }],
+        ...(needsFigure ? { declaredTotal: figure } : {}),
       });
       if (!data?.ok) { setPhase("form"); setError(reasonOf(data)); return; }
       setPhoto(null);
@@ -195,19 +202,21 @@ function TillSlip({ till, live = true }) {
               </label>
             </div>
           )}
+          {needsFigure && (<>
           <label style={S.step} htmlFor={`slip-total-${till.tid}`}>2 · Card total on the slip (R)</label>
           <input id={`slip-total-${till.tid}`} style={S.amount} inputMode="decimal" autoComplete="off" enterKeyHint="done"
                  placeholder="0.00" value={text} disabled={phase === "sending"}
                  onChange={(e) => setText(e.target.value)} />
           <div style={S.hint}>Type 0 if there were no card sales.</div>
+          </>)}
           <button type="button" style={{ ...S.submit, ...(canSend ? null : S.submitOff) }} disabled={!canSend} onClick={submit}>
             {phase === "sending" ? "Sending…" : "Submit"}
           </button>
           {!busy && !canSend && (
             <div style={S.waiting} role="status">
-              {!photo && figure === "" ? "Add the slip photo and type the card total to submit."
-                : !photo ? "Add the slip photo (step 1) to submit."
-                : figure === "" ? "Type the card total (step 2) to submit."
+              {!photo && needsFigure && figure === "" ? "Add the slip photo and type the card total to submit."
+                : !photo ? (needsFigure ? "Add the slip photo (step 1) to submit." : "Add the slip photo to submit.")
+                : needsFigure && figure === "" ? "Type the card total (step 2) to submit."
                 : "Checking your till… one moment."}
             </div>
           )}
