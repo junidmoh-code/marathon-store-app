@@ -16,6 +16,11 @@ vi.mock("firebase/functions", () => ({ httpsCallable: () => async () => ({ data:
 vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => Date.parse("2026-10-17T18:00:00+02:00") }));
 const perms = vi.hoisted(() => ({ permRecord: null }));
 vi.mock("../PermissionsContext", () => ({ usePermissions: () => perms, ADMIN_EMAIL: "x" }));
+vi.mock("../shopify/imageDecode", () => ({
+  decodeImageFile: vi.fn(async (file) => ({ source: { file }, width: 1000, height: 2000, release: () => {} })),
+  isAcceptedImageFile: () => true, describePickedFile: () => "",
+}));
+globalThis.document = { createElement: () => ({ getContext: () => ({ drawImage: () => {} }), toDataURL: () => "data:image/jpeg;base64,QUJDRA==" }) };
 
 const mem = new Map();
 globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
@@ -100,10 +105,14 @@ describe("the Card Slip registry, ready before the tap", () => {
     let t;
     act(() => { t = TestRenderer.create(<CardSlipScreen onExit={() => {}} />); });
     const submit = () => t.root.findAll((n) => n.type === "button" && /^(Submit|Sending…)$/.test(textOf(n)))[0];
+    const file = t.root.findAll((n) => n.type === "input" && n.props.type === "file")[0];
+    await act(async () => { await file.props.onChange({ target: { files: [{ name: "slip.jpg" }], value: "" } }); });
     act(() => { t.root.find((n) => n.type === "input" && n.props.inputMode === "decimal").props.onChange({ target: { value: "0" } }); });
+    // photo and total are both in: only the live confirmation is missing
     expect(submit().props.disabled).toBe(true);
+    expect(allText(t)).toMatch(/Checking your till/);
     act(() => { live.subs[0].ok({ val: () => ESTATE }); });
-    // still needs the photo, but the till is now confirmed
+    expect(submit().props.disabled).toBe(false);
     expect(allText(t)).not.toMatch(/Checking your till/);
   });
 
