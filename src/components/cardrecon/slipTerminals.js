@@ -9,9 +9,10 @@
 //     screen finds the answer already there, and a second visit is instant.
 //   • THE LAST ANSWER IS KEPT ON THE DEVICE (localStorage), so even a cold
 //     start draws the form at once; the live read replaces it the moment it
-//     lands. Safe: the submit sends only the machine id, and cardBatchCapture
-//     re-resolves that machine's till and re-checks the account's till scope —
-//     a stale copy can only ever be refused, never file a slip to another till.
+//     lands. The copy only DRAWS the form: Submit waits for the live answer
+//     (isSlipTerminalsLive), so a slip is only ever sent against the registry
+//     as it is now — and cardBatchCapture re-checks the till scope regardless.
+//   • A refused or dropped read is retried while anyone is listening.
 import { useEffect } from "react";
 import { ref as dbRef, onValue } from "firebase/database";
 import { database } from "../../firebase";
@@ -44,26 +45,39 @@ export function peekSlipTerminals() {
   return latest !== undefined ? latest : readCachedTerminals();
 }
 
+export const SLIP_RETRY_MS = 5000;
+let retry = null;
+
+/** True once THIS session has heard the live registry (not just the device copy). */
+export function isSlipTerminalsLive() {
+  return latest !== undefined;
+}
+
+function open() {
+  if (off) return;
+  off = onValue(
+    dbRef(database, PATH),
+    (snap) => {
+      latest = snap.val() || {};
+      writeCachedTerminals(latest);
+      for (const l of listeners) l(latest);
+    },
+    () => {
+      // Refused or dropped: answer "nothing" only if nothing — live or cached —
+      // was ever known, and try again while anyone is still listening.
+      off = null;
+      if (latest === undefined && readCachedTerminals() === null) for (const l of listeners) l({});
+      clearTimeout(retry);
+      retry = setTimeout(() => { retry = null; if (listeners.size) open(); }, SLIP_RETRY_MS);
+    },
+  );
+}
+
 /** Listen for the registry; opens the one shared subscription on first use. */
 export function subscribeSlipTerminals(cb) {
   listeners.add(cb);
   if (latest !== undefined) cb(latest);
-  if (!off) {
-    off = onValue(
-      dbRef(database, PATH),
-      (snap) => {
-        latest = snap.val() || {};
-        writeCachedTerminals(latest);
-        for (const l of listeners) l(latest);
-      },
-      () => {
-        // Refused or dropped: let the next subscriber try again, and answer
-        // "nothing" only if nothing — live or cached — was ever known.
-        off = null;
-        if (latest === undefined && readCachedTerminals() === null) for (const l of listeners) l({});
-      },
-    );
-  }
+  open();
   return () => listeners.delete(cb);
 }
 
@@ -76,6 +90,8 @@ export function usePrefetchSlipTerminals(enabled) {
 export function _resetSlipTerminals() {
   if (typeof off === "function") off();
   off = null;
+  clearTimeout(retry);
+  retry = null;
   latest = undefined;
   listeners.clear();
 }

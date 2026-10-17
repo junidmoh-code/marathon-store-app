@@ -95,6 +95,29 @@ describe("the Card Slip registry, ready before the tap", () => {
     expect(allText(u)).toMatch(/Marathon Till 2/);
   });
 
+  it("drawn from the device copy, the form can be filled but NOT sent until the live registry confirms the till", async () => {
+    mem.set(mod.SLIP_TERMINALS_KEY, JSON.stringify(ESTATE));
+    let t;
+    act(() => { t = TestRenderer.create(<CardSlipScreen onExit={() => {}} />); });
+    const submit = () => t.root.findAll((n) => n.type === "button" && /^(Submit|Sending…)$/.test(textOf(n)))[0];
+    act(() => { t.root.find((n) => n.type === "input" && n.props.inputMode === "decimal").props.onChange({ target: { value: "0" } }); });
+    expect(submit().props.disabled).toBe(true);
+    act(() => { live.subs[0].ok({ val: () => ESTATE }); });
+    // still needs the photo, but the till is now confirmed
+    expect(allText(t)).not.toMatch(/Checking your till/);
+  });
+
+  it("a refused read is retried while the screen is open", () => {
+    vi.useFakeTimers();
+    try {
+      act(() => { TestRenderer.create(<CardSlipScreen onExit={() => {}} />); });
+      act(() => { live.subs[0].err(new Error("permission_denied")); });
+      expect(live.subs.length).toBe(1);
+      act(() => { vi.advanceTimersByTime(mod.SLIP_RETRY_MS + 10); });
+      expect(live.subs.length).toBe(2);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("a broken device copy is ignored, never thrown", () => {
     mem.set(mod.SLIP_TERMINALS_KEY, "{not json");
     expect(mod.readCachedTerminals()).toBe(null);

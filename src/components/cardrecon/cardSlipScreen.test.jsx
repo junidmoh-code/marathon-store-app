@@ -35,6 +35,7 @@ vi.mock("../shopify/imageDecode", () => ({
 }));
 
 const CardSlipScreen = (await import("./CardSlipScreen")).default;
+const { _resetSlipTerminals } = await import("./slipTerminals");
 
 const textOf = (n) => [].concat(n.props.children).filter((c) => typeof c === "string").join("");
 const everyString = (tree) => tree.root.findAll((n) => typeof n.props?.children === "string" || Array.isArray(n.props?.children))
@@ -48,6 +49,7 @@ const type = (t, v) => act(() => { amount(t).props.onChange({ target: { value: v
 const press = async (b) => { await act(async () => { await b.props.onClick(); }); };
 
 beforeEach(() => {
+  _resetSlipTerminals(); // every test opens its own registry read
   calls.length = 0; calls.fail = null; calls.reply = null; reads.length = 0;
   perms.permRecord = { displayName: "yasmin", stockRole: "pos", cardSlipTills: { pe: { "till-2": true } } };
   globalThis.document = { createElement: () => ({ getContext: () => ({ drawImage: () => {} }), toDataURL: () => "data:image/jpeg;base64,QUJDRA==" }) };

@@ -31,7 +31,7 @@ import { serverNowMs } from "../../utils/serverTime";
 import { describeCallableError } from "./captureFailure";
 import { preparePhoto } from "./slipPhoto";
 import { slipTills } from "./slipScope";
-import { peekSlipTerminals, subscribeSlipTerminals } from "./slipTerminals";
+import { peekSlipTerminals, subscribeSlipTerminals, isSlipTerminalsLive } from "./slipTerminals";
 import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
@@ -92,7 +92,9 @@ export default function CardSlipScreen({ onExit }) {
   // from what the home screen already fetched (or this device's last copy),
   // then kept live (slipTerminals.js). null = nothing known yet.
   const [terminals, setTerminals] = useState(() => peekSlipTerminals());
-  useEffect(() => subscribeSlipTerminals(setTerminals), []);
+  // Live = this session has heard the registry itself, not only the device copy.
+  const [live, setLive] = useState(() => isSlipTerminalsLive());
+  useEffect(() => subscribeSlipTerminals((v) => { setTerminals(v); setLive(isSlipTerminalsLive()); }), []);
   const nowMs = serverNowMs();
   const tills = useMemo(() => slipTills(terminals, permRecord, nowMs), [terminals, permRecord, nowMs]);
 
@@ -105,12 +107,14 @@ export default function CardSlipScreen({ onExit }) {
       {terminals !== null && tills.length === 0 && (
         <div style={S.quiet}>Your till's card machine isn't set up here yet. Tell Junid.</div>
       )}
-      {tills.map((t) => <TillSlip key={t.tid} till={t} />)}
+      {tills.map((t) => <TillSlip key={t.tid} till={t} live={live} />)}
     </div>
   );
 }
 
-function TillSlip({ till }) {
+// live: the till drawn is confirmed by the live registry. Until then the form
+// can be filled in (photo, total) but not sent.
+function TillSlip({ till, live = true }) {
   const [photo, setPhoto] = useState(null);          // { base64 } once attached
   const [text, setText] = useState("");
   const [phase, setPhase] = useState("form");         // form | attaching | sending | sent
@@ -135,7 +139,7 @@ function TillSlip({ till }) {
 
   const figure = text.trim();
   const busy = phase === "sending" || phase === "attaching";
-  const canSend = !!photo && figure !== "" && !busy;
+  const canSend = !!photo && figure !== "" && !busy && live;
 
   const submit = async () => {
     if (!canSend) return;
@@ -203,7 +207,8 @@ function TillSlip({ till }) {
             <div style={S.waiting} role="status">
               {!photo && figure === "" ? "Add the slip photo and type the card total to submit."
                 : !photo ? "Add the slip photo (step 1) to submit."
-                : "Type the card total (step 2) to submit."}
+                : figure === "" ? "Type the card total (step 2) to submit."
+                : "Checking your till… one moment."}
             </div>
           )}
           {error && <div style={S.fail} role="alert">{error}</div>}
