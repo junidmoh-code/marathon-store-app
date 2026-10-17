@@ -218,3 +218,14 @@ test("a staff slip after a later close (a report at 19:00, the slip at 19:30) ne
   assert.equal(plan.extraction.openedAt, SAST("2026-10-17T19:00:00"));
   assert.equal(plan.extraction.closedAt, now);
 });
+
+test("slipTills: a log read that never answers leaves that till unknown — never 'no', never a hang", async () => {
+  const db = world();
+  const realRef = db.ref.bind(db);
+  db.ref = (p) => (String(p || "").startsWith("card_batch_overrides/staff_slips") ? { once: () => new Promise(() => {}) } : realRef(p));
+  const t0 = Date.now();
+  const out = await handleSlipTills(db, { auth: YASMIN, data: { action: "slipTills" } }, { now: () => SAST("2026-10-17T16:24:30"), readMs: 50 });
+  assert.ok(Date.now() - t0 < 2000);
+  assert.equal(out.tills.length, 1);
+  assert.equal("sent" in out.tills[0], false, "unknown, not null");
+});

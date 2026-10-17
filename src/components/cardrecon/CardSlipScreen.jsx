@@ -126,6 +126,10 @@ export default function CardSlipScreen({ onExit }) {
   // The same answer over HTTP, which no big download can queue in front of.
   const [serverTills, setServerTills] = useState(() => peekServerTills(uid));
   useEffect(() => subscribeServerTills(uid, setServerTills), [uid]);
+  // The clock is read again every minute while the screen is open, so the
+  // date, and whether the server's answer is today's, follow 06:00.
+  const [, setTick] = useState(0);
+  useEffect(() => { const id = setInterval(() => setTick((n) => n + 1), 60000); return () => clearInterval(id); }, []);
   const nowMs = serverNowMs();
   const fromRegistry = useMemo(() => (terminals === null ? null : slipTills(terminals, permRecord, nowMs)), [terminals, permRecord, nowMs]);
   // Live registry first; else the server's live answer; else whatever this

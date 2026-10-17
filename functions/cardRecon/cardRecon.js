@@ -1986,9 +1986,12 @@ async function handleSlipTills(db, request, deps = {}) {
   // TODAY'S SLIP IS IN — one leaf per till (their own tills only), from the
   // log every accepted staff slip writes. When it arrived, never a figure.
   // A log that cannot be read leaves `sent` unknown (undefined), never "no".
+  // Each read is bounded (CodeRabbit, #743): one slow read leaves its own
+  // till unknown and never holds the answer for the others.
+  const within = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`no answer in ${ms} ms`)), ms).unref?.())]);
   await Promise.all(tills.map(async (t) => {
     try {
-      const last = latestStaffSlip((await db.ref(staffSlipDayPath({ storeId: t.filedStoreId, tid: t.tid, dayYmd })).once("value")).val());
+      const last = latestStaffSlip((await within(db.ref(staffSlipDayPath({ storeId: t.filedStoreId, tid: t.tid, dayYmd })).once("value"), deps.readMs || SLIP_TILLS_READ_MS)).val());
       t.sent = last ? { at: Number(last.at) } : null;
     } catch (err) {
       console.warn(`slipTills: staff slip log unread for ${t.tid}: ${err && err.message}`);
@@ -1999,6 +2002,7 @@ async function handleSlipTills(db, request, deps = {}) {
   return { ok: true, tills, dayYmd };
 }
 
+const SLIP_TILLS_READ_MS = 4000;
 const SLIP_PHOTOS = 1;
 async function handleSlip(db, request, deps = {}) {
   const uid = request.auth?.uid;

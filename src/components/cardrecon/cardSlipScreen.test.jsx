@@ -148,7 +148,7 @@ describe("Yasmin's screen", () => {
 
   // Junid, 17 Oct 2026: "Sent — thank you" ONLY after the server confirms the write.
   it("an 'ok' with no receipt is NOT sent — the server never said it kept the slip", async () => {
-    for (const reply of [{ ok: true, received: true }, { ok: true }, { received: true, receipt: SENT.receipt }, null, { ok: true, received: true, receipt: { dayYmd: "2026-10-16" } }]) {
+    for (const reply of [{ ok: true, received: true }, { ok: true }, { received: true, receipt: SENT.receipt }, null, { ok: true, received: true, receipt: { dayYmd: "2026-10-16" } }, { ok: true, received: true, receipt: { at: 1 } }, { ok: true, received: true, receipt: { at: 1, dayYmd: "16 Oct" } }]) {
       calls.reply = () => reply;
       const t = render();
       await pick(fileInputs(t)[0]);

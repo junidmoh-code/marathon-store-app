@@ -210,5 +210,6 @@ export function describeDecodeError(err) {
  */
 export function receiptOf(data) {
   return data && data.ok === true && data.received === true
-    && data.receipt && typeof data.receipt === "object" && Number.isFinite(data.receipt.at) ? data.receipt : null;
+    && data.receipt && typeof data.receipt === "object" && Number.isFinite(data.receipt.at)
+    && typeof data.receipt.dayYmd === "string" && /^\d{4}-\d{2}-\d{2}$/.test(data.receipt.dayYmd) ? data.receipt : null;
 }
