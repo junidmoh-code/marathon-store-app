@@ -221,20 +221,26 @@ export function verdictMail(record, { poolKey } = {}) {
 // architect review). Two limits, each saying what it dropped:
 //   · the FIRST failed send stops the round: the host is down or refusing,
 //     and every further try would wait out its own timeout;
-//   · unknown-bank sightings are a stranger's mail, and a spam burst must not
-//     bury Junid's inbox or the mailbox's Gmail send quota (which the Unread
-//     notices share). The first UNKNOWN_BANK_EMAILS_PER_TICK are sent one by
-//     one; the rest of the tick's go as ONE roll-up email naming each domain.
-export const UNKNOWN_BANK_EMAILS_PER_TICK = 3;
+//   · ANYONE CAN SEND THIS MAILBOX MAIL. Two outcomes are triggered by a
+//     stranger rather than by a payment: unknown-bank (a domain we never set
+//     up) and refused-auth (a forgery claiming a bank — CodeRabbit, #733).
+//     A burst of either must not bury Junid's inbox or the mailbox's Gmail
+//     send quota (which the Unread notices share). The first
+//     STRANGER_EMAILS_PER_TICK of them are sent one by one; the rest of the
+//     tick's go as ONE roll-up email naming each one's check and sender.
+//     Real payments (every other outcome) are never rolled up.
+export const STRANGER_EMAILS_PER_TICK = 3;
+export const STRANGER_OUTCOMES = ["unknown-bank", "refused-auth"];
 
-/** One roll-up email for the unknown-bank sightings past the per-tick cap. */
-export function unknownBankRollupMail(items) {
+/** One roll-up email for the stranger-triggered verdicts past the per-tick cap. */
+export function strangerRollupMail(items) {
+  const checks = [...new Set(items.map(({ record }) => failedCheck(record)))];
   const lines = items.map(({ record, poolKey }) =>
-    `- ${oneLine(bankName(record), 80)} · arrived ${formatSast(record?.receivedAt) || "unknown"} · pool record ${oneLine(poolKey, 160)}`);
+    `- ${failedCheck(record)} · ${oneLine(bankName(record), 80)} · arrived ${formatSast(record?.receivedAt) || "unknown"} · pool record ${oneLine(poolKey, 160)}`);
   return {
-    subject: oneLine(`${EFT_VERDICT_SUBJECT_PREFIX} REJECTED — ${CHECKS["unknown-bank"]} — ${items.length} more this round`, 200),
+    subject: oneLine(`${EFT_VERDICT_SUBJECT_PREFIX} REJECTED — ${checks.join(" / ")} — ${items.length} more this round`, 200),
     text: [
-      `REJECTED — ${CHECKS["unknown-bank"]}: ${items.length} more payment-shaped message(s) from banks this pool is not set up for arrived in one round. Nothing was read from any of them. Rolled into one email so a burst cannot flood the inbox.`,
+      `REJECTED — ${checks.join(" / ")}: ${items.length} more message(s) of this kind arrived in one round. None became a payment. Rolled into one email so a burst cannot flood the inbox.`,
       "",
       ...lines,
       "",
@@ -249,16 +255,16 @@ export function unknownBankRollupMail(items) {
  * @param {{queue:{record:object, poolKey:string}[], mode:string, send:(m:object)=>Promise<any>, from:string, cap?:number}} p
  * @returns {Promise<{sent:{verdict:string, check:string|null}[], skipped:number, rolledUp:number, unsent:number, error:string|null}>}
  */
-export async function drainVerdictEmails({ queue, mode, send, from, cap = UNKNOWN_BANK_EMAILS_PER_TICK }) {
+export async function drainVerdictEmails({ queue, mode, send, from, cap = STRANGER_EMAILS_PER_TICK }) {
   const out = { sent: [], skipped: 0, rolledUp: 0, unsent: 0, error: null };
   const envelope = (m) => ({ from: { name: EFT_VERDICT_FROM_NAME, address: from }, to: EFT_VERDICT_TO, subject: m.subject, text: m.text });
   const mails = [];
   const rollup = [];
-  let unknown = 0;
+  let strangers = 0;
   for (const item of Array.isArray(queue) ? queue : []) {
     const verdict = eftVerdict(item?.record);
     if (!shouldSendVerdict(verdict, mode)) { out.skipped += 1; continue; }
-    if (item.record?.outcome === "unknown-bank" && ++unknown > cap) { rollup.push(item); continue; }
+    if (STRANGER_OUTCOMES.includes(item.record?.outcome) && ++strangers > cap) { rollup.push(item); continue; }
     mails.push({ verdict, check: verdict === "REJECTED" ? failedCheck(item.record) : null, item });
   }
   const tryMail = async (build) => {
@@ -274,7 +280,7 @@ export async function drainVerdictEmails({ queue, mode, send, from, cap = UNKNOW
     out.sent.push({ verdict, check });
   }
   if (rollup.length) {
-    if (await tryMail(() => unknownBankRollupMail(rollup))) out.rolledUp = rollup.length;
+    if (await tryMail(() => strangerRollupMail(rollup))) out.rolledUp = rollup.length;
     else out.unsent = rollup.length;
   }
   return out;

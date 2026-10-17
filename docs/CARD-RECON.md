@@ -1454,8 +1454,10 @@ record lands, and a failed send is logged and changes nothing.
   reference still matches by eye). No full card or account number.
 - **When it is sent:** queued as each record is written, sent once the IMAP
   session is closed, so SMTP can never hold the mailbox. The first failed send
-  ends that tick's round (logged with how many were dropped). Unknown-bank
-  sightings past 3 in one tick go as **one roll-up email**. Sent only as
+  ends that tick's round (logged with how many were dropped). Mail a stranger
+  can trigger — unknown-bank sightings and DKIM forgeries — is capped at 3
+  individual emails per tick; the rest go as **one roll-up email** naming
+  each check. Real payments are never rolled up. Sent only as
   marathon6631@gmail.com: any other `CARD_RECON_IMAP_USER` turns them off,
   with a warning.
 - **Path and inbox:** the recycler reports' — Gmail SMTP (`smtp.gmail.com:465`)

@@ -1100,7 +1100,7 @@ async function sendVerdicts() {
   const out = await drainVerdictEmails({ queue: verdictQueue.splice(0), mode: verdictMode, send: verdictSend, from: verdictFrom });
   // The log names the verdict and the check, never the amount.
   for (const m of out.sent) console.log(`  · EFT verdict email sent to Junid: ${m.verdict}${m.check ? ` (${m.check})` : ""}`);
-  if (out.rolledUp) console.log(`  · EFT verdict email sent to Junid: ${out.rolledUp} more unknown-bank sighting(s) in one roll-up`);
+  if (out.rolledUp) console.log(`  · EFT verdict email sent to Junid: ${out.rolledUp} more unknown-bank / forgery verdict(s) in one roll-up`);
   if (out.error) console.warn(`  ⚠ EFT verdict email NOT sent (${out.error}) — ${out.unsent} email(s) this tick dropped; the pool records stand, only the emails are lost`);
 }
 

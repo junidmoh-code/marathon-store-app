@@ -14,7 +14,7 @@ import { noReaderReason } from "./eftBanks.mjs";
 import { OWNER } from "./intakeRules.mjs";
 import {
   eftVerdict, failedCheck, decidingReason, verdictMail, parseVerdictMode, shouldSendVerdict,
-  drainVerdictEmails, unknownBankRollupMail, verdictSenderOk, UNKNOWN_BANK_EMAILS_PER_TICK, maskIdentifier, formatRands, formatSast,
+  drainVerdictEmails, verdictSenderOk, STRANGER_EMAILS_PER_TICK, maskIdentifier, formatRands, formatSast,
   EFT_VERDICT_TO, EFT_VERDICT_SUBJECT_PREFIX, EFT_VERDICT_FROM_NAME,
 } from "./verdictMailCore.mjs";
 
@@ -242,7 +242,7 @@ describe("sending a tick's verdicts", () => {
     const sent = [];
     const queue = [...[1, 2, 3, 4, 5, 6].map(stranger), { record: decide(), poolKey: "pay" }];
     const out = await drainVerdictEmails({ queue, mode: "all", from: FROM, send: async (m) => { sent.push(m); } });
-    expect(UNKNOWN_BANK_EMAILS_PER_TICK).toBe(3);
+    expect(STRANGER_EMAILS_PER_TICK).toBe(3);
     expect(sent).toHaveLength(3 + 1 + 1);
     expect(out.rolledUp).toBe(3);
     expect(sent.filter((m) => /APPROVED/.test(m.subject))).toHaveLength(1);
@@ -250,6 +250,19 @@ describe("sending a tick's verdicts", () => {
     expect(roll.subject).toBe("[EFT confirmer] REJECTED — Unknown bank sender — 3 more this round");
     expect(roll.text.split("\n")[0]).toMatch(/^REJECTED — Unknown bank sender: 3 more/);
     for (const d of ["bank4.example", "bank5.example", "bank6.example"]) expect(roll.text).toContain(d);
+  });
+
+  it("forgeries share the stranger cap with unknown banks, and the roll-up names each one's check", async () => {
+    const sent = [];
+    const queue = [stranger(1), stranger(2), ...[1, 2, 3].map((n) => ({ record: decide({ auth: failAuth }), poolKey: `f${n}` })), { record: decide({ p: parsed({ accountMask: "XXXXXXX1111" }) }), poolKey: "acct" }];
+    const out = await drainVerdictEmails({ queue, mode: "all", from: FROM, send: async (m) => { sent.push(m); } });
+    // 2 unknown + 1 forgery one by one, the wrong-account payment, then one roll-up of 2 forgeries.
+    expect(sent).toHaveLength(5);
+    expect(out.rolledUp).toBe(2);
+    expect(sent.some((m) => /Wrong destination account/.test(m.subject))).toBe(true);
+    const roll = sent.at(-1);
+    expect(roll.subject).toBe("[EFT confirmer] REJECTED — Signature check failed (DKIM) — 2 more this round");
+    expect(roll.text).toContain("- Signature check failed (DKIM) · FNB");
   });
 
   it("the bank's transaction id never appears whole — not even inside the bank's own subject line", () => {
