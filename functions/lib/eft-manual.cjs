@@ -67,7 +67,9 @@ function manualEntryInputCheck(data) {
   const d = data && typeof data === "object" ? data : {};
   const entryId = typeof d.entryId === "string" ? d.entryId : "";
   if (!ENTRY_ID.test(entryId)) return { ok: false, code: "bad-entry-id", message: "The entry carries no id — reload and try again." };
-  const reference = String(d.reference ?? "").trim().replace(/\s+/g, " ").slice(0, MANUAL_REFERENCE_MAX);
+  // Upper-cased: the search normalises anyway, and the till then shows the
+  // reference the way a bank prints one.
+  const reference = String(d.reference ?? "").trim().replace(/\s+/g, " ").slice(0, MANUAL_REFERENCE_MAX).toUpperCase();
   if (normaliseText(reference).length < MANUAL_REFERENCE_MIN_CHARS) {
     return { ok: false, code: "bad-reference", message: "Type the customer's payment reference — at least three letters or digits. The cashier will search by it." };
   }
@@ -140,10 +142,51 @@ function manualDuplicateOf({ reference, amountCents, entryId }, siblings) {
   return null;
 }
 
+/**
+ * THE BANK'S OWN RECORD OF THE SAME MONEY. A manual entry exists because the
+ * notification has not arrived — if an UNMATCHED bank-confirmed payment with
+ * this reference and amount is already in the tail, Junid should use that
+ * one, not type a second spendable copy. (Spec review, this PR.)
+ * @returns {{key:string, record:object}|null}
+ */
+function bankTwinOfEntry({ reference, amountCents }, siblings) {
+  const want = normaliseText(reference);
+  for (const [key, rec] of siblings ?? []) {
+    if (!rec || rec.outcome !== "recorded" || isManualEntry(rec) || rec.status !== "unmatched") continue;
+    if (rec.amountCents === amountCents && normaliseText(rec.reference) === want) return { key, record: rec };
+  }
+  return null;
+}
+
+/**
+ * SETTLE-TIME: a bank-confirmed record about to be spent whose MANUAL twin
+ * (same reference and amount, entered by Junid) has already been USED. The
+ * two records carry different fingerprints, so the fingerprint check cannot
+ * see that they are one payment; this can. Refused — the money was paid out
+ * once already; Junid reverses the manual entry if they really are two.
+ * @returns {{ok:true}|{ok:false, code:string, message:string}}
+ */
+function manualTwinSettleCheck({ poolKey, record, siblings }) {
+  if (!record || isManualEntry(record)) return { ok: true };
+  const want = normaliseText(record.reference);
+  if (!want) return { ok: true };
+  for (const [key, other] of siblings ?? []) {
+    if (key === poolKey || !isManualEntry(other) || other.status !== "used") continue;
+    if (other.amountCents !== record.amountCents || normaliseText(other.reference) !== want) continue;
+    const slip = other.used?.sale?.receiptNumber ? ` on slip ${other.used.sale.receiptNumber}` : "";
+    return {
+      ok: false, code: "manual-twin-used",
+      message: `A payment Junid entered by hand for this reference and amount was already used${slip}. This looks like the bank's notification of that SAME payment — it cannot be used again. If the customer really paid twice, Junid can reverse the manual entry first.`,
+    };
+  }
+  return { ok: true };
+}
+
 module.exports = {
   MANUAL_READER, MANUAL_ENTRY_BY, MANUAL_LOG_PATH,
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
+  bankTwinOfEntry, manualTwinSettleCheck,
 };
 
 // ─── THE LOG — how often the hatch is used, and where each entry went ───────

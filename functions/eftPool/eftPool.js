@@ -125,6 +125,7 @@ const {
 const {
   MANUAL_ENTRY_BY, MANUAL_LOG_PATH, MANUAL_LIST_LIMIT,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
+  bankTwinOfEntry, manualTwinSettleCheck,
   manualLogKeyOf, manualLogRecord, manualLogEventPatch, manualLogView,
 } = require("../lib/eft-manual.cjs");
 const { issuingStamp } = require("../lib/network-registry.cjs");
@@ -272,6 +273,13 @@ async function checkPaymentFingerprint(key, now) {
     console.warn(`eftPoolSettle: ${check.code} on ${key} — refused before settle`);
     throw refusalToError(check);
   }
+  // A bank record whose MANUAL twin (Junid's hand entry of the same money)
+  // was already spent: a different fingerprint, the same payment. Refused.
+  const twin = manualTwinSettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
+  if (!twin.ok) {
+    console.warn(`eftPoolSettle: ${twin.code} on ${key} — refused before settle`);
+    throw refusalToError(twin);
+  }
   if (!check.fingerprint) return null; // owner-released no-bank-id payment
   let claim = null;
   await db.ref(`${EFT_FINGERPRINT_PATH}/${check.fingerprint}`)
@@ -298,9 +306,12 @@ function refusalToError(decision) {
  * whether every entry was spent. Best effort, never a reason to fail the
  * settle: the pool record is the truth; the log is the review.
  */
-async function logManualLifecycle(event, key, decision, now) {
-  const record = decision?.value;
-  if (!decision?.ok || decision.already || !isManualEntry(record)) return;
+async function logManualLifecycle(event, key, decision, now, { record: known = null } = {}) {
+  // A retried attach (`already`) carries no value — the record is read so
+  // a row left without its sale by a crash between the transaction and the
+  // first patch still gets it (the patch is an idempotent update).
+  const record = decision?.value ?? (decision?.already && event === "attach" ? known : null);
+  if (!decision?.ok || !isManualEntry(record)) return;
   const patch = manualLogEventPatch(event, record, now);
   if (!patch) return;
   try {
@@ -699,7 +710,9 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   // Access changes on money records should be findable in the function log.
   console.log(`eftPoolSettle: ${action} ${key} by ${uid} (${attemptId})${decision.already ? " [already]" : ""}`);
   // A record Junid typed by hand: its log row follows (never fails the call).
-  await logManualLifecycle(action, key, decision, now);
+  await logManualLifecycle(action, key, decision, now, {
+    record: action === "attach" && decision.already ? (await admin.database().ref(`${EFT_POOL_PATH}/${key}`).once("value")).val() : null,
+  });
   // An attach finishes its remainder — mint the customer's store credit, or
   // hold the difference visibly. Re-run on a RETRIED attach too (`already`),
   // which is exactly what repairs a crash between the stamp and the IO.
@@ -730,9 +743,24 @@ exports.eftEnforcementStatus = onCall(RUNTIME, async (request) => {
     if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid can change which stores enforce EFT matching.");
     const update = enforcementUpdateOf(data, { at: Date.now(), by: ADMIN_EMAIL });
     if (!update.ok) throw new HttpsError("invalid-argument", update.message, { code: update.code });
-    await db.ref(EFT_ENFORCEMENT_PATH).set(update.value);
-    console.log(`EFT_ENFORCEMENT_SET: ${JSON.stringify(update.value.stores)} by owner`);
-    return { ok: true, ...enforcementStatusOf(update.value, null) };
+    // MERGE, never replace: switching Pine on must not silently switch Trophy
+    // off. A node that does not exist yet starts from the DEFAULT set, so the
+    // first edit does not wipe it either. (Spec review, this PR.)
+    const before = (await db.ref(EFT_ENFORCEMENT_PATH).once("value")).val();
+    const base = before?.stores && typeof before.stores === "object" ? before.stores
+      : Object.fromEntries(enforcedStoresOf(null).map((id) => [id, true]));
+    const merged = { stores: { ...base, ...update.value.stores }, updatedAt: update.value.updatedAt, updatedBy: update.value.updatedBy };
+    await db.ref(EFT_ENFORCEMENT_PATH).set(merged);
+    console.log(`EFT_ENFORCEMENT_SET: ${JSON.stringify(merged.stores)} by owner (was ${JSON.stringify(base)})`);
+    return { ok: true, ...enforcementStatusOf(merged, null) };
+  }
+  if (data.action === "listBreaches") {
+    // JUNID'S VIEW OF THE SCAN'S FINDINGS — the newest breach records by key
+    // order (sale ids are push keys: chronological), one bounded page.
+    if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid can list enforcement breaches.");
+    const snap = await db.ref(EFT_BREACH_PATH).orderByKey().limitToLast(50).once("value");
+    const breaches = Object.entries(snap.val() ?? {}).map(([saleId, b]) => ({ saleId, ...b })).sort((a, b) => (b.flaggedAt ?? 0) - (a.flaggedAt ?? 0));
+    return { ok: true, breaches, limit: 50 };
   }
   const node = (await db.ref(EFT_ENFORCEMENT_PATH).once("value")).val();
   const storeId = typeof data.storeId === "string" ? data.storeId.slice(0, 40) : null;
@@ -780,6 +808,10 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
   // The SAME money typed twice would be two spendable records: refused while
   // the earlier entry is in the pool tail (used or waiting).
   const tail = await readPoolTail();
+  const bankTwin = bankTwinOfEntry(input, Object.entries(tail));
+  if (bankTwin) {
+    throw new HttpsError("failed-precondition", `The bank's own notification for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} is already in the pool, unused — the cashier can use that one. No manual entry is needed.`, { code: "bank-twin-waiting", key: bankTwin.key });
+  }
   const dup = manualDuplicateOf(input, Object.entries(tail));
   if (dup) {
     const state = dup.record.status === "used" ? "has already been used" : "is already in the pool, waiting";

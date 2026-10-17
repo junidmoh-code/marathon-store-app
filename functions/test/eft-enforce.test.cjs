@@ -159,10 +159,23 @@ test("ONLY the owner changes the set — a manager with EFT review is refused an
     assert.match(e.message, /Only Junid/);
   }
   assert.equal(db.sets["eft_enforcement"], undefined);
-  const out = await eftEnforcementStatus({ ...OWNER, data: { action: "set", stores: { trophy: true, pe: true, pine: true } } });
+  // MERGE semantics: switching Pine on from no node starts from the default,
+  // so Trophy and Marathon PE stay enforced.
+  delete db.reads["eft_enforcement"];
+  const out = await eftEnforcementStatus({ ...OWNER, data: { action: "set", stores: { pine: true } } });
   assert.deepEqual(out.enforcedStores, ["pe", "pine", "trophy"]);
   assert.deepEqual(db.sets["eft_enforcement"].stores, { trophy: true, pe: true, pine: true });
   assert.equal(db.sets["eft_enforcement"].updatedBy, "gunidmoh@gmail.com");
+  // …and switching one OFF later keeps the rest.
+  db.reads["eft_enforcement"] = db.sets["eft_enforcement"];
+  const off = await eftEnforcementStatus({ ...OWNER, data: { action: "set", stores: { pine: false } } });
+  assert.deepEqual(off.enforcedStores, ["pe", "trophy"]);
+  // The breach list is Junid's alone, one bounded page by key order.
+  db.queries = [];
+  await rejects(eftEnforcementStatus({ ...MANAGER, data: { action: "listBreaches" } }), "permission-denied");
+  const list = await eftEnforcementStatus({ ...OWNER, data: { action: "listBreaches" } });
+  assert.deepEqual(list.breaches, []);
+  assert.deepEqual(db.queries.find((q) => q.path === "eft_enforcement_breaches").cs.map((c) => c[0]), ["orderByKey", "limitToLast"]);
   const bad = await rejects(eftEnforcementStatus({ ...OWNER, data: { action: "set", stores: { trophy: "off" } } }), "invalid-argument");
   assert.equal(bad.details.code, "bad-flag");
 });

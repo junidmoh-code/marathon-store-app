@@ -115,22 +115,26 @@ function publicEftView(key, record) {
 
 /**
  * A bank-confirmed payment answering a search when a MANUAL entry for the
- * same reference and amount was already spent: the real notification
- * arrived after Junid typed the payment in. Spending both would pay one sum
- * twice, so the till is warned on the row (never blocked — the owner may
- * have entered a genuinely separate payment; the cashier checks).
- * @returns {{at:number|null, receiptNumber:string|null}|null}
+ * same reference and amount exists: the real notification arrived after
+ * Junid typed the payment in. The row is warned either way; if the manual
+ * one was already SPENT the settle refuses this one outright
+ * (manualTwinSettleCheck) — one sum is never paid twice.
+ * @returns {{status:"used"|"unmatched", at:number|null, receiptNumber:string|null}|null}
  */
 function manualTwinOf(record, payments) {
   if (!record || isManualEntry(record) || record.status !== "unmatched") return null;
   const ref = normaliseText(record.reference);
   if (!ref) return null;
+  let waiting = null;
   for (const [, other] of payments ?? []) {
-    if (!isManualEntry(other) || other.status !== "used") continue;
+    if (!isManualEntry(other)) continue;
     if (other.amountCents !== record.amountCents || normaliseText(other.reference) !== ref) continue;
-    return { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
+    if (other.status === "used") {
+      return { status: "used", at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
+    }
+    if (other.status === "unmatched" && !waiting) waiting = { status: "unmatched", at: Number.isInteger(other.manualEntry?.at) ? other.manualEntry.at : null, receiptNumber: null };
   }
-  return null;
+  return waiting;
 }
 
 // ─── NORMALISATION AND NEAR-MISS ─────────────────────────────────────────────
@@ -252,7 +256,14 @@ function searchEftPool(poolTail, query) {
   const candidates = collapseCopies(exact.length ? exact : hits, payments);
   if (!candidates.length) return { results: [], searched };
   const unmatched = candidates.filter((h) => h.record.status === "unmatched");
+  // A MANUAL ENTRY AND ITS BANK TWIN, both waiting (the notification landed
+  // after Junid typed it): one payment, not an ambiguity. The bank's record
+  // is the answer, and the row warns about the waiting manual one.
+  const bankOnly = unmatched.filter((h) => !isManualEntry(h.record));
+  const twinPair = unmatched.length > 1 && bankOnly.length === 1
+    && unmatched.every((h) => h === bankOnly[0] || (isManualEntry(h.record) && h.record.amountCents === bankOnly[0].record.amountCents));
   const pick = unmatched.length === 1 ? unmatched[0]
+    : twinPair ? bankOnly[0]
     : unmatched.length === 0 && candidates.length === 1 ? candidates[0]
     : null;
   if (!pick) return { results: [], searched, ambiguous: true };

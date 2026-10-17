@@ -18,6 +18,7 @@ const assert = require("node:assert/strict");
 
 const {
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
+  bankTwinOfEntry, manualTwinSettleCheck,
   manualLogKeyOf, manualLogRecord, manualLogEventPatch, manualLogView, MANUAL_READER,
 } = require("../lib/eft-manual.cjs");
 const { paymentFingerprint, consumeFingerprintCheck, claimHolderCheck } = require("../lib/eft-fingerprint.cjs");
@@ -30,7 +31,7 @@ const ENTRY = { entryId: "ME-abc12345", reference: "Thabo 0821", amountCents: 55
 // ─── PURE ────────────────────────────────────────────────────────────────────
 test("the typed entry is validated: reference ≥ 3 letters/digits, R1–R50,000, an entry id", () => {
   const ok = manualEntryInputCheck(ENTRY);
-  assert.deepEqual(ok, { ok: true, entryId: "ME-abc12345", reference: "Thabo 0821", amountCents: 55000, note: "Capitec, no email" });
+  assert.deepEqual(ok, { ok: true, entryId: "ME-abc12345", reference: "THABO 0821", amountCents: 55000, note: "Capitec, no email" });
   assert.equal(manualEntryInputCheck({ ...ENTRY, reference: " - " }).code, "bad-reference");
   assert.equal(manualEntryInputCheck({ ...ENTRY, amountCents: 50 }).code, "bad-amount");
   assert.equal(manualEntryInputCheck({ ...ENTRY, amountCents: 5_000_001 }).code, "bad-amount");
@@ -48,7 +49,7 @@ test("the record is a recorded, unmatched pool payment, stamped by Junid, with a
   assert.equal(r.status, "unmatched");
   assert.equal(r.reader, MANUAL_READER);
   assert.equal(r.amountCents, 55000);
-  assert.equal(r.reference, "Thabo 0821");
+  assert.equal(r.reference, "Thabo 0821", "stored as the callable hands it over (upper-cased by the input check)");
   assert.equal(r.payer, null, "no payer was read from any bank");
   assert.equal(r.rawText, null);
   assert.deepEqual(r.manualEntry, { by: "Junid", uid: "owner-uid", email: "gunidmoh@gmail.com", at: 1700, note: "Capitec, no email", entryId: "ME-abc12345" });
@@ -107,7 +108,17 @@ test("the same reference and amount twice is a duplicate; the same entryId is a 
   const bankTwin = { outcome: "recorded", status: "unmatched", amountCents: 55000, reference: "THABO 0821", reader: "capitec", bankRef: "ABCD1234", at: 3000 };
   const out = searchEftPool({ [key]: spent, b: bankTwin }, "thabo 0821");
   assert.equal(out.results[0].key, "b");
-  assert.deepEqual(out.results[0].manualTwin, { at: 2000, receiptNumber: "S-9" });
+  assert.deepEqual(out.results[0].manualTwin, { status: "used", at: 2000, receiptNumber: "S-9" });
+  // …and the SETTLE refuses it: one payment, two records, paid out once.
+  const settleTwin = manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, spent], ["b", bankTwin]] });
+  assert.equal(settleTwin.ok, false);
+  assert.equal(settleTwin.code, "manual-twin-used");
+  assert.match(settleTwin.message, /slip S-9/);
+  assert.equal(manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, r]] }).ok, true, "a WAITING manual twin does not block — the search warns instead");
+  assert.deepEqual(searchEftPool({ [key]: r, b: bankTwin }, "thabo 0821").results[0].manualTwin, { status: "unmatched", at: 1700, receiptNumber: null });
+  // ENTRY-TIME: the bank's own unmatched record is already there → no manual entry.
+  assert.equal(bankTwinOfEntry({ reference: "thabo-0821", amountCents: 55000 }, [["b", bankTwin]])?.key, "b");
+  assert.equal(bankTwinOfEntry({ reference: "thabo-0821", amountCents: 55000 }, [["b", { ...bankTwin, status: "used" }]]), null, "a used bank record is not a reason to refuse — it may be an earlier payment");
 });
 
 test("the log row follows the entry: entered → used (who, where, for whom) → sale attached → reversed", () => {
@@ -220,7 +231,12 @@ test("Junid's entry lands in the pool: recorded, unmatched, stamped, fingerprint
   assert.equal(db.reads[`eft_pool_fingerprints/${fp}`].poolKey, key, "the claim names this record — one entry, one spend");
   const logKey = manualLogKeyOf(rec.manualEntry.at, key);
   assert.equal(db.reads[`eft_manual_entries/${logKey}`].status, "unmatched");
-  assert.equal(db.reads[`eft_manual_entries/${logKey}`].reference, "Thabo 0821");
+  assert.equal(db.reads[`eft_manual_entries/${logKey}`].reference, "THABO 0821");
+  // The bank's own unmatched record for the same money in the tail: refused.
+  db.tail = { bank1: { outcome: "recorded", status: "unmatched", amountCents: 60000, reference: "OTHER 1", reader: "fnb", bankRef: "ABCD9999", at: 3 } };
+  const bt = await rejects(eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-twin00001", reference: "other 1", amountCents: 60000 } }), "failed-precondition");
+  assert.equal(bt.details.code, "bank-twin-waiting");
+  db.tail = {};
   // The same form submit again: the same record, nothing new written.
   const again = await eftPoolManualEntry({ ...OWNER, data: ENTRY });
   assert.equal(again.already, true);
