@@ -16,22 +16,25 @@
 // names, with the machine standing at it now. The server refuses any other
 // till (cardBatchCapture, action "slip"); this screen only draws one.
 //
-// BOTH ARE REQUIRED. Submit stays off until there is a photo AND a figure, and
-// says which one it is waiting for. "0" is a figure. Sending twice is fine:
+// WHAT IS REQUIRED (Junid, 17 Oct 2026): a typed-total till (Trophy Till 2 —
+// its printer puts no total on the paper) needs the photo AND the figure;
+// every other till (Marathon PE Till 2) needs the PHOTO ONLY, and the total is
+// read off it on the server. Submit says what it is still waiting for. "0" is
+// a figure. Sending twice is fine:
 // the second is recorded as a correction of the first, never dropped.
 //
 // THE NUMBER BOX is the app's typed-total pattern (inputMode "decimal" — the
 // phone's own number pad), the same field Junid's typed total uses.
 
 import React, { useEffect, useMemo, useState, useRef } from "react";
-import { ref as dbRef, onValue } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
-import { database, functions } from "../../firebase";
+import { functions } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { serverNowMs } from "../../utils/serverTime";
 import { describeCallableError } from "./captureFailure";
 import { preparePhoto } from "./slipPhoto";
 import { slipTills } from "./slipScope";
+import { peekSlipTerminals, subscribeSlipTerminals, isSlipTerminalsLive } from "./slipTerminals";
 import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
@@ -88,14 +91,13 @@ const reasonOf = (r) => (typeof r?.reason === "string" && r.reason.trim())
 export default function CardSlipScreen({ onExit }) {
   const { permRecord } = usePermissions();
 
-  // The registry: which machine stands at this account's till.
-  const [terminals, setTerminals] = useState(null);   // null = loading
-  useEffect(() => {
-    const off = onValue(dbRef(database, "config/cardTerminals"),
-      (snap) => setTerminals(snap.val() || {}),
-      () => setTerminals({}));
-    return () => off();
-  }, []);
+  // The registry: which machine stands at this account's till. Drawn at once
+  // from what the home screen already fetched (or this device's last copy),
+  // then kept live (slipTerminals.js). null = nothing known yet.
+  const [terminals, setTerminals] = useState(() => peekSlipTerminals());
+  // Live = this session has heard the registry itself, not only the device copy.
+  const [live, setLive] = useState(() => isSlipTerminalsLive());
+  useEffect(() => subscribeSlipTerminals((v) => { setTerminals(v); setLive(isSlipTerminalsLive()); }), []);
   const nowMs = serverNowMs();
   const tills = useMemo(() => slipTills(terminals, permRecord, nowMs), [terminals, permRecord, nowMs]);
 
@@ -108,12 +110,14 @@ export default function CardSlipScreen({ onExit }) {
       {terminals !== null && tills.length === 0 && (
         <div style={S.quiet}>Your till's card machine isn't set up here yet. Tell Junid.</div>
       )}
-      {tills.map((t) => <TillSlip key={t.tid} till={t} />)}
+      {tills.map((t) => <TillSlip key={t.tid} till={t} live={live} />)}
     </div>
   );
 }
 
-function TillSlip({ till }) {
+// live: the till drawn is confirmed by the live registry. Until then the form
+// can be filled in (photo, total) but not sent.
+function TillSlip({ till, live = true }) {
   const [photo, setPhoto] = useState(null);          // { base64 } once attached
   const [text, setText] = useState("");
   const [phase, setPhase] = useState("form");         // form | attaching | sending | sent
@@ -138,7 +142,10 @@ function TillSlip({ till }) {
 
   const figure = text.trim();
   const busy = phase === "sending" || phase === "attaching";
-  const canSend = !!photo && figure !== "" && !busy;
+  // A typed-total till (Trophy Till 2) needs the photo AND the figure; every
+  // other till needs the photo only — its total is read off it.
+  const needsFigure = till.typed === true;
+  const canSend = !!photo && (!needsFigure || figure !== "") && !busy && live;
 
   const submit = async () => {
     if (!canSend) return;
@@ -146,7 +153,8 @@ function TillSlip({ till }) {
     setPhase("sending");
     try {
       const { data } = await cardBatchCaptureFn({
-        action: "slip", pickedTid: till.tid, photos: [{ base64: photo.base64 }], declaredTotal: figure,
+        action: "slip", pickedTid: till.tid, photos: [{ base64: photo.base64 }],
+        ...(needsFigure ? { declaredTotal: figure } : {}),
       });
       if (!data?.ok) { setPhase("form"); setError(reasonOf(data)); return; }
       setPhoto(null);
@@ -194,19 +202,22 @@ function TillSlip({ till }) {
               </label>
             </div>
           )}
+          {needsFigure && (<>
           <label style={S.step} htmlFor={`slip-total-${till.tid}`}>2 · Card total on the slip (R)</label>
           <input id={`slip-total-${till.tid}`} style={S.amount} inputMode="decimal" autoComplete="off" enterKeyHint="done"
                  placeholder="0.00" value={text} disabled={phase === "sending"}
                  onChange={(e) => setText(e.target.value)} />
           <div style={S.hint}>Type 0 if there were no card sales.</div>
+          </>)}
           <button type="button" style={{ ...S.submit, ...(canSend ? null : S.submitOff) }} disabled={!canSend} onClick={submit}>
             {phase === "sending" ? "Sending…" : "Submit"}
           </button>
           {!busy && !canSend && (
             <div style={S.waiting} role="status">
-              {!photo && figure === "" ? "Add the slip photo and type the card total to submit."
-                : !photo ? "Add the slip photo (step 1) to submit."
-                : "Type the card total (step 2) to submit."}
+              {!photo && needsFigure && figure === "" ? "Add the slip photo and type the card total to submit."
+                : !photo ? (needsFigure ? "Add the slip photo (step 1) to submit." : "Add the slip photo to submit.")
+                : needsFigure && figure === "" ? "Type the card total (step 2) to submit."
+                : "Checking your till… one moment."}
             </div>
           )}
           {error && <div style={S.fail} role="alert">{error}</div>}

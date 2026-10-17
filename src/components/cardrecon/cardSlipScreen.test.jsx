@@ -35,6 +35,7 @@ vi.mock("../shopify/imageDecode", () => ({
 }));
 
 const CardSlipScreen = (await import("./CardSlipScreen")).default;
+const { _resetSlipTerminals } = await import("./slipTerminals");
 
 const textOf = (n) => [].concat(n.props.children).filter((c) => typeof c === "string").join("");
 const everyString = (tree) => tree.root.findAll((n) => typeof n.props?.children === "string" || Array.isArray(n.props?.children))
@@ -48,6 +49,7 @@ const type = (t, v) => act(() => { amount(t).props.onChange({ target: { value: v
 const press = async (b) => { await act(async () => { await b.props.onClick(); }); };
 
 beforeEach(() => {
+  _resetSlipTerminals(); // every test opens its own registry read
   calls.length = 0; calls.fail = null; calls.reply = null; reads.length = 0;
   perms.permRecord = { displayName: "yasmin", stockRole: "pos", cardSlipTills: { pe: { "till-2": true } } };
   globalThis.document = { createElement: () => ({ getContext: () => ({ drawImage: () => {} }), toDataURL: () => "data:image/jpeg;base64,QUJDRA==" }) };
@@ -64,18 +66,71 @@ describe("Yasmin's screen", () => {
     expect([...new Set(reads)]).toEqual(["config/cardTerminals"]);
   });
 
-  it("offers the camera and the gallery, and a number box labelled for the card total", () => {
+  // Junid, 17 Oct 2026: Marathon PE Till 2's slip is a PHOTO ONLY — the total
+  // is read off it on the server. Only a typed-total till (Trophy Till 2) asks
+  // for the number.
+  it("offers the camera and the gallery, and NO number box", () => {
     const t = render();
     const inputs = fileInputs(t);
     expect(inputs).toHaveLength(2);
     expect(inputs.map((i) => i.props.capture)).toEqual(["environment", undefined]);
+    expect(t.root.findAll((n) => n.type === "input" && n.props.inputMode === "decimal")).toHaveLength(0);
+    expect(everyString(t)).not.toMatch(/Card total on the slip/);
+  });
+
+  it("Submit waits for the photo only, and says so", async () => {
+    const t = render();
+    expect(submitBtn(t).props.disabled).toBe(true);
+    expect(everyString(t)).toMatch(/Add the slip photo to submit/);
+    expect(everyString(t)).not.toMatch(/type the card total/i);
+    await pick(fileInputs(t)[0]);
+    expect(submitBtn(t).props.disabled).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("sends the photo with NO typed total, and the answer is 'Sent — thank you' and nothing else", async () => {
+    const t = render();
+    await pick(fileInputs(t)[1]);
+    await press(submitBtn(t));
+    expect([...calls]).toEqual([{ action: "slip", pickedTid: "0000AA2X", photos: [{ base64: "QUJDRA==" }] }]);
+    expect(t.root.findAll((n) => n.props["data-testid"] === "slip-sent")).toHaveLength(1);
+    expect(everyString(t)).toMatch(/Sent — thank you/);
+    expect(everyString(t)).not.toMatch(/R\s?\d|batch|variance|clean|short|over/i);
+  });
+
+  it("sending again is allowed", async () => {
+    const t = render();
+    await pick(fileInputs(t)[0]);
+    await press(submitBtn(t));
+    await act(async () => { t.root.find((n) => n.type === "button" && textOf(n) === "Send it again").props.onClick(); });
+    await pick(fileInputs(t)[0]);
+    await press(submitBtn(t));
+    expect(calls).toHaveLength(2);
+    expect(calls.every((c) => !("declaredTotal" in c))).toBe(true);
+  });
+
+  it("a refusal is shown in the server's words", async () => {
+    calls.reply = () => ({ ok: false, reason: "That is not a photo. Take a photo of the slip." });
+    const t = render();
+    await pick(fileInputs(t)[0]);
+    await press(submitBtn(t));
+    expect(everyString(t)).toMatch(/That is not a photo/);
+    expect(t.root.findAll((n) => n.props["data-testid"] === "slip-sent")).toHaveLength(0);
+  });
+});
+
+describe("Amanda's screen: Trophy Till 2 is a typed-total till — photo AND number", () => {
+  beforeEach(() => { perms.permRecord = { displayName: "Amanda", cardSlipTills: { trophy: { "till-2": true } } }; });
+
+  it("offers the camera and a number box labelled for the card total", () => {
+    const t = render();
+    expect(fileInputs(t)).toHaveLength(2);
     expect(amount(t).props.inputMode).toBe("decimal");
     expect(everyString(t)).toMatch(/Card total on the slip \(R\)/);
   });
 
   it("Submit waits for BOTH the photo and the number, and says which", async () => {
     const t = render();
-    expect(submitBtn(t).props.disabled).toBe(true);
     expect(everyString(t)).toMatch(/Add the slip photo and type the card total/);
     type(t, "1,250.00");
     expect(submitBtn(t).props.disabled).toBe(true);
@@ -86,34 +141,18 @@ describe("Yasmin's screen", () => {
     expect(everyString(t)).toMatch(/Type the card total \(step 2\)/);
     type(t, "1,250.00");
     expect(submitBtn(t).props.disabled).toBe(false);
-    expect(calls).toHaveLength(0);
   });
 
-  it("0 is a number: a no-sales evening sends R0 with its photo, and the answer is 'Sent — thank you' and nothing else", async () => {
+  it("0 is a number: a no-sales evening sends R0 with its photo", async () => {
     const t = render();
     await pick(fileInputs(t)[1]);
     type(t, "0");
     await press(submitBtn(t));
-    expect([...calls]).toEqual([{ action: "slip", pickedTid: "0000AA2X", photos: [{ base64: "QUJDRA==" }], declaredTotal: "0" }]);
-    const sent = t.root.findAll((n) => n.props["data-testid"] === "slip-sent");
-    expect(sent).toHaveLength(1);
+    expect([...calls]).toEqual([{ action: "slip", pickedTid: "0000BB2Y", photos: [{ base64: "QUJDRA==" }], declaredTotal: "0" }]);
     expect(everyString(t)).toMatch(/Sent — thank you/);
-    expect(everyString(t)).not.toMatch(/R\s?\d|batch|variance|clean|short|over/i);
   });
 
-  it("sending again is allowed — the server records it as a correction", async () => {
-    const t = render();
-    await pick(fileInputs(t)[0]);
-    type(t, "100");
-    await press(submitBtn(t));
-    await act(async () => { t.root.find((n) => n.type === "button" && textOf(n) === "Send it again").props.onClick(); });
-    await pick(fileInputs(t)[0]);
-    type(t, "120");
-    await press(submitBtn(t));
-    expect(calls.map((c) => c.declaredTotal)).toEqual(["100", "120"]);
-  });
-
-  it("a refusal is shown in the server's words, and the form stays filled to try again", async () => {
+  it("a refusal is shown in the server's words, and the form stays filled", async () => {
     calls.reply = () => ({ ok: false, reason: "\"12abc\" is not an amount — type the total as it would print, e.g. 12,345.67." });
     const t = render();
     await pick(fileInputs(t)[0]);
@@ -121,7 +160,6 @@ describe("Yasmin's screen", () => {
     await press(submitBtn(t));
     expect(everyString(t)).toMatch(/is not an amount/);
     expect(amount(t).props.value).toBe("12abc");
-    expect(t.root.findAll((n) => n.props["data-testid"] === "slip-sent")).toHaveLength(0);
   });
 });
 

@@ -1951,9 +1951,6 @@ async function handleSlip(db, request, deps = {}) {
   if (!Array.isArray(data.photos) || data.photos.length !== SLIP_PHOTOS) {
     throw new HttpsError("invalid-argument", "Take one photo of the slip.");
   }
-  if (!hasDeclaredTotal(data.declaredTotal)) {
-    throw new HttpsError("invalid-argument", "Type the card total on the slip — 0 if there were no card sales.");
-  }
   // One registry row, never the registry.
   const terminal = (await db.ref(`${CARD_TERMINALS_PATH}/${picked}`).once("value")).val();
   if (!terminal || !terminal.storeId || !terminal.tillId) {
@@ -1963,6 +1960,18 @@ async function handleSlip(db, request, deps = {}) {
   const nowMs = (deps.now || Date.now)();
   if (!(await slipScopeAllowsNow(db, request, terminal, nowMs))) {
     throw new HttpsError("permission-denied", "This account can only send the slip for its own till.");
+  }
+  // WHAT A SLIP CARRIES (Junid, 17 Oct 2026): a typed-total till (Trophy Till
+  // 2 — its paper has no total) sends the photo AND the typed figure; every
+  // other till (Marathon PE Till 2) sends the PHOTO ONLY, and its total is read
+  // off the photo exactly as a manager's photographed slip is — stored first,
+  // read in the background, recorded, or marked Unread for Junid
+  // (handleReceive). Gated above by the per-till scope, never by card_recon.
+  if (!hasDeclaredTotal(data.declaredTotal)) {
+    if (typesTotal(terminal)) {
+      throw new HttpsError("invalid-argument", "Type the card total on the slip — 0 if there were no card sales.");
+    }
+    return handleReceive(db, request, deps);
   }
   const decoded = data.photos.map(decodePhoto);
   // A PHOTO, not any bytes: the screen always sends a JPEG (slipPhoto.js), and

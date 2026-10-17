@@ -9,7 +9,7 @@
 // Kept in step with the server by a contract test (slipScope.test.js), which
 // runs both over the same inputs.
 
-import { captureCards } from "./terminalRegistry";
+import { captureCards, typesTotal } from "./terminalRegistry";
 
 export const SLIP_SCOPE_FIELD = "cardSlipTills";
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
@@ -53,7 +53,10 @@ export function slipTills(terminals, permRecord, nowMs) {
   const scope = readSlipScope(permRecord?.[SLIP_SCOPE_FIELD]);
   if (!scope.length) return [];
   return captureCards(terminals)
-    .map((t) => ({ tid: t.tid, ...tillNow(t, nowMs) }))
+    // typed: the machine prints no readable total (Trophy Till 2), so the
+    // person types it beside the photo. Every other till: the photo alone —
+    // the total is read off it (Junid, 17 Oct 2026).
+    .map((t) => ({ tid: t.tid, typed: typesTotal(t), ...tillNow(t, nowMs) }))
     .map((t) => ({ ...t, label: t.label || `${t.storeId} · ${t.tillId}` }))
     .filter((t) => scope.includes(`${t.storeId}/${t.tillId}`));
 }
