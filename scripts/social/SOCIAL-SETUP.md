@@ -665,6 +665,62 @@ browser must never be able to forge a spent — or an unspent — budget.
 
 ---
 
+## 5f. THE DAILY STILL: CURRENT STYLE AND LOOKBOOK, ALTERNATING — 2026-10-17
+
+One still a day on top of the two reels (which are untouched), made by
+`socialStillAutopilot` at **07:00 SAST** and posted at **15:30** once to the
+feed and once as a story. Nothing to do by hand.
+
+| day | what posts |
+|---|---|
+| A, `current` | the existing designed still: `generateOnePost` single/story + its 4:5 feed twin, prompt and layout unchanged |
+| B, `lookbook` | the Lookbook poster (`functions/lookbook/`): head-to-toe outfit from live stock, one generated hero wearing those exact garments, everything else drawn in code |
+
+Strictly alternating. The state is `social_lookbook/rotation` (`seq`,
+`lastDate`, `format`), advanced once per SA date. **A lookbook day that fails
+any gate posts the current style instead.** The gates are: no eligible outfit,
+the hero failing the no-text check, a render error, or the cap. The reason
+goes in `social_still_log/{date}`, and the next lookbook is the next lookbook
+day. Products used in the last 14 lookbooks sit at `social_lookbook/history`.
+Both nodes are Admin-SDK only, like `social_generation_budget`, so no rule
+change is needed.
+
+**Switches** (build-time, `functions/.env`, then redeploy both by name):
+
+```
+LOOKBOOK_ENABLED=false                      # drop the lookbook; the still stays, current style daily
+STILL_FORMATS=["current","lookbook"]        # the rotation; repeat a name to weight it; [] = no daily still
+firebase deploy --only functions:socialStillAutopilot,functions:socialHealthScan --project marathon-club
+```
+
+**The cap, after this change (still 4 a day, unchanged):**
+
+| | generations |
+|---|---|
+| reels (06:00) | 2 |
+| still (07:00): current, or a lookbook that passes first time | 1 |
+| **normal day** | **3 of 4** |
+| lookbook hero fails the text check | no regeneration (it would leave the fallback no unit) → current style: **4 of 4** |
+| a reel needed a billed retry first | the still still gets its unit; a lookbook failure then posts nothing, logged and paged |
+
+"Regenerate once" only happens when one unit would still be left for the
+fallback. On a normal day that is never. A failed lookbook must not cost the
+day its post, and the cap is an owner decision.
+
+**Per poster:** one Nano Banana Pro 2K generation ($0.13–0.17 measured) + two
+claude-sonnet-4-6 vision calls (text check, garment positions, ~$0.01) + one
+caption call. About **R3.20** at R18/$. The first real poster
+(`docs/lookbook-real.jpg`) cost $0.170 to generate.
+
+**Health:** `socialHealthScan` owes the 15:30 story and feed post, and writes
+`social_health/days/{date}/still` = `{planned, posted, fallback, gate,
+reason}`. A fallback is `degraded` (shown, not paged) on its day and the day
+after. **Two lookbook days running that both fell back page**, at most 48 h
+after the first. A still with no record by 07:40, or one that posted nothing,
+pages like a missed reel.
+
+Layout sample without spending anything: `node scripts/social/lookbook-sample.mjs --compare`.
+
 ## 6. Day to day
 
 App → **Social**.

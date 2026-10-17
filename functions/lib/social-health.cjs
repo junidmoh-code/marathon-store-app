@@ -32,6 +32,8 @@
 //   4. HEARTBEAT — is the Mac mini's publisher still ticking? This is the one
 //      check that fires BEFORE the damage: a dead agent is visible within
 //      minutes, rather than at the end of a day with nothing on it.
+//   4b. THE DAILY STILL — did the 07:00 still run and post, which format, and
+//      is the lookbook quietly falling back to the current style?
 //
 // PURE. No RTDB, no network, no clock of its own — every input is passed in.
 // The caller (socialHealthScan in index.js) does the reading and the alerting;
@@ -264,7 +266,7 @@ function listOf(v) {
  * and a story slot also owes a feed post. These are the same twin rules as
  * dayObligation, laid out by time instead of counted.
  */
-function passedSlots(policy, dayStart, nowMs, { reelAlsoPostsToStory = true, storyAlsoPostsToFeed = true } = {}) {
+function passedSlots(policy, dayStart, nowMs, { reelAlsoPostsToStory = true, storyAlsoPostsToFeed = true } = {}, still = null) {
   const by = { reel: [], story: [], feed: [] };
   // A slot whose time was already past when the policy was saved was never
   // owed. Adding a 10:00 slot at 14:00 must not page about 10:00.
@@ -283,12 +285,80 @@ function passedSlots(policy, dayStart, nowMs, { reelAlsoPostsToStory = true, sto
   add("story", policy && policy.stories);
   if (reelAlsoPostsToStory) add("story", policy && policy.reels);
   if (storyAlsoPostsToFeed) add("feed", policy && policy.stories);
+  // The daily still (socialStillAutopilot) is a story, twinned onto the feed.
+  if (still && still.enabled && still.slot) {
+    add("story", [still.slot]);
+    if (storyAlsoPostsToFeed) add("feed", [still.slot]);
+  }
   // By time, not by label: "9:00" sorts after "12:00" as a string.
   for (const f of Object.keys(by)) by[f].sort((a, b) => slotOffsetMs(a) - slotOffsetMs(b));
   return by;
 }
 
-function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true }) {
+// ── THE DAILY STILL ──────────────────────────────────────────────────────────
+// socialStillAutopilot runs at 07:00 and writes social_still_log/{saDate}. By
+// 07:40 (its own 30-minute ceiling plus margin) a missing record means it did
+// not run.
+const STILL_DUE_BY_MS = (7 * 60 + 40) * 60 * 1000;
+
+/**
+ * What the still did today and whether the lookbook is failing quietly.
+ *
+ * A lookbook day that falls back still POSTS (the current style), so every
+ * other check stays green. That is exactly the quiet failure the owner asked
+ * to see within 48 hours. So:
+ *   · a fallback today is a reason (degraded: visible on the day record);
+ *   · yesterday's fallback is still a reason today, so a non-lookbook day
+ *     after a failed one does not read as clean;
+ *   · two lookbook days running that both fell back PAGE. With alternating
+ *     days the second is 48 h after the first.
+ *
+ * @param still { enabled, slot, log, recent: { [saDate]: log } }
+ * @returns { reasons, silent, report }
+ */
+function assessStill(still, { nowMs, dayStart, saDate }) {
+  const out = { reasons: [], silent: false, report: null };
+  if (!still || !still.enabled) return out;
+  const log = still.log || null;
+  out.report = {
+    planned: (log && log.planned) || null,
+    posted: (log && log.posted) || null,
+    fallback: Boolean(log && log.fallback),
+    gate: (log && log.gate) || null,
+    reason: (log && log.reason) || null,
+  };
+  if (!log) {
+    if (nowMs - dayStart > STILL_DUE_BY_MS) { out.reasons.push("the 07:00 still has no record of running today"); out.silent = true; }
+  } else if (log.error) {
+    out.reasons.push(`the 07:00 still failed: ${String(log.error).slice(0, 200)}`); out.silent = true;
+  } else if (log.finishedAt && !log.posted && !log.off) {
+    out.reasons.push(`the 07:00 still made nothing${log.reason ? ` (${String(log.reason).slice(0, 200)})` : ""}`); out.silent = true;
+  } else if (!log.finishedAt && nowMs - Number(log.startedAt || 0) > 40 * 60 * 1000) {
+    out.reasons.push("the 07:00 still started and never finished"); out.silent = true;
+  }
+  if (log && log.fallback) {
+    out.reasons.push(`today's lookbook fell back to the current style (${log.gate || "?"}: ${String(log.reason || "no reason recorded").slice(0, 160)})`);
+  }
+  // The previous lookbook day, from the last few days' records.
+  const prior = Object.keys(still.recent || {})
+    .filter((d) => d < saDate)
+    .sort()
+    .reverse()
+    .map((d) => ({ d, l: still.recent[d] }))
+    .find((x) => x.l && x.l.planned === "lookbook");
+  if (prior && prior.l.fallback) {
+    const ageDays = Math.round((Date.parse(`${saDate}T00:00:00Z`) - Date.parse(`${prior.d}T00:00:00Z`)) / DAY_MS);
+    if (log && log.planned === "lookbook" && log.fallback) {
+      out.reasons.push(`the lookbook has fallen back on two lookbook days running (${prior.d} and ${saDate})`);
+      out.silent = true;
+    } else if (ageDays <= 2) {
+      out.reasons.push(`the last lookbook (${prior.d}) fell back to the current style (${prior.l.gate || "?"}: ${String(prior.l.reason || "").slice(0, 120)})`);
+    }
+  }
+  return out;
+}
+
+function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true, still = null }) {
   const saDate = saDateStringFromMs(nowMs);
   const dayStart = sastMidnight(nowMs);
   const dayEnd = dayStart + DAY_MS;
@@ -358,8 +428,15 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
     Number(p.createdAt) >= dayStart && Number(p.createdAt) < dayEnd &&
     p.status !== "discarded");
   const short = [];
+  // The still's story and its feed twin are owed once the still has run and
+  // posted. Before that they are check 4b's business, not a surface short.
+  const owedByFormat = { ...obligation.byFormat };
+  if (still && still.enabled && still.log && still.log.finishedAt && still.log.posted) {
+    owedByFormat.story += 1;
+    if (!twins || twins.storyAlsoPostsToFeed !== false) owedByFormat.feed += 1;
+  }
   if (autopilotLog && autopilotLog.finishedAt && made > 0) {
-    for (const [format, owed] of Object.entries(obligation.byFormat)) {
+    for (const [format, owed] of Object.entries(owedByFormat)) {
       if (owed <= 0) continue;                       // a retired slot owes nothing
       const have = madeToday.filter((p) => formatOfPost(p) === format).length;
       // "storys" is what `${format}s` produces, and a watchdog that cannot
@@ -434,7 +511,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   // still-open slot at or before the moment it landed (a late 12:00 reel at
   // 13:10 covers 12:00, a 19:01 reel covers 19:00 and not 12:00). A post that
   // landed before every open slot, posted early, covers the earliest one.
-  const slots = passedSlots(policy, dayStart, nowMs, twins || {});
+  const slots = passedSlots(policy, dayStart, nowMs, twins || {}, still);
   const missed = [];
   let missedSlotCount = 0;
   for (const [format, times] of Object.entries(slots)) {
@@ -483,6 +560,10 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
     reasons.push(`the publisher has not ticked for ${mins} minutes`);
   }
 
+  // ── 4b. THE DAILY STILL ───────────────────────────────────────────────────
+  const stillVerdict = assessStill(still, { nowMs, dayStart, saDate });
+  reasons.push(...stillVerdict.reasons);
+
   // ── THE VERDICT ───────────────────────────────────────────────────────────
   // "silent" is reserved for a day that produced NOTHING — no publish, and
   // either no generation or a dead publisher. Everything else that is wrong is
@@ -519,18 +600,21 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   const severity = reasons.length === 0
     ? "ok"
     : (nothingPublished || publisherDead || generatorProducedNothing || owesMore ||
-       generatorOff || generatorMissing || slotMissed) ? "silent" : "degraded";
+       generatorOff || generatorMissing || slotMissed || stillVerdict.silent) ? "silent" : "degraded";
 
   return {
     saDate,
     ok: reasons.length === 0,
     severity,
     reasons,
+    // Which still format was planned and posted today, and whether it fell
+    // back: null when there is no daily still.
+    still: stillVerdict.report,
     counts: {
       wanted, made, skipped,
       // What each surface owed and what it got — the numbers the new rhythm
       // is judged on, recorded so the day's record explains its own verdict.
-      owed: obligation.byFormat,
+      owed: owedByFormat,
       madeByFormat: {
         reel: madeToday.filter((p) => formatOfPost(p) === "reel").length,
         story: madeToday.filter((p) => formatOfPost(p) === "story").length,
@@ -561,7 +645,7 @@ function alarmMessage(verdict) {
 }
 
 module.exports = {
-  assessSocialDay, alarmMessage,
+  assessSocialDay, alarmMessage, assessStill,
   policyTotal, dayObligation, landedSomewhere, passedSlots, pushKeyPrefixForMs,
-  PUBLISH_GRACE_MS, HEARTBEAT_STALE_MS, GENERATOR_DUE_BY_MS, SCAN_WINDOW_MS,
+  PUBLISH_GRACE_MS, HEARTBEAT_STALE_MS, GENERATOR_DUE_BY_MS, SCAN_WINDOW_MS, STILL_DUE_BY_MS,
 };

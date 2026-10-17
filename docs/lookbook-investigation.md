@@ -27,8 +27,11 @@ Read before building the lookbook still. Every path below is in this repo
   as reference images today. The stop condition does not apply.
 - **Renderer:** sharp is in `functions/package.json`, so the poster uses sharp
   plus SVG. Nothing is added.
-- **Remove-bg:** `greyMatte` exists. Studio photos are on plain light grey, the
-  case it was built for.
+- **Remove-bg:** `greyMatte` exists, but the first real run showed that the
+  shop's photos, the New Arrivals "studio" ones included, are on the mesh
+  display wall, not plain grey. The matte is therefore the repo's other
+  remover, `@imgly/background-removal-node` (the Mac mini group poster's local
+  ONNX model), loaded lazily by the lookbook only, with `greyMatte` second.
 - **"Current still style":** there is no live daily still to retire. The
   existing designed still is the `story` format with its 4:5 feed twin, built
   by `generateOnePost` → `compositeSocialDesign`. On a "current" day the still
@@ -55,11 +58,11 @@ Read before building the lookbook still. Every path below is in this repo
    still be left for the current-style fallback**. A failed lookbook must
    never cost the day its post, and the cap is not raised. On a normal day that
    means a hero with text falls straight back to the current style.
-6. **No-text gate:** the pipeline's own vision model (`claude-haiku-4-5`,
-   `REORDER_MODEL`, Anthropic secret already bound). The same call returns the
-   approximate position of each garment, so the leader-line dots follow the
-   real picture. If the call gives no usable positions, the dots fall back to
-   fixed spots by category.
+6. **No-text gate:** a vision model the pipeline already uses. The first plan
+   was `claude-haiku-4-5`. After the first real poster it became
+   `claude-sonnet-4-6` (`CHAT_MODEL`), with the garment positions asked
+   separately as cells on a labelled grid. Raw x/y wandered by a head-height
+   between looks. The text check always sees the clean hero.
 7. **Health:** `social_autopilot_log` is unchanged. The still writes
    `social_still_log/{saDate}`. The scan adds the 15:30 story + feed
    obligation, records `still` (planned, posted, fallback, reason) on

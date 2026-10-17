@@ -5446,6 +5446,199 @@ exports.socialDailyAutopilot = onSchedule(
   }
 );
 
+// ── THE DAILY STILL: CURRENT STYLE AND LOOKBOOK, STRICTLY ALTERNATING ────────
+// Owner brief + addendum, 2026-10-17. One still a day, on top of the two reels
+// (which this does not touch): day A the current designed still, day B the
+// Lookbook poster. Both are one generation and both go out once to the feed
+// and once as a story, at STILL_SLOT (15:30 SAST).
+//
+//   current   generateOnePost(kind "single", format "story"): exactly the
+//             call the autopilot makes for a policy story, unmodified, so the
+//             current style's prompt and layout are the ones already live.
+//   lookbook  functions/lookbook/lookbook.cjs: outfit → hero with the real
+//             garments as references → no-text gate → poster in code.
+//
+// A LOOKBOOK DAY THAT FAILS ANY GATE POSTS THE CURRENT STYLE INSTEAD and
+// records why (social_still_log/{saDate}). The rotation has already moved on,
+// so the next lookbook is the next lookbook day and never a retry of this one.
+//
+// 07:00, not 06:00: the reels' run has a 30-minute ceiling, so by 07:00 it has
+// finished or died, and the reels always reach the day's cap first.
+//
+// SWITCHES (build-time, like every flag in this file; set in functions/.env
+// and redeploy functions:socialStillAutopilot and functions:socialHealthScan):
+//   LOOKBOOK_ENABLED=false            drop "lookbook" from the rotation
+//   STILL_FORMATS=["current","lookbook"]  the rotation, in order; repeat a
+//                                     name to weight it; [] = no daily still
+const socialLookbook = require("./lib/social-lookbook.cjs");
+const socialStill = require("./lib/social-still.cjs");
+const LOOKBOOK_ENABLED = process.env.LOOKBOOK_ENABLED !== "false";
+const STILL_FORMATS = socialLookbook.parseStillFormats(process.env.STILL_FORMATS, { lookbookEnabled: LOOKBOOK_ENABLED });
+
+// The lookbook's own write: story + feed twin + album entry + the 14-lookbook
+// memory, in ONE update, after its three files are uploaded. A failure removes
+// the uploads and is reported as a gate, so the day still falls back.
+async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platforms }) {
+  const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
+  const uploaded = [];
+  try {
+    const up = async (tag, buf) => { const u = await uploadSocialImage(postId, tag, buf, "image/jpeg"); uploaded.push(u); return u; };
+    const urls = {
+      story: await up("story", made.poster.story.buffer),
+      feed: await up("feed", made.poster.feed.buffer),
+      master: await up("master", made.poster.master.buffer),
+    };
+    const picks = made.rows.map((r) => ({ ...r, retailPrice: r.price }));
+    const link = SOCIAL_STOREFRONT;
+    const storyCaption = socialCaption.fallbackCaption({ kind: "outfit", products: picks });
+    const record = socialStill.buildLookbookRecord({
+      rows: made.rows, total: made.total, urls, scheduledAt, platforms,
+      engine: made.engine, costUSD: made.costUSD, nowMs, link, storyCaption,
+    });
+    // The feed shows a caption, so the twin gets a real one, written by the
+    // same caption call every other feed post uses. A failure falls back to
+    // the plain line and never loses the poster.
+    const { caption, source, reason } = await writeSocialCaption({ kind: "outfit", picks, link, styleNotes: [] });
+    const twinId = STORY_ALSO_POSTS_TO_FEED ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
+    const twin = twinId
+      ? socialTwin.buildFeedTwin(record, { twinId, storyId: postId, caption, captionSource: source, captionNote: reason })
+      : null;
+    await db.ref().update({
+      ...socialTwin.twinWriteUpdates(SOCIAL_POSTS_PATH, postId, record, twinId, twin),
+      ...socialLibrary.libraryWriteUpdates(postId, record, { isTwin: false }),
+      [`social_lookbook/history/${saDate}`]: socialLookbook.historyEntry(made.rows, nowMs),
+    });
+    return { ok: true, postId, twinId };
+  } catch (err) {
+    for (const url of uploaded) {
+      try {
+        const objectPath = decodeURIComponent(new URL(url).pathname.split("/o/")[1] || "");
+        if (objectPath) await admin.storage().bucket(STORAGE_BUCKET).file(objectPath).delete();
+      } catch { /* an orphan costs pennies; the reason below matters more */ }
+    }
+    return { ok: false, reason: `the poster could not be saved: ${String(err && err.message).slice(0, 160)}` };
+  }
+}
+
+exports.socialStillAutopilot = onSchedule(
+  {
+    schedule: "0 7 * * *",
+    timeZone: "Africa/Johannesburg",
+    region: "europe-west1",
+    secrets: [geminiApiKey, anthropicApiKey],
+    // The cut-out model (onnxruntime, loaded only here) needs the headroom.
+    memory: "2GiB",
+    // Lookbook (up to two generations at 180 s, two vision calls, six
+    // cut-outs) then, on a failed gate, the current style with its own 503
+    // retries. 1800 s is the v2 onSchedule maximum.
+    timeoutSeconds: 1800,
+  },
+  async () => {
+    if (!SOCIAL_AUTOPILOT_ENABLED) { console.log("socialStillAutopilot: disabled (SOCIAL_AUTOPILOT_ENABLED=false)"); return; }
+    const db = admin.database();
+    const nowMs = Date.now();
+    const saDate = saDateForUsage(nowMs);
+    const logRef = db.ref(`social_still_log/${saDate}`);
+    if (!STILL_FORMATS.length) {
+      await logRef.update({ checkedAt: nowMs, off: true });
+      console.log("socialStillAutopilot: STILL_FORMATS is empty — no daily still");
+      return;
+    }
+
+    // One run per day, claimed, with the same staleness escape as the reels.
+    const claim = await logRef.transaction((cur) => {
+      if (cur === null) return { startedAt: nowMs };
+      if (!cur.finishedAt && nowMs - Number(cur.startedAt || 0) > 40 * 60 * 1000) return { startedAt: nowMs, reclaimedFrom: cur.startedAt };
+      return undefined;
+    });
+    if (!claim.committed) { console.log(`socialStillAutopilot: ${saDate} already ran or is running — skipping`); return; }
+
+    try {
+      // ── WHICH FORMAT TODAY ─────────────────────────────────────────────
+      // Advanced once per date; a reclaimed run reads the same answer.
+      const rot = await db.ref("social_lookbook/rotation")
+        .transaction((cur) => socialLookbook.advanceRotation(cur, saDate, STILL_FORMATS));
+      const rotation = rot.snapshot.val() || {};
+      const planned = rotation.lastDate === saDate ? rotation.format : STILL_FORMATS[0];
+      await logRef.update({ planned, seq: Number.isInteger(rotation.seq) ? rotation.seq : null });
+
+      // ── TODAY'S REEL PRODUCTS STAY OUT, AND THE SLOT IS CLAIMED ────────
+      const recent = (await db.ref(SOCIAL_POSTS_PATH).orderByKey()
+        .startAt(socialHealth.pushKeyPrefixForMs(sastMidnightUtc(nowMs, 0))).once("value")).val() || {};
+      const used = new Set();
+      for (const p of Object.values(recent)) for (const x of (p && p.products) || []) if (x && x.pid) used.add(x.pid);
+      const taken = new Set();
+      for (const st of ["draft", "approved", "posting"]) {
+        const snap = await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(st).limitToLast(100).once("value");
+        for (const p of Object.values(snap.val() || {})) { const n = Number(p && p.scheduledAt); if (Number.isFinite(n)) taken.add(n); }
+      }
+      const { hour, minute } = parseHHMM(socialStill.STILL_SLOT);
+      const scheduledAt = nextHourSlot(nowMs, hour, minute, taken);
+      const platforms = { instagram: true, facebook: true, tiktok: false };
+
+      let costUSD = 0, gate = null, reason = null;
+      if (planned === "lookbook") {
+        // Required here, not at the top: the renderer brings fontkit and the
+        // cut-out model, and no other function in this file should load them.
+        const { makeLookbook } = require("./lookbook/lookbook.cjs");
+        const { engines: lookbookEngines } = require("./lookbook/engines.cjs");
+        const made = await makeLookbook(db, lookbookEngines({
+          db, saDate,
+          geminiApiKey: geminiApiKey.value(),
+          anthropicApiKey: anthropicApiKey.value(),
+          visionModel: CHAT_MODEL,
+          fetchImage: fetchImageBuffer, Anthropic,
+          log: (m) => console.log(m),
+        }), { nowMs, used });
+        costUSD += made.costUSD || 0;
+        if (made.ok) {
+          const w = await writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platforms });
+          if (w.ok) {
+            await logRef.update(socialStill.stillLogEntry({
+              planned, posted: "lookbook", costUSD, postId: w.postId, twinId: w.twinId, scheduledAt,
+              rows: made.rows.length, total: made.total.value, nowMs: Date.now(),
+            }));
+            await logReorderUsage(db, saDate, { at: nowMs, kind: "socialStillAutopilot", by: "cron", format: "lookbook", estimatedCostUSD: +costUSD.toFixed(4) });
+            console.log(`socialStillAutopilot ${saDate}: lookbook posted (${made.rows.length} rows, ${made.total.text}, ~$${costUSD.toFixed(3)})`);
+            return;
+          }
+          gate = "save"; reason = w.reason;
+        } else {
+          gate = made.gate; reason = made.reason;
+        }
+        console.warn(`socialStillAutopilot ${saDate}: lookbook failed the ${gate} gate — posting the current style instead: ${reason}`);
+      }
+
+      // ── THE CURRENT STYLE: today's plan, or the lookbook's fallback ─────
+      const style = "house";
+      const { candidates, styleKit, library, signal } = await loadSocialGenerationContext(db, { nowMs, style });
+      const result = await socialRecovery.generateWithRecovery({
+        kind: "single", format: "story", rotation: AUTOPILOT_KINDS,
+        deadlineMs: nowMs + 1500 * 1000,
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        run: (kind) => generateOnePost(db, {
+          kind, format: "story", style, platforms, styleKit, library, candidates, used,
+          signal, geminiApiKey, status: "approved", scheduledAt,
+          updatedBy: "cron:socialStillAutopilot", saDate,
+        }),
+      });
+      costUSD += result.ok ? result.created.costUSD : (result.skipped.costUSD || 0);
+      await logRef.update(socialStill.stillLogEntry({
+        planned, posted: result.ok ? "current" : null, gate,
+        reason: result.ok ? reason : [reason, `the current style also failed: ${result.skipped.reason}`].filter(Boolean).join(" — "),
+        costUSD, postId: result.ok ? result.created.postId : null, twinId: result.ok ? result.created.twinId : null,
+        scheduledAt, nowMs: Date.now(),
+      }));
+      await logReorderUsage(db, saDate, { at: nowMs, kind: "socialStillAutopilot", by: "cron", format: result.ok ? "current" : "none", fallback: planned === "lookbook", estimatedCostUSD: +costUSD.toFixed(4) });
+      console.log(`socialStillAutopilot ${saDate}: planned ${planned}, posted ${result.ok ? "current" : "NOTHING"}${gate ? ` (lookbook ${gate}: ${reason})` : ""}, ~$${costUSD.toFixed(3)}`);
+    } catch (err) {
+      console.error("socialStillAutopilot failed:", err && err.message);
+      await logRef.update({ finishedAt: Date.now(), error: String(err && err.message).slice(0, 500) });
+      throw err;
+    }
+  }
+);
+
 // ── THE WATCHDOG: A QUIET DAY MUST NOT BE ABLE TO PASS UNNOTICED ─────────────
 //
 // Everything above this line reports its own failures honestly, and on
@@ -5498,7 +5691,10 @@ exports.socialHealthScan = onSchedule(
     const nowMs = Date.now();
     const saDate = saDateForUsage(nowMs);
 
-    const [policy, logSnap, postsSnap, tickSnap] = await Promise.all([
+    // The still's last five days, by key: today's record plus enough history
+    // to find the previous lookbook day. Bounded.
+    const stillFrom = saDateForUsage(nowMs - 4 * DAY_MS);
+    const [policy, logSnap, postsSnap, tickSnap, stillSnap] = await Promise.all([
       loadSocialPolicy(db),
       db.ref(`social_autopilot_log/${saDate}`).once("value"),
       // BOUNDED, by key range: every post CREATED in the last three weeks.
@@ -5512,9 +5708,11 @@ exports.socialHealthScan = onSchedule(
       db.ref(SOCIAL_POSTS_PATH).orderByKey()
         .startAt(socialHealth.pushKeyPrefixForMs(nowMs - socialHealth.SCAN_WINDOW_MS)).once("value"),
       db.ref("social_health/publisher/lastTickAt").once("value"),
+      db.ref("social_still_log").orderByKey().startAt(stillFrom).limitToLast(5).once("value"),
     ]);
 
     const posts = Object.entries(postsSnap.val() || {}).map(([id, p]) => ({ id, ...(p || {}) }));
+    const stillLogs = stillSnap.val() || {};
     const verdict = assessSocialDay({
       nowMs,
       policy,
@@ -5535,6 +5733,14 @@ exports.socialHealthScan = onSchedule(
         reelAlsoPostsToStory: REEL_ALSO_POSTS_TO_STORY,
         storyAlsoPostsToFeed: STORY_ALSO_POSTS_TO_FEED,
       },
+      // The daily still: owed at STILL_SLOT whenever STILL_FORMATS is not
+      // empty, and reported per day with its format and any fallback.
+      still: {
+        enabled: SOCIAL_AUTOPILOT_ENABLED && STILL_FORMATS.length > 0,
+        slot: socialStill.STILL_SLOT,
+        log: stillLogs[saDate] || null,
+        recent: stillLogs,
+      },
     });
 
     // The record is written on EVERY run, healthy or not. A watchdog that only
@@ -5552,6 +5758,9 @@ exports.socialHealthScan = onSchedule(
       severity: verdict.severity,
       reasons: verdict.reasons.length ? verdict.reasons : null,
       counts: verdict.counts,
+      // Which still posted today and whether the lookbook fell back. An
+      // explicit null, for the same reason as `reasons` above.
+      still: verdict.still || null,
     });
 
     if (verdict.ok) {
