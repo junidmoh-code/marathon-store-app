@@ -458,3 +458,33 @@ not live surfaces — re-run them with the sentinel before trusting an old numbe
 **Not decided:** which building Concrete and its stockroom are in (`transitLanes.BUILDING` has no entry, so moves from Central are one step). Concrete and its stockroom are excluded from online availability as a default, not an owner ruling; the Shopify runner's checkout on the mini has not been pulled, which changes nothing while they hold no stock.
 
 **Deploy note:** `arrearsReminder` (POS) has never been deployed. A by-name deploy on 6 Oct created it by mistake; it was deleted within a minute and never ran. Leave it out of deploy lists until the owner asks for reminders.
+
+## 2026-10-17 — EFT matching is ENFORCED at Trophy + Marathon PE by a config node; manual entries live in the pool (PR #734, live at `61cd109f`)
+
+**What's true.** `/eft_enforcement { stores: { trophy: true, pe: true, … } }` is the set of
+stores whose tills refuse a plain ("look at the phone") EFT sale. A **missing node means
+the default — trophy + pe enforced** — never "nothing enforced"; the till falls back to
+the same default when its read fails. Pine and Concrete are off by Junid's decision; layby
+and on-account EFT are not enforced anywhere (by design). The owner's edit
+(`eftEnforcementStatus { action: "set" }`, the toggles on the phone's EFT-by-hand sheet)
+MERGES into the map — adding Pine never switches Trophy off. The 5-minute
+`eftRemainderScan` walks new regular sales (indexed `createdAt`, two-hour sliding window,
+one page) and writes `/eft_enforcement_breaches/{saleId}` create-only for an EFT leg at an
+enforced store with no pool key; Junid reads them on the phone (`listBreaches`).
+
+Junid's hand-entered payments (`eftPoolManualEntry`, the owner account alone — `isOwner()`
+before any read) are **real pool records**: reader `"manual"`, `manualEntry { by: "Junid",
+uid, email, at }`, a synthetic unique `bankRef` so the fingerprint claim and every settle
+check apply unchanged, logged at `/eft_manual_entries`. A manual entry and the bank's
+notification of the same money are "twins" (same normalised reference + amount, bank record
+arrived at or after the entry): refused at entry when the bank's record is already waiting,
+refused at settle in either direction when the other was used, and the search answers a
+waiting pair with the bank record. Rules untouched: all new nodes are top-level, Admin
+SDK only.
+
+**What a change must do first.** Deploy by name —
+`firebase deploy --only functions:eftEnforcementStatus,functions:eftPoolManualEntry,functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan`
+— and ship the till half (marathon-pos-app) in step: the till reads the set and marks manual
+records. Before applying the printed `/pos/sales` `.validate` rule (docs/EFT-ENFORCEMENT.md),
+write `/eft_enforcement/stores` explicitly (a rule cannot see the functions' default) and wait
+for the breach list to stay empty for a day. Till half live at marathon-pos-app `78382270` (#523).
