@@ -1,0 +1,202 @@
+{
+  "generation": {
+    "saDate": "2026-10-17",
+    "ok": true,
+    "gate": null,
+    "reason": null,
+    "budget": {
+      "before": 2,
+      "after": 3,
+      "cap": 4
+    },
+    "costUSD": 0.17004,
+    "costZAR": 3.06,
+    "attempts": [
+      {
+        "attempt": 1,
+        "engine": "nbpro",
+        "costUSD": 0.17004,
+        "textOk": true,
+        "seen": null,
+        "reason": null
+      }
+    ],
+    "rows": [
+      {
+        "slot": "hat",
+        "pid": "p1789820310483",
+        "name": "Lacoste beanie light green",
+        "price": "R180",
+        "studio": false
+      },
+      {
+        "slot": "jacket",
+        "pid": "p1784215481346",
+        "name": "Jacket brown",
+        "price": "R400",
+        "studio": false
+      },
+      {
+        "slot": "tee",
+        "pid": "p1790934565270",
+        "name": "Wanchao wear 6925",
+        "price": "R300",
+        "studio": true
+      },
+      {
+        "slot": "bottoms",
+        "pid": "p1780388009214",
+        "name": "Diesel Jeans Black",
+        "price": "R750",
+        "studio": false
+      },
+      {
+        "slot": "bag",
+        "pid": "p1784461725932",
+        "name": "Lacoste bag navy",
+        "price": "R400",
+        "studio": false
+      },
+      {
+        "slot": "sneakers",
+        "pid": "p1777906301630",
+        "name": "Nike Versair Yellow",
+        "price": "R750",
+        "studio": false
+      }
+    ],
+    "total": "R2,780",
+    "anchors": {
+      "hat": {
+        "x": 0.5,
+        "y": 0.12,
+        "source": "vision"
+      },
+      "jacket": {
+        "x": 0.53,
+        "y": 0.29,
+        "source": "category"
+      },
+      "tee": {
+        "x": 0.5,
+        "y": 0.38,
+        "source": "vision"
+      },
+      "bottoms": {
+        "x": 0.5,
+        "y": 0.62,
+        "source": "vision"
+      },
+      "bag": {
+        "x": 0.62,
+        "y": 0.45,
+        "source": "vision"
+      },
+      "sneakers": {
+        "x": 0.5,
+        "y": 0.88,
+        "source": "vision"
+      }
+    },
+    "head": {
+      "x": 0.5,
+      "y": 0.25
+    },
+    "cutouts": {
+      "hat": "multiply",
+      "jacket": "multiply",
+      "tee": "multiply",
+      "bottoms": "multiply",
+      "bag": "multiply",
+      "sneakers": "multiply"
+    }
+  },
+  "rerender": {
+    "at": "2026-10-17T12:06:09.090Z",
+    "visionModel": "claude-sonnet-4-6",
+    "textOk": true,
+    "seen": null,
+    "rows": [
+      {
+        "slot": "hat",
+        "pid": "p1789820310483",
+        "name": "Lacoste beanie light green",
+        "price": "R180",
+        "cutout": "imgly"
+      },
+      {
+        "slot": "jacket",
+        "pid": "p1784215481346",
+        "name": "Jacket brown",
+        "price": "R400",
+        "cutout": "imgly"
+      },
+      {
+        "slot": "tee",
+        "pid": "p1790934565270",
+        "name": "Wanchao wear 6925",
+        "price": "R300",
+        "cutout": "imgly"
+      },
+      {
+        "slot": "bottoms",
+        "pid": "p1780388009214",
+        "name": "Diesel Jeans Black",
+        "price": "R750",
+        "cutout": "imgly"
+      },
+      {
+        "slot": "bag",
+        "pid": "p1784461725932",
+        "name": "Lacoste bag navy",
+        "price": "R400",
+        "cutout": "imgly"
+      },
+      {
+        "slot": "sneakers",
+        "pid": "p1777906301630",
+        "name": "Nike Versair Yellow",
+        "price": "R750",
+        "cutout": "imgly"
+      }
+    ],
+    "dropped": [],
+    "total": "R2,780",
+    "anchors": {
+      "hat": {
+        "x": 0.4583333333333333,
+        "y": 0.175,
+        "source": "vision"
+      },
+      "jacket": {
+        "x": 0.375,
+        "y": 0.425,
+        "source": "vision"
+      },
+      "tee": {
+        "x": 0.5416666666666666,
+        "y": 0.425,
+        "source": "vision"
+      },
+      "bottoms": {
+        "x": 0.4583333333333333,
+        "y": 0.675,
+        "source": "vision"
+      },
+      "bag": {
+        "x": 0.4583333333333333,
+        "y": 0.475,
+        "source": "vision"
+      },
+      "sneakers": {
+        "x": 0.5416666666666666,
+        "y": 0.925,
+        "source": "vision"
+      }
+    },
+    "head": {
+      "x": 0.4583333333333333,
+      "y": 0.225
+    }
+  }
+}
