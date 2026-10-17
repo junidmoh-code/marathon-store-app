@@ -29,7 +29,7 @@ import { FONT } from "./ui";
 import { usePathState } from "./useStock";
 import { formatSize } from "../../utils/sizeLabel";
 import {
-  AUDIT_STORES, AUDIT_HUBS, snapshotPath, resultsPath,
+  AUDIT_STORES, AUDIT_HUBS, auditStoresForViewer, snapshotPath, resultsPath,
   hubSnapshotPath, hubResultsPath, saDateOf, locationLabel,
 } from "../../config/stockAudit";
 import { serverNowMs } from "../../utils/serverTime";
@@ -104,10 +104,17 @@ function Empty({ text }) {
   return <div style={{ padding: "44px 0", textAlign: "center", color: FAINT, fontSize: 13 }}>{text}</div>;
 }
 
-export default function StockAuditView({ onExit, products = [] }) {
+// myShop: the viewer's /users/{uid}/destShop. A one-shop account sees only its
+// own shop's Audit list; the hubs are shared back stock and stay as they are.
+export default function StockAuditView({ onExit, products = [], myShop = null }) {
+  const stores = auditStoresForViewer(AUDIT_STORES, myShop);
   const [tab, setTab] = useState("oos");
   const [hub, setHub] = useState(AUDIT_HUBS[0].id);
-  const [store, setStore] = useState(AUDIT_STORES[0].id);
+  const [picked, setStore] = useState(stores[0]?.id ?? null);
+  // Derived, not frozen at mount: a grant that lands mid-session (AuthGate
+  // streams /users/{uid}) moves the screen onto the new shop at once, and a
+  // shop that is no longer in scope is never read or written.
+  const store = stores.some((s) => s.id === picked) ? picked : stores[0]?.id ?? null;
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState(null);
 
@@ -127,8 +134,9 @@ export default function StockAuditView({ onExit, products = [] }) {
   // double the read for a list nobody is looking at.
   const onHubs = tab === "oos";
   const scope = onHubs ? hub : store;
-  const snap = usePathState(onHubs ? hubSnapshotPath(hub) : snapshotPath(store), true);
-  const results = usePathState(onHubs ? hubResultsPath(hub, saDate) : resultsPath(store, saDate), true);
+  // No audit shop for this viewer: subscribe to nothing on the Audit tab.
+  const snap = usePathState(onHubs ? hubSnapshotPath(hub) : store ? snapshotPath(store) : null, true);
+  const results = usePathState(onHubs ? hubResultsPath(hub, saDate) : store ? resultsPath(store, saDate) : null, true);
 
   // Photos off the products list App already streams — no snapshot bytes, no
   // read of our own. A renamed or merged product simply has no picture, and the
@@ -164,7 +172,7 @@ export default function StockAuditView({ onExit, products = [] }) {
     } finally { setBusy(null); }
   };
 
-  const chips = onHubs ? AUDIT_HUBS : AUDIT_STORES;
+  const chips = onHubs ? AUDIT_HUBS : stores;
   const stale = data && data.saDate && data.saDate !== saDate;
 
   return (
@@ -194,6 +202,12 @@ export default function StockAuditView({ onExit, products = [] }) {
           {snap.settled && data ? `${rows.length}` : ""}
         </div>
       </div>
+
+      {!onHubs && !store && (
+        <div style={{ color: DIM, fontSize: 14, padding: "28px 0", textAlign: "center" }}>
+          There is no Audit list for your shop.
+        </div>
+      )}
 
       {/* The pass rides on refillHealthScan, which stands down entirely while
           the refill engine is off or Central is receiving — so a list can be

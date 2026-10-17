@@ -46,3 +46,36 @@ describe("stockAuditVisibleForViewer", () => {
     expect(line).not.toContain("isSuperAdmin");
   });
 });
+
+// Owner, 2026-10-17: a one-shop account (destShop) audits its own shop only.
+import { auditStoresForViewer, AUDIT_STORES as STORES_FOR_SCOPE } from "./stockAudit";
+describe("auditStoresForViewer", () => {
+  it("no destShop: every audit shop, as before", () => {
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, null).map((s) => s.id)).toEqual(STORES_FOR_SCOPE.map((s) => s.id));
+  });
+  it("destShop: that shop and nothing else", () => {
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, "marathon-pe").map((s) => s.id)).toEqual(["marathon-pe"]);
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, "trophy").map((s) => s.id)).toEqual(["trophy"]);
+  });
+  it("a destShop that is not an audit shop: none, never the full list", () => {
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, "marathon-pine")).toEqual([]);
+    expect(auditStoresForViewer(STORES_FOR_SCOPE, "pe")).toEqual([]);
+  });
+});
+
+describe("the Stock Audit route hands the screen the viewer's shop", () => {
+  it("App passes myShop (the destShop scope the order feed uses) to StockAuditView", () => {
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    expect(src).toMatch(/<StockAuditView products=\{products\} myShop=\{myShop\}/);
+    // …and that myShop is the destShop scope, owner excepted.
+    expect(src).toMatch(/const myShop = isSuperAdmin \? null : \(permRecord\?\.destShop \|\| null\);/);
+  });
+});
+
+describe("the other tiles every account has get the viewer's shop too", () => {
+  it("App passes myShop to Barcodes and Print Labels", () => {
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    expect(src).toMatch(/<BarcodeCatalog products=\{products\} canMint=\{canMint\} myShop=\{myShop\}/);
+    expect(src).toMatch(/<LabelPrintView products=\{products\} myShop=\{myShop\}/);
+  });
+});

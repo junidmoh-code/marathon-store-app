@@ -27,6 +27,7 @@ import { isDeactivated } from "../../utils/deactivation";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
+import { scopedLocationIds, withinScope } from "../../utils/shopScope";
 
 const keyOf = (pid, size) => `${pid}|${size}`;
 
@@ -51,7 +52,9 @@ function Thumb({ product, size = 40, onOpen }) {
   return <div style={{ width: size, height: size, borderRadius: 9, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>👟</div>;
 }
 
-export default function BarcodeCatalog({ products, canMint, onExit }) {
+// myShop: the viewer's destShop. A one-shop account sees its own shop and its
+// back-stock hubs only — in the location chips and in every on-hand figure.
+export default function BarcodeCatalog({ products, canMint, onExit, myShop = null }) {
   const wide = useWide();
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState(null);
@@ -74,9 +77,11 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     getBarcode(pid, size).then(c => alive && setPreviewCode(c || null)).catch(() => alive && setPreviewCode(null));
     return () => { alive = false; };
   }, [lastKey]);
-  const cells = useStockCells();        // { loc: { pid: { size: cell } } } — all locations
+  const allCells = useStockCells();     // { loc: { pid: { size: cell } } } — all locations
   const registry = useLocations();
-  const locations = useMemo(() => transferTargets(registry), [registry]);
+  const scope = useMemo(() => scopedLocationIds(myShop), [myShop]);
+  const cells = useMemo(() => (scope ? Object.fromEntries(Object.entries(allCells || {}).filter(([l]) => scope.includes(l))) : allCells), [allCells, scope]);
+  const locations = useMemo(() => withinScope(transferTargets(registry), myShop), [registry, myShop]);
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3400); };
 
   // Diagnostic test print: connect (inside this tap's gesture) and send a canvas-free
