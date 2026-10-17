@@ -186,3 +186,22 @@ export function verdictMail(record, { poolKey } = {}) {
 
   return { verdict, subject, text };
 }
+
+/**
+ * The whole send for one record, `send` injected (nodemailer's sendMail on the
+ * mini, a recorder in tests). NEVER throws: a failure comes back as
+ * { sent:false, error } for the caller to log.
+ * @returns {Promise<{verdict:string, sent:boolean, skipped?:true, error?:string}>}
+ */
+export async function sendVerdictEmail({ record, poolKey, mode, send, from }) {
+  let verdict = "REJECTED";
+  try {
+    verdict = eftVerdict(record);
+    if (!shouldSendVerdict(verdict, mode)) return { verdict, sent: false, skipped: true };
+    const mail = verdictMail(record, { poolKey });
+    await send({ from: { name: EFT_VERDICT_FROM_NAME, address: from }, to: EFT_VERDICT_TO, subject: mail.subject, text: mail.text });
+    return { verdict, sent: true };
+  } catch (err) {
+    return { verdict, sent: false, error: oneLine(err?.response || err?.message || err, 200) };
+  }
+}

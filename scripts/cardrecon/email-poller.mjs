@@ -56,10 +56,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import nodemailer from "nodemailer";
 import { deliverNotices } from "./noticeCore.mjs";
-import {
-  verdictMail, failedCheck, eftVerdict, shouldSendVerdict, parseVerdictMode,
-  EFT_VERDICT_TO, EFT_VERDICT_FROM_NAME,
-} from "./verdictMailCore.mjs";
+import { sendVerdictEmail, failedCheck, parseVerdictMode } from "./verdictMailCore.mjs";
 
 import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
@@ -1089,19 +1086,13 @@ let verdictFrom = null;
 let verdictMode = "all";
 
 async function emailVerdict(record, poolKey) {
-  if (!verdictSend || !shouldSendVerdict(eftVerdict(record), verdictMode)) return;
-  let mail = null;
-  try {
-    mail = verdictMail(record, { poolKey });
-    await verdictSend({
-      from: { name: EFT_VERDICT_FROM_NAME, address: verdictFrom },
-      to: EFT_VERDICT_TO, subject: mail.subject, text: mail.text,
-    });
-    // The log line names the verdict and the check, never the amount.
-    console.log(`  · EFT verdict email sent to Junid: ${mail.verdict}${mail.verdict === "REJECTED" ? ` (${failedCheck(record)})` : ""}`);
-  } catch (err) {
-    console.warn(`  ⚠ EFT verdict email NOT sent (${clip(String(err?.response || err?.message || err), 200)}) — the pool record stands; only this email is lost`);
-  }
+  if (!verdictSend) return;
+  const out = await sendVerdictEmail({ record, poolKey, mode: verdictMode, send: verdictSend, from: verdictFrom });
+  if (out.skipped) return;
+  // The log line names the verdict and the check, never the amount.
+  const what = `${out.verdict}${out.verdict === "REJECTED" ? ` (${failedCheck(record)})` : ""}`;
+  if (out.sent) console.log(`  · EFT verdict email sent to Junid: ${what}`);
+  else console.warn(`  ⚠ EFT verdict email NOT sent (${out.error}) — the pool record stands; only this email is lost: ${what}`);
 }
 
 async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, uidValidity, size }) {
