@@ -234,6 +234,14 @@ describe("whether today's slip is in — the server's word, not the phone's", ()
     expect(everyString(t)).toMatch(/Friday, 16 October/);
   });
 
+  it("while the only answer is yesterday's, the till claims nothing either way", async () => {
+    calls.tills = () => ({ ok: true, dayYmd: "2026-10-15", tills: [{ ...TILL, sent: { at: Date.parse("2026-10-15T16:00:00+02:00") } }] });
+    const t = render();
+    await until(() => calls.tillAsks >= 2);
+    await until(() => false); // let every answer land
+    expect(everyString(t)).not.toMatch(/Today's slip is in|No slip sent yet today/);
+  });
+
   it("a send that timed out asks the server again — it may have landed after the phone gave up", async () => {
     calls.tills = () => ({ ok: true, dayYmd: "2026-10-16", tills: [{ ...TILL, sent: null }] });
     const t = render();
