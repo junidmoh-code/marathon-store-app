@@ -52,6 +52,7 @@ import EnginePolicyCard from "./components/stock/EnginePolicyCard";
 import CardReconScreen from "./components/cardrecon/CardReconScreen";
 import CardSlipScreen from "./components/cardrecon/CardSlipScreen";
 import { hasSlipScope } from "./components/cardrecon/slipScope";
+import { usePrefetchSlipTerminals } from "./components/cardrecon/slipTerminals";
 import NewArrivalsScreen from "./components/newArrivals/NewArrivalsScreen";
 import { newArrivalsApi } from "./components/newArrivals/newArrivalsApi";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
@@ -3342,6 +3343,8 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // added here — a hold is an ordinary refill request in the hub queue now
   // (owner spec 2026-08-08), not a separate class of Source work.
   const restockToday = useRestockLogRaw(today);
+  // Card Slip: start its ~2 KB registry read now, so the screen is ready at the tap.
+  usePrefetchSlipTerminals(hasSlipScope(homePerm));
   const sourceBadge = (restockToday || []).length;
   // assistant badge = today's placed orders. A wall-walk display request
   // (displayRequestCore.js) is a warehouse task, not a placed order.

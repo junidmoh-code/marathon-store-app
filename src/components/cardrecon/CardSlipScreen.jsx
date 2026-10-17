@@ -24,14 +24,14 @@
 // phone's own number pad), the same field Junid's typed total uses.
 
 import React, { useEffect, useMemo, useState, useRef } from "react";
-import { ref as dbRef, onValue } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
-import { database, functions } from "../../firebase";
+import { functions } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { serverNowMs } from "../../utils/serverTime";
 import { describeCallableError } from "./captureFailure";
 import { preparePhoto } from "./slipPhoto";
 import { slipTills } from "./slipScope";
+import { peekSlipTerminals, subscribeSlipTerminals } from "./slipTerminals";
 import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
@@ -88,14 +88,11 @@ const reasonOf = (r) => (typeof r?.reason === "string" && r.reason.trim())
 export default function CardSlipScreen({ onExit }) {
   const { permRecord } = usePermissions();
 
-  // The registry: which machine stands at this account's till.
-  const [terminals, setTerminals] = useState(null);   // null = loading
-  useEffect(() => {
-    const off = onValue(dbRef(database, "config/cardTerminals"),
-      (snap) => setTerminals(snap.val() || {}),
-      () => setTerminals({}));
-    return () => off();
-  }, []);
+  // The registry: which machine stands at this account's till. Drawn at once
+  // from what the home screen already fetched (or this device's last copy),
+  // then kept live (slipTerminals.js). null = nothing known yet.
+  const [terminals, setTerminals] = useState(() => peekSlipTerminals());
+  useEffect(() => subscribeSlipTerminals(setTerminals), []);
   const nowMs = serverNowMs();
   const tills = useMemo(() => slipTills(terminals, permRecord, nowMs), [terminals, permRecord, nowMs]);
 
