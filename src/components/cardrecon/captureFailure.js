@@ -201,3 +201,14 @@ export function describeDecodeError(err) {
   return { kind: FAILURE.DECODE, logLine,
     message: "That photo could not be opened on this phone. Take it again, or pick it from the camera roll rather than from Files." };
 }
+
+/**
+ * The server's receipt for a kept staff slip ({ at, dayYmd }), or null.
+ * "Sent — thank you" needs one (Junid, 17 Oct 2026): an answer without it —
+ * a refusal, an old server, anything else — is not a slip the server has said
+ * it kept, so the screen says "Not sent — try again".
+ */
+export function receiptOf(data) {
+  return data && data.ok === true && data.received === true
+    && data.receipt && typeof data.receipt === "object" && Number.isFinite(data.receipt.at) ? data.receipt : null;
+}

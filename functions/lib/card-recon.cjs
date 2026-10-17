@@ -1063,11 +1063,16 @@ function sastDayIndexOf(ms) {
  * @param {number|null} p.lastClosedAt    that batch's close, or null
  * @param {boolean} p.lastWasTyped        was that batch itself a typed capture?
  * @param {boolean} p.correction          replace today's entry rather than add one
+ * @param {number|null} p.closeAtMs       where the batch closes, when that is not now: a
+ *                                        staff slip is filed against the FNB cut-off of its
+ *                                        trading day (card-staff-slip-log.cjs), which may be
+ *                                        later than now (sent before the batch closes) or
+ *                                        earlier (sent that evening, or after midnight)
  * @returns {{ok:true, extraction:object, batchNo:number, warnings:string[]}
  *          | {ok:false, reason:string}}
  */
 function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastOpenedAt = null, lastClosedAt = null,
-                            lastWasTyped = false, correction = false }) {
+                            lastWasTyped = false, correction = false, closeAtMs = null }) {
   if (!normaliseTid(tid)) return { ok: false, reason: `"${tid}" does not look like a terminal ID. Nothing was recorded.` };
   if (!Number.isFinite(nowMs)) return { ok: false, reason: "The server clock could not be read, so nothing was recorded. Try again." };
   const declared = readDeclaredTotal(totalText);
@@ -1079,8 +1084,9 @@ function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastOpene
   // under two batch numbers and the till reads double. The batch number cannot
   // catch it the way it catches a re-sent email — every typed entry gets a
   // fresh number by construction — so the DAY is the guard.
+  let closeAt = Number.isFinite(closeAtMs) ? closeAtMs : nowMs;
   const typedToday = hasPrior && lastWasTyped && Number.isFinite(lastClosedAt)
-    && sastDayIndexOf(lastClosedAt) === sastDayIndexOf(nowMs);
+    && sastDayIndexOf(lastClosedAt) === sastDayIndexOf(closeAt);
   if (typedToday && !correction) {
     // `code` lets a caller that always replaces (a staff slip sent twice —
     // cardBatchCapture's "slip" action) ask again as a correction.
@@ -1092,6 +1098,10 @@ function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastOpene
   // A correction reuses the number so it lands as a revision of the record it
   // replaces; an ordinary entry takes the next one.
   const batchNo = correction ? lastBatchNo : (hasPrior ? lastBatchNo + 1 : 1);
+  // …and never closes before it: a staff slip sent at 16:24 is filed at the
+  // 18:50 cut-off, and Junid's correction at 18:40 must still be the record in
+  // force (the latest close wins — readLastBatchFor), not an earlier one.
+  if (correction && Number.isFinite(lastClosedAt) && lastClosedAt > closeAt) closeAt = lastClosedAt;
 
   // ── THE WINDOW ────────────────────────────────────────────────────────────
   // A correction covers the SAME trading period as the entry it replaces, so it
@@ -1099,13 +1109,13 @@ function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastOpene
   // replacement cover no trading at all.
   const start = correction ? lastOpenedAt : lastClosedAt;
   const warnings = [];
-  let openedAt = Number.isFinite(start) && start < nowMs ? start : nowMs - TYPED_WINDOW_FALLBACK_MS;
-  let windowSource = Number.isFinite(start) && start < nowMs ? "typed-span" : "typed-fallback";
-  if (nowMs - openedAt > MAX_WINDOW_MS) {
+  let openedAt = Number.isFinite(start) && start < closeAt ? start : closeAt - TYPED_WINDOW_FALLBACK_MS;
+  let windowSource = Number.isFinite(start) && start < closeAt ? "typed-span" : "typed-fallback";
+  if (closeAt - openedAt > MAX_WINDOW_MS) {
     // Longer than any batch runs. Clamped rather than refused: the figure in
     // front of the manager is real and refusing it would lose it, but the
     // window it is compared against is not trustworthy and the record says so.
-    openedAt = nowMs - MAX_WINDOW_MS;
+    openedAt = closeAt - MAX_WINDOW_MS;
     windowSource = "typed-clamped";
     warnings.push(`This machine's previous batch closed more than 7 days ago, so the period this total covers had to be cut back to the last 7 days. The card money before that is not counted against it.`);
   }
@@ -1120,7 +1130,7 @@ function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastOpene
     extraction: {
       tid, batchNo: String(batchNo),
       mid: null, mids: [],
-      openedAt, closedAt: nowMs, printedAt: nowMs,
+      openedAt, closedAt: closeAt, printedAt: nowMs,
       openedText: null, closedText: null,
       // NOT READ, NOT ZERO. A figure nobody saw is null on this record; zero
       // would be a claim that the slip printed a zero.

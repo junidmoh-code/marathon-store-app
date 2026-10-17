@@ -110,9 +110,11 @@ export function peekServerTills(uid) {
   return c ? { tills: c, live: false } : null;
 }
 
-export function fetchServerTills(uid) {
+// force: ask again even though this session already has the answer — after a
+// slip is sent, so "today's slip is in" is the server's word, not the phone's.
+export function fetchServerTills(uid, { force = false } = {}) {
   if (!uid) return Promise.resolve(null);
-  if (server.get(uid)?.live) return Promise.resolve(server.get(uid));
+  if (!force && server.get(uid)?.live) return Promise.resolve(server.get(uid));
   if (inFlight.has(uid)) return inFlight.get(uid);
   const p = (async () => {
     try {
@@ -122,7 +124,7 @@ export function fetchServerTills(uid) {
       }
       const { data } = await slipTillsFn({ action: "slipTills" });
       if (data?.ok !== true || !Array.isArray(data.tills)) return null;
-      const v = { tills: data.tills, live: true };
+      const v = { tills: data.tills, dayYmd: typeof data.dayYmd === "string" ? data.dayYmd : null, live: true };
       server.set(uid, v);
       try { globalThis.localStorage?.setItem(TILLS_KEY(uid), JSON.stringify(data.tills)); } catch { /* fine */ }
       for (const l of serverListeners.get(uid) || []) l(v);

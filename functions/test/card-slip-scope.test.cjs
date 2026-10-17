@@ -10,6 +10,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const { assertSent } = require("./helpers/slip-receipt.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
@@ -70,14 +71,14 @@ test("Yasmin sends Marathon Till 2's slip: recorded, and all she gets back is 'r
   const db = world();
   const b = bucket();
   const out = await slip(db, YASMIN, MT2, "21,375.00", b);
-  assert.deepEqual(out, { ok: true, received: true }, "no figure, no batch, no verdict travels back");
+  assertSent(out, "no figure, no batch, no verdict travels back");
   const rec = (await batches(db, "pe", MT2))["545"];
   assert.ok(rec, "filed as the next batch after #544");
   assert.equal(rec.capturedVia, "typed");
   assert.equal(rec.slip.format, "typed");
   assert.equal(rec.slip.totalCents, 2137500);
   assert.equal(rec.slip.openedAt, B544.slip.closedAt, "the window runs from the last settlement");
-  assert.equal(rec.slip.closedAt, NOW);
+  assert.equal(rec.slip.closedAt, SAST("2026-10-16T18:50:00"), "filed against the batch: it closes at the FNB cut-off, not when she sent it");
   assert.equal(rec.declaredTotal.cents, 2137500);
   assert.equal(rec.declaredTotal.via, "staff-slip");
   assert.equal(rec.declaredTotal.byUid, YASMIN.uid);
@@ -93,7 +94,7 @@ test("Yasmin sends Marathon Till 2's slip: recorded, and all she gets back is 'r
 
 test("a typed 0 is a R0.00 record", async () => {
   const db = world();
-  assert.deepEqual(await slip(db, YASMIN, MT2, "0"), { ok: true, received: true });
+  assertSent(await slip(db, YASMIN, MT2, "0"));
   assert.equal((await batches(db, "pe", MT2))["545"].slip.totalCents, 0);
 });
 
@@ -110,7 +111,7 @@ test("Yasmin is refused for every other till, and nothing is written", async () 
 
 test("Amanda sends Trophy Till 2's and is refused Marathon Till 2's", async () => {
   const db = world();
-  assert.deepEqual(await slip(db, AMANDA, TT2, "2,500.00"), { ok: true, received: true });
+  assertSent(await slip(db, AMANDA, TT2, "2,500.00"));
   assert.equal(Object.values(await batches(db, "trophy", TT2))[0].slip.totalCents, 250000);
   await assert.rejects(() => slip(db, AMANDA, MT2, "1.00"), (e) => e.code === "permission-denied");
 });
@@ -143,7 +144,7 @@ test("a scope taken away between the two halves stops the record", async () => {
   // The same correction draft, twice: recorded while the till is hers, refused
   // once it is not. (handleSlip submits at once; the gap is where a revoke lands.)
   const db = world();
-  assert.deepEqual(await slip(db, YASMIN, MT2, "5.00"), { ok: true, received: true });
+  assertSent(await slip(db, YASMIN, MT2, "5.00"));
   const rec545 = (await batches(db, "pe", MT2))["545"];
   const draft = async () => {
     const ref = db.ref(`card_batch_drafts/${YASMIN.uid}`).push();
@@ -195,7 +196,7 @@ test("the machine's own report for today is already in: the slip is NEVER refuse
   const db = world({ card_batches: { pe: { [MT2]: { 544: today } } } });
   const b = bucket();
   const out = await slip(db, YASMIN, MT2, "21,375.00", b);
-  assert.deepEqual(out, { ok: true, received: true });
+  assertSent(out);
   const recs = await batches(db, "pe", MT2);
   assert.deepEqual(Object.keys(recs), ["544"], "not filed as another batch");
   assert.equal(recs["544"].slip.totalCents, today.slip.totalCents, "the machine's figure is untouched");
@@ -215,7 +216,7 @@ test("Yasmin's photo alone is received: stored first, queued to be read, and not
   const db = world();
   const b = bucket();
   const out = await handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: MT2, photos: [PHOTO] } }, { now: () => NOW, bucket: b });
-  assert.deepEqual(out, { ok: true, received: true });
+  assertSent(out);
   const queued = Object.values(await jobs(db));
   assert.equal(queued.length, 1, "one read job");
   const job = queued[0];
@@ -233,7 +234,7 @@ test("Yasmin's photo alone is received: stored first, queued to be read, and not
 test("an empty total on a photo-only till is the same as none: the photo is received", async () => {
   const db = world();
   const out = await handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: MT2, photos: [PHOTO], declaredTotal: "" } }, { now: () => NOW, bucket: bucket() });
-  assert.deepEqual(out, { ok: true, received: true });
+  assertSent(out);
   assert.equal(Object.keys(await jobs(db)).length, 1);
 });
 
@@ -256,7 +257,7 @@ test("Trophy Till 2 is typed-total: Amanda's photo without the number is refused
     (e) => e.code === "invalid-argument" && /Type the card total/.test(e.message));
   assert.deepEqual(await jobs(db), {});
   const out = await slip(db, AMANDA, TT2, "2,500.00");
-  assert.deepEqual(out, { ok: true, received: true });
+  assertSent(out);
   const recs = Object.values(await batches(db, "trophy", TT2));
   assert.equal(recs.length, 1);
   assert.equal(recs[0].slip.totalCents, 250000);
@@ -265,7 +266,7 @@ test("Trophy Till 2 is typed-total: Amanda's photo without the number is refused
 test("a typed total on a photo-only till still works (an old screen still open on a phone)", async () => {
   const db = world();
   const out = await slip(db, YASMIN, MT2, "21,375.00");
-  assert.deepEqual(out, { ok: true, received: true });
+  assertSent(out);
   assert.ok((await batches(db, "pe", MT2))["545"]);
 });
 
@@ -273,7 +274,7 @@ test("with Yasmin's live record (destShop marathon-pe, POS cashier) the photo-on
   const db = world();
   await db.ref(`users/${YASMIN.uid}`).update({ destShop: "marathon-pe", role: "store_assistant", permissions: ["store_assistant", "place_orders"] });
   const out = await handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: MT2, photos: [PHOTO] } }, { now: () => NOW, bucket: bucket() });
-  assert.deepEqual(out, { ok: true, received: true });
+  assertSent(out);
   assert.equal(Object.keys(await jobs(db)).length, 1);
 });
 
@@ -282,11 +283,11 @@ test("with Yasmin's live record (destShop marathon-pe, POS cashier) the photo-on
 test("slipTills: each person gets ONLY their own till — id, label, typed — and nothing else", async () => {
   const db = world();
   const y = await handleSlipTills(db, { auth: YASMIN, data: { action: "slipTills" } }, { now: () => NOW });
-  assert.deepEqual(y, { ok: true, tills: [{ tid: MT2, storeId: "pe", tillId: "till-2", label: "Marathon Till 2", typed: false }] });
+  assert.deepEqual(y, { ok: true, dayYmd: "2026-10-16", tills: [{ tid: MT2, storeId: "pe", tillId: "till-2", label: "Marathon Till 2", typed: false, sent: null }] });
   const a = await handleSlipTills(db, { auth: AMANDA, data: { action: "slipTills" } }, { now: () => NOW });
   assert.deepEqual(a.tills.map((t) => [t.tid, t.typed]), [[TT2, true]]);
   const m = await handleSlipTills(db, { auth: MANAGER, data: { action: "slipTills" } }, { now: () => NOW });
-  assert.deepEqual(m, { ok: true, tills: [] }, "card_recon is not a till scope");
+  assert.deepEqual(m, { ok: true, dayYmd: "2026-10-16", tills: [] }, "card_recon is not a till scope");
   assert.doesNotMatch(JSON.stringify(y), /total|cents|batch|variance/i);
   await assert.rejects(() => handleSlipTills(db, { auth: null, data: {} }), (e) => e.code === "permission-denied");
 });

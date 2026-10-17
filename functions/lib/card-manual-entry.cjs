@@ -142,7 +142,11 @@ function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = tru
   if (sastDayYmd(closedAt) !== i.dayYmd) {
     return { ok: false, reason: `The batch must close on ${i.dayYmd}, the day it is entered for — the report files a batch on the day it closed.` };
   }
-  if (closedAt > nowMs) return { ok: false, reason: "The close time has not happened yet." };
+  // A close KEPT from the record this corrects may still be ahead: a staff
+  // slip sent before the batch closes is filed against the FNB cut-off
+  // (card-staff-slip-log.cjs). Only a close typed or derived here must be past.
+  const keptClose = correction && !typedClose && closedAt === replaced.slip?.closedAt;
+  if (closedAt > nowMs && !keptClose) return { ok: false, reason: "The close time has not happened yet." };
   let openedAt;
   let windowSource;
   const notes = [];

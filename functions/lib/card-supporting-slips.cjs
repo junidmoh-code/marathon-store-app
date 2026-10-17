@@ -23,6 +23,8 @@ const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const sastDay = (ms) => Math.floor((ms + SAST_OFFSET_MS) / DAY_MS);
 const sameSastDay = (a, b) => Number.isFinite(a) && Number.isFinite(b) && sastDay(a) === sastDay(b);
+const { slipTradingDay } = require("./card-staff-slip-log.cjs");
+const { sastDayYmd } = require("./card-unread.cjs");
 
 const SUPPORTING_FIELD = "supportingSlips";
 const STAFF_SLIP_VIA = "staff-slip";
@@ -66,13 +68,16 @@ const photosOf = (rec) => (Array.isArray(rec && rec.photos) ? rec.photos : Objec
  */
 function shouldAttach(inForce, nowMs) {
   if (!inForce || !inForce.record || !inForce.record.slip) return false;
-  if (!sameSastDay(Number(inForce.record.slip.closedAt), nowMs)) return false;
+  // THE SLIP'S TRADING DAY (card-staff-slip-log.cjs): one sent at 00:30 is
+  // the evening before's, and belongs beside that evening's report.
+  const closedAt = Number(inForce.record.slip.closedAt);
+  if (!Number.isFinite(closedAt) || sastDayYmd(closedAt) !== slipTradingDay(nowMs)) return false;
   // Their own (or another staff member's) typed figure is corrected instead.
   return authorityOf(inForce.record) !== "staff";
 }
 
 /** One supporting slip, as stored under {record}/supportingSlips/{slipId}. */
-function buildSupportingSlip({ slipId, cents, photos, byUid, byEmail, nowMs, fromKey = null, photoRead = null }) {
+function buildSupportingSlip({ slipId, cents, photos, byUid, byEmail, nowMs, dayYmd = null, fromKey = null, photoRead = null }) {
   return {
     slipId,
     via: STAFF_SLIP_VIA,
@@ -81,6 +86,9 @@ function buildSupportingSlip({ slipId, cents, photos, byUid, byEmail, nowMs, fro
     byUid: byUid || null,
     byEmail: byEmail || null,
     at: nowMs,
+    // The trading day it was sent for (a slip sent after midnight is the
+    // evening before's) — what Junid's report compares, not `at`'s calendar day.
+    dayYmd: dayYmd || (Number.isFinite(nowMs) ? slipTradingDay(nowMs) : null),
     // Set when the slip was the day's record first and a better figure took
     // over: the batch key it was recorded under, which is kept unchanged.
     fromKey,
