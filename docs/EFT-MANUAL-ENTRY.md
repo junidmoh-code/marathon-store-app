@@ -51,6 +51,11 @@ payment. Three rules do:
 | manual entry **used**, bank twin arrives | the search warns on the row (`manualTwin.status: "used"`); the **settle refuses** the bank record (`manual-twin-used`). Junid reverses the manual entry if the customer really paid twice. |
 | manual entry **waiting**, bank twin arrives | the search answers with the **bank** record (not "ambiguous") and warns that a manual twin is waiting; Junid reverses the manual one or marks it used. |
 | bank record already waiting when Junid types | refused at entry (`bank-twin-waiting`). |
+| bank twin arrives and is **used** while the manual entry still waits | the search warns on the manual row; the **settle refuses** the manual entry (`bank-twin-used`). Junid marks it used or reverses the bank settlement. |
+
+A "twin" is the same normalised reference and amount AND a bank record that
+arrived **at or after** the manual entry was typed — last week's payment with
+the same reference and amount is a different payment.
 
 Limit: all three look at the pool tail (the newest 400), as every settle-time
 check does.

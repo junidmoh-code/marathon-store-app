@@ -159,21 +159,45 @@ function bankTwinOfEntry({ reference, amountCents }, siblings) {
 }
 
 /**
- * SETTLE-TIME: a bank-confirmed record about to be spent whose MANUAL twin
- * (same reference and amount, entered by Junid) has already been USED. The
- * two records carry different fingerprints, so the fingerprint check cannot
- * see that they are one payment; this can. Refused — the money was paid out
- * once already; Junid reverses the manual entry if they really are two.
+ * Two pool records that are ONE payment: a manual entry and the bank's own
+ * notification of it — same normalised reference, same amount, and the bank
+ * record ARRIVED AT OR AFTER the entry was typed (a bank payment from last
+ * week with the same reference and amount is a different payment, not a
+ * twin). Either side may be `record`. Pure.
+ */
+function isPaymentTwin(record, other) {
+  if (!record || !other || record === other) return false;
+  const manual = isManualEntry(record) ? record : isManualEntry(other) ? other : null;
+  const bank = manual === record ? other : record;
+  if (!manual || isManualEntry(bank) || bank.outcome !== "recorded") return false;
+  if (bank.amountCents !== manual.amountCents) return false;
+  const ref = normaliseText(manual.reference);
+  if (!ref || normaliseText(bank.reference) !== ref) return false;
+  const typedAt = Number.isInteger(manual.manualEntry?.at) ? manual.manualEntry.at : null;
+  const arrived = Number.isInteger(bank.bankTs) ? bank.bankTs : Number.isInteger(bank.receivedAt) ? bank.receivedAt : bank.at;
+  return typedAt === null || !Number.isInteger(arrived) || arrived >= typedAt;
+}
+
+/**
+ * SETTLE-TIME, BOTH DIRECTIONS: the record about to be spent has a twin that
+ * was already USED — a bank record whose manual twin was spent, or a manual
+ * entry whose bank notification arrived and was spent. The two carry
+ * different fingerprints, so the fingerprint check cannot see they are one
+ * payment; this can. Refused — the money was paid out once already; Junid
+ * reverses one of them if they really are two.
  * @returns {{ok:true}|{ok:false, code:string, message:string}}
  */
 function manualTwinSettleCheck({ poolKey, record, siblings }) {
-  if (!record || isManualEntry(record)) return { ok: true };
-  const want = normaliseText(record.reference);
-  if (!want) return { ok: true };
+  if (!record || record.outcome !== "recorded") return { ok: true };
   for (const [key, other] of siblings ?? []) {
-    if (key === poolKey || !isManualEntry(other) || other.status !== "used") continue;
-    if (other.amountCents !== record.amountCents || normaliseText(other.reference) !== want) continue;
+    if (key === poolKey || other?.status !== "used" || !isPaymentTwin(record, other)) continue;
     const slip = other.used?.sale?.receiptNumber ? ` on slip ${other.used.sale.receiptNumber}` : "";
+    if (isManualEntry(record)) {
+      return {
+        ok: false, code: "bank-twin-used",
+        message: `The bank's own notification for this reference and amount arrived after Junid entered it by hand, and was already used${slip}. This hand entry is that SAME payment — it cannot be used again. If the customer really paid twice, Junid can mark or reverse it.`,
+      };
+    }
     return {
       ok: false, code: "manual-twin-used",
       message: `A payment Junid entered by hand for this reference and amount was already used${slip}. This looks like the bank's notification of that SAME payment — it cannot be used again. If the customer really paid twice, Junid can reverse the manual entry first.`,
@@ -186,7 +210,7 @@ module.exports = {
   MANUAL_READER, MANUAL_ENTRY_BY, MANUAL_LOG_PATH,
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
-  bankTwinOfEntry, manualTwinSettleCheck,
+  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin,
 };
 
 // ─── THE LOG — how often the hatch is used, and where each entry went ───────

@@ -108,14 +108,26 @@ test("the same reference and amount twice is a duplicate; the same entryId is a 
   const bankTwin = { outcome: "recorded", status: "unmatched", amountCents: 55000, reference: "THABO 0821", reader: "capitec", bankRef: "ABCD1234", at: 3000 };
   const out = searchEftPool({ [key]: spent, b: bankTwin }, "thabo 0821");
   assert.equal(out.results[0].key, "b");
-  assert.deepEqual(out.results[0].manualTwin, { status: "used", at: 2000, receiptNumber: "S-9" });
+  assert.deepEqual(out.results[0].manualTwin, { kind: "manual", status: "used", at: 2000, receiptNumber: "S-9" });
   // …and the SETTLE refuses it: one payment, two records, paid out once.
   const settleTwin = manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, spent], ["b", bankTwin]] });
   assert.equal(settleTwin.ok, false);
   assert.equal(settleTwin.code, "manual-twin-used");
   assert.match(settleTwin.message, /slip S-9/);
   assert.equal(manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, r]] }).ok, true, "a WAITING manual twin does not block — the search warns instead");
-  assert.deepEqual(searchEftPool({ [key]: r, b: bankTwin }, "thabo 0821").results[0].manualTwin, { status: "unmatched", at: 1700, receiptNumber: null });
+  assert.deepEqual(searchEftPool({ [key]: r, b: bankTwin }, "thabo 0821").results[0].manualTwin, { kind: "manual", status: "unmatched", at: 1700, receiptNumber: null });
+  // THE REVERSE ORDER (CodeRabbit): the bank twin arrived AFTER the entry and
+  // was used while the manual one still waits — the manual entry is refused.
+  const bankUsed = { ...bankTwin, status: "used", used: { at: 4000, sale: { receiptNumber: "S-10" } } };
+  const rev = manualTwinSettleCheck({ poolKey: key, record: r, siblings: [[key, r], ["b", bankUsed]] });
+  assert.equal(rev.ok, false);
+  assert.equal(rev.code, "bank-twin-used");
+  assert.match(rev.message, /slip S-10/);
+  assert.deepEqual(searchEftPool({ [key]: r, b: bankUsed }, "thabo 0821").results[0].manualTwin, { kind: "bank", status: "used", at: 4000, receiptNumber: "S-10" });
+  // …but a bank payment that arrived BEFORE the entry is a different payment (last week's), never a twin.
+  const earlier = { ...bankUsed, at: 100, receivedAt: 100, bankTs: 100 };
+  assert.equal(manualTwinSettleCheck({ poolKey: key, record: r, siblings: [["b", earlier]] }).ok, true);
+  assert.equal(searchEftPool({ [key]: r, b: earlier }, "thabo 0821").results[0].manualTwin, undefined);
   // ENTRY-TIME: the bank's own unmatched record is already there → no manual entry.
   assert.equal(bankTwinOfEntry({ reference: "thabo-0821", amountCents: 55000 }, [["b", bankTwin]])?.key, "b");
   assert.equal(bankTwinOfEntry({ reference: "thabo-0821", amountCents: 55000 }, [["b", { ...bankTwin, status: "used" }]]), null, "a used bank record is not a reason to refuse — it may be an earlier payment");

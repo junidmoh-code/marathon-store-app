@@ -68,8 +68,10 @@ The hard wall on `/pos/sales` — **apply in the console once every till runs
 this build** (not from the repo): `payments/$paymentId` `.validate`:
 `newData.child('method').val() !== 'eft' || newData.hasChild('eftPoolKey') ||
 !(root.child('eft_enforcement/stores').child(newData.parent().parent()
-.child('storeId').val()).val() === true)`. It keys on the same config node, so
-it enforces exactly the configured stores. Not applied today because a till
+.child('storeId').val()).val() === true)`. It keys on the config node ONLY —
+the functions' built-in default is not visible to a rule — so **write
+`/eft_enforcement/stores` explicitly first** (a toggle on the phone sheet does
+it, writing the full map). Not applied today because a till
 with an **offline-queued** plain EFT sale from before the cut-over would have
 its sale refused on sync; wait for the breach list to stay empty for a day.
 

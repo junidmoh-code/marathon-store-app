@@ -39,7 +39,7 @@
 "use strict";
 
 const { paymentFingerprint } = require("./eft-fingerprint.cjs");
-const { isManualEntry } = require("./eft-manual.cjs");
+const { isManualEntry, isPaymentTwin } = require("./eft-manual.cjs");
 
 const EFT_POOL_PATH = "eft_pool";
 
@@ -114,25 +114,25 @@ function publicEftView(key, record) {
 }
 
 /**
- * A bank-confirmed payment answering a search when a MANUAL entry for the
- * same reference and amount exists: the real notification arrived after
- * Junid typed the payment in. The row is warned either way; if the manual
- * one was already SPENT the settle refuses this one outright
+ * The answer's TWIN — a bank-confirmed payment with a manual entry of the
+ * same money, or a manual entry whose bank notification has arrived
+ * (isPaymentTwin, either direction). The row is warned either way; if the
+ * twin was already SPENT the settle refuses this record outright
  * (manualTwinSettleCheck) — one sum is never paid twice.
- * @returns {{status:"used"|"unmatched", at:number|null, receiptNumber:string|null}|null}
+ * @returns {{kind:"manual"|"bank", status:"used"|"unmatched", at:number|null, receiptNumber:string|null}|null}
  */
 function manualTwinOf(record, payments) {
-  if (!record || isManualEntry(record) || record.status !== "unmatched") return null;
-  const ref = normaliseText(record.reference);
-  if (!ref) return null;
+  if (!record || record.status !== "unmatched") return null;
   let waiting = null;
   for (const [, other] of payments ?? []) {
-    if (!isManualEntry(other)) continue;
-    if (other.amountCents !== record.amountCents || normaliseText(other.reference) !== ref) continue;
+    if (!isPaymentTwin(record, other)) continue;
+    const kind = isManualEntry(other) ? "manual" : "bank";
     if (other.status === "used") {
-      return { status: "used", at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
+      return { kind, status: "used", at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
     }
-    if (other.status === "unmatched" && !waiting) waiting = { status: "unmatched", at: Number.isInteger(other.manualEntry?.at) ? other.manualEntry.at : null, receiptNumber: null };
+    if (other.status === "unmatched" && !waiting) {
+      waiting = { kind, status: "unmatched", at: kind === "manual" ? (Number.isInteger(other.manualEntry?.at) ? other.manualEntry.at : null) : (other.at ?? null), receiptNumber: null };
+    }
   }
   return waiting;
 }
@@ -261,7 +261,7 @@ function searchEftPool(poolTail, query) {
   // is the answer, and the row warns about the waiting manual one.
   const bankOnly = unmatched.filter((h) => !isManualEntry(h.record));
   const twinPair = unmatched.length > 1 && bankOnly.length === 1
-    && unmatched.every((h) => h === bankOnly[0] || (isManualEntry(h.record) && h.record.amountCents === bankOnly[0].record.amountCents));
+    && unmatched.every((h) => h === bankOnly[0] || isPaymentTwin(bankOnly[0].record, h.record));
   const pick = unmatched.length === 1 ? unmatched[0]
     : twinPair ? bankOnly[0]
     : unmatched.length === 0 && candidates.length === 1 ? candidates[0]
