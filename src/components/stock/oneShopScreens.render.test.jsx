@@ -88,6 +88,16 @@ describe("Print Labels for a one-shop account", () => {
     expect(s).toContain("All stores");
   });
 
+  it("a PE pick made before a Trophy grant lands is dropped, never read again", () => {
+    let t;
+    act(() => { t = TestRenderer.create(<LabelPrintView products={PRODUCTS} onExit={() => {}} />); });
+    const pe = t.root.findAllByType("button").find((b) => instText(b) === "Marathon PE");
+    act(() => { pe.props.onClick(); });
+    READ_PATHS.length = 0;
+    act(() => { t.update(<LabelPrintView products={PRODUCTS} onExit={() => {}} myShop="trophy" />); });
+    expect(READ_PATHS).not.toContain("marathon-pe");
+  });
+
   it("a Trophy assistant picks only Trophy, and a PE pick can never be read", () => {
     READ_PATHS.length = 0;
     const t = mount(<LabelPrintView products={PRODUCTS} onExit={() => {}} myShop="trophy" />);
