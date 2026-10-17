@@ -21,7 +21,19 @@ The till asks `eftEnforcementStatus` (any active POS identity) on the payment
 screen and caches the answer per store; with no answer it uses the built-in
 default, never "not enforced". The owner changes the set with
 `eftEnforcementStatus { action: "set", stores: {…} }` — refused for anyone
-else server-side — so a store is added or removed **without a deploy**.
+else server-side, **merged** into the current map (a missing node starts from
+the default, so `{ pine: true }` never switches Trophy off) — from the
+phone's EFT enforcement sheet, so a store is added or removed **without a
+deploy**.
+
+## What is enforced, exactly
+
+A **regular sale** (`type: "sale"`) at an enforced store. Not enforced, by
+Junid's "do not break layby" and the current screens: **layby deposits and
+instalments** and **on-account payments** render the payment screen without
+the pool, so their EFT is still the plain tender at every store. Switching
+those on is a later, explicit decision (pass `eftPool` to those screens and
+judge `type: "layby"` in the scan).
 
 ## Breach detection (the server's teeth)
 
@@ -29,9 +41,12 @@ The plain-EFT path never reaches a callable, so the till is the wall for the
 sale itself. Every 5 minutes `eftRemainderScan` walks new regular sales
 (`orderByChild("createdAt")`, a sliding two-hour window, one bounded page —
 never the node) and writes any sale at an enforced store carrying an EFT leg
-with **no pool key** to `/eft_enforcement_breaches/{saleId}` and logs
-`EFT_ENFORCEMENT_BREACH`. Detection, not prevention: the sale stands; Junid
-sees which till let it through (an old build, or a fallback that went wrong).
+with **no pool key** to `/eft_enforcement_breaches/{saleId}` (create-only:
+one record, one log line per sale) and logs `EFT_ENFORCEMENT_BREACH`.
+Detection, not prevention: the sale stands; Junid sees which till let it
+through (an old build, or a fallback that went wrong) on the phone's EFT
+enforcement sheet, which reads `eftEnforcementStatus { action: "listBreaches" }`
+(owner only, the newest 50 by key order).
 
 Cursor at `/eft_enforcement_scan { sinceMs, at, drained }`.
 
@@ -49,12 +64,14 @@ list readable on his phone without a callable:
 }
 ```
 
-The hard wall a later session could add on `/pos/sales` (console, not here):
-`payments/$paymentId` `.validate`: `newData.child('method').val() !== 'eft' ||
-newData.hasChild('eftPoolKey') || !(root.child('eft_enforcement/stores')
-.child(newData.parent().parent().child('storeId').val()).val() === true)`.
-Not applied: it would also block Pine/Concrete the day they are switched on
-with an old till build, and offline-queued sales.
+The hard wall on `/pos/sales` — **apply in the console once every till runs
+this build** (not from the repo): `payments/$paymentId` `.validate`:
+`newData.child('method').val() !== 'eft' || newData.hasChild('eftPoolKey') ||
+!(root.child('eft_enforcement/stores').child(newData.parent().parent()
+.child('storeId').val()).val() === true)`. It keys on the same config node, so
+it enforces exactly the configured stores. Not applied today because a till
+with an **offline-queued** plain EFT sale from before the cut-over would have
+its sale refused on sync; wait for the breach list to stay empty for a day.
 
 ## Deploy
 

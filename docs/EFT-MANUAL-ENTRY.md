@@ -31,10 +31,29 @@ case:
 | `manualEntry` | `{ by: "Junid", uid, email, at: server time, note, entryId }` |
 
 The key is `sha256("eftmanual1|" + entryId)[0:40]`: a retried submit lands on
-the same key (create-if-absent → `already: true`). A second entry with the
-same normalised reference **and** amount while one is in the pool tail is
-refused (`already-entered`). The fingerprint is claimed create-only at entry,
-in the poller's order.
+the same key (create-if-absent → `already: true`). Refused at entry:
+
+* the same normalised reference **and** amount already entered by hand while
+  that entry is in the pool tail (`already-entered`);
+* the **bank's own unmatched notification** for that reference and amount
+  already in the tail (`bank-twin-waiting`) — the cashier uses that one.
+
+The fingerprint is claimed create-only at entry, in the poller's order.
+
+## One payment, two records — never paid out twice
+
+A manual entry and the bank's later notification of the same payment carry
+different fingerprints, so the fingerprint check cannot see they are one
+payment. Three rules do:
+
+| situation | what happens |
+|---|---|
+| manual entry **used**, bank twin arrives | the search warns on the row (`manualTwin.status: "used"`); the **settle refuses** the bank record (`manual-twin-used`). Junid reverses the manual entry if the customer really paid twice. |
+| manual entry **waiting**, bank twin arrives | the search answers with the **bank** record (not "ambiguous") and warns that a manual twin is waiting; Junid reverses the manual one or marks it used. |
+| bank record already waiting when Junid types | refused at entry (`bank-twin-waiting`). |
+
+Limit: all three look at the pool tail (the newest 400), as every settle-time
+check does.
 
 ## Consuming it
 
