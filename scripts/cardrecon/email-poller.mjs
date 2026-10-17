@@ -56,7 +56,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import nodemailer from "nodemailer";
 import { deliverNotices } from "./noticeCore.mjs";
-import { sendVerdictEmail, failedCheck, parseVerdictMode } from "./verdictMailCore.mjs";
+import { drainVerdictEmails, parseVerdictMode, verdictSenderOk, EFT_VERDICT_FROM_MAILBOX } from "./verdictMailCore.mjs";
 
 import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
@@ -567,11 +567,13 @@ async function run() {
   // ── JUNID'S EFT VERDICT EMAILS — the recycler reports' path: Gmail SMTP as
   // the card-recon mailbox, to the fixed inbox in verdictMailCore.mjs. The
   // transport connects only when a verdict is sent. A dry run sends nothing.
-  if (!cfg.dryRun) {
+  if (!cfg.dryRun && !verdictSenderOk(cfg.user)) {
+    console.warn(`⚠ EFT verdict emails are OFF this tick: the mailbox is ${cfg.user}, not ${EFT_VERDICT_FROM_MAILBOX}`);
+  } else if (!cfg.dryRun) {
     const transport = nodemailer.createTransport({
       host: cfg.smtpHost, port: cfg.smtpPort, secure: cfg.smtpPort === 465,
       auth: { user: cfg.user, pass: cfg.password },
-      connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000,
+      connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 20000,
     });
     verdictSend = (mail) => transport.sendMail(mail);
     verdictFrom = cfg.user;
@@ -765,6 +767,8 @@ async function run() {
     }
   } finally {
     try { await client.logout(); } catch { /* the connection is going anyway */ }
+    // Junid's verdict emails, AFTER the mailbox is let go — see sendVerdicts.
+    await sendVerdicts();
   }
 
   // WRITTEN EVEN WHEN THE TICK FOUND NOTHING — that is the entire point of it.
@@ -1077,22 +1081,27 @@ async function handleMessage({ client, uid, db, getToken, cfg, releasedFrom = {}
 const MAX_EFT_PDFS = 8;
 
 // ── THE VERDICT EMAIL (Junid, 17 Oct 2026) ───────────────────────────────────
-// Sent once per pool record THIS run wrote — after the write, so the email can
-// only ever describe a decision already made, and a replay (which writes
-// nothing) emails nothing. A failed send is logged and lost: the record is the
-// truth and stands regardless. NEVER throws into the reader.
+// Queued once per pool record THIS run wrote — after the write, so the email
+// can only ever describe a decision already made, and a replay (which writes
+// nothing) emails nothing. Sent by sendVerdicts() once the mailbox session is
+// closed (verdictMailCore.drainVerdictEmails). A failed send is logged and
+// lost: the record is the truth and stands regardless.
 let verdictSend = null;
 let verdictFrom = null;
 let verdictMode = "all";
+const verdictQueue = [];
 
-async function emailVerdict(record, poolKey) {
-  if (!verdictSend) return;
-  const out = await sendVerdictEmail({ record, poolKey, mode: verdictMode, send: verdictSend, from: verdictFrom });
-  if (out.skipped) return;
-  // The log line names the verdict and the check, never the amount.
-  const what = `${out.verdict}${out.verdict === "REJECTED" ? ` (${failedCheck(record)})` : ""}`;
-  if (out.sent) console.log(`  · EFT verdict email sent to Junid: ${what}`);
-  else console.warn(`  ⚠ EFT verdict email NOT sent (${out.error}) — the pool record stands; only this email is lost: ${what}`);
+function emailVerdict(record, poolKey) {
+  if (verdictSend) verdictQueue.push({ record, poolKey });
+}
+
+async function sendVerdicts() {
+  if (!verdictSend || !verdictQueue.length) return;
+  const out = await drainVerdictEmails({ queue: verdictQueue.splice(0), mode: verdictMode, send: verdictSend, from: verdictFrom });
+  // The log names the verdict and the check, never the amount.
+  for (const m of out.sent) console.log(`  · EFT verdict email sent to Junid: ${m.verdict}${m.check ? ` (${m.check})` : ""}`);
+  if (out.rolledUp) console.log(`  · EFT verdict email sent to Junid: ${out.rolledUp} more unknown-bank sighting(s) in one roll-up`);
+  if (out.error) console.warn(`  ⚠ EFT verdict email NOT sent (${out.error}) — ${out.unsent} email(s) this tick dropped; the pool records stand, only the emails are lost`);
 }
 
 async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, uidValidity, size }) {
@@ -1157,7 +1166,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       await db.ref(`${EFT_POOL_PATH}/${key}`).transaction(createOnlyStep(forgery, (x) => { d = x; }));
       if (d?.write) {
         console.log(`  · EFT: refused-auth recorded (message also carries attachments — handed to the slip path)`);
-        await emailVerdict(forgery, key);
+        emailVerdict(forgery, key);
       }
     }
     return null;
@@ -1404,7 +1413,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   if (outcomes.length > 1) {
     console.log(`  · EFT: ${outcomes.length} payment document(s) on one message — each recorded separately`);
   }
-  for (let i = 0; i < written.length; i++) await emailVerdict(written[i], writtenKeys[i]);
+  for (let i = 0; i < written.length; i++) emailVerdict(written[i], writtenKeys[i]);
   const count = (o) => written.filter((r) => r.outcome === o).length;
   return {
     // processed feeds the "N with slips" line and the heartbeat's slip count —
@@ -1483,7 +1492,7 @@ async function noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity,
   if (!decision?.write) return;   // an earlier tick already noted it — and that row is untouched
   unknownBankThisRun += 1;
   console.log(`  · EFT: unknown-bank — payment-shaped mail from ${fromDomain}, which is not a bank this pool knows. Nothing was read from it.`);
-  await emailVerdict(record, key);
+  emailVerdict(record, key);
 }
 
 // ── THE TICK'S OWN EXIT ──────────────────────────────────────────────────────

@@ -24,7 +24,16 @@ import { redactAccountDigits } from "./eftCore.mjs";
 import { clip } from "./intakeCore.mjs";
 
 export const EFT_VERDICT_TO = "gunidmoh@gmail.com";
+// Only ever sent AS the card-recon mailbox — the recycler's own guard
+// (mail.mjs: "not sending as a different mailbox"). A different account in
+// .env means somebody changed card recon, and this must not send as it.
+export const EFT_VERDICT_FROM_MAILBOX = "marathon6631@gmail.com";
 export const EFT_VERDICT_FROM_NAME = "Marathon EFT confirmer";
+
+/** Whether the poller's mailbox is the one these may be sent as. */
+export function verdictSenderOk(user) {
+  return String(user ?? "").trim().toLowerCase() === EFT_VERDICT_FROM_MAILBOX;
+}
 
 // Every subject starts with this, so one Gmail filter (subject:"[EFT confirmer]")
 // files them all into a folder.
@@ -126,6 +135,19 @@ export function maskIdentifier(value) {
   return `${"•".repeat(Math.min(s.length - 4, 8))}${s.slice(-4)}`;
 }
 
+/**
+ * The payer's reference, readable but never a whole long number. It is the
+ * customer's matching key — usually a phone number or invoice — so it is not
+ * struck out the way a diagnostic is (eftCore keeps it whole in the pool for
+ * the same reason); but a payer can type an account or card number there, so
+ * any run of six or more digits keeps only its last four.
+ */
+export function maskReference(value) {
+  const s = oneLine(value, 120);
+  if (!s) return null;
+  return s.replace(/\d(?:[ -]?\d){5,}/g, (run) => `••${run.replace(/\D/g, "").slice(-4)}`);
+}
+
 /** The paying bank, from the reader that read it or the sender's domain. */
 export function bankName(record) {
   if (record?.reader && BANK_NAMES[record.reader]) return BANK_NAMES[record.reader];
@@ -141,8 +163,13 @@ export function bankName(record) {
  */
 export function verdictMail(record, { poolKey } = {}) {
   const verdict = eftVerdict(record);
-  const bank = bankName(record);
+  const bank = oneLine(bankName(record), 60);
   const amount = formatRands(record?.amountCents);
+  // The bank's transaction id is shown masked — and FNB repeats it in its own
+  // email subject ("Payment Notification from … 5TG59DVQ", real record), so
+  // every free-text field has it replaced by the masked form too.
+  const ref = oneLine(record?.bankRef, 80);
+  const unref = (s) => (ref.length >= 4 && s ? String(s).split(ref).join(maskIdentifier(ref)) : s);
   const subject = oneLine([
     `${EFT_VERDICT_SUBJECT_PREFIX} ${verdict}`,
     verdict === "REJECTED" ? failedCheck(record) : null,
@@ -152,11 +179,11 @@ export function verdictMail(record, { poolKey } = {}) {
   // Free text the bank or the payer wrote goes through the account sweep —
   // this leaves the database for an inbox. The reference is swept too: it is
   // usually a phone number or an invoice, but a payer can type anything.
-  const sweep = (s, n) => (s ? oneLine(redactAccountDigits(String(s)), n) : null);
+  const sweep = (s, n) => (s ? oneLine(redactAccountDigits(unref(String(s))), n) : null);
   const details = [
     ["Bank", bank],
     ["Amount", amount],
-    ["Reference", sweep(record?.reference, 120)],
+    ["Reference", maskReference(unref(record?.reference))],
     ["Payer", sweep(record?.payer, 120)],
     ["Paid into", record?.destination?.accountMask
       ? `${oneLine(record.destination.accountMask, 40)}${record.destination.destBankName ? ` (${oneLine(record.destination.destBankName, 60)})` : ""}`
@@ -169,14 +196,14 @@ export function verdictMail(record, { poolKey } = {}) {
     ["Sender", sweep(record?.from, 120)],
     ["Bank email subject", sweep(record?.subject, 160)],
     ["Signature (DKIM)", record?.auth
-      ? `${record.auth.verdict}${record.auth.dkimDomain ? ` — signed by ${oneLine(record.auth.dkimDomain, 80)}` : ""}`
+      ? `${record.auth.verdict === "not-checked" ? "not checked (a bank this pool is not set up for)" : record.auth.verdict}${record.auth.dkimDomain ? ` — signed by ${oneLine(record.auth.dkimDomain, 80)}` : ""}`
       : null],
     ["Duplicate of", record?.duplicateOf ? oneLine(record.duplicateOf, 120) : null],
     ["Pool record", poolKey ? oneLine(poolKey, 160) : null],
   ].filter(([, v]) => v);
 
   const text = [
-    `${verdict} — ${decidingReason(record)}`,
+    `${verdict} — ${redactAccountDigits(unref(decidingReason(record)))}`,
     "",
     ...details.map(([k, v]) => `${k}: ${v}`),
     "",
@@ -187,21 +214,68 @@ export function verdictMail(record, { poolKey } = {}) {
   return { verdict, subject, text };
 }
 
+// ── SENDING A TICK'S VERDICTS ────────────────────────────────────────────────
+// The poller QUEUES each verdict while it holds the mailbox and sends them
+// here, after the IMAP session is closed — so a slow or black-holed SMTP host
+// can never hold the mailbox lock or push a tick past its budget (Sonnet
+// architect review). Two limits, each saying what it dropped:
+//   · the FIRST failed send stops the round: the host is down or refusing,
+//     and every further try would wait out its own timeout;
+//   · unknown-bank sightings are a stranger's mail, and a spam burst must not
+//     bury Junid's inbox or the mailbox's Gmail send quota (which the Unread
+//     notices share). The first UNKNOWN_BANK_EMAILS_PER_TICK are sent one by
+//     one; the rest of the tick's go as ONE roll-up email naming each domain.
+export const UNKNOWN_BANK_EMAILS_PER_TICK = 3;
+
+/** One roll-up email for the unknown-bank sightings past the per-tick cap. */
+export function unknownBankRollupMail(items) {
+  const lines = items.map(({ record, poolKey }) =>
+    `- ${oneLine(bankName(record), 80)} · arrived ${formatSast(record?.receivedAt) || "unknown"} · pool record ${oneLine(poolKey, 160)}`);
+  return {
+    subject: oneLine(`${EFT_VERDICT_SUBJECT_PREFIX} REJECTED — ${CHECKS["unknown-bank"]} — ${items.length} more this round`, 200),
+    text: [
+      `REJECTED — ${CHECKS["unknown-bank"]}: ${items.length} more payment-shaped message(s) from banks this pool is not set up for arrived in one round. Nothing was read from any of them. Rolled into one email so a burst cannot flood the inbox.`,
+      "",
+      ...lines,
+      "",
+      "The EFT confirmer on the Mac mini sent this after deciding; the email changes nothing.",
+    ].join("\n"),
+  };
+}
+
 /**
- * The whole send for one record, `send` injected (nodemailer's sendMail on the
- * mini, a recorder in tests). NEVER throws: a failure comes back as
- * { sent:false, error } for the caller to log.
- * @returns {Promise<{verdict:string, sent:boolean, skipped?:true, error?:string}>}
+ * Send one tick's queued verdicts. `send` is injected (nodemailer's sendMail
+ * on the mini, a recorder in tests). NEVER throws.
+ * @param {{queue:{record:object, poolKey:string}[], mode:string, send:(m:object)=>Promise<any>, from:string, cap?:number}} p
+ * @returns {Promise<{sent:{verdict:string, check:string|null}[], skipped:number, rolledUp:number, unsent:number, error:string|null}>}
  */
-export async function sendVerdictEmail({ record, poolKey, mode, send, from }) {
-  let verdict = "REJECTED";
-  try {
-    verdict = eftVerdict(record);
-    if (!shouldSendVerdict(verdict, mode)) return { verdict, sent: false, skipped: true };
-    const mail = verdictMail(record, { poolKey });
-    await send({ from: { name: EFT_VERDICT_FROM_NAME, address: from }, to: EFT_VERDICT_TO, subject: mail.subject, text: mail.text });
-    return { verdict, sent: true };
-  } catch (err) {
-    return { verdict, sent: false, error: oneLine(err?.response || err?.message || err, 200) };
+export async function drainVerdictEmails({ queue, mode, send, from, cap = UNKNOWN_BANK_EMAILS_PER_TICK }) {
+  const out = { sent: [], skipped: 0, rolledUp: 0, unsent: 0, error: null };
+  const envelope = (m) => ({ from: { name: EFT_VERDICT_FROM_NAME, address: from }, to: EFT_VERDICT_TO, subject: m.subject, text: m.text });
+  const mails = [];
+  const rollup = [];
+  let unknown = 0;
+  for (const item of Array.isArray(queue) ? queue : []) {
+    const verdict = eftVerdict(item?.record);
+    if (!shouldSendVerdict(verdict, mode)) { out.skipped += 1; continue; }
+    if (item.record?.outcome === "unknown-bank" && ++unknown > cap) { rollup.push(item); continue; }
+    mails.push({ verdict, check: verdict === "REJECTED" ? failedCheck(item.record) : null, item });
   }
+  const tryMail = async (build) => {
+    try { await send(envelope(build())); return true; }
+    catch (err) { out.error = oneLine(err?.response || err?.message || err, 200); return false; }
+  };
+  for (let i = 0; i < mails.length; i++) {
+    const { verdict, check, item } = mails[i];
+    if (!(await tryMail(() => verdictMail(item.record, { poolKey: item.poolKey })))) {
+      out.unsent = mails.length - i + rollup.length;
+      return out;
+    }
+    out.sent.push({ verdict, check });
+  }
+  if (rollup.length) {
+    if (await tryMail(() => unknownBankRollupMail(rollup))) out.rolledUp = rollup.length;
+    else out.unsent = rollup.length;
+  }
+  return out;
 }

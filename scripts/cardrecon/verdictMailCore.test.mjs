@@ -11,9 +11,10 @@ import {
   eftPoolRecord, destinationVerdict, immediacyVerdict, applyFingerprintHold, unknownBankRecord,
 } from "./eftCore.mjs";
 import { noReaderReason } from "./eftBanks.mjs";
+import { OWNER } from "./intakeRules.mjs";
 import {
   eftVerdict, failedCheck, decidingReason, verdictMail, parseVerdictMode, shouldSendVerdict,
-  sendVerdictEmail, maskIdentifier, formatRands, formatSast,
+  drainVerdictEmails, unknownBankRollupMail, verdictSenderOk, UNKNOWN_BANK_EMAILS_PER_TICK, maskIdentifier, formatRands, formatSast,
   EFT_VERDICT_TO, EFT_VERDICT_SUBJECT_PREFIX, EFT_VERDICT_FROM_NAME,
 } from "./verdictMailCore.mjs";
 
@@ -150,9 +151,17 @@ describe("REJECTED — every reason the confirmer can refuse names its check", (
     expect(r).toContain("⋯234");
   });
 
-  it("a reference typed as an account number is swept too", () => {
+  it("a reference typed as an account number keeps only its last four; a phone reference stays matchable", () => {
     const mail = verdictMail(decide({ p: parsed({ reference: "62834519234" }) }));
     expect(mail.text).not.toContain("62834519234");
+    expect(mail.text).toContain("Reference: ••9234");
+    expect(verdictMail(decide({ p: parsed({ reference: "082 555 1234" }) })).text).toContain("Reference: ••1234");
+    expect(verdictMail(decide({ p: parsed({ reference: "INV 1042" }) })).text).toContain("Reference: INV 1042");
+  });
+
+  it("an unknown-bank email says the signature was not checked, rather than printing the raw state", () => {
+    const r = unknownBankRecord({ message, fromDomain: "paymebank.example", rawText: "x", at: 1 });
+    expect(verdictMail(r).text).toContain("Signature (DKIM): not checked (a bank this pool is not set up for)");
   });
 
   it("a subject or body carrying newlines stays one header line", () => {
@@ -181,31 +190,73 @@ describe("the ALL / REJECTED-only switch", () => {
 
   const recorder = () => { const sent = []; return { sent, send: async (m) => { sent.push(m); } }; };
 
+  const FROM = "marathon6631@gmail.com";
+
   it("REJECTED-only mode suppresses the APPROVED email and still sends the REJECTED one", async () => {
     const { sent, send } = recorder();
-    const a = await sendVerdictEmail({ record: decide(), poolKey: "a", mode: "rejected", send, from: "marathon6631@gmail.com" });
-    const r = await sendVerdictEmail({ record: decide({ auth: failAuth }), poolKey: "r", mode: "rejected", send, from: "marathon6631@gmail.com" });
-    expect(a).toEqual({ verdict: "APPROVED", sent: false, skipped: true });
-    expect(r).toEqual({ verdict: "REJECTED", sent: true });
+    const out = await drainVerdictEmails({ queue: [{ record: decide(), poolKey: "a" }, { record: decide({ auth: failAuth }), poolKey: "r" }], mode: "rejected", send, from: FROM });
+    expect(out).toMatchObject({ skipped: 1, unsent: 0, error: null, sent: [{ verdict: "REJECTED", check: "Signature check failed (DKIM)" }] });
     expect(sent).toHaveLength(1);
     expect(sent[0].subject).toMatch(/^\[EFT confirmer\] REJECTED — Signature check failed/);
   });
 
   it("ALL mode sends both, from the card-recon mailbox to the recycler reports' inbox", async () => {
     const { sent, send } = recorder();
-    await sendVerdictEmail({ record: decide(), poolKey: "a", mode: "all", send, from: "marathon6631@gmail.com" });
-    await sendVerdictEmail({ record: decide({ auth: failAuth }), poolKey: "r", mode: "all", send, from: "marathon6631@gmail.com" });
+    await drainVerdictEmails({ queue: [{ record: decide(), poolKey: "a" }, { record: decide({ auth: failAuth }), poolKey: "r" }], mode: "all", send, from: FROM });
     expect(sent.map((m) => m.subject.split(" — ")[0])).toEqual(["[EFT confirmer] APPROVED", "[EFT confirmer] REJECTED"]);
     for (const m of sent) {
       expect(m.to).toBe("gunidmoh@gmail.com");
-      expect(m.from).toEqual({ name: EFT_VERDICT_FROM_NAME, address: "marathon6631@gmail.com" });
+      expect(m.from).toEqual({ name: EFT_VERDICT_FROM_NAME, address: FROM });
     }
-    expect(EFT_VERDICT_TO).toBe("gunidmoh@gmail.com");
+    // The recycler's OWNER_EMAIL and this repo's OWNER are the same inbox —
+    // the 2026-09-21 near-miss (junidmoh@ vs gunidmoh@) must not recur here.
+    expect(EFT_VERDICT_TO).toBe(OWNER);
   });
 
-  it("a failed send never throws — it comes back as an error to log", async () => {
-    const out = await sendVerdictEmail({ record: decide(), poolKey: "a", mode: "all", send: async () => { throw new Error("535 bad credentials"); }, from: "x" });
-    expect(out).toEqual({ verdict: "APPROVED", sent: false, error: "535 bad credentials" });
+  it("sends only as the card-recon mailbox, like the recycler's guard", () => {
+    expect(verdictSenderOk("marathon6631@gmail.com")).toBe(true);
+    expect(verdictSenderOk(" Marathon6631@Gmail.com ")).toBe(true);
+    expect(verdictSenderOk("someone@else.example")).toBe(false);
+    expect(verdictSenderOk(undefined)).toBe(false);
+  });
+});
+
+describe("sending a tick's verdicts", () => {
+  const FROM = "marathon6631@gmail.com";
+  const stranger = (n) => ({
+    record: unknownBankRecord({ message: { ...message, from: `pay@bank${n}.example` }, fromDomain: `bank${n}.example`, rawText: "Payment received", at: 1 }),
+    poolKey: `u${n}`,
+  });
+
+  it("the first failed send stops the round — never throws, says how many were dropped", async () => {
+    let tries = 0;
+    const out = await drainVerdictEmails({
+      queue: [{ record: decide(), poolKey: "a" }, { record: decide({ auth: failAuth }), poolKey: "b" }, { record: decide(), poolKey: "c" }],
+      mode: "all", from: FROM, send: async () => { tries += 1; throw new Error("535 bad credentials"); },
+    });
+    expect(tries).toBe(1);
+    expect(out).toMatchObject({ sent: [], unsent: 3, error: "535 bad credentials" });
+  });
+
+  it("a stranger burst: the first few one by one, the rest in ONE roll-up; payments are never rolled up", async () => {
+    const sent = [];
+    const queue = [...[1, 2, 3, 4, 5, 6].map(stranger), { record: decide(), poolKey: "pay" }];
+    const out = await drainVerdictEmails({ queue, mode: "all", from: FROM, send: async (m) => { sent.push(m); } });
+    expect(UNKNOWN_BANK_EMAILS_PER_TICK).toBe(3);
+    expect(sent).toHaveLength(3 + 1 + 1);
+    expect(out.rolledUp).toBe(3);
+    expect(sent.filter((m) => /APPROVED/.test(m.subject))).toHaveLength(1);
+    const roll = sent.at(-1);
+    expect(roll.subject).toBe("[EFT confirmer] REJECTED — Unknown bank sender — 3 more this round");
+    expect(roll.text.split("\n")[0]).toMatch(/^REJECTED — Unknown bank sender: 3 more/);
+    for (const d of ["bank4.example", "bank5.example", "bank6.example"]) expect(roll.text).toContain(d);
+  });
+
+  it("the bank's transaction id never appears whole — not even inside the bank's own subject line", () => {
+    const record = { ...decide(), subject: "Payment Notification from T MOKOENA FNB20261017ABC9876" };
+    const mail = verdictMail(record);
+    expect(mail.text).not.toContain("FNB20261017ABC9876");
+    expect(mail.text).toContain("Bank email subject: Payment Notification from T MOKOENA ••••••••9876");
   });
 });
 
@@ -228,13 +279,17 @@ describe("the poller emails only after a pool record is written", () => {
   const src = readFileSync(resolve(HERE, "email-poller.mjs"), "utf8");
   it("the batch path: after the pool writes and the \\Seen flag, only for written records", () => {
     const write = src.indexOf("if (decision?.write) { written.push(record); writtenKeys.push(poolKey); }");
-    const mail = src.indexOf("await emailVerdict(written[i], writtenKeys[i])");
+    const mail = src.indexOf("emailVerdict(written[i], writtenKeys[i])");
     expect(write).toBeGreaterThan(-1);
     expect(mail).toBeGreaterThan(src.indexOf('messageFlagsAdd(range, ["\\\\Seen"], { uid: true }).catch((err) =>', write));
   });
   it("the forgery-with-attachments path and the unknown-bank path: only when the create-only write landed", () => {
-    expect(src).toMatch(/if \(d\?\.write\) \{\n\s+console\.log\([^\n]+\n\s+await emailVerdict\(forgery, key\);/);
-    expect(src).toMatch(/if \(!decision\?\.write\) return;[^\n]*\n\s+unknownBankThisRun \+= 1;\n[^\n]+\n\s+await emailVerdict\(record, key\);/);
+    expect(src).toMatch(/if \(d\?\.write\) \{\n\s+console\.log\([^\n]+\n\s+emailVerdict\(forgery, key\);/);
+    expect(src).toMatch(/if \(!decision\?\.write\) return;[^\n]*\n\s+unknownBankThisRun \+= 1;\n[^\n]+\n\s+emailVerdict\(record, key\);/);
+  });
+  it("the queue is sent only after the mailbox session is closed", () => {
+    expect(src).toMatch(/try \{ await client\.logout\(\); \} catch[^\n]*\n[^\n]*\n\s+await sendVerdicts\(\);/);
+    expect(src).toMatch(/function emailVerdict\(record, poolKey\) \{\n\s+if \(verdictSend\) verdictQueue\.push\(\{ record, poolKey \}\);\n\}/);
   });
   it("a dry run sets up no sender", () => {
     expect(src).toMatch(/if \(!cfg\.dryRun\) \{\n\s+const transport = nodemailer\.createTransport[\s\S]{0,400}verdictSend = /);

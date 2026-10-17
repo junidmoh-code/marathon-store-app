@@ -1448,8 +1448,16 @@ record lands, and a failed send is logged and changes nothing.
   id already seen) · no bank transaction id.
 - **Body:** first line is the verdict and the deciding reason; then bank,
   amount, reference, payer, destination (masked), bank transaction id (last
-  four), timestamps in SAST, DKIM result, pool record id. Free text goes
-  through `redactAccountDigits`; no full card or account number.
+  four, also wherever the bank's own subject repeats it), timestamps in SAST,
+  DKIM result, pool record id. Free text goes through `redactAccountDigits`;
+  the reference keeps only the last four of any long number (a phone
+  reference still matches by eye). No full card or account number.
+- **When it is sent:** queued as each record is written, sent once the IMAP
+  session is closed, so SMTP can never hold the mailbox. The first failed send
+  ends that tick's round (logged with how many were dropped). Unknown-bank
+  sightings past 3 in one tick go as **one roll-up email**. Sent only as
+  marathon6631@gmail.com: any other `CARD_RECON_IMAP_USER` turns them off,
+  with a warning.
 - **Path and inbox:** the recycler reports' — Gmail SMTP (`smtp.gmail.com:465`)
   as marathon6631@gmail.com with card recon's app password, to
   **gunidmoh@gmail.com** (fixed in `scripts/cardrecon/verdictMailCore.mjs`).
