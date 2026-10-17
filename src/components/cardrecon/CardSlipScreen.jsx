@@ -105,7 +105,7 @@ const clockOf = (ms) => new Date(ms).toLocaleTimeString("en-ZA", {
 // before 06:00 SAST it is still the evening before.
 const SAST_MS = 2 * 60 * 60 * 1000;
 const tradingDayMs = (ms) => (new Date(ms + SAST_MS).getUTCHours() < 6 ? ms - 7 * 60 * 60 * 1000 : ms);
-const dayOfYmd = (ymd) => Date.parse(`${ymd}T12:00:00+02:00`);
+const ymdOf = (ms) => new Date(ms + SAST_MS).toISOString().slice(0, 10);
 
 /** A refusal always reads as a sentence. */
 const reasonOf = (r) => (typeof r?.reason === "string" && r.reason.trim())
@@ -134,12 +134,18 @@ export default function CardSlipScreen({ onExit }) {
   const confirmed = live || serverTills?.live === true;
   // TODAY'S SLIP IS IN — only from the server's live answer this session; the
   // device copy may be yesterday's. undefined = not known (yet).
+  // An answer for another trading day (the screen left open past 06:00) says
+  // nothing about today: it is set aside and the server asked again.
+  const todayYmd = ymdOf(tradingDayMs(nowMs));
+  const answerIsToday = serverTills?.live === true && (!serverTills.dayYmd || serverTills.dayYmd === todayYmd);
   const sentByTid = useMemo(() => {
-    if (serverTills?.live !== true) return {};
+    if (!answerIsToday) return {};
     return Object.fromEntries((serverTills.tills || []).filter((t) => t && t.sent !== undefined).map((t) => [t.tid, t.sent]));
-  }, [serverTills]);
-  const day = serverTills?.live && serverTills.dayYmd ? dayOfYmd(serverTills.dayYmd) : tradingDayMs(nowMs);
+  }, [serverTills, answerIsToday]);
+  const day = tradingDayMs(nowMs);
   const recheck = () => { if (uid) fetchServerTills(uid, { force: true }); };
+  const stale = serverTills?.live === true && !!serverTills.dayYmd && serverTills.dayYmd !== todayYmd;
+  useEffect(() => { if (stale && uid) fetchServerTills(uid, { force: true }); }, [stale, uid]);
 
   return (
     <div style={S.page}>
@@ -219,6 +225,9 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
       console.error(failure.logLine, err);
       setPhase("form");
       setError(failure.message);
+      // The upload may still have landed after the phone gave up: ask the
+      // server, so "Today's slip is in" says so before she sends it twice.
+      onSent();
     }
   };
 

@@ -75,7 +75,7 @@ const { loadNetwork } = require("../lib/network-load.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
 const { tillAt } = require("../lib/card-terminal-placements.cjs");
 const { SLIP_SCOPE_FIELD, readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
-const { SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, shouldAttach, authorityOf, buildSupportingSlip, carriedSlips, sameDaySuccessors } = require("../lib/card-supporting-slips.cjs");
+const { SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, shouldAttach, authorityOf, isStaffSlipRecord, buildSupportingSlip, carriedSlips, sameDaySuccessors } = require("../lib/card-supporting-slips.cjs");
 const {
   JOBS_PATH, DUE_PATH, JOB_PHOTO_PREFIX, dueKey, dueCutoff, claimJob, classifyRun, nextStep, unreadReason,
 } = require("../lib/card-read-jobs.cjs");
@@ -852,6 +852,13 @@ async function readLastBatchFor(db, storeId, tid) {
     ofHighest.push(...Object.entries(snap.val() || {})
       .filter(([, r]) => r && typeof r === "object" && Number(r.batchNo) === highest)
       .map(([key, r]) => ({ ...r, batchKey: r.batchKey || key })));
+  }
+  // A STAFF SLIP NEVER OUTRANKS THE MACHINE'S OWN REPORT of the same batch
+  // (precedence machine > Junid > staff): its close is the 18:50 cut-off, a
+  // stated time, and must not win "latest close" against a real report that
+  // printed 18:49:58. (Sonnet review, #743.)
+  if (ofHighest.some((r) => !isStaffSlipRecord(r))) {
+    for (let i = ofHighest.length - 1; i >= 0; i--) if (isStaffSlipRecord(ofHighest[i])) ofHighest.splice(i, 1);
   }
   const closes = ofHighest.map((r) => Number(r.slip && r.slip.closedAt)).filter(Number.isFinite);
   // The latest close wins; at the same close, the higher revision (a
@@ -2081,16 +2088,20 @@ async function handleSlip(db, request, deps = {}) {
  */
 async function logStaffSlip(db, request, { kind, terminal, picked, nowMs, photos, batchKey = null, slipId = null }) {
   const dayYmd = slipTradingDay(nowMs);
-  try {
-    const here = tillAt(terminal, nowMs);
-    const ref = db.ref(staffSlipDayPath({ storeId: terminal.storeId, tid: picked, dayYmd })).push();
-    await ref.set(staffSlipEntry({
-      kind, storeId: terminal.storeId, tid: picked, placeStoreId: here.storeId || terminal.storeId, tillId: here.tillId || terminal.tillId,
-      label: here.label || terminal.label || null, dayYmd, at: nowMs,
-      byUid: request.auth.uid, byEmail: request.auth.token?.email || null, photos, batchKey, slipId,
-    }));
-  } catch (err) {
-    console.error(`cardBatchCapture: staff slip log not written for ${picked}/${dayYmd}: ${err && err.message}`);
+  // Twice, then said loudly: the slip itself is kept either way.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const here = tillAt(terminal, nowMs);
+      const ref = db.ref(staffSlipDayPath({ storeId: terminal.storeId, tid: picked, dayYmd })).push();
+      await ref.set(staffSlipEntry({
+        kind, storeId: terminal.storeId, tid: picked, placeStoreId: here.storeId || terminal.storeId, tillId: here.tillId || terminal.tillId,
+        label: here.label || terminal.label || null, dayYmd, at: nowMs,
+        byUid: request.auth.uid, byEmail: request.auth.token?.email || null, photos, batchKey, slipId,
+      }));
+      break;
+    } catch (err) {
+      console.error(`cardBatchCapture: staff slip log not written for ${picked}/${dayYmd} (attempt ${attempt}): ${err && err.message}`);
+    }
   }
   return { at: nowMs, dayYmd };
 }

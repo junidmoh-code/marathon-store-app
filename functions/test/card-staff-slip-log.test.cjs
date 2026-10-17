@@ -193,3 +193,28 @@ test("a log that cannot be written never un-sends a slip the record already hold
   assert.equal(out.receipt.dayYmd, "2026-10-17");
   assert.ok(await node(db, `card_batches/trophy/${TT2}/501`), "the record stands");
 });
+
+// ── review fixes (Sonnet architect, #743) ────────────────────────────────────
+
+test("the machine's report of the same batch outranks a staff slip filed at 18:50, whatever its close", async () => {
+  const { readLastBatchFor } = require("../cardRecon/cardRecon.js");
+  const staff = { batchKey: "545", batchNo: 545, revision: 1, capturedVia: "typed",
+    declaredTotal: { cents: 100000, via: "staff-slip", byUid: YASMIN.uid, byEmail: "yasmin@marathon.internal", at: SAST("2026-10-17T16:24:00") },
+    slip: { openedAt: M544.slip.closedAt, closedAt: SAST("2026-10-17T18:50:00"), totalCents: 100000, format: "typed" } };
+  const machine = { batchKey: "545-r2", batchNo: 545, revision: 2, supersedes: "545", autoSuperseded: true, capturedVia: "photo",
+    slip: { openedAt: M544.slip.closedAt, closedAt: SAST("2026-10-17T18:49:58"), totalCents: 105000, format: "printed" } };
+  const db = makeFakeDb({ config: { cardTerminals: TERMINALS }, users: {}, card_batches: { pe: { [MT2]: { 544: M544, 545: staff, "545-r2": machine } } } });
+  const last = await readLastBatchFor(db, "pe", MT2);
+  assert.equal(last.key, "545-r2");
+  assert.equal(shouldAttach({ key: last.key, record: last.record }, SAST("2026-10-17T19:30:00")), true, "her next slip goes beside the machine's figure");
+});
+
+test("a staff slip after a later close (a report at 19:00, the slip at 19:30) never gets a window that ends before it starts", () => {
+  const { planTypedCapture } = require("../lib/card-recon.cjs");
+  const now = SAST("2026-10-17T19:30:00");
+  const plan = planTypedCapture({ tid: TT2, totalText: "10.00", nowMs: now, lastBatchNo: 500, lastOpenedAt: SAST("2026-10-16T19:00:00"),
+    lastClosedAt: SAST("2026-10-17T19:00:00"), lastWasTyped: false, closeAtMs: batchCloseOf("2026-10-17") });
+  assert.equal(plan.ok, true, plan.reason);
+  assert.equal(plan.extraction.openedAt, SAST("2026-10-17T19:00:00"));
+  assert.equal(plan.extraction.closedAt, now);
+});

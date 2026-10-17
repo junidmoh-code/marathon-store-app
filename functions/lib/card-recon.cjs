@@ -1102,6 +1102,9 @@ function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastOpene
   // 18:50 cut-off, and Junid's correction at 18:40 must still be the record in
   // force (the latest close wins — readLastBatchFor), not an earlier one.
   if (correction && Number.isFinite(lastClosedAt) && lastClosedAt > closeAt) closeAt = lastClosedAt;
+  // …and a new batch never closes before the one it follows (a machine report
+  // that closed at 19:00, then a staff slip at 19:30): it closes when sent.
+  if (Number.isFinite(closeAtMs) && !correction && Number.isFinite(lastClosedAt) && lastClosedAt >= closeAt && lastClosedAt < nowMs) closeAt = nowMs;
 
   // ── THE WINDOW ────────────────────────────────────────────────────────────
   // A correction covers the SAME trading period as the entry it replaces, so it

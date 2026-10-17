@@ -3,7 +3,7 @@
 // and the card total, 0 accepted — and see nothing back. These pin what they
 // see; the server's half (scope, correction, record) is
 // functions/test/card-slip-scope.test.cjs and card-slip-record.test.cjs.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 
@@ -42,13 +42,19 @@ vi.mock("../shopify/imageDecode", () => ({
 
 // What the server says when it has KEPT the slip: when, and for which day.
 const SENT = { ok: true, received: true, receipt: { at: Date.parse("2026-10-16T18:01:00+02:00"), dayYmd: "2026-10-16" } };
+// Warm the modules slipTerminals.js imports lazily: a cold first import can
+// outlast a test, and its answer then belongs to no test at all.
+await Promise.all([import("firebase/functions"), import("../../firebase")]);
 const CardSlipScreen = (await import("./CardSlipScreen")).default;
 const { _resetSlipTerminals } = await import("./slipTerminals");
 
 const textOf = (n) => [].concat(n.props.children).filter((c) => typeof c === "string").join("");
 const everyString = (tree) => tree.root.findAll((n) => typeof n.props?.children === "string" || Array.isArray(n.props?.children))
   .map(textOf).join(" | ");
-const render = () => { let t; act(() => { t = TestRenderer.create(<CardSlipScreen onExit={() => {}} />); }); return t; };
+// Every screen a test draws is taken down after it, so no test's effects or
+// pending server answers run on into the next one.
+const mounted = [];
+const render = () => { let t; act(() => { t = TestRenderer.create(<CardSlipScreen onExit={() => {}} />); }); mounted.push(t); return t; };
 const fileInputs = (t) => t.root.findAll((n) => n.type === "input" && n.props.type === "file");
 const amount = (t) => t.root.find((n) => n.type === "input" && n.props.inputMode === "decimal");
 const submitBtn = (t) => t.root.findAll((n) => n.type === "button" && /^(Submit|Sending…)$/.test(textOf(n)))[0];
@@ -57,9 +63,13 @@ const type = (t, v) => act(() => { amount(t).props.onChange({ target: { value: v
 const press = async (b) => { await act(async () => { await b.props.onClick(); }); };
 // The server's till list arrives after a dynamic import — wait for what it draws.
 const until = async (ok) => {
-  for (let i = 0; i < 100 && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 1)); });
+  for (let i = 0; i < 200 && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
   return ok();
 };
+
+afterEach(async () => {
+  await act(async () => { while (mounted.length) mounted.pop().unmount(); await new Promise((r) => setTimeout(r, 20)); });
+});
 
 beforeEach(() => {
   _resetSlipTerminals(); // every test opens its own registry read
@@ -211,11 +221,32 @@ describe("whether today's slip is in — the server's word, not the phone's", ()
     expect(everyString(render())).toMatch(/Saturday, 17 October/);
   });
 
-  it("after midnight the page is still the evening's day", async () => {
-    calls.tills = () => ({ ok: true, dayYmd: "2026-10-15", tills: [{ ...TILL, sent: null }] });
+  it("an answer for yesterday (the screen left open past 06:00) never says today's slip is in — the server is asked again", async () => {
+    let asks = 0;
+    calls.tills = () => (++asks === 1
+      ? { ok: true, dayYmd: "2026-10-15", tills: [{ ...TILL, sent: { at: Date.parse("2026-10-15T16:00:00+02:00") } }] }
+      : { ok: true, dayYmd: "2026-10-16", tills: [{ ...TILL, sent: null }] });
     const t = render();
-    await until(() => /Thursday, 15 October/.test(everyString(t)));
-    expect(everyString(t)).toMatch(/Thursday, 15 October/);
+    expect(everyString(t)).not.toMatch(/Today's slip is in/);
+    await until(() => /No slip sent yet today/.test(everyString(t)));
+    expect(everyString(t)).toMatch(/No slip sent yet today/); // only a fresh ask can say this
+    expect(everyString(t)).not.toMatch(/Today's slip is in/);
+    expect(everyString(t)).toMatch(/Friday, 16 October/);
+  });
+
+  it("a send that timed out asks the server again — it may have landed after the phone gave up", async () => {
+    calls.tills = () => ({ ok: true, dayYmd: "2026-10-16", tills: [{ ...TILL, sent: null }] });
+    const t = render();
+    await until(() => /No slip sent yet today/.test(everyString(t)));
+    const before = calls.tillAsks;
+    calls.fail = Object.assign(new Error("deadline-exceeded"), { name: "FirebaseError", code: "functions/deadline-exceeded" });
+    calls.tills = () => ({ ok: true, dayYmd: "2026-10-16", tills: [{ ...TILL, sent: { at: Date.parse("2026-10-16T18:01:00+02:00") } }] });
+    await pick(fileInputs(t)[0]);
+    await press(submitBtn(t));
+    await until(() => /Today's slip is in/.test(everyString(t)));
+    expect(calls.tillAsks).toBeGreaterThan(before);
+    expect(everyString(t)).toMatch(/Not sent — try again/);
+    expect(everyString(t)).toMatch(/Today's slip is in — sent at 18:01/);
   });
 });
 
