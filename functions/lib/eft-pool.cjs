@@ -39,6 +39,7 @@
 "use strict";
 
 const { paymentFingerprint } = require("./eft-fingerprint.cjs");
+const { isManualEntry } = require("./eft-manual.cjs");
 
 const EFT_POOL_PATH = "eft_pool";
 
@@ -104,7 +105,32 @@ function publicEftView(key, record) {
     reversals: record.reversals && typeof record.reversals === "object"
       ? Object.keys(record.reversals).length
       : 0,
+    // MANUALLY ENTERED BY JUNID (lib/eft-manual.cjs): who and when, so the
+    // till marks it and it is never mistaken for a bank-confirmed payment.
+    manualEntry: isManualEntry(record)
+      ? { by: record.manualEntry.by ?? "Junid", at: Number.isInteger(record.manualEntry.at) ? record.manualEntry.at : null }
+      : null,
   };
+}
+
+/**
+ * A bank-confirmed payment answering a search when a MANUAL entry for the
+ * same reference and amount was already spent: the real notification
+ * arrived after Junid typed the payment in. Spending both would pay one sum
+ * twice, so the till is warned on the row (never blocked — the owner may
+ * have entered a genuinely separate payment; the cashier checks).
+ * @returns {{at:number|null, receiptNumber:string|null}|null}
+ */
+function manualTwinOf(record, payments) {
+  if (!record || isManualEntry(record) || record.status !== "unmatched") return null;
+  const ref = normaliseText(record.reference);
+  if (!ref) return null;
+  for (const [, other] of payments ?? []) {
+    if (!isManualEntry(other) || other.status !== "used") continue;
+    if (other.amountCents !== record.amountCents || normaliseText(other.reference) !== ref) continue;
+    return { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
+  }
+  return null;
 }
 
 // ─── NORMALISATION AND NEAR-MISS ─────────────────────────────────────────────
@@ -234,6 +260,8 @@ function searchEftPool(poolTail, query) {
   // A NEAR match never echoes the stored reference: a cashier probing with
   // typo'd guesses must not learn another customer's reference from it.
   if (pick.on === "near") view.reference = null;
+  const twin = manualTwinOf(pick.record, payments);
+  if (twin) view.manualTwin = twin;
   return { results: [view], searched };
 }
 
@@ -244,6 +272,7 @@ module.exports = {
   EFT_MIN_QUERY,
   NEAR_MISS_MIN_LENGTH,
   publicEftView,
+  manualTwinOf,
   payerInitials,
   normaliseText,
   osaDistance,

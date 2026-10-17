@@ -4112,12 +4112,16 @@ exports.shopifyInventoryHealthScan = onSchedule(
 // eftEnforcementStatus is the till's read of /eft_enforcement — which stores
 // must match every EFT sale (Trophy + Marathon PE by default; lib/eft-enforce.cjs)
 // — and the owner's edit of it; the scan also flags breaches.
-//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus
+// eftPoolManualEntry is JUNID'S escape hatch (owner account alone, checked
+// server-side): a typed reference + amount becomes a spendable pool record,
+// marked "manually entered by Junid", consumed once through the same settle.
+//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry
 exports.eftPoolSearch = require("./eftPool/eftPool.js").eftPoolSearch;
 exports.eftPoolSettle = require("./eftPool/eftPool.js").eftPoolSettle;
 exports.eftPoolReverse = require("./eftPool/eftPool.js").eftPoolReverse;
 exports.eftRemainderScan = require("./eftPool/eftPool.js").eftRemainderScan;
 exports.eftEnforcementStatus = require("./eftPool/eftPool.js").eftEnforcementStatus;
+exports.eftPoolManualEntry = require("./eftPool/eftPool.js").eftPoolManualEntry;
 
 // ─── ENGINE POLICY — setCategoryPolicy ────────────────────────────────────────
 // The ONLY supported way to change /config/refillEngine/categoryPolicy: the

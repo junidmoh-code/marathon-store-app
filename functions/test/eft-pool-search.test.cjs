@@ -49,7 +49,10 @@ const keys = (pool, q) => searchEftPool(pool, q).results.map((r) => r.key);
 
 test("publicEftView projects a payment and nothing else", () => {
   const v = publicEftView("k1", recorded());
-  assert.deepEqual(Object.keys(v).sort(), ["amountCents", "at", "key", "needsOwner", "paidAt", "payerInitials", "reference", "reversals", "status", "used"]);
+  // `manualEntry` (null here): who and when, for a record Junid typed by
+  // hand — the till's "MANUALLY ENTERED BY JUNID" mark (lib/eft-manual.cjs).
+  assert.deepEqual(Object.keys(v).sort(), ["amountCents", "at", "key", "manualEntry", "needsOwner", "paidAt", "payerInitials", "reference", "reversals", "status", "used"]);
+  assert.equal(v.manualEntry, null);
   assert.equal(v.amountCents, 55000);
   assert.equal(v.reference, "JUNID1234");
   assert.equal(v.payerInitials, "J S");

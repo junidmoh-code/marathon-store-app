@@ -66,6 +66,18 @@
 //                   store. eftRemainderScan walks new sales and flags any EFT
 //                   leg with no pool key at an enforced store
 //                   (/eft_enforcement_breaches, EFT_ENFORCEMENT_BREACH).
+//   eftPoolManualEntry  JUNID'S ESCAPE HATCH (lib/eft-manual.cjs). The owner
+//                   account ALONE — not managers, not eftReview holders;
+//                   isOwner() checked here, never the UI — types a customer
+//                   reference and an amount, and a SPENDABLE pool record is
+//                   created: reader "manual", stamped manualEntry {by:
+//                   "Junid", uid, email, at: server time}, a synthetic
+//                   fingerprint claimed create-only at entry. A cashier finds
+//                   and consumes it through the ordinary search/settle above
+//                   — single-use by the same transaction — and every surface
+//                   marks it "manually entered by Junid". Idempotent per
+//                   entryId; a second entry of the same reference and amount
+//                   is refused.
 //   eftPoolReverse  owner-only: unwind a completed settlement. Both records
 //                   survive — the settlement moves to `reversals` on the pool
 //                   record; the sale at /pos/sales is not touched. An issued
@@ -83,7 +95,7 @@
 //
 // DEPLOY BY NAME (functions/ is shared with marathon-pos-app — a bare
 // --only functions would redeploy every function in the project):
-//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus
+//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry
 
 "use strict";
 
@@ -110,6 +122,9 @@ const {
   EFT_ENFORCEMENT_PATH, EFT_BREACH_PATH, EFT_ENFORCEMENT_SCAN_PATH, BREACH_SCAN_PAGE, BREACH_SCAN_WINDOW_MS,
   enforcedStoresOf, enforcementUpdateOf, enforcementStatusOf, enforcementBreachOf, breachScanNext,
 } = require("../lib/eft-enforce.cjs");
+const {
+  MANUAL_ENTRY_BY, manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
+} = require("../lib/eft-manual.cjs");
 const { issuingStamp } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 
@@ -695,6 +710,58 @@ exports.eftEnforcementStatus = onCall(RUNTIME, async (request) => {
   const node = (await db.ref(EFT_ENFORCEMENT_PATH).once("value")).val();
   const storeId = typeof data.storeId === "string" ? data.storeId.slice(0, 40) : null;
   return { ok: true, ...enforcementStatusOf(node, storeId) };
+});
+
+// ─── MANUAL ENTRY — Junid alone ──────────────────────────────────────────────
+// THE LOCK IS HERE. isOwner() is the admin email AND a verified Google
+// sign-in; nothing on the POS access record (role, eftReview, individual)
+// grants this, so a manager, an EFT reviewer or a shared till login is refused
+// before anything is read. The record it creates is consumed ONLY through
+// eftPoolSettle's ordinary settle (customer confirmed, consume-once).
+exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
+  if (!isOwner(request)) {
+    throw new HttpsError("permission-denied", "Only Junid can enter an EFT payment by hand.", { code: "owner-only" });
+  }
+  const data = request.data ?? {};
+  const db = admin.database();
+  const now = Date.now();
+  const actor = { uid: request.auth.uid, email: request.auth.token.email, name: MANUAL_ENTRY_BY };
+
+  const input = manualEntryInputCheck(data);
+  if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
+  const key = manualEntryKeyOf(input.entryId);
+
+  // A RETRY of the same form submit finds its own record: answer it as done.
+  const existing = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+  if (existing) {
+    if (isManualEntry(existing) && existing.manualEntry.entryId === input.entryId) {
+      return { ok: true, already: true, key, reference: existing.reference, amountCents: existing.amountCents, at: existing.manualEntry.at, by: MANUAL_ENTRY_BY, status: existing.status };
+    }
+    throw new HttpsError("already-exists", "That entry id is taken by another record — reload and try again.", { code: "key-taken" });
+  }
+  // The SAME money typed twice would be two spendable records: refused while
+  // the earlier entry is in the pool tail (used or waiting).
+  const tail = await readPoolTail();
+  const dup = manualDuplicateOf(input, Object.entries(tail));
+  if (dup) {
+    const state = dup.record.status === "used" ? "has already been used" : "is already in the pool, waiting";
+    throw new HttpsError("failed-precondition", `A manual entry for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} ${state}. If this is a second, separate payment, give it a different reference.`, { code: "already-entered", key: dup.key });
+  }
+
+  const record = manualEntryRecord({ ...input, key, actor, at: now });
+  // The fingerprint claim FIRST, create-only — the same order the poller
+  // keeps, so the settle's claimHolderCheck finds this very record holding it.
+  const fp = paymentFingerprint(record);
+  let claim = null;
+  await db.ref(`${EFT_FINGERPRINT_PATH}/${fp}`).transaction(fingerprintClaimStep(key, now, (d) => { claim = d; }));
+  if (claim?.holder !== key) {
+    throw new HttpsError("aborted", "The entry's fingerprint is held by another record — try again.", { code: "fingerprint-held" });
+  }
+  // Create-if-absent: two racing submits of one entryId write exactly one.
+  const res = await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => (cur === null ? record : undefined));
+  const already = res && res.committed === false;
+  console.log(`EFT_MANUAL_ENTRY: ${key} ${input.reference} ${input.amountCents}c by ${MANUAL_ENTRY_BY} (${actor.uid})${input.note ? ` — ${input.note}` : ""}${already ? " [already]" : ""}`);
+  return { ok: true, already, key, reference: input.reference, amountCents: input.amountCents, at: now, by: MANUAL_ENTRY_BY, status: "unmatched" };
 });
 
 // ─── REVERSE — the owner alone ───────────────────────────────────────────────
