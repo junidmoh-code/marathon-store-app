@@ -1,0 +1,3275 @@
+{
+ "mode": "dry-run",
+ "at": "2026-10-17T14:26:53.555Z",
+ "cancelWindow": {
+  "from": "2026-10-16T17:07:00.000Z",
+  "to": "2026-10-17T14:20:03.420Z"
+ },
+ "counts": {
+  "policy": "removed",
+  "rekey": 59,
+  "rekeyDone": 0,
+  "rekeyConflict": 0,
+  "rowsRestored": 81,
+  "rowsDone": 0,
+  "rowsConflict": 0,
+  "cancels": 29,
+  "cancelled": null,
+  "leftAlone": 3,
+  "taxonomy": "remove"
+ },
+ "diff": [
+  {
+   "step": "policy",
+   "path": "config/refillEngine/categoryPolicy/paper-bags",
+   "current": {
+    "hub2": {
+     "minQty": 25,
+     "reorderPoint": 10,
+     "target": 50
+    },
+    "marathon-pe": {
+     "carriedOnly": true,
+     "minQty": 25,
+     "reorderPoint": 10,
+     "target": 50
+    },
+    "trophy": {
+     "carriedOnly": true,
+     "minQty": 25,
+     "reorderPoint": 10,
+     "target": 50
+    }
+   },
+   "restored": null,
+   "action": "remove"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791971463851/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791889079314/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791885011582/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1782726989989/categoryKey",
+   "current": "paper-bags",
+   "restored": "packaging",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791888755311/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791889951053/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791886113857/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791884333181/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791888294603/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791885721460/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791884222521/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791886235808/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1782727067661/categoryKey",
+   "current": "paper-bags",
+   "restored": "packaging",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791885927781/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791891476692/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791973701920/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791884019159/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791890345915/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1782726941853/categoryKey",
+   "current": "paper-bags",
+   "restored": "packaging",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791886497941/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791883636340/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791884764527/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791883502646/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791887150502/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791884636653/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791884531085/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791887358177/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1782727152355/categoryKey",
+   "current": "paper-bags",
+   "restored": "packaging",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791882788043/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791882981980/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1782727235670/categoryKey",
+   "current": "paper-bags",
+   "restored": "packaging",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791891317996/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791885266632/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791887272674/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1782727193104/categoryKey",
+   "current": "paper-bags",
+   "restored": "packaging",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791896283311/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792151476022/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792153215900/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792153817693/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792152223010/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792152075007/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792151841872/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792151678286/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792151052119/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792152599905/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792153720360/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792154053817/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792154137342/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792153513242/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792153442416/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1792151189805/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791887047151/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791885522695/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791891084499/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791888468984/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1782727110237/categoryKey",
+   "current": "paper-bags",
+   "restored": "packaging",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791883316473/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791890124685/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rekey",
+   "path": "products/p1791886012494/categoryKey",
+   "current": "paper-bags",
+   "restored": "bags",
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791889079314/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T18:55:44.490Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791889079314/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T18:56:22.870Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791889079314/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T18:56:47.397Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791885011582/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T18:52:54.261Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791885011582/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T18:54:00.094Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791885011582/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T18:55:03.419Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1782726989989/L",
+   "current": {
+    "approvedAt": "2026-07-12T18:40:08.247Z",
+    "approvedBy": "seed-script",
+    "batchId": "targets-2026-07-12",
+    "minQty": 25,
+    "prevRow": {
+     "approvedAt": "2026-07-12T18:40:08.247Z",
+     "approvedBy": "seed-script",
+     "batchId": "targets-2026-07-12",
+     "minQty": 2,
+     "source": "standard_policy_v2",
+     "target": 3
+    },
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:09:00.625Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": {
+    "approvedAt": "2026-07-12T18:40:08.247Z",
+    "approvedBy": "seed-script",
+    "batchId": "targets-2026-07-12",
+    "minQty": 2,
+    "source": "standard_policy_v2",
+    "target": 3
+   },
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1782726989989/L",
+   "current": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:09:02.459Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": null,
+   "action": "remove"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1782726989989/L",
+   "current": {
+    "approvedAt": "2026-07-12T18:40:08.247Z",
+    "approvedBy": "seed-script",
+    "batchId": "retarget-2026-07-13",
+    "minQty": 25,
+    "prevRow": {
+     "approvedAt": "2026-07-12T18:40:08.247Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 1,
+     "source": "standard_policy_v3",
+     "target": 2,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    },
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:09:04.364Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50,
+    "updatedAt": "2026-07-13T18:42:29.259Z",
+    "updatedBy": "retarget-script"
+   },
+   "restored": {
+    "approvedAt": "2026-07-12T18:40:08.247Z",
+    "approvedBy": "seed-script",
+    "batchId": "retarget-2026-07-13",
+    "minQty": 1,
+    "source": "standard_policy_v3",
+    "target": 2,
+    "updatedAt": "2026-07-13T18:42:29.259Z",
+    "updatedBy": "retarget-script"
+   },
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791888755311/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T18:57:51.572Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791888755311/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T18:58:02.229Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791888755311/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T18:58:15.459Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791889951053/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T18:58:41.766Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791889951053/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T18:59:01.979Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791889951053/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T18:59:20.121Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791886113857/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:00:13.951Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791886113857/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:01:19.446Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791886113857/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:01:33.226Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791884333181/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:01:58.121Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791884333181/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:02:16.439Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791884333181/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:02:28.458Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791888294603/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:02:55.738Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791888294603/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:03:06.239Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791888294603/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:03:23.078Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791885721460/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:03:55.442Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791885721460/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:04:06.238Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791885721460/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:04:16.821Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791884222521/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:05:09.544Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791884222521/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:05:24.282Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791884222521/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:05:34.373Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791886235808/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:06:05.174Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791886235808/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:06:16.186Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791886235808/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:06:28.708Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1782727067661/L",
+   "current": {
+    "approvedAt": "2026-07-12T18:40:08.244Z",
+    "approvedBy": "seed-script",
+    "batchId": "retarget-2026-07-13",
+    "minQty": 25,
+    "prevRow": {
+     "approvedAt": "2026-07-12T18:40:08.244Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 1,
+     "source": "standard_policy_v3",
+     "target": 2,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    },
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:09:55.881Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50,
+    "updatedAt": "2026-07-13T18:42:29.259Z",
+    "updatedBy": "retarget-script"
+   },
+   "restored": {
+    "approvedAt": "2026-07-12T18:40:08.244Z",
+    "approvedBy": "seed-script",
+    "batchId": "retarget-2026-07-13",
+    "minQty": 3,
+    "prevRow": {
+     "approvedAt": "2026-07-12T18:40:08.244Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 1,
+     "source": "standard_policy_v3",
+     "target": 2,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    },
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:07:37.866Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5,
+    "updatedAt": "2026-07-13T18:42:29.259Z",
+    "updatedBy": "retarget-script"
+   },
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1782727067661/L",
+   "current": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:09:57.916Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:08:15.876Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791885927781/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:08:49.762Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791885927781/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:09:11.401Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791885927781/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:09:24.303Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791891476692/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:09:59.793Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791891476692/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:10:13.662Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791891476692/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:10:31.208Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791884019159/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:11:01.016Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791884019159/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:11:16.668Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791884019159/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:11:31.210Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791890345915/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:12:06.174Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791890345915/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:12:17.449Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791890345915/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:12:34.403Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1782726941853/L",
+   "current": {
+    "approvedAt": "2026-09-29T14:19:22.672Z",
+    "approvedBy": "introduce-existing",
+    "batchId": "introduce-existing-2026-09-29",
+    "minQty": 25,
+    "prevRow": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 1,
+     "source": "standard_policy_migration",
+     "target": 2
+    },
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:10:25.090Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": {
+    "approvedAt": "2026-09-29T14:19:22.672Z",
+    "approvedBy": "introduce-existing",
+    "batchId": "introduce-existing-2026-09-29",
+    "minQty": 3,
+    "prevRow": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 1,
+     "source": "standard_policy_migration",
+     "target": 2
+    },
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:17:38.580Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1782726941853/L",
+   "current": {
+    "approvedAt": "2026-09-29T14:19:22.672Z",
+    "approvedBy": "introduce-existing",
+    "batchId": "introduce-existing-2026-09-29",
+    "minQty": 25,
+    "prevRow": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 1,
+     "source": "standard_policy_migration",
+     "target": 2
+    },
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:10:27.102Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": {
+    "approvedAt": "2026-09-29T14:19:22.672Z",
+    "approvedBy": "introduce-existing",
+    "batchId": "introduce-existing-2026-09-29",
+    "minQty": 5,
+    "prevRow": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 1,
+     "source": "standard_policy_migration",
+     "target": 2
+    },
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:17:56.519Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791886497941/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:18:31.367Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791886497941/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:18:42.038Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791886497941/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:18:53.918Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791883636340/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:19:22.716Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791883636340/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:19:31.798Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791883636340/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:19:44.662Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791884764527/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:20:26.768Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791884764527/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:20:39.296Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791884764527/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:20:52.318Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791883502646/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:21:23.015Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791883502646/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:21:34.385Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791883502646/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:21:47.508Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791887150502/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:22:14.157Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791887150502/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:22:23.317Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791887150502/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:22:37.208Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791884636653/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:23:03.851Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791884636653/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:23:12.467Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791884636653/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:23:23.172Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791884531085/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:23:44.549Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791884531085/_",
+   "current": null,
+   "restored": {
+    "minQty": 3,
+    "prevAbsent": true,
+    "reorderPoint": 2,
+    "setAt": "2026-10-13T19:23:59.920Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 5
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791884531085/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:24:11.010Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791887358177/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:24:31.855Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1791887358177/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:24:51.397Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1782727152355/L",
+   "current": {
+    "approvedAt": "2026-07-12T18:40:08.246Z",
+    "approvedBy": "seed-script",
+    "batchId": "targets-2026-07-12",
+    "minQty": 25,
+    "prevRow": {
+     "approvedAt": "2026-07-12T18:40:08.246Z",
+     "approvedBy": "seed-script",
+     "batchId": "targets-2026-07-12",
+     "minQty": 2,
+     "source": "standard_policy_v2",
+     "target": 3
+    },
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:11:16.715Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": {
+    "approvedAt": "2026-07-12T18:40:08.246Z",
+    "approvedBy": "seed-script",
+    "batchId": "targets-2026-07-12",
+    "minQty": 2,
+    "source": "standard_policy_v2",
+    "target": 3
+   },
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1782727152355/L",
+   "current": {
+    "approvedAt": "2026-07-12T18:40:08.246Z",
+    "approvedBy": "seed-script",
+    "batchId": "retarget-2026-07-13",
+    "minQty": 25,
+    "prevRow": {
+     "approvedAt": "2026-07-12T18:40:08.246Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 1,
+     "source": "standard_policy_v3",
+     "target": 2,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    },
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:11:18.589Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50,
+    "updatedAt": "2026-07-13T18:42:29.259Z",
+    "updatedBy": "retarget-script"
+   },
+   "restored": {
+    "approvedAt": "2026-07-12T18:40:08.246Z",
+    "approvedBy": "seed-script",
+    "batchId": "retarget-2026-07-13",
+    "minQty": 1,
+    "source": "standard_policy_v3",
+    "target": 2,
+    "updatedAt": "2026-07-13T18:42:29.259Z",
+    "updatedBy": "retarget-script"
+   },
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1782727235670/3",
+   "current": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:11:20.499Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": null,
+   "action": "remove"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1782727235670/3",
+   "current": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:11:22.872Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": null,
+   "action": "remove"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/trophy/p1782727235670/3",
+   "current": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:11:24.958Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": null,
+   "action": "remove"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1782727193104/L",
+   "current": {
+    "approvedAt": "2026-07-12T18:40:08.241Z",
+    "approvedBy": "seed-script",
+    "batchId": "retarget-2026-07-13",
+    "minQty": 25,
+    "prevRow": {
+     "approvedAt": "2026-07-12T18:40:08.241Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 1,
+     "source": "standard_policy_v3",
+     "target": 2,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    },
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:11:26.798Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50,
+    "updatedAt": "2026-07-13T18:42:29.259Z",
+    "updatedBy": "retarget-script"
+   },
+   "restored": {
+    "approvedAt": "2026-07-12T18:40:08.241Z",
+    "approvedBy": "seed-script",
+    "batchId": "retarget-2026-07-13",
+    "minQty": 5,
+    "prevRow": {
+     "approvedAt": "2026-07-12T18:40:08.241Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 1,
+     "source": "standard_policy_v3",
+     "target": 2,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    },
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:26:58.601Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10,
+    "updatedAt": "2026-07-13T18:42:29.259Z",
+    "updatedBy": "retarget-script"
+   },
+   "action": "restore"
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/hub2/p1791896283311/_",
+   "current": null,
+   "restored": {
+    "minQty": 25,
+    "prevAbsent": true,
+    "reorderPoint": 10,
+    "setAt": "2026-10-13T19:28:26.128Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 50
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1791896283311/_",
+   "current": null,
+   "restored": {
+    "minQty": 5,
+    "prevAbsent": true,
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:28:39.857Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore",
+   "cellCurrentlyEmpty": true
+  },
+  {
+   "step": "rows",
+   "path": "stock_targets/marathon-pe/p1782727110237/L",
+   "current": {
+    "approvedAt": "2026-09-29T14:19:22.672Z",
+    "approvedBy": "introduce-existing",
+    "batchId": "introduce-existing-2026-09-29",
+    "minQty": 25,
+    "prevRow": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 1,
+     "source": "standard_policy_migration",
+     "target": 2
+    },
+    "reorderPoint": 10,
+    "setAt": "2026-10-16T17:11:32.672Z",
+    "setBy": "paper-bag-policy-runner",
+    "source": "policy_target",
+    "target": 50
+   },
+   "restored": {
+    "approvedAt": "2026-09-29T14:19:22.672Z",
+    "approvedBy": "introduce-existing",
+    "batchId": "introduce-existing-2026-09-29",
+    "minQty": 5,
+    "prevRow": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 1,
+     "source": "standard_policy_migration",
+     "target": 2
+    },
+    "reorderPoint": 5,
+    "setAt": "2026-10-13T19:30:17.313Z",
+    "setBy": "mc@marathon.internal",
+    "source": "policy_target",
+    "target": 10
+   },
+   "action": "restore"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvBkQo80hRPDHfKC",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-14",
+   "lockPath": "refill_engine/open/marathon-pe/p1791885011582/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvB73Cv_tDwBG8Oq",
+   "current": {
+    "status": "open",
+    "qty": 46,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-11",
+   "lockPath": "refill_engine/open/marathon-pe/p1791884333181/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvCTgoofBq999A6q",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-18",
+   "lockPath": "refill_engine/open/marathon-pe/p1791888294603/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvARgr0bv6-AzvfN",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-10",
+   "lockPath": "refill_engine/open/marathon-pe/p1791884222521/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvBsB1ocEuLOp2B2",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-15",
+   "lockPath": "refill_engine/open/marathon-pe/p1791886235808/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvDWKEeGQhH6eHdY",
+   "current": {
+    "status": "open",
+    "qty": 47,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-23",
+   "lockPath": "refill_engine/open/marathon-pe/p1791891476692/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvA8G15d_ZWOv9xU",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-9",
+   "lockPath": "refill_engine/open/marathon-pe/p1791884019159/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvD4MIptzKXzcn5u",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-21",
+   "lockPath": "refill_engine/open/marathon-pe/p1791890345915/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47Dv8F3WSzuWTTdSDg",
+   "current": {
+    "status": "open",
+    "qty": 47,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-1",
+   "lockPath": "refill_engine/open/marathon-pe/p1782726941853/L"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvC1hpT84aG4yh9d",
+   "current": {
+    "status": "open",
+    "qty": 48,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-16",
+   "lockPath": "refill_engine/open/marathon-pe/p1791886497941/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47Dv9wcn6w3doqUlkT",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-8",
+   "lockPath": "refill_engine/open/marathon-pe/p1791883636340/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47Dv9hZnZBPGxgjZVT",
+   "current": {
+    "status": "open",
+    "qty": 47,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-7",
+   "lockPath": "refill_engine/open/marathon-pe/p1791883502646/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvBXdPaVIBLBXclL",
+   "current": {
+    "status": "open",
+    "qty": 49,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-13",
+   "lockPath": "refill_engine/open/marathon-pe/p1791884636653/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvBKcA_u9BmHgTHz",
+   "current": {
+    "status": "open",
+    "qty": 46,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-12",
+   "lockPath": "refill_engine/open/marathon-pe/p1791884531085/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvCEAzcHg8j2yIRT",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-17",
+   "lockPath": "refill_engine/open/marathon-pe/p1791887358177/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47Dv9HTSVEh2hbQ-iE",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-5",
+   "lockPath": "refill_engine/open/marathon-pe/p1791882788043/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvDIcqfnk7Bu0Sla",
+   "current": {
+    "status": "open",
+    "qty": 46,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-22",
+   "lockPath": "refill_engine/open/marathon-pe/p1791891317996/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvCcW08Z2NgS9Ukt",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-19",
+   "lockPath": "refill_engine/open/marathon-pe/p1791888468984/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P484vI8v-HYEaGzjtRv",
+   "current": {
+    "status": "open",
+    "qty": 5,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T09:00:41.824Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R006-5",
+   "lockPath": "refill_engine/open/marathon-pe/p1782727110237/L"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47Dv9SeOdPFULBImtj",
+   "current": {
+    "status": "open",
+    "qty": 45,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-6",
+   "lockPath": "refill_engine/open/marathon-pe/p1791883316473/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvCrx_UKC8Vv1JBE",
+   "current": {
+    "status": "open",
+    "qty": 46,
+    "dest": "marathon-pe",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R001-20",
+   "lockPath": "refill_engine/open/marathon-pe/p1791890124685/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvF216kqb5xA-Le6",
+   "current": {
+    "status": "open",
+    "qty": 48,
+    "dest": "trophy",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R002-6",
+   "lockPath": "refill_engine/open/trophy/p1791971463851/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvEGnyl5w-uO1jn5",
+   "current": {
+    "status": "open",
+    "qty": 50,
+    "dest": "trophy",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R002-2",
+   "lockPath": "refill_engine/open/trophy/p1791885927781/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvEfTthqowSsqerU",
+   "current": {
+    "status": "open",
+    "qty": 50,
+    "dest": "trophy",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R002-4",
+   "lockPath": "refill_engine/open/trophy/p1791887150502/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvDuboNwuQVCFySI",
+   "current": {
+    "status": "open",
+    "qty": 44,
+    "dest": "trophy",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R002-1",
+   "lockPath": "refill_engine/open/trophy/p1791882981980/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvEqxJiN5PpIySqK",
+   "current": {
+    "status": "open",
+    "qty": 44,
+    "dest": "trophy",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R002-5",
+   "lockPath": "refill_engine/open/trophy/p1791887272674/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P499U8eG-loSIxPYbjL",
+   "current": {
+    "status": "open",
+    "qty": 50,
+    "dest": "trophy",
+    "source": "hub2",
+    "createdAt": "2026-10-17T14:00:11.256Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R017-11",
+   "lockPath": "refill_engine/open/trophy/p1792153215900/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvEU0lw_PUxzf7fi",
+   "current": {
+    "status": "open",
+    "qty": 49,
+    "dest": "trophy",
+    "source": "hub2",
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R002-3",
+   "lockPath": "refill_engine/open/trophy/p1791887047151/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P499U8TugS2So8068Q3",
+   "current": {
+    "status": "open",
+    "qty": 41,
+    "dest": "trophy",
+    "source": "hub2",
+    "createdAt": "2026-10-17T14:00:11.256Z"
+   },
+   "restored": {
+    "status": "cancelled",
+    "cancelReason": "paper_bag_policy_revert"
+   },
+   "action": "cancel",
+   "orderId": "R017-10",
+   "lockPath": "refill_engine/open/trophy/p1791883316473/_"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvGl_MeQDQRsu6XD",
+   "current": {
+    "status": "open",
+    "qty": 8,
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": null,
+   "action": "left",
+   "why": "partly sent (42)"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvHp0AUQE0K1ucDc",
+   "current": {
+    "status": "open",
+    "qty": 47,
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": null,
+   "action": "left",
+   "why": "partly sent (3)"
+  },
+  {
+   "step": "cancel",
+   "path": "refill_requests/-P47DvFpN6ER3ClOwlY4",
+   "current": {
+    "status": "open",
+    "qty": 35,
+    "createdAt": "2026-10-17T05:00:23.646Z"
+   },
+   "restored": null,
+   "action": "left",
+   "why": "partly sent (11)"
+  },
+  {
+   "step": "taxonomy",
+   "path": "settings/productTaxonomy/cats/paper-bags",
+   "current": {
+    "active": true,
+    "flags": {
+     "displayChecks": "unset",
+     "oneSize": "unset",
+     "refillManaged": "unset"
+    },
+    "key": "paper-bags",
+    "label": "Paper Bags",
+    "legacy": {
+     "category": "Accessories",
+     "productType": "clothing",
+     "subcategory": "Bags"
+    },
+    "order": 36,
+    "sizeMode": "one",
+    "sizes": [
+     "_"
+    ],
+    "top": "clothing"
+   },
+   "restored": null,
+   "action": "remove"
+  }
+ ],
+ "leftAlone": [
+  {
+   "dest": "hub2",
+   "pid": "p1792151841872",
+   "sizeKey": "_",
+   "name": "Paper bag Gucci green large",
+   "refillId": "-P47DvGl_MeQDQRsu6XD",
+   "orderId": null,
+   "source": "central",
+   "qty": 8,
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "onHand": 42,
+   "runId": "2026-10-17T05-00",
+   "why": "partly sent (42)"
+  },
+  {
+   "dest": "hub2",
+   "pid": "p1792153720360",
+   "sizeKey": "_",
+   "name": "Paper bag LOUIS VUITTON orange large",
+   "refillId": "-P47DvHp0AUQE0K1ucDc",
+   "orderId": null,
+   "source": "central",
+   "qty": 47,
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "onHand": 3,
+   "runId": "2026-10-17T05-00",
+   "why": "partly sent (3)"
+  },
+  {
+   "dest": "hub2",
+   "pid": "p1791888468984",
+   "sizeKey": "_",
+   "name": "Prada paperbag ( small size)",
+   "refillId": "-P47DvFpN6ER3ClOwlY4",
+   "orderId": null,
+   "source": "central",
+   "qty": 35,
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "onHand": 15,
+   "runId": "2026-10-17T05-00",
+   "why": "partly sent (11)"
+  }
+ ],
+ "model": {
+  "ceiling": true,
+  "requests": 28,
+  "units": 102,
+  "rows": [
+   {
+    "pid": "p1791971463851",
+    "name": "Alexander McQueen paperbag (small size)",
+    "central": "17",
+    "hub2": "22",
+    "pe": "–",
+    "trophy": "2",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791889079314",
+    "name": "Amiri paperbag",
+    "central": "–",
+    "hub2": "0",
+    "pe": "1",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791885011582",
+    "name": "Armani exchange paper bag (big size)",
+    "central": "347",
+    "hub2": "20",
+    "pe": "5",
+    "trophy": "4",
+    "next": [
+     "trophy ← hub2 x6"
+    ]
+   },
+   {
+    "pid": "p1782726989989",
+    "name": "Armani paperbag ",
+    "central": "–",
+    "hub2": "–",
+    "pe": "L:0",
+    "trophy": "L:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791888755311",
+    "name": "Balenciaga paperbag ( small size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791889951053",
+    "name": "Boss paperbag  ( small size)",
+    "central": "409",
+    "hub2": "23",
+    "pe": "16",
+    "trophy": "13",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791886113857",
+    "name": "Boss paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791884333181",
+    "name": "Bottega veneta paperbag",
+    "central": "24",
+    "hub2": "13",
+    "pe": "4",
+    "trophy": "4",
+    "next": [
+     "trophy ← hub2 x6"
+    ]
+   },
+   {
+    "pid": "p1791888294603",
+    "name": "Brunello cucinelli paperbag ( small size)",
+    "central": "0",
+    "hub2": "6",
+    "pe": "5",
+    "trophy": "20",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791885721460",
+    "name": "Burberry paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "1",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791884222521",
+    "name": "Christian louboutin paperbag",
+    "central": "34",
+    "hub2": "20",
+    "pe": "5",
+    "trophy": "21",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791886235808",
+    "name": "D&G paperbag ( big size)",
+    "central": "165",
+    "hub2": "26",
+    "pe": "5",
+    "trophy": "10",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1782727067661",
+    "name": "Diesel paperbag ",
+    "central": "–",
+    "hub2": "–",
+    "pe": "L:0",
+    "trophy": "L:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791885927781",
+    "name": "Diesel paperbag (big size)",
+    "central": "13",
+    "hub2": "20",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "marathon-pe ← hub2 x5",
+     "trophy ← hub2 x10"
+    ]
+   },
+   {
+    "pid": "p1791891476692",
+    "name": "Dior paperbag",
+    "central": "62",
+    "hub2": "20",
+    "pe": "3",
+    "trophy": "4",
+    "next": [
+     "trophy ← hub2 x6"
+    ]
+   },
+   {
+    "pid": "p1791973701920",
+    "name": "Dior paperbag ( big size)",
+    "central": "–",
+    "hub2": "4",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1791884019159",
+    "name": "Dior paperbag (big size)",
+    "central": "17",
+    "hub2": "21",
+    "pe": "5",
+    "trophy": "13",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791890345915",
+    "name": "Dior paperbag (small size)",
+    "central": "4",
+    "hub2": "21",
+    "pe": "5",
+    "trophy": "7",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1782726941853",
+    "name": "Giorgio armani paperbag",
+    "central": "L:114",
+    "hub2": "L:22",
+    "pe": "L:3",
+    "trophy": "L:27",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791886497941",
+    "name": "Giuseppe zanotti paperbag",
+    "central": "0",
+    "hub2": "13",
+    "pe": "2",
+    "trophy": "1",
+    "next": [
+     "marathon-pe ← hub2 x3",
+     "trophy ← hub2 x9"
+    ]
+   },
+   {
+    "pid": "p1791883636340",
+    "name": "Givenchy paperbag",
+    "central": "7",
+    "hub2": "21",
+    "pe": "5",
+    "trophy": "23",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791884764527",
+    "name": "Gucci paperbag green ( big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "5",
+    "trophy": "27",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791883502646",
+    "name": "Gucci paperbag green (medium size)",
+    "central": "0",
+    "hub2": "5",
+    "pe": "3",
+    "trophy": "1",
+    "next": [
+     "trophy ← hub2 x5"
+    ]
+   },
+   {
+    "pid": "p1791887150502",
+    "name": "Gucci paperbag green (small size)",
+    "central": "38",
+    "hub2": "20",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "marathon-pe ← hub2 x5",
+     "trophy ← hub2 x10"
+    ]
+   },
+   {
+    "pid": "p1791884636653",
+    "name": "Gucci paperbag maroon (big size)",
+    "central": "0",
+    "hub2": "1",
+    "pe": "1",
+    "trophy": "0",
+    "next": [
+     "marathon-pe ← hub2 x1"
+    ]
+   },
+   {
+    "pid": "p1791884531085",
+    "name": "Gucci paperbag maroon (small size)",
+    "central": "47",
+    "hub2": "20",
+    "pe": "4",
+    "trophy": "4",
+    "next": [
+     "trophy ← hub2 x6"
+    ]
+   },
+   {
+    "pid": "p1791887358177",
+    "name": "Hermes paperbag",
+    "central": "–",
+    "hub2": "1",
+    "pe": "5",
+    "trophy": "6",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1782727152355",
+    "name": "Jordan paperbag",
+    "central": "L:233",
+    "hub2": "L:598",
+    "pe": "L:48",
+    "trophy": "–",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791882788043",
+    "name": "Karl lagerfeld paperbag (medium size)",
+    "central": "906",
+    "hub2": "46",
+    "pe": "5",
+    "trophy": "20",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791882981980",
+    "name": "Karl lagerfeld paperbag (small size)",
+    "central": "10",
+    "hub2": "50",
+    "pe": "–",
+    "trophy": "6",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1782727235670",
+    "name": "Karl paper bag ",
+    "central": "–",
+    "hub2": "–",
+    "pe": "3:0",
+    "trophy": "3:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791891317996",
+    "name": "Lacoste paperbag ( small size)",
+    "central": "0",
+    "hub2": "5",
+    "pe": "4",
+    "trophy": "19",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791885266632",
+    "name": "Louis Vuitton paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "3",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791887272674",
+    "name": "Louis Vuitton paperbag (small size)",
+    "central": "0",
+    "hub2": "1",
+    "pe": "–",
+    "trophy": "6",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1782727193104",
+    "name": "Nike paperbag",
+    "central": "L:271",
+    "hub2": "L:227",
+    "pe": "L:46",
+    "trophy": "L:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791896283311",
+    "name": "Nike paperbag white",
+    "central": "201",
+    "hub2": "365",
+    "pe": "50",
+    "trophy": "–",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1792151476022",
+    "name": "Paper bag black Dolce GABBANA small",
+    "central": "0",
+    "hub2": "9",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792153215900",
+    "name": "Paper bag boss white medium",
+    "central": "79",
+    "hub2": "50",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792153817693",
+    "name": "Paper bag DIOR white large",
+    "central": "0",
+    "hub2": "2",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792152223010",
+    "name": "Paper bag DIOR white medium",
+    "central": "0",
+    "hub2": "35",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792152075007",
+    "name": "Paper bag DSQUARED2 black  small",
+    "central": "0",
+    "hub2": "16",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792151841872",
+    "name": "Paper bag Gucci green large",
+    "central": "0",
+    "hub2": "42",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792151678286",
+    "name": "Paper bag Gucci green M",
+    "central": "0",
+    "hub2": "10",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792151052119",
+    "name": "Paper bag Karl white large",
+    "central": "0",
+    "hub2": "2",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792152599905",
+    "name": "Paper bag Loro piana brown",
+    "central": "103",
+    "hub2": "50",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792153720360",
+    "name": "Paper bag LOUIS VUITTON orange large",
+    "central": "0",
+    "hub2": "3",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792154053817",
+    "name": "Paper bag MICHAEL KORS large yellow",
+    "central": "0",
+    "hub2": "1",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x1"
+    ]
+   },
+   {
+    "pid": "p1792154137342",
+    "name": "Paper bag MICHAEL KORS small yellow",
+    "central": "0",
+    "hub2": "1",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x1"
+    ]
+   },
+   {
+    "pid": "p1792153513242",
+    "name": "Paper bag omega red small",
+    "central": "0",
+    "hub2": "3",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792153442416",
+    "name": "Paper bag TAGHEUER BLACK Small",
+    "central": "0",
+    "hub2": "10",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1792151189805",
+    "name": "Paper bag white boss large",
+    "central": "0",
+    "hub2": "9",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "trophy ← hub2 x2"
+    ]
+   },
+   {
+    "pid": "p1791887047151",
+    "name": "Philip plein paperbag black (small size)",
+    "central": "147",
+    "hub2": "50",
+    "pe": "–",
+    "trophy": "1",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791885522695",
+    "name": "Phillip plain paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791891084499",
+    "name": "Prada paperbag ( medium size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "5",
+    "trophy": "25",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791888468984",
+    "name": "Prada paperbag ( small size)",
+    "central": "0",
+    "hub2": "15",
+    "pe": "5",
+    "trophy": "9",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1782727110237",
+    "name": "Timberland paperbag",
+    "central": "L:184",
+    "hub2": "L:50",
+    "pe": "L:45",
+    "trophy": "L:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791883316473",
+    "name": "Valentino paperbag (medium size)",
+    "central": "54",
+    "hub2": "50",
+    "pe": "5",
+    "trophy": "9",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791890124685",
+    "name": "Versace paperbag ( small size)",
+    "central": "0",
+    "hub2": "1",
+    "pe": "4",
+    "trophy": "4",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791886012494",
+    "name": "Versace paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "2",
+    "next": [
+     "nothing"
+    ]
+   }
+  ]
+ }
+}
