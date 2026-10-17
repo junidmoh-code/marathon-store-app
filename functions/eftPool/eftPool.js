@@ -56,6 +56,16 @@
 //                   with no bank id is refused unless the owner released it.
 //                   The settle transaction re-derives the fingerprint from the
 //                   value it commits.
+//   eftEnforcementStatus  ENFORCEMENT (Junid, 17 Oct 2026). At an ENFORCED
+//                   store — Trophy and Marathon PE by default — the till closes
+//                   its "EFT without matching" path: an EFT sale must consume a
+//                   confirmed pool payment through the settle above. The set is
+//                   the /eft_enforcement node (lib/eft-enforce.cjs), read here
+//                   for the till (any active POS identity) and WRITTEN here by
+//                   the owner alone ("set") — no deploy to add or remove a
+//                   store. eftRemainderScan walks new sales and flags any EFT
+//                   leg with no pool key at an enforced store
+//                   (/eft_enforcement_breaches, EFT_ENFORCEMENT_BREACH).
 //   eftPoolReverse  owner-only: unwind a completed settlement. Both records
 //                   survive — the settlement moves to `reversals` on the pool
 //                   record; the sale at /pos/sales is not touched. An issued
@@ -73,7 +83,7 @@
 //
 // DEPLOY BY NAME (functions/ is shared with marathon-pos-app — a bare
 // --only functions would redeploy every function in the project):
-//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan
+//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus
 
 "use strict";
 
@@ -96,6 +106,10 @@ const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
   ledgerApplyDecision, buildUnallocatedRecord,
 } = require("../lib/eft-credit.cjs");
+const {
+  EFT_ENFORCEMENT_PATH, EFT_BREACH_PATH, EFT_ENFORCEMENT_SCAN_PATH, BREACH_SCAN_PAGE, BREACH_SCAN_WINDOW_MS,
+  enforcedStoresOf, enforcementUpdateOf, enforcementStatusOf, enforcementBreachOf, breachScanNext,
+} = require("../lib/eft-enforce.cjs");
 const { issuingStamp } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 
@@ -661,6 +675,28 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   return { ok: true, already: decision.already === true, remainder };
 });
 
+// ─── ENFORCEMENT — which stores must match every EFT sale ────────────────────
+// Read: any active POS identity (the till asks on the payment screen and
+// caches the answer; with no answer it falls back to the built-in default,
+// never to "not enforced"). Write ("set"): the OWNER ALONE — a cashier must
+// not be able to take their own store off the list.
+exports.eftEnforcementStatus = onCall(RUNTIME, async (request) => {
+  await assertPosIdentity(request);
+  const data = request.data ?? {};
+  const db = admin.database();
+  if (data.action === "set") {
+    if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid can change which stores enforce EFT matching.");
+    const update = enforcementUpdateOf(data, { at: Date.now(), by: ADMIN_EMAIL });
+    if (!update.ok) throw new HttpsError("invalid-argument", update.message, { code: update.code });
+    await db.ref(EFT_ENFORCEMENT_PATH).set(update.value);
+    console.log(`EFT_ENFORCEMENT_SET: ${JSON.stringify(update.value.stores)} by owner`);
+    return { ok: true, ...enforcementStatusOf(update.value, null) };
+  }
+  const node = (await db.ref(EFT_ENFORCEMENT_PATH).once("value")).val();
+  const storeId = typeof data.storeId === "string" ? data.storeId.slice(0, 40) : null;
+  return { ok: true, ...enforcementStatusOf(node, storeId) };
+});
+
 // ─── REVERSE — the owner alone ───────────────────────────────────────────────
 exports.eftPoolReverse = onCall(RUNTIME, async (request) => {
   if (!isOwner(request)) {
@@ -798,6 +834,36 @@ exports.eftRemainderScan = onSchedule(
         console.error(`EFT_SALE_CHECK_STUCK: ${key} could not be checked —`, err?.message || err);
       }
     }
-    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged, backfilled }));
+    // ENFORCEMENT BREACHES: new regular sales at an enforced store whose EFT
+    // leg names no pool payment — a till that let the plain path through. A
+    // bounded indexed page (createdAt is indexed on /pos/sales), a sliding
+    // two-hour window, an idempotent record per sale; never the node.
+    let breaches = 0;
+    try {
+      const [enfSnap, stateSnap] = await Promise.all([
+        db.ref(EFT_ENFORCEMENT_PATH).once("value"),
+        db.ref(EFT_ENFORCEMENT_SCAN_PATH).once("value"),
+      ]);
+      const enforced = enforcedStoresOf(enfSnap.val());
+      const state = stateSnap.val() || {};
+      const from = Number.isInteger(state.sinceMs) ? state.sinceMs : now - BREACH_SCAN_WINDOW_MS;
+      const snap = await db.ref("pos/sales").orderByChild("createdAt").startAt(from).limitToFirst(BREACH_SCAN_PAGE).once("value");
+      const page = snap.val() || {};
+      let maxSeen = null, count = 0;
+      for (const [saleId, sale] of Object.entries(page)) {
+        count++;
+        if (Number.isInteger(sale?.createdAt) && (maxSeen === null || sale.createdAt > maxSeen)) maxSeen = sale.createdAt;
+        if (!/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) continue;
+        const breach = enforcementBreachOf(saleId, sale, enforced);
+        if (!breach) continue;
+        await db.ref(`${EFT_BREACH_PATH}/${saleId}`).set({ ...breach, flaggedAt: now });
+        breaches++;
+        console.error(`EFT_ENFORCEMENT_BREACH: sale ${saleId} (${breach.receiptNumber ?? "no slip"}) at ${breach.storeId}/${breach.tillId ?? "?"} by ${breach.cashierName ?? "?"} — ${breach.eftCents}c of EFT with no pool payment`);
+      }
+      await db.ref(EFT_ENFORCEMENT_SCAN_PATH).set(breachScanNext({ state: { sinceMs: from }, now, maxSeen, full: count >= BREACH_SCAN_PAGE }));
+    } catch (err) {
+      console.error("EFT_ENFORCEMENT_SCAN_STUCK:", err?.message || err);
+    }
+    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged, backfilled, breaches }));
   },
 );
