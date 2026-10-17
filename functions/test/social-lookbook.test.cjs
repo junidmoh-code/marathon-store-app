@@ -250,6 +250,15 @@ describe("loadLookbookCandidates — reads only what it needs, by pid", () => {
     assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "jacket", "tee", "bottoms", "sneakers"]);
   });
 
+  test("a slot whose newest reads are all out of stock gets a second round", async () => {
+    const db = seed();
+    // s2 is the newest sneaker and is out of stock; with one read per slot the
+    // first round finds no sneaker and the second must read s1.
+    db.root.shopify_publish.s2.liveAt = NOW;
+    const { candidates } = await loadLookbookCandidates(db, { nowMs: NOW, readsPerSlot: 1 });
+    assert.ok(candidates.some((c) => c.pid === "s1"));
+  });
+
   test("no whole-node read of /products or /stock, and the live read is the indexed query", async () => {
     const db = seed();
     await loadLookbookCandidates(db, { nowMs: NOW });
