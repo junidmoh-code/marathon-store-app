@@ -30,7 +30,8 @@ vi.mock("firebase/auth", () => ({
 }));
 vi.mock("firebase/database", () => ({
   ref: (db, path) => ({ path }),
-  onValue: () => () => {},
+  // The person's own record answers (the gate starts the mirror only after it).
+  onValue: (r, cb) => { if (String(r.path).startsWith("users/")) cb({ val: () => ({}) }); return () => {}; },
 }));
 vi.mock("../../firebase", () => ({ database: {}, auth: {}, storage: {} }));
 

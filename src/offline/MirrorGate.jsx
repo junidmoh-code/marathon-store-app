@@ -42,6 +42,9 @@ import { setOfflineMirrorRuntime } from "./mirrorRuntime";
 // without being asked. The download still runs BEHIND the working app, still
 // only after sign-in, still only while the switch is on — the switch is the
 // consent now, and turning it off still stops every device within a second.
+// The longest the mirror waits for the person's own record before starting anyway.
+export const PROFILE_WAIT_MS = 20000;
+
 const autoConsent = (rt) => rt.consentAndDownload().catch((err) => {
   console.warn("offline mirror: could not start the download —", err);
 });
@@ -94,18 +97,41 @@ export function MirrorGate({ auth, storage, children }) {
   // So the app mounts underneath and the setup screen is an OVERLAY on top of
   // it, shown only once there is a user whose credentials the download can
   // actually use. Blocking is what the overlay does, not what this gate does.
+  //
+  // AND NOT BEFORE THE PERSON'S OWN RECORD HAS ARRIVED (Junid, 17 Oct 2026:
+  // "it takes forever to open"). The download is ~6 MB and shares one
+  // connection with everything else: started at sign-in, it sat in front of
+  // the 1 KB /users/{uid} read that AuthGate holds the home screen on, so on a
+  // shop phone the home screen took ~50 s. So "signed in" here means signed in
+  // AND that record answered (or PROFILE_WAIT_MS passed, so the mirror is never
+  // held for good). The listen is the same query AuthGate already has open, so
+  // it costs nothing extra.
   useEffect(() => {
     if (!auth) return undefined;
     let cancelled = false;
     let unsub = null;
+    let offProfile = null;
+    let timer = null;
+    const stopProfile = () => { if (offProfile) { offProfile(); offProfile = null; } clearTimeout(timer); timer = null; };
     (async () => {
       const { onAuthStateChanged } = await import("firebase/auth");
       if (cancelled) return;
-      unsub = onAuthStateChanged(auth, (user) => {
-        setSignedIn(!!user && user.isAnonymous !== true);
+      unsub = onAuthStateChanged(auth, async (user) => {
+        stopProfile();
+        if (!user || user.isAnonymous === true) { setSignedIn(false); return; }
+        let released = false;
+        const release = () => { if (released || cancelled) return; released = true; stopProfile(); setSignedIn(true); };
+        timer = setTimeout(release, PROFILE_WAIT_MS);
+        try {
+          const [{ ref, onValue }, { database }] = await Promise.all([import("firebase/database"), import("../firebase")]);
+          if (cancelled || released) return;
+          offProfile = onValue(ref(database, `users/${user.uid}`), release, release);
+        } catch {
+          release();
+        }
       });
     })();
-    return () => { cancelled = true; if (unsub) unsub(); };
+    return () => { cancelled = true; stopProfile(); if (unsub) unsub(); };
   }, [auth]);
 
   // ── THE FLEET SWITCH ──────────────────────────────────────────────────────
