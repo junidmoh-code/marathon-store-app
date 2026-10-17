@@ -115,6 +115,27 @@ describe("StockAuditView — a one-shop account (destShop) audits its own shop o
     expect(buttonWith(t, "Hub 2")).toBeTruthy();
   });
 
+  it("a grant landing mid-session moves the open screen onto the new shop at once (never reads or writes the old one)", async () => {
+    WRITES.length = 0;
+    let t;
+    act(() => { t = TestRenderer.create(<StockAuditView onExit={() => {}} products={PRODUCTS} myShop={null} />); });
+    tap(t, "Audit");
+    expect(text(t)).toContain("Nike Tee Black");            // PE's list, picked by default
+    SUBSCRIBED.length = 0;
+    act(() => { t.update(<StockAuditView onExit={() => {}} products={PRODUCTS} myShop="trophy" />); });
+    expect(buttonWith(t, "Marathon PE")).toBeUndefined();
+    expect(text(t)).not.toContain("Nike Tee Black");
+    expect(SUBSCRIBED.some((p) => p.includes("/marathon-pe/"))).toBe(false);
+    expect(SUBSCRIBED.some((p) => p.includes("/trophy/"))).toBe(true);
+    expect(WRITES.filter((w) => w[0] === "shop" && w[1] === "marathon-pe")).toEqual([]);
+  });
+
+  it("no audit shop: says so instead of loading forever", () => {
+    const t = mountFor("marathon-pine");
+    tap(t, "Audit");
+    expect(text(t)).toContain("There is no Audit list for your shop.");
+  });
+
   it("a shop that is not an audit shop gets no shop list at all, never the full one", () => {
     SUBSCRIBED.length = 0;
     const t = mountFor("marathon-pine");

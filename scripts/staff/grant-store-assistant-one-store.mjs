@@ -62,7 +62,9 @@ admin.initializeApp({
 });
 const db = admin.database();
 const fail = (m) => { console.error(`✗ ${m}`); process.exit(1); };
-const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+// RTDB hands objects back with their keys sorted, so compare key-sorted.
+const canon = (v) => (Array.isArray(v) ? v.map(canon) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v ?? null);
+const same = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
 const asList = (v) => (Array.isArray(v) ? v : v && typeof v === "object" ? Object.values(v) : []);
 
 const plan = [];

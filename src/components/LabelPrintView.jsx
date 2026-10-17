@@ -20,6 +20,7 @@ import { useLocations, useStockCells } from "./stock/useStock";
 import { sellableLocations, labelFor } from "./stock/locations";
 import { useWide } from "./stock/hooks";
 import { FONT } from "./stock/ui";
+import { withinScope } from "../utils/shopScope";
 
 const RANDS = (v) =>
   v == null || v === "" || isNaN(Number(v)) ? "" : `R${Number(v).toLocaleString("en-ZA")}`;
@@ -41,7 +42,8 @@ function Thumb({ p, size = 44, radius = 10 }) {
   return <div style={{ width: size, height: size, borderRadius: radius, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>{p?.photo || "👟"}</div>;
 }
 
-export default function LabelPrintView({ products = [], onExit }) {
+// myShop: the viewer's destShop. A one-shop account picks only its own shop.
+export default function LabelPrintView({ products = [], onExit, myShop = null }) {
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("all");            // category filter (Footwear / Accessories / …)
   const [store, setStore] = useState("all");        // store filter (Marathon PE / Trophy / …)
@@ -65,8 +67,10 @@ export default function LabelPrintView({ products = [], onExit }) {
   // Store picker — the sellable shops. A chosen store limits the grid to products
   // with stock recorded at that store. useStockCells("all") → {} (no such node).
   const registry = useLocations();
-  const stores = useMemo(() => sellableLocations(registry), [registry]);
-  const storeCells = useStockCells(store);
+  const stores = useMemo(() => withinScope(sellableLocations(registry), myShop), [registry, myShop]);
+  // A shop outside the viewer's scope is never read, whatever was picked.
+  const storeId = store === "all" || stores.some((s) => s.id === store) ? store : "all";
+  const storeCells = useStockCells(storeId);
 
   const shown = useMemo(() => {
     const predicate = (p) => {
@@ -75,14 +79,14 @@ export default function LabelPrintView({ products = [], onExit }) {
       // section, so a retired line is neither printable nor findable here.
       if (isDeactivated(p)) return false;
       if (cat !== "all" && p.category !== cat) return false;
-      if (store !== "all" && !storeCells[p.id]) return false;
+      if (storeId !== "all" && !storeCells[p.id]) return false;
       return true;
     };
     const base = query.trim() === ""
       ? (products || []).filter((p) => p && p.id && p.name && predicate(p))
       : searchProducts(products, query, { predicate, limit: 2000 });
     return [...base].sort(byName);
-  }, [products, query, cat, store, storeCells]);
+  }, [products, query, cat, storeId, storeCells]);
 
   // ── Cart (print queue) ─────────────────────────────────────────────────────
   const cartItems = useMemo(
@@ -155,8 +159,8 @@ export default function LabelPrintView({ products = [], onExit }) {
       {stores.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" }}>
           <span style={{ fontSize: 10, color: "rgba(233,238,255,.35)", textTransform: "uppercase", letterSpacing: ".08em", fontWeight: 700, marginRight: 2 }}>Store</span>
-          {[{ id: "all", label: "All stores" }, ...stores.map((s) => ({ id: s.id, label: labelFor(s.id, registry) }))].map((o) => (
-            <button key={o.id} onClick={() => setStore(o.id)} style={chip(store === o.id)}>{o.label}</button>
+          {[{ id: "all", label: myShop ? "All products" : "All stores" }, ...stores.map((s) => ({ id: s.id, label: labelFor(s.id, registry) }))].map((o) => (
+            <button key={o.id} onClick={() => setStore(o.id)} style={chip(storeId === o.id)}>{o.label}</button>
           ))}
         </div>
       )}
@@ -185,8 +189,8 @@ export default function LabelPrintView({ products = [], onExit }) {
     <div style={{ textAlign: "center", color: "rgba(255,255,255,.4)", fontSize: 14, padding: "48px 0" }}>
       {query.trim()
         ? `No products match “${query}”.`
-        : store !== "all"
-          ? `No ${cat !== "all" ? cat.toLowerCase() + " " : ""}products with stock at ${labelFor(store, registry)}.`
+        : storeId !== "all"
+          ? `No ${cat !== "all" ? cat.toLowerCase() + " " : ""}products with stock at ${labelFor(storeId, registry)}.`
           : cat !== "all" ? `No ${cat} products.` : "No products yet."}
     </div>
   ) : (

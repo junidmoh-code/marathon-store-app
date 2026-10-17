@@ -110,7 +110,11 @@ export default function StockAuditView({ onExit, products = [], myShop = null })
   const stores = auditStoresForViewer(AUDIT_STORES, myShop);
   const [tab, setTab] = useState("oos");
   const [hub, setHub] = useState(AUDIT_HUBS[0].id);
-  const [store, setStore] = useState(stores[0]?.id ?? null);
+  const [picked, setStore] = useState(stores[0]?.id ?? null);
+  // Derived, not frozen at mount: a grant that lands mid-session (AuthGate
+  // streams /users/{uid}) moves the screen onto the new shop at once, and a
+  // shop that is no longer in scope is never read or written.
+  const store = stores.some((s) => s.id === picked) ? picked : stores[0]?.id ?? null;
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState(null);
 
@@ -198,6 +202,12 @@ export default function StockAuditView({ onExit, products = [], myShop = null })
           {snap.settled && data ? `${rows.length}` : ""}
         </div>
       </div>
+
+      {!onHubs && !store && (
+        <div style={{ color: DIM, fontSize: 14, padding: "28px 0", textAlign: "center" }}>
+          There is no Audit list for your shop.
+        </div>
+      )}
 
       {/* The pass rides on refillHealthScan, which stands down entirely while
           the refill engine is off or Central is receiving — so a list can be

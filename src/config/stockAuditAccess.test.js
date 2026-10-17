@@ -71,3 +71,11 @@ describe("the Stock Audit route hands the screen the viewer's shop", () => {
     expect(src).toMatch(/const myShop = isSuperAdmin \? null : \(permRecord\?\.destShop \|\| null\);/);
   });
 });
+
+describe("the other tiles every account has get the viewer's shop too", () => {
+  it("App passes myShop to Barcodes and Print Labels", () => {
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    expect(src).toMatch(/<BarcodeCatalog products=\{products\} canMint=\{canMint\} myShop=\{myShop\}/);
+    expect(src).toMatch(/<LabelPrintView products=\{products\} myShop=\{myShop\}/);
+  });
+});

@@ -21007,8 +21007,8 @@ function AppInner() {
   else if (role === ROLES.CARD_RECON) view = guard(ROLES.CARD_RECON, <CardReconScreen onExit={() => setRole(null)} />);
   // GATE 2 of 2 for Card Slip: the per-till scope on the person's own record.
   else if (role === ROLES.CARD_SLIP) view = hasSlipScope(permRecord) ? <CardSlipScreen onExit={() => setRole(null)} /> : null;
-  else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
-  else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
+  else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} myShop={myShop} onExit={() => setRole(null)} />;
+  else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} myShop={myShop} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);
