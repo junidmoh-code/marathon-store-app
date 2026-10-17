@@ -1430,3 +1430,40 @@ The poll interval is **120 seconds** (was 300): the clock that matters is a
 customer at the counter who has just paid, and 720 IMAP sessions/day is far
 below Gmail's throttling territory. Nothing new to add to `.env` — the EFT
 reader uses the same mailbox credentials the card poller already reads.
+
+## The verdict email to Junid (17 Oct 2026)
+
+Every pool record the poller **writes** is followed by one email to Junid, so
+he can watch how the confirmer reasons. It observes only: it is sent after the
+record lands, and a failed send is logged and changes nothing.
+
+- **Subject:** `[EFT confirmer] APPROVED — R150.00 · FNB`, or
+  `[EFT confirmer] REJECTED — Wrong destination account — R150.00 · FNB`.
+  Filter on `subject:"[EFT confirmer]"`.
+- **APPROVED** only when the record is spendable (`outcome: recorded`,
+  `status: unmatched`). Everything else is **REJECTED**, naming the check:
+  unknown bank sender · signature check failed (DKIM) · unreadable
+  notification (includes "no reader for this bank yet") · wrong destination
+  account · not an immediate (real-time) payment · duplicate (bank transaction
+  id already seen) · no bank transaction id.
+- **Body:** first line is the verdict and the deciding reason; then bank,
+  amount, reference, payer, destination (masked), bank transaction id (last
+  four, also wherever the bank's own subject repeats it), timestamps in SAST,
+  DKIM result, pool record id. Free text goes through `redactAccountDigits`;
+  the reference keeps only the last four of any long number (a phone
+  reference still matches by eye). No full card or account number.
+- **When it is sent:** queued as each record is written, sent once the IMAP
+  session is closed, so SMTP can never hold the mailbox. The first failed send
+  ends that tick's round (logged with how many were dropped). Mail a stranger
+  can trigger — unknown-bank sightings and DKIM forgeries — is capped at 3
+  individual emails per tick; the rest go as **one roll-up email** naming
+  each check. Real payments are never rolled up. Sent only as
+  marathon6631@gmail.com: any other `CARD_RECON_IMAP_USER` turns them off,
+  with a warning.
+- **Path and inbox:** the recycler reports' — Gmail SMTP (`smtp.gmail.com:465`)
+  as marathon6631@gmail.com with card recon's app password, to
+  **gunidmoh@gmail.com** (fixed in `scripts/cardrecon/verdictMailCore.mjs`).
+- **Dial it back:** `EFT_VERDICT_EMAILS=rejected` in `~/marathon-store-app/.env`
+  stops the APPROVED emails from the next tick; `all` (or unset) sends every
+  verdict. An unrecognised value sends every verdict and logs a warning.
+- A replay writes nothing and so emails nothing; a dry run never emails.
