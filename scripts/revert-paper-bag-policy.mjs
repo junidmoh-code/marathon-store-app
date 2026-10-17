@@ -219,7 +219,7 @@ async function main() {
       const want = isObj(was) ? was : null;
       if (same(cur, want)) { rowsDone++; note("rows", p, cur, want, "done"); continue; }
       // #729 either cleared the cell (cur absent) or wrote a 50/25/ask-10 row stamped by its runner.
-      const isSetBy729 = isObj(cur) && cur.setBy === APPLIED_BY && cur.source === "policy_target" && cur.target === 50 && cur.reorderPoint === 10;
+      const isSetBy729 = isObj(cur) && cur.setBy === APPLIED_BY && cur.source === "policy_target" && cur.target === 50 && cur.minQty === 25 && cur.reorderPoint === 10;
       const isClearedBy729 = cur === null && want !== null;
       if (!isSetBy729 && !isClearedBy729) {
         rowsConflict++; note("rows", p, cur, want, "conflict", { why: "the cell no longer holds what #729 left — edited since; left alone" });
@@ -309,9 +309,13 @@ async function main() {
       const fresh = await val(`refill_requests/${c.refillId}`);
       if (!fresh || fresh.status !== "open" || pickInProgress(fresh) || (Number(fresh.sentQty) || 0) > 0) { log(`   ! ${c.refillId} changed — skipped`); continue; }
       if (c.orderId) {
+        // The order is deleted only if it is STILL this lock's order (product,
+        // size, createdAt): an R-number can be reused, and a replacement order
+        // with unset fulfilment fields must not be taken down (CodeRabbit).
         const res = await db.ref(`orders/${c.orderId}`).transaction((cur) => {
           if (!cur) return null;
           if (cur.clothingRefillStatus != null || cur.clothingPlanGen != null || !cur.autoRefill) return;
+          if (cur.productId !== c.pid || engine.encodeSizeKey(cur.size) !== c.sizeKey || cur.createdAt !== c.lock.orderCreatedAt) return;
           return null;
         });
         if (!res.committed) { log(`   ! ${c.refillId} order ${c.orderId} touched — skipped`); continue; }
