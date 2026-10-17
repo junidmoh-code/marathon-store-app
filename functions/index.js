@@ -5526,8 +5526,9 @@ exports.socialStillAutopilot = onSchedule(
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
     secrets: [geminiApiKey, anthropicApiKey],
-    // The cut-out model (onnxruntime, loaded only here) needs the headroom.
-    memory: "2GiB",
+    // The cut-out model (onnxruntime, loaded only here) needs the headroom;
+    // cut-outs also run one at a time (lookbook.cjs).
+    memory: "4GiB",
     // Lookbook (up to two generations at 180 s, two vision calls, six
     // cut-outs) then, on a failed gate, the current style with its own 503
     // retries. 1800 s is the v2 onSchedule maximum.
@@ -5559,7 +5560,10 @@ exports.socialStillAutopilot = onSchedule(
       const rot = await db.ref("social_lookbook/rotation")
         .transaction((cur) => socialLookbook.advanceRotation(cur, saDate, STILL_FORMATS));
       const rotation = rot.snapshot.val() || {};
-      const planned = rotation.lastDate === saDate ? rotation.format : STILL_FORMATS[0];
+      // The stored format is re-checked against TODAY's STILL_FORMATS: a
+      // lookbook switched off since the rotation was written must not run.
+      const stored = rotation.lastDate === saDate ? rotation.format : null;
+      const planned = STILL_FORMATS.includes(stored) ? stored : socialLookbook.formatForSeq(rotation.seq, STILL_FORMATS) || "current";
       await logRef.update({ planned, seq: Number.isInteger(rotation.seq) ? rotation.seq : null });
 
       // ── TODAY'S REEL PRODUCTS STAY OUT, AND THE SLOT IS CLAIMED ────────
@@ -5567,6 +5571,14 @@ exports.socialStillAutopilot = onSchedule(
         .startAt(socialHealth.pushKeyPrefixForMs(sastMidnightUtc(nowMs, 0))).once("value")).val() || {};
       const used = new Set();
       for (const p of Object.values(recent)) for (const x of (p && p.products) || []) if (x && x.pid) used.add(x.pid);
+      // A reclaimed run must not post the day's still twice: a crash after the
+      // post was written and before the log recorded it leaves the post here.
+      const already = Object.entries(recent).find(([, p]) => p && p.updatedBy === "cron:socialStillAutopilot" && !p.twinOf);
+      if (already) {
+        await logRef.update({ finishedAt: Date.now(), posted: already[1].kind === "lookbook" ? "lookbook" : "current", postId: already[0], reclaimNote: "the still was already in the queue" });
+        console.log(`socialStillAutopilot ${saDate}: ${already[0]} is already today's still — not posting again`);
+        return;
+      }
       const taken = new Set();
       for (const st of ["draft", "approved", "posting"]) {
         const snap = await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(st).limitToLast(100).once("value");
@@ -5582,14 +5594,23 @@ exports.socialStillAutopilot = onSchedule(
         // cut-out model, and no other function in this file should load them.
         const { makeLookbook } = require("./lookbook/lookbook.cjs");
         const { engines: lookbookEngines } = require("./lookbook/engines.cjs");
-        const made = await makeLookbook(db, lookbookEngines({
-          db, saDate,
-          geminiApiKey: geminiApiKey.value(),
-          anthropicApiKey: anthropicApiKey.value(),
-          visionModel: CHAT_MODEL,
-          fetchImage: fetchImageBuffer, Anthropic,
-          log: (m) => console.log(m),
-        }), { nowMs, used });
+        // ANY throw in the lookbook is a failed gate, never a lost day: the
+        // current style below still runs (architect review, B2).
+        let made;
+        try {
+          made = await makeLookbook(db, lookbookEngines({
+            db, saDate,
+            geminiApiKey: geminiApiKey.value(),
+            anthropicApiKey: anthropicApiKey.value(),
+            visionModel: CHAT_MODEL,
+            fetchImage: fetchImageBuffer, Anthropic,
+            log: (m) => console.log(m),
+            // No second hero after 15 minutes: the fallback needs the rest.
+            deadlineMs: nowMs + 900 * 1000,
+          }), { nowMs, used });
+        } catch (err) {
+          made = { ok: false, gate: "error", reason: `the lookbook threw: ${String(err && err.message).slice(0, 160)}`, costUSD: 0 };
+        }
         costUSD += made.costUSD || 0;
         if (made.ok) {
           const w = await writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platforms });

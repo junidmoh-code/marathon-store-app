@@ -18,7 +18,7 @@ const gemini = require("../lib/gemini-image.cjs");
 const socialBudget = require("../lib/social-budget.cjs");
 const socialRecovery = require("../lib/social-recovery.cjs");
 
-function engines({ db, saDate, geminiApiKey, anthropicApiKey, visionModel, fetchImage, Anthropic, log }) {
+function engines({ db, saDate, geminiApiKey, anthropicApiKey, visionModel, fetchImage, Anthropic, log, deadlineMs }) {
   const counter = () => db.ref(`social_generation_budget/${saDate}/count`);
   const cap = socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY;
 
@@ -32,11 +32,19 @@ function engines({ db, saDate, geminiApiKey, anthropicApiKey, visionModel, fetch
     } catch (err) {
       if (!socialRecovery.isUnbilledProviderError(err && err.message)) throw err;
       if (log) log(`lookbook: ${gemini.NBPRO_MODEL} unavailable — retrying on ${gemini.GEMINI_MODEL}`);
-      const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.GEMINI_MODEL, parts, {
-        outPerMtok: gemini.GEMINI_OUT_PER_MTOK, flatUsd: gemini.GEMINI_FLAT_IMAGE_USD,
-        imageConfig: { aspectRatio: "9:16" },
-      });
-      return { ...gen, engine: "nb2" };
+      try {
+        const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.GEMINI_MODEL, parts, {
+          outPerMtok: gemini.GEMINI_OUT_PER_MTOK, flatUsd: gemini.GEMINI_FLAT_IMAGE_USD,
+          imageConfig: { aspectRatio: "9:16" },
+        });
+        return { ...gen, engine: "nb2" };
+      } catch (flashErr) {
+        // Pro made nothing (5xx) and Flash made nothing either: no image was
+        // returned by either call, so the unit goes back whatever Flash said.
+        const e = new Error(`${gemini.NBPRO_MODEL} 5xx, then ${gemini.GEMINI_MODEL}: ${flashErr && flashErr.message}`);
+        e.unbilled = true;
+        throw e;
+      }
     }
   }
 
@@ -87,7 +95,7 @@ function engines({ db, saDate, geminiApiKey, anthropicApiKey, visionModel, fetch
     fetchImage, generateHero, checkHero, claimUnit, releaseUnit, unitsLeft,
     inlineImagePart: gemini.inlineImagePart,
     isUnbilledError: (m) => socialRecovery.isUnbilledProviderError(m),
-    log,
+    log, deadlineMs,
   };
 }
 

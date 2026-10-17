@@ -126,6 +126,24 @@ describe("makeLookbook", () => {
     assert.equal(r.gate, "text");
   });
 
+  test("three units already spent: the lookbook does not take the fallback's unit", async () => {
+    const db = seed();
+    await db.ref("social_generation_budget/2026-10-18/count").set(3);
+    const d = deps(db);
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.gate, "cap");
+    assert.equal(d.calls.gen, 0);
+    assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), 3);
+  });
+
+  test("Pro 5xx then Flash failing with anything: the unit goes back", async () => {
+    const db = seed();
+    const d = deps(db, { generateHero: async () => { const e = new Error("pro 5xx, then flash: HTTP 400"); e.unbilled = true; throw e; } });
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.gate, "generate");
+    assert.equal(d.calls.released, 1);
+  });
+
   test("cap reached: the cap gate, no model call", async () => {
     const db = seed();
     await db.ref("social_generation_budget/2026-10-18/count").set(4);

@@ -39,6 +39,7 @@ const { loadLookbookCandidates, loadRecentLookbookPids } = require("./load.cjs")
  *   releaseUnit() → Promise,                                  // unbilled 5xx only
  *   isUnbilledError(message) → boolean,
  *   unitsLeft() → number | null,                              // cap − count, after this call's claims
+ *   deadlineMs?: number                                       // no second attempt after this
  *   log?(msg)
  * }
  * @param opts  { nowMs, used: Set of pids already posted today }
@@ -66,7 +67,9 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } =
     const p = lookbook.pickLookbookOutfit(candidates, { recent, used: exclude });
     if (p.reason) return { ok: false, gate: "outfit", reason: p.reason, costUSD, attempts };
     const fresh = p.rows.filter((r) => !ready.has(r.pid));
-    await Promise.all(fresh.map(async (r) => {
+    // One at a time: each cut-out holds an ONNX session's worth of memory, and
+    // six in parallel is how a 2 GiB instance dies (architect review, B2).
+    for (const r of fresh) await (async () => {
       try {
         const img = await deps.fetchImage(r.photoUrl);
         const c = await cut(img.buffer);
@@ -76,7 +79,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } =
         log(`lookbook: photo for ${r.pid} failed (${e && e.message}) — skipping it`);
         exclude.add(r.pid);
       }
-    }));
+    })();
     if (p.rows.every((r) => ready.has(r.pid))) {
       picked = { ...p, rows: p.rows.map((r) => ({ ...r, ...ready.get(r.pid) })) };
       break;
@@ -96,15 +99,18 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } =
 
   let hero = null, check = null, engine = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    if (attempt === 2) {
-      const left = await deps.unitsLeft();
-      // One more generation must still leave one unit for the fallback.
-      if (!(Number.isFinite(left) && left >= 2)) {
-        return {
-          ok: false, gate: "text", costUSD, attempts, rows,
-          reason: `${check.reason} — not regenerated: ${Number.isFinite(left) ? left : "unknown"} unit(s) left today and the current-style fallback needs one`,
-        };
-      }
+    // EVERY generation, the first included, must leave one unit for the
+    // current-style fallback. Without this a morning that already spent three
+    // (a billed reel retry) let the lookbook take the fourth, and a failed gate
+    // then left the day with nothing (architect review, B1).
+    const left = await deps.unitsLeft();
+    if (!(Number.isFinite(left) && left >= 2)) {
+      return attempt === 1
+        ? { ok: false, gate: "cap", costUSD, attempts, rows, reason: `only ${Number.isFinite(left) ? left : "an unknown number of"} generation unit(s) left today — the lookbook would leave the current-style fallback none` }
+        : { ok: false, gate: "text", costUSD, attempts, rows, reason: `${check.reason} — not regenerated: ${Number.isFinite(left) ? left : "unknown"} unit(s) left today and the current-style fallback needs one` };
+    }
+    if (attempt === 2 && deps.deadlineMs && Date.now() > deps.deadlineMs) {
+      return { ok: false, gate: "text", costUSD, attempts, rows, reason: `${check.reason} — not regenerated: out of time for a second attempt and the fallback` };
     }
     const unit = await deps.claimUnit();
     if (!unit.ok) {
@@ -115,7 +121,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } =
       gen = await deps.generateHero(parts);
     } catch (e) {
       const msg = String(e && e.message);
-      if (deps.isUnbilledError(msg)) { try { await deps.releaseUnit(); } catch { /* best effort */ } }
+      if ((e && e.unbilled) || deps.isUnbilledError(msg)) { try { await deps.releaseUnit(); } catch { /* best effort */ } }
       attempts.push({ attempt, error: msg.slice(0, 200) });
       return { ok: false, gate: "generate", reason: `the hero could not be generated: ${msg.slice(0, 160)}`, costUSD, attempts, rows };
     }

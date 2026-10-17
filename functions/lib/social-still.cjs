@@ -65,7 +65,10 @@ function stillLogEntry({ planned, posted, reason, costUSD, postId, twinId, sched
     finishedAt: nowMs,
     planned: planned || null,
     posted: posted || null,
-    fallback: Boolean(planned === "lookbook" && posted && posted !== "lookbook"),
+    // A lookbook day that did not post a lookbook fell back, including the day
+    // the current style then failed too: that is the worst fallback, and the
+    // two-days-running page must count it (architect review, S4).
+    fallback: planned === "lookbook" && posted !== "lookbook",
     gate: gate || null,
     reason: reason ? String(reason).slice(0, 300) : null,
     costUSD: +Number(costUSD || 0).toFixed(4),

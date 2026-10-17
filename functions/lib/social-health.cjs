@@ -286,7 +286,7 @@ function passedSlots(policy, dayStart, nowMs, { reelAlsoPostsToStory = true, sto
   if (reelAlsoPostsToStory) add("story", policy && policy.reels);
   if (storyAlsoPostsToFeed) add("feed", policy && policy.stories);
   // The daily still (socialStillAutopilot) is a story, twinned onto the feed.
-  if (still && still.enabled && still.slot) {
+  if (stillActive(still) && still.slot) {
     add("story", [still.slot]);
     if (storyAlsoPostsToFeed) add("feed", [still.slot]);
   }
@@ -320,6 +320,9 @@ function assessStill(still, { nowMs, dayStart, saDate }) {
   const out = { reasons: [], silent: false, report: null };
   if (!still || !still.enabled) return out;
   const log = still.log || null;
+  // Owed only once the still has ever run: the deploy day, deployed after
+  // 07:00, has no record and must not page about it (architect review, S5).
+  if (!stillActive(still)) return out;
   out.report = {
     planned: (log && log.planned) || null,
     posted: (log && log.posted) || null,
@@ -348,14 +351,22 @@ function assessStill(still, { nowMs, dayStart, saDate }) {
     .find((x) => x.l && x.l.planned === "lookbook");
   if (prior && prior.l.fallback) {
     const ageDays = Math.round((Date.parse(`${saDate}T00:00:00Z`) - Date.parse(`${prior.d}T00:00:00Z`)) / DAY_MS);
-    if (log && log.planned === "lookbook" && log.fallback) {
+    const todayIsLookbook = Boolean(log && log.planned === "lookbook");
+    if (todayIsLookbook && log.fallback) {
       out.reasons.push(`the lookbook has fallen back on two lookbook days running (${prior.d} and ${saDate})`);
       out.silent = true;
-    } else if (ageDays <= 2) {
+    } else if (!todayIsLookbook && ageDays <= 2) {
+      // Only on the days in between: a lookbook that worked today supersedes
+      // the one before it (architect review, S3).
       out.reasons.push(`the last lookbook (${prior.d}) fell back to the current style (${prior.l.gate || "?"}: ${String(prior.l.reason || "").slice(0, 120)})`);
     }
   }
   return out;
+}
+
+/** Has the daily still ever run (a record today or in the recent window)? */
+function stillActive(still) {
+  return Boolean(still && still.enabled && (still.log || Object.keys(still.recent || {}).length));
 }
 
 function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true, still = null }) {

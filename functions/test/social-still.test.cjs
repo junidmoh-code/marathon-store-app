@@ -75,7 +75,7 @@ describe("the watchdog and the still", () => {
   const okLog = { startedAt: at(D, "07:00"), finishedAt: at(D, "07:03"), planned: "lookbook", posted: "lookbook", fallback: false };
 
   test("the 15:30 still is a slot on both surfaces", () => {
-    const s = passedSlots({ reels: [] }, at(D, "00:00"), at(D, "16:00"), {}, { enabled: true, slot: STILL_SLOT });
+    const s = passedSlots({ reels: [] }, at(D, "00:00"), at(D, "16:00"), {}, { enabled: true, slot: STILL_SLOT, log: okLog });
     assert.deepEqual(s.story, ["15:30"]);
     assert.deepEqual(s.feed, ["15:30"]);
   });
@@ -110,16 +110,31 @@ describe("the watchdog and the still", () => {
   });
 
   test("no still record by 07:40 pages; at 07:20 it is not yet owed", () => {
-    assert.equal(assessStill({ enabled: true, log: null, recent: {} }, { nowMs: at(D, "07:20"), dayStart: at(D, "00:00"), saDate: D }).silent, false);
-    assert.equal(assessStill({ enabled: true, log: null, recent: {} }, { nowMs: at(D, "07:45"), dayStart: at(D, "00:00"), saDate: D }).silent, true);
+    assert.equal(assessStill({ enabled: true, log: null, recent: { "2026-10-19": okLog } }, { nowMs: at(D, "07:20"), dayStart: at(D, "00:00"), saDate: D }).silent, false);
+    assert.equal(assessStill({ enabled: true, log: null, recent: { "2026-10-19": okLog } }, { nowMs: at(D, "07:45"), dayStart: at(D, "00:00"), saDate: D }).silent, true);
   });
 
   test("a still that made nothing pages; a missed 15:30 slot pages", () => {
     const none = { ...okLog, posted: null, fallback: false, reason: "cap reached" };
     assert.equal(base({ enabled: true, slot: STILL_SLOT, log: none, recent: {} }).severity, "silent");
-    const v = base({ enabled: true, slot: STILL_SLOT, log: okLog, recent: {} }, "16:30", []);
+    const v = base({ enabled: true, slot: STILL_SLOT, log: okLog, recent: { [D]: okLog } }, "16:30", []);
     assert.equal(v.severity, "silent");
     assert.match(v.reasons[0], /15:30/);
+  });
+
+  test("a lookbook that worked today is not shadowed by the one before that fell back", () => {
+    const prev = { ...okLog, posted: "current", fallback: true, gate: "text", reason: "x" };
+    const v = base({ enabled: true, slot: STILL_SLOT, log: okLog, recent: { "2026-10-18": prev, [D]: okLog } }, "16:30", [landed("story"), landed("feed")]);
+    assert.equal(v.ok, true, v.reasons.join("; "));
+  });
+
+  test("a lookbook day where the fallback ALSO failed counts as a fallback", () => {
+    assert.equal(stillLogEntry({ planned: "lookbook", posted: null, nowMs: 1 }).fallback, true);
+  });
+
+  test("deploy day: no still has ever run, so nothing is owed and nothing pages", () => {
+    const v = base({ enabled: true, slot: STILL_SLOT, log: null, recent: {} }, "16:30");
+    assert.equal(v.ok, true, v.reasons.join("; "));
   });
 
   test("no daily still configured: nothing owed, nothing reported", () => {
