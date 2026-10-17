@@ -112,19 +112,21 @@ export function MirrorGate({ auth, storage, children }) {
     let unsub = null;
     let offProfile = null;
     let timer = null;
+    let gen = 0; // each auth change supersedes the last: a stale callback does nothing
     const stopProfile = () => { if (offProfile) { offProfile(); offProfile = null; } clearTimeout(timer); timer = null; };
     (async () => {
       const { onAuthStateChanged } = await import("firebase/auth");
       if (cancelled) return;
       unsub = onAuthStateChanged(auth, async (user) => {
+        const my = ++gen;
         stopProfile();
         if (!user || user.isAnonymous === true) { setSignedIn(false); return; }
         let released = false;
-        const release = () => { if (released || cancelled) return; released = true; stopProfile(); setSignedIn(true); };
+        const release = () => { if (released || cancelled || my !== gen) return; released = true; stopProfile(); setSignedIn(true); };
         timer = setTimeout(release, PROFILE_WAIT_MS);
         try {
           const [{ ref, onValue }, { database }] = await Promise.all([import("firebase/database"), import("../firebase")]);
-          if (cancelled || released) return;
+          if (cancelled || released || my !== gen) return;
           offProfile = onValue(ref(database, `users/${user.uid}`), release, release);
         } catch {
           release();
