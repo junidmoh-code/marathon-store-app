@@ -81,7 +81,8 @@ export function toggleDay(days, day) {
 export function normalizeTvBackgrounds(v) {
   const raw = v && typeof v === "object" ? v : {};
   const photos = Object.entries(raw.photos && typeof raw.photos === "object" ? raw.photos : {})
-    .filter(([, p]) => p && typeof p.url === "string" && p.url)
+    // A data: URL would mean image bytes in the database — never drawn.
+    .filter(([, p]) => p && typeof p.url === "string" && p.url && !p.url.startsWith("data:"))
     .map(([id, p]) => {
       const uploadedAt = Number(p.uploadedAt) || Number(p.addedAt) || 0;
       const order = Number.isFinite(Number(p.order)) && p.order !== null && p.order !== "" ? Number(p.order) : uploadedAt;
@@ -139,7 +140,9 @@ export function useTvBackgrounds() {
     const unsub = onValue(
       ref(database, TV_BACKGROUNDS_PATH),
       (snap) => setCfg(normalizeTvBackgrounds(snap.val())),
-      () => setCfg(normalizeTvBackgrounds(null)),
+      // A read error is NOT "no photos": the board falls back to its built-in
+      // wall, but nothing may prune its photo cache on the strength of it.
+      () => setCfg({ ...normalizeTvBackgrounds(null), readFailed: true }),
     );
     return () => unsub();
   }, []);

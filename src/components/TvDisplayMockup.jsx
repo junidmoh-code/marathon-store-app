@@ -290,11 +290,11 @@ function useBoardBackground() {
   const allKey = cfg ? cfg.photos.map((p) => p.url).join("\n") : "";
 
   useEffect(() => {
-    if (!cfg) return;
+    if (!cfg || cfg.readFailed) return; // an unreadable node must not empty the cache
     const cache = tvBackgroundCache();
     const today = todayKey ? todayKey.split("\n") : [];
     cache.prune(allKey ? allKey.split("\n") : []).catch(() => {}).then(() => cache.prefetch(today));
-  }, [todayKey, allKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [todayKey, allKey, cfg?.readFailed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [drawn, setDrawn] = useState(null); // { url, src } — src is the cached blob: URL
   const pickedUrl = picked?.url || "";

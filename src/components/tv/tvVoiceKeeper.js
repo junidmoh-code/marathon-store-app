@@ -44,9 +44,17 @@ export function shouldShowVoiceHint({ kiosk, state }) {
   return !kiosk && state === "blocked";
 }
 
-/** Whether the board should try to speak at all. */
-export function voiceWanted({ kiosk, state }) {
-  return !!kiosk || state === "armed";
+/**
+ * Whether the board should try to speak at all. A kiosk launch always does; so
+ * does a screen that has been armed before (the persisted flag) — each
+ * announcement then resumes audio itself, which Chrome allows on a site the
+ * TV has played sound on, and a refusal is logged and brings the hint back.
+ * A screen never armed and not yet running stays quiet (orders are marked
+ * seen silently, so arming later never recites a backlog).
+ */
+export function voiceWanted({ kiosk, state, armedBefore = false }) {
+  if (state === "unsupported") return false;
+  return !!kiosk || state === "armed" || !!armedBefore;
 }
 
 /** One silent frame through the context: proves (and keeps) the output path alive. */
@@ -75,7 +83,7 @@ const defaultTimers = {
  * States: "starting" → "armed" | "blocked" | "unsupported".
  */
 export function createVoiceKeeper({
-  getCtx, storage = null, win = null, doc = null, onChange = () => {},
+  getCtx, storage = null, win = null, doc = null, onChange = () => {}, onDrop = () => {},
   log = console, timers = defaultTimers, primerEveryMs = PRIMER_EVERY_MS,
 }) {
   let state = "starting";
@@ -172,7 +180,10 @@ export function createVoiceKeeper({
         if (stopped) return;
         poke("announce retry").then((ok2) => {
           if (ok2) fn();
-          else log.warn?.(`TV voice: "${label}" not spoken — audio is ${getCtx()?.state || "gone"} (browser autoplay block).`);
+          else {
+            log.warn?.(`TV voice: "${label}" not spoken — audio is ${getCtx()?.state || "gone"} (browser autoplay block).`);
+            try { onDrop(label); } catch { /* ignore */ }
+          }
         });
       }, START_RETRY_MS);
     });

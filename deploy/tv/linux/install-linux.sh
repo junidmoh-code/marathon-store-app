@@ -26,6 +26,8 @@ chmod +x "$DIR/marathon-tv.sh"
 # Never blank the screen (X11 desktops; harmless elsewhere).
 command -v xset >/dev/null 2>&1 && DISPLAY="${DISPLAY:-:0}" xset s off -dpms 2>/dev/null || true
 
+# Hand the desktop session's display variables to the user service manager.
+systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR 2>/dev/null || true
 systemctl --user daemon-reload
 systemctl --user enable --now marathon-tv.service
 echo "Marathon TV installed. It opens now and every time the Pi starts. Log: journalctl --user -u marathon-tv"

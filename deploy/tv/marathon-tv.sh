@@ -45,6 +45,22 @@ if [ -z "$BROWSER" ]; then
 fi
 mkdir -p "$PROFILE"
 
+# Linux: started by systemd at login, possibly before the desktop is up. Wait
+# for a display (X socket or Wayland socket) rather than crash-looping Chromium.
+if [ "$(uname -s)" != "Darwin" ]; then
+  RUNDIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  for _ in $(seq 1 60); do
+    if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+      for w in "$RUNDIR"/wayland-*; do case "$w" in *.lock) ;; *) [ -S "$w" ] && export WAYLAND_DISPLAY="${w##*/}" && break ;; esac; done
+    fi
+    [ -n "${WAYLAND_DISPLAY:-}" ] && break
+    d="${DISPLAY:-:0}"; [ -S "/tmp/.X11-unix/X${d#:}" ] && break
+    sleep 2
+  done
+  export DISPLAY="${DISPLAY:-:0}"
+  [ -z "${XAUTHORITY:-}" ] && [ -f "$HOME/.Xauthority" ] && export XAUTHORITY="$HOME/.Xauthority"
+fi
+
 FLAGS=(
   --kiosk
   --autoplay-policy=no-user-gesture-required   # the pickup voice plays with no tap

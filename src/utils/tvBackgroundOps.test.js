@@ -38,6 +38,12 @@ function fakeWorld({ now = 1_800_000_000_000 } = {}) {
       }
     }),
     remove: vi.fn(async (rel) => setAt(rel, null)),
+    claimThumb: vi.fn(async (id, t) => {
+      const cur = db.photos?.[id];
+      if (!cur || !cur.url || cur.thumbUrl) return false;   // the transaction's abort
+      Object.assign(cur, t);
+      return true;
+    }),
     nowMs: () => now,
     who: () => "junid",
     encode: vi.fn(async (file, edge, q) => ({ kind: "jpeg", edge, q, from: file.name || "blob" })),
@@ -134,7 +140,30 @@ describe("backfillThumbs", () => {
       { id: "new", path: fullPathFor("new"), thumbUrl: "https://t" },
     ]);
     expect(done).toEqual(["old"]);
-    expect(db.photos.old.thumbPath).toBe(thumbPathFor("old"));
+    expect(db.photos.old.thumbPath).toMatch(/^products\/tv-backgrounds\/old_thumb_\d+\.jpg$/);
+    expect(files.has(db.photos.old.thumbPath)).toBe(true);
     expect(io.encode).toHaveBeenCalledWith({ name: "full" }, TV_BG_THUMB_EDGE, expect.any(Number));
+  });
+
+  it("a photo removed mid-backfill is not resurrected, and the loser's file is deleted", async () => {
+    const { io, files, db } = fakeWorld();
+    files.set(fullPathFor("gone"), { name: "full" });
+    db.photos = {};                                         // removed while the thumb was being made
+    expect(await backfillThumbs(io, [{ id: "gone", path: fullPathFor("gone"), thumbUrl: "" }])).toEqual([]);
+    expect(db.photos.gone).toBeUndefined();
+    expect([...files.keys()]).toEqual([fullPathFor("gone")]);
+  });
+
+  it("two Workshops backfilling at once: one thumb recorded, no overwrite, the other file cleaned up", async () => {
+    const { io, files, db } = fakeWorld();
+    files.set(fullPathFor("old"), { name: "full" });
+    db.photos = { old: { url: "u", path: fullPathFor("old") } };
+    let t = 1;
+    io.nowMs = () => t++;
+    const p = { id: "old", path: fullPathFor("old"), thumbUrl: "" };
+    await Promise.all([backfillThumbs(io, [p]), backfillThumbs(io, [p])]);
+    const thumbs = [...files.keys()].filter((k) => k.includes("_thumb"));
+    expect(thumbs).toEqual([db.photos.old.thumbPath]);
+    expect(new Set(io.putFile.mock.calls.map((c) => c[0])).size).toBe(io.putFile.mock.calls.length);
   });
 });

@@ -15,7 +15,7 @@
 // already write and the TVs can already read, so no rules change is needed.
 // The writes themselves are in src/utils/tvBackgroundOps.js.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { push, ref, remove, update } from "firebase/database";
+import { push, ref, remove, runTransaction, update } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject, getBlob } from "firebase/storage";
 import { database, storage, auth } from "../firebase";
 import { serverNowMs } from "../utils/serverTime";
@@ -44,6 +44,14 @@ const io = {
   getFile: (path) => getBlob(storageRef(storage, path)),
   update: (rel, patch) => update(ref(database, rel ? `${TV_BACKGROUNDS_PATH}/${rel}` : TV_BACKGROUNDS_PATH), patch),
   remove: (rel) => remove(ref(database, `${TV_BACKGROUNDS_PATH}/${rel}`)),
+  claimThumb: async (id, t) => {
+    // Only the photo's own node — never the whole backgrounds node.
+    const res = await runTransaction(ref(database, `${TV_BACKGROUNDS_PATH}/photos/${id}`), (cur) => {
+      if (!cur || !cur.url || cur.thumbUrl) return undefined; // abort: removed, or someone else won
+      return { ...cur, ...t };
+    });
+    return !!res.committed;
+  },
   nowMs: () => serverNowMs(),
   who,
   encode: encodeJpeg,

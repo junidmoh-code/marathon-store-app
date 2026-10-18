@@ -34,7 +34,7 @@ import { useInsightsWindow } from "./insights/useInsightsWindow";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
-import { setUpdateBusy } from "./update/updateChecker";
+import { setUpdateBusy, setTvBoardMounted } from "./update/updateChecker";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { brandOnRename } from "./utils/brands.js";
 import { categorize, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
@@ -57,7 +57,7 @@ import NewArrivalsScreen from "./components/newArrivals/NewArrivalsScreen";
 import { newArrivalsApi } from "./components/newArrivals/newArrivalsApi";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
 import TvDisplayMockup from "./components/TvDisplayMockup";
-import { createVoiceKeeper, isKioskLaunch, shouldShowVoiceHint, voiceWanted } from "./components/tv/tvVoiceKeeper";
+import { createVoiceKeeper, isKioskLaunch, readVoiceArmed, shouldShowVoiceHint, voiceWanted } from "./components/tv/tvVoiceKeeper";
 import { useSpecials } from "./components/TvSpecialsRail";
 import LabelPrintView from "./components/LabelPrintView";
 import AppErrorBoundary from "./AppErrorBoundary";
@@ -21151,10 +21151,14 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // launcher's autoplay flag), re-arms on any touch/focus, and only reports
   // "blocked" when the browser really refused — the one case a hint is shown.
   const kiosk = useMemo(() => isKioskLaunch(typeof window === "undefined" ? "" : window.location.search), []);
+  // Armed on an earlier load (localStorage): this screen tries to speak even
+  // before audio is confirmed running — each announcement resumes it itself.
+  const armedBefore = useMemo(() => { try { return readVoiceArmed(window.localStorage); } catch { return false; } }, []);
   const [voiceState, setVoiceState] = useState("starting");
-  const voiceUnlocked = voiceWanted({ kiosk, state: voiceState }); // kiosk speaks on the first event, gesture or not
+  const voiceUnlocked = voiceWanted({ kiosk, state: voiceState, armedBefore }); // kiosk speaks on the first event, gesture or not
   const keeperRef    = useRef(null);
-  const [hintGone, setHintGone] = useState(false); // the corner hint dismisses itself
+  const [hintGone, setHintGone] = useState(false); // the corner hint dismisses itself; comes back when audio is blocked again or an announcement is dropped
+  const liveSrcRef   = useRef(new Set()); // every scheduled clip not yet ended, so a stuck queue can be cancelled whole
   const [vocabReady, setVocabReady] = useState(false); // true once the clip vocabulary is decoded — STATE (not just the ref) so a late load re-fires the announce effect and catches orders that went ready during the load window
   const announcedRef = useRef(null); // Set of announced order keys; null until seeded with the load-time backlog
   const audioCtxRef  = useRef(null); // shared AudioContext (created on mount for decode; resumed on the unlock tap)
@@ -21226,11 +21230,20 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       getCtx: () => audioCtxRef.current,
       storage: (() => { try { return window.localStorage; } catch { return null; } })(),
       win: window, doc: document,
-      onChange: setVoiceState,
+      onChange: (st) => { setVoiceState(st); if (st === "blocked") setHintGone(false); },
+      onDrop: () => setHintGone(false),
     });
     keeperRef.current = keeper;
     keeper.start();
     return () => { keeper.stop(); keeperRef.current = null; };
+  }, []);
+
+  // Tell the update checker a TV board is on screen — also when it is mounted
+  // in-app for the DISPLAY role, where there is no #tv hash — so nothing
+  // reloads it while the store is open (updateChecker.isTvScreen).
+  useEffect(() => {
+    setTvBoardMounted(true);
+    return () => setTvBoardMounted(false);
   }, []);
 
   // The hint is small and goes away by itself; any touch re-arms regardless.
@@ -21246,14 +21259,16 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // loaded and voice is wanted, so a call before either is harmless. Waits for the
   // context to be running (resume + one retry), and if the audio clock has not
   // moved 3 s after scheduling, cancels the stuck queue and retries once.
-  const playTokens = (tokens, label = tokens.join(" "), isRetry = false) => {
+  const playTokens = (tokens, label = tokens.join(" "), isRetry = false, gapBefore = 0) => {
     const keeper = keeperRef.current;
     if (!audioCtxRef.current || !bufsRef.current || !voiceUnlocked || !keeper) return;
     keeper.whenRunning(() => {
       const ctx = audioCtxRef.current, bufs = bufsRef.current;
       if (!ctx || !bufs) return;
       const sources = [];
-      let t = Math.max(ctx.currentTime + 0.02, chainEndRef.current);
+      // The gap is applied HERE, when the clips are actually scheduled — not
+      // up front, where a wait for audio to resume would stack the gaps.
+      let t = Math.max(ctx.currentTime + 0.02, Math.max(chainEndRef.current, ctx.currentTime) + gapBefore);
       for (const tok of tokens) {
         const buf = bufs.get(tok);
         if (!buf) continue;
@@ -21263,6 +21278,8 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
           src.connect(ctx.destination);
           src.start(t);
           sources.push(src);
+          liveSrcRef.current.add(src);
+          src.onended = () => liveSrcRef.current.delete(src);
         } catch (e) {
           console.warn(`TV voice: could not schedule "${tok}" for "${label}":`, e?.message || e);
           continue;
@@ -21271,9 +21288,11 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       }
       chainEndRef.current = t;
       keeper.guardStart({
-        sources, label,
-        onCancel: () => { chainEndRef.current = 0; },
-        retry: isRetry ? null : () => playTokens(tokens, label, true),
+        // The WHOLE queue on the frozen clock, not just this announcement — or
+        // the earlier ones would play over the retry once the clock moves.
+        sources: [...liveSrcRef.current], label,
+        onCancel: () => { liveSrcRef.current.clear(); chainEndRef.current = 0; },
+        retry: isRetry ? null : () => playTokens(tokens, label, true, gapBefore),
       });
     }, label);
   };
@@ -21354,8 +21373,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       if (!digits.length) continue;
       const seq = ["order_number", ...digits, phraseTok];
       for (let i = 0; i < ANNOUNCE_REPEATS; i++) {                          // repeat so it's not missed
-        if (ctx) chainEndRef.current = Math.max(chainEndRef.current, ctx.currentTime) + ANNOUNCE_REPEAT_GAP_S;
-        playTokens(seq);
+        playTokens(seq, `Order ${num}`, false, ANNOUNCE_REPEAT_GAP_S);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -21468,7 +21486,9 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       {showHint && (
         <button
           type="button"
-          onClick={enableVoice}
+          // pointerdown, not click: the keeper's capture listener arms audio on
+          // this same pointerdown and the hint unmounts before a click lands.
+          onPointerDown={enableVoice}
           aria-label="Enable pickup announcements"
           style={{
             position: "fixed", right: 14, bottom: 14, zIndex: 400,

@@ -67,9 +67,10 @@ $flags = @(
   "--disable-features=Translate",
   "--overscroll-history-navigation=0",
   "--check-for-update-interval=604800",
-  # No manual quotes - Start-Process quotes a flag whose path has a space.
-  "--user-data-dir=$ProfileDir",
-  $TvUrl
+  # Start-Process joins -ArgumentList with spaces and does NOT quote, so a
+  # profile path under a username with a space must carry its own quotes.
+  "--user-data-dir=`"$ProfileDir`"",
+  "`"$TvUrl`""
 )
 
 # Chrome only writes "exited cleanly" on a graceful quit; after a kill or power
@@ -78,9 +79,12 @@ function Set-CleanExit {
   $prefs = Join-Path $ProfileDir "Default\Preferences"
   if (Test-Path $prefs) {
     try {
-      $t = Get-Content -Raw $prefs
+      # Preferences is UTF-8 without a BOM; Get/Set-Content in PowerShell 5.1
+      # would round-trip it through the ANSI code page and mangle it.
+      $utf8 = New-Object System.Text.UTF8Encoding($false)
+      $t = [System.IO.File]::ReadAllText($prefs, $utf8)
       $t = $t -replace '"exited_cleanly":false', '"exited_cleanly":true' -replace '"exit_type":"[A-Za-z]*"', '"exit_type":"Normal"'
-      Set-Content -NoNewline -Path $prefs -Value $t
+      [System.IO.File]::WriteAllText($prefs, $t, $utf8)
     } catch { }
   }
 }

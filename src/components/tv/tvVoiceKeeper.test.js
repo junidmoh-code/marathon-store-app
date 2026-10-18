@@ -112,13 +112,27 @@ describe("tvVoiceKeeper", () => {
     expect(ctx.state).toBe("running");
   });
 
-  it("whenRunning retries once after 3 s, then logs the drop with the reason", async () => {
-    const { k } = setup({ allow: false });
+  it("whenRunning retries once after 3 s, then logs the drop with the reason and reports it", async () => {
+    const ctx = fakeCtx({ allow: false });
+    const onDrop = vi.fn();
+    const k = createVoiceKeeper({ getCtx: () => ctx, log: quiet, onDrop });
     const fn = vi.fn();
     k.whenRunning(fn, "Order 12");
     await vi.advanceTimersByTimeAsync(RESUME_SETTLE_MS + START_RETRY_MS + RESUME_SETTLE_MS);
     expect(fn).not.toHaveBeenCalled();
     expect(quiet.warn.mock.calls.some((c) => String(c[0]).includes('"Order 12" not spoken'))).toBe(true);
+    expect(onDrop).toHaveBeenCalledWith("Order 12");
+  });
+
+  it("whenRunning plays at once when the retry finds audio allowed", async () => {
+    const ctx = fakeCtx({ allow: false });
+    const k = createVoiceKeeper({ getCtx: () => ctx, log: quiet });
+    const fn = vi.fn();
+    k.whenRunning(fn, "Order 5");
+    await vi.advanceTimersByTimeAsync(RESUME_SETTLE_MS);
+    ctx.allow = true;
+    await vi.advanceTimersByTimeAsync(START_RETRY_MS);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it("guardStart cancels a stuck queue (frozen clock) and retries the announcement once", async () => {
@@ -173,9 +187,14 @@ describe("kiosk + hint policy", () => {
     expect(shouldShowVoiceHint({ kiosk: false, state: "blocked" })).toBe(true);
   });
 
-  it("kiosk always wants to speak; elsewhere only once armed", () => {
+  it("kiosk always wants to speak; a fresh screen only once armed; a screen armed before always tries", () => {
     expect(voiceWanted({ kiosk: true, state: "starting" })).toBe(true);
     expect(voiceWanted({ kiosk: false, state: "starting" })).toBe(false);
+    expect(voiceWanted({ kiosk: false, state: "blocked" })).toBe(false);
     expect(voiceWanted({ kiosk: false, state: "armed" })).toBe(true);
+    // The persisted flag changes behaviour after a reload: still blocked, but it tries.
+    expect(voiceWanted({ kiosk: false, state: "starting", armedBefore: true })).toBe(true);
+    expect(voiceWanted({ kiosk: false, state: "blocked", armedBefore: true })).toBe(true);
+    expect(voiceWanted({ kiosk: true, state: "unsupported" })).toBe(false);
   });
 });

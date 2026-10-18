@@ -1,7 +1,7 @@
 // The board's photo cache: each photo is downloaded once, rotation reads from
 // the cache, removed photos are pruned, and any failure falls back to the URL.
 import { describe, it, expect, vi } from "vitest";
-import { createTvBackgroundCache, TV_BG_CACHE_NAME } from "./tvBackgroundCache";
+import { createTvBackgroundCache, TV_BG_CACHE_NAME, FETCH_TIMEOUT_MS, RETRY_AFTER_MS } from "./tvBackgroundCache";
 
 function fakeCaches() {
   const stores = new Map();
@@ -68,5 +68,29 @@ describe("tvBackgroundCache", () => {
     const { cache, fetchFn } = setup();
     fetchFn.mockRejectedValueOnce(new TypeError("CORS"));
     expect(await cache.resolve("https://x/b.jpg")).toBe("https://x/b.jpg");
+  });
+});
+
+describe("tvBackgroundCache — a failing or hung download", () => {
+  it("a hung fetch gives up after the timeout and the board draws the URL", async () => {
+    vi.useFakeTimers();
+    const { cacheStorage } = setup();
+    const cache = createTvBackgroundCache({ cacheStorage, fetchFn: () => new Promise(() => {}), urlApi: null, log: { warn: () => {} } });
+    const p = cache.resolve("https://x/hung.jpg");
+    await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS);
+    expect(await p).toBe("https://x/hung.jpg");
+    vi.useRealTimers();
+  });
+
+  it("a failed photo is not re-fetched on every rotation tick, only after a pause", async () => {
+    let t = 0;
+    const { cacheStorage } = setup();
+    const fetchFn = vi.fn(async () => { throw new TypeError("CORS"); });
+    const cache = createTvBackgroundCache({ cacheStorage, fetchFn, urlApi: null, log: { warn: () => {} }, nowMs: () => t });
+    await cache.prefetch(["a"]); await cache.prefetch(["a"]); await cache.resolve("a");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    t += RETRY_AFTER_MS;
+    await cache.prefetch(["a"]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 });

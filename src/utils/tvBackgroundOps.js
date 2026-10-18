@@ -18,6 +18,9 @@
 //   deleteFile(path): Promise<void>                  // ok if already gone
 //   getFile(path): Promise<Blob>
 //   update(relPath, patch): Promise<void>            // under TV_BACKGROUNDS_PATH
+//   claimThumb(id, {thumbUrl, thumbPath}): Promise<boolean>
+//                    // transaction: records the thumb only if the photo still
+//                    // exists and has none yet; false = someone else won / deleted
 //   remove(relPath): Promise<void>
 //   nowMs(): number
 //   who(): string
@@ -29,7 +32,7 @@ export const FULL_QUALITY = 0.8;
 export const THUMB_QUALITY = 0.72;
 
 export const fullPathFor = (id) => `${TV_BACKGROUNDS_STORAGE_DIR}/${id}.jpg`;
-export const thumbPathFor = (id) => `${TV_BACKGROUNDS_STORAGE_DIR}/${id}_thumb.jpg`;
+export const thumbPathFor = (id, suffix = "") => `${TV_BACKGROUNDS_STORAGE_DIR}/${id}_thumb${suffix ? `_${suffix}` : ""}.jpg`;
 
 /** Upload one photo: full (1920 long edge) + thumb (320), then its metadata. Returns the new id. */
 export async function uploadTvBackground(io, file, { orderBase } = {}) {
@@ -82,6 +85,12 @@ export function swapTvBackgroundOrder(io, a, b) {
  * Photos uploaded before thumbnails existed: make a 320 px thumb from the full
  * photo once, store it beside it, and record it — after which the Workshop grid
  * never loads that full-size photo again. Returns the ids it filled.
+ *
+ * Several staff can have the Workshop open at once, and a photo can be removed
+ * mid-backfill. So each run uploads to its OWN path (never overwriting another
+ * run's file) and records it through a transaction that only takes when the
+ * photo still exists and has no thumb yet; a run that loses deletes its file,
+ * and a removed photo is never brought back as a thumb-only stub.
  */
 export async function backfillThumbs(io, photos, { log = console } = {}) {
   const done = [];
@@ -90,10 +99,10 @@ export async function backfillThumbs(io, photos, { log = console } = {}) {
     try {
       const blob = await io.getFile(p.path);
       const thumb = await io.encode(blob, TV_BG_THUMB_EDGE, THUMB_QUALITY);
-      const thumbPath = thumbPathFor(p.id);
+      const thumbPath = thumbPathFor(p.id, String(io.nowMs()));
       const thumbUrl = await io.putFile(thumbPath, thumb);
-      await io.update(`photos/${p.id}`, { thumbUrl, thumbPath });
-      done.push(p.id);
+      if (await io.claimThumb(p.id, { thumbUrl, thumbPath })) done.push(p.id);
+      else await io.deleteFile(thumbPath).catch(() => {});
     } catch (err) {
       log.warn?.(`TV backgrounds: no thumbnail for ${p.id} yet:`, err?.message || err);
     }

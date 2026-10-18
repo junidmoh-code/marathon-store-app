@@ -117,3 +117,10 @@ describe("TV backgrounds — days", () => {
     expect(normalizeTvBackgrounds({ photos: many }).photos).toHaveLength(60);
   });
 });
+
+describe("TV backgrounds — guards", () => {
+  it("a data: URL (image bytes in the database) is never drawn", () => {
+    const cfg = normalizeTvBackgrounds({ photos: { bad: { url: "data:image/jpeg;base64,AAAA", addedAt: 1 }, ok: { url: "https://x", addedAt: 2 } } });
+    expect(cfg.photos.map((p) => p.id)).toEqual(["ok"]);
+  });
+});

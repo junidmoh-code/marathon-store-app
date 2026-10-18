@@ -17,16 +17,20 @@
 
 export const TV_BG_CACHE_NAME = "marathon-tv-backgrounds-v1";
 const HELD_OBJECT_URLS = 3; // on screen, fading out, and the next one
+export const FETCH_TIMEOUT_MS = 30_000;   // a hung download must not pin the rotation
+export const RETRY_AFTER_MS = 5 * 60_000; // a failed photo is not retried on every tick
 
 export function createTvBackgroundCache({
   cacheStorage = typeof caches === "undefined" ? null : caches,
   fetchFn = typeof fetch === "undefined" ? null : (u, o) => fetch(u, o),
   urlApi = typeof URL === "undefined" ? null : URL,
   log = console,
+  nowMs = () => Date.now(),
 } = {}) {
   let cachePromise = null;
   const inFlight = new Map();   // url → Promise<boolean>
   const held = new Map();       // url → blob: URL, oldest first
+  const failedAt = new Map();   // url → when it last failed (short negative cache)
 
   const open = () => {
     if (!cacheStorage?.open) return Promise.resolve(null);
@@ -41,11 +45,23 @@ export function createTvBackgroundCache({
       const cache = await open();
       if (!cache || !fetchFn) return false;
       if (await cache.match(url)) return true;
-      const res = await fetchFn(url, { mode: "cors" });
-      if (!res || !res.ok) throw new Error(`HTTP ${res?.status}`);
-      await cache.put(url, res);
-      return true;
+      if (nowMs() - (failedAt.get(url) ?? -Infinity) < RETRY_AFTER_MS) return false;
+      const ctl = typeof AbortController === "undefined" ? null : new AbortController();
+      let timer = null;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => { ctl?.abort(); reject(new Error("timed out")); }, FETCH_TIMEOUT_MS);
+      });
+      try {
+        const res = await Promise.race([fetchFn(url, { mode: "cors", signal: ctl?.signal }), timeout]);
+        if (!res || !res.ok) throw new Error(`HTTP ${res?.status}`);
+        await cache.put(url, res);
+        failedAt.delete(url);
+        return true;
+      } finally {
+        clearTimeout(timer);
+      }
     })().catch((err) => {
+      failedAt.set(url, nowMs());
       log.warn?.("TV backgrounds: could not cache a photo, using its URL:", err?.message || err);
       return false;
     }).finally(() => inFlight.delete(url));

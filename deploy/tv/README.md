@@ -29,7 +29,9 @@ started with the "sound allowed" setting. Plug in a small computer instead: a
 Raspberry Pi 5 or any old Windows
 mini PC, set it to log in by itself, and install the matching launcher. Until
 then, the board still re-arms on its own the first time anyone touches it, and
-stays armed all day now that it no longer reloads itself.
+stays armed all day now that it no longer reloads itself while the store is
+open. (Without a launcher it picks up a new app version once, between 03:00 and
+05:00; after that the first touch of the morning turns the voice back on.)
 
 ## Windows
 
@@ -80,6 +82,10 @@ curl -fsSL https://raw.githubusercontent.com/junidmoh-code/marathon-store-app/ma
   shows the voice note and speaks on the first ready order with no tap.
 
 ## For whoever maintains this
+
+- These launchers were written and checked for syntax but **not yet run on
+  real Windows, Pi or TV hardware**. On the first install, watch the board come
+  up, then pull the browser's plug (close it) once to see it come back.
 
 - All three run the same browser flags: `--kiosk
   --autoplay-policy=no-user-gesture-required --noerrdialogs
