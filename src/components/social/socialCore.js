@@ -259,7 +259,36 @@ export const QUEUE_FILTERS = [
   { key: "approved", label: "Approved", statuses: ["approved", "posting"] },
   { key: "posted", label: "Posted", statuses: ["posted"] },
   { key: "discarded", label: "Discarded", statuses: ["discarded", "failed"] },
+  // Lookbook samples for Junid (scripts/social/lookbook-samples-publish.mjs):
+  // visible and tappable, never scheduled, never posted. The publisher reads
+  // only "approved", so nothing here can go out.
+  { key: "sample", label: "Samples", statuses: ["sample"] },
 ];
+
+// ── ONE PICTURE, ONE QUEUE ITEM ──────────────────────────────────────────────
+// Owner, 2026-10-18: "the queue shows every product twice". It never generated
+// twice: a reel's story and a story's feed post are TWINS (functions/lib/
+// social-twin.cjs), separate records only so each surface keeps its own
+// publish result, made from the one picture. The queue now shows a pair as ONE
+// item, led by the post with the real caption (the reel or the feed post; a
+// story shows no caption), and every decision applies to the whole pair.
+//
+// A twin whose lead is not in the same list (the lead already posted, say)
+// stays its own row, so nothing ever disappears from view. Pure.
+export function groupTwins(posts) {
+  const list = Array.isArray(posts) ? posts.filter(Boolean) : [];
+  const byId = new Map(list.map((p) => [p.id, p]));
+  const groups = new Map();
+  for (const p of list) {
+    const root = p.twinOf && byId.has(p.twinOf) ? p.twinOf : p.id;
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(p);
+  }
+  return [...groups.values()].map((members) => {
+    const lead = members.find((m) => formatOf(m) !== "story") || members[0];
+    return { lead, members, twins: members.filter((m) => m !== lead), formats: members.map(formatOf) };
+  });
+}
 
 // How long a claim may stand before the next run treats it as abandoned and
 // takes it back. Sized well above the slowest realistic run: a ten-item

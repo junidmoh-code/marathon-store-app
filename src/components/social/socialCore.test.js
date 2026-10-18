@@ -13,7 +13,7 @@ import {
   captionWithLink, captionWithBioNote, captionFor, truncateWords, BIO_NOTE,
   nextSlots, assignSlots, formatSlot, toLocalInput, fromLocalInput,
   productLink, describePost, resultLine, SLOT_DAYS, SLOT_HOUR_SAST,
-  needsVerification, QUEUE_FILTERS, STALE_CLAIM_MS,
+  needsVerification, QUEUE_FILTERS, STALE_CLAIM_MS, groupTwins,
   MAX_HORIZON_DAYS,
 } from "./socialCore";
 
@@ -576,5 +576,36 @@ describe("per-platform link style", () => {
 
   it("every platform declares a link style", () => {
     for (const p of PLATFORMS) expect(["url", "bio"]).toContain(p.linkStyle);
+  });
+});
+
+describe("groupTwins: one picture, one queue item (2026-10-18)", () => {
+  const reel = { id: "R", format: "reel", caption: "Clean lines, zero fuss." };
+  const reelStory = { id: "RS", format: "story", twinOf: "R", caption: "Lacoste — online now." };
+  const story = { id: "S", format: "story", caption: "plain" };
+  const feedTwin = { id: "SF", format: "feed", twinOf: "S", caption: "The NOCTA Tech Fleece is…" };
+
+  it("folds each twin into its lead, led by the post with the real caption", () => {
+    const g = groupTwins([reel, reelStory, story, feedTwin]);
+    expect(g.map((x) => x.lead.id)).toEqual(["R", "SF"]);
+    expect(g[0].twins.map((t) => t.id)).toEqual(["RS"]);
+    expect(g[0].formats).toEqual(["reel", "story"]);
+    expect(g[1].twins.map((t) => t.id)).toEqual(["S"]);
+  });
+
+  it("a twin whose lead is not in the list stays visible on its own", () => {
+    const g = groupTwins([reelStory]);
+    expect(g).toHaveLength(1);
+    expect(g[0].lead.id).toBe("RS");
+    expect(g[0].twins).toEqual([]);
+  });
+
+  it("null-safe", () => {
+    expect(groupTwins(null)).toEqual([]);
+    expect(groupTwins([null, undefined])).toEqual([]);
+  });
+
+  it("Samples is a queue filter of its own", () => {
+    expect(QUEUE_FILTERS.find((f) => f.key === "sample").statuses).toEqual(["sample"]);
   });
 });

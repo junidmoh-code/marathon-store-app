@@ -185,3 +185,32 @@ describe("the rhythm: exactly one reel and one photo post (2026-10-18)", () => {
     assert.equal(v.counts.rhythm.stillFallback, true);
   });
 });
+
+describe("one picture, one generation, one queue item per product (2026-10-18)", () => {
+  const { buildStoryTwin } = require("../lib/social-twin.cjs");
+  const { queuedPids } = require("../lib/social-still.cjs");
+
+  test("a twin carries no cost of its own: the generation is its lead's", () => {
+    const reel = { format: "reel", costUSD: 0.15744, media: [{ type: "image", url: "U" }] };
+    const st = buildStoryTwin(reel, { twinId: "T", reelId: "R", fallbackCaption: "x — online now." });
+    assert.equal(st.costUSD, 0);
+    assert.equal(st.costOn, "R");
+    const story = { format: "story", costUSD: 0.15792, media: [{ type: "image", url: "S" }] };
+    const ft = buildFeedTwin(story, { twinId: "F", storyId: "S", caption: "c", captionSource: "ai" });
+    assert.equal(ft.costUSD, 0);
+    assert.equal(ft.costOn, "S");
+  });
+
+  test("a product waiting in the queue is excluded; posted, discarded and sample are not", () => {
+    const set = queuedPids([
+      { status: "approved", products: [{ pid: "a" }, { pid: "b" }] },
+      { status: "draft", products: [{ pid: "c" }] },
+      { status: "posting", products: [{ pid: "d" }] },
+      { status: "posted", products: [{ pid: "x" }] },
+      { status: "discarded", products: [{ pid: "y" }] },
+      { status: "sample", products: [{ pid: "z" }] },
+      null, { status: "approved" },
+    ]);
+    assert.deepEqual([...set].sort(), ["a", "b", "c", "d"]);
+  });
+});
