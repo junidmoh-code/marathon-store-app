@@ -68,14 +68,14 @@ test("every client response the callable makes is scanned (else these tests prov
     "a response path was added or removed — scan it, then update this count");
 });
 
-test("RECEIVED is the whole answer: the manager's submit returns {ok, received} and nothing else", () => {
+test("RECEIVED is the whole answer: the manager's submit returns {ok, received} and a receipt (when, which day) — nothing else", () => {
   // Junid, 7 Oct 2026: "Show the manager no result either way." The receive
   // runs before any read, so there is nothing it COULD say — and this pins that
   // nobody later adds a figure, a verdict or a job id to it.
   const body = SRC.slice(SRC.indexOf("async function handleReceive("), SRC.indexOf("async function loadJobPhotos("));
   assert.ok(body.length > 100, "handleReceive is where this test expects it");
   const oks = stripComments(body).match(/return\s*\{\s*ok:\s*true[^}]*\}/g) || [];
-  assert.deepEqual(oks, ["return { ok: true, received: true }"]);
+  assert.deepEqual(oks, ["return { ok: true, received: true, receipt: { at: nowMs, dayYmd }"]);
   // …and no read happens on that path: the OCR and the submit are the job's.
   assert.doesNotMatch(stripComments(body), /runSlipOcr\(|handleExtract\(|handleSubmit\(|computeExpectedCard\(/);
 });
