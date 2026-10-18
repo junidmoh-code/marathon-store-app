@@ -33,6 +33,9 @@ const THUMB_DIR = "aiStudio/social/lookbook/thumbs";
 const THUMB_PATH = (pid) => `${THUMB_DIR}/${pid}.png`;
 // A pid is an RTDB key and a Storage name: nothing else is accepted.
 const SAFE_PID = /^[A-Za-z0-9_-]{1,80}$/;
+// A thumbnail is a small 1K picture: a call that has not answered in a minute
+// is not going to, and the hero is waiting (architect review of #750).
+const THUMB_TIMEOUT_MS = 60000;
 
 function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionModel, fetchImage, Anthropic, log, deadlineMs }) {
   const counter = () => db.ref(`social_generation_budget/${saDate}/count`);
@@ -112,7 +115,7 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
     try {
       const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.FLASH_LITE_MODEL, parts, {
         outPerMtok: gemini.FLASH_LITE_OUT_PER_MTOK, flatUsd: gemini.FLASH_LITE_FLAT_IMAGE_USD,
-        imageConfig: { aspectRatio: "1:1" },
+        imageConfig: { aspectRatio: "1:1" }, timeoutMs: THUMB_TIMEOUT_MS,
       });
       return { ...gen, engine: "flash-lite" };
     } catch (err) {
@@ -120,7 +123,7 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
       if (log) log(`lookbook: ${gemini.FLASH_LITE_MODEL} failed (${String(err && err.message).slice(0, 80)}) — thumbnail on ${gemini.GEMINI_MODEL}`);
       const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.GEMINI_MODEL, parts, {
         outPerMtok: gemini.GEMINI_OUT_PER_MTOK, flatUsd: gemini.GEMINI_FLAT_IMAGE_USD,
-        imageConfig: { aspectRatio: "1:1", imageSize: "1K" },
+        imageConfig: { aspectRatio: "1:1", imageSize: "1K" }, timeoutMs: THUMB_TIMEOUT_MS,
       });
       return { ...gen, engine: "flash" };
     }
@@ -138,7 +141,10 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
   async function readThumbCache(pid) {
     if (!bucket || !SAFE_PID.test(String(pid))) return null;
     const ptr = (await db.ref(`social_lookbook/thumbs/${pid}`).once("value")).val();
-    const file = bucket.file(ptr && typeof ptr.path === "string" && ptr.path.startsWith(`${THUMB_DIR}/`) ? ptr.path : THUMB_PATH(pid));
+    // A shot that was paid for and did not cut out: not bought again.
+    if (ptr && ptr.failed) return { failed: true };
+    // The file is always at its own pid's path; the pointer's path is a record.
+    const file = bucket.file(THUMB_PATH(pid));
     // No pointer: the file may still be there (a pointer write that failed
     // after the upload). It is used, and the pointer put back.
     if (!ptr) {
@@ -169,6 +175,14 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
     return { path, url };
   }
 
+  async function markThumbFailed(pid, meta = {}) {
+    if (!SAFE_PID.test(String(pid))) return;
+    await db.ref(`social_lookbook/thumbs/${pid}`).set({
+      failed: true, at: Date.now(), engine: meta.engine || null, costUSD: Number(meta.costUSD) || 0,
+      tried: Array.isArray(meta.tried) ? meta.tried.slice(0, 4).map(String) : [],
+    });
+  }
+
   // ── THE CHARACTER REFERENCE ────────────────────────────────────────────
   async function readModelRef() {
     if (!bucket) return null;
@@ -180,7 +194,7 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
 
   return {
     fetchImage, generateHero, checkHero, claimUnit, releaseUnit, unitsLeft,
-    generateThumb, claimThumbUnit, readThumbCache, writeThumbCache, readModelRef,
+    generateThumb, claimThumbUnit, readThumbCache, writeThumbCache, markThumbFailed, readModelRef,
     inlineImagePart: gemini.inlineImagePart,
     isUnbilledError: (m) => socialRecovery.isUnbilledProviderError(m),
     log, deadlineMs,

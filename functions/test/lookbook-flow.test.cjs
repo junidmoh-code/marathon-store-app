@@ -314,3 +314,33 @@ describe("makeLookbook — the panel's clean product shots", () => {
     assert.ok(Object.values(r2.thumbs).every((t) => t === "cache"));
   });
 });
+
+describe("makeLookbook — architect review of #750", () => {
+  test("two units already spent and no room: the cap gate comes BEFORE any thumbnail is bought", async () => {
+    const db = seed();
+    await db.ref("social_generation_budget/2026-10-18/count").set(3);
+    let gens = 0;
+    const d = deps(db, { claimThumbUnit: async () => ({ ok: true }), generateThumb: async () => { gens++; throw new Error("must not run"); } });
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.gate, "cap");
+    assert.equal(gens, 0);
+  });
+
+  test("an unanswered model check falls back without a second hero", async () => {
+    const db = seed();
+    const d = deps(db, { checkHero: async (_b, _m, p) => (/grid/.test(p) ? LOCATED : JSON.stringify({ text_found: false, text_seen: "" })) });
+    const r = await makeLookbook(db, d, { nowMs: NOW, maxAttempts: 1 });
+    assert.equal(r.gate, "model");
+    assert.equal(d.calls.gen, 1);
+  });
+
+  test("past the hero deadline before the first hero: the time gate, nothing claimed", async () => {
+    const db = seed();
+    const d = deps(db, { deadlineMs: Date.now() - 1 });
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.gate, "time");
+    assert.equal(d.calls.gen, 0);
+    assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), null);
+  });
+});
+

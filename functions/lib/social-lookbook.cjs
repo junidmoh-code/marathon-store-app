@@ -130,10 +130,13 @@ function formatRand(n) {
 const POSTER_BRANDS = [
   ["G-Star Raw", /^g[\s-]*star(?:[\s-]+raw)?\b/i],
   ["Hugo Boss", /^hugo[\s-]+boss\b/i],
-  ["Alexander McQueen", /^alexander(?:[\s-]+mc[\s-]*queen)?\b/i],
-  ["Karl Lagerfeld", /^karl(?:[\s-]+lagerfeld)?\b/i],
+  // Bare "Alexander", "Karl" and "Tommy" are these brands in this catalogue
+  // (the 2026-08-13 census in alt-shared/shopifyTriggers.js), but never when
+  // the next word names a different house.
+  ["Alexander McQueen", /^alexander(?:[\s-]+mc[\s-]*queen\b|(?![\s-]+(?:wang|mcq)\b))/i],
+  ["Karl Lagerfeld", /^karl(?:[\s-]+lagerfeld\b|(?![\s-]+kani\b))/i],
   ["The North Face", /^(?:the[\s-]+)?north[\s-]+face\b/i],
-  ["Tommy Hilfiger", /^tommy(?:[\s-]+hilfiger)?\b/i],
+  ["Tommy Hilfiger", /^tommy(?:[\s-]+hilfiger\b|(?![\s-]+bahama\b))/i],
   ["Calvin Klein", /^calvin[\s-]+klein\b/i],
   ["Polo Ralph Lauren", /^polo[\s-]+ralph(?:[\s-]+lauren)?\b/i],
   ["Ralph Lauren", /^ralph[\s-]+lauren\b/i],
@@ -159,8 +162,10 @@ const POSTER_BRANDS = [
   ["Comme des Garçons", /^comme[\s-]+des[\s-]+gar[cç]ons\b/i],
   ["Marathon Club", /^marathon[\s-]+club\b/i],
 ];
-// "FG3546#", "FD1299#", "#2506", "#Y8161-1": a token with a '#' at either end.
-const STYLE_CODE = /(?:^|\s)(?:#\S+|\S*\d\S*#)(?=\s|$)/g;
+// "FG3546#", "FD1299#", "#2506", "#Y8161-1": a '#' first, or a letter-led
+// code with two or more digits and a '#' last. "Air Max 90#" is a model name
+// with a stray '#', not a code, and keeps its 90.
+const STYLE_CODE = /(?:^|\s)(?:#\S+|[A-Za-z]+\d{2,}[\w-]*#)(?=\s|$)/g;
 
 /** A display name without its internal style codes. Pure. */
 function stripStyleCodes(name) {
@@ -581,7 +586,9 @@ function readModelCheck(text) {
   const a = s.indexOf("{"), b = s.lastIndexOf("}");
   let v = null;
   if (a !== -1 && b > a) { try { v = JSON.parse(s.slice(a, b + 1)); } catch { v = null; } }
-  if (!v || typeof v.model_black !== "boolean") return { ok: false, seen: "", reason: "the model check did not say whether the model is Black" };
+  // `unreadable`: the check gave no answer, which is not evidence about the
+  // picture. makeLookbook regenerates only on an explicit false.
+  if (!v || typeof v.model_black !== "boolean") return { ok: false, unreadable: true, seen: "", reason: "the model check did not say whether the model is Black" };
   const seen = typeof v.model_seen === "string" ? v.model_seen.slice(0, 120) : "";
   return v.model_black
     ? { ok: true, seen, reason: null }

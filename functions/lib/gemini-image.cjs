@@ -32,7 +32,7 @@ const GEMINI_FETCH_TIMEOUT_MS = 180000;
 // `parts` (interleaved text labels + inline images) and returns the first
 // image in the response. `imageConfig` is only sent when given (the white-bg
 // NB2 path sends none — request shape identical to the 2.5-flash-image days).
-async function geminiGenerateImage(apiKey, model, parts, { outPerMtok, flatUsd, imageConfig } = {}) {
+async function geminiGenerateImage(apiKey, model, parts, { outPerMtok, flatUsd, imageConfig, timeoutMs = GEMINI_FETCH_TIMEOUT_MS } = {}) {
   const body = { contents: [{ parts }] };
   if (imageConfig) body.generationConfig = { imageConfig };
   let res;
@@ -43,14 +43,14 @@ async function geminiGenerateImage(apiKey, model, parts, { outPerMtok, flatUsd, 
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(GEMINI_FETCH_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       },
     );
   } catch (err) {
     // Normalise the abort into the same Error-with-message path as HTTP failures,
     // so the per-product worker catch logs it consistently and moves on.
     if (err && (err.name === "TimeoutError" || err.name === "AbortError")) {
-      throw new Error(`gemini request timed out after ${GEMINI_FETCH_TIMEOUT_MS / 1000}s`);
+      throw new Error(`gemini request timed out after ${timeoutMs / 1000}s`);
     }
     throw err;
   }

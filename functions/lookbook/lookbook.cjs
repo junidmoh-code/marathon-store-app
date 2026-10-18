@@ -62,6 +62,16 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   if (!sceneDef) throw new Error(`makeLookbook: unknown scene ${JSON.stringify(scene)}`);
   const attempts = [];
 
+  // No unit for a hero that would leave the fallback one: stop BEFORE any
+  // thumbnail is bought (architect review of #750).
+  const leftAtStart = await deps.unitsLeft();
+  if (!(Number.isFinite(leftAtStart) && leftAtStart >= 2)) {
+    return { ok: false, gate: "cap", costUSD, attempts, reason: `only ${Number.isFinite(leftAtStart) ? leftAtStart : "an unknown number of"} generation unit(s) left today — the lookbook would leave the current-style fallback none` };
+  }
+  // Thumbnails get the first four minutes; after that the rows use their
+  // shop photos, so the hero (and the fallback after it) keep their time.
+  const thumbDeadlineMs = Date.now() + 240 * 1000;
+
   // ── 1. THE OUTFIT, with real photos that actually download ─────────────
   const [{ candidates }, recent] = await Promise.all([
     loadLookbookCandidates(db, { nowMs }),
@@ -86,7 +96,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
         // The panel picture: studio photo, cached clean shot, a new clean
         // shot, or the shop photo cut out (thumbs.cjs). The shop photo stays
         // the hero's reference either way: it is the real product.
-        const t = await resolveThumb(r, img, { ...deps, cutout: cut, log });
+        const t = await resolveThumb(r, img, { thumbDeadlineMs, ...deps, cutout: cut, log });
         thumbCostUSD += t.costUSD || 0;
         if (!t.cutout) { log(`lookbook: ${r.pid} has no clean picture (${t.source}: ${(t.tried || []).join(", ")}) — skipping it`); exclude.add(r.pid); return; }
         ready.set(r.pid, { thumb: img.buffer, contentType: img.contentType, cutout: t.cutout, thumbSource: t.source });
@@ -138,8 +148,10 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
         ? { ok: false, gate: "cap", costUSD, attempts, rows, reason: `only ${Number.isFinite(left) ? left : "an unknown number of"} generation unit(s) left today — the lookbook would leave the current-style fallback none` }
         : { ok: false, gate: failed, costUSD, attempts, rows, reason: `${failedReason()} — not regenerated: ${Number.isFinite(left) ? left : "unknown"} unit(s) left today and the current-style fallback needs one` };
     }
-    if (attempt === 2 && deps.deadlineMs && Date.now() > deps.deadlineMs) {
-      return { ok: false, gate: failed, costUSD, attempts, rows, reason: `${failedReason()} — not regenerated: out of time for a second attempt and the fallback` };
+    if (deps.deadlineMs && Date.now() > deps.deadlineMs) {
+      return attempt === 1
+        ? { ok: false, gate: "time", costUSD, attempts, rows, reason: "out of time for a hero before the current-style fallback" }
+        : { ok: false, gate: failed, costUSD, attempts, rows, reason: `${failedReason()} — not regenerated: out of time for a second attempt and the fallback` };
     }
     const unit = await deps.claimUnit();
     if (!unit.ok) {
@@ -164,6 +176,9 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     if (check.ok && modelCheck.ok) { hero = gen; break; }
     failed = check.ok ? "model" : "text";
     log(`lookbook: attempt ${attempt} failed the ${failed} check — ${failedReason()}`);
+    // An unanswered model check says nothing about the picture: no second
+    // 4K hero for it, straight to the fallback.
+    if (failed === "model" && modelCheck.unreadable) break;
   }
   function failedReason() { return failed === "model" ? modelCheck.reason : check.reason; }
   if (!hero) {

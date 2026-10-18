@@ -15,7 +15,9 @@
 //                takes a reference image), on pure white, cut out, then cached.
 //                Its own daily ceiling (THUMBS_PER_DAY), never the hero cap.
 //   4. photo     the old way: the shop photo, cut out. Only when 3 could not
-//                run (ceiling, model error) or did not cut out cleanly.
+//                run (ceiling, model error, the run's thumbnail time is up) or
+//                did not cut out cleanly. A paid shot that did not cut out is
+//                marked (failed: true) so it is not bought again every day.
 //
 // A product none of these can draw is not drawn: makeLookbook picks the next
 // one in its slot, as before.
@@ -30,6 +32,8 @@ const lookbook = require("../lib/social-lookbook.cjs");
  *                 readThumbCache?(pid) → { png } | null,
  *                 writeThumbCache?(pid, png, meta) → Promise,
  *                 claimThumbUnit?() → { ok },
+ *                 markThumbFailed?(pid, meta) → Promise,
+ *                 thumbDeadlineMs?: no generation after this (the hero's time)
  *                 generateThumb?(parts) → { buffer, mime, costUSD, engine },
  *                 inlineImagePart(buffer, contentType) → part,
  *                 log?(msg) }
@@ -48,10 +52,16 @@ async function resolveThumb(row, photo, deps) {
     try {
       const hit = await deps.readThumbCache(row.pid);
       if (hit && hit.png) return { cutout: { png: hit.png, method: "cache" }, source: "cache", costUSD };
+      if (hit && hit.failed) {
+        const c = await deps.cutout(photo.buffer);
+        return { cutout: c && c.png ? c : null, source: "photo", costUSD, tried: c && c.tried };
+      }
     } catch (e) { log(`lookbook: thumbnail cache read for ${row.pid} failed (${e && e.message})`); }
   }
 
-  if (deps.generateThumb && deps.claimThumbUnit) {
+  const outOfTime = deps.thumbDeadlineMs && Date.now() > deps.thumbDeadlineMs;
+  if (outOfTime) log(`lookbook: thumbnail time is up — ${row.pid} uses its shop photo`);
+  if (deps.generateThumb && deps.claimThumbUnit && !outOfTime) {
     let unit = { ok: false };
     try { unit = await deps.claimThumbUnit(); } catch { unit = { ok: false }; }
     if (!unit.ok) {
@@ -74,6 +84,9 @@ async function resolveThumb(row, photo, deps) {
           return { cutout: c, source: "generated", costUSD };
         }
         log(`lookbook: generated thumbnail for ${row.pid} did not cut out (${(c && c.tried || []).join(", ")}) — using its shop photo`);
+        if (deps.markThumbFailed) {
+          try { await deps.markThumbFailed(row.pid, { engine: gen.engine || null, costUSD: gen.costUSD || 0, tried: (c && c.tried) || [] }); } catch { /* best effort */ }
+        }
       } catch (e) {
         log(`lookbook: thumbnail generation for ${row.pid} failed (${String(e && e.message).slice(0, 120)}) — using its shop photo`);
       }

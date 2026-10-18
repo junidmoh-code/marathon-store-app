@@ -402,3 +402,23 @@ describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
     assert.match(lb.buildThumbPrompt({ slot: "hat", displayName: "x" }), /front-on/);
   });
 });
+
+describe("lookbook v2 — architect review of #750", () => {
+  const sd = require("../lib/social-design.cjs");
+  const name = (n) => lb.posterName(n, { fallbackSplit: sd.splitName, isCategory: (w) => Boolean(lb.guessSlot(w)) });
+  test("a bare first word takes the long brand only when no other house follows it", () => {
+    assert.equal(name("Karl Kani tee").brand, "KARL");
+    assert.equal(name("Alexander Wang hoodie").brand, "ALEXANDER");
+    assert.equal(name("Tommy Bahama shirt").brand, "TOMMY");
+    assert.equal(name("Karl beanie brown").brand, "KARL LAGERFELD");
+    assert.equal(name("Alexander Oversized White").brand, "ALEXANDER MCQUEEN");
+  });
+  test("a stray '#' on a model number is not a style code", () => {
+    assert.equal(lb.stripStyleCodes("Nike Air Max 90#"), "Nike Air Max 90#");
+    assert.equal(lb.stripStyleCodes("Diesel jean FD1299#"), "Diesel jean");
+  });
+  test("an unanswered model check is marked unreadable; an explicit false is not", () => {
+    assert.equal(lb.readModelCheck('{"text_found":false}').unreadable, true);
+    assert.equal(lb.readModelCheck('{"text_found":false,"model_black":false}').unreadable, undefined);
+  });
+});

@@ -160,3 +160,33 @@ describe("engines: the thumbnail cache and its ceiling", () => {
     assert.equal(await make(new FakeRtdb({}), bucket).readModelRef(), null);
   });
 });
+
+describe("resolveThumb — architect review of #750", () => {
+  test("a paid shot that does not cut out is marked failed; a marked product is never generated again", async () => {
+    const marked = [];
+    const d = fakeDeps({
+      cutout: async (buf) => (String(buf) === "clean-shot" ? { png: null, tried: ["imgly:0.95/4e"] } : { png: Buffer.from("ok"), method: "fake" }),
+      markThumbFailed: async (pid, meta) => { marked.push([pid, meta.costUSD]); },
+    });
+    assert.equal((await resolveThumb(ROW, PHOTO, d)).source, "photo");
+    assert.deepEqual(marked, [["p1", 0.0336]]);
+    const again = fakeDeps({ readThumbCache: async () => ({ failed: true }) });
+    const t = await resolveThumb(ROW, PHOTO, again);
+    assert.equal(t.source, "photo");
+    assert.equal(again.calls.gen, 0);
+  });
+
+  test("after the thumbnail deadline nothing is generated", async () => {
+    const d = fakeDeps({ thumbDeadlineMs: Date.now() - 1 });
+    const t = await resolveThumb(ROW, PHOTO, d);
+    assert.equal(t.source, "photo");
+    assert.equal(d.calls.gen, 0);
+  });
+
+  test("engines: a failed marker reads as failed, not as a cache miss", async () => {
+    const db = new FakeRtdb({});
+    const e = engines({ db, bucket: fakeBucket(), saDate: "2026-10-19" });
+    await e.markThumbFailed("p9", { engine: "flash-lite", costUSD: 0.04, tried: ["x"] });
+    assert.deepEqual(await e.readThumbCache("p9"), { failed: true });
+  });
+});
