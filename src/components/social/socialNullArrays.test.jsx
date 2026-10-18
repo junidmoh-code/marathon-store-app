@@ -294,6 +294,42 @@ test("one malformed post is one broken row — the rest of the queue still rende
   tree.unmount();
 });
 
+// ── 5b. THE SAMPLES TAB WITH LOOKBOOK V2 SAMPLES ──────────────────────────────
+// The exact record scripts/social/lookbook-samples-publish.mjs writes for a v2
+// sample (scene + master size in `sample`, products with prices as text), next
+// to a v1 sample without them. The tab must list both and never fall to the
+// error boundary (#749 was 'unknown status' on this very tab).
+test("the Samples tab lists lookbook v2 samples (scene, 2400 master) beside v1 ones", async () => {
+  const SocialView = (await import("./SocialView.jsx")).default;
+  const sample = (n, extra) => ({
+    status: "sample", kind: "lookbook", format: "feed",
+    media: [{ type: "image", url: `https://firebasestorage.googleapis.com/v0/b/b/o/aiStudio%2Fsocial%2Fsamples%2Flookbook-${n}.jpg?alt=media&token=t` }],
+    caption: `SAMPLE ${n} · Nano Banana Pro${extra.scene ? ` · ${extra.scene}` : ""} · 5 pieces · total R2,930 · R4.32 to generate. Not scheduled; never posted.`,
+    captionSource: "not-needed",
+    products: [{ pid: "p1", name: "G star raw cargo jeans FG3546#", price: "R750" }],
+    platforms: { instagram: false, facebook: false, tiktok: false },
+    sample: { n, model: "gemini-3-pro-image", costUSD: 0.24, total: "R2,930", madeAt: "2026-10-18T14:00:00Z", capOverridden: true, ...extra },
+    createdAt: Number(n), updatedAt: Number(n), updatedBy: "script:lookbook-samples-publish",
+  });
+  store.social_posts = {
+    s01: sample("01", {}),
+    s04: sample("04", { scene: "concrete", master: "1600x2400" }),
+    s05: sample("05", { scene: "garden", master: "1600x2400" }),
+  };
+  let tree;
+  await act(async () => { tree = create(<SocialView products={[]} onExit={() => {}} />); });
+  const tab = tree.root.findAll((n) => n.type === "button" && n.children.includes("Samples"))[0];
+  await act(async () => { tab.props.onClick(); });
+  await act(async () => {});
+  const text = JSON.stringify(tree.toJSON());
+  expect(text).toContain("SAMPLE 04 · Nano Banana Pro · concrete");
+  expect(text).toContain("SAMPLE 05 · Nano Banana Pro · garden");
+  expect(text).toContain("SAMPLE 01");
+  expect(text).not.toContain("couldn't be shown");
+  expect(text).not.toContain("unknown status");
+  tree.unmount();
+});
+
 // ── 6. RETRY MUST NOT RESURRECT A STALE RESULT ───────────────────────────────
 // update() REPLACES the child it is given, so writing the whole `results`
 // object back swaps the live subtree for whatever the browser last loaded. The
