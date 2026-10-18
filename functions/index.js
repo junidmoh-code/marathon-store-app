@@ -5592,7 +5592,7 @@ exports.socialStillAutopilot = onSchedule(
       const recent = (await db.ref(SOCIAL_POSTS_PATH).orderByKey()
         .startAt(socialHealth.pushKeyPrefixForMs(sastMidnightUtc(nowMs, 0))).once("value")).val() || {};
       const used = new Set();
-      for (const p of Object.values(recent)) for (const x of (p && p.products) || []) if (x && x.pid) used.add(x.pid);
+      for (const p of Object.values(recent)) if (p && p.status !== "sample") for (const x of p.products || []) if (x && x.pid) used.add(x.pid);
       // A reclaimed run must not post the day's still twice: a crash after the
       // post was written and before the log recorded it leaves the post here.
       const already = Object.entries(recent).find(([, p]) => p && p.updatedBy === "cron:socialStillAutopilot" && !p.twinOf);

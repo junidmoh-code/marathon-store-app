@@ -205,18 +205,24 @@ function PostRow({ post, twins = [], formats = [], onChanged, onNotice }) {
   // the button on it greyed it forever; keying only its OPACITY on it left the
   // button clickable but painted dead, which reads to a person as broken in
   // exactly the same way. Both are now the same single question.
-  const notReady = postReadiness(post);
+  // Every surface must be ready, not only the lead (twins: see groupTwins).
+  const notReady = postReadiness(post) || twins.map((t) => postReadiness(t)).find(Boolean) || null;
   const caption = draftCaption !== null ? draftCaption : (post.caption || "");
   const captionDirty = draftCaption !== null && draftCaption.trim() !== (post.caption || "").trim();
   const isSample = post.status === "sample";
-  // A decision about the item is a decision about every surface it goes to.
-  const all = [post, ...twins];
+  // A decision about the item is a decision about every surface it goes to —
+  // but only a surface in the SAME state as the one on screen. A twin the
+  // publisher has already claimed (posting) or that has posted is never
+  // overwritten by a button keyed on its lead's status. Every member is
+  // tried; the first failure is the one reported.
+  const all = [post, ...twins].filter((p) => p.status === post.status);
   const forAll = (fn) => async () => {
+    let failed = null;
     for (const p of all) {
       const r = await fn(p);
-      if (r && r.ok === false) return r;
+      if (r && r.ok === false && !failed) failed = r;
     }
-    return { ok: true };
+    return failed || { ok: true };
   };
 
   const run = async (fn, okMsg) => {
@@ -312,7 +318,7 @@ function PostRow({ post, twins = [], formats = [], onChanged, onNotice }) {
               const on = post.platforms?.[p.key] === true;
               return (
                 <button key={p.key} disabled={busy}
-                        onClick={() => run(forAll((x) => setPlatforms(x.id, { ...post.platforms, [p.key]: !on })))}
+                        onClick={() => run(forAll((x) => setPlatforms(x.id, { ...x.platforms, [p.key]: !on })))}
                         style={{ ...(on ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.74rem" }}>
                   {p.label}
                 </button>
