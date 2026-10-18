@@ -270,3 +270,19 @@ test("a deleted log entry (a test) is never recreated by a late read", async () 
   await processReadJob(db, entry.jobId, { now: () => now + 60000, onArrival: true, loadPhotos: async () => [PHOTO], read: async () => { throw new Error("x"); } });
   assert.equal(await node(db, staffSlipDayPath({ storeId: "pe", tid: MT2, dayYmd: "2026-10-18" })), null);
 });
+
+test("a machine standing at a till the POS does not have: the slip is refused and logged, never filed as an orphan", async () => {
+  const db = world();
+  await db.ref(`config/cardTerminals/${MT2}/placements/at-1792300000000`).set({ effectiveFrom: 1792300000000, storeId: "pe", tillId: "till-9", label: "Till 9" });
+  await db.ref(`users/${YASMIN.uid}/cardSlipTills/pe/till-9`).set(true);
+  const errors = [];
+  const orig = console.error; console.error = (m) => errors.push(String(m));
+  try {
+    const out = await send(db, YASMIN, MT2, { now: SAST("2026-10-18T15:00:00") });
+    assert.equal(out.ok, false);
+    assert.match(out.reason, /not set up as a till in the POS/);
+  } finally { console.error = orig; }
+  assert.ok(errors.some((e) => /CARD_SLIP_ORPHAN_TILL .*pe\/till-9/.test(e)));
+  assert.deepEqual(await log(db, "pe", MT2, "2026-10-18"), []);
+  assert.equal(await node(db, "card_batch_jobs"), null);
+});

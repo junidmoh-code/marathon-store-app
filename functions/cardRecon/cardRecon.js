@@ -72,6 +72,7 @@ const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal } = require("../lib/card-terminals.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
+const { tillsFor } = require("../lib/network-registry.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
 const { tillAt } = require("../lib/card-terminal-placements.cjs");
 const { SLIP_SCOPE_FIELD, readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
@@ -2130,6 +2131,16 @@ async function handleSlip(db, request, deps = {}) {
   const nowMs = (deps.now || Date.now)();
   if (!(await slipScopeAllowsNow(db, request, terminal, nowMs))) {
     throw new HttpsError("permission-denied", "This account can only send the slip for its own till.");
+  }
+  // ONE TILL, ONE IDENTITY (18 Oct 2026): the till the machine stands at must
+  // be a till the POS sells on (/network), or the slip would file under a
+  // card nobody draws. Refused out loud, and logged as an alarm.
+  const here = tillAt(terminal, nowMs);
+  const placeStore = here.storeId || terminal.storeId;
+  const placeTill = here.tillId || terminal.tillId;
+  if (!tillsFor(await loadNetwork(db), placeStore).some((t) => t.tillId === placeTill)) {
+    console.error(`CARD_SLIP_ORPHAN_TILL uid=${uid} tid=${picked} till=${placeStore}/${placeTill}: not a POS till — slip refused`);
+    return reject(`${here.label || terminal.label || picked} is not set up as a till in the POS, so its slip would not reach Card Recon — nothing was recorded. Tell Junid.`);
   }
   // WHAT A SLIP CARRIES (Junid, 17 Oct 2026): a typed-total till (Trophy Till
   // 2 — its paper has no total) sends the photo AND the typed figure; every
