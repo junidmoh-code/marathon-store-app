@@ -310,8 +310,8 @@ const STILL_DUE_BY_MS = (7 * 60 + 40) * 60 * 1000;
  *   · a fallback today is a reason (degraded: visible on the day record);
  *   · yesterday's fallback is still a reason today, so a non-lookbook day
  *     after a failed one does not read as clean;
- *   · two lookbook days running that both fell back PAGE. With alternating
- *     days the second is 48 h after the first.
+ *   · two lookbook days running that both fell back PAGE. On Mon/Wed/Fri
+ *     the second is 48 h after the first (72 h across a weekend).
  *
  * @param still { enabled, slot, log, recent: { [saDate]: log } }
  * @returns { reasons, silent, report }
@@ -369,7 +369,7 @@ function stillActive(still) {
   return Boolean(still && still.enabled && (still.log || Object.keys(still.recent || {}).length));
 }
 
-function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true, still = null }) {
+function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true, still = null, rhythm = null }) {
   const saDate = saDateStringFromMs(nowMs);
   const dayStart = sastMidnight(nowMs);
   const dayEnd = dayStart + DAY_MS;
@@ -575,6 +575,27 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   const stillVerdict = assessStill(still, { nowMs, dayStart, saDate });
   reasons.push(...stillVerdict.reasons);
 
+  // ── 4c. THE RHYTHM ────────────────────────────────────────────────────────
+  // Owner brief, 2026-10-18: exactly one reel and one photo post a day. A
+  // policy that asks for more or fewer reels, or a still that is switched
+  // off, still makes posts and so passes every check above; this says so.
+  // Degraded, not paged: it is a configuration, not an outage.
+  const reelsPlanned = listLen(policy && policy.reels);
+  const stillsPlanned = still && still.enabled ? 1 : 0;
+  const reelsMade = madeToday.filter((p) => formatOfPost(p) === "reel").length;
+  const stillsMade = madeToday.filter((p) => p.updatedBy === "cron:socialStillAutopilot" && !p.twinOf).length;
+  if (rhythm) {
+    if (reelsPlanned !== rhythm.reels) {
+      reasons.push(`the policy asks for ${reelsPlanned} reel${reelsPlanned === 1 ? "" : "s"} a day; the rhythm is ${rhythm.reels} reel + ${rhythm.stills} photo post`);
+    }
+    if (stillsPlanned !== rhythm.stills && autopilotEnabled !== false) {
+      reasons.push(`the daily photo post is switched off; the rhythm is ${rhythm.reels} reel + ${rhythm.stills} photo post`);
+    }
+    // And what was actually MADE: more than the rhythm is a cost, not an outage.
+    if (reelsMade > rhythm.reels) reasons.push(`${reelsMade} reels were made today; the rhythm is ${rhythm.reels}`);
+    if (stillsMade > rhythm.stills) reasons.push(`${stillsMade} photo posts were made today; the rhythm is ${rhythm.stills}`);
+  }
+
   // ── THE VERDICT ───────────────────────────────────────────────────────────
   // "silent" is reserved for a day that produced NOTHING — no publish, and
   // either no generation or a dead publisher. Everything else that is wrong is
@@ -630,6 +651,15 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
         reel: madeToday.filter((p) => formatOfPost(p) === "reel").length,
         story: madeToday.filter((p) => formatOfPost(p) === "story").length,
         feed: madeToday.filter((p) => formatOfPost(p) === "feed").length,
+      },
+      // One reel + one photo post: what was planned, what is expected, and
+      // which still format actually posted (current / lookbook / null).
+      rhythm: {
+        reelsPlanned, stillsPlanned, reelsMade, stillsMade,
+        reelsExpected: rhythm ? rhythm.reels : null,
+        stillsExpected: rhythm ? rhythm.stills : null,
+        stillFormat: (stillVerdict.report && stillVerdict.report.posted) || null,
+        stillFallback: Boolean(stillVerdict.report && stillVerdict.report.fallback),
       },
       missedSlots: missedSlotCount,
       dueToday: dueToday.length,
