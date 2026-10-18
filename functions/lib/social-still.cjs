@@ -18,6 +18,7 @@ const STILL_SLOT = "15:30";   // 3½ h before the day's one reel at 19:00
  */
 function buildLookbookRecord({
   rows, total, urls, scheduledAt, platforms, engine, costUSD, nowMs, link, storyCaption, updatedBy,
+  masterSize, scene,
 }) {
   return {
     status: "approved",
@@ -27,7 +28,8 @@ function buildLookbookRecord({
     artwork: {
       story: { url: urls.story, width: 1080, height: 1920 },
       feed: { url: urls.feed, width: 1080, height: 1350 },
-      master: { url: urls.master, width: 1200, height: 1800 },
+      // 1600x2400 since the owner review of 18 Oct (it was 1200x1800).
+      master: { url: urls.master, width: (masterSize && masterSize.width) || 1200, height: (masterSize && masterSize.height) || 1800 },
     },
     caption: storyCaption,
     captionSource: "not-needed",
@@ -41,6 +43,7 @@ function buildLookbookRecord({
     })),
     total: total.value,
     style: "lookbook",
+    ...(scene ? { scene } : {}),
     engine: engine || "nbpro",
     costUSD: +Number(costUSD || 0).toFixed(6),
     refsUsed: rows.length,
@@ -60,7 +63,7 @@ function buildLookbookRecord({
  * update() leaves a key it is not given, so a reclaimed run that succeeds must
  * not keep the reason of the attempt before it.
  */
-function stillLogEntry({ planned, posted, reason, costUSD, postId, twinId, scheduledAt, rows, total, nowMs, gate }) {
+function stillLogEntry({ planned, posted, reason, costUSD, postId, twinId, scheduledAt, rows, total, nowMs, gate, scene, thumbCostUSD }) {
   return {
     finishedAt: nowMs,
     planned: planned || null,
@@ -77,6 +80,8 @@ function stillLogEntry({ planned, posted, reason, costUSD, postId, twinId, sched
     scheduledAt: scheduledAt || null,
     rows: Number.isFinite(rows) ? rows : null,
     total: Number.isFinite(total) ? total : null,
+    scene: scene || null,
+    thumbCostUSD: Number.isFinite(thumbCostUSD) ? +thumbCostUSD.toFixed(4) : null,
   };
 }
 

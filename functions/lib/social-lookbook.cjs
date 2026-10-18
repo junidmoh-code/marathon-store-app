@@ -46,6 +46,13 @@ const LOOKBOOK_SLOTS = [
 const SLOT_KEYS = LOOKBOOK_SLOTS.map((s) => s.slot);
 const SLOT_BY_KEY = new Map(LOOKBOOK_SLOTS.map((s) => [s.slot, s]));
 
+// Clean product shots generated per SA day (functions/lookbook/thumbs.cjs).
+// A poster needs at most six, and a re-picked slot a few more; this is a
+// ceiling on a runaway, not a plan. Its own counter, social_lookbook/
+// thumbBudget/{saDate}: a thumbnail never takes one of the day's four hero
+// and scene units.
+const THUMBS_PER_DAY = 12;
+
 // Fewer than four rows is not a lookbook, it is a pairing with a big panel.
 const MIN_ROWS = 4;
 // "Not used in the last 14 lookbooks".
@@ -110,6 +117,76 @@ function formatRand(n) {
   const v = Number(n);
   if (!Number.isFinite(v) || v <= 0) return null;
   return "R" + String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+// ── THE NAME ON A ROW: BRAND LINE + NAME LINE ────────────────────────────────
+// Sample 01 printed "G" over "STAR RAW CARGO JEANS FG3546#", "HUGO" over "BOSS
+// BEANIE RED" and "ALEXANDER" over "MCQUEEN OVERSIZED": the shared splitName
+// only knows single-word and exact-spelling brands, so it fell back to the
+// first word. The catalogue's own spellings ("G star raw", "Hugo boss",
+// "Alexander McQueen") are matched here, longest first, and the brand is set
+// in its proper form. A style code ("FG3546#", "#2506") is an internal
+// reference and never printed.
+const POSTER_BRANDS = [
+  ["G-Star Raw", /^g[\s-]*star(?:[\s-]+raw)?\b/i],
+  ["Hugo Boss", /^hugo[\s-]+boss\b/i],
+  ["Alexander McQueen", /^alexander(?:[\s-]+mc[\s-]*queen)?\b/i],
+  ["Karl Lagerfeld", /^karl(?:[\s-]+lagerfeld)?\b/i],
+  ["The North Face", /^(?:the[\s-]+)?north[\s-]+face\b/i],
+  ["Tommy Hilfiger", /^tommy(?:[\s-]+hilfiger)?\b/i],
+  ["Calvin Klein", /^calvin[\s-]+klein\b/i],
+  ["Polo Ralph Lauren", /^polo[\s-]+ralph(?:[\s-]+lauren)?\b/i],
+  ["Ralph Lauren", /^ralph[\s-]+lauren\b/i],
+  ["Michael Kors", /^michael[\s-]+kors\b/i],
+  ["Stone Island", /^stone[\s-]+island\b/i],
+  ["True Religion", /^true[\s-]+religion\b/i],
+  ["Dolce & Gabbana", /^dolce[\s-]*(?:&|and)?[\s-]*gabbana\b/i],
+  ["Emporio Armani", /^emporio[\s-]+armani\b/i],
+  ["Off-White", /^off[\s-]*white\b/i],
+  ["Fear of God", /^fear[\s-]+of[\s-]+god\b/i],
+  ["Palm Angels", /^palm[\s-]+angels\b/i],
+  ["Philipp Plein", /^phil+ip+[\s-]+plein\b/i],
+  ["Saint Laurent", /^saint[\s-]+laurent\b/i],
+  ["Louis Vuitton", /^louis[\s-]+vuitton\b/i],
+  ["Bottega Veneta", /^bottega(?:[\s-]+veneta)?\b/i],
+  ["Daniel Wellington", /^daniel[\s-]+wellington\b/i],
+  ["Brunello Cucinelli", /^brunello(?:[\s-]+cucinelli)?\b/i],
+  ["Loro Piana", /^loro[\s-]+piana\b/i],
+  ["New Balance", /^new[\s-]+balance\b/i],
+  ["New Era", /^new[\s-]+era\b/i],
+  ["Under Armour", /^under[\s-]+armou?r\b/i],
+  ["Air Jordan", /^air[\s-]+jordan\b/i],
+  ["Comme des Garçons", /^comme[\s-]+des[\s-]+gar[cç]ons\b/i],
+  ["Marathon Club", /^marathon[\s-]+club\b/i],
+];
+// "FG3546#", "FD1299#", "#2506", "#Y8161-1": a token with a '#' at either end.
+const STYLE_CODE = /(?:^|\s)(?:#\S+|\S*\d\S*#)(?=\s|$)/g;
+
+/** A display name without its internal style codes. Pure. */
+function stripStyleCodes(name) {
+  return String(name || "").replace(STYLE_CODE, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The poster's two lines for a product: { brand, rest }, upper case. `brand`
+ * is "" when the name has no brand line (the whole name then goes on the bold
+ * line). `fallbackSplit` is social-design's splitName, used for any brand
+ * this table does not know; `isCategory(word)` says a first word is a garment
+ * ("Jacket brown"), which is never a brand. Pure.
+ */
+function posterName(displayName, { fallbackSplit, isCategory = () => false } = {}) {
+  const name = stripStyleCodes(displayName);
+  if (!name) return { brand: "", rest: "" };
+  for (const [brand, re] of POSTER_BRANDS) {
+    const m = re.exec(name);
+    if (m) {
+      const rest = name.slice(m[0].length).replace(/^[\s,.-]+/, "").trim();
+      return rest ? { brand: brand.toUpperCase(), rest: rest.toUpperCase() } : { brand: "", rest: brand.toUpperCase() };
+    }
+  }
+  const split = fallbackSplit ? fallbackSplit(name) : { brand: name.split(" ")[0].toUpperCase(), rest: name.split(" ").slice(1).join(" ").toUpperCase() };
+  if (split.rest && !isCategory(split.brand)) return { brand: split.brand, rest: split.rest };
+  return { brand: "", rest: name.toUpperCase() };
 }
 
 /**
@@ -329,24 +406,145 @@ function stillCalendar(todayDate, formats, lookbookDays, days = 7) {
   return out;
 }
 
+// ── THE TWO LOCATIONS ────────────────────────────────────────────────────────
+// Owner review of sample 01 (2026-10-18): two locations, alternating per
+// lookbook day, concrete first. LOOKBOOK_SCENES in functions/.env is the order
+// (a JSON list of scene keys); unknown keys are dropped, an unreadable value
+// is the default, and an empty list is the default too (a poster needs a
+// location). Each scene is the only part of the hero prompt that changes.
+const LOOKBOOK_SCENE_DEFS = {
+  concrete: {
+    key: "concrete",
+    floor: "the concrete floor",
+    location: "Location: he stands on a poured concrete floor in a raw concrete space. Behind him is a board-formed concrete wall, the grain of the timber boards printed in it. No plants, no furniture, no props, no windows in frame.",
+    light: "Light: soft directional daylight from one side, as from a large window out of frame, falling off gently across the wall; soft shadows. Grade: muted grey, cool and neutral, editorial, natural skin tones.",
+    calm: "Keep the upper-left of the frame calm and uncluttered (plain concrete wall only) and the bottom 15% plain concrete floor.",
+  },
+  garden: {
+    key: "garden",
+    floor: "the paving",
+    location: "Location: he stands on large pale stone paving slabs in a lush garden — tall palm trees and dense tropical greenery behind him, a weathered stone bench to one side.",
+    light: "Light: soft overcast daylight, no hard shadows. Grade: muted, editorial, slightly desaturated greens, natural skin tones.",
+    calm: "Keep the upper-left of the frame calm and uncluttered — soft foliage and sky only — and the bottom 15% plain paving.",
+  },
+};
+const LOOKBOOK_SCENE_KEYS = Object.keys(LOOKBOOK_SCENE_DEFS);
+const DEFAULT_LOOKBOOK_SCENES = ["concrete", "garden"];
+
+/** LOOKBOOK_SCENES as configured, deduplicated, in the given order. Pure. */
+function parseLookbookScenes(raw) {
+  let list = DEFAULT_LOOKBOOK_SCENES;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const v = JSON.parse(raw);
+      if (Array.isArray(v)) list = v;
+    } catch { /* default */ }
+  } else if (Array.isArray(raw)) {
+    list = raw;
+  }
+  const out = [];
+  for (const s of list) {
+    const k = String(s || "").trim().toLowerCase();
+    if (LOOKBOOK_SCENE_KEYS.includes(k) && !out.includes(k)) out.push(k);
+  }
+  return out.length ? out : DEFAULT_LOOKBOOK_SCENES.slice();
+}
+
+// The first lookbook day the scenes rotate from: Monday 19 Oct 2026, the
+// first lookbook day after the owner's review, so it gets the first scene.
+const SCENE_EPOCH = "2026-10-19";
+
+/**
+ * The scene for an SA date: the number of lookbook days between SCENE_EPOCH
+ * and this date, modulo the scene list. Counted from the calendar, like the
+ * lookbook days themselves, so a missed or re-run day never shifts the
+ * alternation. A date that is not a lookbook day gets the scene the next
+ * lookbook day would. Pure.
+ */
+function sceneFor(saDate, scenes, lookbookDays) {
+  const list = scenes && scenes.length ? scenes : DEFAULT_LOOKBOOK_SCENES;
+  const days = new Set(lookbookDays && lookbookDays.length ? lookbookDays : DEFAULT_LOOKBOOK_DAYS);
+  const DAY = 86400000;
+  const a = Date.parse(`${SCENE_EPOCH}T12:00:00Z`), b = Date.parse(`${saDate}T12:00:00Z`);
+  if (!Number.isFinite(b)) return LOOKBOOK_SCENE_DEFS[list[0]];
+  // Lookbook days in [epoch, date) going forward, or in [date, epoch) going back.
+  let n = 0;
+  if (b >= a) { for (let t = a; t < b; t += DAY) if (days.has(WEEKDAYS[new Date(t).getUTCDay()])) n++; }
+  else { for (let t = b; t < a; t += DAY) if (days.has(WEEKDAYS[new Date(t).getUTCDay()])) n--; }
+  const i = ((n % list.length) + list.length) % list.length;
+  return LOOKBOOK_SCENE_DEFS[list[i]];
+}
+
+// ── THE MODEL ────────────────────────────────────────────────────────────────
+// Owner review of sample 01: the model is a Black man, dark skin, athletic,
+// in his 20s or 30s. A HARD requirement: it is in every hero prompt, and the
+// vision check below refuses a hero where he is not visibly Black.
+const MODEL_DESCRIPTION = "a Black man with dark skin, athletic build, in his mid-20s to early 30s";
+const MODEL_REQUIREMENT = `The model MUST be ${MODEL_DESCRIPTION}. This is a hard requirement.`;
+
 // ── THE HERO PROMPT ──────────────────────────────────────────────────────────
 // The picture is the ONLY thing the model makes. Type, prices, the wordmark,
 // the badge, the panel and the leader lines are all drawn in code. The
 // composition is pinned so the category anchors land on the body.
-function buildHeroPrompt(rows) {
+// `modelRef`: a character reference image is attached before the garments,
+// so every poster shows the same man.
+function buildHeroPrompt(rows, { scene = LOOKBOOK_SCENE_DEFS[DEFAULT_LOOKBOOK_SCENES[0]], modelRef = false } = {}) {
+  const sc = typeof scene === "string" ? LOOKBOOK_SCENE_DEFS[scene] : scene;
   const garments = (rows || []).map((r, i) =>
     `- ${SLOT_BY_KEY.get(r.slot).label.toUpperCase()}: ${r.displayName} — exactly as in REFERENCE ${i + 1}`).join("\n");
   return [
-    "Editorial fashion photograph, portrait orientation.",
-    "A male model, full length, head to toe in frame, standing upright and relaxed, facing the camera at a slight three-quarter angle, arms loose at his sides.",
-    "Composition: the model's body is centred at about 58% of the frame width (slightly right of centre); the top of his head is about 12% below the top edge and his shoes rest on the paving about 15% above the bottom edge, with open paving below them. Nothing crops him.",
-    "Location: he stands on large pale stone paving slabs in a lush garden — tall palm trees and dense tropical greenery behind him, a weathered stone bench to one side.",
-    "Light: soft overcast daylight, no hard shadows. Grade: muted, editorial, slightly desaturated greens, natural skin tones.",
+    "Editorial fashion photograph, portrait orientation, highest detail.",
+    MODEL_REQUIREMENT,
+    ...(modelRef ? ["He is the man in the MODEL REFERENCE photo: the same face, skin tone, hair and build. Take only the man from it, never its clothing, headwear or background."] : []),
+    "He is full length, head to toe in frame, standing upright and relaxed, facing the camera at a slight three-quarter angle, arms loose at his sides.",
+    `Composition: the model's body is centred at about 58% of the frame width (slightly right of centre); the top of his head is about 12% below the top edge and his shoes rest on ${sc.floor} about 15% above the bottom edge, with open floor below them. Nothing crops him.`,
+    sc.location,
+    sc.light,
     "He wears the complete outfit below, every garment reproduced faithfully from its attached reference photo — same colour, fabric, cut, graphics and logos as the real item:",
     garments,
     "Any item not listed is plain and unbranded (or absent).",
-    "Keep the upper-left of the frame calm and uncluttered — soft foliage and sky only — and the bottom 15% plain paving.",
+    sc.calm,
     "No text, no logos other than those on the garments, no captions, no watermark. No lettering, signage, numbers, borders, frames or graphic overlays of any kind.",
+  ].join("\n");
+}
+
+// ── THE CHARACTER REFERENCE ──────────────────────────────────────────────────
+// Made once (scripts/social/lookbook-model-ref.mjs) and attached to every hero.
+function buildModelRefPrompt() {
+  return [
+    "Studio portrait photograph for a casting reference, portrait orientation.",
+    MODEL_REQUIREMENT,
+    "Head and shoulders to mid-chest, facing the camera, neutral relaxed expression, short natural hair, no headwear, no glasses, no jewellery.",
+    "He wears a plain white crew-neck T-shirt with no logo.",
+    "Plain mid-grey seamless studio backdrop, soft even studio light, natural skin texture.",
+    "No text, no logos, no watermark.",
+  ].join("\n");
+}
+
+// ── THE CLEAN PRODUCT SHOT FOR THE PANEL ─────────────────────────────────────
+// Owner review of sample 01: the panel's pictures were crops of the shop's
+// photos — a hand holding the beanie, a hanger on the jeans, a box under the
+// shoe. Each product is redrawn on its own from its own photo (the reference
+// keeps colour, logo and shape), on pure white, and then cut out.
+const THUMB_VIEW = {
+  hat: "the hat on its own, front-on, as if on an invisible head form",
+  jacket: "the garment on its own, front-on, laid flat or on an invisible mannequin, sleeves relaxed",
+  tee: "the garment on its own, front-on, laid flat or on an invisible mannequin",
+  bottoms: "the garment on its own, front-on, full length, laid flat or on an invisible mannequin",
+  bag: "the bag on its own, front-on, standing upright, its strap tucked neatly behind it",
+  // Front-on, a pair of shoes is two toe caps; the pair at a slight angle is
+  // how every shop shows them.
+  sneakers: "the pair of shoes side by side, at a slight front three-quarter angle so the side profile shows",
+};
+function buildThumbPrompt(row) {
+  const r = row || {};
+  return [
+    `Professional e-commerce product photograph of exactly the item in the reference photo: ${r.displayName || "the product"}.`,
+    `Show ${THUMB_VIEW[r.slot] || "the item on its own, front-on"}, centred, filling about 80% of a square frame.`,
+    "Nothing else: no hand, no person, no hanger, no hook, no box, no packaging, no tag, no price label, no stand, no display block, no props.",
+    "Studio lighting, soft and even. Pure white seamless background (#FFFFFF), no shadow, no reflection, no floor line.",
+    "Reproduce the item faithfully from the reference: the same colour, fabric, shape, logo and every graphic. Change nothing about the product itself.",
+    "No added text, no watermark.",
   ].join("\n");
 }
 
@@ -366,10 +564,27 @@ const WHERE = {
 function buildHeroCheckPrompt() {
   return [
     "You are checking an AI-generated fashion photograph before it is published.",
-    "Does the image contain ANY text, letters, numbers, captions, watermarks, signatures, signage or graphic overlays that are NOT physically printed or embroidered on the model's clothing, shoes, hat or bag? Brand logos and wordmarks ON the garments do not count. Everything else counts, however small.",
+    "1. Does the image contain ANY text, letters, numbers, captions, watermarks, signatures, signage or graphic overlays that are NOT physically printed or embroidered on the model's clothing, shoes, hat or bag? Brand logos and wordmarks ON the garments do not count. Everything else counts, however small.",
+    "2. Is the model visibly a Black man with dark skin? Answer true only if he clearly is.",
     "Answer with ONLY a JSON object, no prose:",
-    '{"text_found": true|false, "text_seen": "what you saw, or empty"}',
+    '{"text_found": true|false, "text_seen": "what you saw, or empty", "model_black": true|false, "model_seen": "a few words describing the model"}',
   ].join("\n");
+}
+
+/**
+ * The model check, read strictly: anything but an explicit true FAILS. Pure.
+ * @returns { ok, seen, reason }
+ */
+function readModelCheck(text) {
+  const s = String(text || "");
+  const a = s.indexOf("{"), b = s.lastIndexOf("}");
+  let v = null;
+  if (a !== -1 && b > a) { try { v = JSON.parse(s.slice(a, b + 1)); } catch { v = null; } }
+  if (!v || typeof v.model_black !== "boolean") return { ok: false, seen: "", reason: "the model check did not say whether the model is Black" };
+  const seen = typeof v.model_seen === "string" ? v.model_seen.slice(0, 120) : "";
+  return v.model_black
+    ? { ok: true, seen, reason: null }
+    : { ok: false, seen, reason: `the model is not visibly a Black man${seen ? ` (${seen})` : ""}` };
 }
 
 // ── WHERE EACH GARMENT IS: A LABELLED GRID, NOT RAW NUMBERS ─────────────────
@@ -489,6 +704,9 @@ module.exports = {
   recentLookbookPids, pickLookbookOutfit, historyEntry,
   parseStillFormats, stillCalendar,
   parseLookbookDays, isJsonList, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
-  buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, anchorsFor,
+  buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, readModelCheck, anchorsFor,
+  buildModelRefPrompt, buildThumbPrompt, MODEL_DESCRIPTION,
+  LOOKBOOK_SCENE_DEFS, LOOKBOOK_SCENE_KEYS, DEFAULT_LOOKBOOK_SCENES, SCENE_EPOCH, parseLookbookScenes, sceneFor,
+  POSTER_BRANDS, stripStyleCodes, posterName, THUMBS_PER_DAY,
   GRID, buildLocatePrompt, cellCentre, readLocate,
 };

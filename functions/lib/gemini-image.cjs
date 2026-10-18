@@ -16,6 +16,13 @@ const GEMINI_FLAT_IMAGE_USD = 0.067;   // fallback per-image when usageMetadata 
 const NBPRO_MODEL           = "gemini-3-pro-image";
 const NBPRO_OUT_PER_MTOK    = 120;     // $/1M image-output tokens (1120 tok ≈ $0.134 per 1K/2K image)
 const NBPRO_FLAT_IMAGE_USD  = 0.134;   // fallback per-image when usageMetadata is absent
+// Lookbook panel thumbnails (2026-10-18): the cheapest image model that takes a
+// reference image. gemini-3.1-flash-lite-image at 1K is $0.0336 an image
+// ($30/1M output tokens), half of Flash; Flash is its fallback.
+const FLASH_LITE_MODEL          = "gemini-3.1-flash-lite-image";
+const FLASH_LITE_OUT_PER_MTOK   = 30;
+const FLASH_LITE_FLAT_IMAGE_USD = 0.0336;
+//
 // Per-request abort so a stalled upstream call fails fast instead of pinning the
 // worker for the Cloud Function's full 540s timeout (esp. NB Pro multi-image gens).
 // Generous headroom over a normal gen (~30-90s) so legitimate slow calls complete.
@@ -72,5 +79,6 @@ const inlineImagePart = (buffer, contentType) =>
 module.exports = {
   GEMINI_MODEL, GEMINI_OUT_PER_MTOK, GEMINI_FLAT_IMAGE_USD,
   NBPRO_MODEL, NBPRO_OUT_PER_MTOK, NBPRO_FLAT_IMAGE_USD,
+  FLASH_LITE_MODEL, FLASH_LITE_OUT_PER_MTOK, FLASH_LITE_FLAT_IMAGE_USD,
   GEMINI_FETCH_TIMEOUT_MS, geminiGenerateImage, inlineImagePart,
 };

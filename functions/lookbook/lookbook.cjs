@@ -14,6 +14,9 @@
 //   cap      the day's generation cap refused the unit           (costs nothing)
 //   generate the model call failed                              (5xx released)
 //   text     the hero contained text (after the allowed retry)
+//   model    the model is not visibly a Black man (after ONE regeneration,
+//            which this gate gets whatever maxAttempts says: owner review of
+//            sample 01, 18 Oct — "regenerate once, then fall back")
 //   render   the renderer threw
 //
 // ── "REGENERATE ONCE" AND THE CAP ────────────────────────────────────────────
@@ -27,6 +30,7 @@
 const lookbook = require("../lib/social-lookbook.cjs");
 const { renderLookbookPoster, cutout: defaultCutout, gridOverlay } = require("../lib/lookbook-render.cjs");
 const { loadLookbookCandidates, loadRecentLookbookPids } = require("./load.cjs");
+const { resolveThumb } = require("./thumbs.cjs");
 
 /**
  * @param db    RTDB handle (reads only)
@@ -42,14 +46,20 @@ const { loadLookbookCandidates, loadRecentLookbookPids } = require("./load.cjs")
  *   deadlineMs?: number                                       // no second attempt after this
  *   log?(msg)
  * }
+ *   thumbnail engines (thumbs.cjs, all optional): readThumbCache, writeThumbCache,
+ *     claimThumbUnit, generateThumb; readModelRef?() → { buffer, contentType } | null
  * @param opts  { nowMs, used: Set of pids already posted today, maxAttempts: heroes
- *               generated before the text gate gives up (production: 1) }
+ *               generated before the text gate gives up (production: 1); the model
+ *               gate always gets one regeneration; scene: a LOOKBOOK_SCENE_DEFS
+ *               entry or key (default: the first of DEFAULT_LOOKBOOK_SCENES) }
  * @returns { ok: true, rows, total, poster, costUSD, engine, attempts, check, anchors }
  *        | { ok: false, gate, reason, costUSD, attempts, rows? }
  */
-async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2 } = {}) {
+async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0] } = {}) {
   const log = deps.log || (() => {});
-  let costUSD = 0;
+  let costUSD = 0, thumbCostUSD = 0;
+  const sceneDef = typeof scene === "string" ? lookbook.LOOKBOOK_SCENE_DEFS[scene] : scene;
+  if (!sceneDef) throw new Error(`makeLookbook: unknown scene ${JSON.stringify(scene)}`);
   const attempts = [];
 
   // ── 1. THE OUTFIT, with real photos that actually download ─────────────
@@ -62,7 +72,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   // reason to stall: the next product in the slot is tried.
   const cut = deps.cutout || defaultCutout;
   const exclude = new Set(used);
-  const ready = new Map();          // pid → { thumb, contentType, cutout }
+  const ready = new Map();          // pid → { thumb, contentType, cutout, thumbSource }
   let picked = null;
   for (let round = 0; round < 8; round++) {
     const p = lookbook.pickLookbookOutfit(candidates, { recent, used: exclude });
@@ -73,9 +83,13 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     for (const r of fresh) await (async () => {
       try {
         const img = await deps.fetchImage(r.photoUrl);
-        const c = await cut(img.buffer);
-        if (!c || !c.png) { log(`lookbook: ${r.pid} photo does not cut out cleanly (${(c && c.tried || []).join(", ")}) — skipping it`); exclude.add(r.pid); return; }
-        ready.set(r.pid, { thumb: img.buffer, contentType: img.contentType, cutout: c });
+        // The panel picture: studio photo, cached clean shot, a new clean
+        // shot, or the shop photo cut out (thumbs.cjs). The shop photo stays
+        // the hero's reference either way: it is the real product.
+        const t = await resolveThumb(r, img, { ...deps, cutout: cut, log });
+        thumbCostUSD += t.costUSD || 0;
+        if (!t.cutout) { log(`lookbook: ${r.pid} has no clean picture (${t.source}: ${(t.tried || []).join(", ")}) — skipping it`); exclude.add(r.pid); return; }
+        ready.set(r.pid, { thumb: img.buffer, contentType: img.contentType, cutout: t.cutout, thumbSource: t.source });
       } catch (e) {
         log(`lookbook: photo for ${r.pid} failed (${e && e.message}) — skipping it`);
         exclude.add(r.pid);
@@ -86,20 +100,34 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
       break;
     }
   }
-  if (!picked) return { ok: false, gate: "outfit", reason: "no full outfit with photos that download and cut out cleanly", costUSD, attempts };
+  costUSD += thumbCostUSD;
+  if (!picked) return { ok: false, gate: "outfit", reason: "no full outfit with photos that download and cut out cleanly", costUSD, attempts, thumbCostUSD };
   const rows = picked.rows;
 
   // ── 2. THE HERO, with the real garments attached ───────────────────────
-  const prompt = lookbook.buildHeroPrompt(rows);
+  // The character reference first, so every poster shows the same man. A
+  // missing or unreadable reference is not a gate: the prompt still pins him.
+  let modelRef = null;
+  if (deps.readModelRef) {
+    try { modelRef = await deps.readModelRef(); } catch (e) { log(`lookbook: character reference unreadable (${e && e.message}) — generating without it`); }
+  }
+  const prompt = lookbook.buildHeroPrompt(rows, { scene: sceneDef, modelRef: Boolean(modelRef) });
   const parts = [{ text: prompt }];
+  if (modelRef) {
+    parts.push({ text: "MODEL REFERENCE — this is the man to photograph (his face, skin tone, hair and build only):" });
+    parts.push(deps.inlineImagePart(modelRef.buffer, modelRef.contentType || "image/jpeg"));
+  }
   rows.forEach((r, i) => {
     parts.push({ text: `REFERENCE ${i + 1} — ${r.slot.toUpperCase()}: ${r.displayName}. He wears exactly this item:` });
     parts.push(deps.inlineImagePart(r.thumb, r.contentType || "image/jpeg"));
   });
   const checkPrompt = lookbook.buildHeroCheckPrompt();
 
-  let hero = null, check = null, engine = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  let hero = null, check = null, modelCheck = null, engine = null, failed = null;
+  // The text gate regenerates only within maxAttempts; the model gate always
+  // gets one regeneration. Both still obey the unit and deadline rules below.
+  for (let attempt = 1; attempt <= Math.max(2, maxAttempts); attempt++) {
+    if (attempt > 1 && failed === "text" && attempt > maxAttempts) break;
     // EVERY generation, the first included, must leave one unit for the
     // current-style fallback. Without this a morning that already spent three
     // (a billed reel retry) let the lookbook take the fourth, and a failed gate
@@ -108,10 +136,10 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     if (!(Number.isFinite(left) && left >= 2)) {
       return attempt === 1
         ? { ok: false, gate: "cap", costUSD, attempts, rows, reason: `only ${Number.isFinite(left) ? left : "an unknown number of"} generation unit(s) left today — the lookbook would leave the current-style fallback none` }
-        : { ok: false, gate: "text", costUSD, attempts, rows, reason: `${check.reason} — not regenerated: ${Number.isFinite(left) ? left : "unknown"} unit(s) left today and the current-style fallback needs one` };
+        : { ok: false, gate: failed, costUSD, attempts, rows, reason: `${failedReason()} — not regenerated: ${Number.isFinite(left) ? left : "unknown"} unit(s) left today and the current-style fallback needs one` };
     }
     if (attempt === 2 && deps.deadlineMs && Date.now() > deps.deadlineMs) {
-      return { ok: false, gate: "text", costUSD, attempts, rows, reason: `${check.reason} — not regenerated: out of time for a second attempt and the fallback` };
+      return { ok: false, gate: failed, costUSD, attempts, rows, reason: `${failedReason()} — not regenerated: out of time for a second attempt and the fallback` };
     }
     const unit = await deps.claimUnit();
     if (!unit.ok) {
@@ -131,11 +159,19 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     let answer = "";
     try { answer = await deps.checkHero(gen.buffer, gen.mime || "image/png", checkPrompt); } catch (e) { answer = ""; log(`lookbook: text check failed: ${e && e.message}`); }
     check = lookbook.readHeroCheck(answer);
-    attempts.push({ attempt, engine, costUSD: gen.costUSD || 0, textOk: check.ok, seen: check.seen || null, reason: check.reason });
-    if (check.ok) { hero = gen; break; }
-    log(`lookbook: attempt ${attempt} failed the text check — ${check.reason}`);
+    modelCheck = lookbook.readModelCheck(answer);
+    attempts.push({ attempt, engine, costUSD: gen.costUSD || 0, textOk: check.ok, seen: check.seen || null, modelOk: modelCheck.ok, modelSeen: modelCheck.seen || null, reason: check.reason || modelCheck.reason });
+    if (check.ok && modelCheck.ok) { hero = gen; break; }
+    failed = check.ok ? "model" : "text";
+    log(`lookbook: attempt ${attempt} failed the ${failed} check — ${failedReason()}`);
   }
-  if (!hero) return { ok: false, gate: "text", reason: `the hero failed the no-text check${attempts.length === 2 ? " twice" : ""} (${check.reason})`, costUSD, attempts, rows };
+  function failedReason() { return failed === "model" ? modelCheck.reason : check.reason; }
+  if (!hero) {
+    const twice = attempts.filter((a) => a.engine).length >= 2 ? " twice" : "";
+    return failed === "model"
+      ? { ok: false, gate: "model", reason: `the hero failed the model check${twice} (${modelCheck.reason})`, costUSD, attempts, rows }
+      : { ok: false, gate: "text", reason: `the hero failed the no-text check${twice} (${check.reason})`, costUSD, attempts, rows };
+  }
 
   // ── 3. WHERE THE GARMENTS ARE (for the dots) ───────────────────────────
   // Best effort: an unanswered locate leaves the dots on the category spots.
@@ -149,7 +185,11 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   const anchors = lookbook.anchorsFor(rows, located.anchors, located.head);
   try {
     const poster = await renderLookbookPoster({ hero: hero.buffer, rows, anchors, subject: located.head });
-    return { ok: true, rows, total: poster.total, poster, costUSD, engine, attempts, check, located, anchors, hero, prompt };
+    return {
+      ok: true, rows, total: poster.total, poster, costUSD, thumbCostUSD, engine, attempts, check, modelCheck, located, anchors, hero, prompt,
+      scene: sceneDef.key, modelRef: Boolean(modelRef),
+      thumbs: Object.fromEntries(rows.map((r) => [r.pid, r.thumbSource || null])),
+    };
   } catch (e) {
     return { ok: false, gate: "render", reason: `the poster could not be rendered: ${String(e && e.message).slice(0, 160)}`, costUSD, attempts, rows };
   }

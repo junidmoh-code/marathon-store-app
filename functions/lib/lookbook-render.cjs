@@ -6,9 +6,13 @@
 // and the TOTAL.
 //
 // ── THREE EXPORTS, TWO LAYOUTS ───────────────────────────────────────────────
-//   master  1200x1800 (2:3)  the layout as authored
+//   master  1600x2400 (2:3)  the layout as authored at 1200x1800, drawn at
+//                            RENDER_SCALE (4/3) so the master is 2400 px
+//                            tall: the type is vector and the hero is 4K, so
+//                            nothing is stretched (owner review, 2026-10-18;
+//                            it was 1200x1800 before)
 //   feed    1080x1350 (4:5)  the SAME design laid out natively at 1200x1500,
-//                            then scaled. The photograph is cropped from the
+//                            drawn at 1600x2000, then scaled down. The photograph is cropped from the
 //                            TOP (never the head or the hat). The panel and
 //                            the strip re-space to the shorter canvas instead
 //                            of being cut off: a literal 300 px crop of the
@@ -25,14 +29,17 @@ const fs = require("fs");
 const path = require("path");
 const type = require("./lookbook-type.cjs");
 const { splitName } = require("./social-design.cjs");
-const { formatRand, guessSlot } = require("./social-lookbook.cjs");
+const { formatRand, guessSlot, posterName } = require("./social-lookbook.cjs");
 
 const PAPER = "#E9E6DF";
 const INK = "#141414";
 const OFF_WHITE = "#F3F0EA";
 const RULE = "#BDB7AC";
 const HERO_FRAC = 0.68;
+// Every layout number below is in the 1200-wide design space. RENDER_SCALE is
+// applied only when the canvas is drawn.
 const MASTER = { w: 1200, h: 1800 };
+const RENDER_SCALE = 4 / 3;
 const FEED_LAYOUT = { w: 1200, h: 1500 };
 const FEED = { w: 1080, h: 1350 };
 const STORY = { w: 1080, h: 1920 };
@@ -90,7 +97,7 @@ function panelLayout(n, H) {
  * Lay out and draw the SVG layer for one canvas. Returns the SVG and the
  * thumbnail boxes the caller composites the cut-outs into.
  */
-function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx }) {
+function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1 }) {
   const heroW = Math.round(W * HERO_FRAC);
   const panelX = heroW, panelW = W - heroW;
   const pad = 24;
@@ -206,11 +213,11 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx }) {
     // A brand line only for a real brand. "Jacket brown" has none, and must
     // not be set as brand JACKET over name BROWN (spec review L18): the
     // whole name goes on the bold line instead.
-    const split = splitName(r.displayName);
-    // splitName falls back to the first word; a first word that is itself a
-    // category ("Jacket", "Pants", "Cap") is not a brand.
-    const known = Boolean(split.rest) && !guessSlot(split.brand);
-    const brand = known ? split.brand : String(r.displayName || "").toUpperCase();
+    // Multi-word brands in their proper form ("G-STAR RAW", "HUGO BOSS"),
+    // style codes never printed (lib/social-lookbook.cjs posterName).
+    const split = posterName(r.displayName, { fallbackSplit: splitName, isCategory: (w) => Boolean(guessSlot(w)) });
+    const known = Boolean(split.brand);
+    const brand = known ? split.brand : split.rest;
     const rest = known ? split.rest : "";
     const bFit = type.wrap(brand, { font: "archivo", weight: 800, size: 19, minSize: 14, letterSpacing: 1, maxWidth: textW, maxLines: known ? 1 : 2 });
     const nFit = type.wrap(rest, { font: "archivo", weight: 500, size: 12.5, minSize: 10, letterSpacing: 0.8, maxWidth: textW, maxLines: 3 });
@@ -266,7 +273,7 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx }) {
   });
 
   return {
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${out.join("")}</svg>`,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(W * scale)}" height="${Math.round(H * scale)}" viewBox="0 0 ${W} ${H}">${out.join("")}</svg>`,
     thumbs, heroW, panelX, layout: P, markW,
   };
 }
@@ -413,35 +420,39 @@ async function gridOverlay(buffer, grid) {
  * @param anchors   { slot: {x,y} } fractions of the GENERATED photograph
  * @param subject   { x, y } fraction: the model's centre / head, or null
  */
-async function renderCanvas({ hero, rows, total, anchors, subject, W, H }) {
+async function renderCanvas({ hero, rows, total, anchors, subject, W, H, scale = RENDER_SCALE }) {
   const sharp = require("sharp");
   const meta = await sharp(hero).metadata();
   const heroW = Math.round(W * HERO_FRAC);
-  const frame = heroFrame(meta.width, meta.height, heroW, H, subject && Number.isFinite(subject.x) ? subject.x : 0.58);
+  // The layout is in design units (W x H); the pixels are design x scale.
+  const PW = Math.round(W * scale), PH = Math.round(H * scale), pHeroW = Math.round(heroW * scale);
+  const frame = heroFrame(meta.width, meta.height, pHeroW, PH, subject && Number.isFinite(subject.x) ? subject.x : 0.58);
   const heroBuf = await sharp(hero)
-    .resize(frame.sw, frame.sh)
-    .extract({ left: frame.left, top: frame.top, width: heroW, height: H })
+    .resize(frame.sw, frame.sh, { kernel: "lanczos3" })
+    .extract({ left: frame.left, top: frame.top, width: pHeroW, height: PH })
     .toBuffer();
+  const toDesign = (p) => ({ x: p.x / scale, y: p.y / scale });
   const anchorsPx = {};
-  for (const [slot, a] of Object.entries(anchors || {})) anchorsPx[slot] = frame.toPx(a.x, a.y);
-  const headPx = subject && Number.isFinite(subject.y) ? frame.toPx(subject.x, subject.y) : null;
-  const built = buildPosterSvg({ W, H, rows, total, anchorsPx, headPx });
+  for (const [slot, a] of Object.entries(anchors || {})) anchorsPx[slot] = toDesign(frame.toPx(a.x, a.y));
+  const headPx = subject && Number.isFinite(subject.y) ? toDesign(frame.toPx(subject.x, subject.y)) : null;
+  const built = buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale });
   const layers = [
     { input: heroBuf, left: 0, top: 0 },
-    { input: grain(W - heroW, H), raw: { width: W - heroW, height: H, channels: 4 }, left: heroW, top: 0 },
+    { input: grain(PW - pHeroW, PH), raw: { width: PW - pHeroW, height: PH, channels: 4 }, left: pHeroW, top: 0 },
   ];
   for (const t of built.thumbs) {
     const row = rows.find((r) => r.slot === t.slot);
-    const layer = row && row.thumbLayers && row.thumbLayers[t.size];
+    const px = Math.round(t.size * scale);
+    const layer = row && row.thumbLayers && row.thumbLayers[px];
     if (!layer) continue;
-    layers.push({ input: layer.input, left: t.x + layer.dx, top: t.y + layer.dy, ...(layer.blend ? { blend: layer.blend } : {}) });
+    layers.push({ input: layer.input, left: Math.round(t.x * scale) + layer.dx, top: Math.round(t.y * scale) + layer.dy, ...(layer.blend ? { blend: layer.blend } : {}) });
   }
   layers.push({ input: Buffer.from(built.svg), left: 0, top: 0 });
-  const buffer = await sharp({ create: { width: W, height: H, channels: 3, background: PAPER } })
+  const buffer = await sharp({ create: { width: PW, height: PH, channels: 3, background: PAPER } })
     .composite(layers)
     .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
     .toBuffer();
-  return { buffer, width: W, height: H, built, frame };
+  return { buffer, width: PW, height: PH, built, frame };
 }
 
 /**
@@ -449,12 +460,13 @@ async function renderCanvas({ hero, rows, total, anchors, subject, W, H }) {
  * `rows[i].thumb` is the product photo buffer; the cut-out is made once per
  * thumbnail size used.
  */
-async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null }) {
+async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null, scale = RENDER_SCALE }) {
   const sharp = require("sharp");
   if (!rows || !rows.length) throw new Error("renderLookbookPoster: no rows");
   const totalValue = rows.reduce((s, r) => s + r.price, 0);
   const total = { value: totalValue, text: formatRand(totalValue) };
-  const sizes = new Set([MASTER, FEED_LAYOUT].map((c) => panelLayout(rows.length, c.h).thumb));
+  // Thumbnail layers in PIXELS (design size x scale), one per size used.
+  const sizes = new Set([MASTER, FEED_LAYOUT].map((c) => Math.round(panelLayout(rows.length, c.h).thumb * scale)));
   const prepared = await Promise.all(rows.map(async (r) => {
     const thumbLayers = {};
     // One matte per product, shared by both canvases.
@@ -462,18 +474,18 @@ async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null }
     for (const size of sizes) thumbLayers[size] = await thumbLayer(row, size);
     return { ...row, thumbLayers };
   }));
-  const master = await renderCanvas({ hero, rows: prepared, total, anchors, subject, W: MASTER.w, H: MASTER.h });
-  const feedNative = await renderCanvas({ hero, rows: prepared, total, anchors, subject, W: FEED_LAYOUT.w, H: FEED_LAYOUT.h });
-  const feed = await sharp(feedNative.buffer).resize(FEED.w, FEED.h).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
+  const master = await renderCanvas({ hero, rows: prepared, total, anchors, subject, W: MASTER.w, H: MASTER.h, scale });
+  const feedNative = await renderCanvas({ hero, rows: prepared, total, anchors, subject, W: FEED_LAYOUT.w, H: FEED_LAYOUT.h, scale });
+  const feed = await sharp(feedNative.buffer).resize(FEED.w, FEED.h, { kernel: "lanczos3" }).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
   const storyH = Math.round(MASTER.h * (STORY.w / MASTER.w));
   const padTop = Math.floor((STORY.h - storyH) / 2);
   const story = await sharp(master.buffer)
-    .resize(STORY.w, storyH)
+    .resize(STORY.w, storyH, { kernel: "lanczos3" })
     .extend({ top: padTop, bottom: STORY.h - storyH - padTop, left: 0, right: 0, background: PAPER })
     .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
     .toBuffer();
   return {
-    master: { buffer: master.buffer, width: MASTER.w, height: MASTER.h },
+    master: { buffer: master.buffer, width: master.width, height: master.height },
     feed: { buffer: feed, width: FEED.w, height: FEED.h },
     story: { buffer: story, width: STORY.w, height: STORY.h },
     total,
@@ -484,5 +496,5 @@ async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null }
 
 module.exports = {
   renderLookbookPoster, buildPosterSvg, panelLayout, heroFrame, cutout, gridOverlay,
-  PAPER, HERO_FRAC, MASTER, FEED, FEED_LAYOUT, STORY,
+  PAPER, HERO_FRAC, MASTER, FEED, FEED_LAYOUT, STORY, RENDER_SCALE,
 };

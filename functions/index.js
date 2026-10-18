@@ -5487,11 +5487,14 @@ exports.socialDailyAutopilot = onSchedule(
 //   LOOKBOOK_ENABLED=false            drop "lookbook": current style every day
 //   STILL_FORMATS=["current","lookbook"]  the formats allowed; [] = no daily still
 //   LOOKBOOK_DAYS=["mon","wed","fri"] the lookbook's days; current the rest
+//   LOOKBOOK_SCENES=["concrete","garden"] the hero's locations, one per
+//                                     lookbook day in turn, the first on Mon 19 Oct 2026
 const socialLookbook = require("./lib/social-lookbook.cjs");
 const socialStill = require("./lib/social-still.cjs");
 const LOOKBOOK_ENABLED = process.env.LOOKBOOK_ENABLED !== "false";
 const STILL_FORMATS = socialLookbook.parseStillFormats(process.env.STILL_FORMATS, { lookbookEnabled: LOOKBOOK_ENABLED });
 const LOOKBOOK_DAYS = socialLookbook.parseLookbookDays(process.env.LOOKBOOK_DAYS);
+const LOOKBOOK_SCENES = socialLookbook.parseLookbookScenes(process.env.LOOKBOOK_SCENES);
 // A malformed LOOKBOOK_DAYS ("tue,thu") reads as the default; say so in the log.
 if (process.env.LOOKBOOK_DAYS && !socialLookbook.isJsonList(process.env.LOOKBOOK_DAYS)) {
   console.warn(`LOOKBOOK_DAYS is not a JSON list (${process.env.LOOKBOOK_DAYS}) — using ${JSON.stringify(LOOKBOOK_DAYS)}`);
@@ -5520,6 +5523,7 @@ async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platfor
     const record = socialStill.buildLookbookRecord({
       rows: made.rows, total: made.total, urls, scheduledAt, platforms,
       engine: made.engine, costUSD: made.costUSD, nowMs, link, storyCaption,
+      masterSize: made.poster.master, scene: made.scene,
     });
     // The feed shows a caption, so the twin gets a real one, written by the
     // same caption call every other feed post uses. A failure falls back to
@@ -5652,7 +5656,7 @@ exports.socialStillAutopilot = onSchedule(
         let made;
         try {
           made = await makeLookbook(db, lookbookEngines({
-            db, saDate,
+            db, saDate, bucket: admin.storage().bucket(STORAGE_BUCKET),
             geminiApiKey: geminiApiKey.value(),
             anthropicApiKey: anthropicApiKey.value(),
             visionModel: CHAT_MODEL,
@@ -5660,7 +5664,7 @@ exports.socialStillAutopilot = onSchedule(
             log: (m) => console.log(m),
             // No second hero after 15 minutes: the fallback needs the rest.
             deadlineMs: nowMs + 900 * 1000,
-          }), { nowMs, used, maxAttempts: LOOKBOOK_HERO_ATTEMPTS });
+          }), { nowMs, used, maxAttempts: LOOKBOOK_HERO_ATTEMPTS, scene: socialLookbook.sceneFor(saDate, LOOKBOOK_SCENES, LOOKBOOK_DAYS) });
         } catch (err) {
           made = { ok: false, gate: "error", reason: `the lookbook threw: ${String(err && err.message).slice(0, 160)}`, costUSD: 0 };
         }
@@ -5671,6 +5675,7 @@ exports.socialStillAutopilot = onSchedule(
             await logRef.update(socialStill.stillLogEntry({
               planned, posted: "lookbook", costUSD, postId: w.postId, twinId: w.twinId, scheduledAt,
               rows: made.rows.length, total: made.total.value, nowMs: Date.now(),
+              scene: made.scene, thumbCostUSD: made.thumbCostUSD,
             }));
             await logReorderUsage(db, saDate, { at: nowMs, kind: "socialStillAutopilot", by: "cron", format: "lookbook", estimatedCostUSD: +costUSD.toFixed(4) });
             console.log(`socialStillAutopilot ${saDate}: lookbook posted (${made.rows.length} rows, ${made.total.text}, ~$${costUSD.toFixed(3)})`);

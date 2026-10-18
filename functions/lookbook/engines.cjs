@@ -2,7 +2,13 @@
 // Builds the `deps` lookbook.cjs takes, from what the pipeline already uses:
 //   · Nano Banana Pro (gemini-3-pro-image) through lib/gemini-image.cjs, with
 //     the same Pro → Flash fallback on an unbilled 5xx that generateSocialScene
-//     makes (7 Oct 2026), at 9:16 / 2K;
+//     makes (7 Oct 2026), at 9:16 and 4K, each model's maximum (owner review,
+//     18 Oct: 2K gave 1536x2752);
+//   · the panel's clean product shots (thumbs.cjs): Flash-Lite with Flash
+//     behind it, cached in social_lookbook/thumbs/{pid} + Storage, under
+//     their own daily ceiling (THUMBS_PER_DAY), never the hero cap;
+//   · the character reference (social_lookbook/model), attached to every hero
+//     so the posters show one man;
 //   · a vision model the pipeline already pays for, for the no-text check and
 //     the garment positions: claude-sonnet-4-6 (CHAT_MODEL in index.js, the
 //     caption model). claude-haiku-4-5 was tried first and placed the hat a
@@ -17,16 +23,26 @@
 const gemini = require("../lib/gemini-image.cjs");
 const socialBudget = require("../lib/social-budget.cjs");
 const socialRecovery = require("../lib/social-recovery.cjs");
+const lookbook = require("../lib/social-lookbook.cjs");
 
-function engines({ db, saDate, geminiApiKey, anthropicApiKey, visionModel, fetchImage, Anthropic, log, deadlineMs }) {
+// 4K output: $0.24 on Pro, $0.151 on Flash (Gemini API pricing, Oct 2026),
+// the estimates used when a response carries no usage metadata.
+const NBPRO_4K_FLAT_USD = 0.24;
+const FLASH_4K_FLAT_USD = 0.151;
+const THUMB_DIR = "aiStudio/social/lookbook/thumbs";
+const THUMB_PATH = (pid) => `${THUMB_DIR}/${pid}.png`;
+// A pid is an RTDB key and a Storage name: nothing else is accepted.
+const SAFE_PID = /^[A-Za-z0-9_-]{1,80}$/;
+
+function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionModel, fetchImage, Anthropic, log, deadlineMs }) {
   const counter = () => db.ref(`social_generation_budget/${saDate}/count`);
   const cap = socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY;
 
   async function generateHero(parts) {
     try {
       const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.NBPRO_MODEL, parts, {
-        outPerMtok: gemini.NBPRO_OUT_PER_MTOK, flatUsd: gemini.NBPRO_FLAT_IMAGE_USD,
-        imageConfig: { aspectRatio: "9:16", imageSize: "2K" },
+        outPerMtok: gemini.NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_4K_FLAT_USD,
+        imageConfig: { aspectRatio: "9:16", imageSize: "4K" },
       });
       return { ...gen, engine: "nbpro" };
     } catch (err) {
@@ -34,8 +50,8 @@ function engines({ db, saDate, geminiApiKey, anthropicApiKey, visionModel, fetch
       if (log) log(`lookbook: ${gemini.NBPRO_MODEL} unavailable — retrying on ${gemini.GEMINI_MODEL}`);
       try {
         const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.GEMINI_MODEL, parts, {
-          outPerMtok: gemini.GEMINI_OUT_PER_MTOK, flatUsd: gemini.GEMINI_FLAT_IMAGE_USD,
-          imageConfig: { aspectRatio: "9:16" },
+          outPerMtok: gemini.GEMINI_OUT_PER_MTOK, flatUsd: FLASH_4K_FLAT_USD,
+          imageConfig: { aspectRatio: "9:16", imageSize: "4K" },
         });
         return { ...gen, engine: "nb2" };
       } catch (flashErr) {
@@ -91,12 +107,84 @@ function engines({ db, saDate, geminiApiKey, anthropicApiKey, visionModel, fetch
     return typeof v === "number" && Number.isFinite(v) ? Math.max(0, cap - v) : null;
   }
 
+  // ── THE PANEL'S CLEAN PRODUCT SHOTS ────────────────────────────────────
+  async function generateThumb(parts) {
+    try {
+      const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.FLASH_LITE_MODEL, parts, {
+        outPerMtok: gemini.FLASH_LITE_OUT_PER_MTOK, flatUsd: gemini.FLASH_LITE_FLAT_IMAGE_USD,
+        imageConfig: { aspectRatio: "1:1" },
+      });
+      return { ...gen, engine: "flash-lite" };
+    } catch (err) {
+      // Lite unavailable (a 5xx) or refusing the request: the same parts to Flash.
+      if (log) log(`lookbook: ${gemini.FLASH_LITE_MODEL} failed (${String(err && err.message).slice(0, 80)}) — thumbnail on ${gemini.GEMINI_MODEL}`);
+      const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.GEMINI_MODEL, parts, {
+        outPerMtok: gemini.GEMINI_OUT_PER_MTOK, flatUsd: gemini.GEMINI_FLAT_IMAGE_USD,
+        imageConfig: { aspectRatio: "1:1", imageSize: "1K" },
+      });
+      return { ...gen, engine: "flash" };
+    }
+  }
+
+  async function claimThumbUnit() {
+    const res = await db.ref(`social_lookbook/thumbBudget/${saDate}`).transaction((cur) => {
+      const n = cur === null ? 0 : Number(cur);
+      if (!Number.isFinite(n) || n >= lookbook.THUMBS_PER_DAY) return undefined;
+      return n + 1;
+    });
+    return { ok: Boolean(res.committed) };
+  }
+
+  async function readThumbCache(pid) {
+    if (!bucket || !SAFE_PID.test(String(pid))) return null;
+    const ptr = (await db.ref(`social_lookbook/thumbs/${pid}`).once("value")).val();
+    const file = bucket.file(ptr && typeof ptr.path === "string" && ptr.path.startsWith(`${THUMB_DIR}/`) ? ptr.path : THUMB_PATH(pid));
+    // No pointer: the file may still be there (a pointer write that failed
+    // after the upload). It is used, and the pointer put back.
+    if (!ptr) {
+      const [exists] = await file.exists();
+      if (!exists) return null;
+      const [png] = await file.download();
+      await db.ref(`social_lookbook/thumbs/${pid}`).set({ path: file.name, at: Date.now(), repaired: true });
+      return { png };
+    }
+    const [png] = await file.download();
+    return { png };
+  }
+
+  async function writeThumbCache(pid, png, meta = {}) {
+    if (!bucket || !SAFE_PID.test(String(pid))) throw new Error("no bucket or an unusable pid");
+    const token = require("crypto").randomUUID();
+    const path = THUMB_PATH(pid);
+    await bucket.file(path).save(png, {
+      resumable: false, contentType: "image/png",
+      metadata: { cacheControl: "public, max-age=31536000", metadata: { firebaseStorageDownloadTokens: token } },
+    });
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+    await db.ref(`social_lookbook/thumbs/${pid}`).set({
+      path, url, at: Date.now(),
+      engine: meta.engine || null, costUSD: Number(meta.costUSD) || 0,
+      method: meta.method || null, src: meta.src || null,
+    });
+    return { path, url };
+  }
+
+  // ── THE CHARACTER REFERENCE ────────────────────────────────────────────
+  async function readModelRef() {
+    if (!bucket) return null;
+    const ptr = (await db.ref("social_lookbook/model").once("value")).val();
+    if (!ptr || typeof ptr.path !== "string" || !ptr.path.startsWith("aiStudio/social/lookbook/model/")) return null;
+    const [buffer] = await bucket.file(ptr.path).download();
+    return { buffer, contentType: ptr.contentType || "image/jpeg" };
+  }
+
   return {
     fetchImage, generateHero, checkHero, claimUnit, releaseUnit, unitsLeft,
+    generateThumb, claimThumbUnit, readThumbCache, writeThumbCache, readModelRef,
     inlineImagePart: gemini.inlineImagePart,
     isUnbilledError: (m) => socialRecovery.isUnbilledProviderError(m),
     log, deadlineMs,
   };
 }
 
-module.exports = { engines };
+module.exports = { engines, THUMB_DIR, THUMB_PATH, NBPRO_4K_FLAT_USD };
