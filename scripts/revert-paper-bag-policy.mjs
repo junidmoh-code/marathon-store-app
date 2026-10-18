@@ -146,8 +146,12 @@ async function guardedWrite(p, expect, next) {
 async function policyRemovedAtMs() {
   const hist = (await db.ref(writer.HISTORY_PATH).orderByKey().startAt("-P44").once("value")).val() || {};
   const entries = Object.values(hist);
-  const rows = entries.filter((h) => h?.revertOfPaperBagPolicy === true && typeof h.verifiedAt === "number").map((h) => h.verifiedAt);
-  if (rows.length) return Math.max(...rows);
+  // Only a run whose rows ALL landed closes the window: every one of its row
+  // entries must read "applied" (a "partial" one means a cell is still at
+  // #729's numbers and can still raise).
+  const rows = entries.filter((h) => h?.revertOfPaperBagPolicy === true && typeof h.verifiedAt === "number");
+  if (rows.length && rows.every((h) => h.status === "applied")) return Math.max(...rows.map((h) => h.verifiedAt));
+  if (rows.length) return null;
   const policy = entries.filter((h) => h?.categoryKey === KEY && !h.kind && h.after === null && h.status === "applied" && typeof h.at === "number").map((h) => h.at);
   return policy.length ? Math.min(...policy) : null;
 }
@@ -214,7 +218,7 @@ async function main() {
 
   // ── 3. ROWS ────────────────────────────────────────────────────────────────
   log(`\n3. ROWS — ${before.rows.length} product × location edits from #729`);
-  let rowsRestored = 0, rowsDone = 0, rowsConflict = 0;
+  let rowsRestored = 0, rowsDone = 0, rowsConflict = 0, rowsLanded = 0;
   const rowWrites = [];   // { loc, pid, sizeKey, path, cur, want }
   for (const e of before.rows) {
     for (const [sizeKey, was] of Object.entries(e.before || {})) {
@@ -260,14 +264,20 @@ async function main() {
       await historyRef.update({ status: landed === ws.length ? "applied" : "partial", verifiedAt: serverNowMs() });
     }
     writer.invalidateCensusCache();
+    rowsLanded = ok;
     log(`   ✓ ${ok}/${rowWrites.length} cells restored`);
   }
-  // Window end: on the run that un-arms the policy, now (policy and rows are
-  // both back); on a dry run with the policy still live, now as well (that is
-  // when the run would close it); on a re-run, the moment the earlier run
-  // finished its rows (its last history entry), else the policy's removal.
-  if (policyRemovedThisRun || (!EXECUTE && policyLive !== null && policyIs729)) policyRemovedAt = serverNowMs();
+  // Window end: on the run that un-arms the policy, now — but ONLY if every row
+  // landed (a row still at #729's numbers can still raise after this moment, so
+  // a partial restore leaves the window open and cancels nothing this run —
+  // CodeRabbit, PR #744); on a dry run with the policy still live, now as well
+  // (that is when the run would close it); on a re-run, the moment an earlier
+  // run finished ALL its rows (an "applied" history entry), else the policy's
+  // removal when no row restore was needed.
+  const allRowsBack = !EXECUTE || rowsLanded === rowWrites.length;
+  if (policyRemovedThisRun || (!EXECUTE && policyLive !== null && policyIs729)) policyRemovedAt = allRowsBack ? serverNowMs() : null;
   else policyRemovedAt = await policyRemovedAtMs();
+  if (policyRemovedAt === null && EXECUTE) log(`   ! ${rowWrites.length - rowsLanded} rows did not land — the cancel window stays open; re-run to cancel`);
 
   // ── 4. CANCEL ──────────────────────────────────────────────────────────────
   const stock = {};
