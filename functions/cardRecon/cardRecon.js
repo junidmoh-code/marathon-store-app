@@ -515,7 +515,10 @@ async function runSlipOcrOnce(photos, apiKey, model, fetchImpl) {
 }
 
 // Gemini's schema, in the JSON Schema dialect Claude's structured output takes:
-// lower-case types, and every object closed (additionalProperties: false).
+// lower-case types, every object closed (additionalProperties: false) and
+// every field REQUIRED — Claude refuses a schema with more than 24 optional
+// fields (HTTP 400, live on 18 Oct 2026), and the prompt already answers an
+// unreadable field with "" / confidence 0, which toExtraction reads as absent.
 function toJsonSchema(node) {
   if (!node || typeof node !== "object") return node;
   const out = { type: String(node.type).toLowerCase() };
@@ -523,9 +526,9 @@ function toJsonSchema(node) {
   if (node.properties) {
     out.properties = Object.fromEntries(Object.entries(node.properties).map(([k, v]) => [k, toJsonSchema(v)]));
     out.additionalProperties = false;
+    out.required = Object.keys(node.properties);
   }
   if (node.items) out.items = toJsonSchema(node.items);
-  if (node.required) out.required = node.required;
   return out;
 }
 const CLAUDE_EXTRACTION_SCHEMA = toJsonSchema(EXTRACTION_SCHEMA);
