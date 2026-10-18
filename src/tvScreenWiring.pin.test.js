@@ -71,6 +71,12 @@ test("TvWithAutoCollect has no reload path", () => {
 
 test("the voice unlock is the keeper's, and the old full-width tap button is gone", () => {
   expect(app).toContain("createVoiceKeeper({");
+  // Started on mount and stopped on unmount — a keeper that is built but never
+  // started arms nothing and listens for nothing.
+  expect(app).toMatch(/keeperRef\.current = keeper;\s*keeper\.start\(\);\s*return \(\) => \{ keeper\.stop\(\);/);
+  // Announcements go through it (resume + retry + stuck-queue guard).
+  expect(app).toContain("keeper.whenRunning(() => {");
+  expect(app).toContain("keeper.guardStart({");
   expect(app).toContain("shouldShowVoiceHint({ kiosk, state: voiceState })");
   expect(app).not.toContain("Tap once to enable pickup voice");
 });
