@@ -34,7 +34,7 @@ import { useInsightsWindow } from "./insights/useInsightsWindow";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
-import { setUpdateBusy } from "./update/updateChecker";
+import { setUpdateBusy, setTvBoardMounted } from "./update/updateChecker";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { brandOnRename } from "./utils/brands.js";
 import { categorize, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
@@ -57,6 +57,7 @@ import NewArrivalsScreen from "./components/newArrivals/NewArrivalsScreen";
 import { newArrivalsApi } from "./components/newArrivals/newArrivalsApi";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
 import TvDisplayMockup from "./components/TvDisplayMockup";
+import { createVoiceKeeper, isKioskLaunch, readVoiceArmed, shouldShowVoiceHint, voiceWanted } from "./components/tv/tvVoiceKeeper";
 import { useSpecials } from "./components/TvSpecialsRail";
 import LabelPrintView from "./components/LabelPrintView";
 import AppErrorBoundary from "./AppErrorBoundary";
@@ -21086,7 +21087,8 @@ function laybyTvNumber(invoiceNo) {
 // then assembles every announcement LOCALLY (gapless, works even if the network
 // later drops). The old robotic browser speechSynthesis engine and the per-clip
 // callable playback are gone; the voice is a single hardcoded OpenAI voice.
-// One user tap unlocks audio (browser autoplay policy) and then vanishes.
+// The browser's autoplay unlock is kept alive by tvVoiceKeeper (no tap on a
+// TV launched from deploy/tv; any incidental touch re-arms it elsewhere).
 const TV_VOICE_VOICE        = "nova"; // hardcoded OpenAI TTS voice for the board
 const ANNOUNCE_REPEATS      = 2;      // say each announcement this many times
 const ANNOUNCE_WORD_GAP_S   = 0.05;   // silence between words inside one announcement
@@ -21144,8 +21146,19 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // ONCE at mount into a single Web Audio context, then every announcement is
   // assembled from those buffers and scheduled LOCALLY — no per-order network, so it
   // survives the store's slow link. TV device ONLY. Orders already terminal at load
-  // are SEEDED (never read out). One tap unlocks audio, then the control disappears.
-  const [voiceUnlocked, setVoiceUnlocked] = useState(false); // browsers block audio until one user gesture per page load
+  // are SEEDED (never read out). The audio unlock is owned by tvVoiceKeeper: it
+  // starts audio on load with no gesture where the browser allows it (the kiosk
+  // launcher's autoplay flag), re-arms on any touch/focus, and only reports
+  // "blocked" when the browser really refused — the one case a hint is shown.
+  const kiosk = useMemo(() => isKioskLaunch(typeof window === "undefined" ? "" : window.location.search), []);
+  // Armed on an earlier load (localStorage): this screen tries to speak even
+  // before audio is confirmed running — each announcement resumes it itself.
+  const armedBefore = useMemo(() => { try { return readVoiceArmed(window.localStorage); } catch { return false; } }, []);
+  const [voiceState, setVoiceState] = useState("starting");
+  const voiceUnlocked = voiceWanted({ kiosk, state: voiceState, armedBefore }); // kiosk speaks on the first event, gesture or not
+  const keeperRef    = useRef(null);
+  const [hintGone, setHintGone] = useState(false); // the corner hint dismisses itself; comes back when audio is blocked again or an announcement is dropped
+  const liveSrcRef   = useRef(new Set()); // every scheduled clip not yet ended, so a stuck queue can be cancelled whole
   const [vocabReady, setVocabReady] = useState(false); // true once the clip vocabulary is decoded — STATE (not just the ref) so a late load re-fires the announce effect and catches orders that went ready during the load window
   const announcedRef = useRef(null); // Set of announced order keys; null until seeded with the load-time backlog
   const audioCtxRef  = useRef(null); // shared AudioContext (created on mount for decode; resumed on the unlock tap)
@@ -21210,32 +21223,87 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
     };
   }, []);
 
+  // Keep the audio unlock alive for the page's whole life (declared AFTER the
+  // vocab effect so the context exists when the keeper first pokes it).
+  useEffect(() => {
+    const keeper = createVoiceKeeper({
+      getCtx: () => audioCtxRef.current,
+      storage: (() => { try { return window.localStorage; } catch { return null; } })(),
+      win: window, doc: document,
+      onChange: (st) => { setVoiceState(st); if (st === "blocked") setHintGone(false); },
+      onDrop: () => setHintGone(false),
+    });
+    keeperRef.current = keeper;
+    keeper.start();
+    return () => { keeper.stop(); keeperRef.current = null; };
+  }, []);
+
+  // Tell the update checker a TV board is on screen — also when it is mounted
+  // in-app for the DISPLAY role, where there is no #tv hash — so nothing
+  // reloads it while the store is open (updateChecker.isTvScreen).
+  useEffect(() => {
+    setTvBoardMounted(true);
+    return () => setTvBoardMounted(false);
+  }, []);
+
+  // The hint is small and goes away by itself; any touch re-arms regardless.
+  const showHint = shouldShowVoiceHint({ kiosk, state: voiceState }) && !hintGone;
+  useEffect(() => {
+    if (!showHint) return undefined;
+    const t = setTimeout(() => setHintGone(true), 60 * 1000);
+    return () => clearTimeout(t);
+  }, [showHint]);
+
   // Schedule a list of vocabulary tokens to play gaplessly, one after another, after
   // anything already queued (chainEndRef). Silently no-ops until the buffers are
-  // loaded and audio is unlocked, so a call before either is harmless.
-  const playTokens = (tokens) => {
-    const ctx = audioCtxRef.current, bufs = bufsRef.current;
-    if (!ctx || !bufs || !voiceUnlocked) return;
-    let t = Math.max(ctx.currentTime + 0.02, chainEndRef.current);
-    for (const tok of tokens) {
-      const buf = bufs.get(tok);
-      if (!buf) continue;
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      src.start(t);
-      t += buf.duration + ANNOUNCE_WORD_GAP_S;
-    }
-    chainEndRef.current = t;
+  // loaded and voice is wanted, so a call before either is harmless. Waits for the
+  // context to be running (resume + one retry), and if the audio clock has not
+  // moved 3 s after scheduling, cancels the stuck queue and retries once.
+  const playTokens = (tokens, label = tokens.join(" "), isRetry = false, gapBefore = 0) => {
+    const keeper = keeperRef.current;
+    if (!audioCtxRef.current || !bufsRef.current || !voiceUnlocked || !keeper) return;
+    keeper.whenRunning(() => {
+      const ctx = audioCtxRef.current, bufs = bufsRef.current;
+      if (!ctx || !bufs) return;
+      const sources = [];
+      // The gap is applied HERE, when the clips are actually scheduled — not
+      // up front, where a wait for audio to resume would stack the gaps.
+      let t = Math.max(ctx.currentTime + 0.02, Math.max(chainEndRef.current, ctx.currentTime) + gapBefore);
+      for (const tok of tokens) {
+        const buf = bufs.get(tok);
+        if (!buf) continue;
+        try {
+          const src = ctx.createBufferSource();
+          src.buffer = buf;
+          src.connect(ctx.destination);
+          src.start(t);
+          sources.push(src);
+          liveSrcRef.current.add(src);
+          src.onended = () => liveSrcRef.current.delete(src);
+        } catch (e) {
+          console.warn(`TV voice: could not schedule "${tok}" for "${label}":`, e?.message || e);
+          continue;
+        }
+        t += buf.duration + ANNOUNCE_WORD_GAP_S;
+      }
+      chainEndRef.current = t;
+      keeper.guardStart({
+        // The WHOLE queue on the frozen clock, not just this announcement — or
+        // the earlier ones would play over the retry once the clock moves.
+        sources: [...liveSrcRef.current], label,
+        onCancel: () => { liveSrcRef.current.clear(); chainEndRef.current = 0; },
+        retry: isRetry ? null : () => playTokens(tokens, label, true, gapBefore),
+      });
+    }, label);
   };
 
   const enableVoice = () => {
-    // One user gesture unlocks Web Audio playback for the page load. Resume the
-    // context, mark unlocked (which hides the button), and play a short confirmation.
-    try { audioCtxRef.current?.resume?.(); } catch { /* ignore */ }
-    setVoiceUnlocked(true);
-    // voiceUnlocked flips async, so schedule the confirmation directly rather than
-    // via playTokens (which reads the not-yet-updated state).
+    // The corner hint was tapped. The capture-phase listener in tvVoiceKeeper
+    // has already resumed the context inside this same gesture; this confirms
+    // out loud that it worked (the only time the board says "Pickup
+    // announcements on" — the silent re-arm on any other touch says nothing).
+    setHintGone(true);
+    keeperRef.current?.poke("hint tap");
     const ctx = audioCtxRef.current, bufs = bufsRef.current;
     if (ctx && bufs?.get("enabled")) {
       try {
@@ -21305,8 +21373,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       if (!digits.length) continue;
       const seq = ["order_number", ...digits, phraseTok];
       for (let i = 0; i < ANNOUNCE_REPEATS; i++) {                          // repeat so it's not missed
-        if (ctx) chainEndRef.current = Math.max(chainEndRef.current, ctx.currentTime) + ANNOUNCE_REPEAT_GAP_S;
-        playTokens(seq);
+        playTokens(seq, `Order ${num}`, false, ANNOUNCE_REPEAT_GAP_S);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -21339,45 +21406,16 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // TV mounts (#tv kiosk and the in-app DISPLAY role) carry the ads.
   const specials = useSpecials();
 
-  // ── TV AUTO-UPDATE ──────────────────────────────────────────────────────────
-  // A kiosk TV is never manually reloaded, so a deploy otherwise never reaches it
-  // (the page keeps running the in-memory bundle it loaded hours ago — which is
-  // exactly how stale "auto-collect" code lingered after we shipped the fix).
-  // index.html is served no-cache, so poll it and reload when the built asset hash
-  // changes. SCOPED TO THE TV ONLY — no in-progress staff action to disrupt, and a
-  // reload re-applies the 8-min hide instantly (it's keyed off the persisted
-  // readyAt age). No reload loop: after reload the document's bundle == deployed.
-  useEffect(() => {
-    const runningBundle =
-      document.querySelector('script[type="module"][src*="assets/index-"]')
-        ?.getAttribute("src")?.match(/index-[A-Za-z0-9_-]+\.js/)?.[0] || "";
-    if (!runningBundle) return; // can't tell what we're running → never force-reload
-    let stopped = false;
-    const check = async () => {
-      if (stopped) return;
-      try {
-        const html = await fetch("/", { cache: "no-store" }).then((r) => r.text());
-        const deployed = html.match(/assets\/(index-[A-Za-z0-9_-]+\.js)/)?.[1] || "";
-        if (deployed && deployed !== runningBundle) {
-          console.warn("TV: new build deployed — reloading", { runningBundle, deployed });
-          window.location.reload();
-        }
-      } catch { /* offline / transient — retry next tick */ }
-    };
-    check();                                        // check IMMEDIATELY on load (don't wait a full interval)
-    const id = setInterval(check, 60 * 1000);       // then every 60s
-    // Also check when the TV tab regains focus/visibility (background tabs throttle
-    // the timer, so a kiosk that was asleep still catches up on wake).
-    const onVisible = () => { if (document.visibilityState === "visible") check(); };
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", check);
-    return () => {
-      stopped = true;
-      clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", check);
-    };
-  }, []);
+  // ── NO SELF-RELOAD ON THE TV ────────────────────────────────────────────────
+  // This board used to poll index.html every 60 s and reload the page
+  // the moment a new bundle was deployed. Every reload is a fresh page with no
+  // user gesture, so Chrome re-locks audio — with 5–10 hosting deploys a day,
+  // that is why the pickup voice switched on in the morning was silent by
+  // midday. The TV route is now never force-reloaded (updateChecker exempts it
+  // too): a new bundle reaches the TV when the deploy/tv launcher restarts
+  // Chrome — at boot, after a crash, and once a night at 04:30 while the store
+  // is shut — and that restart comes back with audio allowed by the kiosk flag.
+  // Pinned by src/tvScreenWiring.pin.test.js.
 
   useEffect(() => {
     const check = () => {
@@ -21442,26 +21480,25 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   return (
     <>
       <TvDisplayMockup orders={filteredOrders} specials={specials} onExit={onExit} />
-      {/* Audio-unlock tap ONLY (browsers block audio until one user gesture per page
-          load). Shows until tapped once, then disappears entirely — there is no
-          persistent mute toggle. After the tap, announcements play from the preloaded
-          clips with no further UI. Reappears only when the kiosk page reloads. */}
-      {!voiceUnlocked && (
+      {/* Corner hint, ONLY when the browser really blocked audio and never on a
+          ?kiosk=1 launch. Any touch anywhere re-arms (tvVoiceKeeper); the hint
+          dismisses itself after a minute. There is no mute toggle. */}
+      {showHint && (
         <button
           type="button"
-          onClick={enableVoice}
+          // pointerdown, not click: the keeper's capture listener arms audio on
+          // this same pointerdown and the hint unmounts before a click lands.
+          onPointerDown={enableVoice}
           aria-label="Enable pickup announcements"
           style={{
-            position: "fixed", left: "50%", bottom: 22, transform: "translateX(-50%)", zIndex: 400,
-            display: "flex", alignItems: "center", gap: 9,
-            // Glass pill to sit on the queue board's floor (TvDisplayMockup).
-            background: "rgba(40,36,32,.78)", color: "#F7F3EE", border: "1px solid rgba(255,244,230,.28)", borderRadius: 999,
-            padding: "13px 24px", fontSize: 15, fontWeight: 700, letterSpacing: 0.3, cursor: "pointer",
-            fontFamily: FONT, boxShadow: "0 8px 28px rgba(0,0,0,.55)",
-            backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+            position: "fixed", right: 14, bottom: 14, zIndex: 400,
+            display: "flex", alignItems: "center", gap: 6,
+            background: "rgba(40,36,32,.62)", color: "rgba(247,243,238,.85)", border: "1px solid rgba(255,244,230,.2)", borderRadius: 999,
+            padding: "6px 12px", fontSize: 11.5, fontWeight: 600, letterSpacing: 0.2, cursor: "pointer",
+            fontFamily: FONT, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
           }}
         >
-          🔊 Tap once to enable pickup voice
+          🔇 Touch the screen to turn on pickup voice
         </button>
       )}
     </>

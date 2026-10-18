@@ -51,3 +51,32 @@ test("the board draws the specials rail only when specials exist", () => {
   expect(tv).toContain("const hasSpecials = !!(specials && specials.length > 0);");
   expect(tv).toMatch(/\{hasSpecials && \([\s\S]{0,200}<TvSpecialsRail specials=\{specials\} \/>/);
 });
+
+// The TV component never reloads its own page. It used to poll index.html and
+// reload on every deploy, and each reload re-locked the browser's audio — the
+// daytime voice drop-off. (updateChecker.tv.test.js covers the global checker.)
+test("TvWithAutoCollect has no reload path", () => {
+  const start = app.indexOf("function TvWithAutoCollect(");
+  const end = app.indexOf("\nfunction TvOnlyShell(", start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const body = app.slice(start, end);
+  expect(body).not.toMatch(/location\.reload\s*\(/);
+  expect(body).not.toMatch(/location\.(replace|assign)\s*\(/);
+  expect(body).not.toMatch(/location\.href\s*=/);
+  // And the TV shells mount nothing that would.
+  const shells = app.slice(end, app.indexOf("export default function App()", end));
+  expect(shells).not.toMatch(/location\.reload\s*\(/);
+});
+
+test("the voice unlock is the keeper's, and the old full-width tap button is gone", () => {
+  expect(app).toContain("createVoiceKeeper({");
+  // Started on mount and stopped on unmount — a keeper that is built but never
+  // started arms nothing and listens for nothing.
+  expect(app).toMatch(/keeperRef\.current = keeper;\s*keeper\.start\(\);\s*return \(\) => \{ keeper\.stop\(\);/);
+  // Announcements go through it (resume + retry + stuck-queue guard).
+  expect(app).toContain("keeper.whenRunning(() => {");
+  expect(app).toContain("keeper.guardStart({");
+  expect(app).toContain("shouldShowVoiceHint({ kiosk, state: voiceState })");
+  expect(app).not.toContain("Tap once to enable pickup voice");
+});

@@ -1,0 +1,21 @@
+# Marathon TV board — systemd USER unit (Raspberry Pi OS / Debian desktop).
+# install-linux.sh puts this in ~/.config/systemd/user/ and enables it; it
+# starts with the desktop session and is restarted if it ever stops.
+[Unit]
+Description=Marathon in-store TV queue board (Chromium kiosk)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash %h/.local/share/marathon-tv/marathon-tv.sh
+# The desktop's display; marathon-tv.sh also waits for it to exist. Override
+# in ~/.config/marathon-tv/env if this Pi's session uses something else.
+Environment=DISPLAY=:0
+EnvironmentFile=-%h/.config/marathon-tv/env
+Restart=always
+RestartSec=5
+
+[Install]
+# default.target: starts with the auto-logged-in user's session even on
+# desktops that never activate graphical-session.target.
+WantedBy=default.target

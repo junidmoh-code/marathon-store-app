@@ -46,7 +46,7 @@ test("the board's own reads are the background settings and .info/connected only
   expect(listeners.map((l) => l.path).sort()).toEqual([".info/connected", "settings/tvBackgrounds", "settings/tvPromo"]);
 });
 
-test("the chosen background fades in only once it has loaded; a missing node keeps the built-in wall", () => {
+test("the chosen background fades in only once it has loaded; a missing node keeps the built-in wall", async () => {
   const loads = [];
   vi.stubGlobal("Image", class { set src(v) { this._src = v; loads.push(this); } get src() { return this._src; } });
   let tree;
@@ -60,10 +60,14 @@ test("the chosen background fades in only once it has loaded; a missing node kee
   act(() => { feed.cb(snap({ defaultId: "b", photos: {
     a: { url: "https://x/a.jpg", addedAt: 1 }, b: { url: "https://x/b.jpg", addedAt: 2 },
   } })); });
+  // The pick resolves through the photo cache (async; no Cache Storage in node,
+  // so it resolves to the plain URL).
+  await act(async () => {});
   expect(bg()).toEqual(builtIn);                          // still loading — no switch yet
   expect(loads.map((i) => i.src)).toEqual(["https://x/b.jpg"]);
   act(() => { loads[0].onload(); });
   expect(bg()).toEqual([builtIn[0], "url(https://x/b.jpg)"]); // old under, new fading in on top
+  act(() => { tree.unmount(); });
 });
 
 test("live orders fill their columns: newest five first, full total, then the next page", () => {
