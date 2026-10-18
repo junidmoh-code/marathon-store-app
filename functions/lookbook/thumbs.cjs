@@ -10,9 +10,10 @@
 //                social_lookbook/thumbs/{pid} → aiStudio/social/lookbook/
 //                thumbs/{pid}.png, already background-removed. Reused on every
 //                poster after it; a thumbnail that exists is NEVER made again.
-//   3. generated the product's own photo sent as the reference to Flash
-//                (gemini-3.1-flash-image, the cheapest image model here that
-//                takes a reference image), on pure white, cut out, then cached.
+//   3. generated the product's own photo sent as the reference to Flash-Lite
+//                (gemini-3.1-flash-lite-image, the cheapest image model here
+//                that takes a reference image: $0.040 measured against Flash's
+//                $0.084; Flash is its fallback), on pure white, cut out, cached.
 //                Its own daily ceiling (THUMBS_PER_DAY), never the hero cap.
 //   4. photo     the old way: the shop photo, cut out. Only when 3 could not
 //                run (ceiling, model error, the run's thumbnail time is up) or
@@ -49,14 +50,21 @@ async function resolveThumb(row, photo, deps) {
   }
 
   if (deps.readThumbCache) {
+    let hit = null;
     try {
-      const hit = await deps.readThumbCache(row.pid);
+      hit = await deps.readThumbCache(row.pid);
       if (hit && hit.png) return { cutout: { png: hit.png, method: "cache" }, source: "cache", costUSD };
       if (hit && hit.failed) {
         const c = await deps.cutout(photo.buffer);
         return { cutout: c && c.png ? c : null, source: "photo", costUSD, tried: c && c.tried };
       }
-    } catch (e) { log(`lookbook: thumbnail cache read for ${row.pid} failed (${e && e.message})`); }
+    } catch (e) {
+      // The cache could not be read, which is not the same as no shot: never
+      // pay to make one that may already exist. The shop photo today.
+      log(`lookbook: thumbnail cache read for ${row.pid} failed (${e && e.message}) — shop photo, nothing generated`);
+      const c = await deps.cutout(photo.buffer);
+      return { cutout: c && c.png ? c : null, source: "photo", costUSD, tried: c && c.tried };
+    }
   }
 
   const outOfTime = deps.thumbDeadlineMs && Date.now() > deps.thumbDeadlineMs;

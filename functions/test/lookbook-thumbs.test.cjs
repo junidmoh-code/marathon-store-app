@@ -190,3 +190,12 @@ describe("resolveThumb — architect review of #750", () => {
     assert.deepEqual(await e.readThumbCache("p9"), { failed: true });
   });
 });
+
+describe("resolveThumb — spec review of #750", () => {
+  test("a cache that cannot be read is not a miss: nothing is generated", async () => {
+    const d = fakeDeps({ readThumbCache: async () => { throw new Error("storage 503"); } });
+    const t = await resolveThumb(ROW, PHOTO, d);
+    assert.equal(t.source, "photo");
+    assert.equal(d.calls.gen, 0);
+  });
+});
