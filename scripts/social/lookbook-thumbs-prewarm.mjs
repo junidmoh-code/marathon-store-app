@@ -76,7 +76,15 @@ const geminiApiKey = secret("GEMINI_API_KEY");
 const deps = engines({ db, bucket, saDate, geminiApiKey, fetchImage });
 
 if (PROBE) {
-  const pick = need.slice(0, PROBE);
+  // One per slot in turn (hat, jacket, tee, bottoms, bag, sneakers), so the
+  // sheet shows every kind of product, not six pairs of sneakers.
+  const pick = [];
+  for (let i = 0; pick.length < PROBE && i < need.length; i++) {
+    for (const slot of lookbook.SLOT_KEYS) {
+      const r = need.filter((x) => x.slot === slot)[i];
+      if (r && pick.length < PROBE) pick.push(r);
+    }
+  }
   const tiles = [];
   let lite = 0, flash = 0;
   for (const r of pick) {
