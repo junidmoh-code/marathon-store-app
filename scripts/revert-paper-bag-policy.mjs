@@ -146,12 +146,23 @@ async function guardedWrite(p, expect, next) {
 async function policyRemovedAtMs() {
   const hist = (await db.ref(writer.HISTORY_PATH).orderByKey().startAt("-P44").once("value")).val() || {};
   const entries = Object.values(hist);
-  // Only a run whose rows ALL landed closes the window: every one of its row
-  // entries must read "applied" (a "partial" one means a cell is still at
-  // #729's numbers and can still raise).
-  const rows = entries.filter((h) => h?.revertOfPaperBagPolicy === true && typeof h.verifiedAt === "number");
-  if (rows.length && rows.every((h) => h.status === "applied")) return Math.max(...rows.map((h) => h.verifiedAt));
-  if (rows.length) return null;
+  // The window closes only once EVERY product × location edit has landed: for
+  // each loc|pid, its LATEST revert entry (by `at`) must read "applied" with a
+  // verifiedAt. A "partial" or still-"pending" latest entry (a cell at #729's
+  // numbers can still raise; a crash between set and update) keeps the window
+  // open; an older partial superseded by a later applied entry does not
+  // (Sonnet review, PR #744).
+  const latest = new Map();
+  for (const h of entries) {
+    if (h?.revertOfPaperBagPolicy !== true) continue;
+    const k = `${h.loc}|${h.pid}`;
+    if (!latest.has(k) || (Number(h.at) || 0) > (Number(latest.get(k).at) || 0)) latest.set(k, h);
+  }
+  if (latest.size) {
+    const all = [...latest.values()];
+    if (all.every((h) => h.status === "applied" && typeof h.verifiedAt === "number")) return Math.max(...all.map((h) => h.verifiedAt));
+    return null;
+  }
   const policy = entries.filter((h) => h?.categoryKey === KEY && !h.kind && h.after === null && h.status === "applied" && typeof h.at === "number").map((h) => h.at);
   return policy.length ? Math.min(...policy) : null;
 }
@@ -277,7 +288,11 @@ async function main() {
   const allRowsBack = !EXECUTE || rowsLanded === rowWrites.length;
   if (policyRemovedThisRun || (!EXECUTE && policyLive !== null && policyIs729)) policyRemovedAt = allRowsBack ? serverNowMs() : null;
   else policyRemovedAt = await policyRemovedAtMs();
-  if (policyRemovedAt === null && EXECUTE) log(`   ! ${rowWrites.length - rowsLanded} rows did not land — the cancel window stays open; re-run to cancel`);
+  if (policyRemovedAt === null) {
+    if (EXECUTE && rowsLanded !== rowWrites.length) log(`   ! ${rowWrites.length - rowsLanded} rows did not land — the cancel window stays open; re-run (a conflict cell keeps it open until it is resolved by hand)`);
+    else if (policyLive !== null) log(`   ! the policy is live but not #729's — the window is unknown, nothing is cancelled`);
+    else log(`   ! an earlier run left a product × location restore pending or partial (see engine_policy_history, revertOfPaperBagPolicy) — the cancel window stays open; nothing is cancelled`);
+  }
 
   // ── 4. CANCEL ──────────────────────────────────────────────────────────────
   const stock = {};
