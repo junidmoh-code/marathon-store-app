@@ -542,6 +542,7 @@ function buildThumbPrompt(row) {
     `Professional e-commerce product photograph of exactly the item in the reference photo: ${r.displayName || "the product"}.`,
     `Show ${THUMB_VIEW[r.slot] || "the item on its own, front-on"}, centred, filling about 80% of a square frame.`,
     "Nothing else: no hand, no person, no hanger, no hook, no box, no packaging, no tag, no price label, no stand, no display block, no props.",
+    "The reference may show a swing tag, price tag, size sticker or label hanging from the item on a string or plastic loop: leave it OFF. Show the item as it looks once the tags are removed. Logos sewn or printed on the item stay.",
     "Studio lighting, soft and even. Pure white seamless background (#FFFFFF), no shadow, no reflection, no floor line.",
     "Reproduce the item faithfully from the reference: the same colour, fabric, shape, logo and every graphic. Change nothing about the product itself.",
     "No added text, no watermark.",
