@@ -52,7 +52,7 @@ async function resolveThumb(row, photo, deps) {
   if (deps.readThumbCache) {
     let hit = null;
     try {
-      hit = await deps.readThumbCache(row.pid);
+      hit = await deps.readThumbCache(row.pid, row.photoUrl || null);
       if (hit && hit.png) return { cutout: { png: hit.png, method: "cache" }, source: "cache", costUSD };
       if (hit && hit.failed) {
         const c = await deps.cutout(photo.buffer);
@@ -93,7 +93,7 @@ async function resolveThumb(row, photo, deps) {
         }
         log(`lookbook: generated thumbnail for ${row.pid} did not cut out (${(c && c.tried || []).join(", ")}) — using its shop photo`);
         if (deps.markThumbFailed) {
-          try { await deps.markThumbFailed(row.pid, { engine: gen.engine || null, costUSD: gen.costUSD || 0, tried: (c && c.tried) || [] }); } catch { /* best effort */ }
+          try { await deps.markThumbFailed(row.pid, { engine: gen.engine || null, costUSD: gen.costUSD || 0, tried: (c && c.tried) || [], src: row.photoUrl || null }); } catch { /* best effort */ }
         }
       } catch (e) {
         log(`lookbook: thumbnail generation for ${row.pid} failed (${String(e && e.message).slice(0, 120)}) — using its shop photo`);

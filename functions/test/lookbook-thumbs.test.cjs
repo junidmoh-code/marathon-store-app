@@ -199,3 +199,26 @@ describe("resolveThumb — spec review of #750", () => {
     assert.equal(d.calls.gen, 0);
   });
 });
+
+describe("engines — CodeRabbit on #750: a changed source photo is a miss", () => {
+  test("same source: hit; a different source: miss; no recorded source: hit; a failed marker for an old photo: miss", async () => {
+    const db = new FakeRtdb({}), bucket = fakeBucket();
+    const e = engines({ db, bucket, saDate: "2026-10-19" });
+    await e.writeThumbCache("p1", Buffer.from("png"), { src: "https://x/old.jpg" });
+    assert.equal(String((await e.readThumbCache("p1", "https://x/old.jpg")).png), "png");
+    assert.equal(await e.readThumbCache("p1", "https://x/new.jpg"), null);
+    bucket.files.set(THUMB_PATH("p2"), Buffer.from("repaired"));
+    await db.ref("social_lookbook/thumbs/p2").set({ path: THUMB_PATH("p2"), repaired: true });
+    assert.equal(String((await e.readThumbCache("p2", "https://x/any.jpg")).png), "repaired");
+    await e.markThumbFailed("p3", { src: "https://x/old.jpg" });
+    assert.deepEqual(await e.readThumbCache("p3", "https://x/old.jpg"), { failed: true });
+    assert.equal(await e.readThumbCache("p3", "https://x/new.jpg"), null);
+  });
+
+  test("resolveThumb asks the cache about THIS photo", async () => {
+    let asked = null;
+    const d = fakeDeps({ readThumbCache: async (pid, src) => { asked = [pid, src]; return { png: Buffer.from("c") }; } });
+    await resolveThumb(ROW, PHOTO, d);
+    assert.deepEqual(asked, ["p1", "https://x/p1.jpg"]);
+  });
+});

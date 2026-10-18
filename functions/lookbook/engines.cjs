@@ -138,9 +138,13 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
     return { ok: Boolean(res.committed) };
   }
 
-  async function readThumbCache(pid) {
+  // `src`: the product's photo now. A shot made from a DIFFERENT photo (the
+  // shop replaced a wrong one) is a shot of something else: a miss. A pointer
+  // that never recorded its source stays valid (CodeRabbit on #750).
+  async function readThumbCache(pid, src = null) {
     if (!bucket || !SAFE_PID.test(String(pid))) return null;
     const ptr = (await db.ref(`social_lookbook/thumbs/${pid}`).once("value")).val();
+    if (ptr && src && ptr.src && ptr.src !== src) return null;
     // A shot that was paid for and did not cut out: not bought again.
     if (ptr && ptr.failed) return { failed: true };
     // The file is always at its own pid's path; the pointer's path is a record.
@@ -178,7 +182,7 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
   async function markThumbFailed(pid, meta = {}) {
     if (!SAFE_PID.test(String(pid))) return;
     await db.ref(`social_lookbook/thumbs/${pid}`).set({
-      failed: true, at: Date.now(), engine: meta.engine || null, costUSD: Number(meta.costUSD) || 0,
+      failed: true, at: Date.now(), engine: meta.engine || null, costUSD: Number(meta.costUSD) || 0, src: meta.src || null,
       tried: Array.isArray(meta.tried) ? meta.tried.slice(0, 4).map(String) : [],
     });
   }
