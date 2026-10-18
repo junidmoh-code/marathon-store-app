@@ -28,7 +28,8 @@ function seed({ withHat = true } = {}) {
 
 let IMG;
 const img = async () => IMG || (IMG = await sharp({ create: { width: 360, height: 640, channels: 3, background: "#6b7" } }).jpeg().toBuffer());
-const CLEAN = JSON.stringify({ text_found: false, text_seen: "" });
+const CLEAN = JSON.stringify({ text_found: false, text_seen: "", model_black: true, model_seen: "Black man, dark skin" });
+const NOT_BLACK = JSON.stringify({ text_found: false, text_seen: "", model_black: false, model_seen: "white man, light skin" });
 const LOCATED = JSON.stringify({ head: "G3", items: { hat: "G2", sneakers: "G17" } });
 const DIRTY = JSON.stringify({ text_found: true, text_seen: "VOGUE", items: {} });
 
@@ -65,6 +66,10 @@ describe("makeLookbook", () => {
     assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "jacket", "tee", "bottoms", "sneakers"]);
     assert.equal(r.total.value, 499 + 1899 + 599 + 799 + 2399);
     assert.equal(r.costUSD, 0.134);
+    assert.equal(r.scene, "concrete");
+    assert.match(sentParts[0].text, /MUST be a Black man with dark skin/);
+    assert.match(sentParts[0].text, /board-formed concrete wall/);
+    assert.doesNotMatch(sentParts[0].text, /palm/);
     assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), 1);
     // prompt, then (label, image) per row
     assert.equal(sentParts.length, 1 + 2 * r.rows.length);
@@ -196,3 +201,146 @@ describe("makeLookbook", () => {
     assert.equal(r.rows.find((x) => x.slot === "tee").pid, "t2");
   });
 });
+
+describe("makeLookbook — the model gate (owner review of sample 01)", () => {
+  test("not visibly Black: regenerated once even in production (maxAttempts 1), and the second passes", async () => {
+    const db = seed();
+    await db.ref("social_generation_budget/2026-10-18/count").set(1);   // the one reel
+    let n = 0;
+    const d = deps(db, { checkHero: async (_b, _m, p) => (/grid/.test(p) ? LOCATED : ++n === 1 ? NOT_BLACK : CLEAN) });
+    const r = await makeLookbook(db, d, { nowMs: NOW, maxAttempts: 1 });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(d.calls.gen, 2);
+    assert.equal(r.attempts[0].modelOk, false);
+    // reel + two heroes = 3: the fallback still has its unit
+    assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), 3);
+  });
+
+  test("not visibly Black twice: the model gate, and no third hero", async () => {
+    const db = seed();
+    const d = deps(db, { checkHero: async (_b, _m, p) => (/grid/.test(p) ? LOCATED : NOT_BLACK) });
+    const r = await makeLookbook(db, d, { nowMs: NOW, maxAttempts: 1 });
+    assert.equal(r.gate, "model");
+    assert.equal(d.calls.gen, 2);
+    assert.match(r.reason, /failed the model check twice/);
+  });
+
+  test("an answer with no model_black is a model FAIL, never a pass", async () => {
+    const db = seed();
+    const d = deps(db, { checkHero: async (_b, _m, p) => (/grid/.test(p) ? LOCATED : JSON.stringify({ text_found: false, text_seen: "" })) });
+    const r = await makeLookbook(db, d, { nowMs: NOW, maxAttempts: 1 });
+    assert.equal(r.gate, "model");
+  });
+
+  test("the regeneration still leaves the fallback its unit: 2 already spent → one hero, then the gate", async () => {
+    const db = seed();
+    await db.ref("social_generation_budget/2026-10-18/count").set(2);
+    const d = deps(db, { checkHero: async (_b, _m, p) => (/grid/.test(p) ? LOCATED : NOT_BLACK) });
+    const r = await makeLookbook(db, d, { nowMs: NOW, maxAttempts: 1 });
+    assert.equal(r.gate, "model");
+    assert.equal(d.calls.gen, 1);
+    assert.match(r.reason, /not regenerated: 1 unit\(s\) left/);
+  });
+
+  test("text found in production is still ONE hero (the model gate's retry is its own)", async () => {
+    const db = seed();
+    const d = deps(db, { checkHero: async () => DIRTY });
+    const r = await makeLookbook(db, d, { nowMs: NOW, maxAttempts: 1 });
+    assert.equal(r.gate, "text");
+    assert.equal(d.calls.gen, 1);
+  });
+
+  test("the character reference goes in before the garments, and the prompt says to use him", async () => {
+    const db = seed();
+    let sent = null;
+    const d = deps(db, {
+      readModelRef: async () => ({ buffer: Buffer.from("face"), contentType: "image/jpeg" }),
+      generateHero: async (parts) => { sent = parts; return { buffer: await img(), mime: "image/jpeg", costUSD: 0.24, engine: "nbpro" }; },
+    });
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.modelRef, true);
+    assert.match(sent[0].text, /MODEL REFERENCE photo/);
+    assert.match(sent[1].text, /^MODEL REFERENCE/);
+    assert.ok(sent[2].inline_data);
+    assert.match(sent[3].text, /^REFERENCE 1 — HAT:/);
+  });
+
+  test("an unreadable character reference is not a gate", async () => {
+    const db = seed();
+    const d = deps(db, { readModelRef: async () => { throw new Error("404"); } });
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.ok, true);
+    assert.equal(r.modelRef, false);
+  });
+
+  test("the garden scene is the garden prompt", async () => {
+    const db = seed();
+    let sent = null;
+    const d = deps(db, { generateHero: async (parts) => { sent = parts; return { buffer: await img(), mime: "image/jpeg", costUSD: 0.24, engine: "nbpro" }; } });
+    const r = await makeLookbook(db, d, { nowMs: NOW, scene: "garden" });
+    assert.equal(r.scene, "garden");
+    assert.match(sent[0].text, /palm trees/);
+    assert.doesNotMatch(sent[0].text, /concrete/);
+    await assert.rejects(makeLookbook(db, d, { nowMs: NOW, scene: "beach" }), /unknown scene/);
+  });
+});
+
+describe("makeLookbook — the panel's clean product shots", () => {
+  test("cached shots are used, missing ones generated once and cached, and their cost is on the poster", async () => {
+    const db = seed();
+    const png = await sharp(await img()).png().toBuffer();
+    const cache = new Map([["h1", png]]);
+    let gens = 0;
+    const d = deps(db, {
+      readThumbCache: async (pid) => (cache.has(pid) ? { png: cache.get(pid) } : null),
+      writeThumbCache: async (pid, p) => { cache.set(pid, p); },
+      claimThumbUnit: async () => ({ ok: true }),
+      generateThumb: async (parts) => { gens++; assert.match(parts[0].text, /Pure white/); assert.ok(parts[2].inline_data); return { buffer: png, costUSD: 0.0336, engine: "flash-lite" }; },
+    });
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(gens, r.rows.length - 1);              // every row but the cached hat
+    assert.equal(r.thumbs.h1, "cache");
+    assert.equal(r.thumbs.s1, "generated");
+    assert.equal(+r.thumbCostUSD.toFixed(4), +(0.0336 * gens).toFixed(4));
+    assert.equal(+r.costUSD.toFixed(4), +(0.134 + 0.0336 * gens).toFixed(4));
+    // a second poster from the same products generates nothing
+    const again = deps(seed(), { readThumbCache: d.readThumbCache, writeThumbCache: d.writeThumbCache, claimThumbUnit: d.claimThumbUnit, generateThumb: d.generateThumb });
+    const before = gens;
+    const r2 = await makeLookbook(seed(), again, { nowMs: NOW });
+    assert.equal(r2.ok, true);
+    assert.equal(gens, before);
+    assert.ok(Object.values(r2.thumbs).every((t) => t === "cache"));
+  });
+});
+
+describe("makeLookbook — architect review of #750", () => {
+  test("two units already spent and no room: the cap gate comes BEFORE any thumbnail is bought", async () => {
+    const db = seed();
+    await db.ref("social_generation_budget/2026-10-18/count").set(3);
+    let gens = 0;
+    const d = deps(db, { claimThumbUnit: async () => ({ ok: true }), generateThumb: async () => { gens++; throw new Error("must not run"); } });
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.gate, "cap");
+    assert.equal(gens, 0);
+  });
+
+  test("an unanswered model check falls back without a second hero", async () => {
+    const db = seed();
+    const d = deps(db, { checkHero: async (_b, _m, p) => (/grid/.test(p) ? LOCATED : JSON.stringify({ text_found: false, text_seen: "" })) });
+    const r = await makeLookbook(db, d, { nowMs: NOW, maxAttempts: 1 });
+    assert.equal(r.gate, "model");
+    assert.equal(d.calls.gen, 1);
+  });
+
+  test("past the hero deadline before the first hero: the time gate, nothing claimed", async () => {
+    const db = seed();
+    const d = deps(db, { deadlineMs: Date.now() - 1 });
+    const r = await makeLookbook(db, d, { nowMs: NOW });
+    assert.equal(r.gate, "time");
+    assert.equal(d.calls.gen, 0);
+    assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), null);
+  });
+});
+

@@ -18,12 +18,48 @@ const ROWS = async () => [
 describe("renderLookbookPoster", () => {
   test("three exports at the exact sizes, total summed from the rows", async () => {
     const out = await R.renderLookbookPoster({ hero: await hero(), rows: (await ROWS()).map((r) => ({ ...r, cutout: null })), anchors: { hat: { x: 0.58, y: 0.13 } } });
-    for (const [k, w, h] of [["master", 1200, 1800], ["feed", 1080, 1350], ["story", 1080, 1920]]) {
+    // The master is drawn at RENDER_SCALE: 2400 px tall (owner review, 18 Oct).
+    for (const [k, w, h] of [["master", 1600, 2400], ["feed", 1080, 1350], ["story", 1080, 1920]]) {
       const m = await sharp(out[k].buffer).metadata();
       assert.equal(m.width, w, k); assert.equal(m.height, h, k);
     }
     assert.equal(out.total.value, 499 + 599 + 1299 + 2399);
     assert.equal(out.total.text, "R4,796");
+    assert.equal(out.master.width, 1600);
+    assert.equal(out.master.height, 2400);
+  });
+
+  test("scale 1 is the old 1200x1800 layout, and the 4/3 master is the same design, not a crop", async () => {
+    const rows = (await ROWS()).map((r) => ({ ...r, cutout: null }));
+    const one = await R.renderLookbookPoster({ hero: await hero(), rows, scale: 1 });
+    assert.equal((await sharp(one.master.buffer).metadata()).height, 1800);
+    const big = await R.renderLookbookPoster({ hero: await hero(), rows });
+    // Downscaled to 1200x1800 the big master matches the small one closely.
+    const a = await sharp(one.master.buffer).resize(300, 450).greyscale().raw().toBuffer();
+    const b = await sharp(big.master.buffer).resize(300, 450).greyscale().raw().toBuffer();
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff += Math.abs(a[i] - b[i]);
+    assert.ok(diff / a.length < 6, `mean difference ${diff / a.length}`);
+  });
+
+  test("at 4/3 the model's position is converted back to design units: the wordmark narrows exactly as at scale 1", async () => {
+    const rows = (await ROWS()).map((r) => ({ ...r, cutout: null }));
+    const subject = { x: 0.45, y: 0.14 };       // a head that rises into the MARATHON block
+    const one = await R.renderLookbookPoster({ hero: await hero(), rows, subject, scale: 1 });
+    const big = await R.renderLookbookPoster({ hero: await hero(), rows, subject });
+    assert.ok(one.markW < 440, `narrowed at scale 1 (${one.markW})`);
+    assert.ok(Math.abs(big.markW - one.markW) < 1, `${big.markW} vs ${one.markW}`);
+  });
+
+  test("the G-Star fix: a multi-word brand on the bold line, the style code never drawn", () => {
+    const rows = [{ slot: "bottoms", displayName: "G star raw cargo jeans FG3546#", priceText: "R750" }];
+    const drawn = [];
+    const real = type.textPath;
+    type.textPath = (text, o) => { drawn.push(String(text)); return real(text, o); };
+    try { R.buildPosterSvg({ W: 1200, H: 1800, rows, total: { text: "R750" }, anchorsPx: {}, headPx: null }); } finally { type.textPath = real; }
+    assert.ok(drawn.includes("G-STAR RAW"), drawn.join(" | "));
+    assert.ok(drawn.includes("CARGO JEANS"), drawn.join(" | "));
+    assert.ok(!drawn.some((t) => /FG3546|^G$|STAR RAW CARGO/.test(t)), drawn.join(" | "));
   });
 
   test("a photo that is all background falls back to multiply rather than an empty cut-out", async () => {

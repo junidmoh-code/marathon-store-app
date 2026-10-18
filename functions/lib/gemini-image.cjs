@@ -16,6 +16,14 @@ const GEMINI_FLAT_IMAGE_USD = 0.067;   // fallback per-image when usageMetadata 
 const NBPRO_MODEL           = "gemini-3-pro-image";
 const NBPRO_OUT_PER_MTOK    = 120;     // $/1M image-output tokens (1120 tok ≈ $0.134 per 1K/2K image)
 const NBPRO_FLAT_IMAGE_USD  = 0.134;   // fallback per-image when usageMetadata is absent
+// Lookbook panel thumbnails (2026-10-18): the cheapest image model that takes a
+// reference image. gemini-3.1-flash-lite-image at 1K is listed at $0.0336 an
+// image ($30/1M output tokens), measured $0.040 with the reference's input
+// tokens (18 Oct, six products), half of Flash; Flash is its fallback.
+const FLASH_LITE_MODEL          = "gemini-3.1-flash-lite-image";
+const FLASH_LITE_OUT_PER_MTOK   = 30;
+const FLASH_LITE_FLAT_IMAGE_USD = 0.040;
+//
 // Per-request abort so a stalled upstream call fails fast instead of pinning the
 // worker for the Cloud Function's full 540s timeout (esp. NB Pro multi-image gens).
 // Generous headroom over a normal gen (~30-90s) so legitimate slow calls complete.
@@ -25,7 +33,7 @@ const GEMINI_FETCH_TIMEOUT_MS = 180000;
 // `parts` (interleaved text labels + inline images) and returns the first
 // image in the response. `imageConfig` is only sent when given (the white-bg
 // NB2 path sends none — request shape identical to the 2.5-flash-image days).
-async function geminiGenerateImage(apiKey, model, parts, { outPerMtok, flatUsd, imageConfig } = {}) {
+async function geminiGenerateImage(apiKey, model, parts, { outPerMtok, flatUsd, imageConfig, timeoutMs = GEMINI_FETCH_TIMEOUT_MS } = {}) {
   const body = { contents: [{ parts }] };
   if (imageConfig) body.generationConfig = { imageConfig };
   let res;
@@ -36,14 +44,14 @@ async function geminiGenerateImage(apiKey, model, parts, { outPerMtok, flatUsd, 
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(GEMINI_FETCH_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       },
     );
   } catch (err) {
     // Normalise the abort into the same Error-with-message path as HTTP failures,
     // so the per-product worker catch logs it consistently and moves on.
     if (err && (err.name === "TimeoutError" || err.name === "AbortError")) {
-      throw new Error(`gemini request timed out after ${GEMINI_FETCH_TIMEOUT_MS / 1000}s`);
+      throw new Error(`gemini request timed out after ${timeoutMs / 1000}s`);
     }
     throw err;
   }
@@ -72,5 +80,6 @@ const inlineImagePart = (buffer, contentType) =>
 module.exports = {
   GEMINI_MODEL, GEMINI_OUT_PER_MTOK, GEMINI_FLAT_IMAGE_USD,
   NBPRO_MODEL, NBPRO_OUT_PER_MTOK, NBPRO_FLAT_IMAGE_USD,
+  FLASH_LITE_MODEL, FLASH_LITE_OUT_PER_MTOK, FLASH_LITE_FLAT_IMAGE_USD,
   GEMINI_FETCH_TIMEOUT_MS, geminiGenerateImage, inlineImagePart,
 };

@@ -313,3 +313,112 @@ describe("loadLookbookCandidates — reads only what it needs, by pid", () => {
     assert.ok(!db.reads.some((r) => r.path.startsWith("stock/") && r.path.endsWith("/g1")));
   });
 });
+
+describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
+  const sd = require("../lib/social-design.cjs");
+  const name = (n) => lb.posterName(n, { fallbackSplit: sd.splitName, isCategory: (w) => Boolean(lb.guessSlot(w)) });
+
+  test("posterName: the catalogue's spellings of multi-word brands, in proper form", () => {
+    assert.deepEqual(name("G star raw cargo jeans FG3546#"), { brand: "G-STAR RAW", rest: "CARGO JEANS" });
+    assert.deepEqual(name("G-Star Raw Cargo Jean GS-5211"), { brand: "G-STAR RAW", rest: "CARGO JEAN GS-5211" });
+    assert.deepEqual(name("Gstar jeans"), { brand: "G-STAR RAW", rest: "JEANS" });
+    assert.deepEqual(name("Hugo boss beanie red"), { brand: "HUGO BOSS", rest: "BEANIE RED" });
+    assert.deepEqual(name("Alexander McQueen Oversized Beige White"), { brand: "ALEXANDER MCQUEEN", rest: "OVERSIZED BEIGE WHITE" });
+    assert.deepEqual(name("The North Face Glenclyffe Low Green"), { brand: "THE NORTH FACE", rest: "GLENCLYFFE LOW GREEN" });
+    assert.deepEqual(name("Karl Lagerfeld beanie brown"), { brand: "KARL LAGERFELD", rest: "BEANIE BROWN" });
+  });
+
+  test("posterName: single-word brands, unbranded names and bare brands", () => {
+    assert.deepEqual(name("Lacoste bag green"), { brand: "LACOSTE", rest: "BAG GREEN" });
+    assert.deepEqual(name("Diesel jean FD1299#"), { brand: "DIESEL", rest: "JEAN" });
+    assert.deepEqual(name("Jacket black white stripes"), { brand: "", rest: "JACKET BLACK WHITE STRIPES" });
+    assert.deepEqual(name("Hugo Boss"), { brand: "", rest: "HUGO BOSS" });
+    assert.deepEqual(name(""), { brand: "", rest: "" });
+    // "Gold chain" starts with G but is not G-Star.
+    assert.equal(name("Gold chain").brand, "GOLD");
+  });
+
+  test("stripStyleCodes: '#' at either end of a token; real model numbers stay", () => {
+    assert.equal(lb.stripStyleCodes("Adidas Tracksuit Grey #2506"), "Adidas Tracksuit Grey");
+    assert.equal(lb.stripStyleCodes("DIESEL JEAN BLUE  #Y8161-1 slim"), "DIESEL JEAN BLUE slim");
+    assert.equal(lb.stripStyleCodes("G star raw cargo jeans FG3546#"), "G star raw cargo jeans");
+    assert.equal(lb.stripStyleCodes("Replay jeans B1113-3"), "Replay jeans B1113-3");
+    assert.equal(lb.stripStyleCodes("Nike Air Force 1"), "Nike Air Force 1");
+  });
+
+  test("LOOKBOOK_SCENES: concrete first by default; config order, dedup, unknowns dropped", () => {
+    assert.deepEqual(lb.parseLookbookScenes(undefined), ["concrete", "garden"]);
+    assert.deepEqual(lb.parseLookbookScenes('["garden","concrete","garden"]'), ["garden", "concrete"]);
+    assert.deepEqual(lb.parseLookbookScenes('["beach"]'), ["concrete", "garden"]);
+    assert.deepEqual(lb.parseLookbookScenes("garden"), ["concrete", "garden"]);
+    assert.deepEqual(lb.parseLookbookScenes('["GARDEN"]'), ["garden"]);
+  });
+
+  test("sceneFor: alternates per LOOKBOOK day, concrete on the first (Mon 19 Oct)", () => {
+    const S = lb.parseLookbookScenes(), D = ["mon", "wed", "fri"];
+    const at = (d) => lb.sceneFor(d, S, D).key;
+    assert.deepEqual(["2026-10-19", "2026-10-21", "2026-10-23", "2026-10-26", "2026-10-28"].map(at),
+      ["concrete", "garden", "concrete", "garden", "concrete"]);
+    // a non-lookbook day reads as the next lookbook day; days before the epoch keep alternating
+    assert.equal(at("2026-10-20"), "garden");
+    assert.equal(at("2026-10-16"), "garden");
+    assert.equal(at("2026-10-14"), "concrete");
+    // one scene configured: always that one
+    assert.equal(lb.sceneFor("2026-10-21", ["garden"], D).key, "garden");
+  });
+
+  test("the hero prompt: the model requirement every time, the scene's floor in the composition", () => {
+    const rows = [{ slot: "tee", displayName: "Nike Tee White" }];
+    const c = lb.buildHeroPrompt(rows, { scene: "concrete" });
+    assert.match(c, /The model MUST be a Black man with dark skin, athletic build, in his mid-20s to early 30s/);
+    assert.match(c, /shoes rest on the concrete floor/);
+    assert.match(c, /poured concrete floor/);
+    assert.match(c, /no plants/i);
+    assert.doesNotMatch(c, /MODEL REFERENCE/);
+    const g = lb.buildHeroPrompt(rows, { scene: lb.LOOKBOOK_SCENE_DEFS.garden, modelRef: true });
+    assert.match(g, /palm trees/);
+    assert.match(g, /shoes rest on the paving/);
+    assert.match(g, /MODEL REFERENCE photo/);
+    assert.match(lb.buildModelRefPrompt(), /MUST be a Black man/);
+  });
+
+  test("readModelCheck: only an explicit true passes", () => {
+    assert.equal(lb.readModelCheck('{"text_found":false,"model_black":true,"model_seen":"Black man"}').ok, true);
+    const no = lb.readModelCheck('{"text_found":false,"model_black":false,"model_seen":"pale skin"}');
+    assert.equal(no.ok, false);
+    assert.match(no.reason, /not visibly a Black man \(pale skin\)/);
+    assert.equal(lb.readModelCheck('{"text_found":false,"model_black":"yes"}').ok, false);
+    assert.equal(lb.readModelCheck('{"text_found":false}').ok, false);
+    assert.equal(lb.readModelCheck("he looks fine").ok, false);
+    assert.match(lb.buildHeroCheckPrompt(), /"model_black": true\|false/);
+  });
+
+  test("the thumbnail prompt: the product alone on pure white, faithful to the reference", () => {
+    const p = lb.buildThumbPrompt({ slot: "sneakers", displayName: "Alexander McQueen Oversized" });
+    assert.match(p, /Alexander McQueen Oversized/);
+    assert.match(p, /no hand, no person, no hanger, no hook, no box, no packaging, no tag/);
+    assert.match(p, /Pure white seamless background \(#FFFFFF\)/);
+    assert.match(p, /pair of shoes/);
+    assert.match(lb.buildThumbPrompt({ slot: "hat", displayName: "x" }), /front-on/);
+  });
+});
+
+describe("lookbook v2 — architect review of #750", () => {
+  const sd = require("../lib/social-design.cjs");
+  const name = (n) => lb.posterName(n, { fallbackSplit: sd.splitName, isCategory: (w) => Boolean(lb.guessSlot(w)) });
+  test("a bare first word takes the long brand only when no other house follows it", () => {
+    assert.equal(name("Karl Kani tee").brand, "KARL");
+    assert.equal(name("Alexander Wang hoodie").brand, "ALEXANDER");
+    assert.equal(name("Tommy Bahama shirt").brand, "TOMMY");
+    assert.equal(name("Karl beanie brown").brand, "KARL LAGERFELD");
+    assert.equal(name("Alexander Oversized White").brand, "ALEXANDER MCQUEEN");
+  });
+  test("a stray '#' on a model number is not a style code", () => {
+    assert.equal(lb.stripStyleCodes("Nike Air Max 90#"), "Nike Air Max 90#");
+    assert.equal(lb.stripStyleCodes("Diesel jean FD1299#"), "Diesel jean");
+  });
+  test("an unanswered model check is marked unreadable; an explicit false is not", () => {
+    assert.equal(lb.readModelCheck('{"text_found":false}').unreadable, true);
+    assert.equal(lb.readModelCheck('{"text_found":false,"model_black":false}').unreadable, undefined);
+  });
+});
