@@ -282,14 +282,20 @@ test("no second key: a 402 is thrown as before", async () => {
   assert.equal(f.calls.length, 1);
 });
 
-test("the Claude schema is the Gemini one, lower-cased, every object closed", () => {
+test("the Claude schema is the Gemini one, lower-cased, every object closed, NO optional field (Claude allows at most 24)", () => {
+  let optional = 0;
   const walk = (n) => {
     assert.equal(n.type, n.type.toLowerCase());
-    if (n.properties) { assert.equal(n.additionalProperties, false); Object.values(n.properties).forEach(walk); }
+    if (n.properties) {
+      assert.equal(n.additionalProperties, false);
+      optional += Object.keys(n.properties).filter((k) => !n.required.includes(k)).length;
+      Object.values(n.properties).forEach(walk);
+    }
     if (n.items) walk(n.items);
   };
   walk(CLAUDE_EXTRACTION_SCHEMA);
-  assert.deepEqual(CLAUDE_EXTRACTION_SCHEMA.required, ["tid", "batchNo", "total", "confidence"]);
+  assert.equal(optional, 0);
+  assert.ok(["tid", "batchNo", "total", "confidence"].every((k) => CLAUDE_EXTRACTION_SCHEMA.required.includes(k)));
 });
 
 test("Claude timing out still surfaces as the credit wall, marked as a backup timeout", async () => {
