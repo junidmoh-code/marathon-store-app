@@ -21,7 +21,13 @@ else
   curl -fsSL "$RAW/linux/marathon-tv.service" -o "$UNIT_DIR/marathon-tv.service"
 fi
 chmod +x "$DIR/marathon-tv.sh"
-[ -n "${MARATHON_TV_SECTION:-}" ] && echo "MARATHON_TV_SECTION=$MARATHON_TV_SECTION" > "$HOME/.config/marathon-tv/env"
+# Section board: digits only. Re-running without it goes back to the main board.
+SECTION="${MARATHON_TV_SECTION:-}"
+case "$SECTION" in
+  "") rm -f "$HOME/.config/marathon-tv/env" ;;
+  *[!0-9]*) echo "MARATHON_TV_SECTION must be a number (e.g. 1)." >&2; exit 1 ;;
+  *) echo "MARATHON_TV_SECTION=$SECTION" > "$HOME/.config/marathon-tv/env" ;;
+esac
 
 # Never blank the screen (X11 desktops; harmless elsewhere).
 command -v xset >/dev/null 2>&1 && DISPLAY="${DISPLAY:-:0}" xset s off -dpms 2>/dev/null || true

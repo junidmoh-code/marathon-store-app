@@ -24,7 +24,13 @@ else
 fi
 chmod +x "$DIR/marathon-tv.sh"
 
-# A Section 1 board keeps its setting across restarts.
+# A Section 1 board keeps its setting across restarts. Digits only — the value
+# is written into the script. (The script is copied fresh on every run, so
+# re-running without it goes back to the main board.)
+case "${MARATHON_TV_SECTION:-}" in
+  "") ;;
+  *[!0-9]*) echo "MARATHON_TV_SECTION must be a number (e.g. 1)." >&2; exit 1 ;;
+esac
 if [ -n "${MARATHON_TV_SECTION:-}" ]; then
   sed -i '' "2a\\
 export MARATHON_TV_SECTION=\"$MARATHON_TV_SECTION\"
