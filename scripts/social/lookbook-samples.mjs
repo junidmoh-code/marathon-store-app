@@ -16,6 +16,9 @@
 //
 // --engine nbpro (default) is the production hero engine; --engine flash sends
 // the same parts to gemini-3.1-flash-image, the pipeline's own fallback model.
+// --scene concrete|garden (default: the scene the next lookbook day gets).
+// The production engines are used whole: the clean-shot cache and its Flash-Lite
+// generation, the character reference, the 4K hero.
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -30,6 +33,8 @@ const sharp = require("sharp");
 const { makeLookbook } = require("./lookbook/lookbook.cjs");
 const { engines } = require("./lookbook/engines.cjs");
 const gemini = require("./lib/gemini-image.cjs");
+const lookbookLib = require("./lib/social-lookbook.cjs");
+const { STORAGE_BUCKET } = require("./lib/photo-scope.cjs");
 const { saDateStringFromMs } = require("./lib/sa-time.cjs");
 const USD_TO_ZAR = 18.0;
 
@@ -37,6 +42,8 @@ const arg = (name, dflt) => { const i = process.argv.indexOf(`--${name}`); retur
 const N = String(arg("n", "01")).padStart(2, "0");
 const ENGINE = arg("engine", "nbpro");
 if (!["nbpro", "flash"].includes(ENGINE)) throw new Error(`--engine must be nbpro or flash, not ${ENGINE}`);
+const SCENE = arg("scene", null);
+if (SCENE && !lookbookLib.LOOKBOOK_SCENE_KEYS.includes(SCENE)) throw new Error(`--scene must be one of ${lookbookLib.LOOKBOOK_SCENE_KEYS.join(", ")}`);
 
 const ROOT = resolve(new URL("../..", import.meta.url).pathname);
 const OUT = join(homedir(), "Desktop", "lookbook-samples");
@@ -55,7 +62,7 @@ const fetchImage = async (url) => {
 
 const geminiApiKey = secret("GEMINI_API_KEY");
 const deps = engines({
-  db, saDate, geminiApiKey,
+  db, saDate, geminiApiKey, bucket: admin.storage().bucket(STORAGE_BUCKET),
   anthropicApiKey: secret("anthropic-api-key"),
   visionModel: "claude-sonnet-4-6",
   fetchImage, Anthropic,
@@ -80,8 +87,8 @@ if (ENGINE === "flash") {
   deps.generateHero = async (parts) => {
     const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.GEMINI_MODEL, parts, {
       outPerMtok: gemini.GEMINI_OUT_PER_MTOK, flatUsd: gemini.GEMINI_FLAT_IMAGE_USD,
-      // The request the production fallback sends (engines.cjs): no imageSize.
-      imageConfig: { aspectRatio: "9:16" },
+      // The request the production fallback sends (engines.cjs).
+      imageConfig: { aspectRatio: "9:16", imageSize: "4K" },
     });
     return { ...gen, engine: "nb2" };
   };
@@ -96,7 +103,8 @@ const real = JSON.parse(await readFile(join(ROOT, "docs/lookbook-real.json"), "u
 for (const r of (real.generation || real).rows || []) used.add(r.pid);
 
 const before = (await db.ref(`social_generation_budget/${saDate}/count`).once("value")).val();
-const r = await makeLookbook(db, deps, { nowMs, used });
+const scene = SCENE || lookbookLib.sceneFor(saDate, lookbookLib.parseLookbookScenes(process.env.LOOKBOOK_SCENES), lookbookLib.parseLookbookDays(process.env.LOOKBOOK_DAYS)).key;
+const r = await makeLookbook(db, deps, { nowMs, used, scene });
 const after = (await db.ref(`social_generation_budget/${saDate}/count`).once("value")).val();
 
 const model = ENGINE === "flash" ? gemini.GEMINI_MODEL : gemini.NBPRO_MODEL;
@@ -104,23 +112,36 @@ const entry = {
   at: new Date().toISOString(), saDate, ok: r.ok, gate: r.gate || null, reason: r.reason || null,
   model, engineUsed: r.engine || null, budget: { before, after, cap: 4, overridden: OVERRIDE_CAP },
   costUSD: r.costUSD, costZAR: +((r.costUSD || 0) * USD_TO_ZAR).toFixed(2), attempts: r.attempts,
-  rows: (r.rows || []).map((x) => ({ slot: x.slot, pid: x.pid, name: x.displayName, price: x.priceText })),
+  rows: (r.rows || []).map((x) => ({ slot: x.slot, pid: x.pid, name: x.displayName, price: x.priceText, thumb: x.thumbSource || null })),
   total: r.total ? r.total.text : null,
+  scene, modelRef: Boolean(r.modelRef), thumbCostUSD: r.thumbCostUSD || 0,
+  heroCostUSD: +((r.costUSD || 0) - (r.thumbCostUSD || 0)).toFixed(6),
 };
 if (r.ok) {
+  const hm = await sharp(r.hero.buffer).metadata();
+  entry.dims = {
+    hero: `${hm.width}x${hm.height}`,
+    master: `${r.poster.master.width}x${r.poster.master.height}`,
+    feed: `${r.poster.feed.width}x${r.poster.feed.height}`,
+    story: `${r.poster.story.width}x${r.poster.story.height}`,
+  };
+  entry.check = { text: r.check && r.check.ok, model: r.modelCheck && r.modelCheck.seen };
   await writeFile(join(OUT, `${N}.jpg`), r.poster.master.buffer);
+  await writeFile(join(OUT, `${N}-feed.jpg`), r.poster.feed.buffer);
+  await writeFile(join(OUT, `${N}-story.jpg`), r.poster.story.buffer);
   await writeFile(join(OUT, `${N}-hero.jpg`), r.hero.buffer);
   const refPath = existsSync(join(ROOT, "docs/lookbook-reference.jpg")) ? "docs/lookbook-reference.jpg" : "docs/lookbook-real.jpg";
   const H = 1800, W = 1200, GAP = 40, BAR = 90;
+  const masterSmall = await sharp(r.poster.master.buffer).resize(W, H).toBuffer();
   const label = (t) => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${BAR}"><text x="0" y="60" font-family="Helvetica" font-size="40" font-weight="bold" fill="#111">${t}</text></svg>`);
   const ref = await sharp(join(ROOT, refPath)).resize(W, H, { fit: "contain", background: "#E9E6DF" }).toBuffer();
   const leftT = refPath.endsWith("reference.jpg") ? "REFERENCE" : "FIRST REAL POSTER · gemini-3-pro-image (17 Oct)";
   await sharp({ create: { width: W * 2 + GAP * 3, height: H + BAR + GAP, channels: 3, background: "#ffffff" } })
     .composite([
       { input: label(leftT), left: GAP, top: 0 },
-      { input: label(`SAMPLE ${N} · ${model}`), left: W + GAP * 2, top: 0 },
+      { input: label(`SAMPLE ${N} · ${model} · ${scene}`), left: W + GAP * 2, top: 0 },
       { input: ref, left: GAP, top: BAR },
-      { input: r.poster.master.buffer, left: W + GAP * 2, top: BAR },
+      { input: masterSmall, left: W + GAP * 2, top: BAR },
     ])
     .jpeg({ quality: 88 }).toFile(join(OUT, `compare-${N}.jpg`));
   entry.comparedWith = refPath;

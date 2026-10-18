@@ -54,7 +54,7 @@ async function upload(n, buffer) {
 }
 
 const describe = (n, s) =>
-  `SAMPLE ${n} · ${LABEL[s.model] || s.model} · ${s.rows.length} pieces · total ${s.total} · ` +
+  `SAMPLE ${n} · ${LABEL[s.model] || s.model}${s.scene ? ` · ${s.scene}` : ""} · ${s.rows.length} pieces · total ${s.total} · ` +
   `R${(s.costUSD * USD_TO_ZAR).toFixed(2)} to generate. Not scheduled; never posted.`;
 
 for (const n of samples) {
@@ -73,7 +73,10 @@ for (const n of samples) {
     products: s.rows.map((r) => ({ pid: r.pid, name: r.name, price: r.price })),
     platforms: { instagram: false, facebook: false, tiktok: false },
     scheduledAt: null,
-    sample: { n, model: s.model, costUSD: s.costUSD, total: s.total, madeAt: s.at, capOverridden: Boolean(s.budget && s.budget.overridden) },
+    sample: {
+      n, model: s.model, costUSD: s.costUSD, total: s.total, madeAt: s.at, capOverridden: Boolean(s.budget && s.budget.overridden),
+      ...(s.scene ? { scene: s.scene } : {}), ...(s.dims ? { master: s.dims.master } : {}),
+    },
     createdAt: now,
     updatedAt: now,
     updatedBy: "script:lookbook-samples-publish",

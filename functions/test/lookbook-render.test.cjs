@@ -42,6 +42,15 @@ describe("renderLookbookPoster", () => {
     assert.ok(diff / a.length < 6, `mean difference ${diff / a.length}`);
   });
 
+  test("at 4/3 the model's position is converted back to design units: the wordmark narrows exactly as at scale 1", async () => {
+    const rows = (await ROWS()).map((r) => ({ ...r, cutout: null }));
+    const subject = { x: 0.45, y: 0.14 };       // a head that rises into the MARATHON block
+    const one = await R.renderLookbookPoster({ hero: await hero(), rows, subject, scale: 1 });
+    const big = await R.renderLookbookPoster({ hero: await hero(), rows, subject });
+    assert.ok(one.markW < 440, `narrowed at scale 1 (${one.markW})`);
+    assert.ok(Math.abs(big.markW - one.markW) < 1, `${big.markW} vs ${one.markW}`);
+  });
+
   test("the G-Star fix: a multi-word brand on the bold line, the style code never drawn", () => {
     const rows = [{ slot: "bottoms", displayName: "G star raw cargo jeans FG3546#", priceText: "R750" }];
     const drawn = [];

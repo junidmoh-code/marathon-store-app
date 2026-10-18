@@ -134,7 +134,9 @@ describe("engines: the thumbnail cache and its ceiling", () => {
   });
 
   test("an unsafe pid is refused on both sides", async () => {
-    const e = make(new FakeRtdb({}), fakeBucket());
+    const bucket = fakeBucket();
+    bucket.files.set("aiStudio/social/lookbook/thumbs/../x.png", Buffer.from("planted"));
+    const e = make(new FakeRtdb({}), bucket);
     assert.equal(await e.readThumbCache("../x"), null);
     await assert.rejects(e.writeThumbCache("a/b", Buffer.from("x")), /unusable pid/);
   });
