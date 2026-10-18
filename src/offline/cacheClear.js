@@ -21,9 +21,15 @@
 // (Opus test audit, PR #618.)
 
 import { PHOTO_CACHE_NAME } from "./photoCache";
+import { TV_BG_CACHE_NAME } from "../components/tv/tvBackgroundCache";
+
+// The second exception: the queue board keeps its background photos in Cache
+// Storage the same way (filled by hand, no worker), so a TV downloads each
+// photo once rather than on every boot.
+const SPARED = new Set([PHOTO_CACHE_NAME, TV_BG_CACHE_NAME]);
 
 /**
- * Delete every cache except the photo mirror's.
+ * Delete every cache except the photo mirror's and the TV backgrounds'.
  *
  * `cacheStorage` is injected so this is testable without a browser; production
  * passes nothing and gets the global. Returns the names actually deleted.
@@ -33,7 +39,7 @@ export async function clearCachesExceptPhotos({ cacheStorage } = {}) {
   if (!store || !store.keys) return [];
   let keys;
   try { keys = await store.keys(); } catch { return []; }
-  const doomed = keys.filter((k) => k !== PHOTO_CACHE_NAME);
+  const doomed = keys.filter((k) => !SPARED.has(k));
   await Promise.all(doomed.map((k) => Promise.resolve(store.delete(k)).catch(() => {})));
   return doomed;
 }

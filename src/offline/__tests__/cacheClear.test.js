@@ -6,6 +6,7 @@
 import { describe, test, expect, vi } from "vitest";
 import { clearCachesExceptPhotos } from "../cacheClear";
 import { PHOTO_CACHE_NAME } from "../photoCache";
+import { TV_BG_CACHE_NAME } from "../../components/tv/tvBackgroundCache";
 
 const fakeCaches = (names) => {
   const held = new Set(names);
@@ -18,6 +19,13 @@ describe("the boot-time cache clear", () => {
     const deleted = await clearCachesExceptPhotos({ cacheStorage: c });
     expect(deleted.sort()).toEqual(["old-runtime", "workbox-precache-v2"]);
     expect([...c.held]).toEqual([PHOTO_CACHE_NAME]);
+  });
+
+  test("keeps the TV board's background photos too", async () => {
+    const c = fakeCaches(["old-runtime", TV_BG_CACHE_NAME, PHOTO_CACHE_NAME]);
+    expect(await clearCachesExceptPhotos({ cacheStorage: c })).toEqual(["old-runtime"]);
+    expect([...c.held].sort()).toEqual([PHOTO_CACHE_NAME, TV_BG_CACHE_NAME].sort());
+    expect(TV_BG_CACHE_NAME).toBe("marathon-tv-backgrounds-v1");
   });
 
   test("a device with only the photo mirror loses nothing", async () => {

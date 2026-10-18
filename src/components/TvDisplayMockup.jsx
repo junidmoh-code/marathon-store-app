@@ -23,7 +23,8 @@ import { serverNowMs } from "../utils/serverTime";
 import { buildBoard, clockText, dateText, pageRows } from "./tv/queueBoardRows";
 import { DEMO_BOARD, isDemoMode } from "./tv/queueBoardDemo";
 import { useTvPromo, tvPromoMode } from "../utils/tvPromo";
-import { useTvBackgrounds, pickTvBackground } from "../utils/tvBackgrounds";
+import { useTvBackgrounds, pickTvBackground, photosForDay, johannesburgDay } from "../utils/tvBackgrounds";
+import { tvBackgroundCache } from "./tv/tvBackgroundCache";
 // The wall: Junid's sneaker-room photo (Nike box walls, the reader in the
 // middle), 1920×1080. It carries no sign, so the lit MARATHON / STORE
 // OPERATIONS sign is drawn on top, and the photo is dimmed so the glass and
@@ -267,18 +268,45 @@ function BlackFridayTape() {
 
 // The wall behind the glass: the photo the TV Ad card picked (/settings/
 // tvBackgrounds — one default, or a rotation on server time so every TV
-// agrees), else the built-in sneaker room. Rotation is checked every 5 s.
+// agrees) from TODAY's pool (Johannesburg day), else the built-in sneaker
+// room. Rotation is checked every 5 s; a still photo re-checks every minute so
+// the pool still turns over at midnight.
+//
+// Today's photos are downloaded once into Cache Storage (tvBackgroundCache)
+// and drawn from there, so rotating, a new day or a new upload never
+// re-downloads a photo the TV already holds; photos removed in the Workshop are
+// dropped from the cache. The only listener is the small metadata node.
 function useBoardBackground() {
   const cfg = useTvBackgrounds();
   const [nowMs, setNowMs] = useState(() => serverNowMs());
   const rotating = cfg?.mode === "rotate" && cfg.photos.length > 1;
   useEffect(() => {
-    if (!rotating) return undefined;
-    const t = setInterval(() => setNowMs(serverNowMs()), 5000);
+    const t = setInterval(() => setNowMs(serverNowMs()), rotating ? 5000 : 60_000);
     return () => clearInterval(t);
   }, [rotating]);
   const picked = cfg ? pickTvBackground(cfg, nowMs) : null;
-  return picked?.url || wallPhoto;
+  const day = johannesburgDay(nowMs);
+  const todayKey = cfg ? photosForDay(cfg, day).map((p) => p.url).join("\n") : "";
+  const allKey = cfg ? cfg.photos.map((p) => p.url).join("\n") : "";
+
+  useEffect(() => {
+    if (!cfg) return;
+    const cache = tvBackgroundCache();
+    const today = todayKey ? todayKey.split("\n") : [];
+    cache.prune(allKey ? allKey.split("\n") : []).catch(() => {}).then(() => cache.prefetch(today));
+  }, [todayKey, allKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [drawn, setDrawn] = useState(null); // { url, src } — src is the cached blob: URL
+  const pickedUrl = picked?.url || "";
+  useEffect(() => {
+    if (!pickedUrl) return undefined;
+    let live = true;
+    tvBackgroundCache().resolve(pickedUrl).then((src) => { if (live) setDrawn({ url: pickedUrl, src }); });
+    return () => { live = false; };
+  }, [pickedUrl]);
+  if (!pickedUrl) return wallPhoto;
+  // Until the pick resolves, keep what is on screen (no flash of an uncached URL).
+  return drawn?.url === pickedUrl ? drawn.src : (drawn?.src || wallPhoto);
 }
 
 // Two layers only (a TV has little memory to spare for full-HD photos): the
