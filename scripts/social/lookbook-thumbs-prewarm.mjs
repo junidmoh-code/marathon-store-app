@@ -14,7 +14,7 @@
 // makes what is missing. Cut-outs run one at a time (an ONNX session each).
 //
 //   GOOGLE_APPLICATION_CREDENTIALS=~/.config/marathon/shopify-reconciler-sa.json \
-//     node scripts/social/lookbook-thumbs-prewarm.mjs [--dry-run] [--limit N] [--concurrency 3]
+//     node scripts/social/lookbook-thumbs-prewarm.mjs [--dry-run] [--limit N] [--from N] [--concurrency 3]
 //
 //   --probe N   make N shots on BOTH Flash-Lite and Flash, cache nothing, and
 //               write a side-by-side sheet: the model choice, measured.
@@ -117,7 +117,12 @@ for (const r of need) {
   const ptr = (await db.ref(`social_lookbook/thumbs/${r.pid}`).once("value")).val();
   if (ptr) cached++; else todo.push(r);
 }
-const queue = todo.slice(0, LIMIT);
+// --from N: start at the Nth missing product, so a second run can take the
+// back half while the first works forward. Each product is checked against
+// the cache again just before it is made (resolveThumb), so a product the
+// other run already made is read, not bought.
+const FROM = Math.max(0, Number(arg("from", 0)) || 0);
+const queue = todo.slice(FROM, FROM + LIMIT);
 console.log(`already cached ${cached} · to generate ${todo.length}${Number.isFinite(LIMIT) ? ` (this run: ${queue.length})` : ""} · estimate $${(queue.length * gemini.FLASH_LITE_FLAT_IMAGE_USD).toFixed(2)} at Flash-Lite's 1K rate`);
 if (DRY) process.exit(0);
 
