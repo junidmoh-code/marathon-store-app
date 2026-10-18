@@ -51,6 +51,20 @@ const FORCED_ATTEMPTS_KEY = "marathon.update.forcedAttempts";
 let forcedMode = false;
 let firstSeenAt = null;
 
+// ── THE TV ROUTE IS NEVER RELOADED ──────────────────────────────────────────
+// The in-store queue board (#tv) is idle for ever, so the idle rule above
+// reloaded it within one poll of every deploy — and a reload re-locks the
+// browser's audio, which is what silenced the pickup voice during the day.
+// Nothing here reloads #tv, in either mode, and the banner is not drawn there.
+// The board picks up a new bundle when its launcher restarts Chrome (deploy/tv:
+// at boot, after a crash, and nightly at 04:30), with audio allowed by flag.
+export function isTvRoute(loc = typeof window === "undefined" ? null : window.location) {
+  return !!loc && loc.hash === "#tv";
+}
+
+// The one place a reload happens, so a test can prove the TV never reaches it.
+export const reloadIo = { reload: () => window.location.reload() };
+
 /** Turned on by the mirror's bootstrap once this device is serving locally. */
 export function setForcedUpdateMode(on) {
   forcedMode = !!on;
@@ -87,9 +101,10 @@ export function isNewVersion(currentVersion, fetchedVersion) {
 
 export function shouldAutoReload({
   updateAvailable, busy, msSinceActivity, alreadyAttempted, hidden = false,
-  forced = false, msSinceFirstSeen = 0, attempts = 0,
+  forced = false, msSinceFirstSeen = 0, attempts = 0, tvRoute = false,
 }) {
   if (!updateAvailable) return false;
+  if (tvRoute) return false; // never the TV — see isTvRoute
   // BUSY IS ABSOLUTE, in both modes. It is the cart, the count in progress,
   // and — on a mirrored device — unsent writes. Nothing reloads over those.
   if (busy) return false;
@@ -139,6 +154,10 @@ function forcedAttempts() {
 }
 
 export function applyUpdate() {
+  if (isTvRoute()) {
+    console.warn("update: a new build is deployed, but the TV board is never reloaded from the page (deploy/tv restarts it nightly).");
+    return;
+  }
   try { sessionStorage.setItem(RELOAD_LATCH_KEY, fetchedVersion ?? "unknown"); } catch { /* reload anyway */ }
   if (forcedMode) {
     try {
@@ -146,7 +165,7 @@ export function applyUpdate() {
         JSON.stringify({ version: fetchedVersion, n: forcedAttempts() + 1 }));
     } catch { /* reload anyway */ }
   }
-  window.location.reload();
+  reloadIo.reload();
 }
 
 let forcedTimer = null;
@@ -163,6 +182,7 @@ function maybeAutoReload(hidden) {
       forced: forcedMode,
       msSinceFirstSeen: firstSeenAt === null ? 0 : Date.now() - firstSeenAt,
       attempts: forcedAttempts(),
+      tvRoute: isTvRoute(),
     })
   ) {
     applyUpdate();
@@ -171,7 +191,7 @@ function maybeAutoReload(hidden) {
   // A forced reload that was refused — busy, or inside its grace — comes back
   // for it. The ordinary mode deliberately does not: its one attempt per
   // version is what stops a lagging CDN reload-looping a device.
-  if (forcedMode && updateAvailable && forcedTimer === null
+  if (forcedMode && updateAvailable && forcedTimer === null && !isTvRoute()
     && forcedAttempts() < FORCED_MAX_ATTEMPTS) {
     forcedTimer = setTimeout(() => {
       forcedTimer = null;

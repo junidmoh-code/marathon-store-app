@@ -21388,45 +21388,16 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // TV mounts (#tv kiosk and the in-app DISPLAY role) carry the ads.
   const specials = useSpecials();
 
-  // ── TV AUTO-UPDATE ──────────────────────────────────────────────────────────
-  // A kiosk TV is never manually reloaded, so a deploy otherwise never reaches it
-  // (the page keeps running the in-memory bundle it loaded hours ago — which is
-  // exactly how stale "auto-collect" code lingered after we shipped the fix).
-  // index.html is served no-cache, so poll it and reload when the built asset hash
-  // changes. SCOPED TO THE TV ONLY — no in-progress staff action to disrupt, and a
-  // reload re-applies the 8-min hide instantly (it's keyed off the persisted
-  // readyAt age). No reload loop: after reload the document's bundle == deployed.
-  useEffect(() => {
-    const runningBundle =
-      document.querySelector('script[type="module"][src*="assets/index-"]')
-        ?.getAttribute("src")?.match(/index-[A-Za-z0-9_-]+\.js/)?.[0] || "";
-    if (!runningBundle) return; // can't tell what we're running → never force-reload
-    let stopped = false;
-    const check = async () => {
-      if (stopped) return;
-      try {
-        const html = await fetch("/", { cache: "no-store" }).then((r) => r.text());
-        const deployed = html.match(/assets\/(index-[A-Za-z0-9_-]+\.js)/)?.[1] || "";
-        if (deployed && deployed !== runningBundle) {
-          console.warn("TV: new build deployed — reloading", { runningBundle, deployed });
-          window.location.reload();
-        }
-      } catch { /* offline / transient — retry next tick */ }
-    };
-    check();                                        // check IMMEDIATELY on load (don't wait a full interval)
-    const id = setInterval(check, 60 * 1000);       // then every 60s
-    // Also check when the TV tab regains focus/visibility (background tabs throttle
-    // the timer, so a kiosk that was asleep still catches up on wake).
-    const onVisible = () => { if (document.visibilityState === "visible") check(); };
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", check);
-    return () => {
-      stopped = true;
-      clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", check);
-    };
-  }, []);
+  // ── NO SELF-RELOAD ON THE TV ────────────────────────────────────────────────
+  // This board used to poll index.html every 60 s and reload the page
+  // the moment a new bundle was deployed. Every reload is a fresh page with no
+  // user gesture, so Chrome re-locks audio — with 5–10 hosting deploys a day,
+  // that is why the pickup voice switched on in the morning was silent by
+  // midday. The TV route is now never force-reloaded (updateChecker exempts it
+  // too): a new bundle reaches the TV when the deploy/tv launcher restarts
+  // Chrome — at boot, after a crash, and once a night at 04:30 while the store
+  // is shut — and that restart comes back with audio allowed by the kiosk flag.
+  // Pinned by src/tvScreenWiring.pin.test.js.
 
   useEffect(() => {
     const check = () => {
