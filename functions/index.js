@@ -5484,6 +5484,10 @@ const socialStill = require("./lib/social-still.cjs");
 const LOOKBOOK_ENABLED = process.env.LOOKBOOK_ENABLED !== "false";
 const STILL_FORMATS = socialLookbook.parseStillFormats(process.env.STILL_FORMATS, { lookbookEnabled: LOOKBOOK_ENABLED });
 const LOOKBOOK_DAYS = socialLookbook.parseLookbookDays(process.env.LOOKBOOK_DAYS);
+// A malformed LOOKBOOK_DAYS ("tue,thu") reads as the default; say so in the log.
+if (process.env.LOOKBOOK_DAYS && !socialLookbook.isJsonList(process.env.LOOKBOOK_DAYS)) {
+  console.warn(`LOOKBOOK_DAYS is not a JSON list (${process.env.LOOKBOOK_DAYS}) — using ${JSON.stringify(LOOKBOOK_DAYS)}`);
+}
 // Heroes generated before a failed text check falls back to the current
 // style. 1 since 2026-10-18 (owner's cap arithmetic: a lookbook-fallback day
 // is 3 of 4 = reel + hero + current style). 2 restores "regenerate once".
@@ -5543,7 +5547,7 @@ exports.socialStillAutopilot = onSchedule(
     // The cut-out model (onnxruntime, loaded only here) needs the headroom;
     // cut-outs also run one at a time (lookbook.cjs).
     memory: "4GiB",
-    // Lookbook (up to two generations at 180 s, two vision calls, six
+    // Lookbook (up to LOOKBOOK_HERO_ATTEMPTS generations at 180 s, two vision calls, six
     // cut-outs) then, on a failed gate, the current style with its own 503
     // retries. 1800 s is the v2 onSchedule maximum.
     timeoutSeconds: 1800,

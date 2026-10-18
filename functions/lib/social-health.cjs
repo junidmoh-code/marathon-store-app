@@ -582,13 +582,18 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   // Degraded, not paged: it is a configuration, not an outage.
   const reelsPlanned = listLen(policy && policy.reels);
   const stillsPlanned = still && still.enabled ? 1 : 0;
+  const reelsMade = madeToday.filter((p) => formatOfPost(p) === "reel").length;
+  const stillsMade = madeToday.filter((p) => p.updatedBy === "cron:socialStillAutopilot" && !p.twinOf).length;
   if (rhythm) {
     if (reelsPlanned !== rhythm.reels) {
       reasons.push(`the policy asks for ${reelsPlanned} reel${reelsPlanned === 1 ? "" : "s"} a day; the rhythm is ${rhythm.reels} reel + ${rhythm.stills} photo post`);
     }
-    if (stillsPlanned !== rhythm.stills) {
+    if (stillsPlanned !== rhythm.stills && autopilotEnabled !== false) {
       reasons.push(`the daily photo post is switched off; the rhythm is ${rhythm.reels} reel + ${rhythm.stills} photo post`);
     }
+    // And what was actually MADE: more than the rhythm is a cost, not an outage.
+    if (reelsMade > rhythm.reels) reasons.push(`${reelsMade} reels were made today; the rhythm is ${rhythm.reels}`);
+    if (stillsMade > rhythm.stills) reasons.push(`${stillsMade} photo posts were made today; the rhythm is ${rhythm.stills}`);
   }
 
   // ── THE VERDICT ───────────────────────────────────────────────────────────
@@ -650,7 +655,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
       // One reel + one photo post: what was planned, what is expected, and
       // which still format actually posted (current / lookbook / null).
       rhythm: {
-        reelsPlanned, stillsPlanned,
+        reelsPlanned, stillsPlanned, reelsMade, stillsMade,
         reelsExpected: rhythm ? rhythm.reels : null,
         stillsExpected: rhythm ? rhythm.stills : null,
         stillFormat: (stillVerdict.report && stillVerdict.report.posted) || null,

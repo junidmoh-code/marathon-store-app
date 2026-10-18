@@ -157,7 +157,7 @@ describe("the rhythm: exactly one reel and one photo post (2026-10-18)", () => {
   test("one reel slot and a still: no rhythm reason; the posted format is reported", () => {
     const v = assessSocialDay({ ...base, policy: { reels: ["19:00"], photos: [], stories: [] }, still: still(lookbook) });
     assert.ok(!v.reasons.some((r) => /rhythm/.test(r)), v.reasons.join("; "));
-    assert.deepEqual(v.counts.rhythm, { reelsPlanned: 1, stillsPlanned: 1, reelsExpected: 1, stillsExpected: 1, stillFormat: "lookbook", stillFallback: false });
+    assert.deepEqual(v.counts.rhythm, { reelsPlanned: 1, stillsPlanned: 1, reelsMade: 0, stillsMade: 0, reelsExpected: 1, stillsExpected: 1, stillFormat: "lookbook", stillFallback: false });
   });
 
   test("the 12:00 reel switched back on is reported, not paged", () => {
@@ -169,6 +169,13 @@ describe("the rhythm: exactly one reel and one photo post (2026-10-18)", () => {
     const v = assessSocialDay({ ...base, policy: { reels: ["19:00"], photos: [], stories: [] }, still: { enabled: false } });
     assert.ok(v.reasons.some((r) => r.startsWith("the daily photo post is switched off")));
     assert.equal(v.counts.rhythm.stillFormat, null);
+  });
+
+  test("two reels actually made is reported even when the policy says one", () => {
+    const reel = (id) => ({ id, format: "reel", status: "approved", createdAt: at("2026-10-19", "06:01"), scheduledAt: at("2026-10-19", "19:00") });
+    const v = assessSocialDay({ ...base, policy: { reels: ["19:00"], photos: [], stories: [] }, posts: [reel("a"), reel("b")], still: still(lookbook) });
+    assert.ok(v.reasons.includes("2 reels were made today; the rhythm is 1"), v.reasons.join("; "));
+    assert.equal(v.counts.rhythm.reelsMade, 2);
   });
 
   test("a lookbook day that fell back reports current + fallback", () => {

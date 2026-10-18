@@ -297,6 +297,11 @@ function parseLookbookDays(raw) {
   return WEEKDAYS.filter((d) => want.has(d));
 }
 
+/** Is `raw` a JSON array? For warning about a malformed switch. Pure. */
+function isJsonList(raw) {
+  try { return Array.isArray(JSON.parse(raw)); } catch { return false; }
+}
+
 /** "2026-10-19" -> "mon". The SA date is a calendar date, so UTC is exact. Pure. */
 function weekdayOf(saDate) {
   return WEEKDAYS[new Date(`${saDate}T12:00:00Z`).getUTCDay()];
@@ -483,7 +488,7 @@ module.exports = {
   lookbookSlot, guessSlot, priceOf, formatRand, approvedPhoto, resolveRow,
   recentLookbookPids, pickLookbookOutfit, historyEntry,
   parseStillFormats, stillCalendar,
-  parseLookbookDays, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
+  parseLookbookDays, isJsonList, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, anchorsFor,
   GRID, buildLocatePrompt, cellCentre, readLocate,
 };

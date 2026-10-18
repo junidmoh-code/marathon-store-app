@@ -10,7 +10,7 @@
 // to any of them.
 "use strict";
 
-const STILL_SLOT = "15:30";   // 3½ h after the 12:00 reel and 3½ h before the 19:00 one
+const STILL_SLOT = "15:30";   // 3½ h before the day's one reel at 19:00
 
 /**
  * The lookbook's story record (its feed twin is built from it by

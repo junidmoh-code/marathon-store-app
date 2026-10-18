@@ -45,10 +45,11 @@ Read before building the lookbook still. Every path below is in this repo
    06:00 run's own 30-minute ceiling, so the reels always reach the cap first
    and the still can never take a reel's unit.
 2. **Rotation:** `STILL_FORMATS` (env JSON, default `["current","lookbook"]`).
-   Its state is in `social_lookbook/rotation`, a sequence number advanced once
-   per SA date in a transaction. `LOOKBOOK_ENABLED=false` drops `"lookbook"`
+   (Superseded 2026-10-18, PR #746: the format is now by weekday from
+   `LOOKBOOK_DAYS`, default Mon/Wed/Fri; `social_lookbook/rotation` only
+   records the day's `{lastDate, format}`.) `LOOKBOOK_ENABLED=false` drops `"lookbook"`
    from the list, and `STILL_FORMATS=[]` turns the still off.
-3. **Slot 15:30 SAST**, 3½ h after the 12:00 reel and 3½ h before the 19:00 reel.
+3. **Slot 15:30 SAST**, 3½ h before the 19:00 reel (the 12:00 reel is off since 2026-10-18).
 4. **The lookbook record is a `story`** (1080×1920 letterboxed) with
    `artwork.feed` (the 1080×1350 top crop) and goes through the existing
    `buildFeedTwin`. That gives one feed post and one story post. The publisher
