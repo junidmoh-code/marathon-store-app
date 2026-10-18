@@ -32,6 +32,8 @@ const admin = adminRequire(import.meta.url)("firebase-admin");
 const local = createRequire(import.meta.url);
 const { tillAt } = local("../../functions/lib/card-terminal-placements.cjs");
 const { SLIP_SCOPE_FIELD, readSlipScope } = local("../../functions/lib/card-slip-scope.cjs");
+const { loadNetwork } = local("../../functions/lib/network-load.cjs");
+const { tillsFor } = local("../../functions/lib/network-registry.cjs");
 
 const EXECUTE = process.argv.includes("--execute");
 const GRANTS = [
@@ -48,6 +50,14 @@ const db = admin.database();
 const offset = (await db.ref(".info/serverTimeOffset").once("value")).val() || 0;
 const nowMs = Date.now() + offset;
 const terminals = (await db.ref("config/cardTerminals").once("value")).val() || {};
+// THE POS'S OWN TILLS (/network, the registry every till reads). A grant for a
+// till the POS does not have would be a till nobody sells on — refused.
+const network = await loadNetwork(db, { fresh: true });
+const posHasTill = (storeId, tillId) => tillsFor(network, storeId).some((t) => t.tillId === tillId);
+// Where every live machine stands now, "storeId/tillId".
+const standing = new Set(Object.entries(terminals)
+  .filter(([, row]) => row && !row.retiredAt)
+  .map(([, row]) => { const t = tillAt(row, nowMs); return `${t.storeId}/${t.tillId}`; }));
 
 function fail(msg) { console.error(`✗ ${msg}`); process.exit(1); }
 
@@ -60,6 +70,9 @@ for (const g of GRANTS) {
     .filter((t) => t.label === g.tillLabel);
   if (hits.length !== 1) fail(`"${g.tillLabel}": ${hits.length} machines stand at a till by that name — expected exactly one.`);
   const { storeId, tillId } = hits[0];
+  // ONE IDENTITY PER TILL (18 Oct 2026): the id granted is the POS's own till
+  // id, the one Card Recon draws the card under — or nothing is written.
+  if (!posHasTill(storeId, tillId)) fail(`"${g.tillLabel}" stands at ${storeId}/${tillId}, which is not a till in the POS registry (/network) — refusing a grant that would never match a card.`);
 
   // THE PERSON: their existing sign-in, one lookup.
   const email = `${g.username}@marathon.internal`;
@@ -72,6 +85,12 @@ for (const g of GRANTS) {
   if (!posStores.includes(storeId)) fail(`${email} has POS access to [${posStores.join(", ")}], not to "${storeId}" — will not grant ${g.tillLabel}.`);
 
   const before = readSlipScope(rec[SLIP_SCOPE_FIELD]);
+  // A till already held that no machine stands at, or the POS does not know,
+  // is said out loud (never silently kept as if it worked).
+  for (const key of before) {
+    const [s, t] = key.split("/");
+    if (!standing.has(key) || !posHasTill(s, t)) console.error(`  ⚠ ${email} holds ${key}: ${!posHasTill(s, t) ? "not a POS till" : "no card machine stands there"} — fix the registry or remove it.`);
+  }
   const want = `${storeId}/${tillId}`;
   plan.push({ ...g, email, uid: user.uid, name: rec.displayName || rec.posAccess?.displayName || g.username, storeId, tillId, before, already: before.includes(want) });
 }

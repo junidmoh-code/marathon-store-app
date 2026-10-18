@@ -92,6 +92,10 @@ if (!admin.apps.length) {
 }
 
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
+// The second reader, for the one failure Gemini cannot recover from by itself
+// (see CREDIT_WALL_MODEL). Same secret the rest of the store app's Claude
+// calls use.
+const anthropicApiKey = defineSecret("anthropic-api-key");
 
 // Same model tier as readStyleCodeLabel's residual: a till slip is dense,
 // low-contrast thermal print and misreading a digit here becomes a recorded
@@ -107,6 +111,17 @@ const OCR_MODEL = "gemini-3.6-flash";
 // 3.6 was refusing. Every other status fails at once — a 402 does not get
 // better by asking twice.
 const OCR_FALLBACK_MODEL = "gemini-3.8-flash";
+// ── WHEN GEMINI HAS RUN OUT OF CREDIT ────────────────────────────────────────
+// 18 Oct 2026: Yasmin's Marathon PE Till 2 slip (#546, R22,460.00) arrived at
+// 14:58 and sat unread, because the Gemini prepay balance was empty (HTTP 402)
+// and every retry met the same wall — so Junid's report showed the till as
+// "awaiting a slip" all afternoon. A 402/429 is the one failure no number of
+// retries fixes, so it is handed ONCE to Claude, which read the same photo
+// exactly (TID, batch, opened/closed, total, count). Never used for anything
+// else: a 503 or a hang still goes to the Gemini fallback tier as before.
+const CREDIT_WALL_MODEL = "claude-opus-5-5";
+const CLAUDE_TIMEOUT_MS = 120000;
+const isCreditWall = (err) => !!err && (err.httpStatus === 402 || err.httpStatus === 429);
 const OCR_503_RETRIES = 3;
 const OCR_503_BACKOFF_MS = [1500, 3000, 5000];
 // No new attempt starts unless it could still finish inside the callable's
@@ -125,6 +140,7 @@ const OUT_PER_MTOK_USD = 2.50;
 const OCR_RATES = {
   "gemini-3.6-flash": { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD },
   "gemini-3.8-flash": { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD },
+  [CREDIT_WALL_MODEL]: { in: 4, out: 20 },
 };
 
 // A batch of 50 transactions is 2-4 detail photos plus the summary. 14 is the
@@ -380,6 +396,21 @@ function decodePhoto(raw, i) {
 // One photo set, tried against the primary model with a short 503 retry, then
 // once against the fallback. `deps` is the test seam: fetch and sleep.
 async function runSlipOcr(photos, apiKey, deps = {}) {
+  try {
+    return await runGeminiOcr(photos, apiKey, deps);
+  } catch (err) {
+    // Out of credit, and a second reader is configured: one read there.
+    if (!isCreditWall(err) || !deps.claudeKey) throw err;
+    console.warn(`cardBatchCapture: Gemini HTTP ${err.httpStatus} (out of credit) — reading with ${CREDIT_WALL_MODEL}`);
+    const out = await runClaudeOcrOnce(photos, deps.claudeKey, deps.fetch || fetch);
+    return { ...out, model: CREDIT_WALL_MODEL, attempts: (err.attempts || 1) + 1 };
+  }
+}
+
+/** Both readers, with the keys the deployed functions hold. */
+const liveOcr = (photos) => runSlipOcr(photos, geminiApiKey.value(), { claudeKey: anthropicApiKey.value() });
+
+async function runGeminiOcr(photos, apiKey, deps = {}) {
   const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const clock = deps.now || Date.now;
   const started = clock();
@@ -410,7 +441,7 @@ async function runSlipOcr(photos, apiKey, deps = {}) {
         i = fallback - 1; // the loop's i++ lands on the fallback
         continue;
       }
-      if (err.httpStatus !== 503) throw err;
+      if (err.httpStatus !== 503) { err.attempts = made; throw err; }
       const wait = OCR_503_BACKOFF_MS[i];
       if (wait && plan[i + 1] === OCR_MODEL) await sleep(wait);
     }
@@ -467,6 +498,59 @@ async function runSlipOcrOnce(photos, apiKey, model, fetchImpl) {
     tokensIn: usage.promptTokenCount || 0,
     tokensOut: usage.candidatesTokenCount || 0,
   };
+}
+
+// Gemini's schema, in the JSON Schema dialect Claude's structured output takes:
+// lower-case types, and every object closed (additionalProperties: false).
+function toJsonSchema(node) {
+  if (!node || typeof node !== "object") return node;
+  const out = { type: String(node.type).toLowerCase() };
+  if (node.enum) out.enum = node.enum;
+  if (node.properties) {
+    out.properties = Object.fromEntries(Object.entries(node.properties).map(([k, v]) => [k, toJsonSchema(v)]));
+    out.additionalProperties = false;
+  }
+  if (node.items) out.items = toJsonSchema(node.items);
+  if (node.required) out.required = node.required;
+  return out;
+}
+const CLAUDE_EXTRACTION_SCHEMA = toJsonSchema(EXTRACTION_SCHEMA);
+
+async function runClaudeOcrOnce(photos, apiKey, fetchImpl) {
+  const res = await fetchImpl("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({
+      model: CREDIT_WALL_MODEL,
+      max_tokens: 16000,
+      output_config: { effort: "medium", format: { type: "json_schema", schema: CLAUDE_EXTRACTION_SCHEMA } },
+      messages: [{
+        role: "user",
+        content: [
+          ...photos.map((p) => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: p.base64 } })),
+          { type: "text", text: EXTRACTION_PROMPT },
+        ],
+      }],
+    }),
+    signal: AbortSignal.timeout(CLAUDE_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const err = new Error(`claude HTTP ${res.status}`);
+    // The 402 is GEMINI's — the person is told the reader is out of credit,
+    // which it still is. Claude's own status is in the log line.
+    err.httpStatus = 402;
+    err.secondStatus = res.status;
+    try { err.body = (await res.text()).slice(0, 400); } catch { /* bonus */ }
+    console.error(`cardBatchCapture: ${CREDIT_WALL_MODEL} fallback failed: HTTP ${res.status} ${err.body || ""}`);
+    throw err;
+  }
+  const payload = await res.json();
+  const text = (payload.stop_reason === "refusal" ? [] : payload.content || [])
+    .filter((b) => b && b.type === "text").map((b) => b.text).join("");
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch { parsed = null; }
+  const usage = payload.usage || {};
+  return { parsed, tokensIn: usage.input_tokens || 0, tokensOut: usage.output_tokens || 0 };
 }
 
 // Model output → the validated, integer-cents extraction the lib understands.
@@ -1109,7 +1193,7 @@ async function handleExtract(db, request, opts = {}) {
   // ── OCR ──
   let ocr;
   try {
-    ocr = await runSlipOcr(decoded, geminiApiKey.value());
+    ocr = await liveOcr(decoded);
   } catch (err) {
     // ── THE SENTENCE THE MANAGER GETS IS THE POINT OF ALL THIS ──────────────
     // "Could not read the photos right now — try again." was the answer to
@@ -1983,6 +2067,14 @@ async function handleSlipTills(db, request, deps = {}) {
     if (!slipScopeAllows(scope, { storeId, tillId })) continue;
     tills.push({ tid, filedStoreId: row.storeId, storeId, tillId, label: here.label || row.label || `${storeId} · ${tillId}`, typed: typesTotal(row) });
   }
+  // A GRANTED TILL NO MACHINE STANDS AT is said out loud, never dropped
+  // quietly: the screen tells the person to call Junid, and the log carries
+  // the alarm (18 Oct 2026 — one till must only ever have one identity).
+  for (const key of scope) {
+    if (!tills.some((t) => `${t.storeId}/${t.tillId}` === key)) {
+      console.error(`CARD_SLIP_SCOPE_ORPHAN uid=${uid} till=${key}: no registered card machine stands at this till — the person cannot send its slip`);
+    }
+  }
   // TODAY'S SLIP IS IN — one leaf per till (their own tills only), from the
   // log every accepted staff slip writes. When it arrived, never a figure.
   // A log that cannot be read leaves `sent` unknown (undefined), never "no".
@@ -2257,7 +2349,7 @@ async function queueSlipCheck(db, { terminal, picked, batchKey, nowMs, slip = nu
 
 /** One OCR read of a check job's photo: the total the slip prints, or null. Throws what the reader throws. */
 async function checkJobOnce(db, job, photos, deps = {}) {
-  const ocr = await (deps.ocr || ((p) => runSlipOcr(p, geminiApiKey.value())))(photos);
+  const ocr = await (deps.ocr || liveOcr)(photos);
   const rate = OCR_RATES[ocr.model] || { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD };
   const costUSD = +(((ocr.tokensIn || 0) / 1e6) * rate.in + ((ocr.tokensOut || 0) / 1e6) * rate.out).toFixed(6);
   try {
@@ -2526,6 +2618,7 @@ async function processReadJob(db, jobId, deps = {}) {
   // about. (Sonnet architect review, #707.)
   if (!check && final === "unread") await markJobUnread(db, done, outcome, t);
   if (!check && final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
+  if (!check) await noteStaffSlipRead(db, done, outcome, final, t);
   const updates = { [`${DUE_PATH}/${job.dueKey}`]: null };
   for (const [k, v] of Object.entries(patch)) updates[`${JOBS_PATH}/${jobId}/${k}`] = v;
   updates[`${JOBS_PATH}/${jobId}/prevDueKey`] = null;
@@ -2538,6 +2631,31 @@ async function processReadJob(db, jobId, deps = {}) {
   await db.ref().update(updates);
   console.log(`cardBatchReadJob: job ${jobId} picked=${job.pickedTid} attempt ${job.attempts} → ${outcome.kind}${final ? ` (${final})` : ` (retry ${new Date(patch.dueAt).toISOString()})`}`);
   return { outcome: outcome.kind, final };
+}
+
+/**
+ * WHAT THE READER MADE OF A STAFF SLIP, on its log entry (18 Oct 2026). Yasmin's
+ * PE Till 2 photo sat behind an empty Gemini balance for hours and Junid's
+ * card said only "being read". The entry now says what the last attempt
+ * met — Junid's report draws it. Only an entry the receive wrote is touched
+ * (cold-null: a deleted entry stays deleted); a log failure never fails the job.
+ */
+async function noteStaffSlipRead(db, job, outcome, final, nowMs) {
+  if (!job || !job.jobId || !job.dayYmd) return;
+  let path;
+  try { path = `${staffSlipDayPath({ storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd })}/${job.jobId}`; } catch { return; }
+  const read = {
+    at: nowMs,
+    attempts: Number.isInteger(job.attempts) ? job.attempts : null,
+    outcome: final || outcome.kind,
+    reason: outcome.reason ? String(outcome.reason).slice(0, 300) : null,
+    batchKey: final === "recorded" && outcome.batchKey ? String(outcome.batchKey) : null,
+  };
+  try {
+    await db.ref(path).transaction((cur) => (cur === null ? null : { ...cur, read }));
+  } catch (err) {
+    console.warn(`cardBatchReadJob: staff-slip read note failed for ${job.jobId}: ${err.message}`);
+  }
 }
 
 /** The read gave up: that till/day is Unread in Junid's report, and he is emailed once. */
@@ -2683,7 +2801,7 @@ async function recordNoticeResults(db, results, nowMs) {
 exports.cardBatchCapture = onCall(
   {
     region: "europe-west1",
-    secrets: [geminiApiKey],
+    secrets: [geminiApiKey, anthropicApiKey],
     timeoutSeconds: 300,
     memory: "512MiB",
   },
@@ -2783,7 +2901,7 @@ exports.cardBatchReadJob = onValueCreated(
     ref: `/${JOBS_PATH}/{jobId}`,
     instance: "marathon-club-default-rtdb",
     region: "europe-west1",
-    secrets: [geminiApiKey],
+    secrets: [geminiApiKey, anthropicApiKey],
     timeoutSeconds: 540,
     memory: "1GiB",
   },
@@ -2797,7 +2915,7 @@ exports.cardBatchReadRetry = onSchedule(
     schedule: "*/5 * * * *",
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
-    secrets: [geminiApiKey],
+    secrets: [geminiApiKey, anthropicApiKey],
     timeoutSeconds: 540,
     memory: "1GiB",
   },
@@ -2848,5 +2966,7 @@ exports.OCR_MODEL = OCR_MODEL;
 exports.EXTRACTION_PROMPT = EXTRACTION_PROMPT;
 exports.OCR_FALLBACK_MODEL = OCR_FALLBACK_MODEL;
 exports.runSlipOcr = runSlipOcr;
+exports.CREDIT_WALL_MODEL = CREDIT_WALL_MODEL;
+exports.CLAUDE_EXTRACTION_SCHEMA = CLAUDE_EXTRACTION_SCHEMA;
 exports.photoReadLogLine = photoReadLogLine;
 exports.refusalLogLine = refusalLogLine;

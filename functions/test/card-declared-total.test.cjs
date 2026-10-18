@@ -169,7 +169,7 @@ const submitBody = SRC.slice(SRC.indexOf("async function handleSubmit("), SRC.in
 test("the owner gate and the photo requirement run BEFORE any OCR is paid for", () => {
   const gate = extractBody.indexOf("mayDeclareTotal(request.auth?.token)");
   const noPhoto = extractBody.indexOf("A typed total is refused without a photo");
-  const ocr = extractBody.indexOf("runSlipOcr(");
+  const ocr = extractBody.indexOf("liveOcr(");
   assert.ok(gate > -1 && noPhoto > -1 && ocr > -1);
   assert.ok(gate < ocr && noPhoto < ocr);
   assert.match(extractBody, /channel === "email" \|\| pdf/);

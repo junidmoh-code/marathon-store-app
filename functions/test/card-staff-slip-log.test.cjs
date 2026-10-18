@@ -11,7 +11,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { assertSent } = require("./helpers/slip-receipt.cjs");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
-const { handleSlip, handleSlipTills, handleTypedCapture, handleSubmit } = require("../cardRecon/cardRecon.js");
+const { handleSlip, handleSlipTills, handleTypedCapture, handleSubmit, processReadJob } = require("../cardRecon/cardRecon.js");
 const { slipTradingDay, batchCloseOf, staffSlipDayPath, latestStaffSlip } = require("../lib/card-staff-slip-log.cjs");
 const { shouldAttach } = require("../lib/card-supporting-slips.cjs");
 
@@ -228,4 +228,45 @@ test("slipTills: a log read that never answers leaves that till unknown — neve
   assert.ok(Date.now() - t0 < 2000);
   assert.equal(out.tills.length, 1);
   assert.equal("sent" in out.tills[0], false, "unknown, not null");
+});
+
+// ── 18 OCT 2026: WHAT THE READER MADE OF IT, ON THE ENTRY ────────────────────
+// Yasmin's 14:58 photo met an empty Gemini balance on every attempt and Junid's
+// card said only "being read". Each attempt now leaves its outcome on her entry.
+test("a read that meets an empty reader leaves the reason on the staff slip's log entry", async () => {
+  const db = world();
+  const now = SAST("2026-10-18T14:58:21");
+  assertSent(await send(db, YASMIN, MT2, { now }));
+  const [entry] = await log(db, "pe", MT2, "2026-10-18");
+  // What handleExtract throws when both readers are out (an HttpsError).
+  const credit = Object.assign(new Error("The slip reader has run out of credit, so photographed slips cannot be read until it is topped up."), { code: "resource-exhausted" });
+  await processReadJob(db, entry.jobId, { now: () => now + 60000, onArrival: true, loadPhotos: async () => [PHOTO], read: async () => { throw credit; } });
+  const [after] = await log(db, "pe", MT2, "2026-10-18");
+  assert.equal(after.kind, "received", "still a photo waiting");
+  assert.equal(after.read.attempts, 1);
+  assert.equal(after.read.outcome, "transient");
+  assert.match(after.read.reason, /run out of credit/);
+  assert.equal(after.read.batchKey ?? null, null, "RTDB keeps no null");
+});
+
+test("a read that records the batch says which batch on the entry", async () => {
+  const db = world();
+  const now = SAST("2026-10-18T14:58:21");
+  assertSent(await send(db, YASMIN, MT2, { now }));
+  const [entry] = await log(db, "pe", MT2, "2026-10-18");
+  await processReadJob(db, entry.jobId, { now: () => now + 60000, onArrival: true, loadPhotos: async () => [PHOTO],
+    read: async () => ({ extract: { ok: true, draftId: "d" }, submit: { ok: true, batchKey: "546" } }) });
+  const [after] = await log(db, "pe", MT2, "2026-10-18");
+  assert.equal(after.read.outcome, "recorded");
+  assert.equal(after.read.batchKey, "546");
+});
+
+test("a deleted log entry (a test) is never recreated by a late read", async () => {
+  const db = world();
+  const now = SAST("2026-10-18T14:58:21");
+  assertSent(await send(db, YASMIN, MT2, { now }));
+  const [entry] = await log(db, "pe", MT2, "2026-10-18");
+  await db.ref(staffSlipDayPath({ storeId: "pe", tid: MT2, dayYmd: "2026-10-18" })).set(null);
+  await processReadJob(db, entry.jobId, { now: () => now + 60000, onArrival: true, loadPhotos: async () => [PHOTO], read: async () => { throw new Error("x"); } });
+  assert.equal(await node(db, staffSlipDayPath({ storeId: "pe", tid: MT2, dayYmd: "2026-10-18" })), null);
 });

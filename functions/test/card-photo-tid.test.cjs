@@ -192,7 +192,7 @@ test("an Email-only terminal is refused BEFORE any OCR is paid for", () => {
   const body = src.slice(src.indexOf("async function handleExtract("), src.indexOf("async function handleExtractPdf("));
   const gate = body.indexOf("if (!takesPhoto(terminal))");
   assert.ok(gate > 0, "the capture-mode gate is in the photo path");
-  assert.ok(gate < body.indexOf("runSlipOcr("), "…and comes before the paid call");
+  assert.ok(gate < body.indexOf("liveOcr("), "…and comes before the paid call");
 });
 
 test("the photo-read log line carries the header and NOTHING from the transaction roll", () => {
@@ -220,4 +220,74 @@ test("the callable logs both lines on the extract path", () => {
   const extract = src.slice(src.indexOf("async function handleExtract("), src.indexOf("async function handleExtractPdf("));
   assert.ok(extract.indexOf("console.log(photoReadLogLine(") > extract.indexOf("toExtraction(ocr.parsed)"));
   assert.match(src, /if \(out && out\.ok === false\) \{\s*console\.warn\(refusalLogLine\(/);
+});
+
+// ── 18 OCT 2026: GEMINI OUT OF CREDIT — ONE READ BY CLAUDE ───────────────────
+// Yasmin's PE Till 2 slip waited all afternoon behind a 402. A credit wall is
+// handed once to the second reader; nothing else is.
+const { CREDIT_WALL_MODEL, CLAUDE_EXTRACTION_SCHEMA } = require("../cardRecon/cardRecon.js");
+function twoReaderFetch(geminiStatuses, claudeStatus = 200) {
+  const calls = [];
+  const fn = async (url, init) => {
+    calls.push({ url, init });
+    if (url.includes("anthropic.com")) {
+      return {
+        ok: claudeStatus === 200, status: claudeStatus,
+        json: async () => ({ stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify(REAL_HP1X) }], usage: { input_tokens: 4000, output_tokens: 70 } }),
+        text: async () => `{"error":{"type":"x"}}`,
+      };
+    }
+    const status = geminiStatuses[calls.filter((c) => !c.url.includes("anthropic.com")).length - 1] ?? 200;
+    return { ok: status === 200, status, json: async () => okBody, text: async () => `{"error":{"code":${status}}}` };
+  };
+  return { fn, calls };
+}
+
+test("402 with a second reader configured: Claude reads it once, and says it was Claude", async () => {
+  const f = twoReaderFetch([402]);
+  const out = await runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep, claudeKey: "c" });
+  assert.equal(out.model, CREDIT_WALL_MODEL);
+  assert.equal(out.parsed.tid, "0000HP1X");
+  assert.equal(out.tokensIn, 4000);
+  assert.equal(f.calls.length, 2);
+  const body = JSON.parse(f.calls[1].init.body);
+  assert.equal(f.calls[1].init.headers["x-api-key"], "c");
+  assert.equal(body.output_config.format.type, "json_schema");
+  assert.equal(body.messages[0].content[0].type, "image");
+});
+
+test("429 is the same wall and goes to Claude too", async () => {
+  const f = twoReaderFetch([429]);
+  const out = await runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep, claudeKey: "c" });
+  assert.equal(out.model, CREDIT_WALL_MODEL);
+});
+
+test("Claude failing too still surfaces as out of credit (402) — the person's message is unchanged", async () => {
+  const f = twoReaderFetch([402], 500);
+  await assert.rejects(runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep, claudeKey: "c" }),
+    (err) => err.httpStatus === 402 && err.secondStatus === 500);
+  assert.equal(f.calls.length, 2, "one Claude attempt, never more");
+});
+
+test("a 503 never goes to Claude — overload stays on the Gemini tiers", async () => {
+  const f = twoReaderFetch([503, 503, 503, 503, 503]);
+  await assert.rejects(runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep, claudeKey: "c" }),
+    (err) => err.httpStatus === 503);
+  assert.ok(f.calls.every((c) => !c.url.includes("anthropic.com")));
+});
+
+test("no second key: a 402 is thrown as before", async () => {
+  const f = twoReaderFetch([402]);
+  await assert.rejects(runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep }), (err) => err.httpStatus === 402);
+  assert.equal(f.calls.length, 1);
+});
+
+test("the Claude schema is the Gemini one, lower-cased, every object closed", () => {
+  const walk = (n) => {
+    assert.equal(n.type, n.type.toLowerCase());
+    if (n.properties) { assert.equal(n.additionalProperties, false); Object.values(n.properties).forEach(walk); }
+    if (n.items) walk(n.items);
+  };
+  walk(CLAUDE_EXTRACTION_SCHEMA);
+  assert.deepEqual(CLAUDE_EXTRACTION_SCHEMA.required, ["tid", "batchNo", "total", "confidence"]);
 });
