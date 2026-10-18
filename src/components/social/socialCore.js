@@ -234,7 +234,9 @@ export function mediaForSurface(post) {
   return [{ ...media[0], url }];
 }
 
-export const STATUSES = ["draft", "approved", "posting", "posted", "failed", "discarded"];
+// "sample" (2026-10-18): a lookbook sample shown in the queue's Samples tab,
+// never scheduled and never posted — the publisher reads only "approved".
+export const STATUSES = ["draft", "approved", "posting", "posted", "failed", "discarded", "sample"];
 
 // What the QUEUE shows, in tab order. "All" is deliberately absent — a list
 // with no state is a list nobody reads. Four tabs, not six: "posting" and

@@ -68,12 +68,14 @@ const TABS = [
 // minutes" rather than pretending it is instant.
 function PublisherStrip() {
   const [tick, setTick] = useState(undefined);   // undefined = not read yet
+  const [readErr, setReadErr] = useState(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState(null);
 
   const read = useCallback(async () => {
     const r = await loadPublisherHeartbeat();
     setTick(r.ok ? r.lastTickAt : null);
+    setReadErr(r.ok ? null : r.message || "unknown error");
   }, []);
   useEffect(() => { read(); }, [read]);
 
@@ -88,7 +90,10 @@ function PublisherStrip() {
   };
 
   if (tick === undefined) return null;           // say nothing until we know
-  const st = publisherStatus(tick, Date.now());
+  // A heartbeat that could not be READ is not a missing heartbeat.
+  const st = readErr
+    ? { state: "unknown", text: `Couldn't read the publisher's heartbeat: ${readErr}` }
+    : publisherStatus(tick, Date.now());
   const colour = st.state === "down" ? RED : st.state === "late" ? AMBER : st.state === "ok" ? GREEN : GRAY;
 
   return (
