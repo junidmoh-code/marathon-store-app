@@ -46,7 +46,8 @@ import {
   ref, get, query, orderByChild, equalTo, startAt, endAt, limitToLast, update, push, remove,
 } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
-import { database, storage, auth } from "../../firebase";
+import { httpsCallable } from "firebase/functions";
+import { database, storage, auth, functions } from "../../firebase";
 // The album path lives with the album reader, which has no firebase import and
 // can therefore be unit-tested on its own. Two copies of an RTDB path is two
 // things to keep in step.
@@ -707,26 +708,32 @@ export async function loadAlbum() {
 // A TIMESTAMP, not a flag: the mini keeps its own high-water mark and never
 // writes back, so a second press is genuinely "again" rather than a flag that
 // was already consumed, and the history stays visible.
+// ── THE PUBLISHER, THROUGH A FUNCTION, NOT THE DATABASE ──────────────────────
+// social_health has no client rule in the live RTDB rules, so a browser read
+// of the heartbeat (and a browser write of the revive request) was refused,
+// and the strip said "No heartbeat recorded yet" while the mini ticked every
+// two minutes (2026-10-18). Both now go through the socialPublisher callable,
+// which uses the Admin SDK — no rule change, nothing else can be reached.
+const publisherCall = httpsCallable(functions, "socialPublisher");
+
 export async function requestPublisherRevive() {
   try {
-    await update(ref(database, "social_health/revive"), {
-      requestedAt: Date.now(),
-      requestedBy: auth.currentUser?.uid || null,
-    });
+    await publisherCall({ action: "revive" });
     return { ok: true };
   } catch (err) {
-    return writeError(err);
+    return { ok: false, message: `Could not send the request: ${String(err?.message || err)}` };
   }
 }
 
 // The publisher's own heartbeat, so the button can say how long it has been
-// quiet instead of asking someone to guess.
+// quiet instead of asking someone to guess. A failed READ is reported as one
+// (ok: false), never as a missing heartbeat.
 export async function loadPublisherHeartbeat() {
   try {
-    const snap = await get(ref(database, "social_health/publisher/lastTickAt"));
-    const v = Number(snap.val());
+    const res = await publisherCall({ action: "status" });
+    const v = Number(res?.data?.lastTickAt);
     return { ok: true, lastTickAt: Number.isFinite(v) && v > 0 ? v : null };
   } catch (err) {
-    return { ...writeError(err), lastTickAt: null };
+    return { ok: false, message: String(err?.message || err), lastTickAt: null };
   }
 }

@@ -5546,6 +5546,34 @@ async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platfor
   }
 }
 
+// ── THE PUBLISHER'S HEARTBEAT AND REVIVE, FOR THE SOCIAL CARD ────────────────
+// The live RTDB rules have no client rule for social_health, so the card's
+// direct read of social_health/publisher/lastTickAt was refused and shown as
+// "No heartbeat recorded yet" while the mini ticked every two minutes
+// (2026-10-18). database.rules.json is not touched; the card asks here
+// instead. Two actions, nothing else reachable:
+//   status  → { lastTickAt, capabilities } from social_health/publisher
+//   revive  → social_health/revive.requestedAt, which the mini's watchdog
+//             (scripts/social/revive-check.mjs) polls every two minutes
+exports.socialPublisher = onCall(
+  { region: "europe-west1", memory: "256MiB", timeoutSeconds: 30 },
+  async (request) => {
+    assertAdmin(request);
+    const db = admin.database();
+    const action = request.data && request.data.action;
+    if (action === "status") {
+      const v = (await db.ref("social_health/publisher").once("value")).val() || {};
+      const t = Number(v.lastTickAt);
+      return { lastTickAt: Number.isFinite(t) && t > 0 ? t : null, capabilities: v.capabilities || null };
+    }
+    if (action === "revive") {
+      await db.ref("social_health/revive").update({ requestedAt: Date.now(), requestedBy: request.auth.uid || null });
+      return { ok: true };
+    }
+    throw new HttpsError("invalid-argument", "action must be status or revive");
+  }
+);
+
 exports.socialStillAutopilot = onSchedule(
   {
     schedule: "0 7 * * *",
