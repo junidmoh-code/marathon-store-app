@@ -61,7 +61,7 @@
 // Reads are per product / per path. The exceptions, each the same read the
 // Engine Policy writer makes: the writer's own preview pages the catalogue, and
 // step 5 pages it once more to be sure nothing is still keyed paper-bags. The
-// refill_requests read is an indexed createdAt window, never the node.
+// refill_requests read is a key range (push keys since 16 Oct), never the node.
 //
 // Writes, beside the cwd:
 //   paper-bag-revert-dry-run-<stamp>.json   every path: current value → restored value
@@ -89,8 +89,8 @@ const CANCEL_REASON = "paper_bag_policy_revert";
 // The 16 Oct policy, exactly as #729 left it (its execute report, step C "after").
 const NUMBERS = { target: 50, minQty: 25, reorderPoint: 10 };
 const POLICY_729 = { hub2: { ...NUMBERS }, "marathon-pe": { ...NUMBERS, carriedOnly: true }, trophy: { ...NUMBERS, carriedOnly: true } };
-// The policy was armed at 17:08:03Z on 16 Oct (history -P44fvJieYCNoZJvP7Hs); the first
-// request under it could not exist before this.
+// The policy was armed at 17:08:03Z on 16 Oct (history -P44fvJieYCNoZJvP7Hs); a minute
+// of slack before it. Nothing open was raised 17:07–17:08 (#729 cancelled at 17:09).
 const NEW_POLICY_FROM = "2026-10-16T17:07:00.000Z";
 const STAMP = new Date().toISOString().replace(/[:.]/g, "-");
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -145,8 +145,11 @@ async function guardedWrite(p, expect, next) {
 // (categoryKey paper-bags, after null). Keys after "-P44" = entries since 16 Oct.
 async function policyRemovedAtMs() {
   const hist = (await db.ref(writer.HISTORY_PATH).orderByKey().startAt("-P44").once("value")).val() || {};
-  const hits = Object.values(hist).filter((h) => h?.categoryKey === KEY && !h.kind && h.after === null && h.status === "applied" && typeof h.at === "number");
-  return hits.length ? Math.min(...hits.map((h) => h.at)) : null;
+  const entries = Object.values(hist);
+  const rows = entries.filter((h) => h?.revertOfPaperBagPolicy === true && typeof h.verifiedAt === "number").map((h) => h.verifiedAt);
+  if (rows.length) return Math.max(...rows);
+  const policy = entries.filter((h) => h?.categoryKey === KEY && !h.kind && h.after === null && h.status === "applied" && typeof h.at === "number").map((h) => h.at);
+  return policy.length ? Math.min(...policy) : null;
 }
 
 async function main() {
@@ -182,14 +185,15 @@ async function main() {
     if (EXECUTE) {
       const after = await val(policyPath);
       if (after !== null) throw new Error(`policy still reads ${JSON.stringify(after)}`);
-      policyRemovedAt = serverNowMs();
       undo.push({ path: policyPath, was: policyLive, historyId: r.historyId }); applied.push({ path: policyPath, value: null }); saveUndo();
       log(`   ✓ un-armed through the Engine Policy writer — history ${r.historyId}`);
     } else log(`   dry run through the writer: ${r.changes.length} leg changes, modelled requests ${r.preview?.before?.totalRequests} → ${r.preview?.after?.totalRequests}`);
   }
-  // Dry run with the policy still live: the removal would happen now, so the
-  // window closes now. A conflict (edited policy) leaves it unknown → no cancels.
-  if (policyRemovedAt === null) policyRemovedAt = !EXECUTE && policyLive !== null && policyIs729 ? serverNowMs() : await policyRemovedAtMs();
+  // The cancel window closes when the LAST path a scan reads is back — after
+  // step 3 (the explicit rows), not here: the restored engine honours explicit
+  // rows, so a scan landing between this step and step 3 would still raise
+  // under #729's 50/25/ask-10 rows (Fable review, PR #742). See step 3's end.
+  const policyRemovedThisRun = EXECUTE && policyLive !== null && policyIs729;
 
   // ── 2. RE-KEY ──────────────────────────────────────────────────────────────
   log(`\n2. RE-KEY — ${before.categoryKeys.length} products back to their previous key`);
@@ -258,6 +262,12 @@ async function main() {
     writer.invalidateCensusCache();
     log(`   ✓ ${ok}/${rowWrites.length} cells restored`);
   }
+  // Window end: on the run that un-arms the policy, now (policy and rows are
+  // both back); on a dry run with the policy still live, now as well (that is
+  // when the run would close it); on a re-run, the moment the earlier run
+  // finished its rows (its last history entry), else the policy's removal.
+  if (policyRemovedThisRun || (!EXECUTE && policyLive !== null && policyIs729)) policyRemovedAt = serverNowMs();
+  else policyRemovedAt = await policyRemovedAtMs();
 
   // ── 4. CANCEL ──────────────────────────────────────────────────────────────
   const stock = {};
@@ -289,7 +299,11 @@ async function main() {
       }
     }
   }
-  const recent = (await db.ref("refill_requests").orderByChild("createdAt").startAt(NEW_POLICY_FROM).once("value")).val() || {};
+  // Push keys are time-ordered and orderByKey needs no index: "-P44f" is the
+  // first key minted after the 16 Oct arming. (orderByChild("createdAt") has
+  // no .indexOn on /refill_requests and would pull the whole node — Fable
+  // review, PR #742.)
+  const recent = (await db.ref("refill_requests").orderByKey().startAt("-P44f").once("value")).val() || {};
   for (const [id, r] of Object.entries(recent)) {
     if (r?.status === "open" && pids.includes(r.productId) && !lockedIds.has(id)) {
       leftAlone.push({ refillId: id, dest: r.requestingLocation, qty: r.qty, createdAt: r.createdAt, name: nameOf(r.productId), why: "no engine lock (not an engine request) — left as it is" });
