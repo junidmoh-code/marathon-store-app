@@ -437,7 +437,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   const madeToday = all.filter((p) =>
     Number.isFinite(Number(p.createdAt)) &&
     Number(p.createdAt) >= dayStart && Number(p.createdAt) < dayEnd &&
-    p.status !== "discarded");
+    p.status !== "discarded" && p.status !== "sample");
   const short = [];
   // The still's story and its feed twin are owed once the still has run and
   // posted. Before that they are check 4b's business, not a surface short.

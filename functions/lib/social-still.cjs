@@ -80,4 +80,21 @@ function stillLogEntry({ planned, posted, reason, costUSD, postId, twinId, sched
   };
 }
 
-module.exports = { STILL_SLOT, buildLookbookRecord, stillLogEntry };
+/**
+ * ── ONE PRODUCT, ONE QUEUE ITEM ──────────────────────────────────────────────
+ * Owner brief, 2026-10-18: a product must not be queued twice for the same
+ * day. Every generator seeds its `used` set with this, so a product already
+ * waiting in the queue (draft, approved or posting, on ANY day) is not picked
+ * again until it has gone out. Stricter than "the same day", and it needs no
+ * date arithmetic to be right. Pure.
+ */
+function queuedPids(posts) {
+  const out = new Set();
+  for (const p of posts || []) {
+    if (!p || !["draft", "approved", "posting"].includes(p.status)) continue;
+    for (const x of p.products || []) if (x && x.pid) out.add(x.pid);
+  }
+  return out;
+}
+
+module.exports = { STILL_SLOT, buildLookbookRecord, stillLogEntry, queuedPids };

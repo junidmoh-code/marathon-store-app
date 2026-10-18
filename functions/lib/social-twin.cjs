@@ -136,6 +136,10 @@ function buildStoryTwin(reel, { twinId, reelId, fallbackCaption }) {
     // The publisher reads this and encodes ONCE, onto the reel. Never a URL:
     // at generation there is no video to point at.
     videoFrom: reelId,
+    // The generation is the reel's. A copied costUSD made every pair look
+    // like two generations in the queue (owner, 2026-10-18).
+    costUSD: 0,
+    costOn: reelId,
   };
   delete twin.captionNote;
   delete twin.artwork;
@@ -176,6 +180,9 @@ function buildFeedTwin(story, { twinId, storyId, caption, captionSource, caption
     captionSource: captionSource || null,
     twinOf: storyId,
     twinRole: TWIN_ROLE,
+    // The generation is the story's; see buildStoryTwin.
+    costUSD: 0,
+    costOn: storyId,
   };
   // The picture is the one thing about the surface that is NOT the story's:
   // the feed gets the 1080x1350 render of the same design. An older record with

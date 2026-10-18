@@ -205,7 +205,9 @@ describe("the Post now button is wired to the schedule, not to a publisher", () 
     // now" found a comment that happened to mention the button and failed on a
     // correct file — an assertion that breaks when a comment is added is
     // measuring the wrong thing.
-    const i = view.indexOf("postNow(post.id)");
+    // postNow(x.id): since 2026-10-18 a queue item is the whole twin pair, and
+    // the call runs once per surface (forAll) — still behind the same guard.
+    const i = view.search(/postNow\((post|x)\.id\)/);
     expect(i, "no postNow call in the view").toBeGreaterThan(-1);
     const before = view.slice(Math.max(0, i - 400), i);
     expect(before).toMatch(/post\.status === "approved"/);

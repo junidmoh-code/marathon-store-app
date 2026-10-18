@@ -32,7 +32,7 @@ import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, GLASS, tabOn, tabOff, input as i
 import {
   PLATFORMS, PLATFORM_KEYS, QUEUE_FILTERS, CAPTION_MAX,
   postKind, platform, enabledPlatforms, postReadiness, isSendingSoon, describePost, resultLine,
-  formatSlot, toLocalInput, fromLocalInput, captionFor, needsVerification,
+  formatSlot, toLocalInput, fromLocalInput, captionFor, needsVerification, groupTwins,
 } from "./socialCore";
 import { asList } from "../../utils/rtdbList";
 import {
@@ -114,7 +114,36 @@ const STATUS_BADGE = {
   posted: { label: "posted", color: GREEN, border: "rgba(74,222,128,.8)" },
   failed: { label: "failed", color: RED, border: "rgba(248,113,113,.6)" },
   discarded: { label: "discarded", color: GRAY, border: "rgba(255,255,255,.18)" },
+  // A lookbook sample: shown, never scheduled, never posted.
+  sample: { label: "sample", color: "#C4A7FF", border: "rgba(196,167,255,.6)" },
 };
+
+// Where one queue item goes: "REEL + STORY", "STORY + FEED". The twins are
+// one picture published to two surfaces, not two posts (groupTwins).
+function SurfacesChip({ formats }) {
+  if (!formats || formats.length < 2) return null;
+  return (
+    <span style={{ fontSize: 9.5, fontWeight: 800, color: BLUE_L, border: "1px solid rgba(74,127,255,.45)",
+                   borderRadius: 8, padding: "3px 7px", whiteSpace: "nowrap", flexShrink: 0 }}>
+      {formats.map((f) => f.toUpperCase()).join(" + ")}
+    </span>
+  );
+}
+
+// The picture at full size, one tap away. Images only: a video's poster frame
+// is not the post.
+function FullSize({ media, large }) {
+  const first = (media || [])[0];
+  if (!first || first.type !== "image" || !first.url) return null;
+  return (
+    <a href={first.url} target="_blank" rel="noopener noreferrer"
+       style={{ display: "block", marginBottom: 12, width: large ? "100%" : 160, maxWidth: 420 }}>
+      <img src={first.url} alt="" loading="lazy"
+           style={{ width: "100%", borderRadius: 8, border: "1px solid rgba(255,255,255,.12)", display: "block" }} />
+      <span style={{ fontSize: 10.5, color: BLUE_L }}>Open full size</span>
+    </a>
+  );
+}
 
 // The gap between pressing Post now and the post appearing. Up to one tick.
 // Shown as its own chip rather than by changing the status, because the status
@@ -165,7 +194,7 @@ function Cover({ media }) {
 // an editable box, the platform switches, the date, the per-platform result
 // lines, and the decisions. Editing happens IN THE ROW — no modal, matching the
 // Shopify product page's treatment.
-function PostRow({ post, onChanged, onNotice }) {
+function PostRow({ post, twins = [], formats = [], onChanged, onNotice }) {
   const [open, setOpen] = useState(false);
   const [draftCaption, setDraftCaption] = useState(null);
   const [schedDraft, setSchedDraft] = useState(null);
@@ -176,9 +205,25 @@ function PostRow({ post, onChanged, onNotice }) {
   // the button on it greyed it forever; keying only its OPACITY on it left the
   // button clickable but painted dead, which reads to a person as broken in
   // exactly the same way. Both are now the same single question.
-  const notReady = postReadiness(post);
+  // Every surface must be ready, not only the lead (twins: see groupTwins).
+  const notReady = postReadiness(post) || twins.map((t) => postReadiness(t)).find(Boolean) || null;
   const caption = draftCaption !== null ? draftCaption : (post.caption || "");
   const captionDirty = draftCaption !== null && draftCaption.trim() !== (post.caption || "").trim();
+  const isSample = post.status === "sample";
+  // A decision about the item is a decision about every surface it goes to —
+  // but only a surface in the SAME state as the one on screen. A twin the
+  // publisher has already claimed (posting) or that has posted is never
+  // overwritten by a button keyed on its lead's status. Every member is
+  // tried; the first failure is the one reported.
+  const all = [post, ...twins].filter((p) => p.status === post.status);
+  const forAll = (fn) => async () => {
+    let failed = null;
+    for (const p of all) {
+      const r = await fn(p);
+      if (r && r.ok === false && !failed) failed = r;
+    }
+    return failed || { ok: true };
+  };
 
   const run = async (fn, okMsg) => {
     setBusy(true);
@@ -201,6 +246,7 @@ function PostRow({ post, onChanged, onNotice }) {
           <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
             <span style={{ fontSize: 13.5, fontWeight: 700 }}>{kind ? kind.label : post.kind}</span>
             <StatusChip status={post.status} />
+            <SurfacesChip formats={formats} />
             {isSendingSoon(post) && <SendingChip />}
           </div>
           <div style={{ fontSize: 11.5, color: GRAY, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -209,7 +255,7 @@ function PostRow({ post, onChanged, onNotice }) {
           <div style={{ fontSize: 10.5, color: GRAY, marginTop: 4 }}>
             {enabledPlatforms(post).map((k) => platform(k).label).join(" · ") || "no platform"}
             {" · "}
-            {formatSlot(post.scheduledAt)}
+            {isSample ? "never scheduled" : formatSlot(post.scheduledAt)}
           </div>
         </div>
         <span style={{ fontSize: 12, color: GRAY, flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
@@ -227,6 +273,10 @@ function PostRow({ post, onChanged, onNotice }) {
             </div>
           )}
 
+          <FullSize media={post.media} large={isSample} />
+          {isSample ? (
+            <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.5, marginBottom: 6 }}>{post.caption}</div>
+          ) : (<>
           <div style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700, marginBottom: 5 }}>
             Caption
           </div>
@@ -252,6 +302,12 @@ function PostRow({ post, onChanged, onNotice }) {
           {post.link && (
             <div style={{ fontSize: 11, color: BLUE_L, marginTop: 8, wordBreak: "break-all" }}>{post.link}</div>
           )}
+          {twins.length > 0 && (
+            <div style={{ fontSize: 11, color: GRAY, marginTop: 8, lineHeight: 1.5 }}>
+              The same picture also goes out as a {twins.map((t) => (t.format || "feed")).join(" and ")} — one
+              generation, published to {formats.length} places. Every decision below applies to all of them.
+            </div>
+          )}
 
           {/* ── Platforms ── */}
           <div style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700, margin: "14px 0 6px" }}>
@@ -262,7 +318,7 @@ function PostRow({ post, onChanged, onNotice }) {
               const on = post.platforms?.[p.key] === true;
               return (
                 <button key={p.key} disabled={busy}
-                        onClick={() => run(() => setPlatforms(post.id, { ...post.platforms, [p.key]: !on }))}
+                        onClick={() => run(forAll((x) => setPlatforms(x.id, { ...x.platforms, [p.key]: !on })))}
                         style={{ ...(on ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.74rem" }}>
                   {p.label}
                 </button>
@@ -293,13 +349,14 @@ function PostRow({ post, onChanged, onNotice }) {
               setSchedDraft(null);
               if (ms === null) { onNotice({ kind: "err", text: "That is not a valid date and time." }); return; }
               if (ms === Number(post.scheduledAt)) return;   // nothing changed
-              run(() => reschedulePost(post.id, ms), "Rescheduled.");
+              run(forAll((x) => reschedulePost(x.id, ms)), "Rescheduled.");
             }}
             style={{ ...inputStyle, fontSize: "0.82rem", colorScheme: "dark" }}
           />
           <div style={{ fontSize: 10.5, color: GRAY, marginTop: 4 }}>
             South African time. An approved post with no date goes out on the next run.
           </div>
+          </>)}
 
           {/* ── What each platform did ── */}
           {post.results && Object.keys(post.results).length > 0 && (
@@ -353,13 +410,13 @@ function PostRow({ post, onChanged, onNotice }) {
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 16 }}>
             {post.status === "draft" && (
               <button disabled={busy || !!notReady}
-                      onClick={() => run(() => approvePost(post.id), "Approved — it goes out on its scheduled run.")}
+                      onClick={() => run(forAll((x) => approvePost(x.id)), "Approved — it goes out on its scheduled run.")}
                       style={{ ...bGreen, opacity: notReady ? 0.45 : 1, cursor: notReady ? "not-allowed" : "pointer" }}>
                 Approve
               </button>
             )}
             {post.status === "approved" && (
-              <button disabled={busy} onClick={() => run(() => unapprovePost(post.id), "Back in the queue — it will not be posted.")}
+              <button disabled={busy} onClick={() => run(forAll((x) => unapprovePost(x.id)), "Back in the queue — it will not be posted.")}
                       style={bGray}>
                 Un-approve
               </button>
@@ -371,19 +428,19 @@ function PostRow({ post, onChanged, onNotice }) {
                 on its next tick, with every existing check still applied. ── */}
             {post.status === "approved" && (
               <button disabled={busy}
-                      onClick={() => run(() => postNow(post.id), "Going out on the next tick — within about two minutes.")}
+                      onClick={() => run(forAll((x) => postNow(x.id)), "Going out on the next tick — within about two minutes.")}
                       style={bGreen}>
                 Post now
               </button>
             )}
             {post.status === "failed" && (
-              <button disabled={busy} onClick={() => run(() => retryPost(post.id, post), "Back in the queue. Anything already posted stays posted.")}
+              <button disabled={busy} onClick={() => run(forAll((x) => (x.status === "failed" ? retryPost(x.id, x) : { ok: true })), "Back in the queue. Anything already posted stays posted.")}
                       style={bBlue}>
                 Put back in the queue
               </button>
             )}
             {post.status !== "discarded" && post.status !== "posted" && (
-              <button disabled={busy} onClick={() => run(() => discardPost(post.id), "Discarded.")} style={bRed}>
+              <button disabled={busy} onClick={() => run(forAll((x) => discardPost(x.id)), "Discarded.")} style={bRed}>
                 Throw away
               </button>
             )}
@@ -493,7 +550,7 @@ function Queue({ notice, onNotice }) {
       {!error && posts === null && <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>Loading…</div>}
       {!error && posts && posts.length === 0 && (
         <div style={{ fontSize: 12.5, color: GRAY, padding: "18px 2px", lineHeight: 1.6 }}>
-          Nothing here.{filter === "draft" ? " Generate some posts and they'll queue up for you." : ""}
+          Nothing here.{filter === "sample" ? " Lookbook samples appear here once they are made." : ""}{filter === "draft" ? " Generate some posts and they'll queue up for you." : ""}
         </div>
       )}
       {/* Each row inside its OWN boundary. One post that cannot render is one
@@ -501,11 +558,11 @@ function Queue({ notice, onNotice }) {
           Discard is the right escape hatch here because it is reversible: the
           record keeps every field and moves to the "discarded" filter, where
           it can be looked at rather than being lost. */}
-      {asList(posts).map((p) => (
+      {groupTwins(asList(posts)).map(({ lead: p, twins, formats }) => (
         <RowBoundary key={p.id} recordId={p.id} label="post" resetKey={p.rowKey}
                      actionLabel="Discard it"
-                     onAction={async () => { await discardPost(p.id); await onChanged(); }}>
-          <PostRow post={p} onChanged={onChanged} onNotice={onNotice} />
+                     onAction={async () => { for (const x of [p, ...twins]) await discardPost(x.id); await onChanged(); }}>
+          <PostRow post={p} twins={twins} formats={formats} onChanged={onChanged} onNotice={onNotice} />
         </RowBoundary>
       ))}
       {truncated && (

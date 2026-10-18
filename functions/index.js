@@ -4925,7 +4925,13 @@ exports.generateSocialPosts = onCall(
     const { candidates, styleKit, library, signal } = await loadSocialGenerationContext(db, { nowMs, style });
 
     // ── 4. Make each post ────────────────────────────────────────────────────
+    // Seeded with every product already waiting in the queue: one product,
+    // one queue item (owner brief, 2026-10-18).
     const used = new Set();
+    for (const st of ["draft", "approved", "posting"]) {
+      const snap = await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(st).limitToLast(100).once("value");
+      for (const pid of socialStill.queuedPids(Object.values(snap.val() || {}))) used.add(pid);
+    }
     const created = [];
     const skipped = [];
     let estCostUSD = 0;
@@ -5363,6 +5369,8 @@ exports.socialDailyAutopilot = onSchedule(
         for (const p of Object.values(snap.val() || {})) existingForSlots.push(p);
       }
       const taken = new Set(existingForSlots.map((p) => Number(p && p.scheduledAt)).filter((n) => Number.isFinite(n)));
+      // A product already waiting in the queue is not queued again.
+      for (const pid of socialStill.queuedPids(existingForSlots)) used.add(pid);
       const claimSlot = (hhmm) => {
         const { hour, minute } = parseHHMM(hhmm);
         const slot = nextHourSlot(nowMs, hour, minute, taken);
@@ -5584,7 +5592,7 @@ exports.socialStillAutopilot = onSchedule(
       const recent = (await db.ref(SOCIAL_POSTS_PATH).orderByKey()
         .startAt(socialHealth.pushKeyPrefixForMs(sastMidnightUtc(nowMs, 0))).once("value")).val() || {};
       const used = new Set();
-      for (const p of Object.values(recent)) for (const x of (p && p.products) || []) if (x && x.pid) used.add(x.pid);
+      for (const p of Object.values(recent)) if (p && p.status !== "sample") for (const x of p.products || []) if (x && x.pid) used.add(x.pid);
       // A reclaimed run must not post the day's still twice: a crash after the
       // post was written and before the log recorded it leaves the post here.
       const already = Object.entries(recent).find(([, p]) => p && p.updatedBy === "cron:socialStillAutopilot" && !p.twinOf);
@@ -5596,7 +5604,10 @@ exports.socialStillAutopilot = onSchedule(
       const taken = new Set();
       for (const st of ["draft", "approved", "posting"]) {
         const snap = await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(st).limitToLast(100).once("value");
-        for (const p of Object.values(snap.val() || {})) { const n = Number(p && p.scheduledAt); if (Number.isFinite(n)) taken.add(n); }
+        const pending = Object.values(snap.val() || {});
+        for (const p of pending) { const n = Number(p && p.scheduledAt); if (Number.isFinite(n)) taken.add(n); }
+        // Nor anything already waiting in the queue (one product, one item).
+        for (const pid of socialStill.queuedPids(pending)) used.add(pid);
       }
       const { hour, minute } = parseHHMM(socialStill.STILL_SLOT);
       const scheduledAt = nextHourSlot(nowMs, hour, minute, taken);
