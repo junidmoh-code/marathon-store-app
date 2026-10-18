@@ -146,25 +146,23 @@ async function guardedWrite(p, expect, next) {
 async function policyRemovedAtMs() {
   const hist = (await db.ref(writer.HISTORY_PATH).orderByKey().startAt("-P44").once("value")).val() || {};
   const entries = Object.values(hist);
-  // The window closes only once EVERY product × location edit has landed: for
-  // each loc|pid, its LATEST revert entry (by `at`) must read "applied" with a
-  // verifiedAt. A "partial" or still-"pending" latest entry (a cell at #729's
-  // numbers can still raise; a crash between set and update) keeps the window
-  // open; an older partial superseded by a later applied entry does not
-  // (Sonnet review, PR #744).
+  const removal = entries.filter((h) => h?.categoryKey === KEY && !h.kind && h.after === null && h.status === "applied" && typeof h.at === "number").map((h) => h.at);
+  // Per product × location, the LATEST revert entry (by `at`; ties → the later
+  // push). Only when every one reads "applied" with a verifiedAt has an earlier
+  // run put every row back; a "partial" or still-"pending" latest entry keeps the
+  // window open. An older partial superseded by a later applied entry does not.
   const latest = new Map();
   for (const h of entries) {
-    if (h?.revertOfPaperBagPolicy !== true) continue;
+    if (h?.revertOfPaperBagPolicy !== true || typeof h.loc !== "string" || typeof h.pid !== "string") continue;
     const k = `${h.loc}|${h.pid}`;
-    if (!latest.has(k) || (Number(h.at) || 0) > (Number(latest.get(k).at) || 0)) latest.set(k, h);
+    if (!latest.has(k) || (Number(h.at) || 0) >= (Number(latest.get(k).at) || 0)) latest.set(k, h);
   }
-  if (latest.size) {
-    const all = [...latest.values()];
-    if (all.every((h) => h.status === "applied" && typeof h.verifiedAt === "number")) return Math.max(...all.map((h) => h.verifiedAt));
-    return null;
-  }
-  const policy = entries.filter((h) => h?.categoryKey === KEY && !h.kind && h.after === null && h.status === "applied" && typeof h.at === "number").map((h) => h.at);
-  return policy.length ? Math.min(...policy) : null;
+  const all = [...latest.values()];
+  const lastRowAt = all.length ? Math.max(...all.map((h) => Number(h.verifiedAt) || Number(h.at) || 0)) : null;
+  if (all.length && all.every((h) => h.status === "applied" && typeof h.verifiedAt === "number")) return { ms: lastRowAt, why: "applied" };
+  if (all.length) return { ms: null, why: "blocked", lastRowAt, removalAt: removal.length ? Math.min(...removal) : null };
+  if (removal.length) return { ms: Math.min(...removal), why: "removal" };
+  return { ms: null, why: "no-history" };
 }
 
 async function main() {
@@ -285,14 +283,36 @@ async function main() {
   // (that is when the run would close it); on a re-run, the moment an earlier
   // run finished ALL its rows (an "applied" history entry), else the policy's
   // removal when no row restore was needed.
-  const allRowsBack = !EXECUTE || rowsLanded === rowWrites.length;
-  if (policyRemovedThisRun || (!EXECUTE && policyLive !== null && policyIs729)) policyRemovedAt = allRowsBack ? serverNowMs() : null;
-  else policyRemovedAt = await policyRemovedAtMs();
-  if (policyRemovedAt === null) {
-    if (EXECUTE && rowsLanded !== rowWrites.length) log(`   ! ${rowWrites.length - rowsLanded} rows did not land — the cancel window stays open; re-run (a conflict cell keeps it open until it is resolved by hand)`);
-    else if (policyLive !== null) log(`   ! the policy is live but not #729's — the window is unknown, nothing is cancelled`);
-    else log(`   ! an earlier run left a product × location restore pending or partial (see engine_policy_history, revertOfPaperBagPolicy) — the cancel window stays open; nothing is cancelled`);
+  // A conflict cell is STILL at #729's numbers and can still raise: it keeps the
+  // window open too, on every run, until Junid resolves it by hand.
+  const allRowsBack = rowsConflict === 0 && (!EXECUTE || rowsLanded === rowWrites.length);
+  let windowWhy = null;
+  if (policyRemovedThisRun || (!EXECUTE && policyLive !== null && policyIs729)) {
+    policyRemovedAt = allRowsBack ? serverNowMs() : null;
+    windowWhy = allRowsBack ? "this-run" : rowsConflict ? "conflict" : "not-landed";
+  } else if (policyLive !== null) {
+    policyRemovedAt = null; windowWhy = "policy-foreign";
+  } else {
+    const h = await policyRemovedAtMs();
+    if (!allRowsBack) { policyRemovedAt = null; windowWhy = rowsConflict ? "conflict" : "not-landed"; }
+    else if (h.why === "blocked" && rowWrites.length === 0) {
+      // Every cell verifies live as before (nothing to write, no conflict): a
+      // stale pending/partial entry from a crashed or hand-fixed earlier run
+      // must not deadlock the window. The live rows are the proof; the window
+      // closes at the latest moment a row was written (Sonnet review, #744).
+      policyRemovedAt = Math.max(h.lastRowAt || 0, h.removalAt || 0) || null; windowWhy = policyRemovedAt ? "verified-live" : "no-history";
+    } else { policyRemovedAt = h.ms; windowWhy = h.why; }
   }
+  if (policyRemovedAt === null) {
+    const why = {
+      "not-landed": `${rowWrites.length - rowsLanded} rows did not land (moved while writing) — the cancel window stays open; re-run`,
+      conflict: `${rowsConflict} conflict cells are still at #729's numbers — the cancel window stays open until they are resolved by hand`,
+      "policy-foreign": "the policy is live but not #729's — the window is unknown, nothing is cancelled",
+      blocked: "an earlier run left a product × location restore pending or partial and this run still had rows to write — the window stays open; re-run",
+      "no-history": "no revert or policy-removal history found — the window is unknown, nothing is cancelled",
+    }[windowWhy] || windowWhy;
+    log(`   ! ${why}`);
+  } else log(`   cancel window closes ${new Date(policyRemovedAt).toISOString()} (${windowWhy})`);
 
   // ── 4. CANCEL ──────────────────────────────────────────────────────────────
   const stock = {};
