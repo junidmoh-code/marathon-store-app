@@ -267,40 +267,59 @@ function parseStillFormats(raw, { lookbookEnabled = true } = {}) {
     .filter((s) => lookbookEnabled || s !== "lookbook");
 }
 
-/**
- * The transaction body for social_lookbook/rotation. Advances the sequence ONCE
- * per SA date, so a re-invoked or retried run on the same day gets the same
- * format and never skips one. A cold-cache null returns a value so that
- * Firebase re-runs against the server's real one (the trap social-budget.cjs
- * documents). Pure.
- */
-function advanceRotation(cur, saDate, formats) {
-  if (!formats || !formats.length) return undefined;
-  if (cur && cur.lastDate === saDate) return undefined;   // already advanced today
-  const prev = cur && Number.isInteger(cur.seq) && cur.seq >= 0 ? cur.seq : -1;
-  const seq = prev + 1;
-  return { seq, lastDate: saDate, format: formats[seq % formats.length] };
-}
-
-/** The format the rotation gives a sequence number. Pure. */
-function formatForSeq(seq, formats) {
-  if (!formats || !formats.length || !Number.isInteger(seq) || seq < 0) return null;
-  return formats[seq % formats.length];
-}
+// ── WHICH DAYS ARE LOOKBOOK DAYS ─────────────────────────────────────────────
+// Owner brief, 2026-10-18: the lookbook takes the photo-post slot THREE days a
+// week, Monday, Wednesday and Friday, and the current style the other four.
+// The days are config (LOOKBOOK_DAYS in functions/.env, a JSON list of day
+// names), so they change with a redeploy and no code. This replaced the strict
+// day-A/day-B alternation of 17 Oct: a weekday is a fact of the date, so a
+// missed or re-run day can never shift the week.
+const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const DEFAULT_LOOKBOOK_DAYS = ["mon", "wed", "fri"];
 
 /**
- * The next `days` days of the still, from the stored rotation. A day that has
- * already advanced keeps its format, and each later day takes the next one. Pure.
+ * LOOKBOOK_DAYS as configured: day names ("mon", "Monday", "MON" all read as
+ * mon), deduplicated, in week order. Unknown names are dropped. An unreadable
+ * value falls back to the default for the same reason parseStillFormats does;
+ * an explicit "[]" means no lookbook days. Pure.
  */
-function stillCalendar(rotation, todayDate, formats, days = 7) {
+function parseLookbookDays(raw) {
+  let list = DEFAULT_LOOKBOOK_DAYS;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const v = JSON.parse(raw);
+      if (Array.isArray(v)) list = v;
+    } catch { /* default */ }
+  } else if (Array.isArray(raw)) {
+    list = raw;
+  }
+  const want = new Set(list.map((s) => String(s || "").trim().toLowerCase().slice(0, 3)));
+  return WEEKDAYS.filter((d) => want.has(d));
+}
+
+/** "2026-10-19" -> "mon". The SA date is a calendar date, so UTC is exact. Pure. */
+function weekdayOf(saDate) {
+  return WEEKDAYS[new Date(`${saDate}T12:00:00Z`).getUTCDay()];
+}
+
+/**
+ * The still's format for an SA date: "lookbook" on a lookbook day when
+ * STILL_FORMATS allows it, otherwise "current" when allowed, otherwise
+ * whatever STILL_FORMATS still holds; null when there is no daily still. Pure.
+ */
+function plannedStillFormat(saDate, formats, lookbookDays) {
+  if (!formats || !formats.length) return null;
+  if (formats.includes("lookbook") && (lookbookDays || []).includes(weekdayOf(saDate))) return "lookbook";
+  return formats.includes("current") ? "current" : formats[0];
+}
+
+/** The next `days` days of the still from `todayDate`, by weekday. Pure. */
+function stillCalendar(todayDate, formats, lookbookDays, days = 7) {
   const out = [];
-  const advancedToday = rotation && rotation.lastDate === todayDate;
-  const lastSeq = rotation && Number.isInteger(rotation.seq) ? rotation.seq : -1;
   const start = new Date(`${todayDate}T00:00:00Z`).getTime();
   for (let i = 0; i < days; i++) {
     const date = new Date(start + i * 86400000).toISOString().slice(0, 10);
-    const seq = advancedToday ? lastSeq + i : lastSeq + 1 + i;
-    out.push({ date, format: formatForSeq(seq, formats) });
+    out.push({ date, day: weekdayOf(date), format: plannedStillFormat(date, formats, lookbookDays) });
   }
   return out;
 }
@@ -463,7 +482,8 @@ module.exports = {
   STILL_FORMAT_KEYS, DEFAULT_STILL_FORMATS,
   lookbookSlot, guessSlot, priceOf, formatRand, approvedPhoto, resolveRow,
   recentLookbookPids, pickLookbookOutfit, historyEntry,
-  parseStillFormats, advanceRotation, formatForSeq, stillCalendar,
+  parseStillFormats, stillCalendar,
+  parseLookbookDays, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, anchorsFor,
   GRID, buildLocatePrompt, cellCentre, readLocate,
 };

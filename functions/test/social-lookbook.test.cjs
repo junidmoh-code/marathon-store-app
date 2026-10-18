@@ -179,23 +179,30 @@ describe("rotation", () => {
     assert.deepEqual(lb.parseStillFormats("[]"), []);
   });
 
-  test("strictly alternates, advances once per date, survives a cold-cache transaction", async () => {
-    const db = new FakeRtdb();   // coldTransactions on: first call sees null
+  test("lookbook on Mon/Wed/Fri by default, current the other four", () => {
     const F = ["current", "lookbook"];
-    const got = [];
-    for (const d of ["2026-10-18", "2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21"]) {
-      await db.ref("social_lookbook/rotation").transaction((cur) => lb.advanceRotation(cur, d, F));
-      got.push((await db.ref("social_lookbook/rotation").once("value")).val().format);
-    }
-    assert.deepEqual(got, ["current", "current", "lookbook", "current", "lookbook"]);
+    const days = lb.parseLookbookDays(undefined);
+    assert.deepEqual(days, ["mon", "wed", "fri"]);
+    const cal = lb.stillCalendar("2026-10-18", F, days, 7);
+    assert.deepEqual(cal.map((c) => `${c.date}:${c.day}:${c.format}`), [
+      "2026-10-18:sun:current", "2026-10-19:mon:lookbook", "2026-10-20:tue:current",
+      "2026-10-21:wed:lookbook", "2026-10-22:thu:current", "2026-10-23:fri:lookbook",
+      "2026-10-24:sat:current"]);
+    assert.equal(cal.filter((c) => c.format === "lookbook").length, 3);
   });
 
-  test("the calendar follows the stored sequence", () => {
-    const cal = lb.stillCalendar({ seq: 0, lastDate: "2026-10-18", format: "current" }, "2026-10-18", ["current", "lookbook"], 4);
-    assert.deepEqual(cal.map((c) => `${c.date}:${c.format}`), [
-      "2026-10-18:current", "2026-10-19:lookbook", "2026-10-20:current", "2026-10-21:lookbook"]);
-    const fresh = lb.stillCalendar(null, "2026-10-18", ["current", "lookbook"], 2);
-    assert.deepEqual(fresh.map((c) => c.format), ["current", "lookbook"]);
+  test("LOOKBOOK_DAYS is config: names, case, order, junk, [] and a typo", () => {
+    assert.deepEqual(lb.parseLookbookDays('["Friday","TUE","mon","mon","xyz"]'), ["mon", "tue", "fri"]);
+    assert.deepEqual(lb.parseLookbookDays("[]"), []);
+    assert.deepEqual(lb.parseLookbookDays("mon,wed"), ["mon", "wed", "fri"]);   // unreadable -> default
+    assert.equal(lb.plannedStillFormat("2026-10-19", ["current", "lookbook"], []), "current");
+  });
+
+  test("STILL_FORMATS still decides what may run on any day", () => {
+    const days = ["mon", "wed", "fri"];
+    assert.equal(lb.plannedStillFormat("2026-10-19", ["current"], days), "current");   // lookbook switched off
+    assert.equal(lb.plannedStillFormat("2026-10-20", ["lookbook"], days), "lookbook"); // only lookbook left
+    assert.equal(lb.plannedStillFormat("2026-10-19", [], days), null);
   });
 });
 

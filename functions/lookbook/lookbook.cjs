@@ -42,11 +42,12 @@ const { loadLookbookCandidates, loadRecentLookbookPids } = require("./load.cjs")
  *   deadlineMs?: number                                       // no second attempt after this
  *   log?(msg)
  * }
- * @param opts  { nowMs, used: Set of pids already posted today }
+ * @param opts  { nowMs, used: Set of pids already posted today, maxAttempts: heroes
+ *               generated before the text gate gives up (production: 1) }
  * @returns { ok: true, rows, total, poster, costUSD, engine, attempts, check, anchors }
  *        | { ok: false, gate, reason, costUSD, attempts, rows? }
  */
-async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } = {}) {
+async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2 } = {}) {
   const log = deps.log || (() => {});
   let costUSD = 0;
   const attempts = [];
@@ -98,7 +99,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } =
   const checkPrompt = lookbook.buildHeroCheckPrompt();
 
   let hero = null, check = null, engine = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // EVERY generation, the first included, must leave one unit for the
     // current-style fallback. Without this a morning that already spent three
     // (a billed reel retry) let the lookbook take the fourth, and a failed gate
@@ -134,7 +135,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set() } =
     if (check.ok) { hero = gen; break; }
     log(`lookbook: attempt ${attempt} failed the text check — ${check.reason}`);
   }
-  if (!hero) return { ok: false, gate: "text", reason: `the hero failed the no-text check twice (${check.reason})`, costUSD, attempts, rows };
+  if (!hero) return { ok: false, gate: "text", reason: `the hero failed the no-text check${attempts.length === 2 ? " twice" : ""} (${check.reason})`, costUSD, attempts, rows };
 
   // ── 3. WHERE THE GARMENTS ARE (for the dots) ───────────────────────────
   // Best effort: an unanswered locate leaves the dots on the category spots.

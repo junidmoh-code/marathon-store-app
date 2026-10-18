@@ -5040,8 +5040,16 @@ exports.generateSocialPosts = onCall(
 // African audience is actually on a phone rather than at work or in traffic.
 // The old 08:00 slot competed with the commute and 18:00 with it in the other
 // direction.
+//
+// ── ONE REEL A DAY SINCE 2026-10-18 ──────────────────────────────────────────
+// Owner brief: the day is 1 reel + 1 photo post (socialStillAutopilot), each
+// also a story — two generations on a normal day. The 12:00 reel is switched
+// OFF, not deleted: the live /social_policy keeps it under
+// reels.disabledTimes (["12:00"]), which nothing reads; putting it back in
+// reels.times (the Policy tab) turns it on again with no code change and no
+// deploy. Every reel code path is untouched.
 const DEFAULT_POLICY_TIMES = {
-  reels: ["12:00", "19:00"],
+  reels: ["19:00"],
   photos: [],
   stories: [],
 };
@@ -5446,10 +5454,11 @@ exports.socialDailyAutopilot = onSchedule(
   }
 );
 
-// ── THE DAILY STILL: CURRENT STYLE AND LOOKBOOK, STRICTLY ALTERNATING ────────
-// Owner brief + addendum, 2026-10-17. One still a day, on top of the two reels
-// (which this does not touch): day A the current designed still, day B the
-// Lookbook poster. Both are one generation and both go out once to the feed
+// ── THE DAILY STILL: CURRENT STYLE, AND THE LOOKBOOK ON MON / WED / FRI ──────
+// Owner brief + addendum, 2026-10-17; days from 2026-10-18. The day is ONE reel
+// and ONE photo post, each also a story. This is the photo post: the Lookbook
+// poster on LOOKBOOK_DAYS (default Mon, Wed, Fri), the current designed still
+// the other four. Both are one generation and both go out once to the feed
 // and once as a story, at STILL_SLOT (15:30 SAST).
 //
 //   current   generateOnePost(kind "single", format "story"): exactly the
@@ -5459,21 +5468,26 @@ exports.socialDailyAutopilot = onSchedule(
 //             garments as references → no-text gate → poster in code.
 //
 // A LOOKBOOK DAY THAT FAILS ANY GATE POSTS THE CURRENT STYLE INSTEAD and
-// records why (social_still_log/{saDate}). The rotation has already moved on,
-// so the next lookbook is the next lookbook day and never a retry of this one.
+// records why (social_still_log/{saDate}). The next lookbook is the next
+// lookbook day and never a retry of this one.
 //
 // 07:00, not 06:00: the reels' run has a 30-minute ceiling, so by 07:00 it has
 // finished or died, and the reels always reach the day's cap first.
 //
 // SWITCHES (build-time, like every flag in this file; set in functions/.env
 // and redeploy functions:socialStillAutopilot and functions:socialHealthScan):
-//   LOOKBOOK_ENABLED=false            drop "lookbook" from the rotation
-//   STILL_FORMATS=["current","lookbook"]  the rotation, in order; repeat a
-//                                     name to weight it; [] = no daily still
+//   LOOKBOOK_ENABLED=false            drop "lookbook": current style every day
+//   STILL_FORMATS=["current","lookbook"]  the formats allowed; [] = no daily still
+//   LOOKBOOK_DAYS=["mon","wed","fri"] the lookbook's days; current the rest
 const socialLookbook = require("./lib/social-lookbook.cjs");
 const socialStill = require("./lib/social-still.cjs");
 const LOOKBOOK_ENABLED = process.env.LOOKBOOK_ENABLED !== "false";
 const STILL_FORMATS = socialLookbook.parseStillFormats(process.env.STILL_FORMATS, { lookbookEnabled: LOOKBOOK_ENABLED });
+const LOOKBOOK_DAYS = socialLookbook.parseLookbookDays(process.env.LOOKBOOK_DAYS);
+// Heroes generated before a failed text check falls back to the current
+// style. 1 since 2026-10-18 (owner's cap arithmetic: a lookbook-fallback day
+// is 3 of 4 = reel + hero + current style). 2 restores "regenerate once".
+const LOOKBOOK_HERO_ATTEMPTS = Math.min(2, Math.max(1, Number(process.env.LOOKBOOK_HERO_ATTEMPTS) || 1));
 
 // The lookbook's own write: story + feed twin + album entry + the 14-lookbook
 // memory, in ONE update, after its three files are uploaded. A failure removes
@@ -5556,15 +5570,11 @@ exports.socialStillAutopilot = onSchedule(
 
     try {
       // ── WHICH FORMAT TODAY ─────────────────────────────────────────────
-      // Advanced once per date; a reclaimed run reads the same answer.
-      const rot = await db.ref("social_lookbook/rotation")
-        .transaction((cur) => socialLookbook.advanceRotation(cur, saDate, STILL_FORMATS));
-      const rotation = rot.snapshot.val() || {};
-      // The stored format is re-checked against TODAY's STILL_FORMATS: a
-      // lookbook switched off since the rotation was written must not run.
-      const stored = rotation.lastDate === saDate ? rotation.format : null;
-      const planned = STILL_FORMATS.includes(stored) ? stored : socialLookbook.formatForSeq(rotation.seq, STILL_FORMATS) || "current";
-      await logRef.update({ planned, seq: Number.isInteger(rotation.seq) ? rotation.seq : null });
+      // By weekday (LOOKBOOK_DAYS), so a reclaimed run reads the same answer
+      // and a missed day never shifts the week. Recorded for the health scan.
+      const planned = socialLookbook.plannedStillFormat(saDate, STILL_FORMATS, LOOKBOOK_DAYS) || "current";
+      await db.ref("social_lookbook/rotation").set({ lastDate: saDate, format: planned, by: "LOOKBOOK_DAYS" });
+      await logRef.update({ planned, day: socialLookbook.weekdayOf(saDate) });
 
       // ── TODAY'S REEL PRODUCTS STAY OUT, AND THE SLOT IS CLAIMED ────────
       const recent = (await db.ref(SOCIAL_POSTS_PATH).orderByKey()
@@ -5607,7 +5617,7 @@ exports.socialStillAutopilot = onSchedule(
             log: (m) => console.log(m),
             // No second hero after 15 minutes: the fallback needs the rest.
             deadlineMs: nowMs + 900 * 1000,
-          }), { nowMs, used });
+          }), { nowMs, used, maxAttempts: LOOKBOOK_HERO_ATTEMPTS });
         } catch (err) {
           made = { ok: false, gate: "error", reason: `the lookbook threw: ${String(err && err.message).slice(0, 160)}`, costUSD: 0 };
         }
@@ -5762,6 +5772,8 @@ exports.socialHealthScan = onSchedule(
         log: stillLogs[saDate] || null,
         recent: stillLogs,
       },
+      // Exactly one reel and one photo post a day (owner brief, 2026-10-18).
+      rhythm: { reels: 1, stills: 1 },
     });
 
     // The record is written on EVERY run, healthy or not. A watchdog that only

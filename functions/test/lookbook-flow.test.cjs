@@ -117,6 +117,17 @@ describe("makeLookbook", () => {
     assert.match(r.reason, /failed the no-text check twice/);
   });
 
+  test("production (maxAttempts 1): text found on a 1-reel day is ONE hero, then the fallback — 3 of 4", async () => {
+    const db = seed();
+    await db.ref("social_generation_budget/2026-10-18/count").set(1);   // the one reel
+    const d = deps(db, { checkHero: async () => DIRTY });
+    const r = await makeLookbook(db, d, { nowMs: NOW, maxAttempts: 1 });
+    assert.equal(r.gate, "text");
+    assert.equal(d.calls.gen, 1);
+    assert.match(r.reason, /failed the no-text check \(/);
+    assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), 2);
+  });
+
   test("an unreadable check is a FAIL, never a pass", async () => {
     const db = seed();
     await db.ref("social_generation_budget/2026-10-18/count").set(2);

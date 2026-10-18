@@ -665,61 +665,69 @@ browser must never be able to forge a spent — or an unspent — budget.
 
 ---
 
-## 5f. THE DAILY STILL: CURRENT STYLE AND LOOKBOOK, ALTERNATING — 2026-10-17
+## 5f. THE DAY: ONE REEL + ONE PHOTO POST; LOOKBOOK MON / WED / FRI — 2026-10-18
 
-One still a day on top of the two reels (which are untouched), made by
-`socialStillAutopilot` at **07:00 SAST** and posted at **15:30** once to the
-feed and once as a story. Nothing to do by hand.
+The day is **one reel (19:00) and one photo post (15:30)**, and each also goes out
+as a story from the same file. That's **2 generations on a normal day**. The
+12:00 reel is switched off in config, not deleted: `/social_policy/reels/times` is
+`["19:00"]`, and the old slot is kept at `reels/disabledTimes`. Put `12:00` back
+in the Policy tab to bring it back, with no deploy.
+
+The photo post is made by `socialStillAutopilot` at **07:00 SAST**:
 
 | day | what posts |
 |---|---|
-| A, `current` | the existing designed still: `generateOnePost` single/story + its 4:5 feed twin, prompt and layout unchanged |
-| B, `lookbook` | the Lookbook poster (`functions/lookbook/`): head-to-toe outfit from live stock, one generated hero wearing those exact garments, everything else drawn in code |
+| **Mon, Wed, Fri** (`LOOKBOOK_DAYS`) | the Lookbook poster (`functions/lookbook/`): a head-to-toe outfit from live stock, one generated hero wearing those exact garments, everything else drawn in code |
+| Tue, Thu, Sat, Sun | the existing designed still: `generateOnePost` single/story + its 4:5 feed twin, prompt and layout unchanged |
 
-Strictly alternating. The state is `social_lookbook/rotation` (`seq`,
-`lastDate`, `format`), advanced once per SA date. **A lookbook day that fails
-any gate posts the current style instead.** The gates are: no eligible outfit,
-the hero failing the no-text check, a render error, or the cap. The reason
-goes in `social_still_log/{date}`, and the next lookbook is the next lookbook
-day. Products used in the last 14 lookbooks sit at `social_lookbook/history`.
-Both nodes are Admin-SDK only, like `social_generation_budget`, so no rule
-change is needed.
+The day comes from the SA date's weekday, so a missed day never shifts the
+week. **A lookbook day that fails any gate posts the current style instead.**
+The gates are: no eligible outfit, the hero failing the no-text check, a render
+error, or the cap. The reason goes in `social_still_log/{date}`, and the next
+lookbook is the next lookbook day. There's no regeneration on a failed text
+check (`LOOKBOOK_HERO_ATTEMPTS=1`). Products used in the last 14 lookbooks sit
+at `social_lookbook/history`. `social_lookbook/rotation` now only records the
+day's `{lastDate, format}`.
 
-**Switches** (build-time, `functions/.env`, then redeploy both by name):
+**Switches** (build-time, `functions/.env`, then redeploy by name):
 
 ```
-LOOKBOOK_ENABLED=false                      # drop the lookbook; the still stays, current style daily
-STILL_FORMATS=["current","lookbook"]        # the rotation; repeat a name to weight it; [] = no daily still
+LOOKBOOK_DAYS=["mon","wed","fri"]           # the lookbook's days; [] = never
+LOOKBOOK_ENABLED=false                      # current style every day
+STILL_FORMATS=["current","lookbook"]        # the formats allowed; [] = no daily still
+LOOKBOOK_HERO_ATTEMPTS=1                    # 2 = regenerate once on a failed text check
 firebase deploy --only functions:socialStillAutopilot,functions:socialHealthScan --project marathon-club
 ```
 
-**The cap, after this change (still 4 a day, unchanged):**
+**The cap (still 4 a day, unchanged):**
 
-| | generations |
+| day | generations |
 |---|---|
-| reels (06:00) | 2 |
-| still (07:00): current, or a lookbook that passes first time | 1 |
-| **normal day** | **3 of 4** |
-| lookbook hero fails the text check | no regeneration (it would leave the fallback no unit) → current style: **4 of 4** |
-| a reel needed a billed retry first (3 spent) | the lookbook would leave the fallback nothing, so it is skipped (gate `cap`) and the current style takes the 4th unit |
+| normal day (reel + current or lookbook) | **2 of 4** |
+| lookbook fails a gate after its hero → current style | **3 of 4** |
+| the reel needed a billed retry | **3 of 4** |
+| both of the above on one Monday/Wednesday/Friday | 4 of 4 (worst case; still posts) |
 
-"Regenerate once" only happens when one unit would still be left for the
-fallback. On a normal day that is never. A failed lookbook must not cost the
-day its post, and the cap is an owner decision.
+**Per poster:** lookbook hero on Nano Banana Pro (`gemini-3-pro-image`, 9:16, 2K)
+$0.13–0.17 measured, plus two claude-sonnet-4-6 vision calls (~$0.01) and one
+caption call. About **R3.20** at R18/$. The current-style still is the same model
+at the same size ($0.158 on 18 Oct, about **R2.90** with its caption).
+`gemini-3.1-flash-image`, the pipeline's 5xx fallback, takes the same
+reference images: one lookbook hero cost $0.089 on 18 Oct (about **R1.80**
+per poster). See `scripts/social/lookbook-samples.mjs --engine flash`.
 
-**Per poster:** one Nano Banana Pro 2K generation ($0.13–0.17 measured) + two
-claude-sonnet-4-6 vision calls (text check, garment positions, ~$0.01) + one
-caption call. About **R3.20** at R18/$. The first real poster
-(`docs/lookbook-real.jpg`) cost $0.170 to generate.
-
-**Health:** `socialHealthScan` owes the 15:30 story and feed post, and writes
-`social_health/days/{date}/still` = `{planned, posted, fallback, gate,
-reason}`. A fallback is `degraded` (shown, not paged) on its day and the day
-after. **Two lookbook days running that both fell back page**, at most 48 h
-after the first. A still with no record by 07:40, or one that posted nothing,
-pages like a missed reel.
+**Health:** `socialHealthScan` expects **exactly one reel and one photo post**.
+A policy with any other reel count, or a switched-off still, is a reason on the
+day record. It writes `social_health/days/{date}/still` =
+`{planned, posted, fallback, gate, reason}` and
+`counts.rhythm.{stillFormat, stillFallback}`. A fallback is `degraded` on its day
+and on the day or two after. **Two lookbook days running that both fell back
+page** (48 h after the first, or 72 h across a weekend). A still with no record by
+07:40, or one that posted nothing, pages like a missed reel.
 
 Layout sample without spending anything: `node scripts/social/lookbook-sample.mjs --compare`.
+Real samples, posted nowhere, one generation each:
+`node scripts/social/lookbook-samples.mjs --n 01 [--engine flash]` → `~/Desktop/lookbook-samples/`.
 
 ## 6. Day to day
 
