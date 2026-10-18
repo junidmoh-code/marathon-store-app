@@ -5,8 +5,8 @@
 // Card Recon cannot place?" deserves a standing answer. This prints one.
 //
 // READS ONLY, all bounded: the registry (/config/cardTerminals), the POS
-// tills (/network), the staff-slip log and Unread markers (small owner
-// nodes), each terminal's last 40 batch records, the read jobs of the last
+// tills (/network), the staff-slip log and Unread markers (shallow keys,
+// then the last N days per terminal), each terminal's last 40 batch records, the read jobs of the last
 // N days (by push-key range), shallow key lists of /card_batches, and the
 // slip scope of every person who ever sent a staff slip.
 //
@@ -95,9 +95,11 @@ for (const store of await shallowKeys("card_batches")) {
 console.log("\nStaff-slip log and Unread markers:");
 const slipUids = new Set();
 for (const [node, label] of [["card_batch_overrides/staff_slips", "staff slip"], ["card_batch_overrides/unread", "unread"]]) {
-  const tree = (await val(node)) || {};
-  for (const [store, byTid] of Object.entries(tree)) {
-    for (const [tid, byDay] of Object.entries(byTid || {})) {
+  // Bounded: shallow store/terminal keys, then only the days in range.
+  const sinceYmd = new Date(sinceMs + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  for (const store of await shallowKeys(node)) {
+    for (const tid of await shallowKeys(`${node}/${store}`)) {
+      const byDay = (await db.ref(`${node}/${store}/${tid}`).orderByKey().startAt(sinceYmd).once("value")).val() || {};
       const row = terminals[tid];
       if (!row || row.storeId !== store) flag(`${node}/${store}/${tid}: not a registered terminal filed under ${store}`);
       for (const [day, v] of Object.entries(byDay || {})) {

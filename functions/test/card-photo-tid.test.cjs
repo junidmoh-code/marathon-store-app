@@ -291,3 +291,18 @@ test("the Claude schema is the Gemini one, lower-cased, every object closed", ()
   walk(CLAUDE_EXTRACTION_SCHEMA);
   assert.deepEqual(CLAUDE_EXTRACTION_SCHEMA.required, ["tid", "batchNo", "total", "confidence"]);
 });
+
+test("Claude timing out still surfaces as the credit wall, marked as a backup timeout", async () => {
+  const f = twoReaderFetch([402]);
+  const fn = async (url, init) => { if (url.includes("anthropic.com")) { const e = new Error("aborted"); e.name = "TimeoutError"; throw e; } return f.fn(url, init); };
+  await assert.rejects(runSlipOcr([{ base64: "AA==" }], "k", { fetch: fn, sleep: noSleep, claudeKey: "c" }),
+    (err) => err.httpStatus === 402 && err.secondStatus === "timeout");
+});
+
+test("a credit wall met with under 30 s of the budget left never starts a Claude read", async () => {
+  let t = 0;
+  const f = twoReaderFetch([503, 503, 503, 402]);
+  await assert.rejects(runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep, claudeKey: "c", now: () => (t += 60000) }),
+    (err) => err.httpStatus === 402 || err.httpStatus === 503);
+  assert.ok(f.calls.every((c) => !c.url.includes("anthropic.com")));
+});

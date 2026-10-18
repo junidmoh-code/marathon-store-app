@@ -396,14 +396,27 @@ function decodePhoto(raw, i) {
 // One photo set, tried against the primary model with a short 503 retry, then
 // once against the fallback. `deps` is the test seam: fetch and sleep.
 async function runSlipOcr(photos, apiKey, deps = {}) {
+  const started = (deps.now || Date.now)();
   try {
     return await runGeminiOcr(photos, apiKey, deps);
   } catch (err) {
     // Out of credit, and a second reader is configured: one read there.
     if (!isCreditWall(err) || !deps.claudeKey) throw err;
+    // Inside the callable's 300 s: a wall met late (after 503 retries) leaves
+    // only what is left of the budget, and none at all under 30 s.
+    const left = OCR_BUDGET_MS - ((deps.now || Date.now)() - started);
+    if (left < 30 * 1000) throw err;
     console.warn(`cardBatchCapture: Gemini HTTP ${err.httpStatus} (out of credit) — reading with ${CREDIT_WALL_MODEL}`);
-    const out = await runClaudeOcrOnce(photos, deps.claudeKey, deps.fetch || fetch);
-    return { ...out, model: CREDIT_WALL_MODEL, attempts: (err.attempts || 1) + 1 };
+    try {
+      const out = await runClaudeOcrOnce(photos, deps.claudeKey, deps.fetch || fetch, Math.min(CLAUDE_TIMEOUT_MS, left));
+      return { ...out, model: CREDIT_WALL_MODEL, attempts: (err.attempts || 1) + 1 };
+    } catch (second) {
+      // Still Gemini's wall (the person is told the reader is out of credit),
+      // and that the backup failed too, with its own status or timeout.
+      if (second.secondStatus) throw second;
+      console.error(`cardBatchCapture: ${CREDIT_WALL_MODEL} fallback failed: ${second.name}: ${second.message}`);
+      throw Object.assign(new Error(`claude ${second.name || "error"}`), { httpStatus: err.httpStatus, secondStatus: second.name === "TimeoutError" || second.name === "AbortError" ? "timeout" : "unreachable" });
+    }
   }
 }
 
@@ -516,7 +529,7 @@ function toJsonSchema(node) {
 }
 const CLAUDE_EXTRACTION_SCHEMA = toJsonSchema(EXTRACTION_SCHEMA);
 
-async function runClaudeOcrOnce(photos, apiKey, fetchImpl) {
+async function runClaudeOcrOnce(photos, apiKey, fetchImpl, timeoutMs = CLAUDE_TIMEOUT_MS) {
   const res = await fetchImpl("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
@@ -532,7 +545,7 @@ async function runClaudeOcrOnce(photos, apiKey, fetchImpl) {
         ],
       }],
     }),
-    signal: AbortSignal.timeout(CLAUDE_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     const err = new Error(`claude HTTP ${res.status}`);
@@ -1213,8 +1226,11 @@ async function handleExtract(db, request, opts = {}) {
     // days). Both mean the same thing to the person holding the slip: this
     // will not work until somebody puts money in, so DO NOT retake the photo.
     if (err.httpStatus === 402 || err.httpStatus === 429) {
+      // The backup reader failed too: said, with what it answered, so a
+      // broken key never reads as "just top it up" (Sonnet review, #752).
+      const backup = err.secondStatus ? ` The backup reader failed too (${err.secondStatus === "timeout" ? "it timed out" : `HTTP ${err.secondStatus}`}).` : "";
       throw new HttpsError("resource-exhausted",
-        "The slip reader has run out of credit, so photographed slips cannot be read until it is topped up. "
+        `The slip reader has run out of credit, so photographed slips cannot be read until it is topped up.${backup} `
         + "Retaking the photo will not help. Tell Junid — the machines that email their report are still recording normally.");
     }
     // 503 after every retry and the fallback: Google's reader is overloaded.
