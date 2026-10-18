@@ -65,6 +65,17 @@ const deps = engines({
 // unit held back (the same allowance lookbook-real.mjs makes).
 const realLeft = deps.unitsLeft;
 deps.unitsLeft = async () => { const l = await realLeft(); return l === null ? null : l + 1; };
+// --override-cap: Junid's explicit one-off permission to go past the day's cap.
+// The unit is still counted on social_generation_budget/{today}, so the day's
+// record shows the overspend; only the refusal is skipped.
+const OVERRIDE_CAP = process.argv.includes("--override-cap");
+if (OVERRIDE_CAP) {
+  deps.unitsLeft = async () => 2;
+  deps.claimUnit = async () => {
+    const res = await db.ref(`social_generation_budget/${saDate}/count`).transaction((cur) => (Number(cur) || 0) + 1);
+    return { ok: true, count: Number(res.snapshot.val()) || 0, cap: 4 };
+  };
+}
 if (ENGINE === "flash") {
   deps.generateHero = async (parts) => {
     const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.GEMINI_MODEL, parts, {
@@ -91,7 +102,7 @@ const after = (await db.ref(`social_generation_budget/${saDate}/count`).once("va
 const model = ENGINE === "flash" ? gemini.GEMINI_MODEL : gemini.NBPRO_MODEL;
 const entry = {
   at: new Date().toISOString(), saDate, ok: r.ok, gate: r.gate || null, reason: r.reason || null,
-  model, engineUsed: r.engine || null, budget: { before, after, cap: 4 },
+  model, engineUsed: r.engine || null, budget: { before, after, cap: 4, overridden: OVERRIDE_CAP },
   costUSD: r.costUSD, costZAR: +((r.costUSD || 0) * USD_TO_ZAR).toFixed(2), attempts: r.attempts,
   rows: (r.rows || []).map((x) => ({ slot: x.slot, pid: x.pid, name: x.displayName, price: x.priceText })),
   total: r.total ? r.total.text : null,
