@@ -337,7 +337,10 @@ function attachLegacy(node) {
 
 test("a till can no longer settle with no customer, or an unconfirmed one", () => {
   const node = makeNode(recorded({ amountCents: 10000 }));
-  assert.equal(runSettle(node, { ...tillA, customerId: null, appliedCents: 3000 }).code, "no-customer");
+  // No customer, money left over (3000 of more): the remainder would have to
+  // belong to someone — refused whatever the till claims about the match.
+  assert.equal(runSettle(node, { ...tillA, customerId: null, confirmedCustomerId: null, appliedCents: 3000 }).code, "no-customer");
+  assert.equal(runSettle(node, { ...tillA, customerId: null, confirmedCustomerId: null, appliedCents: 3000, wholePaymentMatched: true }).code, "no-customer");
   assert.equal(runSettle(node, { ...tillA, customerResolved: false, appliedCents: 3000 }).code, "no-customer");
   assert.equal(runSettle(node, { ...tillA, confirmedCustomerId: "c9", appliedCents: 3000 }).code, "not-confirmed");
   assert.equal(runSettle(node, { ...tillA, confirmedCustomerId: undefined, appliedCents: 3000 }).code, "not-confirmed");

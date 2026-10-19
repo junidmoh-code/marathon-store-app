@@ -44,6 +44,12 @@ function refuse(code, message) {
   return { ok: false, code, message };
 }
 
+/** R1,234.50 for a refusal read out at the counter. */
+function formatRand(cents) {
+  const n = Number.isInteger(cents) ? cents : 0;
+  return `R${(n / 100).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 /** What "this payment is already used" should say to the losing till. */
 function alreadyUsedMessage(used) {
   const who = used?.cashierName ? ` by ${used.cashierName}` : "";
@@ -74,19 +80,43 @@ function settleDecision(current, settlement) {
     || !Number.isInteger(current.amountCents) || s.appliedCents > current.amountCents) {
     return refuse("bad-amount", "The amount applied to the sale must be within what the customer actually paid.");
   }
+  // THE SAME ATTEMPT RETRYING (a timeout, a resumed request) already holds the
+  // payment — success, nothing to write. Decided BEFORE the customer and match
+  // checks (architect review, 19 Oct 2026): a customer-less settle whose
+  // response was lost would otherwise be refused on retry, because the search
+  // the retry re-runs now sees the record as used.
+  if (current.status === "used" && current.used?.attemptId === s.attemptId) return { ok: true, already: true };
   // WHOSE PAYMENT IS THIS? (fix 3). A till settle consumes a payment only for
   // a customer the cashier EXPLICITLY confirmed as the payer — attached to the
   // sale, resolved server-side against /customers (the callable stamps
   // customerResolved; the till's own name for them is never used), and
-  // confirmed by id. A payment is never applied on its amount alone, and never
-  // to a sale nobody is named on. The owner's mark-as-used has no customer and
-  // pays nothing out, so it is exempt.
+  // confirmed by id. A payment is never applied on its amount alone. The
+  // owner's mark-as-used has no customer and pays nothing out, so it is exempt.
+  //
+  // A CUSTOMER ONLY WHEN MONEY IS LEFT OVER (Junid, 19 Oct 2026). A payment
+  // consumed WHOLE — appliedCents equal to the payment — leaves nothing that
+  // must belong to anyone, so it may settle a sale nobody is named on, ON ONE
+  // CONDITION the callable establishes and stamps as `wholePaymentMatched`:
+  // the query the cashier typed re-resolved, through the same search they
+  // used, to THIS payment. The amount is never what authorises the consume. A
+  // payment with anything left over still needs the confirmed customer the
+  // remainder will be credited to.
   if (s.outsidePos !== true) {
-    if (typeof s.customerId !== "string" || !s.customerId || s.customerResolved !== true) {
-      return refuse("no-customer", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.");
-    }
-    if (s.confirmedCustomerId !== s.customerId) {
-      return refuse("not-confirmed", "Confirm that this payment belongs to the customer on the sale before using it.");
+    const hasCustomer = typeof s.customerId === "string" && s.customerId !== "";
+    if (hasCustomer) {
+      if (s.customerResolved !== true) {
+        return refuse("no-customer", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.");
+      }
+      if (s.confirmedCustomerId !== s.customerId) {
+        return refuse("not-confirmed", "Confirm that this payment belongs to the customer on the sale before using it.");
+      }
+    } else {
+      if (s.appliedCents !== current.amountCents) {
+        return refuse("no-customer", `${formatRand(current.amountCents - s.appliedCents)} of this payment is left over after the sale — attach the customer it belongs to before using it.`);
+      }
+      if (s.wholePaymentMatched !== true) {
+        return refuse("not-matched", "Find the payment by its reference again before using it — a payment is never used on its amount.");
+      }
     }
   }
   // THE BANK'S TRANSACTION ID, RE-CHECKED INSIDE THE TRANSACTION (fix 1). The
@@ -105,9 +135,7 @@ function settleDecision(current, settlement) {
     }
   }
   if (current.status === "used") {
-    // The same attempt retrying (a timeout, a resumed request) already holds
-    // it — success, nothing to write. Anyone else lost the race.
-    if (current.used?.attemptId === s.attemptId) return { ok: true, already: true };
+    // Anyone else lost the race (the same attempt was answered above).
     return refuse("already-used", alreadyUsedMessage(current.used));
   }
   if (current.status !== "unmatched") {
@@ -128,8 +156,12 @@ function settleDecision(current, settlement) {
         customerId: s.customerId ?? null,
         customerName: s.customerName ?? null,
         // The customer was resolved against /customers AND confirmed at the
-        // till (fix 3) — only such a settlement may mint remainder credit.
-        ...(s.outsidePos === true ? {} : { customerConfirmed: true }),
+        // till (fix 3) — only such a settlement may mint remainder credit. A
+        // whole-payment settle with no customer (19 Oct 2026) has no remainder
+        // to mint and says how it was authorised instead.
+        ...(s.outsidePos === true ? {}
+          : s.customerId ? { customerConfirmed: true }
+          : { customerConfirmed: false, wholePaymentMatched: true }),
         appliedCents: s.appliedCents,
         sale: null, // the sale attaches only after it has committed
       },
@@ -599,7 +631,7 @@ function poolTransactionStep(decide, capture) {
 }
 
 module.exports = {
-  settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
+  settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep, formatRand,
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN,
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,

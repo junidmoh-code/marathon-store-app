@@ -108,7 +108,7 @@ const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN, releaseHoldDecision,
-  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
+  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision, formatRand,
 } = require("../lib/eft-settle.cjs");
 const {
   EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck, paymentFingerprint,
@@ -263,11 +263,15 @@ async function readPoolTail() {
  * Returns the fingerprint the settle transaction must see again. A record
  * that is missing or not a payment is left to settleDecision's own refusal.
  */
-async function checkPaymentFingerprint(key, now) {
+async function checkPaymentFingerprint(key, now, { record = undefined, tail = undefined } = {}) {
   const db = admin.database();
-  const record = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+  // THE READS ARE THE CALLER'S WHEN IT HAS THEM (speed, 19 Oct 2026): the
+  // settle fetches the record and the tail alongside its other lookups in one
+  // round trip and hands them in, instead of this function making two more
+  // sequential ones. Read here only when not supplied.
+  if (record === undefined) record = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
   if (!record || record.outcome !== "recorded") return null;
-  const tail = await readPoolTail();
+  if (tail === undefined) tail = await readPoolTail();
   const check = consumeFingerprintCheck({ poolKey: key, record, siblings: Object.entries(tail) });
   if (!check.ok) {
     console.warn(`eftPoolSettle: ${check.code} on ${key} — refused before settle`);
@@ -502,8 +506,16 @@ exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
 exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   await assertPosIdentity(request);
   const data = request.data ?? {};
-  const key = poolKeyOf(data);
   const action = String(data.action ?? "");
+  // WARM (speed, 19 Oct 2026). A settle happens a few times a day, so this
+  // service had scaled to zero before nearly every one of them: the live logs
+  // showed 2.4–3.7 s of cold start in front of 0.1–0.3 s of work. The till
+  // calls this when its payment screen opens (eftPoolApi.warmEftPool, throttled
+  // on the till), so the instance — and the browser's CORS preflight cache for
+  // this URL — are ready by the time the cashier confirms. Nothing is read
+  // past the identity check; nothing is written.
+  if (action === "warm") return { ok: true, warm: true, at: Date.now() };
+  const key = poolKeyOf(data);
   const attemptId = String(data.attemptId ?? "").slice(0, 60);
   // The lifecycle actions are holder-scoped and need the attempt id; the
   // owner's allocate acts on a finished settlement and has none, and the
@@ -517,33 +529,72 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   let decision;
   if (action === "settle") {
     const appliedCents = data.appliedCents;
-    const cashierName = await cashierNameOf(request);
     // FIX 3 — THE CUSTOMER IS RESOLVED HERE, NOT TAKEN FROM THE TILL. The
     // sale's attached customer must exist in /customers (a merge followed to
     // its survivor), and the till must send the SAME id back as the one the
     // cashier explicitly confirmed as the payer. The name on the settlement is
     // the record's, never the till's.
     const sentId = typeof data.customerId === "string" ? data.customerId.trim() : "";
-    if (!sentId) {
-      throw new HttpsError("failed-precondition", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.", { code: "no-customer" });
-    }
-    if (data.confirmedCustomerId !== sentId) {
+    if (sentId && data.confirmedCustomerId !== sentId) {
       throw new HttpsError("failed-precondition", "Confirm that this payment belongs to the customer on the sale before using it.", { code: "not-confirmed" });
     }
-    const customer = await resolveCustomer({ customerId: sentId });
-    const fingerprint = await checkPaymentFingerprint(key, now);
+    // NO CUSTOMER ON THE SALE (Junid, 19 Oct 2026): allowed only for a payment
+    // consumed WHOLE — nothing left over that would need an owner — and only
+    // when the query the cashier typed re-resolves, through the very search
+    // they used (lib/eft-pool.cjs searchEftPool over the same tail), to THIS
+    // payment. Decided below once the record and the tail are in hand; the
+    // amount is never what authorises the consume. Refused before any claim.
+    const matchQuery = typeof data.matchQuery === "string" ? data.matchQuery.slice(0, 120) : "";
+    // ONE ROUND TRIP FOR EVERYTHING THE CHECKS NEED (speed, 19 Oct 2026). The
+    // cashier's name, the customer record, the payment and the pool tail do
+    // not depend on each other, so they are fetched together; they used to be
+    // four sequential awaits in front of the two transactions. The checks
+    // themselves run in the same order as before, on the same values: nothing
+    // is claimed until the customer has resolved and the fingerprint is clean.
+    const db = admin.database();
+    const [cashierName, customer, record, tail] = await Promise.all([
+      cashierNameOf(request),
+      sentId ? resolveCustomer({ customerId: sentId }) : null,
+      db.ref(`${EFT_POOL_PATH}/${key}`).once("value").then((s) => s.val()),
+      readPoolTail(),
+    ]);
+    let wholePaymentMatched = false;
+    if (!customer && record && record.outcome === "recorded") {
+      // A malformed amount is settleDecision's "bad-amount", not a leftover.
+      if (!Number.isInteger(appliedCents) || appliedCents <= 0 || !Number.isInteger(record.amountCents) || appliedCents > record.amountCents) {
+        throw new HttpsError("failed-precondition", "The amount applied to the sale must be within what the customer actually paid.", { code: "bad-amount" });
+      }
+      if (appliedCents !== record.amountCents) {
+        throw new HttpsError("failed-precondition", `${formatRand(record.amountCents - appliedCents)} of this payment is left over after the sale — attach the customer it belongs to before using it.`, { code: "no-customer" });
+      }
+      if (record.status === "used" && record.used?.attemptId === attemptId) {
+        // THIS attempt already holds it (a retry after a lost response): the
+        // search would now answer "used", so the match is not re-asked — the
+        // transaction answers `already`. (Architect review, 19 Oct 2026.)
+        wholePaymentMatched = record.used.wholePaymentMatched === true;
+      } else {
+        const found = searchEftPool(tail, matchQuery);
+        wholePaymentMatched = found.results.length === 1 && found.results[0].key === key && found.results[0].status === "unmatched";
+        if (!wholePaymentMatched) {
+          console.warn(`eftPoolSettle: customer-less settle on ${key} refused — query ${JSON.stringify(matchQuery)} resolved to ${found.results[0]?.key ?? (found.ambiguous ? "ambiguous" : "nothing")}`);
+          throw new HttpsError("failed-precondition", "Find the payment by its reference again before using it — a payment is never used on its amount.", { code: "not-matched" });
+        }
+      }
+    }
+    const fingerprint = await checkPaymentFingerprint(key, now, { record, tail });
     decision = await runPoolTransaction(key, (current) => settleDecision(current, {
       fingerprint,
-      customerResolved: true,
-      confirmedCustomerId: customer.id,
+      wholePaymentMatched,
+      customerResolved: !!customer,
+      confirmedCustomerId: customer?.id ?? null,
       attemptId,
       at: now,
       cashierUid: uid,
       cashierName,
       storeId: typeof data.storeId === "string" ? data.storeId.slice(0, 40) : null,
       tillId: typeof data.tillId === "string" ? data.tillId.slice(0, 40) : null,
-      customerId: customer.id,
-      customerName: customer.name,
+      customerId: customer?.id ?? null,
+      customerName: customer?.name ?? null,
       appliedCents,
     }));
   } else if (action === "attach") {
@@ -553,8 +604,21 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     // leaves something eftRemainderScan can find, instead of a "pending" plan
     // whose only window is a bounded tail. A refused attach cleans it up; a
     // stale one is cleared by the scan.
+    // FIX 5 — READ THE COMMITTED SALE BACK. Its EFT legs for this payment
+    // must add up to exactly what was settled, and it must name the confirmed
+    // customer (saleCheckOf). A sale id is a push key — charset-checked before
+    // it becomes a path. One record read, never the node.
+    const saleId = String(data.saleId ?? "").slice(0, 60);
+    if (!/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) throw new HttpsError("invalid-argument", "That is not a sale id.");
+    // The payment and the sale in ONE round trip (speed, 19 Oct 2026): the
+    // breadcrumb decision and the sale check both read the pool record, which
+    // used to be fetched twice, sequentially, before the sale was. The merge
+    // walk runs only when the sale actually names a customer.
+    const [pre, sale] = await Promise.all([
+      admin.database().ref(`${EFT_POOL_PATH}/${key}`).once("value").then((s) => s.val()),
+      admin.database().ref(`pos/sales/${saleId}`).once("value").then((s) => s.val()),
+    ]);
     try {
-      const pre = (await admin.database().ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
       const willRemainder = pre?.used
         && Number.isInteger(pre.amountCents) && Number.isInteger(pre.used.appliedCents)
         && pre.amountCents > pre.used.appliedCents;
@@ -567,20 +631,9 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       // panel are layers, not the mechanism.
       console.error(`eftPool: breadcrumb write failed for ${key}:`, e);
     }
-    // FIX 5 — READ THE COMMITTED SALE BACK. Its EFT legs for this payment
-    // must add up to exactly what was settled, and it must name the confirmed
-    // customer (saleCheckOf). A sale id is a push key — charset-checked before
-    // it becomes a path. One record read, never the node.
-    const saleId = String(data.saleId ?? "").slice(0, 60);
-    if (!/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) throw new HttpsError("invalid-argument", "That is not a sale id.");
-    const [saleSnap, heldSnap] = await Promise.all([
-      admin.database().ref(`pos/sales/${saleId}`).once("value"),
-      admin.database().ref(`${EFT_POOL_PATH}/${key}/used`).once("value"),
-    ]);
-    const sale = saleSnap.val();
     const saleCheck = saleCheckOf({
-      poolKey: key, used: heldSnap.val(), sale,
-      saleCustomerId: sale ? await followMerges(sale.customerId ?? null) : undefined,
+      poolKey: key, used: pre?.used ?? null, sale,
+      saleCustomerId: !sale ? undefined : sale.customerId == null ? null : await followMerges(sale.customerId),
     });
     if (saleCheck.state === "absent") {
       // Durable BEFORE the attach transaction: the scan verifies this sale
@@ -716,8 +769,12 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   // An attach finishes its remainder — mint the customer's store credit, or
   // hold the difference visibly. Re-run on a RETRIED attach too (`already`),
   // which is exactly what repairs a crash between the stamp and the IO.
+  // An attach that stamped NO remainder (the payment covered the sale exactly —
+  // the common case) has nothing to finish: finishRemainder's read of the
+  // record is skipped (speed, 19 Oct 2026). A retried attach still runs it,
+  // because that is what repairs a crash between the stamp and the IO.
   let remainder = null;
-  if (action === "attach") {
+  if (action === "attach" && (decision.already === true || decision.value?.used?.remainder)) {
     try {
       remainder = await finishRemainder(key);
     } catch (e) {

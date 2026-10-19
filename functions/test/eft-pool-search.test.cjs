@@ -1,8 +1,15 @@
-// ─── EFT POOL SEARCH — the locked-down contract (fix 2) ──────────────────────
-// Pinned here, next to the attack scenarios in eft-pool-search-leak.test.cjs:
-//   · the key is the payment's REFERENCE or the bank's TRANSACTION ID, whole —
-//     case, spaces and punctuation ignored, nothing else; one typo tolerated
-//     only on a LONG reference (both ≥ 6), never on the bank id;
+// ─── EFT POOL SEARCH — the locked-down contract (fix 2), forgiving on spelling
+// (Junid, 19 Oct 2026). Pinned here, next to the attack scenarios in
+// eft-pool-search-leak.test.cjs:
+//   · the key is the payment's REFERENCE or the bank's TRANSACTION ID — case,
+//     spaces and punctuation ignored. The reference is matched AS IT IS TYPED:
+//     the typed text as its start from three characters, one typo from four,
+//     two from ten; the bank id whole, or by a six-plus-character start, never
+//     with a typo;
+//   · forgiving on spelling ONLY, never on which payment: the best rank of
+//     match present is the only one considered (exact > prefix > typo), and
+//     two candidates at that rank surface NOTHING (`ambiguous`, with `partial`
+//     when more typing would settle it);
 //   · the payer's name is never a key and comes back as initials only;
 //   · at most ONE payment; several candidates → nothing, `ambiguous`;
 //   · amount is never a key; under three letters/digits nothing is searched;
@@ -16,8 +23,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  publicEftView, payerInitials, searchPlan, searchEftPool, osaDistance, matchOf,
-  EFT_SEARCH_LIMIT, EFT_MIN_QUERY, NEAR_MISS_MIN_LENGTH,
+  publicEftView, payerInitials, searchPlan, searchEftPool, osaDistance, matchOf, editsAllowed,
+  EFT_SEARCH_LIMIT, EFT_MIN_QUERY, PREFIX_MIN_LENGTH, DIGITS_FORGIVING_MIN_LENGTH, NEAR_MISS_MIN_LENGTH, NEAR_MISS_TWO_EDITS_LENGTH, BANK_PREFIX_MIN_LENGTH,
 } = require("../lib/eft-pool.cjs");
 
 // A recorded pool record exactly as eftCore.mjs's eftPoolRecord stores it
@@ -117,13 +124,22 @@ test("an amount never finds a payment — not bare, not with R, not with cents",
   }
 });
 
-test("digits find a payment only when they ARE its reference or bank id", () => {
-  const pool = { a: recorded({ reference: "0821234567", bankRef: "4140542552" }) };
-  assert.deepEqual(keys(pool, "082"), []);
-  assert.deepEqual(keys(pool, "0821234"), []);
+test("digits find a payment as the START of its reference or bank id — from FIVE digits, never as an amount", () => {
+  const pool = { a: recorded({ reference: "0821234567", bankRef: "4140542552", amountCents: 55000 }) };
+  // A phone number used as the reference is the PII case: three or four
+  // digits never guess at it (spec review, 19 Oct 2026).
+  assert.deepEqual(keys(pool, "082"), [], "three digits: nothing");
+  assert.deepEqual(keys(pool, "0821"), [], "four digits: nothing");
+  assert.deepEqual(keys(pool, "08212"), ["a"], "five digits: the one reference that starts so");
+  assert.deepEqual(keys(pool, "08213"), ["a"], "five digits, one slip");
+  assert.equal(DIGITS_FORGIVING_MIN_LENGTH, 5);
+  assert.deepEqual(keys(pool, "0821234"), ["a"]);
   assert.deepEqual(keys(pool, "082 123 4567"), ["a"]);
   assert.deepEqual(keys(pool, "4140542552"), ["a"]);
-  assert.deepEqual(keys(pool, "414054255"), [], "a bank id must be exact");
+  assert.deepEqual(keys(pool, "414054"), ["a"], "six characters of the bank id");
+  assert.deepEqual(keys(pool, "41405"), [], "five is not enough on a bank id");
+  assert.deepEqual(keys(pool, "550"), [], "the amount is never a key");
+  assert.deepEqual(keys(pool, "55000"), []);
 });
 
 test("searchPlan reads no amount and no words — only the whole query", () => {
@@ -142,22 +158,100 @@ test("an empty or short query returns nothing — no recent list, no default set
   }
 });
 
-test("prefix and substring are NOT matches", () => {
+test("the START of a reference matches as it is typed; a substring does not", () => {
   const pool = { a: recorded({ reference: "JUNID1234" }) };
-  for (const q of ["junid", "junid12", "nid1234", "1234"]) assert.deepEqual(keys(pool, q), [], q);
+  for (const q of ["jun", "junid", "junid12"]) assert.deepEqual(keys(pool, q), ["a"], q);
+  for (const q of ["nid1234", "1234", "d1234"]) assert.deepEqual(keys(pool, q), [], q);
+  // "unid" is a substring, but it is also one dropped character from the
+  // start of the reference — forgiven as a typo, as the contract says.
+  assert.equal(searchEftPool(pool, "unid").results[0]?.matchedOn, "near");
   assert.deepEqual(keys(pool, "Junid 1234"), ["a"]);
+  assert.equal(PREFIX_MIN_LENGTH, EFT_MIN_QUERY);
+  assert.equal(searchEftPool(pool, "jun").results[0].matchedOn, "prefix");
 });
 
-test("near-exact: exactly one edit, on a reference of six or more, never on the bank id", () => {
+test("a typo is forgiven from four typed characters: HAFF finds HAFG", () => {
+  assert.deepEqual(keys({ a: recorded({ reference: "HAFG" }) }, "haff"), ["a"]);
+  assert.equal(searchEftPool({ a: recorded({ reference: "HAFG" }) }, "haff").results[0].matchedOn, "near");
+  // Three characters: the start of a reference, not a typo of one.
+  assert.deepEqual(keys({ a: recorded({ reference: "HAFG" }) }, "hag"), []);
+  assert.deepEqual(editsAllowed(3), 0);
+  assert.deepEqual(editsAllowed(4), 1);
+  assert.deepEqual(editsAllowed(10), 2);
+  assert.equal(NEAR_MISS_MIN_LENGTH, 4);
+  assert.equal(NEAR_MISS_TWO_EDITS_LENGTH, 10);
+});
+
+test("near-exact on the whole reference: one edit, two on a long one — never on the bank id", () => {
   const pool = { a: recorded({ reference: "JUNID1234", bankRef: "5TG59DVQ" }) };
   assert.deepEqual(keys(pool, "juind1234"), ["a"]); // transposition
   assert.deepEqual(keys(pool, "junid12345"), ["a"]); // one extra
   assert.deepEqual(keys(pool, "junld1234"), ["a"]); // one substitution
-  assert.deepEqual(keys(pool, "jnuid1324"), [], "two edits");
-  assert.deepEqual(keys(pool, "5tg59dvx"), [], "the bank id is exact or nothing");
-  assert.equal(NEAR_MISS_MIN_LENGTH, 6);
+  assert.deepEqual(keys(pool, "jnuid1324"), [], "two edits on nine typed characters");
+  assert.deepEqual(keys(pool, "junid1243x"), ["a"], "two edits (a swap and an extra) once ten are typed");
+  assert.deepEqual(keys(pool, "5tg59dvx"), [], "the bank id is exact or a prefix — never a typo");
+  assert.deepEqual(keys(pool, "5tg59d"), ["a"], "six characters of the bank id");
+  assert.equal(searchEftPool(pool, "5tg59d").results[0].matchedOn, "bankPrefix");
+  assert.equal(BANK_PREFIX_MIN_LENGTH, 6);
   const short = { b: recorded({ reference: "OM82X" }) };
-  assert.deepEqual(keys(short, "om82y"), [], "under six characters, exact only");
+  assert.deepEqual(keys(short, "om82y"), ["b"], "five characters, one slip");
+});
+
+test("a slip part-way through a long reference is forgiven as the cashier types on", () => {
+  const pool = { a: recorded({ reference: "THANDI0821234567" }) };
+  assert.deepEqual(keys(pool, "thamdi"), ["a"], "substitution in the typed head");
+  assert.deepEqual(keys(pool, "thandi08212"), ["a"], "plain prefix still");
+  assert.deepEqual(keys(pool, "thandi0812"), ["a"], "transposition in the typed head");
+  assert.deepEqual(keys(pool, "thnd"), ["a"], "a dropped character in the typed head");
+  assert.deepEqual(keys(pool, "thabo"), [], "a different name is not one slip away");
+});
+
+test("FORGIVING ON SPELLING, NEVER ON WHICH PAYMENT: two same-ish references surface nothing", () => {
+  const two = {
+    a: recorded({ reference: "HAFG", bankRef: "A1", at: 1 }),
+    b: recorded({ reference: "HAFH", bankRef: "B2", at: 2 }),
+  };
+  // One edit from both → ambiguous, "keep typing".
+  const out = searchEftPool(two, "haff");
+  assert.deepEqual(out.results, []);
+  assert.equal(out.ambiguous, true);
+  assert.equal(out.partial, true);
+  // Typed exactly: that one, never the other.
+  assert.deepEqual(keys(two, "hafg"), ["a"]);
+  assert.deepEqual(keys(two, "hafh"), ["b"]);
+  // Both start with what was typed → nothing, keep typing.
+  const pre = searchEftPool(two, "haf");
+  assert.deepEqual(pre.results, []);
+  assert.equal(pre.partial, true);
+  // Different customers' phone-number references one digit apart: typed whole,
+  // the exact one; typed with a slip that is one edit from BOTH, nothing.
+  const phones = {
+    t: recorded({ reference: "0821234567", bankRef: "T1", at: 1 }),
+    s: recorded({ reference: "0821234568", bankRef: "S2", at: 2 }),
+  };
+  assert.deepEqual(keys(phones, "0821234567"), ["t"]);
+  assert.deepEqual(keys(phones, "0821234569"), [], "one edit from both: nobody");
+  assert.equal(searchEftPool(phones, "0821234569").ambiguous, true);
+  assert.deepEqual(keys(phones, "082123456"), [], "both start so: nobody");
+});
+
+test("exact beats prefix beats typo — a fully typed reference is never ambiguous with a longer one", () => {
+  const pool = {
+    whole: recorded({ reference: "JUNID", bankRef: "W1", at: 1 }),
+    longer: recorded({ reference: "JUNID1234", bankRef: "L2", at: 2 }),
+    typo: recorded({ reference: "JUNIE", bankRef: "T3", at: 3 }),
+  };
+  assert.deepEqual(keys(pool, "junid"), ["whole"]);
+  assert.deepEqual(keys(pool, "junid1"), ["longer"]);
+  assert.deepEqual(keys(pool, "junie"), ["typo"]);
+  // "JUNIF" is one edit from JUNID and from JUNIE — both typo-rank → nothing.
+  assert.equal(searchEftPool(pool, "junif").ambiguous, true);
+  // An exact-rank ambiguity (two payments with the SAME reference) is not
+  // "partial": more typing cannot settle it — the bank id can.
+  const same = { a: recorded({ reference: "NKOSI", bankRef: "A1", at: 1 }), b: recorded({ reference: "NKOSI", bankRef: "B2", at: 2 }) };
+  const out = searchEftPool(same, "nkosi");
+  assert.equal(out.ambiguous, true);
+  assert.equal(out.partial, undefined);
 });
 
 test("an exact match outranks near-misses — they are not even candidates", () => {
@@ -186,8 +280,11 @@ test("matchOf names what matched", () => {
   const rec = recorded({ reference: "JUNID1234", bankRef: "5TG59DVQ" });
   assert.equal(matchOf(rec, searchPlan("junid1234")), "reference");
   assert.equal(matchOf(rec, searchPlan("5tg59dvq")), "bankRef");
+  assert.equal(matchOf(rec, searchPlan("junid")), "prefix");
+  assert.equal(matchOf(rec, searchPlan("5tg59d")), "bankPrefix");
   assert.equal(matchOf(rec, searchPlan("juind1234")), "near");
   assert.equal(matchOf(rec, searchPlan("nothing")), null);
+  assert.equal(matchOf(rec, searchPlan("ju")), null);
 });
 
 test("osaDistance: identical 0, one typo 1, transposition 1, unrelated more", () => {
@@ -225,10 +322,10 @@ test("copies of ONE bank transaction (pre-fix resends) are one payment, not an a
   assert.equal(searchEftPool(two, "junid1234").ambiguous, true);
 });
 
-test("a near match never echoes the stored reference", () => {
+test("a near match SHOWS the stored reference (Junid, 19 Oct 2026) — the cashier checks it against the proof of payment", () => {
   const out = searchEftPool({ a: recorded({ reference: "JUNID1234" }) }, "juind1234");
   assert.equal(out.results[0].matchedOn, "near");
-  assert.equal(out.results[0].reference, null);
+  assert.equal(out.results[0].reference, "JUNID1234");
 });
 
 test("a payment with no bank id that the owner never released says so (needsOwner)", () => {
