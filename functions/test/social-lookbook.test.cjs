@@ -677,3 +677,15 @@ describe("optional slots and headwear (Junid, 19 Oct)", () => {
     assert.equal(sty.isKnitwear({ slot: "sneakers", tags: {}, displayName: "Textured knit runner" }), false);
   });
 });
+
+test("historySlots: today's own entry (a rerun) is not one of the two days before; old entries are read by pid", async () => {
+  const { historySlots } = require("../lookbook/lookbook.cjs");
+  const db = new FakeRtdb({ products: { p1: { categoryKey: "fitted-caps" }, p2: { categoryKey: "t-shirts" } } });
+  const history = { "2026-10-14": { pids: ["p1"] }, "2026-10-16": { pids: ["p2"], slots: ["tee"] }, "2026-10-19": { pids: ["p2"], slots: ["tee"] }, "2026-10-21": { pids: ["p1"], slots: ["hat"] } };
+  const s = await historySlots(db, history, "2026-10-21");
+  assert.deepEqual(Object.keys(s), ["2026-10-16", "2026-10-19"]);
+  assert.equal(lb.headwearRests(s, "2026-10-21"), false);
+  const s2 = await historySlots(db, history, "2026-10-17");
+  assert.deepEqual(s2["2026-10-14"], ["hat"]);
+  assert.equal(lb.headwearRests(s2, "2026-10-17"), true);
+});

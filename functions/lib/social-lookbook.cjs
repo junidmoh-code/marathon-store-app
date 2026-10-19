@@ -331,6 +331,8 @@ const OTHER_KNOWN_BRANDS = [
   "Dickies", "Levi's", "Levis", "Kappa", "Ellesse", "Diadora", "Ugg", "Dr. Martens", "Boss", "Hugo", "Jordan", "Converse",
   "Vans", "Fila", "Champion", "Timberland", "Creed", "Armani", "EA7", "Replay", "True Religion", "Daniel Wellington",
   "New Era", "Comme des Garçons", "Lululemon", "Gymshark", "Oakley", "Ray-Ban", "Fred Perry", "Ralph Lauren",
+  "Mizuno", "Saucony", "Brooks", "Umbro", "Hummel", "Lotto", "Sergio Tacchini", "Napapijri", "Superdry", "Jack & Jones",
+  "Columbia", "Patagonia", "Arc'teryx", "Canada Goose", "Stüssy", "Stussy", "Corteiz", "Trapstar", "Amiri",
 ];
 const normBrand = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9&]+/g, " ").trim();
 const KNOWN_BRANDS = [...new Set([

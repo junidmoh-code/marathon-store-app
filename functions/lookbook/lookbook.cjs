@@ -82,9 +82,9 @@ const MAX_CHOICES = 2;
  * before slots were recorded is looked up by its pids' categoryKey: point
  * reads, only for the two days the headwear rotation reads.
  */
-async function historySlots(db, history) {
+async function historySlots(db, history, saDate = null) {
   const out = {};
-  const days = Object.keys(history || {}).sort().slice(-lookbook.HEADWEAR_EVERY);
+  const days = Object.keys(history || {}).filter((d) => !saDate || d < saDate).sort().slice(-(lookbook.HEADWEAR_EVERY - 1));
   for (const d of days) {
     const e = history[d] || {};
     const slots = Array.isArray(e.slots) ? e.slots : e.slots && typeof e.slots === "object" ? Object.values(e.slots) : null;
@@ -121,10 +121,11 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   // The 14-day no-repeat: never picked, whatever the score, and never read,
   // so the loader's per-slot quota counts only products the stylist can use.
   const blocked = lookbook.pidsWithinDays(history, saDate, 14);
-  const { candidates } = await loadLookbookCandidates(db, { nowMs, skip: new Set([...blocked, ...used]) });
-  // Headwear in at most one lookbook in three (Junid, 19 Oct).
-  const noHeadwear = headwear === "off" || (headwear === "rotate" && lookbook.headwearRests(await historySlots(db, history), saDate));
+  // Headwear in at most one lookbook in three (Junid, 19 Oct). Decided
+  // before the load, so a resting day reads no hats at all.
+  const noHeadwear = headwear === "off" || (headwear === "rotate" && lookbook.headwearRests(await historySlots(db, history, saDate), saDate));
   if (noHeadwear) log("lookbook: no headwear today (one lookbook in three)");
+  const { candidates } = await loadLookbookCandidates(db, { nowMs, skip: new Set([...blocked, ...used]), skipSlots: noHeadwear ? new Set(["hat"]) : new Set() });
   // Every candidate's style tags: cached, tagged now (a few), or read from its name.
   const tagRun = await ensureStyleTags(db, candidates.map((c) => {
     const ph = lookbook.approvedPhoto(c.product, c.node);

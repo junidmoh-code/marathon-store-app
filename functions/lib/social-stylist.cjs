@@ -85,10 +85,14 @@ function styledPicksForKind(kind, candidates, { used = new Set(), tags = new Map
   const fits = (chosen, c) => socialSelect.fitsWith(chosen, c);
   const base = { fits, month, perSlot: SOCIAL_PER_SLOT };
   let outfits = [];
+  // What the stylist removed before scoring, for the skip reason (the same
+  // piece counted once across the pairing shapes).
+  const excluded = {};
+  const noteExcluded = (res) => { for (const [k, n] of Object.entries(res.excluded || {})) excluded[k] = Math.max(excluded[k] || 0, n); return res; };
   if (kind === "pairing") {
     socialSelect.PAIRING_SHAPES.forEach((shape, i) => {
       const core = shape.map((s) => SHAPE_SLOT[s]);
-      const res = stylist.styleOutfits(pieces, { ...base, core, slots: [...new Set(core.flat())], minPieces: shape.length, maxPieces: shape.length, template: false });
+      const res = noteExcluded(stylist.styleOutfits(pieces, { ...base, core, slots: [...new Set(core.flat())], minPieces: shape.length, maxPieces: shape.length, template: false }));
       // The owner's preference order, as a nudge.
       const bonus = SHAPE_BONUS * (socialSelect.PAIRING_SHAPES.length - i);
       // The shape's own groups must each hold exactly one piece (no tee + jacket as "top, shoe").
@@ -98,13 +102,13 @@ function styledPicksForKind(kind, candidates, { used = new Set(), tags = new Map
       }
     });
   } else if (kind === "outfit") {
-    const res = stylist.styleOutfits(pieces, {
+    const res = noteExcluded(stylist.styleOutfits(pieces, {
       ...base, core: [["tee", "jacket"], ["bottoms"], ["sneakers"]], slots: ["tee", "jacket", "bottoms", "sneakers", "hat", "bag", "fragrance"],
       minPieces: spec.minProducts, maxPieces: spec.maxProducts,
-    });
+    }));
     outfits = res.outfits;
   } else {
-    const res = stylist.styleOutfits(pieces, { ...base, core: [], minPieces: spec.minProducts, maxPieces: spec.maxProducts, template: false });
+    const res = noteExcluded(stylist.styleOutfits(pieces, { ...base, core: [], minPieces: spec.minProducts, maxPieces: spec.maxProducts, template: false }));
     outfits = res.outfits;
   }
   // The same products reached through two shapes are one pairing: keep the better.
@@ -115,7 +119,8 @@ function styledPicksForKind(kind, candidates, { used = new Set(), tags = new Map
     score: o.score, look: o.look, reasoning: o.reasoning, pieces: o.pieces, parts: o.parts, shape: o.shape || null,
   }));
   if (!shortlist.length) {
-    return { picks: [], shortlist, reason: `the stylist found no ${spec.label.toLowerCase()} in live stock that passes the style guide` };
+    const ex = Object.entries(excluded).sort((a, b) => b[1] - a[1]);
+    return { picks: [], shortlist, excluded, reason: `the stylist found no ${spec.label.toLowerCase()} in live stock that passes the style guide${ex.length ? ` (removed first: ${ex.slice(0, 3).map(([k, n]) => `${k} ×${n}`).join("; ")})` : ""}` };
   }
   return { picks: shortlist[0].picks, reason: null, shortlist, shape: shortlist[0].shape };
 }

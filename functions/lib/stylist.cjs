@@ -275,7 +275,7 @@ function scoreOutfit(pieces, ctx = {}) {
   for (const k of Object.keys(parts)) parts[k] = Math.round(parts[k] * 100) / 100;
   const score = Math.round(Object.values(parts).reduce((a, b) => a + b, 0) * 100) / 100;
   const layered = pieces.filter((p) => layerPenalty(p, season, guide) > 0);
-  const lw = layered.length ? [`${layered.map((p) => (isKnitwear(p) ? "knitwear" : "an outer layer")).join(" and ")} in a Durban ${season}`] : [];
+  const lw = layered.length ? [`${layered.map((p) => (isKnitwear(p) ? "knitwear" : "an outer layer")).join(" and ")} in the Durban ${season} season`] : [];
   const reasoning = [...c.why, ...s.why, ...f.why, ...fo.why, ...se.why, ...lw].join("; ");
   return { score, parts, look: bl ? bl.look.key : null, lookMatch: bl ? Math.round(bl.match * 100) / 100 : 0, reasoning };
 }
@@ -368,8 +368,9 @@ function styleOutfits(pieces, opts = {}) {
         const key = chosen.map((p) => p.pid).sort().join(",");
         if (seen.has(key)) return;
         const sc = scoreOutfit(chosen, ctx);
-        // The lookbook: headwear only where a look that declares it is worn.
-        if (lookSlots && !forced && !sc.look && chosen.some((p) => p.slot === "hat")) { refused["headwear with no look that wears it"] = (refused["headwear with no look that wears it"] || 0) + 1; return; }
+        // The lookbook: an optional piece only where a look that declares it
+        // is worn; an outfit that matches no look is the core alone.
+        if (lookSlots && !forced && !sc.look && chosen.some((p) => !core.some((alts) => alts.includes(p.slot)))) { refused["an optional piece with no look that wears it"] = (refused["an optional piece with no look that wears it"] || 0) + 1; return; }
         // A forced look keeps every outfit that QUALIFIES for it, not only
         // the ones it matches best, and names the outfit after it (Fable
         // review of #759: coastal-summer lost every outfit to earth-tone).
