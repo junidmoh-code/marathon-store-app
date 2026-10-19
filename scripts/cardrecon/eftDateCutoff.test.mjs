@@ -211,7 +211,9 @@ describe("an old proof of payment forwarded today — refused on the bank's date
     const mail = verdictMail(record, { poolKey: "pool-k" });
     expect(mail.subject).toBe(`${EFT_VERDICT_SUBJECT_PREFIX} REJECTED — Payment dated before the cutoff — R450.00 · Capitec`);
     const first = mail.text.split("\n")[0];
-    expect(first.startsWith("REJECTED — Payment dated before the cutoff: Payment dated before the cutoff: the bank dates this payment 2026-08-30")).toBe(true);
+    // The check's name once, not twice: the reason already opens with it.
+    expect(first.startsWith("REJECTED — Payment dated before the cutoff: the bank dates this payment 2026-08-30")).toBe(true);
+    expect(first).not.toContain("cutoff: Payment dated before");
     expect(mail.text).toContain("Payment-date cutoff: 2026-10-20");
     expect(mail.text).toContain("Bank's timestamp: 2026-08-30 11:36:00 SAST");
     expect(mail.text).toContain("Notification arrived: 2026-10-19 18:40:00 SAST");
@@ -252,6 +254,9 @@ describe("the same notification dated on or after the cutoff is confirmed", () =
     expect(parsed.bankTs).toBe(null);
     expect(record.outcome).toBe("refused-stale-date");
     expect(record.reason).toMatch(/could not be read/);
+    // Junid's email must not call an unreadable date "dated before the cutoff".
+    expect(failedCheck(record)).toBe("Payment date unreadable (cutoff check)");
+    expect(verdictMail(record, { poolKey: "k" }).subject).toMatch(/^\[EFT confirmer\] REJECTED — Payment date unreadable \(cutoff check\) — /);
   });
 });
 
@@ -280,8 +285,11 @@ describe("the poller wires the gate on the bank's date (source scan)", () => {
     // A bad value stops EFT decisions only: the bank path throws BEFORE any
     // claim (the message stays unread, retried), the heartbeat says INVALID,
     // and the slip path keeps running — config() itself never fails on it.
-    expect(src).toMatch(/if \(!cfg\.eftPaymentDateCutoff\.ok\) \{\s*throw new Error\(/);
-    expect(src.indexOf("if (!cfg.eftPaymentDateCutoff.ok) {\n    throw")).toBeLessThan(src.indexOf("const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress })"));
+    const guard = src.search(/if \(!cfg\.eftPaymentDateCutoff\.ok\) \{\s*throw new Error\(/);
+    const firstDecision = src.indexOf("const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress })");
+    expect(guard).toBeGreaterThan(-1);
+    expect(firstDecision).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(firstDecision);
     expect(src).toMatch(/eftPaymentDateCutoff: cfg\.eftPaymentDateCutoff\.ok \? cfg\.eftPaymentDateCutoff\.date : "INVALID"/);
     expect(src).not.toMatch(/fail\(`\$\{c\.reason\}/);
     expect(src).toMatch(/paymentDateVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff \}\)/);

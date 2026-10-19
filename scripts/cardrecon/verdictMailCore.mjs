@@ -99,6 +99,10 @@ export function eftVerdict(record) {
 
 /** The check that decided a REJECTED record, as Junid reads it. */
 export function failedCheck(record) {
+  // Fix 8 refuses two different things under one outcome: a date the bank
+  // printed that is before the cutoff, and a date that could not be read at
+  // all (bankTs null). The label must not call the second "dated before".
+  if (record?.outcome === "refused-stale-date" && !Number.isInteger(record?.bankTs)) return "Payment date unreadable (cutoff check)";
   return CHECKS[record?.outcome] || `Not approved (outcome "${clip(String(record?.outcome ?? "none"), 40)}")`;
 }
 
@@ -107,8 +111,12 @@ export function decidingReason(record) {
   if (eftVerdict(record) === "APPROVED") {
     return "All checks passed — genuine bank signature (DKIM), paid into the shop's own account, an immediate payment, dated by the bank on or after the cutoff, and a bank transaction id not seen before. It is now a spendable payment in the pool.";
   }
+  const check = failedCheck(record);
   const why = oneLine(redactAccountDigits(String(record?.reason ?? "")), 600);
-  return why ? `${failedCheck(record)}: ${why}` : failedCheck(record);
+  if (!why) return check;
+  // A reason that already opens with its check's name (the stale-date reason
+  // does, by spec) is not prefixed with it a second time.
+  return why.toLowerCase().startsWith(check.toLowerCase()) ? why : `${check}: ${why}`;
 }
 
 const oneLine = (s, n) => String(s ?? "").replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, n);

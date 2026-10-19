@@ -1156,6 +1156,9 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // alone claimed, while EFT_PAYMENT_DATE_CUTOFF is unreadable: the throw is
   // caught by the caller, the message stays unread, eftErrors counts it, and
   // the next tick after the line is fixed reads it as if it had just arrived.
+  // (A bank-domain message that turns out to carry batch SLIPS waits with
+  // them — it is only routed to the card path further down — and is read the
+  // same way once the line is fixed; nothing is lost.)
   if (!cfg.eftPaymentDateCutoff.ok) {
     throw new Error(`${cfg.eftPaymentDateCutoff.reason} Fix ${EFT_CUTOFF_ENV_VAR} in ${cfg.eftPaymentDateCutoffSource}`);
   }
