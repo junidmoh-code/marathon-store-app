@@ -597,3 +597,141 @@ Either is fine. Leaving a check that always fails is the one option that is not.
 
 The deploy key added in §9 can be revoked at any time from Settings → Deploy
 keys. Revoking it stops the Monday capture delivering; it breaks nothing else.
+
+---
+
+## Trading-hours capture — Monday 19 October 2026, 11:05 SAST
+
+Captured unattended by `com.marathon.costcapture` on the Mac mini,
+via `scripts/cost/trading-hours-capture.sh`. This is the weekday-trading
+counterpart to the after-hours floor above: the same 60 minutes of raw
+profiler output, analysed by `scripts/cost/analyse-profile.mjs`.
+
+The raw capture stays on the mini at `/Users/marathonclub/costfix/trading-20261019-1000.jsonl`.
+
+## Capture: /Users/marathonclub/costfix/trading-20261019-1000.jsonl
+records: 29,680
+window: 2026-10-19T08:00:11.286Z → 2026-10-19T09:00:10.980Z (60.0 min)
+downloaded: 236,248,264 B = 236.25 MB
+annualised: 5.28 GiB/day = $5.15/day at $0.97604/GiB
+
+### By path
+
+| Path | Bytes | Share | Reads | Largest single read |
+|---|---:|---:|---:|---:|
+| `/mirror_changes` | 70,977,913 | 30.0% | 1,600 · 1250 ranged | 6,096,085 B |
+| `/orders` | 44,905,370 | 19.0% | 3,324 · 3188 ranged | 2,981,477 B |
+| `/stock_movements` | 16,580,555 | 7.0% | 1,075 · 1073 ranged | 13,565,721 B |
+| `/refill_requests` | 13,921,254 | 5.9% | 2,930 · 2852 ranged | 12,718,457 B |
+| `/pos` | 12,811,524 | 5.4% | 725 · 556 ranged | 4,108,793 B |
+| `/stock` | 11,560,364 | 4.9% | 7,072 · 7063 ranged | 1,814,607 B |
+| `/products` | 11,293,583 | 4.8% | 161 · 151 ranged | 5,592,378 B |
+| `/customers` | 8,970,521 | 3.8% | 947 · 919 ranged | 2,178,140 B |
+| `/shopify_publish` | 7,713,656 | 3.3% | 562 · 562 ranged | 2,815,095 B |
+| `/laybys` | 6,301,296 | 2.7% | 70 | 262,554 B |
+| `/settings` | 5,614,882 | 2.4% | 358 · 335 ranged | 2,044,825 B |
+| `/displayChecks_active` | 5,059,290 | 2.1% | 143 · 56 ranged | 1,634,923 B |
+| `/laybyPulls` | 4,614,024 | 2.0% | 70 | 192,251 B |
+| `/eft_pool` | 3,461,796 | 1.5% | 81 · 68 ranged | 51,621 B |
+| `/stock_targets` | 3,010,480 | 1.3% | 1 | 3,010,480 B |
+| `/search_index` | 2,276,513 | 1.0% | 13 · 13 ranged | 1,137,289 B |
+| `/shopify_autopublish_queue` | 2,174,070 | 0.9% | 48 · 30 ranged | 72,469 B |
+| `/social_posts` | 1,054,164 | 0.4% | 64 · 64 ranged | 124,566 B |
+| `/shopify_sync` | 917,647 | 0.4% | 874 · 815 ranged | 64,714 B |
+| `/insights_log` | 831,984 | 0.4% | 1,019 · 919 ranged | 32,073 B |
+| `/product_identity` | 698,971 | 0.3% | 3 · 3 ranged | 698,441 B |
+| `/refill_engine` | 475,685 | 0.2% | 56 · 1 ranged | 250,925 B |
+| `/restock_log` | 203,926 | 0.1% | 521 · 521 ranged | 516 B |
+| `/mirror_devices` | 192,917 | 0.1% | 66 · 6 ranged | 32,328 B |
+| `/displayChecks` | 157,919 | 0.1% | 41 | 61,163 B |
+| `/push_bursts` | 79,142 | 0.0% | 136 · 18 ranged | 1,263 B |
+| `/restock_requests` | 70,996 | 0.0% | 226 · 226 ranged | 1,074 B |
+| `/(root)` | 68,834 | 0.0% | 183 | 4,680 B |
+| `/users` | 62,747 | 0.0% | 366 · 143 ranged | 13,924 B |
+| `/locations` | 60,255 | 0.0% | 65 · 64 ranged | 927 B |
+
+### By client
+
+| Client (tag os/browser/version) | Bytes | Share | Reads | Largest single read |
+|---|---:|---:|---:|---:|
+| `client-bd61 android/unknown/150_0_0_0` | 76,729,377 | 32.5% | 8,341 | 6,096,085 B |
+| `client-7dd7 admin_node/firebase/12_7_0` | 45,389,396 | 19.2% | 118 | 13,565,721 B |
+| `client-6294 ios/unknown/27_0_1` | 18,272,012 | 7.7% | 75 | 5,592,378 B |
+| `client-b06c windows/chrome/88` | 16,866,908 | 7.1% | 162 | 2,356,456 B |
+| `client-632c android/chrome/131` | 14,416,081 | 6.1% | 302 | 2,342,570 B |
+| `client-8896 admin_node/firebase/12_7_0` | 12,117,794 | 5.1% | 4,401 | 2,815,095 B |
+| `client-f3f0 ios/unknown/27_0_1` | 10,042,469 | 4.3% | 211 | 2,981,477 B |
+| `client-b06c windows/chrome/155` | 6,324,846 | 2.7% | 1,337 | 2,333,031 B |
+| `client-2f84 android/unknown/117_0_0_0` | 5,694,803 | 2.4% | 568 | 262,554 B |
+| `client-bd61 windows/chrome/155` | 4,240,674 | 1.8% | 91 | 266,294 B |
+| `client-0f78 ios/unknown/26_2` | 4,209,091 | 1.8% | 613 | 262,554 B |
+| `client-8c7a admin_node/firebase/12_7_0` | 2,545,335 | 1.1% | 8 | 2,044,825 B |
+| `client-b06c ios/unknown/26_2` | 2,128,621 | 0.9% | 237 | 1,524,184 B |
+| `client-b06c linux/chrome/135` | 1,868,304 | 0.8% | 600 | 262,554 B |
+| `client-ca7e admin_node/firebase/12_7_0` | 1,798,149 | 0.8% | 72 | 51,240 B |
+| `client-da58 android/unknown/154_0_0_0` | 1,791,822 | 0.8% | 777 | 262,554 B |
+| `client-8896 unknown/unknown/unknown` | 1,483,558 | 0.6% | 160 | 698,441 B |
+| `client-bd61 os_x/chrome/155` | 1,362,949 | 0.6% | 1,105 | 188,910 B |
+| `client-f224 admin_node/firebase/12_7_0` | 1,227,528 | 0.5% | 72 | 51,621 B |
+| `client-3a32 admin_node/firebase/12_7_0` | 1,139,009 | 0.5% | 9 | 1,137,289 B |
+| `client-aebf admin_node/firebase/12_7_0` | 1,137,504 | 0.5% | 2 | 1,137,289 B |
+| `client-6f0c admin_node/firebase/12_7_0` | 796,895 | 0.3% | 49 | 51,621 B |
+| `client-bd61 android/unknown/154_0_0_0` | 785,103 | 0.3% | 776 | 188,910 B |
+| `client-bd61 ios/unknown/16_6_2` | 778,390 | 0.3% | 460 | 141,530 B |
+| `client-df47 android/chrome/131` | 474,112 | 0.2% | 712 | 5,677 B |
+| `client-684f admin_node/firebase/12_7_0` | 446,347 | 0.2% | 439 | 124,566 B |
+| `client-b06c android/unknown/4_0` | 415,126 | 0.2% | 560 | 5,377 B |
+| `client-03c3 admin_node/firebase/12_7_0` | 302,686 | 0.1% | 90 | 27,850 B |
+| `client-6cdf admin_node/firebase/12_7_0` | 250,748 | 0.1% | 12 | 124,566 B |
+| `client-b4d9 admin_node/firebase/12_7_0` | 224,793 | 0.1% | 282 | 9,059 B |
+
+### By client × path (top pairs)
+
+| Client | Path | Bytes | Share |
+|---|---|---:|---:|
+| `client-bd61 android/unknown/150_0_0_0` | `/mirror_changes` | 68,774,081 | 29.1% |
+| `client-632c android/chrome/131` | `/orders` | 14,043,588 | 5.9% |
+| `client-7dd7 admin_node/firebase/12_7_0` | `/stock_movements` | 13,565,721 | 5.7% |
+| `client-7dd7 admin_node/firebase/12_7_0` | `/refill_requests` | 12,718,457 | 5.4% |
+| `client-b06c windows/chrome/88` | `/orders` | 11,701,569 | 5.0% |
+| `client-f3f0 ios/unknown/27_0_1` | `/orders` | 8,933,737 | 3.8% |
+| `client-7dd7 admin_node/firebase/12_7_0` | `/stock` | 7,105,787 | 3.0% |
+| `client-6294 ios/unknown/27_0_1` | `/customers` | 6,533,853 | 2.8% |
+| `client-6294 ios/unknown/27_0_1` | `/pos` | 6,145,618 | 2.6% |
+| `client-8896 admin_node/firebase/12_7_0` | `/shopify_publish` | 5,915,804 | 2.5% |
+| `client-7dd7 admin_node/firebase/12_7_0` | `/products` | 5,592,378 | 2.4% |
+| `client-6294 ios/unknown/27_0_1` | `/products` | 5,592,378 | 2.4% |
+| `client-b06c windows/chrome/88` | `/displayChecks_active` | 4,900,760 | 2.1% |
+| `client-bd61 windows/chrome/155` | `/pos` | 4,195,576 | 1.8% |
+| `client-7dd7 admin_node/firebase/12_7_0` | `/stock_targets` | 3,010,480 | 1.3% |
+| `client-7dd7 admin_node/firebase/12_7_0` | `/orders` | 2,970,257 | 1.3% |
+| `client-b06c windows/chrome/155` | `/orders` | 2,369,459 | 1.0% |
+| `client-2f84 android/unknown/117_0_0_0` | `/laybys` | 2,362,986 | 1.0% |
+| `client-bd61 android/unknown/150_0_0_0` | `/orders` | 2,205,762 | 0.9% |
+| `client-b06c windows/chrome/155` | `/customers` | 2,188,031 | 0.9% |
+| `client-8896 admin_node/firebase/12_7_0` | `/shopify_autopublish_queue` | 2,174,070 | 0.9% |
+| `client-8c7a admin_node/firebase/12_7_0` | `/settings` | 2,044,825 | 0.9% |
+| `client-bd61 android/unknown/150_0_0_0` | `/stock` | 1,822,310 | 0.8% |
+| `client-ca7e admin_node/firebase/12_7_0` | `/eft_pool` | 1,798,005 | 0.8% |
+| `client-2f84 android/unknown/117_0_0_0` | `/laybyPulls` | 1,730,259 | 0.7% |
+| `client-8896 admin_node/firebase/12_7_0` | `/stock_movements` | 1,711,016 | 0.7% |
+| `client-b06c ios/unknown/26_2` | `/shopify_publish` | 1,702,731 | 0.7% |
+| `client-0f78 ios/unknown/26_2` | `/settings` | 1,513,784 | 0.6% |
+| `client-bd61 android/unknown/150_0_0_0` | `/laybys` | 1,312,770 | 0.6% |
+| `client-2f84 android/unknown/117_0_0_0` | `/orders` | 1,267,150 | 0.5% |
+
+### Operation verbs (billed as download unless marked)
+
+| Verb | Records | Bytes | Counted? |
+|---|---:|---:|---|
+| `listener-listen` | 2,011 | 197,651,836 | yes |
+| `realtime-read` | 20,967 | 36,308,204 | yes |
+| `rest-read` | 165 | 1,483,558 | yes |
+| `realtime-write` | 1,090 | 811,534 | no — not a download |
+| `listener-broadcast` | 1,794 | 804,666 | yes |
+| `rest-write` | 37 | 305,154 | no — not a download |
+| `realtime-update` | 491 | 164,053 | no — not a download |
+| `realtime-transaction` | 502 | 159,934 | no — not a download |
+| `listener-unlisten` | 1,958 | 0 | no — not a download |
+| `concurrent-disconnect` | 333 | 0 | no — not a download |
+| `concurrent-connect` | 332 | 0 | no — not a download |
