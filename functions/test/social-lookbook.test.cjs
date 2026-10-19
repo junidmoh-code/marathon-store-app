@@ -84,6 +84,10 @@ describe("price and photo resolver", () => {
     assert.equal(lb.guessSlot("Textured knit runner in orange"), "sneakers");
     assert.equal(lb.guessSlot("Ribbed-knit short-sleeve polo with contrast tipping"), "tee");
     assert.equal(lb.guessSlot("Cropped bomber jacket silhouette in washed sand beige"), "jacket");
+    // A low-top is a sneaker, not a top (19 Oct: 47 of 96 tee reads were sneakers).
+    assert.equal(lb.guessSlot("Leather low-top in white on a cup sole with retro, minimal, basketball styling"), "sneakers");
+    assert.equal(lb.guessSlot("Quilted nubuck low-top in black"), "sneakers");
+    assert.equal(lb.guessSlot("Sleeveless tank top with airbrushed stars"), "tee");
   });
 });
 

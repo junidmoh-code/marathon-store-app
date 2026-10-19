@@ -41,7 +41,10 @@ const LOOKBOOK_SLOTS = [
   { slot: "jacket",   label: "jacket",   keys: ["jackets", "hoodies"],
     guess: /\b(jackets?|hoodies?|puffer|windbreaker|windrunner|anorak|bomber|sweaters?|pullover|cardigan|quarter-zip)\b/i, anchor: { x: 0.53, y: 0.24 } },
   { slot: "tee",      label: "tee",      keys: ["t-shirts", "golf-t-shirts"],
-    guess: /\b(t-shirts?|tees?|t|polo|henley|shirt|top)\b/i, anchor: { x: 0.60, y: 0.30 } },
+    // Never "top" after a hyphen: "low-top", "high-top" are sneakers. On 19
+    // Oct 47 of the 96 tee reads were sneakers ("Leather low-top in white"),
+    // and the lookbook saw four tees.
+    guess: /(?<!-)\b(t-shirts?|tees?|t|polo|henley|shirt|top)\b/i, anchor: { x: 0.60, y: 0.30 } },
   { slot: "bottoms",  label: "bottoms",  keys: ["shorts", "pants", "jeans"],
     guess: /\b(shorts?|pants|jeans?|cargo|trousers?|joggers?|chinos?)\b/i, anchor: { x: 0.55, y: 0.53 } },
   { slot: "bag",      label: "bag",      keys: ["bags"],
