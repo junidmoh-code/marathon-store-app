@@ -76,5 +76,12 @@ export function photoContentMarker(product) {
   if (typeof product?.photoUrl === "string" && product.photoUrl) parts.push(product.photoUrl);
   else if (typeof product?.photo === "string" && product.photo) parts.push(product.photo);
 
+  // thumbAt: stamped when the THUMBNAIL was rebuilt while the photo did not
+  // move (a repair of a thumbnail made from the wrong photo). Appended only
+  // when present, so every other product keeps the marker it had and no
+  // device re-downloads the catalogue for it.
+  const thumbAt = product?.thumbAt;
+  if (parts.length && typeof thumbAt === "number" && thumbAt > 0) parts.push(`t${thumbAt}`);
+
   return parts.length ? parts.join("|") : "no-photo";
 }

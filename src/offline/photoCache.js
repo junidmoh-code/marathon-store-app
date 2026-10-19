@@ -380,6 +380,12 @@ export async function primePhotoCachePass({
         // object is not there means the object is not there; anything else is
         // a transport problem and is simply left for the next pass.
         if (isObjectNotFound(err)) {
+          // The photo moved and its thumbnail is gone: drop the one this
+          // device holds, or every card keeps showing the OLD picture (the
+          // card reads Cache Storage by product id, with no marker check).
+          // A missing thumbnail falls back to the real photo; a stale one
+          // is wrong for ever.
+          try { await cache.delete(photoCacheRequest(productId)); } catch { /* best-effort */ }
           await setEntry(productId, { bytes: 0, marker, at: now(), missing: true });
           summary.missing += 1;
         } else {

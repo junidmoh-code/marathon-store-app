@@ -94,6 +94,32 @@ describe("the thumbnail trickle", () => {
     expect(storage.calls.length).toBe(before + 1);
   });
 
+  test("A PHOTO WHOSE THUMBNAIL IS GONE drops the cached one — the card never keeps the OLD picture", async () => {
+    // The card reads Cache Storage by product id with no marker check, so a
+    // re-pointed photo whose new thumbnail 404s showed last month's picture
+    // for ever (CPFM White Red Flea, 19 Oct 2026).
+    const db = await freshMirrorDb();
+    const cache = fakeCache();
+    const storage = fakeStorage({ p0: 20000 });
+    await pass({ db, storage, cache, products: [{ id: "p0", photoUrl: "https://x/old.jpg" }] });
+    expect(cache.held.size).toBe(1);
+    storage.getBlob = fakeStorage({}).getBlob;
+    const summary = await pass({ db, storage, cache, products: [{ id: "p0", photoUrl: "https://x/new.jpg" }] });
+    expect(summary.missing).toBe(1);
+    expect(cache.held.size).toBe(0);
+    expect(await readCachedPhotoUrl(cache, "p0")).toBeNull();
+  });
+
+  test("a REPAIRED thumbnail (thumbAt stamped, photo unchanged) is re-fetched", async () => {
+    const db = await freshMirrorDb();
+    const cache = fakeCache();
+    const storage = fakeStorage({ p0: 20000 });
+    await pass({ db, storage, cache, products: [{ id: "p0", photoUrl: "https://x/a.jpg" }] });
+    const before = storage.calls.length;
+    await pass({ db, storage, cache, products: [{ id: "p0", photoUrl: "https://x/a.jpg", thumbAt: 5 }] });
+    expect(storage.calls.length).toBe(before + 1);
+  });
+
   test("A FAILED FETCH IS NOT A MISSING PHOTO", async () => {
     // Marking a transport failure `missing` suppressed the retry for six
     // hours, so one pass run while the line was down poisoned that slice of
