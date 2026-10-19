@@ -1,48 +1,40 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const writes = [];
+const metaReads = [];
 vi.mock("../../firebase", () => ({ database: {}, storage: {} }));
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   update: async (r, patch) => { writes.push([r.path, patch]); },
 }));
-vi.mock("firebase/storage", () => ({ ref: (_s, p) => ({ p }), getBlob: async () => new Blob(["x"]), uploadBytes: async () => {}, deleteObject: async () => {} }));
+vi.mock("firebase/storage", () => ({
+  ref: (_s, p) => ({ p }),
+  getMetadata: async (r) => { metaReads.push(r.p); return { md5Hash: `md5:${r.p}` }; },
+  getBlob: async () => new Blob(["x"]), uploadBytes: async () => {}, deleteObject: async () => {},
+}));
 vi.mock("../../utils/productThumb", () => ({ writeApprovedThumbFromUrl: vi.fn(async () => ({ ok: true })) }));
 
-const { appPhotoPatch, syncAppPhoto } = await import("./appPhoto.js");
+const { browserPrimaryPhotoDeps: d } = await import("./appPhoto.js");
 const { writeApprovedThumbFromUrl } = await import("../../utils/productThumb");
 const B = "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/";
-const staff = `${B}products%2Fp1%2Fphoto.jpg?alt=media&token=a`;
-const pub = (n) => `${B}products%2Fp1%2Fshopify%2F${n}.jpg?alt=media&token=b`;
 
-beforeEach(() => { writes.length = 0; writeApprovedThumbFromUrl.mockClear(); });
+beforeEach(() => { writes.length = 0; metaReads.length = 0; writeApprovedThumbFromUrl.mockClear(); });
 
-describe("the primary photo is the app photo (26 Sep)", () => {
-  it("a changed primary writes ONLY photoUrl (+ keeps the staff original) as child keys, and rebuilds the till thumbnail", async () => {
-    const product = { photoUrl: staff, styleCodeNormalised: "ABC123" };
-    const r = await syncAppPhoto("p1", product, staff, pub("new"));
-    expect(r).toMatchObject({ ok: true, changed: true });
-    expect(writes).toEqual([["products/p1", { photoUrl: pub("new"), photoUrlOriginal: staff }]]);
-    // nothing else on the record — styleCodeNormalised above all — is in the patch
-    expect(Object.keys(writes[0][1])).not.toContain("styleCodeNormalised");
-    expect(writeApprovedThumbFromUrl).toHaveBeenCalledWith("p1", pub("new"), expect.any(Object));
+describe("the browser's legs for the primary-photo write", () => {
+  it("writeProduct is an update() of /products/{pid} child keys — never a set of the record", async () => {
+    await d.writeProduct("p1", { photoUrl: "u" });
+    expect(writes).toEqual([["products/p1", { photoUrl: "u" }]]);
   });
-  it("an edit that does not change the primary (an extra photo, a video, a reorder behind it) never touches the app photo", async () => {
-    expect(appPhotoPatch("p1", { photoUrl: staff }, staff, staff)).toBeNull();
-    const r = await syncAppPhoto("p1", { photoUrl: pub("a") }, pub("a"), pub("a"));
-    expect(r.changed).toBe(false);
-    expect(writes).toEqual([]);
+  it("md5Of reads the object's Storage metadata by PATH, and answers null for a URL outside this bucket", async () => {
+    expect(await d.md5Of(`${B}products%2Fp1%2Fphoto.jpg?alt=media&token=a`)).toBe("md5:products/p1/photo.jpg");
+    expect(await d.md5Of("https://example.com/x.jpg")).toBeNull();
+    expect(metaReads).toEqual(["products/p1/photo.jpg"]);
   });
-  it("an original already kept is not overwritten by a later swap between publishing photos", () => {
-    const product = { photoUrl: pub("a"), photoUrlOriginal: staff };
-    expect(appPhotoPatch("p1", product, pub("a"), pub("b"))).toEqual({ photoUrl: pub("b") });
+  it("rebuildThumb is the AI Studio approve's thumbnail helper", async () => {
+    await d.rebuildThumb("p1", "u");
+    expect(writeApprovedThumbFromUrl).toHaveBeenCalledWith("p1", "u", expect.any(Object));
   });
-  it("EMPTY-PID GUARD: no product id → no write, never a path at the products root", async () => {
-    for (const bad of ["", null, undefined, "a/b", "p1.x"]) {
-      expect(appPhotoPatch(bad, { photoUrl: staff }, staff, pub("x"))).toBeNull();
-      const r = await syncAppPhoto(bad, { photoUrl: staff }, staff, pub("x"));
-      expect(r.changed).toBe(false);
-    }
-    expect(writes).toEqual([]);
+  it("now is the server clock", () => {
+    expect(typeof d.now()).toBe("number");
   });
 });

@@ -1,10 +1,10 @@
 // ─── NEW ARRIVALS — THE POST-APPROVAL CHAIN ──────────────────────────────────
 // After Junid taps Approve, the agents do exactly what a person does today, by
 // calling the SAME code the buttons call — never a copy, never the UI:
-//   (a) the generated photo becomes the product photo — the AI Studio approve
-//       path (photoUrl ← generated, photoUrlOriginal ← the upload, kept for
-//       ever; writeApprovedThumbFromUrl for the tills) and the publisher card's
-//       photo strip (photosMutator);
+//   (a) the generated photo becomes the product photo — the publisher card's
+//       photo strip (photosMutator), then THE primary-photo write
+//       (primaryPhotoCore.setShopifyPrimaryPhoto: photoUrl ← generated,
+//       photoUrlOriginal ← the upload, kept for ever; the till thumbnail);
 //   (b) accept the name suggester's proposal — the Suggested-name Apply button
 //       (applyProposalMutator), and ONLY the proposal Junid was shown;
 //   (c) condition Excellent — the condition chip (conditionMutator);
@@ -21,6 +21,7 @@ import { applyProposalMutator, conditionMutator, photosMutator, publishMutator, 
 import { CONDITIONS } from "../../src/components/shopify/publishShared.js";
 import { writeApprovedThumbFromUrl, writeProductThumb } from "../../src/utils/productThumb.js";
 import sourcePhoto from "../../functions/newArrivals/sourcePhoto.cjs";
+import { setShopifyPrimaryPhoto } from "../../src/components/shopify/primaryPhotoCore.js";
 
 export const EXCELLENT = CONDITIONS[0];
 export const DUPLICATE = "duplicate name — needs a distinct name";
@@ -147,28 +148,31 @@ export async function advance(pid, deps) {
     const res = await decide(db, pid, node, photosMutator, { photos: [item.generatedUrl], basisPhotos: node?.photos }, await ctx());
     if (!res.ok) return reject("photo", res.message);
     node = res.node;
-    // AI Studio approve path: photoUrl ← generated; photoUrlOriginal ← the staff
-    // photo it replaces. That is the product's CURRENT staff photo, read now
-    // (sourcePhoto.cjs) — never a copy pinned on the item. An original already
-    // kept is never overwritten by a later approval of another GENERATED photo;
-    // it IS replaced when staff re-shot the product since (the product's photo
-    // is a staff photo again: the old original is no longer the product).
-    const original = sourcePhoto.currentSourceUrl(pid, product, item);
-    // Exactly the AI Studio approve write (App.jsx): photoUrl + photoUrlOriginal.
-    const update = { photoUrl: item.generatedUrl };
-    if (original && (!product.photoUrlOriginal || sourcePhoto.isStaffPhoto(pid, product.photoUrl))) update.photoUrlOriginal = original;
-    await db.ref(`products/${pid}`).update(update);
-    // The till thumbnail, by the same helper the AI Studio approve uses. The
-    // browser encodes with a canvas; here the encoder is injected (sharp), and
-    // the helper's own contract — best-effort, never throws — is unchanged.
-    const thumb = await writeApprovedThumbFromUrl(pid, item.generatedUrl, {
-      download: deps.download,
-      upload: deps.uploadThumb,
-      remove: deps.removeObject,
-      warn: (...a) => log(`${pid}: thumbnail — ${a.map(String).join(" ")}`),
-      write: (id, blob, d) => writeProductThumb(id, blob, { ...d, encode: deps.encodeThumb }),
+    // The generated photo is now the Shopify primary, so the app photo follows
+    // through THE one write (primaryPhotoCore): photoUrl ← generated;
+    // photoUrlOriginal ← the staff photo it replaces (re-shoots included), an
+    // original already kept is never overwritten by a later generated photo;
+    // the item's old pin is only the last resort. The till thumbnail is
+    // rebuilt by the same helper the AI Studio approve uses — the browser
+    // encodes with a canvas, here the encoder is injected (sharp).
+    const app = await setShopifyPrimaryPhoto(pid, {
+      product, oldPrimary: null, newPrimary: item.generatedUrl,
+      fallbackOriginal: sourcePhoto.currentSourceUrl(pid, product, item),
+    }, {
+      now: deps.now,
+      md5Of: deps.md5Of,
+      rebuildThumb: (id, url) => writeApprovedThumbFromUrl(id, url, {
+        download: deps.download,
+        upload: deps.uploadThumb,
+        remove: deps.removeObject,
+        warn: (...a) => log(`${pid}: thumbnail — ${a.map(String).join(" ")}`),
+        write: (tid, blob, d) => writeProductThumb(tid, blob, { ...d, encode: deps.encodeThumb }),
+      }),
+      writeProduct: (id, patch) => db.ref(`products/${id}`).update(patch),
     });
-    await stampStep("photo", { thumb: !!thumb?.ok, url: item.generatedUrl });
+    // A refused product write is a crash, not a rejection: the run resumes here.
+    if (!app.ok) throw new Error(app.message);
+    await stampStep("photo", { thumb: !!app.thumb, url: item.generatedUrl });
   }
 
   // (b) the name — the proposal Junid saw on the card, and only that one.
