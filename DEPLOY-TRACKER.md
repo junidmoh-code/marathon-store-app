@@ -488,3 +488,21 @@ SDK only.
 records. Before applying the printed `/pos/sales` `.validate` rule (docs/EFT-ENFORCEMENT.md),
 write `/eft_enforcement/stores` explicitly (a rule cannot see the functions' default) and wait
 for the breach list to stay empty for a day. Till half live at marathon-pos-app `78382270` (#523).
+
+## 2026-10-19 — EFT consume flow at the till: confirm speed, forgiving search, a customer only on leftover (PR #TBD)
+
+**What was slow.** Not the server's work (settle 0.1–0.3 s warm, search 18 ms p50) — the
+`eftpoolsettle` Cloud Run instance scaling to zero between the few settles a day: 5 of 6
+confirms in 14 days paid a 2.4–3.7 s cold start first. Fixed by a `warm` action the till
+calls when the payment screen opens, plus one read round for the settle (7 → 4 dependent
+round trips) and the attach (6 → 4/3). `test/eft-pool-latency.test.cjs` counts them.
+
+**What's true now.** `searchEftPool` matches the reference as it is typed (prefix from 3,
+one typo from 4, two from 10; bank id whole or 6+ prefix, never a typo) and still answers
+at most ONE payment — two candidates at the best rank present → `ambiguous` (+`partial`
+when more typing would settle it). A settle with no customer is accepted only for a payment
+consumed WHOLE whose `matchQuery` re-resolves to that very record (`not-matched` /
+`no-customer` otherwise, before any claim). Docs: docs/EFT-ENFORCEMENT.md, 19 Oct section.
+
+**Deploy by name:** `firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle
+--project=marathon-club`, then the till (marathon-pos-app).
