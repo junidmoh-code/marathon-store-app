@@ -489,7 +489,7 @@ records. Before applying the printed `/pos/sales` `.validate` rule (docs/EFT-ENF
 write `/eft_enforcement/stores` explicitly (a rule cannot see the functions' default) and wait
 for the breach list to stay empty for a day. Till half live at marathon-pos-app `78382270` (#523).
 
-## 2026-10-19 — EFT consume flow at the till: confirm speed, forgiving search, a customer only on leftover (PR #TBD)
+## 2026-10-19 — EFT consume flow at the till: confirm speed, forgiving search, a customer only on leftover (PR #757, live at `0acdfb9b`)
 
 **What was slow.** Not the server's work (settle 0.1–0.3 s warm, search 18 ms p50) — the
 `eftpoolsettle` Cloud Run instance scaling to zero between the few settles a day: 5 of 6
@@ -505,5 +505,11 @@ when more typing would settle it). A settle with no customer is accepted only fo
 consumed WHOLE whose `matchQuery` re-resolves to that very record (`not-matched` /
 `no-customer` otherwise, before any claim). Docs: docs/EFT-ENFORCEMENT.md, 19 Oct section.
 
-**Deploy by name:** `firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle
---project=marathon-club`, then the till (marathon-pos-app).
+**Deployed** 19 Oct 2026 13:25Z from a fresh clone of `origin/main` at `0acdfb9b`:
+`firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle --project=marathon-club`
+(the clone needs `functions/node_modules` — a symlink to the live checkout's — for the CLI's
+trigger discovery). Live check as a till account: `warm` answers `{ok:true}` in 0.2–0.3 s warm;
+"0821" → nothing (digit floor); a real reference's 3-letter prefix → one `prefix` result, a
+4-letter typo → one `near` result, typed whole → `reference`. Till half live at marathon-pos-app
+`0c84633c` (#536). Reviews: CodeRabbit (1 docs nit, fixed) + Sonnet architect (M1 retry
+idempotency fixed) + Fable-vs-spec (digit floor added); provenance in a PR comment.
