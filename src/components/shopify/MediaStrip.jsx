@@ -28,11 +28,11 @@
 // A change of PRIMARY also becomes the app photo (Junid, 26 Sep 2026).
 import React, { useEffect, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, tabOff, bGray, bRed } from "../stock/ui";
-import { photoUrlsOf, shopifyVideoProblem, MAX_PUBLISH_MEDIA, resolveMediaList, storagePathOf } from "./publishShared";
+import { shopifyVideoProblem, MAX_PUBLISH_MEDIA, resolveMediaList, storagePathOf } from "./publishShared";
 import { isOn } from "./shopifyPublishCore";
-import { setPublishMedia, appendPublishMedia } from "./shopifyPublishStore";
 import { prepareMediaItem, pickedKind, pickedFileProblem, newMediaId } from "./mediaUpload";
-import { syncAppPhoto } from "./appPhoto";
+import { commitPublishMedia } from "./publishMediaCommit";
+import { browserPrimaryPhotoDeps } from "./appPhoto";
 import AiStudioCard from "./AiStudioCard";
 import { moveItem, makePrimary, removeItem, replaceItem } from "./mediaEdits";
 import { usePermissions } from "../PermissionsContext";
@@ -133,33 +133,29 @@ export default function MediaStrip({ product, node, onChanged }) {
   useEffect(() => { setConfirmRemove(false); }, [sel]);
   useEffect(() => { if (sel !== null && sel >= items.length) setSel(null); }, [sel, items.length]);
 
-  // After any committed write: fold the node back, and if the PRIMARY changed,
-  // the app photo follows.
-  const afterWrite = async (res, oldPrimary) => {
+  // EVERY list write goes through commitPublishMedia, which makes the app
+  // photo follow a changed PRIMARY (primaryPhotoCore). Here: fold the node
+  // back and say what happened to the app photo. → the store's answer.
+  const commit = async (op, node0, list) => {
+    const { res, app } = await commitPublishMedia(product, node0, op, list, browserPrimaryPhotoDeps);
+    if (!res?.ok) return res;
     nodeRef.current = res.node;
     onChanged(product.id, res.node);
-    const newPrimary = photoUrlsOf(resolveMediaList(res.node, product).items)[0] || null;
-    if (newPrimary && newPrimary !== oldPrimary) {
-      // One retry: the list is already saved, and the app photo must follow it.
-      let app = await syncAppPhoto(product.id, product, oldPrimary, newPrimary);
-      if (!app.ok) app = await syncAppPhoto(product.id, product, oldPrimary, newPrimary);
-      if (!app.ok) setErr(app.message);
-      else if (app.changed) setNote("The new primary photo is now the product's photo in the app too.");
-    }
+    if (app && !app.ok) setErr(app.message);
+    else if (app?.changed) setNote("The new primary photo is now the product's photo in the app too.");
+    return res;
   };
 
   // → true iff the list committed.
   const write = async (next, after) => {
     if (!next) return false;
     setBusy(true); setErr(null); setNote(null);
-    const oldPrimary = photoUrlsOf(items)[0] || null;
     try {
       // The basis is the SAME snapshot `items` came from (the rendered node):
       // a write computed from a list that has since grown must be refused,
       // never silently drop what was added in between.
-      const res = await setPublishMedia(product.id, node, next);
+      const res = await commit("set", node, next);
       if (!res?.ok) { setErr(res?.message || "Not saved."); return false; }
-      await afterWrite(res, oldPrimary);
       after?.();
       return true;
     } catch (e) {
@@ -191,10 +187,8 @@ export default function MediaStrip({ product, node, onChanged }) {
             registerCancel: (fn) => patchRow(row.key, { cancel: fn }),
           });
           patchRow(row.key, { phase: "saving", cancel: null });
-          const oldPrimary = photoUrlsOf(current)[0] || null;
-          const res = await appendPublishMedia(product.id, nodeRef.current, [item], product);
+          const res = await commit("append", nodeRef.current, [item]);
           if (!res?.ok) throw new Error(res?.message || "Not saved.");
-          await afterWrite(res, oldPrimary);
           patchRow(row.key, { phase: "done" });
         } catch (e) {
           const canceled = /canceled|cancelled/i.test(String(e?.code || e?.message || ""));
@@ -361,16 +355,14 @@ export default function MediaStrip({ product, node, onChanged }) {
                   source: "ai", derivedFrom: sourceUrl, addedBy: auth.currentUser?.uid || undefined,
                 }))}
                 onAdd={async (url, meta = {}) => {
-                  const oldPrimary = photoUrlsOf(items)[0] || null;
                   setBusy(true); setErr(null);
                   try {
-                    const res = await appendPublishMedia(product.id, nodeRef.current, [{
+                    const res = await commit("append", nodeRef.current, [{
                       id: newMediaId(), type: "photo", url, path: storagePathOf(url) || undefined,
                       sha256: meta.sha256, source: "ai", derivedFrom: selected.url,
                       ...(auth.currentUser?.uid ? { addedBy: auth.currentUser.uid } : {}),
-                    }], product);
+                    }]);
                     if (!res?.ok) { setErr(res?.message || "Not saved."); return false; }
-                    await afterWrite(res, oldPrimary);
                     setSel(resolveMediaList(res.node, product).items.length - 1);
                     return true;
                   } finally { setBusy(false); }

@@ -143,10 +143,14 @@ vi.mock("./mediaUpload", () => ({
   prepareMediaItem: () => Promise.reject(new Error("not in render tests")),
   pickedKind: () => "photo", pickedFileProblem: () => null, newMediaId: () => "mnew",
 }));
+// The REAL commit path (publishMediaCommit → primaryPhotoCore) runs on top of
+// the mocked store; only the browser's Storage/RTDB legs are recorded.
 vi.mock("./appPhoto", () => ({
-  syncAppPhoto: (pid, product, oldPrimary, newPrimary) => {
-    calls.appPhoto.push({ pid, oldPrimary, newPrimary });
-    return Promise.resolve({ ok: true, changed: true });
+  browserPrimaryPhotoDeps: {
+    now: () => 1_790_000_000_000,
+    md5Of: async () => null,
+    rebuildThumb: async () => ({ ok: true }),
+    writeProduct: async (pid, patch) => { calls.appPhoto.push({ pid, patch }); },
   },
 }));
 // photoTools reaches firebase storage — mock it out entirely (uploads are
@@ -798,8 +802,9 @@ test("page media strip: always visible, reorder writes the full ordered list, th
     "https://firebasestorage.googleapis.com/a.jpg",
   ]);
   // The new primary becomes the app photo (26 Sep).
-  expect(calls.appPhoto).toEqual([{ pid: "p1", oldPrimary: "https://firebasestorage.googleapis.com/a.jpg",
-                                    newPrimary: "https://firebasestorage.googleapis.com/b.jpg" }]);
+  expect(calls.appPhoto).toEqual([{ pid: "p1", patch: { photoUrl: "https://firebasestorage.googleapis.com/b.jpg",
+                                    photoUrlOriginal: "https://x/p1.jpg",
+                                    photoSource: { from: "shopify_publish", at: 1_790_000_000_000 } } }]);
   // Remove asks first, inline — no modal — then writes.
   await act(() => { button(tree, "Remove…").props.onClick(); });
   await flush();
