@@ -220,8 +220,11 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   // row's line goes to its own garment AND the dots run top to bottom in row
   // order (owner go-live brief, 19 Oct): a sling bag worn at the chest is
   // listed above the trousers. Head to toe breaks a tie.
-  const bodyOrder = rows.map((r, i) => ({ r, i })).sort((a, b) =>
-    (anchors[a.r.slot] ? anchors[a.r.slot].y : 2) - (anchors[b.r.slot] ? anchors[b.r.slot].y : 2) || a.i - b.i).map((x) => x.r);
+  // The SAME key planLeaders sorts the dots by (y, then x), so a tie on one
+  // grid row (a sling bag beside the tee) cannot swap two rows' dots (Fable
+  // re-review of #756).
+  const bodyOrder = rows.map((r, i) => ({ r, i, a: anchors[r.slot] })).sort((a, b) =>
+    a.a.y - b.a.y || a.a.x - b.a.x || a.i - b.i).map((x) => x.r);
   rows.splice(0, rows.length, ...bodyOrder);
   try {
     const poster = await renderLookbookPoster({ hero: hero.buffer, rows, anchors, subject: located.head, body });

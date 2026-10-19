@@ -252,6 +252,8 @@ function posterBrand(product) {
   if (!brand || (GARMENT_WORDS.has(brand.toLowerCase()) && brand.toLowerCase() !== "polo")) return null;
   const catWords = new Set(words([p.categoryKey, p.category, p.subcategory, p.productType].filter(Boolean).join(" ").replace(/-/g, " ")));
   if (words(brand.replace(/-/g, " ")).every((t) => catWords.has(t))) return null;
+  // Placeholders the till uses across categories.
+  if (["golf", "unbranded", "generic", "other", "no brand", "none"].includes(brand.toLowerCase())) return null;
   const name = stripStyleCodes(p.name);
   for (const [proper, re] of POSTER_BRANDS) {
     if (re.test(brand)) return proper.toUpperCase();
@@ -293,7 +295,8 @@ function panelName(websiteName, product, brandLine = "") {
   //     suede xl black end white").
   const inv = words(stripBareCodes(stripStyleCodes(product && product.name)));
   if (/#/.test(raw) || stripBareCodes(raw) !== raw) return { name: null, why: `website name "${raw}" is the inventory string (stock code)` };
-  if (inv.length && w.join(" ") === inv.join(" ")) return { name: null, why: `website name "${name}" is the inventory string` };
+  const invNoBrand = inv.slice(words(String((product && product.brand) || "")).filter((t, i) => inv[i] === t).length);
+  if (inv.length && (w.join(" ") === inv.join(" ") || w.join(" ") === invNoBrand.join(" "))) return { name: null, why: `website name "${name}" is the inventory string` };
   const tail = w.slice(1).join(" ");
   if (inv.length && GARMENT_WORDS.has(w[0]) && w.length > 1 && (" " + inv.join(" ")).endsWith(" " + tail)) {
     return { name: null, why: `website name "${name}" is the inventory string with a garment word for the brand` };

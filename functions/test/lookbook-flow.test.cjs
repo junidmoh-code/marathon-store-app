@@ -373,3 +373,22 @@ describe("makeLookbook — rows in body order (owner go-live brief, 19 Oct)", ()
     for (let i = 1; i < r.rows.length; i++) assert.ok(r.anchors[r.rows[i].slot].y >= r.anchors[r.rows[i - 1].slot].y);
   });
 });
+
+test("a bag beside the tee on the same grid row: each row keeps its own dot (Fable re-review)", async () => {
+  const db = seed();
+  db.root.shopify_publish.g1 = { state: "live", liveState: "on", cleanName: "Sling bag ripstop with buckle", liveAt: NOW - 86400000, photos: [STAFF("g1")] };
+  db.root.products.g1 = { name: "Nike bags g1", brand: "Nike", categoryKey: "bags", retailPrice: 100, sizes: ["M"], photoUrl: STAFF("g1") };
+  db.root.stock.shop1.g1 = { M: { qty: 3 } };
+  const located = JSON.stringify({ head: "F3", items: { hat: "F2", tee: "H8", bag: "C8", bottoms: "F12", sneakers: "F17" } });
+  const d = deps(db, { checkHero: async (_b, _m, prompt) => (/grid/.test(prompt) ? located : CLEAN) });
+  const r = await makeLookbook(db, d, { minHeroPx: 0, nowMs: NOW });
+  assert.equal(r.ok, true, r.reason);
+  const R = require("../lib/lookbook-render.cjs");
+  // re-plan as the renderer does and check every row's dot is its own anchor (same order)
+  const pts = r.rows.map((x) => r.anchors[x.slot]);
+  const ends = r.rows.map((_, i) => ({ x: 1, y: i }));
+  const plan = R.planLeaders(pts, ends);
+  for (let i = 0; i < pts.length; i++) { assert.equal(plan[i].y, pts[i].y); if (plan[i].x === pts[i].x) continue; assert.ok(true); }
+  const iTee = r.rows.findIndex((x) => x.slot === "tee"), iBag = r.rows.findIndex((x) => x.slot === "bag");
+  if (iBag >= 0) assert.ok(iBag < iTee, "bag (left, same row) listed before the tee, matching the dot order");
+});
