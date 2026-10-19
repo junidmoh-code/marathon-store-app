@@ -100,9 +100,15 @@ const WALL_CSS = `
   /* THE POPUP OVER THE WALL keeps its normal size (820px wide, centred) and
      never grows past 85vh — the alternatives strip inside it scrolls
      sideways, the popup does not grow for it (round 3, item 10). */
-  .ad-root--wall .ad-sv{max-height:85vh}
+  .ad-root--wall .ad-sv{max-height:85vh;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}
+  /* minmax(0,…) and min-width:0 keep the strip's 18 tiles from sizing the
+     column: the row scrolls inside the body instead of widening it. */
+  .ad-root--wall .ad-svbody,.ad-root--wall .ad-svbody>div{min-width:0}
+  @media(max-width:680px){.ad-root--wall .ad-sv{grid-template-columns:minmax(0,1fr)}}
   /* Deactivate / merge (admin only) — moved off the tile into the header. */
   .ad-svacts{position:absolute;top:14px;right:54px;z-index:2}
+  /* The name block (and the back link) clear the ⋯ and ✕ in the corner. */
+  .ad-root--wall .ad-svbody>div:first-child{padding-right:72px}
   /* "← back to <the shoe you came from>" after an alternative swapped in. */
   .ad-svback{display:inline-flex;align-items:center;gap:4px;max-width:100%;margin:0 0 10px;padding:0;border:0;background:transparent;color:#b9beff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ad-svback:focus-visible{outline:2px solid #b9beff;outline-offset:2px;border-radius:4px}

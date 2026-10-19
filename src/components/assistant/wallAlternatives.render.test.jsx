@@ -107,8 +107,11 @@ describe("the popup hosts it (App.jsx)", () => {
     expect(APP).not.toContain("altMode");
     expect(WALL).not.toContain("ad-sv--alt");
     expect(APP).toContain('<div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name}>');
-    expect(WALL).toContain(".ad-root--wall .ad-sv{max-height:85vh}");
     expect(APP).toMatch(/\.ad-sv\{width:min\(820px,100%\);/);
+    // Measured in Chrome before this rule: the 18 tiles sized the text column
+    // to 2116px and squeezed the photo. minmax(0,…) keeps the row scrolling.
+    expect(WALL).toContain(".ad-root--wall .ad-sv{max-height:85vh;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}");
+    expect(WALL).toContain(".ad-root--wall .ad-svbody,.ad-root--wall .ad-svbody>div{min-width:0}");
   });
   it("a pick swaps the popup in place and remembers the shoe for the back link", () => {
     expect(APP).toContain('onPicked={(row) => { onAlternativePicked?.("wall", qv, qvNa.size, row); pickWallAlternative(row, qvNa.size); }}');
