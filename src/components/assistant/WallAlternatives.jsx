@@ -23,6 +23,7 @@ export const ALT_PANEL_MAX = 18;
 
 const STRIP_CSS = `
   .alt-strip{margin-top:12px;min-width:0}
+  .alt-strip[hidden]{display:none}
   .alt-line{min-height:15px;font-size:12px;font-weight:600;color:#8b8b95;padding:0 0 8px}
   /* One row, sideways only: snap per tile, no visible scrollbar (touch and
      trackpad still scroll it), never a vertical overflow. */
@@ -56,7 +57,7 @@ export function quietBlockLine(size, w, stillOut = true) {
   return `Your order already has every size ${sz} ${hub} can give — these have it:`;
 }
 
-export default function WallAlternatives({ rows, requestedSize, line, onShown, onPicked }) {
+export default function WallAlternatives({ rows, requestedSize, line, onShown, onPicked, hidden = false }) {
   const answered = Array.isArray(rows);
 
   // Telemetry, log only — once per size shown, after availability answered.
@@ -74,7 +75,7 @@ export default function WallAlternatives({ rows, requestedSize, line, onShown, o
   const shown = answered ? rows.slice(0, ALT_PANEL_MAX) : [];
 
   return (
-    <div className="alt-strip" data-testid="alt-strip">
+    <div className="alt-strip" data-testid="alt-strip" hidden={hidden}>
       <style>{STRIP_CSS}</style>
       {/* Always mounted, so a screen reader announces the text when it
           arrives; empty until the rows have answered, because "these have

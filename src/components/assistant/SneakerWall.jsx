@@ -126,8 +126,12 @@ export function tilePhotoSrc(p) {
 // fails too) `fallback`. Lazy and async-decoded, so the wall's sixty
 // originals load as they scroll in, not all at once.
 export function HiResPhoto({ p, fallback = null, onLoad, alt = "", ...rest }) {
-  const [stage, setStage] = useState("full");
   const src = tilePhotoSrc(p);
+  // The fallback stage belongs to ONE url: a new photo starts at the original
+  // again, whether or not the caller keys this component.
+  const [st, setSt] = useState({ src, stage: "full" });
+  const stage = st.src === src ? st.stage : "full";
+  const setStage = (s) => setSt({ src, stage: s });
   if (!src || stage === "none") return fallback;
   if (stage === "thumb") {
     return <MirroredImg productId={p.id} src={src} alt={alt} draggable={false} loading="lazy" decoding="async"

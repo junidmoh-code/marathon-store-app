@@ -126,9 +126,8 @@ import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
 import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
-import SneakerWall from "./components/assistant/SneakerWall.jsx";
+import SneakerWall, { HiResPhoto } from "./components/assistant/SneakerWall.jsx";
 import WallAlternatives, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/WallAlternatives.jsx";
-import { HiResPhoto } from "./components/assistant/SneakerWall.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
 import { answerStyleCodeSibling, recordLabelCodes } from "./components/stock/hubCleanupStore";
@@ -8814,6 +8813,10 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
     pickQvAlternative(row, size);
     setQvFrom(from);
   };
+  // On the wall the popup is the only way in, so it takes focus when it opens
+  // or swaps (the wall hands it back to the tile on close).
+  const qvCloseRef = useRef(null);
+  useEffect(() => { if (wall && qv) qvCloseRef.current?.focus?.(); }, [wall, qv]);
   const backToQvFrom = () => {
     const f = qvFrom;
     if (!f) return;
@@ -9186,7 +9189,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
       {qv && (
         <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setQv(null); }}>
           <div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name}>
-            <button className="ad-svclose" onClick={() => setQv(null)} aria-label="Close">✕</button>
+            <button className="ad-svclose" ref={qvCloseRef} onClick={() => setQv(null)} aria-label="Close">✕</button>
             {/* Deactivate / reactivate / merge (owner spec 2026-08-31): off the
                 wall's tiles since round 3, into the popup header. Renders
                 nothing for a non-admin. */}
@@ -9334,11 +9337,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         ✕ tap as the classic note (qvNa.snk); Display Partner
                         lifts every ✕, so it lifts the strip too. A tile swaps
                         this popup to that shoe in place. */}
-                    {wall && qvNa?.snk && !qvDP && !clothingOrder && !deadForOrder(qv) && (() => {
+                    {wall && qvNa?.snk && !clothingOrder && !deadForOrder(qv) && (() => {
                       const alt = alternativesFor?.(qv, qvNa.size) ?? null;
                       const stillOut = !!sneakerOut?.(qv, qvNa.size);
                       return (
-                        <WallAlternatives key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null} requestedSize={qvNa.size}
+                        // Hidden, not unmounted, under Display Partner: a remount
+                        // would log "shown" again on every toggle.
+                        <WallAlternatives key={`${qv.id}|${qvNa.size}`} hidden={qvDP} rows={alt ? alt.rows : null} requestedSize={qvNa.size}
                           line={quietBlockLine(qvNa.size, sneakerOutWhy?.(qv, qvNa.size), stillOut)}
                           // Its own surface: it shows up to 18, the strip 8, and
                           // /alternatives_log must be able to tell them apart.

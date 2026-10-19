@@ -78,6 +78,18 @@ describe("the strip", () => {
   });
 });
 
+describe("hidden under Display Partner", () => {
+  it("stays mounted and does not log shown again when it reappears", () => {
+    const onShown = vi.fn();
+    let tr;
+    act(() => { tr = TestRenderer.create(<WallAlternatives requestedSize="7" rows={rows(3)} onShown={onShown} />); });
+    act(() => { tr.update(<WallAlternatives requestedSize="7" rows={rows(3)} onShown={onShown} hidden />); });
+    expect(tr.root.find(n => n.props["data-testid"] === "alt-strip").props.hidden).toBe(true);
+    act(() => { tr.update(<WallAlternatives requestedSize="7" rows={rows(3)} onShown={onShown} />); });
+    expect(onShown).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("a tile tap", () => {
   it("hands that row to the host and nothing else", () => {
     const onPicked = vi.fn();
@@ -100,7 +112,9 @@ describe("the popup hosts it (App.jsx)", () => {
     expect(strip).toBeGreaterThan(pills);
     expect(dp).toBeGreaterThan(strip);
     // Raised by the ✕ tap's note state, lifted by Display Partner.
-    expect(APP).toContain("{wall && qvNa?.snk && !qvDP && !clothingOrder && !deadForOrder(qv) && (() => {");
+    expect(APP).toContain("{wall && qvNa?.snk && !clothingOrder && !deadForOrder(qv) && (() => {");
+    // Display Partner hides it without a remount (a remount re-logs "shown").
+    expect(APP).toContain("<WallAlternatives key={`${qv.id}|${qvNa.size}`} hidden={qvDP}");
   });
   it("the popup keeps one size: no wide alternatives mode, max-height 85vh", () => {
     expect(APP).not.toContain("ad-sv--alt");

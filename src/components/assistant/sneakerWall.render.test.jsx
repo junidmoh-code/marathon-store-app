@@ -144,6 +144,16 @@ describe("full-resolution tile photos (item 2)", () => {
     expect(tr.root.findAll(n => n.type === "img")).toHaveLength(0);
     expect(textIn(tr.root.find(n => n.props.className === "sw-noimg"))).toBe(KOBE.name);
   });
+  it("a new photo on the same instance starts at the original again", () => {
+    let tr;
+    act(() => { tr = TestRenderer.create(<TilePhoto p={KOBE} />); });
+    act(() => { tr.root.find(n => n.type === "img").props.onError(); });
+    expect(tr.root.find(n => n.type === "img").props["data-mirrored"]).toBe("pKobe");
+    act(() => { tr.update(<TilePhoto p={{ ...KOBE, photoUrl: "https://x/new.jpg" }} />); });
+    const img = tr.root.find(n => n.type === "img");
+    expect(img.props.src).toBe("https://x/new.jpg");
+    expect(img.props["data-mirrored"]).toBeUndefined();
+  });
   it("the popup's photo is full-resolution too", () => {
     expect(APP).toContain("? <HiResPhoto key={`${qv.id}|${qv.photoUrl || \"\"}`} p={qv} alt={qv.name}");
   });
