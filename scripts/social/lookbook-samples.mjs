@@ -110,7 +110,10 @@ await mkdir(OUT, { recursive: true });
 const logPath = join(OUT, "samples.json");
 const log = existsSync(logPath) ? JSON.parse(await readFile(logPath, "utf8")) : {};
 const used = new Set();
-for (const s of Object.values(log)) for (const r of s.rows || []) used.add(r.pid);
+// --exclude-from NN: only samples NN and later keep their products out (a new
+// round of samples need not avoid every product of every earlier round).
+const FROM = arg("exclude-from", null);
+for (const [k, s] of Object.entries(log)) if (!FROM || k >= String(FROM).padStart(2, "0")) for (const r of s.rows || []) used.add(r.pid);
 const real = JSON.parse(await readFile(join(ROOT, "docs/lookbook-real.json"), "utf8"));
 for (const r of (real.generation || real).rows || []) used.add(r.pid);
 
