@@ -44,6 +44,11 @@ const ADMIN_WRITE = new RegExp(`ref\\(\\s*${PATH}\\s*\\)\\s*\\.(set|update|trans
 const CLIENT_WRITE = new RegExp(`\\b(set|update|runTransaction|push|remove)\\(\\s*ref\\(\\s*\\w+\\s*,\\s*${PATH}`);
 // … and a multi-path update keyed by the path: update({ [`shopify_publish/${pid}/media`]: … }).
 const MULTI_PATH_WRITE = new RegExp(`\\[\\s*${PATH}\\s*\\]\\s*:|${Q}shopify_publish\\/${NQ}*\\/(photos|media)(\\/${NQ}*)?${Q}\\s*:`);
+// … and a write to the NODE whose payload names photos/media:
+// db.ref(`shopify_publish/${pid}`).update({ photos: […] }) / update(ref(db, `shopify_publish/${pid}`), { media }).
+const NODE = `${Q}shopify_publish\\/${NQ}*${Q}`;
+const PAYLOAD = `\\{[^}]*\\b(photos|media)\\b\\s*[:,}]`;
+const NODE_WRITE = new RegExp(`ref\\(\\s*${NODE}\\s*\\)\\s*\\.(set|update)\\(\\s*${PAYLOAD}|\\b(set|update)\\(\\s*ref\\(\\s*\\w+\\s*,\\s*${NODE}\\s*\\)\\s*,\\s*${PAYLOAD}`);
 const offenders = (re, allowed) => FILES.filter((f) => !allowed.includes(f.rel) && re.test(code(f.src))).map((f) => f.rel);
 
 describe("the Shopify primary photo has ONE write path", () => {
@@ -57,6 +62,7 @@ describe("the Shopify primary photo has ONE write path", () => {
     expect(offenders(ADMIN_WRITE, [])).toEqual([]);
     expect(offenders(CLIENT_WRITE, [])).toEqual([]);
     expect(offenders(MULTI_PATH_WRITE, [])).toEqual([]);
+    expect(offenders(NODE_WRITE, [])).toEqual([]);
     expect(offenders(/\.child\(\s*["'`](photos|media)["'`]\s*\)\s*\.(set|update|transaction|push|remove)\b/, [])).toEqual([]);
   });
   it("every allowed writer calls setShopifyPrimaryPhoto", () => {
@@ -75,6 +81,9 @@ describe("the Shopify primary photo has ONE write path", () => {
     expect(ADMIN_WRITE.test("db.ref(`shopify_publish/${pid}/photos/0`).update(x)")).toBe(true);
     expect(CLIENT_WRITE.test("await set(ref(database, `shopify_publish/${pid}/photos`), x)")).toBe(true);
     expect(ADMIN_WRITE.test("db.ref(`shopify_publish/${pid}/media`).once(\"value\")")).toBe(false);
+    expect(NODE_WRITE.test("db.ref(`shopify_publish/${pid}`).update({ photos: [u], at })")).toBe(true);
+    expect(NODE_WRITE.test("await update(ref(database, `shopify_publish/${pid}`), { state, media })")).toBe(true);
+    expect(NODE_WRITE.test("db.ref(`shopify_publish/${pid}`).update({ cleanName: n })")).toBe(false);
     expect(MULTI_PATH_WRITE.test("update(ref(db), { [`shopify_publish/${pid}/media`]: list })")).toBe(true);
     expect(MULTI_PATH_WRITE.test("db.ref().update({ \"shopify_publish/p1/photos\": [] })")).toBe(true);
     expect(ADMIN_WRITE.test("db.ref(`shopify_publish/${pid}/mediaShopify/${id}`).set(x)")).toBe(false);
