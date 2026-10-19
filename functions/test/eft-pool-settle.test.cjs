@@ -125,6 +125,7 @@ test("settle refuses a missing record, a refusal record, and bad amounts", () =>
   assert.equal(runSettle(makeNode(null), tillA).code, "not-found");
   assert.equal(runSettle(makeNode(recorded({ outcome: "refused-auth" })), tillA).code, "not-a-payment");
   assert.equal(runSettle(makeNode(recorded({ outcome: "refused-account" })), tillA).code, "not-a-payment");
+  assert.equal(runSettle(makeNode(recorded({ outcome: "refused-stale-date" })), tillA).code, "not-a-payment");
   // Applied amount must be a positive integer within the payment.
   assert.equal(runSettle(makeNode(recorded()), { ...tillA, appliedCents: 0 }).code, "bad-amount");
   assert.equal(runSettle(makeNode(recorded()), { ...tillA, appliedCents: 55001 }).code, "bad-amount");

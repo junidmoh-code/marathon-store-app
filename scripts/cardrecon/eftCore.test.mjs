@@ -542,7 +542,7 @@ describe("the pool record", () => {
   it("a verified, parsed, ACCOUNT-CHECKED payment: outcome recorded, status unmatched, every field aboard", () => {
     const r = eftPoolRecord({
       message, verdict: passVerdict, parsed: parsedOk,
-      account: { ok: true, tail: "4321" }, timing: { ok: true }, reader: "standardbank",
+      account: { ok: true, tail: "4321" }, timing: { ok: true }, dated: { ok: true }, reader: "standardbank",
       rawText: "Amount: R 1,234.56\nfrom account 62834519234", at: 99,
     });
     expect(r).toMatchObject({
@@ -573,6 +573,13 @@ describe("the pool record", () => {
     const r = eftPoolRecord({ message, verdict: passVerdict, parsed: parsedOk, account: null, reader: "standardbank", rawText: "x", at: 99 });
     expect(r.outcome).toBe("refused-account");
     expect(r.reason).toMatch(/never checked/);
+  });
+
+  it("a parsed payment with NO payment-date verdict cannot be stored as recorded (fix 8)", () => {
+    const r = eftPoolRecord({ message, verdict: passVerdict, parsed: parsedOk, account: { ok: true, tail: "4321" }, timing: { ok: true }, reader: "standardbank", rawText: "x", at: 99 });
+    expect(r.outcome).toBe("refused-stale-date");
+    expect(r.reason).toMatch(/never checked/);
+    expect(r.status).toBeUndefined();
   });
 
   it("the subject gets the same account-number sweep as the body", () => {

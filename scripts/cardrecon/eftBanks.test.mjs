@@ -383,7 +383,7 @@ describe("the Capitec reader — built from the real notification", () => {
   it("a date it cannot read costs the date and nothing else", () => {
     const lines = REAL_CAPITEC_PDF_LINES.map((l) => (l.startsWith("Payment date ") ? "Payment date sometime tuesday" : l));
     const parsed = cap.parse(lines);
-    expect(parsed.ok, "the payment still lands — receivedAt carries it").toBe(true);
+    expect(parsed.ok, "the parse still succeeds — the date gate (fix 8) refuses it downstream, never on receivedAt").toBe(true);
     expect(parsed.bankTs).toBe(null);
     expect(parsed.amountCents).toBe(75000);
   });

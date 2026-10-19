@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  eftPoolRecord, destinationVerdict, immediacyVerdict, applyFingerprintHold, unknownBankRecord,
+  eftPoolRecord, destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, applyFingerprintHold, unknownBankRecord,
 } from "./eftCore.mjs";
 import { noReaderReason } from "./eftBanks.mjs";
 import { OWNER } from "./intakeRules.mjs";
@@ -30,11 +30,17 @@ const parsed = (over = {}) => ({
   accountMask: "XXXXXXX5678", destBankName: "FNB", beneficiaryName: "MARATHON", ...over,
 });
 
+// The fixture is a payment of 17 Oct 2026 — before the default cutoff (fix 8,
+// 2026-10-20) — so the chain runs with the cutoff Junid would have had then;
+// the stale case below runs it against the default.
+const CUTOFF_THEN = parsePaymentDateCutoff("2026-10-01");
+
 /** The confirmer's own decision chain for one parsed FNB payment. */
-function decide({ auth = passAuth, p = parsed(), accounts = [SHOP_ACCOUNT], holder = "pool-1", reader = "fnb" } = {}) {
+function decide({ auth = passAuth, p = parsed(), accounts = [SHOP_ACCOUNT], holder = "pool-1", reader = "fnb", cutoff = CUTOFF_THEN } = {}) {
   const account = p.ok ? destinationVerdict({ accountMask: p.accountMask, destBankName: p.destBankName, allowedAccounts: accounts, configured: accounts.length > 0 }) : null;
   const timing = p.ok ? immediacyVerdict({ parsed: p, reader, receivedAt: message.receivedAt }) : null;
-  const record = eftPoolRecord({ message, verdict: auth, parsed: p, account, timing, reader, rawText: "Amount R1,250.50 from 62834519234", at: 1792242005000 });
+  const dated = p.ok ? paymentDateVerdict({ parsed: p, cutoff }) : null;
+  const record = eftPoolRecord({ message, verdict: auth, parsed: p, account, timing, dated, reader, rawText: "Amount R1,250.50 from 62834519234", at: 1792242005000 });
   return applyFingerprintHold(record, { fingerprint: record.bankRef ? `${reader}~${record.bankRef}` : null, holder, poolKey: "pool-1" });
 }
 
@@ -53,6 +59,7 @@ describe("APPROVED — a payment that passed every check", () => {
     const first = mail.text.split("\n")[0];
     expect(first.startsWith("APPROVED — ")).toBe(true);
     expect(first).toMatch(/all checks passed/i);
+    expect(first).toMatch(/dated by the bank on or after the cutoff/);
   });
 
   it("carries the details, masked — never a full account or transaction number", () => {
@@ -85,6 +92,11 @@ describe("REJECTED — every reason the confirmer can refuse names its check", (
       name: "not an immediate / real-time payment (future-dated)",
       record: decide({ p: parsed({ bankTs: message.receivedAt + 24 * 3600 * 1000 }) }),
       outcome: "refused-not-immediate", check: "Not an immediate (real-time) payment", says: /future-dated/,
+    },
+    {
+      name: "payment dated before the cutoff (a 17 Oct payment against the default 2026-10-20 cutoff)",
+      record: decide({ cutoff: parsePaymentDateCutoff(undefined) }),
+      outcome: "refused-stale-date", check: "Payment dated before the cutoff", says: /the bank dates this payment 2026-10-17, and only payments dated 2026-10-20 or later/,
     },
     {
       name: "signature / DKIM failed",

@@ -116,7 +116,10 @@ const standardBank = {
     const payer = labelledLine(lines, /payment has been made into your account from\s+(.+?):?\s*$/i, "payer sentence");
 
     // "Payment date and time 2026-08-30 23h48" — parseBankTimestamp knows the
-    // 23h48 shape. Optional; receivedAt carries the record if absent.
+    // 23h48 shape. The parse still succeeds without it, but since fix 8 the
+    // date GATES the money: a null bankTs refuses downstream as
+    // refused-stale-date (eftCore.paymentDateVerdict), never carried by
+    // receivedAt.
     const when = labelledLine(lines, /^Payment date and time\s+(.+)$/i, "Payment date and time");
     const bankTs = when.ok && when.value ? parseBankTimestamp(when.value) : null;
 
@@ -220,8 +223,9 @@ const fnb = {
     const payer = fnbLabelValue(lines, /^Payment From\s+(.+)$/i, "payer line");
 
     // "Date Actioned : 2026/08/31" inline; the time is the value-above-label
-    // of "Time Actioned :". Optional — receivedAt carries the record if the
-    // pair does not read.
+    // of "Time Actioned :". The parse still succeeds if the pair does not
+    // read, but since fix 8 the date GATES the money: a null bankTs refuses
+    // downstream as refused-stale-date, never carried by receivedAt.
     const date = fnbLabelValue(lines, /^Date Actioned\s*:\s*(.*)$/i, "Date Actioned");
     const time = fnbLabelValue(lines, /^Time Actioned\s*:\s*(.*)$/i, "Time Actioned");
     const timeOk = time.ok && time.value && /^\d{2}:\d{2}(?::\d{2})?$/.test(time.value);
@@ -282,10 +286,14 @@ const fnb = {
 // is converted here into the ISO shape parseBankTimestamp already accepts
 // rather than teaching the shared parser a shape whose meaning depends on
 // which bank printed it — the ambiguous half of the year (04/05) would then be
-// read day-first for every bank, including any that prints month-first. A
-// misread here costs a DISPLAYED date and nothing else: bankTs is carried on
-// the record for a person to read, no money and no matching depends on it, and
-// a payment whose date will not parse still lands (receivedAt carries it).
+// read day-first for every bank, including any that prints month-first.
+// SINCE FIX 8 THE DATE GATES THE MONEY (eftCore.paymentDateVerdict refuses a
+// payment the bank dates before the cutoff), so day-first is a load-bearing
+// assumption here, pinned by eftBanks.test.mjs on this document's own
+// "31/08/2026" header: a month-first Capitec layout would have to be a new
+// reader built from a real sample, never a guess. A date that will not parse
+// leaves bankTs null and the payment refuses downstream as refused-stale-date;
+// receivedAt never stands in for it.
 const CAPITEC_DAY_FIRST = /^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}:\d{2}(?::\d{2})?))?$/;
 function capitecTimestamp(value) {
   const m = CAPITEC_DAY_FIRST.exec(String(value ?? "").trim());
@@ -483,7 +491,9 @@ const absa = {
     const payer = take(/^Payment made by:\s*(.*)$/i, "Payment made by");
 
     // "Payment date:" then "2026-09-01" — a shape parseBankTimestamp already
-    // knows. Optional: receivedAt carries the record if it will not read.
+    // knows. The parse still succeeds if it will not read, but since fix 8
+    // the date GATES the money: a null bankTs refuses downstream as
+    // refused-stale-date, never carried by receivedAt.
     const when = take(/^Payment date:\s*(.*)$/i, "Payment date");
     const bankTs = when.ok && when.value ? parseBankTimestamp(when.value) : null;
 

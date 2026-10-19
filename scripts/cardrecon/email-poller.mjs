@@ -75,7 +75,7 @@ import {
   eftMessageKey, createOnlyStep, eftPoolRecord,
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   redactAccountDigits, domainOfAddress, parseAllowedAccountTails, parseAllowedAccounts,
-  destinationVerdict, immediacyVerdict,
+  destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
 import { selectReader, noReaderReason } from "./eftBanks.mjs";
@@ -242,6 +242,17 @@ function config() {
     eftAccountsConfigured: !!String(env.EFT_ALLOWED_ACCOUNTS ?? "").trim(),
     // Junid's verdict emails: "all" (default) or "rejected" — verdictMailCore.
     verdictMode: parseVerdictMode(env.EFT_VERDICT_EMAILS),
+    // FIX 8: the payment-date cutoff (EFT_PAYMENT_DATE_CUTOFF, YYYY-MM-DD SAST,
+    // default in eftCore.mjs). A payment the BANK dates before this day is
+    // refused — stale money the pool never saw is not new money. A value that
+    // is not a date is carried here as {ok:false}: the EFT reader then throws
+    // on every bank notification BEFORE claiming it (handleEftMessage), so
+    // they wait unread and are retried once the line is fixed — never a
+    // silent fallback to a cutoff Junid did not set, and never a stopped
+    // tick either: the card-slip path and the heartbeat keep running.
+    // (Sonnet architect review, #765.)
+    eftPaymentDateCutoff: parsePaymentDateCutoff(env.EFT_PAYMENT_DATE_CUTOFF),
+    eftPaymentDateCutoffSource: sourceOf(EFT_CUTOFF_ENV_VAR),
     dryRun: process.argv.includes("--dry-run"),
   };
 }
@@ -580,6 +591,13 @@ async function run() {
     verdictMode = cfg.verdictMode.mode;
     if (cfg.verdictMode.warning) console.warn(`⚠ ${cfg.verdictMode.warning}`);
   }
+  // FIX 8 — said on every tick, so the log always shows which cutoff decided:
+  // a date, never a secret. A bad value is said every tick too, until fixed.
+  if (cfg.eftPaymentDateCutoff.ok) {
+    console.log(`· EFT payment-date cutoff: ${cfg.eftPaymentDateCutoff.date} (${EFT_CUTOFF_ENV_VAR}) — a payment the bank dates earlier refuses`);
+  } else {
+    console.warn(`⚠ ${cfg.eftPaymentDateCutoff.reason} It is set in ${cfg.eftPaymentDateCutoffSource}; fix it or remove it to use the default (${DEFAULT_EFT_PAYMENT_DATE_CUTOFF}). Until then every bank notification waits UNREAD — nothing is confirmed, nothing is refused; slips are unaffected.`);
+  }
 
   // ── RE-RUN WHAT AN OLDER PARSER REFUSED — before the scan, so the scan
   // finds the released messages in this same tick. Never the tick's failure.
@@ -618,7 +636,7 @@ async function run() {
   // The EFT reader's own tallies — separable on purpose: a refused slip means a
   // terminal is not reconciling; a refused-auth notification means somebody
   // tried to forge a payment. Different alarms for different people.
-  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftRefusedTiming = 0, eftHeld = 0, eftErrors = 0;
+  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftRefusedTiming = 0, eftRefusedStale = 0, eftHeld = 0, eftErrors = 0;
   let scannedSoFar = 0;
   let windowCount = 0;
   try {
@@ -754,6 +772,7 @@ async function run() {
             eftRefusedParse += result.eftRefusedParse || 0;
             eftRefusedAccount += result.eftRefusedAccount || 0;
             eftRefusedTiming += result.eftRefusedTiming || 0;
+            eftRefusedStale += result.eftRefusedStale || 0;
             eftHeld += result.eftHeld || 0;
             eftErrors += result.eftErrors || 0;
           } catch (err) {
@@ -782,7 +801,7 @@ async function run() {
       lastRunAt: serverNowMs(), scanned, window: windowCount, processed, recorded, refused, unrelated,
       // The EFT reader beats on the same heart: counts only, never a figure —
       // this node is readable by every card_recon holder.
-      eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount, eftRefusedTiming, eftHeld,
+      eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount, eftRefusedTiming, eftRefusedStale, eftHeld,
       // Counted where it happens: noteStrangerPayment hands nothing back (it
       // must not consume the message), so the tally is a run counter rather
       // than a value threaded through six return points.
@@ -791,6 +810,9 @@ async function run() {
       // a value. Zero is the loudest number on this line: it means every
       // payment refuses until EFT_ALLOWED_ACCOUNTS is set in .env.
       eftAccountTails: cfg.eftAccountTails.length,
+      // FIX 8: the cutoff this tick refused stale payments against — a date,
+      // so the owner can see from the heartbeat which cutoff is live.
+      eftPaymentDateCutoff: cfg.eftPaymentDateCutoff.ok ? cfg.eftPaymentDateCutoff.date : "INVALID",
       // Messages the EFT reader THREW on this tick (left unread, retried) — a
       // persistent environment failure must not hide behind a healthy beat.
       eftErrors,
@@ -802,8 +824,8 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
-  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftRefusedTiming || eftHeld || unknownBankThisRun) {
-    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftRefusedTiming} NOT IMMEDIATE, ${eftHeld} HELD (resent copy or no bank transaction id), ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
+  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftRefusedTiming || eftRefusedStale || eftHeld || unknownBankThisRun) {
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftRefusedTiming} NOT IMMEDIATE, ${eftRefusedStale} DATED BEFORE THE CUTOFF, ${eftHeld} HELD (resent copy or no bank transaction id), ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
   }
   return 0;
 }
@@ -1129,7 +1151,17 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     return null;
   }
 
-  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0, eftRefusedTiming: 0, eftHeld: 0 };
+  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0, eftRefusedTiming: 0, eftRefusedStale: 0, eftHeld: 0 };
+  // FIX 8 — NO CUTOFF, NO DECISION. A bank notification is never judged, let
+  // alone claimed, while EFT_PAYMENT_DATE_CUTOFF is unreadable: the throw is
+  // caught by the caller, the message stays unread, eftErrors counts it, and
+  // the next tick after the line is fixed reads it as if it had just arrived.
+  // (A bank-domain message that turns out to carry batch SLIPS waits with
+  // them — it is only routed to the card path further down — and is read the
+  // same way once the line is fixed; nothing is lost.)
+  if (!cfg.eftPaymentDateCutoff.ok) {
+    throw new Error(`${cfg.eftPaymentDateCutoff.reason} Fix ${EFT_CUTOFF_ENV_VAR} in ${cfg.eftPaymentDateCutoffSource}`);
+  }
   const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
   // The auth verdict is part of the key so a forgery carrying a guessed genuine
   // Message-ID cannot occupy the key the genuine notification will need.
@@ -1322,10 +1354,16 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
         const timing = group.parse.ok
           ? immediacyVerdict({ parsed: group.parse, reader: group.readerId, receivedAt: message.receivedAt })
           : null;
+        // FIX 8 — dated on or after the cutoff BY THE BANK (group.parse.bankTs,
+        // the bank's own printed payment date). message.receivedAt is
+        // deliberately not passed: the mailbox's clock is never the payment's.
+        const dated = group.parse.ok
+          ? paymentDateVerdict({ parsed: group.parse, cutoff: cfg.eftPaymentDateCutoff })
+          : null;
         outcomes.push({
           poolKey: eftPaymentKey(key, group, groups.length),
           record: eftPoolRecord({
-            message, verdict, parsed: group.parse, account, timing,
+            message, verdict, parsed: group.parse, account, timing, dated,
             reader: group.readerId, rawText: group.rawText, at,
           }),
         });
@@ -1426,6 +1464,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     eftRefusedParse: count("refused-parse"),
     eftRefusedAccount: count("refused-account"),
     eftRefusedTiming: count("refused-not-immediate"),
+    eftRefusedStale: count("refused-stale-date"),
     eftHeld: written.filter((r) => HELD_OUTCOMES.includes(r.outcome)).length,
   };
 }
