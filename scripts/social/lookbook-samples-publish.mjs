@@ -54,12 +54,13 @@ async function upload(n, buffer) {
 }
 
 const describe = (n, s) =>
-  `SAMPLE ${n} · ${LABEL[s.model] || s.model}${s.scene ? ` · ${s.scene}` : ""} · ${s.rows.length} pieces · total ${s.total} · ` +
-  `R${(s.costUSD * USD_TO_ZAR).toFixed(2)} to generate. Not scheduled; never posted.`;
+  `SAMPLE ${n} · ${s.look && s.look.name ? `${s.look.name} · ` : ""}${LABEL[s.model] || s.model}${s.scene ? ` · ${s.scene}` : ""} · ${s.rows.length} pieces · total ${s.total} · ` +
+  `R${(s.costUSD * USD_TO_ZAR).toFixed(2)} to generate. Not scheduled; never posted.` +
+  (s.look ? `\n\nStylist: ${s.look.score}/100${s.look.note ? ` — ${s.look.note}` : ""}${s.styled && s.styled.reasoning ? `\n(${s.styled.reasoning})` : ""}` : "");
 
 for (const n of samples) {
   const s = log[n];
-  if (s.postId) { console.log(`${n}: already in the queue as ${s.postId}`); continue; }
+  if (s.postId) { console.log(`${n}: already in the queue as ${s.postId}${s.url ? ` — ${s.url}` : ""}`); continue; }
   const url = await upload(n, await readFile(join(DIR, `${n}.jpg`)));
   const id = db.ref("social_posts").push().key;
   const now = Date.now();
@@ -76,6 +77,7 @@ for (const n of samples) {
     sample: {
       n, model: s.model, costUSD: s.costUSD, total: s.total, madeAt: s.at, capOverridden: Boolean(s.budget && s.budget.overridden),
       ...(s.scene ? { scene: s.scene } : {}), ...(s.dims ? { master: s.dims.master } : {}),
+      ...(s.look ? { look: { key: s.look.key || null, name: s.look.name || null, note: s.look.note || null, score: s.look.score ?? null } } : {}),
     },
     createdAt: now,
     updatedAt: now,
@@ -83,7 +85,7 @@ for (const n of samples) {
   });
   s.postId = id;
   s.url = url;
-  console.log(`${n}: in the queue as ${id} (status sample)`);
+  console.log(`${n}: in the queue as ${id} (status sample) — ${url}`);
 }
 await writeFile(logPath, JSON.stringify(log, null, 2) + "\n");
 

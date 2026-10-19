@@ -278,7 +278,11 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     if (crossed.length) return { ok: false, gate: "render", reason: `leader lines cross on the ${crossed.map(([c]) => c).join(", ")}`, costUSD, attempts, rows };
     return {
       ok: true, rows, total: poster.total, poster, costUSD, thumbCostUSD, stylistCostUSD, engine, attempts, check, modelCheck, located, anchors, body, hero, prompt,
-      look: lookInfo, styled: picked.styled ? { score: picked.styled.score, parts: picked.styled.parts, reasoning: picked.styled.reasoning } : null,
+      look: lookInfo,
+      styled: picked.styled ? {
+        score: picked.styled.score, parts: picked.styled.parts, reasoning: picked.styled.reasoning,
+        tags: Object.fromEntries(picked.styled.pieces.map((x) => [x.pid, x.tags])),
+      } : null,
       heroSize: `${heroMeta.width}x${heroMeta.height}`,
       scene: sceneDef.key, modelRef: Boolean(modelRef),
       thumbs: Object.fromEntries(rows.map((r) => [r.pid, r.thumbSource || null])),
