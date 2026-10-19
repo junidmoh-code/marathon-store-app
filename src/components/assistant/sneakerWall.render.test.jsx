@@ -1,62 +1,50 @@
-// ─── SNEAKER WALL — rendered: Junid's touch rules hold ───────────────────────
-// (Design signed off 2026-10-19.) Mounted for real through react-test-renderer
-// with a live cart harness, so the order pill reads the SAME grouping the
-// drawer does. Proves:
-//   1. every tile is a <button> named by the product, and the resting tile
-//      shows the photo only — no name, price or size pills
-//   2. the FIRST tap opens the overlay and adds nothing
-//   3. only one tile is open at a time
-//   4. a size the gate says is out is disabled, struck, and adds nothing
-//   5. a size tap adds through quickAdd and the order pill's count + total
-//      update from the cart
-//   6. a mouse opens a tile on hover; a touch "hover" does not
-//   7. a zero add (quickAdd refused) leaves the count where it was
+// ─── SNEAKER WALL — rendered: Junid's round-3 tap rule holds ────────────────
+// (Design signed off 2026-10-19; round 3 the same day.) Mounted for real
+// through react-test-renderer. Proves:
+//   1. every tile is ONE <button> named by the product holding the photo and
+//      nothing else — no child controls, no text, no hover state but a ring
+//   2. a single tap opens the product popup (onOpenDetails) and adds nothing;
+//      no double-tap handler delays it
+//   3. Escape: the popup's own handler closes it; the wall's yields to it
+//   4. the popup's large photo opens the lightbox; the ⋯ actions moved into
+//      the popup header
+//   5. the tile draws the full-resolution photoUrl the lightbox opens — the
+//      mirrored 300px thumbnail only as the offline fallback (item 2)
+//   6. the order pill and drawer still follow the cart
 
 import { describe, it, expect, vi } from "vitest";
 import React, { useMemo, useState } from "react";
 import TestRenderer, { act } from "react-test-renderer";
+import { readFileSync } from "node:fs";
 
 vi.mock("../../firebase", () => ({ database: {}, functions: {}, auth: {} }));
 vi.mock("../../offline/MirroredImg.jsx", () => ({
-  MirroredImg: ({ productId, src, ...rest }) => <img src={src} data-pid={productId} {...rest} />,
+  MirroredImg: ({ productId, src, ...rest }) => <img src={src} data-mirrored={productId} {...rest} />,
 }));
 vi.mock("../stock/locations", () => ({ labelFor: (id) => ({ pe: "Marathon PE", pine: "Pine", trophy: "Trophy" }[id] || id) }));
 
-const { default: SneakerWall } = await import("./SneakerWall.jsx");
+const { default: SneakerWall, tilePhotoSrc, TilePhoto } = await import("./SneakerWall.jsx");
 const { groupOrderLines, orderLinesTotal } = await import("./assistantOrderModel");
+const WALL = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");
+const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
 
-const KOBE = { id: "pKobe", name: "Air Force 1 Low QS Kobe Yellow", brand: "Nike", retailPrice: 750, sizes: ["6", "7", "8", "10"], photoUrl: "https://x/kobe.jpg" };
+const KOBE = { id: "pKobe", name: "Air Force 1 Low QS Kobe Yellow", brand: "Nike", retailPrice: 750, sizes: ["6", "7", "8", "10"], photoUrl: "https://firebasestorage.googleapis.com/v0/b/b/o/products%2FpKobe%2Fphoto.jpg?alt=media&token=t" };
 const PANDA = { id: "pPanda", name: "Nike Dunk Low Panda", brand: "Nike", retailPrice: 1500, sizes: ["7", "9"], photoUrl: "https://x/panda.jpg" };
-const PRODUCTS = [KOBE, PANDA];
+const BARE = { id: "pBare", name: "No Photo Runner", brand: "Nike", retailPrice: 500, sizes: ["8"] };
+const PRODUCTS = [KOBE, PANDA, BARE];
 const SHOPS = [{ id: "pe" }, { id: "pine" }, { id: "trophy" }];
 
-// Kobe size 10 has no stock at the serving hub.
-const sizeGate = {
-  clothingOrder: false,
-  hubQty: () => 0,
-  sneakerOut: (p, sz) => p.id === "pKobe" && sz === "10",
-  sneakerOutWhy: () => ({ booked: 0, hubLabel: "Hub 1" }),
-  sneakerDisplayInfo: () => null,
-  deadForOrder: () => false,
-  hubLabelFor: () => "Hub 1",
-};
-
-function Harness({ refuse = false, quickAddSpy, modalOpen = false, onOutSize }) {
-  const [cart, setCart] = useState([]);
+function Harness({ onOpenDetails = () => {}, quickAddSpy, initialCart = [] }) {
+  const [cart, setCart] = useState(initialCart);
   const grouped = useMemo(() => groupOrderLines(cart), [cart]);
   const units = grouped.reduce((s, g) => s + g.qty, 0);
-  const onQuickAdd = (p, size, n) => {
-    quickAddSpy?.(p, size, n);
-    if (refuse) return 0;
-    setCart(c => [...c, { product: p, size, productType: "sneaker" }]);
-    return 1;
-  };
+  const onQuickAdd = (p, size, n) => { quickAddSpy?.(p, size, n); setCart(c => [...c, { product: p, size, productType: "sneaker" }]); return 1; };
   return (
     <SneakerWall availableShops={SHOPS} effectiveShop="pe" shopRegistry={null} onPickShop={() => {}}
                  mode="sneaker" setMode={() => {}} onSwitchView={() => {}} userEmail="a@b.c"
                  search="" setSearch={() => {}} searchRef={{ current: null }} onLabelFind={() => {}}
-                 shownCount={PRODUCTS.length} visible={PRODUCTS} onShowMore={() => {}} modalOpen={modalOpen} onOutSize={onOutSize}
-                 sizeGate={sizeGate} onQuickAdd={onQuickAdd} onOpenDetails={() => {}} onViewPhoto={() => {}}
+                 shownCount={PRODUCTS.length} visible={PRODUCTS} onShowMore={() => {}}
+                 onQuickAdd={onQuickAdd} onOpenDetails={onOpenDetails}
                  grouped={grouped} units={units} total={orderLinesTotal(grouped)}
                  onRemoveOne={() => {}} onAddDisplayPartner={() => {}} onCheckout={() => {}} />
   );
@@ -68,130 +56,114 @@ function mount(props = {}) {
   return tr;
 }
 const textIn = (inst) => (typeof inst === "string" ? inst : (inst.children || []).map(textIn).join(""));
-const tileButton = (tr, name) => tr.root.find(n => n.type === "button" && n.props.className === "sw-tbtn" && n.props["aria-label"] === name);
-const tileOf = (tr, name) => tileButton(tr, name).parent;
-const sizePills = (tr) => tr.root.findAll(n => n.type === "button" && /^sw-sz/.test(n.props.className || ""));
-const pill = (tr, label) => sizePills(tr).find(n => textIn(n) === label);
-const openTiles = (tr) => tr.root.findAll(n => n.type === "div" && n.props.className === "sw-tile" && n.props["data-open"] === true);
+const tiles = (tr) => tr.root.findAll(n => n.type === "button" && n.props.className === "sw-tile");
+const tile = (tr, name) => tiles(tr).find(n => n.props["aria-label"] === name);
 const count = (tr) => textIn(tr.root.find(n => n.props["data-testid"] === "order-count"));
 const total = (tr) => textIn(tr.root.find(n => n.props["data-testid"] === "order-total"));
-const tap = (node) => act(() => { node.props.onClick({ currentTarget: { classList: { add() {}, remove() {} } } }); });
+const click = (node) => act(() => { node.props.onClick({ currentTarget: {} }); });
 
-describe("the resting wall", () => {
-  it("draws every product as a real button named by the product, photo only", () => {
+describe("a tile is the photo and nothing else", () => {
+  it("one real button per product, named by it, with no child controls and no text", () => {
     const tr = mount();
-    expect(tileButton(tr, KOBE.name)).toBeTruthy();
-    expect(tileButton(tr, PANDA.name)).toBeTruthy();
-    // No overlay anywhere: no size pills, no price, no visible name text.
-    expect(sizePills(tr)).toHaveLength(0);
-    expect(openTiles(tr)).toHaveLength(0);
-    const tiles = tr.root.findAll(n => n.type === "div" && n.props.className === "sw-tile");
-    for (const t of tiles) {
-      expect(textIn(t)).not.toContain("R750");
-      expect(textIn(t)).not.toContain(KOBE.name);
+    expect(tiles(tr)).toHaveLength(3);
+    for (const p of [KOBE, PANDA]) {
+      const t = tile(tr, p.name);
+      expect(t.props.type).toBe("button");                       // Enter/Space open it natively
+      expect(t.findAll(n => n !== t && ["button", "a", "input", "select"].includes(n.type))).toHaveLength(0);
+      expect(t.findAll(n => n.type === "img")).toHaveLength(1);
+      expect(textIn(t)).toBe("");                                  // no name, price or size
     }
+    // Nothing else on the wall is a per-product control: no ⓘ, ⋯ or zoom.
+    expect(tr.root.findAll(n => n.type === "button" && /sw-(ib|sz|tbtn)|ad-zoom/.test(n.props.className || ""))).toHaveLength(0);
+    expect(tr.root.findAll(n => /^(More about|Enlarge photo|Actions for)/.test(n.props["aria-label"] || ""))).toHaveLength(0);
   });
-  it("the store chips replace the sidebar, the selected one pressed", () => {
-    const tr = mount();
-    const chips = tr.root.findAll(n => n.type === "button" && n.props.className === "sw-chip");
-    expect(chips.map(textIn)).toEqual(["Marathon PE", "Pine", "Trophy"]);
-    expect(chips.map(c => c.props["aria-pressed"])).toEqual([true, false, false]);
+  it("has no hover or touch state in code — only the 2px accent ring in CSS — and no double-tap", () => {
+    const t = tile(mount(), KOBE.name);
+    for (const k of ["onPointerEnter", "onPointerLeave", "onMouseEnter", "onFocus", "onDoubleClick", "onTouchEnd"]) expect(t.props[k]).toBeUndefined();
+    expect(WALL).toContain(".sw-tile:hover::after,.sw-tile:focus-visible::after{box-shadow:inset 0 0 0 2px #5b63ff}");
+    expect(WALL).not.toMatch(/sw-ov|sw-szrow|sw-tools|data-open/);
   });
-});
-
-describe("touch: the first tap opens, it never adds", () => {
-  it("tapping a tile opens its overlay with name, price and sizes — and adds nothing", () => {
-    const spy = vi.fn();
-    const tr = mount({ quickAddSpy: spy });
-    tap(tileButton(tr, KOBE.name));
-    expect(spy).not.toHaveBeenCalled();
-    expect(openTiles(tr)).toHaveLength(1);
-    const t = tileOf(tr, KOBE.name);
-    expect(textIn(t)).toContain(KOBE.name);
-    expect(textIn(t)).toContain("750");
-    expect(sizePills(tr).map(textIn)).toEqual(["6", "7", "8", "10"]);
-    expect(count(tr)).toBe("0");
+  it("a product without a photo shows its name on the dark ground", () => {
+    expect(textIn(tile(mount(), BARE.name))).toBe(BARE.name);
   });
 });
 
-describe("only one tile is open at a time", () => {
-  it("opening a second tile closes the first", () => {
-    const tr = mount();
-    tap(tileButton(tr, KOBE.name));
-    tap(tileButton(tr, PANDA.name));
-    expect(openTiles(tr)).toHaveLength(1);
-    expect(tileOf(tr, PANDA.name).props["data-open"]).toBe(true);
-    expect(tileOf(tr, KOBE.name).props["data-open"]).toBe(false);
-    // Panda's sizes, not Kobe's.
-    expect(sizePills(tr).map(textIn)).toEqual(["7", "9"]);
-  });
-  it("a mouse opens on hover and closes on leave; a touch pointerenter does not open", () => {
-    const tr = mount();
-    act(() => { tileOf(tr, PANDA.name).props.onPointerEnter({ pointerType: "touch" }); });
-    expect(openTiles(tr)).toHaveLength(0);
-    act(() => { tileOf(tr, PANDA.name).props.onPointerEnter({ pointerType: "mouse" }); });
-    expect(tileOf(tr, PANDA.name).props["data-open"]).toBe(true);
-    act(() => { tileOf(tr, KOBE.name).props.onPointerEnter({ pointerType: "mouse" }); });
-    expect(openTiles(tr)).toHaveLength(1);
-    expect(tileOf(tr, KOBE.name).props["data-open"]).toBe(true);
-    act(() => { tileOf(tr, KOBE.name).props.onPointerLeave({ pointerType: "mouse" }); });
-    expect(openTiles(tr)).toHaveLength(0);
-  });
-});
-
-describe("Escape", () => {
-  it("the wall's Escape handler yields to a modal", async () => {
-    const { readFileSync } = await import("node:fs");
-    const src = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");
-    expect(src).toContain('if (e.key !== "Escape" || modalOpen) return;');
-  });
-});
-
-describe("a size with no stock is not tappable", () => {
-  it("is disabled, says why, and a tap adds nothing", () => {
-    const spy = vi.fn();
-    const tr = mount({ quickAddSpy: spy });
-    tap(tileButton(tr, KOBE.name));
-    const ten = pill(tr, "10");
-    expect(ten.props.disabled).toBe(true);
-    expect(ten.props["aria-label"]).toBe("Size 10, not available");
-    expect(ten.props.title).toContain("Size 10 isn't available at Hub 1");
-    tap(ten);
+describe("a single tap opens the popup", () => {
+  it("calls onOpenDetails once with that product and adds nothing", () => {
+    const open = vi.fn(); const spy = vi.fn();
+    const tr = mount({ onOpenDetails: open, quickAddSpy: spy });
+    click(tile(tr, PANDA.name));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(PANDA);
     expect(spy).not.toHaveBeenCalled();
     expect(count(tr)).toBe("0");
-    // The in-stock neighbours are live buttons.
-    expect(pill(tr, "8").props.disabled).toBe(false);
   });
-  it("the struck-through style belongs to the disabled state", async () => {
-    const { readFileSync } = await import("node:fs");
-    const css = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");
-    // #7a7a84: the artboard's #6e6e78 is 4.2:1 on the true-black ground.
-    expect(css).toMatch(/\.sw-sz:disabled\{[^}]*color:#7a7a84[^}]*text-decoration:line-through[^}]*cursor:not-allowed/);
-    expect(css).toMatch(/\.sw-sz\.out\{[^}]*color:#7a7a84[^}]*text-decoration:line-through/);
+  it("the host wires the tap to the product popup (openQv)", () => {
+    expect(APP).toMatch(/<SneakerWall[\s\S]*?onQuickAdd=\{onQuickAdd\} onOpenDetails=\{openQv\}/);
+    expect(APP).not.toContain("renderTileActions");
+    expect(APP).not.toContain("onOutSize=");
   });
 });
 
-describe("a struck size opens the alternatives — it never adds", () => {
-  it("with the panel wired, the out pill is live, still struck, and opens that size's alternatives", () => {
-    const spy = vi.fn();
-    const onOutSize = vi.fn();
-    const tr = mount({ quickAddSpy: spy, onOutSize });
-    tap(tileButton(tr, KOBE.name));
-    const ten = pill(tr, "10");
-    expect(ten.props.disabled).toBe(false);
-    expect(ten.props.className).toBe("sw-sz out");
-    expect(ten.props["aria-label"]).toBe("Size 10, not available — show what is");
-    tap(ten);
-    expect(onOutSize).toHaveBeenCalledWith(KOBE, "10");
-    expect(spy).not.toHaveBeenCalled();
-    expect(count(tr)).toBe("0");
+describe("the popup's own behaviour", () => {
+  it("Escape closes it; the wall's Escape yields while it is open", () => {
+    expect(APP).toContain('if (e.key === "Escape") setQv(null);');
+    expect(APP).toContain("modalOpen={!!qv || coOpen || !!pendingShop} popupOpen={!!qv}");
+    // Tab stays inside the wall's popup.
+    expect(APP).toContain('aria-label={qv.name} onKeyDown={trapQvTab}>');
+    expect(WALL).toContain('if (e.key !== "Escape" || modalOpen) return;');
+  });
+  it("its large photo opens the full-screen lightbox", () => {
+    expect(APP).toContain('<div className="ad-svimg" onClick={() => qv.photoUrl && onViewPhoto(productPhotos(qv))}');
+  });
+  it("the deactivate / merge ⋯ sits in its header, on the wall", () => {
+    expect(APP).toContain('{wall && <div className="ad-svacts"><ProductActionsButton product={qv} products={products} /></div>}');
+  });
+});
+
+describe("full-resolution tile photos (item 2)", () => {
+  it("the tile URL is the product's own photoUrl — what the lightbox opens — never the 300px thumbnail", () => {
+    expect(tilePhotoSrc(KOBE)).toBe(KOBE.photoUrl);
+    expect(tilePhotoSrc(KOBE)).not.toMatch(/thumb_300/);
+    expect(tilePhotoSrc(BARE)).toBeNull();
+    // The lightbox's list starts with the same URL.
+    expect(APP).toContain("if (p?.photoUrl) out.push(p.photoUrl);");
+  });
+  it("the rendered <img> loads it directly — lazy, async — not through the photo mirror", () => {
+    const img = tile(mount(), KOBE.name).find(n => n.type === "img");
+    expect(img.props.src).toBe(KOBE.photoUrl);
+    expect(img.props["data-mirrored"]).toBeUndefined();
+    expect(img.props.loading).toBe("lazy");
+    expect(img.props.decoding).toBe("async");
+  });
+  it("offline: a failed original drops to the cached thumbnail, then to the name", () => {
+    let tr;
+    act(() => { tr = TestRenderer.create(<TilePhoto p={KOBE} />); });
+    act(() => { tr.root.find(n => n.type === "img").props.onError(); });
+    const thumb = tr.root.find(n => n.type === "img");
+    expect(thumb.props["data-mirrored"]).toBe("pKobe");
+    act(() => { thumb.props.onError(); });
+    expect(tr.root.findAll(n => n.type === "img")).toHaveLength(0);
+    expect(textIn(tr.root.find(n => n.props.className === "sw-noimg"))).toBe(KOBE.name);
+  });
+  it("a new photo on the same instance starts at the original again", () => {
+    let tr;
+    act(() => { tr = TestRenderer.create(<TilePhoto p={KOBE} />); });
+    act(() => { tr.root.find(n => n.type === "img").props.onError(); });
+    expect(tr.root.find(n => n.type === "img").props["data-mirrored"]).toBe("pKobe");
+    act(() => { tr.update(<TilePhoto p={{ ...KOBE, photoUrl: "https://x/new.jpg" }} />); });
+    const img = tr.root.find(n => n.type === "img");
+    expect(img.props.src).toBe("https://x/new.jpg");
+    expect(img.props["data-mirrored"]).toBeUndefined();
+  });
+  it("the popup's photo is full-resolution too", () => {
+    expect(APP).toContain("? <HiResPhoto key={`${qv.id}|${qv.photoUrl || \"\"}`} p={qv} alt={qv.name}");
   });
 });
 
 describe("compact bar, five columns, three full rows (Junid, 2026-10-19)", () => {
-  it("the CSS geometry gives three complete rows at 1440×900 and 1280×800", async () => {
-    const { readFileSync } = await import("node:fs");
-    const css = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");
+  it("the CSS geometry gives three complete rows at 1440×900 and 1280×800", () => {
+    const css = WALL;
     expect(css).toMatch(/\.sw-top\{[^}]*height:44px;box-sizing:content-box;padding:12px 16px/);
     expect(css).toMatch(/\.sw-grid\{display:grid;grid-template-columns:repeat\(5,minmax\(0,1fr\)\);gap:10px\}/);
     expect(css).toMatch(/\.sw-tile\{[^}]*aspect-ratio:5\/4/);
@@ -205,35 +177,14 @@ describe("compact bar, five columns, three full rows (Junid, 2026-10-19)", () =>
 });
 
 describe("the order pill follows the cart", () => {
-  it("a size tap adds through quickAdd and the count and total update", () => {
-    const spy = vi.fn();
-    const tr = mount({ quickAddSpy: spy });
-    expect(count(tr)).toBe("0");
-    expect(total(tr)).toBe("R0");
-    tap(tileButton(tr, KOBE.name));
-    tap(pill(tr, "8"));
-    expect(spy).toHaveBeenCalledWith(KOBE, "8", 1);
-    expect(count(tr)).toBe("1");
-    expect(total(tr)).toBe("R750");
-    tap(pill(tr, "8"));
-    tap(tileButton(tr, PANDA.name));
-    tap(pill(tr, "9"));
-    expect(count(tr)).toBe("3");
-    // en-ZA groups thousands with a (no-break) space: R3 000.
-    expect(total(tr).replace(/\s/g, " ")).toBe("R3 000");
-  });
-  it("a refused add (quickAdd → 0) leaves the pill where it was", () => {
-    const tr = mount({ refuse: true });
-    tap(tileButton(tr, KOBE.name));
-    tap(pill(tr, "8"));
-    expect(count(tr)).toBe("0");
-    expect(total(tr)).toBe("R0");
+  it("reads the cart's count and total", () => {
+    const tr = mount({ initialCart: [{ product: KOBE, size: "8", productType: "sneaker" }, { product: PANDA, size: "9", productType: "sneaker" }] });
+    expect(count(tr)).toBe("2");
+    expect(total(tr).replace(/\s/g, " ")).toBe("R2 250");
   });
   it("tapping the pill opens the order drawer with the same Place order button", () => {
-    const tr = mount();
-    tap(tileButton(tr, KOBE.name));
-    tap(pill(tr, "6"));
-    tap(tr.root.find(n => n.type === "button" && n.props.className === "sw-pill"));
+    const tr = mount({ initialCart: [{ product: KOBE, size: "6", productType: "sneaker" }] });
+    click(tr.root.find(n => n.type === "button" && n.props.className === "sw-pill"));
     const drawer = tr.root.find(n => n.type === "aside" && n.props.className === "sw-drawer");
     expect(textIn(drawer)).toContain(KOBE.name);
     const place = drawer.find(n => n.type === "button" && n.props.className === "ad-place");
