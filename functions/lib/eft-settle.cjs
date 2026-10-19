@@ -44,6 +44,12 @@ function refuse(code, message) {
   return { ok: false, code, message };
 }
 
+/** R1,234.50 for a refusal read out at the counter. */
+function formatRand(cents) {
+  const n = Number.isInteger(cents) ? cents : 0;
+  return `R${(n / 100).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 /** What "this payment is already used" should say to the losing till. */
 function alreadyUsedMessage(used) {
   const who = used?.cashierName ? ` by ${used.cashierName}` : "";
@@ -78,15 +84,33 @@ function settleDecision(current, settlement) {
   // a customer the cashier EXPLICITLY confirmed as the payer — attached to the
   // sale, resolved server-side against /customers (the callable stamps
   // customerResolved; the till's own name for them is never used), and
-  // confirmed by id. A payment is never applied on its amount alone, and never
-  // to a sale nobody is named on. The owner's mark-as-used has no customer and
-  // pays nothing out, so it is exempt.
+  // confirmed by id. A payment is never applied on its amount alone. The
+  // owner's mark-as-used has no customer and pays nothing out, so it is exempt.
+  //
+  // A CUSTOMER ONLY WHEN MONEY IS LEFT OVER (Junid, 19 Oct 2026). A payment
+  // consumed WHOLE — appliedCents equal to the payment — leaves nothing that
+  // must belong to anyone, so it may settle a sale nobody is named on, ON ONE
+  // CONDITION the callable establishes and stamps as `wholePaymentMatched`:
+  // the query the cashier typed re-resolved, through the same search they
+  // used, to THIS payment. The amount is never what authorises the consume. A
+  // payment with anything left over still needs the confirmed customer the
+  // remainder will be credited to.
   if (s.outsidePos !== true) {
-    if (typeof s.customerId !== "string" || !s.customerId || s.customerResolved !== true) {
-      return refuse("no-customer", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.");
-    }
-    if (s.confirmedCustomerId !== s.customerId) {
-      return refuse("not-confirmed", "Confirm that this payment belongs to the customer on the sale before using it.");
+    const hasCustomer = typeof s.customerId === "string" && s.customerId !== "";
+    if (hasCustomer) {
+      if (s.customerResolved !== true) {
+        return refuse("no-customer", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.");
+      }
+      if (s.confirmedCustomerId !== s.customerId) {
+        return refuse("not-confirmed", "Confirm that this payment belongs to the customer on the sale before using it.");
+      }
+    } else {
+      if (s.appliedCents !== current.amountCents) {
+        return refuse("no-customer", `${formatRand(current.amountCents - s.appliedCents)} of this payment is left over after the sale — attach the customer it belongs to before using it.`);
+      }
+      if (s.wholePaymentMatched !== true) {
+        return refuse("not-matched", "Find the payment by its reference again before using it — a payment is never used on its amount.");
+      }
     }
   }
   // THE BANK'S TRANSACTION ID, RE-CHECKED INSIDE THE TRANSACTION (fix 1). The
@@ -128,8 +152,12 @@ function settleDecision(current, settlement) {
         customerId: s.customerId ?? null,
         customerName: s.customerName ?? null,
         // The customer was resolved against /customers AND confirmed at the
-        // till (fix 3) — only such a settlement may mint remainder credit.
-        ...(s.outsidePos === true ? {} : { customerConfirmed: true }),
+        // till (fix 3) — only such a settlement may mint remainder credit. A
+        // whole-payment settle with no customer (19 Oct 2026) has no remainder
+        // to mint and says how it was authorised instead.
+        ...(s.outsidePos === true ? {}
+          : s.customerId ? { customerConfirmed: true }
+          : { customerConfirmed: false, wholePaymentMatched: true }),
         appliedCents: s.appliedCents,
         sale: null, // the sale attaches only after it has committed
       },

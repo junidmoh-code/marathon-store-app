@@ -300,12 +300,77 @@ test("releaseHold is the OWNER alone", async () => {
 });
 
 // ─── FIX 3: A PAYMENT IS APPLIED ONLY TO A CONFIRMED, RESOLVED CUSTOMER ──────
-test("settle with no customer on the sale is refused before anything is read or claimed", async () => {
+// …EXCEPT (Junid, 19 Oct 2026) a payment consumed WHOLE, found by its
+// reference: nothing is left over to belong to anyone. The callable re-runs
+// the cashier's query through the very search they used and settles only when
+// it resolves to THIS payment. Never on the amount; never with money left over.
+test("settle with no customer and no re-resolving query is refused before any claim", async () => {
   resetPool();
   dbState.pool[`eft_pool/${K1}`] = PAY;
-  const e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null })), "failed-precondition");
+  dbState.tail = { [K1]: PAY };
+  for (const matchQuery of [undefined, null, "", "550", "55000", "zzzz", "OTHERREF"]) {
+    const e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery })), "failed-precondition");
+    assert.equal(e.details.code, "not-matched", JSON.stringify(matchQuery));
+  }
+  assert.deepEqual(dbState.txPaths, [], "nothing claimed, nothing settled");
+});
+
+test("settle with no customer: the whole payment, found by its reference again → settles for nobody, saying how", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  dbState.tail = { [K1]: PAY };
+  dbState.txCurrent = PAY;
+  const out = await eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "junid 1234" }));
+  assert.equal(out.ok, true);
+  assert.equal(dbState.txNext?.status, "used");
+  assert.equal(dbState.txNext?.used.customerId, null);
+  assert.equal(dbState.txNext?.used.customerConfirmed, false);
+  assert.equal(dbState.txNext?.used.wholePaymentMatched, true);
+  assert.equal(dbState.txNext?.used.appliedCents, 50000);
+  // A forgiving query that still resolves to this one payment is enough —
+  // forgiving on spelling, never on which payment.
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY; dbState.tail = { [K1]: PAY }; dbState.txCurrent = PAY;
+  const typo = await eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "junid1235" }));
+  assert.equal(typo.ok, true);
+  resetPool();
+});
+
+test("settle with no customer and money LEFT OVER is refused — the remainder must belong to someone", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  dbState.tail = { [K1]: PAY };
+  const e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, appliedCents: 30000, matchQuery: "junid1234" })), "failed-precondition");
   assert.equal(e.details.code, "no-customer");
+  assert.match(e.message, /R200[.,]00 of this payment is left over/);
   assert.deepEqual(dbState.txPaths, []);
+});
+
+test("NEVER on the amount: a query that resolves to a DIFFERENT payment, or to two, settles nothing", async () => {
+  resetPool();
+  const other = { ...PAY, reference: "OTHER9999", bankRef: "Z9Z9Z9Z9", at: 2 };
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  dbState.tail = { [K1]: PAY, [K2]: other };
+  // The query names the OTHER payment (same amount) — this key is refused.
+  let e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "other9999" })), "failed-precondition");
+  assert.equal(e.details.code, "not-matched");
+  // Two payments with the same reference: ambiguous → refused for either.
+  dbState.tail = { [K1]: PAY, [K2]: { ...PAY, bankRef: "Z9Z9Z9Z9", at: 2 } };
+  e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "junid1234" })), "failed-precondition");
+  assert.equal(e.details.code, "not-matched");
+  assert.deepEqual(dbState.txPaths, []);
+});
+
+test("with a customer on the sale, the confirmed-customer rule is exactly as before", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  dbState.tail = { [K1]: PAY };
+  dbState.txCurrent = PAY;
+  await eftPoolSettle(settleReq(K1, { appliedCents: 30000, matchQuery: "junid1234" })).catch(() => {});
+  assert.equal(dbState.txNext?.used.customerId, "0821234567");
+  assert.equal(dbState.txNext?.used.customerConfirmed, true);
+  assert.equal(dbState.txNext?.used.wholePaymentMatched, undefined);
+  resetPool();
 });
 
 test("settle without the cashier's explicit confirmation of THAT customer is refused", async () => {

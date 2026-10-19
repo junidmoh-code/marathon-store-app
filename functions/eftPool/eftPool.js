@@ -296,6 +296,12 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
   return check.fingerprint;
 }
 
+/** R1,234.50 for a refusal read out at the counter. */
+function formatRandCents(cents) {
+  const n = Number.isInteger(cents) ? cents : 0;
+  return `R${(n / 100).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function refusalToError(decision) {
   // failed-precondition: the till should refresh its search and tell the
   // cashier the sentence — these are states of the payment, not bugs.
@@ -535,12 +541,16 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     // cashier explicitly confirmed as the payer. The name on the settlement is
     // the record's, never the till's.
     const sentId = typeof data.customerId === "string" ? data.customerId.trim() : "";
-    if (!sentId) {
-      throw new HttpsError("failed-precondition", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.", { code: "no-customer" });
-    }
-    if (data.confirmedCustomerId !== sentId) {
+    if (sentId && data.confirmedCustomerId !== sentId) {
       throw new HttpsError("failed-precondition", "Confirm that this payment belongs to the customer on the sale before using it.", { code: "not-confirmed" });
     }
+    // NO CUSTOMER ON THE SALE (Junid, 19 Oct 2026): allowed only for a payment
+    // consumed WHOLE — nothing left over that would need an owner — and only
+    // when the query the cashier typed re-resolves, through the very search
+    // they used (lib/eft-pool.cjs searchEftPool over the same tail), to THIS
+    // payment. Decided below once the record and the tail are in hand; the
+    // amount is never what authorises the consume. Refused before any claim.
+    const matchQuery = typeof data.matchQuery === "string" ? data.matchQuery.slice(0, 120) : "";
     // ONE ROUND TRIP FOR EVERYTHING THE CHECKS NEED (speed, 19 Oct 2026). The
     // cashier's name, the customer record, the payment and the pool tail do
     // not depend on each other, so they are fetched together; they used to be
@@ -550,23 +560,36 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     const db = admin.database();
     const [cashierName, customer, record, tail] = await Promise.all([
       cashierNameOf(request),
-      resolveCustomer({ customerId: sentId }),
+      sentId ? resolveCustomer({ customerId: sentId }) : null,
       db.ref(`${EFT_POOL_PATH}/${key}`).once("value").then((s) => s.val()),
       readPoolTail(),
     ]);
+    let wholePaymentMatched = false;
+    if (!customer && record && record.outcome === "recorded") {
+      if (appliedCents !== record.amountCents) {
+        throw new HttpsError("failed-precondition", `${formatRandCents(record.amountCents - appliedCents)} of this payment is left over after the sale — attach the customer it belongs to before using it.`, { code: "no-customer" });
+      }
+      const found = searchEftPool(tail, matchQuery);
+      wholePaymentMatched = found.results.length === 1 && found.results[0].key === key && found.results[0].status === "unmatched";
+      if (!wholePaymentMatched) {
+        console.warn(`eftPoolSettle: customer-less settle on ${key} refused — query ${JSON.stringify(matchQuery)} resolved to ${found.results[0]?.key ?? (found.ambiguous ? "ambiguous" : "nothing")}`);
+        throw new HttpsError("failed-precondition", "Find the payment by its reference again before using it — a payment is never used on its amount.", { code: "not-matched" });
+      }
+    }
     const fingerprint = await checkPaymentFingerprint(key, now, { record, tail });
     decision = await runPoolTransaction(key, (current) => settleDecision(current, {
       fingerprint,
-      customerResolved: true,
-      confirmedCustomerId: customer.id,
+      wholePaymentMatched,
+      customerResolved: !!customer,
+      confirmedCustomerId: customer?.id ?? null,
       attemptId,
       at: now,
       cashierUid: uid,
       cashierName,
       storeId: typeof data.storeId === "string" ? data.storeId.slice(0, 40) : null,
       tillId: typeof data.tillId === "string" ? data.tillId.slice(0, 40) : null,
-      customerId: customer.id,
-      customerName: customer.name,
+      customerId: customer?.id ?? null,
+      customerName: customer?.name ?? null,
       appliedCents,
     }));
   } else if (action === "attach") {

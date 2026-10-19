@@ -90,8 +90,17 @@ test("a cashier finds it by its reference like any payment, and it consumes ONCE
   assert.equal(second.ok, false);
   assert.equal(second.code, "already-used", "a second till loses, as for any payment");
   assert.deepEqual(settleDecision(first.value, settlement), { ok: true, already: true }, "the same attempt retrying is not a second spend");
+  // No customer on the sale (19 Oct 2026): a manual entry consumed WHOLE may
+  // settle only when the callable found it by the typed reference again
+  // (wholePaymentMatched); never on its amount, and never with money left over.
   const noCustomer = settleDecision(r, { ...settlement, customerId: null, confirmedCustomerId: null });
-  assert.equal(noCustomer.code, "no-customer", "the confirmed-customer rule applies to a manual entry too");
+  assert.equal(noCustomer.code, "not-matched", "no customer and no re-resolved reference: refused");
+  const leftover = settleDecision(r, { ...settlement, customerId: null, confirmedCustomerId: null, wholePaymentMatched: true, appliedCents: 50000 });
+  assert.equal(leftover.code, "no-customer", "money left over needs the customer it belongs to");
+  const whole = settleDecision(r, { ...settlement, customerId: null, confirmedCustomerId: null, wholePaymentMatched: true });
+  assert.equal(whole.ok, true);
+  assert.equal(whole.value.used.customerId, null);
+  assert.equal(whole.value.used.wholePaymentMatched, true);
 });
 
 test("the same reference and amount twice is a duplicate; the same entryId is a retry; a bank twin is flagged", () => {
