@@ -72,6 +72,13 @@ describe("photoContentMarker (matched pair with marathon-pos-app)", () => {
     expect(photoContentMarker(null)).toBe("no-photo");
   });
 
+  it("thumbAt (a repaired thumbnail) is appended only when present — every other marker is unchanged", () => {
+    expect(photoContentMarker({ photoUpdatedAt: 1757000000000, photoUrl: "https://x/y.jpg", thumbAt: 1792000000000 }))
+      .toBe("1757000000000|https://x/y.jpg|t1792000000000");
+    expect(photoContentMarker({ photoUrl: "https://x", thumbAt: 0 })).toBe("https://x");
+    expect(photoContentMarker({ thumbAt: 5 })).toBe("no-photo");
+  });
+
   it("a zero or empty stamp does not contribute", () => {
     expect(photoContentMarker({ photoUpdatedAt: 0, photoUrl: "https://x" })).toBe("https://x");
     expect(photoContentMarker({ photoUpdatedAt: "", photoUrl: "https://x" })).toBe("https://x");
