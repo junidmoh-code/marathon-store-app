@@ -133,7 +133,7 @@ describe("the strip is wired into both sheets", () => {
     expect(APP).toContain("<AlternativesStrip compact key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null}");
     // …and on the wall the panel replaces it, fed by the same call.
     expect(APP).toContain("const alt = alternativesFor?.(qv, qvAlt) ?? null;");
-    expect(APP).toContain("<AlternativesPanel rows={alt ? alt.rows : null} requestedSize={qvAlt}");
+    expect(APP).toContain("<AlternativesPanel key={`${qv.id}|${qvAlt}`} rows={alt ? alt.rows : null} requestedSize={qvAlt}");
   });
 });
 

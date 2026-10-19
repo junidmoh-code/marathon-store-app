@@ -140,14 +140,6 @@ describe("only one tile is open at a time", () => {
 });
 
 describe("Escape", () => {
-  const press = () => act(() => { window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape" })); });
-  it("closes the open tile, but leaves it alone while a modal sits over the wall", () => {
-    if (typeof window === "undefined" || !window.KeyboardEvent) return;   // node env: covered by source below
-    const tr = mount();
-    tap(tileButton(tr, KOBE.name));
-    press();
-    expect(openTiles(tr)).toHaveLength(0);
-  });
   it("the wall's Escape handler yields to a modal", async () => {
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");

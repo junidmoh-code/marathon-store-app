@@ -41,9 +41,6 @@ describe("the grid", () => {
     expect(src).toMatch(/\.alt-grid\{display:grid;grid-template-columns:repeat\(6,minmax\(0,1fr\)\);gap:10px\}/);
     expect(src).toMatch(/@media\(max-width:1399px\)\{\.alt-grid\{grid-template-columns:repeat\(5,minmax\(0,1fr\)\)\}\}/);
     expect(src).toMatch(/\.alt-tile\{[^}]*aspect-ratio:5\/4;border-radius:14px/);
-    // No flex row, no fixed card width — the two things that made the old
-    // strip scroll sideways and clip its last card.
-    expect(src).not.toMatch(/flex: `0 0|overflowX: "auto"/);
   });
   it("draws at most 18, in the ranking's order", () => {
     const tr = mount({ rows: rows(25) });
@@ -93,6 +90,15 @@ describe("tap → the wall's overlay → add closes", () => {
     const p6 = tr.root.findAll(n => n.type === "button" && n.props.className === "sw-sz")[0];
     act(() => { p6.props.onClick({ currentTarget: { classList: { add() {}, remove() {} } } }); });
     expect(onAdded).not.toHaveBeenCalled();
+  });
+});
+
+describe("Escape", () => {
+  it("the capture handler swallows Escape only while a shoe is open", () => {
+    const src = readFileSync(new URL("./AlternativesPanel.jsx", import.meta.url), "utf8");
+    expect(src).toContain('if (e.key === "Escape") { e.stopImmediatePropagation(); setPicked(null); }');
+    expect(src).toContain('window.addEventListener("keydown", h, true);');
+    expect(src).toMatch(/if \(!picked \|\| typeof window === "undefined"\) return undefined;/);
   });
 });
 

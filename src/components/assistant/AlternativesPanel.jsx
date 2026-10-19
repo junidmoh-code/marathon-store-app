@@ -27,7 +27,7 @@ export const ALT_PANEL_MAX = 18;
 const PANEL_CSS = `
   .alt-panel{display:flex;flex-direction:column;height:100%;min-height:0}
   .alt-body{flex:1;min-height:0;display:flex;flex-direction:column;padding:0 22px}
-  .alt-line{flex:0 0 auto;font-size:13px;font-weight:600;color:#8b8b95;padding:2px 0 12px}
+  .alt-line{flex:0 0 auto;min-height:15px;font-size:13px;font-weight:600;color:#8b8b95;padding:2px 0 12px}
   .alt-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:14px}
   /* Wrapping, never sideways: 6 columns at 1440, 5 at 1280, 4 on a tablet. */
   .alt-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
@@ -65,10 +65,19 @@ export function quietBlockLine(size, w, stillOut = true) {
 
 export default function AlternativesPanel({ rows, requestedSize, line, sizeGate, onQuickAdd, onViewPhoto,
                                             onShown, onPicked, onAdded }) {
+  // The host keys this panel by shoe + size, so a new size is a fresh mount:
+  // back on the grid, and logged once for that open.
   const [picked, setPicked] = useState(null);
   const answered = Array.isArray(rows);
-  // A new size (or a new answer) returns to the grid.
-  useEffect(() => { setPicked(null); }, [requestedSize]);
+  // Focus follows the swap: into Back when a shoe opens, back onto that
+  // shoe's tile when Back closes it — never dropped to <body>.
+  const backRef = useRef(null);
+  const tileRefs = useRef(new Map());
+  const lastPicked = useRef(null);
+  useEffect(() => {
+    if (picked) { lastPicked.current = picked; backRef.current?.focus?.(); }
+    else if (lastPicked.current) tileRefs.current.get(lastPicked.current)?.focus?.();
+  }, [picked]);
 
   // Telemetry, log only — once per size shown, after availability answered.
   const shownFor = useRef("");
@@ -99,10 +108,12 @@ export default function AlternativesPanel({ rows, requestedSize, line, sizeGate,
       <div className="alt-body">
         {/* Only once the rows have answered: "these have it:" over an empty
             space would be a claim the screen cannot make yet. */}
-        {line && answered ? <div className="alt-line" role="status">{line}</div> : null}
+        {/* Always mounted, so a screen reader announces the text when it
+            arrives rather than missing a live region born full. */}
+        <div className="alt-line" role="status">{line && answered ? line : ""}</div>
         {pickedRow ? (
           <div className="alt-detail">
-            <button type="button" className="sw-back" onClick={() => setPicked(null)} aria-label="Back to the alternatives">
+            <button type="button" ref={backRef} className="sw-back" onClick={() => setPicked(null)} aria-label="Back to the alternatives">
               <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
               Back
             </button>
@@ -120,7 +131,8 @@ export default function AlternativesPanel({ rows, requestedSize, line, sizeGate,
               {shown.map(r => {
                 const sz = r.matchedSize ?? requestedSize;
                 return (
-                  <button key={r.product.id} type="button" className="alt-tile" aria-label={`${r.product.name}, size ${formatSize(sz)} available`}
+                  <button key={r.product.id} type="button" className="alt-tile"
+                          ref={el => { if (el) tileRefs.current.set(r.product.id, el); else tileRefs.current.delete(r.product.id); }} aria-label={`${r.product.name}, size ${formatSize(sz)} available`}
                           onClick={() => { onPicked?.(r); setPicked(r.product.id); }}>
                     <span className="alt-sz">{sz === "Free Size" ? "OS" : formatSize(sz)}</span>
                     <TilePhoto key={r.product.photoUrl || ""} p={r.product} />

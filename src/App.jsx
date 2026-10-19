@@ -9198,7 +9198,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
               return (
                 <div className="ad-altwrap">
                   <div className="ad-alttitle">Available now instead</div>
-                  <AlternativesPanel rows={alt ? alt.rows : null} requestedSize={qvAlt}
+                  <AlternativesPanel key={`${qv.id}|${qvAlt}`} rows={alt ? alt.rows : null} requestedSize={qvAlt}
                     line={quietBlockLine(qvAlt, sneakerOutWhy?.(qv, qvAlt), stillOut)}
                     sizeGate={sizeGate} onQuickAdd={onQuickAdd} onViewPhoto={wallViewPhoto}
                     // Its own surface: it shows up to 18, the strip 8, and
