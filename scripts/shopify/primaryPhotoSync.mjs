@@ -132,18 +132,31 @@ export async function runSync(pids, io, { write = null, onReplaced = async () =>
   return { counts, rows };
 }
 
+// Equal as RTDB values: key order ignored (the server returns keys sorted).
+const canon = (v) => v && typeof v === "object"
+  ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(",")}}`
+  : JSON.stringify(v ?? null);
+
 /**
- * Undo ONE ledger entry. Refuses when the app photo has changed since the
- * sync (anything but the photo the sync put there): a later edit is never
- * overwritten. → { pid, ok, refused?, patch? }
+ * Undo ONE ledger entry. Refuses when any field the sync wrote — photoUrl,
+ * photoUrlOriginal, photoSource — has changed since: a later edit is never
+ * overwritten. The thumbnail goes back BEFORE photoUrl (the mirror's marker)
+ * does; when it cannot be rebuilt from the old photo it is removed, never left
+ * showing the synced photo. → { pid, ok, refused?, patch?, thumb? }
  */
-export async function rollbackEntry(entry, { readProduct, writeProduct, rebuildThumb = null, apply = false }) {
+export async function rollbackEntry(entry, { readProduct, writeProduct, rebuildThumb = null, removeThumb = null, apply = false }) {
   const pid = entry?.pid;
   if (!pid || !entry.newPhotoUrl) return { pid, ok: false, refused: "the ledger entry is incomplete" };
   const now = await readProduct(pid);
   if (!now?.exists) return { pid, ok: false, refused: "the product no longer exists" };
-  if (now.photoUrl !== entry.newPhotoUrl) {
-    return { pid, ok: false, refused: "the app photo has changed since the sync — left as it is" };
+  const wrote = entry.patch || {};
+  const after = {
+    photoUrl: entry.newPhotoUrl,
+    photoUrlOriginal: "photoUrlOriginal" in wrote ? wrote.photoUrlOriginal : entry.oldPhotoUrlOriginal,
+    photoSource: "photoSource" in wrote ? wrote.photoSource : entry.oldPhotoSource,
+  };
+  for (const [k, v] of Object.entries(after)) {
+    if (canon(now[k]) !== canon(v)) return { pid, ok: false, refused: `the app ${k} has changed since the sync — left as it is` };
   }
   const patch = {
     photoUrl: entry.oldPhotoUrl ?? null,
@@ -152,7 +165,20 @@ export async function rollbackEntry(entry, { readProduct, writeProduct, rebuildT
     photoSource: entry.oldPhotoSource ?? null,
   };
   if (!apply) return { pid, ok: true, dryRun: true, patch };
-  if (rebuildThumb && entry.oldPhotoUrl) { try { await rebuildThumb(pid, entry.oldPhotoUrl); } catch { /* best-effort */ } }
-  await writeProduct(pid, patch);
-  return { pid, ok: true, patch };
+  let thumb = false;
+  if (rebuildThumb && entry.oldPhotoUrl) {
+    try { thumb = !!(await rebuildThumb(pid, entry.oldPhotoUrl))?.ok; } catch { thumb = false; }
+  }
+  const removeIt = async () => { if (removeThumb) { try { await removeThumb(pid); } catch { /* best-effort */ } } };
+  if (!thumb) await removeIt();
+  try {
+    await writeProduct(pid, patch);
+  } catch (e) {
+    // photoUrl still names the synced photo: its thumbnail back, else none.
+    let back = false;
+    if (thumb && rebuildThumb) { try { back = !!(await rebuildThumb(pid, entry.newPhotoUrl))?.ok; } catch { back = false; } }
+    if (thumb && !back) await removeIt();
+    throw e;
+  }
+  return { pid, ok: true, patch, thumb };
 }

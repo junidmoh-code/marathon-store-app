@@ -20,6 +20,7 @@ import { applyProposalMutator, conditionMutator, photosMutator, publishMutator, 
   from "../../src/components/shopify/publishMutators.js";
 import { CONDITIONS } from "../../src/components/shopify/publishShared.js";
 import { writeApprovedThumbFromUrl, writeProductThumb } from "../../src/utils/productThumb.js";
+import { productPhotoThumbPath } from "../../src/utils/productPhotoPaths.js";
 import sourcePhoto from "../../functions/newArrivals/sourcePhoto.cjs";
 import { setShopifyPrimaryPhoto } from "../../src/components/shopify/primaryPhotoCore.js";
 
@@ -168,6 +169,7 @@ export async function advance(pid, deps) {
         warn: (...a) => log(`${pid}: thumbnail — ${a.map(String).join(" ")}`),
         write: (tid, blob, d) => writeProductThumb(tid, blob, { ...d, encode: deps.encodeThumb }),
       }),
+      removeThumb: (id) => deps.removeObject(productPhotoThumbPath(id)),
       writeProduct: (id, patch) => db.ref(`products/${id}`).update(patch),
     });
     // A refused product write is a crash, not a rejection: the run resumes here.

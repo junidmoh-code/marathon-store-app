@@ -12,6 +12,7 @@ import { ref, update, get } from "firebase/database";
 import { ref as storageRef, getBlob, getMetadata, uploadBytes, deleteObject } from "firebase/storage";
 import { database, storage } from "../../firebase";
 import { writeApprovedThumbFromUrl } from "../../utils/productThumb";
+import { productPhotoThumbPath } from "../../utils/productPhotoPaths";
 import { serverNowMs } from "../../utils/serverTime";
 import { storagePathOf } from "./publishShared";
 
@@ -31,6 +32,7 @@ export const browserPrimaryPhotoDeps = {
     upload: uploadThumbObject,
     remove: removeThumbObject,
   }),
+  removeThumb: (pid) => removeThumbObject(productPhotoThumbPath(pid)),
   writeProduct: (pid, patch) => update(ref(database, `products/${pid}`), patch),
   // Two child reads — never the whole record.
   readProduct: async (pid) => {

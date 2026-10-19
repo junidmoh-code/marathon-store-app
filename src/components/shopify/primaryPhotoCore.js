@@ -84,6 +84,9 @@ export function appPhotoPatch(pid, product, oldPrimary, newPrimary, { at = null,
  *     now()                 → serverNowMs, or a promise of it (the photoSource stamp)
  *     md5Of(url)            → the object's Storage md5, or null when unknown
  *     rebuildThumb(pid,url) → the till thumbnail from the new photo (best-effort)
+ *     removeThumb(pid)?     → delete the till thumbnail (best-effort; only when
+ *                             the product write fails and the old one cannot
+ *                             be rebuilt)
  *     writeProduct(pid, patch) → an update() of /products/{pid} child keys
  *     readProduct(pid)?     → { photoUrl, photoUrlOriginal } as stored NOW; the
  *                             caller's `product` may be a render-time snapshot
@@ -120,10 +123,24 @@ export async function setShopifyPrimaryPhoto(pid, { product, oldPrimary = null, 
   try {
     await deps.writeProduct(pid, patch);
   } catch (e) {
+    // The thumbnail already shows the new photo but photoUrl did not move, so
+    // the mirror would keep that picture under the OLD marker. Put the old one
+    // back, or leave none: a stale thumbnail is worse than a missing one
+    // (productThumb.writeProductThumb).
+    if (thumb?.ok) await undoThumb(pid, current, deps);
     return { ok: false, changed: false, patch, thumb: !!thumb?.ok,
              message: `The Shopify photos are saved, but the app photo could not be changed (${String(e?.message || e)}).` };
   }
   return { ok: true, changed: true, patch, thumb: !!thumb?.ok };
+}
+
+async function undoThumb(pid, url, deps) {
+  if (url) {
+    try { if ((await deps.rebuildThumb(pid, url))?.ok) return; } catch { /* fall through */ }
+  }
+  if (typeof deps.removeThumb === "function") {
+    try { await deps.removeThumb(pid); } catch { /* best-effort */ }
+  }
 }
 
 /**
