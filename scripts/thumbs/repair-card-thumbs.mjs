@@ -5,16 +5,16 @@
 //   … --pid=p123  --limit=N
 //
 // Walks /products KEYS shallowly; per product reads only photoUrl. One listing
-// of products/ in Storage gives every thumbnail's metadata. A thumbnail of
-// unknown origin for a photo that is not photo.jpg is compared by pixels
-// (24×24 greyscale) with the photo itself. Missing or stale → rebuilt from
-// photoUrl (thumbSource=repair) and thumbAt stamped so devices re-fetch.
+// of products/ in Storage gives every thumbnail's metadata. Missing, or of
+// unproven origin for a photo that is not photo.jpg → rebuilt from photoUrl
+// (thumbSource=repair) and thumbAt stamped so devices re-fetch. (The 24×24
+// pixel diff is printed for the record only; it never decides.)
 // Idempotent: a rebuilt thumbnail records its source, so a rerun says "ok".
 // Every repair is listed in ~/marathon-rollbacks/card-thumb-repair-{date}.json.
 // Thumbnails are derived files: no photo is touched, moved or deleted.
 import { createRequire } from "module";
 import { join } from "node:path";
-import { runRepair } from "./cardThumbRepair.mjs";
+import { runRepair, signatureDiff } from "./cardThumbRepair.mjs";
 import { eachLimited } from "../shopify/primaryPhotoSync.mjs";
 import { initAdmin, shallowKeys, serverClock, thumbRebuilder, openLedger, ROLLBACK_DIR, BUCKET } from "../shopify/primaryPhotoNode.mjs";
 
@@ -39,7 +39,6 @@ for (let q = { prefix: "products/", maxResults: 1000, autoPaginate: false }; q;)
 console.log(`products: ${pids.length} · thumbnails in the bucket: ${thumbs.size}`);
 
 const sig = async (buf) => sharp(buf).rotate().resize(24, 24, { fit: "fill" }).greyscale().raw().toBuffer();
-const { signatureDiff } = await import("./cardThumbRepair.mjs");
 const io = {
   readPhotoUrl: (pid) => db.ref(`products/${pid}/photoUrl`).once("value").then((s) => s.val()),
   thumbMetaOf: (pid) => thumbs.get(pid) || null,
@@ -61,8 +60,8 @@ const { counts } = await runRepair(pids, io, {
   write, onRepaired: ledger ? ledger.add : undefined,
   each: (items, fn) => eachLimited(items, 8, fn, { gapMs: 25 }),
   log: (r) => {
-    if (!["missing", "stale", "error"].includes(r.verdict) && !ONLY) return;
-    console.log(`  ${r.pid}: ${r.verdict}${r.diff != null ? ` (diff ${r.diff.toFixed(1)})` : ""}${r.result ? ` → ${r.result}` : ""}${r.message ? ` — ${r.message}` : ""}`);
+    if (!["missing", "unproven", "error"].includes(r.verdict) && !ONLY) return;
+    console.log(`  ${r.pid}: ${r.verdict}${r.diff != null ? ` (pixel diff ${r.diff.toFixed(1)})` : ""}${r.result ? ` → ${r.result}` : ""}${r.message ? ` — ${r.message}` : ""}`);
   },
 });
 
