@@ -8,7 +8,7 @@
 // on the record — styleCodeNormalised above all, which the rules make
 // immutable — is ever rewritten. The live rules let any signed-in staff
 // account write /products children, so this needs no callable.
-import { ref, update } from "firebase/database";
+import { ref, update, get } from "firebase/database";
 import { ref as storageRef, getBlob, getMetadata, uploadBytes, deleteObject } from "firebase/storage";
 import { database, storage } from "../../firebase";
 import { writeApprovedThumbFromUrl } from "../../utils/productThumb";
@@ -32,5 +32,11 @@ export const browserPrimaryPhotoDeps = {
     remove: removeThumbObject,
   }),
   writeProduct: (pid, patch) => update(ref(database, `products/${pid}`), patch),
+  // Two child reads — never the whole record.
+  readProduct: async (pid) => {
+    const [photoUrl, photoUrlOriginal] = await Promise.all(["photoUrl", "photoUrlOriginal"]
+      .map((k) => get(ref(database, `products/${pid}/${k}`)).then((s) => s.val())));
+    return { photoUrl, photoUrlOriginal };
+  },
 };
 

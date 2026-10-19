@@ -6,6 +6,7 @@ vi.mock("../../firebase", () => ({ database: {}, storage: {} }));
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   update: async (r, patch) => { writes.push([r.path, patch]); },
+  get: async (r) => ({ val: () => ({ "products/p1/photoUrl": "U", "products/p1/photoUrlOriginal": null })[r.path] }),
 }));
 vi.mock("firebase/storage", () => ({
   ref: (_s, p) => ({ p }),
@@ -33,6 +34,9 @@ describe("the browser's legs for the primary-photo write", () => {
   it("rebuildThumb is the AI Studio approve's thumbnail helper", async () => {
     await d.rebuildThumb("p1", "u");
     expect(writeApprovedThumbFromUrl).toHaveBeenCalledWith("p1", "u", expect.any(Object));
+  });
+  it("readProduct reads ONLY the two photo children", async () => {
+    expect(await d.readProduct("p1")).toEqual({ photoUrl: "U", photoUrlOriginal: null });
   });
   it("now is the server clock", () => {
     expect(typeof d.now()).toBe("number");

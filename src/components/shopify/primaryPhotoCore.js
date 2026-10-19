@@ -85,6 +85,8 @@ export function appPhotoPatch(pid, product, oldPrimary, newPrimary, { at = null,
  *     md5Of(url)            → the object's Storage md5, or null when unknown
  *     rebuildThumb(pid,url) → the till thumbnail from the new photo (best-effort)
  *     writeProduct(pid, patch) → an update() of /products/{pid} child keys
+ *     readProduct(pid)?     → { photoUrl, photoUrlOriginal } as stored NOW; the
+ *                             caller's `product` may be a render-time snapshot
  *   }
  * → { ok, changed, reason?, patch?, thumb?, message? }. Never throws.
  *
@@ -96,6 +98,14 @@ export function appPhotoPatch(pid, product, oldPrimary, newPrimary, { at = null,
 export async function setShopifyPrimaryPhoto(pid, { product, oldPrimary = null, newPrimary, fallbackOriginal = null }, deps) {
   let at = null;
   try { at = Math.round(Number(await deps.now())); } catch { at = null; }
+  // The original is decided from the record as it stands, not from a snapshot
+  // a re-shoot on another device may have overtaken. Unreadable → the snapshot.
+  if (typeof deps.readProduct === "function") {
+    try {
+      const fresh = await deps.readProduct(pid);
+      if (fresh) product = { ...product, photoUrl: fresh.photoUrl ?? null, photoUrlOriginal: fresh.photoUrlOriginal ?? null };
+    } catch { /* keep the snapshot */ }
+  }
   const patch = appPhotoPatch(pid, product, oldPrimary, newPrimary, { at, fallbackOriginal });
   if (!patch) return { ok: true, changed: false, reason: newPrimary && product?.photoUrl === newPrimary ? "same-url" : "no-change" };
   const current = product?.photoUrl || null;

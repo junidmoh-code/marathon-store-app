@@ -82,6 +82,14 @@ describe("setShopifyPrimaryPhoto — THE one write", () => {
     const r = await setShopifyPrimaryPhoto("p1", { product: { photoUrl: staff }, newPrimary: pub("n") }, d);
     expect(r.patch.photoSource).toEqual({ from: "shopify_publish", at: 42 });
   });
+  it("STALE SNAPSHOT: the original is decided from the record as stored now (a re-shoot on another device)", async () => {
+    const reshot = `${B}products%2Fp1%2Fphoto.jpg?alt=media&token=z`;
+    const d = { ...fakeDeps(), readProduct: async () => ({ photoUrl: reshot, photoUrlOriginal: null }) };
+    const r = await setShopifyPrimaryPhoto("p1", { product: { photoUrl: pub("old") }, newPrimary: pub("n") }, d);
+    expect(r.patch.photoUrlOriginal).toBe(reshot);
+    const d2 = { ...fakeDeps(), readProduct: async () => ({ photoUrl: pub("n") }) };
+    expect(await setShopifyPrimaryPhoto("p1", { product: { photoUrl: staff }, newPrimary: pub("n") }, d2)).toMatchObject({ changed: false, reason: "same-url" });
+  });
   it("a refused product write is a sentence, never a throw", async () => {
     const r = await setShopifyPrimaryPhoto("p1", { product: { photoUrl: staff }, newPrimary: pub("n") }, fakeDeps({ failWrite: true }));
     expect(r.ok).toBe(false);
