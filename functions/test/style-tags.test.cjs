@@ -6,13 +6,45 @@ const st = require("../lib/style-tags.cjs");
 const io = require("../lookbook/style-tags-io.cjs");
 const { FakeRtdb } = require("./fixtures/rtdb-fake.cjs");
 
-const ANSWER = { dominant: "black", secondary: "white", pattern: "solid", silhouette: "regular", family: "athleisure", formality: 2, season: "all" };
+const V1 = { dominant: "black", secondary: "white", pattern: "solid", silhouette: "regular", family: "athleisure", formality: 2, season: "all" };
+const ANSWER = { ...V1, gender: "mens", cut: "none", headwear: "n/a", knit: false };
 
 describe("readTags", () => {
   test("a good answer, normalised", () => {
-    const r = st.readTags("```json\n" + JSON.stringify({ ...ANSWER, dominant: "Black" }) + "\n```");
+    const r = st.readTags("```json\n" + JSON.stringify({ ...ANSWER, dominant: "Black", gender: "Mens", knit: "no" }) + "\n```");
     assert.equal(r.ok, true);
     assert.deepEqual(r.tags, ANSWER);
+  });
+  test("v2: a v1 record reads with the four new fields null; a fresh answer must have them", () => {
+    const r = st.readTags(JSON.stringify(V1));
+    assert.equal(r.ok, true);
+    assert.deepEqual([r.tags.gender, r.tags.cut, r.tags.headwear, r.tags.knit], [null, null, null, null]);
+    assert.equal(st.needsV2(r.tags), true);
+    assert.equal(st.readTags(JSON.stringify(V1), undefined, { requireV2: true }).ok, false);
+    assert.equal(st.readTags(JSON.stringify({ ...V1, gender: "mens" })).ok, false, "half a v2 answer");
+    for (const bad of [{ gender: "male" }, { cut: "mini" }, { headwear: "helmet" }, { knit: "maybe" }]) {
+      assert.equal(st.readTags(JSON.stringify({ ...ANSWER, ...bad })).ok, false, JSON.stringify(bad));
+    }
+    assert.equal(st.readTags(JSON.stringify({ ...ANSWER, gender: "womens", cut: "bike-short" })).tags.cut, "bike-short");
+    const s = st.tagSchema();
+    assert.deepEqual(s.properties.gender.enum, ["mens", "womens", "unisex"]);
+    assert.ok(s.properties.cut.enum.includes("bike-short"));
+    assert.ok(s.required.includes("gender") && s.required.includes("knit"));
+    assert.match(st.buildTagPrompt({ brand: "Alo", name: "Alo short", websiteName: "Compression bike shorts", categoryKey: "shorts" }), /Shop title: Compression bike shorts[\s\S]*gender: who it is made for/);
+  });
+  test("v2 from the name: women's words and cuts, headwear kinds, knitwear", () => {
+    assert.deepEqual(st.nameGender("High-waisted compression bike shorts with side pockets"), { gender: "womens", cut: "bike-short" });
+    assert.deepEqual(st.nameGender("Nike Wmns Dunk Low"), { gender: "womens", cut: null });
+    assert.deepEqual(st.nameGender("Nike tech fleece joggers"), { gender: null, cut: null });
+    assert.equal(st.nameGender("Ribbed cropped tank top").cut, "crop");
+    assert.equal(st.nameGender("Leather dress shoes").gender, null);
+    assert.equal(st.nameHeadwear("Ribbed turn-up knit beanie brown"), "beanie");
+    assert.equal(st.nameHeadwear("Hugo Boss knit cap"), "beanie");
+    assert.equal(st.nameHeadwear("New Era 59FIFTY fitted"), "cap");
+    assert.equal(st.nameKnit("Henley-collar knit sweater in heathered taupe"), true);
+    assert.equal(st.nameKnit("Ribbed-knit short-sleeve polo"), false);
+    const t = st.nameTags({ name: "Nike shorts", categoryKey: "shorts" });
+    assert.equal(t.gender, null, "a name that says nothing is UNKNOWN, never unisex");
   });
   test("secondary none, or the same as dominant, is null", () => {
     assert.equal(st.readTags(JSON.stringify({ ...ANSWER, secondary: "none" })).tags.secondary, null);
@@ -81,7 +113,7 @@ const PNG = async () => {
 
 describe("ensureStyleTags", () => {
   test("cached tags are read, never re-tagged; missing ones tagged once and cached", async () => {
-    const db = new FakeRtdb({ social_lookbook: { styleTags: { p1: { v: 1, ...ANSWER, source: "vision" } } } });
+    const db = new FakeRtdb({ social_lookbook: { styleTags: { p1: { v: 2, ...ANSWER, source: "vision" } } } });
     const calls = [];
     const fetchImpl = okFetch({ ...ANSWER, dominant: "olive", family: "streetwear" }, calls);
     const items = [
@@ -124,6 +156,39 @@ describe("ensureStyleTags", () => {
       assert.equal(db._get(["social_lookbook", "styleTags", "old"]).dominant, "black");
       assert.equal(await io.hasTagRecord(db, "old"), true);
     } finally { global.fetch = orig; }
+  });
+
+  test("a v1 record is topped up: same call, its colours kept, gender added; then never again", async () => {
+    const db = new FakeRtdb({ social_lookbook: { styleTags: { v1: { v: 1, ...V1, dominant: "olive", source: "vision", model: "gemini-3.1-flash-lite", at: 1 } } } });
+    const calls = [];
+    const orig = global.fetch;
+    global.fetch = okFetch({ ...ANSWER, dominant: "black", gender: "womens", cut: "bike-short" }, calls);
+    try {
+      assert.equal(await io.hasTagRecord(db, "v1"), false);
+      const items = [{ pid: "v1", photoUrl: "u", product: { brand: "Alo", name: "Alo short cream white", categoryKey: "shorts" }, websiteName: "High-waisted compression bike shorts" }];
+      const r = await io.ensureStyleTags(db, items, { geminiApiKey: "k", fetchImage: PNG });
+      assert.equal(r.tagged, 1);
+      const rec = db._get(["social_lookbook", "styleTags", "v1"]);
+      assert.equal(rec.v, 2);
+      assert.equal(rec.dominant, "olive", "the v1 colour is kept");
+      assert.equal(rec.gender, "womens");
+      assert.equal(rec.cut, "bike-short");
+      assert.equal(rec.at, 1);
+      assert.ok(rec.v2 && rec.v2.at);
+      assert.equal(r.tags.get("v1").gender, "womens");
+      assert.match(calls[0].body.contents[0].parts[1].text, /Alo — Alo short cream white[\s\S]*Shop title: High-waisted compression bike shorts/);
+      const again = await io.ensureStyleTags(db, items, { geminiApiKey: "k", fetchImage: PNG });
+      assert.equal(again.tagged, 0);
+      assert.equal(calls.length, 1);
+    } finally { global.fetch = orig; }
+  });
+
+  test("a v1 record past the ceiling keeps its photo tags with gender unknown, never a name guess", async () => {
+    const db = new FakeRtdb({ social_lookbook: { styleTags: { v1: { v: 1, ...V1, source: "vision" } } } });
+    const r = await io.ensureStyleTags(db, [{ pid: "v1", photoUrl: "u", product: { name: "Nike shorts", categoryKey: "shorts" } }], {}, {});
+    assert.equal(r.tags.get("v1").source, "vision");
+    assert.equal(r.tags.get("v1").gender, null);
+    assert.equal(r.named, 0);
   });
 
   test("past the ceiling, or with no key, the name is read and nothing is cached", async () => {

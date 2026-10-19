@@ -359,7 +359,7 @@
     "weightLook": 10,
     "weightFresh": 6,
     "offSeasonPenalty": 6,
-    "perPieceOverMin": 3,
+    "perPieceOverMin": 2,
     "whiteSneakerBonus": 0.12,
     "echoBonus": 0.08,
     "secondAccentPenalty": 0.3,
@@ -399,6 +399,34 @@
       "shoulder": 1
     }
   },
+  "seasonRules": {
+    "summer": {
+      "outerPenalty": 20,
+      "knitPenalty": 20,
+      "headwear": [
+        "cap"
+      ]
+    },
+    "shoulder": {
+      "outerPenalty": 0,
+      "knitPenalty": 4,
+      "headwear": [
+        "cap",
+        "beanie",
+        "bucket"
+      ]
+    },
+    "winter": {
+      "outerPenalty": 0,
+      "knitPenalty": 0,
+      "headwear": [
+        "cap",
+        "beanie",
+        "bucket",
+        "visor"
+      ]
+    }
+  },
   "looks": [
     {
       "key": "clean-monochrome",
@@ -423,8 +451,7 @@
       ],
       "core": [
         [
-          "tee",
-          "jacket"
+          "tee"
         ],
         [
           "bottoms"
@@ -468,8 +495,7 @@
       ],
       "core": [
         [
-          "tee",
-          "jacket"
+          "tee"
         ],
         [
           "bottoms"
@@ -479,7 +505,6 @@
         ]
       ],
       "extras": [
-        "hat",
         "jacket",
         "bag"
       ],
@@ -517,8 +542,7 @@
       ],
       "core": [
         [
-          "tee",
-          "jacket"
+          "tee"
         ],
         [
           "bottoms"
@@ -574,7 +598,6 @@
         ]
       ],
       "extras": [
-        "hat",
         "jacket",
         "bag"
       ],
@@ -606,8 +629,7 @@
       ],
       "core": [
         [
-          "tee",
-          "jacket"
+          "tee"
         ],
         [
           "bottoms"
@@ -617,7 +639,6 @@
         ]
       ],
       "extras": [
-        "hat",
         "jacket",
         "bag"
       ],
@@ -661,7 +682,6 @@
         ]
       ],
       "extras": [
-        "hat",
         "bag"
       ],
       "requires": [

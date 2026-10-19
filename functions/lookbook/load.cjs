@@ -20,6 +20,8 @@
 
 const socialSelect = require("../lib/social-select.cjs");
 const lookbook = require("../lib/social-lookbook.cjs");
+const { cleanProductName } = require("../lib/product-name.cjs");
+const { nameGender } = require("../lib/style-tags.cjs");
 
 const READ_BATCH = 20;
 // Up to twelve rounds of READS_PER_SLOT, but only a slot short of
@@ -72,6 +74,12 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
         // No brand, or no usable website name: never on a lookbook, so no stock reads.
         const brand = lookbook.posterBrand(v);
         if (!brand || !lookbook.panelName(node && node.cleanName, v, brand).name) return;
+        // A raw display name ("Jacket brown", "Wanchao Wear 6925"), or a name
+        // that says it is women's: never on a men's lookbook, so no stock
+        // reads and no place in the slot's quota. (Tags decide the rest.)
+        const display = cleanProductName(String(v.name || ""));
+        if (lookbook.displayNameRefusal(display, v)) return;
+        if (nameGender(`${node && node.cleanName} ${display}`).gender) return;
         const cells = await Promise.all(locations.map((loc) => db.ref(`stock/${loc}/${pid}`).once("value")));
         reads.stock += locations.length;
         const tree = {};

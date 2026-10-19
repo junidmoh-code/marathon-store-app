@@ -6,7 +6,8 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const sty = require("../lib/stylist.cjs");
 
-const T = (over = {}) => ({ dominant: "black", secondary: null, pattern: "solid", silhouette: "regular", family: "streetwear", formality: 3, season: "all", ...over });
+// v2 tags: men's, no women's cut; a hat in these fixtures is a cap.
+const T = (over = {}) => ({ dominant: "black", secondary: null, pattern: "solid", silhouette: "regular", family: "streetwear", formality: 3, season: "all", gender: "mens", cut: "none", headwear: "cap", knit: false, ...over });
 let n = 0;
 const P = (slot, tags = {}, over = {}) => ({ pid: over.pid || `${slot}${++n}`, slot, price: 300, fresh: 0.5, tags: T(tags), categoryKey: over.categoryKey || null, ...over });
 
@@ -179,11 +180,12 @@ describe("styleOutfits", () => {
     // Pruned while building, so no enumerated outfit holds both loud pieces.
     assert.ok(!r.outfits.some((o) => ["t-orange-print", "b-denim-logo"].every((id) => o.pieces.some((p) => p.pid === id))));
   });
-  test("the price band is a hard limit", () => {
-    const r = sty.styleOutfits(CATALOGUE(), { ...opts, band: { min: 1400, max: 1700 } });
-    for (const o of r.outfits) assert.ok(o.total >= 1400 && o.total <= 1700, String(o.total));
-    const none = sty.styleOutfits(CATALOGUE(), { ...opts, band: { min: 100, max: 200 } });
-    assert.equal(none.outfits.length, 0);
+  test("price never refuses: a preferred range nobody fits still dresses every outfit", () => {
+    const all = sty.styleOutfits(CATALOGUE(), opts);
+    const r = sty.styleOutfits(CATALOGUE(), { ...opts, prefer: { min: 100, max: 200 } });
+    assert.equal(r.outfits.length, all.outfits.length);
+    assert.ok(r.outfits.every((o) => o.inPrefer === false));
+    assert.equal("nearest" in r, false);
   });
   test("a forced look returns only outfits of that look", () => {
     const r = sty.styleOutfits(CATALOGUE(), { ...opts, look: "earth-tone-street" });

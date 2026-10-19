@@ -11,7 +11,8 @@
 //            the kind's maxProducts with cap, bag and fragrance as extras.
 //   flatlay  three to five pieces from different slots, no template.
 //
-// No band (only the lookbook has one), the same hard rules, the same score,
+// No price rule at all, the same hard rules, the same menswear and season
+// exclusions, the same score,
 // the same shortlist and the same one text-model tie-break. Pure.
 //
 // Only products with an outfit slot (social-select outfitSlot: shoes, tops,
@@ -23,6 +24,7 @@
 const socialSelect = require("./social-select.cjs");
 const styleTags = require("./style-tags.cjs");
 const stylist = require("./stylist.cjs");
+const { displayNameRefusal, displayNameOf } = require("./social-lookbook.cjs");
 
 const STYLED_KINDS = new Set(["pairing", "outfit", "flatlay"]);
 // The stylist's slot for a social outfit slot (social-select SLOT_MATCHERS).
@@ -47,10 +49,17 @@ const SHAPE_SLOT = { top: ["tee", "jacket"], shoe: ["sneakers"], bottom: ["botto
 const SOCIAL_PER_SLOT = 4;
 const SHAPE_BONUS = 0.5;
 
-/** A social-select candidate as a stylist piece, or null. Pure. */
+/**
+ * A social-select candidate as a stylist piece, or null. A product whose
+ * display name (the label these posts print) is a category and colour only
+ * or a bare stock number with no brand is never a piece (Junid, 19 Oct). Who
+ * it is cut for is decided in the stylist (menswearRefusal). Pure.
+ */
 function pieceOf(c, tags) {
   const slot = stylistSlot(c);
   if (!slot) return null;
+  const displayName = displayNameOf(c);
+  if (displayNameRefusal(displayName, c.product)) return null;
   const p = c.product || {};
   const key = String(p.categoryKey || "").toLowerCase();
   return {
@@ -58,6 +67,7 @@ function pieceOf(c, tags) {
     fullBody: FULL_BODY.has(key),
     fresh: Math.max(0, Math.min(1, Number(c.score) || 0)),
     tags: (tags && tags.get(c.pid)) || styleTags.nameTags({ name: p.name, websiteName: c.name, brand: p.brand, categoryKey: p.categoryKey }),
+    displayName, websiteName: c.name || "",
     label: c.displayName || c.name || c.pid, ref: c,
   };
 }

@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const ss = require("../lib/social-stylist.cjs");
 const { outfitSlot, PAIRING_SHAPES } = require("../lib/social-select.cjs");
 
-const TAG = (over = {}) => ({ dominant: "black", secondary: null, pattern: "solid", silhouette: "regular", family: "streetwear", formality: 3, season: "all", source: "vision", ...over });
+const TAG = (over = {}) => ({ dominant: "black", secondary: null, pattern: "solid", silhouette: "regular", family: "streetwear", formality: 3, season: "all", gender: "mens", cut: "none", headwear: "cap", knit: false, source: "vision", ...over });
 // A buildCandidates-shaped row.
 const C = (pid, categoryKey, tag = {}, over = {}) => {
   const product = { categoryKey, brand: "Nike", name: `Nike ${categoryKey} ${pid}`, retailPrice: 500 };
@@ -102,5 +102,30 @@ describe("chooseStyledPicks", () => {
     const bad = ss.chooseStyledPicks("pairing", r, JSON.stringify({ choice: 1, note: "A great look for the weekend" }));
     assert.doesNotMatch(bad.look.note, /\b(look|outfit|fit)\b/i);
     assert.match(ss.styledChoicePrompt("pairing", r), /Never call them an outfit/);
+  });
+});
+
+// ── JUNID'S REVIEW OF SAMPLES 06–08 (19 Oct): THE SAME RULES ON EVERY POST ──
+describe("flat-lays, pairings and outfits are men's, caps-only in summer, real names only", () => {
+  test("the women's Alo bike shorts never reach a pairing, an outfit or a flat-lay", () => {
+    const pool = [...POOL(), C("alo", "shorts", { dominant: "cream", gender: "womens", cut: "bike-short", season: "summer" }, {
+      name: "High-waisted compression bike shorts with side pockets", displayName: "Alo Airlift high-rise short", score: 1,
+      product: { categoryKey: "shorts", brand: "Alo", name: "Alo Airlift high-rise short", retailPrice: 350 } })];
+    for (const kind of ["pairing", "outfit", "flatlay"]) {
+      const r = ss.styledPicksForKind(kind, pool, { tags: tagsOf(pool) });
+      assert.ok(!r.shortlist.some((o) => o.pieces.some((p) => p.pid === "alo")), kind);
+    }
+  });
+  test("a beanie is not a cap in October", () => {
+    const pool = [...POOL().filter((c) => c.pid !== "cap-black"), C("beanie", "caps-beanies", { silhouette: "n/a", headwear: "beanie", season: "winter" }, { score: 1, name: "Ribbed knit beanie" })];
+    const r = ss.styledPicksForKind("pairing", pool, { tags: tagsOf(pool), month: 10 });
+    assert.ok(!r.shortlist.some((o) => o.pieces.some((p) => p.pid === "beanie")));
+  });
+  test("a raw display name is never a piece", () => {
+    const t = TAG();
+    assert.equal(ss.pieceOf(C("jb", "jackets", {}, { displayName: "Jacket brown", product: { categoryKey: "jackets", brand: "Jacket", name: "Jacket brown #1513" } }), new Map([["jb", t]])), null);
+    assert.equal(ss.pieceOf(C("ww", "t-shirts", {}, { displayName: "Wanchao Wear 6925", product: { categoryKey: "t-shirts", brand: "Wanchao", name: "Wanchao Wear 6925" } }), new Map([["ww", t]])), null);
+    assert.equal(ss.pieceOf(C("bg", "bags", {}, { displayName: "Bag Green", product: { categoryKey: "bags", brand: "", name: "Bag Green" } }), new Map([["bg", t]])), null);
+    assert.ok(ss.pieceOf(C("ok", "t-shirts", {}, { displayName: "Nike Sportswear Club tee" }), new Map([["ok", t]])));
   });
 });

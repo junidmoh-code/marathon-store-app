@@ -98,13 +98,34 @@ describe("cut-out acceptance", () => {
 });
 
 describe("layout", () => {
-  test("rows re-space between header and total for 4..6 rows, in both canvases", () => {
-    for (const H of [1800, 1500]) for (const n of [4, 5, 6]) {
+  test("rows re-space between header and total for 3..6 rows, in both canvases", () => {
+    for (const H of [1800, 1500]) for (const n of [3, 4, 5, 6]) {
       const P = R.panelLayout(n, H);
       assert.equal(P.rows.length, n);
       assert.ok(P.rows[0].top >= P.header.top + P.header.h);
       assert.ok(P.rows[n - 1].top + P.rows[n - 1].h <= P.total.top);
       assert.ok(P.total.top + P.total.h < P.deliveryY);
+    }
+  });
+
+  test("a short look fills the panel instead of floating in it (Junid, 19 Oct)", () => {
+    for (const H of [1800, 1500]) for (const n of [3, 4]) {
+      const P = R.panelLayout(n, H);
+      assert.ok(Math.abs(P.rows[0].top - P.rowsTop) < 1e-6, "no empty band above");
+      assert.ok(Math.abs(P.rows[n - 1].top + P.rows[n - 1].h - P.rowsBottom) < 1e-6, "no empty band below");
+      assert.ok(P.thumb > R.panelLayout(6, H).thumb, `${n} rows: a larger cut-out than six`);
+    }
+    assert.equal(R.panelLayout(3, 1800).stacked, true);
+    assert.equal(R.panelLayout(4, 1800).stacked, false);
+    // Three rows stack: the cut-out is centred and inside its own row.
+    const rows = ["tee", "bottoms", "sneakers"].map((slot) => ({ slot, brandLine: "NIKE", nameLine: "A LONG ENOUGH NAME TO WRAP ONTO A SECOND LINE", priceText: "R650" }));
+    for (const H of [1800, 1500]) {
+      const built = R.buildPosterSvg({ W: 1200, H, rows, total: { text: "R1,950" }, anchorsPx: {}, headPx: null });
+      const P = R.panelLayout(3, H);
+      built.thumbs.forEach((t, i) => {
+        assert.ok(t.y >= P.rows[i].top && t.y + t.size <= P.rows[i].top + P.rows[i].h, `row ${i} at H ${H}`);
+        assert.ok(Math.abs(t.x + t.size / 2 - (1200 * R.HERO_FRAC + 24 + (1200 - 1200 * R.HERO_FRAC - 48) / 2)) <= 1, "centred");
+      });
     }
   });
 
