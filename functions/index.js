@@ -5525,12 +5525,15 @@ async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platfor
     const record = socialStill.buildLookbookRecord({
       rows: made.rows, total: made.total, urls, scheduledAt, platforms,
       engine: made.engine, costUSD: made.costUSD, nowMs, link, storyCaption,
-      masterSize: made.poster.master, scene: made.scene,
+      masterSize: made.poster.master, scene: made.scene, look: made.look,
     });
     // The feed shows a caption, so the twin gets a real one, written by the
     // same caption call every other feed post uses. A failure falls back to
-    // the plain line and never loses the poster.
-    const { caption, source, reason } = await writeSocialCaption({ kind: "outfit", picks, link, styleNotes: [] });
+    // the plain line and never loses the poster. The stylist's note ("why
+    // this works") is its last paragraph.
+    const written = await writeSocialCaption({ kind: "outfit", picks, link, styleNotes: [] });
+    const caption = socialStill.withStylingNote(written.caption, made.look && made.look.note);
+    const { source, reason } = written;
     const twinId = STORY_ALSO_POSTS_TO_FEED ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
     const twin = twinId
       ? socialTwin.buildFeedTwin(record, { twinId, storyId: postId, caption, captionSource: source, captionNote: reason })
@@ -5678,6 +5681,7 @@ exports.socialStillAutopilot = onSchedule(
               planned, posted: "lookbook", costUSD, postId: w.postId, twinId: w.twinId, scheduledAt,
               rows: made.rows.length, total: made.total.value, nowMs: Date.now(),
               scene: made.scene, thumbCostUSD: made.thumbCostUSD,
+              look: made.look, stylistCostUSD: made.stylistCostUSD,
             }));
             // The hero as drawn: its native size, and whether the 85% crop ran
             // (it needs the located head and shoes; without them the prompt's

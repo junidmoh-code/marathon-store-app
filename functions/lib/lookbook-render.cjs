@@ -110,7 +110,10 @@ function panelLayout(n, H) {
  * Lay out and draw the SVG layer for one canvas. Returns the SVG and the
  * thumbnail boxes the caller composites the cut-outs into.
  */
-function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1 }) {
+// The panel header when the stylist names no look.
+const DEFAULT_HEADER = ["THE EVERYDAY", "LEGACY COLLECTION"];
+
+function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1, header = DEFAULT_HEADER }) {
   const heroW = Math.round(W * HERO_FRAC);
   const panelX = heroW, panelW = W - heroW;
   const pad = 24;
@@ -212,12 +215,20 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1 }) {
   // ── THE PANEL ────────────────────────────────────────────────────────────
   const px0 = panelX + pad, px1 = W - pad, innerW = px1 - px0;
   out.push(`<rect x="${px0}" y="${P.header.top}" width="${innerW}" height="${P.header.h}" fill="${INK}"/>`);
+  // The stylist's look name ("EARTH TONE" / "STREET"), one or two lines, set
+  // at one size: the widest line fits the bar. The house line is the fallback.
+  const lines = (Array.isArray(header) && header.length ? header : DEFAULT_HEADER).slice(0, 2).map((l) => String(l).toUpperCase());
   const headOpts = { font: "archivo", weight: 800, letterSpacing: 3 };
-  const headSize = Math.min(24, type.sizeForWidth("LEGACY COLLECTION", innerW - 44, { ...headOpts }));
+  const widest = lines.reduce((a, b) => (type.measure(b, { ...headOpts, size: 24 }) > type.measure(a, { ...headOpts, size: 24 }) ? b : a));
+  const headSize = Math.min(24, type.sizeForWidth(widest, innerW - 44, { ...headOpts }));
   const hCap = type.capHeight("archivo", headSize, 800);
   const hMid = P.header.top + P.header.h / 2;
-  out.push(T("THE EVERYDAY", { ...headOpts, size: headSize, x: px0 + innerW / 2, y: hMid - 7, anchor: "middle", fill: "#fff" }));
-  out.push(T("LEGACY COLLECTION", { ...headOpts, size: headSize, x: px0 + innerW / 2, y: hMid + 7 + hCap, anchor: "middle", fill: "#fff" }));
+  if (lines.length === 1) {
+    out.push(T(lines[0], { ...headOpts, size: headSize, x: px0 + innerW / 2, y: hMid + hCap / 2, anchor: "middle", fill: "#fff" }));
+  } else {
+    out.push(T(lines[0], { ...headOpts, size: headSize, x: px0 + innerW / 2, y: hMid - 7, anchor: "middle", fill: "#fff" }));
+    out.push(T(lines[1], { ...headOpts, size: headSize, x: px0 + innerW / 2, y: hMid + 7 + hCap, anchor: "middle", fill: "#fff" }));
+  }
 
   const thumbs = [];
   const textX = px0 + P.thumb + 18;
@@ -503,7 +514,7 @@ async function gridOverlay(buffer, grid) {
  * @param anchors   { slot: {x,y} } fractions of the GENERATED photograph
  * @param subject   { x, y } fraction: the model's centre / head, or null
  */
-async function renderCanvas({ hero, rows, total, anchors, subject, body = null, W, H, scale = RENDER_SCALE }) {
+async function renderCanvas({ hero, rows, total, anchors, subject, body = null, W, H, scale = RENDER_SCALE, header }) {
   const sharp = require("sharp");
   const meta = await sharp(hero).metadata();
   const heroW = Math.round(W * HERO_FRAC);
@@ -518,7 +529,7 @@ async function renderCanvas({ hero, rows, total, anchors, subject, body = null, 
   const anchorsPx = {};
   for (const [slot, a] of Object.entries(anchors || {})) anchorsPx[slot] = toDesign(frame.toPx(a.x, a.y));
   const headPx = subject && Number.isFinite(subject.y) ? toDesign(frame.toPx(subject.x, subject.y)) : null;
-  const built = buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale });
+  const built = buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale, header });
   const layers = [
     { input: heroBuf, left: 0, top: 0 },
     { input: grain(PW - pHeroW, PH), raw: { width: PW - pHeroW, height: PH, channels: 4 }, left: pHeroW, top: 0 },
@@ -543,7 +554,8 @@ async function renderCanvas({ hero, rows, total, anchors, subject, body = null, 
  * `rows[i].thumb` is the product photo buffer; the cut-out is made once per
  * thumbnail size used.
  */
-async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null, body = null, scale = RENDER_SCALE }) {
+async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null, body = null, scale = RENDER_SCALE, header = null }) {
+  header = header && header.length ? header : DEFAULT_HEADER;
   const sharp = require("sharp");
   if (!rows || !rows.length) throw new Error("renderLookbookPoster: no rows");
   const totalValue = rows.reduce((s, r) => s + r.price, 0);
@@ -557,8 +569,8 @@ async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null, 
     for (const size of sizes) thumbLayers[size] = await thumbLayer(row, size);
     return { ...row, thumbLayers };
   }));
-  const master = await renderCanvas({ hero, rows: prepared, total, anchors, subject, body, W: MASTER.w, H: MASTER.h, scale });
-  const feedNative = await renderCanvas({ hero, rows: prepared, total, anchors, subject, body, W: FEED_LAYOUT.w, H: FEED_LAYOUT.h, scale });
+  const master = await renderCanvas({ hero, rows: prepared, total, anchors, subject, body, W: MASTER.w, H: MASTER.h, scale, header });
+  const feedNative = await renderCanvas({ hero, rows: prepared, total, anchors, subject, body, W: FEED_LAYOUT.w, H: FEED_LAYOUT.h, scale, header });
   const feed = await sharp(feedNative.buffer).resize(FEED.w, FEED.h, { kernel: "lanczos3" }).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
   const storyH = Math.round(MASTER.h * (STORY.w / MASTER.w));
   const padTop = Math.floor((STORY.h - storyH) / 2);
@@ -578,11 +590,12 @@ async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null, 
     heroScale: { master: master.frame.scale, feed: feedNative.frame.scale },
     leaders: { master: master.built.leaders, feed: feedNative.built.leaders },
     thumbBoxes: master.built.thumbs,
+    header,
   };
 }
 
 module.exports = {
   renderLookbookPoster, buildPosterSvg, panelLayout, heroFrame, cutout, gridOverlay,
   planLeaders, segmentsCross, thumbFit, alphaTrim, THUMB_PAD,
-  PAPER, HERO_FRAC, MASTER, FEED, FEED_LAYOUT, STORY, RENDER_SCALE,
+  PAPER, HERO_FRAC, MASTER, FEED, FEED_LAYOUT, STORY, RENDER_SCALE, DEFAULT_HEADER,
 };

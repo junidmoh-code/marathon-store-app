@@ -22,10 +22,12 @@ const socialSelect = require("../lib/social-select.cjs");
 const lookbook = require("../lib/social-lookbook.cjs");
 
 const READ_BATCH = 20;
-// Four rounds of READS_PER_SLOT: at most 6 x 8 x 4 = 192 product point reads,
+// Six rounds of READS_PER_SLOT: at most 6 x 8 x 6 = 288 product point reads,
 // and only a slot short of WANT_PER_SLOT eligible products reads past the first.
-const ROUNDS = 4;
-const WANT_PER_SLOT = 3;
+// The stylist needs a real choice of colours per slot, not the three the
+// price band needed (it combines up to the guide's perSlot per look).
+const ROUNDS = 6;
+const WANT_PER_SLOT = 10;
 
 /**
  * @param db  an RTDB handle (admin.database() or a test fake)
@@ -102,10 +104,15 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
   return { candidates, reads, liveCount: Object.keys(live).length };
 }
 
-/** social_lookbook/history, the last HISTORY_DEPTH days by key. Bounded. */
-async function loadRecentLookbookPids(db) {
+/** social_lookbook/history, the last HISTORY_DEPTH days by key, as stored. Bounded. */
+async function loadLookbookHistory(db) {
   const snap = await db.ref("social_lookbook/history").orderByKey().limitToLast(lookbook.HISTORY_DEPTH).once("value");
-  return lookbook.recentLookbookPids(snap.val());
+  return snap.val();
 }
 
-module.exports = { loadLookbookCandidates, loadRecentLookbookPids };
+/** The pids of those lookbooks. */
+async function loadRecentLookbookPids(db) {
+  return lookbook.recentLookbookPids(await loadLookbookHistory(db));
+}
+
+module.exports = { loadLookbookCandidates, loadLookbookHistory, loadRecentLookbookPids };

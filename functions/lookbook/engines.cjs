@@ -14,6 +14,9 @@
 //     caption model). claude-haiku-4-5 was tried first and placed the hat a
 //     head-height above the beanie on the first real poster (2026-10-17);
 //     about a cent more per poster buys dots that land on the garments.
+//   · the stylist's tie-break (stylist-call.cjs): one claude-haiku-5-5 call
+//     over the shortlist, and the Gemini key for tagging a product the
+//     style-tag pre-warm has not reached;
 //   · the day's generation cap: social_generation_budget/{saDate}/count,
 //     reserved through social-budget's reserveGeneration and released through
 //     social-recovery's releaseGeneration. The same counter, the same
@@ -24,6 +27,7 @@ const gemini = require("../lib/gemini-image.cjs");
 const socialBudget = require("../lib/social-budget.cjs");
 const socialRecovery = require("../lib/social-recovery.cjs");
 const lookbook = require("../lib/social-lookbook.cjs");
+const { makeStylistChooser } = require("./stylist-call.cjs");
 
 // 4K output: $0.24 on Pro, $0.151 on Flash (Gemini API pricing, Oct 2026),
 // the estimates used when a response carries no usage metadata.
@@ -201,6 +205,9 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
     generateThumb, claimThumbUnit, readThumbCache, writeThumbCache, markThumbFailed, readModelRef,
     inlineImagePart: gemini.inlineImagePart,
     isUnbilledError: (m) => socialRecovery.isUnbilledProviderError(m),
+    // No Anthropic key (the thumbnail pre-warm): no chooser, the top score stands.
+    chooseOutfit: anthropicApiKey && Anthropic ? makeStylistChooser({ Anthropic, apiKey: anthropicApiKey }) : null,
+    geminiApiKey,
     log, deadlineMs,
   };
 }
