@@ -20,6 +20,8 @@
 
 const socialSelect = require("../lib/social-select.cjs");
 const lookbook = require("../lib/social-lookbook.cjs");
+const { cleanProductName } = require("../lib/product-name.cjs");
+const { nameGender, nameHeadwear } = require("../lib/style-tags.cjs");
 
 const READ_BATCH = 20;
 // Up to twelve rounds of READS_PER_SLOT, but only a slot short of
@@ -28,8 +30,10 @@ const READ_BATCH = 20;
 // 19 Oct six rounds left the stylist ONE tee and two jackets (most tees fail
 // the website-name rule), so four of the six looks could not be dressed.
 // Worst case 6 x 8 x 12 = 576 product point reads; a normal day ~300.
+// 14, not 10, since 19 Oct: the tags remove women's and untagged pieces
+// AFTER the load, so a slot reads a few spare.
 const ROUNDS = 12;
-const WANT_PER_SLOT = 10;
+const WANT_PER_SLOT = 14;
 
 /**
  * @param db  an RTDB handle (admin.database() or a test fake)
@@ -39,14 +43,18 @@ const WANT_PER_SLOT = 10;
  *                   would not count toward a slot's WANT_PER_SLOT anyway
  * @returns { candidates, reads: { products, stock }, liveCount }
  */
-async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null, readsPerSlot = lookbook.READS_PER_SLOT, skip = new Set() } = {}) {
+async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null, readsPerSlot = lookbook.READS_PER_SLOT, skip = new Set(), skipSlots = new Set(), skipHeadwear = [] } = {}) {
   const live = liveNodes || ((await db.ref("shopify_publish").orderByChild("state").equalTo("live").once("value")).val() || {});
   const queues = new Map(lookbook.SLOT_KEYS.map((k) => [k, []]));
   for (const [pid, n] of Object.entries(live)) {
     if (!n || n.state !== "live" || n.liveState !== "on" || !n.cleanName) continue;
     if (skip.has(pid)) continue;
     const g = lookbook.guessSlot(n.cleanName);
-    if (g) queues.get(g).push({ pid, liveAt: Number(n.liveAt) || 0 });
+    // A hat the season removes anyway ("beanie" in a Durban summer) costs no
+    // read: on 19 Oct beanies filled the hat queue and the caps behind them
+    // were never reached.
+    if (g === "hat" && skipHeadwear.length && skipHeadwear.includes(nameHeadwear(n.cleanName))) continue;
+    if (g && !skipSlots.has(g)) queues.get(g).push({ pid, liveAt: Number(n.liveAt) || 0 });
   }
   // Newest first: the bias to new arrivals starts in what is read at all.
   for (const q of queues.values()) q.sort((a, b) => b.liveAt - a.liveAt || (a.pid < b.pid ? -1 : 1));
@@ -72,6 +80,12 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
         // No brand, or no usable website name: never on a lookbook, so no stock reads.
         const brand = lookbook.posterBrand(v);
         if (!brand || !lookbook.panelName(node && node.cleanName, v, brand).name) return;
+        // A raw display name ("Jacket brown", "Wanchao Wear 6925"), or a name
+        // that says it is women's: never on a men's lookbook, so no stock
+        // reads and no place in the slot's quota. (Tags decide the rest.)
+        const display = cleanProductName(String(v.name || ""));
+        if (lookbook.displayNameRefusal(display, v)) return;
+        if (nameGender(`${node && node.cleanName} ${display}`).gender) return;
         const cells = await Promise.all(locations.map((loc) => db.ref(`stock/${loc}/${pid}`).once("value")));
         reads.stock += locations.length;
         const tree = {};
@@ -97,7 +111,7 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
     }
     if (!batch.length) break;
     await readPids(batch);
-    if (lookbook.SLOT_KEYS.every((k) => (haveSlot.get(k) || 0) >= WANT_PER_SLOT)) break;
+    if (lookbook.SLOT_KEYS.every((k) => skipSlots.has(k) || (haveSlot.get(k) || 0) >= WANT_PER_SLOT)) break;
   }
 
   // The lookbook keeps its own 14-lookbook memory, so the reels' 45-day

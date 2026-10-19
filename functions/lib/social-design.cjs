@@ -596,5 +596,5 @@ function buildOverlay({ products = [], edges = {}, kind = "single", storefront =
 module.exports = {
   buildOverlay, buildVerticalOverlay, verticalLayout, renderVerticalSvg, textBox,
   CANVAS, FORMATS, canvasFor, isVertical, FONT, FONT_DIR, chooseLayout, sellableRows, outfitTotal,
-  splitName, rand, fitLines, textWidth, SAFE_BAND, FEED_CROP_TOP, ASCENT, DESCENT, W, H,
+  BRANDS, splitName, rand, fitLines, textWidth, SAFE_BAND, FEED_CROP_TOP, ASCENT, DESCENT, W, H,
 };

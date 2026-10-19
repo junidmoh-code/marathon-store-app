@@ -3,19 +3,29 @@
 // here, against the style guide (docs/style-guide.md → style-guide.json) and
 // each product's style tags (lib/style-tags.cjs). Pure: no RTDB, no network.
 //
+//   0. EXCLUDE     before anything is scored: a piece that is not menswear
+//                  (gender womens or unknown, or a women's-only cut such as
+//                  bike shorts, by tag OR by name), and headwear the season
+//                  does not allow (no beanie Oct–Mar: the guide's
+//                  seasonRules). Junid's review of samples 06–08, 19 Oct.
 //   1. ENUMERATE   every combination the post's slot template allows, from
 //                  the best `perSlot` candidates per slot, once per named look
-//                  (that look's palette) and once with no palette filter.
+//                  (that look's palette, and for the lookbook only the
+//                  optional slots that look declares) and once with no
+//                  palette filter.
 //   2. REFUSE      anything that breaks a hard rule: two accent hues, two loud
 //                  pieces, formality more than 2 apart, all oversized, two
-//                  style families that do not border each other. And, for
-//                  the lookbook, a total outside the price band.
+//                  style families that do not border each other. Never the
+//                  price: no outfit is refused on its total.
 //   3. SCORE       what is left, out of 100: colour harmony, silhouette
-//                  balance, one style family, formality, season, how cleanly
-//                  it matches a named look, freshness (+ a few points per
-//                  lookbook piece over four).
+//                  balance, one style family, formality, season (and the
+//                  season's outer-layer and knitwear penalty), how cleanly it
+//                  matches a named look, freshness (+ a few points per
+//                  lookbook piece over three).
 //   4. SHORTLIST   the best `shortlist` outfits within `tieWindow` points of
-//                  the top, each differing from the others by two pieces.
+//                  the top, each differing from the others by two pieces. An
+//                  exact tie (to 0.1 point) goes to the total inside the
+//                  preferred price range, `prefer`.
 //
 // A text model then picks one of the shortlist and writes the styling note
 // (buildChoicePrompt / readChoice); the scores decide everything else, so the
@@ -24,6 +34,7 @@
 "use strict";
 
 const GUIDE = require("./style-guide.json");
+const { nameGender, nameHeadwear, nameKnit, WOMENS_CUTS } = require("./style-tags.cjs");
 
 const ACCESSORY_SLOTS = new Set(["hat", "bag", "fragrance"]);
 const GARMENT_SLOTS = new Set(["jacket", "tee", "bottoms"]);
@@ -33,6 +44,54 @@ const ORDER = ["tee", "bottoms", "sneakers", "jacket", "hat", "bag", "fragrance"
 /** "summer" | "winter" | "shoulder" for a 1–12 month in Durban. Pure. */
 function seasonOf(month, guide = GUIDE) {
   return guide.seasons[String(month)] || guide.seasons[month] || "shoulder";
+}
+
+/** The guide's rules for a season: { outerPenalty, knitPenalty, headwear: [...] }. Pure. */
+function seasonRulesFor(season, guide = GUIDE) {
+  return (guide.seasonRules && guide.seasonRules[season]) || { outerPenalty: 0, knitPenalty: 0, headwear: ["cap", "beanie", "bucket", "visor"] };
+}
+
+// The words a piece is known by: its till name and its website name.
+const namesOf = (p) => [p.displayName, p.websiteName, p.label].filter(Boolean).join(" ");
+
+/**
+ * Why a piece cannot go on a men's post, or null. Hard: decided before any
+ * scoring. Women's by tag, a women's-only cut by tag, women's words or a
+ * women's cut in either name (Alo "High-waisted compression bike shorts",
+ * sample 08), or no gender tag at all: unknown is never assumed unisex. Pure.
+ */
+function menswearRefusal(p) {
+  const t = p.tags || {};
+  const byName = nameGender(namesOf(p));
+  if (t.gender === "womens") return "womenswear";
+  if (t.cut && WOMENS_CUTS.includes(t.cut)) return `a women's cut (${t.cut})`;
+  if (byName.cut) return `a women's cut (${byName.cut}) by its name`;
+  if (byName.gender) return "womenswear by its name";
+  if (t.gender !== "mens" && t.gender !== "unisex") return "no gender tag";
+  return null;
+}
+
+/** The kind of hat a piece is: the name first (it says "beanie"), then the tag, then the category. Pure. */
+const HEADWEAR_BY_KEY = { "fitted-caps": "cap", visors: "visor" };
+function headwearOf(p) {
+  return nameHeadwear(namesOf(p)) || (p.tags && p.tags.headwear && p.tags.headwear !== "n/a" ? p.tags.headwear : null)
+    || HEADWEAR_BY_KEY[p.categoryKey] || null;
+}
+
+/** Is the piece knitwear (a sweater, cardigan, sweater vest)? Tag or name. Pure. */
+function isKnitwear(p) {
+  if (!GARMENT_SLOTS.has(p.slot)) return false;
+  return Boolean(p.tags && p.tags.knit) || nameKnit(namesOf(p));
+}
+
+/**
+ * The season's points off for one piece: an outer layer (the jacket slot:
+ * jackets, hoodies, cardigans) or knitwear, the larger of the two (a knitted
+ * cardigan is not charged twice). Pure.
+ */
+function layerPenalty(p, season, guide = GUIDE) {
+  const sr = seasonRulesFor(season, guide);
+  return Math.max(p.slot === "jacket" ? sr.outerPenalty : 0, isKnitwear(p) ? sr.knitPenalty : 0);
 }
 
 const fam = (c, guide) => (guide.palette[c] ? guide.palette[c].family : null);
@@ -151,9 +210,11 @@ function seasonScore(pieces, season, guide = GUIDE) {
 }
 
 /** How cleanly the pieces match one look, 0–1, or null when its conditions fail. Pure. */
-function lookMatch(pieces, look, { season, template = true, guide = GUIDE } = {}) {
+function lookMatch(pieces, look, { season, template = true, lookSlots = false, guide = GUIDE } = {}) {
   const has = (slot) => pieces.some((p) => p.slot === slot || (slot === "bottoms" && p.fullBody));
   if (template && !look.core.every((alts) => alts.some(has))) return null;
+  // The lookbook: a look wears only the optional pieces it declares.
+  if (lookSlots && !pieces.every((p) => lookAllows(look, p.slot))) return null;
   for (const w of look.requires) {
     if (w === "mono" && !isMono(pieces, guide)) return null;
     if (w === "noaccent" && dominantAccents(pieces, guide).size) return null;
@@ -169,6 +230,11 @@ function lookMatch(pieces, look, { season, template = true, guide = GUIDE } = {}
   const core = pieces.filter((p) => !ACCESSORY_SLOTS.has(p.slot));
   const famFrac = core.length ? core.filter((p) => look.families.includes(p.tags.family)).length / core.length : 1;
   return 0.6 * coverage + 0.4 * famFrac;
+}
+
+/** Does a look's template have room for this slot (core or extras)? Pure. */
+function lookAllows(look, slot) {
+  return look.core.some((alts) => alts.includes(slot)) || look.extras.includes(slot);
 }
 
 /** The best-matching look, or null. Ties go to the guide's order. Pure. */
@@ -192,7 +258,7 @@ function scoreOutfit(pieces, ctx = {}) {
   const season = ctx.season || "summer";
   const c = colourScore(pieces, guide), s = silhouetteScore(pieces), f = familyScore(pieces, guide);
   const fo = formalityScore(pieces), se = seasonScore(pieces, season, guide);
-  const bl = bestLook(pieces, { season, template: ctx.template !== false, guide });
+  const bl = bestLook(pieces, { season, template: ctx.template !== false, lookSlots: Boolean(ctx.lookSlots), guide });
   const fresh = pieces.length ? pieces.reduce((a, p) => a + Math.max(0, Math.min(1, Number(p.fresh) || 0)), 0) / pieces.length : 0;
   const parts = {
     colour: r.weightColour * c.score, silhouette: r.weightSilhouette * s.score, family: r.weightFamily * f.score,
@@ -202,27 +268,37 @@ function scoreOutfit(pieces, ctx = {}) {
     // A piece made for the other season costs on its own, not just as a share
     // of the average: one beanie in January must not ride along for a row.
     offSeason: season === "shoulder" ? 0 : -r.offSeasonPenalty * pieces.filter((p) => p.tags.season !== "all" && p.tags.season !== season).length || 0,
+    // The season's hard penalty on outer layers and knitwear (guide
+    // seasonRules): a cardigan over a sweater vest in a Durban October.
+    layers: -pieces.reduce((a, p) => a + layerPenalty(p, season, guide), 0) || 0,
   };
   for (const k of Object.keys(parts)) parts[k] = Math.round(parts[k] * 100) / 100;
   const score = Math.round(Object.values(parts).reduce((a, b) => a + b, 0) * 100) / 100;
-  const reasoning = [...c.why, ...s.why, ...f.why, ...fo.why, ...se.why].join("; ");
+  const layered = pieces.filter((p) => layerPenalty(p, season, guide) > 0);
+  const lw = layered.length ? [`${layered.map((p) => (isKnitwear(p) ? "knitwear" : "an outer layer")).join(" and ")} in the Durban ${season} season`] : [];
+  const reasoning = [...c.why, ...s.why, ...f.why, ...fo.why, ...se.why, ...lw].join("; ");
   return { score, parts, look: bl ? bl.look.key : null, lookMatch: bl ? Math.round(bl.match * 100) / 100 : 0, reasoning };
 }
 
 /**
  * Enumerate, refuse, score and shortlist.
  *
- * @param pieces [{ pid, slot, price|null, fresh 0–1, tags, categoryKey?, fullBody?, ref }]
+ * @param pieces [{ pid, slot, price|null, fresh 0–1, tags, categoryKey?, fullBody?, displayName?, websiteName?, ref }]
  * @param opts {
  *   core: [[slot, …alternatives], …]   every group must be filled (null: no template)
  *   slots: the slots that may appear (default: every slot in ORDER)
- *   minPieces, maxPieces, band { min, max } | null,
+ *   minPieces, maxPieces,
+ *   prefer { min, max } | null           the preferred total: an exact-tie breaker only
  *   fits(chosenRefs, ref) → boolean      wardrobe context (social-select fitsWith)
  *   month, look: force one look key, perPieceBonus, template (looks' slot templates apply)
+ *   lookSlots: each look enumerates only its declared optional slots, and an
+ *              outfit that matches no look wears no headwear (the lookbook)
+ *   noHeadwear: no hat at all (the lookbook's one-in-three rotation)
+ *   requireSlots: [slot, …] every outfit must include these (the samples)
+ *   menswear: false lets non-menswear through (default true: every post is men's)
  *   guide
  * }
- * @returns { outfits, shortlist, considered, refused: { reason: count }, nearest, best }
- *          `nearest`: the look closest to the band when it refused ({ off, sum, n })
+ * @returns { outfits, shortlist, considered, refused: { reason: count }, excluded: { reason: count }, best }
  */
 function styleOutfits(pieces, opts = {}) {
   const guide = opts.guide || GUIDE;
@@ -232,71 +308,95 @@ function styleOutfits(pieces, opts = {}) {
   const order = ORDER.filter((s) => slots.includes(s));
   const minPieces = opts.minPieces || 2, maxPieces = opts.maxPieces || order.length;
   const core = opts.core || [];
-  const band = opts.band || null;
+  const prefer = opts.prefer || null;
   const fits = opts.fits || (() => true);
   const perSlot = Math.max(1, opts.perSlot || r.perSlot);
-  const ctx = { season, template: opts.template !== false, minPieces, perPieceBonus: Boolean(opts.perPieceBonus), guide };
+  const lookSlots = Boolean(opts.lookSlots);
+  const requireSlots = opts.requireSlots || [];
+  const ctx = { season, template: opts.template !== false, lookSlots, minPieces, perPieceBonus: Boolean(opts.perPieceBonus), guide };
   const forced = opts.look ? guide.looks.find((l) => l.key === opts.look) || null : null;
   if (opts.look && !forced) throw new Error(`styleOutfits: unknown look "${opts.look}"`);
   const looks = forced ? [forced] : guide.looks;
+  const sr = seasonRulesFor(season, guide);
+  // ── 0. EXCLUDED before scoring: not menswear, or a hat this season or
+  // this rotation does not allow. Counted, so a starved day says why.
+  const excluded = {};
+  const exclude = (why) => { excluded[why] = (excluded[why] || 0) + 1; return false; };
+  const eligible = pieces.filter((p) => {
+    if (opts.menswear !== false) { const why = menswearRefusal(p); if (why) return exclude(why); }
+    if (p.slot === "hat") {
+      if (opts.noHeadwear) return exclude("headwear rests (one lookbook in three)");
+      const kind = headwearOf(p);
+      // A hat of unknown kind only where the season allows a beanie too: in
+      // summer a hat must be KNOWN to be a cap.
+      if (kind ? !sr.headwear.includes(kind) : !sr.headwear.includes("beanie")) return exclude(kind ? `a ${kind} in a Durban ${season}` : `headwear that is not named a ${sr.headwear.join("/")} in a Durban ${season}`);
+    }
+    return true;
+  });
   // Each plan enumerates from its own per-slot shortlist: a look's palette
   // (so an earth-tone look is not starved by six black tees), and one with no
-  // palette at all.
-  const plans = [...looks.map((l) => ({ palette: new Set(l.palette) })), ...(opts.look ? [] : [{ palette: null }])];
+  // palette at all. With lookSlots a look's plan has only its declared
+  // optional slots; the palette-free plan has every slot, and an outfit from
+  // it keeps an optional piece only when it matches a look that declares it
+  // (checked after scoring). A look's palette needs only 60% of the pieces,
+  // so a cap look with olive jeans exists only in that plan (19 Oct).
+  const plans = [
+    ...looks.map((l) => ({ palette: new Set(l.palette), slots: lookSlots ? order.filter((s) => lookAllows(l, s) || core.some((alts) => alts.includes(s))) : order })),
+    ...(opts.look ? [] : [{ palette: null, slots: order }]),
+  ];
   const seen = new Map();
   const refused = {};
-  let considered = 0, nearest = null;
-  const groupOk = (chosen) => core.every((alts) => alts.some((s) => chosen.some((p) => p.slot === s || (s === "bottoms" && p.fullBody))));
+  let considered = 0;
+  const groupOk = (chosen) => core.every((alts) => alts.some((s) => chosen.some((p) => p.slot === s || (s === "bottoms" && p.fullBody))))
+    && requireSlots.every((s) => chosen.some((p) => p.slot === s));
 
   for (const plan of plans) {
     const bySlot = new Map(order.map((s) => [s, []]));
-    for (const p of pieces) {
-      if (!bySlot.has(p.slot)) continue;
+    for (const p of eligible) {
+      if (!bySlot.has(p.slot) || !plan.slots.includes(p.slot)) continue;
       if (plan.palette && !plan.palette.has(p.tags.dominant)) continue;
       bySlot.get(p.slot).push(p);
     }
     for (const [s, list] of bySlot) {
       list.sort((a, b) => (b.fresh || 0) - (a.fresh || 0) || (a.pid < b.pid ? -1 : 1));
-      // The freshest perSlot − 2, plus the two cheapest of the rest, so a slot
-      // of expensive favourites cannot price a whole look out of the band.
+      // The freshest perSlot − 2, plus the two freshest QUIET pieces of the
+      // rest (solid, not a loud colour), so a slot of fresh prints cannot
+      // break the one-loud-piece rule for every outfit (19 Oct: the six
+      // freshest tees were all graphic prints and no cap look could form).
       const top = list.slice(0, Math.max(1, perSlot - 2));
-      const cheap = band ? list.slice(top.length).sort((a, b) => (a.price || 0) - (b.price || 0) || (a.pid < b.pid ? -1 : 1)).slice(0, 2) : list.slice(top.length, perSlot);
-      bySlot.set(s, [...top, ...cheap]);
+      const quiet = list.slice(top.length).filter((p) => !isLoud(p.tags, guide)).slice(0, Math.max(0, Math.min(2, perSlot - top.length)));
+      const fill = list.slice(top.length).filter((p) => !quiet.includes(p)).slice(0, Math.max(0, perSlot - top.length - quiet.length));
+      bySlot.set(s, [...top, ...quiet, ...fill]);
     }
     const walk = (i, chosen, sum) => {
       if (chosen.length > maxPieces) return;
       if (i === order.length) {
         if (chosen.length < minPieces || !groupOk(chosen)) return;
         considered++;
-        if (band && (sum < band.min || sum > band.max)) {
-          refused.band = (refused.band || 0) + 1;
-          const off = sum < band.min ? band.min - sum : sum - band.max;
-          if (!nearest || off < nearest.off) nearest = { off, sum, n: chosen.length };
-          return;
-        }
         const why = hardRule(chosen, guide);
         if (why) { const k = refusalKey(why); refused[k] = (refused[k] || 0) + 1; return; }
         const key = chosen.map((p) => p.pid).sort().join(",");
         if (seen.has(key)) return;
         const sc = scoreOutfit(chosen, ctx);
+        // The lookbook: an optional piece only where a look that declares it
+        // is worn; an outfit that matches no look is the core alone.
+        if (lookSlots && !forced && !sc.look && chosen.some((p) => !core.some((alts) => alts.includes(p.slot)))) { refused["an optional piece with no look that wears it"] = (refused["an optional piece with no look that wears it"] || 0) + 1; return; }
         // A forced look keeps every outfit that QUALIFIES for it, not only
         // the ones it matches best, and names the outfit after it (Fable
         // review of #759: coastal-summer lost every outfit to earth-tone).
         if (forced) {
-          const m = lookMatch(chosen, forced, { season, template: ctx.template, guide });
+          const m = lookMatch(chosen, forced, { season, template: ctx.template, lookSlots, guide });
           if (m === null) { refused[`not ${forced.key}`] = (refused[`not ${forced.key}`] || 0) + 1; return; }
           const lookPart = Math.round(r.weightLook * m * 100) / 100;
           sc.score = Math.round((sc.score - sc.parts.look + lookPart) * 100) / 100;
           sc.parts = { ...sc.parts, look: lookPart };
           sc.look = forced.key; sc.lookMatch = Math.round(m * 100) / 100;
         }
-        seen.set(key, { key, pieces: chosen.slice(), total: sum, ...sc });
+        seen.set(key, { key, pieces: chosen.slice(), total: sum, inPrefer: !prefer || (sum >= prefer.min && sum <= prefer.max), ...sc });
         return;
       }
       const slot = order[i];
       for (const p of bySlot.get(slot)) {
-        // Over the ceiling: counted, so a day refused only on price says so.
-        if (band && sum + (p.price || 0) > band.max) { refused.band = (refused.band || 0) + 1; continue; }
         if (p.fullBody && chosen.some((x) => x.slot === "bottoms")) continue;
         if (slot === "bottoms" && chosen.some((x) => x.fullBody)) continue;
         if (chosen.some((x) => x.pid === p.pid)) continue;
@@ -304,8 +404,7 @@ function styleOutfits(pieces, opts = {}) {
         chosen.push(p);
         const why = hardRule(chosen, guide, { partial: true });
         if (!why) walk(i + 1, chosen, sum + (p.price || 0));
-        // Refused while building: counted under its rule, so a day with looks
-        // in the band that all break the guide reports "style", not "price".
+        // Refused while building: counted under its rule.
         else { const k = refusalKey(why); refused[k] = (refused[k] || 0) + 1; }
         chosen.pop();
       }
@@ -315,12 +414,15 @@ function styleOutfits(pieces, opts = {}) {
   }
 
   const outfits = [...seen.values()].sort(byScore);
-  return { outfits, shortlist: shortlistOf(outfits, guide), considered, refused, nearest, best: outfits[0] || null };
+  return { outfits, shortlist: shortlistOf(outfits, guide), considered, refused, excluded, best: outfits[0] || null };
 }
 
 // "2 accent colours (red, green) — the guide allows 1" → "N accent colours — the guide allows N"
 const refusalKey = (why) => why.replace(/\(.*?\)/g, "").replace(/\d+/g, "N").replace(/\s+/g, " ").trim();
-const byScore = (a, b) => b.score - a.score || (a.key < b.key ? -1 : 1);
+// Score first. Only an exact tie (to 0.1 point) looks at the price: the total
+// inside the preferred range wins it (Junid, 19 Oct: price never refuses).
+const byScore = (a, b) => Math.round(b.score * 10) - Math.round(a.score * 10)
+  || (b.inPrefer === true) - (a.inPrefer === true) || b.score - a.score || (a.key < b.key ? -1 : 1);
 
 /**
  * The best `shortlist` outfits within `tieWindow` points of the top. Five
@@ -386,7 +488,9 @@ function cleanNote(note, { kind } = {}) {
   if (kind === "pairing" && /\b(outfits?|looks?|fits?)\b/i.test(s)) return null;
   if (s.length > NOTE_MAX) {
     const cut = s.slice(0, NOTE_MAX);
-    s = cut.slice(0, Math.max(cut.lastIndexOf(" "), 60)).replace(/[,;:\s—-]+$/, "") + ".";
+    // Never end on a dangling word ("…adding a fresh touch for." — sample 10).
+    s = cut.slice(0, Math.max(cut.lastIndexOf(" "), 60)).replace(/[,;:\s—-]+$/, "")
+      .replace(/(?:\s+(?:a|an|the|and|or|but|for|with|to|of|in|on|at|by|from|its|his|their|your))+$/i, "").replace(/[,;:\s—-]+$/, "") + ".";
   }
   return s;
 }
@@ -417,7 +521,7 @@ function readChoice(text, shortlist, { kind = "lookbook", season = "summer", gui
   if (!valid) v = null;
   const modelLook = v && lookByKey(String(v.look || "").trim().toLowerCase(), guide);
   // The model's look only where the outfit actually qualifies for it.
-  const qualifies = modelLook && lookMatch(chosen.pieces, modelLook, { season, template: kind !== "pairing" && kind !== "flatlay", guide }) !== null;
+  const qualifies = modelLook && lookMatch(chosen.pieces, modelLook, { season, template: kind !== "pairing" && kind !== "flatlay", lookSlots: kind === "lookbook", guide }) !== null;
   const look = qualifies ? modelLook.key : chosen.look;
   const note = (v && cleanNote(v.note, { kind })) || fallbackNote(chosen, { kind });
   const source = valid ? "model" : "score";
@@ -433,7 +537,7 @@ function headerFor(lookKey, guide = GUIDE) {
 
 module.exports = {
   GUIDE, ORDER, ACCESSORY_SLOTS, FALLBACK_HEADER, NOTE_MAX,
-  seasonOf, hardRule, isMono, colourScore, silhouetteScore, familyScore, formalityScore, seasonScore,
+  seasonOf, seasonRulesFor, menswearRefusal, headwearOf, isKnitwear, layerPenalty, lookAllows, hardRule, isMono, colourScore, silhouetteScore, familyScore, formalityScore, seasonScore,
   lookMatch, bestLook, scoreOutfit, styleOutfits, shortlistOf,
   buildChoicePrompt, readChoice, cleanNote, fallbackNote, headerFor, lookByKey,
 };

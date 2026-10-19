@@ -10,10 +10,11 @@
 // queue, and a failed gate makes the day post the current style instead.
 //
 // ── THE GATES ────────────────────────────────────────────────────────────────
-//   outfit   fewer than MIN_ROWS slots could be filled           (costs nothing)
-//   price    looks exist, but none totals within PRICE_BAND      (costs nothing)
-//   style    looks in the band exist, but none passes the style guide
+//   outfit   fewer than MIN_ROWS slots could be filled, or no outfit could
+//            be put together                                    (costs nothing)
+//   style    outfits exist, but none passes the style guide
 //            (docs/style-guide.md hard rules)                    (costs nothing)
+//   (No price gate: the total never refuses an outfit, Junid 19 Oct.)
 //   cap      the day's generation cap refused the unit           (costs nothing)
 //   generate the model call failed                              (5xx released)
 //   text     the hero contained text (after the allowed retry)
@@ -34,6 +35,7 @@
 "use strict";
 
 const lookbook = require("../lib/social-lookbook.cjs");
+const stylist = require("../lib/stylist.cjs");
 const { renderLookbookPoster, cutout: defaultCutout, gridOverlay, segmentsCross } = require("../lib/lookbook-render.cjs");
 const { loadLookbookCandidates, loadLookbookHistory } = require("./load.cjs");
 const { resolveThumb } = require("./thumbs.cjs");
@@ -67,6 +69,8 @@ const MAX_CHOICES = 2;
  *     text-model call that picks among the shortlist and writes the note;
  *     geminiApiKey — tags products the pre-warm has not reached
  * @param opts.look  force one named look (the samples); opts.month 1–12 (default: the SA month)
+ * @param opts.rows  exactly this many rows; opts.requireSlots slots every outfit must have (the samples)
+ * @param opts.headwear "rotate" (default: one lookbook in three, from the history) | "off" | "allow" 
  * @param opts  { nowMs, used: Set of pids already posted today, maxAttempts: heroes
  *               generated before the text gate gives up (production: 1); the model
  *               gate always gets one regeneration; scene: a LOOKBOOK_SCENE_DEFS
@@ -74,7 +78,26 @@ const MAX_CHOICES = 2;
  * @returns { ok: true, rows, total, poster, costUSD, engine, attempts, check, anchors, look, stylistCostUSD }
  *        | { ok: false, gate, reason, costUSD, attempts, rows? }
  */
-async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null } = {}) {
+/**
+ * { saDate: [slot, …] } for the lookbooks in `history`. An entry written
+ * before slots were recorded is looked up by its pids' categoryKey: point
+ * reads, only for the two days the headwear rotation reads.
+ */
+async function historySlots(db, history, saDate = null) {
+  const out = {};
+  const days = Object.keys(history || {}).filter((d) => !saDate || d < saDate).sort().slice(-(lookbook.HEADWEAR_EVERY - 1));
+  for (const d of days) {
+    const e = history[d] || {};
+    const slots = Array.isArray(e.slots) ? e.slots : e.slots && typeof e.slots === "object" ? Object.values(e.slots) : null;
+    if (slots) { out[d] = slots; continue; }
+    const raw = e.pids;
+    const pids = (Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.values(raw) : []).filter((x) => typeof x === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(x));
+    out[d] = (await Promise.all(pids.map(async (pid) => lookbook.lookbookSlot({ categoryKey: (await db.ref(`products/${pid}/categoryKey`).once("value")).val() })))).filter(Boolean);
+  }
+  return out;
+}
+
+async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate" } = {}) {
   const log = deps.log || (() => {});
   let costUSD = 0, thumbCostUSD = 0, stylistCostUSD = 0;
   const saDate = saDateStringFromMs(nowMs);
@@ -99,7 +122,12 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   // The 14-day no-repeat: never picked, whatever the score, and never read,
   // so the loader's per-slot quota counts only products the stylist can use.
   const blocked = lookbook.pidsWithinDays(history, saDate, 14);
-  const { candidates } = await loadLookbookCandidates(db, { nowMs, skip: new Set([...blocked, ...used]) });
+  // Headwear in at most one lookbook in three (Junid, 19 Oct). Decided
+  // before the load, so a resting day reads no hats at all.
+  const noHeadwear = headwear === "off" || (headwear === "rotate" && lookbook.headwearRests(await historySlots(db, history, saDate), saDate));
+  if (noHeadwear) log("lookbook: no headwear today (one lookbook in three)");
+  const { candidates } = await loadLookbookCandidates(db, { nowMs, skip: new Set([...blocked, ...used]), skipSlots: noHeadwear ? new Set(["hat"]) : new Set(),
+    skipHeadwear: ["beanie", "bucket", "visor"].filter((k) => !stylist.seasonRulesFor(stylist.seasonOf(saMonth)).headwear.includes(k)) });
   // Every candidate's style tags: cached, tagged now (a few), or read from its name.
   const tagRun = await ensureStyleTags(db, candidates.map((c) => {
     const ph = lookbook.approvedPhoto(c.product, c.node);
@@ -115,8 +143,9 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   const ready = new Map();          // pid → { thumb, contentType, cutout, thumbSource }
   let picked = null, choices = 0;
   for (let round = 0; round < 8; round++) {
-    let p = lookbook.pickLookbookOutfit(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, look });
-    if (p.reason) return { ok: false, gate: p.band ? "price" : p.style ? "style" : "outfit", reason: p.reason, costUSD: costUSD + thumbCostUSD + stylistCostUSD, thumbCostUSD, stylistCostUSD, attempts };
+    let p = lookbook.pickLookbookOutfit(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, look, noHeadwear, rows: exactRows, requireSlots });
+    if (p.reason) return { ok: false, gate: p.style ? "style" : "outfit", reason: p.reason, costUSD: costUSD + thumbCostUSD + stylistCostUSD, thumbCostUSD, stylistCostUSD, attempts };
+    if (round === 0 && Object.keys(p.excluded || {}).length) log(`stylist: removed before scoring — ${Object.entries(p.excluded).map(([k, n]) => `${k} ×${n}`).join("; ")}`);
     // The stylist's tie-break: one short text call over the shortlist. Any
     // failure keeps the top score and the deterministic note.
     let answer = "";
@@ -291,4 +320,4 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   }
 }
 
-module.exports = { makeLookbook };
+module.exports = { makeLookbook, historySlots };

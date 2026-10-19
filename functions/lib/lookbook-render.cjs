@@ -91,6 +91,16 @@ function heroFrame(gw, gh, heroW, heroH, subjectX = 0.58, targetX = 0.62, body =
 }
 
 // ── THE PANEL'S VERTICAL RHYTHM ──────────────────────────────────────────────
+// The rows always fill the space between the header and the TOTAL, so a short
+// look is spaced out, not floated in the middle of empty paper (Junid, 19 Oct:
+// 3 to 6 rows). Three rows are STACKED: a large cut-out with its text centred
+// under it. Four rows keep the side-by-side row with a larger cut-out. Five
+// and six are the original rhythm.
+const STACK_AT = 3;
+function thumbFor(n, rowH, k) {
+  if (n <= STACK_AT) return Math.round(Math.min(250 * k, rowH - 165 * k));
+  return Math.round(Math.min(n === 4 ? 172 : 150, rowH - 30 * k));
+}
 function panelLayout(n, H) {
   const k = H / MASTER.h;
   const header = { top: Math.round(40 * k), h: Math.round(132 * k) };
@@ -100,10 +110,9 @@ function panelLayout(n, H) {
   const rowsTop = header.top + header.h + Math.round(18 * k);
   const rowsBottom = total.top - Math.round(18 * k);
   const avail = rowsBottom - rowsTop;
-  const rowH = Math.min(avail / n, 250 * k);
-  const start = rowsTop + (avail - rowH * n) / 2;
-  const rows = Array.from({ length: n }, (_, i) => ({ top: start + i * rowH, h: rowH, cy: start + i * rowH + rowH / 2 }));
-  return { k, header, total, deliveryY, rows, rowsTop, rowsBottom, thumb: Math.round(Math.min(150, rowH - 30 * k)) };
+  const rowH = avail / Math.max(1, n);
+  const rows = Array.from({ length: n }, (_, i) => ({ top: rowsTop + i * rowH, h: rowH, cy: rowsTop + i * rowH + rowH / 2 }));
+  return { k, header, total, deliveryY, rows, rowsTop, rowsBottom, thumb: thumbFor(n, rowH, k), stacked: n <= STACK_AT };
 }
 
 /**
@@ -231,11 +240,12 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1, heade
   }
 
   const thumbs = [];
-  const textX = px0 + P.thumb + 18;
-  const textW = px1 - textX;
+  // Stacked (three rows): the text is centred under the cut-out, full width.
+  const textX = P.stacked ? px0 + innerW / 2 : px0 + P.thumb + 18;
+  const textW = P.stacked ? innerW - 24 : px1 - textX;
+  const anchor = P.stacked ? "middle" : "start";
   rows.forEach((r, i) => {
     const box = P.rows[i];
-    thumbs.push({ slot: r.slot, x: Math.round(px0), y: Math.round(box.cy - P.thumb / 2), size: P.thumb });
     // A brand line only for a real brand. "Jacket brown" has none, and must
     // not be set as brand JACKET over name BROWN (spec review L18): the
     // whole name goes on the bold line instead.
@@ -257,16 +267,26 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1, heade
     const bLead = bFit.size * 1.25;
     const hasName = nFit.lines.length > 0;
     const blockH = bCap + bLead * (bFit.lines.length - 1) + (hasName ? 10 + nCap + nLead * (nFit.lines.length - 1) : 0) + 14 + pCap;
-    let y = box.cy - blockH / 2 + bCap;
-    bFit.lines.forEach((line, j) => out.push(T(line, { font: "archivo", weight: 800, size: bFit.size, letterSpacing: 1, x: textX, y: y + j * bLead, fill: INK })));
+    let y;
+    if (P.stacked) {
+      // Cut-out and text as one block, centred in the row.
+      const gap = 18 * k;
+      const top = box.cy - (P.thumb + gap + blockH) / 2;
+      thumbs.push({ slot: r.slot, x: Math.round(px0 + (innerW - P.thumb) / 2), y: Math.round(top), size: P.thumb });
+      y = top + P.thumb + gap + bCap;
+    } else {
+      thumbs.push({ slot: r.slot, x: Math.round(px0), y: Math.round(box.cy - P.thumb / 2), size: P.thumb });
+      y = box.cy - blockH / 2 + bCap;
+    }
+    bFit.lines.forEach((line, j) => out.push(T(line, { font: "archivo", weight: 800, size: bFit.size, letterSpacing: 1, x: textX, y: y + j * bLead, anchor, fill: INK })));
     y += bLead * (bFit.lines.length - 1);
     if (hasName) {
       y += 10 + nCap;
-      nFit.lines.forEach((line, j) => out.push(T(line, { font: "archivo", weight: 500, size: nFit.size, letterSpacing: 0.8, x: textX, y: y + j * nLead, fill: "#3a3a3a" })));
+      nFit.lines.forEach((line, j) => out.push(T(line, { font: "archivo", weight: 500, size: nFit.size, letterSpacing: 0.8, x: textX, y: y + j * nLead, anchor, fill: "#3a3a3a" })));
       y += nLead * (nFit.lines.length - 1);
     }
     y += 14 + pCap;
-    out.push(T(r.priceText, { font: "archivo", weight: 800, size: priceSize, letterSpacing: 0.4, x: textX, y, fill: INK }));
+    out.push(T(r.priceText, { font: "archivo", weight: 800, size: priceSize, letterSpacing: 0.4, x: textX, y, anchor, fill: INK }));
     if (i < rows.length - 1) {
       const ry = box.top + box.h;
       out.push(`<line x1="${px0}" y1="${f1(ry)}" x2="${px1}" y2="${f1(ry)}" stroke="${RULE}" stroke-width="1"/>`);

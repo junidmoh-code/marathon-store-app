@@ -17,6 +17,8 @@
 
 const { isGeneratedPhoto } = require("../newArrivals/sourcePhoto.cjs");
 const { fitsWith } = require("./social-select.cjs");
+const { cleanProductName } = require("./product-name.cjs");
+const { BRANDS: DESIGN_BRANDS } = require("./social-design.cjs");
 const stylist = require("./stylist.cjs");
 const styleTags = require("./style-tags.cjs");
 
@@ -39,7 +41,10 @@ const LOOKBOOK_SLOTS = [
   { slot: "jacket",   label: "jacket",   keys: ["jackets", "hoodies"],
     guess: /\b(jackets?|hoodies?|puffer|windbreaker|windrunner|anorak|bomber|sweaters?|pullover|cardigan|quarter-zip)\b/i, anchor: { x: 0.53, y: 0.24 } },
   { slot: "tee",      label: "tee",      keys: ["t-shirts", "golf-t-shirts"],
-    guess: /\b(t-shirts?|tees?|t|polo|henley|shirt|top)\b/i, anchor: { x: 0.60, y: 0.30 } },
+    // Never "top" after a hyphen: "low-top", "high-top" are sneakers. On 19
+    // Oct 47 of the 96 tee reads were sneakers ("Leather low-top in white"),
+    // and the lookbook saw four tees.
+    guess: /(?<!-)\b(t-shirts?|tees?|t|polo|henley|shirt|top)\b/i, anchor: { x: 0.60, y: 0.30 } },
   { slot: "bottoms",  label: "bottoms",  keys: ["shorts", "pants", "jeans"],
     guess: /\b(shorts?|pants|jeans?|cargo|trousers?|joggers?|chinos?)\b/i, anchor: { x: 0.55, y: 0.53 } },
   { slot: "bag",      label: "bag",      keys: ["bags"],
@@ -57,6 +62,8 @@ const BODY_TOP = 0.04;
 // this was not made at the maximum.
 const HERO_MIN_LONG_SIDE = 5000;
 const SLOT_KEYS = LOOKBOOK_SLOTS.map((s) => s.slot);
+// One row per slot, at most: six.
+const MAX_ROWS = SLOT_KEYS.length;
 const SLOT_BY_KEY = new Map(LOOKBOOK_SLOTS.map((s) => [s.slot, s]));
 
 // Clean product shots generated per SA day (functions/lookbook/thumbs.cjs).
@@ -66,13 +73,18 @@ const SLOT_BY_KEY = new Map(LOOKBOOK_SLOTS.map((s) => [s.slot, s]));
 // and scene units.
 const THUMBS_PER_DAY = 12;
 
-// Fewer than four rows is not a lookbook, it is a pairing with a big panel.
-const MIN_ROWS = 4;
-// The TOTAL lands in this band, inclusive (owner go-live brief, 19 Oct). The
-// picker chooses products to hit it; a price is never altered to fit.
-const PRICE_BAND = { min: 1400, max: 1900 };
-// Every look has something on top, on the legs and on the feet.
-const CORE_SLOTS = [["tee", "jacket"], ["bottoms"], ["sneakers"]];
+// A top, bottoms and sneakers: three rows is a lookbook (Junid, 19 Oct). The
+// outer layer, headwear and bag are optional, per look (docs/style-guide.md).
+const MIN_ROWS = 3;
+// The preferred TOTAL, inclusive: an exact-tie breaker and nothing more. No
+// outfit is ever refused on price (Junid, 19 Oct: the R1,400–R1,900 band
+// threw good outfits away). A price is never altered.
+const PRICE_PREFER = { min: 1200, max: 3500 };
+// Every look has a top, bottoms and sneakers.
+const CORE_SLOTS = [["tee"], ["bottoms"], ["sneakers"]];
+// Headwear in at most one lookbook in three: a hat in either of the two
+// lookbooks before today rests it.
+const HEADWEAR_EVERY = 3;
 // "Not used in the last 14 lookbooks".
 const HISTORY_DEPTH = 14;
 // How many of each guessed slot the loader reads per round. Six slots at eight
@@ -303,6 +315,96 @@ function panelName(websiteName, product, brandLine = "") {
   return { name: name.charAt(0).toUpperCase() + name.slice(1) };
 }
 
+// ── THE DISPLAY NAME GATE (Junid, 19 Oct) ──────────────────────────────────
+// The till name (products/{pid}/name, cleaned: social-select displayName) is
+// what the hero prompt, the flat-lays' labels and the captions print. Two
+// shapes of it make a product ineligible for every styled post:
+//   · category and colour only, once a real brand is taken off the front:
+//     "Jacket brown", "Bag Green", "Lacoste bag green" (LACOSTE / BAG GREEN);
+//   · a bare SKU or model number with no recognised brand: "Wanchao Wear
+//     6925", "PATTABON 3908 white", "Bs-8022 black". "Nike Air Max 90" and
+//     "New Balance 550" keep theirs: the brand is known.
+// A brand is recognised when it is one the shop names anywhere: the poster's
+// spellings, the style guide's families, the designed posts' list, and the
+// houses below that are stocked but in none of those.
+const OTHER_KNOWN_BRANDS = [
+  "Alo", "Diesel", "Gallery Dept", "Gucci", "Balenciaga", "Prada", "Versace", "Moncler", "Burberry", "Givenchy",
+  "Balmain", "Kenzo", "Moschino", "Fendi", "Dior", "Valentino", "Rick Owens", "Chrome Hearts", "Sp5der", "Hellstar",
+  "Denim Tears", "Eric Emanuel", "Rhude", "Kith", "Bape", "A Bathing Ape", "Salomon", "Hoka", "Crocs", "Birkenstock",
+  "Dickies", "Levi's", "Levis", "Kappa", "Ellesse", "Diadora", "Ugg", "Dr. Martens", "Boss", "Hugo", "Jordan", "Converse",
+  "Vans", "Fila", "Champion", "Timberland", "Creed", "Armani", "EA7", "Replay", "True Religion", "Daniel Wellington",
+  "New Era", "Comme des Garçons", "Lululemon", "Gymshark", "Oakley", "Ray-Ban", "Fred Perry", "Ralph Lauren",
+  "Mizuno", "Saucony", "Brooks", "Umbro", "Hummel", "Lotto", "Sergio Tacchini", "Napapijri", "Superdry", "Jack & Jones",
+  "Columbia", "Patagonia", "Arc'teryx", "Canada Goose", "Stüssy", "Stussy", "Corteiz", "Trapstar", "Amiri",
+];
+// Accents off first, so "Stüssy" is "stussy" on both sides.
+const plain = (s) => String(s || "").normalize("NFD").replace(/\p{M}+/gu, "");
+const normBrand = (s) => plain(s).toLowerCase().replace(/[^a-z0-9&]+/g, " ").trim();
+const KNOWN_BRANDS = [...new Set([
+  ...POSTER_BRANDS.map(([b]) => b), ...DESIGN_BRANDS, ...OTHER_KNOWN_BRANDS,
+  ...Object.values(stylist.GUIDE.families).flatMap((f) => f.brands),
+].map(normBrand).filter(Boolean))].sort((a, b) => b.length - a.length);
+
+/**
+ * The recognised brand a product carries: { brand, rest } where `rest` is the
+ * display name with the brand taken off its front (the whole name when only
+ * the brand field names it), or null. Pure.
+ */
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function knownBrandOf(product, displayName) {
+  const raw = plain(displayName).trim();
+  // The name's own front, matched on its own spelling ("G-Star Raw", "G star raw").
+  for (const b of KNOWN_BRANDS) {
+    const m = new RegExp(`^${b.split(" ").map(escRe).join("[\\s.'&-]*")}(?=[\\s.,-]|$)`, "i").exec(raw.replace(/[^\p{L}\p{N}\s.'&-]+/gu, " "));
+    if (m) return { brand: b, rest: raw.slice(m[0].length) };
+  }
+  // The catalogue's own spellings: "G star raw", "Under Amour".
+  for (const [proper, re] of POSTER_BRANDS) {
+    const m = re.exec(raw);
+    if (m) return { brand: normBrand(proper), rest: raw.slice(m[0].length) };
+  }
+  const field = normBrand(product && product.brand);
+  for (const b of KNOWN_BRANDS) if (field && (field === b || field.startsWith(`${b} `))) return { brand: b, rest: raw };
+  for (const [proper, re] of POSTER_BRANDS) if (re.test(String((product && product.brand) || ""))) return { brand: normBrand(proper), rest: raw };
+  return null;
+}
+
+// A bare SKU or model number: three or more digits ("6925", "Bs-8022",
+// "WT0061-2", "FD1299#"), not a size or a volume ("100ML", "50ml").
+const BARE_CODE = /^(?=.*\d{3,})[a-z0-9#-]+$/i;
+const MEASURE = /^\d+(?:ml|l|g|kg|cm|mm|oz)$/i;
+
+/**
+ * Why a product's display name makes it ineligible, or null. `displayName`
+ * is the cleaned till name; `product` the /products record. Pure.
+ */
+function displayNameRefusal(displayName, product) {
+  const raw = String(displayName || "").trim();
+  if (!raw) return "no display name";
+  const known = knownBrandOf(product, raw);
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  if (!known && tokens.some((t) => BARE_CODE.test(t) && !MEASURE.test(t))) return `display name "${raw}" has a bare stock or model number and no brand`;
+  // Category and colour only, once the brand is off the front: the
+  // recognised one, else the record's own brand when it is not a garment
+  // word ("Jacket" on "Jacket brown" is the till's placeholder).
+  let w = words(stripStyleCodes(known ? known.rest : raw));
+  const field = normBrand(product && product.brand);
+  if (!known && field && !GARMENT_WORDS.has(field) && field.split(" ").every((t, i) => w[i] === t)) w = w.slice(field.split(" ").length);
+  // A number here is a model ("550" after New Balance) and describes it.
+  const hue = w.some((t) => COLOUR_WORDS.has(t) && !CONNECTIVES.has(t));
+  // No colour and no brand is no better: a bare "Jacket" says nothing either.
+  if (!w.length || ((hue || !known) && w.every((t) => GARMENT_WORDS.has(t) || COLOUR_WORDS.has(t)))) {
+    return `display name "${raw}" is a category and colour only`;
+  }
+  return null;
+}
+const CONNECTIVES = new Set(["and", "with", "in", "&", "on", "light", "dark", "pale", "colour", "color"]);
+
+/** The display name the styled posts print for a candidate: social-select's, else the cleaned till name. Pure. */
+function displayNameOf(c) {
+  return (c && c.displayName) || cleanProductName(String((c && c.product && c.product.name) || "")) || "";
+}
+
 /**
  * The approved photo for a product: the New Arrivals studio photo where one
  * exists, else the storefront's lead photo, else the record's hero. An
@@ -338,6 +440,8 @@ function resolveRow(candidate) {
   if (!brandLine) return { skip: "no brand" };
   const named = panelName(c.name, c.product, brandLine);
   if (!named.name) return { skip: named.why };
+  const shown = displayNameRefusal(displayNameOf(c), c.product);
+  if (shown) return { skip: shown };
   return {
     row: {
       pid: c.pid, slot, price, priceText: formatRand(price),
@@ -375,23 +479,25 @@ function recentLookbookPids(history, depth = HISTORY_DEPTH) {
 }
 
 /**
- * Pick the outfit: at most one product per slot, head to toe, whose TOTAL
- * lands in PRICE_BAND (owner go-live brief, 19 Oct), chosen by the STYLIST
- * (lib/stylist.cjs) against docs/style-guide.md.
+ * Pick the outfit: at most one product per slot, head to toe, chosen by the
+ * STYLIST (lib/stylist.cjs) against docs/style-guide.md.
  *
- * Every look has a top (tee or jacket), bottoms and sneakers; hat, bag and the
- * second top are finishing pieces, and each piece over four earns a few points
- * (the guide's perPieceOverMin), so a full six-row look still wins when it is
- * as well styled. Every combination is enumerated per named look, refused on
- * the guide's hard rules (one accent hue, one loud piece, formality spread,
- * never all oversized, one style family) and on the band, and scored. The
- * best few within the guide's tie window come back as `shortlist`; the text
- * model chooses among them (chooseLookbookOutfit). `rows` is the top one.
+ * Every look has a tee, bottoms and sneakers (three rows); the outer layer,
+ * headwear and bag are optional, and each look wears only the optional
+ * pieces its template declares (style guide §6), so a lookbook has 3 to 6
+ * rows. Each piece over three earns a few points (the guide's
+ * perPieceOverMin). Not menswear, a hat the season does not allow, and (with
+ * `noHeadwear`) any hat at all are removed before scoring. Every combination
+ * is enumerated per named look, refused on the guide's hard rules, and
+ * scored. The price NEVER refuses: an exact tie goes to the total inside
+ * PRICE_PREFER (Junid, 19 Oct). The best few within the guide's tie window
+ * come back as `shortlist`; the text model chooses among them
+ * (chooseLookbookOutfit). `rows` is the top one.
  *
- * Freshness, the old bias, is one part of the score: not in the last 14
- * lookbooks, then an approved New Arrivals studio photo, then newness, then
- * the shared sales and newness score. A product used in a lookbook in the last
- * 14 DAYS (`blocked`) is never picked. Prices are never altered.
+ * Freshness is one part of the score: not in the last 14 lookbooks, then an
+ * approved New Arrivals studio photo, then newness, then the shared sales and
+ * newness score. A product used in a lookbook in the last 14 DAYS (`blocked`)
+ * is never picked. Prices are never altered.
  *
  * Pieces that do not share a wardrobe context (social-select fitsWith: no
  * soccer boot with jeans) are never combined.
@@ -400,14 +506,15 @@ function recentLookbookPids(history, depth = HISTORY_DEPTH) {
  * @param opts.recent  Set of pids used in recent lookbooks (scored down)
  * @param opts.blocked Set of pids used in a lookbook in the last 14 days (never picked)
  * @param opts.used    Set of pids already spoken for today (never picked)
- * @param opts.band    { min, max } rand, inclusive (default PRICE_BAND)
+ * @param opts.prefer  { min, max } rand, inclusive: the tie-break range (default PRICE_PREFER)
  * @param opts.tags    Map pid → style tags; a product without is read from its name
  * @param opts.month   1–12 (the Durban season); opts.look forces one look key
- * @returns { rows, total, reason, band?, style?, skipped, missing, styled, shortlist }
- *          `band: true` on a refusal means looks existed but none in the band;
- *          `style: true` that looks in the band all broke the style guide.
+ * @param opts.noHeadwear  no hat today (headwearRests: one lookbook in three)
+ * @param opts.rows    exactly this many rows (the samples); opts.requireSlots slots that must appear
+ * @returns { rows, total, reason, style?, skipped, excluded, missing, styled, shortlist }
+ *          `style: true` on a refusal means outfits existed but all broke the style guide.
  */
-function pickLookbookOutfit(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), band = PRICE_BAND, tags = new Map(), month = 10, look = null } = {}) {
+function pickLookbookOutfit(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), prefer = PRICE_PREFER, tags = new Map(), month = 10, look = null, noHeadwear = false, rows: exactRows = null, requireSlots = [] } = {}) {
   const skipped = [];
   const pieces = [];
   for (const c of candidates || []) {
@@ -422,48 +529,58 @@ function pickLookbookOutfit(candidates, { recent = new Set(), blocked = new Set(
     pieces.push({
       pid: r.row.pid, slot: r.row.slot, price: r.row.price, fresh, categoryKey: String(p.categoryKey || "").toLowerCase(),
       tags: tags.get(c.pid) || styleTags.nameTags({ name: p.name, websiteName: c.name, brand: p.brand, categoryKey: p.categoryKey }),
+      displayName: displayNameOf(c), websiteName: c.name || "",
       label: `${r.row.brandLine} ${r.row.nameLine}`.trim(), row: r.row, ref: c,
     });
   }
+  const minRows = exactRows || MIN_ROWS, maxRows = exactRows || MAX_ROWS;
   const filled = SLOT_KEYS.filter((k) => pieces.some((x) => x.slot === k));
   const missingSlots = SLOT_KEYS.filter((k) => !filled.includes(k));
   const hasCore = (slots) => CORE_SLOTS.every((any) => any.some((k) => slots.has(k)));
-  if (filled.length < MIN_ROWS || !hasCore(new Set(filled))) {
+  if (filled.length < minRows || !hasCore(new Set(filled))) {
     return {
-      rows: [], total: 0, skipped, shortlist: [],
-      reason: `no eligible outfit — only ${filled.length} of the six slots could be filled (nothing for: ${missingSlots.join(", ")}); a lookbook needs ${MIN_ROWS} with a top, bottoms and sneakers`,
+      rows: [], total: 0, skipped, shortlist: [], excluded: {},
+      reason: `no eligible outfit — only ${filled.length} of the six slots could be filled (nothing for: ${missingSlots.join(", ")}); a lookbook needs ${minRows} with a tee, bottoms and sneakers`,
     };
   }
   const res = stylist.styleOutfits(pieces, {
-    core: CORE_SLOTS, slots: SLOT_KEYS, minPieces: MIN_ROWS, maxPieces: SLOT_KEYS.length, band,
+    core: CORE_SLOTS, slots: SLOT_KEYS, minPieces: minRows, maxPieces: maxRows, prefer,
     fits: (chosen, c) => fitsWith(chosen, c), month, look, perPieceBonus: true,
+    lookSlots: true, noHeadwear, requireSlots,
   });
   const toPick = (o) => {
     const chosen = new Map(o.pieces.map((x) => [x.slot, x.row]));
     const rows = SLOT_KEYS.filter((k) => chosen.has(k)).map((k) => chosen.get(k));
     return {
       rows, total: rows.reduce((t, r) => t + r.price, 0), missing: SLOT_KEYS.filter((k) => !chosen.has(k)),
-      styled: { score: o.score, parts: o.parts, look: o.look, lookMatch: o.lookMatch, reasoning: o.reasoning, pieces: o.pieces },
+      styled: { score: o.score, parts: o.parts, look: o.look, lookMatch: o.lookMatch, reasoning: o.reasoning, pieces: o.pieces, inPrefer: o.inPrefer },
     };
   };
+  const excluded = res.excluded;
   if (!res.shortlist.length) {
-    const styleRefusals = Object.entries(res.refused).filter(([k]) => k !== "band").sort((a, b) => b[1] - a[1]);
-    // Style, not price, when the guide refused anything: a look that broke a
-    // rule may have fitted the band, a look over the ceiling says nothing.
-    if (styleRefusals.length) {
-      return {
-        rows: [], total: 0, skipped, shortlist: [], style: true,
-        reason: `no outfit in ${formatRand(band.min)}–${formatRand(band.max)} passes the style guide${look ? ` as ${look}` : ""} (most often: ${styleRefusals.slice(0, 2).map(([k, n]) => `${k} ×${n}`).join("; ")})`,
-      };
-    }
-    const nearest = res.nearest;
+    const styleRefusals = Object.entries(res.refused).sort((a, b) => b[1] - a[1]);
+    const ex = Object.entries(excluded).sort((a, b) => b[1] - a[1]);
+    const exText = ex.length ? `; removed first: ${ex.slice(0, 3).map(([k, n]) => `${k} ×${n}`).join("; ")}` : "";
     return {
-      rows: [], total: 0, skipped, shortlist: [], band: true,
-      reason: `no outfit of ${MIN_ROWS}–6 rows totals ${formatRand(band.min)}–${formatRand(band.max)}${nearest ? ` (closest: ${formatRand(nearest.sum)} with ${nearest.n} rows)` : " (every look is over the ceiling)"}`,
+      rows: [], total: 0, skipped, shortlist: [], excluded, style: styleRefusals.length > 0,
+      reason: styleRefusals.length
+        ? `no outfit passes the style guide${look ? ` as ${look}` : ""} (most often: ${styleRefusals.slice(0, 2).map(([k, n]) => `${k} ×${n}`).join("; ")})${exText}`
+        : `no outfit of ${minRows === maxRows ? minRows : `${minRows}–${maxRows}`} rows could be put together${look ? ` as ${look}` : ""}${requireSlots.length ? ` with a ${requireSlots.join(" and a ")}` : ""}${exText}`,
     };
   }
   const shortlist = res.shortlist.map(toPick);
-  return { ...shortlist[0], reason: null, skipped, shortlist, considered: res.considered };
+  return { ...shortlist[0], reason: null, skipped, excluded, shortlist, considered: res.considered };
+}
+
+/**
+ * Does headwear rest today? True when either of the HEADWEAR_EVERY − 1
+ * lookbooks before `saDate` wore a hat, so a hat is in at most one poster in
+ * three. `slotsByDay` is { saDate: [slot, …] } (historyEntry writes `slots`;
+ * an older entry's slots are looked up by its caller). Pure.
+ */
+function headwearRests(slotsByDay, saDate) {
+  const days = Object.keys(slotsByDay || {}).filter((d) => d < saDate).sort().slice(-(HEADWEAR_EVERY - 1));
+  return days.some((d) => (slotsByDay[d] || []).includes("hat"));
 }
 
 /**
@@ -516,7 +633,7 @@ function pidsWithinDays(history, saDate, days = 14) {
 
 /** The history entry a finished lookbook writes. Pure. */
 function historyEntry(rows, atMs) {
-  return { pids: (rows || []).map((r) => r.pid), at: atMs };
+  return { pids: (rows || []).map((r) => r.pid), slots: (rows || []).map((r) => r.slot), at: atMs };
 }
 
 // ── THE ROTATION ─────────────────────────────────────────────────────────────
@@ -923,7 +1040,7 @@ function bodyExtent(located, anchors) {
 }
 
 module.exports = {
-  PRICE_BAND, CORE_SLOTS, HERO_MIN_LONG_SIDE, BODY_FILL, BODY_TOP, bodyExtent, posterBrand, panelName,
+  PRICE_PREFER, CORE_SLOTS, MAX_ROWS, HEADWEAR_EVERY, headwearRests, displayNameRefusal, displayNameOf, knownBrandOf, HERO_MIN_LONG_SIDE, BODY_FILL, BODY_TOP, bodyExtent, posterBrand, panelName,
   LOOKBOOK_SLOTS, SLOT_KEYS, MIN_ROWS, HISTORY_DEPTH, READS_PER_SLOT,
   STILL_FORMAT_KEYS, DEFAULT_STILL_FORMATS,
   lookbookSlot, guessSlot, priceOf, formatRand, approvedPhoto, resolveRow,

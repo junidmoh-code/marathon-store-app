@@ -6,7 +6,8 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const sty = require("../lib/stylist.cjs");
 
-const T = (over = {}) => ({ dominant: "black", secondary: null, pattern: "solid", silhouette: "regular", family: "streetwear", formality: 3, season: "all", ...over });
+// v2 tags: men's, no women's cut; a hat in these fixtures is a cap.
+const T = (over = {}) => ({ dominant: "black", secondary: null, pattern: "solid", silhouette: "regular", family: "streetwear", formality: 3, season: "all", gender: "mens", cut: "none", headwear: "cap", knit: false, ...over });
 let n = 0;
 const P = (slot, tags = {}, over = {}) => ({ pid: over.pid || `${slot}${++n}`, slot, price: 300, fresh: 0.5, tags: T(tags), categoryKey: over.categoryKey || null, ...over });
 
@@ -179,11 +180,12 @@ describe("styleOutfits", () => {
     // Pruned while building, so no enumerated outfit holds both loud pieces.
     assert.ok(!r.outfits.some((o) => ["t-orange-print", "b-denim-logo"].every((id) => o.pieces.some((p) => p.pid === id))));
   });
-  test("the price band is a hard limit", () => {
-    const r = sty.styleOutfits(CATALOGUE(), { ...opts, band: { min: 1400, max: 1700 } });
-    for (const o of r.outfits) assert.ok(o.total >= 1400 && o.total <= 1700, String(o.total));
-    const none = sty.styleOutfits(CATALOGUE(), { ...opts, band: { min: 100, max: 200 } });
-    assert.equal(none.outfits.length, 0);
+  test("price never refuses: a preferred range nobody fits still dresses every outfit", () => {
+    const all = sty.styleOutfits(CATALOGUE(), opts);
+    const r = sty.styleOutfits(CATALOGUE(), { ...opts, prefer: { min: 100, max: 200 } });
+    assert.equal(r.outfits.length, all.outfits.length);
+    assert.ok(r.outfits.every((o) => o.inPrefer === false));
+    assert.equal("nearest" in r, false);
   });
   test("a forced look returns only outfits of that look", () => {
     const r = sty.styleOutfits(CATALOGUE(), { ...opts, look: "earth-tone-street" });
@@ -290,4 +292,41 @@ describe("review fixes (Sonnet architect, #759)", () => {
     const r = sty.styleOutfits(pool, { core: [["tee"], ["sneakers"]], minPieces: 2, maxPieces: 2, month: 10, template: false });
     assert.equal(r.shortlist.length, 2);
   });
+});
+
+test("a slot of fresh prints keeps two quiet pieces in reach (19 Oct: no cap look could form)", () => {
+  const prints = Array.from({ length: 8 }, (_, i) => P("tee", { pattern: "print" }, { pid: `print${i}`, fresh: 1 - i * 0.01 }));
+  const set = [...prints, P("tee", {}, { pid: "solid-tee", fresh: 0 }),
+    P("bottoms", { dominant: "charcoal" }, { pid: "b" }), P("sneakers", { dominant: "white", silhouette: "n/a" }, { pid: "s" }),
+    P("hat", { dominant: "red", pattern: "logo-heavy", silhouette: "n/a", family: "athleisure" }, { pid: "loud-cap" })];
+  const r = sty.styleOutfits(set, { core: [["tee"], ["bottoms"], ["sneakers"]], requireSlots: ["hat"], minPieces: 4, maxPieces: 4, month: 10 });
+  assert.ok(r.best, JSON.stringify(r.refused));
+  assert.ok(r.best.pieces.some((p) => p.pid === "solid-tee"));
+});
+
+test("lookbook: a cap look with one off-palette piece (olive jeans) is still found, and named for a look that wears a hat", () => {
+  const set = [P("tee", { dominant: "charcoal" }, { pid: "t" }), P("bottoms", { dominant: "olive", silhouette: "slim" }, { pid: "b" }),
+    P("sneakers", { dominant: "off-white", silhouette: "n/a" }, { pid: "s" }), P("hat", { dominant: "green", pattern: "print", silhouette: "n/a", family: "prep" }, { pid: "cap" })];
+  const r = sty.styleOutfits(set, { core: [["tee"], ["bottoms"], ["sneakers"]], requireSlots: ["hat"], minPieces: 4, maxPieces: 4, month: 10, lookSlots: true });
+  assert.ok(r.best, JSON.stringify(r.refused));
+  assert.ok(sty.GUIDE.looks.find((l) => l.key === r.best.look).extras.includes("hat"));
+});
+
+test("lookbook: a hat with no look that wears one is refused; a narrow slot never grows past perSlot", () => {
+  // Earth tones: earth-tone-street does not wear a hat, and no hat look fits.
+  const set = [P("tee", { dominant: "cream" }, { pid: "t" }), P("bottoms", { dominant: "olive" }, { pid: "b" }),
+    P("sneakers", { dominant: "brown", silhouette: "n/a" }, { pid: "s" }), P("hat", { dominant: "khaki", silhouette: "n/a" }, { pid: "cap" })];
+  const r = sty.styleOutfits(set, { core: [["tee"], ["bottoms"], ["sneakers"]], minPieces: 3, maxPieces: 4, month: 10, lookSlots: true });
+  assert.ok(r.best);
+  assert.ok(!r.outfits.some((o) => o.pieces.some((p) => p.pid === "cap")), JSON.stringify(r.refused));
+  const many = Array.from({ length: 6 }, (_, i) => P("tee", {}, { pid: `t${i}`, fresh: i / 10 }));
+  const n = sty.styleOutfits([...many, P("bottoms", {}, { pid: "b2" }), P("sneakers", { silhouette: "n/a", dominant: "white" }, { pid: "s2" })],
+    { core: [["tee"], ["bottoms"], ["sneakers"]], minPieces: 3, maxPieces: 3, month: 10, perSlot: 1, template: false });
+  assert.equal(new Set(n.outfits.map((o) => o.pieces.find((p) => p.slot === "tee").pid)).size, 1);
+});
+
+test("a note cut to length never ends on a dangling word", () => {
+  const n = sty.cleanNote("Charcoal oversized tee, black sweat shorts and crisp white sneakers keep it cool and sharp, with a light-blue cap adding a fresh touch for the Durban heat.");
+  assert.ok(n.length <= sty.NOTE_MAX + 1);
+  assert.doesNotMatch(n, /\b(for|a|with|and)\.$/);
 });

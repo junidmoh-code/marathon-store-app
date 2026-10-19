@@ -5,6 +5,9 @@ const assert = require("node:assert/strict");
 const lb = require("../lib/social-lookbook.cjs");
 const { loadLookbookCandidates, loadRecentLookbookPids } = require("../lookbook/load.cjs");
 const { FakeRtdb } = require("./fixtures/rtdb-fake.cjs");
+const { mensTagMap } = require("./fixtures/mens-tags.cjs");
+// The picker with every untagged fixture read as a men's piece.
+const pick = (list, opts = {}) => lb.pickLookbookOutfit(list, { ...opts, tags: mensTagMap(list, opts.tags) });
 
 const NOW = Date.UTC(2026, 9, 17, 5, 0);
 const DAY = 86400000;
@@ -22,7 +25,7 @@ const cand = (pid, categoryKey, over = {}) => ({
   ...over,
   ...(over.product ? { product: { categoryKey, brand: "Nike", name: `Nike ${categoryKey} ${pid}`, retailPrice: 300, photoUrl: STAFF(pid), sizes: ["M"], ...over.product } } : {}),
 });
-// Six rows that total R1,850, inside the R1,400–R1,900 band.
+// Six rows that total R1,850.
 const SIX = () => [
   cand("h1", "fitted-caps", { product: { retailPrice: 150 } }),
   cand("j1", "jackets", { product: { retailPrice: 350 } }),
@@ -81,13 +84,17 @@ describe("price and photo resolver", () => {
     assert.equal(lb.guessSlot("Textured knit runner in orange"), "sneakers");
     assert.equal(lb.guessSlot("Ribbed-knit short-sleeve polo with contrast tipping"), "tee");
     assert.equal(lb.guessSlot("Cropped bomber jacket silhouette in washed sand beige"), "jacket");
+    // A low-top is a sneaker, not a top (19 Oct: 47 of 96 tee reads were sneakers).
+    assert.equal(lb.guessSlot("Leather low-top in white on a cup sole with retro, minimal, basketball styling"), "sneakers");
+    assert.equal(lb.guessSlot("Quilted nubuck low-top in black"), "sneakers");
+    assert.equal(lb.guessSlot("Sleeveless tank top with airbrushed stars"), "tee");
   });
 });
 
 describe("pickLookbookOutfit", () => {
   test("six rows, head to toe, total summed from the rows", () => {
     // May: a shoulder month, so the jacket is not an off-season piece.
-    const r = lb.pickLookbookOutfit(SIX().reverse(), { month: 5 });
+    const r = pick(SIX().reverse(), { month: 5 });
     assert.equal(r.reason, null);
     assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "jacket", "tee", "bottoms", "bag", "sneakers"]);
     assert.equal(r.total, 1850);
@@ -99,63 +106,53 @@ describe("pickLookbookOutfit", () => {
     list[5] = cand("s0", "sneakers", { score: 0.99, product: { retailPrice: null } });
     list.push(cand("s9", "sneakers", { product: { retailPrice: 450 } }));
     list.push(cand("t0", "t-shirts", { score: 0.99, node: {}, product: { photoUrl: null } }));
-    const r = lb.pickLookbookOutfit(list);
+    const r = pick(list);
     assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "s9");
     assert.equal(r.rows.find((x) => x.slot === "tee").pid, "t1");
     assert.ok(r.skipped.some((s) => s.pid === "s0" && s.why === "no retail price"));
     assert.ok(r.skipped.some((s) => s.pid === "t0" && s.why === "no approved photo"));
   });
 
-  test("an empty slot drops its row; four rows is enough", () => {
-    const r = lb.pickLookbookOutfit(SIX().filter((c) => !["h1", "g1"].includes(c.pid)));
+  test("three rows is a lookbook: a tee, bottoms and sneakers; an October jacket stays home", () => {
+    const r = pick(SIX().filter((c) => !["h1", "g1"].includes(c.pid)));
     assert.equal(r.reason, null);
-    assert.deepEqual(r.rows.map((x) => x.slot), ["jacket", "tee", "bottoms", "sneakers"]);
-    assert.deepEqual(r.missing, ["hat", "bag"]);
+    assert.deepEqual(r.rows.map((x) => x.slot), ["tee", "bottoms", "sneakers"]);
+    assert.deepEqual(r.missing, ["hat", "jacket", "bag"]);
+    // In May (a shoulder month) the outer layer pays nothing and can be worn.
+    assert.ok(pick(SIX().filter((c) => !["h1", "g1"].includes(c.pid)), { month: 5 }).shortlist.some((o) => o.rows.some((x) => x.slot === "jacket")));
   });
 
-  test("three rows is not a lookbook — refused with the reason", () => {
-    const r = lb.pickLookbookOutfit(SIX().slice(0, 3));
+  test("no tee, bottoms or sneakers is not a lookbook — refused with the reason", () => {
+    const r = pick(SIX().slice(0, 3));
     assert.deepEqual(r.rows, []);
-    assert.match(r.reason, /only 3 of the six slots/);
+    assert.match(r.reason, /only 3 of the six slots .*nothing for: bottoms, bag, sneakers/);
   });
 
-  test("the band: products are chosen to land the total in R1,400–R1,900, prices never touched", () => {
-    // The best-ranked sneaker (s0, R1,650) would take every look over R1,900.
-    const list = [...SIX(), cand("s0", "sneakers", { score: 0.99, product: { retailPrice: 1650 } })];
-    const r = lb.pickLookbookOutfit(list);
-    assert.equal(r.reason, null);
-    assert.ok(r.total >= 1400 && r.total <= 1900, String(r.total));
-    assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "s1");
-    assert.equal(r.rows.find((x) => x.slot === "sneakers").price, 500);
+  test("price never refuses: R900 a piece, R100 a piece and a R1,650 sneaker are all dressed", () => {
+    for (const price of [900, 100]) {
+      const r = pick(SIX().map((c) => ({ ...c, product: { ...c.product, retailPrice: price } })));
+      assert.equal(r.reason, null, String(price));
+      assert.equal(r.total, price * r.rows.length);
+    }
+    const list = [...SIX().filter((c) => c.pid !== "s1"), cand("s0", "sneakers", { product: { retailPrice: 1650 } })];
+    const r = pick(list);
+    assert.equal(r.rows.find((x) => x.slot === "sneakers").price, 1650);
+    assert.equal("PRICE_BAND" in lb, false);
+    assert.deepEqual(lb.PRICE_PREFER, { min: 1200, max: 3500 });
   });
 
-  test("the band: six rows that cannot fit drop to fewer, down to four", () => {
-    // Six rows total R2,450; only the four-row core (+ nothing) fits.
-    const list = [
-      cand("h1", "fitted-caps", { product: { retailPrice: 300 } }),
-      cand("j1", "jackets", { product: { retailPrice: 500 } }),
-      cand("t1", "t-shirts", { product: { retailPrice: 350 } }),
-      cand("b1", "shorts", { product: { retailPrice: 450 } }),
-      cand("g1", "bags", { product: { retailPrice: 250 } }),
-      cand("s1", "sneakers", { product: { retailPrice: 600 } }),
-    ];
-    const r = lb.pickLookbookOutfit(list);
-    assert.equal(r.reason, null);
-    assert.ok(r.total >= 1400 && r.total <= 1900, String(r.total));
-    assert.ok(r.rows.length >= 4 && r.rows.length < 6);
-    for (const k of ["bottoms", "sneakers"]) assert.ok(r.rows.some((x) => x.slot === k), k);
-  });
-
-  test("the band: nothing fits even at four rows — refused (the day posts the current style)", () => {
-    const list = SIX().map((c) => ({ ...c, product: { ...c.product, retailPrice: 900 } }));
-    const r = lb.pickLookbookOutfit(list);
-    assert.deepEqual(r.rows, []);
-    assert.equal(r.band, true);
-    assert.match(r.reason, /R1,400–R1,900/);
-    const cheap = SIX().map((c) => ({ ...c, product: { ...c.product, retailPrice: 100 } }));
-    const r2 = lb.pickLookbookOutfit(cheap);
-    assert.equal(r2.band, true);
-    assert.match(r2.reason, /closest: R600 with 6 rows/);
+  test("price is a tie-breaker only: an exact tie goes to the total inside R1,200–R3,500", () => {
+    // Two sneakers identical in every tag and score, one at R5,000.
+    const list = [...SIX().filter((c) => c.pid !== "s1"),
+      cand("s2", "sneakers", { product: { retailPrice: 5000 } }), cand("s3", "sneakers", { product: { retailPrice: 600 } })];
+    const tags = mensTagMap(list);
+    tags.set("s2", tags.get("s3"));
+    const r = pick(list, { tags });
+    assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "s3");
+    // Turn the preference round and the tie goes the other way: it is the
+    // only thing deciding it.
+    const r2 = pick(list, { tags, prefer: { min: 5000, max: 9000 } });
+    assert.equal(r2.rows.find((x) => x.slot === "sneakers").pid, "s2");
   });
 
   test("names: no brand, a till placeholder brand, or no usable website name is not eligible", () => {
@@ -166,7 +163,7 @@ describe("pickLookbookOutfit", () => {
       cand("s9", "sneakers", { score: 0.99, name: "Sneaker black", product: { retailPrice: 450 } }),
       cand("s6", "sneakers", { score: 0.99, name: "Sneaker runner tonal", product: { retailPrice: 450, name: "Nike flyknit runner tonal #12" } }),
     ];
-    const r = lb.pickLookbookOutfit(list);
+    const r = pick(list);
     assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "s1");
     const why = Object.fromEntries(r.skipped.map((x) => [x.pid, x.why]));
     assert.equal(why.s7, "no brand");
@@ -184,7 +181,7 @@ describe("pickLookbookOutfit", () => {
       cand("t2", "t-shirts", { score: 0.1 }),
       cand("b2", "shorts", { score: 0.1, product: { photoUrl: STUDIO("b2") } }),
     ];
-    const r = lb.pickLookbookOutfit(list, { recent: new Set(["t1"]) });
+    const r = pick(list, { recent: new Set(["t1"]) });
     assert.equal(r.rows.find((x) => x.slot === "tee").pid, "t2");
     assert.equal(r.rows.find((x) => x.slot === "bottoms").pid, "b2");
     assert.equal(r.rows.find((x) => x.slot === "bottoms").studio, true);
@@ -192,13 +189,13 @@ describe("pickLookbookOutfit", () => {
 
   test("today's reel products are never re-used", () => {
     const list = [...SIX(), cand("s2", "sneakers")];
-    const r = lb.pickLookbookOutfit(list, { used: new Set(["s1"]) });
+    const r = pick(list, { used: new Set(["s1"]) });
     assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "s2");
   });
 
   test("is deterministic on ties", () => {
-    const a = lb.pickLookbookOutfit([...SIX(), cand("t0", "t-shirts")]);
-    const b = lb.pickLookbookOutfit([cand("t0", "t-shirts"), ...SIX()].reverse());
+    const a = pick([...SIX(), cand("t0", "t-shirts")]);
+    const b = pick([cand("t0", "t-shirts"), ...SIX()].reverse());
     assert.deepEqual(a.rows.map((x) => x.pid), b.rows.map((x) => x.pid));
   });
 });
@@ -270,7 +267,7 @@ describe("rotation", () => {
 });
 
 describe("hero prompt and the no-text check", () => {
-  const rows = lb.pickLookbookOutfit(SIX(), { month: 5 }).rows;
+  const rows = pick(SIX(), { month: 5 }).rows;
 
   test("the prompt lists every garment against its reference and forbids text", () => {
     const p = lb.buildHeroPrompt(rows);
@@ -350,8 +347,18 @@ describe("loadLookbookCandidates — reads only what it needs, by pid", () => {
     const db = seed();
     const { candidates } = await loadLookbookCandidates(db, { nowMs: NOW });
     assert.deepEqual(candidates.map((c) => c.pid).sort(), ["b1", "h1", "j1", "s1", "t1"]);
-    const r = lb.pickLookbookOutfit(candidates);
-    assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "jacket", "tee", "bottoms", "sneakers"]);
+    const r = pick(candidates);
+    // October: the puffer stays home, the fitted cap is a cap.
+    assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "tee", "bottoms", "sneakers"]);
+  });
+
+  test("a beanie title costs no read when the season removes beanies", async () => {
+    const db = seed();
+    db.root.shopify_publish.h9 = { state: "live", liveState: "on", cleanName: "Ribbed knit beanie with logo", liveAt: NOW, photos: [STAFF("h9")] };
+    db.root.products.h9 = { name: "Nike beanie h9", brand: "Nike", categoryKey: "caps-beanies", retailPrice: 200, sizes: ["M"], photoUrl: STAFF("h9") };
+    await loadLookbookCandidates(db, { nowMs: NOW, skipHeadwear: ["beanie"] });
+    assert.ok(!db.reads.some((r) => r.path === "products/h9"));
+    assert.ok(db.reads.some((r) => r.path === "products/h1"), "the cap is still read");
   });
 
   test("a slot whose newest reads are all out of stock gets a second round", async () => {
@@ -492,14 +499,6 @@ describe("lookbook v2 — architect review of #750", () => {
 });
 
 describe("go-live review fixes", () => {
-  test("a slot of expensive favourites cannot price the day out of the band: the cheapest are always searched", () => {
-    const pricey = Array.from({ length: 8 }, (_, i) => cand(`s${i}`, "sneakers", { score: 0.9 - i * 0.01, product: { retailPrice: 1600 } }));
-    const list = [...SIX().filter((c) => c.pid !== "s1"), ...pricey, cand("sz", "sneakers", { score: 0, product: { retailPrice: 500 } })];
-    const r = lb.pickLookbookOutfit(list);
-    assert.equal(r.reason, null);
-    assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "sz");
-  });
-
   test("brands: Polo is a house; a category word on its own record is a placeholder", () => {
     assert.equal(lb.posterBrand({ brand: "Polo", name: "Polo Ralph Lauren pony tee" }), "POLO RALPH LAUREN");
     assert.equal(lb.posterBrand({ brand: "Polo", name: "Polo classic tee" }), "POLO");
@@ -529,19 +528,179 @@ describe("go-live review fixes", () => {
 });
 
 describe("stylist gates (review of #759)", () => {
-  test("looks in the band that all break the guide are the style gate, not price", () => {
+  test("outfits that all break the guide are the style gate", () => {
     // Every tee is a print and every pair of shorts is logo-heavy: two loud pieces.
     const list = SIX().filter((c) => !["h1", "j1"].includes(c.pid));
+    const V2 = { gender: "mens", cut: "none", headwear: "n/a", knit: false };
     const tags = new Map([
-      ["t1", { dominant: "black", secondary: null, pattern: "print", silhouette: "regular", family: "athleisure", formality: 3, season: "all" }],
-      ["b1", { dominant: "black", secondary: null, pattern: "logo-heavy", silhouette: "regular", family: "athleisure", formality: 3, season: "all" }],
-      ["s1", { dominant: "white", secondary: null, pattern: "solid", silhouette: "n/a", family: "athleisure", formality: 3, season: "all" }],
+      ["t1", { dominant: "black", secondary: null, pattern: "print", silhouette: "regular", family: "athleisure", formality: 3, season: "all", ...V2 }],
+      ["b1", { dominant: "black", secondary: null, pattern: "logo-heavy", silhouette: "regular", family: "athleisure", formality: 3, season: "all", ...V2 }],
+      ["s1", { dominant: "white", secondary: null, pattern: "solid", silhouette: "n/a", family: "athleisure", formality: 3, season: "all", ...V2 }],
     ]);
     const extra = cand("s2", "sneakers", { product: { retailPrice: 900 } });
     tags.set("s2", tags.get("s1"));
     tags.set("g1", { ...tags.get("s1"), dominant: "black" });
-    const r = lb.pickLookbookOutfit([...list, extra, cand("s3", "sneakers", { product: { retailPrice: 600 } })], { tags: new Map([...tags, ["s3", tags.get("s1")]]), band: { min: 100, max: 5000 } });
+    const r = pick([...list, extra, cand("s3", "sneakers", { product: { retailPrice: 600 } })], { tags: new Map([...tags, ["s3", tags.get("s1")]]) });
     assert.equal(r.style, true, r.reason);
     assert.match(r.reason, /passes the style guide/);
   });
+});
+
+// ── JUNID'S REVIEW OF SAMPLES 06–08 (19 Oct) ─────────────────────────────────
+describe("menswear only (sample 08: women's Alo bike shorts on the male model)", () => {
+  // The real record is p1784653439034: till name "Alo short cream white"
+  // (which the display name gate also refuses), website name "High-waisted
+  // compression bike shorts with side pockets". Here its till name is a good
+  // one, so only the gender rule stands between it and the poster.
+  const alo = () => cand("alo", "shorts", {
+    name: "High-waisted compression bike shorts with side pockets", displayName: "Alo Airlift high-rise short",
+    score: 0.99, product: { brand: "Alo", name: "Alo Airlift high-rise short", retailPrice: 350 },
+  });
+  const ALO_V2 = { dominant: "cream", secondary: null, pattern: "solid", silhouette: "slim", family: "athleisure", formality: 2, season: "summer", gender: "womens", cut: "bike-short", headwear: "n/a", knit: false, source: "vision" };
+
+  test("tagged womens, the Alo bike shorts are removed before scoring, whatever they would score", () => {
+    const list = [...SIX(), alo()];
+    const r = pick(list, { tags: new Map([["alo", ALO_V2]]) });
+    assert.equal(r.reason, null);
+    assert.ok(!r.shortlist.some((o) => o.rows.some((x) => x.pid === "alo")));
+  });
+
+  test("a misread unisex tag does not save them: the cut, or the website name, removes them", () => {
+    for (const t of [{ ...ALO_V2, gender: "unisex" }, { ...ALO_V2, gender: "unisex", cut: "none" }]) {
+      const r = pick([...SIX(), alo()], { tags: new Map([["alo", t]]) });
+      assert.ok(!r.shortlist.some((o) => o.rows.some((x) => x.pid === "alo")), JSON.stringify(t));
+    }
+    const sty = require("../lib/stylist.cjs");
+    assert.match(sty.menswearRefusal({ tags: { ...ALO_V2, gender: "unisex", cut: "none" }, websiteName: "High-waisted compression bike shorts with side pockets" }), /bike-short/);
+  });
+
+  test("no gender tag is never assumed unisex; mens and unisex pieces are kept", () => {
+    const sty = require("../lib/stylist.cjs");
+    assert.equal(sty.menswearRefusal({ tags: { gender: null } }), "no gender tag");
+    assert.equal(sty.menswearRefusal({ tags: { gender: "mens", cut: "none" }, displayName: "Nike tee" }), null);
+    assert.equal(sty.menswearRefusal({ tags: { gender: "unisex", cut: "none" }, displayName: "Nike cap" }), null);
+    assert.match(sty.menswearRefusal({ tags: { gender: "unisex", cut: "none" }, displayName: "Nike Wmns Dunk Low" }), /womenswear by its name/);
+    assert.match(sty.menswearRefusal({ tags: { gender: "mens", cut: "legging" } }), /legging/);
+  });
+
+  test("the report says what was removed; the real till name is refused even earlier", () => {
+    const r = pick([...SIX(), alo()], { tags: new Map([["alo", ALO_V2]]) });
+    assert.equal(r.excluded.womenswear, 1);
+    assert.match(lb.displayNameRefusal("Alo short cream white", { brand: "Alo" }), /category and colour only/);
+  });
+});
+
+describe("the display name gate (Junid, 19 Oct)", () => {
+  const no = (name, brand) => lb.displayNameRefusal(name, { brand });
+  test('"Jacket Brown" and "Bag Green" are a category and colour only', () => {
+    assert.match(no("Jacket Brown", "Jacket"), /category and colour only/);
+    assert.match(no("Jacket brown", ""), /category and colour only/);
+    assert.match(no("Bag Green", ""), /category and colour only/);
+    // A real brand in front changes nothing: LACOSTE over BAG GREEN.
+    assert.match(no("Lacoste bag green", "Lacoste"), /category and colour only/);
+    assert.match(no("Jacket", "Jacket"), /category and colour only/);
+  });
+  test('"Wanchao Wear 6925" has a bare model number and no brand', () => {
+    assert.match(no("Wanchao Wear 6925", "Wanchao"), /bare stock or model number and no brand/);
+    assert.match(no("PATTABON 3908 white", "PATTABON"), /bare stock/);
+    assert.match(no("Bs-8022 black", "Bs-8022"), /bare stock/);
+    assert.match(no("Giavceye Jean Jacket cream white WT0061-2", "Giavceye"), /bare stock/);
+  });
+  test("real names pass: a known brand's model number, a described piece, a fragrance volume", () => {
+    for (const [n, b] of [["Nike Air Force 1 White Blue Laces", "Nike"], ["New Balance 550 White Green", "New balance"], ["Nike Air Max 90", "Nike"],
+      ["Lacoste L12 100ML", "Lacoste"], ["Sonic Youth Graphic T-Shirt Black", "Sonic Youth"], ["G star raw cargo jeans", "G star raw"],
+      ["Gallery Dept. White Distressed T-Shirt", "Gallery Dept"], ["Nike bag lite green", "Nike"],
+      // The brand is taken off by its own spelling: "G-Star" is one word here.
+      ["G-Star Raw GS-5222 Dark Navy", "G-Star"], ["Dr. Martens 1460 black", "Dr"]]) {
+      assert.equal(no(n, b), null, n);
+    }
+  });
+  test("on the lookbook a raw display name is skipped with its reason, the website name notwithstanding", () => {
+    const list = [...SIX(),
+      cand("jb", "hoodies", { score: 0.99, name: "Henley-collar knit sweater in heathered taupe", displayName: "Jacket brown", product: { brand: "Jacket", name: "Jacket brown #1513" } }),
+      cand("ww", "t-shirts", { score: 0.99, name: "Boxy heavyweight tee", displayName: "Wanchao Wear 6925", product: { brand: "Wanchao", name: "Wanchao Wear 6925" } }),
+      cand("bg", "bags", { score: 0.99, name: "Coated canvas shoulder pouch in dark green", displayName: "Lacoste bag green", product: { brand: "Lacoste", name: "Lacoste bag green" } })];
+    const r = pick(list, { month: 5 });
+    const why = Object.fromEntries(r.skipped.map((x) => [x.pid, x.why]));
+    assert.match(why.jb, /no brand|category and colour/);
+    assert.match(why.ww, /bare stock or model number/);
+    assert.match(why.bg, /category and colour only/);
+    assert.ok(!r.shortlist.some((o) => o.rows.some((x) => ["jb", "ww", "bg"].includes(x.pid))));
+  });
+});
+
+describe("optional slots and headwear (Junid, 19 Oct)", () => {
+  test("a beanie is never worn October to March; a cap can be", () => {
+    const list = [...SIX().filter((c) => c.pid !== "h1"),
+      cand("bn", "caps-beanies", { score: 0.99, name: "Ribbed turn-up knit beanie", product: { name: "Nike beanie ribbed", retailPrice: 180 } })];
+    const r = pick(list);
+    assert.equal(r.reason, null);
+    assert.ok(!r.shortlist.some((o) => o.rows.some((x) => x.pid === "bn")));
+    assert.ok(Object.keys(r.excluded).some((k) => /beanie in a Durban summer/.test(k)), JSON.stringify(r.excluded));
+    // A cap tagged as such is allowed; a beanie named "cap" by the tag is still a beanie by its name.
+    assert.ok(pick(SIX()).shortlist.some((o) => o.rows.some((x) => x.slot === "hat")));
+    const tags = mensTagMap(list);
+    tags.set("bn", { ...tags.get("bn"), headwear: "cap" });
+    assert.ok(!pick(list, { tags }).shortlist.some((o) => o.rows.some((x) => x.pid === "bn")));
+    // In July the beanie may be worn.
+    assert.ok(pick(list, { month: 7 }).shortlist.some((o) => o.rows.some((x) => x.pid === "bn")));
+  });
+
+  test("headwear rests in two lookbooks of three", () => {
+    assert.equal(lb.headwearRests({ "2026-10-16": ["tee", "bottoms", "sneakers"], "2026-10-19": ["hat", "tee", "bottoms", "sneakers"] }, "2026-10-21"), true);
+    assert.equal(lb.headwearRests({ "2026-10-14": ["hat", "tee"], "2026-10-16": ["tee"], "2026-10-19": ["tee"] }, "2026-10-21"), false);
+    // Today's own entry does not count.
+    assert.equal(lb.headwearRests({ "2026-10-21": ["hat"] }, "2026-10-21"), false);
+    const r = pick(SIX(), { noHeadwear: true });
+    assert.ok(!r.shortlist.some((o) => o.rows.some((x) => x.slot === "hat")));
+    assert.equal(lb.historyEntry([{ pid: "a", slot: "hat" }, { pid: "b", slot: "tee" }], 5).slots.join(), "hat,tee");
+  });
+
+  test("a look wears only the optional pieces it declares; a hat only in a look that wears one", () => {
+    const sty = require("../lib/stylist.cjs");
+    const hatLooks = sty.GUIDE.looks.filter((l) => l.extras.includes("hat")).map((l) => l.key);
+    assert.ok(hatLooks.length <= sty.GUIDE.looks.length / 3);
+    assert.ok(!hatLooks.includes("coastal-summer"));
+    for (const o of pick(SIX()).shortlist) {
+      if (o.rows.some((x) => x.slot === "hat")) assert.ok(hatLooks.includes(o.styled.look), o.styled.look);
+    }
+    const coastal = pick(SIX(), { look: "coastal-summer" });
+    for (const o of coastal.shortlist) assert.ok(!o.rows.some((x) => x.slot === "hat" || x.slot === "jacket"));
+  });
+
+  test("rows and required slots for the samples: exactly N rows, with the slot asked for", () => {
+    const r3 = pick(SIX(), { rows: 3 });
+    assert.ok(r3.shortlist.every((o) => o.rows.length === 3));
+    const r5 = pick(SIX(), { rows: 5, requireSlots: ["bag"], month: 5 });
+    assert.equal(r5.reason, null);
+    assert.ok(r5.shortlist.every((o) => o.rows.length === 5 && o.rows.some((x) => x.slot === "bag")));
+  });
+
+  test("knitwear and outer layers pay the season's penalty Oct–Mar: no cardigan over a sweater vest", () => {
+    const list = [...SIX().filter((c) => !["h1", "g1", "j1"].includes(c.pid)),
+      cand("cd", "jackets", { score: 0.99, name: "Chunky knit cardigan", product: { name: "Nike cardigan knit", retailPrice: 500 } }),
+      cand("sv", "t-shirts", { score: 0.99, name: "Cable knit sweater vest", product: { name: "Nike sweater vest", retailPrice: 400 } })];
+    const r = pick(list);
+    assert.equal(r.reason, null);
+    assert.ok(!r.rows.some((x) => x.pid === "cd" || x.pid === "sv"), r.rows.map((x) => x.pid).join());
+    const sty = require("../lib/stylist.cjs");
+    const piece = { slot: "jacket", tags: { knit: true } };
+    assert.equal(sty.layerPenalty(piece, "summer"), 20);
+    assert.equal(sty.layerPenalty(piece, "winter"), 0);
+    // A knit polo is summer wear; a "knit runner" is a sneaker.
+    assert.equal(sty.isKnitwear({ slot: "tee", tags: {}, displayName: "Lacoste knit polo" }), false);
+    assert.equal(sty.isKnitwear({ slot: "sneakers", tags: {}, displayName: "Textured knit runner" }), false);
+  });
+});
+
+test("historySlots: today's own entry (a rerun) is not one of the two days before; old entries are read by pid", async () => {
+  const { historySlots } = require("../lookbook/lookbook.cjs");
+  const db = new FakeRtdb({ products: { p1: { categoryKey: "fitted-caps" }, p2: { categoryKey: "t-shirts" } } });
+  const history = { "2026-10-14": { pids: ["p1"] }, "2026-10-16": { pids: ["p2"], slots: ["tee"] }, "2026-10-19": { pids: ["p2"], slots: ["tee"] }, "2026-10-21": { pids: ["p1"], slots: ["hat"] } };
+  const s = await historySlots(db, history, "2026-10-21");
+  assert.deepEqual(Object.keys(s), ["2026-10-16", "2026-10-19"]);
+  assert.equal(lb.headwearRests(s, "2026-10-21"), false);
+  const s2 = await historySlots(db, history, "2026-10-17");
+  assert.deepEqual(s2["2026-10-14"], ["hat"]);
+  assert.equal(lb.headwearRests(s2, "2026-10-17"), true);
 });

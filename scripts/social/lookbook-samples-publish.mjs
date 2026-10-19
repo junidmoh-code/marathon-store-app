@@ -56,7 +56,9 @@ async function upload(n, buffer) {
 const describe = (n, s) =>
   `SAMPLE ${n} · ${s.look && s.look.name ? `${s.look.name} · ` : ""}${LABEL[s.model] || s.model}${s.scene ? ` · ${s.scene}` : ""} · ${s.rows.length} pieces · total ${s.total} · ` +
   `R${(s.costUSD * USD_TO_ZAR).toFixed(2)} to generate. Not scheduled; never posted.` +
-  (s.look ? `\n\nStylist: ${s.look.score}/100${s.look.note ? ` — ${s.look.note}` : ""}${s.styled && s.styled.reasoning ? `\n(${s.styled.reasoning})` : ""}` : "");
+  (s.look ? `\n\nStylist: ${s.look.score}/100${s.look.note ? ` — ${s.look.note}` : ""}${s.styled && s.styled.reasoning ? `\n(${s.styled.reasoning})` : ""}` : "") +
+  // Who each piece is cut for, from its style tags (Junid, 19 Oct).
+  (s.rows.some((r) => r.gender !== undefined) ? `\n\n${s.rows.map((r) => `${r.slot}: ${r.panel || r.name} — ${r.price} — ${r.gender || "no gender tag"}`).join("\n")}` : "");
 
 for (const n of samples) {
   const s = log[n];
@@ -71,7 +73,7 @@ for (const n of samples) {
     media: [{ type: "image", url }],
     caption: describe(n, s),
     captionSource: "not-needed",
-    products: s.rows.map((r) => ({ pid: r.pid, name: r.name, price: r.price })),
+    products: s.rows.map((r) => ({ pid: r.pid, name: r.name, price: r.price, ...(r.gender ? { gender: r.gender } : {}) })),
     platforms: { instagram: false, facebook: false, tiktok: false },
     scheduledAt: null,
     sample: {

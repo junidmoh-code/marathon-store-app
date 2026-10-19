@@ -1,8 +1,10 @@
 // ─── PRE-WARM THE STYLIST'S TAGS FOR EVERY ELIGIBLE PRODUCT ──────────────────
 // One vision call per product (functions/lookbook/style-tags-io.cjs
 // visionTags, gemini-3.1-flash-lite on a 384 px photo), cached at
-// social_lookbook/styleTags/{pid}. A product that already has a record is
-// skipped, so a re-run only tags what is new.
+// social_lookbook/styleTags/{pid}. A product with a complete record is
+// skipped, so a re-run only tags what is new. A v1 record (no gender, cut,
+// headwear, knit) is topped up: the same call, its other tags kept
+// (writeVisionTags).
 //
 //   eligible = live and on the storefront, a slot the stylist can use (a
 //              lookbook row or a social outfit slot), an approved photo, and
@@ -24,8 +26,7 @@ const require = createRequire(new URL("../../functions/package.json", import.met
 const admin = require("firebase-admin");
 const lookbook = require("./lib/social-lookbook.cjs");
 const socialSelect = require("./lib/social-select.cjs");
-const styleTags = require("./lib/style-tags.cjs");
-const { visionTags, hasTagRecord, TAG_PATH } = require("./lookbook/style-tags-io.cjs");
+const { visionTags, hasTagRecord, writeVisionTags } = require("./lookbook/style-tags-io.cjs");
 const USD_TO_ZAR = 18.0;
 
 const arg = (name, dflt) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : dflt; };
@@ -92,9 +93,9 @@ async function worker() {
       // Checked again just before the call: a parallel run may have tagged it.
       if (await hasTagRecord(db, e.pid)) { results.push({ pid: e.pid, source: "cached" }); continue; }
       const img = await fetchImage(e.photoUrl);
-      const v = await visionTags(geminiApiKey, img, { brand: e.product.brand, name: e.websiteName || e.product.name, categoryKey: e.product.categoryKey });
+      const v = await visionTags(geminiApiKey, img, { brand: e.product.brand, name: e.product.name || e.websiteName, websiteName: e.websiteName, categoryKey: e.product.categoryKey });
       spent += v.costUSD;
-      await db.ref(TAG_PATH(e.pid)).set(styleTags.tagRecord(v.tags, { model: v.model, costUSD: v.costUSD, src: e.photoUrl, nowMs: Date.now() }));
+      await writeVisionTags(db, e.pid, v, { src: e.photoUrl, nowMs: Date.now() });
       results.push({ pid: e.pid, source: "vision", model: v.model, costUSD: v.costUSD, tags: v.tags });
       if (results.length % 50 === 0) console.log(`${results.length}/${queue.length} · $${spent.toFixed(4)}`);
     } catch (err) {
@@ -116,6 +117,7 @@ const report = {
   costUSD: +spent.toFixed(5), costZAR: +(spent * USD_TO_ZAR).toFixed(3),
   perProductUSD: tagged.length ? +(spent / tagged.length).toFixed(6) : null,
   dominant: tally("dominant"), family: tally("family"), silhouette: tally("silhouette"), pattern: tally("pattern"), season: tally("season"),
+  gender: tally("gender"), cut: tally("cut"), headwear: tally("headwear"), knit: tally("knit"),
   results,
 };
 await writeFile(join(OUT, `style-tags-prewarm-${Date.now()}.json`), JSON.stringify(report, null, 2));

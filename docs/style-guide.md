@@ -57,7 +57,12 @@ studies, reduced to things a computer can check:
 - **Durban weather.** Summer is long, hot and humid (October to March); winter
   is mild (June to August, 20–24 °C days); April, May and September sit
   between. Summer favours tees, shorts, light colours and caps; a puffer or a
-  beanie in January reads as wrong.
+  beanie in January reads as wrong, and so does a cardigan over a sweater vest
+  in October.
+- **Menswear only.** Every post is styled on a man. A women's piece (by its
+  tag, or by its name: "women's", "ladies", bike shorts, leggings, crop tops,
+  dresses, skirts) is removed before anything is scored, and so is a piece
+  whose gender the tagger has not read yet. This is in code, not a table.
 
 ## 2. The palette
 
@@ -145,7 +150,7 @@ is 0–1 and is multiplied by its weight, so the weights are the points out of
 | weightLook | 10 | how cleanly it matches one of the named looks below |
 | weightFresh | 6 | new arrivals, studio photos, sales, not shown lately |
 | offSeasonPenalty | 6 | points off for each piece made for the other season (a beanie in a Durban summer) |
-| perPieceOverMin | 3 | points for each lookbook piece beyond the four-piece minimum |
+| perPieceOverMin | 2 | points for each lookbook piece beyond the three-piece minimum |
 | whiteSneakerBonus | 0.12 | added to the colour score when the sneakers are white or off-white |
 | echoBonus | 0.08 | added when the one accent appears on exactly two pieces (cap and sneaker) |
 | secondAccentPenalty | 0.3 | taken off when a second accent hue appears as a SECONDARY colour |
@@ -172,6 +177,22 @@ is 0–1 and is multiplied by its weight, so the weights are the points out of
 | 11 | summer |
 | 12 | summer |
 
+What each season allows. `outer layer penalty` is the points taken off for
+every outer layer (the jacket row: jackets, hoodies, cardigans) and
+`knitwear penalty` for every knitted garment (a sweater, a cardigan, a sweater
+vest); a piece that is both pays the larger one, once. They are big on
+purpose: in a Durban summer a jacket only appears when nothing else can be
+dressed. `headwear` lists the hats that may be worn at all; anything else
+(a beanie in summer) is removed before scoring. Kinds: cap, beanie, bucket,
+visor.
+
+<!-- config: seasonRules -->
+| season | outer layer penalty | knitwear penalty | headwear |
+|---|---|---|---|
+| summer | 20 | 20 | cap |
+| shoulder | 0 | 4 | cap, beanie, bucket |
+| winter | 0 | 0 | cap, beanie, bucket, visor |
+
 Each product is tagged as a `summer`, `winter` or `all` piece. How well a piece
 fits the month (the season score is the average over the outfit):
 
@@ -192,8 +213,14 @@ the fallback when nothing matches). Columns:
   far as its pieces' dominant colours are in this list.
 - `families`: the style families the look belongs to.
 - `core` / `extras`: the slot template. Core slots must all be filled
-  (`tee|jacket` means either); extras are optional finishing pieces. Slots:
-  hat, jacket, tee, bottoms, bag, sneakers, fragrance.
+  (`tee|jacket` means either); extras are the optional pieces the look may
+  add, and on the lookbook a look wears ONLY the extras listed here. Every
+  look's core is a top, bottoms and sneakers (three rows); the outer layer
+  (jacket), headwear (hat) and bag are optional, so a lookbook has 3 to 6
+  rows. Headwear: at most a third of the looks list `hat`, never a summer
+  look, and the lookbook wears a hat in at most one poster in three (the
+  build refuses a guide that breaks the first two). Slots: hat, jacket, tee,
+  bottoms, bag, sneakers, fragrance.
 - `requires`: extra conditions, from this vocabulary only —
   `mono` (every dominant colour is in one neutral family, dark or light,
   with black/white allowed as anchors), `earth>=N` (at least N pieces with an
@@ -205,12 +232,12 @@ the fallback when nothing matches). Columns:
 <!-- config: looks -->
 | key | name | header | families | palette | core | extras | requires |
 |---|---|---|---|---|---|---|---|
-| clean-monochrome | Clean Monochrome | CLEAN\|MONOCHROME | streetwear, athleisure, smart-casual | black, charcoal, grey, white, off-white, cream, light-grey | tee\|jacket, bottoms, sneakers | hat, jacket, bag | mono, noaccent |
-| earth-tone-street | Earth Tone Street | EARTH TONE\|STREET | streetwear, smart-casual | beige, stone, khaki, camel, brown, olive, cream, off-white, black, white | tee\|jacket, bottoms, sneakers | hat, jacket, bag | earth>=2 |
-| sport-luxe | Sport Luxe | SPORT\|LUXE | athleisure, streetwear | black, charcoal, grey, white, off-white, light-grey, navy, red, blue, green, orange, yellow, teal, purple, pink | tee\|jacket, bottoms, sneakers | hat, jacket, bag | accent=1 |
-| prep-casual | Prep Casual | PREP\|CASUAL | prep, smart-casual | navy, white, off-white, cream, beige, stone, light-blue, forest-green, burgundy, denim-light, denim-mid, denim-dark, khaki | tee, bottoms, sneakers | hat, jacket, bag | |
-| raw-denim | Raw Denim | RAW\|DENIM | streetwear, smart-casual, prep | denim-light, denim-mid, denim-dark, black, white, off-white, grey, charcoal, navy, olive | tee\|jacket, bottoms, sneakers | hat, jacket, bag | denim |
-| coastal-summer | Coastal Summer | COASTAL\|SUMMER | athleisure, prep, streetwear | white, off-white, cream, beige, stone, light-grey, light-blue, navy, khaki, teal | tee, bottoms, sneakers | hat, bag | shorts, summer |
+| clean-monochrome | Clean Monochrome | CLEAN\|MONOCHROME | streetwear, athleisure, smart-casual | black, charcoal, grey, white, off-white, cream, light-grey | tee, bottoms, sneakers | hat, jacket, bag | mono, noaccent |
+| earth-tone-street | Earth Tone Street | EARTH TONE\|STREET | streetwear, smart-casual | beige, stone, khaki, camel, brown, olive, cream, off-white, black, white | tee, bottoms, sneakers | jacket, bag | earth>=2 |
+| sport-luxe | Sport Luxe | SPORT\|LUXE | athleisure, streetwear | black, charcoal, grey, white, off-white, light-grey, navy, red, blue, green, orange, yellow, teal, purple, pink | tee, bottoms, sneakers | hat, jacket, bag | accent=1 |
+| prep-casual | Prep Casual | PREP\|CASUAL | prep, smart-casual | navy, white, off-white, cream, beige, stone, light-blue, forest-green, burgundy, denim-light, denim-mid, denim-dark, khaki | tee, bottoms, sneakers | jacket, bag | |
+| raw-denim | Raw Denim | RAW\|DENIM | streetwear, smart-casual, prep | denim-light, denim-mid, denim-dark, black, white, off-white, grey, charcoal, navy, olive | tee, bottoms, sneakers | jacket, bag | denim |
+| coastal-summer | Coastal Summer | COASTAL\|SUMMER | athleisure, prep, streetwear | white, off-white, cream, beige, stone, light-grey, light-blue, navy, khaki, teal | tee, bottoms, sneakers | bag | shorts, summer |
 
 ## 7. Formality, 1 to 5
 

@@ -11,6 +11,7 @@ const SLOTS = ["hat", "jacket", "tee", "bottoms", "bag", "sneakers", "fragrance"
 const COLOUR_FAMILIES = ["dark", "light", "earth", "denim", "accent"];
 const SEASONS = ["summer", "winter", "shoulder"];
 const PIECE_SEASONS = ["summer", "winter", "all"];
+const HEADWEAR_KINDS = ["cap", "beanie", "bucket", "visor"];
 const REQUIRE_WORDS = /^(mono|denim|shorts|summer|winter|noaccent|accent=1|earth>=\d)$/;
 // Every rule the stylist reads. A missing one is a build error, not a default.
 const RULE_KEYS = [
@@ -60,7 +61,7 @@ const lower = (s) => String(s || "").trim().toLowerCase();
 
 function parseStyleGuide(md) {
   const t = markedTables(md);
-  for (const need of ["palette", "families", "rules", "seasons", "seasonFit", "looks"]) {
+  for (const need of ["palette", "families", "rules", "seasons", "seasonFit", "seasonRules", "looks"]) {
     if (!t[need]) throw new Error(`style guide: the "${need}" table is missing`);
   }
   const fail = (table, i, msg) => { throw new Error(`style guide: ${table} row ${i + 1}: ${msg}`); };
@@ -116,6 +117,21 @@ function parseStyleGuide(md) {
   });
   for (const p of PIECE_SEASONS) if (!seasonFit[p]) throw new Error(`style guide: seasonFit has no "${p}" row`);
 
+  const seasonRules = {};
+  t.seasonRules.forEach((r, i) => {
+    const se = lower(r.season);
+    if (!SEASONS.includes(se)) fail("seasonRules", i, `season "${r.season}" is not one of ${SEASONS.join(", ")}`);
+    if (seasonRules[se]) fail("seasonRules", i, `season "${se}" is listed twice`);
+    const outerPenalty = Number(r["outer layer penalty"]), knitPenalty = Number(r["knitwear penalty"]);
+    for (const [k, v] of [["outer layer penalty", outerPenalty], ["knitwear penalty", knitPenalty]]) {
+      if (!(Number.isFinite(v) && v >= 0 && v <= 100)) fail("seasonRules", i, `${k} must be 0–100 points`);
+    }
+    const headwear = list(r.headwear).map(lower);
+    for (const h of headwear) if (!HEADWEAR_KINDS.includes(h)) fail("seasonRules", i, `headwear "${h}" is not one of ${HEADWEAR_KINDS.join(", ")}`);
+    seasonRules[se] = { outerPenalty, knitPenalty, headwear };
+  });
+  for (const se of SEASONS) if (!seasonRules[se]) throw new Error(`style guide: seasonRules has no "${se}" row`);
+
   const looks = t.looks.map((r, i) => {
     const key = lower(r.key);
     if (!/^[a-z0-9-]+$/.test(key)) fail("looks", i, `key "${r.key}" must be lower-case words joined by -`);
@@ -134,8 +150,19 @@ function parseStyleGuide(md) {
   });
   const keys = new Set();
   for (const l of looks) { if (keys.has(l.key)) throw new Error(`style guide: look "${l.key}" is listed twice`); keys.add(l.key); }
+  // Headwear is a finishing piece, never the rule (Junid, 19 Oct): at most a
+  // third of the looks wear it, a summer look never does, and no look makes
+  // it core.
+  const hatLooks = looks.filter((l) => l.extras.includes("hat"));
+  for (const l of looks) {
+    if (l.core.some((alts) => alts.includes("hat"))) throw new Error(`style guide: look "${l.key}" makes the hat core — headwear is only ever an extra`);
+    if (l.requires.includes("summer") && l.extras.includes("hat")) throw new Error(`style guide: look "${l.key}" is a summer look and wears a hat`);
+  }
+  if (hatLooks.length > Math.floor(looks.length / 3)) {
+    throw new Error(`style guide: ${hatLooks.length} looks wear a hat (${hatLooks.map((l) => l.key).join(", ")}) — at most ${Math.floor(looks.length / 3)} of ${looks.length}`);
+  }
 
-  return { version: 1, source: "docs/style-guide.md", palette, families, rules, seasons, seasonFit, looks };
+  return { version: 1, source: "docs/style-guide.md", palette, families, rules, seasons, seasonFit, seasonRules, looks };
 }
 
-module.exports = { parseStyleGuide, markedTables, SLOTS, COLOUR_FAMILIES, PIECE_SEASONS, RULE_KEYS };
+module.exports = { parseStyleGuide, markedTables, SLOTS, COLOUR_FAMILIES, PIECE_SEASONS, HEADWEAR_KINDS, RULE_KEYS };

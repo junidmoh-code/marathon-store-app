@@ -11,7 +11,8 @@
 //            the kind's maxProducts with cap, bag and fragrance as extras.
 //   flatlay  three to five pieces from different slots, no template.
 //
-// No band (only the lookbook has one), the same hard rules, the same score,
+// No price rule at all, the same hard rules, the same menswear and season
+// exclusions, the same score,
 // the same shortlist and the same one text-model tie-break. Pure.
 //
 // Only products with an outfit slot (social-select outfitSlot: shoes, tops,
@@ -23,6 +24,7 @@
 const socialSelect = require("./social-select.cjs");
 const styleTags = require("./style-tags.cjs");
 const stylist = require("./stylist.cjs");
+const { displayNameRefusal, displayNameOf } = require("./social-lookbook.cjs");
 
 const STYLED_KINDS = new Set(["pairing", "outfit", "flatlay"]);
 // The stylist's slot for a social outfit slot (social-select SLOT_MATCHERS).
@@ -47,10 +49,17 @@ const SHAPE_SLOT = { top: ["tee", "jacket"], shoe: ["sneakers"], bottom: ["botto
 const SOCIAL_PER_SLOT = 4;
 const SHAPE_BONUS = 0.5;
 
-/** A social-select candidate as a stylist piece, or null. Pure. */
+/**
+ * A social-select candidate as a stylist piece, or null. A product whose
+ * display name (the label these posts print) is a category and colour only
+ * or a bare stock number with no brand is never a piece (Junid, 19 Oct). Who
+ * it is cut for is decided in the stylist (menswearRefusal). Pure.
+ */
 function pieceOf(c, tags) {
   const slot = stylistSlot(c);
   if (!slot) return null;
+  const displayName = displayNameOf(c);
+  if (displayNameRefusal(displayName, c.product)) return null;
   const p = c.product || {};
   const key = String(p.categoryKey || "").toLowerCase();
   return {
@@ -58,6 +67,7 @@ function pieceOf(c, tags) {
     fullBody: FULL_BODY.has(key),
     fresh: Math.max(0, Math.min(1, Number(c.score) || 0)),
     tags: (tags && tags.get(c.pid)) || styleTags.nameTags({ name: p.name, websiteName: c.name, brand: p.brand, categoryKey: p.categoryKey }),
+    displayName, websiteName: c.name || "",
     label: c.displayName || c.name || c.pid, ref: c,
   };
 }
@@ -75,10 +85,14 @@ function styledPicksForKind(kind, candidates, { used = new Set(), tags = new Map
   const fits = (chosen, c) => socialSelect.fitsWith(chosen, c);
   const base = { fits, month, perSlot: SOCIAL_PER_SLOT };
   let outfits = [];
+  // What the stylist removed before scoring, for the skip reason (the same
+  // piece counted once across the pairing shapes).
+  const excluded = {};
+  const noteExcluded = (res) => { for (const [k, n] of Object.entries(res.excluded || {})) excluded[k] = Math.max(excluded[k] || 0, n); return res; };
   if (kind === "pairing") {
     socialSelect.PAIRING_SHAPES.forEach((shape, i) => {
       const core = shape.map((s) => SHAPE_SLOT[s]);
-      const res = stylist.styleOutfits(pieces, { ...base, core, slots: [...new Set(core.flat())], minPieces: shape.length, maxPieces: shape.length, template: false });
+      const res = noteExcluded(stylist.styleOutfits(pieces, { ...base, core, slots: [...new Set(core.flat())], minPieces: shape.length, maxPieces: shape.length, template: false }));
       // The owner's preference order, as a nudge.
       const bonus = SHAPE_BONUS * (socialSelect.PAIRING_SHAPES.length - i);
       // The shape's own groups must each hold exactly one piece (no tee + jacket as "top, shoe").
@@ -88,13 +102,13 @@ function styledPicksForKind(kind, candidates, { used = new Set(), tags = new Map
       }
     });
   } else if (kind === "outfit") {
-    const res = stylist.styleOutfits(pieces, {
+    const res = noteExcluded(stylist.styleOutfits(pieces, {
       ...base, core: [["tee", "jacket"], ["bottoms"], ["sneakers"]], slots: ["tee", "jacket", "bottoms", "sneakers", "hat", "bag", "fragrance"],
       minPieces: spec.minProducts, maxPieces: spec.maxProducts,
-    });
+    }));
     outfits = res.outfits;
   } else {
-    const res = stylist.styleOutfits(pieces, { ...base, core: [], minPieces: spec.minProducts, maxPieces: spec.maxProducts, template: false });
+    const res = noteExcluded(stylist.styleOutfits(pieces, { ...base, core: [], minPieces: spec.minProducts, maxPieces: spec.maxProducts, template: false }));
     outfits = res.outfits;
   }
   // The same products reached through two shapes are one pairing: keep the better.
@@ -105,9 +119,20 @@ function styledPicksForKind(kind, candidates, { used = new Set(), tags = new Map
     score: o.score, look: o.look, reasoning: o.reasoning, pieces: o.pieces, parts: o.parts, shape: o.shape || null,
   }));
   if (!shortlist.length) {
-    return { picks: [], shortlist, reason: `the stylist found no ${spec.label.toLowerCase()} in live stock that passes the style guide` };
+    const ex = Object.entries(excluded).sort((a, b) => b[1] - a[1]);
+    return { picks: [], shortlist, excluded, reason: `the stylist found no ${spec.label.toLowerCase()} in live stock that passes the style guide${ex.length ? ` (removed first: ${ex.slice(0, 3).map(([k, n]) => `${k} ×${n}`).join("; ")})` : ""}` };
   }
   return { picks: shortlist[0].picks, reason: null, shortlist, shape: shortlist[0].shape };
+}
+
+/**
+ * The rules that need no style tags: a real display name, and nothing that
+ * says it is women's by either name. The unstyled fallback uses it. Pure.
+ */
+function nameEligible(c) {
+  const displayName = displayNameOf(c);
+  if (displayNameRefusal(displayName, c && c.product)) return false;
+  return !styleTags.nameGender(`${displayName} ${(c && c.name) || ""}`).gender;
 }
 
 /** The text model's prompt for a styled pick. Pure. */
@@ -130,4 +155,4 @@ function chooseStyledPicks(kind, result, answerText, { month = 10 } = {}) {
   };
 }
 
-module.exports = { STYLED_KINDS, stylistSlot, pieceOf, styledPicksForKind, styledChoicePrompt, chooseStyledPicks };
+module.exports = { STYLED_KINDS, stylistSlot, pieceOf, nameEligible, styledPicksForKind, styledChoicePrompt, chooseStyledPicks };

@@ -19,6 +19,9 @@
 // --scene concrete|garden (default: the scene the next lookbook day gets).
 // --look <key> makes the stylist choose only outfits of that named look
 // (docs/style-guide.md), so a set of samples can show different looks.
+// --rows N asks for exactly N rows (3–6); --with hat,bag for outfits that
+// include those optional pieces. A sample ignores the one-in-three headwear
+// rotation (it is never posted); the season's rules still apply.
 // The production engines are used whole: the clean-shot cache and its Flash-Lite
 // generation, the character reference, the 4K hero.
 import { createRequire } from "node:module";
@@ -49,6 +52,10 @@ if (SCENE && !lookbookLib.LOOKBOOK_SCENE_KEYS.includes(SCENE)) throw new Error(`
 const LOOK = arg("look", null);
 const LOOK_KEYS = require("./lib/style-guide.json").looks.map((l) => l.key);
 if (LOOK && !LOOK_KEYS.includes(LOOK)) throw new Error(`--look must be one of ${LOOK_KEYS.join(", ")}`);
+const ROWS = arg("rows", null) === null ? null : Number(arg("rows"));
+if (ROWS !== null && !(Number.isInteger(ROWS) && ROWS >= lookbookLib.MIN_ROWS && ROWS <= lookbookLib.MAX_ROWS)) throw new Error(`--rows must be ${lookbookLib.MIN_ROWS}–${lookbookLib.MAX_ROWS}`);
+const WITH = String(arg("with", "")).split(",").map((x) => x.trim()).filter(Boolean);
+for (const w of WITH) if (!lookbookLib.SLOT_KEYS.includes(w)) throw new Error(`--with takes slots from ${lookbookLib.SLOT_KEYS.join(", ")}`);
 
 const ROOT = resolve(new URL("../..", import.meta.url).pathname);
 const OUT = join(homedir(), "Desktop", "lookbook-samples");
@@ -103,13 +110,16 @@ await mkdir(OUT, { recursive: true });
 const logPath = join(OUT, "samples.json");
 const log = existsSync(logPath) ? JSON.parse(await readFile(logPath, "utf8")) : {};
 const used = new Set();
-for (const s of Object.values(log)) for (const r of s.rows || []) used.add(r.pid);
+// --exclude-from NN: only samples NN and later keep their products out (a new
+// round of samples need not avoid every product of every earlier round).
+const FROM = arg("exclude-from", null);
+for (const [k, s] of Object.entries(log)) if (!FROM || k >= String(FROM).padStart(2, "0")) for (const r of s.rows || []) used.add(r.pid);
 const real = JSON.parse(await readFile(join(ROOT, "docs/lookbook-real.json"), "utf8"));
 for (const r of (real.generation || real).rows || []) used.add(r.pid);
 
 const before = (await db.ref(`social_generation_budget/${saDate}/count`).once("value")).val();
 const scene = SCENE || lookbookLib.sceneFor(saDate, lookbookLib.parseLookbookScenes(process.env.LOOKBOOK_SCENES), lookbookLib.parseLookbookDays(process.env.LOOKBOOK_DAYS)).key;
-const r = await makeLookbook(db, deps, { nowMs, used, scene, look: LOOK });
+const r = await makeLookbook(db, deps, { nowMs, used, scene, look: LOOK, rows: ROWS, requireSlots: WITH, headwear: "allow" });
 const after = (await db.ref(`social_generation_budget/${saDate}/count`).once("value")).val();
 
 const model = ENGINE === "flash" ? gemini.GEMINI_MODEL : gemini.NBPRO_MODEL;
@@ -117,7 +127,10 @@ const entry = {
   at: new Date().toISOString(), saDate, ok: r.ok, gate: r.gate || null, reason: r.reason || null,
   model, engineUsed: r.engine || null, budget: { before, after, cap: 4, overridden: OVERRIDE_CAP },
   costUSD: r.costUSD, costZAR: +((r.costUSD || 0) * USD_TO_ZAR).toFixed(2), attempts: r.attempts,
-  rows: (r.rows || []).map((x) => ({ slot: x.slot, pid: x.pid, name: x.displayName, price: x.priceText, thumb: x.thumbSource || null, tags: (r.styled && r.styled.tags && r.styled.tags[x.pid]) || null })),
+  rows: (r.rows || []).map((x) => {
+    const tags = (r.styled && r.styled.tags && r.styled.tags[x.pid]) || null;
+    return { slot: x.slot, pid: x.pid, name: x.displayName, panel: `${x.brandLine} ${x.nameLine}`, price: x.priceText, thumb: x.thumbSource || null, gender: tags ? tags.gender : null, cut: tags ? tags.cut : null, tags };
+  }),
   total: r.total ? r.total.text : null,
   scene, modelRef: Boolean(r.modelRef), thumbCostUSD: r.thumbCostUSD || 0,
   heroCostUSD: +((r.costUSD || 0) - (r.thumbCostUSD || 0) - (r.stylistCostUSD || 0)).toFixed(6),
