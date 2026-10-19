@@ -11,13 +11,17 @@
 //
 // ── THE GATES ────────────────────────────────────────────────────────────────
 //   outfit   fewer than MIN_ROWS slots could be filled           (costs nothing)
+//   price    looks exist, but none totals within PRICE_BAND      (costs nothing)
 //   cap      the day's generation cap refused the unit           (costs nothing)
 //   generate the model call failed                              (5xx released)
 //   text     the hero contained text (after the allowed retry)
 //   model    the model is not visibly a Black man (after ONE regeneration,
 //            which this gate gets whatever maxAttempts says: owner review of
 //            sample 01, 18 Oct — "regenerate once, then fall back")
-//   render   the renderer threw
+//   resolution the hero came back smaller than the model's native maximum
+//            (minHeroPx on its long side): it is never upscaled
+//   render   the renderer threw, or the poster it drew upscaled the hero or
+//            has two leader lines crossing
 //
 // ── "REGENERATE ONCE" AND THE CAP ────────────────────────────────────────────
 // A hero that fails the text check is regenerated once ONLY when the day's cap
@@ -28,7 +32,7 @@
 "use strict";
 
 const lookbook = require("../lib/social-lookbook.cjs");
-const { renderLookbookPoster, cutout: defaultCutout, gridOverlay } = require("../lib/lookbook-render.cjs");
+const { renderLookbookPoster, cutout: defaultCutout, gridOverlay, segmentsCross } = require("../lib/lookbook-render.cjs");
 const { loadLookbookCandidates, loadRecentLookbookPids } = require("./load.cjs");
 const { resolveThumb } = require("./thumbs.cjs");
 
@@ -55,7 +59,7 @@ const { resolveThumb } = require("./thumbs.cjs");
  * @returns { ok: true, rows, total, poster, costUSD, engine, attempts, check, anchors }
  *        | { ok: false, gate, reason, costUSD, attempts, rows? }
  */
-async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0] } = {}) {
+async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE } = {}) {
   const log = deps.log || (() => {});
   let costUSD = 0, thumbCostUSD = 0;
   const sceneDef = typeof scene === "string" ? lookbook.LOOKBOOK_SCENE_DEFS[scene] : scene;
@@ -86,7 +90,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   let picked = null;
   for (let round = 0; round < 8; round++) {
     const p = lookbook.pickLookbookOutfit(candidates, { recent, used: exclude });
-    if (p.reason) return { ok: false, gate: "outfit", reason: p.reason, costUSD, attempts };
+    if (p.reason) return { ok: false, gate: p.band ? "price" : "outfit", reason: p.reason, costUSD: costUSD + thumbCostUSD, thumbCostUSD, attempts };
     const fresh = p.rows.filter((r) => !ready.has(r.pid));
     // One at a time: each cut-out holds an ONNX session's worth of memory, and
     // six in parallel is how a 2 GiB instance dies (architect review, B2).
@@ -188,6 +192,19 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
       : { ok: false, gate: "text", reason: `the hero failed the no-text check${twice} (${check.reason})`, costUSD, attempts, rows };
   }
 
+  // ── 2b. NATIVE RESOLUTION ──────────────────────────────────────────────
+  // The hero is asked for at the model's maximum (4K, engines.cjs). Anything
+  // smaller (a fallback that ignored imageSize) is not drawn: the poster never
+  // upscales a small render (owner go-live brief, 19 Oct).
+  let heroMeta;
+  try { heroMeta = await require("sharp")(hero.buffer).metadata(); } catch (e) {
+    return { ok: false, gate: "render", reason: `the hero could not be read: ${String(e && e.message).slice(0, 120)}`, costUSD, attempts, rows };
+  }
+  const heroLong = Math.max(heroMeta.width || 0, heroMeta.height || 0);
+  if (heroLong < minHeroPx) {
+    return { ok: false, gate: "resolution", reason: `the hero is ${heroMeta.width}x${heroMeta.height}, under the model's native ${minHeroPx}px — it would have to be upscaled`, costUSD, attempts, rows };
+  }
+
   // ── 3. WHERE THE GARMENTS ARE (for the dots) ───────────────────────────
   // Best effort: an unanswered locate leaves the dots on the category spots.
   let located = { anchors: {}, head: null };
@@ -198,10 +215,29 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
 
   // ── 4. THE POSTER ──────────────────────────────────────────────────────
   const anchors = lookbook.anchorsFor(rows, located.anchors, located.head);
+  const body = lookbook.bodyExtent(located, anchors);
+  // The panel lists the pieces in the order they sit on the body, so each
+  // row's line goes to its own garment AND the dots run top to bottom in row
+  // order (owner go-live brief, 19 Oct): a sling bag worn at the chest is
+  // listed above the trousers. Head to toe breaks a tie.
+  // The SAME key planLeaders sorts the dots by (y, then x), so a tie on one
+  // grid row (a sling bag beside the tee) cannot swap two rows' dots (Fable
+  // re-review of #756).
+  const bodyOrder = rows.map((r, i) => ({ r, i, a: anchors[r.slot] })).sort((a, b) =>
+    a.a.y - b.a.y || a.a.x - b.a.x || a.i - b.i).map((x) => x.r);
+  rows.splice(0, rows.length, ...bodyOrder);
   try {
-    const poster = await renderLookbookPoster({ hero: hero.buffer, rows, anchors, subject: located.head });
+    const poster = await renderLookbookPoster({ hero: hero.buffer, rows, anchors, subject: located.head, body });
+    // The drawn poster, checked: the photograph only ever scaled down, and no
+    // two leader lines crossing, on either canvas.
+    // minHeroPx 0 switches the resolution gate off (the tests' small fakes).
+    const upscaled = minHeroPx > 0 ? Object.entries(poster.heroScale || {}).filter(([, k]) => k > 1.0001) : [];
+    if (upscaled.length) return { ok: false, gate: "resolution", reason: `the hero would be upscaled on the ${upscaled.map(([c, k]) => `${c} (x${k.toFixed(2)})`).join(", ")}`, costUSD, attempts, rows };
+    const crossed = Object.entries(poster.leaders || {}).filter(([, ls]) => ls.some((a, i) => ls.some((b, j) => j > i && segmentsCross(a.a, a.end, b.a, b.end))));
+    if (crossed.length) return { ok: false, gate: "render", reason: `leader lines cross on the ${crossed.map(([c]) => c).join(", ")}`, costUSD, attempts, rows };
     return {
-      ok: true, rows, total: poster.total, poster, costUSD, thumbCostUSD, engine, attempts, check, modelCheck, located, anchors, hero, prompt,
+      ok: true, rows, total: poster.total, poster, costUSD, thumbCostUSD, engine, attempts, check, modelCheck, located, anchors, body, hero, prompt,
+      heroSize: `${heroMeta.width}x${heroMeta.height}`,
       scene: sceneDef.key, modelRef: Boolean(modelRef),
       thumbs: Object.fromEntries(rows.map((r) => [r.pid, r.thumbSource || null])),
     };

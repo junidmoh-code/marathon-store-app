@@ -10,8 +10,9 @@
 //      /products/{pid}. The record's own categoryKey then decides.
 //   3. /stock/{loc}/{pid} point reads, only for a record that has a slot, a
 //      price and a photo. A product that cannot be drawn costs no stock reads.
-//   4. A slot that came up empty gets ONE more round, of the next
-//      READS_PER_SLOT. It never scans to the end.
+//   4. A slot with fewer than WANT_PER_SLOT eligible products (brand, website
+//      name, price, photo, stock) gets another round of the next
+//      READS_PER_SLOT, up to ROUNDS. It never scans to the end.
 //
 // /locations is the same ~10-row config read the reels already make (called
 // out there).
@@ -21,7 +22,10 @@ const socialSelect = require("../lib/social-select.cjs");
 const lookbook = require("../lib/social-lookbook.cjs");
 
 const READ_BATCH = 20;
-const ROUNDS = 2;
+// Four rounds of READS_PER_SLOT: at most 6 x 8 x 4 = 192 product point reads,
+// and only a slot short of WANT_PER_SLOT eligible products reads past the first.
+const ROUNDS = 4;
+const WANT_PER_SLOT = 3;
 
 /**
  * @param db  an RTDB handle (admin.database() or a test fake)
@@ -46,7 +50,9 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
   const products = {}, stockByPid = {}, liveSubset = {};
   const reads = { products: 0, stock: 0 };
   const seen = new Set();
-  const haveSlot = new Set();
+  // Eligible products found per slot. The price band needs a choice in each
+  // slot, so a slot keeps reading (a further round) until it has WANT_PER_SLOT.
+  const haveSlot = new Map();
 
   const readPids = async (pids) => {
     for (let i = 0; i < pids.length; i += READ_BATCH) {
@@ -56,13 +62,17 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
         if (!v) return;
         const node = live[pid];
         if (!lookbook.lookbookSlot(v) || lookbook.priceOf(v) === null || !lookbook.approvedPhoto(v, node)) return;
+        // No brand, or no usable website name: never on a lookbook, so no stock reads.
+        const brand = lookbook.posterBrand(v);
+        if (!brand || !lookbook.panelName(node && node.cleanName, v, brand).name) return;
         const cells = await Promise.all(locations.map((loc) => db.ref(`stock/${loc}/${pid}`).once("value")));
         reads.stock += locations.length;
         const tree = {};
         locations.forEach((loc, j) => { const c = cells[j].val(); if (c) tree[loc] = c; });
         if (socialSelect.availableUnits(tree, v.sizes) <= 0) return;
         products[pid] = v; stockByPid[pid] = tree; liveSubset[pid] = node;
-        haveSlot.add(lookbook.lookbookSlot(v));
+        const slot = lookbook.lookbookSlot(v);
+        haveSlot.set(slot, (haveSlot.get(slot) || 0) + 1);
       }));
     }
   };
@@ -70,7 +80,7 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
   for (let round = 0; round < ROUNDS; round++) {
     const batch = [];
     for (const [slot, q] of queues) {
-      if (round > 0 && haveSlot.has(slot)) continue;
+      if (round > 0 && (haveSlot.get(slot) || 0) >= WANT_PER_SLOT) continue;
       let taken = 0;
       for (const r of q) {
         if (taken >= readsPerSlot) break;
@@ -80,7 +90,7 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
     }
     if (!batch.length) break;
     await readPids(batch);
-    if (lookbook.SLOT_KEYS.every((k) => haveSlot.has(k))) break;
+    if (lookbook.SLOT_KEYS.every((k) => (haveSlot.get(k) || 0) >= WANT_PER_SLOT)) break;
   }
 
   // The lookbook keeps its own 14-lookbook memory, so the reels' 45-day

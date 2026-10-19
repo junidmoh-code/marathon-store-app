@@ -682,8 +682,21 @@ The photo post is made by `socialStillAutopilot` at **07:00 SAST**:
 
 The day comes from the SA date's weekday, so a missed day never shifts the
 week. **A lookbook day that fails any gate posts the current style instead.**
-The gates are: no eligible outfit, the hero failing the no-text check, a render
-error, or the cap. The reason goes in `social_still_log/{date}`, and the next
+The gates are: no eligible outfit, no outfit whose TOTAL lands in **R1,400–R1,900**
+(six rows, then five, then four are tried; prices are never altered), the hero
+failing the no-text or model check, a hero under the model's native 4K, a
+render error (including an upscaled hero or two crossing leader lines), or the
+cap.
+
+**Go-live rules (Junid, 19 Oct):** every row is the brand line + the product's
+WEBSITE name (`shopify_publish/{pid}/cleanName`, brand stripped, style codes
+removed). A product with no brand (or the till's placeholder brand "Jacket"),
+no website name, a colour-only website name ("Jacket black") or one that is
+just the inventory string re-dressed is not eligible. The model fills ~85% of
+the hero height (prompt, then a crop that only ever scales down). Dots are
+handed out top to bottom in row order and never cross. Every cut-out is
+trimmed and fitted into the same padded box. Scene: concrete every lookbook
+day (`LOOKBOOK_SCENES` default). The reason goes in `social_still_log/{date}`, and the next
 lookbook is the next lookbook day. There's no regeneration on a failed text
 check (`LOOKBOOK_HERO_ATTEMPTS=1`). Products used in the last 14 lookbooks sit
 at `social_lookbook/history`. `social_lookbook/rotation` now only records the
@@ -692,7 +705,8 @@ day's `{lastDate, format}`.
 **Switches** (build-time, `functions/.env`, then redeploy by name):
 
 ```
-LOOKBOOK_DAYS=["mon","wed","fri"]           # the lookbook's days; [] = never
+LOOKBOOK_DAYS=["mon","wed","fri"]           # the lookbook's days (the default); [] = never
+LOOKBOOK_SCENES=["concrete"]                # the default; ["concrete","garden"] alternates
 LOOKBOOK_ENABLED=false                      # current style every day
 STILL_FORMATS=["current","lookbook"]        # the formats allowed; [] = no daily still
 LOOKBOOK_HERO_ATTEMPTS=1                    # 2 = regenerate once on a failed text check

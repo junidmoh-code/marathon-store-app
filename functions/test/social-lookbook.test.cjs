@@ -13,20 +13,23 @@ const STAFF = (pid) => `https://firebasestorage.googleapis.com/v0/b/b/o/${encode
 
 // A buildCandidates-shaped row.
 const cand = (pid, categoryKey, over = {}) => ({
-  pid, name: `${categoryKey} ${pid}`, displayName: `Nike ${categoryKey} ${pid}`, handle: pid, link: `https://x/${pid}`,
+  // `name` is the website title (shopify_publish cleanName); the till name and
+  // the brand are on the product record.
+  pid, name: `Washed ${categoryKey} with tonal detail ${pid}`, displayName: `Nike ${categoryKey} ${pid}`, handle: pid, link: `https://x/${pid}`,
   liveAt: NOW - DAY, newNorm: 1, score: 0.5, slot: null,
   node: { photos: [STAFF(pid)] },
-  product: { categoryKey, retailPrice: 1000, photoUrl: STAFF(pid), sizes: ["M"] },
+  product: { categoryKey, brand: "Nike", name: `Nike ${categoryKey} ${pid}`, retailPrice: 300, photoUrl: STAFF(pid), sizes: ["M"] },
   ...over,
-  ...(over.product ? { product: { categoryKey, retailPrice: 1000, photoUrl: STAFF(pid), sizes: ["M"], ...over.product } } : {}),
+  ...(over.product ? { product: { categoryKey, brand: "Nike", name: `Nike ${categoryKey} ${pid}`, retailPrice: 300, photoUrl: STAFF(pid), sizes: ["M"], ...over.product } } : {}),
 });
+// Six rows that total R1,850, inside the R1,400–R1,900 band.
 const SIX = () => [
-  cand("h1", "fitted-caps", { product: { retailPrice: 499 } }),
-  cand("j1", "jackets", { product: { retailPrice: 1899 } }),
-  cand("t1", "t-shirts", { product: { retailPrice: 599 } }),
-  cand("b1", "shorts", { product: { retailPrice: 799 } }),
-  cand("g1", "bags", { product: { retailPrice: 1249 } }),
-  cand("s1", "sneakers", { product: { retailPrice: 3598 } }),
+  cand("h1", "fitted-caps", { product: { retailPrice: 150 } }),
+  cand("j1", "jackets", { product: { retailPrice: 350 } }),
+  cand("t1", "t-shirts", { product: { retailPrice: 250 } }),
+  cand("b1", "shorts", { product: { retailPrice: 300 } }),
+  cand("g1", "bags", { product: { retailPrice: 300 } }),
+  cand("s1", "sneakers", { product: { retailPrice: 500 } }),
 ];
 
 describe("price and photo resolver", () => {
@@ -86,14 +89,14 @@ describe("pickLookbookOutfit", () => {
     const r = lb.pickLookbookOutfit(SIX().reverse());
     assert.equal(r.reason, null);
     assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "jacket", "tee", "bottoms", "bag", "sneakers"]);
-    assert.equal(r.total, 499 + 1899 + 599 + 799 + 1249 + 3598);
-    assert.equal(r.rows[5].priceText, "R3,598");
+    assert.equal(r.total, 1850);
+    assert.equal(r.rows[5].priceText, "R500");
   });
 
   test("a product with no price or no photo is skipped and the next in its slot is taken — never stalls", () => {
     const list = SIX();
     list[5] = cand("s0", "sneakers", { score: 0.99, product: { retailPrice: null } });
-    list.push(cand("s9", "sneakers", { product: { retailPrice: 2199 } }));
+    list.push(cand("s9", "sneakers", { product: { retailPrice: 450 } }));
     list.push(cand("t0", "t-shirts", { score: 0.99, node: {}, product: { photoUrl: null } }));
     const r = lb.pickLookbookOutfit(list);
     assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "s9");
@@ -113,6 +116,65 @@ describe("pickLookbookOutfit", () => {
     const r = lb.pickLookbookOutfit(SIX().slice(0, 3));
     assert.deepEqual(r.rows, []);
     assert.match(r.reason, /only 3 of the six slots/);
+  });
+
+  test("the band: products are chosen to land the total in R1,400–R1,900, prices never touched", () => {
+    // The best-ranked sneaker (s0, R1,650) would take every look over R1,900.
+    const list = [...SIX(), cand("s0", "sneakers", { score: 0.99, product: { retailPrice: 1650 } })];
+    const r = lb.pickLookbookOutfit(list);
+    assert.equal(r.reason, null);
+    assert.ok(r.total >= 1400 && r.total <= 1900, String(r.total));
+    assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "s1");
+    assert.equal(r.rows.find((x) => x.slot === "sneakers").price, 500);
+  });
+
+  test("the band: six rows that cannot fit drop to fewer, down to four", () => {
+    // Six rows total R2,450; only the four-row core (+ nothing) fits.
+    const list = [
+      cand("h1", "fitted-caps", { product: { retailPrice: 300 } }),
+      cand("j1", "jackets", { product: { retailPrice: 500 } }),
+      cand("t1", "t-shirts", { product: { retailPrice: 350 } }),
+      cand("b1", "shorts", { product: { retailPrice: 450 } }),
+      cand("g1", "bags", { product: { retailPrice: 250 } }),
+      cand("s1", "sneakers", { product: { retailPrice: 600 } }),
+    ];
+    const r = lb.pickLookbookOutfit(list);
+    assert.equal(r.reason, null);
+    assert.ok(r.total >= 1400 && r.total <= 1900, String(r.total));
+    assert.ok(r.rows.length >= 4 && r.rows.length < 6);
+    for (const k of ["bottoms", "sneakers"]) assert.ok(r.rows.some((x) => x.slot === k), k);
+  });
+
+  test("the band: nothing fits even at four rows — refused (the day posts the current style)", () => {
+    const list = SIX().map((c) => ({ ...c, product: { ...c.product, retailPrice: 900 } }));
+    const r = lb.pickLookbookOutfit(list);
+    assert.deepEqual(r.rows, []);
+    assert.equal(r.band, true);
+    assert.match(r.reason, /R1,400–R1,900/);
+    const cheap = SIX().map((c) => ({ ...c, product: { ...c.product, retailPrice: 100 } }));
+    const r2 = lb.pickLookbookOutfit(cheap);
+    assert.equal(r2.band, true);
+    assert.match(r2.reason, /closest: R600 with 6 rows/);
+  });
+
+  test("names: no brand, a till placeholder brand, or no usable website name is not eligible", () => {
+    const list = [
+      ...SIX(),
+      cand("s7", "sneakers", { score: 0.99, product: { retailPrice: 450, brand: "" } }),
+      cand("s8", "sneakers", { score: 0.99, product: { retailPrice: 450, brand: "Jacket" } }),
+      cand("s9", "sneakers", { score: 0.99, name: "Sneaker black", product: { retailPrice: 450 } }),
+      cand("s6", "sneakers", { score: 0.99, name: "Sneaker runner tonal", product: { retailPrice: 450, name: "Nike flyknit runner tonal #12" } }),
+    ];
+    const r = lb.pickLookbookOutfit(list);
+    assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "s1");
+    const why = Object.fromEntries(r.skipped.map((x) => [x.pid, x.why]));
+    assert.equal(why.s7, "no brand");
+    assert.equal(why.s8, "no brand");
+    assert.match(why.s9, /colour-only/);
+    assert.match(why.s6, /inventory string/);
+    const t = r.rows.find((x) => x.slot === "tee");
+    assert.equal(t.brandLine, "NIKE");
+    assert.equal(t.nameLine, "WASHED T-SHIRTS WITH TONAL DETAIL T1");
   });
 
   test("bias: not in the last 14 lookbooks beats score; a studio photo beats a staff one", () => {
@@ -240,14 +302,14 @@ describe("hero prompt and the no-text check", () => {
     const a = lb.anchorsFor(rows, { hat: { x: 0.52, y: 0.08 }, sneakers: { x: 0.5, y: 0.2 } });
     assert.equal(a.hat.source, "vision");
     assert.equal(a.sneakers.source, "category");
-    assert.equal(a.sneakers.y, 0.82);
+    assert.equal(a.sneakers.y, 0.855);
   });
 
   test("with a known head, the category spots follow the real body", () => {
     const a = lb.anchorsFor(rows, { hat: { x: 0.46, y: 0.21 }, sneakers: { x: 0.47, y: 0.93 } }, { x: 0.46, y: 0.27 });
     assert.equal(a.jacket.source, "body");
-    // jacket template 0.29 on a 0.16..0.82 body → 0.27 + (0.13 / 0.66) × 0.66
-    assert.ok(Math.abs(a.jacket.y - 0.40) < 1e-9);
+    // jacket template 0.24 on a 0.09..0.855 body, stretched onto 0.27..0.93
+    assert.ok(Math.abs(a.jacket.y - (0.27 + 0.15 * (0.66 / 0.765))) < 1e-9);
     assert.ok(Math.abs(a.jacket.x - 0.41) < 1e-9);
     assert.ok(a.bottoms.y > 0.6 && a.bottoms.y < 0.7);
   });
@@ -264,16 +326,18 @@ describe("loadLookbookCandidates — reads only what it needs, by pid", () => {
     const live = {}, products = {}, stock = { shop1: {}, hub3: {} };
     const add = (pid, title, categoryKey, over = {}) => {
       live[pid] = { state: "live", liveState: "on", cleanName: title, liveAt: NOW - DAY, photos: [STAFF(pid)] };
-      products[pid] = { name: `Nike ${title}`, categoryKey, retailPrice: 900, sizes: ["M"], photoUrl: STAFF(pid), ...over };
+      products[pid] = { name: `Nike ${categoryKey} ${pid}`, brand: "Nike", categoryKey, retailPrice: 300, sizes: ["M"], photoUrl: STAFF(pid), ...over };
       stock.shop1[pid] = { M: { qty: 2 } };
     };
-    add("h1", "Cap fitted", "fitted-caps");
-    add("j1", "Jacket puffer", "jackets");
-    add("t1", "T shirt box", "t-shirts");
-    add("b1", "Shorts mesh", "shorts");
-    add("g1", "Bag sling", "bags", { retailPrice: 0 });     // no price → skipped
-    add("s1", "Sneaker low", "sneakers");
-    add("s2", "Sneaker high", "sneakers");
+    add("h1", "Cap fitted with curved brim", "fitted-caps");
+    add("j1", "Jacket puffer quilted", "jackets");
+    add("t1", "T shirt boxy heavyweight", "t-shirts");
+    add("b1", "Shorts mesh with drawcord", "shorts");
+    add("g1", "Bag sling ripstop", "bags", { retailPrice: 0 });     // no price → skipped
+    add("s1", "Sneaker low suede", "sneakers");
+    add("s2", "Sneaker high leather", "sneakers");
+    add("s3", "Sneaker black", "sneakers");                          // colour-only website name → skipped, no stock read
+    add("s4", "Sneaker runner mesh", "sneakers", { brand: "" });     // no brand → skipped
     stock.shop1.s2 = { M: { qty: 0 } };                    // out of stock
     stock.hub3.s2 = { M: { qty: 9 } };                     // untrusted: does not count
     live.x1 = { state: "live", liveState: "on", cleanName: "Fragrance 100ML", liveAt: NOW };
@@ -347,16 +411,19 @@ describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
   });
 
   test("LOOKBOOK_SCENES: concrete first by default; config order, dedup, unknowns dropped", () => {
-    assert.deepEqual(lb.parseLookbookScenes(undefined), ["concrete", "garden"]);
+    // Concrete only since go-live (19 Oct); the garden is still a valid key.
+    assert.deepEqual(lb.parseLookbookScenes(undefined), ["concrete"]);
     assert.deepEqual(lb.parseLookbookScenes('["garden","concrete","garden"]'), ["garden", "concrete"]);
-    assert.deepEqual(lb.parseLookbookScenes('["beach"]'), ["concrete", "garden"]);
-    assert.deepEqual(lb.parseLookbookScenes("garden"), ["concrete", "garden"]);
+    assert.deepEqual(lb.parseLookbookScenes('["beach"]'), ["concrete"]);
+    assert.deepEqual(lb.parseLookbookScenes("garden"), ["concrete"]);
     assert.deepEqual(lb.parseLookbookScenes('["GARDEN"]'), ["garden"]);
   });
 
   test("sceneFor: alternates per LOOKBOOK day, concrete on the first (Mon 19 Oct)", () => {
-    const S = lb.parseLookbookScenes(), D = ["mon", "wed", "fri"];
+    const S = lb.parseLookbookScenes('["concrete","garden"]'), D = ["mon", "wed", "fri"];
     const at = (d) => lb.sceneFor(d, S, D).key;
+    // the default is concrete every lookbook day
+    assert.deepEqual(["2026-10-19", "2026-10-21", "2026-10-23"].map((d) => lb.sceneFor(d, lb.parseLookbookScenes(), D).key), ["concrete", "concrete", "concrete"]);
     assert.deepEqual(["2026-10-19", "2026-10-21", "2026-10-23", "2026-10-26", "2026-10-28"].map(at),
       ["concrete", "garden", "concrete", "garden", "concrete"]);
     // a non-lookbook day reads as the next lookbook day; days before the epoch keep alternating
@@ -420,5 +487,42 @@ describe("lookbook v2 — architect review of #750", () => {
   test("an unanswered model check is marked unreadable; an explicit false is not", () => {
     assert.equal(lb.readModelCheck('{"text_found":false}').unreadable, true);
     assert.equal(lb.readModelCheck('{"text_found":false,"model_black":false}').unreadable, undefined);
+  });
+});
+
+describe("go-live review fixes", () => {
+  test("a slot of expensive favourites cannot price the day out of the band: the cheapest are always searched", () => {
+    const pricey = Array.from({ length: 8 }, (_, i) => cand(`s${i}`, "sneakers", { score: 0.9 - i * 0.01, product: { retailPrice: 1600 } }));
+    const list = [...SIX().filter((c) => c.pid !== "s1"), ...pricey, cand("sz", "sneakers", { score: 0, product: { retailPrice: 500 } })];
+    const r = lb.pickLookbookOutfit(list);
+    assert.equal(r.reason, null);
+    assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "sz");
+  });
+
+  test("brands: Polo is a house; a category word on its own record is a placeholder", () => {
+    assert.equal(lb.posterBrand({ brand: "Polo", name: "Polo Ralph Lauren pony tee" }), "POLO RALPH LAUREN");
+    assert.equal(lb.posterBrand({ brand: "Polo", name: "Polo classic tee" }), "POLO");
+    assert.equal(lb.posterBrand({ brand: "Golf", categoryKey: "golf-t-shirts", name: "Golf t-shirt black" }), null);
+    assert.equal(lb.posterBrand({ brand: "Jacket", name: "Jacket brown #1611" }), null);
+    assert.equal(lb.posterBrand({ brand: "Boss", name: "Hugo boss beanie red #4" }), "HUGO BOSS");
+    assert.equal(lb.posterBrand({ brand: "Under", name: "Under Amour black and blue bag" }), "UNDER ARMOUR");
+  });
+
+  test("website names: the till string is refused, a good name sharing its words is not", () => {
+    const n = (web, inv) => lb.panelName(web, { name: inv });
+    assert.equal(n("Dunk Low Panda", "Nike dunk low panda #5521").name, "Dunk Low Panda");
+    assert.equal(n("Air Max 90", "Air max 90 white #1").name, "Air Max 90");
+    assert.equal(n("Tech Fleece Joggers", "Nike tech fleece joggers").name, "Tech Fleece Joggers");
+    assert.equal(n("Beanie Grey with white logo", "Karl Lagerfeld beanie Grey 2").name, "Beanie Grey with white logo");
+    assert.match(n("Jacket black white stripes #1552", "Jacket black white stripes #1552").why, /colour-only/);
+    assert.match(n("Raw cargo jeans FD3554", "G star raw cargo jeans FD3554#").why, /stock code/);
+    assert.match(n("Sneaker xl black end white", "Puma suede xl black end white").why, /garment word for the brand/);
+    assert.match(n("Sneaker 1fontanka cream white brown", "Nike airforce 1fontanka cream white, brown").why, /garment word for the brand/);
+    assert.match(n("Puma suede classic", "Puma suede classic").why, /inventory string/);
+  });
+
+  test("website names: codes stripped, models kept", () => {
+    assert.match(lb.panelName("Pants raw cargo jeanFG3551 tapered", { name: "x" }).why, /stock code/);
+    assert.equal(lb.panelName("Retro runner P6000 in silver mesh", { name: "x" }).name, "Retro runner P6000 in silver mesh");
   });
 });
