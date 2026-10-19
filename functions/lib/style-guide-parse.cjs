@@ -16,7 +16,7 @@ const REQUIRE_WORDS = /^(mono|denim|shorts|summer|winter|noaccent|accent=1|earth
 const RULE_KEYS = [
   "maxAccentHues", "maxLoudPieces", "maxFormalitySpread", "neverAllOversized", "oneFamilyOrBorder",
   "weightColour", "weightSilhouette", "weightFamily", "weightFormality", "weightSeason", "weightLook", "weightFresh",
-  "perPieceOverMin", "whiteSneakerBonus", "echoBonus", "secondAccentPenalty", "noAccentScore",
+  "offSeasonPenalty", "perPieceOverMin", "whiteSneakerBonus", "echoBonus", "secondAccentPenalty", "noAccentScore",
   "tieWindow", "shortlist", "perSlot",
 ];
 

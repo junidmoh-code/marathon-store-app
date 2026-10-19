@@ -235,3 +235,12 @@ describe("the stylist on the still", () => {
     assert.equal(still.stillLogEntry({ planned: "current", posted: "current", nowMs: 1 }).look, null);
   });
 });
+
+describe("the styling note above the hashtags", () => {
+  const still = require("../lib/social-still.cjs");
+  test("goes above a closing hashtag block, and never past Instagram's ceiling", () => {
+    assert.equal(still.withStylingNote("New in.\n\n#marathonclub #durban", "Tonal base, white sneaker."), "New in.\n\nTonal base, white sneaker.\n\n#marathonclub #durban");
+    const long = "x".repeat(2190);
+    assert.equal(still.withStylingNote(long, "Tonal base, white sneaker."), long);
+  });
+});

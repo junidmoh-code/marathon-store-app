@@ -86,7 +86,8 @@ describe("price and photo resolver", () => {
 
 describe("pickLookbookOutfit", () => {
   test("six rows, head to toe, total summed from the rows", () => {
-    const r = lb.pickLookbookOutfit(SIX().reverse());
+    // May: a shoulder month, so the jacket is not an off-season piece.
+    const r = lb.pickLookbookOutfit(SIX().reverse(), { month: 5 });
     assert.equal(r.reason, null);
     assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "jacket", "tee", "bottoms", "bag", "sneakers"]);
     assert.equal(r.total, 1850);
@@ -269,7 +270,7 @@ describe("rotation", () => {
 });
 
 describe("hero prompt and the no-text check", () => {
-  const rows = lb.pickLookbookOutfit(SIX()).rows;
+  const rows = lb.pickLookbookOutfit(SIX(), { month: 5 }).rows;
 
   test("the prompt lists every garment against its reference and forbids text", () => {
     const p = lb.buildHeroPrompt(rows);
@@ -524,5 +525,23 @@ describe("go-live review fixes", () => {
   test("website names: codes stripped, models kept", () => {
     assert.match(lb.panelName("Pants raw cargo jeanFG3551 tapered", { name: "x" }).why, /stock code/);
     assert.equal(lb.panelName("Retro runner P6000 in silver mesh", { name: "x" }).name, "Retro runner P6000 in silver mesh");
+  });
+});
+
+describe("stylist gates (review of #759)", () => {
+  test("looks in the band that all break the guide are the style gate, not price", () => {
+    // Every tee is a print and every pair of shorts is logo-heavy: two loud pieces.
+    const list = SIX().filter((c) => !["h1", "j1"].includes(c.pid));
+    const tags = new Map([
+      ["t1", { dominant: "black", secondary: null, pattern: "print", silhouette: "regular", family: "athleisure", formality: 3, season: "all" }],
+      ["b1", { dominant: "black", secondary: null, pattern: "logo-heavy", silhouette: "regular", family: "athleisure", formality: 3, season: "all" }],
+      ["s1", { dominant: "white", secondary: null, pattern: "solid", silhouette: "n/a", family: "athleisure", formality: 3, season: "all" }],
+    ]);
+    const extra = cand("s2", "sneakers", { product: { retailPrice: 900 } });
+    tags.set("s2", tags.get("s1"));
+    tags.set("g1", { ...tags.get("s1"), dominant: "black" });
+    const r = lb.pickLookbookOutfit([...list, extra, cand("s3", "sneakers", { product: { retailPrice: 600 } })], { tags: new Map([...tags, ["s3", tags.get("s1")]]), band: { min: 100, max: 5000 } });
+    assert.equal(r.style, true, r.reason);
+    assert.match(r.reason, /passes the style guide/);
   });
 });

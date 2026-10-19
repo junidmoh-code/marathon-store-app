@@ -94,13 +94,12 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   const thumbDeadlineMs = Date.now() + 240 * 1000;
 
   // ── 1. THE OUTFIT, styled, with real photos that actually download ─────
-  const [{ candidates }, history] = await Promise.all([
-    loadLookbookCandidates(db, { nowMs }),
-    loadLookbookHistory(db),
-  ]);
+  const history = await loadLookbookHistory(db);
   const recent = lookbook.recentLookbookPids(history);
-  // The 14-day no-repeat: never picked, whatever the score.
+  // The 14-day no-repeat: never picked, whatever the score, and never read,
+  // so the loader's per-slot quota counts only products the stylist can use.
   const blocked = lookbook.pidsWithinDays(history, saDate, 14);
+  const { candidates } = await loadLookbookCandidates(db, { nowMs, skip: new Set([...blocked, ...used]) });
   // Every candidate's style tags: cached, tagged now (a few), or read from its name.
   const tagRun = await ensureStyleTags(db, candidates.map((c) => {
     const ph = lookbook.approvedPhoto(c.product, c.node);

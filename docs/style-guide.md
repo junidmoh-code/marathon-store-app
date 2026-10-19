@@ -143,6 +143,7 @@ is 0–1 and is multiplied by its weight, so the weights are the points out of
 | weightSeason | 14 | right for Durban this month |
 | weightLook | 10 | how cleanly it matches one of the named looks below |
 | weightFresh | 6 | new arrivals, studio photos, sales, not shown lately |
+| offSeasonPenalty | 6 | points off for each piece made for the other season (a beanie in a Durban summer) |
 | perPieceOverMin | 3 | points for each lookbook piece beyond the four-piece minimum |
 | whiteSneakerBonus | 0.12 | added to the colour score when the sneakers are white or off-white |
 | echoBonus | 0.08 | added when the one accent appears on exactly two pieces (cap and sneaker) |

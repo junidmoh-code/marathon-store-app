@@ -133,6 +133,13 @@ describe("scoreOutfit", () => {
     assert.equal(s.score, 28 + 14 + 18 + 10 + 12.6 + 10 + 3);
     assert.match(s.reasoning, /monochrome; white sneakers anchor it; loose top over slim bottoms; all streetwear/);
   });
+  test("an off-season piece costs points of its own", () => {
+    const beanie = [...MONO(), P("hat", { dominant: "black", silhouette: "n/a", season: "winter" })];
+    const s = sty.scoreOutfit(beanie, { season: "summer" });
+    assert.equal(s.parts.offSeason, -6);
+    assert.equal(sty.scoreOutfit(beanie, { season: "winter" }).parts.offSeason, 0);
+    assert.equal(sty.scoreOutfit(beanie, { season: "shoulder" }).parts.offSeason, 0);
+  });
   test("a clash scores below a harmony", () => {
     const clash = [P("tee", { dominant: "navy", silhouette: "regular" }), P("bottoms", { dominant: "beige", silhouette: "regular" }), P("sneakers", { dominant: "grey", secondary: "orange" })];
     assert.ok(sty.scoreOutfit(clash, { season: "summer" }).score < sty.scoreOutfit(MONO(), { season: "summer" }).score - 10);
@@ -239,5 +246,30 @@ describe("the tie-break", () => {
   test("the panel header: the look's two lines, or the house fallback", () => {
     assert.deepEqual(sty.headerFor("earth-tone-street"), ["EARTH TONE", "STREET"]);
     assert.deepEqual(sty.headerFor(null), ["THE EVERYDAY", "LEGACY COLLECTION"]);
+  });
+});
+
+describe("review fixes (Sonnet architect, #759)", () => {
+  test("refusals made while building are counted under their rule", () => {
+    const loud = [P("tee", { pattern: "print" }, { pid: "a" }), P("bottoms", { pattern: "print" }, { pid: "b" }), P("sneakers", {}, { pid: "c" })];
+    const r = sty.styleOutfits(loud, { core: [["tee"], ["bottoms"], ["sneakers"]], minPieces: 3, maxPieces: 3, month: 10 });
+    assert.equal(r.outfits.length, 0);
+    assert.ok(Object.keys(r.refused).some((k) => /loud pieces/.test(k)), JSON.stringify(r.refused));
+  });
+  test("an out-of-range choice drops the model's note and look with it", () => {
+    const s = sty.styleOutfits(CATALOGUE(), { core: [["tee", "jacket"], ["bottoms"], ["sneakers"]], minPieces: 3, maxPieces: 4, month: 10 }).shortlist;
+    const c = sty.readChoice(JSON.stringify({ choice: 9, look: "raw-denim", note: "Denim on denim, kept simple and calm." }), s);
+    assert.equal(c.source, "score");
+    assert.notEqual(c.note, "Denim on denim, kept simple and calm.");
+    assert.equal(c.look, s[0].look);
+  });
+  test("a word ending in r before a number is not a price", () => {
+    assert.equal(sty.cleanNote("Colour 1 is black, colour 2 is white"), "Colour 1 is black, colour 2 is white");
+    assert.equal(sty.cleanNote("Under R900 for the set"), null);
+  });
+  test("two-piece pairings may share one piece in the shortlist", () => {
+    const pool = [P("tee", {}, { pid: "t1" }), P("tee", { dominant: "white" }, { pid: "t2" }), P("sneakers", { dominant: "white", silhouette: "n/a" }, { pid: "s1" })];
+    const r = sty.styleOutfits(pool, { core: [["tee"], ["sneakers"]], minPieces: 2, maxPieces: 2, month: 10, template: false });
+    assert.equal(r.shortlist.length, 2);
   });
 });

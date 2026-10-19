@@ -4594,13 +4594,21 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
   const { ensureStyleTags } = require("./lookbook/style-tags-io.cjs");
   const { makeStylistChooser } = require("./lookbook/stylist-call.cjs");
   let costUSD = 0;
+  // The run's tags: read once, and their cost charged to the post that read them.
+  let first = false;
   if (!STYLE_TAGS_BY_RUN.has(candidates)) {
-    STYLE_TAGS_BY_RUN.set(candidates, ensureStyleTags(db, candidates.filter((c) => c.slot).map((c) => ({
+    first = true;
+    const p = ensureStyleTags(db, candidates.filter((c) => c.slot).map((c) => ({
       pid: c.pid, photoUrl: c.photoUrl, product: c.product, websiteName: c.name,
     })), { geminiApiKey: geminiApiKey && geminiApiKey.value(), fetchImage: fetchImageBuffer, log: (m) => console.log(m) },
-    { maxNew: RUN_STYLE_TAGS, deadlineMs: Date.now() + 60 * 1000 }).then((r) => { costUSD += r.costUSD; return r.tags; }));
+    { maxNew: RUN_STYLE_TAGS, deadlineMs: Date.now() + 60 * 1000 });
+    // A failed read is not remembered: the next post in the run tries again.
+    p.catch(() => STYLE_TAGS_BY_RUN.delete(candidates));
+    STYLE_TAGS_BY_RUN.set(candidates, p);
   }
-  const tags = await STYLE_TAGS_BY_RUN.get(candidates);
+  const tagRun = await STYLE_TAGS_BY_RUN.get(candidates);
+  if (first) costUSD += tagRun.costUSD;
+  const tags = tagRun.tags;
   const month = Number(saDateForUsage(Date.now()).slice(5, 7));
   let res = socialStylist.styledPicksForKind(kind, candidates, { used, tags, month });
   if (!res.picks.length) return { ...res, costUSD };
@@ -4622,7 +4630,15 @@ async function generateOnePost(db, {
 }) {
   let picks, reason, look = null, stylistCostUSD = 0;
   if (socialStylist.STYLED_KINDS.has(kind)) {
-    ({ picks, reason, look = null, costUSD: stylistCostUSD = 0 } = await pickStyledPost(db, kind, candidates, used, geminiApiKey));
+    // The stylist failing (an unreadable tag, a bad record) must not cost the
+    // day its post: the unstyled picker that ran before it takes over.
+    try {
+      ({ picks, reason, look = null, costUSD: stylistCostUSD = 0 } = await pickStyledPost(db, kind, candidates, used, geminiApiKey));
+    } catch (err) {
+      console.warn(`social: the stylist failed for a ${kind} — picking it unstyled: ${err && err.message}`);
+      ({ picks, reason } = socialSelect.pickForKind(kind, candidates, { used }));
+      look = null;
+    }
   } else {
     ({ picks, reason } = socialSelect.pickForKind(kind, candidates, { used }));
   }

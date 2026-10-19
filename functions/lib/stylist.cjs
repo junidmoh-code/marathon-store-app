@@ -199,6 +199,9 @@ function scoreOutfit(pieces, ctx = {}) {
     formality: r.weightFormality * fo.score, season: r.weightSeason * se.score,
     look: r.weightLook * (bl ? bl.match : 0), fresh: r.weightFresh * fresh,
     pieces: ctx.perPieceBonus ? r.perPieceOverMin * Math.max(0, pieces.length - (ctx.minPieces || pieces.length)) : 0,
+    // A piece made for the other season costs on its own, not just as a share
+    // of the average: one beanie in January must not ride along for a row.
+    offSeason: season === "shoulder" ? 0 : -r.offSeasonPenalty * pieces.filter((p) => p.tags.season !== "all" && p.tags.season !== season).length || 0,
   };
   for (const k of Object.keys(parts)) parts[k] = Math.round(parts[k] * 100) / 100;
   const score = Math.round(Object.values(parts).reduce((a, b) => a + b, 0) * 100) / 100;
@@ -270,7 +273,7 @@ function styleOutfits(pieces, opts = {}) {
           return;
         }
         const why = hardRule(chosen, guide);
-        if (why) { const k = why.replace(/\(.*?\)/g, "").replace(/\d+/g, "N").trim(); refused[k] = (refused[k] || 0) + 1; return; }
+        if (why) { const k = refusalKey(why); refused[k] = (refused[k] || 0) + 1; return; }
         const key = chosen.map((p) => p.pid).sort().join(",");
         if (seen.has(key)) return;
         const sc = scoreOutfit(chosen, ctx);
@@ -280,13 +283,18 @@ function styleOutfits(pieces, opts = {}) {
       }
       const slot = order[i];
       for (const p of bySlot.get(slot)) {
-        if (band && sum + (p.price || 0) > band.max) continue;
+        // Over the ceiling: counted, so a day refused only on price says so.
+        if (band && sum + (p.price || 0) > band.max) { refused.band = (refused.band || 0) + 1; continue; }
         if (p.fullBody && chosen.some((x) => x.slot === "bottoms")) continue;
         if (slot === "bottoms" && chosen.some((x) => x.fullBody)) continue;
         if (chosen.some((x) => x.pid === p.pid)) continue;
         if (!fits(chosen.map((x) => x.ref), p.ref)) continue;
         chosen.push(p);
-        if (!hardRule(chosen, guide, { partial: true })) walk(i + 1, chosen, sum + (p.price || 0));
+        const why = hardRule(chosen, guide, { partial: true });
+        if (!why) walk(i + 1, chosen, sum + (p.price || 0));
+        // Refused while building: counted under its rule, so a day with looks
+        // in the band that all break the guide reports "style", not "price".
+        else { const k = refusalKey(why); refused[k] = (refused[k] || 0) + 1; }
         chosen.pop();
       }
       walk(i + 1, chosen, sum);
@@ -298,12 +306,15 @@ function styleOutfits(pieces, opts = {}) {
   return { outfits, shortlist: shortlistOf(outfits, guide), considered, refused, nearest, best: outfits[0] || null };
 }
 
+// "2 accent colours (red, green) — the guide allows 1" → "N accent colours — the guide allows N"
+const refusalKey = (why) => why.replace(/\(.*?\)/g, "").replace(/\d+/g, "N").replace(/\s+/g, " ").trim();
 const byScore = (a, b) => b.score - a.score || (a.key < b.key ? -1 : 1);
 
 /**
  * The best `shortlist` outfits within `tieWindow` points of the top. Five
  * near-copies of one outfit (the same look with a different cap) is not a
- * choice: each one differs from every other by two pieces. Pure.
+ * choice: each one differs from every other by two pieces (a two-piece
+ * pairing by one). Pure.
  */
 function shortlistOf(outfits, guide = GUIDE) {
   const r = guide.rules;
@@ -314,7 +325,8 @@ function shortlistOf(outfits, guide = GUIDE) {
     if (out.length >= r.shortlist) break;
     if (best && o.score < best.score - r.tieWindow) break;
     const ids = new Set(o.pieces.map((p) => p.pid));
-    if (out.some((s) => s.pieces.filter((p) => ids.has(p.pid)).length > Math.max(s.pieces.length, o.pieces.length) - 2)) continue;
+    // A two-piece pairing may share one piece with another option.
+    if (out.some((s) => s.pieces.filter((p) => ids.has(p.pid)).length > Math.max(1, Math.max(s.pieces.length, o.pieces.length) - 2))) continue;
     out.push(o);
   }
   return out;
@@ -354,7 +366,7 @@ const NOTE_MAX = 140;
 function cleanNote(note, { kind } = {}) {
   let s = String(note || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").replace(/^["'“”]+|["'“”]+$/g, "").trim();
   // Too short to say anything ("x", "Nice."), or a price, a hashtag or a link.
-  if (s.length < 12 || /#|R\s?\d|https?:/i.test(s)) return null;
+  if (s.length < 12 || /#|\bR\s?\d|https?:/.test(s) || /https?:/i.test(s)) return null;
   if (kind === "pairing" && /\b(outfits?|looks?|fits?)\b/i.test(s)) return null;
   if (s.length > NOTE_MAX) {
     const cut = s.slice(0, NOTE_MAX);
@@ -381,14 +393,18 @@ function readChoice(text, shortlist, { kind = "lookbook", season = "summer", gui
   let v = null;
   try { v = a !== -1 && b > a ? JSON.parse(s.slice(a, b + 1)) : null; } catch { v = null; }
   const n = v ? Number(v.choice) : NaN;
-  const index = Number.isInteger(n) && n >= 1 && n <= shortlist.length ? n - 1 : 0;
+  const valid = Number.isInteger(n) && n >= 1 && n <= shortlist.length;
+  const index = valid ? n - 1 : 0;
   const chosen = shortlist[index];
+  // A note and a look written for an option that does not exist describe
+  // nothing that will be posted: both are dropped with the choice.
+  if (!valid) v = null;
   const modelLook = v && lookByKey(String(v.look || "").trim().toLowerCase(), guide);
   // The model's look only where the outfit actually qualifies for it.
   const qualifies = modelLook && lookMatch(chosen.pieces, modelLook, { season, template: kind !== "pairing" && kind !== "flatlay", guide }) !== null;
   const look = qualifies ? modelLook.key : chosen.look;
   const note = (v && cleanNote(v.note, { kind })) || fallbackNote(chosen, { kind });
-  const source = v && Number.isInteger(n) && n >= 1 && n <= shortlist.length ? "model" : "score";
+  const source = valid ? "model" : "score";
   return { index, look, note, source };
 }
 

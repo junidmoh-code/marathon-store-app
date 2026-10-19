@@ -74,7 +74,14 @@ function withStylingNote(caption, note) {
   const c = String(caption || "").trim();
   const n = String(note || "").trim();
   if (!n || c.includes(n)) return c;
-  return c ? `${c}\n\n${n}` : n;
+  if (!c) return n;
+  // Above a closing hashtag block, which is where a caption ends.
+  const paras = c.split(/\n\s*\n/);
+  const last = paras[paras.length - 1].trim();
+  const tagsOnly = paras.length > 1 && /^(#[\p{L}\p{N}_]+\s*)+$/u.test(last);
+  const out = tagsOnly ? [...paras.slice(0, -1), n, last].join("\n\n") : `${c}\n\n${n}`;
+  // Instagram's caption ceiling is 2,200 characters: never pushed past it.
+  return out.length <= 2200 ? out : c;
 }
 
 /**

@@ -448,6 +448,8 @@ function pickLookbookOutfit(candidates, { recent = new Set(), blocked = new Set(
   };
   if (!res.shortlist.length) {
     const styleRefusals = Object.entries(res.refused).filter(([k]) => k !== "band").sort((a, b) => b[1] - a[1]);
+    // Style, not price, when the guide refused anything: a look that broke a
+    // rule may have fitted the band, a look over the ceiling says nothing.
     if (styleRefusals.length) {
       return {
         rows: [], total: 0, skipped, shortlist: [], style: true,

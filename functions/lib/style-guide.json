@@ -358,6 +358,7 @@
     "weightSeason": 14,
     "weightLook": 10,
     "weightFresh": 6,
+    "offSeasonPenalty": 6,
     "perPieceOverMin": 3,
     "whiteSneakerBonus": 0.12,
     "echoBonus": 0.08,
