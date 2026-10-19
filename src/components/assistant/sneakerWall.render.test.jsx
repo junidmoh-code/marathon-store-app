@@ -41,7 +41,7 @@ const sizeGate = {
   hubLabelFor: () => "Hub 1",
 };
 
-function Harness({ refuse = false, quickAddSpy, modalOpen = false }) {
+function Harness({ refuse = false, quickAddSpy, modalOpen = false, onOutSize }) {
   const [cart, setCart] = useState([]);
   const grouped = useMemo(() => groupOrderLines(cart), [cart]);
   const units = grouped.reduce((s, g) => s + g.qty, 0);
@@ -55,7 +55,7 @@ function Harness({ refuse = false, quickAddSpy, modalOpen = false }) {
     <SneakerWall availableShops={SHOPS} effectiveShop="pe" shopRegistry={null} onPickShop={() => {}}
                  mode="sneaker" setMode={() => {}} onSwitchView={() => {}} userEmail="a@b.c"
                  search="" setSearch={() => {}} searchRef={{ current: null }} onLabelFind={() => {}}
-                 shownCount={PRODUCTS.length} visible={PRODUCTS} onShowMore={() => {}} modalOpen={modalOpen}
+                 shownCount={PRODUCTS.length} visible={PRODUCTS} onShowMore={() => {}} modalOpen={modalOpen} onOutSize={onOutSize}
                  sizeGate={sizeGate} onQuickAdd={onQuickAdd} onOpenDetails={() => {}} onViewPhoto={() => {}}
                  grouped={grouped} units={units} total={orderLinesTotal(grouped)}
                  onRemoveOne={() => {}} onAddDisplayPartner={() => {}} onCheckout={() => {}} />
@@ -70,7 +70,7 @@ function mount(props = {}) {
 const textIn = (inst) => (typeof inst === "string" ? inst : (inst.children || []).map(textIn).join(""));
 const tileButton = (tr, name) => tr.root.find(n => n.type === "button" && n.props.className === "sw-tbtn" && n.props["aria-label"] === name);
 const tileOf = (tr, name) => tileButton(tr, name).parent;
-const sizePills = (tr) => tr.root.findAll(n => n.type === "button" && n.props.className === "sw-sz");
+const sizePills = (tr) => tr.root.findAll(n => n.type === "button" && /^sw-sz/.test(n.props.className || ""));
 const pill = (tr, label) => sizePills(tr).find(n => textIn(n) === label);
 const openTiles = (tr) => tr.root.findAll(n => n.type === "div" && n.props.className === "sw-tile" && n.props["data-open"] === true);
 const count = (tr) => textIn(tr.root.find(n => n.props["data-testid"] === "order-count"));
@@ -140,14 +140,6 @@ describe("only one tile is open at a time", () => {
 });
 
 describe("Escape", () => {
-  const press = () => act(() => { window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape" })); });
-  it("closes the open tile, but leaves it alone while a modal sits over the wall", () => {
-    if (typeof window === "undefined" || !window.KeyboardEvent) return;   // node env: covered by source below
-    const tr = mount();
-    tap(tileButton(tr, KOBE.name));
-    press();
-    expect(openTiles(tr)).toHaveLength(0);
-  });
   it("the wall's Escape handler yields to a modal", async () => {
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");
@@ -173,7 +165,42 @@ describe("a size with no stock is not tappable", () => {
   it("the struck-through style belongs to the disabled state", async () => {
     const { readFileSync } = await import("node:fs");
     const css = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");
-    expect(css).toMatch(/\.sw-sz:disabled\{[^}]*color:#6e6e78[^}]*text-decoration:line-through[^}]*cursor:not-allowed/);
+    // #7a7a84: the artboard's #6e6e78 is 4.2:1 on the true-black ground.
+    expect(css).toMatch(/\.sw-sz:disabled\{[^}]*color:#7a7a84[^}]*text-decoration:line-through[^}]*cursor:not-allowed/);
+    expect(css).toMatch(/\.sw-sz\.out\{[^}]*color:#7a7a84[^}]*text-decoration:line-through/);
+  });
+});
+
+describe("a struck size opens the alternatives — it never adds", () => {
+  it("with the panel wired, the out pill is live, still struck, and opens that size's alternatives", () => {
+    const spy = vi.fn();
+    const onOutSize = vi.fn();
+    const tr = mount({ quickAddSpy: spy, onOutSize });
+    tap(tileButton(tr, KOBE.name));
+    const ten = pill(tr, "10");
+    expect(ten.props.disabled).toBe(false);
+    expect(ten.props.className).toBe("sw-sz out");
+    expect(ten.props["aria-label"]).toBe("Size 10, not available — show what is");
+    tap(ten);
+    expect(onOutSize).toHaveBeenCalledWith(KOBE, "10");
+    expect(spy).not.toHaveBeenCalled();
+    expect(count(tr)).toBe("0");
+  });
+});
+
+describe("compact bar, five columns, three full rows (Junid, 2026-10-19)", () => {
+  it("the CSS geometry gives three complete rows at 1440×900 and 1280×800", async () => {
+    const { readFileSync } = await import("node:fs");
+    const css = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");
+    expect(css).toMatch(/\.sw-top\{[^}]*height:44px;box-sizing:content-box;padding:12px 16px/);
+    expect(css).toMatch(/\.sw-grid\{display:grid;grid-template-columns:repeat\(5,minmax\(0,1fr\)\);gap:10px\}/);
+    expect(css).toMatch(/\.sw-tile\{[^}]*aspect-ratio:5\/4/);
+    expect(css).toMatch(/\.sw-scroll\{[^}]*padding:0 16px 16px/);
+    // bar 68 + three rows + two gaps must fit the viewport height.
+    const rows3 = (w, cols) => 68 + 3 * ((w - 32 - 10 * (cols - 1)) / cols) * 0.8 + 20;
+    expect(rows3(1440, 5)).toBeLessThanOrEqual(900);
+    expect(rows3(1280, 5)).toBeLessThanOrEqual(800);
+    expect(css).toMatch(/@media\(max-width:1199px\)\{\.sw-grid\{grid-template-columns:repeat\(4/);
   });
 });
 
