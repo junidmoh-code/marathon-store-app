@@ -250,6 +250,19 @@ describe("the tie-break", () => {
 });
 
 describe("review fixes (Sonnet architect, #759)", () => {
+  test("a forced look keeps an outfit that qualifies even when another look matches it better (Fable review)", () => {
+    const set = [
+      P("tee", { dominant: "beige", family: "prep" }, { pid: "t" }),
+      P("bottoms", { dominant: "khaki", family: "prep", season: "summer" }, { pid: "b", categoryKey: "shorts" }),
+      P("sneakers", { dominant: "white", silhouette: "n/a", family: "prep" }, { pid: "s" }),
+    ];
+    const opts = { core: [["tee"], ["bottoms"], ["sneakers"]], minPieces: 3, maxPieces: 3, month: 10 };
+    assert.notEqual(sty.styleOutfits(set, opts).best.look, "coastal-summer");
+    const forced = sty.styleOutfits(set, { ...opts, look: "coastal-summer" });
+    assert.equal(forced.outfits.length, 1);
+    assert.equal(forced.best.look, "coastal-summer");
+    assert.throws(() => sty.styleOutfits(set, { ...opts, look: "nope" }), /unknown look/);
+  });
   test("refusals made while building are counted under their rule", () => {
     const loud = [P("tee", { pattern: "print" }, { pid: "a" }), P("bottoms", { pattern: "print" }, { pid: "b" }), P("sneakers", {}, { pid: "c" })];
     const r = sty.styleOutfits(loud, { core: [["tee"], ["bottoms"], ["sneakers"]], minPieces: 3, maxPieces: 3, month: 10 });

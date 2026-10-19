@@ -13,6 +13,11 @@
 //
 // No band (only the lookbook has one), the same hard rules, the same score,
 // the same shortlist and the same one text-model tie-break. Pure.
+//
+// Only products with an outfit slot (social-select outfitSlot: shoes, tops,
+// bottoms, caps, bags, fragrance) can be styled, so a flat-lay no longer
+// takes an unslotted product the old ranking could. A pairing's look is kept
+// on the post record for the report; its caption never names it.
 "use strict";
 
 const socialSelect = require("./social-select.cjs");

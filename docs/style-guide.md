@@ -112,7 +112,8 @@ the loud piece of its outfit even with no print on it).
 Each product belongs to one family. The vision tagger decides it from the
 photograph; the brands below are the stylist's prior, used to read the
 product's name when no photo tag exists. `borders` lists the families an
-outfit may mix with this one; any other mix is refused.
+outfit may mix with this one; any other mix is refused. A border works in
+both directions, so it only needs writing on one of the two rows.
 
 <!-- config: families -->
 | family | borders | brands | categories |

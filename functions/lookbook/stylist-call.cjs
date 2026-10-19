@@ -26,11 +26,14 @@ function makeStylistChooser({ Anthropic, apiKey, model = STYLIST_MODEL, timeoutM
     const client = new Ctor({ apiKey, timeout: timeoutMs, maxRetries: 1 });
     const msg = await client.messages.create({
       model,
-      max_tokens: 1024,
+      // Room for Haiku 5.5's adaptive thinking before the JSON; cost is negligible.
+      max_tokens: 4000,
       output_config: { effort: "low" },
       messages: [{ role: "user", content: prompt }],
     });
     if (msg.stop_reason === "refusal") throw new Error("the stylist call was refused");
+    // A cut-off answer is half a JSON object: not an answer.
+    if (msg.stop_reason === "max_tokens") throw new Error("the stylist's answer was cut off (max_tokens)");
     const text = (msg.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
     return { text, costUSD: stylistCostUSD(msg.usage), model };
   };

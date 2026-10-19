@@ -236,7 +236,9 @@ function styleOutfits(pieces, opts = {}) {
   const fits = opts.fits || (() => true);
   const perSlot = Math.max(1, opts.perSlot || r.perSlot);
   const ctx = { season, template: opts.template !== false, minPieces, perPieceBonus: Boolean(opts.perPieceBonus), guide };
-  const looks = opts.look ? guide.looks.filter((l) => l.key === opts.look) : guide.looks;
+  const forced = opts.look ? guide.looks.find((l) => l.key === opts.look) || null : null;
+  if (opts.look && !forced) throw new Error(`styleOutfits: unknown look "${opts.look}"`);
+  const looks = forced ? [forced] : guide.looks;
   // Each plan enumerates from its own per-slot shortlist: a look's palette
   // (so an earth-tone look is not starved by six black tees), and one with no
   // palette at all.
@@ -277,7 +279,17 @@ function styleOutfits(pieces, opts = {}) {
         const key = chosen.map((p) => p.pid).sort().join(",");
         if (seen.has(key)) return;
         const sc = scoreOutfit(chosen, ctx);
-        if (opts.look && sc.look !== opts.look) return;
+        // A forced look keeps every outfit that QUALIFIES for it, not only
+        // the ones it matches best, and names the outfit after it (Fable
+        // review of #759: coastal-summer lost every outfit to earth-tone).
+        if (forced) {
+          const m = lookMatch(chosen, forced, { season, template: ctx.template, guide });
+          if (m === null) { refused[`not ${forced.key}`] = (refused[`not ${forced.key}`] || 0) + 1; return; }
+          const lookPart = Math.round(r.weightLook * m * 100) / 100;
+          sc.score = Math.round((sc.score - sc.parts.look + lookPart) * 100) / 100;
+          sc.parts = { ...sc.parts, look: lookPart };
+          sc.look = forced.key; sc.lookMatch = Math.round(m * 100) / 100;
+        }
         seen.set(key, { key, pieces: chosen.slice(), total: sum, ...sc });
         return;
       }
