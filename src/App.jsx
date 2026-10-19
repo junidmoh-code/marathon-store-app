@@ -126,6 +126,8 @@ import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
 import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
+import SneakerWall from "./components/assistant/SneakerWall.jsx";
+import { buildBrandIndex, matchBrandQuery, productInBrand } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
 import { answerStyleCodeSibling, recordLabelCodes } from "./components/stock/hubCleanupStore";
 import { extractDominantColours } from "./utils/dominantColours";
@@ -8739,11 +8741,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   }, [searchResults, catalog, brand, sort]);
 
   // Reset the brand filter when switching modes (brands differ per catalog).
-  useEffect(() => { setBrand("All"); }, [mode]);
+  // The wall has neither control, so entering it drops a sort left over from
+  // the clothing layout — the wall is always the featured order.
+  useEffect(() => { setBrand("All"); if (mode === "sneaker") setSort("feat"); }, [mode]);
 
   // Cart grouping, the running total and the render cap — shared with the
   // sneaker wall (components/assistant/assistantOrderModel.js).
-  const { grouped, groupedRefill, units, refillUnits, visible, showMore } =
+  const { grouped, groupedRefill, units, refillUnits, total, visible, showMore } =
     useAssistantOrderModel({ cart, shown, resetKeys: [searchResults, brand, sort, mode] });
 
   useEffect(() => {
@@ -8784,11 +8788,17 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
     ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
     : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
 
+  // SNEAKER ORDER = THE PHOTO WALL (Junid's design, 2026-10-19). Clothing
+  // order and the CR fallback keep the three-pane layout below, untouched.
+  // Both share this root's quick-view, checkout and shop-switch confirm.
+  const wall = mode === "sneaker";
+
   return (
-    <div className="ad-root">
+    <div className={wall ? "ad-root ad-root--wall" : "ad-root"}>
       <style>{`
         .ad-root{position:fixed;inset:0;z-index:50;background:#000;color:#f4f6ff;font-family:${FONT.replace(/`/g,"")};display:grid;grid-template-columns:184px minmax(0,1fr) 288px;overflow:hidden}
         .ad-root *{box-sizing:border-box}
+        .ad-root.ad-root--wall{display:block}
         @media(max-width:1180px){.ad-root{grid-template-columns:184px minmax(0,1fr)} .ad-drawer{position:fixed;right:0;top:0;bottom:0;width:288px}}
         .ad-side{background:rgba(255,255,255,.015);border-right:1px solid rgba(255,255,255,.08);padding:22px 12px 16px;display:flex;flex-direction:column;gap:4px;overflow:auto}
         .ad-wm .m{font-size:21px;font-weight:800;font-style:italic;letter-spacing:-.6px;color:#fff}
@@ -8901,6 +8911,22 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
         @media(prefers-reduced-motion:reduce){.ad-price,.ad-svprice{animation:none} .ad-card,.ad-quick,.ad-scroll,.ad-dbody,.ad-danger,.ad-warnpulse{animation:none;transition:none}}
       `}</style>
 
+      {wall ? (
+        <SneakerWall
+          availableShops={availableShops} effectiveShop={effectiveShop} shopRegistry={shopRegistry}
+          onPickShop={setPendingShop}
+          mode={mode} setMode={setMode} onSwitchView={onSwitchView} userEmail={userEmail}
+          search={search} setSearch={setSearch} searchRef={searchRef} onLabelFind={onLabelFind}
+          shownCount={shown.length} visible={visible} onShowMore={showMore}
+          sizeGate={sizeGate} onQuickAdd={onQuickAdd} onOpenDetails={openQv}
+          onViewPhoto={p => onViewPhoto(productPhotos(p))}
+          // Deactivate / reactivate / merge (owner spec 2026-08-31) moved from
+          // the resting card into the open tile. Renders nothing for a non-admin.
+          renderTileActions={p => <ProductActionsButton product={p} products={products} />}
+          grouped={grouped} units={units} total={total}
+          onRemoveOne={onRemoveOne} onAddDisplayPartner={onAddDisplayPartner}
+          onCheckout={() => setCoOpen(true)} />
+      ) : (<>
       {/* SIDEBAR */}
       <aside className="ad-side">
         <div className="ad-wm" style={{ padding: "0 8px 14px" }}><div className="m">marathon</div><div className="c">CLUB</div></div>
@@ -9126,6 +9152,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           )}
         </div>
       </aside>
+      </>)}
 
       {/* QUICK-VIEW STAGE */}
       {qv && (
@@ -10008,6 +10035,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // plus a full grid re-render before it appeared — which is why typing into
   // the search box on the till lagged behind the keyboard.
   const deferredSearch = useDeferredValue(search);
+  // The brands in the pool, for "typing a brand name filters by brand" — the
+  // sneaker wall has no brand dropdown (components/assistant/brandSearch.js).
+  const brandIndex = useMemo(() => buildBrandIndex(base), [base]);
   const filtered = useMemo(() => {
     const q = deferredSearch.trim();
     if (!q) return browse;   // no query = browsing: deactivated products are not on offer
@@ -10029,6 +10059,16 @@ function AssistantView({ products, onExit, orders = [] }) {
       const seen = new Set(codeHits.map(p => p.id));
       return [...codeHits, ...rest.filter(p => !seen.has(p.id))];
     };
+    // BRAND — a query that starts with a brand name ("nike", "new balance 550")
+    // narrows to that brand; whatever follows the brand searches within it.
+    const bq = matchBrandQuery(brandIndex, q);
+    if (bq) {
+      const inBrand = (p) => productInBrand(p, bq.key);
+      if (!bq.rest) return merge(base.filter(inBrand));
+      if (bq.rest.length < 2)
+        return merge(base.filter(p => inBrand(p) && p.name.toLowerCase().includes(bq.rest)));
+      return merge(fuse.search(bq.rest).map(r => r.item).filter(inBrand));
+    }
     // 1-char queries: Fuse's minMatchCharLength would return nothing, so fall
     // back to a plain case-insensitive substring match for the first letter.
     if (q.length < 2) {
@@ -10037,7 +10077,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         p.name.toLowerCase().includes(lc) || (p.category || "").toLowerCase().includes(lc)));
     }
     return merge(fuse.search(q).map(r => r.item));
-  }, [deferredSearch, base, browse, fuse]);
+  }, [deferredSearch, base, browse, fuse, brandIndex]);
 
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
