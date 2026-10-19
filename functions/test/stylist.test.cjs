@@ -324,3 +324,9 @@ test("lookbook: a hat with no look that wears one is refused; a narrow slot neve
     { core: [["tee"], ["bottoms"], ["sneakers"]], minPieces: 3, maxPieces: 3, month: 10, perSlot: 1, template: false });
   assert.equal(new Set(n.outfits.map((o) => o.pieces.find((p) => p.slot === "tee").pid)).size, 1);
 });
+
+test("a note cut to length never ends on a dangling word", () => {
+  const n = sty.cleanNote("Charcoal oversized tee, black sweat shorts and crisp white sneakers keep it cool and sharp, with a light-blue cap adding a fresh touch for the Durban heat.");
+  assert.ok(n.length <= sty.NOTE_MAX + 1);
+  assert.doesNotMatch(n, /\b(for|a|with|and)\.$/);
+});

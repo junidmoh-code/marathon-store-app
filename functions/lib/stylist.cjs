@@ -488,7 +488,9 @@ function cleanNote(note, { kind } = {}) {
   if (kind === "pairing" && /\b(outfits?|looks?|fits?)\b/i.test(s)) return null;
   if (s.length > NOTE_MAX) {
     const cut = s.slice(0, NOTE_MAX);
-    s = cut.slice(0, Math.max(cut.lastIndexOf(" "), 60)).replace(/[,;:\s—-]+$/, "") + ".";
+    // Never end on a dangling word ("…adding a fresh touch for." — sample 10).
+    s = cut.slice(0, Math.max(cut.lastIndexOf(" "), 60)).replace(/[,;:\s—-]+$/, "")
+      .replace(/(?:\s+(?:a|an|the|and|or|but|for|with|to|of|in|on|at|by|from|its|his|their|your))+$/i, "").replace(/[,;:\s—-]+$/, "") + ".";
   }
   return s;
 }
