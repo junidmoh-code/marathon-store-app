@@ -30,9 +30,10 @@ async function hasTagRecord(db, pid) {
 }
 
 /**
- * ONE vision call: the product photo (downscaled to TAG_IMAGE_PX, 258 input
- * tokens) and the tagging prompt, answered in the guide's vocabulary through
- * a response schema. Flash-Lite 2.5 first, 3.1 Flash-Lite if it errors.
+ * ONE vision call: the product photo (downscaled to TAG_IMAGE_PX, sent at low
+ * media resolution: 256 input tokens) and the tagging prompt, answered in the
+ * guide's vocabulary through a response schema, no thinking. 3.1 Flash-Lite
+ * first, 3.5 Flash-Lite if it errors.
  * @returns { tags, model, costUSD } — throws when neither model answers usably
  */
 async function visionTags(geminiApiKey, image, product, { fetchImpl = fetch, models = [styleTags.TAG_MODEL, styleTags.TAG_FALLBACK_MODEL] } = {}) {
@@ -45,7 +46,10 @@ async function visionTags(geminiApiKey, image, product, { fetchImpl = fetch, mod
       { inlineData: { mimeType: "image/jpeg", data: jpeg.toString("base64") } },
       { text: styleTags.buildTagPrompt(product) },
     ] }],
-    generationConfig: { temperature: 0, responseMimeType: "application/json", responseSchema: styleTags.tagSchema(), maxOutputTokens: 200 },
+    generationConfig: {
+      temperature: 0, responseMimeType: "application/json", responseSchema: styleTags.tagSchema(), maxOutputTokens: 200,
+      mediaResolution: "MEDIA_RESOLUTION_LOW", thinkingConfig: { thinkingLevel: "minimal" },
+    },
   };
   let costUSD = 0, last = null;
   for (const model of models) {

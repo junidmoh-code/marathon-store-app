@@ -23,14 +23,17 @@ const TAG_VERSION = 1;
 const PATTERNS = ["solid", "print", "logo-heavy"];
 const SILHOUETTES = ["slim", "regular", "oversized", "n/a"];
 const PIECE_SEASONS = ["summer", "winter", "all"];
-// The cheapest vision model on the account: $0.10 per million input tokens,
-// $0.40 output (Gemini API pricing, Oct 2026). A 384 px photo is 258 tokens.
-const TAG_MODEL = "gemini-2.5-flash-lite";
-const TAG_FALLBACK_MODEL = "gemini-3.1-flash-lite";
-const TAG_IN_PER_MTOK = 0.10;
-const TAG_OUT_PER_MTOK = 0.40;
-const TAG_FALLBACK_IN_PER_MTOK = 0.25;
-const TAG_FALLBACK_OUT_PER_MTOK = 1.50;
+// The cheapest vision model the account can call: gemini-3.1-flash-lite at
+// $0.25 per million input tokens and $1.50 output (Oct 2026). 2.5 Flash-Lite
+// ($0.10/$0.40) answered 404 "no longer available to new users" on 19 Oct.
+// At low media resolution a photo is 256 tokens and a whole call ~1,000
+// (measured: 944 in, 64 out = $0.00033). 3.5 Flash-Lite ($0.30/$2.50) is behind it.
+const TAG_MODEL = "gemini-3.1-flash-lite";
+const TAG_FALLBACK_MODEL = "gemini-3.5-flash-lite";
+const TAG_IN_PER_MTOK = 0.25;
+const TAG_OUT_PER_MTOK = 1.50;
+const TAG_FALLBACK_IN_PER_MTOK = 0.30;
+const TAG_FALLBACK_OUT_PER_MTOK = 2.50;
 const TAG_IMAGE_PX = 384;
 
 // What the vision answer is held to (Gemini responseSchema, OpenAPI subset).

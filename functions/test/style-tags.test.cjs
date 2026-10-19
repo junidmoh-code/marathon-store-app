@@ -63,9 +63,10 @@ describe("nameTags (the fallback)", () => {
 });
 
 describe("cost", () => {
-  test("Flash-Lite 2.5 at $0.10/$0.40 per million", () => {
-    assert.equal(+st.tagCostUSD({ promptTokenCount: 1000000, candidatesTokenCount: 1000000 }).toFixed(4), 0.5);
-    assert.equal(+st.tagCostUSD({ promptTokenCount: 900, candidatesTokenCount: 60 }).toFixed(6), 0.000114);
+  test("3.1 Flash-Lite at $0.25/$1.50 per million, thinking tokens billed as output", () => {
+    assert.equal(+st.tagCostUSD({ promptTokenCount: 1000000, candidatesTokenCount: 1000000 }).toFixed(4), 1.75);
+    assert.equal(+st.tagCostUSD({ promptTokenCount: 944, candidatesTokenCount: 64 }).toFixed(6), 0.000332);
+    assert.equal(+st.tagCostUSD({ promptTokenCount: 0, candidatesTokenCount: 10, thoughtsTokenCount: 10 }, "gemini-3.5-flash-lite").toFixed(6), 0.00005);
   });
 });
 
@@ -95,13 +96,14 @@ describe("ensureStyleTags", () => {
       const r = await io.ensureStyleTags(db, items, deps, { nowMs: 5 });
       assert.equal(r.tagged, 1);
       assert.equal(calls.length, 1);
-      assert.match(calls[0].url, /gemini-2\.5-flash-lite:generateContent/);
+      assert.match(calls[0].url, /gemini-3\.1-flash-lite:generateContent/);
+      assert.equal(calls[0].body.generationConfig.mediaResolution, "MEDIA_RESOLUTION_LOW");
       assert.equal(calls[0].body.generationConfig.responseMimeType, "application/json");
       assert.equal(r.tags.get("p1").dominant, "black");
       assert.equal(r.tags.get("p2").dominant, "olive");
       const rec = db._get(["social_lookbook", "styleTags", "p2"]);
       assert.equal(rec.source, "vision");
-      assert.equal(rec.model, "gemini-2.5-flash-lite");
+      assert.equal(rec.model, "gemini-3.1-flash-lite");
       assert.equal(rec.src, "u2");
       // A second run spends nothing.
       const again = await io.ensureStyleTags(db, items, deps, { nowMs: 6 });
@@ -127,7 +129,7 @@ describe("ensureStyleTags", () => {
     global.fetch = okFetch({ ...ANSWER, dominant: "chartreuse" }, calls);
     try {
       const r = await io.ensureStyleTags(db, [{ pid: "p4", photoUrl: "u", product: { name: "x", categoryKey: "t-shirts" } }], { geminiApiKey: "k", fetchImage: PNG, log: () => {} });
-      assert.equal(calls.length, 2, "2.5 Flash-Lite, then 3.1 Flash-Lite");
+      assert.equal(calls.length, 2, "3.1 Flash-Lite, then 3.5 Flash-Lite");
       assert.equal(r.tags.get("p4").source, "name");
       assert.ok(r.costUSD > 0);
       assert.equal(db._get(["social_lookbook", "styleTags", "p4"]), undefined);

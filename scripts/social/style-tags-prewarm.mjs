@@ -1,6 +1,6 @@
 // ─── PRE-WARM THE STYLIST'S TAGS FOR EVERY ELIGIBLE PRODUCT ──────────────────
 // One vision call per product (functions/lookbook/style-tags-io.cjs
-// visionTags, gemini-2.5-flash-lite on a 384 px photo), cached at
+// visionTags, gemini-3.1-flash-lite on a 384 px photo), cached at
 // social_lookbook/styleTags/{pid}. A product that already has a record is
 // skipped, so a re-run only tags what is new.
 //
@@ -79,7 +79,7 @@ for (let i = 0; i < eligible.length; i += 25) {
   slice.forEach((e, j) => { if (has[j]) cached++; else todo.push(e); });
 }
 const queue = todo.slice(0, LIMIT);
-console.log(`already tagged ${cached} · to tag ${todo.length}${Number.isFinite(LIMIT) ? ` (this run: ${queue.length})` : ""} · estimate ~$${(queue.length * 0.00012).toFixed(3)}`);
+console.log(`already tagged ${cached} · to tag ${todo.length}${Number.isFinite(LIMIT) ? ` (this run: ${queue.length})` : ""} · estimate ~$${(queue.length * 0.00035).toFixed(3)}`);
 if (DRY) process.exit(0);
 
 const geminiApiKey = secret("GEMINI_API_KEY");
