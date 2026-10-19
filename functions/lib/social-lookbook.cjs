@@ -236,18 +236,22 @@ const COLOUR_WORDS = new Set([
   "bluish", "and", "with", "in", "&", "on", "stripes", "striped",
 ]);
 // A bare stock code left in a website name: "FG3551", "FD1299", "FG3535-1",
-// and the same glued to a word ("jeanFG3551" is "jean"). Two digits is a model
-// ("59FIFTY", "Air Max 90"), never stripped.
-const stripBareCodes = (s) => String(s || "").replace(/([a-z])([A-Z]{1,3}\d{3,})/g, "$1 $2")
-  .replace(/(^|\s)[A-Za-z]{1,3}\d{3,}[\w-]*(?=\s|$)/g, " ");
+// and the same glued to a word ("jeanFG3551" is "jean"): two or three letters
+// and four or more digits. A model ("P6000", "59FIFTY", "Air Max 90") stays.
+const stripBareCodes = (s) => String(s || "").replace(/([a-z])([A-Z]{2,3}\d{4,})/g, "$1 $2")
+  .replace(/(^|\s)[A-Za-z]{2,3}\d{4,}[\w-]*(?=\s|$)/g, " ");
 const words = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9&\s-]+/g, " ").split(/\s+/).filter(Boolean);
 
 /** The brand line: the catalogue spelling in its proper form, else the record's brand. Pure. */
 function posterBrand(product) {
   const p = product || {};
   const brand = typeof p.brand === "string" ? p.brand.trim() : "";
-  // A brand that is itself a garment ("Jacket") is the till's placeholder.
-  if (!brand || GARMENT_WORDS.has(brand.toLowerCase()) || guessSlot(brand)) return null;
+  // A brand that is itself a garment ("Jacket") or the product's own category
+  // ("Golf" on a golf-t-shirts record) is the till's placeholder, not a brand.
+  // ("Polo" is a house, Polo Ralph Lauren, not a placeholder.)
+  if (!brand || (GARMENT_WORDS.has(brand.toLowerCase()) && brand.toLowerCase() !== "polo")) return null;
+  const catWords = new Set(words([p.categoryKey, p.category, p.subcategory, p.productType].filter(Boolean).join(" ").replace(/-/g, " ")));
+  if (words(brand.replace(/-/g, " ")).every((t) => catWords.has(t))) return null;
   const name = stripStyleCodes(p.name);
   for (const [proper, re] of POSTER_BRANDS) {
     if (re.test(brand)) return proper.toUpperCase();
@@ -279,12 +283,21 @@ function panelName(websiteName, product, brandLine = "") {
   if (w.every((t) => GARMENT_WORDS.has(t) || COLOUR_WORDS.has(t) || /^\d+$/.test(t))) {
     return { name: null, why: `colour-only website name "${name}"` };
   }
-  // The till's string re-dressed: every descriptive word is already in the
-  // inventory name ("Jacket black white stripes #1552", "Raw cargo jeans
-  // FD3554" for "G star raw cargo jeans FD3554#").
-  const inv = new Set(words(stripBareCodes(stripStyleCodes(product && product.name))));
-  const own = w.filter((t) => !GARMENT_WORDS.has(t) && !COLOUR_WORDS.has(t));
-  if (inv.size && own.every((t) => inv.has(t))) return { name: null, why: `website name "${name}" is the inventory string` };
+  // The till's string, not a website name (reviews of #756: a good website
+  // name may share every word with the till name — "Dunk Low Panda" — so only
+  // these three shapes are refused):
+  //   · the publisher kept a stock code ("Jacket black #5926", "Pants raw cargo jeanFG3551");
+  //   · it IS the inventory name, brand and all;
+  //   · the gateway lexicon's swap: a garment word in place of the brand, then
+  //     the tail of the inventory name ("Sneaker xl black end white" for "Puma
+  //     suede xl black end white").
+  const inv = words(stripBareCodes(stripStyleCodes(product && product.name)));
+  if (/#/.test(raw) || stripBareCodes(raw) !== raw) return { name: null, why: `website name "${raw}" is the inventory string (stock code)` };
+  if (inv.length && w.join(" ") === inv.join(" ")) return { name: null, why: `website name "${name}" is the inventory string` };
+  const tail = w.slice(1).join(" ");
+  if (inv.length && GARMENT_WORDS.has(w[0]) && w.length > 1 && (" " + inv.join(" ")).endsWith(" " + tail)) {
+    return { name: null, why: `website name "${name}" is the inventory string with a garment word for the brand` };
+  }
   return { name: name.charAt(0).toUpperCase() + name.slice(1) };
 }
 
@@ -397,9 +410,14 @@ function pickLookbookOutfit(candidates, { recent = new Set(), used = new Set(), 
   }
   const rank = (e) => (recent.has(e.row.pid) ? 0 : 4) + (e.row.studio ? 1 : 0)
     + e.row.newNorm + 0.5 * e.row.score;
-  for (const list of bySlot.values()) {
+  for (const [slot, list] of bySlot) {
     list.sort((a, b) => rank(b) - rank(a) || (a.row.pid < b.row.pid ? -1 : 1));
-    list.splice(BAND_PER_SLOT);
+    // The best BAND_PER_SLOT − 2 by bias, plus the two cheapest of the rest,
+    // so a slot of expensive favourites can never price the whole day out of
+    // the band (architect review).
+    const top = list.slice(0, BAND_PER_SLOT - 2);
+    const cheap = list.slice(BAND_PER_SLOT - 2).sort((a, b) => a.row.price - b.row.price || (a.row.pid < b.row.pid ? -1 : 1)).slice(0, 2);
+    bySlot.set(slot, [...top, ...cheap]);
   }
 
   // The core of the look first (what is on the body), then the finishing

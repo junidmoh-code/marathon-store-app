@@ -90,7 +90,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   let picked = null;
   for (let round = 0; round < 8; round++) {
     const p = lookbook.pickLookbookOutfit(candidates, { recent, used: exclude });
-    if (p.reason) return { ok: false, gate: p.band ? "price" : "outfit", reason: p.reason, costUSD, attempts };
+    if (p.reason) return { ok: false, gate: p.band ? "price" : "outfit", reason: p.reason, costUSD: costUSD + thumbCostUSD, thumbCostUSD, attempts };
     const fresh = p.rows.filter((r) => !ready.has(r.pid));
     // One at a time: each cut-out holds an ONNX session's worth of memory, and
     // six in parallel is how a 2 GiB instance dies (architect review, B2).
@@ -196,7 +196,10 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   // The hero is asked for at the model's maximum (4K, engines.cjs). Anything
   // smaller (a fallback that ignored imageSize) is not drawn: the poster never
   // upscales a small render (owner go-live brief, 19 Oct).
-  const heroMeta = await require("sharp")(hero.buffer).metadata();
+  let heroMeta;
+  try { heroMeta = await require("sharp")(hero.buffer).metadata(); } catch (e) {
+    return { ok: false, gate: "render", reason: `the hero could not be read: ${String(e && e.message).slice(0, 120)}`, costUSD, attempts, rows };
+  }
   const heroLong = Math.max(heroMeta.width || 0, heroMeta.height || 0);
   if (heroLong < minHeroPx) {
     return { ok: false, gate: "resolution", reason: `the hero is ${heroMeta.width}x${heroMeta.height}, under the model's native ${minHeroPx}px — it would have to be upscaled`, costUSD, attempts, rows };
@@ -213,6 +216,13 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   // ── 4. THE POSTER ──────────────────────────────────────────────────────
   const anchors = lookbook.anchorsFor(rows, located.anchors, located.head);
   const body = lookbook.bodyExtent(located, anchors);
+  // The panel lists the pieces in the order they sit on the body, so each
+  // row's line goes to its own garment AND the dots run top to bottom in row
+  // order (owner go-live brief, 19 Oct): a sling bag worn at the chest is
+  // listed above the trousers. Head to toe breaks a tie.
+  const bodyOrder = rows.map((r, i) => ({ r, i })).sort((a, b) =>
+    (anchors[a.r.slot] ? anchors[a.r.slot].y : 2) - (anchors[b.r.slot] ? anchors[b.r.slot].y : 2) || a.i - b.i).map((x) => x.r);
+  rows.splice(0, rows.length, ...bodyOrder);
   try {
     const poster = await renderLookbookPoster({ hero: hero.buffer, rows, anchors, subject: located.head, body });
     // The drawn poster, checked: the photograph only ever scaled down, and no

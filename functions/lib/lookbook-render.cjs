@@ -142,7 +142,9 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1 }) {
   };
   let markW = 440;
   if (headPx) {
-    const headTop = headPx.y - 0.045 * H, headLeft = headPx.x - 0.034 * H;
+    // The face centre is located; the head (and any hat) is larger since the
+    // model fills ~85% of the column: ~0.07 H above the face, ~0.055 H to its side.
+    const headTop = headPx.y - 0.07 * H, headLeft = headPx.x - 0.055 * H;
     if (headTop < blockBottom(markW) + 14 && headLeft - 28 < mx + markW) {
       markW = Math.max(300, Math.min(440, headLeft - 28 - mx));
     }

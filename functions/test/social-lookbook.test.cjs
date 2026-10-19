@@ -163,7 +163,7 @@ describe("pickLookbookOutfit", () => {
       cand("s7", "sneakers", { score: 0.99, product: { retailPrice: 450, brand: "" } }),
       cand("s8", "sneakers", { score: 0.99, product: { retailPrice: 450, brand: "Jacket" } }),
       cand("s9", "sneakers", { score: 0.99, name: "Sneaker black", product: { retailPrice: 450 } }),
-      cand("s6", "sneakers", { score: 0.99, name: "Sneaker runner tonal", product: { retailPrice: 450, name: "Nike runner tonal #12" } }),
+      cand("s6", "sneakers", { score: 0.99, name: "Sneaker runner tonal", product: { retailPrice: 450, name: "Nike flyknit runner tonal #12" } }),
     ];
     const r = lb.pickLookbookOutfit(list);
     assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "s1");
@@ -487,5 +487,42 @@ describe("lookbook v2 — architect review of #750", () => {
   test("an unanswered model check is marked unreadable; an explicit false is not", () => {
     assert.equal(lb.readModelCheck('{"text_found":false}').unreadable, true);
     assert.equal(lb.readModelCheck('{"text_found":false,"model_black":false}').unreadable, undefined);
+  });
+});
+
+describe("go-live review fixes", () => {
+  test("a slot of expensive favourites cannot price the day out of the band: the cheapest are always searched", () => {
+    const pricey = Array.from({ length: 8 }, (_, i) => cand(`s${i}`, "sneakers", { score: 0.9 - i * 0.01, product: { retailPrice: 1600 } }));
+    const list = [...SIX().filter((c) => c.pid !== "s1"), ...pricey, cand("sz", "sneakers", { score: 0, product: { retailPrice: 500 } })];
+    const r = lb.pickLookbookOutfit(list);
+    assert.equal(r.reason, null);
+    assert.equal(r.rows.find((x) => x.slot === "sneakers").pid, "sz");
+  });
+
+  test("brands: Polo is a house; a category word on its own record is a placeholder", () => {
+    assert.equal(lb.posterBrand({ brand: "Polo", name: "Polo Ralph Lauren pony tee" }), "POLO RALPH LAUREN");
+    assert.equal(lb.posterBrand({ brand: "Polo", name: "Polo classic tee" }), "POLO");
+    assert.equal(lb.posterBrand({ brand: "Golf", categoryKey: "golf-t-shirts", name: "Golf t-shirt black" }), null);
+    assert.equal(lb.posterBrand({ brand: "Jacket", name: "Jacket brown #1611" }), null);
+    assert.equal(lb.posterBrand({ brand: "Boss", name: "Hugo boss beanie red #4" }), "HUGO BOSS");
+    assert.equal(lb.posterBrand({ brand: "Under", name: "Under Amour black and blue bag" }), "UNDER ARMOUR");
+  });
+
+  test("website names: the till string is refused, a good name sharing its words is not", () => {
+    const n = (web, inv) => lb.panelName(web, { name: inv });
+    assert.equal(n("Dunk Low Panda", "Nike dunk low panda #5521").name, "Dunk Low Panda");
+    assert.equal(n("Air Max 90", "Air max 90 white #1").name, "Air Max 90");
+    assert.equal(n("Tech Fleece Joggers", "Nike tech fleece joggers").name, "Tech Fleece Joggers");
+    assert.equal(n("Beanie Grey with white logo", "Karl Lagerfeld beanie Grey 2").name, "Beanie Grey with white logo");
+    assert.match(n("Jacket black white stripes #1552", "Jacket black white stripes #1552").why, /colour-only/);
+    assert.match(n("Raw cargo jeans FD3554", "G star raw cargo jeans FD3554#").why, /stock code/);
+    assert.match(n("Sneaker xl black end white", "Puma suede xl black end white").why, /garment word for the brand/);
+    assert.match(n("Sneaker 1fontanka cream white brown", "Nike airforce 1fontanka cream white, brown").why, /garment word for the brand/);
+    assert.match(n("Puma suede classic", "Puma suede classic").why, /inventory string/);
+  });
+
+  test("website names: codes stripped, models kept", () => {
+    assert.match(lb.panelName("Pants raw cargo jeanFG3551 tapered", { name: "x" }).why, /stock code/);
+    assert.equal(lb.panelName("Retro runner P6000 in silver mesh", { name: "x" }).name, "Retro runner P6000 in silver mesh");
   });
 });

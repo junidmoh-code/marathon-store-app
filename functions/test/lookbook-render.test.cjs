@@ -118,7 +118,8 @@ describe("layout", () => {
   test("the wordmark stays full width unless the head rises into it", () => {
     const rows = [{ slot: "hat", displayName: "A B", priceText: "R1" }, { slot: "tee", displayName: "A B", priceText: "R1" }, { slot: "bottoms", displayName: "A B", priceText: "R1" }, { slot: "sneakers", displayName: "A B", priceText: "R1" }];
     const base = { W: 1200, H: 1800, rows, total: { text: "R4" }, anchorsPx: {} };
-    assert.equal(R.buildPosterSvg({ ...base, headPx: { x: 506, y: 300 } }).markW, 440);
+    assert.equal(R.buildPosterSvg({ ...base, headPx: { x: 506, y: 360 } }).markW, 440);
+    assert.ok(R.buildPosterSvg({ ...base, headPx: { x: 566, y: 244 } }).markW <= 566 - 0.055 * 1800 - 28 - 50);
     assert.ok(R.buildPosterSvg({ ...base, headPx: { x: 470, y: 150 } }).markW < 440);
   });
 

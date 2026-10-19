@@ -5679,6 +5679,10 @@ exports.socialStillAutopilot = onSchedule(
               rows: made.rows.length, total: made.total.value, nowMs: Date.now(),
               scene: made.scene, thumbCostUSD: made.thumbCostUSD,
             }));
+            // The hero as drawn: its native size, and whether the 85% crop ran
+            // (it needs the located head and shoes; without them the prompt's
+            // framing stands). Read by the go-live checks.
+            await logRef.update({ heroSize: made.heroSize || null, heroFramed: Boolean(made.body) });
             await logReorderUsage(db, saDate, { at: nowMs, kind: "socialStillAutopilot", by: "cron", format: "lookbook", estimatedCostUSD: +costUSD.toFixed(4) });
             console.log(`socialStillAutopilot ${saDate}: lookbook posted (${made.rows.length} rows, ${made.total.text}, ~$${costUSD.toFixed(3)})`);
             return;

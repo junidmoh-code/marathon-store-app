@@ -360,3 +360,16 @@ describe("makeLookbook — native resolution (owner go-live brief, 19 Oct)", () 
     assert.match(r.reason, /360x640/);
   });
 });
+
+describe("makeLookbook — rows in body order (owner go-live brief, 19 Oct)", () => {
+  test("a piece worn higher than its slot is listed higher, so every line goes to its own garment", async () => {
+    const db = seed();
+    // The jacket located BELOW the tee: the tee row moves above the jacket row.
+    const located = JSON.stringify({ head: "G3", items: { hat: "G2", jacket: "G8", tee: "G5", bottoms: "G11", sneakers: "G17" } });
+    const d = deps(db, { checkHero: async (_b, _m, prompt) => (/grid/.test(prompt) ? located : CLEAN) });
+    const r = await makeLookbook(db, d, { minHeroPx: 0, nowMs: NOW });
+    assert.equal(r.ok, true, r.reason);
+    assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "tee", "jacket", "bottoms", "sneakers"]);
+    for (let i = 1; i < r.rows.length; i++) assert.ok(r.anchors[r.rows[i].slot].y >= r.anchors[r.rows[i - 1].slot].y);
+  });
+});
