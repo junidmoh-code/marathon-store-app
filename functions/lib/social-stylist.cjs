@@ -120,6 +120,16 @@ function styledPicksForKind(kind, candidates, { used = new Set(), tags = new Map
   return { picks: shortlist[0].picks, reason: null, shortlist, shape: shortlist[0].shape };
 }
 
+/**
+ * The rules that need no style tags: a real display name, and nothing that
+ * says it is women's by either name. The unstyled fallback uses it. Pure.
+ */
+function nameEligible(c) {
+  const displayName = displayNameOf(c);
+  if (displayNameRefusal(displayName, c && c.product)) return false;
+  return !styleTags.nameGender(`${displayName} ${(c && c.name) || ""}`).gender;
+}
+
 /** The text model's prompt for a styled pick. Pure. */
 function styledChoicePrompt(kind, result, { month = 10 } = {}) {
   return stylist.buildChoicePrompt(result.shortlist, { kind, season: stylist.seasonOf(month) });
@@ -140,4 +150,4 @@ function chooseStyledPicks(kind, result, answerText, { month = 10 } = {}) {
   };
 }
 
-module.exports = { STYLED_KINDS, stylistSlot, pieceOf, styledPicksForKind, styledChoicePrompt, chooseStyledPicks };
+module.exports = { STYLED_KINDS, stylistSlot, pieceOf, nameEligible, styledPicksForKind, styledChoicePrompt, chooseStyledPicks };

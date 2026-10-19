@@ -129,3 +129,18 @@ describe("flat-lays, pairings and outfits are men's, caps-only in summer, real n
     assert.ok(ss.pieceOf(C("ok", "t-shirts", {}, { displayName: "Nike Sportswear Club tee" }), new Map([["ok", t]])));
   });
 });
+
+test("the unstyled fallback keeps the name rules: no raw names, nothing women's by name", () => {
+  assert.equal(ss.nameEligible(C("a", "shorts", {}, { name: "High-waisted compression bike shorts", displayName: "Alo Airlift short" })), false);
+  assert.equal(ss.nameEligible(C("b", "bags", {}, { displayName: "Bag Green", product: { categoryKey: "bags", brand: "", name: "Bag Green" } })), false);
+  assert.equal(ss.nameEligible(C("c", "t-shirts", {}, { displayName: "Nike Sportswear Club tee" })), true);
+});
+test("a hat of unknown kind is fine in winter, never in summer; a fitted cap is a cap by its category", () => {
+  const sty = require("../lib/stylist.cjs");
+  assert.equal(sty.headwearOf({ slot: "hat", tags: { headwear: "n/a" }, categoryKey: "fitted-caps", displayName: "New Era Yankees navy" }), "cap");
+  const hat = { pid: "h", slot: "hat", price: 1, fresh: 1, tags: TAG({ headwear: "n/a", silhouette: "n/a" }), displayName: "Yankees navy" };
+  const base = [{ pid: "t", slot: "tee", price: 1, fresh: 1, tags: TAG() }, { pid: "s", slot: "sneakers", price: 1, fresh: 1, tags: TAG({ silhouette: "n/a", dominant: "white" }) }];
+  const run = (month) => sty.styleOutfits([...base, hat], { core: [["tee"], ["sneakers"]], minPieces: 3, maxPieces: 3, month, template: false });
+  assert.equal(run(7).outfits.length, 1);
+  assert.equal(run(10).outfits.length, 0);
+});

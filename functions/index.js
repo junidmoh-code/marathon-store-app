@@ -4636,7 +4636,9 @@ async function generateOnePost(db, {
       ({ picks, reason, look = null, costUSD: stylistCostUSD = 0 } = await pickStyledPost(db, kind, candidates, used, geminiApiKey));
     } catch (err) {
       console.warn(`social: the stylist failed for a ${kind} — picking it unstyled: ${err && err.message}`);
-      ({ picks, reason } = socialSelect.pickForKind(kind, candidates, { used }));
+      // Unstyled, but still men's and still a real name (Junid, 19 Oct): the
+      // name-level rules need no tags.
+      ({ picks, reason } = socialSelect.pickForKind(kind, candidates.filter((c) => socialStylist.nameEligible(c)), { used }));
       look = null;
     }
   } else {

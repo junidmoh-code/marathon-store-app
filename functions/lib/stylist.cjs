@@ -71,9 +71,11 @@ function menswearRefusal(p) {
   return null;
 }
 
-/** The kind of hat a piece is: the name first (it says "beanie"), then the tag. Pure. */
+/** The kind of hat a piece is: the name first (it says "beanie"), then the tag, then the category. Pure. */
+const HEADWEAR_BY_KEY = { "fitted-caps": "cap", visors: "visor" };
 function headwearOf(p) {
-  return nameHeadwear(namesOf(p)) || (p.tags && p.tags.headwear && p.tags.headwear !== "n/a" ? p.tags.headwear : null);
+  return nameHeadwear(namesOf(p)) || (p.tags && p.tags.headwear && p.tags.headwear !== "n/a" ? p.tags.headwear : null)
+    || HEADWEAR_BY_KEY[p.categoryKey] || null;
 }
 
 /** Is the piece knitwear (a sweater, cardigan, sweater vest)? Tag or name. Pure. */
@@ -325,7 +327,9 @@ function styleOutfits(pieces, opts = {}) {
     if (p.slot === "hat") {
       if (opts.noHeadwear) return exclude("headwear rests (one lookbook in three)");
       const kind = headwearOf(p);
-      if (!sr.headwear.includes(kind)) return exclude(kind ? `a ${kind} in a Durban ${season}` : `headwear that is not named a ${sr.headwear.join("/")} in a Durban ${season}`);
+      // A hat of unknown kind only where the season allows a beanie too: in
+      // summer a hat must be KNOWN to be a cap.
+      if (kind ? !sr.headwear.includes(kind) : !sr.headwear.includes("beanie")) return exclude(kind ? `a ${kind} in a Durban ${season}` : `headwear that is not named a ${sr.headwear.join("/")} in a Durban ${season}`);
     }
     return true;
   });
