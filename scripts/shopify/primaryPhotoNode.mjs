@@ -115,9 +115,9 @@ export const ROLLBACK_DIR = join(homedir(), "marathon-rollbacks");
 export const ledgerPath = (date) => join(ROLLBACK_DIR, `shopify-photo-sync-${date}.json`);
 
 /** A ledger that survives an interrupted run: rewritten atomically after every entry. */
-export function openLedger(path) {
+export function openLedger(path, kind = "shopify-photo-sync") {
   mkdirSync(ROLLBACK_DIR, { recursive: true });
-  const doc = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { kind: "shopify-photo-sync", createdAt: new Date().toISOString(), entries: [] };
+  const doc = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { kind, createdAt: new Date().toISOString(), entries: [] };
   const save = () => { writeFileSync(`${path}.tmp`, JSON.stringify(doc, null, 2)); renameSync(`${path}.tmp`, path); };
   return {
     doc,
