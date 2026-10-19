@@ -12,6 +12,8 @@
 // ── THE GATES ────────────────────────────────────────────────────────────────
 //   outfit   fewer than MIN_ROWS slots could be filled           (costs nothing)
 //   price    looks exist, but none totals within PRICE_BAND      (costs nothing)
+//   style    looks in the band exist, but none passes the style guide
+//            (docs/style-guide.md hard rules)                    (costs nothing)
 //   cap      the day's generation cap refused the unit           (costs nothing)
 //   generate the model call failed                              (5xx released)
 //   text     the hero contained text (after the allowed retry)
@@ -33,8 +35,17 @@
 
 const lookbook = require("../lib/social-lookbook.cjs");
 const { renderLookbookPoster, cutout: defaultCutout, gridOverlay, segmentsCross } = require("../lib/lookbook-render.cjs");
-const { loadLookbookCandidates, loadRecentLookbookPids } = require("./load.cjs");
+const { loadLookbookCandidates, loadLookbookHistory } = require("./load.cjs");
 const { resolveThumb } = require("./thumbs.cjs");
+const { ensureStyleTags } = require("./style-tags-io.cjs");
+const { saDateStringFromMs } = require("../lib/sa-time.cjs");
+
+// New products tagged by vision during one run (the pre-warm tags the rest);
+// past this the stylist reads their names. One tag is ~$0.0003.
+const RUN_TAGS = 24;
+// Text-model choices per run: the first shortlist, and one re-pick when a
+// chosen row's photo fails. After that the top score stands.
+const MAX_CHOICES = 2;
 
 /**
  * @param db    RTDB handle (reads only)
@@ -52,16 +63,22 @@ const { resolveThumb } = require("./thumbs.cjs");
  * }
  *   thumbnail engines (thumbs.cjs, all optional): readThumbCache, writeThumbCache,
  *     claimThumbUnit, generateThumb; readModelRef?() → { buffer, contentType } | null
+ *   the stylist (optional): chooseOutfit(prompt) → { text, costUSD } — one short
+ *     text-model call that picks among the shortlist and writes the note;
+ *     geminiApiKey — tags products the pre-warm has not reached
+ * @param opts.look  force one named look (the samples); opts.month 1–12 (default: the SA month)
  * @param opts  { nowMs, used: Set of pids already posted today, maxAttempts: heroes
  *               generated before the text gate gives up (production: 1); the model
  *               gate always gets one regeneration; scene: a LOOKBOOK_SCENE_DEFS
  *               entry or key (default: the first of DEFAULT_LOOKBOOK_SCENES) }
- * @returns { ok: true, rows, total, poster, costUSD, engine, attempts, check, anchors }
+ * @returns { ok: true, rows, total, poster, costUSD, engine, attempts, check, anchors, look, stylistCostUSD }
  *        | { ok: false, gate, reason, costUSD, attempts, rows? }
  */
-async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE } = {}) {
+async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null } = {}) {
   const log = deps.log || (() => {});
-  let costUSD = 0, thumbCostUSD = 0;
+  let costUSD = 0, thumbCostUSD = 0, stylistCostUSD = 0;
+  const saDate = saDateStringFromMs(nowMs);
+  const saMonth = month || Number(saDate.slice(5, 7));
   const sceneDef = typeof scene === "string" ? lookbook.LOOKBOOK_SCENE_DEFS[scene] : scene;
   if (!sceneDef) throw new Error(`makeLookbook: unknown scene ${JSON.stringify(scene)}`);
   const attempts = [];
@@ -76,21 +93,42 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   // shop photos, so the hero (and the fallback after it) keep their time.
   const thumbDeadlineMs = Date.now() + 240 * 1000;
 
-  // ── 1. THE OUTFIT, with real photos that actually download ─────────────
-  const [{ candidates }, recent] = await Promise.all([
-    loadLookbookCandidates(db, { nowMs }),
-    loadRecentLookbookPids(db),
-  ]);
+  // ── 1. THE OUTFIT, styled, with real photos that actually download ─────
+  const history = await loadLookbookHistory(db);
+  const recent = lookbook.recentLookbookPids(history);
+  // The 14-day no-repeat: never picked, whatever the score, and never read,
+  // so the loader's per-slot quota counts only products the stylist can use.
+  const blocked = lookbook.pidsWithinDays(history, saDate, 14);
+  const { candidates } = await loadLookbookCandidates(db, { nowMs, skip: new Set([...blocked, ...used]) });
+  // Every candidate's style tags: cached, tagged now (a few), or read from its name.
+  const tagRun = await ensureStyleTags(db, candidates.map((c) => {
+    const ph = lookbook.approvedPhoto(c.product, c.node);
+    return { pid: c.pid, photoUrl: ph && ph.url, product: c.product, websiteName: c.name };
+  }), { geminiApiKey: deps.geminiApiKey, fetchImage: deps.fetchImage, log }, { maxNew: RUN_TAGS, deadlineMs: Date.now() + 90 * 1000, nowMs });
+  stylistCostUSD += tagRun.costUSD;
+  if (tagRun.tagged || tagRun.named) log(`stylist: ${tagRun.tags.size - tagRun.tagged - tagRun.named} tags cached, ${tagRun.tagged} tagged now, ${tagRun.named} read from names`);
   // A row needs a photo that downloads AND cuts out cleanly. One that fails
   // either is excluded and its slot re-picked, never drawn badly and never a
   // reason to stall: the next product in the slot is tried.
   const cut = deps.cutout || defaultCutout;
   const exclude = new Set(used);
   const ready = new Map();          // pid → { thumb, contentType, cutout, thumbSource }
-  let picked = null;
+  let picked = null, choices = 0;
   for (let round = 0; round < 8; round++) {
-    const p = lookbook.pickLookbookOutfit(candidates, { recent, used: exclude });
-    if (p.reason) return { ok: false, gate: p.band ? "price" : "outfit", reason: p.reason, costUSD: costUSD + thumbCostUSD, thumbCostUSD, attempts };
+    let p = lookbook.pickLookbookOutfit(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, look });
+    if (p.reason) return { ok: false, gate: p.band ? "price" : p.style ? "style" : "outfit", reason: p.reason, costUSD: costUSD + thumbCostUSD + stylistCostUSD, thumbCostUSD, stylistCostUSD, attempts };
+    // The stylist's tie-break: one short text call over the shortlist. Any
+    // failure keeps the top score and the deterministic note.
+    let answer = "";
+    if (deps.chooseOutfit && p.shortlist.length > 1 && choices < MAX_CHOICES) {
+      choices++;
+      try {
+        const r = await deps.chooseOutfit(lookbook.lookbookChoicePrompt(p, { month: saMonth }));
+        answer = (r && r.text) || "";
+        stylistCostUSD += (r && r.costUSD) || 0;
+      } catch (e) { log(`stylist: the choice call failed (${String(e && e.message).slice(0, 100)}) — the top score stands`); }
+    }
+    p = lookbook.chooseLookbookOutfit(p, answer, { month: saMonth });
     const fresh = p.rows.filter((r) => !ready.has(r.pid));
     // One at a time: each cut-out holds an ONNX session's worth of memory, and
     // six in parallel is how a 2 GiB instance dies (architect review, B2).
@@ -114,9 +152,11 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
       break;
     }
   }
-  costUSD += thumbCostUSD;
-  if (!picked) return { ok: false, gate: "outfit", reason: "no full outfit with photos that download and cut out cleanly", costUSD, attempts, thumbCostUSD };
+  costUSD += thumbCostUSD + stylistCostUSD;
+  if (!picked) return { ok: false, gate: "outfit", reason: "no full outfit with photos that download and cut out cleanly", costUSD, attempts, thumbCostUSD, stylistCostUSD };
   const rows = picked.rows;
+  const lookInfo = picked.look || null;
+  log(`stylist: ${lookInfo ? `${lookInfo.name || "no named look"} (${lookInfo.key || "-"}), ${lookInfo.score}/100, option ${lookInfo.choice} of ${lookInfo.of} by ${lookInfo.source}: ${lookInfo.note}` : "no look"}`);
 
   // ── 2. THE HERO, with the real garments attached ───────────────────────
   // The character reference first, so every poster shows the same man. A
@@ -227,7 +267,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     a.a.y - b.a.y || a.a.x - b.a.x || a.i - b.i).map((x) => x.r);
   rows.splice(0, rows.length, ...bodyOrder);
   try {
-    const poster = await renderLookbookPoster({ hero: hero.buffer, rows, anchors, subject: located.head, body });
+    const poster = await renderLookbookPoster({ hero: hero.buffer, rows, anchors, subject: located.head, body, header: lookInfo && lookInfo.header });
     // The drawn poster, checked: the photograph only ever scaled down, and no
     // two leader lines crossing, on either canvas.
     // minHeroPx 0 switches the resolution gate off (the tests' small fakes).
@@ -236,7 +276,12 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     const crossed = Object.entries(poster.leaders || {}).filter(([, ls]) => ls.some((a, i) => ls.some((b, j) => j > i && segmentsCross(a.a, a.end, b.a, b.end))));
     if (crossed.length) return { ok: false, gate: "render", reason: `leader lines cross on the ${crossed.map(([c]) => c).join(", ")}`, costUSD, attempts, rows };
     return {
-      ok: true, rows, total: poster.total, poster, costUSD, thumbCostUSD, engine, attempts, check, modelCheck, located, anchors, body, hero, prompt,
+      ok: true, rows, total: poster.total, poster, costUSD, thumbCostUSD, stylistCostUSD, engine, attempts, check, modelCheck, located, anchors, body, hero, prompt,
+      look: lookInfo,
+      styled: picked.styled ? {
+        score: picked.styled.score, parts: picked.styled.parts, reasoning: picked.styled.reasoning,
+        tags: Object.fromEntries(picked.styled.pieces.map((x) => [x.pid, x.tags])),
+      } : null,
       heroSize: `${heroMeta.width}x${heroMeta.height}`,
       scene: sceneDef.key, modelRef: Boolean(modelRef),
       thumbs: Object.fromEntries(rows.map((r) => [r.pid, r.thumbSource || null])),

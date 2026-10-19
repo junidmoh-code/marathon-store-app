@@ -392,3 +392,54 @@ test("a bag beside the tee on the same grid row: each row keeps its own dot (Fab
   const iTee = r.rows.findIndex((x) => x.slot === "tee"), iBag = r.rows.findIndex((x) => x.slot === "bag");
   if (iBag >= 0) assert.ok(iBag < iTee, "bag (left, same row) listed before the tee, matching the dot order");
 });
+
+describe("makeLookbook — the stylist", () => {
+  test("one choice call over the shortlist; its look heads the panel and its note comes back", async () => {
+    const db = seed();
+    const prompts = [];
+    const d = deps(db, {
+      chooseOutfit: async (prompt) => { prompts.push(prompt); return { text: JSON.stringify({ choice: 1, look: "clean-monochrome", note: "Black on black, the sneaker does the talking." }), costUSD: 0.0004 }; },
+    });
+    const r = await makeLookbook(db, d, { minHeroPx: 0, nowMs: NOW });
+    assert.equal(r.ok, true, r.reason);
+    assert.ok(prompts.length <= 1);
+    assert.ok(r.look && r.look.score > 0);
+    if (prompts.length) {
+      assert.match(prompts[0], /OPTION 1 — score/);
+      assert.equal(r.look.source, "model");
+      assert.equal(r.look.note, "Black on black, the sneaker does the talking.");
+    }
+    assert.deepEqual(r.poster.header, r.look.header);
+    assert.ok(r.stylistCostUSD >= 0);
+    assert.ok(Math.abs(r.costUSD - (0.134 + r.stylistCostUSD + (r.thumbCostUSD || 0))) < 1e-9);
+  });
+
+  test("a failed choice call keeps the top score and the scorer's note", async () => {
+    const db = seed();
+    const d = deps(db, { chooseOutfit: async () => { throw new Error("HTTP 529 overloaded"); } });
+    const r = await makeLookbook(db, d, { minHeroPx: 0, nowMs: NOW });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.look.source, "score");
+    assert.ok(r.look.note.length > 10);
+  });
+
+  test("a product in a lookbook within 14 days is never picked; cached tags are used", async () => {
+    const db = seed();
+    db.root.social_lookbook = {
+      history: { "2026-10-12": { pids: ["t1", "t2"], at: 1 } },
+      styleTags: { s1: { v: 1, dominant: "white", secondary: null, pattern: "solid", silhouette: "n/a", family: "athleisure", formality: 3, season: "all", source: "vision" } },
+    };
+    const r = await makeLookbook(db, deps(db), { minHeroPx: 0, nowMs: NOW });
+    assert.equal(r.ok, true, r.reason);
+    assert.ok(!r.rows.some((x) => x.pid === "t1" || x.pid === "t2"));
+    assert.match(r.styled.reasoning, /white sneakers anchor it/);
+  });
+
+  test("history older than 14 days does not block", async () => {
+    const db = seed();
+    db.root.social_lookbook = { history: { "2026-09-01": { pids: ["t1", "t2", "j1"], at: 1 } } };
+    const r = await makeLookbook(db, deps(db), { minHeroPx: 0, nowMs: NOW });
+    assert.equal(r.ok, true, r.reason);
+    assert.ok(r.rows.some((x) => x.slot === "tee"));
+  });
+});

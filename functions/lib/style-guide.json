@@ -1,0 +1,673 @@
+{
+  "version": 1,
+  "source": "docs/style-guide.md",
+  "palette": {
+    "black": {
+      "family": "dark",
+      "loud": false,
+      "aliases": [
+        "jet",
+        "onyx"
+      ]
+    },
+    "charcoal": {
+      "family": "dark",
+      "loud": false,
+      "aliases": [
+        "anthracite",
+        "dark grey"
+      ]
+    },
+    "grey": {
+      "family": "dark",
+      "loud": false,
+      "aliases": [
+        "heather grey",
+        "mid grey",
+        "slate"
+      ]
+    },
+    "navy": {
+      "family": "dark",
+      "loud": false,
+      "aliases": [
+        "dark blue",
+        "midnight"
+      ]
+    },
+    "white": {
+      "family": "light",
+      "loud": false,
+      "aliases": [
+        "optic white"
+      ]
+    },
+    "off-white": {
+      "family": "light",
+      "loud": false,
+      "aliases": [
+        "ecru",
+        "ivory",
+        "sail",
+        "bone"
+      ]
+    },
+    "cream": {
+      "family": "light",
+      "loud": false,
+      "aliases": [
+        "oatmeal",
+        "vanilla"
+      ]
+    },
+    "light-grey": {
+      "family": "light",
+      "loud": false,
+      "aliases": [
+        "pale grey",
+        "silver grey",
+        "ash"
+      ]
+    },
+    "beige": {
+      "family": "earth",
+      "loud": false,
+      "aliases": [
+        "sand",
+        "taupe",
+        "nude"
+      ]
+    },
+    "stone": {
+      "family": "earth",
+      "loud": false,
+      "aliases": [
+        "putty",
+        "mushroom"
+      ]
+    },
+    "khaki": {
+      "family": "earth",
+      "loud": false,
+      "aliases": [
+        "desert"
+      ]
+    },
+    "camel": {
+      "family": "earth",
+      "loud": false,
+      "aliases": [
+        "tan",
+        "wheat"
+      ]
+    },
+    "brown": {
+      "family": "earth",
+      "loud": false,
+      "aliases": [
+        "chocolate",
+        "mocha",
+        "coffee"
+      ]
+    },
+    "olive": {
+      "family": "earth",
+      "loud": false,
+      "aliases": [
+        "military green",
+        "sage"
+      ]
+    },
+    "denim-light": {
+      "family": "denim",
+      "loud": false,
+      "aliases": [
+        "light wash",
+        "bleached denim"
+      ]
+    },
+    "denim-mid": {
+      "family": "denim",
+      "loud": false,
+      "aliases": [
+        "mid wash",
+        "indigo"
+      ]
+    },
+    "denim-dark": {
+      "family": "denim",
+      "loud": false,
+      "aliases": [
+        "raw denim",
+        "rinse"
+      ]
+    },
+    "forest-green": {
+      "family": "accent",
+      "loud": false,
+      "aliases": [
+        "bottle green",
+        "dark green"
+      ]
+    },
+    "burgundy": {
+      "family": "accent",
+      "loud": false,
+      "aliases": [
+        "maroon",
+        "wine",
+        "oxblood"
+      ]
+    },
+    "light-blue": {
+      "family": "accent",
+      "loud": false,
+      "aliases": [
+        "sky blue",
+        "baby blue",
+        "powder blue"
+      ]
+    },
+    "red": {
+      "family": "accent",
+      "loud": true,
+      "aliases": [
+        "scarlet",
+        "university red"
+      ]
+    },
+    "orange": {
+      "family": "accent",
+      "loud": true,
+      "aliases": [
+        "rust-orange",
+        "safety orange"
+      ]
+    },
+    "yellow": {
+      "family": "accent",
+      "loud": true,
+      "aliases": [
+        "mustard",
+        "gold"
+      ]
+    },
+    "green": {
+      "family": "accent",
+      "loud": true,
+      "aliases": [
+        "kelly green",
+        "lime"
+      ]
+    },
+    "blue": {
+      "family": "accent",
+      "loud": true,
+      "aliases": [
+        "royal blue",
+        "cobalt"
+      ]
+    },
+    "pink": {
+      "family": "accent",
+      "loud": true,
+      "aliases": [
+        "rose",
+        "salmon"
+      ]
+    },
+    "purple": {
+      "family": "accent",
+      "loud": true,
+      "aliases": [
+        "lilac",
+        "violet"
+      ]
+    },
+    "teal": {
+      "family": "accent",
+      "loud": false,
+      "aliases": [
+        "petrol",
+        "turquoise"
+      ]
+    },
+    "multi": {
+      "family": "accent",
+      "loud": true,
+      "aliases": [
+        "multicolour",
+        "rainbow"
+      ]
+    }
+  },
+  "families": {
+    "streetwear": {
+      "borders": [
+        "athleisure",
+        "smart-casual"
+      ],
+      "brands": [
+        "Fear of God",
+        "Essentials",
+        "Represent",
+        "Carhartt",
+        "G-Star Raw",
+        "Palm Angels",
+        "Off-White",
+        "Stussy",
+        "Supreme",
+        "Nocta",
+        "Corteiz",
+        "Trapstar",
+        "Amiri",
+        "Purple Brand",
+        "Marathon Club"
+      ],
+      "categories": [
+        "hoodies",
+        "jackets",
+        "t-shirts",
+        "jeans",
+        "pants",
+        "caps-beanies",
+        "bags"
+      ]
+    },
+    "athleisure": {
+      "borders": [
+        "streetwear"
+      ],
+      "brands": [
+        "Nike",
+        "adidas",
+        "Air Jordan",
+        "Puma",
+        "New Balance",
+        "Under Armour",
+        "Asics",
+        "On",
+        "Reebok",
+        "The North Face"
+      ],
+      "categories": [
+        "tracksuits",
+        "shorts",
+        "sneakers",
+        "golf-t-shirts",
+        "soccer-jerseys",
+        "fitted-caps",
+        "visors",
+        "slides"
+      ]
+    },
+    "prep": {
+      "borders": [
+        "smart-casual"
+      ],
+      "brands": [
+        "Lacoste",
+        "Polo Ralph Lauren",
+        "Ralph Lauren",
+        "Tommy Hilfiger",
+        "Hugo Boss",
+        "Calvin Klein",
+        "Aimé Leon Dore",
+        "Michael Kors",
+        "Karl Lagerfeld",
+        "Emporio Armani"
+      ],
+      "categories": [
+        "golf-t-shirts",
+        "pants"
+      ]
+    },
+    "smart-casual": {
+      "borders": [
+        "prep",
+        "streetwear"
+      ],
+      "brands": [
+        "Alexander McQueen",
+        "Dolce & Gabbana",
+        "Saint Laurent",
+        "Louis Vuitton",
+        "Bottega Veneta",
+        "Brunello Cucinelli",
+        "Loro Piana",
+        "Philipp Plein",
+        "Stone Island"
+      ],
+      "categories": [
+        "designer-shoes",
+        "boots",
+        "pants"
+      ]
+    }
+  },
+  "rules": {
+    "maxAccentHues": 1,
+    "maxLoudPieces": 1,
+    "maxFormalitySpread": 2,
+    "neverAllOversized": 1,
+    "oneFamilyOrBorder": 1,
+    "weightColour": 28,
+    "weightSilhouette": 14,
+    "weightFamily": 18,
+    "weightFormality": 10,
+    "weightSeason": 14,
+    "weightLook": 10,
+    "weightFresh": 6,
+    "offSeasonPenalty": 6,
+    "perPieceOverMin": 3,
+    "whiteSneakerBonus": 0.12,
+    "echoBonus": 0.08,
+    "secondAccentPenalty": 0.3,
+    "noAccentScore": 0.85,
+    "tieWindow": 6,
+    "shortlist": 5,
+    "perSlot": 6
+  },
+  "seasons": {
+    "1": "summer",
+    "2": "summer",
+    "3": "summer",
+    "4": "shoulder",
+    "5": "shoulder",
+    "6": "winter",
+    "7": "winter",
+    "8": "winter",
+    "9": "shoulder",
+    "10": "summer",
+    "11": "summer",
+    "12": "summer"
+  },
+  "seasonFit": {
+    "summer": {
+      "summer": 1,
+      "winter": 0.5,
+      "shoulder": 0.8
+    },
+    "winter": {
+      "summer": 0.3,
+      "winter": 1,
+      "shoulder": 0.8
+    },
+    "all": {
+      "summer": 0.9,
+      "winter": 0.9,
+      "shoulder": 1
+    }
+  },
+  "looks": [
+    {
+      "key": "clean-monochrome",
+      "name": "Clean Monochrome",
+      "header": [
+        "CLEAN",
+        "MONOCHROME"
+      ],
+      "families": [
+        "streetwear",
+        "athleisure",
+        "smart-casual"
+      ],
+      "palette": [
+        "black",
+        "charcoal",
+        "grey",
+        "white",
+        "off-white",
+        "cream",
+        "light-grey"
+      ],
+      "core": [
+        [
+          "tee",
+          "jacket"
+        ],
+        [
+          "bottoms"
+        ],
+        [
+          "sneakers"
+        ]
+      ],
+      "extras": [
+        "hat",
+        "jacket",
+        "bag"
+      ],
+      "requires": [
+        "mono",
+        "noaccent"
+      ]
+    },
+    {
+      "key": "earth-tone-street",
+      "name": "Earth Tone Street",
+      "header": [
+        "EARTH TONE",
+        "STREET"
+      ],
+      "families": [
+        "streetwear",
+        "smart-casual"
+      ],
+      "palette": [
+        "beige",
+        "stone",
+        "khaki",
+        "camel",
+        "brown",
+        "olive",
+        "cream",
+        "off-white",
+        "black",
+        "white"
+      ],
+      "core": [
+        [
+          "tee",
+          "jacket"
+        ],
+        [
+          "bottoms"
+        ],
+        [
+          "sneakers"
+        ]
+      ],
+      "extras": [
+        "hat",
+        "jacket",
+        "bag"
+      ],
+      "requires": [
+        "earth>=2"
+      ]
+    },
+    {
+      "key": "sport-luxe",
+      "name": "Sport Luxe",
+      "header": [
+        "SPORT",
+        "LUXE"
+      ],
+      "families": [
+        "athleisure",
+        "streetwear"
+      ],
+      "palette": [
+        "black",
+        "charcoal",
+        "grey",
+        "white",
+        "off-white",
+        "light-grey",
+        "navy",
+        "red",
+        "blue",
+        "green",
+        "orange",
+        "yellow",
+        "teal",
+        "purple",
+        "pink"
+      ],
+      "core": [
+        [
+          "tee",
+          "jacket"
+        ],
+        [
+          "bottoms"
+        ],
+        [
+          "sneakers"
+        ]
+      ],
+      "extras": [
+        "hat",
+        "jacket",
+        "bag"
+      ],
+      "requires": [
+        "accent=1"
+      ]
+    },
+    {
+      "key": "prep-casual",
+      "name": "Prep Casual",
+      "header": [
+        "PREP",
+        "CASUAL"
+      ],
+      "families": [
+        "prep",
+        "smart-casual"
+      ],
+      "palette": [
+        "navy",
+        "white",
+        "off-white",
+        "cream",
+        "beige",
+        "stone",
+        "light-blue",
+        "forest-green",
+        "burgundy",
+        "denim-light",
+        "denim-mid",
+        "denim-dark",
+        "khaki"
+      ],
+      "core": [
+        [
+          "tee"
+        ],
+        [
+          "bottoms"
+        ],
+        [
+          "sneakers"
+        ]
+      ],
+      "extras": [
+        "hat",
+        "jacket",
+        "bag"
+      ],
+      "requires": []
+    },
+    {
+      "key": "raw-denim",
+      "name": "Raw Denim",
+      "header": [
+        "RAW",
+        "DENIM"
+      ],
+      "families": [
+        "streetwear",
+        "smart-casual",
+        "prep"
+      ],
+      "palette": [
+        "denim-light",
+        "denim-mid",
+        "denim-dark",
+        "black",
+        "white",
+        "off-white",
+        "grey",
+        "charcoal",
+        "navy",
+        "olive"
+      ],
+      "core": [
+        [
+          "tee",
+          "jacket"
+        ],
+        [
+          "bottoms"
+        ],
+        [
+          "sneakers"
+        ]
+      ],
+      "extras": [
+        "hat",
+        "jacket",
+        "bag"
+      ],
+      "requires": [
+        "denim"
+      ]
+    },
+    {
+      "key": "coastal-summer",
+      "name": "Coastal Summer",
+      "header": [
+        "COASTAL",
+        "SUMMER"
+      ],
+      "families": [
+        "athleisure",
+        "prep",
+        "streetwear"
+      ],
+      "palette": [
+        "white",
+        "off-white",
+        "cream",
+        "beige",
+        "stone",
+        "light-grey",
+        "light-blue",
+        "navy",
+        "khaki",
+        "teal"
+      ],
+      "core": [
+        [
+          "tee"
+        ],
+        [
+          "bottoms"
+        ],
+        [
+          "sneakers"
+        ]
+      ],
+      "extras": [
+        "hat",
+        "bag"
+      ],
+      "requires": [
+        "shorts",
+        "summer"
+      ]
+    }
+  ]
+}

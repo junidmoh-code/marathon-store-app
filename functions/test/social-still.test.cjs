@@ -214,3 +214,33 @@ describe("one picture, one generation, one queue item per product (2026-10-18)",
     assert.deepEqual([...set].sort(), ["a", "b", "c", "d"]);
   });
 });
+
+describe("the stylist on the still", () => {
+  const still = require("../lib/social-still.cjs");
+  test("the styling note is the caption's last paragraph, once", () => {
+    assert.equal(still.withStylingNote("New in.\n\nShop now", "Tonal base, white sneaker."), "New in.\n\nShop now\n\nTonal base, white sneaker.");
+    assert.equal(still.withStylingNote("New in. Tonal base, white sneaker.", "Tonal base, white sneaker."), "New in. Tonal base, white sneaker.");
+    assert.equal(still.withStylingNote("New in.", null), "New in.");
+  });
+  test("the look is recorded on the post and the day's log, without undefined", () => {
+    const look = { key: "earth-tone-street", name: "Earth Tone Street", note: "Olive and cream.", score: 91.2, source: "model", header: ["EARTH TONE", "STREET"] };
+    const rec = still.buildLookbookRecord({
+      rows: [{ pid: "a", slot: "tee", price: 300, displayName: "x" }], total: { value: 300 }, urls: { story: "s", feed: "f", master: "m" },
+      nowMs: 1, link: "l", storyCaption: "c", platforms: {}, look,
+    });
+    assert.deepEqual(rec.look, { key: "earth-tone-street", name: "Earth Tone Street", note: "Olive and cream.", score: 91.2, source: "model" });
+    const log = still.stillLogEntry({ planned: "lookbook", posted: "lookbook", nowMs: 1, look, stylistCostUSD: 0.000412 });
+    assert.equal(log.look.key, "earth-tone-street");
+    assert.equal(log.stylistCostUSD, 0.00041);
+    assert.equal(still.stillLogEntry({ planned: "current", posted: "current", nowMs: 1 }).look, null);
+  });
+});
+
+describe("the styling note above the hashtags", () => {
+  const still = require("../lib/social-still.cjs");
+  test("goes above a closing hashtag block, and never past Instagram's ceiling", () => {
+    assert.equal(still.withStylingNote("New in.\n\n#marathonclub #durban", "Tonal base, white sneaker."), "New in.\n\nTonal base, white sneaker.\n\n#marathonclub #durban");
+    const long = "x".repeat(2190);
+    assert.equal(still.withStylingNote(long, "Tonal base, white sneaker."), long);
+  });
+});

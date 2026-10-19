@@ -22,22 +22,29 @@ const socialSelect = require("../lib/social-select.cjs");
 const lookbook = require("../lib/social-lookbook.cjs");
 
 const READ_BATCH = 20;
-// Four rounds of READS_PER_SLOT: at most 6 x 8 x 4 = 192 product point reads,
-// and only a slot short of WANT_PER_SLOT eligible products reads past the first.
-const ROUNDS = 4;
-const WANT_PER_SLOT = 3;
+// Up to twelve rounds of READS_PER_SLOT, but only a slot short of
+// WANT_PER_SLOT eligible products reads past the first: the stylist needs a
+// real choice of colours per slot, not the three the price band needed. On
+// 19 Oct six rounds left the stylist ONE tee and two jackets (most tees fail
+// the website-name rule), so four of the six looks could not be dressed.
+// Worst case 6 x 8 x 12 = 576 product point reads; a normal day ~300.
+const ROUNDS = 12;
+const WANT_PER_SLOT = 10;
 
 /**
  * @param db  an RTDB handle (admin.database() or a test fake)
  * @param opts.nowMs
  * @param opts.liveNodes optional: an already-fetched live query result
+ * @param opts.skip  pids never read (the 14-day no-repeat, today's used): they
+ *                   would not count toward a slot's WANT_PER_SLOT anyway
  * @returns { candidates, reads: { products, stock }, liveCount }
  */
-async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null, readsPerSlot = lookbook.READS_PER_SLOT } = {}) {
+async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null, readsPerSlot = lookbook.READS_PER_SLOT, skip = new Set() } = {}) {
   const live = liveNodes || ((await db.ref("shopify_publish").orderByChild("state").equalTo("live").once("value")).val() || {});
   const queues = new Map(lookbook.SLOT_KEYS.map((k) => [k, []]));
   for (const [pid, n] of Object.entries(live)) {
     if (!n || n.state !== "live" || n.liveState !== "on" || !n.cleanName) continue;
+    if (skip.has(pid)) continue;
     const g = lookbook.guessSlot(n.cleanName);
     if (g) queues.get(g).push({ pid, liveAt: Number(n.liveAt) || 0 });
   }
@@ -102,10 +109,15 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
   return { candidates, reads, liveCount: Object.keys(live).length };
 }
 
-/** social_lookbook/history, the last HISTORY_DEPTH days by key. Bounded. */
-async function loadRecentLookbookPids(db) {
+/** social_lookbook/history, the last HISTORY_DEPTH days by key, as stored. Bounded. */
+async function loadLookbookHistory(db) {
   const snap = await db.ref("social_lookbook/history").orderByKey().limitToLast(lookbook.HISTORY_DEPTH).once("value");
-  return lookbook.recentLookbookPids(snap.val());
+  return snap.val();
 }
 
-module.exports = { loadLookbookCandidates, loadRecentLookbookPids };
+/** The pids of those lookbooks. */
+async function loadRecentLookbookPids(db) {
+  return lookbook.recentLookbookPids(await loadLookbookHistory(db));
+}
+
+module.exports = { loadLookbookCandidates, loadLookbookHistory, loadRecentLookbookPids };

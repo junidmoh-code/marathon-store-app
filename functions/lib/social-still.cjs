@@ -18,7 +18,7 @@ const STILL_SLOT = "15:30";   // 3½ h before the day's one reel at 19:00
  */
 function buildLookbookRecord({
   rows, total, urls, scheduledAt, platforms, engine, costUSD, nowMs, link, storyCaption, updatedBy,
-  masterSize, scene,
+  masterSize, scene, look,
 }) {
   return {
     status: "approved",
@@ -44,6 +44,8 @@ function buildLookbookRecord({
     total: total.value,
     style: "lookbook",
     ...(scene ? { scene } : {}),
+    // The stylist's look: what heads the panel and why it was chosen.
+    ...(look && (look.key || look.note) ? { look: lookField(look) } : {}),
     engine: engine || "nbpro",
     costUSD: +Number(costUSD || 0).toFixed(6),
     refsUsed: rows.length,
@@ -52,6 +54,34 @@ function buildLookbookRecord({
     updatedAt: nowMs,
     updatedBy: updatedBy || "cron:socialStillAutopilot",
   };
+}
+
+/** The stylist's look as stored on a post or a log: no undefined, nothing long. Pure. */
+function lookField(look) {
+  return {
+    key: look.key || null, name: look.name || null,
+    note: look.note ? String(look.note).slice(0, 200) : null,
+    score: Number.isFinite(Number(look.score)) ? Number(look.score) : null,
+    source: look.source || null,
+  };
+}
+
+/**
+ * The feed caption with the stylist's note as its last paragraph, or the
+ * caption unchanged when there is no note (or it is already there). Pure.
+ */
+function withStylingNote(caption, note) {
+  const c = String(caption || "").trim();
+  const n = String(note || "").trim();
+  if (!n || c.includes(n)) return c;
+  if (!c) return n;
+  // Above a closing hashtag block, which is where a caption ends.
+  const paras = c.split(/\n\s*\n/);
+  const last = paras[paras.length - 1].trim();
+  const tagsOnly = paras.length > 1 && /^(#[\p{L}\p{N}_]+\s*)+$/u.test(last);
+  const out = tagsOnly ? [...paras.slice(0, -1), n, last].join("\n\n") : `${c}\n\n${n}`;
+  // Instagram's caption ceiling is 2,200 characters: never pushed past it.
+  return out.length <= 2200 ? out : c;
 }
 
 /**
@@ -63,7 +93,7 @@ function buildLookbookRecord({
  * update() leaves a key it is not given, so a reclaimed run that succeeds must
  * not keep the reason of the attempt before it.
  */
-function stillLogEntry({ planned, posted, reason, costUSD, postId, twinId, scheduledAt, rows, total, nowMs, gate, scene, thumbCostUSD }) {
+function stillLogEntry({ planned, posted, reason, costUSD, postId, twinId, scheduledAt, rows, total, nowMs, gate, scene, thumbCostUSD, look, stylistCostUSD }) {
   return {
     finishedAt: nowMs,
     planned: planned || null,
@@ -82,6 +112,8 @@ function stillLogEntry({ planned, posted, reason, costUSD, postId, twinId, sched
     total: Number.isFinite(total) ? total : null,
     scene: scene || null,
     thumbCostUSD: Number.isFinite(thumbCostUSD) ? +thumbCostUSD.toFixed(4) : null,
+    look: look && (look.key || look.note) ? lookField(look) : null,
+    stylistCostUSD: Number.isFinite(stylistCostUSD) ? +stylistCostUSD.toFixed(5) : null,
   };
 }
 
@@ -102,4 +134,4 @@ function queuedPids(posts) {
   return out;
 }
 
-module.exports = { STILL_SLOT, buildLookbookRecord, stillLogEntry, queuedPids };
+module.exports = { STILL_SLOT, buildLookbookRecord, stillLogEntry, queuedPids, lookField, withStylingNote };

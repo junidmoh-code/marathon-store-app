@@ -17,6 +17,8 @@
 
 const { isGeneratedPhoto } = require("../newArrivals/sourcePhoto.cjs");
 const { fitsWith } = require("./social-select.cjs");
+const stylist = require("./stylist.cjs");
+const styleTags = require("./style-tags.cjs");
 
 // ── THE SIX ROWS, HEAD TO TOE ────────────────────────────────────────────────
 // `keys` are products/{pid}/categoryKey values from the live catalogue (the
@@ -71,9 +73,6 @@ const MIN_ROWS = 4;
 const PRICE_BAND = { min: 1400, max: 1900 };
 // Every look has something on top, on the legs and on the feet.
 const CORE_SLOTS = [["tee", "jacket"], ["bottoms"], ["sneakers"]];
-// How many of each slot's best the band search combines. 7^6 leaves at most,
-// cut down hard by the band's ceiling.
-const BAND_PER_SLOT = 6;
 // "Not used in the last 14 lookbooks".
 const HISTORY_DEPTH = 14;
 // How many of each guessed slot the loader reads per round. Six slots at eight
@@ -377,103 +376,142 @@ function recentLookbookPids(history, depth = HISTORY_DEPTH) {
 
 /**
  * Pick the outfit: at most one product per slot, head to toe, whose TOTAL
- * lands in PRICE_BAND (owner go-live brief, 19 Oct).
+ * lands in PRICE_BAND (owner go-live brief, 19 Oct), chosen by the STYLIST
+ * (lib/stylist.cjs) against docs/style-guide.md.
  *
  * Every look has a top (tee or jacket), bottoms and sneakers; hat, bag and the
- * second top are finishing pieces. Among the looks inside the band the most
- * rows wins (six, then five, then four: "drop to 4 rows"), then the best
- * summed bias. Bias per product, in order of weight: not in the last 14
- * lookbooks, then an approved New Arrivals studio photo (it cuts out cleanly
- * and is the best reference the model can be given), then newness, then the
- * shared sales and newness score. Ties break on the pids so two runs on the
- * same data agree. Prices are never altered: a product either fits the band
- * with the others or is not chosen.
+ * second top are finishing pieces, and each piece over four earns a few points
+ * (the guide's perPieceOverMin), so a full six-row look still wins when it is
+ * as well styled. Every combination is enumerated per named look, refused on
+ * the guide's hard rules (one accent hue, one loud piece, formality spread,
+ * never all oversized, one style family) and on the band, and scored. The
+ * best few within the guide's tie window come back as `shortlist`; the text
+ * model chooses among them (chooseLookbookOutfit). `rows` is the top one.
+ *
+ * Freshness, the old bias, is one part of the score: not in the last 14
+ * lookbooks, then an approved New Arrivals studio photo, then newness, then
+ * the shared sales and newness score. A product used in a lookbook in the last
+ * 14 DAYS (`blocked`) is never picked. Prices are never altered.
  *
  * Pieces that do not share a wardrobe context (social-select fitsWith: no
  * soccer boot with jeans) are never combined.
  *
- * @param candidates  social-select buildCandidates rows (live, in stock)
- * @param opts.recent Set of pids used in recent lookbooks
- * @param opts.used   Set of pids already spoken for today (never picked)
- * @param opts.band   { min, max } rand, inclusive (default PRICE_BAND)
- * @returns { rows, total, reason, band?, skipped: [{ pid, slot, why }], missing }
- *          `band: true` on a refusal means looks existed but none in the band.
+ * @param candidates   social-select buildCandidates rows (live, in stock)
+ * @param opts.recent  Set of pids used in recent lookbooks (scored down)
+ * @param opts.blocked Set of pids used in a lookbook in the last 14 days (never picked)
+ * @param opts.used    Set of pids already spoken for today (never picked)
+ * @param opts.band    { min, max } rand, inclusive (default PRICE_BAND)
+ * @param opts.tags    Map pid → style tags; a product without is read from its name
+ * @param opts.month   1–12 (the Durban season); opts.look forces one look key
+ * @returns { rows, total, reason, band?, style?, skipped, missing, styled, shortlist }
+ *          `band: true` on a refusal means looks existed but none in the band;
+ *          `style: true` that looks in the band all broke the style guide.
  */
-function pickLookbookOutfit(candidates, { recent = new Set(), used = new Set(), band = PRICE_BAND } = {}) {
+function pickLookbookOutfit(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), band = PRICE_BAND, tags = new Map(), month = 10, look = null } = {}) {
   const skipped = [];
-  const bySlot = new Map(SLOT_KEYS.map((k) => [k, []]));
+  const pieces = [];
   for (const c of candidates || []) {
-    if (!c || !c.pid || used.has(c.pid)) continue;
+    if (!c || !c.pid || used.has(c.pid) || blocked.has(c.pid)) continue;
     const r = resolveRow(c);
     if (r.skip) {
       if (lookbookSlot(c.product)) skipped.push({ pid: c.pid, slot: lookbookSlot(c.product), why: r.skip });
       continue;
     }
-    bySlot.get(r.row.slot).push({ row: r.row, candidate: c });
+    const p = c.product || {};
+    const fresh = ((recent.has(r.row.pid) ? 0 : 4) + (r.row.studio ? 1 : 0) + r.row.newNorm + 0.5 * r.row.score) / 6.5;
+    pieces.push({
+      pid: r.row.pid, slot: r.row.slot, price: r.row.price, fresh, categoryKey: String(p.categoryKey || "").toLowerCase(),
+      tags: tags.get(c.pid) || styleTags.nameTags({ name: p.name, websiteName: c.name, brand: p.brand, categoryKey: p.categoryKey }),
+      label: `${r.row.brandLine} ${r.row.nameLine}`.trim(), row: r.row, ref: c,
+    });
   }
-  const rank = (e) => (recent.has(e.row.pid) ? 0 : 4) + (e.row.studio ? 1 : 0)
-    + e.row.newNorm + 0.5 * e.row.score;
-  for (const [slot, list] of bySlot) {
-    list.sort((a, b) => rank(b) - rank(a) || (a.row.pid < b.row.pid ? -1 : 1));
-    // The best BAND_PER_SLOT − 2 by bias, plus the two cheapest of the rest,
-    // so a slot of expensive favourites can never price the whole day out of
-    // the band (architect review).
-    const top = list.slice(0, BAND_PER_SLOT - 2);
-    const cheap = list.slice(BAND_PER_SLOT - 2).sort((a, b) => a.row.price - b.row.price || (a.row.pid < b.row.pid ? -1 : 1)).slice(0, 2);
-    bySlot.set(slot, [...top, ...cheap]);
-  }
-
-  // The core of the look first (what is on the body), then the finishing
-  // pieces, so the search prunes on the big prices early.
-  const ORDER = ["tee", "bottoms", "sneakers", "jacket", "hat", "bag"];
+  const filled = SLOT_KEYS.filter((k) => pieces.some((x) => x.slot === k));
+  const missingSlots = SLOT_KEYS.filter((k) => !filled.includes(k));
   const hasCore = (slots) => CORE_SLOTS.every((any) => any.some((k) => slots.has(k)));
-  let best = null, nearest = null, looks = 0;
-  const better = (a, b) => !b || a.n > b.n || (a.n === b.n && (a.score > b.score + 1e-9
-    || (Math.abs(a.score - b.score) <= 1e-9 && a.key < b.key)));
-  const walk = (i, chosen, sum, score) => {
-    if (i === ORDER.length) {
-      if (chosen.length < MIN_ROWS || !hasCore(new Set(chosen.map((e) => e.row.slot)))) return;
-      looks++;
-      if (sum >= band.min && sum <= band.max) {
-        const cand = { n: chosen.length, score, key: chosen.map((e) => e.row.pid).sort().join(","), chosen: chosen.slice() };
-        if (better(cand, best)) best = cand;
-      } else {
-        const off = sum < band.min ? band.min - sum : sum - band.max;
-        if (!nearest || off < nearest.off) nearest = { off, sum, n: chosen.length };
-      }
-      return;
-    }
-    for (const e of bySlot.get(ORDER[i])) {
-      if (sum + e.row.price > band.max) continue;
-      if (!fitsWith(chosen.map((x) => x.candidate), e.candidate)) continue;
-      chosen.push(e);
-      walk(i + 1, chosen, sum + e.row.price, score + rank(e));
-      chosen.pop();
-    }
-    walk(i + 1, chosen, sum, score);
+  if (filled.length < MIN_ROWS || !hasCore(new Set(filled))) {
+    return {
+      rows: [], total: 0, skipped, shortlist: [],
+      reason: `no eligible outfit — only ${filled.length} of the six slots could be filled (nothing for: ${missingSlots.join(", ")}); a lookbook needs ${MIN_ROWS} with a top, bottoms and sneakers`,
+    };
+  }
+  const res = stylist.styleOutfits(pieces, {
+    core: CORE_SLOTS, slots: SLOT_KEYS, minPieces: MIN_ROWS, maxPieces: SLOT_KEYS.length, band,
+    fits: (chosen, c) => fitsWith(chosen, c), month, look, perPieceBonus: true,
+  });
+  const toPick = (o) => {
+    const chosen = new Map(o.pieces.map((x) => [x.slot, x.row]));
+    const rows = SLOT_KEYS.filter((k) => chosen.has(k)).map((k) => chosen.get(k));
+    return {
+      rows, total: rows.reduce((t, r) => t + r.price, 0), missing: SLOT_KEYS.filter((k) => !chosen.has(k)),
+      styled: { score: o.score, parts: o.parts, look: o.look, lookMatch: o.lookMatch, reasoning: o.reasoning, pieces: o.pieces },
+    };
   };
-  walk(0, [], 0, 0);
-  // No look at all under the ceiling: say why, with the cheapest look's price.
-  if (!best && !looks) {
-    const filled = SLOT_KEYS.filter((k) => bySlot.get(k).length);
-    const missing = SLOT_KEYS.filter((k) => !bySlot.get(k).length);
-    if (filled.length < MIN_ROWS || !hasCore(new Set(filled))) {
+  if (!res.shortlist.length) {
+    const styleRefusals = Object.entries(res.refused).filter(([k]) => k !== "band").sort((a, b) => b[1] - a[1]);
+    // Style, not price, when the guide refused anything: a look that broke a
+    // rule may have fitted the band, a look over the ceiling says nothing.
+    if (styleRefusals.length) {
       return {
-        rows: [], total: 0, skipped,
-        reason: `no eligible outfit — only ${filled.length} of the six slots could be filled (nothing for: ${missing.join(", ")}); a lookbook needs ${MIN_ROWS} with a top, bottoms and sneakers`,
+        rows: [], total: 0, skipped, shortlist: [], style: true,
+        reason: `no outfit in ${formatRand(band.min)}–${formatRand(band.max)} passes the style guide${look ? ` as ${look}` : ""} (most often: ${styleRefusals.slice(0, 2).map(([k, n]) => `${k} ×${n}`).join("; ")})`,
       };
     }
-  }
-  if (!best) {
+    const nearest = res.nearest;
     return {
-      rows: [], total: 0, skipped, band: true,
+      rows: [], total: 0, skipped, shortlist: [], band: true,
       reason: `no outfit of ${MIN_ROWS}–6 rows totals ${formatRand(band.min)}–${formatRand(band.max)}${nearest ? ` (closest: ${formatRand(nearest.sum)} with ${nearest.n} rows)` : " (every look is over the ceiling)"}`,
     };
   }
-  const chosen = new Map(best.chosen.map((e) => [e.row.slot, e.row]));
-  const rows = SLOT_KEYS.filter((k) => chosen.has(k)).map((k) => chosen.get(k));
-  const missing = SLOT_KEYS.filter((k) => !chosen.has(k));
-  return { rows, total: rows.reduce((s, r) => s + r.price, 0), reason: null, skipped, missing };
+  const shortlist = res.shortlist.map(toPick);
+  return { ...shortlist[0], reason: null, skipped, shortlist, considered: res.considered };
+}
+
+/**
+ * The text model's answer applied to a pick: the chosen outfit, its look and
+ * its styling note (lib/stylist.cjs readChoice; an unreadable answer keeps the
+ * top-scoring outfit and the deterministic note). Pure.
+ * @returns the pick with rows/total/styled of the chosen outfit, plus
+ *          look: { key, name, header, note, score, source, reasoning }
+ */
+function chooseLookbookOutfit(pick, answerText, { month = 10 } = {}) {
+  const list = (pick && pick.shortlist) || [];
+  if (!list.length) return pick;
+  const outfits = list.map((x) => ({ pieces: x.styled.pieces, look: x.styled.look, reasoning: x.styled.reasoning, score: x.styled.score }));
+  const c = stylist.readChoice(answerText, outfits, { kind: "lookbook", season: stylist.seasonOf(month) });
+  const chosen = list[c.index];
+  const def = stylist.lookByKey(c.look);
+  return {
+    ...pick, rows: chosen.rows, total: chosen.total, missing: chosen.missing, styled: chosen.styled,
+    look: {
+      key: c.look, name: def ? def.name : null, header: stylist.headerFor(c.look), note: c.note,
+      score: chosen.styled.score, source: c.source, reasoning: chosen.styled.reasoning, choice: c.index + 1, of: list.length,
+    },
+  };
+}
+
+/** The stylist prompt for a pick's shortlist. Pure. */
+function lookbookChoicePrompt(pick, { month = 10 } = {}) {
+  const outfits = ((pick && pick.shortlist) || []).map((x) => ({ pieces: x.styled.pieces, look: x.styled.look, reasoning: x.styled.reasoning, score: x.styled.score }));
+  return stylist.buildChoicePrompt(outfits, { kind: "lookbook", season: stylist.seasonOf(month) });
+}
+
+/**
+ * The pids used in a lookbook within `days` days before `saDate` (inclusive
+ * of today): the 14-day no-repeat. Same RTDB shapes as recentLookbookPids. Pure.
+ */
+function pidsWithinDays(history, saDate, days = 14) {
+  const out = new Set();
+  if (!history || typeof history !== "object") return out;
+  const end = Date.parse(`${saDate}T12:00:00Z`);
+  if (!Number.isFinite(end)) return out;
+  for (const [d, entry] of Object.entries(history)) {
+    const t = Date.parse(`${d}T12:00:00Z`);
+    if (!Number.isFinite(t) || t > end || end - t >= days * 86400000) continue;
+    const raw = entry && entry.pids;
+    const list = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.values(raw) : [];
+    for (const pid of list) if (typeof pid === "string" && pid) out.add(pid);
+  }
+  return out;
 }
 
 /** The history entry a finished lookbook writes. Pure. */
@@ -889,7 +927,7 @@ module.exports = {
   LOOKBOOK_SLOTS, SLOT_KEYS, MIN_ROWS, HISTORY_DEPTH, READS_PER_SLOT,
   STILL_FORMAT_KEYS, DEFAULT_STILL_FORMATS,
   lookbookSlot, guessSlot, priceOf, formatRand, approvedPhoto, resolveRow,
-  recentLookbookPids, pickLookbookOutfit, historyEntry,
+  recentLookbookPids, pidsWithinDays, pickLookbookOutfit, chooseLookbookOutfit, lookbookChoicePrompt, historyEntry,
   parseStillFormats, stillCalendar,
   parseLookbookDays, isJsonList, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, readModelCheck, anchorsFor,

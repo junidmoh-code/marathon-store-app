@@ -17,6 +17,8 @@
 // --engine nbpro (default) is the production hero engine; --engine flash sends
 // the same parts to gemini-3.1-flash-image, the pipeline's own fallback model.
 // --scene concrete|garden (default: the scene the next lookbook day gets).
+// --look <key> makes the stylist choose only outfits of that named look
+// (docs/style-guide.md), so a set of samples can show different looks.
 // The production engines are used whole: the clean-shot cache and its Flash-Lite
 // generation, the character reference, the 4K hero.
 import { createRequire } from "node:module";
@@ -44,6 +46,9 @@ const ENGINE = arg("engine", "nbpro");
 if (!["nbpro", "flash"].includes(ENGINE)) throw new Error(`--engine must be nbpro or flash, not ${ENGINE}`);
 const SCENE = arg("scene", null);
 if (SCENE && !lookbookLib.LOOKBOOK_SCENE_KEYS.includes(SCENE)) throw new Error(`--scene must be one of ${lookbookLib.LOOKBOOK_SCENE_KEYS.join(", ")}`);
+const LOOK = arg("look", null);
+const LOOK_KEYS = require("./lib/style-guide.json").looks.map((l) => l.key);
+if (LOOK && !LOOK_KEYS.includes(LOOK)) throw new Error(`--look must be one of ${LOOK_KEYS.join(", ")}`);
 
 const ROOT = resolve(new URL("../..", import.meta.url).pathname);
 const OUT = join(homedir(), "Desktop", "lookbook-samples");
@@ -104,7 +109,7 @@ for (const r of (real.generation || real).rows || []) used.add(r.pid);
 
 const before = (await db.ref(`social_generation_budget/${saDate}/count`).once("value")).val();
 const scene = SCENE || lookbookLib.sceneFor(saDate, lookbookLib.parseLookbookScenes(process.env.LOOKBOOK_SCENES), lookbookLib.parseLookbookDays(process.env.LOOKBOOK_DAYS)).key;
-const r = await makeLookbook(db, deps, { nowMs, used, scene });
+const r = await makeLookbook(db, deps, { nowMs, used, scene, look: LOOK });
 const after = (await db.ref(`social_generation_budget/${saDate}/count`).once("value")).val();
 
 const model = ENGINE === "flash" ? gemini.GEMINI_MODEL : gemini.NBPRO_MODEL;
@@ -112,10 +117,13 @@ const entry = {
   at: new Date().toISOString(), saDate, ok: r.ok, gate: r.gate || null, reason: r.reason || null,
   model, engineUsed: r.engine || null, budget: { before, after, cap: 4, overridden: OVERRIDE_CAP },
   costUSD: r.costUSD, costZAR: +((r.costUSD || 0) * USD_TO_ZAR).toFixed(2), attempts: r.attempts,
-  rows: (r.rows || []).map((x) => ({ slot: x.slot, pid: x.pid, name: x.displayName, price: x.priceText, thumb: x.thumbSource || null })),
+  rows: (r.rows || []).map((x) => ({ slot: x.slot, pid: x.pid, name: x.displayName, price: x.priceText, thumb: x.thumbSource || null, tags: (r.styled && r.styled.tags && r.styled.tags[x.pid]) || null })),
   total: r.total ? r.total.text : null,
   scene, modelRef: Boolean(r.modelRef), thumbCostUSD: r.thumbCostUSD || 0,
-  heroCostUSD: +((r.costUSD || 0) - (r.thumbCostUSD || 0)).toFixed(6),
+  heroCostUSD: +((r.costUSD || 0) - (r.thumbCostUSD || 0) - (r.stylistCostUSD || 0)).toFixed(6),
+  stylistCostUSD: r.stylistCostUSD || 0,
+  look: r.look ? { key: r.look.key, name: r.look.name, header: r.look.header, note: r.look.note, score: r.look.score, source: r.look.source, choice: r.look.choice, of: r.look.of } : null,
+  styled: r.styled || null,
 };
 if (r.ok) {
   const hm = await sharp(r.hero.buffer).metadata();
