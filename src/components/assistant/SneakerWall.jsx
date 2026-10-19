@@ -51,11 +51,12 @@ const WALL_CSS = `
   .sw-badge{display:flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 7px;border-radius:13px;background:#fff;color:#3a40c7;font-size:14px}
   .sw-scroll{position:relative;flex:1;min-height:0;overflow:auto;padding:0 24px 24px}
   .sw-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
-  /* 4:5 tiles. The photos are mostly 600×800 portrait (2026-08-13 survey):
-     cover in a 4:5 box trims ~6% of a portrait's height, where the artboard's
-     near-square box would cut ~20%. content-visibility skips paint for the
-     rows scrolled away — the till's UHD 600 is why the old grid needed it. */
-  .sw-tile{position:relative;aspect-ratio:4/5;border-radius:18px;overflow:hidden;background:#1a1a1e;content-visibility:auto;contain-intrinsic-size:auto 420px}
+  /* 9:10 tiles — two full rows on the 1440×900 terminal, as in the artboard.
+     cover (Junid's spec) trims a 600×800 portrait ~17% top-and-bottom and a
+     square studio photo ~10% at the sides; the whole shoe is one tap away in
+     the enlarge view. content-visibility skips paint for rows scrolled away —
+     the till's UHD 600 is why the old grid needed it. */
+  .sw-tile{position:relative;aspect-ratio:9/10;border-radius:18px;overflow:hidden;background:#1a1a1e;content-visibility:auto;contain-intrinsic-size:auto 420px}
   .sw-tile::after{content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;z-index:3;box-shadow:inset 0 0 0 3px transparent;transition:box-shadow .12s}
   .sw-tile[data-open="true"]::after{box-shadow:inset 0 0 0 3px #5b63ff}
   .sw-tbtn{position:absolute;inset:0;width:100%;height:100%;padding:0;border:0;background:transparent;cursor:pointer;display:block;border-radius:18px}
