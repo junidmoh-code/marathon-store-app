@@ -27,22 +27,33 @@ const { fitsWith } = require("./social-select.cjs");
 // `anchor` is where the model-side dot of the leader line sits when the vision
 // check gives no position for the item. It is a fraction of the generated photo, and
 // the hero prompt pins the composition (full length, body at 58% of the
-// width, head ~12% from the top, feet ~15% above the bottom) so these land on
-// the body. Rows are head to toe and so are these, so the lines never cross.
+// width, the top of the head ~4% from the top, soles ~11% above the bottom:
+// the body fills ~85% of the height, owner go-live brief 19 Oct) so these
+// land on the body. The renderer still orders the dots top to bottom against
+// the rows (lookbook-render planLeaders), so the lines never cross.
 const LOOKBOOK_SLOTS = [
   { slot: "hat",      label: "hat",      keys: ["caps-beanies", "fitted-caps", "visors"],
-    guess: /\b(cap|caps|beanie|bucket|visor|fitted|snapback|hat)\b/i, anchor: { x: 0.58, y: 0.135 } },
+    guess: /\b(cap|caps|beanie|bucket|visor|fitted|snapback|hat)\b/i, anchor: { x: 0.58, y: 0.06 } },
   { slot: "jacket",   label: "jacket",   keys: ["jackets", "hoodies"],
-    guess: /\b(jackets?|hoodies?|puffer|windbreaker|windrunner|anorak|bomber|sweaters?|pullover|cardigan|quarter-zip)\b/i, anchor: { x: 0.53, y: 0.29 } },
+    guess: /\b(jackets?|hoodies?|puffer|windbreaker|windrunner|anorak|bomber|sweaters?|pullover|cardigan|quarter-zip)\b/i, anchor: { x: 0.53, y: 0.24 } },
   { slot: "tee",      label: "tee",      keys: ["t-shirts", "golf-t-shirts"],
-    guess: /\b(t-shirts?|tees?|t|polo|henley|shirt|top)\b/i, anchor: { x: 0.60, y: 0.34 } },
+    guess: /\b(t-shirts?|tees?|t|polo|henley|shirt|top)\b/i, anchor: { x: 0.60, y: 0.30 } },
   { slot: "bottoms",  label: "bottoms",  keys: ["shorts", "pants", "jeans"],
-    guess: /\b(shorts?|pants|jeans?|cargo|trousers?|joggers?|chinos?)\b/i, anchor: { x: 0.55, y: 0.54 } },
+    guess: /\b(shorts?|pants|jeans?|cargo|trousers?|joggers?|chinos?)\b/i, anchor: { x: 0.55, y: 0.53 } },
   { slot: "bag",      label: "bag",      keys: ["bags"],
     guess: /\b(bag|backpack|crossbody|sling|pouch|tote|duffel|messenger)\b/i, anchor: { x: 0.72, y: 0.58 } },
   { slot: "sneakers", label: "sneakers", keys: ["sneakers"],
-    guess: /\b(sneakers?|low-top|mid-top|high-top|trainers?|runners?)\b/i, anchor: { x: 0.58, y: 0.82 } },
+    guess: /\b(sneakers?|low-top|mid-top|high-top|trainers?|runners?)\b/i, anchor: { x: 0.58, y: 0.855 } },
 ];
+// The body in the hero column (owner go-live brief, 19 Oct): the model fills
+// ~85% of the height, the top of his head ~4% below the top edge. The prompt
+// asks for it and the renderer crops to it when the model came out smaller.
+const BODY_FILL = 0.85;
+const BODY_TOP = 0.04;
+// The hero's long side at the model's native maximum: Nano Banana Pro and
+// Flash at 9:16 4K both return 3072x5504 (measured 18 Oct). Anything under
+// this was not made at the maximum.
+const HERO_MIN_LONG_SIDE = 5000;
 const SLOT_KEYS = LOOKBOOK_SLOTS.map((s) => s.slot);
 const SLOT_BY_KEY = new Map(LOOKBOOK_SLOTS.map((s) => [s.slot, s]));
 
@@ -55,6 +66,14 @@ const THUMBS_PER_DAY = 12;
 
 // Fewer than four rows is not a lookbook, it is a pairing with a big panel.
 const MIN_ROWS = 4;
+// The TOTAL lands in this band, inclusive (owner go-live brief, 19 Oct). The
+// picker chooses products to hit it; a price is never altered to fit.
+const PRICE_BAND = { min: 1400, max: 1900 };
+// Every look has something on top, on the legs and on the feet.
+const CORE_SLOTS = [["tee", "jacket"], ["bottoms"], ["sneakers"]];
+// How many of each slot's best the band search combines. 7^6 leaves at most,
+// cut down hard by the band's ceiling.
+const BAND_PER_SLOT = 6;
 // "Not used in the last 14 lookbooks".
 const HISTORY_DEPTH = 14;
 // How many of each guessed slot the loader reads per round. Six slots at eight
@@ -157,7 +176,8 @@ const POSTER_BRANDS = [
   ["Loro Piana", /^loro[\s-]+piana\b/i],
   ["New Balance", /^new[\s-]+balance\b/i],
   ["New Era", /^new[\s-]+era\b/i],
-  ["Under Armour", /^under[\s-]+armou?r\b/i],
+  // "Under Amour" is how the till spells it on several records.
+  ["Under Armour", /^under[\s-]+a(?:r)?mou?r\b/i],
   ["Air Jordan", /^air[\s-]+jordan\b/i],
   ["Comme des Garçons", /^comme[\s-]+des[\s-]+gar[cç]ons\b/i],
   ["Marathon Club", /^marathon[\s-]+club\b/i],
@@ -194,6 +214,80 @@ function posterName(displayName, { fallbackSplit, isCategory = () => false } = {
   return { brand: "", rest: name.toUpperCase() };
 }
 
+// ── THE PANEL'S TWO LINES, FROM THE WEBSITE (owner go-live brief, 19 Oct) ───
+// Brand line: the product's brand. Name line: the product's WEBSITE name,
+// shopify_publish/{pid}/cleanName, the title the Shopify publisher writes
+// (already brand-stripped for the payment gateway), cleaned. Never the till's
+// inventory string ("Jacket black #5926") and never a colour-only name
+// ("Jacket Black", "Bag Green"). A product without a brand or without a
+// usable website name is not eligible for the lookbook at all.
+const GARMENT_WORDS = new Set([
+  "jacket", "jackets", "hoodie", "hoodies", "sweater", "sweaters", "jumper", "pullover", "top", "tops",
+  "tee", "tees", "t-shirt", "t-shirts", "tshirt", "shirt", "shirts", "polo", "pants", "pant", "jeans", "jean",
+  "trousers", "shorts", "short", "joggers", "cargo", "cargos", "bag", "bags", "backpack", "pouch",
+  "sneaker", "sneakers", "shoe", "shoes", "boot", "boots", "trainer", "trainers", "runner", "runners",
+  "beanie", "beanies", "cap", "caps", "hat", "hats", "bucket", "visor", "item", "product",
+]);
+const COLOUR_WORDS = new Set([
+  "black", "white", "grey", "gray", "brown", "beige", "cream", "khaki", "navy", "blue", "green", "olive",
+  "red", "maroon", "burgundy", "pink", "purple", "orange", "yellow", "gold", "silver", "tan", "taupe",
+  "camel", "charcoal", "stone", "sand", "mint", "teal", "lilac", "ivory", "nude", "multi", "multicolour",
+  "multicolor", "colour", "color", "light", "dark", "pale", "off-white", "brownish", "greyish", "greenish",
+  "bluish", "and", "with", "in", "&", "on", "stripes", "striped",
+]);
+// A bare stock code left in a website name: "FG3551", "FD1299", "FG3535-1",
+// and the same glued to a word ("jeanFG3551" is "jean"). Two digits is a model
+// ("59FIFTY", "Air Max 90"), never stripped.
+const stripBareCodes = (s) => String(s || "").replace(/([a-z])([A-Z]{1,3}\d{3,})/g, "$1 $2")
+  .replace(/(^|\s)[A-Za-z]{1,3}\d{3,}[\w-]*(?=\s|$)/g, " ");
+const words = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9&\s-]+/g, " ").split(/\s+/).filter(Boolean);
+
+/** The brand line: the catalogue spelling in its proper form, else the record's brand. Pure. */
+function posterBrand(product) {
+  const p = product || {};
+  const brand = typeof p.brand === "string" ? p.brand.trim() : "";
+  // A brand that is itself a garment ("Jacket") is the till's placeholder.
+  if (!brand || GARMENT_WORDS.has(brand.toLowerCase()) || guessSlot(brand)) return null;
+  const name = stripStyleCodes(p.name);
+  for (const [proper, re] of POSTER_BRANDS) {
+    if (re.test(brand)) return proper.toUpperCase();
+    // "Boss" over "Hugo boss beanie", "Under" over "Under Amour bag": the name
+    // carries the full brand when the record's brand field is short of it.
+    const m = re.exec(name);
+    if (m && m[0].toLowerCase().includes(brand.toLowerCase().split(/[\s-]+/)[0])) return proper.toUpperCase();
+  }
+  return brand.toUpperCase();
+}
+
+/**
+ * The website name for the panel, or { name: null, why }. `websiteName` is
+ * shopify_publish/{pid}/cleanName; `product` the /products record. Pure.
+ */
+function panelName(websiteName, product, brandLine = "") {
+  const raw = typeof websiteName === "string" ? websiteName.trim() : "";
+  if (!raw) return { name: null, why: "no website name" };
+  let name = stripBareCodes(stripStyleCodes(raw))
+    .replace(/[!?]+/g, " ").replace(/\s+,/g, ",").replace(/\s+/g, " ").trim();
+  // Brand stripped (the publisher already strips it; this is the backstop).
+  for (const b of [brandLine, product && product.brand].filter(Boolean)) {
+    const re = new RegExp(`^${String(b).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[\s-]+/g, "[\\s-]+")}\\b[\\s,-]*`, "i");
+    name = name.replace(re, "").trim();
+  }
+  if (!name) return { name: null, why: "no website name" };
+  const w = words(name);
+  // Colour-only: a garment word and colours, nothing that describes it.
+  if (w.every((t) => GARMENT_WORDS.has(t) || COLOUR_WORDS.has(t) || /^\d+$/.test(t))) {
+    return { name: null, why: `colour-only website name "${name}"` };
+  }
+  // The till's string re-dressed: every descriptive word is already in the
+  // inventory name ("Jacket black white stripes #1552", "Raw cargo jeans
+  // FD3554" for "G star raw cargo jeans FD3554#").
+  const inv = new Set(words(stripBareCodes(stripStyleCodes(product && product.name))));
+  const own = w.filter((t) => !GARMENT_WORDS.has(t) && !COLOUR_WORDS.has(t));
+  if (inv.size && own.every((t) => inv.has(t))) return { name: null, why: `website name "${name}" is the inventory string` };
+  return { name: name.charAt(0).toUpperCase() + name.slice(1) };
+}
+
 /**
  * The approved photo for a product: the New Arrivals studio photo where one
  * exists, else the storefront's lead photo, else the record's hero. An
@@ -225,9 +319,14 @@ function resolveRow(candidate) {
   if (price === null) return { skip: "no retail price" };
   const photo = approvedPhoto(c.product, c.node);
   if (!photo) return { skip: "no approved photo" };
+  const brandLine = posterBrand(c.product);
+  if (!brandLine) return { skip: "no brand" };
+  const named = panelName(c.name, c.product, brandLine);
+  if (!named.name) return { skip: named.why };
   return {
     row: {
       pid: c.pid, slot, price, priceText: formatRand(price),
+      brandLine, nameLine: named.name.toUpperCase(),
       photoUrl: photo.url, studio: photo.studio,
       displayName: c.displayName || c.name || "",
       name: c.name || null, handle: c.handle || null, link: c.link || null,
@@ -261,24 +360,30 @@ function recentLookbookPids(history, depth = HISTORY_DEPTH) {
 }
 
 /**
- * Pick one product per slot, head to toe.
+ * Pick the outfit: at most one product per slot, head to toe, whose TOTAL
+ * lands in PRICE_BAND (owner go-live brief, 19 Oct).
  *
- * Bias, in order of weight: not in the last 14 lookbooks, then an approved
- * New Arrivals studio photo (it is on plain grey, so it cuts out cleanly and
- * is the best reference the model can be given), then newness, then the
- * shared sales and newness score. Every term is a preference. Only price, photo
- * and slot are refusals. Ties break on pid so two runs on the same data agree.
+ * Every look has a top (tee or jacket), bottoms and sneakers; hat, bag and the
+ * second top are finishing pieces. Among the looks inside the band the most
+ * rows wins (six, then five, then four: "drop to 4 rows"), then the best
+ * summed bias. Bias per product, in order of weight: not in the last 14
+ * lookbooks, then an approved New Arrivals studio photo (it cuts out cleanly
+ * and is the best reference the model can be given), then newness, then the
+ * shared sales and newness score. Ties break on the pids so two runs on the
+ * same data agree. Prices are never altered: a product either fits the band
+ * with the others or is not chosen.
  *
- * A piece that does not share a wardrobe context with what is already chosen
- * (social-select fitsWith: no soccer boot with jeans) is passed over for the
- * next one in its slot. A slot with nothing that fits is dropped.
+ * Pieces that do not share a wardrobe context (social-select fitsWith: no
+ * soccer boot with jeans) are never combined.
  *
  * @param candidates  social-select buildCandidates rows (live, in stock)
  * @param opts.recent Set of pids used in recent lookbooks
  * @param opts.used   Set of pids already spoken for today (never picked)
- * @returns { rows, total, reason, skipped: [{ pid, slot, why }] }
+ * @param opts.band   { min, max } rand, inclusive (default PRICE_BAND)
+ * @returns { rows, total, reason, band?, skipped: [{ pid, slot, why }], missing }
+ *          `band: true` on a refusal means looks existed but none in the band.
  */
-function pickLookbookOutfit(candidates, { recent = new Set(), used = new Set() } = {}) {
+function pickLookbookOutfit(candidates, { recent = new Set(), used = new Set(), band = PRICE_BAND } = {}) {
   const skipped = [];
   const bySlot = new Map(SLOT_KEYS.map((k) => [k, []]));
   for (const c of candidates || []) {
@@ -294,25 +399,59 @@ function pickLookbookOutfit(candidates, { recent = new Set(), used = new Set() }
     + e.row.newNorm + 0.5 * e.row.score;
   for (const list of bySlot.values()) {
     list.sort((a, b) => rank(b) - rank(a) || (a.row.pid < b.row.pid ? -1 : 1));
+    list.splice(BAND_PER_SLOT);
   }
 
   // The core of the look first (what is on the body), then the finishing
-  // pieces, so a hat can never be the reason a pair of shorts is refused.
+  // pieces, so the search prunes on the big prices early.
   const ORDER = ["tee", "bottoms", "sneakers", "jacket", "hat", "bag"];
-  const chosen = new Map();
-  const chosenCandidates = [];
-  for (const slot of ORDER) {
-    const pick = bySlot.get(slot).find((e) => fitsWith(chosenCandidates, e.candidate));
-    if (pick) { chosen.set(slot, pick.row); chosenCandidates.push(pick.candidate); }
+  const hasCore = (slots) => CORE_SLOTS.every((any) => any.some((k) => slots.has(k)));
+  let best = null, nearest = null, looks = 0;
+  const better = (a, b) => !b || a.n > b.n || (a.n === b.n && (a.score > b.score + 1e-9
+    || (Math.abs(a.score - b.score) <= 1e-9 && a.key < b.key)));
+  const walk = (i, chosen, sum, score) => {
+    if (i === ORDER.length) {
+      if (chosen.length < MIN_ROWS || !hasCore(new Set(chosen.map((e) => e.row.slot)))) return;
+      looks++;
+      if (sum >= band.min && sum <= band.max) {
+        const cand = { n: chosen.length, score, key: chosen.map((e) => e.row.pid).sort().join(","), chosen: chosen.slice() };
+        if (better(cand, best)) best = cand;
+      } else {
+        const off = sum < band.min ? band.min - sum : sum - band.max;
+        if (!nearest || off < nearest.off) nearest = { off, sum, n: chosen.length };
+      }
+      return;
+    }
+    for (const e of bySlot.get(ORDER[i])) {
+      if (sum + e.row.price > band.max) continue;
+      if (!fitsWith(chosen.map((x) => x.candidate), e.candidate)) continue;
+      chosen.push(e);
+      walk(i + 1, chosen, sum + e.row.price, score + rank(e));
+      chosen.pop();
+    }
+    walk(i + 1, chosen, sum, score);
+  };
+  walk(0, [], 0, 0);
+  // No look at all under the ceiling: say why, with the cheapest look's price.
+  if (!best && !looks) {
+    const filled = SLOT_KEYS.filter((k) => bySlot.get(k).length);
+    const missing = SLOT_KEYS.filter((k) => !bySlot.get(k).length);
+    if (filled.length < MIN_ROWS || !hasCore(new Set(filled))) {
+      return {
+        rows: [], total: 0, skipped,
+        reason: `no eligible outfit — only ${filled.length} of the six slots could be filled (nothing for: ${missing.join(", ")}); a lookbook needs ${MIN_ROWS} with a top, bottoms and sneakers`,
+      };
+    }
   }
-  const rows = SLOT_KEYS.filter((k) => chosen.has(k)).map((k) => chosen.get(k));
-  const missing = SLOT_KEYS.filter((k) => !chosen.has(k));
-  if (rows.length < MIN_ROWS) {
+  if (!best) {
     return {
-      rows: [], total: 0, skipped,
-      reason: `no eligible outfit — only ${rows.length} of the six slots could be filled (nothing for: ${missing.join(", ")}); a lookbook needs ${MIN_ROWS}`,
+      rows: [], total: 0, skipped, band: true,
+      reason: `no outfit of ${MIN_ROWS}–6 rows totals ${formatRand(band.min)}–${formatRand(band.max)}${nearest ? ` (closest: ${formatRand(nearest.sum)} with ${nearest.n} rows)` : " (every look is over the ceiling)"}`,
     };
   }
+  const chosen = new Map(best.chosen.map((e) => [e.row.slot, e.row]));
+  const rows = SLOT_KEYS.filter((k) => chosen.has(k)).map((k) => chosen.get(k));
+  const missing = SLOT_KEYS.filter((k) => !chosen.has(k));
   return { rows, total: rows.reduce((s, r) => s + r.price, 0), reason: null, skipped, missing };
 }
 
@@ -423,18 +562,20 @@ const LOOKBOOK_SCENE_DEFS = {
     floor: "the concrete floor",
     location: "Location: he stands on a poured concrete floor in a raw concrete space. Behind him is a board-formed concrete wall, the grain of the timber boards printed in it. No plants, no furniture, no props, no windows in frame.",
     light: "Light: soft directional daylight from one side, as from a large window out of frame, falling off gently across the wall; soft shadows. Grade: muted grey, cool and neutral, editorial, natural skin tones.",
-    calm: "Keep the upper-left of the frame calm and uncluttered (plain concrete wall only) and the bottom 15% plain concrete floor.",
+    calm: "Keep the upper-left of the frame calm and uncluttered (plain concrete wall only) and the floor below his shoes plain concrete.",
   },
   garden: {
     key: "garden",
     floor: "the paving",
     location: "Location: he stands on large pale stone paving slabs in a lush garden — tall palm trees and dense tropical greenery behind him, a weathered stone bench to one side.",
     light: "Light: soft overcast daylight, no hard shadows. Grade: muted, editorial, slightly desaturated greens, natural skin tones.",
-    calm: "Keep the upper-left of the frame calm and uncluttered — soft foliage and sky only — and the bottom 15% plain paving.",
+    calm: "Keep the upper-left of the frame calm and uncluttered — soft foliage and sky only — and the paving below his shoes plain.",
   },
 };
 const LOOKBOOK_SCENE_KEYS = Object.keys(LOOKBOOK_SCENE_DEFS);
-const DEFAULT_LOOKBOOK_SCENES = ["concrete", "garden"];
+// Concrete only since go-live (owner, 19 Oct): the garden stays defined and
+// LOOKBOOK_SCENES='["concrete","garden"]' brings the alternation back.
+const DEFAULT_LOOKBOOK_SCENES = ["concrete"];
 
 /** LOOKBOOK_SCENES as configured, deduplicated, in the given order. Pure. */
 function parseLookbookScenes(raw) {
@@ -502,7 +643,7 @@ function buildHeroPrompt(rows, { scene = LOOKBOOK_SCENE_DEFS[DEFAULT_LOOKBOOK_SC
     MODEL_REQUIREMENT,
     ...(modelRef ? ["He is the man in the MODEL REFERENCE photo: the same face, skin tone, hair and build. Take only the man from it, never its clothing, headwear or background."] : []),
     "He is full length, head to toe in frame, standing upright and relaxed, facing the camera at a slight three-quarter angle, arms loose at his sides.",
-    `Composition: the model's body is centred at about 58% of the frame width (slightly right of centre); the top of his head is about 12% below the top edge and his shoes rest on ${sc.floor} about 15% above the bottom edge, with open floor below them. Nothing crops him.`,
+    `Composition: a tight full-length frame. He fills about ${Math.round(BODY_FILL * 100)}% of the frame height: the top of his head is about ${Math.round(BODY_TOP * 100)}% below the top edge and the soles of his shoes rest on ${sc.floor} about ${Math.round((1 - BODY_TOP - BODY_FILL) * 100)}% above the bottom edge. His body is centred at about 58% of the frame width (slightly right of centre). Nothing crops him: the whole head, any hat and both shoes are in frame.`,
     sc.location,
     sc.light,
     "He wears the complete outfit below, every garment reproduced faithfully from its attached reference photo — same colour, fabric, cut, graphics and logos as the real item:",
@@ -662,8 +803,8 @@ function readHeroCheck(text) {
  * bottom quarter, and so on). Otherwise the slot's fixed anchor is used. Pure.
  */
 const PLAUSIBLE_Y = {
-  hat: [0.02, 0.25], jacket: [0.15, 0.5], tee: [0.18, 0.55],
-  bottoms: [0.4, 0.75], bag: [0.3, 0.8], sneakers: [0.65, 0.95],
+  hat: [0.0, 0.22], jacket: [0.1, 0.5], tee: [0.12, 0.55],
+  bottoms: [0.38, 0.8], bag: [0.25, 0.8], sneakers: [0.65, 0.98],
 };
 function anchorsFor(rows, visionAnchors = {}, head = null) {
   const out = {};
@@ -675,12 +816,12 @@ function anchorsFor(rows, visionAnchors = {}, head = null) {
   if (head && visionAnchors && visionAnchors.hat && Math.abs(visionAnchors.hat.y - (head.y - HAT_ABOVE_FACE)) > 0.03) {
     visionAnchors = { ...visionAnchors, hat: { x: head.x, y: Math.max(0.02, head.y - HAT_ABOVE_FACE) } };
   }
-  // The category spots are a TEMPLATE of a body from head (y 0.16) to feet
+  // The category spots are a TEMPLATE of a body from face (y 0.09) to feet
   // (y 0.82) centred at x 0.58, the composition the prompt asks for. The model
   // does not always stand there (the first real hero put him ~10% lower), so
   // when the head is known the template is stretched onto the real body: head
   // to the vision feet, or to the same body height below the head.
-  const T_HEAD = 0.16, T_FEET = SLOT_BY_KEY.get("sneakers").anchor.y, T_X = 0.58;
+  const T_HEAD = 0.09, T_FEET = SLOT_BY_KEY.get("sneakers").anchor.y, T_X = 0.58;
   const feetV = visionAnchors && visionAnchors.sneakers;
   const place = (fixed) => {
     if (!head) return fixed;
@@ -705,7 +846,25 @@ function anchorsFor(rows, visionAnchors = {}, head = null) {
   return out;
 }
 
+/**
+ * Where the body is in the hero, as fractions { top, bottom }, from the
+ * located face (and hat) and shoes, or null when either end is unknown. The
+ * top is the top of the head (a face cell centre sits ~0.04 below it), the
+ * bottom the soles (a shoe cell centre sits ~0.02 above them). Pure.
+ */
+function bodyExtent(located, anchors) {
+  const head = located && located.head;
+  const feet = anchors && anchors.sneakers && anchors.sneakers.source === "vision" ? anchors.sneakers
+    : located && located.anchors && located.anchors.sneakers;
+  if (!head || !feet || !(feet.y > head.y + 0.3)) return null;
+  const hat = anchors && anchors.hat && anchors.hat.source === "vision" ? anchors.hat.y : head.y;
+  const top = Math.max(0, Math.min(head.y, hat) - 0.04);
+  const bottom = Math.min(1, feet.y + 0.02);
+  return bottom - top > 0.3 ? { top, bottom } : null;
+}
+
 module.exports = {
+  PRICE_BAND, CORE_SLOTS, HERO_MIN_LONG_SIDE, BODY_FILL, BODY_TOP, bodyExtent, posterBrand, panelName,
   LOOKBOOK_SLOTS, SLOT_KEYS, MIN_ROWS, HISTORY_DEPTH, READS_PER_SLOT,
   STILL_FORMAT_KEYS, DEFAULT_STILL_FORMATS,
   lookbookSlot, guessSlot, priceOf, formatRand, approvedPhoto, resolveRow,

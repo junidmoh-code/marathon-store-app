@@ -129,3 +129,71 @@ describe("layout", () => {
     assert.ok(type.measure("MARATHON", { font: "anton", size: 100 }) > 300);
   });
 });
+
+// ── GO-LIVE FIXES (owner brief, 19 Oct) ──────────────────────────────────────
+describe("go-live: hero framing, leader lines, thumbnail scale", () => {
+  test("body fit: the model fills ~85% of the column, head ~4% from the top, never upscaled", () => {
+    // A 4K hero with the model from 0.12 to 0.85 (the old composition).
+    const gw = 3072, gh = 5504, cw = 1088, ch = 2400;
+    const f = R.heroFrame(gw, gh, cw, ch, 0.58, 0.62, { top: 0.12, bottom: 0.85 });
+    assert.ok(f.scale <= 1, `scale ${f.scale}`);
+    const top = f.toPx(0.58, 0.12).y, bottom = f.toPx(0.58, 0.85).y;
+    assert.ok(Math.abs((bottom - top) / ch - 0.85) < 0.01, String((bottom - top) / ch));
+    assert.ok(Math.abs(top / ch - 0.04) < 0.01, String(top / ch));
+    assert.ok(f.top + ch <= f.sh && f.left + cw <= f.sw && f.top >= 0 && f.left >= 0);
+    // A tiny body would need more than native pixels: the window stops at the column's size.
+    const g = R.heroFrame(gw, gh, cw, ch, 0.58, 0.62, { top: 0.4, bottom: 0.6 });
+    assert.ok(Math.abs(g.scale - 1) < 1e-9);
+    // A body already taller than 85% keeps the full height (scale = cover).
+    const h = R.heroFrame(gw, gh, cw, ch, 0.58, 0.62, { top: 0.02, bottom: 0.98 });
+    assert.equal(h.sh, ch);
+  });
+
+  test("leader lines: dots handed out top to bottom in row order, and no two lines ever cross", () => {
+    // The vision order inverted (tee above jacket, bag above bottoms).
+    const ends = [100, 300, 500, 700, 900, 1100].map((y) => ({ x: 800, y }));
+    const pts = [{ x: 420, y: 150 }, { x: 400, y: 520 }, { x: 380, y: 480 }, { x: 410, y: 900 }, { x: 600, y: 860 }, { x: 420, y: 1500 }];
+    const p = R.planLeaders(pts, ends);
+    for (let i = 1; i < p.length; i++) assert.ok(p[i].y >= p[i - 1].y);
+    // Randomised: whatever the dots, the plan never crosses.
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let n = 0; n < 500; n++) {
+      const k = 4 + Math.floor(rnd() * 3);
+      const e = Array.from({ length: k }, (_, i) => ({ x: 816, y: 200 + i * 250 }));
+      const q = Array.from({ length: k }, () => ({ x: 200 + rnd() * 600, y: 50 + rnd() * 1650 }));
+      const plan = R.planLeaders(q, e);
+      for (let i = 0; i < k; i++) for (let j = i + 1; j < k; j++) {
+        assert.equal(R.segmentsCross(plan[i], e[i], plan[j], e[j]), false, JSON.stringify({ q, plan }));
+      }
+    }
+  });
+
+  test("the drawn poster's lines do not cross even when the vision order is upside down", () => {
+    const rows = ["hat", "jacket", "tee", "bottoms", "bag", "sneakers"].map((slot) => ({ slot, brandLine: "NIKE", nameLine: "A PIECE", priceText: "R1" }));
+    const anchorsPx = { hat: { x: 500, y: 200 }, jacket: { x: 520, y: 700 }, tee: { x: 450, y: 600 }, bottoms: { x: 470, y: 1100 }, bag: { x: 300, y: 1000 }, sneakers: { x: 480, y: 1500 } };
+    const b = R.buildPosterSvg({ W: 1200, H: 1800, rows, total: { text: "R6" }, anchorsPx, headPx: null });
+    const L = b.leaders;
+    assert.equal(L.length, 6);
+    for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) assert.equal(R.segmentsCross(L[i].a, L[i].end, L[j].a, L[j].end), false);
+    for (let i = 1; i < L.length; i++) assert.ok(L[i].a.y >= L[i - 1].a.y);
+  });
+
+  test("thumbnails: every cut-out fits the same padded box, centred", () => {
+    const size = 200, inner = size * (1 - 2 * R.THUMB_PAD);
+    for (const [w, h] of [[900, 300], [300, 900], [500, 500], [640, 820], [40, 30]]) {
+      const f = R.thumbFit(w, h, size);
+      assert.ok(f.w <= Math.round(inner) && f.h <= Math.round(inner), `${w}x${h} → ${f.w}x${f.h}`);
+      // the long side or the area cap decides: nothing is tiny next to its neighbours
+      assert.ok(Math.max(f.w, f.h) >= inner * 0.84 - 1, `${w}x${h} → ${f.w}x${f.h}`);
+    }
+  });
+
+  test("thumbnails: a transparent margin around a cut-out does not shrink it", async () => {
+    const sharp = require("sharp");
+    const solid = await sharp({ create: { width: 100, height: 100, channels: 4, background: { r: 20, g: 20, b: 20, alpha: 1 } } }).png().toBuffer();
+    const padded = await sharp(solid).extend({ top: 300, bottom: 300, left: 300, right: 300, background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
+    const t = await R.alphaTrim(padded);
+    assert.deepEqual([t.w, t.h], [100, 100]);
+  });
+});

@@ -29,7 +29,7 @@ const fs = require("fs");
 const path = require("path");
 const type = require("./lookbook-type.cjs");
 const { splitName } = require("./social-design.cjs");
-const { formatRand, guessSlot, posterName } = require("./social-lookbook.cjs");
+const { formatRand, guessSlot, posterName, BODY_FILL, BODY_TOP } = require("./social-lookbook.cjs");
 
 const PAPER = "#E9E6DF";
 const INK = "#141414";
@@ -63,17 +63,30 @@ function icon(name, x, y, size, color, strokeWidth = 1.5) {
 }
 
 // ── WHERE THE PHOTOGRAPH SITS ────────────────────────────────────────────────
-// Cover-fit into the hero column, cropped from the top. Horizontally the
-// subject (the model's centre, from the vision check, else 0.58 of the frame
-// as the prompt asks) is placed at 62% of the column, which leaves the
-// wordmark's corner to the garden.
-function heroFrame(gw, gh, heroW, heroH, subjectX = 0.58, targetX = 0.62) {
-  const scale = Math.max(heroW / gw, heroH / gh);
+// A window of the generated photograph, scaled to the hero column. Without a
+// known body it is the cover fit, cropped from the top. With one (`body`, the
+// top of the head and the soles as fractions) the window is cut so the model
+// fills BODY_FILL of the column with his head BODY_TOP below its top edge
+// (owner go-live brief, 19 Oct). The window is never smaller than the column
+// in pixels: the photograph is only ever scaled DOWN, never upscaled. A body
+// already that tall keeps the full height.
+// Horizontally the subject (the model's centre, from the vision check, else
+// 0.58 of the frame as the prompt asks) is placed at 62% of the column, which
+// leaves the wordmark's corner to the scene.
+function heroFrame(gw, gh, heroW, heroH, subjectX = 0.58, targetX = 0.62, body = null) {
+  const aspect = heroW / heroH;
+  let wh = gh;
+  if (body && body.bottom > body.top) wh = Math.min(gh, Math.max(heroH, ((body.bottom - body.top) * gh) / BODY_FILL));
+  let ww = wh * aspect;
+  if (ww > gw) { ww = gw; wh = ww / aspect; }
+  const scale = heroW / ww;
   const sw = Math.round(gw * scale), sh = Math.round(gh * scale);
-  const left = Math.max(0, Math.min(sw - heroW, Math.round(subjectX * sw - targetX * heroW)));
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const top = body ? clamp(Math.round((body.top * gh - BODY_TOP * wh) * scale), 0, sh - heroH) : 0;
+  const left = clamp(Math.round(subjectX * sw - targetX * heroW), 0, sw - heroW);
   return {
-    scale, sw, sh, left, top: 0,
-    toPx: (fx, fy) => ({ x: fx * sw - left, y: fy * sh }),
+    scale, sw, sh, left, top, window: { w: ww, h: wh },
+    toPx: (fx, fy) => ({ x: fx * sw - left, y: fy * sh - top }),
   };
 }
 
@@ -215,7 +228,10 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1 }) {
     // whole name goes on the bold line instead.
     // Multi-word brands in their proper form ("G-STAR RAW", "HUGO BOSS"),
     // style codes never printed (lib/social-lookbook.cjs posterName).
-    const split = posterName(r.displayName, { fallbackSplit: splitName, isCategory: (w) => Boolean(guessSlot(w)) });
+    // The picker's brand line + website name (social-lookbook resolveRow); a
+    // row without them (an older caller) falls back to the display name.
+    const split = r.brandLine && r.nameLine ? { brand: r.brandLine, rest: r.nameLine }
+      : posterName(r.displayName, { fallbackSplit: splitName, isCategory: (w) => Boolean(guessSlot(w)) });
     const known = Boolean(split.brand);
     const brand = known ? split.brand : split.rest;
     const rest = known ? split.rest : "";
@@ -260,22 +276,56 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1 }) {
 
   // ── LEADER LINES ─────────────────────────────────────────────────────────
   // White, thin, a dot at both ends. The panel end stops just inside the hero
-  // so the dot sits on the photograph's edge, where white reads.
-  rows.forEach((r, i) => {
-    const a = anchorsPx[r.slot];
-    if (!a) return;
-    const ex = heroW - 9, ey = P.rows[i].cy;
-    out.push(`<line x1="${f1(a.x)}" y1="${f1(a.y)}" x2="${ex}" y2="${f1(ey)}" stroke="#000" stroke-opacity="0.25" stroke-width="3"/>`);
-    out.push(`<line x1="${f1(a.x)}" y1="${f1(a.y)}" x2="${ex}" y2="${f1(ey)}" stroke="#fff" stroke-width="1.3"/>`);
-    for (const [x, y] of [[a.x, a.y], [ex, ey]]) {
+  // so the dot sits on the photograph's edge, where white reads. The dots are
+  // handed out top to bottom in the panel's row order (planLeaders), so no two
+  // lines ever cross (owner go-live brief, 19 Oct).
+  const withDot = rows.map((r, i) => ({ a: anchorsPx[r.slot], end: { x: heroW - 9, y: P.rows[i].cy } })).filter((l) => l.a);
+  const planned = planLeaders(withDot.map((l) => l.a), withDot.map((l) => l.end));
+  const leaders = withDot.map((l, i) => ({ a: planned[i], end: l.end }));
+  for (const { a, end } of leaders) {
+    out.push(`<line x1="${f1(a.x)}" y1="${f1(a.y)}" x2="${end.x}" y2="${f1(end.y)}" stroke="#000" stroke-opacity="0.25" stroke-width="3"/>`);
+    out.push(`<line x1="${f1(a.x)}" y1="${f1(a.y)}" x2="${end.x}" y2="${f1(end.y)}" stroke="#fff" stroke-width="1.3"/>`);
+    for (const [x, y] of [[a.x, a.y], [end.x, end.y]]) {
       out.push(`<circle cx="${f1(x)}" cy="${f1(y)}" r="4.6" fill="#fff" stroke="#000" stroke-opacity="0.35" stroke-width="1"/>`);
     }
-  });
+  }
 
   return {
     svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(W * scale)}" height="${Math.round(H * scale)}" viewBox="0 0 ${W} ${H}">${out.join("")}</svg>`,
-    thumbs, heroW, panelX, layout: P, markW,
+    thumbs, heroW, panelX, layout: P, markW, leaders,
   };
+}
+
+// ── LEADER LINES THAT NEVER CROSS ────────────────────────────────────────────
+/** Do segments p1→p2 and q1→q2 properly cross (touching ends do not count)? Pure. */
+function segmentsCross(p1, p2, q1, q2) {
+  const o = (a, b, c) => Math.sign((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+  const d1 = o(q1, q2, p1), d2 = o(q1, q2, p2), d3 = o(p1, p2, q1), d4 = o(p1, p2, q2);
+  return d1 * d2 < 0 && d3 * d4 < 0;
+}
+/**
+ * The dots for the rows: the points sorted top to bottom and given to the rows
+ * in order (`ends` are the panel ends, top to bottom). Two lines can still
+ * cross when one dot is far left of the other; the left dot then moves level
+ * with the right one (same x, so their order at both ends agrees and they
+ * cannot cross). As a last resort every dot shares the rightmost x. Pure.
+ */
+function planLeaders(points, ends) {
+  const p = points.map((q) => ({ x: q.x, y: q.y })).sort((a, b) => a.y - b.y || a.x - b.x);
+  const crossing = () => {
+    for (let i = 0; i < p.length; i++) for (let j = i + 1; j < p.length; j++) {
+      if (segmentsCross(p[i], ends[i], p[j], ends[j])) return [i, j];
+    }
+    return null;
+  };
+  for (let n = 0; n < p.length * p.length; n++) {
+    const c = crossing();
+    if (!c) return p;
+    const [i, j] = c;
+    if (p[i].x < p[j].x) p[i].x = p[j].x; else p[j].x = p[i].x;
+  }
+  if (crossing()) { const x = Math.max(...p.map((q) => q.x)); for (const q of p) q.x = x; }
+  return p;
 }
 
 // ── PAPER GRAIN ──────────────────────────────────────────────────────────────
@@ -380,18 +430,49 @@ async function cutout(buffer, { mattes = [["imgly", imglyMatte], ["greyMatte", g
   return { png: null, method: "multiply", tried };
 }
 
+// ── THE PANEL'S CUT-OUTS AT ONE SCALE (owner go-live brief, 19 Oct) ────────
+// Every cut-out is trimmed to what it actually shows (alpha above THUMB_ALPHA,
+// so a faint halo cannot pad one product out), then fitted into the same box:
+// the thumbnail square less THUMB_PAD on every side, centred. Compact pieces
+// (a beanie, a bag) are held to THUMB_AREA of the box by area, so a square
+// item does not read twice the size of a long one.
+const THUMB_PAD = 0.08;
+const THUMB_AREA = 0.84;
+const THUMB_ALPHA = 24;
+async function alphaTrim(png) {
+  const sharp = require("sharp");
+  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const w = info.width, h = info.height;
+  let l = w, r = -1, t = h, b = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (data[(y * w + x) * 4 + 3] <= THUMB_ALPHA) continue;
+    if (x < l) l = x; if (x > r) r = x; if (y < t) t = y; if (y > b) b = y;
+  }
+  if (r < l || b < t) return { buffer: await sharp(png).ensureAlpha().png().toBuffer(), w, h };
+  const buffer = await sharp(png).ensureAlpha().extract({ left: l, top: t, width: r - l + 1, height: b - t + 1 }).png().toBuffer();
+  return { buffer, w: r - l + 1, h: b - t + 1 };
+}
+/** The size a w×h cut-out is drawn at inside a `size` box. Pure. */
+function thumbFit(w, h, size) {
+  const inner = size * (1 - 2 * THUMB_PAD);
+  const k = Math.min(inner / w, inner / h, (inner * THUMB_AREA) / Math.sqrt(w * h));
+  return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) };
+}
+
 async function thumbLayer(row, size) {
   const sharp = require("sharp");
   const c = row.cutout !== undefined ? row.cutout : (row.thumb ? await cutout(row.thumb) : { png: null });
   if (c && c.png) {
-    const fitted = await sharp(c.png).resize(size, size, { fit: "inside" }).png().toBuffer();
-    const m = await sharp(fitted).metadata();
-    return { input: fitted, dx: Math.round((size - m.width) / 2), dy: Math.round((size - m.height) / 2), method: c.method };
+    const t = await alphaTrim(c.png);
+    const fit = thumbFit(t.w, t.h, size);
+    const fitted = await sharp(t.buffer).resize(fit.w, fit.h, { fit: "fill", kernel: "lanczos3" }).png().toBuffer();
+    return { input: fitted, dx: Math.round((size - fit.w) / 2), dy: Math.round((size - fit.h) / 2), method: c.method };
   }
   if (!row.thumb) return null;
-  const fitted = await sharp(row.thumb).rotate().resize(size, size, { fit: "inside" }).flatten({ background: "#ffffff" }).png().toBuffer();
-  const m = await sharp(fitted).metadata();
-  return { input: fitted, dx: Math.round((size - m.width) / 2), dy: Math.round((size - m.height) / 2), blend: "multiply", method: "multiply" };
+  const meta = await sharp(row.thumb).rotate().metadata();
+  const fit = thumbFit(meta.width || size, meta.height || size, size);
+  const fitted = await sharp(row.thumb).rotate().resize(fit.w, fit.h, { fit: "fill" }).flatten({ background: "#ffffff" }).png().toBuffer();
+  return { input: fitted, dx: Math.round((size - fit.w) / 2), dy: Math.round((size - fit.h) / 2), blend: "multiply", method: "multiply" };
 }
 
 // ── THE LOCATE GRID ──────────────────────────────────────────────────────────
@@ -420,13 +501,13 @@ async function gridOverlay(buffer, grid) {
  * @param anchors   { slot: {x,y} } fractions of the GENERATED photograph
  * @param subject   { x, y } fraction: the model's centre / head, or null
  */
-async function renderCanvas({ hero, rows, total, anchors, subject, W, H, scale = RENDER_SCALE }) {
+async function renderCanvas({ hero, rows, total, anchors, subject, body = null, W, H, scale = RENDER_SCALE }) {
   const sharp = require("sharp");
   const meta = await sharp(hero).metadata();
   const heroW = Math.round(W * HERO_FRAC);
   // The layout is in design units (W x H); the pixels are design x scale.
   const PW = Math.round(W * scale), PH = Math.round(H * scale), pHeroW = Math.round(heroW * scale);
-  const frame = heroFrame(meta.width, meta.height, pHeroW, PH, subject && Number.isFinite(subject.x) ? subject.x : 0.58);
+  const frame = heroFrame(meta.width, meta.height, pHeroW, PH, subject && Number.isFinite(subject.x) ? subject.x : 0.58, 0.62, body);
   const heroBuf = await sharp(hero)
     .resize(frame.sw, frame.sh, { kernel: "lanczos3" })
     .extract({ left: frame.left, top: frame.top, width: pHeroW, height: PH })
@@ -460,7 +541,7 @@ async function renderCanvas({ hero, rows, total, anchors, subject, W, H, scale =
  * `rows[i].thumb` is the product photo buffer; the cut-out is made once per
  * thumbnail size used.
  */
-async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null, scale = RENDER_SCALE }) {
+async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null, body = null, scale = RENDER_SCALE }) {
   const sharp = require("sharp");
   if (!rows || !rows.length) throw new Error("renderLookbookPoster: no rows");
   const totalValue = rows.reduce((s, r) => s + r.price, 0);
@@ -474,8 +555,8 @@ async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null, 
     for (const size of sizes) thumbLayers[size] = await thumbLayer(row, size);
     return { ...row, thumbLayers };
   }));
-  const master = await renderCanvas({ hero, rows: prepared, total, anchors, subject, W: MASTER.w, H: MASTER.h, scale });
-  const feedNative = await renderCanvas({ hero, rows: prepared, total, anchors, subject, W: FEED_LAYOUT.w, H: FEED_LAYOUT.h, scale });
+  const master = await renderCanvas({ hero, rows: prepared, total, anchors, subject, body, W: MASTER.w, H: MASTER.h, scale });
+  const feedNative = await renderCanvas({ hero, rows: prepared, total, anchors, subject, body, W: FEED_LAYOUT.w, H: FEED_LAYOUT.h, scale });
   const feed = await sharp(feedNative.buffer).resize(FEED.w, FEED.h, { kernel: "lanczos3" }).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
   const storyH = Math.round(MASTER.h * (STORY.w / MASTER.w));
   const padTop = Math.floor((STORY.h - storyH) / 2);
@@ -491,10 +572,15 @@ async function renderLookbookPoster({ hero, rows, anchors = {}, subject = null, 
     total,
     cutouts: Object.fromEntries(prepared.map((r) => [r.slot, Object.values(r.thumbLayers)[0]?.method || "none"])),
     markW: master.built.markW,
+    // What the poster actually drew, for the gates and the report.
+    heroScale: { master: master.frame.scale, feed: feedNative.frame.scale },
+    leaders: { master: master.built.leaders, feed: feedNative.built.leaders },
+    thumbBoxes: master.built.thumbs,
   };
 }
 
 module.exports = {
   renderLookbookPoster, buildPosterSvg, panelLayout, heroFrame, cutout, gridOverlay,
+  planLeaders, segmentsCross, thumbFit, alphaTrim, THUMB_PAD,
   PAPER, HERO_FRAC, MASTER, FEED, FEED_LAYOUT, STORY, RENDER_SCALE,
 };

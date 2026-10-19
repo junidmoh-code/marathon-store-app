@@ -5487,8 +5487,10 @@ exports.socialDailyAutopilot = onSchedule(
 //   LOOKBOOK_ENABLED=false            drop "lookbook": current style every day
 //   STILL_FORMATS=["current","lookbook"]  the formats allowed; [] = no daily still
 //   LOOKBOOK_DAYS=["mon","wed","fri"] the lookbook's days; current the rest
-//   LOOKBOOK_SCENES=["concrete","garden"] the hero's locations, one per
-//                                     lookbook day in turn, the first on Mon 19 Oct 2026
+//   LOOKBOOK_SCENES=["concrete"]      the hero's locations, one per lookbook day in
+//                                     turn from Mon 19 Oct 2026; concrete only by
+//                                     default since go-live (["concrete","garden"]
+//                                     alternates)
 const socialLookbook = require("./lib/social-lookbook.cjs");
 const socialStill = require("./lib/social-still.cjs");
 const LOOKBOOK_ENABLED = process.env.LOOKBOOK_ENABLED !== "false";
