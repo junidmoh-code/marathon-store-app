@@ -71,6 +71,10 @@ const WALL_CSS = `
   /* The overlay sits on the bottom and GROWS UPWARD over the photo when a shoe
      has more sizes than two pill rows; past the full tile it scrolls inside. */
   .sw-ov{position:absolute;left:0;right:0;bottom:0;z-index:2;max-height:100%;overflow:auto;padding:30px 12px 10px;background:linear-gradient(180deg,rgba(0,0,0,0) 0%,rgba(0,0,0,.82) 30%,rgba(0,0,0,.92) 100%);display:flex;flex-direction:column;gap:7px}
+  /* A long size run (more than eight) tightens the overlay — one-line name,
+     less fade — so three pill rows still fit a 1280-wide tile (193px). */
+  .sw-ov.many{padding-top:14px;gap:6px}
+  .sw-ov.many .sw-name{-webkit-line-clamp:1}
   .sw-ovhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
   .sw-name{font-size:14px;font-weight:600;color:#fff;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .sw-price{font-size:18px;font-weight:800;color:#b9beff;white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -339,7 +343,7 @@ export function TileDetails({ p, sizeGate, onQuickAdd, onOpenDetails, onViewPhot
           </button>
         )}
       </div>
-      <div className="sw-ov">
+      <div className={sizesOf(p).length > 8 ? "sw-ov many" : "sw-ov"}>
         <div className="sw-ovhead">
           <div className="sw-name">{p.name}{isDeactivated(p) ? <span className="sw-dead">DEACTIVATED</span> : null}</div>
           {priced ? <div className="sw-price">{fmtR(p.retailPrice)}</div> : <div className="sw-price no">No price set</div>}
