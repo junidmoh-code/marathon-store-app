@@ -513,3 +513,35 @@ trigger discovery). Live check as a till account: `warm` answers `{ok:true}` in 
 4-letter typo → one `near` result, typed whole → `reference`. Till half live at marathon-pos-app
 `0c84633c` (#536). Reviews: CodeRabbit (1 docs nit, fixed) + Sonnet architect (M1 retry
 idempotency fixed) + Fable-vs-spec (digit floor added); provenance in a PR comment.
+
+## 2026-10-19 — EFT confirmer refuses any payment the bank dates before the cutoff (PR #765, live at `90debaa`)
+
+**The gap (Junid).** The fingerprint dedupe stops the SAME payment being confirmed
+twice; it cannot stop a payment the pool has NEVER seen — a genuine payment from
+weeks or months before the pool was live, whose proof of payment is forwarded in
+today for the first time. Not a replay, but stale money.
+
+**What's true now.** One more gate at the same decision point (DKIM → destination
+account → immediate → **dated on or after the cutoff** → fingerprint claim):
+`paymentDateVerdict` in `scripts/cardrecon/eftCore.mjs` refuses when the
+**bank's own printed payment date** (`parsed.bankTs` — Standard Bank "Payment
+date and time", FNB "Date Actioned", Capitec/Absa "Payment date"; the field the
+immediacy check reads) is before the cutoff day in SAST. The email's arrival
+time is never used and never a fallback; an unreadable bank date refuses. Outcome
+`refused-stale-date` in the owner-only `/eft_pool` quarantine, never spendable;
+Junid's verdict email says REJECTED — "Payment dated before the cutoff"
+("Payment date unreadable (cutoff check)" for a null date). Heartbeat carries
+`eftRefusedStale` and `eftPaymentDateCutoff`.
+
+**Config.** `EFT_PAYMENT_DATE_CUTOFF=YYYY-MM-DD` in `~/marathon-store-app/.env`;
+unset = **2026-10-20** (payments dated 2026-10-19 or earlier refuse). A non-date
+value holds every bank notification unread (warned each tick, heartbeat
+`"INVALID"`, slips unaffected) until fixed. Docs: docs/CARD-RECON.md.
+
+**Deploy.** Poller only — no Cloud Function, no hosting, no rules.
+`git pull --ff-only origin main` in `~/marathon-store-app` (live checkout moved
+`bf3c746` → `90debaa`); the next tick (20:42:31 SAST) wrote
+`eftPaymentDateCutoff: "2026-10-20"` to `/card_batch_poll_status` with
+`eftErrors: 0`. Reviews: CodeRabbit rate-limited (spending cap); Sonnet
+architect, Fable spec-conformance and a Sonnet CodeRabbit-substitute pass —
+provenance in the PR comment.
