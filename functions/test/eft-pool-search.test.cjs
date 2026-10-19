@@ -24,7 +24,7 @@ const assert = require("node:assert/strict");
 
 const {
   publicEftView, payerInitials, searchPlan, searchEftPool, osaDistance, matchOf, editsAllowed,
-  EFT_SEARCH_LIMIT, EFT_MIN_QUERY, PREFIX_MIN_LENGTH, NEAR_MISS_MIN_LENGTH, NEAR_MISS_TWO_EDITS_LENGTH, BANK_PREFIX_MIN_LENGTH,
+  EFT_SEARCH_LIMIT, EFT_MIN_QUERY, PREFIX_MIN_LENGTH, DIGITS_FORGIVING_MIN_LENGTH, NEAR_MISS_MIN_LENGTH, NEAR_MISS_TWO_EDITS_LENGTH, BANK_PREFIX_MIN_LENGTH,
 } = require("../lib/eft-pool.cjs");
 
 // A recorded pool record exactly as eftCore.mjs's eftPoolRecord stores it
@@ -124,9 +124,15 @@ test("an amount never finds a payment — not bare, not with R, not with cents",
   }
 });
 
-test("digits find a payment as the START of its reference or bank id — never as an amount", () => {
+test("digits find a payment as the START of its reference or bank id — from FIVE digits, never as an amount", () => {
   const pool = { a: recorded({ reference: "0821234567", bankRef: "4140542552", amountCents: 55000 }) };
-  assert.deepEqual(keys(pool, "082"), ["a"], "three digits typed: the one reference that starts so");
+  // A phone number used as the reference is the PII case: three or four
+  // digits never guess at it (spec review, 19 Oct 2026).
+  assert.deepEqual(keys(pool, "082"), [], "three digits: nothing");
+  assert.deepEqual(keys(pool, "0821"), [], "four digits: nothing");
+  assert.deepEqual(keys(pool, "08212"), ["a"], "five digits: the one reference that starts so");
+  assert.deepEqual(keys(pool, "08213"), ["a"], "five digits, one slip");
+  assert.equal(DIGITS_FORGIVING_MIN_LENGTH, 5);
   assert.deepEqual(keys(pool, "0821234"), ["a"]);
   assert.deepEqual(keys(pool, "082 123 4567"), ["a"]);
   assert.deepEqual(keys(pool, "4140542552"), ["a"]);

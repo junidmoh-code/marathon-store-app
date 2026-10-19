@@ -82,6 +82,11 @@ const EFT_MIN_QUERY = 3;
 //   ≥ 10 two edits on a long reference
 //   ≥ 6  the typed text as the start of the bank's transaction id (never a typo)
 const PREFIX_MIN_LENGTH = EFT_MIN_QUERY;
+// An ALL-DIGIT query (a phone number used as the reference — the PII case) is
+// matched forgivingly only from five digits: "0821" would otherwise hand back
+// the one 0821… number in the window. Exact and bank-id matching unchanged.
+// (Spec review, 19 Oct 2026.)
+const DIGITS_FORGIVING_MIN_LENGTH = 5;
 const NEAR_MISS_MIN_LENGTH = 4;
 const NEAR_MISS_TWO_EDITS_LENGTH = 10;
 const BANK_PREFIX_MIN_LENGTH = 6;
@@ -226,6 +231,12 @@ function matchOf(record, plan) {
   const bank = normaliseText(record.bankRef);
   if (ref && ref === q) return "reference";
   if (bank && bank === q) return "bankRef";
+  if (/^[0-9]+$/.test(q) && q.length < DIGITS_FORGIVING_MIN_LENGTH) {
+    // Digits only, too few of them: the bank id's own prefix rule still
+    // applies below (six or more), the reference is not guessed at.
+    if (bank && q.length >= BANK_PREFIX_MIN_LENGTH && bank.startsWith(q)) return "bankPrefix";
+    return null;
+  }
   if (ref && q.length >= PREFIX_MIN_LENGTH && ref.startsWith(q)) return "prefix";
   if (bank && q.length >= BANK_PREFIX_MIN_LENGTH && bank.startsWith(q)) return "bankPrefix";
   const k = editsAllowed(q.length);
@@ -338,6 +349,7 @@ module.exports = {
   EFT_SEARCH_LIMIT,
   EFT_MIN_QUERY,
   PREFIX_MIN_LENGTH,
+  DIGITS_FORGIVING_MIN_LENGTH,
   NEAR_MISS_MIN_LENGTH,
   NEAR_MISS_TWO_EDITS_LENGTH,
   BANK_PREFIX_MIN_LENGTH,

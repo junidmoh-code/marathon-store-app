@@ -143,6 +143,15 @@ The till half (marathon-pos-app) ships after it: an older till keeps working
 against the new functions (the old flow always sends a customer); the new till
 needs the new `warm` action and the customer-less settle.
 
+**Spec review (19 Oct 2026):** an all-digit query — a phone number used as
+the reference, the PII case — is matched forgivingly only from five digits;
+three or four digits return nothing. A whole-payment one-tap on exact cover
+with a customer already on the sale stamps `customerConfirmed: true` without a
+separate "yes, this is X's" step (nothing is left over; no credit is minted).
+Residual risk accepted with the spec: "never the WRONG payment" is enforced
+as uniqueness within the pool plus the cashier's check against the proof of
+payment, not as proof of ownership — as it always was.
+
 **Decided against the architect review (19 Oct 2026), on record.** (a) A
 customer-less whole-payment settle accepts a *forgiving* match (prefix or typo)
 as long as it resolves to one payment: Junid's spec is that "HAFF" surfaces

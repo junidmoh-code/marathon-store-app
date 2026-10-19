@@ -37,11 +37,16 @@ test("a prefix two customers share lists nobody; a name is never a key", () => {
     const out = searchEftPool(POOL, q);
     assert.deepEqual(out.results, [], `"${q}" must not list payments`);
   }
-  // "082" starts two references: nothing, and the till is told to keep typing.
-  assert.equal(searchEftPool(POOL, "082").partial, true);
-  // One more digit settles which — and still at most that one payment, as
-  // initials (Junid, 19 Oct 2026: forgiving on spelling, never on which).
-  const out = searchEftPool(POOL, "0821");
+  // Digits are matched forgivingly only from five: "082" and "0821" are
+  // nothing at all (a phone number is the PII case). "08212" starts exactly
+  // one reference — and still at most that one payment, as initials (Junid,
+  // 19 Oct 2026: forgiving on spelling, never on which).
+  assert.deepEqual(searchEftPool(POOL, "0821").results, []);
+  assert.equal(searchEftPool(POOL, "0821").partial, undefined);
+  assert.equal(searchEftPool(POOL, "08212").results.length, 1);
+  // Five digits two references share: nothing, keep typing.
+  assert.equal(searchEftPool({ ...POOL, k7: pay({ reference: "0821299999", bankRef: "Q7", at: 9 }) }, "08212").partial, true);
+  const out = searchEftPool(POOL, "08212");
   assert.equal(out.results.length, 1);
   assert.equal(out.results[0].key, "k2");
   assert.deepEqual(leakedNames(out), []);
