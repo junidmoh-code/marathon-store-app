@@ -77,6 +77,10 @@ describe("classify", () => {
   });
   it("thumbnails never count as a product's photo", () => {
     expect(ownerPidOf("products/p1/thumb_300.webp")).toBe("p1");
+    expect(ownerPidOf("products/_intake/009605100/p1792064556733.jpg")).toBe("p1792064556733");
+    expect(ownerPidOf("products/_other/x.jpg")).toBeNull();
+    const o = buildOwnersByMd5([{ name: "products/_intake/c/p1.jpg", md5Hash: "I" }, { name: "products/p1/photo.jpg", md5Hash: "I" }]);
+    expect([...o.get("I")]).toEqual(["p1"]); // its own intake copy is not "another product"
     expect(owners.get("T")).toBeUndefined();
   });
 });

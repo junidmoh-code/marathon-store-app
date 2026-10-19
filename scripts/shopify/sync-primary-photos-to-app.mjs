@@ -7,7 +7,7 @@
 //
 //   node scripts/shopify/sync-primary-photos-to-app.mjs            # dry run (default)
 //   node scripts/shopify/sync-primary-photos-to-app.mjs --commit   # apply
-//   … --pid=p123 (one product)  --limit=N  --concurrency=4
+//   … --pid=p123 (one product)  --limit=N  --concurrency=8  --report=rows.jsonl
 //
 // Walks /shopify_publish KEYS shallowly; per product reads only media/photos
 // and the product's photoUrl/photoUrlOriginal/photoSource. One listing of
@@ -20,6 +20,7 @@
 // product, so an interrupted run keeps its ledger); undo with
 // rollback-primary-photo-sync.mjs. No photo object is ever deleted or
 // overwritten: the old app photo stays where it is.
+import { writeFileSync } from "node:fs";
 import { runSync, buildOwnersByMd5 } from "./primaryPhotoSync.mjs";
 import { initAdmin, shallowKeys, serverClock, md5Reader, listProductObjects, readers, thumbRebuilder,
          productWriter, openLedger, ledgerPath } from "./primaryPhotoNode.mjs";
@@ -28,7 +29,8 @@ const argv = process.argv.slice(2);
 const COMMIT = argv.includes("--commit");
 const arg = (k) => argv.find((a) => a.startsWith(`--${k}=`))?.split("=")[1];
 const LIMIT = Number(arg("limit")) || Infinity;
-const CONCURRENCY = Number(arg("concurrency")) || 4;
+const CONCURRENCY = Number(arg("concurrency")) || 8;
+const REPORT = arg("report") || null; // every product's verdict as JSON lines
 const ONLY = arg("pid") || null;
 const SHARED_STOP = 10;
 
@@ -62,6 +64,7 @@ const { counts, rows } = await runSync(pids, { ...readers(db), md5Of: md5Reader(
   },
 });
 
+if (REPORT) writeFileSync(REPORT, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
 console.log("\n── summary ──");
 console.log(`mode:                ${COMMIT ? "COMMIT" : "DRY RUN (nothing written)"}`);
 console.log(`total nodes:         ${counts.total}`);

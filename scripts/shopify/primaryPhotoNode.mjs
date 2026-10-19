@@ -55,10 +55,11 @@ export function md5Reader(bucket) {
   };
 }
 
-/** md5 → owners, from ONE listing of products/ (names and hashes only). */
+/** Every object under products/ as { name, md5Hash } — ONE paged listing. */
 export async function listProductObjects(bucket) {
   const out = [];
-  let q = { prefix: "products/", maxResults: 1000, autoPaginate: false, fields: "items(name,md5Hash),nextPageToken" };
+  // No `fields` filter: with one, the SDK hands back Files with no metadata (md5 lost).
+  let q = { prefix: "products/", maxResults: 1000, autoPaginate: false };
   while (q) {
     const [files, next] = await bucket.getFiles(q);
     for (const f of files) out.push({ name: f.name, md5Hash: f.metadata?.md5Hash || null });

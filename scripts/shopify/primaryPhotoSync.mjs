@@ -13,8 +13,18 @@
 import { setShopifyPrimaryPhoto, storedPrimaryOf, objectPathOf } from "../../src/components/shopify/primaryPhotoCore.js";
 import { APP_STORAGE_PREFIX } from "../../src/components/shopify/publishShared.js";
 
-/** The product folder an object lives in (products/{pid}/…), or null. */
-export const ownerPidOf = (path) => /^products\/([^/]+)\//.exec(String(path || ""))?.[1] ?? null;
+/**
+ * The product an object belongs to, or null: products/{pid}/…, or an intake
+ * capture products/_intake/{code}/{pid}.jpg (named by the product). Any other
+ * "_" folder is not a product.
+ */
+export function ownerPidOf(path) {
+  const p = String(path || "");
+  const intake = /^products\/_intake\/[^/]+\/([A-Za-z0-9-]+)\.[a-z0-9]+$/i.exec(p);
+  if (intake) return intake[1];
+  const m = /^products\/([^/_][^/]*)\//.exec(p);
+  return m ? m[1] : null;
+}
 
 // Objects that are never "a product's photo": derived thumbnails.
 const isThumb = (path) => /\/thumb_[^/]*$/.test(path);
