@@ -3,7 +3,7 @@
 // that AssistantView's one search path actually calls it.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { buildBrandIndex, matchBrandQuery, productInBrand } from "./brandSearch";
+import { buildBrandIndex, matchBrandQuery, productInBrand, brandResults } from "./brandSearch";
 
 const P = [
   { id: "1", name: "Air Force 1 Low QS Kobe Yellow", brand: "Nike" },
@@ -48,6 +48,18 @@ describe("productInBrand", () => {
   it("filtering the catalogue by a typed brand returns that brand only", () => {
     const bq = matchBrandQuery(index, "Nike");
     expect(P.filter(p => productInBrand(p, bq.key)).map(p => p.id)).toEqual(["1"]);
+  });
+});
+
+describe("brandResults — the brand first, then names that carry it", () => {
+  it("a Jordan-filed 'Nike Air Jordan' still answers 'nike', after the Nike-branded ones", () => {
+    const pool = [...P, { id: "6", name: "Nike Air Jordan 1 Mid", brand: "Jordan" }];
+    expect(brandResults(pool, "nike").map(p => p.id)).toEqual(["1", "6"]);
+  });
+  it("a two-letter brand on its own does not hijack a name search", () => {
+    const idx = buildBrandIndex([{ name: "Cloud 5", brand: "On" }]);
+    expect(matchBrandQuery(idx, "on")).toBeNull();
+    expect(matchBrandQuery(idx, "on cloud")).toEqual({ key: "on", rest: "cloud" });
   });
 });
 

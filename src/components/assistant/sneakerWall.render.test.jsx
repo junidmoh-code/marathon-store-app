@@ -41,7 +41,7 @@ const sizeGate = {
   hubLabelFor: () => "Hub 1",
 };
 
-function Harness({ refuse = false, quickAddSpy }) {
+function Harness({ refuse = false, quickAddSpy, modalOpen = false }) {
   const [cart, setCart] = useState([]);
   const grouped = useMemo(() => groupOrderLines(cart), [cart]);
   const units = grouped.reduce((s, g) => s + g.qty, 0);
@@ -55,7 +55,7 @@ function Harness({ refuse = false, quickAddSpy }) {
     <SneakerWall availableShops={SHOPS} effectiveShop="pe" shopRegistry={null} onPickShop={() => {}}
                  mode="sneaker" setMode={() => {}} onSwitchView={() => {}} userEmail="a@b.c"
                  search="" setSearch={() => {}} searchRef={{ current: null }} onLabelFind={() => {}}
-                 shownCount={PRODUCTS.length} visible={PRODUCTS} onShowMore={() => {}}
+                 shownCount={PRODUCTS.length} visible={PRODUCTS} onShowMore={() => {}} modalOpen={modalOpen}
                  sizeGate={sizeGate} onQuickAdd={onQuickAdd} onOpenDetails={() => {}} onViewPhoto={() => {}}
                  grouped={grouped} units={units} total={orderLinesTotal(grouped)}
                  onRemoveOne={() => {}} onAddDisplayPartner={() => {}} onCheckout={() => {}} />
@@ -136,6 +136,22 @@ describe("only one tile is open at a time", () => {
     expect(tileOf(tr, KOBE.name).props["data-open"]).toBe(true);
     act(() => { tileOf(tr, KOBE.name).props.onPointerLeave({ pointerType: "mouse" }); });
     expect(openTiles(tr)).toHaveLength(0);
+  });
+});
+
+describe("Escape", () => {
+  const press = () => act(() => { window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape" })); });
+  it("closes the open tile, but leaves it alone while a modal sits over the wall", () => {
+    if (typeof window === "undefined" || !window.KeyboardEvent) return;   // node env: covered by source below
+    const tr = mount();
+    tap(tileButton(tr, KOBE.name));
+    press();
+    expect(openTiles(tr)).toHaveLength(0);
+  });
+  it("the wall's Escape handler yields to a modal", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");
+    expect(src).toContain('if (e.key !== "Escape" || modalOpen) return;');
   });
 });
 

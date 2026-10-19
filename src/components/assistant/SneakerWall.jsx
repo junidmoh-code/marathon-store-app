@@ -18,7 +18,7 @@
 // opened it. A mouse opens it on hover. One tile is open at a time, and a
 // tap anywhere outside it closes it.
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { MirroredImg } from "../../offline/MirroredImg.jsx";
 import { labelFor } from "../stock/locations";
 import { isDeactivated } from "../../utils/deactivation";
@@ -51,19 +51,22 @@ const WALL_CSS = `
   .sw-badge{display:flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 7px;border-radius:13px;background:#fff;color:#3a40c7;font-size:14px}
   .sw-scroll{position:relative;flex:1;min-height:0;overflow:auto;padding:0 24px 24px}
   .sw-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+  /* Below ~1180px (iPad landscape) four tiles are too narrow for the overlay:
+     a 12-size shoe's pills would push the name off the top. Three columns. */
+  @media(max-width:1180px){.sw-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
   /* 9:10 tiles — two full rows on the 1440×900 terminal, as in the artboard.
      cover (Junid's spec) trims a 600×800 portrait ~17% top-and-bottom and a
      square studio photo ~10% at the sides; the whole shoe is one tap away in
      the enlarge view. content-visibility skips paint for rows scrolled away —
      the till's UHD 600 is why the old grid needed it. */
-  .sw-tile{position:relative;aspect-ratio:9/10;border-radius:18px;overflow:hidden;background:#1a1a1e;content-visibility:auto;contain-intrinsic-size:auto 420px}
+  .sw-tile{position:relative;aspect-ratio:9/10;border-radius:18px;overflow:hidden;background:#1a1a1e;content-visibility:auto;contain-intrinsic-size:auto 375px}
   .sw-tile::after{content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;z-index:3;box-shadow:inset 0 0 0 3px transparent;transition:box-shadow .12s}
   .sw-tile[data-open="true"]::after{box-shadow:inset 0 0 0 3px #5b63ff}
   .sw-tbtn{position:absolute;inset:0;width:100%;height:100%;padding:0;border:0;background:transparent;cursor:pointer;display:block;border-radius:18px}
   .sw-tbtn img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .2s}
   .sw-tbtn img.ok{opacity:1}
   .sw-noimg{position:absolute;inset:0;display:grid;place-items:center;padding:18px;text-align:center;color:#6e6e78;font-size:14px;font-weight:600;line-height:1.3}
-  .sw-ov{position:absolute;left:0;right:0;bottom:0;z-index:2;padding:70px 16px 14px;background:linear-gradient(180deg,rgba(0,0,0,0) 0%,rgba(0,0,0,.82) 45%,rgba(0,0,0,.92) 100%);display:flex;flex-direction:column;gap:10px}
+  .sw-ov{position:absolute;left:0;right:0;bottom:0;z-index:2;max-height:100%;overflow:auto;padding:70px 16px 14px;background:linear-gradient(180deg,rgba(0,0,0,0) 0%,rgba(0,0,0,.82) 45%,rgba(0,0,0,.92) 100%);display:flex;flex-direction:column;gap:10px}
   .sw-ovhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
   .sw-name{font-size:16px;font-weight:600;color:#fff;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .sw-price{font-size:20px;font-weight:800;color:#b9beff;white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -107,7 +110,7 @@ export default function SneakerWall({
   availableShops, effectiveShop, shopRegistry, onPickShop,
   mode, setMode, onSwitchView, userEmail,
   search, setSearch, searchRef, onLabelFind,
-  shownCount, visible, onShowMore,
+  shownCount, visible, onShowMore, modalOpen = false,
   sizeGate, onQuickAdd, onOpenDetails, onViewPhoto, renderTileActions,
   grouped, units, total, onRemoveOne, onAddDisplayPartner, onCheckout,
 }) {
@@ -116,6 +119,21 @@ export default function SneakerWall({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const openTileRef = useRef(null);
   const menuRef = useRef(null);
+  const scrollRef = useRef(null);
+  const drawerCloseRef = useRef(null);
+  const pillRef = useRef(null);
+
+  // A new result set starts at the top — the cap resets to one page, and a
+  // scrolled-down wall would otherwise land on empty space.
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [shownCount, search]);
+
+  // The drawer takes focus on open and hands it back to the pill on close.
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (drawerOpen) drawerCloseRef.current?.focus?.();
+    else if (wasOpen.current) pillRef.current?.focus?.();
+    wasOpen.current = drawerOpen;
+  }, [drawerOpen]);
 
   // A new result set closes the overlay only when its tile left the wall — a
   // live stock update re-renders the list and must not shut it mid-tap.
@@ -140,14 +158,14 @@ export default function SneakerWall({
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
     const h = (e) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || modalOpen) return;
       if (menuOpen) setMenuOpen(false);
       else if (openId) setOpenId(null);
       else if (drawerOpen) setDrawerOpen(false);
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [menuOpen, openId, drawerOpen]);
+  }, [menuOpen, openId, drawerOpen, modalOpen]);
 
   const pickMenu = (fn) => { setMenuOpen(false); fn(); };
 
@@ -161,15 +179,15 @@ export default function SneakerWall({
         <div className="sw-side">
           <div className="sw-menuwrap" ref={menuRef}>
             <button type="button" className="sw-more" aria-label="More: order type and switch view"
-                    aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(v => !v)}>
+                    aria-expanded={menuOpen} onClick={() => setMenuOpen(v => !v)}>
               <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
             </button>
             {menuOpen && (
-              <div className="sw-menu" role="menu">
+              <div className="sw-menu">
                 {userEmail ? <div className="who">{userEmail.split("@")[0]} · Store assistant</div> : null}
-                <button type="button" role="menuitem" aria-current={mode === "sneaker"} onClick={() => pickMenu(() => setMode("sneaker"))}>Sneaker order</button>
-                <button type="button" role="menuitem" aria-current={mode === "clothing"} onClick={() => pickMenu(() => setMode("clothing"))}>Clothing order</button>
-                <button type="button" role="menuitem" onClick={() => pickMenu(onSwitchView)}>Switch view</button>
+                <button type="button" aria-current={mode === "sneaker"} onClick={() => pickMenu(() => setMode("sneaker"))}>Sneaker order</button>
+                <button type="button" aria-current={mode === "clothing"} onClick={() => pickMenu(() => setMode("clothing"))}>Clothing order</button>
+                <button type="button" onClick={() => pickMenu(onSwitchView)}>Switch view</button>
               </div>
             )}
           </div>
@@ -193,7 +211,7 @@ export default function SneakerWall({
         </label>
 
         <div className="sw-side r">
-          <button type="button" className="sw-pill" onClick={() => setDrawerOpen(true)}
+          <button type="button" ref={pillRef} className="sw-pill" onClick={() => setDrawerOpen(true)}
                   aria-label={`Order: ${units} item${units !== 1 ? "s" : ""}, ${fmtR(total)}`}>
             <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 4h2l2.4 11.2a1 1 0 0 0 1 .8h9.6a1 1 0 0 0 1-.8L21 8H6"/><circle cx="9.5" cy="20" r="1.3"/><circle cx="17.5" cy="20" r="1.3"/></svg>
             <span className="sw-badge" data-testid="order-count">{units}</span>
@@ -203,27 +221,16 @@ export default function SneakerWall({
       </div>
 
       {/* THE WALL */}
-      <div className="sw-scroll">
+      <div className="sw-scroll" ref={scrollRef}>
         {shownCount === 0 ? (
           <div className="sw-empty">No products match.</div>
         ) : (
           <div className="sw-grid">
-            {visible.map(p => {
-              const open = openId === p.id;
-              return (
-                <div key={p.id} className="sw-tile" data-open={open} ref={open ? openTileRef : undefined}
-                     onPointerEnter={e => { if (e.pointerType === "mouse") setOpenId(p.id); }}
-                     onPointerLeave={e => { if (e.pointerType === "mouse") setOpenId(id => (id === p.id ? null : id)); }}>
-                  <button type="button" className="sw-tbtn" aria-label={p.name} aria-expanded={open}
-                          onFocus={() => setOpenId(p.id)} onClick={() => setOpenId(p.id)}>
-                    <TilePhoto p={p} />
-                  </button>
-                  {open && <TileDetails p={p} sizeGate={sizeGate} onQuickAdd={onQuickAdd}
-                                        onOpenDetails={onOpenDetails} onViewPhoto={onViewPhoto}
-                                        renderTileActions={renderTileActions} />}
-                </div>
-              );
-            })}
+            {visible.map(p => (
+              <WallTile key={p.id} p={p} open={openId === p.id} tileRef={openId === p.id ? openTileRef : undefined}
+                        setOpenId={setOpenId} sizeGate={sizeGate} onQuickAdd={onQuickAdd}
+                        onOpenDetails={onOpenDetails} onViewPhoto={onViewPhoto} renderTileActions={renderTileActions} />
+            ))}
           </div>
         )}
         {shownCount > 0 && (
@@ -243,7 +250,7 @@ export default function SneakerWall({
           <aside className="sw-drawer" role="dialog" aria-modal="true" aria-label="Order">
             <div className="sw-dhead">
               <h2>Order</h2><span className="ad-dn">{units}</span>
-              <button type="button" className="sw-dclose" onClick={() => setDrawerOpen(false)} aria-label="Close order">✕</button>
+              <button type="button" ref={drawerCloseRef} className="sw-dclose" onClick={() => setDrawerOpen(false)} aria-label="Close order">✕</button>
             </div>
             <div className="ad-dbody">
               <OrderLinesPanel grouped={grouped} units={units} onRemoveOne={onRemoveOne} onQuickAdd={onQuickAdd}
@@ -256,6 +263,24 @@ export default function SneakerWall({
     </div>
   );
 }
+
+// One tile. Memoised: opening or hovering a tile changes `open` for two tiles
+// only, so the other fifty-eight skip their render on the till.
+const WallTile = memo(function WallTile({ p, open, tileRef, setOpenId, sizeGate, onQuickAdd, onOpenDetails, onViewPhoto, renderTileActions }) {
+  return (
+    <div className="sw-tile" data-open={open} ref={tileRef}
+         onPointerEnter={e => { if (e.pointerType === "mouse") setOpenId(p.id); }}
+         onPointerLeave={e => { if (e.pointerType === "mouse") setOpenId(id => (id === p.id ? null : id)); }}>
+      <button type="button" className="sw-tbtn" aria-label={p.name} aria-expanded={open}
+              onFocus={() => setOpenId(p.id)} onClick={() => setOpenId(p.id)}>
+        <TilePhoto key={p.photoUrl || ""} p={p} />
+      </button>
+      {open && <TileDetails p={p} sizeGate={sizeGate} onQuickAdd={onQuickAdd}
+                            onOpenDetails={onOpenDetails} onViewPhoto={onViewPhoto}
+                            renderTileActions={renderTileActions} />}
+    </div>
+  );
+});
 
 // The overlay on the one open tile: name, price, size pills, and the two
 // affordances that used to live on the resting card (photo zoom, and the full

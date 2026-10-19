@@ -28,20 +28,41 @@ export function buildBrandIndex(products) {
 // The brand a query names, and what is left of the query after it — or null
 // when the query does not start with a known brand. The brand must be the
 // whole query or be followed by a space: "nikes" is a name search, not Nike.
+// A two-letter brand ("On", "DC") only counts with more typed after it — on
+// its own it would hijack every two-letter name search.
 export function matchBrandQuery(index, q) {
   const ql = norm(q);
   if (!ql) return null;
   for (const key of index || []) {
-    if (ql === key) return { key, rest: "" };
+    if (ql === key && key.length >= 3) return { key, rest: "" };
     if (ql.startsWith(key + " ")) return { key, rest: ql.slice(key.length + 1) };
   }
   return null;
 }
 
+// The brand as a whole word of a product's name — one RegExp per query.
+export function brandWordTest(key) {
+  const re = new RegExp(`(^|[^a-z0-9])${escapeRe(key)}([^a-z0-9]|$)`);
+  return (p) => re.test(norm(p?.name));
+}
+
 // Does this product belong to the brand? Its own brand field, or — only when
 // it has none — the brand as a whole word of its name.
-export function productInBrand(p, key) {
+export function productInBrand(p, key, nameHas = brandWordTest(key)) {
   const own = norm(p?.brand);
   if (own) return own === key;
-  return new RegExp(`(^|[^a-z0-9])${escapeRe(key)}([^a-z0-9]|$)`).test(norm(p?.name));
+  return nameHas(p);
+}
+
+// What a typed brand returns: the brand's products first, then any other
+// product whose NAME carries the brand as a word ("Nike Air Jordan 1" filed
+// under Jordan still answers "nike", as it did through Fuse before).
+export function brandResults(pool, key) {
+  const nameHas = brandWordTest(key);
+  const own = [], named = [];
+  for (const p of pool || []) {
+    if (productInBrand(p, key, nameHas)) own.push(p);
+    else if (nameHas(p)) named.push(p);
+  }
+  return [...own, ...named];
 }

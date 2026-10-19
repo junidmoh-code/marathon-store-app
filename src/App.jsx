@@ -127,7 +127,7 @@ import { hasStockAccess } from "./components/stock/stockAccess";
 import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SneakerWall from "./components/assistant/SneakerWall.jsx";
-import { buildBrandIndex, matchBrandQuery, productInBrand } from "./components/assistant/brandSearch";
+import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
 import { answerStyleCodeSibling, recordLabelCodes } from "./components/stock/hubCleanupStore";
 import { extractDominantColours } from "./utils/dominantColours";
@@ -8675,7 +8675,12 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // clothing catalog with live per-size availability at the serving CR hub
   // (hubQty/servingHubLabel from AssistantView) greying out zero-stock sizes.
   const clothingOrder = mode === "clothing";
-  const sizeGate = { clothingOrder, hubQty, sneakerOut, sneakerOutWhy, sneakerDisplayInfo, deadForOrder, hubLabelFor };
+  // Memoised: the wall's tiles are React.memo, and a fresh gate object every
+  // render would redraw all sixty on each hover.
+  const sizeGate = useMemo(
+    () => ({ clothingOrder, hubQty, sneakerOut, sneakerOutWhy, sneakerDisplayInfo, deadForOrder, hubLabelFor }),
+    // hubLabelFor is derived from the last two.
+    [clothingOrder, hubQty, sneakerOut, sneakerOutWhy, sneakerDisplayInfo, deadForOrder, clothingHubLabelOf, servingHubLabel]);
   // Cart units of a clothing product+size — mirrors AssistantView's helper so
   // the quick-view can explain adds blocked by cart-vs-hub availability.
   const clothingInCart = (pid, size) =>
@@ -8792,6 +8797,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // order and the CR fallback keep the three-pane layout below, untouched.
   // Both share this root's quick-view, checkout and shop-switch confirm.
   const wall = mode === "sneaker";
+  // Stable callbacks for the wall's memoised tiles.
+  const wallViewPhoto = useCallback(p => onViewPhoto(productPhotos(p)), [onViewPhoto]);
+  const wallTileActions = useCallback(p => <ProductActionsButton product={p} products={products} />, [products]);
 
   return (
     <div className={wall ? "ad-root ad-root--wall" : "ad-root"}>
@@ -8918,11 +8926,14 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           mode={mode} setMode={setMode} onSwitchView={onSwitchView} userEmail={userEmail}
           search={search} setSearch={setSearch} searchRef={searchRef} onLabelFind={onLabelFind}
           shownCount={shown.length} visible={visible} onShowMore={showMore}
+          // A modal over the wall (quick-view, checkout, shop switch) owns
+          // Escape; the wall leaves its tile/drawer alone underneath it.
+          modalOpen={!!qv || coOpen || !!pendingShop}
           sizeGate={sizeGate} onQuickAdd={onQuickAdd} onOpenDetails={openQv}
-          onViewPhoto={p => onViewPhoto(productPhotos(p))}
+          onViewPhoto={wallViewPhoto}
           // Deactivate / reactivate / merge (owner spec 2026-08-31) moved from
           // the resting card into the open tile. Renders nothing for a non-admin.
-          renderTileActions={p => <ProductActionsButton product={p} products={products} />}
+          renderTileActions={wallTileActions}
           grouped={grouped} units={units} total={total}
           onRemoveOne={onRemoveOne} onAddDisplayPartner={onAddDisplayPartner}
           onCheckout={() => setCoOpen(true)} />
@@ -10063,11 +10074,12 @@ function AssistantView({ products, onExit, orders = [] }) {
     // narrows to that brand; whatever follows the brand searches within it.
     const bq = matchBrandQuery(brandIndex, q);
     if (bq) {
-      const inBrand = (p) => productInBrand(p, bq.key);
-      if (!bq.rest) return merge(base.filter(inBrand));
+      const pool = brandResults(base, bq.key);
+      if (!bq.rest) return merge(pool);
+      const inPool = new Set(pool.map(p => p.id));
       if (bq.rest.length < 2)
-        return merge(base.filter(p => inBrand(p) && p.name.toLowerCase().includes(bq.rest)));
-      return merge(fuse.search(bq.rest).map(r => r.item).filter(inBrand));
+        return merge(pool.filter(p => p.name.toLowerCase().includes(bq.rest)));
+      return merge(fuse.search(bq.rest).map(r => r.item).filter(p => inPool.has(p.id)));
     }
     // 1-char queries: Fuse's minMatchCharLength would return nothing, so fall
     // back to a plain case-insensitive substring match for the first letter.
