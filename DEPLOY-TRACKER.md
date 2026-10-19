@@ -498,7 +498,8 @@ calls when the payment screen opens, plus one read round for the settle (7 → 4
 round trips) and the attach (6 → 4/3). `test/eft-pool-latency.test.cjs` counts them.
 
 **What's true now.** `searchEftPool` matches the reference as it is typed (prefix from 3,
-one typo from 4, two from 10; bank id whole or 6+ prefix, never a typo) and still answers
+one typo from 4, two from 10 — an ALL-DIGIT query, a phone number as the reference, only
+from 5 digits; bank id whole or 6+ prefix, never a typo) and still answers
 at most ONE payment — two candidates at the best rank present → `ambiguous` (+`partial`
 when more typing would settle it). A settle with no customer is accepted only for a payment
 consumed WHOLE whose `matchQuery` re-resolves to that very record (`not-matched` /
