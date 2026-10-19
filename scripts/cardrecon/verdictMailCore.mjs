@@ -74,6 +74,7 @@ const CHECKS = {
   "refused-parse": "Unreadable notification",
   "refused-account": "Wrong destination account",
   "refused-not-immediate": "Not an immediate (real-time) payment",
+  "refused-stale-date": "Payment dated before the cutoff",
   "held-duplicate": "Duplicate — bank transaction id already seen",
   "held-no-bankref": "No bank transaction id",
 };
@@ -104,7 +105,7 @@ export function failedCheck(record) {
 /** Plain-English deciding reason: one line, account digits struck out. */
 export function decidingReason(record) {
   if (eftVerdict(record) === "APPROVED") {
-    return "All checks passed — genuine bank signature (DKIM), paid into the shop's own account, an immediate payment, and a bank transaction id not seen before. It is now a spendable payment in the pool.";
+    return "All checks passed — genuine bank signature (DKIM), paid into the shop's own account, an immediate payment, dated by the bank on or after the cutoff, and a bank transaction id not seen before. It is now a spendable payment in the pool.";
   }
   const why = oneLine(redactAccountDigits(String(record?.reason ?? "")), 600);
   return why ? `${failedCheck(record)}: ${why}` : failedCheck(record);
@@ -191,6 +192,8 @@ export function verdictMail(record, { poolKey } = {}) {
     ["Bank transaction id", maskIdentifier(record?.bankRef)],
     ["Payment type", sweep(record?.paymentType, 60)],
     ["Bank's timestamp", formatSast(record?.bankTs)],
+    // Fix 8: the configured cutoff this payment's bank date failed.
+    ["Payment-date cutoff", record?.cutoff ? oneLine(record.cutoff, 20) : null],
     ["Notification arrived", formatSast(record?.receivedAt)],
     ["Decided", formatSast(record?.at)],
     ["Sender", sweep(record?.from, 120)],

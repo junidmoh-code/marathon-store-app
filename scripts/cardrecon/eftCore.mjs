@@ -659,6 +659,77 @@ export function immediacyVerdict({ parsed, reader, receivedAt }) {
   };
 }
 
+// ─── THE EFFECTIVE-DATE CUTOFF: NO PAYMENT DATED BEFORE THE POOL WENT LIVE ───
+// Junid, 19 Oct 2026. The fingerprint dedupe (fix 1) stops the SAME payment
+// being confirmed twice. It cannot stop a payment the pool has NEVER seen — one
+// a customer genuinely made weeks or months ago, before the pool existed, whose
+// proof of payment is forwarded in today for the first time. That is not a
+// replay (nothing to dedupe against), but the money is stale: it was settled
+// by hand at the time, or already spent, or is a scammer's old slip. So one
+// more gate, at the same decision point as the others:
+//
+//   ONLY A PAYMENT THE BANK ITSELF DATES ON OR AFTER THE CUTOFF IS CONFIRMED.
+//
+// THE DATE IS THE BANK'S, NEVER THE MAILBOX'S. `bankTs` is the payment date
+// the bank printed in its own notification — the same field the immediacy
+// check reads: Standard Bank "Payment date and time", FNB "Date Actioned",
+// Capitec "Payment date", Absa "Payment date" (eftBanks.mjs) — the day the
+// money moved. The email's arrival time (`receivedAt`) is NOT used and must
+// never be a fallback: forwarding an old proof of payment makes it arrive
+// today, which is exactly the case this gate exists to refuse. A notification
+// whose payment date cannot be read refuses (the date is unknown, not new).
+//
+// THE CUTOFF IS CONFIG: EFT_PAYMENT_DATE_CUTOFF in the mini's .env, a calendar
+// date (YYYY-MM-DD, South African time), default 2026-10-20 — payments dated
+// 2026-10-19 or earlier refuse. Junid moves it without a code change. A value
+// that is not a date STOPS the poller with a sentence (config() in the
+// poller) rather than silently falling back to a cutoff he did not set.
+export const EFT_CUTOFF_ENV_VAR = "EFT_PAYMENT_DATE_CUTOFF";
+export const DEFAULT_EFT_PAYMENT_DATE_CUTOFF = "2026-10-20";
+
+/**
+ * The configured cutoff as a calendar day in SAST: the first instant of that
+ * day, in ms, plus the date as typed — or a refusal sentence for a value
+ * that is not a real YYYY-MM-DD date. Empty/unset means the default.
+ * @returns {{ok:true, date:string, startMs:number} | {ok:false, reason:string}}
+ */
+export function parsePaymentDateCutoff(raw) {
+  const s = String(raw ?? "").trim() || DEFAULT_EFT_PAYMENT_DATE_CUTOFF;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  const startMs = m ? parseBankTimestamp(s) : null;
+  if (startMs === null) {
+    return { ok: false, reason: `${EFT_CUTOFF_ENV_VAR} reads "${clip(raw, 40)}", which is not a calendar date written YYYY-MM-DD (for example ${DEFAULT_EFT_PAYMENT_DATE_CUTOFF}).` };
+  }
+  return { ok: true, date: s, startMs };
+}
+
+/** The SAST calendar day of a bank timestamp, as the bank would print it. */
+export function sastDate(ms) {
+  return new Date(ms + SAST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * FIX 8 — the payment's own bank date must be on or after the cutoff.
+ * @param {{parsed:object, cutoff:{date:string, startMs:number}}} p
+ * @returns {{ok:true} | {ok:false, reason:string, cutoff?:string}}
+ */
+export function paymentDateVerdict({ parsed, cutoff }) {
+  if (!cutoff || !Number.isInteger(cutoff.startMs) || typeof cutoff.date !== "string") {
+    return { ok: false, reason: "The payment-date cutoff was never configured, so this payment's date could not be checked against it — refused rather than assumed." };
+  }
+  const bankTs = parsed?.bankTs;
+  if (!Number.isInteger(bankTs)) {
+    return { ok: false, cutoff: cutoff.date, reason: `The bank's own payment date could not be read from this notification, so it cannot be checked against the ${cutoff.date} cutoff — refused rather than assumed (the time the email arrived is never used for this).` };
+  }
+  if (bankTs < cutoff.startMs) {
+    return {
+      ok: false, cutoff: cutoff.date,
+      reason: `Payment dated before the cutoff: the bank dates this payment ${sastDate(bankTs)}, and only payments dated ${cutoff.date} or later may be confirmed (${EFT_CUTOFF_ENV_VAR}). An old payment — even a genuine one — may already have been settled or spent; check it on the bank statement.`,
+    };
+  }
+  return { ok: true };
+}
+
 // ─── IDENTITY AND IDEMPOTENCY ────────────────────────────────────────────────
 /**
  * The pool key for a message — ALSO the record's node name, which is what makes
@@ -742,6 +813,7 @@ export function createOnlyStep(record, capture = () => {}) {
  *
  *   outcome   "recorded" | "refused-auth" | "refused-parse" | "refused-account"
  *             | "refused-not-immediate" (fix 7b)
+ *             | "refused-stale-date" (fix 8 — the bank dates it before the cutoff)
  *             — separable on purpose: a forgery attempt, a format change and a
  *             payment into somebody else's account are different problems for
  *             different people.
@@ -757,7 +829,7 @@ export function createOnlyStep(record, capture = () => {}) {
  * whenever `parsed.ok`; a parsed payment whose destination was not checked
  * must be impossible to store as recorded.
  */
-export function eftPoolRecord({ message, verdict, parsed, account, timing, reader, rawText, at }) {
+export function eftPoolRecord({ message, verdict, parsed, account, timing, dated, reader, rawText, at }) {
   const base = {
     at,
     receivedAt: Number.isInteger(message.receivedAt) ? message.receivedAt : null,
@@ -813,6 +885,21 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, reade
       // The reason quotes the bank-printed payment-type field; redact any
       // account digits that field might carry, as the account/parse reasons do.
       reason: clip(redactAccountDigits(timing?.reason || "Whether this was an immediate payment was never checked — refused rather than assumed."), 400),
+    };
+  }
+  // FIX 8 — the payment-date verdict is REQUIRED like the other two: a parsed
+  // payment whose bank date was never checked against the cutoff must be
+  // impossible to record. The record keeps the bank's date and the cutoff it
+  // failed, so the owner's panel and the verdict email say exactly why.
+  if (!dated || dated.ok !== true) {
+    return {
+      ...base, outcome: "refused-stale-date", destination,
+      amountCents: parsed.amountCents,
+      reference: parsed.reference ?? null,
+      bankRef: clip(parsed.bankRef, 60) || null,
+      bankTs: Number.isInteger(parsed.bankTs) ? parsed.bankTs : null,
+      cutoff: typeof dated?.cutoff === "string" ? dated.cutoff : null,
+      reason: clip(redactAccountDigits(dated?.reason || "Whether this payment is dated on or after the cutoff was never checked — refused rather than assumed."), 400),
     };
   }
   return {

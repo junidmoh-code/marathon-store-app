@@ -1404,6 +1404,45 @@ A real, authenticated payment into any other account is recorded as
 enters the pool as money. No allowlist configured refuses everything,
 deliberately.
 
+## Only payments the bank dates on or after the cutoff (19 Oct 2026)
+
+The fingerprint dedupe stops the **same** payment being confirmed twice. It
+cannot stop a payment the pool has **never seen** — one a customer genuinely
+made weeks or months ago, before the pool was live, whose proof of payment is
+forwarded in today for the first time. That is not a replay, but the money is
+stale: settled by hand at the time, already spent, or a scammer's old slip.
+So one more gate at the same decision point (after DKIM, destination account,
+immediate, before the fingerprint claim):
+
+- **The date checked is the bank's own payment date** — `bankTs`, parsed from
+  the notification the bank sent: Standard Bank "Payment date and time", FNB
+  "Date Actioned" (+ "Time Actioned"), Capitec "Payment date", Absa "Payment
+  date". It is the day the money moved. **The email's arrival time is never
+  used and is never a fallback**: forwarding an old proof of payment makes it
+  arrive today, which is exactly what this refuses. A notification whose
+  payment date cannot be read refuses too (unknown is not new).
+- **`EFT_PAYMENT_DATE_CUTOFF`** in `~/marathon-store-app/.env` — a calendar
+  date `YYYY-MM-DD` in South African time; unset means the default
+  **2026-10-20** (`DEFAULT_EFT_PAYMENT_DATE_CUTOFF` in `eftCore.mjs`). A
+  payment the bank dates **2026-10-19 or earlier** is refused; **2026-10-20 or
+  later** passes. Changing the line moves the boundary from the next tick
+  (every tick is a fresh process). A value that is not a real date **stops
+  the tick with a sentence** naming the variable and the file — never a
+  silent fallback to a cutoff Junid did not set.
+- The refusal is its own outcome, **`refused-stale-date`**, in the same
+  owner-only `/eft_pool` quarantine as every other refusal: amount, reference,
+  bank transaction id, the bank's date (`bankTs`) and the `cutoff` it failed,
+  with the reason "Payment dated before the cutoff: the bank dates this payment
+  2026-10-19, and only payments dated 2026-10-20 or later may be confirmed…".
+  Never spendable (the search and the settle accept only `recorded`).
+- Junid gets the usual **REJECTED** verdict email, check "Payment dated before
+  the cutoff", with a "Payment-date cutoff" line. The heartbeat carries
+  `eftRefusedStale` per tick and `eftPaymentDateCutoff` (the live date), and
+  every tick logs the cutoff it decided with.
+- A refused stale payment that Junid decides to honour: move the cutoff back
+  in `.env` and re-run the message with `retry-eft-message.mjs` (the ordinary
+  refusal re-run), or settle it by hand as before. Nothing is deleted.
+
 ## Never twice
 
 The record's node name IS the message's key (auth verdict included, so a
@@ -1420,7 +1459,8 @@ slips.
 payments show amount · reference · payer; refusals are red at the top, with
 the stored raw text behind a tap. The poller heartbeat
 (`/card_batch_poll_status`) carries `eftRecorded / eftRefusedAuth /
-eftRefusedParse / eftRefusedAccount` counts per tick.
+eftRefusedParse / eftRefusedAccount / eftRefusedTiming / eftRefusedStale /
+eftHeld` counts per tick, and `eftPaymentDateCutoff`, the cutoff date in force.
 
 Rules live in `scripts/cardrecon/eftRules.mjs`, applied with the house method
 by `scripts/cardrecon/apply-eft-pool-rules.mjs [--apply]` — never
@@ -1444,8 +1484,9 @@ record lands, and a failed send is logged and changes nothing.
   `status: unmatched`). Everything else is **REJECTED**, naming the check:
   unknown bank sender · signature check failed (DKIM) · unreadable
   notification (includes "no reader for this bank yet") · wrong destination
-  account · not an immediate (real-time) payment · duplicate (bank transaction
-  id already seen) · no bank transaction id.
+  account · not an immediate (real-time) payment · payment dated before the
+  cutoff · duplicate (bank transaction id already seen) · no bank transaction
+  id.
 - **Body:** first line is the verdict and the deciding reason; then bank,
   amount, reference, payer, destination (masked), bank transaction id (last
   four, also wherever the bank's own subject repeats it), timestamps in SAST,
