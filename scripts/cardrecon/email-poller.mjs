@@ -75,7 +75,7 @@ import {
   eftMessageKey, createOnlyStep, eftPoolRecord,
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   redactAccountDigits, domainOfAddress, parseAllowedAccountTails, parseAllowedAccounts,
-  destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR,
+  destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
 import { selectReader, noReaderReason } from "./eftBanks.mjs";
@@ -245,13 +245,14 @@ function config() {
     // FIX 8: the payment-date cutoff (EFT_PAYMENT_DATE_CUTOFF, YYYY-MM-DD SAST,
     // default in eftCore.mjs). A payment the BANK dates before this day is
     // refused — stale money the pool never saw is not new money. A value that
-    // is not a date stops the tick with a sentence: silently falling back to
-    // a cutoff Junid did not set would admit payments he meant to refuse.
-    eftPaymentDateCutoff: (() => {
-      const c = parsePaymentDateCutoff(env.EFT_PAYMENT_DATE_CUTOFF);
-      if (!c.ok) fail(`${c.reason} It is set in ${sourceOf(EFT_CUTOFF_ENV_VAR)}; fix it or remove it to use the default.`);
-      return c;
-    })(),
+    // is not a date is carried here as {ok:false}: the EFT reader then throws
+    // on every bank notification BEFORE claiming it (handleEftMessage), so
+    // they wait unread and are retried once the line is fixed — never a
+    // silent fallback to a cutoff Junid did not set, and never a stopped
+    // tick either: the card-slip path and the heartbeat keep running.
+    // (Sonnet architect review, #765.)
+    eftPaymentDateCutoff: parsePaymentDateCutoff(env.EFT_PAYMENT_DATE_CUTOFF),
+    eftPaymentDateCutoffSource: sourceOf(EFT_CUTOFF_ENV_VAR),
     dryRun: process.argv.includes("--dry-run"),
   };
 }
@@ -591,8 +592,12 @@ async function run() {
     if (cfg.verdictMode.warning) console.warn(`⚠ ${cfg.verdictMode.warning}`);
   }
   // FIX 8 — said on every tick, so the log always shows which cutoff decided:
-  // a date, never a secret.
-  console.log(`· EFT payment-date cutoff: ${cfg.eftPaymentDateCutoff.date} (${EFT_CUTOFF_ENV_VAR}) — a payment the bank dates earlier refuses`);
+  // a date, never a secret. A bad value is said every tick too, until fixed.
+  if (cfg.eftPaymentDateCutoff.ok) {
+    console.log(`· EFT payment-date cutoff: ${cfg.eftPaymentDateCutoff.date} (${EFT_CUTOFF_ENV_VAR}) — a payment the bank dates earlier refuses`);
+  } else {
+    console.warn(`⚠ ${cfg.eftPaymentDateCutoff.reason} It is set in ${cfg.eftPaymentDateCutoffSource}; fix it or remove it to use the default (${DEFAULT_EFT_PAYMENT_DATE_CUTOFF}). Until then every bank notification waits UNREAD — nothing is confirmed, nothing is refused; slips are unaffected.`);
+  }
 
   // ── RE-RUN WHAT AN OLDER PARSER REFUSED — before the scan, so the scan
   // finds the released messages in this same tick. Never the tick's failure.
@@ -807,7 +812,7 @@ async function run() {
       eftAccountTails: cfg.eftAccountTails.length,
       // FIX 8: the cutoff this tick refused stale payments against — a date,
       // so the owner can see from the heartbeat which cutoff is live.
-      eftPaymentDateCutoff: cfg.eftPaymentDateCutoff.date,
+      eftPaymentDateCutoff: cfg.eftPaymentDateCutoff.ok ? cfg.eftPaymentDateCutoff.date : "INVALID",
       // Messages the EFT reader THREW on this tick (left unread, retried) — a
       // persistent environment failure must not hide behind a healthy beat.
       eftErrors,
@@ -1147,6 +1152,13 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   }
 
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0, eftRefusedTiming: 0, eftRefusedStale: 0, eftHeld: 0 };
+  // FIX 8 — NO CUTOFF, NO DECISION. A bank notification is never judged, let
+  // alone claimed, while EFT_PAYMENT_DATE_CUTOFF is unreadable: the throw is
+  // caught by the caller, the message stays unread, eftErrors counts it, and
+  // the next tick after the line is fixed reads it as if it had just arrived.
+  if (!cfg.eftPaymentDateCutoff.ok) {
+    throw new Error(`${cfg.eftPaymentDateCutoff.reason} Fix ${EFT_CUTOFF_ENV_VAR} in ${cfg.eftPaymentDateCutoffSource}`);
+  }
   const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
   // The auth verdict is part of the key so a forgery carrying a guessed genuine
   // Message-ID cannot occupy the key the genuine notification will need.

@@ -79,7 +79,7 @@ test("payer initials: letters only, at most four, null when there is no name", (
 });
 
 test("refusals and holds never become till results", () => {
-  for (const outcome of ["refused-auth", "refused-parse", "refused-account", "unknown-bank", "held-duplicate", "held-no-bankref"]) {
+  for (const outcome of ["refused-auth", "refused-parse", "refused-account", "refused-not-immediate", "refused-stale-date", "unknown-bank", "held-duplicate", "held-no-bankref"]) {
     assert.equal(publicEftView("k", recorded({ outcome })), null);
     assert.deepEqual(keys({ r: recorded({ outcome }) }, "junid1234"), [], outcome);
   }

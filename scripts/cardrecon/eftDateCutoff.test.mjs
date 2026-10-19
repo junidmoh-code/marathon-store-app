@@ -241,6 +241,11 @@ describe("the same notification dated on or after the cutoff is confirmed", () =
     expect(record).toMatchObject({ outcome: "recorded", status: "unmatched" });
   });
 
+  it("Capitec's day-first date is applied under the gate: 10/11/2026 is 10 November (passes), 11/10/2026 is 11 October (refuses)", () => {
+    expect(confirm({ lines: capitecLines("10/11/2026 09:00"), receivedAt: sast(2026, 11, 10, 9, 2) }).record.outcome).toBe("recorded");
+    expect(confirm({ lines: capitecLines("11/10/2026 09:00"), receivedAt: sast(2026, 10, 19, 9, 2) }).record.outcome).toBe("refused-stale-date");
+  });
+
   it("a Capitec notification whose Payment date line will not read refuses — not admitted on arrival time", () => {
     const lines = capitecLines("yesterday");
     const { parsed, record } = confirm({ lines, receivedAt: sast(2026, 10, 25, 9, 0) });
@@ -271,12 +276,17 @@ describe("the poller wires the gate on the bank's date (source scan)", () => {
   it("reads EFT_PAYMENT_DATE_CUTOFF into cfg, stops on a bad value, and never hands the verdict an arrival time", async () => {
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("./email-poller.mjs", import.meta.url), "utf8");
-    expect(src).toMatch(/parsePaymentDateCutoff\(env\.EFT_PAYMENT_DATE_CUTOFF\)/);
-    expect(src).toMatch(/if \(!c\.ok\) fail\(/);
+    expect(src).toMatch(/eftPaymentDateCutoff: parsePaymentDateCutoff\(env\.EFT_PAYMENT_DATE_CUTOFF\)/);
+    // A bad value stops EFT decisions only: the bank path throws BEFORE any
+    // claim (the message stays unread, retried), the heartbeat says INVALID,
+    // and the slip path keeps running — config() itself never fails on it.
+    expect(src).toMatch(/if \(!cfg\.eftPaymentDateCutoff\.ok\) \{\s*throw new Error\(/);
+    expect(src.indexOf("if (!cfg.eftPaymentDateCutoff.ok) {\n    throw")).toBeLessThan(src.indexOf("const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress })"));
+    expect(src).toMatch(/eftPaymentDateCutoff: cfg\.eftPaymentDateCutoff\.ok \? cfg\.eftPaymentDateCutoff\.date : "INVALID"/);
+    expect(src).not.toMatch(/fail\(`\$\{c\.reason\}/);
     expect(src).toMatch(/paymentDateVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff \}\)/);
     expect(src).not.toMatch(/paymentDateVerdict\([^)]*receivedAt/);
     expect(src).toMatch(/message, verdict, parsed: group\.parse, account, timing, dated,/);
     expect(src).toMatch(/eftRefusedStale: count\("refused-stale-date"\)/);
-    expect(src).toMatch(/eftPaymentDateCutoff: cfg\.eftPaymentDateCutoff\.date/);
   });
 });

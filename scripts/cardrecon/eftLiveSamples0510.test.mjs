@@ -15,7 +15,7 @@
 //    refusing them (needsSample) rather than guessing.
 import { describe, it, expect } from "vitest";
 import { selectReader } from "./eftBanks.mjs";
-import { parseAllowedAccounts, destinationVerdict, immediacyVerdict } from "./eftCore.mjs";
+import { parseAllowedAccounts, destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff } from "./eftCore.mjs";
 
 const CAPITEC_REGULAR = [
   "One of the Global One money management products or services",
@@ -243,8 +243,28 @@ function judge(fromDomain, lines) {
     parsed,
     dest: destinationVerdict({ accountMask: parsed.accountMask, destBankName: parsed.destBankName, allowedAccounts: ALLOWED, configured: true }),
     timing: immediacyVerdict({ parsed, reader: reader.id, receivedAt: RECEIVED }),
+    dated: paymentDateVerdict({ parsed, cutoff: parsePaymentDateCutoff(undefined) }),
   };
 }
+
+describe("fix 8 on the real 5 Oct notifications — every bank prints a payment date the gate can read", () => {
+  const samples = [
+    ["capitecbank.co.za", CAPITEC_REGULAR], ["capitecbank.co.za", CAPITEC_IMMEDIATE],
+    ["absa.co.za", ABSA_IMMEDIATE_NO_TXN], ["absa.co.za", ABSA_NORMAL],
+    ["fnb.co.za", FNB_0510], ["standardbank.co.za", STANDARDBANK_0510],
+  ];
+  for (const [domain, lines] of samples) {
+    it(`${domain}: the bank's date reads, and 5 Oct 2026 is before the default cutoff — refused on that date`, () => {
+      const { parsed, dated } = judge(domain, lines);
+      expect(Number.isInteger(parsed.bankTs)).toBe(true);
+      expect(new Date(parsed.bankTs + 2 * 3600 * 1000).toISOString().slice(0, 10)).toBe("2026-10-05");
+      expect(dated.ok).toBe(false);
+      expect(dated.reason).toContain("the bank dates this payment 2026-10-05");
+      // Dated on the cutoff day itself (in config), the same notification passes.
+      expect(paymentDateVerdict({ parsed, cutoff: parsePaymentDateCutoff("2026-10-05") })).toEqual({ ok: true });
+    });
+  }
+});
 
 describe("fix 7 on the real 5 Oct notifications", () => {
   it("Capitec REGULAR payment: right account, refused as not immediate", () => {

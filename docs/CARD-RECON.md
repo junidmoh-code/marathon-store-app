@@ -1404,7 +1404,7 @@ A real, authenticated payment into any other account is recorded as
 enters the pool as money. No allowlist configured refuses everything,
 deliberately.
 
-## Only payments the bank dates on or after the cutoff (19 Oct 2026)
+## Only payments the bank dates on or after the cutoff — 2026-10-20 (built 19 Oct 2026)
 
 The fingerprint dedupe stops the **same** payment being confirmed twice. It
 cannot stop a payment the pool has **never seen** — one a customer genuinely
@@ -1426,9 +1426,16 @@ immediate, before the fingerprint claim):
   **2026-10-20** (`DEFAULT_EFT_PAYMENT_DATE_CUTOFF` in `eftCore.mjs`). A
   payment the bank dates **2026-10-19 or earlier** is refused; **2026-10-20 or
   later** passes. Changing the line moves the boundary from the next tick
-  (every tick is a fresh process). A value that is not a real date **stops
-  the tick with a sentence** naming the variable and the file — never a
-  silent fallback to a cutoff Junid did not set.
+  (every tick is a fresh process). A value that is not a real date is never a
+  silent fallback to a cutoff Junid did not set: every tick logs a sentence
+  naming the variable and the file, the heartbeat shows
+  `eftPaymentDateCutoff: "INVALID"`, and **every bank notification waits
+  unread** (counted in `eftErrors`, retried each tick) until the line is
+  fixed — nothing is confirmed and nothing is refused. Slip intake is
+  unaffected.
+- Gate order is unchanged and a record names the FIRST check it failed: a
+  payment into the wrong account, or a non-immediate one, is named as that
+  even if it is also stale (the verdict email still prints the bank's date).
 - The refusal is its own outcome, **`refused-stale-date`**, in the same
   owner-only `/eft_pool` quarantine as every other refusal: amount, reference,
   bank transaction id, the bank's date (`bankTs`) and the `cutoff` it failed,
@@ -1441,7 +1448,9 @@ immediate, before the fingerprint claim):
   every tick logs the cutoff it decided with.
 - A refused stale payment that Junid decides to honour: move the cutoff back
   in `.env` and re-run the message with `retry-eft-message.mjs` (the ordinary
-  refusal re-run), or settle it by hand as before. Nothing is deleted.
+  refusal re-run; a payment from a batched multi-PDF message cannot be re-run
+  that way, as before), or settle the sale by hand as before. Nothing is
+  deleted.
 
 ## Never twice
 

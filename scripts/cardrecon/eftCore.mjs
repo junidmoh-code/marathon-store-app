@@ -322,8 +322,9 @@ export function htmlToText(html) {
 // ─── THE BANK'S OWN TIMESTAMP ────────────────────────────────────────────────
 // SA is UTC+2 with no daylight saving; the offset is a constant, same as the
 // card slips. Only shapes the bank is known to print are accepted; anything
-// else is null — the record still lands, carried by receivedAt, because a
-// payment with an unreadable date is still a payment.
+// else is null. (Until fix 8 a null date was cosmetic — the record landed and
+// receivedAt carried it. Now the date gates the money: paymentDateVerdict
+// refuses a payment whose bank date is null, and receivedAt never stands in.)
 const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
 const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
