@@ -167,4 +167,27 @@ describe("rollbackEntry", () => {
     expect(dry).toMatchObject({ ok: true, dryRun: true });
     expect(writes).toEqual([]);
   });
+  it("REFUSES when photoUrlOriginal or photoSource changed since the sync, whatever the key order RTDB returns", async () => {
+    const entry = { pid: "a", oldPhotoUrl: staff("a"), newPhotoUrl: pub("a", "1"),
+                    patch: { photoUrl: pub("a", "1"), photoUrlOriginal: staff("a"), photoSource: { from: "shopify_publish", at: 5 } } };
+    const synced = { photoUrl: pub("a", "1"), photoUrlOriginal: staff("a"), photoSource: { at: 5, from: "shopify_publish" } };
+    const run = (product) => rollbackEntry(entry, { readProduct: io(fakeDb({ products: { a: product } }), {}).readProduct, writeProduct: async () => {} });
+    expect(await run(synced)).toMatchObject({ ok: true });
+    expect(await run({ ...synced, photoUrlOriginal: staff("b") })).toMatchObject({ ok: false, refused: expect.stringMatching(/photoUrlOriginal has changed/) });
+    expect(await run({ ...synced, photoSource: { at: 9, from: "shopify_publish" } })).toMatchObject({ ok: false, refused: expect.stringMatching(/photoSource has changed/) });
+  });
+  it("THUMBNAIL: rebuilt from the old photo before photoUrl moves back; removed (before the write) when the rebuild fails or there is no old photo", async () => {
+    for (const [oldPhotoUrl, rebuilt, want] of [[staff("a"), true, ["thumb", "write"]], [staff("a"), false, ["thumb", "remove", "write"]], [null, true, ["remove", "write"]]]) {
+      const db = fakeDb({ products: { a: { photoUrl: pub("a", "1") } } });
+      const log = [];
+      const r = await rollbackEntry({ pid: "a", oldPhotoUrl, newPhotoUrl: pub("a", "1") }, {
+        readProduct: io(db, {}).readProduct, apply: true,
+        rebuildThumb: async () => { log.push("thumb"); return { ok: rebuilt }; },
+        removeThumb: async () => { log.push("remove"); },
+        writeProduct: async () => { log.push("write"); },
+      });
+      expect(log).toEqual(want);
+      expect(r.thumb).toBe(!!oldPhotoUrl && rebuilt);
+    }
+  });
 });

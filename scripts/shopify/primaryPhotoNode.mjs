@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import { writeApprovedThumbFromUrl, writeProductThumb } from "../../src/utils/productThumb.js";
-import { PHOTO_THUMB_MAX_EDGE } from "../../src/utils/productPhotoPaths.js";
+import { PHOTO_THUMB_MAX_EDGE, productPhotoThumbPath } from "../../src/utils/productPhotoPaths.js";
 import { objectPathOf } from "../../src/components/shopify/primaryPhotoCore.js";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
@@ -104,6 +104,9 @@ export function thumbRebuilder(bucket, from = "shopify_publish") {
     write: (id, blob, d) => writeProductThumb(id, blob, { ...d, encode: encodeThumbNode }),
   });
 }
+
+/** Delete the till thumbnail (a missing one is retried by the tills; a stale one never is). */
+export const thumbRemover = (bucket) => (pid) => bucket.file(productPhotoThumbPath(pid)).delete({ ignoreNotFound: true });
 
 export const productWriter = (db) => (pid, patch) => db.ref(`products/${pid}`).update(patch);
 

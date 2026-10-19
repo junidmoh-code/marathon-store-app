@@ -23,7 +23,7 @@
 import { writeFileSync } from "node:fs";
 import { runSync, buildOwnersByMd5 } from "./primaryPhotoSync.mjs";
 import { initAdmin, shallowKeys, serverClock, md5Reader, listProductObjects, readers, thumbRebuilder,
-         productWriter, openLedger, ledgerPath } from "./primaryPhotoNode.mjs";
+         thumbRemover, productWriter, openLedger, ledgerPath } from "./primaryPhotoNode.mjs";
 
 const argv = process.argv.slice(2);
 const COMMIT = argv.includes("--commit");
@@ -49,6 +49,7 @@ const ledger = COMMIT ? openLedger(ledgerPath(date)) : null;
 const write = COMMIT ? {
   now: await serverClock(db),
   rebuildThumb: thumbRebuilder(bucket),
+  removeThumb: thumbRemover(bucket),
   writeProduct: productWriter(db),
 } : null;
 

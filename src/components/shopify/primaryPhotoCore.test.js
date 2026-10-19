@@ -95,6 +95,22 @@ describe("setShopifyPrimaryPhoto — THE one write", () => {
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/app photo could not be changed \(PERMISSION_DENIED\)/);
   });
+  it("REFUSED WRITE AFTER THE THUMBNAIL: the old photo's thumbnail is rebuilt, never left showing the new one", async () => {
+    const d = fakeDeps({ failWrite: true });
+    d.removeThumb = async (pid) => d.log.push(["remove", pid]);
+    const r = await setShopifyPrimaryPhoto("p1", { product: { photoUrl: staff }, newPrimary: pub("n") }, d);
+    expect(r).toMatchObject({ ok: false, changed: false, thumb: true });
+    expect(d.log).toEqual([["thumb", "p1", pub("n")], ["thumb", "p1", staff]]);
+  });
+  it("…and when the old one cannot be rebuilt (or there is none), the thumbnail is removed", async () => {
+    for (const product of [{ photoUrl: staff }, {}]) {
+      const d = fakeDeps({ failWrite: true });
+      d.rebuildThumb = async (pid, url) => { d.log.push(["thumb", pid, url]); return { ok: url === pub("n") }; };
+      d.removeThumb = async (pid) => d.log.push(["remove", pid]);
+      await setShopifyPrimaryPhoto("p1", { product, newPrimary: pub("n") }, d);
+      expect(d.log.at(-1)).toEqual(["remove", "p1"]);
+    }
+  });
   it("a thumbnail failure never blocks the photo", async () => {
     const d = { ...fakeDeps(), rebuildThumb: async () => { throw new Error("no webp"); } };
     const r = await setShopifyPrimaryPhoto("p1", { product: { photoUrl: staff }, newPrimary: pub("n") }, d);
