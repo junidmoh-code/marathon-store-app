@@ -364,8 +364,8 @@ function styleOutfits(pieces, opts = {}) {
       // break the one-loud-piece rule for every outfit (19 Oct: the six
       // freshest tees were all graphic prints and no cap look could form).
       const top = list.slice(0, Math.max(1, perSlot - 2));
-      const quiet = list.slice(top.length).filter((p) => !isLoud(p.tags, guide)).slice(0, 2);
-      const fill = list.slice(top.length).filter((p) => !quiet.includes(p)).slice(0, perSlot - top.length - quiet.length);
+      const quiet = list.slice(top.length).filter((p) => !isLoud(p.tags, guide)).slice(0, Math.max(0, Math.min(2, perSlot - top.length)));
+      const fill = list.slice(top.length).filter((p) => !quiet.includes(p)).slice(0, Math.max(0, perSlot - top.length - quiet.length));
       bySlot.set(s, [...top, ...quiet, ...fill]);
     }
     const walk = (i, chosen, sum) => {

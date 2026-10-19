@@ -311,3 +311,16 @@ test("lookbook: a cap look with one off-palette piece (olive jeans) is still fou
   assert.ok(r.best, JSON.stringify(r.refused));
   assert.ok(sty.GUIDE.looks.find((l) => l.key === r.best.look).extras.includes("hat"));
 });
+
+test("lookbook: a hat with no look that wears one is refused; a narrow slot never grows past perSlot", () => {
+  // Earth tones: earth-tone-street does not wear a hat, and no hat look fits.
+  const set = [P("tee", { dominant: "cream" }, { pid: "t" }), P("bottoms", { dominant: "olive" }, { pid: "b" }),
+    P("sneakers", { dominant: "brown", silhouette: "n/a" }, { pid: "s" }), P("hat", { dominant: "khaki", silhouette: "n/a" }, { pid: "cap" })];
+  const r = sty.styleOutfits(set, { core: [["tee"], ["bottoms"], ["sneakers"]], minPieces: 3, maxPieces: 4, month: 10, lookSlots: true });
+  assert.ok(r.best);
+  assert.ok(!r.outfits.some((o) => o.pieces.some((p) => p.pid === "cap")), JSON.stringify(r.refused));
+  const many = Array.from({ length: 6 }, (_, i) => P("tee", {}, { pid: `t${i}`, fresh: i / 10 }));
+  const n = sty.styleOutfits([...many, P("bottoms", {}, { pid: "b2" }), P("sneakers", { silhouette: "n/a", dominant: "white" }, { pid: "s2" })],
+    { core: [["tee"], ["bottoms"], ["sneakers"]], minPieces: 3, maxPieces: 3, month: 10, perSlot: 1, template: false });
+  assert.equal(new Set(n.outfits.map((o) => o.pieces.find((p) => p.slot === "tee").pid)).size, 1);
+});
