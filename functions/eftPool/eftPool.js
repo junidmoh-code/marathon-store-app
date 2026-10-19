@@ -108,7 +108,7 @@ const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN, releaseHoldDecision,
-  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
+  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision, formatRand,
 } = require("../lib/eft-settle.cjs");
 const {
   EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck, paymentFingerprint,
@@ -294,12 +294,6 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
     throw refusalToError(holder);
   }
   return check.fingerprint;
-}
-
-/** R1,234.50 for a refusal read out at the counter. */
-function formatRandCents(cents) {
-  const n = Number.isInteger(cents) ? cents : 0;
-  return `R${(n / 100).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function refusalToError(decision) {
@@ -566,14 +560,25 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     ]);
     let wholePaymentMatched = false;
     if (!customer && record && record.outcome === "recorded") {
-      if (appliedCents !== record.amountCents) {
-        throw new HttpsError("failed-precondition", `${formatRandCents(record.amountCents - appliedCents)} of this payment is left over after the sale — attach the customer it belongs to before using it.`, { code: "no-customer" });
+      // A malformed amount is settleDecision's "bad-amount", not a leftover.
+      if (!Number.isInteger(appliedCents) || appliedCents <= 0 || !Number.isInteger(record.amountCents) || appliedCents > record.amountCents) {
+        throw new HttpsError("failed-precondition", "The amount applied to the sale must be within what the customer actually paid.", { code: "bad-amount" });
       }
-      const found = searchEftPool(tail, matchQuery);
-      wholePaymentMatched = found.results.length === 1 && found.results[0].key === key && found.results[0].status === "unmatched";
-      if (!wholePaymentMatched) {
-        console.warn(`eftPoolSettle: customer-less settle on ${key} refused — query ${JSON.stringify(matchQuery)} resolved to ${found.results[0]?.key ?? (found.ambiguous ? "ambiguous" : "nothing")}`);
-        throw new HttpsError("failed-precondition", "Find the payment by its reference again before using it — a payment is never used on its amount.", { code: "not-matched" });
+      if (appliedCents !== record.amountCents) {
+        throw new HttpsError("failed-precondition", `${formatRand(record.amountCents - appliedCents)} of this payment is left over after the sale — attach the customer it belongs to before using it.`, { code: "no-customer" });
+      }
+      if (record.status === "used" && record.used?.attemptId === attemptId) {
+        // THIS attempt already holds it (a retry after a lost response): the
+        // search would now answer "used", so the match is not re-asked — the
+        // transaction answers `already`. (Architect review, 19 Oct 2026.)
+        wholePaymentMatched = record.used.wholePaymentMatched === true;
+      } else {
+        const found = searchEftPool(tail, matchQuery);
+        wholePaymentMatched = found.results.length === 1 && found.results[0].key === key && found.results[0].status === "unmatched";
+        if (!wholePaymentMatched) {
+          console.warn(`eftPoolSettle: customer-less settle on ${key} refused — query ${JSON.stringify(matchQuery)} resolved to ${found.results[0]?.key ?? (found.ambiguous ? "ambiguous" : "nothing")}`);
+          throw new HttpsError("failed-precondition", "Find the payment by its reference again before using it — a payment is never used on its amount.", { code: "not-matched" });
+        }
       }
     }
     const fingerprint = await checkPaymentFingerprint(key, now, { record, tail });

@@ -80,6 +80,12 @@ function settleDecision(current, settlement) {
     || !Number.isInteger(current.amountCents) || s.appliedCents > current.amountCents) {
     return refuse("bad-amount", "The amount applied to the sale must be within what the customer actually paid.");
   }
+  // THE SAME ATTEMPT RETRYING (a timeout, a resumed request) already holds the
+  // payment — success, nothing to write. Decided BEFORE the customer and match
+  // checks (architect review, 19 Oct 2026): a customer-less settle whose
+  // response was lost would otherwise be refused on retry, because the search
+  // the retry re-runs now sees the record as used.
+  if (current.status === "used" && current.used?.attemptId === s.attemptId) return { ok: true, already: true };
   // WHOSE PAYMENT IS THIS? (fix 3). A till settle consumes a payment only for
   // a customer the cashier EXPLICITLY confirmed as the payer — attached to the
   // sale, resolved server-side against /customers (the callable stamps
@@ -129,9 +135,7 @@ function settleDecision(current, settlement) {
     }
   }
   if (current.status === "used") {
-    // The same attempt retrying (a timeout, a resumed request) already holds
-    // it — success, nothing to write. Anyone else lost the race.
-    if (current.used?.attemptId === s.attemptId) return { ok: true, already: true };
+    // Anyone else lost the race (the same attempt was answered above).
     return refuse("already-used", alreadyUsedMessage(current.used));
   }
   if (current.status !== "unmatched") {
@@ -627,7 +631,7 @@ function poolTransactionStep(decide, capture) {
 }
 
 module.exports = {
-  settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
+  settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep, formatRand,
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN,
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,

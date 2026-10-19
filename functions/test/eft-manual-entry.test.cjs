@@ -101,6 +101,9 @@ test("a cashier finds it by its reference like any payment, and it consumes ONCE
   assert.equal(whole.ok, true);
   assert.equal(whole.value.used.customerId, null);
   assert.equal(whole.value.used.wholePaymentMatched, true);
+  // The same attempt retrying, now without the match flag (the search sees
+  // the record as used): still `already`, never a refusal.
+  assert.deepEqual(settleDecision(whole.value, { ...settlement, customerId: null, confirmedCustomerId: null }), { ok: true, already: true });
 });
 
 test("the same reference and amount twice is a duplicate; the same entryId is a retry; a bank twin is flagged", () => {

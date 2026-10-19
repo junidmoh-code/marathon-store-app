@@ -336,6 +336,34 @@ test("settle with no customer: the whole payment, found by its reference again â
   resetPool();
 });
 
+test("a customer-less settle RETRIED by the same attempt (lost response) is success, not a refusal", async () => {
+  resetPool();
+  const held = { ...PAY, status: "used", used: { attemptId: "P-1", at: 5, cashierUid: "cashier-uid", cashierName: "Ahmed", customerId: null, customerName: null, customerConfirmed: false, wholePaymentMatched: true, appliedCents: 50000, sale: null } };
+  dbState.pool[`eft_pool/${K1}`] = held;
+  dbState.tail = { [K1]: held };
+  dbState.txCurrent = held;
+  dbState.fingerprints[`eft_pool_fingerprints/${paymentFingerprint(PAY)}`] = { poolKey: K1, at: 5 };
+  const out = await eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "junid1234" }));
+  assert.equal(out.ok, true);
+  assert.equal(out.already, true);
+  assert.equal(dbState.txNext, undefined, "nothing rewritten");
+  // A DIFFERENT attempt still loses.
+  const e = await rejects(eftPoolSettle(settleReq(K1, { attemptId: "P-2", customerId: null, confirmedCustomerId: null, matchQuery: "junid1234" })), "failed-precondition");
+  assert.equal(e.details.code, "not-matched");
+  resetPool();
+});
+
+test("a malformed amount on a customer-less settle is bad-amount, never a leftover message", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  dbState.tail = { [K1]: PAY };
+  for (const appliedCents of [undefined, 0, -5, 50001, "50000"]) {
+    const e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, appliedCents, matchQuery: "junid1234" })), "failed-precondition");
+    assert.equal(e.details.code, "bad-amount", String(appliedCents));
+  }
+  assert.deepEqual(dbState.txPaths, []);
+});
+
 test("settle with no customer and money LEFT OVER is refused â€” the remainder must belong to someone", async () => {
   resetPool();
   dbState.pool[`eft_pool/${K1}`] = PAY;

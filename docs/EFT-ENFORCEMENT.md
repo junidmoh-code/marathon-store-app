@@ -142,3 +142,15 @@ firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle --project
 The till half (marathon-pos-app) ships after it: an older till keeps working
 against the new functions (the old flow always sends a customer); the new till
 needs the new `warm` action and the customer-less settle.
+
+**Decided against the architect review (19 Oct 2026), on record.** (a) A
+customer-less whole-payment settle accepts a *forgiving* match (prefix or typo)
+as long as it resolves to one payment: Junid's spec is that "HAFF" surfaces
+HAFG and that payment is then usable; the till asks for a second tap naming the
+reference on any non-exact match, and the old customer-attached path never
+verified ownership server-side either — the proof of payment at the counter
+was always the check. (b) A unique three-character prefix surfaces one payment
+(reference, amount, initials) to any active POS identity; the one-result rule
+stops listing, not enumeration. Accepted for "results as they type"; a per-uid
+rate limit on non-exact searches is the next step if the owner panel ever shows
+probing (`EFT_POOL_SEARCH` log lines carry the uid).
