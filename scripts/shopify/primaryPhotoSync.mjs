@@ -169,7 +169,16 @@ export async function rollbackEntry(entry, { readProduct, writeProduct, rebuildT
   if (rebuildThumb && entry.oldPhotoUrl) {
     try { thumb = !!(await rebuildThumb(pid, entry.oldPhotoUrl))?.ok; } catch { thumb = false; }
   }
-  if (!thumb && removeThumb) { try { await removeThumb(pid); } catch { /* best-effort */ } }
-  await writeProduct(pid, patch);
+  const removeIt = async () => { if (removeThumb) { try { await removeThumb(pid); } catch { /* best-effort */ } } };
+  if (!thumb) await removeIt();
+  try {
+    await writeProduct(pid, patch);
+  } catch (e) {
+    // photoUrl still names the synced photo: its thumbnail back, else none.
+    let back = false;
+    if (thumb && rebuildThumb) { try { back = !!(await rebuildThumb(pid, entry.newPhotoUrl))?.ok; } catch { back = false; } }
+    if (thumb && !back) await removeIt();
+    throw e;
+  }
   return { pid, ok: true, patch, thumb };
 }

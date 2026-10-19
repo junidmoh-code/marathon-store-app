@@ -176,6 +176,14 @@ describe("rollbackEntry", () => {
     expect(await run({ ...synced, photoUrlOriginal: staff("b") })).toMatchObject({ ok: false, refused: expect.stringMatching(/photoUrlOriginal has changed/) });
     expect(await run({ ...synced, photoSource: { at: 9, from: "shopify_publish" } })).toMatchObject({ ok: false, refused: expect.stringMatching(/photoSource has changed/) });
   });
+  it("a patch that did not write photoUrlOriginal (the original was already kept) expects the ledger's old value — never a false refusal", async () => {
+    const entry = { pid: "a", oldPhotoUrl: pub("a", "0"), oldPhotoUrlOriginal: staff("a"), newPhotoUrl: pub("a", "1"),
+                    patch: { photoUrl: pub("a", "1"), photoSource: { from: "shopify_publish", at: 5 } } };
+    const run = (product) => rollbackEntry(entry, { readProduct: io(fakeDb({ products: { a: product } }), {}).readProduct, writeProduct: async () => {} });
+    const synced = { photoUrl: pub("a", "1"), photoUrlOriginal: staff("a"), photoSource: { at: 5, from: "shopify_publish" } };
+    expect(await run(synced)).toMatchObject({ ok: true });
+    expect(await run({ ...synced, photoUrlOriginal: staff("b") })).toMatchObject({ ok: false, refused: expect.stringMatching(/photoUrlOriginal/) });
+  });
   it("THUMBNAIL: rebuilt from the old photo before photoUrl moves back; removed (before the write) when the rebuild fails or there is no old photo", async () => {
     for (const [oldPhotoUrl, rebuilt, want] of [[staff("a"), true, ["thumb", "write"]], [staff("a"), false, ["thumb", "remove", "write"]], [null, true, ["remove", "write"]]]) {
       const db = fakeDb({ products: { a: { photoUrl: pub("a", "1") } } });
@@ -188,6 +196,19 @@ describe("rollbackEntry", () => {
       });
       expect(log).toEqual(want);
       expect(r.thumb).toBe(!!oldPhotoUrl && rebuilt);
+    }
+  });
+  it("a refused write after the old thumbnail was rebuilt puts the synced photo's thumbnail back (else removes it) and still throws", async () => {
+    for (const [secondOk, want] of [[true, ["thumb:old", "write", "thumb:new"]], [false, ["thumb:old", "write", "thumb:new", "remove"]]]) {
+      const db = fakeDb({ products: { a: { photoUrl: pub("a", "1") } } });
+      const log = [];
+      await expect(rollbackEntry({ pid: "a", oldPhotoUrl: staff("a"), newPhotoUrl: pub("a", "1") }, {
+        readProduct: io(db, {}).readProduct, apply: true,
+        rebuildThumb: async (pid, u) => { const isNew = u === pub("a", "1"); log.push(isNew ? "thumb:new" : "thumb:old"); return { ok: isNew ? secondOk : true }; },
+        removeThumb: async () => { log.push("remove"); },
+        writeProduct: async () => { log.push("write"); throw new Error("PERMISSION_DENIED"); },
+      })).rejects.toThrow("PERMISSION_DENIED");
+      expect(log).toEqual(want);
     }
   });
 });
