@@ -341,21 +341,26 @@ const KNOWN_BRANDS = [...new Set([
 ].map(normBrand).filter(Boolean))].sort((a, b) => b.length - a.length);
 
 /**
- * The recognised brand a product carries: { brand, lead } where `lead` is how
- * many words of the name it takes up front (0 when only the brand field
- * names it), or null. Pure.
+ * The recognised brand a product carries: { brand, rest } where `rest` is the
+ * display name with the brand taken off its front (the whole name when only
+ * the brand field names it), or null. Pure.
  */
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function knownBrandOf(product, displayName) {
-  const name = normBrand(displayName);
-  for (const b of KNOWN_BRANDS) if (name === b || name.startsWith(`${b} `)) return { brand: b, lead: b.split(" ").length };
+  const raw = String(displayName || "").trim();
+  // The name's own front, matched on its own spelling ("G-Star Raw", "G star raw").
+  for (const b of KNOWN_BRANDS) {
+    const m = new RegExp(`^${b.split(" ").map(escRe).join("[\\s.'&-]*")}(?=[\\s.,-]|$)`, "i").exec(raw.replace(/[^\p{L}\p{N}\s.'&-]+/gu, " "));
+    if (m) return { brand: b, rest: raw.slice(m[0].length) };
+  }
   // The catalogue's own spellings: "G star raw", "Under Amour".
   for (const [proper, re] of POSTER_BRANDS) {
-    const m = re.exec(String(displayName || "").trim());
-    if (m) return { brand: normBrand(proper), lead: normBrand(m[0]).split(" ").length };
+    const m = re.exec(raw);
+    if (m) return { brand: normBrand(proper), rest: raw.slice(m[0].length) };
   }
   const field = normBrand(product && product.brand);
-  for (const b of KNOWN_BRANDS) if (field && (field === b || field.startsWith(`${b} `))) return { brand: b, lead: 0 };
-  for (const [proper, re] of POSTER_BRANDS) if (re.test(String((product && product.brand) || ""))) return { brand: normBrand(proper), lead: 0 };
+  for (const b of KNOWN_BRANDS) if (field && (field === b || field.startsWith(`${b} `))) return { brand: b, rest: raw };
+  for (const [proper, re] of POSTER_BRANDS) if (re.test(String((product && product.brand) || ""))) return { brand: normBrand(proper), rest: raw };
   return null;
 }
 
@@ -377,10 +382,9 @@ function displayNameRefusal(displayName, product) {
   // Category and colour only, once the brand is off the front: the
   // recognised one, else the record's own brand when it is not a garment
   // word ("Jacket" on "Jacket brown" is the till's placeholder).
-  let w = words(stripStyleCodes(raw));
+  let w = words(stripStyleCodes(known ? known.rest : raw));
   const field = normBrand(product && product.brand);
-  if (known && known.lead) w = w.slice(known.lead);
-  else if (field && !GARMENT_WORDS.has(field) && field.split(" ").every((t, i) => w[i] === t)) w = w.slice(field.split(" ").length);
+  if (!known && field && !GARMENT_WORDS.has(field) && field.split(" ").every((t, i) => w[i] === t)) w = w.slice(field.split(" ").length);
   // A number here is a model ("550" after New Balance) and describes it.
   const hue = w.some((t) => COLOUR_WORDS.has(t) && !CONNECTIVES.has(t));
   // No colour and no brand is no better: a bare "Jacket" says nothing either.

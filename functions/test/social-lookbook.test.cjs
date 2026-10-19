@@ -596,7 +596,9 @@ describe("the display name gate (Junid, 19 Oct)", () => {
   test("real names pass: a known brand's model number, a described piece, a fragrance volume", () => {
     for (const [n, b] of [["Nike Air Force 1 White Blue Laces", "Nike"], ["New Balance 550 White Green", "New balance"], ["Nike Air Max 90", "Nike"],
       ["Lacoste L12 100ML", "Lacoste"], ["Sonic Youth Graphic T-Shirt Black", "Sonic Youth"], ["G star raw cargo jeans", "G star raw"],
-      ["Gallery Dept. White Distressed T-Shirt", "Gallery Dept"], ["Nike bag lite green", "Nike"]]) {
+      ["Gallery Dept. White Distressed T-Shirt", "Gallery Dept"], ["Nike bag lite green", "Nike"],
+      // The brand is taken off by its own spelling: "G-Star" is one word here.
+      ["G-Star Raw GS-5222 Dark Navy", "G-Star"], ["Dr. Martens 1460 black", "Dr"]]) {
       assert.equal(no(n, b), null, n);
     }
   });
