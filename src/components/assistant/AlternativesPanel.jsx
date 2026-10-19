@@ -81,6 +81,15 @@ export default function AlternativesPanel({ rows, requestedSize, line, sizeGate,
     // onShown is a fresh closure every render; the ref makes this once per size.
   }, [answered, requestedSize]);
 
+  // Escape in a picked shoe returns to the grid instead of closing the whole
+  // quick-view (capture phase, ahead of AssistantDesktop's window handler).
+  useEffect(() => {
+    if (!picked || typeof window === "undefined") return undefined;
+    const h = (e) => { if (e.key === "Escape") { e.stopImmediatePropagation(); setPicked(null); } };
+    window.addEventListener("keydown", h, true);
+    return () => window.removeEventListener("keydown", h, true);
+  }, [picked]);
+
   const shown = answered ? rows.slice(0, ALT_PANEL_MAX) : [];
   const pickedRow = picked ? shown.find(r => r.product.id === picked) : null;
 
@@ -88,7 +97,9 @@ export default function AlternativesPanel({ rows, requestedSize, line, sizeGate,
     <div className="alt-panel">
       <style>{PANEL_CSS}</style>
       <div className="alt-body">
-        {line ? <div className="alt-line" role="status">{line}</div> : null}
+        {/* Only once the rows have answered: "these have it:" over an empty
+            space would be a claim the screen cannot make yet. */}
+        {line && answered ? <div className="alt-line" role="status">{line}</div> : null}
         {pickedRow ? (
           <div className="alt-detail">
             <button type="button" className="sw-back" onClick={() => setPicked(null)} aria-label="Back to the alternatives">

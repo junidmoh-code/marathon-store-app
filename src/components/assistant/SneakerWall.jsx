@@ -116,11 +116,12 @@ const WALL_CSS = `
   .ad-root--wall .ad-line{background:#0a0a0a;border-color:#1c1c1c}
   .ad-root--wall .ad-dfoot{border-top-color:#1c1c1c}
   .ad-root--wall .ad-qlab,.ad-root--wall .ad-empty,.ad-root--wall .ad-lm,.ad-root--wall .ad-trow{color:rgba(233,238,255,.55)}
+  .ad-root--wall .ad-noprice{color:rgba(233,238,255,.55)!important}
   /* THE ALTERNATIVES PANEL'S HOST (AlternativesPanel.jsx): the quick-view
      goes wide and fixed-height. The panel takes the flexible height and
      scrolls inside; the shoe's own sizes, Display Partner, quantity and Add
      become a fixed footer band that never moves with the grid. */
-  .ad-root--wall .ad-sv.ad-sv--alt{width:min(1240px,calc(100vw - 52px));height:min(860px,calc(100vh - 40px));max-height:none;display:flex;flex-direction:column;overflow:hidden}
+  .ad-root--wall .ad-sv.ad-sv--alt{width:min(1240px,calc(100vw - 52px));height:min(860px,calc(100vh - 40px));height:min(860px,calc(100dvh - 40px));max-height:none;display:flex;flex-direction:column;overflow:hidden}
   .ad-sv--alt .ad-svimg{display:none}
   .ad-altwrap{flex:1;min-height:0;display:flex;flex-direction:column;padding-top:18px}
   .ad-alttitle{font-size:17px;font-weight:800;color:#fff;padding:0 64px 6px 22px}

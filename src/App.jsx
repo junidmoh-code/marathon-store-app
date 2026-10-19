@@ -8774,6 +8774,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // "available now instead" grid the quick-view is showing. Sticky while this
   // shoe is open, so choosing another size below never collapses the grid.
   const [qvAlt, setQvAlt] = useState(null);
+  // Every close path (✕, backdrop, Escape, an add) only clears qv — drop the
+  // panel with it so no later setQv(p) can reopen straight into alt mode.
+  useEffect(() => { if (!qv) setQvAlt(null); }, [qv]);
   const openQv = (p) => {
     setQvAlt(null);
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
@@ -8809,12 +8812,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const wallTileActions = useCallback(p => <ProductActionsButton product={p} products={products} />, [products]);
   // A struck size on the wall opens this shoe's quick-view straight onto the
   // alternatives for that size. Nothing is selected and nothing is added.
-  const openAlternatives = useCallback((p, sz) => {
-    setQv(p); setQvSize(null); setQvQty(1); setQvDP(false);
-    setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
+  const openAlternatives = (p, sz) => {
+    openQv(p);
     setQvNa({ size: sz, left: 0, snk: true }); setQvAlt(sz);
-  }, []);
-  const altMode = !!(qv && qvAlt && wall && flow === "order" && !clothingOrder && !deadForOrder(qv));
+  };
+  // Display Partner lifts every ✕ (adversarial review), so the panel saying
+  // the size can't be ordered must go with it — the classic layout returns.
+  const altMode = !!(qv && qvAlt && !qvDP && wall && flow === "order" && !clothingOrder && !deadForOrder(qv));
 
   return (
     <div className={wall ? "ad-root ad-root--wall" : "ad-root"}>
@@ -9197,8 +9201,10 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                   <AlternativesPanel rows={alt ? alt.rows : null} requestedSize={qvAlt}
                     line={quietBlockLine(qvAlt, sneakerOutWhy?.(qv, qvAlt), stillOut)}
                     sizeGate={sizeGate} onQuickAdd={onQuickAdd} onViewPhoto={wallViewPhoto}
-                    onShown={() => onAlternativesShown?.("quickview", qv, qvAlt, alt)}
-                    onPicked={(row) => onAlternativePicked?.("quickview", qv, qvAlt, row)}
+                    // Its own surface: it shows up to 18, the strip 8, and
+                    // /alternatives_log must be able to tell them apart.
+                    onShown={() => onAlternativesShown?.("wall", qv, qvAlt, alt)}
+                    onPicked={(row) => onAlternativePicked?.("wall", qv, qvAlt, row)}
                     onAdded={() => setQv(null)} />
                 </div>
               );
@@ -9214,7 +9220,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                 </div>
                 {typeof qv.retailPrice === "number" && qv.retailPrice > 0
                   ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(qv.retailPrice)}</div>
-                  : <div style={{ marginTop: 6, color: "rgba(233,238,255,.35)", fontWeight: 700 }}>No price set</div>}
+                  : <div className="ad-noprice" style={{ marginTop: 6, color: "rgba(233,238,255,.35)", fontWeight: 700 }}>No price set</div>}
               </div>
               {flow === "order" ? (
                 <>
