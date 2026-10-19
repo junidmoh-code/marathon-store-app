@@ -334,7 +334,9 @@ const OTHER_KNOWN_BRANDS = [
   "Mizuno", "Saucony", "Brooks", "Umbro", "Hummel", "Lotto", "Sergio Tacchini", "Napapijri", "Superdry", "Jack & Jones",
   "Columbia", "Patagonia", "Arc'teryx", "Canada Goose", "Stüssy", "Stussy", "Corteiz", "Trapstar", "Amiri",
 ];
-const normBrand = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9&]+/g, " ").trim();
+// Accents off first, so "Stüssy" is "stussy" on both sides.
+const plain = (s) => String(s || "").normalize("NFD").replace(/\p{M}+/gu, "");
+const normBrand = (s) => plain(s).toLowerCase().replace(/[^a-z0-9&]+/g, " ").trim();
 const KNOWN_BRANDS = [...new Set([
   ...POSTER_BRANDS.map(([b]) => b), ...DESIGN_BRANDS, ...OTHER_KNOWN_BRANDS,
   ...Object.values(stylist.GUIDE.families).flatMap((f) => f.brands),
@@ -347,7 +349,7 @@ const KNOWN_BRANDS = [...new Set([
  */
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function knownBrandOf(product, displayName) {
-  const raw = String(displayName || "").trim();
+  const raw = plain(displayName).trim();
   // The name's own front, matched on its own spelling ("G-Star Raw", "G star raw").
   for (const b of KNOWN_BRANDS) {
     const m = new RegExp(`^${b.split(" ").map(escRe).join("[\\s.'&-]*")}(?=[\\s.,-]|$)`, "i").exec(raw.replace(/[^\p{L}\p{N}\s.'&-]+/gu, " "));
