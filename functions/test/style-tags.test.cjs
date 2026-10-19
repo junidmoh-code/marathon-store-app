@@ -112,6 +112,20 @@ describe("ensureStyleTags", () => {
     } finally { global.fetch = orig; }
   });
 
+  test("a record the guide can no longer read is tagged again; a usable one never is", async () => {
+    const db = new FakeRtdb({ social_lookbook: { styleTags: { old: { v: 1, ...ANSWER, dominant: "chartreuse", source: "vision" } } } });
+    const calls = [];
+    const orig = global.fetch;
+    global.fetch = okFetch(ANSWER, calls);
+    try {
+      assert.equal(await io.hasTagRecord(db, "old"), false);
+      const r = await io.ensureStyleTags(db, [{ pid: "old", photoUrl: "u", product: { name: "x", categoryKey: "t-shirts" } }], { geminiApiKey: "k", fetchImage: PNG });
+      assert.equal(r.tagged, 1);
+      assert.equal(db._get(["social_lookbook", "styleTags", "old"]).dominant, "black");
+      assert.equal(await io.hasTagRecord(db, "old"), true);
+    } finally { global.fetch = orig; }
+  });
+
   test("past the ceiling, or with no key, the name is read and nothing is cached", async () => {
     const db = new FakeRtdb({});
     const items = [{ pid: "p3", photoUrl: "u", product: { brand: "Lacoste", name: "Lacoste polo navy", categoryKey: "golf-t-shirts" } }];

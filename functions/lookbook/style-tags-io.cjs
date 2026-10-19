@@ -24,9 +24,14 @@ async function readStyleTags(db, pids) {
   return out;
 }
 
-/** Is there a record at all (usable or not)? A record is never overwritten. */
+/**
+ * Does the product have tags this guide can read? A usable record is never
+ * overwritten. One the guide can no longer read (a colour or family renamed
+ * in docs/style-guide.md) is no tag at all, and is tagged again (CodeRabbit
+ * on #759).
+ */
 async function hasTagRecord(db, pid) {
-  return (await db.ref(TAG_PATH(pid)).once("value")).exists();
+  return Boolean(styleTags.usableTags((await db.ref(TAG_PATH(pid)).once("value")).val()));
 }
 
 /**
@@ -91,7 +96,7 @@ async function ensureStyleTags(db, items, deps = {}, { maxNew = 24, deadlineMs =
     const p = it.product || {};
     if (deps.geminiApiKey && deps.fetchImage && it.photoUrl && tagged < maxNew && Date.now() < deadlineMs) {
       try {
-        // A record that exists but is unusable (an older vocabulary) is left alone.
+        // Checked again just before the call: a parallel run may have tagged it.
         if (!(await hasTagRecord(db, it.pid))) {
           const img = await deps.fetchImage(it.photoUrl);
           const v = await visionTags(deps.geminiApiKey, img, { brand: p.brand, name: it.websiteName || p.name, categoryKey: p.categoryKey });

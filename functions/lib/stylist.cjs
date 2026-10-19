@@ -370,6 +370,7 @@ function buildChoicePrompt(shortlist, { kind = "lookbook", season = "summer", gu
     pairing
       ? "The note is about two or three pieces that go together. Never call them an outfit, a look or a fit."
       : "The note speaks to a customer, in plain words. No prices, no hashtags, no emoji.",
+    "Marathon Club sells online: never mention a shop, a branch, \"in store\" or visiting.",
   ].join("\n");
 }
 
@@ -378,7 +379,10 @@ const NOTE_MAX = 140;
 function cleanNote(note, { kind } = {}) {
   let s = String(note || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").replace(/^["'“”]+|["'“”]+$/g, "").trim();
   // Too short to say anything ("x", "Nice."), or a price, a hashtag or a link.
-  if (s.length < 12 || /#|\bR\s?\d|https?:/.test(s) || /https?:/i.test(s)) return null;
+  if (s.length < 12 || /#|\bR\s?\d/.test(s) || /https?:/i.test(s)) return null;
+  // The shop is online-only in every caption (social-caption policy): a note
+  // that sends people to a branch is not used (CodeRabbit on #759).
+  if (/\b(?:in[- ]?store|visit us|come see us|pop in|our (?:shop|store|branch))\b/i.test(s)) return null;
   if (kind === "pairing" && /\b(outfits?|looks?|fits?)\b/i.test(s)) return null;
   if (s.length > NOTE_MAX) {
     const cut = s.slice(0, NOTE_MAX);

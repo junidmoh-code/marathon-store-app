@@ -276,6 +276,11 @@ describe("review fixes (Sonnet architect, #759)", () => {
     assert.notEqual(c.note, "Denim on denim, kept simple and calm.");
     assert.equal(c.look, s[0].look);
   });
+  test("a note that sends people to a shop is not used (CodeRabbit)", () => {
+    assert.equal(sty.cleanNote("Grab the whole set in store this weekend"), null);
+    assert.equal(sty.cleanNote("Visit us for the full colourway"), null);
+    assert.equal(sty.cleanNote("Restored storefront energy, clean lines"), "Restored storefront energy, clean lines");
+  });
   test("a word ending in r before a number is not a price", () => {
     assert.equal(sty.cleanNote("Colour 1 is black, colour 2 is white"), "Colour 1 is black, colour 2 is white");
     assert.equal(sty.cleanNote("Under R900 for the set"), null);
