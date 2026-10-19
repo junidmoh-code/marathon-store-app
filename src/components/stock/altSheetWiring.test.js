@@ -34,7 +34,7 @@ describe("the refusal itself is unchanged", () => {
   });
   it("the quick-view's out-tap does the same", () => {
     // Since the wall's panel (2026-10-19) the out branch is a short block: it
-    // raises the note (and, on the wall, the alternatives) and returns —
+    // raises the note (on the wall, the strip under the pills) and returns —
     // still never selecting the size.
     const i = APP.indexOf("const snk = !(clothingOrder || deadForOrder(qv));");
     expect(i).toBeGreaterThan(-1);
@@ -131,9 +131,9 @@ describe("the strip is wired into both sheets", () => {
   it("the quick-view renders it too", () => {
     expect(APP).toContain("const full = alternativesFor?.(qv, qvNa.size) ?? null;");
     expect(APP).toContain("<AlternativesStrip compact key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null}");
-    // …and on the wall the panel replaces it, fed by the same call.
-    expect(APP).toContain("const alt = alternativesFor?.(qv, qvAlt) ?? null;");
-    expect(APP).toContain("<AlternativesPanel key={`${qv.id}|${qvAlt}`} rows={alt ? alt.rows : null} requestedSize={qvAlt}");
+    // …and on the wall the popup's own strip replaces it, fed by the same call.
+    expect(APP).toContain("const alt = alternativesFor?.(qv, qvNa.size) ?? null;");
+    expect(APP).toContain("<WallAlternatives key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null} requestedSize={qvNa.size}");
   });
 });
 

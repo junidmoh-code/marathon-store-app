@@ -127,7 +127,8 @@ import { hasStockAccess } from "./components/stock/stockAccess";
 import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SneakerWall from "./components/assistant/SneakerWall.jsx";
-import AlternativesPanel, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/AlternativesPanel.jsx";
+import WallAlternatives, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/WallAlternatives.jsx";
+import { HiResPhoto } from "./components/assistant/SneakerWall.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
 import { answerStyleCodeSibling, recordLabelCodes } from "./components/stock/hubCleanupStore";
@@ -8677,8 +8678,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // (hubQty/servingHubLabel from AssistantView) greying out zero-stock sizes.
   const clothingOrder = mode === "clothing";
   const wallMode = mode === "sneaker";
-  // Memoised: the wall's tiles are React.memo, and a fresh gate object every
-  // render would redraw all sixty on each hover.
+  // The classic grid's size gate (quickAddSizeState), memoised.
   const sizeGate = useMemo(
     () => ({ clothingOrder, hubQty, sneakerOut, sneakerOutWhy, sneakerDisplayInfo, deadForOrder, hubLabelFor }),
     // hubLabelFor is derived from the last two.
@@ -8770,15 +8770,14 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // Quick-view availability note — { size, left } (mirrors the mobile sheet's
   // naNote; live via hubQty/cart every render).
   const [qvNa, setQvNa] = useState(null);
-  // THE ALTERNATIVES PANEL (wall only, 2026-10-19): the size whose
-  // "available now instead" grid the quick-view is showing. Sticky while this
-  // shoe is open, so choosing another size below never collapses the grid.
-  const [qvAlt, setQvAlt] = useState(null);
-  // Every close path (✕, backdrop, Escape, an add) only clears qv — drop the
-  // panel with it so no later setQv(p) can reopen straight into alt mode.
-  useEffect(() => { if (!qv) setQvAlt(null); }, [qv]);
+  // THE WALL'S "← back to …" (round 3, item 10): the shoe — and the size it
+  // had no stock in — that the popup came from when an alternative in its
+  // strip swapped in. Every close path (✕, backdrop, Escape, an add) only
+  // clears qv, so drop it with qv; openQv drops it too.
+  const [qvFrom, setQvFrom] = useState(null);
+  useEffect(() => { if (!qv) setQvFrom(null); }, [qv]);
   const openQv = (p) => {
-    setQvAlt(null);
+    setQvFrom(null);
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
     setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
   };
@@ -8807,18 +8806,20 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // order and the CR fallback keep the three-pane layout below, untouched.
   // Both share this root's quick-view, checkout and shop-switch confirm.
   const wall = wallMode;
-  // Stable callbacks for the wall's memoised tiles.
-  const wallViewPhoto = useCallback(p => onViewPhoto(productPhotos(p)), [onViewPhoto]);
-  const wallTileActions = useCallback(p => <ProductActionsButton product={p} products={products} />, [products]);
-  // A struck size on the wall opens this shoe's quick-view straight onto the
-  // alternatives for that size. Nothing is selected and nothing is added.
-  const openAlternatives = (p, sz) => {
-    openQv(p);
-    setQvNa({ size: sz, left: 0, snk: true }); setQvAlt(sz);
+  // An alternative tapped in the wall popup's strip swaps the popup to that
+  // shoe in place, remembering where it came from for the back link.
+  const pickWallAlternative = (row, size) => {
+    if (!alternativeSelection(row, size)) return;
+    const from = { p: qv, size };
+    pickQvAlternative(row, size);
+    setQvFrom(from);
   };
-  // Display Partner lifts every ✕ (adversarial review), so the panel saying
-  // the size can't be ordered must go with it — the classic layout returns.
-  const altMode = !!(qv && qvAlt && !qvDP && wall && flow === "order" && !clothingOrder && !deadForOrder(qv));
+  const backToQvFrom = () => {
+    const f = qvFrom;
+    if (!f) return;
+    openQv(f.p);
+    setQvNa({ size: f.size, left: 0, snk: true });
+  };
 
   return (
     <div className={wall ? "ad-root ad-root--wall" : "ad-root"}>
@@ -8948,11 +8949,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           // A modal over the wall (quick-view, checkout, shop switch) owns
           // Escape; the wall leaves its tile/drawer alone underneath it.
           modalOpen={!!qv || coOpen || !!pendingShop}
-          sizeGate={sizeGate} onQuickAdd={onQuickAdd} onOpenDetails={openQv} onOutSize={openAlternatives}
-          onViewPhoto={wallViewPhoto}
-          // Deactivate / reactivate / merge (owner spec 2026-08-31) moved from
-          // the resting card into the open tile. Renders nothing for a non-admin.
-          renderTileActions={wallTileActions}
+          // A tile tap opens the popup — the only place sizes live.
+          onQuickAdd={onQuickAdd} onOpenDetails={openQv}
           grouped={grouped} units={units} total={total}
           onRemoveOne={onRemoveOne} onAddDisplayPartner={onAddDisplayPartner}
           onCheckout={() => setCoOpen(true)} />
@@ -9187,34 +9185,28 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
       {/* QUICK-VIEW STAGE */}
       {qv && (
         <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setQv(null); }}>
-          <div className={altMode ? "ad-sv ad-sv--alt" : "ad-sv"}>
+          <div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name}>
             <button className="ad-svclose" onClick={() => setQv(null)} aria-label="Close">✕</button>
-            {/* AVAILABLE NOW INSTEAD (wall, item 7). The panel takes the
-                flexible height; this shoe's own controls below become the
-                fixed footer band (the .ad-sv--alt rules in SneakerWall). */}
-            {altMode && (() => {
-              const alt = alternativesFor?.(qv, qvAlt) ?? null;
-              const stillOut = !!sneakerOut?.(qv, qvAlt);
-              return (
-                <div className="ad-altwrap">
-                  <div className="ad-alttitle">Available now instead</div>
-                  <AlternativesPanel key={`${qv.id}|${qvAlt}`} rows={alt ? alt.rows : null} requestedSize={qvAlt}
-                    line={quietBlockLine(qvAlt, sneakerOutWhy?.(qv, qvAlt), stillOut)}
-                    sizeGate={sizeGate} onQuickAdd={onQuickAdd} onViewPhoto={wallViewPhoto}
-                    // Its own surface: it shows up to 18, the strip 8, and
-                    // /alternatives_log must be able to tell them apart.
-                    onShown={() => onAlternativesShown?.("wall", qv, qvAlt, alt)}
-                    onPicked={(row) => onAlternativePicked?.("wall", qv, qvAlt, row)}
-                    onAdded={() => setQv(null)} />
-                </div>
-              );
-            })()}
+            {/* Deactivate / reactivate / merge (owner spec 2026-08-31): off the
+                wall's tiles since round 3, into the popup header. Renders
+                nothing for a non-admin. */}
+            {wall && <div className="ad-svacts"><ProductActionsButton product={qv} products={products} /></div>}
             <div className="ad-svimg" onClick={() => qv.photoUrl && onViewPhoto(productPhotos(qv))} style={{ cursor: qv.photoUrl ? "zoom-in" : "default" }}>
               <span className="ad-cat" style={{ top: 14, left: 14 }}>{qv.brand || (mode !== "sneaker" ? "Clothing" : "Sneakers")}</span>
-              <Photo p={qv} big />
+              {/* The wall's popup draws the full-resolution original — the
+                  file the lightbox opens — with the cached thumbnail as its
+                  offline fallback (round 3, item 2). Called directly, not
+                  through the inline Photo, so a re-render never remounts it. */}
+              {wall
+                ? <HiResPhoto key={`${qv.id}|${qv.photoUrl || ""}`} p={qv} alt={qv.name} style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                              fallback={<span style={{ fontSize: 110 }}>{qv.photo || "👟"}</span>} />
+                : <Photo p={qv} big />}
             </div>
             <div className="ad-svbody">
               <div>
+                {wall && qvFrom && (
+                  <button type="button" className="ad-svback" onClick={backToQvFrom}>← back to {qvFrom.p.name}</button>
+                )}
                 <div className="ad-svname">{qv.name}
                   {isDeactivated(qv) && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, letterSpacing: ".06em", padding: "2px 7px", borderRadius: 6, background: "rgba(150,160,190,.18)", border: "1px solid rgba(150,160,190,.4)", color: "#B9C0D4", verticalAlign: "middle" }}>DEACTIVATED</span>}
                 </div>
@@ -9237,8 +9229,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                       // instead of leaving "reserved" indistinguishable from
                       // "doesn't exist". Self-hides once the size frees up.
                       if (qvNa.snk && !deadForOrder(qv)) {
-                        // The wall's panel above already says it, quietly.
-                        if (altMode) return null;
+                        // The wall's strip under the pills says it, quietly.
+                        if (wall) return null;
                         // Belt on the toggle's clear: partner mode lifts the
                         // grey-out, so the note must never outlive it either way.
                         if (qvDP || !sneakerOut?.(qv, qvNa.size)) return null;
@@ -9322,8 +9314,6 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               if (out) {
                                 const snk = !(clothingOrder || deadForOrder(qv));
                                 setQvNa(snk ? { size: sz, left: 0, snk: true } : { size: sz, left: 0 });
-                                // On the wall a ✕ tap shows ITS alternatives.
-                                if (snk && wallMode) setQvAlt(sz);
                                 return;
                               }
                               setQvNa(null); setQvSize(sz);
@@ -9338,6 +9328,24 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         );
                       })}
                     </div>
+                    {/* THESE HAVE IT (wall, round 3 item 10): a ✕ size's
+                        alternatives as a strip INSIDE the popup, under the
+                        pills — a suggestion, not a screen. Raised by the same
+                        ✕ tap as the classic note (qvNa.snk); Display Partner
+                        lifts every ✕, so it lifts the strip too. A tile swaps
+                        this popup to that shoe in place. */}
+                    {wall && qvNa?.snk && !qvDP && !clothingOrder && !deadForOrder(qv) && (() => {
+                      const alt = alternativesFor?.(qv, qvNa.size) ?? null;
+                      const stillOut = !!sneakerOut?.(qv, qvNa.size);
+                      return (
+                        <WallAlternatives key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null} requestedSize={qvNa.size}
+                          line={quietBlockLine(qvNa.size, sneakerOutWhy?.(qv, qvNa.size), stillOut)}
+                          // Its own surface: it shows up to 18, the strip 8, and
+                          // /alternatives_log must be able to tell them apart.
+                          onShown={() => onAlternativesShown?.("wall", qv, qvNa.size, alt)}
+                          onPicked={(row) => { onAlternativePicked?.("wall", qv, qvNa.size, row); pickWallAlternative(row, qvNa.size); }} />
+                      );
+                    })()}
                   </div>
                   {/* Display Partner request — sneakers only; one line, size optional. */}
                   {!clothingOrder && (
