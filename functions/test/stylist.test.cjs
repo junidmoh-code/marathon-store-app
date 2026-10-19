@@ -303,3 +303,11 @@ test("a slot of fresh prints keeps two quiet pieces in reach (19 Oct: no cap loo
   assert.ok(r.best, JSON.stringify(r.refused));
   assert.ok(r.best.pieces.some((p) => p.pid === "solid-tee"));
 });
+
+test("lookbook: a cap look with one off-palette piece (olive jeans) is still found, and named for a look that wears a hat", () => {
+  const set = [P("tee", { dominant: "charcoal" }, { pid: "t" }), P("bottoms", { dominant: "olive", silhouette: "slim" }, { pid: "b" }),
+    P("sneakers", { dominant: "off-white", silhouette: "n/a" }, { pid: "s" }), P("hat", { dominant: "green", pattern: "print", silhouette: "n/a", family: "prep" }, { pid: "cap" })];
+  const r = sty.styleOutfits(set, { core: [["tee"], ["bottoms"], ["sneakers"]], requireSlots: ["hat"], minPieces: 4, maxPieces: 4, month: 10, lookSlots: true });
+  assert.ok(r.best, JSON.stringify(r.refused));
+  assert.ok(sty.GUIDE.looks.find((l) => l.key === r.best.look).extras.includes("hat"));
+});

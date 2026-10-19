@@ -336,10 +336,13 @@ function styleOutfits(pieces, opts = {}) {
   // Each plan enumerates from its own per-slot shortlist: a look's palette
   // (so an earth-tone look is not starved by six black tees), and one with no
   // palette at all. With lookSlots a look's plan has only its declared
-  // optional slots, and the palette-free plan never has headwear.
+  // optional slots; the palette-free plan has every slot, and an outfit from
+  // it keeps an optional piece only when it matches a look that declares it
+  // (checked after scoring). A look's palette needs only 60% of the pieces,
+  // so a cap look with olive jeans exists only in that plan (19 Oct).
   const plans = [
     ...looks.map((l) => ({ palette: new Set(l.palette), slots: lookSlots ? order.filter((s) => lookAllows(l, s) || core.some((alts) => alts.includes(s))) : order })),
-    ...(opts.look ? [] : [{ palette: null, slots: lookSlots ? order.filter((s) => s !== "hat") : order }]),
+    ...(opts.look ? [] : [{ palette: null, slots: order }]),
   ];
   const seen = new Map();
   const refused = {};
