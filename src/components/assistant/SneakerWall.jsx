@@ -153,7 +153,7 @@ export default function SneakerWall({
   availableShops, effectiveShop, shopRegistry, onPickShop,
   mode, setMode, onSwitchView, userEmail,
   search, setSearch, searchRef, onLabelFind,
-  shownCount, visible, onShowMore, modalOpen = false,
+  shownCount, visible, onShowMore, modalOpen = false, popupOpen = false,
   onOpenDetails, onQuickAdd,
   grouped, units, total, onRemoveOne, onAddDisplayPartner, onCheckout,
 }) {
@@ -179,11 +179,13 @@ export default function SneakerWall({
     wasOpen.current = drawerOpen;
   }, [drawerOpen]);
 
-  const wasModal = useRef(false);
+  // Only the product popup hands focus back — closing checkout or the shop
+  // confirm must not pull focus to a tile from an earlier popup.
+  const wasPopup = useRef(false);
   useEffect(() => {
-    if (!modalOpen && wasModal.current && lastTile.current?.isConnected) lastTile.current.focus?.();
-    wasModal.current = modalOpen;
-  }, [modalOpen]);
+    if (!popupOpen && wasPopup.current && lastTile.current?.isConnected) lastTile.current.focus?.();
+    wasPopup.current = popupOpen;
+  }, [popupOpen]);
 
   // Tap outside the open menu closes it.
   useEffect(() => {

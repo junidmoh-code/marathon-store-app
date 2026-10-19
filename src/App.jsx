@@ -8806,7 +8806,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // Both share this root's quick-view, checkout and shop-switch confirm.
   const wall = wallMode;
   // An alternative tapped in the wall popup's strip swaps the popup to that
-  // shoe in place, remembering where it came from for the back link.
+  // shoe in place, remembering where it came from for the back link. One
+  // level: from a second swap, back goes to the shoe before it, not the first.
   const pickWallAlternative = (row, size) => {
     if (!alternativeSelection(row, size)) return;
     const from = { p: qv, size };
@@ -8817,6 +8818,16 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // or swaps (the wall hands it back to the tile on close).
   const qvCloseRef = useRef(null);
   useEffect(() => { if (wall && qv) qvCloseRef.current?.focus?.(); }, [wall, qv]);
+  // aria-modal means it: Tab and Shift-Tab cycle inside the wall's popup.
+  const trapQvTab = (e) => {
+    if (!wall || e.key !== "Tab") return;
+    const els = [...e.currentTarget.querySelectorAll('button:not([disabled]),input:not([disabled]),[tabindex]:not([tabindex="-1"])')]
+      .filter(el => el.offsetParent !== null);
+    if (!els.length) return;
+    const first = els[0], last = els[els.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
   const backToQvFrom = () => {
     const f = qvFrom;
     if (!f) return;
@@ -8951,7 +8962,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           shownCount={shown.length} visible={visible} onShowMore={showMore}
           // A modal over the wall (quick-view, checkout, shop switch) owns
           // Escape; the wall leaves its tile/drawer alone underneath it.
-          modalOpen={!!qv || coOpen || !!pendingShop}
+          modalOpen={!!qv || coOpen || !!pendingShop} popupOpen={!!qv}
           // A tile tap opens the popup — the only place sizes live.
           onQuickAdd={onQuickAdd} onOpenDetails={openQv}
           grouped={grouped} units={units} total={total}
@@ -9188,7 +9199,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
       {/* QUICK-VIEW STAGE */}
       {qv && (
         <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setQv(null); }}>
-          <div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name}>
+          <div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name} onKeyDown={trapQvTab}>
             <button className="ad-svclose" ref={qvCloseRef} onClick={() => setQv(null)} aria-label="Close">✕</button>
             {/* Deactivate / reactivate / merge (owner spec 2026-08-31): off the
                 wall's tiles since round 3, into the popup header. Renders
@@ -9348,7 +9359,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                           // Its own surface: it shows up to 18, the strip 8, and
                           // /alternatives_log must be able to tell them apart.
                           onShown={() => onAlternativesShown?.("wall", qv, qvNa.size, alt)}
-                          onPicked={(row) => { onAlternativePicked?.("wall", qv, qvNa.size, row); pickWallAlternative(row, qvNa.size); }} />
+                          // Logged only when the pick really swaps the popup.
+                          onPicked={(row) => { if (!alternativeSelection(row, qvNa.size)) return; onAlternativePicked?.("wall", qv, qvNa.size, row); pickWallAlternative(row, qvNa.size); }} />
                       );
                     })()}
                   </div>

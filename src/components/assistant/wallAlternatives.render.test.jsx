@@ -120,7 +120,7 @@ describe("the popup hosts it (App.jsx)", () => {
     expect(APP).not.toContain("ad-sv--alt");
     expect(APP).not.toContain("altMode");
     expect(WALL).not.toContain("ad-sv--alt");
-    expect(APP).toContain('<div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name}>');
+    expect(APP).toContain('<div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name} onKeyDown={trapQvTab}>');
     expect(APP).toMatch(/\.ad-sv\{width:min\(820px,100%\);/);
     // Measured in Chrome before this rule: the 18 tiles sized the text column
     // to 2116px and squeezed the photo. minmax(0,…) keeps the row scrolling.
@@ -128,7 +128,7 @@ describe("the popup hosts it (App.jsx)", () => {
     expect(WALL).toContain(".ad-root--wall .ad-svbody,.ad-root--wall .ad-svbody>div{min-width:0}");
   });
   it("a pick swaps the popup in place and remembers the shoe for the back link", () => {
-    expect(APP).toContain('onPicked={(row) => { onAlternativePicked?.("wall", qv, qvNa.size, row); pickWallAlternative(row, qvNa.size); }}');
+    expect(APP).toContain('onPicked={(row) => { if (!alternativeSelection(row, qvNa.size)) return; onAlternativePicked?.("wall", qv, qvNa.size, row); pickWallAlternative(row, qvNa.size); }}');
     const i = APP.indexOf("const pickWallAlternative = (row, size) => {");
     const body = APP.slice(i, APP.indexOf("\n  };", i));
     expect(body).toContain("const from = { p: qv, size };");
