@@ -252,7 +252,11 @@ describe("availability is monotonic — no chip can lose an order it had", () =>
 // hubs, an ✕ means both were asked, and the note has to say that. This also
 // pins the literal used as the post-deploy bundle probe.
 import { readFileSync } from "fs";
-const appSrc = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
+// The order screen's size gate and ✕ note moved to
+// components/assistant/assistantOrderModel.js (2026-10-19, the sneaker wall);
+// the pins read it alongside App.jsx so they keep guarding the same text.
+const appSrc = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8")
+  + "\n" + readFileSync(new URL("../assistant/assistantOrderModel.js", import.meta.url), "utf8");
 
 describe("the both-hubs-empty note", () => {
   it("names both hubs when both were actually read and both were empty", () => {

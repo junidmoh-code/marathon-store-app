@@ -125,6 +125,10 @@ import AttentionView from "./components/stock/AttentionView";
 import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
 import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
+import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
+import SneakerWall from "./components/assistant/SneakerWall.jsx";
+import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
+import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
 import { answerStyleCodeSibling, recordLabelCodes } from "./components/stock/hubCleanupStore";
 import { extractDominantColours } from "./utils/dominantColours";
 import { displaySendNeedsSize } from "./utils/displaySend";
@@ -8649,54 +8653,8 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // keep the existing tap→sheet flow. Reuses AssistantView's cart + checkout via
 // props (onQuickAdd/onRemoveOne/onCheckout); clothing is CR-only, so the catalog
 // is sneakers only. Committed dark — the POS's world.
-// How many product cards the desktop workspace builds at once. The till is a
-// Celeron J4125 with UHD 600 graphics: ~2.4k clothing cards (each with a photo,
-// a blurred glass background and an animated price) is several seconds of work,
-// which is what made typing in the search box lag. A screenful is ~12-20 cards.
-const AD_PAGE = 60;
-
-// The ✕-note text for a sneaker size — WHY the serving hub can't give it out.
-// Three ✕ causes that looked identical and read as "this size doesn't exist"
-// (owner report 2026-09-01, Lacoste Powercourt size 8): the cell truly has
-// nothing; the cell has stock but every unit is reserved for a ready-but-
-// uncollected order; or this cart already holds everything the hub can give.
-// `w` is sneakerOutWhy's { booked, promised, available, pullOnly, hubLabel }.
-// hubLabel is the hub that actually refused (Hub 1 or, since 2026-09-05, Hub
-// 2): naming the wrong shelf sends staff to the wrong building. It defaults to
-// "Hub 1" only when there is no split at all, which is the pre-2026-09-05
-// wording verbatim.
-function sneakerBlockNoteText(size, w) {
-  const sz = formatSize(size);
-  const hub = w?.hubLabel || "Hub 1";
-  // "another customer's order", not "awaiting collection": the promised
-  // scalar merges ready promises WITH pending display-pair pulls, and the
-  // note must not name a reason it cannot distinguish (adversarial review).
-  // The hold is SHORT (20-minute collection deadline, owner directive
-  // 2026-09-01) and the note says so — staff should retry, not give up.
-  // EXCEPT a block explained only by a display-pair pull claim (w.pullOnly):
-  // that lane holds for up to 48h, and calling it a 20-minute hold would be
-  // false (CodeRabbit, #546).
-  // BOTH GATED HUBS CHECKED, BOTH EMPTY (2026-09-06). Since sourcing became
-  // stock-aware, an ✕ on a size neither Hub 1 nor Hub 2 holds is a genuinely
-  // different fact from "the hub this shoe is tagged to hasn't got it" — and
-  // the old wording said the second while meaning the first, which is the
-  // shape of the report that started this work: staff read a hub-named ✕ as
-  // "this size doesn't exist" and stopped looking. Say what was actually
-  // checked. Only when the resolver really did read both (w.checkedBoth);
-  // an unsettled alternate keeps the single-hub wording verbatim.
-  if (!w || w.booked <= 0) return w?.checkedBoth
-    ? `Size ${sz} isn't at Hub 1 or Hub 2 right now — it can't be ordered.`
-    : `Size ${sz} isn't available at ${hub} right now — it can't be ordered.`;
-  if (w.available <= 0) {
-    if (w.pullOnly)
-      return `Size ${sz} at ${hub} is claimed by a pending display-pair request — it can't be ordered.`;
-    return w.booked === 1
-      ? `${hub}'s only size ${sz} is reserved for another customer's order (20-minute hold) — try again shortly.`
-      : `All ${w.booked} of size ${sz} at ${hub} are reserved for other customers' orders (20-minute hold) — try again shortly.`;
-  }
-  return `Your cart already has all ${w.available} of size ${sz} that ${hub} can give out.`;
-}
-
+// AD_PAGE, sneakerBlockNoteText and the cart grouping live in
+// components/assistant/assistantOrderModel.js (shared with the sneaker wall).
 
 function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
@@ -8717,6 +8675,12 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // clothing catalog with live per-size availability at the serving CR hub
   // (hubQty/servingHubLabel from AssistantView) greying out zero-stock sizes.
   const clothingOrder = mode === "clothing";
+  // Memoised: the wall's tiles are React.memo, and a fresh gate object every
+  // render would redraw all sixty on each hover.
+  const sizeGate = useMemo(
+    () => ({ clothingOrder, hubQty, sneakerOut, sneakerOutWhy, sneakerDisplayInfo, deadForOrder, hubLabelFor }),
+    // hubLabelFor is derived from the last two.
+    [clothingOrder, hubQty, sneakerOut, sneakerOutWhy, sneakerDisplayInfo, deadForOrder, clothingHubLabelOf, servingHubLabel]);
   // Cart units of a clothing product+size — mirrors AssistantView's helper so
   // the quick-view can explain adds blocked by cart-vs-hub availability.
   const clothingInCart = (pid, size) =>
@@ -8781,48 +8745,15 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
     return list;
   }, [searchResults, catalog, brand, sort]);
 
-  // Render cap — a query like "a" matches thousands of products, and building
-  // that many cards is what made the till crawl. Cards are cheap to add on
-  // demand, so show a screenful and grow on scroll/click.
-  const [renderCap, setRenderCap] = useState(AD_PAGE);
-  useEffect(() => { setRenderCap(AD_PAGE); }, [searchResults, brand, sort, mode]);
-  const visible = useMemo(() => shown.slice(0, renderCap), [shown, renderCap]);
-
   // Reset the brand filter when switching modes (brands differ per catalog).
-  useEffect(() => { setBrand("All"); }, [mode]);
+  // The wall has neither control, so entering it drops a sort left over from
+  // the clothing layout — the wall is always the featured order.
+  useEffect(() => { setBrand("All"); if (mode === "sneaker") setSort("feat"); }, [mode]);
 
-  // Cart → grouped by product+size for the drawer (the cart is one line per unit).
-  const grouped = useMemo(() => {
-    const m = new Map();
-    (cart || []).forEach(l => {
-      if (l.intent === "refill") return;                 // desktop = customer orders
-      const dp = !!l.requestDisplayPartner;
-      // A display-pair PULL groups apart from a classic partner line — mixing
-      // them let "+" mint an unflagged twin and "−" strip the flagged one.
-      const pull = l.displayPairRequest === true;
-      const key = `${l.product?.id}__${l.size}__${dp ? "dp" : ""}${pull ? "pull" : ""}`;
-      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, dp, pull, qty: 0 });
-      m.get(key).qty++;
-    });
-    return [...m.values()];
-  }, [cart]);
-  const units = grouped.reduce((s, g) => s + g.qty, 0);
-  // Refill cart (intent:"refill") — each line carries its own qty; sum per size.
-  const groupedRefill = useMemo(() => {
-    const m = new Map();
-    (cart || []).forEach(l => {
-      if (l.intent !== "refill") return;
-      const key = `${l.product?.id}__${l.size}`;
-      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, qty: 0 });
-      m.get(key).qty += (l.qty || 1);
-    });
-    return [...m.values()];
-  }, [cart]);
-  const refillUnits = groupedRefill.reduce((s, g) => s + g.qty, 0);
-  const fmtR = n => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
-  // Numeric runs in ascending order (orderSizesForDisplay) — stored order put
-  // a shoe's 10 before its 6 (2026-10-03).
-  const sizesOf = p => { const s = orderSizesForDisplay((Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_")); return s.length ? s : ["Free Size"]; };
+  // Cart grouping, the running total and the render cap — shared with the
+  // sneaker wall (components/assistant/assistantOrderModel.js).
+  const { grouped, groupedRefill, units, refillUnits, total, visible, showMore } =
+    useAssistantOrderModel({ cart, shown, resetKeys: [searchResults, brand, sort, mode] });
 
   useEffect(() => {
     const h = e => {
@@ -8862,11 +8793,20 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
     ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
     : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
 
+  // SNEAKER ORDER = THE PHOTO WALL (Junid's design, 2026-10-19). Clothing
+  // order and the CR fallback keep the three-pane layout below, untouched.
+  // Both share this root's quick-view, checkout and shop-switch confirm.
+  const wall = mode === "sneaker";
+  // Stable callbacks for the wall's memoised tiles.
+  const wallViewPhoto = useCallback(p => onViewPhoto(productPhotos(p)), [onViewPhoto]);
+  const wallTileActions = useCallback(p => <ProductActionsButton product={p} products={products} />, [products]);
+
   return (
-    <div className="ad-root">
+    <div className={wall ? "ad-root ad-root--wall" : "ad-root"}>
       <style>{`
         .ad-root{position:fixed;inset:0;z-index:50;background:#000;color:#f4f6ff;font-family:${FONT.replace(/`/g,"")};display:grid;grid-template-columns:184px minmax(0,1fr) 288px;overflow:hidden}
         .ad-root *{box-sizing:border-box}
+        .ad-root.ad-root--wall{display:block}
         @media(max-width:1180px){.ad-root{grid-template-columns:184px minmax(0,1fr)} .ad-drawer{position:fixed;right:0;top:0;bottom:0;width:288px}}
         .ad-side{background:rgba(255,255,255,.015);border-right:1px solid rgba(255,255,255,.08);padding:22px 12px 16px;display:flex;flex-direction:column;gap:4px;overflow:auto}
         .ad-wm .m{font-size:21px;font-weight:800;font-style:italic;letter-spacing:-.6px;color:#fff}
@@ -8979,6 +8919,25 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
         @media(prefers-reduced-motion:reduce){.ad-price,.ad-svprice{animation:none} .ad-card,.ad-quick,.ad-scroll,.ad-dbody,.ad-danger,.ad-warnpulse{animation:none;transition:none}}
       `}</style>
 
+      {wall ? (
+        <SneakerWall
+          availableShops={availableShops} effectiveShop={effectiveShop} shopRegistry={shopRegistry}
+          onPickShop={setPendingShop}
+          mode={mode} setMode={setMode} onSwitchView={onSwitchView} userEmail={userEmail}
+          search={search} setSearch={setSearch} searchRef={searchRef} onLabelFind={onLabelFind}
+          shownCount={shown.length} visible={visible} onShowMore={showMore}
+          // A modal over the wall (quick-view, checkout, shop switch) owns
+          // Escape; the wall leaves its tile/drawer alone underneath it.
+          modalOpen={!!qv || coOpen || !!pendingShop}
+          sizeGate={sizeGate} onQuickAdd={onQuickAdd} onOpenDetails={openQv}
+          onViewPhoto={wallViewPhoto}
+          // Deactivate / reactivate / merge (owner spec 2026-08-31) moved from
+          // the resting card into the open tile. Renders nothing for a non-admin.
+          renderTileActions={wallTileActions}
+          grouped={grouped} units={units} total={total}
+          onRemoveOne={onRemoveOne} onAddDisplayPartner={onAddDisplayPartner}
+          onCheckout={() => setCoOpen(true)} />
+      ) : (<>
       {/* SIDEBAR */}
       <aside className="ad-side">
         <div className="ad-wm" style={{ padding: "0 8px 14px" }}><div className="m">marathon</div><div className="c">CLUB</div></div>
@@ -9099,40 +9058,18 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                           <div className="ad-qlab">Add a size</div>
                           <div className="ad-szrow">
                             {szs.map(sz => {
-                              // Clothing: a size the serving hub has zero of is
-                              // greyed/disabled here (hover quick-add has no room
-                              // for the inline note — the quick-view carries it).
-                              // Sneakers (Hub 1 and Hub 2): same disable from
-                              // the shared availability resolver (sneakerOut), composed
-                              // with the deactivation/clothing rule (#445).
-                              const out = orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz), deactivated: deadForOrder(p) })
-                                || (!clothingOrder && !!sneakerOut?.(p, sz));
-                              // THE GLYPH IS INFORMATIONAL AND NOTHING ELSE.
-                              // It says "a unit of this size is on a floor" —
-                              // it does not gate the tile. Never on a
-                              // ✕/deactivated tile: the ✕ is authoritative
-                              // (the drift rule), and a cell the books call
-                              // empty must not advertise a display.
-                              const dInfo = !clothingOrder && !out && !deadForOrder(p) ? sneakerDisplayInfo?.(p, sz) : null;
-                              // THE THIRD SIZE-CHIP SURFACE. The spec says
-                                // the unavailable chip becomes tappable, and
-                                // that has to mean here too — this hover panel
-                                // has no room for a sheet, so the tap opens the
-                                // quick-view with the note and the alternatives
-                                // already up. Exactly the route the
-                                // display-only tile has taken since #456.
-                                // A CLOTHING or DEACTIVATED tile keeps its
-                                // disabled state: neither has a sheet to open.
-                              const snkTappable = out && !clothingOrder && !deadForOrder(p) && !!sneakerOut?.(p, sz);
+                              // The one quick-add size gate (assistantOrderModel):
+                              // clothing greys a zero-at-hub size; sneakers (Hub 1
+                              // and Hub 2) take the shared resolver's ✕, composed
+                              // with the deactivation rule (#445). THE GLYPH IS
+                              // INFORMATIONAL AND NOTHING ELSE. THE THIRD
+                              // SIZE-CHIP SURFACE: an out sneaker chip stays
+                              // tappable and opens the quick-view's note with the
+                              // alternatives already up (#456's route).
+                              const { out, tappable: snkTappable, dInfo, title } = quickAddSizeState(p, sz, sizeGate);
                               return (
                                 <button key={sz} className="ad-sz" disabled={out && !snkTappable}
-                                  title={out ? (deadForOrder(p) ? "Deactivated — finished line"
-                                      : clothingOrder ? `Not available at ${hubLabelFor(p.id)}`
-                                      // Sneaker ✕: name the real reason — a cell
-                                      // whose stock is reserved for an uncollected
-                                      // order must not read as "doesn't exist".
-                                      : sneakerBlockNoteText(sz, sneakerOutWhy?.(p, sz)))
-                                    : dInfo ? "This size is on a display" : undefined}
+                                  title={title}
                                   // No line-through, for the same reason the ✕
                                   // went: the size number is the content. And
                                   // the same FOUR-AXIS container difference the
@@ -9179,7 +9116,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
             </div>
           )}
           {visible.length < shown.length && (
-            <button className="ad-more" onClick={() => setRenderCap(c => c + AD_PAGE)}>
+            <button className="ad-more" onClick={showMore}>
               Show {Math.min(AD_PAGE, shown.length - visible.length)} more
               <span className="ad-more-n">{shown.length - visible.length} left</span>
             </button>
@@ -9193,43 +9130,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
         <div className="ad-dhead"><h2>{flow === "refill" ? "Refill request" : "Order"}</h2><span className="ad-dn">{flow === "refill" ? refillUnits : units}</span></div>
         <div className="ad-dbody" key={flow}>
           {flow === "order" ? (
-            <>
-              <div className="ad-dlist">
-                {grouped.length === 0 ? (
-                  <div className="ad-empty">
-                    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: .5, marginBottom: 10 }}><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
-                    <div style={{ fontWeight: 600 }}>Order is empty</div>
-                    <div style={{ marginTop: 4, fontSize: 11 }}>Hover a product and tap a size.</div>
-                  </div>
-                ) : grouped.map(g => (
-                  <div key={g.key} className="ad-line">
-                    <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👟")}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="ad-ln">{g.product?.name}</div>
-                      <div className="ad-lm">
-                        {g.dp
-                          ? <span style={{ color: "#9DBCFF" }}>Display Partner{g.size ? ` · Sz ${formatSize(g.size)}` : ""}</span>
-                          : `Size ${g.size === "Free Size" ? "OS" : formatSize(g.size)} · ${typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice) : "—"}`}
-                      </div>
-                      <div className="ad-step">
-                        <button onClick={() => onRemoveOne(g.product.id, g.size, g.dp, g.pull)}>−</button>
-                        <span>{g.qty}</span>
-                        {/* A pull is ONE known unit — there is no "+" for it. */}
-                        {g.pull
-                          ? <button disabled title="The display pair is a single known unit" style={{ opacity:.3, cursor:"not-allowed" }}>+</button>
-                          : <button onClick={() => g.dp ? onAddDisplayPartner(g.product, g.size) : onQuickAdd(g.product, g.size, 1)}>+</button>}
-                      </div>
-                    </div>
-                    <div className="ad-lp">{g.dp ? "—" : (typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice * g.qty) : "—")}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="ad-dfoot">
-                {/* Ordering system, not POS — no money total. */}
-                <div className="ad-trow"><span>{units} item{units !== 1 ? "s" : ""}</span><span>{grouped.length} line{grouped.length !== 1 ? "s" : ""}</span></div>
-                <button className="ad-place" disabled={!units} onClick={() => setCoOpen(true)}>Place order</button>
-              </div>
-            </>
+            <OrderLinesPanel grouped={grouped} units={units} onRemoveOne={onRemoveOne} onQuickAdd={onQuickAdd}
+                             onAddDisplayPartner={onAddDisplayPartner} onCheckout={() => setCoOpen(true)} />
           ) : (
             <>
               <div className="ad-dlist">
@@ -9261,6 +9163,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           )}
         </div>
       </aside>
+      </>)}
 
       {/* QUICK-VIEW STAGE */}
       {qv && (
@@ -10143,6 +10046,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // plus a full grid re-render before it appeared — which is why typing into
   // the search box on the till lagged behind the keyboard.
   const deferredSearch = useDeferredValue(search);
+  // The brands in the pool, for "typing a brand name filters by brand" — the
+  // sneaker wall has no brand dropdown (components/assistant/brandSearch.js).
+  const brandIndex = useMemo(() => buildBrandIndex(base), [base]);
   const filtered = useMemo(() => {
     const q = deferredSearch.trim();
     if (!q) return browse;   // no query = browsing: deactivated products are not on offer
@@ -10164,6 +10070,17 @@ function AssistantView({ products, onExit, orders = [] }) {
       const seen = new Set(codeHits.map(p => p.id));
       return [...codeHits, ...rest.filter(p => !seen.has(p.id))];
     };
+    // BRAND — a query that starts with a brand name ("nike", "new balance 550")
+    // narrows to that brand; whatever follows the brand searches within it.
+    const bq = matchBrandQuery(brandIndex, q);
+    if (bq) {
+      const pool = brandResults(base, bq.key);
+      if (!bq.rest) return merge(pool);
+      const inPool = new Set(pool.map(p => p.id));
+      if (bq.rest.length < 2)
+        return merge(pool.filter(p => p.name.toLowerCase().includes(bq.rest)));
+      return merge(fuse.search(bq.rest).map(r => r.item).filter(p => inPool.has(p.id)));
+    }
     // 1-char queries: Fuse's minMatchCharLength would return nothing, so fall
     // back to a plain case-insensitive substring match for the first letter.
     if (q.length < 2) {
@@ -10172,7 +10089,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         p.name.toLowerCase().includes(lc) || (p.category || "").toLowerCase().includes(lc)));
     }
     return merge(fuse.search(q).map(r => r.item));
-  }, [deferredSearch, base, browse, fuse]);
+  }, [deferredSearch, base, browse, fuse, brandIndex]);
 
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).

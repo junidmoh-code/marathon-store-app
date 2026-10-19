@@ -14,7 +14,11 @@ import { resolve } from "node:path";
 // elsewhere could silently break, where the failure is invisible on screen
 // (a suggestion that cannot be sold looks exactly like one that can) and
 // expensive when a customer meets it.
-const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
+// The order screen's size gate and ✕ note moved to
+// components/assistant/assistantOrderModel.js (2026-10-19, the sneaker wall);
+// the pins read it alongside App.jsx so they keep guarding the same text.
+const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8")
+  + "\n" + readFileSync(new URL("../assistant/assistantOrderModel.js", import.meta.url), "utf8");
 
 describe("the refusal itself is unchanged", () => {
   // THE HARD RULE. Tapping an unavailable size raises the note and RETURNS.

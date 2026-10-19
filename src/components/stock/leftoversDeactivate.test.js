@@ -142,7 +142,9 @@ describe("clothing/perfume twin — computeMissingProducts skips deactivated too
 
 describe("source pins — the call sites exist", () => {
   it("all three assistant ordering chip surfaces use orderSizeOut", () => {
-    const app = src("../../App.jsx");
+    // The hover grid's (and the sneaker wall's) call lives in the shared
+    // quick-add gate since 2026-10-19 — read it alongside App.jsx.
+    const app = src("../../App.jsx") + "\n" + src("../assistant/assistantOrderModel.js");
     expect(app.split("orderSizeOut(").length - 1).toBeGreaterThanOrEqual(3);
   });
   it("the global ReactivationNotice is mounted", () => {

@@ -39,6 +39,11 @@ import {
 import { displayUnitsByCell } from "./displayPairCore";
 
 const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
+// The quick-add size gate the desktop hover grid calls (lifted out of App.jsx
+// 2026-10-19 for the sneaker wall) — its body, sliced to the function's end.
+const MODEL = readFileSync(new URL("../assistant/assistantOrderModel.js", import.meta.url), "utf8");
+const QUICK_ADD_GATE = MODEL.slice(MODEL.indexOf("export function quickAddSizeState("),
+  MODEL.indexOf("\n}\n", MODEL.indexOf("export function quickAddSizeState(")));
 
 const SNEAKER = { id: "p1", category: "Footwear", productType: "sneaker" };
 
@@ -239,7 +244,10 @@ describe("PART 2 — no size grid has a display-shaped branch left", () => {
       // THE ONE THING THE MARKER MAY STILL DO. It reads the slots for the
       // glyph and for nothing else, so its only appearance is the info read.
       it("the only display read left is the informational one", () => {
-        const body = bodyOf(name);
+        let body = bodyOf(name);
+        // The hover grid reads its chip state through the shared quick-add
+        // gate (assistantOrderModel.js, 2026-10-19): the read lives there.
+        if (body.includes("quickAddSizeState(")) body += "\n" + QUICK_ADD_GATE;
         const reads = body.match(/sneakerDisplay\w+/g) || [];
         expect(reads.length).toBeGreaterThan(0);          // the glyph is still drawn
         expect([...new Set(reads)]).toEqual(["sneakerDisplayInfo"]);

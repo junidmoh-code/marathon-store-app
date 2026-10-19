@@ -44,7 +44,10 @@ import { decodeSizeKey } from "../../utils/sizeKey";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const src = (p) => readFileSync(join(HERE, p), "utf8");
-const app = () => src("../../App.jsx");
+// The order screen's size gate and ✕ note moved to
+// components/assistant/assistantOrderModel.js (2026-10-19, the sneaker wall);
+// the pins read it alongside App.jsx so they keep guarding the same text.
+const app = () => src("../../App.jsx") + "\n" + src("../assistant/assistantOrderModel.js");
 
 const SNEAKER  = { id: "s1", category: "Footwear", productType: "sneaker" };
 const CLOTHING = { id: "c1", category: "Clothing", productType: "clothing" };

@@ -23,7 +23,10 @@ describe("orderSizesForDisplay — the size picker's order (2026-10-03)", () => 
   // the phone sheet (selectedSizes) — must go through it, or the two disagree.
   it("both order-screen size lists use it", () => {
     const app = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
-    expect(app).toMatch(/const sizesOf = p => \{ const s = orderSizesForDisplay\(/);
+    // sizesOf moved to the shared order model (2026-10-19, the sneaker wall).
+    const model = readFileSync(new URL("../components/assistant/assistantOrderModel.js", import.meta.url), "utf8");
+    expect(app).toMatch(/import \{[^}]*\bsizesOf\b[^}]*\} from "\.\/components\/assistant\/assistantOrderModel"/);
+    expect(model).toMatch(/export function sizesOf\(p\) \{\n  const s = orderSizesForDisplay\(/);
     expect(app).toMatch(/const real = orderSizesForDisplay\(\(selected\?\.sizes/);
   });
 });
