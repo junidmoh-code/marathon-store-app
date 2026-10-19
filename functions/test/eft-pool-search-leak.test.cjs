@@ -2,10 +2,12 @@
 // EFT interrogation H: three characters at the till ("082", "jun", a common
 // surname) listed up to ten OTHER customers' full names, amounts and bank
 // references — and, for used payments, who they were sold to and by whom.
-// The search is now an exact (or one-typo, on long references) match on the
-// payment's REFERENCE or the bank's TRANSACTION ID, answering with AT MOST ONE
-// payment, the payer as initials only, and nothing at all when the answer is
-// ambiguous. These run the real searchEftPool over a pool of five customers.
+// The search matches the payment's REFERENCE or the bank's TRANSACTION ID —
+// forgivingly on spelling since 19 Oct 2026 (as typed, with a typo), but
+// answering with AT MOST ONE payment, the payer as initials only, and NOTHING
+// AT ALL when two payments could be the answer. The one-result rule is what
+// keeps the pool from being browsed: a prefix two customers share lists
+// nobody. These run the real searchEftPool over a pool of five customers.
 "use strict";
 
 const test = require("node:test");
@@ -30,11 +32,22 @@ function leakedNames(out) {
   return NAMES.filter((n) => text.includes(n) && !String(out.results[0]?.reference ?? "").includes(n));
 }
 
-test("three characters of a phone prefix list nobody", () => {
-  for (const q of ["082", "0821", "jun", "nko", "thandi", "nkosi thandi", "mohammed"]) {
+test("a prefix two customers share lists nobody; a name is never a key", () => {
+  for (const q of ["082", "thandi", "nkosi thandi", "mohammed", "lerato", "sipho"]) {
     const out = searchEftPool(POOL, q);
     assert.deepEqual(out.results, [], `"${q}" must not list payments`);
   }
+  // "082" starts two references: nothing, and the till is told to keep typing.
+  assert.equal(searchEftPool(POOL, "082").partial, true);
+  // One more digit settles which — and still at most that one payment, as
+  // initials (Junid, 19 Oct 2026: forgiving on spelling, never on which).
+  const out = searchEftPool(POOL, "0821");
+  assert.equal(out.results.length, 1);
+  assert.equal(out.results[0].key, "k2");
+  assert.deepEqual(leakedNames(out), []);
+  // A rank-two ambiguity never falls through to a single typo match: "NKOSA"
+  // is one edit from NKOSI only, so it finds k4; "NKOS" starts NKOSI only.
+  assert.equal(searchEftPool(POOL, "nkos").results[0]?.key, "k4");
 });
 
 test("a payer's NAME is never a search key", () => {
@@ -61,11 +74,13 @@ test("the bank's transaction id from the customer's proof of payment finds it to
   assert.equal(out.results[0].matchedOn, "bankRef");
 });
 
-test("one typo in a LONG reference is tolerated; in a short one it is not", () => {
+test("a typo is forgiven — and two edits only on a long reference", () => {
   assert.equal(searchEftPool(POOL, "juind1234").results[0]?.key, "k1");  // transposition
-  assert.equal(searchEftPool(POOL, "junid123").results[0]?.key, "k1");   // one dropped char
-  assert.deepEqual(searchEftPool(POOL, "nkosa").results, [], "five chars: exact only");
-  assert.deepEqual(searchEftPool(POOL, "junid12").results, [], "two edits away");
+  assert.equal(searchEftPool(POOL, "junid123").results[0]?.key, "k1");   // one dropped char (also a prefix)
+  assert.equal(searchEftPool(POOL, "nkosa").results[0]?.key, "k4");      // five chars, one slip
+  assert.equal(searchEftPool(POOL, "junid12").results[0]?.key, "k1");    // the start of it
+  assert.equal(searchEftPool(POOL, "jonid").results[0]?.key, "k1");     // a slip in the typed head
+  assert.deepEqual(searchEftPool(POOL, "zanele").results, [], "a reference nobody has");
 });
 
 test("AMBIGUOUS → nothing at all, and the till is told to ask for the bank's transaction id", () => {

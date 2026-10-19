@@ -32,6 +32,29 @@
 //   · A USED payment answers as used, when and on which slip — never the
 //     customer, the cashier, the remainder's recipient or a typed reason.
 //
+// FORGIVING ON SPELLING, NEVER ON WHICH PAYMENT (Junid, 19 Oct 2026). The
+// "whole reference or nothing" rule above made the cashier type every
+// character before anything appeared, and a one-letter slip on a short
+// reference ("HAFF" for "HAFG") found nothing. So the reference is now matched
+// AS IT IS TYPED — what the cashier has so far as the START of a reference,
+// and with a typo tolerated once the typed text is long enough that one edit
+// is not simply a different reference — while everything that protects the
+// pool stays exactly as it was:
+//
+//   · still AT MOST ONE payment, and still NOTHING when two could be the
+//     answer. Forgiveness widens what a payment may be matched BY; it never
+//     decides BETWEEN payments. Two references that both start with what was
+//     typed, or are both one edit from it, surface nothing and the till says
+//     "keep typing". An exact match outranks a prefix, which outranks a typo:
+//     the cashier who has typed the whole reference gets that payment, never a
+//     longer one it happens to begin.
+//   · still never by name, never by amount, still initials only, still the
+//     used-payment projection. The bank's transaction id is matched whole or
+//     by a six-character-plus prefix — never with a typo (it is the unique
+//     key the cashier falls back to).
+//   · the reference IS shown on a near match now (it was blanked): the cashier
+//     confirms "HAFG" against the proof of payment, which is the point.
+//
 // The record shape is eftCore.mjs's (scripts/cardrecon), stored by the mailbox
 // poller. This module redefines nothing about it and reads only what it needs.
 // PURE by the house rule: no IO, no clock; tested in test/eft-pool-search*.cjs.
@@ -53,9 +76,19 @@ const EFT_SEARCH_WINDOW = 400;
 const EFT_SEARCH_LIMIT = 1;
 // Shorter than this (letters and digits only) is not a search.
 const EFT_MIN_QUERY = 3;
-// One typo is tolerated only when BOTH the query and the reference are at
-// least this long — on a short reference one edit is a different reference.
-const NEAR_MISS_MIN_LENGTH = 6;
+// FORGIVING MATCHING, by the length of what the cashier has TYPED:
+//   ≥ 3  the typed text as the start of a reference ("HAF" → HAFG…)
+//   ≥ 4  one edit — typo, dropped, extra or swapped character ("HAFF" → HAFG)
+//   ≥ 10 two edits on a long reference
+//   ≥ 6  the typed text as the start of the bank's transaction id (never a typo)
+const PREFIX_MIN_LENGTH = EFT_MIN_QUERY;
+const NEAR_MISS_MIN_LENGTH = 4;
+const NEAR_MISS_TWO_EDITS_LENGTH = 10;
+const BANK_PREFIX_MIN_LENGTH = 6;
+// How a match ranks: an exact match beats a prefix beats a typo. Only the best
+// rank present is considered, so a fully typed reference is never ambiguous
+// with a longer one it begins.
+const MATCH_RANK = { reference: 0, bankRef: 0, prefix: 1, bankPrefix: 1, near: 2 };
 
 // ─── THE PUBLIC VIEW ─────────────────────────────────────────────────────────
 /** "MARA-THONE TRADING" → "M T T": enough for the cashier to ask "is your
@@ -176,16 +209,36 @@ function searchPlan(query) {
   return { whole, tooShort: whole.length < EFT_MIN_QUERY };
 }
 
+/** How many edits the typed text may be from the reference. */
+function editsAllowed(typedLength) {
+  if (typedLength >= NEAR_MISS_TWO_EDITS_LENGTH) return 2;
+  if (typedLength >= NEAR_MISS_MIN_LENGTH) return 1;
+  return 0;
+}
+
 /** How one payment answers the query: "reference" | "bankRef" (exact),
- *  "near" (one typo in a long reference), or null. */
+ *  "prefix" | "bankPrefix" (the typed text starts it), "near" (a typo in the
+ *  reference, whole or as far as it has been typed), or null. */
 function matchOf(record, plan) {
   if (plan.tooShort) return null;
+  const q = plan.whole;
   const ref = normaliseText(record.reference);
   const bank = normaliseText(record.bankRef);
-  if (ref && ref === plan.whole) return "reference";
-  if (bank && bank === plan.whole) return "bankRef";
-  if (plan.whole.length >= NEAR_MISS_MIN_LENGTH && ref.length >= NEAR_MISS_MIN_LENGTH
-    && osaDistance(plan.whole, ref) <= 1) return "near";
+  if (ref && ref === q) return "reference";
+  if (bank && bank === q) return "bankRef";
+  if (ref && q.length >= PREFIX_MIN_LENGTH && ref.startsWith(q)) return "prefix";
+  if (bank && q.length >= BANK_PREFIX_MIN_LENGTH && bank.startsWith(q)) return "bankPrefix";
+  const k = editsAllowed(q.length);
+  if (!k || !ref) return null;
+  // The whole reference…
+  if (osaDistance(q, ref) <= k) return "near";
+  // …or the part of it typed so far (a slip mid-way through a long reference):
+  // the reference's head, one character either side of the typed length to
+  // allow for a dropped or an extra character.
+  for (let len = q.length - 1; len <= q.length + 1; len++) {
+    if (len < NEAR_MISS_MIN_LENGTH || len >= ref.length) continue;
+    if (osaDistance(q, ref.slice(0, len)) <= k) return "near";
+  }
   return null;
 }
 
@@ -235,10 +288,12 @@ function collapseCopies(hits, allPayments = []) {
 /**
  * Find THE payment a cashier's query names — or nothing.
  *
- * Exact matches (reference or bank id) are considered first; near-misses only
- * when nothing matches exactly. Among the candidates, exactly ONE unmatched
+ * Only the best rank of match present is considered: exact (reference or bank
+ * id), else prefix, else a typo. Among those candidates, exactly ONE unmatched
  * payment is the answer; with none unmatched, exactly one used payment is
- * (answered as used). Anything else is `ambiguous` and returns NOTHING.
+ * (answered as used). Anything else is `ambiguous` and returns NOTHING —
+ * with `partial` when the ambiguity is between prefix or typo matches, so the
+ * till can say "keep typing" rather than "ask for the bank's transaction id".
  *
  * @param {object|null} poolTail  the raw children of /eft_pool the callable
  *   read (key → record) — refusals and holds included; they are filtered here.
@@ -252,8 +307,9 @@ function searchEftPool(poolTail, query) {
   const searched = payments.length;
   if (plan.tooShort) return { results: [], searched, needQuery: true };
   const hits = payments.map(([key, record]) => ({ key, record, on: matchOf(record, plan) })).filter((h) => h.on);
-  const exact = hits.filter((h) => h.on !== "near");
-  const candidates = collapseCopies(exact.length ? exact : hits, payments);
+  if (!hits.length) return { results: [], searched };
+  const best = Math.min(...hits.map((h) => MATCH_RANK[h.on]));
+  const candidates = collapseCopies(hits.filter((h) => MATCH_RANK[h.on] === best), payments);
   if (!candidates.length) return { results: [], searched };
   const unmatched = candidates.filter((h) => h.record.status === "unmatched");
   // A MANUAL ENTRY AND ITS BANK TWIN, both waiting (the notification landed
@@ -266,11 +322,11 @@ function searchEftPool(poolTail, query) {
     : twinPair ? bankOnly[0]
     : unmatched.length === 0 && candidates.length === 1 ? candidates[0]
     : null;
-  if (!pick) return { results: [], searched, ambiguous: true };
+  if (!pick) return { results: [], searched, ambiguous: true, ...(best > 0 ? { partial: true } : {}) };
+  // The reference is shown whatever matched it — on a prefix or a typo match
+  // it is what the cashier checks against the proof of payment before using
+  // the payment (Junid, 19 Oct 2026; it was blanked on a near match before).
   const view = { ...publicEftView(pick.key, pick.record), matchedOn: pick.on };
-  // A NEAR match never echoes the stored reference: a cashier probing with
-  // typo'd guesses must not learn another customer's reference from it.
-  if (pick.on === "near") view.reference = null;
   const twin = manualTwinOf(pick.record, payments);
   if (twin) view.manualTwin = twin;
   return { results: [view], searched };
@@ -281,7 +337,12 @@ module.exports = {
   EFT_SEARCH_WINDOW,
   EFT_SEARCH_LIMIT,
   EFT_MIN_QUERY,
+  PREFIX_MIN_LENGTH,
   NEAR_MISS_MIN_LENGTH,
+  NEAR_MISS_TWO_EDITS_LENGTH,
+  BANK_PREFIX_MIN_LENGTH,
+  MATCH_RANK,
+  editsAllowed,
   publicEftView,
   manualTwinOf,
   payerInitials,
