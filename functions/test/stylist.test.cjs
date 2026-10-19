@@ -293,3 +293,13 @@ describe("review fixes (Sonnet architect, #759)", () => {
     assert.equal(r.shortlist.length, 2);
   });
 });
+
+test("a slot of fresh prints keeps two quiet pieces in reach (19 Oct: no cap look could form)", () => {
+  const prints = Array.from({ length: 8 }, (_, i) => P("tee", { pattern: "print" }, { pid: `print${i}`, fresh: 1 - i * 0.01 }));
+  const set = [...prints, P("tee", {}, { pid: "solid-tee", fresh: 0 }),
+    P("bottoms", { dominant: "charcoal" }, { pid: "b" }), P("sneakers", { dominant: "white", silhouette: "n/a" }, { pid: "s" }),
+    P("hat", { dominant: "red", pattern: "logo-heavy", silhouette: "n/a", family: "athleisure" }, { pid: "loud-cap" })];
+  const r = sty.styleOutfits(set, { core: [["tee"], ["bottoms"], ["sneakers"]], requireSlots: ["hat"], minPieces: 4, maxPieces: 4, month: 10 });
+  assert.ok(r.best, JSON.stringify(r.refused));
+  assert.ok(r.best.pieces.some((p) => p.pid === "solid-tee"));
+});

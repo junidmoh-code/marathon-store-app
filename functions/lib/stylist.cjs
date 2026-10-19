@@ -356,7 +356,14 @@ function styleOutfits(pieces, opts = {}) {
     }
     for (const [s, list] of bySlot) {
       list.sort((a, b) => (b.fresh || 0) - (a.fresh || 0) || (a.pid < b.pid ? -1 : 1));
-      bySlot.set(s, list.slice(0, perSlot));
+      // The freshest perSlot − 2, plus the two freshest QUIET pieces of the
+      // rest (solid, not a loud colour), so a slot of fresh prints cannot
+      // break the one-loud-piece rule for every outfit (19 Oct: the six
+      // freshest tees were all graphic prints and no cap look could form).
+      const top = list.slice(0, Math.max(1, perSlot - 2));
+      const quiet = list.slice(top.length).filter((p) => !isLoud(p.tags, guide)).slice(0, 2);
+      const fill = list.slice(top.length).filter((p) => !quiet.includes(p)).slice(0, perSlot - top.length - quiet.length);
+      bySlot.set(s, [...top, ...quiet, ...fill]);
     }
     const walk = (i, chosen, sum) => {
       if (chosen.length > maxPieces) return;
