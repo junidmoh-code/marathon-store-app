@@ -24,7 +24,7 @@ describe("runRepair", () => {
     const photo = { a: url("products/a/photo_reframed_x.jpg"), b: url("products/b/photo_reframed_y.jpg"), c: url("products/c/shopify/gen.jpg"), d: url("products/d/photo.jpg") };
     const meta = { a: {}, b: {}, d: {} };
     const log = [];
-    const io = { readPhotoUrl: async (p) => photo[p] ?? null, thumbMetaOf: (p) => meta[p] ?? null, inBucket, looksLike: async () => 2 };
+    const io = { readPhotoUrl: async (p) => photo[p] ?? null, readThumbAt: async () => null, thumbMetaOf: (p) => meta[p] ?? null, inBucket, looksLike: async () => 2 };
     const write = { rebuildThumb: async (p, u) => { log.push(["thumb", p, u]); return { ok: true }; }, stamp: async (p) => log.push(["stamp", p]) };
     return { photo, io, write, log };
   };
@@ -48,6 +48,22 @@ describe("runRepair", () => {
     const { counts } = await runRepair(["a"], io, { each, write });
     expect(counts).toMatchObject({ failed: 1, repaired: 0 });
     expect(log).toEqual([]);
+  });
+  it("A STAMP THAT FAILED after the rebuild is stamped on the rerun (the thumbnail alone looks done)", async () => {
+    const { io, write, log, photo } = setup();
+    const meta = { metadata: { thumbSource: "repair", thumbSourceObject: "products/a/photo_reframed_x.jpg" } };
+    io.thumbMetaOf = () => meta;
+    let r = await runRepair(["a"], io, { each, write });
+    expect(r.counts).toMatchObject({ unstamped: 1, repaired: 1 });
+    expect(log).toEqual([["stamp", "a"]]);
+    io.readThumbAt = async () => 1792000000000;
+    r = await runRepair(["a"], io, { each, write });
+    expect(r.counts).toMatchObject({ ok: 1, repaired: 0 });
+    // a thumbnail some OTHER writer recorded from this photo needs no stamp
+    io.readThumbAt = async () => null;
+    meta.metadata.thumbSource = "shopify_publish";
+    expect((await runRepair(["a"], io, { each })).counts.ok).toBe(1);
+    expect(photo.a).toBeTruthy();
   });
   it("RE-SHOOT DURING THE REPAIR: rebuilt again from the NEW photo before the stamp", async () => {
     const { io, write, log, photo } = setup();

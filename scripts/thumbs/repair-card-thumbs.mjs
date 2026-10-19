@@ -41,6 +41,7 @@ console.log(`products: ${pids.length} · thumbnails in the bucket: ${thumbs.size
 const sig = async (buf) => sharp(buf).rotate().resize(24, 24, { fit: "fill" }).greyscale().raw().toBuffer();
 const io = {
   readPhotoUrl: (pid) => db.ref(`products/${pid}/photoUrl`).once("value").then((s) => s.val()),
+  readThumbAt: (pid) => db.ref(`products/${pid}/thumbAt`).once("value").then((s) => s.val()),
   thumbMetaOf: (pid) => thumbs.get(pid) || null,
   inBucket: (u) => typeof u === "string" && u.includes(`/v0/b/${BUCKET}/o/`),
   looksLike: async (pid, path) => {
@@ -60,7 +61,7 @@ const { counts } = await runRepair(pids, io, {
   write, onRepaired: ledger ? ledger.add : undefined,
   each: (items, fn) => eachLimited(items, 8, fn, { gapMs: 25 }),
   log: (r) => {
-    if (!["missing", "unproven", "error"].includes(r.verdict) && !ONLY) return;
+    if (!["missing", "unproven", "unstamped", "error"].includes(r.verdict) && !ONLY) return;
     console.log(`  ${r.pid}: ${r.verdict}${r.diff != null ? ` (pixel diff ${r.diff.toFixed(1)})` : ""}${r.result ? ` → ${r.result}` : ""}${r.message ? ` — ${r.message}` : ""}`);
   },
 });
