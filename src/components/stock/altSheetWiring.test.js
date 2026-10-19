@@ -33,10 +33,14 @@ describe("the refusal itself is unchanged", () => {
     expect(line).not.toContain("setPendingSize");
   });
   it("the quick-view's out-tap does the same", () => {
-    const line = APP.split("\n").find((l) => l.includes("setQvNa(clothingOrder || deadForOrder(qv)"));
-    expect(line).toBeTruthy();
-    expect(line).toContain("return;");
-    expect(line).not.toContain("setQvSize");
+    // Since the wall's panel (2026-10-19) the out branch is a short block: it
+    // raises the note (and, on the wall, the alternatives) and returns —
+    // still never selecting the size.
+    const i = APP.indexOf("const snk = !(clothingOrder || deadForOrder(qv));");
+    expect(i).toBeGreaterThan(-1);
+    const block = APP.slice(i, APP.indexOf("return;", i) + 7);
+    expect(block).toContain("setQvNa(snk ? { size: sz, left: 0, snk: true } : { size: sz, left: 0 });");
+    expect(block).not.toContain("setQvSize");
   });
   it("the reason text function is still the one that was there before", () => {
     // Byte-for-byte on the sentences staff read. The strip sits BELOW this and
@@ -120,13 +124,16 @@ describe("the strip is wired into both sheets", () => {
   // actually mounts it, which is the part that lives in App.jsx.
   it("the phone sheet renders it under the reason", () => {
     const i = APP.indexOf("{sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}");
-    const j = APP.indexOf("const alt = alternativesFor(selected, naNote.size);");
+    const j = APP.indexOf("const full = alternativesFor(selected, naNote.size);");
     expect(i).toBeGreaterThan(0);
     expect(j).toBeGreaterThan(i);          // BELOW the reason, never above it
   });
   it("the quick-view renders it too", () => {
-    expect(APP).toContain("const alt = alternativesFor?.(qv, qvNa.size) ?? null;");
+    expect(APP).toContain("const full = alternativesFor?.(qv, qvNa.size) ?? null;");
     expect(APP).toContain("<AlternativesStrip compact key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null}");
+    // …and on the wall the panel replaces it, fed by the same call.
+    expect(APP).toContain("const alt = alternativesFor?.(qv, qvAlt) ?? null;");
+    expect(APP).toContain("<AlternativesPanel rows={alt ? alt.rows : null} requestedSize={qvAlt}");
   });
 });
 
