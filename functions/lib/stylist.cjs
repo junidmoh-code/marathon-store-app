@@ -294,19 +294,30 @@ function styleOutfits(pieces, opts = {}) {
     walk(0, [], 0);
   }
 
-  const outfits = [...seen.values()].sort((a, b) => b.score - a.score || (a.key < b.key ? -1 : 1));
-  const best = outfits[0] || null;
-  const shortlist = [];
-  for (const o of outfits) {
-    if (shortlist.length >= r.shortlist) break;
+  const outfits = [...seen.values()].sort(byScore);
+  return { outfits, shortlist: shortlistOf(outfits, guide), considered, refused, nearest, best: outfits[0] || null };
+}
+
+const byScore = (a, b) => b.score - a.score || (a.key < b.key ? -1 : 1);
+
+/**
+ * The best `shortlist` outfits within `tieWindow` points of the top. Five
+ * near-copies of one outfit (the same look with a different cap) is not a
+ * choice: each one differs from every other by two pieces. Pure.
+ */
+function shortlistOf(outfits, guide = GUIDE) {
+  const r = guide.rules;
+  const sorted = outfits.slice().sort(byScore);
+  const best = sorted[0];
+  const out = [];
+  for (const o of sorted) {
+    if (out.length >= r.shortlist) break;
     if (best && o.score < best.score - r.tieWindow) break;
-    // Five near-copies of one outfit (the same look with a different cap) is
-    // not a choice: each one differs from every other by two pieces.
     const ids = new Set(o.pieces.map((p) => p.pid));
-    if (shortlist.some((s) => s.pieces.filter((p) => ids.has(p.pid)).length > Math.max(s.pieces.length, o.pieces.length) - 2)) continue;
-    shortlist.push(o);
+    if (out.some((s) => s.pieces.filter((p) => ids.has(p.pid)).length > Math.max(s.pieces.length, o.pieces.length) - 2)) continue;
+    out.push(o);
   }
-  return { outfits, shortlist, considered, refused, nearest, best };
+  return out;
 }
 
 // ── THE TIE-BREAK: ONE SHORT TEXT-MODEL CALL ────────────────────────────────
@@ -391,6 +402,6 @@ function headerFor(lookKey, guide = GUIDE) {
 module.exports = {
   GUIDE, ORDER, ACCESSORY_SLOTS, FALLBACK_HEADER, NOTE_MAX,
   seasonOf, hardRule, isMono, colourScore, silhouetteScore, familyScore, formalityScore, seasonScore,
-  lookMatch, bestLook, scoreOutfit, styleOutfits,
+  lookMatch, bestLook, scoreOutfit, styleOutfits, shortlistOf,
   buildChoicePrompt, readChoice, cleanNote, fallbackNote, headerFor, lookByKey,
 };

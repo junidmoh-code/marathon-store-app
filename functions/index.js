@@ -4581,11 +4581,51 @@ async function claimImageGeneration(db, saDate) {
   }
 }
 
+// ── THE STYLIST CHOOSES EVERY MULTI-PRODUCT POST ─────────────────────────────
+// Flat-lays, pairings and outfits are picked by lib/social-stylist.cjs against
+// docs/style-guide.md, with one claude-haiku-5-5 tie-break and a styling note
+// for the caption (the lookbook uses the same stylist). Single products and
+// new-arrivals carousels are untouched. The run's candidates array is shared
+// by every post in it, so its style tags are read once per run.
+const socialStylist = require("./lib/social-stylist.cjs");
+const STYLE_TAGS_BY_RUN = new WeakMap();
+const RUN_STYLE_TAGS = 12;
+async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
+  const { ensureStyleTags } = require("./lookbook/style-tags-io.cjs");
+  const { makeStylistChooser } = require("./lookbook/stylist-call.cjs");
+  let costUSD = 0;
+  if (!STYLE_TAGS_BY_RUN.has(candidates)) {
+    STYLE_TAGS_BY_RUN.set(candidates, ensureStyleTags(db, candidates.filter((c) => c.slot).map((c) => ({
+      pid: c.pid, photoUrl: c.photoUrl, product: c.product, websiteName: c.name,
+    })), { geminiApiKey: geminiApiKey && geminiApiKey.value(), fetchImage: fetchImageBuffer, log: (m) => console.log(m) },
+    { maxNew: RUN_STYLE_TAGS, deadlineMs: Date.now() + 60 * 1000 }).then((r) => { costUSD += r.costUSD; return r.tags; }));
+  }
+  const tags = await STYLE_TAGS_BY_RUN.get(candidates);
+  const month = Number(saDateForUsage(Date.now()).slice(5, 7));
+  let res = socialStylist.styledPicksForKind(kind, candidates, { used, tags, month });
+  if (!res.picks.length) return { ...res, costUSD };
+  let answer = "";
+  if (res.shortlist.length > 1) {
+    try {
+      const r = await makeStylistChooser({ Anthropic, apiKey: anthropicApiKey.value() })(socialStylist.styledChoicePrompt(kind, res, { month }));
+      answer = r.text; costUSD += r.costUSD || 0;
+    } catch (err) { console.warn(`social: the stylist's choice call failed — the top score stands: ${err && err.message}`); }
+  }
+  res = socialStylist.chooseStyledPicks(kind, res, answer, { month });
+  console.log(`social: stylist ${kind} — ${res.look && res.look.name || "no named look"}, ${res.look && res.look.score}/100, option ${res.look && res.look.choice} of ${res.look && res.look.of} (${res.look && res.look.source}): ${res.look && res.look.note}`);
+  return { ...res, costUSD };
+}
+
 async function generateOnePost(db, {
   kind, format, style, platforms, styleKit, library, candidates, used,
   signal, geminiApiKey, status, scheduledAt, updatedBy, saDate,
 }) {
-  const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
+  let picks, reason, look = null, stylistCostUSD = 0;
+  if (socialStylist.STYLED_KINDS.has(kind)) {
+    ({ picks, reason, look = null, costUSD: stylistCostUSD = 0 } = await pickStyledPost(db, kind, candidates, used, geminiApiKey));
+  } else {
+    ({ picks, reason } = socialSelect.pickForKind(kind, candidates, { used }));
+  }
   if (!picks.length) return { ok: false, skipped: { kind, format, reason, noStock: true } };
 
   const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
@@ -4710,10 +4750,12 @@ async function generateOnePost(db, {
     // 1080x1920 file, which the feed crops through the wordmark — so no twin.
     const wantsTwin = socialTwin.wantsFeedTwin(format, media, STORY_ALSO_POSTS_TO_FEED)
       && socialTwin.hasFeedArtwork({ artwork });
-    const { caption, source: captionSource, reason: captionReason } =
+    const { caption: writtenCaption, source: captionSource, reason: captionReason } =
       format === "story" && !wantsTwin
         ? { caption: socialCaption.fallbackCaption({ kind, products: picks }), source: "not-needed", reason: null }
         : await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
+    // The stylist's "why this works" is the caption's last paragraph.
+    const caption = captionSource === "not-needed" ? writtenCaption : socialStill.withStylingNote(writtenCaption, look && look.note);
     // ── THE STORY'S OWN CAPTION FIELDS, ALL THREE OF THEM ───────────────────
     // A story keeps the plain line whether or not a caption was written for
     // its twin, because nothing can show a story's caption and putting a
@@ -4754,6 +4796,7 @@ async function generateOnePost(db, {
       // labels say. The design layer needs the real one.
       products: picks.map((p) => ({ pid: p.pid, name: p.name, displayName: p.displayName || p.name, handle: p.handle, slot: p.slot || null })),
       style,
+      ...(look ? { look: socialStill.lookField(look), stylistCostUSD: +stylistCostUSD.toFixed(6) } : {}),
       engine,
       costUSD: +costUSD.toFixed(6),
       refsUsed: spec.generates ? refsSent : 0,
