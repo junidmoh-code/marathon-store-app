@@ -35,6 +35,7 @@
 "use strict";
 
 const lookbook = require("../lib/social-lookbook.cjs");
+const stylist = require("../lib/stylist.cjs");
 const { renderLookbookPoster, cutout: defaultCutout, gridOverlay, segmentsCross } = require("../lib/lookbook-render.cjs");
 const { loadLookbookCandidates, loadLookbookHistory } = require("./load.cjs");
 const { resolveThumb } = require("./thumbs.cjs");
@@ -125,7 +126,8 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   // before the load, so a resting day reads no hats at all.
   const noHeadwear = headwear === "off" || (headwear === "rotate" && lookbook.headwearRests(await historySlots(db, history, saDate), saDate));
   if (noHeadwear) log("lookbook: no headwear today (one lookbook in three)");
-  const { candidates } = await loadLookbookCandidates(db, { nowMs, skip: new Set([...blocked, ...used]), skipSlots: noHeadwear ? new Set(["hat"]) : new Set() });
+  const { candidates } = await loadLookbookCandidates(db, { nowMs, skip: new Set([...blocked, ...used]), skipSlots: noHeadwear ? new Set(["hat"]) : new Set(),
+    skipHeadwear: ["beanie", "bucket", "visor"].filter((k) => !stylist.seasonRulesFor(stylist.seasonOf(saMonth)).headwear.includes(k)) });
   // Every candidate's style tags: cached, tagged now (a few), or read from its name.
   const tagRun = await ensureStyleTags(db, candidates.map((c) => {
     const ph = lookbook.approvedPhoto(c.product, c.node);

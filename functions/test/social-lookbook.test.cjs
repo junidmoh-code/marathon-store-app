@@ -352,6 +352,15 @@ describe("loadLookbookCandidates — reads only what it needs, by pid", () => {
     assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "tee", "bottoms", "sneakers"]);
   });
 
+  test("a beanie title costs no read when the season removes beanies", async () => {
+    const db = seed();
+    db.root.shopify_publish.h9 = { state: "live", liveState: "on", cleanName: "Ribbed knit beanie with logo", liveAt: NOW, photos: [STAFF("h9")] };
+    db.root.products.h9 = { name: "Nike beanie h9", brand: "Nike", categoryKey: "caps-beanies", retailPrice: 200, sizes: ["M"], photoUrl: STAFF("h9") };
+    await loadLookbookCandidates(db, { nowMs: NOW, skipHeadwear: ["beanie"] });
+    assert.ok(!db.reads.some((r) => r.path === "products/h9"));
+    assert.ok(db.reads.some((r) => r.path === "products/h1"), "the cap is still read");
+  });
+
   test("a slot whose newest reads are all out of stock gets a second round", async () => {
     const db = seed();
     // s2 is the newest sneaker and is out of stock; with one read per slot the

@@ -21,7 +21,7 @@
 const socialSelect = require("../lib/social-select.cjs");
 const lookbook = require("../lib/social-lookbook.cjs");
 const { cleanProductName } = require("../lib/product-name.cjs");
-const { nameGender } = require("../lib/style-tags.cjs");
+const { nameGender, nameHeadwear } = require("../lib/style-tags.cjs");
 
 const READ_BATCH = 20;
 // Up to twelve rounds of READS_PER_SLOT, but only a slot short of
@@ -43,13 +43,17 @@ const WANT_PER_SLOT = 14;
  *                   would not count toward a slot's WANT_PER_SLOT anyway
  * @returns { candidates, reads: { products, stock }, liveCount }
  */
-async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null, readsPerSlot = lookbook.READS_PER_SLOT, skip = new Set(), skipSlots = new Set() } = {}) {
+async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null, readsPerSlot = lookbook.READS_PER_SLOT, skip = new Set(), skipSlots = new Set(), skipHeadwear = [] } = {}) {
   const live = liveNodes || ((await db.ref("shopify_publish").orderByChild("state").equalTo("live").once("value")).val() || {});
   const queues = new Map(lookbook.SLOT_KEYS.map((k) => [k, []]));
   for (const [pid, n] of Object.entries(live)) {
     if (!n || n.state !== "live" || n.liveState !== "on" || !n.cleanName) continue;
     if (skip.has(pid)) continue;
     const g = lookbook.guessSlot(n.cleanName);
+    // A hat the season removes anyway ("beanie" in a Durban summer) costs no
+    // read: on 19 Oct beanies filled the hat queue and the caps behind them
+    // were never reached.
+    if (g === "hat" && skipHeadwear.length && skipHeadwear.includes(nameHeadwear(n.cleanName))) continue;
     if (g && !skipSlots.has(g)) queues.get(g).push({ pid, liveAt: Number(n.liveAt) || 0 });
   }
   // Newest first: the bias to new arrivals starts in what is read at all.
