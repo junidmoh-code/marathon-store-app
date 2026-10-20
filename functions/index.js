@@ -4059,7 +4059,8 @@ exports.shopifyInventoryHealthScan = onSchedule(
 // — and the owner's edit of it; the scan also flags breaches.
 // eftPoolManualEntry is JUNID'S escape hatch (owner account alone, checked
 // server-side): a typed reference + amount becomes a spendable pool record,
-// marked "manually entered by Junid", consumed once through the same settle.
+// consumed once through the same settle, and shown at the till exactly like a
+// bank-confirmed payment (the provenance stays with Junid).
 //   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry
 exports.eftPoolSearch = require("./eftPool/eftPool.js").eftPoolSearch;
 exports.eftPoolSettle = require("./eftPool/eftPool.js").eftPoolSettle;

@@ -143,36 +143,31 @@ function publicEftView(key, record) {
     reversals: record.reversals && typeof record.reversals === "object"
       ? Object.keys(record.reversals).length
       : 0,
-    // MANUALLY ENTERED BY JUNID (lib/eft-manual.cjs): who and when, so the
-    // till marks it and it is never mistaken for a bank-confirmed payment.
-    manualEntry: isManualEntry(record)
-      ? { by: record.manualEntry.by ?? "Junid", at: Number.isInteger(record.manualEntry.at) ? record.manualEntry.at : null }
-      : null,
+    // NOTHING about a manual entry (lib/eft-manual.cjs) reaches the till:
+    // a payment Junid typed in is consumed exactly like a bank-confirmed one,
+    // same card, same wording (Junid, 20 Oct 2026). Its provenance lives on
+    // the pool record, in /eft_manual_entries and in Junid's own review.
   };
 }
 
 /**
- * The answer's TWIN — a bank-confirmed payment with a manual entry of the
- * same money, or a manual entry whose bank notification has arrived
- * (isPaymentTwin, either direction). The row is warned either way; if the
- * twin was already SPENT the settle refuses this record outright
- * (manualTwinSettleCheck) — one sum is never paid twice.
- * @returns {{kind:"manual"|"bank", status:"used"|"unmatched", at:number|null, receiptNumber:string|null}|null}
+ * The answer's TWIN, already SPENT — a bank-confirmed payment whose manual
+ * entry was used, or a manual entry whose bank notification was used
+ * (isPaymentTwin, either direction). The settle refuses this record outright
+ * (manualTwinSettleCheck) — one sum is never paid twice — and the till warns
+ * first. The till's view says only THAT the same payment was used, where and
+ * when: never which side was typed by hand (Junid, 20 Oct 2026). A twin that
+ * is still waiting is not the cashier's concern: the search already answers
+ * with the bank's record when both wait, and either one spends the money.
+ * @returns {{at:number|null, receiptNumber:string|null}|null}
  */
 function manualTwinOf(record, payments) {
   if (!record || record.status !== "unmatched") return null;
-  let waiting = null;
   for (const [, other] of payments ?? []) {
-    if (!isPaymentTwin(record, other)) continue;
-    const kind = isManualEntry(other) ? "manual" : "bank";
-    if (other.status === "used") {
-      return { kind, status: "used", at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
-    }
-    if (other.status === "unmatched" && !waiting) {
-      waiting = { kind, status: "unmatched", at: kind === "manual" ? (Number.isInteger(other.manualEntry?.at) ? other.manualEntry.at : null) : (other.at ?? null), receiptNumber: null };
-    }
+    if (other?.status !== "used" || !isPaymentTwin(record, other)) continue;
+    return { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
   }
-  return waiting;
+  return null;
 }
 
 // ─── NORMALISATION AND NEAR-MISS ─────────────────────────────────────────────
@@ -325,7 +320,8 @@ function searchEftPool(poolTail, query) {
   const unmatched = candidates.filter((h) => h.record.status === "unmatched");
   // A MANUAL ENTRY AND ITS BANK TWIN, both waiting (the notification landed
   // after Junid typed it): one payment, not an ambiguity. The bank's record
-  // is the answer, and the row warns about the waiting manual one.
+  // is the answer; the manual one stays unused (and is refused once the
+  // bank's is spent).
   const bankOnly = unmatched.filter((h) => !isManualEntry(h.record));
   const twinPair = unmatched.length > 1 && bankOnly.length === 1
     && unmatched.every((h) => h === bankOnly[0] || isPaymentTwin(bankOnly[0].record, h.record));
@@ -339,7 +335,7 @@ function searchEftPool(poolTail, query) {
   // the payment (Junid, 19 Oct 2026; it was blanked on a near match before).
   const view = { ...publicEftView(pick.key, pick.record), matchedOn: pick.on };
   const twin = manualTwinOf(pick.record, payments);
-  if (twin) view.manualTwin = twin;
+  if (twin) view.sameUsed = twin;
   return { results: [view], searched };
 }
 

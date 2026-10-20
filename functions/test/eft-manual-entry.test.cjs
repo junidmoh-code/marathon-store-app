@@ -4,8 +4,9 @@
 //     login — is refused ON THE SERVER before any read;
 //   · Junid's entry becomes a recorded, unmatched, spendable pool record
 //     stamped { by: "Junid", uid, email, at: server time } with reader
-//     "manual", a synthetic fingerprint claimed create-only, and the till's
-//     view marks it manualEntry;
+//     "manual", a synthetic fingerprint claimed create-only — and the till's
+//     view of it is INDISTINGUISHABLE from a bank-confirmed payment's (Junid,
+//     20 Oct 2026), while the record and the log keep the provenance;
 //   · it settles ONCE through the ordinary settle; a second attempt loses
 //     exactly as a second till loses a bank payment;
 //   · the same entryId is an idempotent retry; the same reference + amount
@@ -59,16 +60,46 @@ test("the record is a recorded, unmatched pool payment, stamped by Junid, with a
   assert.notEqual(paymentFingerprint(other), paymentFingerprint(r), "every entry is its own transaction");
 });
 
-test("the till's view marks it MANUALLY ENTERED BY JUNID, and a bank payment is not marked", () => {
+// A bank-confirmed payment of the same money, arriving at the same moment,
+// with no payer read — the closest bank twin a manual entry can have.
+const bankLike = (at = 1700, over = {}) => ({
+  at, receivedAt: at, bankTs: at, outcome: "recorded", status: "unmatched", amountCents: 55000,
+  reference: "THABO 0821", reader: "capitec", bankRef: "ABCD1234", payer: null, ...over,
+});
+// What the callable stores: the input as manualEntryInputCheck cleaned it.
+const typedRecord = (key) => manualEntryRecord({ ...manualEntryInputCheck(ENTRY), key, actor: ACTOR, at: 1700 });
+
+test("the till's view of a manual entry is IDENTICAL to a bank-confirmed payment's — no trace of Junid", () => {
   const key = manualEntryKeyOf(ENTRY.entryId);
-  const r = manualEntryRecord({ ...ENTRY, key, actor: ACTOR, at: 1700 });
+  const r = typedRecord(key);
   const v = publicEftView(key, r);
-  assert.deepEqual(v.manualEntry, { by: "Junid", at: 1700 });
+  const b = publicEftView(key, bankLike());
+  assert.deepEqual(v, b, "field for field, the cashier sees the same payment");
   assert.equal(v.needsOwner, false, "spendable as it stands");
-  assert.equal(v.payerInitials, null);
-  assert.ok(!JSON.stringify(v).includes("gunidmoh"), "the owner's email never reaches the till");
-  const bank = { outcome: "recorded", status: "unmatched", amountCents: 100, reference: "X", reader: "fnb", bankRef: "5TG59DVQ", at: 1 };
-  assert.equal(publicEftView("k", bank).manualEntry, null);
+  assert.equal("manualEntry" in v, false);
+  const text = JSON.stringify(v);
+  for (const leak of ["gunidmoh", "Junid", "manual", "MANUAL", "hand", "Capitec, no email", ENTRY.entryId]) {
+    assert.ok(!text.includes(leak), `"${leak}" never reaches the till`);
+  }
+  // …and the same through the search, the till's only way to the pool.
+  const s = searchEftPool({ [key]: r }, "thabo 0821").results[0];
+  assert.deepEqual(s, searchEftPool({ [key]: bankLike() }, "thabo 0821").results[0]);
+  for (const leak of ["Junid", "manual", "MANUAL", "hand"]) assert.ok(!JSON.stringify(s).includes(leak));
+});
+
+test("the provenance stays with Junid: the pool record, the settled record and the log row say manual", () => {
+  const key = manualEntryKeyOf(ENTRY.entryId);
+  const r = typedRecord(key);
+  assert.equal(r.reader, MANUAL_READER);
+  assert.equal(r.auth.verdict, "manual");
+  assert.deepEqual({ by: r.manualEntry.by, email: r.manualEntry.email, at: r.manualEntry.at }, { by: "Junid", email: "gunidmoh@gmail.com", at: 1700 });
+  const settled = settleDecision(r, { fingerprint: paymentFingerprint(r), customerResolved: true, confirmedCustomerId: "c1", customerId: "c1", customerName: "Thabo", attemptId: "E-1", at: 2000, cashierUid: "u1", cashierName: "Ahmed", storeId: "trophy", tillId: "till-1", appliedCents: 55000 });
+  assert.ok(isManualEntry(settled.value), "consumed, still marked manual on the record");
+  const row = manualLogRecord(r, key);
+  assert.equal(row.by, "Junid");
+  assert.equal(row.reference, "THABO 0821");
+  const used = manualLogEventPatch("settle", settled.value, 2000);
+  assert.deepEqual({ status: used.status, cashierName: used.cashierName, storeId: used.storeId }, { status: "used", cashierName: "Ahmed", storeId: "trophy" }, "the consumption lands in Junid's log");
 });
 
 test("a cashier finds it by its reference like any payment, and it consumes ONCE", () => {
@@ -76,7 +107,7 @@ test("a cashier finds it by its reference like any payment, and it consumes ONCE
   const r = manualEntryRecord({ ...ENTRY, key, actor: ACTOR, at: 1700 });
   const found = searchEftPool({ [key]: r }, "thabo 0821");
   assert.equal(found.results.length, 1);
-  assert.equal(found.results[0].manualEntry.by, "Junid");
+  assert.equal(found.results[0].key, key);
   // The settle's checks, exactly as for a bank payment.
   const check = consumeFingerprintCheck({ poolKey: key, record: r, siblings: [] });
   assert.equal(check.ok, true);
@@ -120,26 +151,33 @@ test("the same reference and amount twice is a duplicate; the same entryId is a 
   const bankTwin = { outcome: "recorded", status: "unmatched", amountCents: 55000, reference: "THABO 0821", reader: "capitec", bankRef: "ABCD1234", at: 3000 };
   const out = searchEftPool({ [key]: spent, b: bankTwin }, "thabo 0821");
   assert.equal(out.results[0].key, "b");
-  assert.deepEqual(out.results[0].manualTwin, { kind: "manual", status: "used", at: 2000, receiptNumber: "S-9" });
+  assert.deepEqual(out.results[0].sameUsed, { at: 2000, receiptNumber: "S-9" });
   // …and the SETTLE refuses it: one payment, two records, paid out once.
   const settleTwin = manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, spent], ["b", bankTwin]] });
   assert.equal(settleTwin.ok, false);
-  assert.equal(settleTwin.code, "manual-twin-used");
+  assert.equal(settleTwin.code, "twin-used");
+  assert.equal(settleTwin.side, "manual-twin-used", "the server's log line keeps the side");
   assert.match(settleTwin.message, /slip S-9/);
-  assert.equal(manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, r]] }).ok, true, "a WAITING manual twin does not block — the search warns instead");
-  assert.deepEqual(searchEftPool({ [key]: r, b: bankTwin }, "thabo 0821").results[0].manualTwin, { kind: "manual", status: "unmatched", at: 1700, receiptNumber: null });
+  assert.equal(manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, r]] }).ok, true, "a WAITING manual twin does not block");
+  const both = searchEftPool({ [key]: r, b: bankTwin }, "thabo 0821").results[0];
+  assert.equal(both.key, "b", "both waiting: the bank's record is the answer");
+  assert.equal(both.sameUsed, undefined, "and the cashier is told nothing about the hand entry");
   // THE REVERSE ORDER (CodeRabbit): the bank twin arrived AFTER the entry and
   // was used while the manual one still waits — the manual entry is refused.
   const bankUsed = { ...bankTwin, status: "used", used: { at: 4000, sale: { receiptNumber: "S-10" } } };
   const rev = manualTwinSettleCheck({ poolKey: key, record: r, siblings: [[key, r], ["b", bankUsed]] });
   assert.equal(rev.ok, false);
-  assert.equal(rev.code, "bank-twin-used");
+  assert.equal(rev.code, "twin-used");
+  assert.equal(rev.side, "bank-twin-used");
   assert.match(rev.message, /slip S-10/);
-  assert.deepEqual(searchEftPool({ [key]: r, b: bankUsed }, "thabo 0821").results[0].manualTwin, { kind: "bank", status: "used", at: 4000, receiptNumber: "S-10" });
+  assert.deepEqual(searchEftPool({ [key]: r, b: bankUsed }, "thabo 0821").results[0].sameUsed, { at: 4000, receiptNumber: "S-10" });
+  // ONE SENTENCE whichever side was typed by hand: the cashier cannot tell.
+  assert.equal(rev.message.replace("S-10", "S-9"), settleTwin.message);
+  for (const m of [rev.message, settleTwin.message]) assert.doesNotMatch(m, /by hand|manual|bank's/i);
   // …but a bank payment that arrived BEFORE the entry is a different payment (last week's), never a twin.
   const earlier = { ...bankUsed, at: 100, receivedAt: 100, bankTs: 100 };
   assert.equal(manualTwinSettleCheck({ poolKey: key, record: r, siblings: [["b", earlier]] }).ok, true);
-  assert.equal(searchEftPool({ [key]: r, b: earlier }, "thabo 0821").results[0].manualTwin, undefined);
+  assert.equal(searchEftPool({ [key]: r, b: earlier }, "thabo 0821").results[0].sameUsed, undefined);
   // ENTRY-TIME: the bank's own unmatched record is already there → no manual entry.
   assert.equal(bankTwinOfEntry({ reference: "thabo-0821", amountCents: 55000 }, [["b", bankTwin]])?.key, "b");
   assert.equal(bankTwinOfEntry({ reference: "thabo-0821", amountCents: 55000 }, [["b", { ...bankTwin, status: "used" }]]), null, "a used bank record is not a reason to refuse — it may be an earlier payment");

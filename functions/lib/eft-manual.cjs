@@ -11,11 +11,14 @@
 //     consume-once, the fingerprint claimed), the same attach, release,
 //     remainder and reversal. NOTHING in that flow is re-implemented.
 //
-// WHAT MAKES IT DIFFERENT, AND VISIBLY SO:
+// WHAT MAKES IT DIFFERENT — TO JUNID, AND TO JUNID ONLY:
 //   · reader "manual", `manualEntry: { by: "Junid", uid, email, at, note,
-//     entryId }` on the record. publicEftView carries `manualEntry` to the
-//     till, and the till and the owner's tab print "MANUALLY ENTERED BY
-//     JUNID" on it — it is never mistaken for a bank-confirmed payment.
+//     entryId }` on the record; the owner's pool tab, his EFT review list and
+//     the /eft_manual_entries log say "MANUALLY ENTERED BY JUNID".
+//   · THE TILL NEVER KNOWS (Junid, 20 Oct 2026): publicEftView carries no
+//     trace of it, a twin warning or refusal never says which side was typed
+//     by hand, and the cashier consumes it exactly like a bank-confirmed
+//     payment — same card, same wording, same taps.
 //   · no payer name, no bank transcript, `auth.verdict: "manual"`.
 //   · its bankRef is SYNTHETIC and unique to the record ("MANUAL-<key…>"), so
 //     paymentFingerprint() works unchanged: the fingerprint is claimed at
@@ -192,15 +195,13 @@ function manualTwinSettleCheck({ poolKey, record, siblings }) {
   for (const [key, other] of siblings ?? []) {
     if (key === poolKey || other?.status !== "used" || !isPaymentTwin(record, other)) continue;
     const slip = other.used?.sale?.receiptNumber ? ` on slip ${other.used.sale.receiptNumber}` : "";
-    if (isManualEntry(record)) {
-      return {
-        ok: false, code: "bank-twin-used",
-        message: `The bank's own notification for this reference and amount arrived after Junid entered it by hand, and was already used${slip}. This hand entry is that SAME payment — it cannot be used again. If the customer really paid twice, Junid can mark or reverse it.`,
-      };
-    }
+    // ONE sentence and one code whichever side was typed by hand: the till
+    // shows the message, and a cashier must not learn that from it (Junid,
+    // 20 Oct 2026). `side` is for the server's own log line only.
     return {
-      ok: false, code: "manual-twin-used",
-      message: `A payment Junid entered by hand for this reference and amount was already used${slip}. This looks like the bank's notification of that SAME payment — it cannot be used again. If the customer really paid twice, Junid can reverse the manual entry first.`,
+      ok: false, code: "twin-used",
+      side: isManualEntry(record) ? "bank-twin-used" : "manual-twin-used",
+      message: `This payment — the same reference and amount — was already used${slip}. It cannot be used again. If the customer really paid twice, ask Junid.`,
     };
   }
   return { ok: true };

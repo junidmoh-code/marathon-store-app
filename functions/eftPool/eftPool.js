@@ -74,8 +74,10 @@
 //                   "Junid", uid, email, at: server time}, a synthetic
 //                   fingerprint claimed create-only at entry. A cashier finds
 //                   and consumes it through the ordinary search/settle above
-//                   — single-use by the same transaction — and every surface
-//                   marks it "manually entered by Junid". Idempotent per
+//                   — single-use by the same transaction — and the till shows
+//                   it exactly like a bank-confirmed payment (no manual mark
+//                   reaches it); the pool record, the log and Junid's review
+//                   carry the provenance. Idempotent per
 //                   entryId; a second entry of the same reference and amount
 //                   is refused.
 //   eftPoolReverse  owner-only: unwind a completed settlement. Both records
@@ -281,7 +283,7 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
   // was already spent: a different fingerprint, the same payment. Refused.
   const twin = manualTwinSettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
   if (!twin.ok) {
-    console.warn(`eftPoolSettle: ${twin.code} on ${key} — refused before settle`);
+    console.warn(`eftPoolSettle: ${twin.side} on ${key} — refused before settle`);
     throw refusalToError(twin);
   }
   if (!check.fingerprint) return null; // owner-released no-bank-id payment
