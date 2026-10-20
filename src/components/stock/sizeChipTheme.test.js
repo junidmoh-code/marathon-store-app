@@ -24,7 +24,8 @@ describe("the container alone carries the signal", () => {
   });
   it("the hover grid only offers a pointer where there is a sheet to open", () => {
     expect(hoverGridSizeChipStyle({ out: true, tappable: true }).cursor).toBe("pointer");
-    expect(hoverGridSizeChipStyle({ out: true, tappable: false }).cursor).toBe("not-allowed");
+    // No ⊘ cursor on the desktop order screen (Junid, 2026-10-20).
+    expect(hoverGridSizeChipStyle({ out: true, tappable: false }).cursor).toBe("default");
     expect(hoverGridSizeChipStyle({ out: false })).toBeUndefined();   // the class is the style
   });
   it("the unavailable chip carries no accent colour at all", () => {
@@ -46,11 +47,21 @@ describe("the container alone carries the signal", () => {
 describe("the size number stays readable", () => {
   // The whole reason the glyph could go: the number is the content, and
   // anything that obscures it defeats the change.
-  it("nothing is struck through", () => {
-    for (const s of [phoneSizeChipStyle({ out: true }), quickViewSizeChipStyle({ out: true }),
-                     hoverGridSizeChipStyle({ out: true, tappable: true })]) {
-      expect(s.textDecoration).toBeUndefined();
+  it("the phone sheet strikes nothing through", () => {
+    expect(phoneSizeChipStyle({ out: true }).textDecoration).toBeUndefined();
+    expect(phoneSizeChipStyle({ out: false, selected: false }).textDecoration).toBeUndefined();
+  });
+  // KEEP #5 of the classic-layout restore (Junid, 2026-10-20): on the desktop
+  // order screen a no-stock pill is dim and struck through, never ⊘.
+  it("the desktop surfaces strike a no-stock size through, with no ⊘ cursor", () => {
+    for (const s of [quickViewSizeChipStyle({ out: true }),
+                     hoverGridSizeChipStyle({ out: true, tappable: true }),
+                     hoverGridSizeChipStyle({ out: true, tappable: false })]) {
+      expect(s.textDecoration).toBe("line-through");
+      expect(s.cursor).not.toBe("not-allowed");
     }
+    expect(quickViewSizeChipStyle({ out: false }).textDecoration).toBeUndefined();
+    expect(hoverGridSizeChipStyle({ out: false })).toBeUndefined();
   });
   // COMPUTED CONTRAST, not an alpha threshold. An alpha reads as "dim enough"
   // and says nothing about whether a 16px size number can actually be read on

@@ -26,9 +26,15 @@
 // independent differences (border style, border colour, fill, text weight of
 // contrast), any one of which reads at arm's length.
 //
-// NO STRIKETHROUGH. The old desktop tiles struck the number through; the spec
-// is explicit that the number must read clearly, and a line through a "8.5" on
-// a 34px tile is exactly what stops it doing so.
+// NO STRIKETHROUGH ON THE PHONE SHEET. The old desktop tiles struck the number
+// through; the 2026-09-06 spec said the number must read clearly, and a line
+// through a "8.5" on a 34px tile is exactly what stops it doing so.
+//
+// THE DESKTOP ORDER SCREEN STRIKES IT AGAIN (Junid, 2026-10-20). Restoring the
+// classic layout, Junid kept one thing from the wall rounds: a no-stock pill on
+// the desktop surfaces (hover grid + quick-view) is dim AND struck through, with
+// no ⊘ cursor and no tooltip. The four container axes stay as well. The phone
+// sheet is unchanged.
 
 /** The accent the app uses for a selectable size. */
 const BLUE = "#3C6EFF";
@@ -90,6 +96,7 @@ export function quickViewSizeChipStyle({ out }) {
       borderColor: "rgba(255,255,255,.20)",
       background: "rgba(255,255,255,.045)",
       color: "rgba(233,238,255,.62)",   // see phoneSizeChipStyle for the pairing
+      textDecoration: "line-through",   // desktop only (2026-10-20, see header)
       cursor: "pointer",
     };
   }
@@ -115,9 +122,11 @@ export function hoverGridSizeChipStyle({ out, tappable }) {
     borderColor: "rgba(255,255,255,.20)",
     background: "rgba(255,255,255,.045)",
     color: "rgba(233,238,255,.62)",
+    textDecoration: "line-through",     // desktop only (2026-10-20, see header)
     // Only a SNEAKER tile opens a sheet. Clothing and deactivated tiles have
-    // nothing to open and stay not-allowed.
-    cursor: tappable ? "pointer" : "not-allowed",
+    // nothing to open — a plain arrow, never the ⊘ "not-allowed" cursor
+    // (Junid, 2026-10-20).
+    cursor: tappable ? "pointer" : "default",
   };
 }
 
