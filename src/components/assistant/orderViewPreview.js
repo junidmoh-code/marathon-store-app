@@ -6,7 +6,9 @@
 // only mounts when the preview is on:
 //
 //   - the URL carries ?view=wall (any account — a link, for a demo), or
-//   - this browser's localStorage has mc.orderView === "wall".
+//   - this browser's localStorage has mc.orderView === "wall" AND the signed-in
+//     account is one that may set it (a flag left on a shared till by Junid or
+//     MC must not put a staff login on the wall).
 //
 // The "Preview new design" toggle that writes the localStorage key is shown
 // to two accounts only: Junid's (the owner email the database rules name) and
@@ -28,10 +30,11 @@ function defaultSearch() {
 }
 
 /** Is the sneaker-wall preview on for this page load? Never throws. */
-export function isWallPreviewOn({ search = defaultSearch(), storage = defaultStorage() } = {}) {
+export function isWallPreviewOn({ search = defaultSearch(), storage = defaultStorage(), email = "" } = {}) {
   try {
     if (new URLSearchParams(search).get("view") === ORDER_VIEW_WALL) return true;
   } catch { /* malformed query — fall through */ }
+  if (!canTogglePreview(email)) return false;
   try {
     return storage?.getItem(ORDER_VIEW_KEY) === ORDER_VIEW_WALL;
   } catch { return false; }   // private window / blocked storage = classic

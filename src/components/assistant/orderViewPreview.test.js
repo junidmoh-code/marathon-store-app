@@ -15,15 +15,23 @@ describe("isWallPreviewOn", () => {
     expect(isWallPreviewOn({ search: "?a=1&view=wall", storage: mem() })).toBe(true);
     expect(isWallPreviewOn({ search: "?view=grid", storage: mem() })).toBe(false);
   });
-  it("localStorage mc.orderView === \"wall\" turns it on", () => {
+  it("localStorage mc.orderView === \"wall\" turns it on for Junid and MC", () => {
     expect(ORDER_VIEW_KEY).toBe("mc.orderView");
-    expect(isWallPreviewOn({ search: "", storage: mem({ "mc.orderView": "wall" }) })).toBe(true);
-    expect(isWallPreviewOn({ search: "", storage: mem({ "mc.orderView": "classic" }) })).toBe(false);
+    for (const email of ["gunidmoh@gmail.com", "mc@marathon.internal"]) {
+      expect(isWallPreviewOn({ search: "", storage: mem({ "mc.orderView": "wall" }), email })).toBe(true);
+      expect(isWallPreviewOn({ search: "", storage: mem({ "mc.orderView": "classic" }), email })).toBe(false);
+    }
+  });
+  it("a flag left in a shared till's browser does not reach a staff login", () => {
+    for (const email of ["", undefined, "yasmin@marathon.internal"])
+      expect(isWallPreviewOn({ search: "", storage: mem({ "mc.orderView": "wall" }), email })).toBe(false);
+    // The URL switch is a deliberate link and works for anyone.
+    expect(isWallPreviewOn({ search: "?view=wall", storage: mem(), email: "yasmin@marathon.internal" })).toBe(true);
   });
   it("blocked storage means classic, never a throw", () => {
     const bad = { getItem() { throw new Error("SecurityError"); } };
-    expect(isWallPreviewOn({ search: "", storage: bad })).toBe(false);
-    expect(isWallPreviewOn({ search: "", storage: null })).toBe(false);
+    expect(isWallPreviewOn({ search: "", storage: bad, email: "gunidmoh@gmail.com" })).toBe(false);
+    expect(isWallPreviewOn({ search: "", storage: null, email: "gunidmoh@gmail.com" })).toBe(false);
   });
 });
 

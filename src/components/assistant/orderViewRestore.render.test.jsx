@@ -118,7 +118,7 @@ describe("preview on (?view=wall or mc.orderView) — the wall", () => {
     expect(r.root.findAllByType(SneakerWall)).toHaveLength(0);
   });
   it("AssistantView reads the switch once and hands it down", () => {
-    expect(APP).toContain("const [wallPreview] = useState(() => isWallPreviewOn());");
+    expect(APP).toContain("const wallPreview = useMemo(() => isWallPreviewOn({ email: assistantUser?.email }), [assistantUser?.email]);");
     expect(APP).toContain("wallPreview={wallPreview}");
     expect(APP).toContain('const wallMode = wallPreview && mode === "sneaker";');
     // The classic layout asks alternatives for the eight it has always shown.
@@ -181,6 +181,25 @@ describe("KEEP #2 — Marathon Club deals defaults to ticked", () => {
   });
 });
 
+describe("the classic quick-view carries nothing from the wall", () => {
+  it("no back link, no header actions, no dialog trap; the alternatives strip is the classic one", () => {
+    const r = mount();
+    act(() => { r.root.findAll(n => n.props?.className === "ad-card")[0].props.onClick(); });
+    const sv = r.root.findAll(n => n.type === "div" && n.props.className === "ad-sv")[0];
+    expect(sv.props.role).toBeUndefined();
+    expect(sv.props["aria-modal"]).toBeUndefined();
+    expect(sv.props.onKeyDown).toBeUndefined();
+    for (const cls of ["ad-svacts", "ad-svback"])
+      expect(r.root.findAll(n => n.props?.className === cls)).toHaveLength(0);
+  });
+  it("the wall's popup keeps its dialog semantics", () => {
+    const r = mount({ wallPreview: true });
+    act(() => { r.root.findByType(SneakerWall).props.onOpenDetails(KOBE); });
+    const sv = r.root.findAll(n => n.type === "div" && n.props.className === "ad-sv")[0];
+    expect(sv.props.role).toBe("dialog");
+  });
+});
+
 describe("KEEP #3 — the Confirm order panel is a fixed size", () => {
   const open = (over) => {
     const r = mount({ cart: [{ product: KOBE, size: "6" }], ...over });
@@ -203,6 +222,12 @@ describe("KEEP #3 — the Confirm order panel is a fixed size", () => {
   });
   it("the panel does not clip, so a customer dropdown floats instead of adding a scrollbar", () => {
     expect(byTestId(open(), "confirm-order")[0].props.style.overflow).toBe("visible");
+  });
+  it("on a short screen the stage scrolls — the panel has no max-height to spill past", () => {
+    const panel = byTestId(open(), "confirm-order")[0];
+    expect(panel.props.style.maxHeight).toBe("none");
+    expect(panel.parent.props.className).toBe("ad-stage");
+    expect(panel.parent.props.style.overflow).toBe("auto");
   });
 });
 

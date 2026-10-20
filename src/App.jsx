@@ -9227,7 +9227,9 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
       {/* QUICK-VIEW STAGE */}
       {qv && (
         <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setQv(null); }}>
-          <div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name} onKeyDown={trapQvTab}>
+          {/* The dialog semantics and the Tab trap belong to the wall's popup;
+              the classic quick-view stays as it was. */}
+          <div className="ad-sv" {...(wall ? { role: "dialog", "aria-modal": "true", "aria-label": qv.name, onKeyDown: trapQvTab } : {})}>
             <button className="ad-svclose" ref={qvCloseRef} onClick={() => setQv(null)} aria-label="Close">✕</button>
             {/* Deactivate / reactivate / merge (owner spec 2026-08-31): off the
                 wall's tiles since round 3, into the popup header. Renders
@@ -9486,14 +9488,16 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
 
       {/* CHECKOUT — ordering system (NO money total). Summary + customer + place. */}
       {coOpen && (
-        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target && !submitting) setCoOpen(false); }}>
+        <div className="ad-stage" style={{ overflow: "auto" }} onClick={e => { if (e.currentTarget === e.target && !submitting) setCoOpen(false); }}>
           {/* FIXED SIZE, NO REFLOW (2026-10-20). The panel's size never
               depends on what is typed or how many lines the cart has: the
               summary box is a fixed height (it scrolls inside), the phone hint
               has its line reserved, and the panel does not clip — so a
               customer dropdown floats over it instead of pushing in a
-              scrollbar that shifted every field sideways. */}
-          <div className="ad-sv" data-testid="confirm-order" style={{ gridTemplateColumns: "1fr", width: "min(460px,100%)", overflow: "visible" }}>
+              scrollbar that shifted every field sideways. No max-height
+              either: on a short screen the STAGE scrolls (the grid row grows
+              with the panel), so nothing spills out of reach. */}
+          <div className="ad-sv" data-testid="confirm-order" style={{ gridTemplateColumns: "1fr", width: "min(460px,100%)", overflow: "visible", maxHeight: "none" }}>
             <button className="ad-svclose" onClick={() => !submitting && setCoOpen(false)} aria-label="Close">✕</button>
             <div className="ad-svbody" style={{ gap: 13 }}>
               <div className="ad-svname" style={{ fontSize: 19 }}>Confirm order</div>
@@ -9519,7 +9523,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                        onChange={e => { setCustomerPhone(e.target.value.replace(/\D/g, "").slice(0, 10)); setPhoneDD(true); }}
                        onFocus={() => setPhoneDD(true)} onBlur={() => setTimeout(() => setPhoneDD(false), 150)} />
                 {phoneDD && <CustomerSuggestionDropdown query={customerPhone} mode="phone" customers={customerIndex} onPick={p => { onPickCustomer(p); setPhoneDD(false); }} onAddNew={() => setPhoneDD(false)} />}
-                <div data-testid="phone-hint" aria-live="polite" style={{ color: "#FF6B6B", fontSize: 11, marginTop: 5, minHeight: 15, lineHeight: "15px" }}>
+                <div data-testid="phone-hint" style={{ color: "#FF6B6B", fontSize: 11, marginTop: 5, minHeight: 15, lineHeight: "15px" }}>
                   {customerPhone && !isValidLocalSAPhone(customerPhone) ? "Enter a 10-digit number starting with 0." : null}
                 </div>
               </div>
@@ -10156,9 +10160,11 @@ function AssistantView({ products, onExit, orders = [] }) {
   // plus a full grid re-render before it appeared — which is why typing into
   // the search box on the till lagged behind the keyboard.
   const deferredSearch = useDeferredValue(search);
-  // The sneaker-wall preview (orderViewPreview.js). Read once: the toggle
-  // reloads the page, so it never changes under a mounted screen.
-  const [wallPreview] = useState(() => isWallPreviewOn());
+  // The sneaker-wall preview (orderViewPreview.js). The toggle reloads the
+  // page, so it changes only when the signed-in account does.
+  // The stored switch counts only for the accounts that may set it, so a flag
+  // left in a shared till's browser never reaches staff (architect review).
+  const wallPreview = useMemo(() => isWallPreviewOn({ email: assistantUser?.email }), [assistantUser?.email]);
   // The brands in the pool, for "typing a brand name filters by brand" — the
   // sneaker wall has no brand dropdown (components/assistant/brandSearch.js).
   const brandIndex = useMemo(() => buildBrandIndex(base), [base]);

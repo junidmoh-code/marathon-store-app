@@ -120,7 +120,7 @@ describe("the popup hosts it (App.jsx)", () => {
     expect(APP).not.toContain("ad-sv--alt");
     expect(APP).not.toContain("altMode");
     expect(WALL).not.toContain("ad-sv--alt");
-    expect(APP).toContain('<div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name} onKeyDown={trapQvTab}>');
+    expect(APP).toContain('<div className="ad-sv" {...(wall ? { role: "dialog", "aria-modal": "true", "aria-label": qv.name, onKeyDown: trapQvTab } : {})}>');
     expect(APP).toMatch(/\.ad-sv\{width:min\(820px,100%\);/);
     // Measured in Chrome before this rule: the 18 tiles sized the text column
     // to 2116px and squeezed the photo. minmax(0,…) keeps the row scrolling.
