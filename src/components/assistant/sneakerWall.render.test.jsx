@@ -110,7 +110,7 @@ describe("the popup's own behaviour", () => {
     expect(APP).toContain('if (e.key === "Escape") setQv(null);');
     expect(APP).toContain("modalOpen={!!qv || coOpen || !!pendingShop} popupOpen={!!qv}");
     // Tab stays inside the wall's popup.
-    expect(APP).toContain('aria-label={qv.name} onKeyDown={trapQvTab}>');
+    expect(APP).toContain('{...(wall ? { role: "dialog", "aria-modal": "true", "aria-label": qv.name, onKeyDown: trapQvTab } : {})}>');
     expect(WALL).toContain('if (e.key !== "Escape" || modalOpen) return;');
   });
   it("its large photo opens the full-screen lightbox", () => {

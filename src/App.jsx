@@ -126,7 +126,9 @@ import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
 import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
-import SneakerWall, { HiResPhoto } from "./components/assistant/SneakerWall.jsx";
+import SneakerWall from "./components/assistant/SneakerWall.jsx";
+import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
+import { isWallPreviewOn, isWallPreviewFromUrl, canTogglePreview, setWallPreview } from "./components/assistant/orderViewPreview";
 import WallAlternatives, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/WallAlternatives.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
@@ -8657,7 +8659,8 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // AD_PAGE, sneakerBlockNoteText and the cart grouping live in
 // components/assistant/assistantOrderModel.js (shared with the sneaker wall).
 
-function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
+// Exported for orderViewRestore.render.test.jsx only.
+export function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
@@ -8666,7 +8669,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
                             hubQty, servingHubLabel, clothingHubLabelOf = null, sneakerOut, sneakerOutWhy, sneakerDisplayInfo,
                             alternativesFor, onAlternativesShown, onAlternativePicked,
-                            deadForOrder = isDeactivated }) {
+                            deadForOrder = isDeactivated, wallPreview = false }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // The hub a clothing note names: the product's own back-stock hub when the
   // caller can say (a shop with a category flipped to a second hub), else the
@@ -8676,7 +8679,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // clothing catalog with live per-size availability at the serving CR hub
   // (hubQty/servingHubLabel from AssistantView) greying out zero-stock sizes.
   const clothingOrder = mode === "clothing";
-  const wallMode = mode === "sneaker";
+  // THE CLASSIC LAYOUT IS THE DEFAULT (Junid, 2026-10-20). The sneaker wall
+  // mounts only with the preview on (?view=wall or mc.orderView = "wall" —
+  // components/assistant/orderViewPreview.js); everyone else gets the sidebar,
+  // card grid and Order panel staff know.
+  const wallMode = wallPreview && mode === "sneaker";
+  // Junid and MC see a toggle for that preview; nobody else does.
+  const previewToggle = canTogglePreview(userEmail);
   // The classic grid's size gate (quickAddSizeState), memoised.
   const sizeGate = useMemo(
     () => ({ clothingOrder, hubQty, sneakerOut, sneakerOutWhy, sneakerDisplayInfo, deadForOrder, hubLabelFor }),
@@ -8749,7 +8758,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // Reset the brand filter when switching modes (brands differ per catalog).
   // The wall has neither control, so entering it drops a sort left over from
   // the clothing layout — the wall is always the featured order.
-  useEffect(() => { setBrand("All"); if (mode === "sneaker") setSort("feat"); }, [mode]);
+  useEffect(() => { setBrand("All"); if (wallPreview && mode === "sneaker") setSort("feat"); }, [mode, wallPreview]);
 
   // Cart grouping, the running total and the render cap — shared with the
   // sneaker wall (components/assistant/assistantOrderModel.js).
@@ -8958,6 +8967,10 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           availableShops={availableShops} effectiveShop={effectiveShop} shopRegistry={shopRegistry}
           onPickShop={setPendingShop}
           mode={mode} setMode={setMode} onSwitchView={onSwitchView} userEmail={userEmail}
+          // Anyone who arrived by a ?view=wall link can leave it too — the
+          // query survives hash navigation, so a till would otherwise stay
+          // on the wall (CodeRabbit, #770).
+          onLeavePreview={previewToggle || isWallPreviewFromUrl() ? () => setWallPreview(false) : null}
           search={search} setSearch={setSearch} searchRef={searchRef} onLabelFind={onLabelFind}
           shownCount={shown.length} visible={visible} onShowMore={showMore}
           // A modal over the wall (quick-view, checkout, shop switch) owns
@@ -9001,6 +9014,14 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M18 2l4 4-9 9H9v-4z"/></svg>
           Switch view
         </button>
+        {/* The sneaker wall preview (2026-10-20) — Junid and MC only. Sets
+            mc.orderView in this browser and reloads. */}
+        {previewToggle && (
+          <button className="ad-nav" data-testid="preview-toggle" onClick={() => setWallPreview(true)}>
+            <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            Preview new design
+          </button>
+        )}
         {/* Identity only — the sign-out icon here was removed with every other
             scattered logout (owner directive 2026-08-08). The ONE logout lives
             at the bottom of the home page; leave via "Switch view" to reach it. */}
@@ -9067,7 +9088,14 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
                         </button>
                       )}
-                      <Photo p={p} />
+                      {/* FULL-RESOLUTION PHOTO (kept from the wall, 2026-10-20):
+                          the product's own photoUrl — the file the lightbox
+                          opens — not the mirror's 300px thumbnail, which is
+                          its offline fallback. Called directly, not through
+                          the inline Photo, so a re-render never remounts it. */}
+                      <HiResPhoto key={p.photoUrl || ""} p={p} alt={p.name}
+                                  style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                                  fallback={<span style={{ fontSize: 52 }}>{p.photo || "👟"}</span>} />
                       {/* Deactivate / reactivate / merge, right on the card the
                           operator is looking at (owner spec 2026-08-31).
                           Renders nothing for a non-admin. */}
@@ -9100,10 +9128,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               const { out, tappable: snkTappable, dInfo, title } = quickAddSizeState(p, sz, sizeGate);
                               return (
                                 <button key={sz} className="ad-sz" disabled={out && !snkTappable}
-                                  title={title}
-                                  // No line-through, for the same reason the ✕
-                                  // went: the size number is the content. And
-                                  // the same FOUR-AXIS container difference the
+                                  // No tooltip on a no-stock pill (Junid,
+                                  // 2026-10-20): the strike-through says it,
+                                  // and a tap on a sneaker opens the reason.
+                                  title={out ? undefined : title}
+                                  // Struck through again since 2026-10-20
+                                  // (sizeChipTheme's header). And the same
+                                  // FOUR-AXIS container difference the
                                   // other two surfaces use — opacity alone left
                                   // this tile reading as an ordinary blue chip
                                   // at 32%, a fifth of a signal (CodeRabbit).
@@ -9199,7 +9230,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
       {/* QUICK-VIEW STAGE */}
       {qv && (
         <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setQv(null); }}>
-          <div className="ad-sv" role="dialog" aria-modal="true" aria-label={qv.name} onKeyDown={trapQvTab}>
+          {/* The dialog semantics and the Tab trap belong to the wall's popup;
+              the classic quick-view stays as it was. */}
+          <div className="ad-sv" {...(wall ? { role: "dialog", "aria-modal": "true", "aria-label": qv.name, onKeyDown: trapQvTab } : {})}>
             <button className="ad-svclose" ref={qvCloseRef} onClick={() => setQv(null)} aria-label="Close">✕</button>
             {/* Deactivate / reactivate / merge (owner spec 2026-08-31): off the
                 wall's tiles since round 3, into the popup header. Renders
@@ -9304,10 +9337,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                           ? sneakerDisplayInfo?.(qv, sz) : null;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
-                            // The ✕ is gone here too, and with it the
-                            // line-through that made a half size unreadable on
-                            // a 34px tile. sizeChipTheme carries the four-axis
-                            // container difference that replaces both.
+                            // The ✕ is gone here too. sizeChipTheme carries the
+                            // four-axis container difference and, since
+                            // 2026-10-20, the strike-through on a no-stock size.
                             // ONE STYLE FOR EVERY AVAILABLE CHIP. A marked size
                             // is not a different kind of chip; the glyph in the
                             // corner is the whole difference (it is absolutely
@@ -9459,12 +9491,20 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
 
       {/* CHECKOUT — ordering system (NO money total). Summary + customer + place. */}
       {coOpen && (
-        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target && !submitting) setCoOpen(false); }}>
-          <div className="ad-sv" style={{ gridTemplateColumns: "1fr", width: "min(460px,100%)" }}>
+        <div className="ad-stage" style={{ overflow: "auto" }} onClick={e => { if (e.currentTarget === e.target && !submitting) setCoOpen(false); }}>
+          {/* FIXED SIZE, NO REFLOW (2026-10-20). The panel's size never
+              depends on what is typed or how many lines the cart has: the
+              summary box is a fixed height (it scrolls inside), the phone hint
+              has its line reserved, and the panel does not clip — so a
+              customer dropdown floats over it instead of pushing in a
+              scrollbar that shifted every field sideways. No max-height
+              either: on a short screen the STAGE scrolls (the grid row grows
+              with the panel), so nothing spills out of reach. */}
+          <div className="ad-sv" data-testid="confirm-order" style={{ gridTemplateColumns: "1fr", width: "min(460px,100%)", overflow: "visible", maxHeight: "none" }}>
             <button className="ad-svclose" onClick={() => !submitting && setCoOpen(false)} aria-label="Close">✕</button>
             <div className="ad-svbody" style={{ gap: 13 }}>
               <div className="ad-svname" style={{ fontSize: 19 }}>Confirm order</div>
-              <div style={{ background: "rgba(74,127,255,.05)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, padding: "9px 12px", maxHeight: 172, overflow: "auto" }}>
+              <div data-testid="confirm-summary" style={{ background: "rgba(74,127,255,.05)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, padding: "9px 12px", height: 172, boxSizing: "border-box", overflow: "auto" }}>
                 <div className="ad-qlab" style={{ margin: "0 0 6px" }}>Order · {units} item{units !== 1 ? "s" : ""}</div>
                 {grouped.map(g => (
                   <div key={g.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, color: "#dfe7ff", padding: "4px 0" }}>
@@ -9486,7 +9526,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                        onChange={e => { setCustomerPhone(e.target.value.replace(/\D/g, "").slice(0, 10)); setPhoneDD(true); }}
                        onFocus={() => setPhoneDD(true)} onBlur={() => setTimeout(() => setPhoneDD(false), 150)} />
                 {phoneDD && <CustomerSuggestionDropdown query={customerPhone} mode="phone" customers={customerIndex} onPick={p => { onPickCustomer(p); setPhoneDD(false); }} onAddNew={() => setPhoneDD(false)} />}
-                {customerPhone && !isValidLocalSAPhone(customerPhone) && <div style={{ color: "#FF6B6B", fontSize: 11, marginTop: 5 }}>Enter a 10-digit number starting with 0.</div>}
+                <div data-testid="phone-hint" style={{ color: "#FF6B6B", fontSize: 11, marginTop: 5, minHeight: 15, lineHeight: "15px" }}>
+                  {customerPhone && !isValidLocalSAPhone(customerPhone) ? "Enter a 10-digit number starting with 0." : null}
+                </div>
               </div>
               <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 12.5, color: "#dfe7ff" }}>
                 <input type="checkbox" checked={marketingOptIn} onChange={e => setMarketingOptIn(e.target.checked)} style={{ width: 17, height: 17, accentColor: "#4A7FFF" }} />
@@ -10022,7 +10064,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   const [checkoutOpen, setCheckoutOpen]                 = useState(false);
   const [customerName, setCustomerName]                 = useState("");
   const [customerPhone, setCustomerPhone]               = useState("");
-  const [marketingOptIn, setMarketingOptIn]             = useState(false);
+  // Ticked by default (Junid, 2026-10-20) — staff untick it for a customer
+  // who says no. closeCheckout resets it to ticked as well.
+  const [marketingOptIn, setMarketingOptIn]             = useState(true);
   const [lastOrders, setLastOrders]                     = useState([]);
   const [submitting, setSubmitting]                     = useState(false);
   // The submit-time stock guard's refusal, shown ON the checkout sheet (both
@@ -10119,6 +10163,11 @@ function AssistantView({ products, onExit, orders = [] }) {
   // plus a full grid re-render before it appeared — which is why typing into
   // the search box on the till lagged behind the keyboard.
   const deferredSearch = useDeferredValue(search);
+  // The sneaker-wall preview (orderViewPreview.js). The toggle reloads the
+  // page, so it changes only when the signed-in account does.
+  // The stored switch counts only for the accounts that may set it, so a flag
+  // left in a shared till's browser never reaches staff (architect review).
+  const wallPreview = useMemo(() => isWallPreviewOn({ email: assistantUser?.email }), [assistantUser?.email]);
   // The brands in the pool, for "typing a brand name filters by brand" — the
   // sneaker wall has no brand dropdown (components/assistant/brandSearch.js).
   const brandIndex = useMemo(() => buildBrandIndex(base), [base]);
@@ -10466,10 +10515,11 @@ function AssistantView({ products, onExit, orders = [] }) {
       // dropped merged-away records; availabilityKnown below drops everything
       // that is not a gated sneaker.
       candidates: products,
-      // Eighteen, best first: the wall's panel shows them all; the phone sheet
+      // Eighteen, best first, for the wall preview's strip; the phone sheet
       // and the classic strip draw the first MAX_ALTERNATIVES_SHOWN (8) —
       // the same eight the ranking always put first.
-      limit: ALT_PANEL_MAX,
+      // The classic layout asks for the eight it has always shown.
+      limit: wallPreview ? ALT_PANEL_MAX : MAX_ALTERNATIVES_SHOWN,
       // FOLLOWS MERGES. A pid in a list written last week may since have been
       // merged away; resolveProductById lands on the survivor, and
       // alternativesForSize de-duplicates when two entries land on the same
@@ -10776,7 +10826,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
 
   const openCheckout = () => { resetSheet(); setCheckoutOpen(true); };
-  const closeCheckout = () => { setCheckoutOpen(false); setCustomerName(""); setCustomerPhone(""); setMarketingOptIn(false); };
+  const closeCheckout = () => { setCheckoutOpen(false); setCustomerName(""); setCustomerPhone(""); setMarketingOptIn(true); };
 
   // ─── NEVER MID-ORDER ──────────────────────────────────────────────────
   // The update checker refuses to reload while anything is registered busy,
@@ -11433,7 +11483,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
           onViewPhoto={setFullPhoto} onSwitchView={onExit}
-          userEmail={assistantUser?.email || ""} mode={mode} setMode={setMode}
+          userEmail={assistantUser?.email || ""} mode={mode} setMode={setMode} wallPreview={wallPreview}
           customerName={customerName} setCustomerName={setCustomerName}
           customerPhone={customerPhone} setCustomerPhone={setCustomerPhone}
           marketingOptIn={marketingOptIn} setMarketingOptIn={setMarketingOptIn}
