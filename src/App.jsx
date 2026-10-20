@@ -128,7 +128,7 @@ import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SneakerWall from "./components/assistant/SneakerWall.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
-import { isWallPreviewOn, canTogglePreview, setWallPreview } from "./components/assistant/orderViewPreview";
+import { isWallPreviewOn, isWallPreviewFromUrl, canTogglePreview, setWallPreview } from "./components/assistant/orderViewPreview";
 import WallAlternatives, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/WallAlternatives.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
@@ -8967,7 +8967,10 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           availableShops={availableShops} effectiveShop={effectiveShop} shopRegistry={shopRegistry}
           onPickShop={setPendingShop}
           mode={mode} setMode={setMode} onSwitchView={onSwitchView} userEmail={userEmail}
-          onLeavePreview={previewToggle ? () => setWallPreview(false) : null}
+          // Anyone who arrived by a ?view=wall link can leave it too — the
+          // query survives hash navigation, so a till would otherwise stay
+          // on the wall (CodeRabbit, #770).
+          onLeavePreview={previewToggle || isWallPreviewFromUrl() ? () => setWallPreview(false) : null}
           search={search} setSearch={setSearch} searchRef={searchRef} onLabelFind={onLabelFind}
           shownCount={shown.length} visible={visible} onShowMore={showMore}
           // A modal over the wall (quick-view, checkout, shop switch) owns

@@ -29,11 +29,15 @@ function defaultSearch() {
   return typeof window !== "undefined" ? window.location?.search || "" : "";
 }
 
+/** Did this page load turn the preview on through ?view=wall? Never throws. */
+export function isWallPreviewFromUrl(search = defaultSearch()) {
+  try { return new URLSearchParams(search).get("view") === ORDER_VIEW_WALL; }
+  catch { return false; }   // malformed query
+}
+
 /** Is the sneaker-wall preview on for this page load? Never throws. */
 export function isWallPreviewOn({ search = defaultSearch(), storage = defaultStorage(), email = "" } = {}) {
-  try {
-    if (new URLSearchParams(search).get("view") === ORDER_VIEW_WALL) return true;
-  } catch { /* malformed query — fall through */ }
+  if (isWallPreviewFromUrl(search)) return true;
   if (!canTogglePreview(email)) return false;
   try {
     return storage?.getItem(ORDER_VIEW_KEY) === ORDER_VIEW_WALL;

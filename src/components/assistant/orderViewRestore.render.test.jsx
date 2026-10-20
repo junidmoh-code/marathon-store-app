@@ -145,6 +145,13 @@ describe("the Preview new design toggle", () => {
     expect(mount({ wallPreview: true, userEmail: "gunidmoh@gmail.com" }).root.findByType(SneakerWall).props.onLeavePreview).toBeTypeOf("function");
     expect(mount({ wallPreview: true, userEmail: "yasmin@marathon.internal" }).root.findByType(SneakerWall).props.onLeavePreview).toBeNull();
   });
+  it("a staff account that arrived by a ?view=wall link gets the way back too", () => {
+    const prev = globalThis.window.location;
+    globalThis.window.location = { search: "?view=wall", hash: "" };
+    try {
+      expect(mount({ wallPreview: true, userEmail: "yasmin@marathon.internal" }).root.findByType(SneakerWall).props.onLeavePreview).toBeTypeOf("function");
+    } finally { globalThis.window.location = prev; }
+  });
 });
 
 describe("KEEP #1 — cards draw the high-resolution photo", () => {

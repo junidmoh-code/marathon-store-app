@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { isWallPreviewOn, canTogglePreview, setWallPreview, ORDER_VIEW_KEY } from "./orderViewPreview";
+import { isWallPreviewOn, isWallPreviewFromUrl, canTogglePreview, setWallPreview, ORDER_VIEW_KEY } from "./orderViewPreview";
 
 const mem = (init = {}) => {
   const m = new Map(Object.entries(init));
@@ -32,6 +32,14 @@ describe("isWallPreviewOn", () => {
     const bad = { getItem() { throw new Error("SecurityError"); } };
     expect(isWallPreviewOn({ search: "", storage: bad, email: "gunidmoh@gmail.com" })).toBe(false);
     expect(isWallPreviewOn({ search: "", storage: null, email: "gunidmoh@gmail.com" })).toBe(false);
+  });
+});
+
+describe("isWallPreviewFromUrl", () => {
+  it("only ?view=wall", () => {
+    expect(isWallPreviewFromUrl("?view=wall")).toBe(true);
+    expect(isWallPreviewFromUrl("")).toBe(false);
+    expect(isWallPreviewFromUrl("?view=grid")).toBe(false);
   });
 });
 
