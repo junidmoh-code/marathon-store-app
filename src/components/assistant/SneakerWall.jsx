@@ -129,7 +129,7 @@ export function TilePhoto({ p }) {
 
 export default function SneakerWall({
   availableShops, effectiveShop, shopRegistry, onPickShop,
-  mode, setMode, onSwitchView, userEmail,
+  mode, setMode, onSwitchView, userEmail, onLeavePreview = null,
   search, setSearch, searchRef, onLabelFind,
   shownCount, visible, onShowMore, modalOpen = false, popupOpen = false,
   onOpenDetails, onQuickAdd,
@@ -207,6 +207,11 @@ export default function SneakerWall({
                 <button type="button" aria-current={mode === "sneaker"} onClick={() => pickMenu(() => setMode("sneaker"))}>Sneaker order</button>
                 <button type="button" aria-current={mode === "clothing"} onClick={() => pickMenu(() => setMode("clothing"))}>Clothing order</button>
                 <button type="button" onClick={() => pickMenu(onSwitchView)}>Switch view</button>
+                {/* The wall is a preview (2026-10-20): the accounts allowed to
+                    turn it on can turn it off from here. */}
+                {onLeavePreview && (
+                  <button type="button" data-testid="preview-toggle" onClick={() => pickMenu(onLeavePreview)}>Back to the classic view</button>
+                )}
               </div>
             )}
           </div>

@@ -117,6 +117,34 @@ describe("preview on (?view=wall or mc.orderView) — the wall", () => {
     const r = mount({ wallPreview: true, mode: "clothing" });
     expect(r.root.findAllByType(SneakerWall)).toHaveLength(0);
   });
+  it("AssistantView reads the switch once and hands it down", () => {
+    expect(APP).toContain("const [wallPreview] = useState(() => isWallPreviewOn());");
+    expect(APP).toContain("wallPreview={wallPreview}");
+    expect(APP).toContain('const wallMode = wallPreview && mode === "sneaker";');
+    // The classic layout asks alternatives for the eight it has always shown.
+    expect(APP).toContain("limit: wallPreview ? ALT_PANEL_MAX : MAX_ALTERNATIVES_SHOWN,");
+  });
+});
+
+describe("the Preview new design toggle", () => {
+  it("is absent for a normal staff session", () => {
+    for (const email of ["yasmin@marathon.internal", "amanda@marathon.internal", "junidmoh@gmail.com", ""]) {
+      const r = mount({ userEmail: email });
+      expect(byTestId(r, "preview-toggle")).toHaveLength(0);
+      expect(text(r)).not.toContain("Preview new design");
+    }
+  });
+  it("is present for Junid's owner account and for MC", () => {
+    for (const email of ["gunidmoh@gmail.com", "mc@marathon.internal"]) {
+      const r = mount({ userEmail: email });
+      expect(byTestId(r, "preview-toggle")).toHaveLength(1);
+      expect(text(r)).toContain("Preview new design");
+    }
+  });
+  it("inside the wall the same accounts get the way back; nobody else sees it", () => {
+    expect(mount({ wallPreview: true, userEmail: "gunidmoh@gmail.com" }).root.findByType(SneakerWall).props.onLeavePreview).toBeTypeOf("function");
+    expect(mount({ wallPreview: true, userEmail: "yasmin@marathon.internal" }).root.findByType(SneakerWall).props.onLeavePreview).toBeNull();
+  });
 });
 
 describe("KEEP #1 — cards draw the high-resolution photo", () => {

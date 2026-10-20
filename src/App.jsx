@@ -128,6 +128,7 @@ import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SneakerWall from "./components/assistant/SneakerWall.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
+import { isWallPreviewOn, canTogglePreview, setWallPreview } from "./components/assistant/orderViewPreview";
 import WallAlternatives, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/WallAlternatives.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
@@ -8683,7 +8684,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // components/assistant/orderViewPreview.js); everyone else gets the sidebar,
   // card grid and Order panel staff know.
   const wallMode = wallPreview && mode === "sneaker";
-
+  // Junid and MC see a toggle for that preview; nobody else does.
+  const previewToggle = canTogglePreview(userEmail);
   // The classic grid's size gate (quickAddSizeState), memoised.
   const sizeGate = useMemo(
     () => ({ clothingOrder, hubQty, sneakerOut, sneakerOutWhy, sneakerDisplayInfo, deadForOrder, hubLabelFor }),
@@ -8965,6 +8967,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           availableShops={availableShops} effectiveShop={effectiveShop} shopRegistry={shopRegistry}
           onPickShop={setPendingShop}
           mode={mode} setMode={setMode} onSwitchView={onSwitchView} userEmail={userEmail}
+          onLeavePreview={previewToggle ? () => setWallPreview(false) : null}
           search={search} setSearch={setSearch} searchRef={searchRef} onLabelFind={onLabelFind}
           shownCount={shown.length} visible={visible} onShowMore={showMore}
           // A modal over the wall (quick-view, checkout, shop switch) owns
@@ -9008,6 +9011,14 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M18 2l4 4-9 9H9v-4z"/></svg>
           Switch view
         </button>
+        {/* The sneaker wall preview (2026-10-20) — Junid and MC only. Sets
+            mc.orderView in this browser and reloads. */}
+        {previewToggle && (
+          <button className="ad-nav" data-testid="preview-toggle" onClick={() => setWallPreview(true)}>
+            <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            Preview new design
+          </button>
+        )}
         {/* Identity only — the sign-out icon here was removed with every other
             scattered logout (owner directive 2026-08-08). The ONE logout lives
             at the bottom of the home page; leave via "Switch view" to reach it. */}
@@ -10145,8 +10156,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // plus a full grid re-render before it appeared — which is why typing into
   // the search box on the till lagged behind the keyboard.
   const deferredSearch = useDeferredValue(search);
-  // The sneaker wall is off for everyone (the classic layout is restored).
-  const wallPreview = false;
+  // The sneaker-wall preview (orderViewPreview.js). Read once: the toggle
+  // reloads the page, so it never changes under a mounted screen.
+  const [wallPreview] = useState(() => isWallPreviewOn());
   // The brands in the pool, for "typing a brand name filters by brand" — the
   // sneaker wall has no brand dropdown (components/assistant/brandSearch.js).
   const brandIndex = useMemo(() => buildBrandIndex(base), [base]);
