@@ -48,10 +48,10 @@ payment. Three rules do:
 
 | situation | what happens |
 |---|---|
-| manual entry **used**, bank twin arrives | the search warns on the row (`manualTwin.status: "used"`); the **settle refuses** the bank record (`manual-twin-used`). Junid reverses the manual entry if the customer really paid twice. |
-| manual entry **waiting**, bank twin arrives | the search answers with the **bank** record (not "ambiguous") and warns that a manual twin is waiting; Junid reverses the manual one or marks it used. |
+| manual entry **used**, bank twin arrives | the search warns on the row (`sameUsed`); the **settle refuses** the bank record (`twin-used`; the log line says `manual-twin-used`). Junid reverses the manual entry if the customer really paid twice. |
+| manual entry **waiting**, bank twin arrives | the search answers with the **bank** record (not "ambiguous"); no warning — the manual one stays unused and is refused once the bank's is spent. Junid reverses it or marks it used. |
 | bank record already waiting when Junid types | refused at entry (`bank-twin-waiting`). |
-| bank twin arrives and is **used** while the manual entry still waits | the search warns on the manual row; the **settle refuses** the manual entry (`bank-twin-used`). Junid marks it used or reverses the bank settlement. |
+| bank twin arrives and is **used** while the manual entry still waits | the search warns on the manual row (`sameUsed`); the **settle refuses** the manual entry (`twin-used`; the log line says `bank-twin-used`). Junid marks it used or reverses the bank settlement. |
 
 A "twin" is the same normalised reference and amount AND a bank record that
 arrived **at or after** the manual entry was typed — last week's payment with
@@ -67,11 +67,16 @@ The ordinary path: `eftPoolSearch` by the reference → the till's confirm step
 transaction, fingerprint re-derived inside it) → attach → remainder → the
 owner's reversal. Single-use by the same transaction as a bank payment.
 
-`publicEftView` carries `manualEntry: { by, at }` so the till prints
-**MANUALLY ENTERED BY JUNID** on the row and on the staged tender; the
-owner's tab and the review screen print it too. A bank-confirmed payment
-answering a search when a manual entry for the same reference and amount was
-already spent carries `manualTwin` — the till warns before a second spend.
+**The till cannot tell (Junid, 20 Oct 2026).** A manual entry is
+indistinguishable from a bank-confirmed payment on the cashier's side: same
+card, same confirm wording, same taps, nothing on the staged tender or the
+sale record. `publicEftView` carries no manual field; a twin warning
+(`sameUsed { at, receiptNumber }`) and the settle's `twin-used` refusal use
+one sentence whichever side was typed by hand. The provenance stays where it
+belongs — the pool record (`reader: "manual"`, `manualEntry`), the
+`/eft_manual_entries` log, the `EFT_MANUAL_ENTRY` / settle log lines, the
+owner's pool tab, and the EFT review list **for the owner only** (POS
+`eftPoolList` strips the mark for an eftReview holder).
 
 ## Log — how often the hatch is used
 
