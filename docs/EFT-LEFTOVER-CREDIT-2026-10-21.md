@@ -77,3 +77,22 @@ response now drives the slip.
   be paid a second time.
 - `0ce50318…` (Daud): sale check re-queued, so the deployed scan promotes the
   R40 through the normal mint.
+
+## Follow-up (Junid, 21 Oct 2026): the attached customer is enough
+
+The customer's name and the payment's reference do not need to match for store
+credit to be issued. If a customer is attached at completion, the sale proceeds
+and the leftover becomes that customer's credit:
+
+- **Till:** an exact match with money left over no longer asks the second-tap
+  "Is this X's payment? Check it against their proof of payment" question. It
+  is one tap. A forgiving match (a prefix or a typo) still asks for one look at
+  the reference. The settle sends the customer **on the sale at completion**,
+  not the one confirmed when the EFT leg was staged. A customer attached or
+  changed afterwards still counts.
+- **Server (`eftPoolSettle`):** the `not-confirmed` refusal is gone. A
+  well-formed customer id the server cannot find yet (for example, created on a
+  till whose outbox has not landed the record) settles for that id instead of
+  failing the sale. Its credit lands on that id. With **no** customer attached,
+  a payment with money left over is still refused, because the credit must
+  belong to someone.

@@ -401,20 +401,38 @@ test("with a customer on the sale, the confirmed-customer rule is exactly as bef
   resetPool();
 });
 
-test("settle without the cashier's explicit confirmation of THAT customer is refused", async () => {
-  resetPool();
-  dbState.pool[`eft_pool/${K1}`] = PAY;
+// Junid, 21 Oct 2026: the customer attached to the sale is enough — their name
+// and the payment's reference need not match, no separate confirmation, and a
+// customer the server cannot find yet never stops the sale.
+test("settle goes ahead for the attached customer with NO separate confirmation of them", async () => {
   for (const confirmedCustomerId of [undefined, null, "", "0829999999"]) {
-    const e = await rejects(eftPoolSettle(settleReq(K1, { confirmedCustomerId })), "failed-precondition");
-    assert.equal(e.details.code, "not-confirmed");
+    resetPool();
+    dbState.pool[`eft_pool/${K1}`] = PAY;
+    dbState.txCurrent = PAY;
+    await eftPoolSettle(settleReq(K1, { confirmedCustomerId, appliedCents: 30000 })).catch(() => {});
+    assert.equal(dbState.txNext?.status, "used", String(confirmedCustomerId));
+    assert.equal(dbState.txNext.used.customerId, "0821234567");
+    assert.equal(dbState.txNext.used.customerConfirmed, true, "its leftover becomes this customer's credit");
   }
-  assert.deepEqual(dbState.txPaths, []);
+  resetPool();
 });
 
-test("settle refuses a customer id that is not a real customer record", async () => {
+test("a customer the server cannot find yet never stops the sale — the settlement stands for that id", async () => {
   resetPool();
   dbState.pool[`eft_pool/${K1}`] = PAY;
-  await rejects(eftPoolSettle(settleReq(K1, { customerId: "0820000000", confirmedCustomerId: "0820000000" })), "not-found");
+  dbState.txCurrent = PAY;
+  await eftPoolSettle(settleReq(K1, { customerId: "0820000000", confirmedCustomerId: "0820000000", customerName: "New Customer", appliedCents: 30000 })).catch(() => {});
+  assert.equal(dbState.txNext?.status, "used");
+  assert.equal(dbState.txNext.used.customerId, "0820000000");
+  assert.equal(dbState.txNext.used.customerName, "New Customer");
+  assert.equal(dbState.txNext.used.customerConfirmed, true);
+  resetPool();
+});
+
+test("a malformed customer id is still refused before any transaction", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  await rejects(eftPoolSettle(settleReq(K1, { customerId: "../users", confirmedCustomerId: "../users" })), "not-found");
   assert.deepEqual(dbState.txPaths, []);
 });
 

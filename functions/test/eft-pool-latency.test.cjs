@@ -139,9 +139,11 @@ test("settle with a confirmed customer: 4 round trips, down from 7 — the check
   assert.equal(settled.used.cashierName, "Ahmed");
 });
 
-test("settle still refuses before any claim when the customer does not resolve — with the reads in one wave", async () => {
+test("settle still refuses before any claim when the customer id is malformed — with the reads in one wave", async () => {
   reset();
-  const req = { ...CASHIER, data: { action: "settle", poolKey: K, attemptId: "P-1", appliedCents: 50000, customerId: "0820000000", confirmedCustomerId: "0820000000" } };
+  // A well-formed id the server cannot find yet now SETTLES for that id (Junid,
+  // 21 Oct 2026 — eft-pool-callables.test.cjs); only a malformed one is no customer.
+  const req = { ...CASHIER, data: { action: "settle", poolKey: K, attemptId: "P-1", appliedCents: 50000, customerId: "../x", confirmedCustomerId: "../x" } };
   const { outcome } = await waves(eftPoolSettle(req));
   assert.equal(outcome.ok, false);
   assert.equal(outcome.error.code, "not-found");

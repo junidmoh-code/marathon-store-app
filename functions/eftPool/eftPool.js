@@ -468,6 +468,22 @@ async function resolveCustomer(data) {
     "No customer record matches that. Create the customer at a till first, then allocate.");
 }
 
+/** The customer attached to a till's sale. Resolved like the owner's
+ *  allocate (merges followed, the record's own name) — but a customer the till
+ *  has attached and the server cannot find YET (created on a till whose outbox
+ *  has not landed the record) never stops the sale: the settlement stands for
+ *  that id, flagged `unresolved` for the log, and its credit lands on that id,
+ *  where the record arrives. Only a malformed id is no customer at all. */
+async function resolveSaleCustomer(id) {
+  try {
+    return await resolveCustomer({ customerId: id });
+  } catch (e) {
+    if (e?.code !== "not-found" || !/^[A-Za-z0-9_-]{1,60}$/.test(id)) throw e;
+    console.warn(`eftPoolSettle: customer ${id} is not on the server yet — settling for the attached id`);
+    return { id, name: null, unresolved: true };
+  }
+}
+
 /** A customer id followed through merge tombstones to its survivor — the same
  *  walk resolveCustomer does, without throwing. Null in, null out. */
 async function followMerges(id) {
@@ -548,10 +564,12 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     // its survivor), and the till must send the SAME id back as the one the
     // cashier explicitly confirmed as the payer. The name on the settlement is
     // the record's, never the till's.
+    // THE CUSTOMER ON THE SALE IS ENOUGH (Junid, 21 Oct 2026): whoever the
+    // till has attached at completion is whose leftover credit it is — their
+    // name and the payment's reference need not match, and no separate "is
+    // this their payment?" confirmation is asked for. (A till that still sends
+    // a different confirmedCustomerId is not refused for it any more.)
     const sentId = typeof data.customerId === "string" ? data.customerId.trim() : "";
-    if (sentId && data.confirmedCustomerId !== sentId) {
-      throw new HttpsError("failed-precondition", "Confirm that this payment belongs to the customer on the sale before using it.", { code: "not-confirmed" });
-    }
     // NO CUSTOMER ON THE SALE (Junid, 19 Oct 2026): allowed only for a payment
     // consumed WHOLE — nothing left over that would need an owner — and only
     // when the query the cashier typed re-resolves, through the very search
@@ -568,7 +586,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     const db = admin.database();
     const [cashierName, customer, record, tail] = await Promise.all([
       cashierNameOf(request),
-      sentId ? resolveCustomer({ customerId: sentId }) : null,
+      sentId ? resolveSaleCustomer(sentId) : null,
       db.ref(`${EFT_POOL_PATH}/${key}`).once("value").then((s) => s.val()),
       readPoolTail(),
     ]);
@@ -608,7 +626,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       storeId: typeof data.storeId === "string" ? data.storeId.slice(0, 40) : null,
       tillId: typeof data.tillId === "string" ? data.tillId.slice(0, 40) : null,
       customerId: customer?.id ?? null,
-      customerName: customer?.name ?? null,
+      customerName: customer?.name ?? (customer?.unresolved && typeof data.customerName === "string" ? data.customerName.slice(0, 80) : null),
       appliedCents,
     }));
   } else if (action === "attach") {
