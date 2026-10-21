@@ -157,3 +157,73 @@ safe side), with per-service overrides in `/config/shipping`.
 | `scripts/shipping/bookShipment.mjs` | `bookShipment(order)` / `cancelShipment(order)` — dormant while live is false |
 | `scripts/shipping/quote-runner.mjs` | Mac mini job that answers the Shipping card's quote requests (rates only) |
 | `src/components/admin/ShippingCard.jsx` | the admin card at `#admin/shipping` |
+
+## The Shipping card
+
+Home screen → **Shipping** tile (owner only) → `#admin/shipping`.
+Every number the estimator uses is editable there with an **unmeasured**
+marker; tick "measured" once a number is real. The live switch is shown
+disabled ("Enable after measurement"); nothing on the card books.
+
+"Test an order" takes the order's **/online_orders key** — the Shopify order
+id (the website-order ingester keys orders by it; `WEB-1042` is a field, not a
+key). It reads that one order, shows the parcel, and "Get live quotes" asks
+the Mac mini's quote runner for door + locker rates.
+
+## Rules (not deployed by this build — paste into database.rules.json)
+
+`/config` already grants read to every signed-in, non-anonymous user, and an
+RTDB child rule cannot narrow a parent's read, so `/config/shipping` is
+owner-only for **writes**; its contents (box sizes, collection address, the
+live flag) are readable by staff like the rest of `/config`.
+
+```json
+"config": {
+  "shipping": {
+    ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+    "live": { ".validate": "newData.isBoolean()" }
+  }
+},
+"shipping_quotes": {
+  ".read": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+  ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+  "answers": { ".indexOn": ["answeredAt"] }
+}
+```
+
+(`shipping` goes INSIDE the existing `"config"` block, next to `posCutover`.)
+
+## Installing the quote runner on the Mac mini (after this is on main)
+
+```sh
+ssh marathonclub@100.64.186.78
+cd ~/marathon-store-app && git pull --ff-only
+cp scripts/shipping/com.marathon.shippingquotes.plist ~/Library/LaunchAgents/
+mkdir -p logs && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marathon.shippingquotes.plist
+tail -f logs/courier.log     # "quote-runner listening"
+```
+
+It makes rates calls only. Its key comes from `~/.config/marathon/courier.env`.
+
+## Going live (Junid only, after measuring)
+
+1. Measure the boxes and the per-item weights on the Shipping card; tick each.
+2. Fill in the collection contact (a mobile or an email) — live refuses without it.
+3. Wire the seam (below) if not already done, and watch a few dry runs in
+   `logs/courier.log` (`bookShipment … DRY RUN … would POST /shipments {…}`).
+4. Set `/config/shipping/live` to the boolean `true` (Firebase console).
+   Anything else — `"true"`, `1` — stays a dry run.
+
+## Wiring into the website-order flow
+
+`feat/online-orders` calls `bookShipment(order)` from
+`scripts/shopify/onlineOrders/shipping.mjs` (a stub returning `{skipped:true}`).
+The one-line change is that file's body becoming:
+
+```js
+export { bookShipment } from "../../shipping/bookShipment.mjs";
+```
+
+Its caller (`poll.mjs` shipOrder) must pass the order WITH its key — e.g.
+`bookShipment({ ...order, key: id })` — or rely on `order.shopifyGid`, which
+bookShipment already reads the key from.
