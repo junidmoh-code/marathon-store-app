@@ -155,6 +155,10 @@ function settleDecision(current, settlement) {
         tillId: s.tillId ?? null,
         customerId: s.customerId ?? null,
         customerName: s.customerName ?? null,
+        // Attached at the till but not on the server yet (Junid, 21 Oct 2026:
+        // never a reason to stop the sale). The attach re-checks; still
+        // missing → the leftover is held, not minted onto a recordless id.
+        ...(s.customerUnresolved === true ? { customerUnresolved: true } : {}),
         // The customer was resolved against /customers AND confirmed at the
         // till (fix 3) — only such a settlement may mint remainder credit. A
         // whole-payment settle with no customer (19 Oct 2026) has no remainder
@@ -278,10 +282,11 @@ function remainderPlanOf(poolKey, used, amountCents, { holdReason = null } = {})
   // sent. Now only a settlement whose customer was resolved and confirmed
   // (customerConfirmed, fix 3) AND whose sale was read back and matched
   // (no holdReason) may mint; anything else is HELD for the owner, visibly.
-  if (holdReason || used?.customerConfirmed !== true) {
+  if (holdReason || used?.customerConfirmed !== true || used?.customerUnresolved === true) {
     return {
       cents, disposition: "unallocated", customerId: null, customerName: null, creditId: null, status: "pending",
-      holdReason: holdReason || "the settlement's customer was never confirmed at the till",
+      holdReason: holdReason
+        || (used?.customerUnresolved === true ? CUSTOMER_ABSENT_HOLD : "the settlement's customer was never confirmed at the till"),
     };
   }
   // The customer id came from the till's settle payload and is about to
@@ -341,7 +346,7 @@ function saleCheckOf({ poolKey, used, sale, saleCustomerId }) {
   // settlement stores the merge SURVIVOR; the cart may still hold the merged-
   // away id). Falls back to the raw id.
   const onSale = saleCustomerId !== undefined ? saleCustomerId : sale.customerId;
-  if (used?.customerId && onSale !== used.customerId) {
+  if (used?.customerId && onSale !== used.customerId && sale.customerId !== used.customerId) {
     return { state: "mismatch", legCents, why: "the sale names a different customer from the one confirmed when the payment was settled" };
   }
   return { state: "verified", legCents };
@@ -412,6 +417,7 @@ function flagSaleMismatchDecision(current, { saleId, legCents, why, at }) {
 // it into the credit the attach would have minted had the sale been there.
 // A hold for any OTHER reason (no confirmed customer), one the owner already
 // allocated, or one Junid settled by hand (resolvedByHand) is never touched.
+const CUSTOMER_ABSENT_HOLD = "the customer on the sale had no record on the server, so the credit could not be given to them";
 const SALE_ABSENT_HOLD = "the sale was not on the server when the payment was attached, so it could not be checked";
 
 /** A hold that exists only for want of the sale, whatever its follow-up
@@ -445,7 +451,7 @@ function promotedRemainderOf(poolKey, current, at) {
   return { ...plan, promotedAt: at, promotedFrom: "sale-verified" };
 }
 
-function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poolKey, saleCheck }) {
+function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poolKey, saleCheck, customerNowResolved = false }) {
   if (!current || current.status !== "used" || !current.used) {
     return refuse("not-held", "No settlement is holding this payment — the sale cannot be attached.");
   }
@@ -472,6 +478,8 @@ function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poo
   // A verified attach supersedes evidence from an earlier refused one; an
   // unverified attach keeps it for the owner.
   const used = { ...(verified ? held : current.used), sale: { saleId, receiptNumber: receiptNumber ?? null, at, verified } };
+  // The customer's record has landed since the settle: no longer unresolved.
+  if (customerNowResolved && used.customerUnresolved) delete used.customerUnresolved;
   const remainder = remainderPlanOf(poolKey, used, current.amountCents, {
     holdReason: verified ? null : SALE_ABSENT_HOLD,
   });
@@ -708,5 +716,5 @@ module.exports = {
   pendingRemainderScanAction,
   releaseHoldDecision, RELEASE_REASON_MIN,
   saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
-  SALE_ABSENT_HOLD, promotableHoldOf, awaitingSaleHoldOf,
+  SALE_ABSENT_HOLD, CUSTOMER_ABSENT_HOLD, promotableHoldOf, awaitingSaleHoldOf,
 };

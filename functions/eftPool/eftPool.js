@@ -475,10 +475,13 @@ async function resolveCustomer(data) {
  *  that id, flagged `unresolved` for the log, and its credit lands on that id,
  *  where the record arrives. Only a malformed id is no customer at all. */
 async function resolveSaleCustomer(id) {
+  // A malformed id is NO customer (never a path segment): a whole payment
+  // still settles, a leftover is refused as needing a customer.
+  if (!/^[A-Za-z0-9_-]{1,60}$/.test(id)) return null;
   try {
     return await resolveCustomer({ customerId: id });
   } catch (e) {
-    if (e?.code !== "not-found" || !/^[A-Za-z0-9_-]{1,60}$/.test(id)) throw e;
+    if (e?.code !== "not-found") throw e;
     console.warn(`eftPoolSettle: customer ${id} is not on the server yet — settling for the attached id`);
     return { id, name: null, unresolved: true };
   }
@@ -627,6 +630,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       tillId: typeof data.tillId === "string" ? data.tillId.slice(0, 40) : null,
       customerId: customer?.id ?? null,
       customerName: customer?.name ?? (customer?.unresolved && typeof data.customerName === "string" ? data.customerName.slice(0, 80) : null),
+      customerUnresolved: customer?.unresolved === true,
       appliedCents,
     }));
   } else if (action === "attach") {
@@ -667,6 +671,13 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       poolKey: key, used: pre?.used ?? null, sale,
       saleCustomerId: !sale ? undefined : sale.customerId == null ? null : await followMerges(sale.customerId),
     });
+    // A customer that was not on the server at settle: one read now (the
+    // till landed its outbox first). Found → the leftover mints as usual;
+    // still missing → it is HELD for the owner, never minted onto an id with
+    // no record behind it.
+    const customerNowResolved = pre?.used?.customerUnresolved === true && /^[A-Za-z0-9_-]{1,60}$/.test(pre.used.customerId ?? "")
+      ? (await admin.database().ref(`customers/${pre.used.customerId}`).once("value")).exists()
+      : false;
     if (saleCheck.state === "absent") {
       // Durable BEFORE the attach transaction: the scan verifies this sale
       // when it reaches the server, and flags it if it never does.
@@ -695,6 +706,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
         at: now,
         poolKey: key,
         saleCheck,
+        customerNowResolved,
       });
     });
   } else if (action === "allocate") {

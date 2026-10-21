@@ -93,6 +93,9 @@ and the leftover becomes that customer's credit:
 - **Server (`eftPoolSettle`):** the `not-confirmed` refusal is gone. A
   well-formed customer id the server cannot find yet (for example, created on a
   till whose outbox has not landed the record) settles for that id instead of
-  failing the sale. Its credit lands on that id. With **no** customer attached,
-  a payment with money left over is still refused, because the credit must
-  belong to someone.
+  failing the sale. The attach checks again after the till has landed its
+  outbox: if the record is there, the credit is minted as usual; if it is still
+  missing, the leftover is **held** on Junid's list (`CUSTOMER_ABSENT_HOLD`)
+  rather than minted onto an id with no record behind it. A malformed id counts
+  as no customer. With **no** customer attached, a payment with money left
+  over is still refused, because the credit must belong to someone.

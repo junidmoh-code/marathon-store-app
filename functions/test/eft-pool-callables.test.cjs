@@ -426,13 +426,15 @@ test("a customer the server cannot find yet never stops the sale — the settlem
   assert.equal(dbState.txNext.used.customerId, "0820000000");
   assert.equal(dbState.txNext.used.customerName, "New Customer");
   assert.equal(dbState.txNext.used.customerConfirmed, true);
+  assert.equal(dbState.txNext.used.customerUnresolved, true, "the attach re-checks; still missing → the leftover is held, never minted onto a recordless id");
   resetPool();
 });
 
-test("a malformed customer id is still refused before any transaction", async () => {
+test("a malformed customer id is NO customer: a leftover is refused as needing one, before any transaction", async () => {
   resetPool();
   dbState.pool[`eft_pool/${K1}`] = PAY;
-  await rejects(eftPoolSettle(settleReq(K1, { customerId: "../users", confirmedCustomerId: "../users" })), "not-found");
+  const e = await rejects(eftPoolSettle(settleReq(K1, { customerId: "../users", confirmedCustomerId: "../users", appliedCents: 30000 })), "failed-precondition");
+  assert.equal(e.details.code, "no-customer");
   assert.deepEqual(dbState.txPaths, []);
 });
 

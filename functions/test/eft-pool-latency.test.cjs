@@ -146,7 +146,7 @@ test("settle still refuses before any claim when the customer id is malformed â€
   const req = { ...CASHIER, data: { action: "settle", poolKey: K, attemptId: "P-1", appliedCents: 50000, customerId: "../x", confirmedCustomerId: "../x" } };
   const { outcome } = await waves(eftPoolSettle(req));
   assert.equal(outcome.ok, false);
-  assert.equal(outcome.error.code, "not-found");
+  assert.equal(outcome.error.code, "failed-precondition", "no customer and no re-resolving query");
   assert.deepEqual(state.ops.filter((o) => o.startsWith("txn")), [], "nothing was claimed or settled");
 });
 
