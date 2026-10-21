@@ -50,7 +50,7 @@ const MUTATIONS = [
   { id: "L6", file: BOOK, guard: "a held booking claim blocks a second booking",
     from: "(cur && cur.state !== \"failed\" ? undefined :", to: "(false ? undefined :" },
   { id: "L7", file: BOOK, guard: "a 5xx/timeout leaves the claim UNKNOWN (TCG may have booked it)",
-    from: "const ambiguous = !(err?.status >= 400 && err?.status < 500);", to: "const ambiguous = false;" },
+    from: "const ambiguous = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;", to: "const ambiguous = false;" },
   { id: "L8", file: BOOK, guard: "live refuses without a collection contact / with no box",
     from: "  if (plan.liveBlockers.length) {", to: "  if (false) {" },
   { id: "L9", file: ORDER, guard: "the WEB- ref is never used as the /online_orders key",
