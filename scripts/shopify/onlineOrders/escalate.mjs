@@ -325,6 +325,18 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
       const s = line.source?.status;
       const outcome = s === LINE_STATUS.HANDED ? "handed" : FAILED_LINE.has(s) ? "failed" : null;
       if (!outcome) return null;
+      // Mixed hub answers on a multi-unit line (some sent, one Out of Stock):
+      // never re-request the whole qty — Junid is told once and the chain waits.
+      if (outcome === "failed" && Number(line.qty) > 1 && Array.isArray(line.source?.orderKeys) && line.source.orderKeys.length > 1) {
+        if (!esc.mixedMailedAt) {
+          const marked = await lineTxn(ctx, orderId, i, (cur) => (sameSpot(cur.escalation, esc) && !cur.escalation.mixedMailedAt ? { ...cur, escalation: { ...cur.escalation, mixedMailedAt: now } } : undefined));
+          if (marked && ctx.send) {
+            try { await ctx.send({ subject: `Website order ${order.ref}: a hub sent part of a line and marked the rest Out of Stock`, text: `${line.title} ×${line.qty} at ${line.source.locationId}. Not re-requested automatically (units would move twice). Settings → Online orders → Escalations: resolve it by hand or mark it unavailable.` }); }
+            catch (e) { log(`  ✗ ${order.ref}: mixed-hub email not sent (${String(e?.message || e)})`); }
+          }
+        }
+        return null;
+      }
       return lineTxn(ctx, orderId, i, (cur) => {
         if (!sameSpot(cur.escalation, esc) || cur.source?.status !== s) return undefined;
         const nextEsc = stepEscalation(cur.escalation, { type: "line", outcome }, { nowMs: now });
@@ -404,12 +416,14 @@ async function deliverFollowUp(ctx, orderId, order, i, esc) {
   const follow = followUpRecord({ order, orderId, i, line, parentLine, nowMs: now });
   const res = await db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).transaction((cur) => (cur == null ? clean(follow) : undefined));
   if (!res.committed && !res.snapshot.val()) return null;
+  // The parent names its follow-up FIRST: a crash after this can never leave
+  // a follow-up a Shopify cancel would not reach.
+  await db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
   const next = await lineTxn(ctx, orderId, i, (cur) => {
     if (!sameSpot(cur.escalation, esc)) return undefined;
     return { ...cur, escalation: { ...cur.escalation, phase: ESC_PHASE.DONE, doneAt: now, movedTo: fid }, source: { status: LINE_STATUS.MOVED, movedTo: fid } };
   });
   if (next) {
-    await db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
     log(`  ⤴ ${order.ref} line ${i + 1}: came good after the pack — ships as ${follow.ref}`);
   }
   return next;

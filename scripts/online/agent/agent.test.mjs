@@ -335,7 +335,7 @@ describe("Sonnet-review guards (agent)", () => {
   });
 
   it("an order rung by hand / cancelled / closed is never messaged", async () => {
-    for (const status of ["fulfilled_elsewhere", "cancelled", "closed"]) {
+    for (const status of ["fulfilled_elsewhere", "cancelled", "closed"]) {   // closed with no credit window open
       const f = fakeDb(world({ order: { status } }));
       const h = harness(f);
       await h.run();
@@ -377,5 +377,43 @@ describe("Sonnet-review guards (agent)", () => {
     await h.run({ inbox: { replies: async () => [reply("1")] }, offerStillAvailable: async () => false });
     expect(line(f).pid).toBe("TEE");
     expect(h.mails.at(-1).text).toMatch(/just sold out/);
+  });
+});
+
+describe("Sonnet final review", () => {
+  it("an order CLOSED by its last credit still honours the 14-day refund reply (Junid told, never a second money action)", async () => {
+    const f = fakeDb(world());
+    const h = harness(f);
+    await h.run();
+    await h.run({ nowMs: async () => NOW + 48 * H });
+    await f.db.ref("online_orders/9001/status").set("closed");
+    await h.run({ nowMs: async () => NOW + 72 * H, inbox: { replies: async () => [reply("refund", 9)] } });
+    expect(h.junid.at(-1).subject).toMatch(/swap the store credit for a refund/);
+    expect(line(f).resolution.money.kind).toBe("credit");
+  });
+
+  it("a swap bumps the line's escalation generation (a second chain never reuses the first chain's request keys)", async () => {
+    const f = fakeDb(world());
+    const h = harness(f);
+    await h.run();
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).escalationGen).toBe(1);
+  });
+
+  it("a pack landing between the read and the swap: the swapped line moves to a follow-up", async () => {
+    const f = fakeDb(world({ line: unavailableLine(), order: { status: "ready" } }));
+    const h = harness(f);
+    await h.run();
+    const realGet = f.db.ref;
+    let packedOnce = false;
+    const db = { ref: (p) => {
+      const r = realGet(p);
+      if (p === "online_orders/9001/lines/0") return { ...r, transaction: async (fn) => { const out = await r.transaction(fn); if (!packedOnce && out.committed && out.snapshot.val()?.pid === "ALT1") { packedOnce = true; await f.db.ref("online_orders/9001").update({ status: "packed", packedLines: {} }); } return out; } };
+      return r;
+    } };
+    await h.run({ db, inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).source).toEqual({ status: "moved", movedTo: "9001f0" });
+    expect(f.read("online_orders/9001f0/lines/0")).toMatchObject({ pid: "ALT1" });
+    expect(f.read("online_orders/9001/followUps")).toEqual({ "9001f0": true });
   });
 });

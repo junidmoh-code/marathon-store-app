@@ -92,7 +92,10 @@ async function handleLine(ctx, key, row) {
   if (!order || !line) { await setAgentRow(ctx, key, null); return; }
   // Only an order still open (or packed, for its leftover lines) is the
   // agent's: cancelled, rung by hand, closed → nothing more goes to anyone.
-  if (!AGENT_STATUSES.has(order.status) || order.cancelledAfterPack) { await setAgentRow(ctx, key, null); return; }
+  // An order CLOSED by settling its last line still owes the customer their
+  // 14-day "refund instead" window (Sonnet final review).
+  const windowOpen = order.status === "closed" && line.resolution?.conversation?.state === "credited_window";
+  if ((!AGENT_STATUSES.has(order.status) && !windowOpen) || order.cancelledAfterPack) { await setAgentRow(ctx, key, null); return; }
   const conv = line.resolution?.conversation;
   if (!conv) {
     if (line.source?.status !== LINE_STATUS.UNAVAILABLE) return;
@@ -318,6 +321,7 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
       unitPriceCents: offer.priceCents,
       originalUnitPriceCents: Number.isInteger(cur.originalUnitPriceCents) ? cur.originalUnitPriceCents : cur.unitPriceCents,
       swappedFrom, routeGen: (Number(cur.routeGen) || 0) + 1,
+      escalationGen: (Number(cur.escalationGen) || 0) + 1,
       source: { locationId: offer.locationId, status: offer.status },
       resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, state: "closed", closedAt: ctx.now }, outcome: { kind: "swap", pid: offer.pid, size: offer.size, creditCents: judged.creditCents, at: ctx.now } },
     };
@@ -329,11 +333,24 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
     const follow = followUpRecord({ order: fresh, orderId, i, line: newLine(parentLine), parentLine, nowMs: ctx.now });
     const res = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).transaction((cur) => (cur == null ? clean(follow) : undefined));
     if (!res.committed && !res.snapshot.val()) return;
-    await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, state: "closed", closedAt: ctx.now }, outcome: { kind: "swap", pid: offer.pid, size: offer.size, creditCents: judged.creditCents, at: ctx.now, movedTo: fid } } }));
     await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
+    await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, state: "closed", closedAt: ctx.now }, outcome: { kind: "swap", pid: offer.pid, size: offer.size, creditCents: judged.creditCents, at: ctx.now, movedTo: fid } } }));
   } else {
     const done = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation?.state === "offering" ? newLine(cur) : undefined));
     if (!done) return;
+    // RACE: a pack may have landed between the read and the swap. A packed
+    // order never ships a pick: the swapped line moves to a follow-up.
+    const after = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}`);
+    if (after?.status === ORDER_STATUS.PACKED && !after.packedLines?.[i]) {
+      const fid = followUpId(orderId, i);
+      const moving = linesOf(after)[i];
+      const follow = followUpRecord({ order: after, orderId, i, line: moving, parentLine: moving, nowMs: ctx.now });
+      const res = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).transaction((cur) => (cur == null ? clean(follow) : undefined));
+      if (res.committed || res.snapshot.val()) {
+        await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
+        await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid } }));
+      }
+    }
   }
   // The old item's hold goes; the poller writes the new one this tick.
   if (line.pid && line.sizeKey) await ctx.db.ref(`online_reservations/${line.pid}/${line.sizeKey}/${orderId}`).set(null);

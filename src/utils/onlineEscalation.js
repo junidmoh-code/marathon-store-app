@@ -116,6 +116,7 @@ export function startEscalation(line, { nowMs, reason }) {
     idx: 0,
     phase: ESC_PHASE.RAISE,
     startedAt: nowMs,
+    gen: Number(line?.escalationGen) || 0,
     attempts: [{ location: line?.source?.locationId || null, action: "routed", result: reason, at: nowMs }],
   };
 }
@@ -237,7 +238,10 @@ export function pendingAction(esc, { nowMs }) {
 
 /** Deterministic key of the n-th request this line raises (restart-safe). */
 export function requestKey(orderId, lineIndex, esc) {
-  return `web_${orderId}_${lineIndex}_r${esc.round}s${esc.idx}`;
+  // `gen` counts escalations on this line (a swapped item that fails again
+  // starts a new chain): its requests never reuse the first chain's keys.
+  const gen = Number(esc.gen) > 0 ? `g${Number(esc.gen)}` : "";
+  return `web_${orderId}_${lineIndex}_${gen}r${esc.round}s${esc.idx}`;
 }
 
 /**

@@ -204,6 +204,10 @@ describe("restart safety — a repeated observation is a no-op", () => {
     expect(requestKey("9001", 2, e)).toBe("web_9001_2_r1s0");
     expect(requestKey("9001", 2, run(e, [raised(), rejected]))).toBe("web_9001_2_r1s1");
   });
+  it("a second chain on a swapped line gets its own keys", () => {
+    const e = startEscalation({ ...shirt, escalationGen: 1 }, { nowMs: T0, reason: "not_found" });
+    expect(requestKey("9001", 2, e)).toBe("web_9001_2_g1r1s0");
+  });
   it("never mutates its input", () => {
     const e = Object.freeze(startEscalation(shirt, { nowMs: T0, reason: "not_found" }));
     expect(() => stepEscalation(e, raised(), { nowMs: T0 })).not.toThrow();
