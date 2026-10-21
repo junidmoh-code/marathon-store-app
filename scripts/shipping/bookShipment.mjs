@@ -35,7 +35,7 @@ import { mergeShippingConfig } from "../../src/shipping/shippingConfig.js";
 import { chooseRate } from "../../src/shipping/chooseService.js";
 import { orderLines, deliveryAddress, deliveryContact, orderRef, orderKey as keyOf } from "../../src/shipping/orderShipment.js";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
-import { quoteParcel, tcgParcel, lockerCollection } from "./quote.mjs";
+import { quoteParcel, tcgParcels, lockerCollection } from "./quote.mjs";
 import { fileLogger } from "./courier-client.mjs";
 
 export const LIVE_PATH = "config/shipping/live";
@@ -60,13 +60,13 @@ async function defaultDeps(deps) {
   return out;
 }
 
-// The /online_orders key (the Shopify order id), never the WEB- ref.
+// The /online_orders key (the Shopify order id, digits), never the order's code.
 function orderKey(order) {
   const key = keyOf(order);
   if (!key) throw new Error("bookShipment: the order carries no /online_orders key (key, id or shopifyGid)");
-  // A WEB- ref passed as id/key would put the claim on a junk node the real
-  // order never sees — and the one-booking guard with it.
-  if (/^web-/i.test(key)) throw new Error(`bookShipment: "${key}" is an order REF, not its /online_orders key`);
+  // A ref (KQZ) passed as id/key would put the claim on a junk node the real
+  // order never sees — and the one-booking guard with it. Keys are digits.
+  if (!/^\d+$/.test(key)) throw new Error(`bookShipment: "${key}" is not an /online_orders key (the Shopify order id)`);
   return assertSafeSegment(key, "order key");
 }
 
@@ -105,8 +105,11 @@ export async function planShipment(order, { db, client, products = null }) {
     ...(!parcel.fits ? ["no standard box fits"] : []),
   ];
 
-  const dropBox = { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider };
-  const quoted = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: address, parcel, dropBox });
+  // The locker is only asked when the drop box is ON (door-to-door otherwise).
+  const dropBox = cfg.dropBox?.enabled
+    ? { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider }
+    : null;
+  const quoted = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: address, parcels: parcel.parcels, dropBox });
   const chosen = chooseRate({ door: quoted.door.rates, locker: quoted.locker.rates }, parcel, cfg);
   if (!chosen) {
     return { ok: false, reason: `no usable rate (door: ${quoted.door.error ?? "none"}; locker: ${quoted.locker.error ?? "none"})`, parcel, quoted };
@@ -124,7 +127,8 @@ export async function planShipment(order, { db, client, products = null }) {
     collection_contact: { name: collectionContact.name ?? "", mobile_number: collectionContact.mobile_number ?? "", email: collectionContact.email ?? "" },
     delivery_address: address,
     delivery_contact: contact,
-    parcels: [tcgParcel(parcel)],
+    // ONE shipment, every parcel of the parcel rule (N shoeboxes + any flat box).
+    parcels: tcgParcels(parcel.parcels),
     service_level_code: chosen.rate.code,
     customer_reference: ref,
     customer_reference_name: "Order no.",
@@ -260,4 +264,36 @@ export async function cancelShipment(order, deps = {}) {
   await db.ref(`online_orders/${key}/shipping`).update(patch);
   log(`cancelShipment ${key} CANCELLED ${trackingReference}`);
   return { ...s, ...patch };
+}
+
+/**
+ * The parcels an order will ship as — the parcel rule over its lines, with
+ * the live /config/shipping — in the small shape the POS order card shows
+ * before Pack. No rates, no network. `sig` changes when the lines do.
+ */
+/** The estimate's signature: the order's lines AND the config they are packed with. */
+export function estimateSig(order, rawConfig) {
+  const raw = Array.isArray(order?.lines) ? order.lines : Object.values(order?.lines ?? {});
+  const lines = raw.map((l) => `${l?.pid ?? l?.productId}|${l?.size}|${l?.qty}`).join(";");
+  let h = 0;
+  for (const c of JSON.stringify(rawConfig ?? null)) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return `${lines}#${(h >>> 0).toString(36)}`;
+}
+
+export async function estimateForOrder(order, { db, products = null, rawConfig, sig }) {
+  const raw = rawConfig !== undefined ? rawConfig : (await db.ref("config/shipping").get()).val();
+  const cfg = mergeShippingConfig(raw);
+  const lines = orderLines(order, products ?? (await productsFor(db, order)));
+  const est = estimateParcel(lines, cfg);
+  sig = sig ?? estimateSig(order, raw);
+  return {
+    sig,
+    parcelCount: est.parcelCount,
+    chargeableKg: est.chargeableKg,
+    parcels: est.parcels.map((p) => ({
+      kind: p.kind, boxCode: p.boxCode, lengthCm: p.lengthCm, widthCm: p.widthCm, heightCm: p.heightCm,
+      actualKg: p.actualKg, chargeableKg: p.chargeableKg, items: p.contents.length,
+      ...(p.contents.length ? { contents: p.contents.map((c) => c.kind) } : {}),
+    })),
+  };
 }

@@ -16,7 +16,7 @@ webhook). The pack step is the only writer of an `channel: "online"` sale.
 
 | What | Where | Default |
 |---|---|---|
-| Staff-visible feeds (hub picks, display entries, walk-in guard) | `/config/onlineOrders/enabled` | absent = **off** |
+| Staff-visible feeds (hub orders, the Display Checks strip, walk-in guard) | `/config/onlineOrders/enabled` | absent = **off** |
 | The POS Online Orders tab | `/users/{uid}/permissions` contains `online_orders` **and** `/users/{uid}/permFlags/online_orders === true` (rules read the flag) | Junid only |
 
 Orders poll in and reserve from day one, whatever the switch says. When the
@@ -32,7 +32,7 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
        ├─ /online_reservations/{pid}/{size}/{orderId}   the hold
        ├─ routeLine() per line               source {locationId, status}
        └─ when /config/onlineOrders/enabled:
-            pick    → /online_picks/{orderId}_{i}                 (hub Warehouse queue)
+            pick    → /orders/{code}[-n] (customer "Shopify", channel online) — the hub's own Warehouse queue + the TV
             display → /displayChecks_active/{store}/online__{orderId}__{i}  (shop feed)
   hub "Handed over" / shop "Handed to packer"  → line source.status "handed"
   POS Online Orders tab (marathon-pe): basket by scan / tap → Pack
@@ -42,6 +42,11 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
   orders-poll.mjs next tick: bookShipment(order) (→ {skipped:true}) then
        Shopify fulfillmentCreate (notifyCustomer true, tracking if typed)
        failure → fulfilState "failed", "Packed, Shopify not updated", Retry
+       live courier booking (docs/COURIER-GUY.md): the waybill is the Shopify
+       tracking number, carrier "The Courier Guy", notifyCustomer true; with
+       /config/shipping/live on and no waybill → fulfilState "courier_failed",
+       "Packed, courier not booked", attention courier_failed (Junid emailed),
+       POS Retry re-runs the booking only
 ```
 
 ## `/online_orders/{orderId}`
@@ -50,7 +55,7 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
 
 | Field | Meaning |
 |---|---|
-| `ref` | `WEB-{order number}`; the prefix is `ONLINE_ORDER_PREFIX` (`src/utils/onlineOrders.js`) |
+| `ref` | a three-letter code (KQZ: A–Z without I/O), unique for 180 days via `/online_order_refs/{code} = {orderId, at}`; the Shopify number is `orderNumber` |
 | `orderNumber`, `shopifyGid`, `shopifyName` | Shopify identity |
 | `status` | `new` · `picking` · `ready` · `needs_attention` · `packed` · `cancelled` · `fulfilled_elsewhere` · `release_requested` (indexed) |
 | `customer` | `{ name, phone, email }` |
@@ -64,7 +69,7 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
 | `attentionOpen` | `true` while `attention` is unresolved (indexed — the Settings list) |
 | `packClaim` | `{ saleId, by, at }` — the pack's single-flight claim; its saleId is reused by every retry |
 | `pack` | `{ saleId, by, at }` after the sale lands |
-| `fulfilState` | `pending` · `done` · `failed` (indexed) |
+| `fulfilState` | `pending` · `done` · `failed` · `courier_failed` (indexed). `courier_failed` = live Courier Guy booking did not happen; Shopify waits; POS Retry → `pending` re-runs the booking only |
 | `fulfil` | `{ state, attempts, error?, at?, trackingNumber? }` |
 | `cancelledAfterPack` | true when Shopify cancelled an order already packed (left alone, flagged) |
 | `overrides/{pushId}` | walk-in overrides: `{ by, byName, at, storeId, tillId, productId, size, loc }` |
@@ -176,16 +181,19 @@ waits for it), `lastRunAt`.
 
 ## Feeds (only while the switch is on)
 
-- `/online_picks/{orderId}_{i}` — `{ kind: "online_pick", orderId, ref, lineIndex,
-  locationId, locStatus: "hub1|open", productId, size, qty, title, photoUrl,
-  instruction: "Give to Yasmin at Marathon PE", status: open|handed|cancelled, createdAt }`.
-  Listed in the hub's Warehouse queue by `orderByChild("locStatus").equalTo("{hub}|open")`.
-  "Handed over" is one tap: the pick and the order line flip to `handed` in one
-  update. No transfer, no movement.
-- `/displayChecks_active/{store}/online__{orderId}__{i}` — a display-check record
-  with `kind: "online_pick"`, `ref`, `orderId`, `lineIndex`, `qty`, `instruction`.
-  Verdicts "Handed to packer" (`handed`) and "Not found" (`not_found`) go through
-  the existing `completeDisplayCheck` callable, which also flips the order line.
+- **Hub orders** (`/orders/{code}`, `{code}-{line}`, `{code}-{line}-{unit}`): the
+  EXISTING store-order record the Assistant writes, field for field, one per
+  unit, with `customerName: "Shopify"`, `customerPhone: null` (so no customer
+  message of any kind), `channel: "online"`, `onlineOrderId`, `onlineLineIndex`.
+  Hub 1/Hub 2 Mark as Sent as usual — **no stock moves on Send for channel
+  online** (`src/utils/dispatchStockPolicy.js`). The TV shows the code and never
+  speaks it. The poller copies the hub's outcome onto the line (sent → handed,
+  from that hub; out of stock → no_stock; other size → needs_attention) and
+  marks the hub orders collected after the Pack. The POS never sells or indexes
+  a channel-online order — the Pack is the one deduction.
+- **Display Checks strip** ("Website orders", top of Today): the shop's
+  `kind: "online_pick"` display-check records (same gate, same locks), "Pull and
+  give to Till 2" (`/config/onlineOrders/handoverText`), Handed over / Not found.
 
 ## Pack (POS)
 
@@ -221,3 +229,26 @@ Courier booking and waybills. `shipping.provider` is null and
 `bookShipment(order)` (`scripts/shopify/onlineOrders/shipping.mjs`) returns
 `{ skipped: true }`. Waybill numbers are handwritten; the Pack step has an
 optional tracking-number field.
+
+## Decisions taken without asking (2026-10-21 go-live)
+
+- **No Shopify "fulfilment note" carries the code.** `FulfillmentInput` has no
+  note field, and writing an order note or tag needs `write_orders`, which the
+  app is not granted. The code reaches the customer as the Courier Guy
+  customer reference; Shopify gets the waybill as the tracking number.
+- **Uniqueness by registry, not index**: `/online_order_refs/{code}` is claimed
+  in one transaction — atomic, exact path, never a scan.
+- **Not found takes two taps** on the Display Checks strip: it is not undone by
+  the next tap and it emails Junid.
+- **Multi-unit hub orders** are keyed `KQZ-{line}`, `KQZ-{line}-{unit}`,
+  `KQZ-{line}r{gen}` after a re-route, and `…-b` if a key is already held by
+  someone else's record. Scanning any of these labels at the POS confirms like
+  the bare code.
+- **The TV never speaks a website order** (no customer at the counter), and
+  **the Mac mini closes the hub orders** as collected after the Pack (a lettered
+  key can never be rung at a till).
+- **Remaining gap:** order edits made in Shopify after pull-in are not picked up.
+- **Watch after go-live:** the TV's two code ranges also bracket any future
+  lettered keys (Pine's `P001`, a Pine refill cart `RP001-…`); they are dropped
+  client-side, so they cost a download. None exist today (census 2026-10-21:
+  565 numeric, 2,531 `R###-…`).

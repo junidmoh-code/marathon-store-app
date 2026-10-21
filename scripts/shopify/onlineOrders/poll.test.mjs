@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runOrdersPoll, attentionMail } from "./poll.mjs";
+import { hubOrderRecord } from "./orderModel.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
 import lockerRates from "../../shipping/fixtures/rates-locker-capetown.json";
@@ -88,6 +89,15 @@ function shopify({ orders = [], fos = [], fulfilErrors = [], byId = {} } = {}) {
   return { graphql, calls };
 }
 
+// Deterministic order codes: draws spell KQZ, then BCD, then EFG, … (a code
+// already claimed by another order is skipped by the mint, exactly as live).
+const ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+function codeSeq(codes = ["KQZ", "BCD", "EFG", "HJK"]) {
+  const draws = codes.flatMap((c) => [...c].map((ch) => (ALPHA.indexOf(ch) + 0.5) / ALPHA.length));
+  let i = 0;
+  return () => draws[i++ % draws.length];
+}
+
 function deps(f, sh, over = {}) {
   const mails = [];
   return {
@@ -100,6 +110,7 @@ function deps(f, sh, over = {}) {
       log: () => {},
       courier: fakeCourier(),
       courierLog: () => {}, // never write logs/courier.log from a test
+      refRand: codeSeq(),
       ...over,
     },
   };
@@ -115,7 +126,7 @@ describe("ingest", () => {
     const out = await runOrdersPoll(deps(f, sh).deps);
     expect(out.ingested).toBe(1);
     const o = order(f);
-    expect(o).toMatchObject({ ref: "WEB-1801", orderNumber: 1801, status: "new", customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" } });
+    expect(o).toMatchObject({ ref: "KQZ", orderNumber: 1801, status: "new", customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" } });
     expect(o.totals).toEqual({ subtotalCents: 150000, shippingCents: 10000, taxCents: 19565, totalCents: 160000, currency: "ZAR" });
     expect(o.lines.map((l) => [l.pid, l.size, l.qty, l.source.locationId, l.source.status])).toEqual([
       ["SNK", "8", 1, "hub1", "pick"],
@@ -125,12 +136,12 @@ describe("ingest", () => {
     ]);
     expect(lineAt(f, 2)).toMatchObject({ barcode: "6001", isFootwear: false, unitPriceCents: 25000, photoUrl: "https://x/tee.jpg" });
     expect(lineAt(f, 0)).toMatchObject({ isFootwear: true });
-    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2, ref: "WEB-1801", locs: { hub1: 1, hub2: 1 } });
+    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2, ref: "KQZ", locs: { hub1: 1, hub2: 1 } });
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 2, locs: { "marathon-pe": 1, hub2: 1 } });
     // The reconciler is told: both products' markers moved.
     expect(f.read("shopify_inventory_dirty")).toEqual({ SNK: 1, TEE: 1 });
-    // Switch off → no feed anywhere.
-    expect(f.read("online_picks")).toBeNull();
+    // Switch off → no feed anywhere: no hub order, no display entry.
+    expect(f.read("orders")).toBeNull();
     expect(f.read("displayChecks_active")).toBeNull();
     // The Shopify query is bounded below by go-live.
     expect(sh.calls[0].vars.q).toContain(`created_at:>='2026-10-21T09:00:00Z'`);
@@ -185,7 +196,7 @@ describe("ingest", () => {
     expect(o.lines.at(-1)).toMatchObject({ title: "Mystery — XL", qty: 1, source: { status: "unresolved" } });
     expect(o.lines.at(-1).reason).toMatch(/not linked/);
     expect(d.mails).toHaveLength(1);
-    expect(d.mails[0].subject).toBe("Website order WEB-1801 needs attention");
+    expect(d.mails[0].subject).toBe("Website order KQZ needs attention");
     expect(order(f).attention.mailedAt).toBe(NOW);
     await runOrdersPoll(d.deps);
     expect(d.mails).toHaveLength(1);
@@ -208,22 +219,133 @@ describe("feed entries", () => {
     const f = fakeDb(world());
     const sh = shopify({ orders: [shopifyOrder()] });
     await runOrdersPoll(deps(f, sh).deps);
-    expect(f.read("online_picks")).toBeNull();
+    expect(f.read("orders")).toBeNull();
     await f.db.ref("config/onlineOrders/enabled").set(true);
     await runOrdersPoll(deps(f, shopify()).deps);
-    const picks = f.read("online_picks");
-    expect(Object.keys(picks).sort()).toEqual(["9001_0", "9001_1", "9001_3"]);
-    expect(picks["9001_0"]).toMatchObject({ kind: "online_pick", ref: "WEB-1801", locationId: "hub1", locStatus: "hub1|open", status: "open", qty: 1, size: "8", instruction: "Give to Yasmin at Marathon PE" });
+    // HUB-ROUTED LINES ARE HUB ORDERS — the Assistant's /orders shape, field for
+    // field, keyed by the order's code (three hub units → KQZ-1, -2, -4).
+    const hubOrders = f.read("orders");
+    expect(Object.keys(hubOrders).sort()).toEqual(["KQZ-1", "KQZ-2", "KQZ-4"]);
+    const expected = {
+      id: "KQZ-1", productId: "SNK", productName: "Air Runner", productPhoto: null, productPhotoUrl: "https://x/snk.jpg",
+      size: "8", sentSize: null, productType: "sneaker",
+      customerName: "Shopify", customerPhone: null, customerId: null, customerCode: null, customerPending: false,
+      hub: "hub1", placedAtHub: "hub1", placedStore: "central", destShop: "marathon-pe", section: 2,
+      requestDisplay: false, requestDisplayPartner: false, displayPairRequest: false, displayPairStore: null,
+      status: "incoming", createdAt: "2026-10-21T10:00:00.000Z", updatedAt: "2026-10-21T10:00:00.000Z",
+      readyAt: null, outOfStockAt: null, comingTomorrowAt: null, collectedAt: null,
+      displayRefillScheduledAt: null, displayRefillHub: null, displayRefillStatus: null, displayRefilledAt: null,
+      displayRefillStockDepletedAt: null, displayRefilledBy: null,
+      channel: "online", onlineOrderId: "9001", onlineLineIndex: 0,
+    };
+    // The pure record carries every Assistant field (nulls included)…
+    expect(hubOrderRecord({ key: "KQZ-1", line: lineAt(f, 0), onlineOrderId: "9001", lineIndex: 0, section: 2, nowIso: "2026-10-21T10:00:00.000Z" })).toEqual(expected);
+    // …and RTDB stores it as it stores an Assistant order: nulls dropped.
+    expect(hubOrders["KQZ-1"]).toEqual(Object.fromEntries(Object.entries(expected).filter(([, v]) => v !== null)));
+    expect(hubOrders["KQZ-4"]).toMatchObject({ productType: "clothing", hub: "hub2", size: "M" });
+    expect(f.read("online_picks")).toBeNull(); // the old hub feed is gone
     const display = f.read("displayChecks_active/marathon-pe/online__9001__2");
-    expect(display).toMatchObject({ kind: "online_pick", status: "open", ref: "WEB-1801", productId: "TEE", size: "M", sizeKey: "M", qty: 1, orderId: "9001", lineIndex: 2, activatedSaDate: "2026-10-21" });
+    expect(display).toMatchObject({ kind: "online_pick", status: "open", ref: "KQZ", productId: "TEE", size: "M", sizeKey: "M", qty: 1, orderId: "9001", lineIndex: 2, activatedSaDate: "2026-10-21" });
     expect(display.checkId).toBeTruthy();
-    expect(lineAt(f, 0).source.entryKey).toBe("online_picks/9001_0");
+    expect(lineAt(f, 0).source).toMatchObject({ entryKey: "orders/KQZ-1", orderKeys: ["KQZ-1"] });
     expect(lineAt(f, 2).source.entryKey).toBe("displayChecks_active/marathon-pe/online__9001__2");
     expect(order(f).status).toBe("picking");
     // Idempotent: a further tick creates nothing new.
     const n = f.writes.length;
     await runOrdersPoll(deps(f, shopify()).deps);
-    expect(f.writes.slice(n).filter(([, p]) => p.startsWith("online_picks") || p.startsWith("displayChecks_active"))).toEqual([]);
+    expect(f.writes.slice(n).filter(([, p]) => p.startsWith("orders") || p.startsWith("displayChecks_active"))).toEqual([]);
+  });
+
+  describe("hub orders follow what the hub does (the existing store-order route)", () => {
+    const on = () => fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
+    const tick = async (f) => runOrdersPoll(deps(f, shopify()).deps);
+    const first = async (f) => runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+
+    it("Mark as Sent (ready) → the line is handed, from the hub that sent it (the Pack deducts there)", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-2").update({ status: "ready", readyAt: "x" }); // Hub 2 sent line 1
+      await tick(f);
+      expect(lineAt(f, 1).source).toMatchObject({ status: "handed", locationId: "hub2", handedBy: "hub" });
+      expect(lineAt(f, 0).source.status).toBe("pick"); // hub1 has not sent yet
+    });
+
+    it("Out of Stock at the hub → no_stock, the order needs attention, Junid is emailed", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "out_of_stock" });
+      const d = deps(f, shopify());
+      await runOrdersPoll(d.deps);
+      expect(lineAt(f, 0).source).toMatchObject({ status: "no_stock", reason: "hub1 marked it out of stock" });
+      expect(order(f)).toMatchObject({ status: "needs_attention", attentionOpen: true });
+      expect(order(f).attention.reason).toMatch(/hub1 marked it out of stock/);
+      expect(d.mails).toHaveLength(1);
+    });
+
+    it("sent in another size → needs attention (Shopify sold the ordered size), never silently handed", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "ready", sentSize: "9" });
+      await tick(f);
+      expect(lineAt(f, 0).source).toMatchObject({ status: "needs_attention", reason: "hub1 sent size 9, the website sold size 8" });
+      expect(order(f).status).toBe("needs_attention");
+    });
+
+    it("after the Pack the hub orders close as collected (off the Warehouse queue and the TV)", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "ready" });
+      await f.db.ref("orders/KQZ-4").update({ status: "out_of_stock" });
+      await f.db.ref("online_orders/9001").update({ status: "packed", pack: { saleId: "S1" }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 } });
+      await runOrdersPoll(deps(f, shopify({ fos: [] })).deps);
+      expect(f.read("orders/KQZ-1")).toMatchObject({ status: "collected", collectedAt: "2026-10-21T10:00:00.000Z" });
+      expect(f.read("orders/KQZ-2")).toMatchObject({ status: "collected" });
+      expect(f.read("orders/KQZ-4").status).toBe("out_of_stock"); // never rewritten
+    });
+
+    it("a cancelled order whose unit was already SENT leaves that hub order alone", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "ready" });
+      await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z", updatedAt: "2026-10-21T09:50:00Z" })] })).deps);
+      expect(f.read("orders/KQZ-1").status).toBe("ready");
+      expect(f.read("orders/KQZ-2")).toBeNull();
+    });
+
+    it("a key already holding SOMEONE ELSE's record (a code reused after 180 days) is never adopted — the line gets its own", async () => {
+      const f = on();
+      await f.db.ref("orders/KQZ-1").set({ id: "KQZ-1", channel: "online", onlineOrderId: "7000", onlineLineIndex: 0, status: "collected", hub: "hub1" });
+      await first(f);
+      expect(lineAt(f, 0).source.orderKeys).toEqual(["KQZ-1-b"]);
+      expect(f.read("orders/KQZ-1-b")).toMatchObject({ onlineOrderId: "9001", onlineLineIndex: 0, status: "incoming" });
+      expect(f.read("orders/KQZ-1").onlineOrderId).toBe("7000"); // untouched
+      await tick(f);
+      expect(lineAt(f, 0).source.status).toBe("pick"); // the old order's "collected" was never read as ours
+    });
+
+    it("a cancelled order whose pair the hub already SENT raises an attention (return it to the hub)", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "ready" });
+      const d = deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z", updatedAt: "2026-10-21T09:50:00Z" })] }));
+      await runOrdersPoll(d.deps);
+      expect(order(f)).toMatchObject({ status: "cancelled", attentionOpen: true });
+      expect(order(f).attention.reason).toMatch(/KQZ-1 from hub1.*return it to the hub/);
+    });
+
+    it("never touches a shop's own order that happens to share a key", async () => {
+      const f = on();
+      await f.db.ref("orders/KQZ-1").set({ id: "KQZ-1", customerName: "Thabo", status: "incoming" });
+      await first(f);
+      expect(f.read("orders/KQZ-1")).toEqual({ id: "KQZ-1", customerName: "Thabo", status: "incoming" }); // create-if-absent
+      expect(lineAt(f, 0).source.orderKeys).toEqual(["KQZ-1-b"]);
+    });
+  });
+
+  it("the parcels the POS shows before Pack are on the order (the parcel rule), rewritten only when the lines change", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    const est = order(f).shipping.estimate;
+    // 2 pairs (SNK ×2) = 2 shoeboxes; the 2 tees ride inside them.
+    expect(est).toMatchObject({ parcelCount: 2 });
+    expect(est.parcels.map((p) => p.kind)).toEqual(["shoebox", "shoebox"]);
+    const n = f.writes.length;
+    await runOrdersPoll(deps(f, shopify()).deps);
+    expect(f.writes.slice(n).filter(([, p]) => p.includes("/shipping/estimate"))).toEqual([]);
   });
 
   it("every line handed → ready", async () => {
@@ -245,7 +367,7 @@ describe("cancellation", () => {
     expect(order(f).status).toBe("cancelled");
     expect(order(f).lines.every((l) => l.source.status === "cancelled")).toBe(true);
     expect(f.read("online_reservations")).toBeNull();
-    expect(f.read("online_picks/9001_0")).toMatchObject({ status: "cancelled", locStatus: "hub1|cancelled" });
+    expect(f.read("orders/KQZ-1")).toBeNull(); // not yet sent → off the hub's queue
     expect(f.read("displayChecks_active/marathon-pe/online__9001__2")).toMatchObject({ status: "completed", result: "cancelled", completedSaDate: "2026-10-21" });
     expect(f.read("shopify_inventory_dirty")).toEqual({ SNK: 2, TEE: 2 });
   });
@@ -289,7 +411,7 @@ describe("the old way, while the switch is off", () => {
     await runOrdersPoll(deps(f, shopify()).deps);
     expect(order(f).status).toBe("fulfilled_elsewhere");
     expect(f.read("online_reservations")).toBeNull();
-    expect(f.read("online_picks/9001_0")).toMatchObject({ status: "cancelled" });
+    expect(f.read("orders/KQZ-1")).toBeNull();
     expect(f.read("displayChecks_active/marathon-pe/online__9001__2")).toMatchObject({ status: "completed", result: "cancelled" });
   });
 });
@@ -308,7 +430,7 @@ describe("Resolve → re-route", () => {
     expect(o.lines.map((l) => [l.qty, l.source.locationId, l.source.status, l.routeGen])).toEqual([[1, "trophy", "display", 1], [1, "hub2", "pick", 1]]);
     expect(o.lines[0].lineId).toBe("l0");
     expect(o.lines[0].source.entryKey).toBe("displayChecks_active/trophy/online__9001__0_r1");
-    expect(o.lines[1].source.entryKey).toBe("online_picks/9001_1_r1");
+    expect(o.lines[1].source).toMatchObject({ entryKey: "orders/KQZ-2r1", orderKeys: ["KQZ-2r1"] });
     expect(o.status).toBe("picking");
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 2, locs: { trophy: 1, hub2: 1 } });
   });
@@ -316,7 +438,7 @@ describe("Resolve → re-route", () => {
 
 describe("Shopify fulfilment after the pack", () => {
   const packed = (fulfil = {}) => world({
-    online_orders: { 9001: { ref: "WEB-1801", shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0, ...fulfil }, lines: [{ pid: "TEE", sizeKey: "M", qty: 1, source: { status: "handed" } }] } },
+    online_orders: { 9001: { ref: "KQZ", shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0, ...fulfil }, lines: [{ pid: "TEE", sizeKey: "M", qty: 1, source: { status: "handed" } }] } },
   });
   const fos = [{ id: "gid://shopify/FulfillmentOrder/7", status: "OPEN", lineItems: { nodes: [{ remainingQuantity: 1 }] } }];
 
@@ -346,8 +468,8 @@ describe("Shopify fulfilment after the pack", () => {
       const out = await runOrdersPoll(deps(f, shopify({ fos }), { courier }).deps);
       const booking = order(f).shipping.booking;
       expect(booking.skipped).toBe(true);
-      expect(booking.dryRun).toMatchObject({ customer_reference: "WEB-1801", delivery_address: { city: "Cape Town", zone: "WC", code: "7441" } });
-      expect(courier.calls.map(([op]) => op)).toEqual(["getRates", "getRates"]);
+      expect(booking.dryRun).toMatchObject({ customer_reference: "KQZ", delivery_address: { city: "Cape Town", zone: "WC", code: "7441" } });
+      expect(courier.calls.map(([op]) => op)).toEqual(["getRates"]); // door-to-door: one quote
       // The fake client is the network boundary; this proves nothing behind
       // it (or beside it) reached for fetch either.
       expect(fetched).toBe(0);
@@ -369,8 +491,73 @@ describe("Shopify fulfilment after the pack", () => {
     const courier = { ...fakeCourier(), createShipment: async () => ({ id: 7, short_tracking_reference: "ABC123", charged_amount: 100 }) };
     const sh = shopify({ fos });
     await runOrdersPoll(deps(f, sh, { courier }).deps);
-    expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "ABC123" });
+    expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "ABC123", company: "The Courier Guy" });
     expect(order(f).shipping).toMatchObject({ provider: "courier_guy", waybill: "ABC123", booking: { waybill: "ABC123" } });
+  });
+
+  describe("LIVE: no waybill, no fulfilment (go-live from order 1768)", () => {
+    const liveOrder = (cfg = {}) => {
+      const w = packed();
+      Object.assign(w.online_orders[9001], {
+        customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
+        shipping: { address: { address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
+      });
+      w.config.shipping = { live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg };
+      return w;
+    };
+    const failing = (err) => ({ ...fakeCourier(), createShipment: async () => { throw err; } });
+
+    it("a failed live booking holds the fulfilment: courier_failed, attention, Junid emailed, no Shopify write", async () => {
+      const f = fakeDb(liveOrder());
+      const sh = shopify({ fos });
+      const d = deps(f, sh, { courier: failing(Object.assign(new Error("HTTP 400 bad address"), { status: 400 })) });
+      const out = await runOrdersPoll(d.deps);
+      expect(out.fulfilled).toBe(0);
+      expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false);
+      expect(order(f)).toMatchObject({ status: "packed", fulfilState: "courier_failed", attentionOpen: true, attention: { kind: "courier_failed" } });
+      expect(order(f).courierError).toMatch(/400/);
+      expect(d.mails).toHaveLength(1);
+      expect(f.writes.some(([, p]) => p.startsWith("pos/"))).toBe(false); // never a second sale
+    });
+
+    it("a live booking refused before the call (over the ceiling) also holds", async () => {
+      const f = fakeDb(liveOrder({ maxChargeRand: 10 }));
+      const sh = shopify({ fos });
+      await runOrdersPoll(deps(f, sh).deps);
+      expect(order(f).fulfilState).toBe("courier_failed");
+      expect(order(f).courierError).toMatch(/ceiling/);
+      expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false);
+    });
+
+    it("Retry (back to pending) re-runs the booking only, then fulfils with the waybill and clears the attention", async () => {
+      const f = fakeDb(liveOrder());
+      await runOrdersPoll(deps(f, shopify({ fos }), { courier: failing(Object.assign(new Error("HTTP 400"), { status: 400 })) }).deps);
+      expect(order(f).fulfilState).toBe("courier_failed");
+      await f.db.ref("online_orders/9001").update({ fulfilState: "pending", "fulfil/state": "pending" }); // the POS Retry
+      const sh = shopify({ fos });
+      const courier = { ...fakeCourier(), createShipment: async () => ({ id: 8, short_tracking_reference: "RTY777", charged_amount: 120 }) };
+      await runOrdersPoll(deps(f, sh, { courier }).deps);
+      expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "RTY777", company: "The Courier Guy" });
+      expect(order(f)).toMatchObject({ fulfilState: "done", shipping: { waybill: "RTY777" } });
+      expect(order(f).attention).toBeUndefined();
+      expect(order(f).courierError).toBeUndefined();
+    });
+
+    it("an already-booked order fulfils with the waybill it has", async () => {
+      const w = liveOrder();
+      w.online_orders[9001].shipping = { ...w.online_orders[9001].shipping, provider: "courier_guy", shipmentId: 5, waybill: "LD-1" };
+      const f = fakeDb(w);
+      const sh = shopify({ fos });
+      await runOrdersPoll(deps(f, sh).deps);
+      expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "LD-1", company: "The Courier Guy" });
+    });
+
+    it("live OFF: a courier error never holds the fulfilment", async () => {
+      const w = liveOrder(); w.config.shipping.live = false;
+      const f = fakeDb(w);
+      const out = await runOrdersPoll(deps(f, shopify({ fos }), { courier: { getRates: async () => { throw new Error("down"); } } }).deps);
+      expect(out.fulfilled).toBe(1);
+    });
   });
 
   it("a courier failure is recorded and never blocks the fulfilment", async () => {
@@ -444,14 +631,14 @@ describe("one bad order never stops the rest", () => {
     const later = shopifyOrder({ id: "gid://shopify/Order/9002", legacyResourceId: "9002", number: 1802, name: "#1802", updatedAt: "2026-10-21T09:40:00Z" });
     const out = await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder(), later] })).deps);
     expect(out.errors).toHaveLength(1);
-    expect(order(f, "9002").ref).toBe("WEB-1802");
+    expect(order(f, "9002").ref).toBe("BCD");
     expect(f.read("online_orders_meta/cursorMs")).toBe(Date.parse("2026-10-21T09:40:00Z"));
     expect(f.read("online_orders_meta/retry/9001")).toMatchObject({ name: "#1801", attempts: 1 });
     // The fault clears; the next tick's list no longer carries 9001 — it is fetched by id.
     const g = fakeDb(f.root);
     const out2 = await runOrdersPoll(deps(g, shopify({ orders: [], byId: { 9001: shopifyOrder() } })).deps);
     expect(out2.errors).toEqual([]);
-    expect(g.read("online_orders/9001").ref).toBe("WEB-1801");
+    expect(g.read("online_orders/9001").ref).toBe("KQZ");
     expect(g.read("online_orders_meta/retry")).toBeNull();
   });
 });
@@ -477,7 +664,7 @@ describe("invariants", () => {
     // Collections, a whole location's stock, a product's whole reservation
     // node, a store's whole display feed: none of these may be read.
     const WHOLE = [
-      /^(online_orders|online_reservations|online_picks|stock|shopify_sync|products|displayChecks_active|users)$/,
+      /^(online_orders|online_reservations|online_order_refs|orders|network|stock|shopify_sync|products|displayChecks_active|users)$/,
       /^stock\/[^/]+(\/[^/]+)?$/,
       /^online_reservations\/[^/]+$/,
       /^displayChecks_active\/[^/]+$/,

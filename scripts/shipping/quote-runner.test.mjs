@@ -18,25 +18,37 @@ function fakeClient() {
 const req = (over = {}) => ({
   ref: "W1001", requestedAt: 1_000_000,
   deliveryAddress: { street_address: "5 Esplanade Road", city: "Cape Town", code: "7441", zone: "WC", country: "ZA" },
-  parcel: { lengthCm: 35, widthCm: 23, heightCm: 14, actualKg: 1.5 },
+  parcels: [{ lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.3 }],
   ...over,
 });
 
 describe("quote runner", () => {
-  it("prices door + locker, names the choice, writes the answer, deletes the request", async () => {
+  it("door-to-door: prices the door, names the choice, writes the answer, deletes the request", async () => {
     const db = fakeDb({ shipping_quotes: { requests: { q1: req() } } });
     const client = fakeClient();
     const a = await answerQuoteRequest({ db, client, id: "q1", req: req(), now: 1_000_500 });
-    expect(client.calls.map((c) => c[0])).toEqual(["getRates", "getRates"]);
-    expect(a.chosen).toMatchObject({ mode: "locker", code: "L2DM - ECO" });
+    expect(client.calls.map((c) => c[0])).toEqual(["getRates"]);
+    expect(a.chosen).toMatchObject({ mode: "door", code: "ECO" });
     expect(db.root.shipping_quotes.answers.q1.door.rates.map((r) => r.code)).toEqual(["ECO", "PRI", "SDX"]);
     expect(db.root.shipping_quotes.requests?.q1).toBeUndefined();
   });
 
-  it("a parcel over every locker threshold is quoted for the door choice", async () => {
-    const db = fakeDb();
-    const a = await answerQuoteRequest({ db, client: fakeClient(), id: "q2", req: req({ parcel: { lengthCm: 55, widthCm: 40, heightCm: 35, actualKg: 16 } }), now: 1_000_500 });
-    expect(a.chosen).toMatchObject({ mode: "door", code: "ECO" });
+  it("drop box ON: a one-parcel shipment that fits a locker is quoted both ways and goes from the locker", async () => {
+    const db = fakeDb({ config: { shipping: { dropBox: { enabled: true } } } });
+    const client = fakeClient();
+    const a = await answerQuoteRequest({ db, client, id: "q2", req: req(), now: 1_000_500 });
+    expect(client.calls.map((c) => c[0])).toEqual(["getRates", "getRates"]);
+    expect(a.chosen).toMatchObject({ mode: "locker", code: "L2DM - ECO" });
+  });
+
+  it("several parcels are one quote with every parcel, never a locker", async () => {
+    const db = fakeDb({ config: { shipping: { dropBox: { enabled: true } } } });
+    const client = fakeClient();
+    const two = [{ lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.3 }, { lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.3 }];
+    const a = await answerQuoteRequest({ db, client, id: "q5", req: req({ parcels: two }), now: 1_000_500 });
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0][1].parcels).toHaveLength(2);
+    expect(a.chosen.mode).toBe("door");
   });
 
   it("drops a stale request unanswered", async () => {

@@ -13,7 +13,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, PANEL, META } from "./tokens";
-import { deriveFeed } from "./feedModel";
+import { deriveFeed, isOnlinePick } from "./feedModel";
+import WebsiteOrdersStrip from "./WebsiteOrdersStrip";
 import CheckCard from "./CheckCard";
 import CheckSheet from "./CheckSheet";
 import { styleCodeProgressForFootwear } from "../../utils/styleCodeCapture";
@@ -82,6 +83,9 @@ function CardGrid({ children }) {
 // no longer opens its own subscription, so switching tabs never churns it.
 export default function TodayView({ store, active, activeItems, completedItems, ready, error, products }) {
   const feed = useMemo(() => deriveFeed(activeItems, completedItems), [activeItems, completedItems]);
+  // Website rows live in their own strip at the top; the grid is display checks only.
+  const websiteRows = useMemo(() => feed.outstanding.filter(isOnlinePick), [feed]);
+  const gridRows = useMemo(() => feed.outstanding.filter((c) => !isOnlinePick(c)), [feed]);
   // The check whose confirm sheet is open (PR 7). Null = no sheet.
   const [sheetCheck, setSheetCheck] = useState(null);
   // Backfill progress, shown where the work happens so it has a finish line
@@ -123,6 +127,7 @@ export default function TodayView({ store, active, activeItems, completedItems, 
 
   return (
     <div>
+      <WebsiteOrdersStrip store={store} rows={websiteRows} />
       <StatStrip stats={feed.stats} />
 
       {!ready && (
@@ -142,13 +147,13 @@ export default function TodayView({ store, active, activeItems, completedItems, 
       )}
 
       {/* Outstanding — the work you can act on, always expanded */}
-      {feed.outstanding.length > 0 && (
+      {gridRows.length > 0 && (
         <div>
           <div style={{ ...META, fontSize: 11, color: "rgba(233,238,255,.55)", padding: "8px 0 12px" }}>
-            OUTSTANDING <span style={{ color: "rgba(233,238,255,.3)" }}>({feed.outstanding.length})</span>
+            OUTSTANDING <span style={{ color: "rgba(233,238,255,.3)" }}>({gridRows.length})</span>
           </div>
           <CardGrid>
-            {feed.outstanding.map((c) => (
+            {gridRows.map((c) => (
               <CheckCard key={c.key} check={c} variant="outstanding" onOpen={setSheetCheck} />
             ))}
           </CardGrid>

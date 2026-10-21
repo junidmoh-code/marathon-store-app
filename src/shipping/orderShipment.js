@@ -33,7 +33,7 @@ export function tcgZone(province) {
 /**
  * The order's KEY in /online_orders — where its shipping object lives. The
  * website-order ingester keys orders by the Shopify order's numeric id
- * (legacyResourceId) and carries `ref` ("WEB-1042") as a field, so the ref is
+ * (legacyResourceId) and carries `ref` (the code, "KQZ") as a field, so the ref is
  * NEVER a key: writing under it would mint a junk order. "" when unknown.
  */
 export function orderKey(order) {

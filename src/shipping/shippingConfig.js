@@ -47,23 +47,42 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   volumetricDivisor: 4000,
   divisorByServiceGroup: { ECO: 4000, L2D: 4000, L2L: 4000, PRI: 5000, SDX: 5000, LPF: 5000, LPP: 5000, LSF: 5000, LSP: 5000 },
 
-  // Packed size of ONE item as it goes into the parcel (cm) and its weight
-  // (kg). Footwear is in its shoebox; soft goods folded — heightCm is the
-  // folded thickness, which is what stacks. sneakerAdult's dims are the
-  // "Marathon club" preset staff already use in the portal (33×20×11).
+  // ── THE PARCEL RULE (Junid, 2026-10-21) ──────────────────────────────────
+  // The sneaker box is the unit. Each pair (and, unless its item says
+  // otherwise, each kids pair and each pair of slides) ships as ONE shoebox
+  // parcel. Soft and small goods are STUFFED into the order's shoeboxes —
+  // their weight only, no dimensions — up to fillBudgetKg per box, first box
+  // first; only when every shoebox is full does the overflow get its own flat
+  // parcel. No footwear: the soft goods go in the smallest flat box that fits.
+  // combinePairs (off): when on, all pairs share one box from the box list.
+  shoebox: {
+    label: "Sneaker box (outer)",
+    // Measured range 33–35 × 22–24 × 12–14 cm; the midpoint until measured.
+    lengthCm: 34, widthCm: 23, heightCm: 13,
+    fillBudgetKg: 1.2,
+    combinePairs: false,
+    measured: false,
+  },
+
+  // Packed size of ONE item as it goes into a parcel (cm) and its weight (kg).
+  // ownShoebox: ships as its own shoebox parcel. stuffable: rides inside a
+  // shoebox (weight only). Neither: packed into a flat box. Footwear weights
+  // are the shoebox WITH the pair.
   items: {
     sneakerAdult: {
-      label: "Sneaker (adult, boxed)", lengthCm: 33, widthCm: 20, heightCm: 11,
-      // Weight stepped by UK size band; EU sizes (≥ 36) are converted first.
+      label: "Sneaker (adult, boxed)", lengthCm: 34, widthCm: 23, heightCm: 13,
+      ownShoebox: true,
+      // Shoebox with a pair: 1.3 kg, stepped by UK size band (EU ≥ 36 converted).
       bands: [
-        { upToSize: 6.5, kg: 1.1 },
+        { upToSize: 6.5, kg: 1.2 },
         { upToSize: 9.5, kg: 1.3 },
-        { upToSize: 99, kg: 1.5 },
+        { upToSize: 99, kg: 1.4 },
       ],
       measured: false,
     },
     sneakerKids: {
       label: "Sneaker (kids, boxed)", lengthCm: 28, widthCm: 18, heightCm: 10,
+      ownShoebox: true,
       // Kids bands are on the EU scale: UK kids sizes run 10–13.5 then 1–6
       // (not monotonic), so a UK size is converted first (estimateParcel.js
       // toEuKidsSize). Toddler / little kids / grade school.
@@ -77,6 +96,7 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
     },
     slides: {
       label: "Slides / sandals", lengthCm: 31, widthCm: 13, heightCm: 9,
+      ownShoebox: true,
       bands: [
         { upToSize: 6.5, kg: 0.5 },
         { upToSize: 9.5, kg: 0.6 },
@@ -84,13 +104,13 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
       ],
       measured: false,
     },
-    foldedTop: { label: "Folded top (tee, jersey, hoodie, jacket)", lengthCm: 30, widthCm: 25, heightCm: 4, kg: 0.4, measured: false },
-    foldedBottoms: { label: "Folded bottoms (pants, jeans, shorts)", lengthCm: 32, widthCm: 26, heightCm: 4, kg: 0.5, measured: false },
-    tracksuitSet: { label: "Tracksuit set", lengthCm: 35, widthCm: 28, heightCm: 8, kg: 1.0, measured: false },
-    cap: { label: "Cap / hat", lengthCm: 26, widthCm: 19, heightCm: 12, kg: 0.15, measured: false },
+    foldedTop: { stuffable: true, label: "Folded top (tee, jersey, hoodie, jacket)", lengthCm: 30, widthCm: 25, heightCm: 4, kg: 0.4, measured: false },
+    foldedBottoms: { stuffable: true, label: "Folded bottoms (pants, jeans, shorts)", lengthCm: 32, widthCm: 26, heightCm: 4, kg: 0.5, measured: false },
+    tracksuitSet: { stuffable: true, label: "Tracksuit set", lengthCm: 35, widthCm: 28, heightCm: 8, kg: 1.0, measured: false },
+    cap: { stuffable: true, label: "Cap / hat", lengthCm: 26, widthCm: 19, heightCm: 12, kg: 0.15, measured: false },
     bag: { label: "Bag", lengthCm: 35, widthCm: 28, heightCm: 6, kg: 0.5, measured: false },
-    perfume: { label: "Perfume (boxed)", lengthCm: 12, widthCm: 8, heightCm: 6, kg: 0.35, measured: false },
-    accessory: { label: "Belt / accessory", lengthCm: 15, widthCm: 10, heightCm: 4, kg: 0.2, measured: false },
+    perfume: { stuffable: true, label: "Perfume (boxed)", lengthCm: 12, widthCm: 8, heightCm: 6, kg: 0.35, measured: false },
+    accessory: { stuffable: true, label: "Belt / accessory", lengthCm: 15, widthCm: 10, heightCm: 4, kg: 0.2, measured: false },
   },
 
   // The boxes Junid stocks — SEEDS until measured. `id` is immutable (the
@@ -113,7 +133,8 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   // the door on the cheapest door service quoted. Thresholds are TCG's own
   // limits, measured from /rates (docs/COURIER-GUY.md); XS weight is a guess.
   dropBox: {
-    enabled: true,
+    // OFF: door-to-door for every order until Junid sets locker costing rules.
+    enabled: false,
     pickupPointId: DROP_BOX_PICKUP_POINT.id,
     pickupPointProvider: DROP_BOX_PICKUP_POINT.provider,
     lockers: [

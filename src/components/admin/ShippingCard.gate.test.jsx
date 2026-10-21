@@ -93,7 +93,7 @@ describe("the live switch", () => {
     expect(r.path).toBe("config/shipping");
     expect(payload).not.toHaveProperty("live");
     expect(payload.volumetricDivisor).toBe(5000);
-    expect(Object.keys(payload).sort()).toEqual(["boxes", "collectionAddress", "collectionContact", "divisorByServiceGroup", "doorServiceCode", "dropBox", "excludeServiceCodes", "items", "maxChargeRand", "volumetricDivisor"]);
+    expect(Object.keys(payload).sort()).toEqual(["boxes", "collectionAddress", "collectionContact", "divisorByServiceGroup", "doorServiceCode", "dropBox", "excludeServiceCodes", "items", "maxChargeRand", "shoebox", "volumetricDivisor"]);
   });
 
   it("every unmeasured seed carries the marker", async () => {
@@ -129,12 +129,20 @@ describe("test an order", () => {
     expect(text(tree)).toContain("not a valid order ref");
   });
 
-  it("a WEB- ref is explained, not searched for (that would read every order)", async () => {
+  it("a three-letter code is looked up through its registry by exact path, then the order", async () => {
+    store = { online_order_refs: { KQZ: { orderId: "5551234", at: 1 } }, online_orders: { 5551234: ORDER } };
     const tree = await render(ADMIN);
-    await act(async () => { byLabel(tree, "order ref").props.onChange({ target: { value: "WEB-1042" } }); });
+    await act(async () => { byLabel(tree, "order ref").props.onChange({ target: { value: "kqz" } }); });
     await act(async () => { button(tree, "Read order").props.onClick(); });
-    expect(getMock.mock.calls.map((c) => c[0].path)).toEqual(["config/shipping"]);
-    expect(text(tree)).toContain("Shopify order id");
+    expect(getMock.mock.calls.map((c) => c[0].path)).toEqual(["config/shipping", "online_order_refs/KQZ", "online_orders/5551234"]);
+  });
+
+  it("an unknown code reads nothing else", async () => {
+    const tree = await render(ADMIN);
+    await act(async () => { byLabel(tree, "order ref").props.onChange({ target: { value: "ABC" } }); });
+    await act(async () => { button(tree, "Read order").props.onClick(); });
+    expect(getMock.mock.calls.map((c) => c[0].path)).toEqual(["config/shipping", "online_order_refs/ABC"]);
+    expect(text(tree)).toContain("No order has the code ABC");
   });
 
   it("live quotes: one request write, one answer listener, nothing else", async () => {
@@ -146,7 +154,7 @@ describe("test an order", () => {
     expect(pushMock.mock.calls[0][0].path).toBe("shipping_quotes/requests");
     expect(setMock).toHaveBeenCalledTimes(1);
     expect(setMock.mock.calls[0][0].path).toBe("shipping_quotes/requests/req1");
-    expect(setMock.mock.calls[0][1]).toMatchObject({ ref: "W1001", parcel: { lengthCm: 35, widthCm: 23, heightCm: 14, actualKg: 1.5 } });
+    expect(setMock.mock.calls[0][1]).toMatchObject({ ref: "W1001", parcels: [{ lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.3 }] });
     expect(onValueMock.mock.calls.map((c) => c[0].path)).toEqual(["shipping_quotes/answers/req1"]);
   });
 });

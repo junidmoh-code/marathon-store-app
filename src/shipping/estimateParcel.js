@@ -1,26 +1,25 @@
-// ── estimateParcel(lines) — the parcel an order becomes ──────────────────────
-// Pure. No staff typing: size and weight are computed from what the order
-// contains, using the per-category numbers in /config/shipping. Staff only
-// ever see the result.
+// ── estimateParcel(lines) — the parcels an order becomes ─────────────────────
+// Pure. No staff typing: sizes and weights are computed from what the order
+// contains, using /config/shipping. Staff only ever see the result.
+//
+// THE PARCEL RULE (Junid, 2026-10-21). The sneaker box is the unit:
+//   • each pair (adult; kids and slides too unless their item says otherwise)
+//     is ONE shoebox parcel, cfg.shoebox (34 × 23 × 13 cm);
+//   • soft and small goods are STUFFED into the order's shoeboxes — weight only,
+//     no dimensions — first shoebox first, up to cfg.shoebox.fillBudgetKg each;
+//   • only when every shoebox is full does the overflow get its own flat parcel;
+//   • no footwear: the goods go in the smallest flat box from the box list;
+//   • several pairs ship as N shoebox parcels in ONE shipment — unless
+//     cfg.shoebox.combinePairs, when they share the smallest box that fits.
+// Each parcel: chargeable = max(actual, volumetric), divisor from config.
 //
 //   estimateParcel(lines, config?) → {
-//     boxCode, lengthCm, widthCm, heightCm,          the box TCG is told about
-//     actualKg, volumetricKg, chargeableKg,          chargeable = max(actual, volumetric)
-//     service, dropBoxEligible, lockerSize,          from the drop-box rule
-//     fits, items, unmeasured,                       diagnostics for the card
+//     parcels: [{ kind: "shoebox"|"box"|"custom", boxCode, lengthCm, widthCm, heightCm,
+//                 actualKg, volumetricKg, chargeableKg, contents: [{ kind, kg }] }],
+//     parcelCount, actualKg, chargeableKg,          totals over the parcels
+//     service, dropBoxEligible, lockerSize,         door-to-door unless a single parcel fits a locker AND the drop box is on
+//     fits, items, guessed, unmeasured,             diagnostics for the cards
 //   }
-//
-// PACKING. Every unit is one item with packed dims (largest first). Footwear
-// keeps its own shoebox footprint — a box is never squashed; soft goods are
-// folded and stack by their thickness. Items are laid in 1–4 side-by-side
-// columns, each column a stack (shortest column takes the next item); for
-// every layout, the smallest standard box whose dims fit the block (in any
-// orientation) is a candidate, and the smallest candidate wins.
-//
-// THE DROP-BOX RULE. The parcel goes in a TCG locker when it fits a
-// configured locker's size AND is at or under its weight threshold — the
-// smallest such locker names the service. Above every threshold: door
-// collection, `doorServiceCode`.
 import { DEFAULT_SHIPPING_CONFIG, mergeShippingConfig } from "./shippingConfig.js";
 
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -170,41 +169,93 @@ export function chooseLocker(dims, actualKg, dropBox) {
   return lockers.find((lk) => fitsIn(dims, [lk.lengthCm, lk.widthCm, lk.heightCm]) && actualKg <= Number(lk.maxKg)) ?? null;
 }
 
+// One flat parcel from a set of items: the smallest standard box (or a custom
+// parcel when none holds them, fits: false).
+function flatParcel(items, cfg, divisor) {
+  const best = chooseBox(items, cfg.boxes ?? []);
+  const dims = best ? [best.box.lengthCm, best.box.widthCm, best.box.heightCm].map(Number) : layoutBlock(items, 1).map(Math.ceil);
+  const [lengthCm, widthCm, heightCm] = sortDesc(dims);
+  const actualKg = round2(items.reduce((t, it) => t + it.kg, 0) + (best ? Number(best.box.tareKg) || 0 : 0));
+  return finish({
+    kind: best ? "box" : "custom", boxCode: best ? best.box.code : null,
+    lengthCm, widthCm, heightCm, actualKg,
+    contents: items.map((it) => ({ kind: it.kind, kg: it.kg })),
+    measured: best ? best.box.measured === true : false,
+  }, divisor);
+}
+
+function finish(parcel, divisor) {
+  const volumetricKg = round2((parcel.lengthCm * parcel.widthCm * parcel.heightCm) / divisor);
+  return { ...parcel, volumetricKg, chargeableKg: Math.max(parcel.actualKg, volumetricKg) };
+}
+
 export function estimateParcel(lines, config = DEFAULT_SHIPPING_CONFIG) {
   const cfg = config === DEFAULT_SHIPPING_CONFIG ? config : mergeShippingConfig(config);
   const { items, guessed } = expandLines(lines, cfg);
   if (items.length === 0) throw new Error("estimateParcel: the order has no units to ship");
-
-  const best = chooseBox(items, cfg.boxes ?? []);
-  // Nothing fits: no standard box is big enough. Ship the single-stack block
-  // as a custom parcel, rounded up, and say so (fits: false) — the card shows
-  // it and Junid adds a box.
-  const dims = best
-    ? [best.box.lengthCm, best.box.widthCm, best.box.heightCm].map(Number)
-    : layoutBlock(items, 1).map(Math.ceil);
-  const [lengthCm, widthCm, heightCm] = sortDesc(dims);
-  const tare = best ? Number(best.box.tareKg) || 0 : 0;
-  const actualKg = round2(items.reduce((s, it) => s + it.kg, 0) + tare);
   const divisor = Number(cfg.volumetricDivisor) || 4000;
-  const volumetricKg = round2((lengthCm * widthCm * heightCm) / divisor);
-  const chargeableKg = Math.max(actualKg, volumetricKg);
+  const sb = cfg.shoebox ?? {};
+  const budget = Math.max(0, Number(sb.fillBudgetKg) || 0);
 
-  const locker = chooseLocker([lengthCm, widthCm, heightCm], actualKg, cfg.dropBox);
+  const pairs = items.filter((it) => cfg.items[it.kind]?.ownShoebox === true);
+  const stuffable = items.filter((it) => cfg.items[it.kind]?.ownShoebox !== true && cfg.items[it.kind]?.stuffable === true);
+  const flat = items.filter((it) => cfg.items[it.kind]?.ownShoebox !== true && cfg.items[it.kind]?.stuffable !== true);
+
+  const parcels = [];
+  // ── shoeboxes ──
+  const boxes = [];
+  if (pairs.length && sb.combinePairs === true) {
+    // One box for every pair (the old column packing over shoebox footprints).
+    const d = sortDesc([sb.lengthCm, sb.widthCm, sb.heightCm].map(Number));
+    const asBoxes = pairs.map((p) => ({ ...p, l: d[0], w: d[1], h: d[2] }));
+    const combined = flatParcel(asBoxes, cfg, divisor);
+    boxes.push({ base: combined, stuffedKg: 0, stuffed: [], budget: budget * pairs.length });
+  } else {
+    const d = sortDesc([sb.lengthCm, sb.widthCm, sb.heightCm].map(Number));
+    for (const p of pairs) {
+      boxes.push({
+        base: { kind: "shoebox", boxCode: "SHOEBOX", lengthCm: d[0], widthCm: d[1], heightCm: d[2], actualKg: p.kg,
+                contents: [{ kind: p.kind, kg: p.kg }], measured: sb.measured === true },
+        stuffedKg: 0, stuffed: [], budget,
+      });
+    }
+  }
+  // ── stuffing: first shoebox with room, in order; the rest overflows ──
+  const overflow = [];
+  for (const it of stuffable) {
+    const room = boxes.find((b) => b.stuffedKg + it.kg <= b.budget + 1e-9);
+    if (room) { room.stuffedKg += it.kg; room.stuffed.push(it); }
+    else overflow.push(it);
+  }
+  for (const b of boxes) {
+    parcels.push(finish({
+      ...b.base,
+      actualKg: round2(b.base.actualKg + b.stuffedKg),
+      contents: [...b.base.contents, ...b.stuffed.map((it) => ({ kind: it.kind, kg: it.kg }))],
+    }, divisor));
+  }
+  // ── flat: the overflow and anything that is neither ──
+  const rest = [...overflow, ...flat];
+  if (rest.length) parcels.push(flatParcel(rest, cfg, divisor));
+
+  const one = parcels.length === 1 ? parcels[0] : null;
+  const locker = one ? chooseLocker([one.lengthCm, one.widthCm, one.heightCm], one.actualKg, cfg.dropBox) : null;
   const kinds = [...new Set(items.map((i) => i.kind))];
   const unmeasured = [
     ...kinds.filter((k) => cfg.items[k]?.measured !== true).map((k) => `item:${k}`),
-    ...(best && best.box.measured !== true ? [`box:${best.box.code}`] : []),
+    ...(pairs.length && sb.measured !== true ? ["shoebox"] : []),
+    ...[...new Set(parcels.filter((p) => p.kind === "box" && p.measured !== true).map((p) => `box:${p.boxCode}`))],
     ...(locker && locker.measured !== true ? [`locker:${locker.size}`] : []),
   ];
-
   return {
-    boxCode: best ? best.box.code : null,
-    lengthCm, widthCm, heightCm,
-    actualKg, volumetricKg, chargeableKg,
+    parcels: parcels.map(({ measured, ...p }) => p),
+    parcelCount: parcels.length,
+    actualKg: round2(parcels.reduce((t, p) => t + p.actualKg, 0)),
+    chargeableKg: round2(parcels.reduce((t, p) => t + p.chargeableKg, 0)),
     service: locker ? locker.serviceCode : cfg.doorServiceCode,
     dropBoxEligible: !!locker,
     lockerSize: locker ? locker.size : null,
-    fits: !!best,
+    fits: parcels.every((p) => p.kind !== "custom"),
     items: items.length,
     guessed,
     unmeasured,

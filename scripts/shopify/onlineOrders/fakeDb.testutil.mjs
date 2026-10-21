@@ -92,7 +92,10 @@ export function fakeDb(initial = {}, { failWritesUnder = null, missingIndexes = 
     transaction: async (fn) => {
       const cold = fn(null);
       const current = at(path);
-      if (current === null && cold === undefined) return { committed: false, snapshot: snap(null) };
+      // The real SDK with no cached value: an update function that answers the
+      // cold null pass with undefined ABORTS there — the server is never asked
+      // (architect review, #777: closeHubOrders did this and never closed).
+      if (cold === undefined) return { committed: false, snapshot: snap(current) };
       const next = current === null ? cold : fn(clone(current));
       if (next === undefined) return { committed: false, snapshot: snap(current) };
       writes.push(["txn", path, clone(next)]);

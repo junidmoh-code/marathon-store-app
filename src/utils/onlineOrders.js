@@ -1,13 +1,37 @@
 // ── Website orders: the vocabulary every writer and reader shares ────────────
 // The contract is docs/ONLINE-ORDERS.md. This module is plain ESM with no
 // imports beyond sizeKey, so the Mac mini scripts (scripts/shopify/) and the
-// store app import the SAME constants — the prefix in particular exists once.
+// store app import the SAME constants.
 import { stockSizeKey } from "./sizeKey.js";
 
-// "WEB-1234". One constant; nothing else spells the prefix.
-export const ONLINE_ORDER_PREFIX = "WEB-";
+// ── THE ORDER REF: a three-letter code ──────────────────────────────────────
+// order.ref is three upper-case letters, no digits, no prefix, no dash (KQZ).
+// I and O are never used (they read as 1 and 0 on a handwritten parcel).
+// Minted once when the order is pulled in (scripts/shopify/onlineOrders/
+// orderRefs.mjs), unique against every order of the last 180 days through the
+// registry /online_order_refs/{code} = { orderId, at } — an exact-path lookup,
+// never a scan. The Shopify order number stays on the order as `orderNumber`.
+export const ORDER_REF_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // 24 letters, no I, no O
+export const ORDER_REF_LENGTH = 3;
+export const ORDER_REF_REUSE_AFTER_MS = 180 * 24 * 3600 * 1000;
+export const ONLINE_ORDER_REFS_PATH = "online_order_refs";
 
-export const onlineOrderRef = (orderNumber) => `${ONLINE_ORDER_PREFIX}${orderNumber}`;
+/** Is `s` a well-formed order code (exactly 3 letters from the alphabet)? */
+export function isOrderRefCode(s) {
+  return typeof s === "string" && s.length === ORDER_REF_LENGTH && [...s].every((c) => ORDER_REF_ALPHABET.includes(c));
+}
+
+/** A random code. `rand` returns [0,1) — injected by tests. */
+export function randomOrderRef(rand = Math.random) {
+  let out = "";
+  for (let i = 0; i < ORDER_REF_LENGTH; i++) out += ORDER_REF_ALPHABET[Math.floor(rand() * ORDER_REF_ALPHABET.length) % ORDER_REF_ALPHABET.length];
+  return out;
+}
+
+/** A scanned or typed value folded for comparison with a ref: letters and digits, upper case ("kqz" → "KQZ"). */
+export function foldOrderRef(value) {
+  return String(value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
 
 // Paths. /online_reservations rows are keyed by the stock cell's size key.
 export const ONLINE_ORDERS_PATH = "online_orders";
@@ -67,7 +91,14 @@ export const ATTENTION_KIND = Object.freeze({
   WALKIN_OVERRIDE: "walkin_override",
   CANCELLED_AFTER_PACK: "cancelled_after_pack",
   FULFIL_FAILED: "fulfil_failed",
+  // Packed, but the live Courier Guy booking did not happen (failed, refused
+  // or unconfirmed). The Shopify fulfilment waits for it; the POS Retry
+  // re-runs the booking only.
+  COURIER_FAILED: "courier_failed",
 });
+
+// The carrier name Shopify shows the customer next to the waybill.
+export const COURIER_COMPANY = "The Courier Guy";
 
 /**
  * Units of `pid/size` held at `loc` by website orders, from the reservation
