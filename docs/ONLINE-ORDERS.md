@@ -55,7 +55,9 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
 
 | Field | Meaning |
 |---|---|
-| `ref` | a three-letter code (KQZ: A–Z without I/O), unique for 180 days via `/online_order_refs/{code} = {orderId, at}`; the Shopify number is `orderNumber` |
+| `orderNumber` | the Shopify order number — **what the order is called everywhere**: `orderLabel(order)` = `#1768` (POS, Display Checks strip, Settings, courier reference, sale `onlineOrderRef`, emails). Owner decision 2026-10-21 |
+| `ref` | LEGACY only (orders pulled in before 2026-10-21, e.g. LEV, QGZ): the old per-order code; a fallback for `orderLabel` |
+| `codesIn/{code}` | `true` once the packer confirmed that pair at the till (Collect order by number → code) |
 | `orderNumber`, `shopifyGid`, `shopifyName` | Shopify identity |
 | `status` | `new` · `picking` · `ready` · `needs_attention` · `packed` · `cancelled` · `fulfilled_elsewhere` · `release_requested` (indexed) |
 | `customer` | `{ name, phone, email }` |
@@ -190,10 +192,17 @@ waits for it), `lastRunAt`.
 
 ## Feeds (only while the switch is on)
 
-- **Hub orders** (`/orders/{code}`, `{code}-{line}`, `{code}-{line}-{unit}`): the
-  EXISTING store-order record the Assistant writes, field for field, one per
-  unit, with `customerName: "Shopify"`, `customerPhone: null` (so no customer
-  message of any kind), `channel: "online"`, `onlineOrderId`, `onlineLineIndex`.
+- **Hub orders** (`/orders/{code}`): the EXISTING store-order record the
+  Assistant writes, field for field, **one per unit, each keyed by its OWN
+  three-letter code** (owner decision 2026-10-21: one pair = one code; two pairs
+  on one order = two codes; A–Z without I/O; letters = website, digits =
+  walk-in). The code is claimed in `/online_order_refs/{code} = {orderId:
+  "{orderId}:{line}:{unit}:{routeGen}", at, kind: "hub_unit"}` for 180 days and
+  is DETERMINISTIC per that owner (`mintHubCode`), so a re-run adopts its own
+  record and never raises a second hub order for one pair. The line lists its
+  codes in `source.orderKeys`. Fields: `customerName: "Shopify"`,
+  `customerPhone: null` (so no customer message of any kind), `channel:
+  "online"`, `onlineOrderId`, `onlineLineIndex`, `onlineUnit`, `onlineOrderNumber`.
   Hub 1/Hub 2 Mark as Sent as usual — **no stock moves on Send for channel
   online** (`src/utils/dispatchStockPolicy.js`). The TV shows the code and never
   speaks it. The poller copies the hub's outcome onto the line (sent → handed,
@@ -206,7 +215,14 @@ waits for it), `lastRunAt`.
 
 ## Pack (POS)
 
-1. Every line In basket (barcode scan; a footwear line by tapping its photo).
+1. Every line In basket. **A pair**: at the till, the EXISTING "Collect order by
+   number" → its code (QGZ) → the one pair tied to that hub order pops up
+   ("WEBSITE ORDER #1768 · QGZ") → Confirm writes ONE update: `codesIn/{code}`
+   (the line's `basket/{i}` once all its codes are in) + the hub order
+   `collected`, exactly as a walk-in collection closes one — no sale line, no
+   stock. **Clothing / perfume**: scan the barcode on the sale screen (it asks
+   "Put with #1768 / Sell at the till", so a walk-in sale is never taken) or on
+   the order card. The card lists each line's codes; there is no scan box.
 2. Claim: transaction on `packClaim` mints the saleId once; every retry reuses it.
 3. `writeSale(draft, { saleId, extraUpdates })` — the existing sale path, with
    `channel: "online"`, `tillId: "online"`, one `online` tender for the line total,
@@ -222,6 +238,14 @@ The pack sale never raises a display check (`onClothingSale` skips a movement
 whose sale has `channel: "online"`), never reaches a cash-up or card
 reconciliation (tender `online`, till `online`), and returns through the normal
 return flow, which credits the cell the ledger says each line came from.
+
+### The waybill on the card
+
+The Mac mini books Courier Guy on its first tick after the Pack and writes
+`shipping.waybill` only for a LIVE booking. The card shows that waybill LARGE
+until Done; otherwise it says why there is none: `DRY RUN (the live switch was
+off)` (`shipping.booking {skipped, dryRun}`), `not booked (reason)`, or
+`booking…` (packed, the tick has not run yet).
 
 ## Attention and email
 
@@ -353,10 +377,9 @@ optional tracking-number field.
   in one transaction — atomic, exact path, never a scan.
 - **Not found takes two taps** on the Display Checks strip: it is not undone by
   the next tap and it emails Junid.
-- **Multi-unit hub orders** are keyed `KQZ-{line}`, `KQZ-{line}-{unit}`,
-  `KQZ-{line}r{gen}` after a re-route, and `…-b` if a key is already held by
-  someone else's record. Scanning any of these labels at the POS confirms like
-  the bare code.
+- **(Superseded 2026-10-21)** hub orders used to be keyed by the order's code
+  (`KQZ-{line}-{unit}`); every unit now has its own code. LEV and QGZ were
+  migrated with `scripts/shopify/onlineOrders/migrate-hub-codes.mjs`.
 - **The TV never speaks a website order** (no customer at the counter), and
   **the Mac mini closes the hub orders** as collected after the Pack (a lettered
   key can never be rung at a till).
