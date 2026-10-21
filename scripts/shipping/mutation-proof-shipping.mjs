@@ -61,6 +61,8 @@ const MUTATIONS = [
     from: "chosen.rate.rate > ceiling)", to: "chosen.rate.rate > ceiling * 1000)" },
   { id: "L12", file: BOOK, guard: "booking never mints an order node — the order must exist at its key",
     from: "if (!(await db.ref(`online_orders/${key}/ref`).get()).exists()) {", to: "if (false) {" },
+  { id: "L13", file: BOOK, guard: "a create response naming no shipment is UNKNOWN, never 'booked'",
+    from: "(res.id == null && !res.short_tracking_reference && !res.custom_tracking_reference)", to: "(false)" },
   { id: "C1", file: CLIENT, guard: "a create is NEVER retried on 5xx (a retry could book twice)",
     from: "createShipment: (body) => call(\"POST\", \"/shipments\", { body, retry5xx: false }),", to: "createShipment: (body) => call(\"POST\", \"/shipments\", { body, retry5xx: true })," },
   { id: "C2", file: CLIENT, guard: "the API key is redacted from every log line",
@@ -107,6 +109,8 @@ const MUTATIONS = [
     from: "checked={live} disabled readOnly", to: "checked={live} readOnly" },
   { id: "K3", file: CARD, guard: "an order ref is validated before any read",
     from: "try { seg = assertSafeSegment(refInput.trim(), \"order ref\"); }", to: "try { seg = refInput.trim(); }" },
+  { id: "K4", file: CARD, guard: "a stale quote request registers no listener once the order changed",
+    from: "    if (!current()) return; // the order changed", to: "    // the order changed" },
 ];
 
 function runVitest(files) {

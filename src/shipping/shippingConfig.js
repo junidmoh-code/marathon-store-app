@@ -93,17 +93,18 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
     accessory: { label: "Belt / accessory", lengthCm: 15, widthCm: 10, heightCm: 4, kg: 0.2, measured: false },
   },
 
-  // The boxes Junid stocks — SEEDS until measured. Outer dims are what TCG
+  // The boxes Junid stocks — SEEDS until measured. `id` is immutable (the
+  // card keys rows by it); `code` is the editable name. Outer dims are what TCG
   // is told; they are also used as the fit test (cardboard walls ignored).
   // Sized so the small ones fit TCG's lockers: FLAT fits locker S, SHOE and
   // SMALL fit locker M, XL is exactly locker L.
   boxes: [
-    { code: "FLAT", label: "Flat mailer", lengthCm: 40, widthCm: 30, heightCm: 8, tareKg: 0.15, measured: false },
-    { code: "SHOE", label: "Single shoe box mailer", lengthCm: 35, widthCm: 23, heightCm: 14, tareKg: 0.2, measured: false },
-    { code: "SMALL", label: "Small box", lengthCm: 40, widthCm: 30, heightCm: 18, tareKg: 0.3, measured: false },
-    { code: "MEDIUM", label: "Medium box", lengthCm: 45, widthCm: 35, heightCm: 25, tareKg: 0.45, measured: false },
-    { code: "LARGE", label: "Large box", lengthCm: 55, widthCm: 40, heightCm: 35, tareKg: 0.65, measured: false },
-    { code: "XL", label: "XL box (locker L size)", lengthCm: 60, widthCm: 41, heightCm: 41, tareKg: 0.8, measured: false },
+    { id: "box-flat", code: "FLAT", label: "Flat mailer", lengthCm: 40, widthCm: 30, heightCm: 8, tareKg: 0.15, measured: false },
+    { id: "box-shoe", code: "SHOE", label: "Single shoe box mailer", lengthCm: 35, widthCm: 23, heightCm: 14, tareKg: 0.2, measured: false },
+    { id: "box-small", code: "SMALL", label: "Small box", lengthCm: 40, widthCm: 30, heightCm: 18, tareKg: 0.3, measured: false },
+    { id: "box-medium", code: "MEDIUM", label: "Medium box", lengthCm: 45, widthCm: 35, heightCm: 25, tareKg: 0.45, measured: false },
+    { id: "box-large", code: "LARGE", label: "Large box", lengthCm: 55, widthCm: 40, heightCm: 35, tareKg: 0.65, measured: false },
+    { id: "box-xl", code: "XL", label: "XL box (locker L size)", lengthCm: 60, widthCm: 41, heightCm: 41, tareKg: 0.8, measured: false },
   ],
 
   // THE DROP-BOX RULE. A parcel at or under a locker's size AND weight

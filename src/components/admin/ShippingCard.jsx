@@ -151,7 +151,12 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
   const [quote, setQuote] = useState(null);
   const quoteUnsub = useRef(null);
   const quoteTimer = useRef(null);
+  // Every request (and every order read) takes a ticket; an answer or timeout
+  // for a stale ticket — a newer request, a new order, an unmounted card —
+  // writes nothing. Same guard as CostWatchCard's loadGen.
+  const quoteGen = useRef(0);
   const stopQuote = () => {
+    quoteGen.current += 1;
     if (quoteUnsub.current) { quoteUnsub.current(); quoteUnsub.current = null; }
     if (quoteTimer.current) { clearTimeout(quoteTimer.current); quoteTimer.current = null; }
   };
@@ -194,6 +199,8 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
   const requestQuotes = useCallback(async () => {
     if (!test?.parcel) return;
     stopQuote();
+    const gen = quoteGen.current;
+    const current = () => quoteGen.current === gen;
     const db = getDatabase();
     const reqRef = push(ref(db, "shipping_quotes/requests"));
     const id = reqRef.key;
@@ -215,12 +222,13 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
         by: authUser?.email ?? null,
       });
     } catch (e) {
-      setQuote({ state: /permission_denied/i.test(String(e?.message || e)) ? "denied" : "error", error: String(e?.message || e) });
+      if (current()) setQuote({ state: /permission_denied/i.test(String(e?.message || e)) ? "denied" : "error", error: String(e?.message || e) });
       return;
     }
+    if (!current()) return; // the order changed (or the card closed) while the request was being written
     // ONE answer node, by exact path; dropped as soon as it answers.
     quoteUnsub.current = onValue(ref(db, `shipping_quotes/answers/${id}`), (snap) => {
-      if (!snap.exists()) return;
+      if (!snap.exists() || !current()) return;
       stopQuote();
       setQuote({ state: "answered", id, answer: snap.val() });
     }, (e) => { stopQuote(); setQuote({ state: "error", error: String(e?.message || e) }); });
@@ -320,7 +328,7 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
         {(cfg.boxes ?? []).map((b, i) => {
           const setB = (next) => patch((c) => { c.boxes[i] = next; return c; });
           return (
-            <div key={i} style={S.row}>
+            <div key={b.id ?? `seed-${i}`} style={S.row}>
               <input aria-label={`box ${i + 1} code`} value={b.code} onChange={(e) => setB({ ...b, code: e.target.value })} style={{ ...S.text, minWidth: 70, width: 70 }} />
               <input aria-label={`box ${i + 1} label`} value={b.label ?? ""} onChange={(e) => setB({ ...b, label: e.target.value })} style={{ ...S.text, flex: "1 1 140px" }} />
               <Dims obj={b} prefix={`box ${b.code}`} onChange={setB} />
@@ -333,7 +341,7 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
           );
         })}
         <button style={{ ...S.btn, marginTop: 8 }} onClick={() => patch((c) => {
-          c.boxes.push({ code: `BOX${c.boxes.length + 1}`, label: "New box", lengthCm: 30, widthCm: 20, heightCm: 10, tareKg: 0.2, measured: false });
+          c.boxes.push({ id: `box-${Date.now().toString(36)}`, code: `BOX${c.boxes.length + 1}`, label: "New box", lengthCm: 30, widthCm: 20, heightCm: 10, tareKg: 0.2, measured: false });
           return c;
         })}>Add a box</button>
       </div>

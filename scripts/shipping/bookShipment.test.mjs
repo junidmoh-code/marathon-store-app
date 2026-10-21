@@ -318,3 +318,25 @@ describe("review hardening (Sonnet architect review, PR #774)", () => {
     expect(res.waybill).toBe("ABC");
   });
 });
+
+describe("CodeRabbit review (PR #774)", () => {
+  it("a create response naming no shipment holds the claim as unknown and throws", async () => {
+    for (const createResult of [null, "", {}, { message: "ok" }]) {
+      const d = db(true);
+      await expect(bookShipment(ORDER(), deps(d, fakeClient({ createResult })))).rejects.toThrow(/named no shipment/);
+      expect(d.root.online_orders.W1001.shipping.courierBooking.state).toBe("unknown");
+      expect(d.root.online_orders.W1001.shipping.provider).toBeUndefined();
+    }
+  });
+
+  it("a failed cancel is recorded (refused vs unknown) and rethrown", async () => {
+    const BOOKED = ORDER({ shipping: { provider: "courier_guy", shipmentId: 5, waybill: "LD-1", trackingReference: "T1" } });
+    for (const [status, state] of [[400, "refused"], [502, "unknown"], [408, "unknown"]]) {
+      const d = db(true);
+      const client = { ...fakeClient(), cancelShipment: async () => { throw Object.assign(new Error(`HTTP ${status}`), { status }); } };
+      await expect(cancelShipment(BOOKED, deps(d, client))).rejects.toThrow();
+      expect(d.root.online_orders.W1001.shipping.cancel.state).toBe(state);
+      expect(d.root.online_orders.W1001.shipping.cancelledAt).toBeUndefined();
+    }
+  });
+});

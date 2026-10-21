@@ -151,6 +151,25 @@ describe("test an order", () => {
   });
 });
 
+describe("stale quote answers (CodeRabbit, PR #774)", () => {
+  it("reading a new order while a request is being written registers no listener for the old one", async () => {
+    store = { online_orders: { W1001: {
+      ref: "W1001", lines: [{ category: "Perfume", qty: 1 }],
+      shipping: { address: { street: "1 A Rd", city: "Durban", zip: "4001" } }, customer: { phone: "0820000000" },
+    } } };
+    const tree = await render(ADMIN);
+    await act(async () => { byLabel(tree, "order ref").props.onChange({ target: { value: "W1001" } }); });
+    await act(async () => { button(tree, "Read order").props.onClick(); });
+    let release;
+    setMock.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    let pending;
+    await act(async () => { pending = button(tree, "Get live quotes").props.onClick(); });
+    await act(async () => { button(tree, "Read order").props.onClick(); });
+    await act(async () => { release(); await pending; });
+    expect(onValueMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("books nothing", () => {
   it("the card's source has no path to a shipment call", () => {
     const src = readFileSync(new URL("./ShippingCard.jsx", import.meta.url), "utf8").replace(/\/\/.*$/gm, "");

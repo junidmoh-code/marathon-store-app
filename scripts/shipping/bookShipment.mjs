@@ -196,6 +196,13 @@ export async function bookShipment(order, deps = {}) {
     log(`bookShipment ${key} CREATE ${ambiguous ? "UNKNOWN" : "FAILED"} ${err?.message || err}`);
     throw err;
   }
+  // A 2xx that names no shipment is not a confirmed booking: hold the claim
+  // as "unknown" (nothing re-books it) and let a person check the portal.
+  if (!res || typeof res !== "object" || (res.id == null && !res.short_tracking_reference && !res.custom_tracking_reference)) {
+    await claimRef.set({ state: "unknown", at: now(), error: "create returned no shipment id or tracking reference" });
+    log(`bookShipment ${key} CREATE UNCONFIRMED — response named no shipment: ${JSON.stringify(res)?.slice(0, 300)}`);
+    throw new Error("bookShipment: Courier Guy's create response named no shipment — check the portal before retrying");
+  }
   const shipping = {
     provider: "courier_guy",
     shipmentId: finiteOrNull(res?.id),
@@ -236,8 +243,20 @@ export async function cancelShipment(order, deps = {}) {
     return { skipped: true, dryRun: payload };
   }
 
-  await client.cancelShipment(trackingReference);
-  const patch = { cancelledAt: now(), courierBooking: { state: "cancelled", at: now() } };
+  try {
+    await client.cancelShipment(trackingReference);
+  } catch (err) {
+    // A 4xx means TCG refused (e.g. already collected); anything else may have
+    // cancelled it. Either way the order says so; a retry re-sends the cancel,
+    // which TCG treats idempotently.
+    const refused = err?.status >= 400 && err?.status < 500 && err?.status !== 408;
+    await db.ref(`online_orders/${key}/shipping/cancel`).set({ state: refused ? "refused" : "unknown", at: now(), error: String(err?.message || err).slice(0, 300) });
+    log(`cancelShipment ${key} ${refused ? "REFUSED" : "UNKNOWN"} ${err?.message || err}`);
+    throw err;
+  }
+  // A 2xx is TCG's documented success for /shipments/cancel (the client
+  // throws on anything else); the doc gives no body to check further.
+  const patch = { cancelledAt: now(), cancel: { state: "cancelled", at: now() }, courierBooking: { state: "cancelled", at: now() } };
   await db.ref(`online_orders/${key}/shipping`).update(patch);
   log(`cancelShipment ${key} CANCELLED ${trackingReference}`);
   return { ...s, ...patch };
