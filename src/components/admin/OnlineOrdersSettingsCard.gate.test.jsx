@@ -41,10 +41,12 @@ describe("OnlineOrdersSettingsCard", () => {
     expect(onValueMock).not.toHaveBeenCalled();
   });
 
-  it("the owner reads the switch scalar and indexed /online_orders queries only, never the node", async () => {
+  it("the owner reads the switch scalar, the escalations mirror and indexed /online_orders queries only, never the node", async () => {
     await render(ADMIN);
     const targets = onValueMock.mock.calls.map(([r]) => r);
-    expect(targets.filter((r) => r.path !== "online_orders").map((r) => r.path)).toEqual(["config/onlineOrders/enabled"]);
+    // online_escalations is the Mac mini's small per-line mirror (one row per
+    // escalating line), not /online_orders.
+    expect(targets.filter((r) => r.path !== "online_orders").map((r) => r.path).sort()).toEqual(["config/onlineOrders/enabled", "online_escalations"]);
     const qs = targets.filter((r) => r.path === "online_orders").map((r) => r.constraints);
     expect(qs).toEqual(expect.arrayContaining([
       [{ orderByChild: "attentionOpen" }, { equalTo: true }],
