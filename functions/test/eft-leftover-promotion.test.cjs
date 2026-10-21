@@ -11,7 +11,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   attachSaleDecision, saleCheckOf, laterSaleCheckDecision, allocateRemainderDecision, remainderStatusDecision,
-  promotableHoldOf, awaitingSaleHoldOf, SALE_ABSENT_HOLD, eftCreditIdOf,
+  promotableHoldOf, awaitingSaleHoldOf, SALE_ABSENT_HOLD, CUSTOMER_ABSENT_HOLD, eftCreditIdOf,
 } = require("../lib/eft-settle.cjs");
 const { buildEftCreditClaim, eftCreditMirrorRecord, ledgerApplyDecision } = require("../lib/eft-credit.cjs");
 const { creditSpendableAt, issuingStamp, SEED_REGISTRY } = require("../lib/network-registry.cjs");
@@ -176,4 +176,33 @@ test("creditOnVerify: a hold awaiting its sale counts whether the follow-up is p
   assert.equal(promotableHoldOf(heldRec), true);
   const unconfirmed = { ...heldRec, used: { ...heldRec.used, customerConfirmed: false } };
   assert.equal(awaitingSaleHoldOf(unconfirmed), false, "an owner hold is never 'to follow'");
+});
+
+// Junid, 21 Oct 2026: the attached customer is enough — name and reference
+// need not match. A customer with no record yet never stops the sale.
+test("ATTACHED-CUSTOMER RULE: a customer not on the server at settle — record landed by the attach → credit", () => {
+  const unresolved = { ...settled, used: { ...deranUsed, customerUnresolved: true } };
+  const d = attachSaleDecision(unresolved, {
+    attemptId: deranUsed.attemptId, saleId: "S", receiptNumber: "S-1", at: USED_AT + 1, poolKey: KEY,
+    saleCheck: saleCheckOf({ poolKey: KEY, used: unresolved.used, sale: s46291 }), customerNowResolved: true,
+  });
+  assert.equal(d.value.used.remainder.disposition, "credit");
+  assert.equal(d.value.used.remainder.customerId, "27785056874");
+  assert.equal(d.value.used.customerUnresolved, undefined);
+});
+
+test("ATTACHED-CUSTOMER RULE: …still no record at the attach → HELD for the owner, never minted onto a recordless id", () => {
+  const unresolved = { ...settled, used: { ...deranUsed, customerUnresolved: true } };
+  const d = attachSaleDecision(unresolved, {
+    attemptId: deranUsed.attemptId, saleId: "S", receiptNumber: "S-1", at: USED_AT + 1, poolKey: KEY,
+    saleCheck: saleCheckOf({ poolKey: KEY, used: unresolved.used, sale: s46291 }), customerNowResolved: false,
+  });
+  assert.equal(d.ok, true, "the sale's attach still succeeds");
+  assert.equal(d.value.used.remainder.disposition, "unallocated");
+  assert.equal(d.value.used.remainder.holdReason, CUSTOMER_ABSENT_HOLD);
+});
+
+test("the attach accepts the sale's raw customer id even when it now follows a merge elsewhere", () => {
+  const check = saleCheckOf({ poolKey: KEY, used: deranUsed, sale: s46291, saleCustomerId: "merge-survivor" });
+  assert.equal(check.state, "verified");
 });
