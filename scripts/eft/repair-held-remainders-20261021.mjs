@@ -39,7 +39,12 @@ async function resolveByHand() {
   if (!r || r.disposition !== "unallocated" || r.status !== "held" || r.cents !== HAND.cents || rec.used.customerId !== HAND.customerId) {
     console.log(`${HAND.key}: not the expected held R1,000 — left alone`, JSON.stringify(r)); return;
   }
-  if (r.resolvedByHand) { console.log(`${HAND.key}: already resolvedByHand`); return; }
+  if (r.resolvedByHand) {
+    // A run that crashed between the mark and the removal: finish the removal.
+    console.log(`${HAND.key}: already resolvedByHand — removing any eft_unallocated entry left behind`);
+    if (EXECUTE) await db.ref(`eft_unallocated/${HAND.key}`).remove();
+    return;
+  }
   if (credit?.customerId !== HAND.customerId || credit?.issuedAmount !== HAND.cents) {
     console.log(`${HAND.key}: hand credit ${HAND.creditId} does not match — left alone`, JSON.stringify(credit)); return;
   }
