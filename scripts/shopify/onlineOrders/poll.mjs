@@ -647,7 +647,9 @@ async function createEntry(ctx, orderId, order, index, line) {
       const rec = res.snapshot?.val?.();
       if (res.committed || ours(rec, u)) keys.push(key);
     }
-    if (!keys.length) return null;
+    // ALL units or none: a line recorded with fewer hub orders than pairs would
+    // read as handed one pair short. The next tick tries again (idempotent).
+    if (keys.length !== qty) return null;
     return { entryKey: `orders/${keys[0]}`, orderKeys: keys };
   }
   const store = line.source.locationId;

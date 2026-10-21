@@ -19,6 +19,7 @@ import { createRequire } from "node:module";
 import { ONLINE_ORDERS_PATH, HOLDING_STATUSES, LINE_STATUS, orderLabel } from "../../../src/utils/onlineOrders.js";
 import { linesOf } from "./orderModel.mjs";
 import { mintHubCode } from "./orderRefs.mjs";
+import { migrationPlan, nextPointer, oldStillMatches } from "./hubCodeMigration.mjs";
 import { serverNowMs } from "../publishNode.mjs";
 
 const COMMIT = process.argv.includes("--commit");
@@ -28,18 +29,6 @@ if (!admin.apps.length) admin.initializeApp({ databaseURL: "https://marathon-clu
 const db = admin.database();
 const now = await serverNowMs(db);
 const say = (s) => console.log(`${COMMIT ? "" : "[dry] "}${s}`);
-
-/** Pure: the plan for one order → { units: [{ i, u, gen, oldKey }], displays: [entryKey] }. */
-export function migrationPlan(order) {
-  const units = [];
-  const displays = [];
-  linesOf(order).forEach((l, i) => {
-    const keys = Array.isArray(l?.source?.orderKeys) ? l.source.orderKeys : [];
-    keys.forEach((k, u) => units.push({ i, u, gen: Number(l.routeGen) || 0, oldKey: k }));
-    if (typeof l?.source?.entryKey === "string" && l.source.entryKey.startsWith("displayChecks_active/")) displays.push(l.source.entryKey);
-  });
-  return { units, displays };
-}
 
 for (const status of HOLDING_STATUSES) {
   const found = (await db.ref(ONLINE_ORDERS_PATH).orderByChild("status").equalTo(status).get()).val() || {};
@@ -63,14 +52,21 @@ for (const status of HOLDING_STATUSES) {
       const res = await db.ref(`orders/${code}`).transaction((cur) => (cur == null ? copy : undefined));
       const there = res.snapshot.val();
       if (!res.committed && !(there && there.migratedFrom === oldKey)) throw new Error(`orders/${code} is taken`);
-      await db.ref(`orders/${oldKey}`).transaction((cur) => (cur && cur.channel === "online" && cur.onlineOrderId === String(id) ? null : undefined));
+      // Removed only if it is STILL what was copied — a hub "sent" / "out of
+      // stock" landing meanwhile keeps the old record (and is reported).
+      const del = await db.ref(`orders/${oldKey}`).transaction((cur) => (oldStillMatches(cur, rec, id) ? null : undefined));
+      if (!del.committed) {
+        await db.ref(`orders/${code}`).set(null);
+        delete newKeys[i][u];
+        say(`  ! ${oldKey} changed while being moved — kept as it is; re-run the migration`);
+      }
     }
     if (COMMIT) {
       for (const [i, codes] of Object.entries(newKeys)) {
         const oldKeys = linesOf(order)[i].source.orderKeys;
         await db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines/${i}/source`).transaction((cur) => {
           if (!cur || JSON.stringify(cur.orderKeys) !== JSON.stringify(oldKeys)) return undefined; // moved meanwhile
-          return { ...cur, orderKeys: codes, entryKey: `orders/${codes[0]}` };
+          return { ...cur, ...nextPointer(oldKeys, codes) };
         });
       }
       for (const key of displays) {
