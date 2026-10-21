@@ -27,7 +27,7 @@ export function OnlineBadge({ record }) {
     <span style={{ ...META, fontSize: 10.5, letterSpacing: "0.12em", color: WEB_GREEN, fontWeight: 700,
                    background: "rgba(74,202,122,.12)", border: "1px solid rgba(74,202,122,.45)", borderRadius: 999,
                    padding: "3px 9px", display: "inline-block", whiteSpace: "nowrap" }}>
-      WEBSITE · {record.ref || "—"}{Number(record.qty) > 1 ? ` · ×${Number(record.qty)}` : ""}
+      WEBSITE · {record.orderNumber != null ? `#${record.orderNumber}` : (record.ref || "—")}{Number(record.qty) > 1 ? ` · ×${Number(record.qty)}` : ""}
     </span>
   );
 }

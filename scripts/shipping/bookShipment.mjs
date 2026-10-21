@@ -172,7 +172,9 @@ export async function bookShipment(order, deps = {}) {
     return { skipped: true, reason: plan.liveBlockers.join(", ") };
   }
   // The order must exist at that key — never mint a node by booking.
-  if (!(await db.ref(`online_orders/${key}/ref`).get()).exists()) {
+  // shopifyGid is on every ingested order (ref is not, since 2026-10-21 —
+  // gating on ref refused every live booking of a new order).
+  if (!(await db.ref(`online_orders/${key}/shopifyGid`).get()).exists()) {
     log(`bookShipment ${key} REFUSED no order at /online_orders/${key}`);
     return { skipped: true, reason: `no order at /online_orders/${key}` };
   }

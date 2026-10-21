@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runOrdersPoll } from "./poll.mjs";
+import { candidateCode } from "./orderRefs.mjs";
+const C = (i, u = 0, g = 0, k = 0, id = "9001") => candidateCode(`${id}:${i}:${u}:${g}`, k);
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
 import lockerRates from "../../shipping/fixtures/rates-locker-capetown.json";
@@ -77,7 +79,7 @@ describe("non-footwear: shop Not found → Hub 2 → Central", () => {
     await runOrdersPoll(d.deps);
     expect(f.read("orders/R001-1")).toMatchObject({
       productId: "TEE", size: "M", qty: 1, customerName: "Shop Refill", hub: "hub2", placedAtHub: "hub2",
-      destShop: "marathon-pe", productType: "clothing", status: "incoming", onlineRef: "LEV",
+      destShop: "marathon-pe", productType: "clothing", status: "incoming", onlineRef: "#1801",
       onlineEscalationKey: "web_9001_0_r1s0",
     });
     expect(f.read("refillCounter")).toMatchObject({ counter: 1 });
@@ -88,7 +90,7 @@ describe("non-footwear: shop Not found → Hub 2 → Central", () => {
     expect(o.attentionOpen).toBeUndefined();
     expect(d.mails).toEqual([]);
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 1, locs: { "marathon-pe": 1 } });
-    expect(f.read("online_escalations/9001_0")).toMatchObject({ ref: "LEV", phase: "await", where: "round 1: Hub 2 → Marathon PE requested" });
+    expect(f.read("online_escalations/9001_0")).toMatchObject({ ref: "#1801", phase: "await", where: "round 1: Hub 2 → Marathon PE requested" });
   });
 
   it("a second tick raises nothing new (restart / re-run safety)", async () => {
@@ -108,9 +110,9 @@ describe("non-footwear: shop Not found → Hub 2 → Central", () => {
     await tick(f);
     expect(f.read("refill_requests/web_9001_0_r1s1")).toMatchObject({
       productId: "TEE", size: "M", qty: 1, requestingLocation: "hub2", status: "open",
-      createdFrom: { manual: true, source: "central", via: "online_escalation", ref: "LEV", orderKey: "9001", lineIndex: 0 },
-      earlyRelease: { by: "online-escalation", reason: "Website order LEV" },
-      onlineRef: "LEV",
+      createdFrom: { manual: true, source: "central", via: "online_escalation", ref: "#1801", orderKey: "9001", lineIndex: 0 },
+      earlyRelease: { by: "online-escalation", reason: "Website order #1801" },
+      onlineRef: "#1801",
     });
     expect(line(f, 0).source).toEqual({ status: "resolving", locationId: "hub2" });
     expect(f.read("online_reservations/TEE/M/9001").locs).toEqual({ hub2: 1 });
@@ -129,11 +131,11 @@ describe("non-footwear: shop Not found → Hub 2 → Central", () => {
     expect(f.read("online_picks")).toBeNull();
     await tick(f, NEXT_DAY_11);
     // Back on Hub 2's Warehouse queue as an ordinary hub order (#777's route).
-    expect(line(f, 0).source).toMatchObject({ locationId: "hub2", status: "pick", entryKey: "orders/LEV-1r1", orderKeys: ["LEV-1r1"] });
-    expect(f.read("orders/LEV-1r1")).toMatchObject({ customerName: "Shopify", channel: "online", hub: "hub2", productId: "TEE", status: "incoming", onlineOrderId: "9001", onlineLineIndex: 0 });
-    expect(f.read("orders/LEV-1r1").checkProperly).toBeUndefined();
+    expect(line(f, 0).source).toMatchObject({ locationId: "hub2", status: "pick", entryKey: `orders/${C(0, 0, 1)}`, orderKeys: [C(0, 0, 1)] });
+    expect(f.read(`orders/${C(0, 0, 1)}`)).toMatchObject({ customerName: "Shopify", channel: "online", hub: "hub2", productId: "TEE", status: "incoming", onlineOrderId: "9001", onlineLineIndex: 0 });
+    expect(f.read(`orders/${C(0, 0, 1)}`).checkProperly).toBeUndefined();
     // Hub 2 marks it sent (the existing Mark as Sent) → handed → escalation done.
-    await f.db.ref("orders/LEV-1r1/status").set("ready");
+    await f.db.ref(`orders/${C(0, 0, 1)}/status`).set("ready");
     await tick(f, NEXT_DAY_11 + 60e3);
     expect(line(f, 0).escalation.phase).toBe("done");
     expect(f.read("online_escalations/9001_0")).toBeNull();
@@ -150,13 +152,13 @@ describe("non-footwear: shop Not found → Hub 2 → Central", () => {
     await tick(f, (t += 60e3));
     // Round 2: the shop looks again — a fresh display entry, CHECK PROPERLY.
     expect(line(f, 0).source).toMatchObject({ locationId: "marathon-pe", status: "display", checkProperly: true, entryKey: "displayChecks_active/marathon-pe/online__9001__0_r1" });
-    expect(f.read("displayChecks_active/marathon-pe/online__9001__0_r1")).toMatchObject({ kind: "online_pick", ref: "LEV", checkProperly: true, status: "open" });
+    expect(f.read("displayChecks_active/marathon-pe/online__9001__0_r1")).toMatchObject({ kind: "online_pick", ref: "#1801", checkProperly: true, status: "open" });
     // Not found again (completeDisplayCheck's write).
     await f.db.ref("online_orders/9001/lines/0/source/status").set("not_found");
     await tick(f, (t += 60e3));
     const card2 = line(f, 0).escalation.request.key;
     expect(card2).toBe("R002-1");
-    expect(f.read(`orders/${card2}`)).toMatchObject({ onlineRef: "LEV", onlineEscalationKey: "web_9001_0_r2s1" });
+    expect(f.read(`orders/${card2}`)).toMatchObject({ onlineRef: "#1801", onlineEscalationKey: "web_9001_0_r2s1" });
     await f.db.ref(`orders/${card2}/clothingRefillStatus`).set("rejected");
     await tick(f, (t += 60e3));
     expect(f.read("refill_requests/web_9001_0_r2s2")).toMatchObject({ requestingLocation: "hub2" });
@@ -191,9 +193,9 @@ describe("footwear: the hub marks its order Out of Stock → Central", () => {
     expect(f.read("online_reservations/SNK/8/9001").locs).toEqual({ hub1: 1 });
     await f.db.ref("refill_requests/web_9001_1_r1s0/status").set("cancelled");
     await tick(f, NOW + 60e3);
-    expect(line(f, 1).source).toMatchObject({ locationId: "hub1", status: "pick", checkProperly: true, orderKeys: ["LEV-2r1"] });
-    expect(f.read("orders/LEV-2r1")).toMatchObject({ channel: "online", hub: "hub1", checkProperly: true, status: "incoming" });
-    await f.db.ref("orders/LEV-2r1/status").set("out_of_stock");
+    expect(line(f, 1).source).toMatchObject({ locationId: "hub1", status: "pick", checkProperly: true, orderKeys: [C(1, 0, 1)] });
+    expect(f.read(`orders/${C(1, 0, 1)}`)).toMatchObject({ channel: "online", hub: "hub1", checkProperly: true, status: "incoming" });
+    await f.db.ref(`orders/${C(1, 0, 1)}/status`).set("out_of_stock");
     await tick(f, NOW + 120e3);
     expect(line(f, 1).source).toEqual({ status: "unavailable" });
     expect(f.read("online_escalations/9001_1")).toMatchObject({ phase: "unavailable" });
@@ -248,7 +250,7 @@ describe("crash recovery", () => {
     expect(f.read("orders/R001-1/productId")).toBe("OTHER");
     expect(line(f, 0).escalation.pending).toBeUndefined();
     await tick(f, NOW + 60e3);
-    expect(f.read("orders/R002-1")).toMatchObject({ productId: "TEE", onlineRef: "LEV" });
+    expect(f.read("orders/R002-1")).toMatchObject({ productId: "TEE", onlineRef: "#1801" });
   });
 });
 
@@ -304,17 +306,17 @@ describe("after a partial pack: a line that comes good ships as a follow-up", ()
     await tick(f, NEXT_DAY_11);
     expect(line(f, 0).source).toEqual({ status: "moved", movedTo: "9001f0" });
     const fu = f.read("online_orders/9001f0");
-    expect(fu).toMatchObject({ ref: "LEV-F1", followUpOf: "9001", shopifyGid: "gid://shopify/Order/9001", status: "picking" });
+    expect(fu).toMatchObject({ followUpOf: "9001", shopifyGid: "gid://shopify/Order/9001", status: "picking" });
     // No hold gap: the follow-up holds in the SAME tick the parent let go.
     expect(f.read("online_reservations/TEE/M/9001f0")).toMatchObject({ qty: 1, locs: { hub2: 1 } });
-    expect(fu.lines[0]).toMatchObject({ pid: "TEE", shopifyLineItemId: LI(2), source: { locationId: "hub2", status: "pick", orderKeys: ["LEV-F1-1r1"] } });
+    expect(fu.lines[0]).toMatchObject({ pid: "TEE", shopifyLineItemId: LI(2), source: { locationId: "hub2", status: "pick", orderKeys: [C(0, 0, 1, 0, "9001f0")] } });
     expect(f.read("online_orders/9001/followUps")).toEqual({ "9001f0": true });
     // The parent stops holding; next tick the follow-up holds and gets its pick.
     expect(f.read("online_reservations/TEE/M/9001")).toBeNull();
     await tick(f, NEXT_DAY_11 + 60e3);
     expect(f.read("online_reservations/TEE/M/9001f0")).toMatchObject({ qty: 1, locs: { hub2: 1 } });
-    expect(f.read("online_orders/9001f0/lines/0/source")).toMatchObject({ status: "pick", orderKeys: ["LEV-F1-1r1"] });
-    expect(f.read("orders/LEV-F1-1r1")).toMatchObject({ channel: "online", hub: "hub2", onlineOrderId: "9001f0", status: "incoming" });
+    expect(f.read("online_orders/9001f0/lines/0/source")).toMatchObject({ status: "pick", orderKeys: [C(0, 0, 1, 0, "9001f0")] });
+    expect(f.read(`orders/${C(0, 0, 1, 0, "9001f0")}`)).toMatchObject({ channel: "online", hub: "hub2", onlineOrderId: "9001f0", status: "incoming" });
   });
 });
 

@@ -66,7 +66,7 @@ describe("first message", () => {
     expect(h.mails).toHaveLength(1);
     const m = h.mails[0];
     expect(m.to).toBe("thandi@example.com");
-    expect(m.subject).toBe("Your order LEV — [LEV item l0]");
+    expect(m.subject).toBe("Your order #1801 — [#1801 item l0]"); // the Shopify number, never a code
     expect(m.text).toContain("Hi Thandi,");
     // The storefront listing name, never the app's product name.
     expect(m.text).toContain("The item: Cotton crew tee in white, size M.");
@@ -74,7 +74,7 @@ describe("first message", () => {
     expect(m.text).toContain("1. Club Tee Navy — R240 — https://marathonclub.co.za/products/club-tee-navy");
     expect(m.text).toContain("2. Club Tee Sand — R300 — https://marathonclub.co.za/products/club-tee-sand");
     expect(m.text).toMatch(/"credit" for store credit of R250, or "refund" for a refund of R250/);
-    expect(conv(f)).toMatchObject({ state: "offering", outbound: 1, email: "thandi@example.com", tag: "[LEV item l0]" });
+    expect(conv(f)).toMatchObject({ state: "offering", outbound: 1, email: "thandi@example.com", tag: "[#1801 item l0]" });
     // A second tick never opens another conversation or resends.
     await h.run();
     expect(h.mails).toHaveLength(1);

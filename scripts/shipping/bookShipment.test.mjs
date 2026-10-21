@@ -26,7 +26,7 @@ function fakeClient({ createResult = shipmentLocker, createError = null } = {}) 
 
 const ORDER = (over = {}) => ({
   key: "1001",
-  ref: "KQZ",
+  orderNumber: 1801, shopifyGid: "gid://shopify/Order/1001", // no ref since 2026-10-21
   lines: [{ category: "Footwear", subcategory: "Sneakers", name: "Runner", size: "9", qty: 1 }],
   shipping: { address: { street: "5 Esplanade Road", suburb: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441" } },
   customer: { name: "A Customer", phone: "0820000000", email: "a@example.com" },
@@ -66,7 +66,7 @@ describe("bookShipment — dry run (live off)", () => {
       parcels: [{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.3 }],
       // Door-to-door: the cheapest door service quoted (Cape Town → ECO).
       service_level_code: "ECO",
-      customer_reference: "KQZ",
+      customer_reference: "#1801",
       customer_reference_name: "Order no.",
       mute_notifications: false,
     });
@@ -86,7 +86,7 @@ describe("bookShipment — dry run (live off)", () => {
 
   it("with the drop box switched ON, a one-parcel order may go from a locker", async () => {
     const client = fakeClient();
-    const d = fakeDb({ config: { shipping: { live: false, collectionContact: CONTACT, dropBox: { enabled: true } } }, online_orders: { 1001: { ref: "KQZ" } } });
+    const d = fakeDb({ config: { shipping: { live: false, collectionContact: CONTACT, dropBox: { enabled: true } } }, online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001" } } });
     const res = await bookShipment(ORDER(), deps(d, client));
     expect(client.calls.map((c) => c[0])).toEqual(["getRates", "getRates"]);
     expect(res.dryRun).toMatchObject({ collection_pickup_point_id: "CG0000", service_level_code: "L2DM - ECO" });
@@ -146,7 +146,7 @@ describe("bookShipment — live", () => {
     const client = fakeClient();
     const res = await bookShipment(ORDER(), deps(d, client));
     expect(client.shipmentCalls().map((c) => c[0])).toEqual(["createShipment"]);
-    expect(client.shipmentCalls()[0][1].customer_reference).toBe("KQZ");
+    expect(client.shipmentCalls()[0][1].customer_reference).toBe("#1801");
     expect(res).toEqual({
       provider: "courier_guy", shipmentId: 0, waybill: "LD-TEST01", trackingReference: "TEST01",
       service: "L2DS - ECO", parcel: expect.objectContaining({ parcelCount: 1 }), cost: 100, bookedAt: 1_700_000_000_000,
@@ -163,7 +163,7 @@ describe("bookShipment — live", () => {
 
   it("a held claim (another packer, or a lost response) blocks a second booking", async () => {
     for (const state of ["booking", "unknown", "booked"]) {
-      const d = db(true, { online_orders: { 1001: { ref: "KQZ", shipping: { courierBooking: { state } } } } });
+      const d = db(true, { online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001", shipping: { courierBooking: { state } } } } });
       const client = fakeClient();
       const res = await bookShipment(ORDER(), deps(d, client));
       expect(res.reason).toBe(`booking already ${state}`);
@@ -186,7 +186,7 @@ describe("bookShipment — live", () => {
   });
 
   it("refuses live without a collection contact, and when no box fits", async () => {
-    const d = fakeDb({ config: { shipping: { live: true } }, online_orders: { 1001: { ref: "KQZ" } } });
+    const d = fakeDb({ config: { shipping: { live: true } }, online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001" } } });
     const client = fakeClient();
     expect((await bookShipment(ORDER(), deps(d, client))).reason).toBe("collection_contact");
     const res = await bookShipment(ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty: 30 }] }), deps(db(true), client));
@@ -230,22 +230,22 @@ describe("cancelShipment", () => {
 describe("the website-order ingester's real shape (feat/online-orders orderModel.mjs)", () => {
   // /online_orders/{Shopify order id}; ref is a FIELD (the code "KQZ"), lines carry pid.
   const INGESTED = () => ({
-    ref: "KQZ", orderNumber: 1042, shopifyGid: "gid://shopify/Order/5551234", shopifyName: "#1042",
+    orderNumber: 1042, shopifyGid: "gid://shopify/Order/5551234", shopifyName: "#1042", // no ref: orders since 2026-10-21 have none
     customer: { name: "Ann Bee", phone: "+27820000000", email: "ann@example.com" },
     shipping: { address: { name: "Ann Bee", address1: "5 Esplanade Road", address2: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa", phone: "+27820000000" } },
     lines: [{ pid: "p_x", title: "Item 7", category: "Clothing", size: "32", qty: 2 }],
   });
 
-  it("keys by the Shopify id, references by its code, classifies from /products/{pid}", async () => {
+  it("keys by the Shopify id, references by the Shopify order number, classifies from /products/{pid}", async () => {
     const d = fakeDb({
       config: { shipping: { live: true, collectionContact: CONTACT } },
       products: { p_x: { name: "Item 7", category: "Clothing", subcategory: "Jeans & Denim" } },
-      online_orders: { 5551234: { ref: "KQZ" } },
+      online_orders: { 5551234: { orderNumber: 1042, shopifyGid: "gid://shopify/Order/5551234" } },
     });
     const client = fakeClient();
     await bookShipment(INGESTED(), deps(d, client));
     const body = client.shipmentCalls()[0][1];
-    expect(body.customer_reference).toBe("KQZ");
+    expect(body.customer_reference).toBe("#1042"); // owner decision 2026-10-21: the Shopify number, never a code
     expect(body.delivery_address).toMatchObject({ street_address: "5 Esplanade Road, Century City", zone: "WC", country: "ZA", code: "7441" });
     expect(body.delivery_contact).toEqual({ name: "Ann Bee", mobile_number: "+27820000000", email: "ann@example.com" });
     // "Item 7" says nothing; /products/p_x says jeans → 2 × 0.5 kg + the flat mailer
@@ -295,7 +295,7 @@ describe("review hardening (Sonnet architect review, PR #774)", () => {
 
   it("a quote over the spend ceiling is refused live, named in a dry run", async () => {
     const client = fakeClient();
-    const low = (live) => fakeDb({ config: { shipping: { live, collectionContact: CONTACT, maxChargeRand: 50 } }, online_orders: { 1001: { ref: "KQZ" } } });
+    const low = (live) => fakeDb({ config: { shipping: { live, collectionContact: CONTACT, maxChargeRand: 50 } }, online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001" } } });
     expect((await bookShipment(ORDER(), deps(low(true), client))).reason).toMatch(/over the R50 ceiling/);
     expect((await bookShipment(ORDER(), deps(low(false), client))).liveBlockers).toEqual(["quote R100.00 is over the R50 ceiling"]);
     expect(client.shipmentCalls()).toEqual([]);
@@ -348,5 +348,20 @@ describe("CodeRabbit review (PR #774)", () => {
       expect(d.root.online_orders["1001"].shipping.cancel.state).toBe(state);
       expect(d.root.online_orders["1001"].shipping.cancelledAt).toBeUndefined();
     }
+  });
+});
+
+describe("an order pulled in after 2026-10-21 has no ref", () => {
+  it("is still booked live — the existence gate reads shopifyGid, never ref (Fable review, PR #779)", async () => {
+    const d = fakeDb({
+      config: { shipping: { live: true, collectionContact: CONTACT } },
+      products: { p_x: { name: "Item 7", category: "Clothing", subcategory: "Jeans & Denim" } },
+      online_orders: { 5551234: { orderNumber: 1042, shopifyGid: "gid://shopify/Order/5551234" } },
+    });
+    const client = fakeClient();
+    const out = await bookShipment({ ...ORDER(), key: "5551234", shopifyGid: "gid://shopify/Order/5551234", orderNumber: 1042 }, deps(d, client));
+    expect(out.skipped).toBeFalsy();
+    expect(client.shipmentCalls()).toHaveLength(1);
+    expect(client.shipmentCalls()[0][1].customer_reference).toBe("#1042");
   });
 });

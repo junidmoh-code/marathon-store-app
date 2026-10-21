@@ -4,13 +4,21 @@
 // store app import the SAME constants.
 import { stockSizeKey } from "./sizeKey.js";
 
-// ── THE ORDER REF: a three-letter code ──────────────────────────────────────
-// order.ref is three upper-case letters, no digits, no prefix, no dash (KQZ).
-// I and O are never used (they read as 1 and 0 on a handwritten parcel).
-// Minted once when the order is pulled in (scripts/shopify/onlineOrders/
-// orderRefs.mjs), unique against every order of the last 180 days through the
-// registry /online_order_refs/{code} = { orderId, at } — an exact-path lookup,
-// never a scan. The Shopify order number stays on the order as `orderNumber`.
+// ── WHAT AN ORDER IS CALLED: its Shopify order number ("#1768") ────────────
+// Owner decision 2026-10-21: the website order is named by its Shopify order
+// number everywhere a person reads it (POS, Display Checks, Settings, courier
+// reference, sale, emails). `orderLabel` is the one spelling. `order.ref` (the
+// old per-order three-letter code) survives only on orders pulled in before
+// this change, as a fallback.
+//
+// ── THE THREE-LETTER CODE: one per HUB ORDER UNIT ───────────────────────────
+// Every unit a hub sends for a website order (one pair of sneakers = one
+// code) is its own /orders record keyed by a fresh code: three upper-case
+// letters, never I or O, never a digit. Letters = website, digits = walk-in —
+// staff seeing letters know it goes to Yasmin. Claimed in the registry
+// /online_order_refs/{code} = { orderId: owner, at } (unique for 180 days,
+// one exact-path transaction, never a scan). scripts/shopify/onlineOrders/
+// orderRefs.mjs mintHubCode.
 export const ORDER_REF_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // 24 letters, no I, no O
 export const ORDER_REF_LENGTH = 3;
 export const ORDER_REF_REUSE_AFTER_MS = 180 * 24 * 3600 * 1000;
@@ -26,6 +34,13 @@ export function randomOrderRef(rand = Math.random) {
   let out = "";
   for (let i = 0; i < ORDER_REF_LENGTH; i++) out += ORDER_REF_ALPHABET[Math.floor(rand() * ORDER_REF_ALPHABET.length) % ORDER_REF_ALPHABET.length];
   return out;
+}
+
+/** "#1768" — the name a person reads for a website order (a follow-up says so). */
+export function orderLabel(order) {
+  const n = order?.orderNumber;
+  const base = n != null && String(n) !== "" ? `#${n}` : (order?.shopifyName || order?.ref || "#?");
+  return order?.followUpOf != null ? `${base} (follow-up)` : base;
 }
 
 /** A scanned or typed value folded for comparison with a ref: letters and digits, upper case ("kqz" → "KQZ"). */

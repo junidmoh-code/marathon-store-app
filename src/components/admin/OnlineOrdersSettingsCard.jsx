@@ -7,8 +7,8 @@
 //      Warehouse queue, online entries in the shops' display-check feed, the
 //      POS walk-in guard. Written as { enabled, updatedAt, updatedBy }, the
 //      same shape as /config/transit's switch.
-//   2. THE ORDER CODE — read-only: every order's ref is a three-letter code
-//      (KQZ, no I or O), minted by the Mac mini when the order is pulled in.
+//   2. NAMES — read-only: an order is its Shopify number (#1768); each hub
+//      order unit has its own three-letter code (QGZ), minted by the Mac mini.
 //   4. ESCALATIONS — /online_escalations (the Mac mini's small mirror of every
 //      line climbing the escalation chain or with the customer agent): where
 //      it is, what is next and when, and two escape hatches for Junid only,
@@ -190,9 +190,9 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
       </div>
 
       <div style={box}>
-        <div style={label}>Order code</div>
-        <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 18, marginTop: 8 }}>KQZ</div>
-        <div style={{ fontSize: 13, color: "#8e8e93", marginTop: 4 }}>Three letters (never I or O), unique for 180 days. The Shopify number stays on the order.</div>
+        <div style={label}>Order numbers and codes</div>
+        <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 18, marginTop: 8 }}>#1768 · QGZ</div>
+        <div style={{ fontSize: 13, color: "#8e8e93", marginTop: 4 }}>A website order is its Shopify number everywhere. Each pair a hub sends gets its own three-letter code (never I or O) as its hub order number — letters mean website, digits mean walk-in.</div>
       </div>
 
       <div style={box}>
