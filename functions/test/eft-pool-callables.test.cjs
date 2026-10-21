@@ -497,6 +497,27 @@ test("the scan PROMOTES a remainder held only because the sale was not on the se
   resetPool();
 });
 
+test("the scan KEEPS the sale check when a verified sale's hold is still pending — a later pass promotes it", async () => {
+  resetPool();
+  dbState.sets = {};
+  const usedRec = { attemptId: "P-1", at: 5, cashierUid: "cashier-uid", customerId: "27785056874", customerConfirmed: true, appliedCents: 15000,
+    sale: { saleId: "S-46291", receiptNumber: "S-46291", at: 6, verified: false },
+    remainder: { cents: 100000, disposition: "unallocated", status: "pending",
+      holdReason: "the sale was not on the server when the payment was attached, so it could not be checked" } };
+  const rec = { ...PAY, status: "used", amountCents: 115000, used: usedRec };
+  dbState.reads["eft_pending_sale_checks"] = { [K1]: { at: Date.now() - 60_000, saleId: "S-46291" } };
+  dbState.pool[`eft_pool/${K1}`] = rec;
+  dbState.reads["pos/sales/S-46291"] = { customerId: "27785056874", payments: { p: { method: "eft", amount: 15000, eftPoolKey: K1 } } };
+  dbState.txCurrent = rec;
+  const realLog = console.log; const lines = []; console.log = (...a) => { lines.push(a.join(" ")); };
+  try { await eftRemainderScan(); } finally { console.log = realLog; }
+  assert.equal(dbState.txNext?.used?.remainder?.disposition, "unallocated", "not promoted under a pending follow-up");
+  assert.match(lines.find((l) => l.startsWith("eftRemainderScan done")) ?? "", /"waited":[1-9]/, "the sale check is kept (waited), not cleared");
+  delete dbState.reads["eft_pending_sale_checks"];
+  delete dbState.reads["pos/sales/S-46291"];
+  resetPool();
+});
+
 test("the scan backfills spent pre-fix payments one bounded page at a time, then stops", async () => {
   resetPool();
   delete dbState.reads["_migrations/eftFingerprintBackfill"];

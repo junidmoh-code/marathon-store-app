@@ -110,7 +110,7 @@ const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN, releaseHoldDecision,
-  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision, formatRand, promotableHoldOf,
+  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision, formatRand, promotableHoldOf, awaitingSaleHoldOf,
 } = require("../lib/eft-settle.cjs");
 const {
   EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck, paymentFingerprint,
@@ -433,7 +433,7 @@ async function finishRemainder(key) {
   console.log(`eftPool: remainder of ${r.cents}c on ${key} HELD unallocated (${r.holdReason || "no customer on the sale"})`);
   // creditOnVerify: held only until the sale reads back — the scan will make
   // it the confirmed customer's credit (the till's slip says so).
-  return { ...summary, status: "held", creditOnVerify: promotableHoldOf(record) };
+  return { ...summary, status: "held", creditOnVerify: awaitingSaleHoldOf(record) };
 }
 
 /** The owner's allocate names a customer by id or by phone; resolve it
@@ -1056,6 +1056,12 @@ exports.eftRemainderScan = onSchedule(
           flagged++;
           console.error(`EFT_SALE_MISMATCH: ${key} sale ${saleId} — ${saleCheck.state === "mismatch" ? saleCheck.why : "never reached the server"}`);
         } else if (d.outcome === "done") verified++;
+        if (d.outcome === "done" && !d.promoted && awaitingSaleHoldOf(record) && record.used.remainder.status === "pending") {
+          // Verified, but the hold's own follow-up has not parked it as held
+          // yet: keep the sale check, so a later pass promotes it (re-reading
+          // the sale) instead of stranding it (architect re-check, this PR).
+          waited++; continue;
+        }
         if (d.promoted) {
           // The sale is verified and the hold's only reason is gone: the
           // confirmed customer's credit is minted now (clears the hold too).

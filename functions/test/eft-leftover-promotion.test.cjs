@@ -11,7 +11,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   attachSaleDecision, saleCheckOf, laterSaleCheckDecision, allocateRemainderDecision, remainderStatusDecision,
-  promotableHoldOf, SALE_ABSENT_HOLD, eftCreditIdOf,
+  promotableHoldOf, awaitingSaleHoldOf, SALE_ABSENT_HOLD, eftCreditIdOf,
 } = require("../lib/eft-settle.cjs");
 const { buildEftCreditClaim, eftCreditMirrorRecord, ledgerApplyDecision } = require("../lib/eft-credit.cjs");
 const { creditSpendableAt, issuingStamp, SEED_REGISTRY } = require("../lib/network-registry.cjs");
@@ -165,4 +165,15 @@ test("an earlier verified stamp alone never promotes — this pass must read the
   heldRec.used.sale = { ...heldRec.used.sale, verified: true };
   assert.notEqual(later(heldRec, null).promoted, true, "sale gone");
   assert.notEqual(later(heldRec, { ...s46291, customerId: "someone-else" }).promoted, true, "sale now names another customer");
+});
+
+test("creditOnVerify: a hold awaiting its sale counts whether the follow-up is pending or done; promotion waits for held", () => {
+  const pending = attachWith(null).value;
+  assert.equal(awaitingSaleHoldOf(pending), true, "what finishRemainder sees (status pending) — the slip's 'to follow'");
+  assert.equal(promotableHoldOf(pending), false);
+  const heldRec = { ...pending, used: { ...pending.used, remainder: { ...pending.used.remainder, status: "held" } } };
+  assert.equal(awaitingSaleHoldOf(heldRec), true);
+  assert.equal(promotableHoldOf(heldRec), true);
+  const unconfirmed = { ...heldRec, used: { ...heldRec.used, customerConfirmed: false } };
+  assert.equal(awaitingSaleHoldOf(unconfirmed), false, "an owner hold is never 'to follow'");
 });

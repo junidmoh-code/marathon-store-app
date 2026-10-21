@@ -414,18 +414,26 @@ function flagSaleMismatchDecision(current, { saleId, legCents, why, at }) {
 // allocated, or one Junid settled by hand (resolvedByHand) is never touched.
 const SALE_ABSENT_HOLD = "the sale was not on the server when the payment was attached, so it could not be checked";
 
-function promotableHoldOf(current) {
+/** A hold that exists only for want of the sale, whatever its follow-up
+ *  status — it becomes credit once the sale verifies (the till's slip prints
+ *  it as "to follow"). */
+function awaitingSaleHoldOf(current) {
   const used = current?.used;
   const r = used?.remainder;
   return !!(r && current.status === "used"
     && r.disposition === "unallocated"
     && r.holdReason === SALE_ABSENT_HOLD
-    // HELD only: a pending hold is the attach's own follow-up still in
-    // flight — promoting under it would let its late "held" flip land on the
-    // credit (architect review, this PR). The next scan pass gets it.
-    && r.status === "held"
+    && (r.status === "held" || r.status === "pending")
     && !r.resolvedByHand && !r.allocatedAt
     && used.customerConfirmed === true);
+}
+
+/** …and may be promoted NOW: HELD only. A pending hold is the attach's own
+ *  follow-up still in flight — promoting under it would let its late "held"
+ *  flip land on the credit (architect review, this PR); the scan keeps the
+ *  sale check and promotes it on a later pass. */
+function promotableHoldOf(current) {
+  return awaitingSaleHoldOf(current) && current.used.remainder.status === "held";
 }
 
 /** The credit plan a promotable hold becomes once its sale is verified — the
@@ -700,5 +708,5 @@ module.exports = {
   pendingRemainderScanAction,
   releaseHoldDecision, RELEASE_REASON_MIN,
   saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
-  SALE_ABSENT_HOLD, promotableHoldOf,
+  SALE_ABSENT_HOLD, promotableHoldOf, awaitingSaleHoldOf,
 };
