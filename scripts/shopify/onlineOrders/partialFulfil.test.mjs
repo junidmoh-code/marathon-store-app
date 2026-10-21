@@ -135,3 +135,14 @@ describe("partial fulfilment", () => {
     expect(f.read("online_orders/9001/fulfilState")).toBe("done");
   });
 });
+
+describe("owed but not coverable", () => {
+  it("a packed line whose fulfilment order is ON_HOLD is a failure, never 'done'", async () => {
+    const { fulfilLinesOnShopify } = await import("./shopifyOrders.mjs");
+    const LI2 = "gid://shopify/LineItem/2";
+    const graphql = async () => ({ order: { id: "o", lineItems: { nodes: [{ id: LI2, currentQuantity: 1, unfulfilledQuantity: 1 }] }, fulfillmentOrders: { nodes: [{ id: "FO1", status: "ON_HOLD", lineItems: { nodes: [{ id: "FOL1", remainingQuantity: 1, lineItem: { id: LI2 } }] } }] } } });
+    const out = await fulfilLinesOnShopify(graphql, { orderGid: "o", packed: { [LI2]: 1 }, baseline: { [LI2]: 0 } });
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/no open fulfilment for 1 unit/);
+  });
+});

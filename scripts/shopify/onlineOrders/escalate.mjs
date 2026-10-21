@@ -169,7 +169,11 @@ async function escalateLine(ctx, orderId, order, i, line0, helpers) {
   // A place that failed (Not found / Couldn't find it) or a line routing
   // found nowhere: the chain begins. An override on a line with no
   // escalation starts one too, so the escape hatch works on any open line.
-  const startable = !line.escalation && line.pid && (FAILED_LINE.has(st) || (override && !override.appliedAt));
+  // A multi-unit line whose hub orders came back MIXED (some units sent, one
+  // Out of Stock) is Junid's: escalating the whole qty would send units twice
+  // (Sonnet review, PR #778). Its no_stock attention stands.
+  const mixedHub = FAILED_LINE.has(st) && Number(line.qty) > 1 && Array.isArray(line.source?.orderKeys) && line.source.orderKeys.length > 1;
+  const startable = !line.escalation && line.pid && !mixedHub && (FAILED_LINE.has(st) || (override && !override.appliedAt));
   if (startable) {
     const reason = FAILED_LINE.has(st) ? st : "override";
     const esc = startEscalation(line, { nowMs: now, reason });
@@ -197,6 +201,9 @@ async function escalateLine(ctx, orderId, order, i, line0, helpers) {
     });
     if (next) {
       if (helpers.cancelLine && (before.source?.entryKey || before.source?.orderKeys)) await helpers.cancelLine(before);
+      // The request still open at Hub 2 / Central is withdrawn: nobody should
+      // move stock toward a line Junid has settled.
+      if (before.escalation?.phase === ESC_PHASE.AWAIT && before.escalation.request) await withdrawRequest(ctx, orderId, i, before.escalation);
       log(`  ⤴ ${order.ref} line ${i + 1}: ${override.kind === "unavailable" ? "marked unavailable" : "resolved by hand"} by Junid`);
       line = next;
       changed = true;
@@ -277,7 +284,10 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
       // number): it says nothing about this line.
       if (kind === STEP.STORE_ORDER && record && record.onlineEscalationKey && record.onlineEscalationKey !== requestKey(orderId, i, esc)) return null;
       const seen = requestOutcome(kind, record);
-      if (!seen) return null;
+      if (!seen) {
+        await staleAlert(ctx, orderId, order, i, line, esc);
+        return null;
+      }
       const next = await lineTxn(ctx, orderId, i, (cur) => {
         if (!sameSpot(cur.escalation, esc)) return undefined;
         return lineForEscalation(cur, stepEscalation(cur.escalation, { type: "request", ...seen }, { nowMs: now }));
@@ -292,8 +302,10 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
       });
     }
     case "deliver": {
-      // A packed order cannot take a line back: it ships in a follow-up.
-      if (order.status === ORDER_STATUS.PACKED) return deliverFollowUp(ctx, orderId, order, i, esc);
+      // A packed order cannot take a line back: it ships in a follow-up. The
+      // status is RE-READ — a pack may have landed since this tick began.
+      const status = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}/status`);
+      if (status === ORDER_STATUS.PACKED) return deliverFollowUp(ctx, orderId, { ...order, status }, i, esc);
       const next = await lineTxn(ctx, orderId, i, (cur) => {
         if (!sameSpot(cur.escalation, esc) || cur.escalation.delivered) return undefined;
         return deliveredLine(cur, cur.escalation, now);
@@ -302,6 +314,14 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
       return next;
     }
     case "watch_line": {
+      // RACE (Sonnet review, PR #778): the line went back on a list, then a
+      // pack built from an earlier read landed without it. A packed order
+      // never sees a pick again — the line moves to a follow-up.
+      if (order.status === ORDER_STATUS.PACKED && !order.packedLines?.[i]
+        && (line.source?.status === LINE_STATUS.PICK || line.source?.status === LINE_STATUS.DISPLAY)) {
+        if (ctx.cancelLineForFollowUp) await ctx.cancelLineForFollowUp(line);
+        return deliverFollowUp(ctx, orderId, order, i, esc);
+      }
       const s = line.source?.status;
       const outcome = s === LINE_STATUS.HANDED ? "handed" : FAILED_LINE.has(s) ? "failed" : null;
       if (!outcome) return null;
@@ -314,6 +334,44 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
     default:
       return null;
   }
+}
+
+// ── Withdrawing an open request (Junid's override) ──────────────────────────
+// Untouched only: a card Hub 2 has not answered is removed (as a cancelled
+// hub order is); a refill row nobody is picking or has sent is cancelled
+// no_longer_needed. Anything already moving is left to the people moving it.
+async function withdrawRequest(ctx, orderId, i, esc) {
+  const { kind, key } = esc.request;
+  if (kind === STEP.REFILL) {
+    await ctx.db.ref(`refill_requests/${key}`).transaction((cur) => {
+      if (cur == null) return null;
+      if (cur.status !== "open" || cur.picking || Number(cur.sentQty) > 0) return undefined;
+      return { ...cur, status: "cancelled", cancelReason: "no_longer_needed", resolvedAt: new Date(ctx.now).toISOString() };
+    });
+  } else {
+    await ctx.db.ref(`orders/${key}`).transaction((cur) => {
+      if (cur == null) return null;
+      if (cur.onlineEscalationKey !== requestKey(orderId, i, esc) || cur.clothingRefillStatus != null || cur.status !== "incoming") return undefined;
+      return null;
+    });
+  }
+}
+
+// ── A request nobody answers ────────────────────────────────────────────────
+// The order's attention was taken over, so silence would be invisible: after
+// 24 hours Junid is emailed once (ctx.send — the poll's mail sender).
+export const STALE_REQUEST_MS = 24 * 3600 * 1000;
+async function staleAlert(ctx, orderId, order, i, line, esc) {
+  const at = Number(esc.request?.at) || 0;
+  if (!at || ctx.now - at < STALE_REQUEST_MS || esc.staleMailedAt || !ctx.send) return;
+  const marked = await lineTxn(ctx, orderId, i, (cur) => (sameSpot(cur.escalation, esc) && !cur.escalation.staleMailedAt ? { ...cur, escalation: { ...cur.escalation, staleMailedAt: ctx.now } } : undefined));
+  if (!marked) return;
+  try {
+    await ctx.send({ subject: `Website order ${order.ref}: nobody has answered ${esc.request.from === "central" ? "Central" : "Hub 2"} for a day`, text: [
+      `${line.title}${line.size && line.size !== "_" ? ` size ${line.size}` : ""} ×${line.qty}: ${esc.request.kind === STEP.REFILL ? "refill request" : "Shop Refill card"} ${esc.request.key} (${esc.request.from} → ${esc.request.to}) has been open since ${new Date(at).toISOString().slice(0, 16).replace("T", " ")} UTC.`,
+      "", "Settings → Online orders → Escalations: mark it unavailable now (the customer is asked), or resolved by hand.",
+    ].join("\n") });
+  } catch (e) { ctx.log(`  ✗ ${order.ref}: stale-request email not sent (${String(e?.message || e)})`); }
 }
 
 // ── A line that comes good after its order was packed ships on its own ──────

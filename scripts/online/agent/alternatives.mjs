@@ -87,3 +87,11 @@ export async function listingTitle(graphql, line) {
   const d = await graphql(`query ($id: ID!) { product(id: $id) { title } }`, { id: line.productGid });
   return d.product?.title || null;
 }
+
+/** Is the offered unit still free at the place the offer found it? Exact reads. */
+export async function offerStillAvailable({ get, offer, line, orderId }) {
+  const qty = Number(line.qty) || 1;
+  const stockQty = { [offer.locationId]: Number(await get(`stock/${offer.locationId}/${offer.pid}/${offer.sizeKey}/qty`)) || 0 };
+  const free = availableAt({ stockQty, holdsCell: await get(`online_reservations/${offer.pid}/${offer.sizeKey}`), orderId });
+  return (free[offer.locationId] || 0) >= qty;
+}

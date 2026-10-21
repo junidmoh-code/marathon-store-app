@@ -54,10 +54,15 @@ export function parseReplyCode(text, offerCount) {
     const n = Number(m[1]);
     return n >= 1 && n <= offerCount ? { kind: "pick", n } : null;
   }
+  // Only the bare choice and polite filler — "no refund", "not credit", or
+  // anything longer goes to the classifier (Sonnet review, PR #778).
+  const FILLER = new Set(["please", "store", "a", "the", "thanks", "thank", "you", "ok", "okay", "i", "want", "would", "like", "id", "d", "prefer"]);
   const hasCredit = words.includes("credit");
   const hasRefund = words.includes("refund");
-  if (words.length <= 3 && hasCredit && !hasRefund) return { kind: "credit" };
-  if (words.length <= 3 && hasRefund && !hasCredit) return { kind: "refund" };
+  const onlyFiller = words.every((w) => w === "credit" || w === "refund" || FILLER.has(w));
+  if (!onlyFiller) return null;
+  if (hasCredit && !hasRefund) return { kind: "credit" };
+  if (hasRefund && !hasCredit) return { kind: "refund" };
   return null;
 }
 
@@ -121,6 +126,7 @@ export function acceptModelText(text, maxLen = 600) {
 const FALLBACK = {
   offer: { opening: "We're so sorry — the item below from your order turned out not to be available after all. We looked everywhere for it before writing to you.", closing: "Thank you for your patience, and sorry again." },
   costs_more: { opening: "Thank you for choosing so quickly.", closing: "Sorry about that." },
+  gone: { opening: "Thank you for choosing so quickly.", closing: "Sorry about that." },
   swapped: { opening: "Done — we've swapped the item on your order.", closing: "Thank you for sticking with us." },
   credit: { opening: "Thank you for letting us know — store credit it is.", closing: "Thank you, and sorry again for the trouble." },
   refund: { opening: "We've started your refund for this item.", closing: "Sorry again for the trouble." },
@@ -146,7 +152,8 @@ export function composeMessage(kind, { ref, firstName, line, offers = [], amount
   const hi = firstName ? `Hi ${firstName},` : "Hi,";
   const parts = [hi, "", words.opening, ""];
   const tag = subjectTag(ref, line);
-  if (kind === "offer" || kind === "costs_more" || kind === "unclear") {
+  if (kind === "offer" || kind === "costs_more" || kind === "unclear" || kind === "gone") {
+    if (kind === "gone") parts.push("That one has just sold out, so we can't swap to it.", "");
     if (kind === "costs_more") parts.push(`That one costs ${rands(amountCents)} more than what you paid, and we'll never ask you to pay more — so we can't swap to it.`, "");
     parts.push(`The item: ${itemWords(line)}.`, "");
     if (offers.length) {

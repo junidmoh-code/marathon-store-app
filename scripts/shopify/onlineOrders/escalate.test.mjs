@@ -304,8 +304,10 @@ describe("after a partial pack: a line that comes good ships as a follow-up", ()
     await tick(f, NEXT_DAY_11);
     expect(line(f, 0).source).toEqual({ status: "moved", movedTo: "9001f0" });
     const fu = f.read("online_orders/9001f0");
-    expect(fu).toMatchObject({ ref: "LEV-F1", followUpOf: "9001", shopifyGid: "gid://shopify/Order/9001", status: "new" });
-    expect(fu.lines[0]).toMatchObject({ pid: "TEE", shopifyLineItemId: LI(2), source: { locationId: "hub2", status: "pick" } });
+    expect(fu).toMatchObject({ ref: "LEV-F1", followUpOf: "9001", shopifyGid: "gid://shopify/Order/9001", status: "picking" });
+    // No hold gap: the follow-up holds in the SAME tick the parent let go.
+    expect(f.read("online_reservations/TEE/M/9001f0")).toMatchObject({ qty: 1, locs: { hub2: 1 } });
+    expect(fu.lines[0]).toMatchObject({ pid: "TEE", shopifyLineItemId: LI(2), source: { locationId: "hub2", status: "pick", orderKeys: ["LEV-F1-1r1"] } });
     expect(f.read("online_orders/9001/followUps")).toEqual({ "9001f0": true });
     // The parent stops holding; next tick the follow-up holds and gets its pick.
     expect(f.read("online_reservations/TEE/M/9001")).toBeNull();
@@ -316,3 +318,76 @@ describe("after a partial pack: a line that comes good ships as a follow-up", ()
   });
 });
 
+
+describe("cancelled on Shopify after a partial pack", () => {
+  it("the follow-up is cancelled, the parent's resolving line stops, holds and registry rows go", async () => {
+    const waiting = { chain: "other", home: "marathon-pe", round: 1, idx: 1, phase: "wait", waitUntil: NEXT_DAY_11, deliverAt: "hub2", request: { kind: "refill", key: "k", from: "central", to: "hub2" }, attempts: [] };
+    const f = fakeDb(world({
+      lines: [tee({ source: { status: "resolving", locationId: "hub2" }, escalation: waiting }), snk(), tee({ lineId: "l2", source: { status: "resolving", locationId: "hub2" }, escalation: { ...waiting } })],
+      order: { status: "packed", packedLines: { 1: true }, attention: null, attentionOpen: null, fulfilState: "done", pack: { saleId: "S1" } },
+      over: { online_escalations: { "9001_0": { orderId: "9001", lineIndex: 0, phase: "wait" }, "9001_2": { orderId: "9001", lineIndex: 2, phase: "wait" } } },
+    }));
+    await tick(f, NEXT_DAY_11); // line 0 comes good → follow-up; line 2 too
+    expect(f.read("online_orders/9001f0/status")).toBe("picking");
+    const cancelled = { id: "gid://shopify/Order/9001", legacyResourceId: "9001", name: "#1801", number: 1801, cancelledAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z", displayFinancialStatus: "REFUNDED", displayFulfillmentStatus: "PARTIALLY_FULFILLED", lineItems: { nodes: [] } };
+    const graphql = async (q) => (q.includes("orders(") ? { orders: { nodes: [cancelled], pageInfo: { hasNextPage: false } } } : { order: null });
+    await runOrdersPoll(deps(f, NEXT_DAY_11 + 60e3, { graphql }).deps);
+    expect(f.read("online_orders/9001").cancelledAfterPack).toBe(true);
+    expect(f.read("online_orders/9001f0/status")).toBe("cancelled");
+    expect(f.read("online_reservations/TEE/M/9001f0")).toBeNull();
+    expect(f.read("online_reservations/TEE/M/9001")).toBeNull();
+    expect(f.read("online_escalations")).toBeNull();
+  });
+});
+
+describe("Sonnet-review guards", () => {
+  it("a pack that landed without a line already back on a list: the line moves to a follow-up (never stranded)", async () => {
+    const delivered = { chain: "other", home: "marathon-pe", round: 1, idx: 1, phase: "deliver", deliverAt: "hub2", delivered: true, checkProperly: false, attempts: [] };
+    const f = fakeDb(world({
+      lines: [tee({ routeGen: 1, source: { locationId: "hub2", status: "pick", entryKey: "orders/LEV-1r1", orderKeys: ["LEV-1r1"] }, escalation: delivered }), snk()],
+      order: { status: "packed", packedLines: { 1: true }, attention: null, attentionOpen: null, fulfilState: "done", pack: { saleId: "S1" } },
+      over: {
+        online_escalations: { "9001_0": { orderId: "9001", lineIndex: 0, phase: "deliver" } },
+        orders: { "LEV-1r1": { id: "LEV-1r1", channel: "online", onlineOrderId: "9001", onlineLineIndex: 0, hub: "hub2", status: "incoming" } },
+      },
+    }));
+    await tick(f);
+    expect(line(f, 0).source).toEqual({ status: "moved", movedTo: "9001f0" });
+    expect(f.read("orders/LEV-1r1")).toBeNull(); // the parent's unsent hub order is withdrawn
+    expect(f.read("online_orders/9001f0/lines/0/source")).toMatchObject({ locationId: "hub2", status: "pick" });
+  });
+
+  it("a request nobody answers for 24 hours: Junid is emailed once", async () => {
+    const f = fakeDb(world());
+    await tick(f);
+    const d1 = deps(f, NOW + 23 * 3600e3);
+    await runOrdersPoll(d1.deps);
+    expect(d1.mails).toEqual([]);
+    const d2 = deps(f, NOW + 25 * 3600e3);
+    await runOrdersPoll(d2.deps);
+    expect(d2.mails).toHaveLength(1);
+    expect(d2.mails[0].subject).toMatch(/nobody has answered Hub 2 for a day/);
+    const d3 = deps(f, NOW + 26 * 3600e3);
+    await runOrdersPoll(d3.deps);
+    expect(d3.mails).toEqual([]);
+  });
+
+  it("Junid's override withdraws the untouched open request (no stock moves toward a settled line)", async () => {
+    const f = fakeDb(world());
+    await tick(f);
+    await f.db.ref("orders/R001-1/clothingRefillStatus").set("rejected");
+    await tick(f);
+    expect(f.read("refill_requests/web_9001_0_r1s1/status")).toBe("open");
+    await f.db.ref("online_orders/9001/lines/0/escalationOverride").set({ kind: "resolved", by: "junid", at: NOW });
+    await tick(f, NOW + 60e3);
+    expect(f.read("refill_requests/web_9001_0_r1s1")).toMatchObject({ status: "cancelled", cancelReason: "no_longer_needed" });
+  });
+
+  it("a multi-unit hub line with mixed answers is Junid's — never re-requested whole", async () => {
+    const f = fakeDb(world({ lines: [snk({ qty: 2, source: { locationId: "hub1", status: "no_stock", entryKey: "orders/LEV-2-1", orderKeys: ["LEV-2-1", "LEV-2-2"] } })], order: { attention: { kind: "no_stock", reason: "x", at: NOW }, attentionOpen: true } }));
+    await tick(f);
+    expect(line(f, 0).escalation).toBeUndefined();
+    expect(f.read("refill_requests")).toBeNull();
+    expect(f.read("online_orders/9001/attentionOpen")).toBe(true);
+  });
+});

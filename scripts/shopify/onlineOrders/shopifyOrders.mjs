@@ -181,8 +181,16 @@ export async function fulfilLinesOnShopify(graphql, { orderGid, packed, baseline
     const owe = (Number(baseline?.[li.id]) || 0) + (Number(packed[li.id]) || 0) - fulfilledNow(li);
     if (owe > 0) want[li.id] = owe;
   }
+  if (!Object.keys(want).length) return { ok: true, fulfillmentIds: [], alreadyDone: true };
   const plan = partialFulfilmentPlan(order.fulfillmentOrders?.nodes ?? [], want);
-  if (!plan.length) return { ok: true, fulfillmentIds: [], alreadyDone: true };
+  // Owed but not coverable (on hold, scheduled, closed, or short): never
+  // "done" — the fulfil-failed attention tells Junid (Sonnet review, PR #778).
+  const covered = {};
+  for (const e of plan) for (const fo of order.fulfillmentOrders?.nodes ?? []) if (fo.id === e.fulfillmentOrderId) {
+    for (const it of e.fulfillmentOrderLineItems) { const lid = (fo.lineItems?.nodes ?? []).find((x) => x.id === it.id)?.lineItem?.id; if (lid) covered[lid] = (covered[lid] || 0) + it.quantity; }
+  }
+  const short = Object.entries(want).filter(([lid, n]) => (covered[lid] || 0) < n);
+  if (short.length) return { ok: false, error: `Shopify has no open fulfilment for ${short.map(([lid, n]) => `${n - (covered[lid] || 0)} unit(s) of line item ${lid.split("/").pop()}`).join(", ")} (on hold, scheduled or closed?)` };
   // One fulfilment per fulfilment order (each may sit at its own Shopify
   // location). A failure part-way is safe: the retry re-reads and owes less.
   const fulfillmentIds = [];

@@ -335,6 +335,10 @@ async function cancelOrder(ctx, id, node) {
       if (cur.cancelledAfterPack) return undefined;
       return {
         ...cur, cancelledAfterPack: true, shopifyCancelledAt: Date.parse(node.cancelledAt) || now, updatedAt: now,
+        // The parcel stands (Junid refunds or takes it back), but nothing
+        // LEFT on the order may ship or climb any more: lines still resolving
+        // or with the customer agent are cancelled with the order.
+        lines: linesOf(cur).map((l) => (PARKED_OPEN.has(l?.source?.status) ? { ...l, source: { status: LINE_STATUS.CANCELLED } } : l)),
         attention: { kind: ATTENTION_KIND.CANCELLED_AFTER_PACK, reason: `Cancelled on Shopify after it was packed (sale ${cur.pack?.saleId ?? "?"}) — refund or return it by hand`, at: now },
         attentionOpen: true,
       };
@@ -352,6 +356,11 @@ async function cancelOrder(ctx, id, node) {
   if (order.status === ORDER_STATUS.PACKED) {
     ctx.summary.flagged++;
     log(`  ‼ ${order.ref}: cancelled on Shopify AFTER it was packed — flagged for Junid`);
+    // Follow-ups only exist for packed orders: they, the chain and the
+    // agent stop here (Sonnet review, PR #778).
+    await syncHolds(ctx, id, order);
+    await dropEscalations(ctx, id, order);
+    for (const fid of Object.keys(order.followUps || {})) await cancelOrder(ctx, fid, node);
     return;
   }
   ctx.summary.cancelled++;
@@ -373,10 +382,16 @@ async function dropEscalations(ctx, id, order) {
   }
 }
 
+// Lines a cancellation after the pack stops: nothing shipped, nothing settled.
+const PARKED_OPEN = new Set([LINE_STATUS.RESOLVING, LINE_STATUS.UNAVAILABLE, LINE_STATUS.PICK, LINE_STATUS.DISPLAY]);
+
 const needsEscalationStart = (l) => !l?.escalation && (l?.source?.status === LINE_STATUS.NO_STOCK || l?.source?.status === LINE_STATUS.NOT_FOUND);
 
 // An override on a line still on a list closes what it had there (hub orders, a display entry).
 const escalationHelpers = (ctx) => ({ cancelLine: (line) => cancelLineEntries(ctx, line) });
+// Lines a packed order moves into a follow-up close what they had on a list
+// first (the follow-up raises its own, under the follow-up's id).
+const withFollowUpCancel = (ctx) => { ctx.cancelLineForFollowUp ??= (line) => cancelLineEntries(ctx, line); return ctx; };
 
 async function keepPackedEscalations(ctx, kept) {
   const reg = (await ctx.get(ESCALATIONS_PATH)) || {};
@@ -387,11 +402,19 @@ async function keepPackedEscalations(ctx, kept) {
       const order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
       if (!order) { for (const [k, r] of Object.entries(reg)) if (r?.orderId === id) await ctx.db.ref(`${ESCALATIONS_PATH}/${k}`).set(null); continue; }
       if (order.status !== ORDER_STATUS.PACKED) continue;
-      const changed = await escalateOrder(ctx, id, order, escalationHelpers(ctx));
+      const changed = await escalateOrder(withFollowUpCancel(ctx), id, order, escalationHelpers(ctx));
       // Every tick, not only on a change: the POS pack nulls the order's hold
       // rows in its one atomic write, including the resolving lines' — this
       // puts those back before the reconcile that follows pushes stock.
-      await syncHolds(ctx, id, changed ? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`) : order);
+      const after = changed ? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`) : order;
+      await syncHolds(ctx, id, after);
+      // A follow-up made just now holds and gets its entry THIS tick — the
+      // parent stopped holding that line a moment ago (no gap for a walk-in).
+      for (const fid of Object.keys(after?.followUps || {})) {
+        if (kept.has(fid)) continue;
+        const fu = await ctx.get(`${ONLINE_ORDERS_PATH}/${fid}`);
+        if (fu && !isTerminal(fu.status)) { kept.add(fid); await maintainOrder(ctx, fid, fu); }
+      }
     } catch (e) {
       ctx.summary.errors.push(`${id} escalation: ${String(e?.message || e)}`);
       ctx.log(`  ✗ ${id}: escalation — ${String(e?.message || e)}`);
@@ -412,6 +435,7 @@ async function releaseFulfilledElsewhere(ctx, id, node, { why = "fulfilled in th
   log(`  ~ ${order.ref}: ${why} — handled the old way, hold released`);
   await cancelEntries(ctx, { ...order, key: id });
   await syncHolds(ctx, id, order);
+  await dropEscalations(ctx, id, order);
 }
 
 async function cancelEntries(ctx, order) {

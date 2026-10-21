@@ -29,7 +29,7 @@ import { serverNowMs } from "../shopify/publishNode.mjs";
 import { recordingDb } from "../shopify/onlineOrders/recordingDb.mjs";
 import { fakeDb } from "../shopify/onlineOrders/fakeDb.testutil.mjs";
 import { runCustomerAgent, AGENT_META } from "./agent/run.mjs";
-import { findAlternatives, listingTitle } from "./agent/alternatives.mjs";
+import { findAlternatives, listingTitle, offerStillAvailable } from "./agent/alternatives.mjs";
 import { grantedScopes } from "./agent/money.mjs";
 
 const COMMIT = process.argv.includes("--commit");
@@ -91,6 +91,9 @@ function imapInbox() {
             const subject = msg.envelope?.subject || "";
             if (!subject.includes(tag)) continue;
             const parsed = await simpleParser(msg.source);
+            // The EXACT sender (IMAP's FROM search is a substring match).
+            const sender = String(parsed.from?.value?.[0]?.address || "").toLowerCase();
+            if (sender !== String(email).toLowerCase()) continue;
             const when = parsed.date ? parsed.date.getTime() : 0;
             if (when && when < sinceMs) continue;
             const id = parsed.messageId || `uid-${msg.uid}`;
@@ -141,6 +144,7 @@ const WHAT = {
   refund: "we started the refund they asked for",
   auto_credit: "they didn't reply within 48 hours so store credit is being arranged automatically",
   unclear: "we couldn't tell what they wanted from their reply; we're asking again",
+  gone: "the alternative they picked has just sold out; we're re-offering",
   refund_after_credit: "they asked for a refund instead of the store credit; we're arranging it",
 };
 const model = {
@@ -242,11 +246,13 @@ try {
     inbox: imapInbox(),
     findAlternatives: ({ line, orderId }) => findAlternatives({ graphql, get: async (p) => (await liveDb.ref(p).get()).val(), line, orderId }),
     listingTitle: (l) => listingTitle(graphql, l),
+    offerStillAvailable: (a) => offerStillAvailable({ get: async (p) => (await liveDb.ref(p).get()).val(), ...a }),
     scopes: async () => (scopeCache ??= await grantedScopes(graphql)),
     graphql,
   });
   if (COMMIT && mail) await dailySummary(liveDb, await serverNowMs(liveDb), (m) => mail.send({ to: NOTIFY_TO, ...m })).catch((e) => logLine(`✗ daily summary: ${e.message}`));
   const busy = summary.opened || summary.sent || summary.replies || summary.swaps || summary.credits || summary.refunds || summary.errors.length;
+  if (summary.off) { logLine("agent: OFF (/config/onlineOrders/agentOff)"); process.exit(0); }
   logLine(busy ? `agent: ${summary.opened} opened · ${summary.sent} sent · ${summary.replies} replies · ${summary.swaps} swaps · ${summary.credits} credits · ${summary.refunds} refunds · ${summary.junid} to Junid${summary.errors.length ? ` · ${summary.errors.length} ERROR(S)` : ""}${COMMIT ? "" : " — DRY RUN"}` : `agent: quiet${COMMIT ? "" : " — DRY RUN"}`);
   process.exit(summary.errors.length ? 1 : 0);
 } catch (e) {

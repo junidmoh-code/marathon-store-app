@@ -55,6 +55,21 @@ M = [
  ("a second conversation on a line", STORE, RUN, "    if (cur.resolution?.conversation) return undefined;\n    return { ...cur, resolution: { ...(cur.resolution || {}), conversation: {", "    return { ...cur, resolution: { ...(cur.resolution || {}), conversation: {", ST),
  ("a swapped item failing again re-opens the customer", STORE, RUN, '  if (conv.state === "closed" && line.source?.status === LINE_STATUS.UNAVAILABLE) {', "  if (false) {", ST),
 ]
+M += [
+ # ── Sonnet architect review fixes ──
+ ("cancel after pack leaves the follow-up shipping", STORE, "scripts/shopify/onlineOrders/poll.mjs", "    for (const fid of Object.keys(order.followUps || {})) await cancelOrder(ctx, fid, node);\n    return;", "    return;", ST),
+ ("owed lines with no open fulfilment order reported done", STORE, "scripts/shopify/onlineOrders/shopifyOrders.mjs", "  if (short.length) return", "  if (false) return", ST),
+ ("a pack racing a delivery strands the line", STORE, IO, "      if (order.status === ORDER_STATUS.PACKED && !order.packedLines?.[i]", "      if (false && !order.packedLines?.[i]", ST),
+ ("a crashed money claim is executed a second time", STORE, RUN, "  if (existing && existing.kind === kind && Number(existing.amountCents) === amountCents) {", "  if (false) {", ST),
+ ("the agent messages a customer of a cancelled / hand-rung order", STORE, RUN, "  if (!AGENT_STATUSES.has(order.status) || order.cancelledAfterPack) {", "  if (false) {", ST),
+ ("'no refund' read as a refund", STORE, CORE, "  if (!onlyFiller) return null;", "", ST),
+ ("Junid's override leaves the request open", STORE, IO, "      if (before.escalation?.phase === ESC_PHASE.AWAIT && before.escalation.request) await withdrawRequest(ctx, orderId, i, before.escalation);", "", ST),
+ ("an unanswered request is never reported", STORE, IO, "  if (!at || ctx.now - at < STALE_REQUEST_MS || esc.staleMailedAt || !ctx.send) return;", "  return;", ST),
+ ("a mixed multi-unit hub line re-requested whole", STORE, IO, "!line.escalation && line.pid && !mixedHub &&", "!line.escalation && line.pid &&", ST),
+ ("a sold-out offer is swapped anyway", STORE, RUN, "  if (ctx.offerStillAvailable && !(await ctx.offerStillAvailable({ offer, line, orderId }))) {", "  if (false) {", ST),
+ ("auto-credit after an offer that never went out", STORE, RUN, "  if (!first?.sentAt) {", "  if (false) {", ST),
+ ("a pending credit told as done", STORE, CORE, '  const creditState = pending ? "It is being added to your account and will show there within a day." : "It is on your account now.";', '  const creditState = "It is on your account now.";', ST),
+]
 only = sys.argv[1:] and int(sys.argv[1])
 results = []
 for i, (name, root, f, a, b, (cmd, sub)) in enumerate(M):

@@ -25,6 +25,8 @@ import {
 import { CREDIT_SCOPE, REFUND_SCOPE, issueStoreCredit, refundLine } from "./money.mjs";
 
 export const AGENT_META = "online_orders_meta/customerAgent";
+const AGENT_STATUSES = new Set(["new", "picking", "ready", "needs_attention", "packed"]);
+export const STUCK_CLAIM_MS = 10 * 60 * 1000;
 const clean = (v) => JSON.parse(JSON.stringify(v ?? null));
 
 export async function runCustomerAgent(deps) {
@@ -32,6 +34,8 @@ export async function runCustomerAgent(deps) {
   const get = async (path) => (await db.ref(path).get()).val();
   const now = await deps.nowMs();
   const ctx = { ...deps, get, now, log, summary: { opened: 0, sent: 0, replies: 0, swaps: 0, credits: 0, refunds: 0, junid: 0, errors: [] } };
+  // Junid's brake: /config/onlineOrders/agentOff true → the agent does nothing.
+  if ((await get("config/onlineOrders/agentOff")) === true) { ctx.summary.off = true; return ctx.summary; }
   const reg = (await get(ESCALATIONS_PATH)) || {};
   for (const [key, row] of Object.entries(reg)) {
     if (!row || typeof row !== "object") continue;
@@ -86,6 +90,9 @@ async function handleLine(ctx, key, row) {
   const order = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}`);
   const line = order ? linesOf(order)[i] : null;
   if (!order || !line) { await setAgentRow(ctx, key, null); return; }
+  // Only an order still open (or packed, for its leftover lines) is the
+  // agent's: cancelled, rung by hand, closed → nothing more goes to anyone.
+  if (!AGENT_STATUSES.has(order.status) || order.cancelledAfterPack) { await setAgentRow(ctx, key, null); return; }
   const conv = line.resolution?.conversation;
   if (!conv) {
     if (line.source?.status !== LINE_STATUS.UNAVAILABLE) return;
@@ -101,6 +108,15 @@ async function handleLine(ctx, key, row) {
   }
   // ONE CONVERSATION PER LINE: a swapped item that later became unavailable
   // too is Junid's — the customer is never opened a second conversation.
+  // A swap whose difference credit (or its message) never happened — a crash
+  // between the swap and the money (Sonnet review, PR #778): finish it.
+  const out = line.resolution?.outcome;
+  if (out?.kind === "swap" && conv.state === "closed" && !Object.values(conv.sends || {}).some((x) => x?.kind === "swapped")) {
+    const diff = out.creditCents > 0 ? await money(ctx, orderId, order, i, line, "credit", out.creditCents, "swap difference") : null;
+    await send(ctx, orderId, order, i, line, "swapped", { amountCents: out.creditCents || 0, pending: !!diff && diff.via !== "api" });
+    await setAgentRow(ctx, key, null);
+    return;
+  }
   if (conv.state === "closed" && line.source?.status === LINE_STATUS.UNAVAILABLE) {
     if (!line.resolution?.secondUnavailableMailedAt) {
       await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, resolution: { ...cur.resolution, secondUnavailableMailedAt: ctx.now } }));
@@ -283,6 +299,12 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
     await send(ctx, orderId, order, i, line, "costs_more", { amountCents: judged.extraCents });
     return;
   }
+  // The offer may be days old: the unit is checked again NOW.
+  if (ctx.offerStillAvailable && !(await ctx.offerStillAvailable({ offer, line, orderId }))) {
+    await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title} is no longer in stock` });
+    await send(ctx, orderId, order, i, line, "gone");
+    return;
+  }
   // The swap: the line becomes the new item, routed where the offer found it.
   const fresh = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}`);
   const packed = fresh?.status === ORDER_STATUS.PACKED;
@@ -375,6 +397,19 @@ async function creditedWindow(ctx, key, orderId, order, i, line) {
  * was paid. Junid is emailed on every one. → the slot, or null when refused.
  */
 export async function money(ctx, orderId, order, i, line, kind, amountCents, why) {
+  // RESUME: the same action already claimed (a crash after the claim): never
+  // a second Shopify call. A claim with no outcome for 10 minutes is Junid's.
+  const existing = (await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/resolution/money`)) || null;
+  if (existing && existing.kind === kind && Number(existing.amountCents) === amountCents) {
+    if (existing.state === "claimed" && ctx.now - Number(existing.at) >= STUCK_CLAIM_MS && !existing.stuckMailedAt) {
+      await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, resolution: { ...cur.resolution, money: { ...cur.resolution.money, stuckMailedAt: ctx.now } } }));
+      await tellJunid(ctx, `Website order ${order.ref}: CHECK SHOPIFY — a ${kind} of ${rands(amountCents)} may or may not have gone through`, [
+        `The agent claimed this ${kind} at ${new Date(Number(existing.at)).toISOString()} and stopped before recording the result.`,
+        `Line: ${line.title} ×${line.qty}. Check the Shopify order ${order.shopifyName || ""}; it will NOT be tried again.`,
+      ]);
+    }
+    return { ...existing, resumed: true, via: existing.via || "junid_email" };
+  }
   let refused = null;
   const claimed = await lineTxn(ctx, orderId, i, (cur) => {
     const verdict = moneyAllowed(cur.resolution?.money, { kind, amountCents, line: cur });
@@ -401,7 +436,6 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
     }
     slot = r.ok ? { state: "done", via: "api", ref: r.id ?? null, ...(r.amountCents ? { paidCents: r.amountCents } : {}) } : { state: "failed", via: "junid_email", error: String(r.error).slice(0, 300), ambiguous: !!r.ambiguous };
   }
-  await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, resolution: { ...cur.resolution, money: { ...cur.resolution.money, ...slot } } }));
   ctx.summary[kind === "credit" ? "credits" : "refunds"]++;
   await record(ctx, orderId, i, order.ref, kind, { amountCents, note: `${rands(amountCents)} — ${slot.via === "api" ? "done on Shopify" : slot.state === "failed" ? `Shopify refused: ${slot.error}` : `scope ${need} not granted: Junid emailed`}` });
   const action = kind === "credit" ? "store credit" : "refund";
@@ -415,5 +449,8 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
         ? `Shopify refused or did not answer: ${slot.error}${slot.ambiguous ? " — it MAY have gone through; check the order before doing it by hand." : ""} It will not be retried.`
         : `The app is not allowed to do this yet (Shopify scope ${need} not granted). Please do it in the Shopify admin.`,
   ]);
+  // Junid is told FIRST (above): a write failing here can never hide money
+  // that moved.
+  await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, resolution: { ...cur.resolution, money: { ...cur.resolution.money, ...slot } } }));
   return { ...claimed.resolution.money, ...slot };
 }

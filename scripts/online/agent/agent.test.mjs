@@ -324,3 +324,58 @@ describe("reply parsing (code)", () => {
     expect(m.text).toContain("Store credit: R250, for Club Tee, size M.");
   });
 });
+
+describe("Sonnet-review guards (agent)", () => {
+  it("agentOff stops everything", async () => {
+    const f = fakeDb({ ...world(), config: { onlineOrders: { agentOff: true } } });
+    const h = harness(f);
+    const out = await h.run();
+    expect(out.off).toBe(true);
+    expect(h.mails).toEqual([]);
+  });
+
+  it("an order rung by hand / cancelled / closed is never messaged", async () => {
+    for (const status of ["fulfilled_elsewhere", "cancelled", "closed"]) {
+      const f = fakeDb(world({ order: { status } }));
+      const h = harness(f);
+      await h.run();
+      expect(h.mails).toEqual([]);
+      expect(f.read("online_escalations/9001_0")).toBeNull();
+    }
+  });
+
+  it("'no refund' is never read as a refund by code", () => {
+    expect(parseReplyCode("no refund", 2)).toBeNull();
+    expect(parseReplyCode("not credit", 2)).toBeNull();
+    expect(parseReplyCode("store credit please", 2)).toEqual({ kind: "credit" });
+    expect(parseReplyCode("I'd like a refund", 2)).toEqual({ kind: "refund" });
+  });
+
+  it("a crash after the money claim: the re-run never makes a second Shopify call, and finishes the line", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    // Simulate: the claim landed, the process died before anything else.
+    await f.db.ref("online_orders/9001/lines/0/resolution/money").set({ kind: "credit", amountCents: 25000, state: "claimed", at: NOW });
+    await h.run({ inbox: { replies: async () => [reply("credit")] } });
+    expect(h.gql.filter((g) => /mutation/.test(g.q))).toEqual([]);
+    expect(line(f).source).toEqual({ status: "resolved" });
+    expect(conv(f).state).toBe("closed");
+    // 10 minutes on, still only claimed → Junid is told to check Shopify, once.
+    const f2 = fakeDb(world());
+    const h2 = harness(f2);
+    await h2.run();
+    await f2.db.ref("online_orders/9001/lines/0/resolution/money").set({ kind: "credit", amountCents: 25000, state: "claimed", at: NOW - 11 * 60e3 });
+    await h2.run({ inbox: { replies: async () => [reply("credit")] } });
+    expect(h2.junid.filter((m) => /CHECK SHOPIFY/.test(m.subject))).toHaveLength(1);
+  });
+
+  it("an offer sold out since: refused, re-offered, nothing swapped", async () => {
+    const f = fakeDb(world());
+    const h = harness(f);
+    await h.run();
+    await h.run({ inbox: { replies: async () => [reply("1")] }, offerStillAvailable: async () => false });
+    expect(line(f).pid).toBe("TEE");
+    expect(h.mails.at(-1).text).toMatch(/just sold out/);
+  });
+});
