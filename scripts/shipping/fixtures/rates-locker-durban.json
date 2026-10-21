@@ -1,0 +1,116 @@
+{
+  "message": "Success",
+  "service_days": {
+    "collection_service_days": null,
+    "delivery_service_days": null
+  },
+  "rates": [
+    {
+      "rate": 100,
+      "rate_excluding_vat": 100,
+      "base_rate": {
+        "charge_per_parcel": [
+          100
+        ],
+        "charge": 100,
+        "group_name": "Default group",
+        "vat": 100,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "flat",
+        "rate_types": [
+          "flat"
+        ],
+        "total_calculated_weight": 3
+      },
+      "service_level": {
+        "id": 0,
+        "code": "L2DM - ECO",
+        "name": "Locker to Door Medium",
+        "group_code": "L2D",
+        "description": "Expect shipment to be ready for collection between 3 - 5 business days.",
+        "delivery_date_from": "2026-10-26T08:00:00+02:00",
+        "delivery_date_to": "2026-10-28T17:00:00+02:00",
+        "collection_date": "2026-10-21T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T16:30:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": true,
+        "pickup_point_only": true,
+        "bob_box_only": true
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge - locker door",
+          "charge": 100,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 100,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 3,
+      "actual_weight": 2,
+      "volumetric_weight": 3
+    },
+    {
+      "rate": 110,
+      "rate_excluding_vat": 110,
+      "base_rate": {
+        "charge_per_parcel": [
+          110
+        ],
+        "charge": 110,
+        "group_name": "Default group",
+        "vat": 110,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "flat",
+        "rate_types": [
+          "flat"
+        ],
+        "total_calculated_weight": 3
+      },
+      "service_level": {
+        "id": 0,
+        "code": "L2DL - ECO",
+        "name": "Locker to Door Large",
+        "group_code": "L2D",
+        "description": "Expect shipment to be ready for collection between 3 - 5 business days.",
+        "delivery_date_from": "2026-10-26T08:00:00+02:00",
+        "delivery_date_to": "2026-10-28T17:00:00+02:00",
+        "collection_date": "2026-10-21T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T16:30:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": true,
+        "pickup_point_only": true,
+        "bob_box_only": true
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge - locker door",
+          "charge": 110,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 110,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 3,
+      "actual_weight": 2,
+      "volumetric_weight": 3
+    }
+  ],
+  "_redacted": "account ids zeroed; prices replaced by rank-preserving placeholders (100, 110, …)"
+}

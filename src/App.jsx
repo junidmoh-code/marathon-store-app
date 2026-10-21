@@ -110,6 +110,7 @@ import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
 import NetworkSettingsCard from "./components/admin/NetworkSettingsCard";
 import OnlineOrdersSettingsCard from "./components/admin/OnlineOrdersSettingsCard";
+import ShippingCard from "./components/admin/ShippingCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
 import { changeProductType, saveProductPatch, useLiveProduct } from "./components/admin/productSave";
 import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
@@ -3016,6 +3017,15 @@ const RoleIcons = {
       <path d="M20 11V7h-4"/>
     </svg>
   ),
+  shipping: (
+    // A parcel box, lid flaps and centre seam: the Courier Guy parcel card.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 8 12 3 3 8v8l9 5 9-5Z"/>
+      <path d="m3 8 9 5 9-5"/>
+      <path d="M12 13v8"/>
+      <path d="m7.5 5.5 9 5"/>
+    </svg>
+  ),
   network: (
     // One node feeding two branches: Central above, a section on each side.
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -3545,6 +3555,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // of 3; the route gate and the card's own check are the others, and the
       // RTDB rules on /config/onlineOrders and /online_orders refuse the writes.
       isSuperAdmin && { key:"online_orders", icon:RoleIcons.online_orders, name:"Online Orders", desc:"Website orders · staff switch · needs attention", onClick:()=>(window.location.hash = "#admin/online-orders") },
+      // Shipping — the numbers a Courier Guy parcel is computed from, a "test an
+      // order" panel with live quotes, and the (disabled) live-booking switch.
+      // Super-admin ONLY. GATE 1 of 3; the route gate and the card's own check
+      // are the others, and the RTDB rule on /config/shipping refuses the write.
+      isSuperAdmin && { key:"shipping", icon:RoleIcons.shipping, name:"Shipping", desc:"Courier Guy parcel sizes, boxes, drop-box rule · test an order", onClick:()=>(window.location.hash = "#admin/shipping") },
       isSuperAdmin && { key:"network", icon:RoleIcons.network, name:"Network", desc:"Sections · Solve and Auto-refill per location · Concrete's back stock · credit scope", onClick:()=>(window.location.hash = "#admin/network") },
       // Device codes — the 4-digit code every phone on MC's login needs
       // (src/device/enrolment.js). Junid, or an enrolled device whose person may
@@ -20660,6 +20675,10 @@ function AppInner() {
   // /#admin/online-orders — ONLINE ORDERS. Recognises the HASH only and grants
   // nothing; the mount below gates, and the RTDB rules refuse.
   const wantOnlineOrders = hash === "#admin/online-orders" || hash === "#admin/online-orders/";
+  // /#admin/shipping — SHIPPING. Recognises the HASH only and grants nothing;
+  // authorization happens at the mount below, and the RTDB rule on
+  // /config/shipping is what actually refuses the write.
+  const wantShipping = hash === "#admin/shipping" || hash === "#admin/shipping/";
   // /#admin/devices — DEVICE CODES. Recognises the HASH only and grants
   // nothing; the deviceEnrolmentAdmin callable is what actually refuses.
   const wantDeviceCodes = hash === "#admin/devices" || hash === "#admin/devices/";
@@ -20945,6 +20964,11 @@ function AppInner() {
     // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
     view = isSuperAdmin
       ? <NetworkSettingsCard authUser={authUser} products={products} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantShipping) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    view = isSuperAdmin
+      ? <ShippingCard authUser={authUser} products={products} onExit={() => (window.location.hash = "")} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantMirrorFleet) {
     // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────

@@ -1,0 +1,186 @@
+{
+  "message": "Success",
+  "service_days": {
+    "collection_service_days": null,
+    "delivery_service_days": null
+  },
+  "rates": [
+    {
+      "rate": 100,
+      "rate_excluding_vat": 100,
+      "base_rate": {
+        "charge_per_parcel": [
+          100
+        ],
+        "charge": 100,
+        "group_name": "Default group",
+        "vat": 100,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "flat",
+        "rate_types": [
+          "flat"
+        ],
+        "total_calculated_weight": 3
+      },
+      "service_level": {
+        "id": 0,
+        "code": "ECO",
+        "name": "Economy",
+        "group_code": "ECO",
+        "description": "Expect delivery between 3 - 4 business days.",
+        "delivery_date_from": "2026-10-26T08:00:00+02:00",
+        "delivery_date_to": "2026-10-27T17:00:00+02:00",
+        "collection_date": "2026-10-21T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T15:00:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": false
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge",
+          "charge": 100,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 100,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 3,
+      "actual_weight": 2,
+      "volumetric_weight": 3
+    },
+    {
+      "rate": 110,
+      "rate_excluding_vat": 110,
+      "base_rate": {
+        "charge_per_parcel": [
+          110
+        ],
+        "charge": 110,
+        "group_name": "Default group",
+        "vat": 110,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "formula",
+        "rate_types": [
+          "formula"
+        ],
+        "total_calculated_weight": 3
+      },
+      "service_level": {
+        "id": 0,
+        "code": "PRI",
+        "legacy_code": "OVN",
+        "name": "Priority",
+        "group_code": "PRI",
+        "description": "Expect delivery between 1 - 2 business days.",
+        "delivery_date_from": "2026-10-22T08:00:00+02:00",
+        "delivery_date_to": "2026-10-23T17:00:00+02:00",
+        "collection_date": "2026-10-21T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T15:00:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": false
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Airline surcharge",
+          "charge": 110,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 110,
+          "vat_type": "standard",
+          "description": "Temporary surcharge applied to airfreight shipments due to increased aviation fuel costs imposed by airlines."
+        },
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge",
+          "charge": 110,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 110,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 3,
+      "actual_weight": 2,
+      "volumetric_weight": 3
+    },
+    {
+      "rate": 120,
+      "rate_excluding_vat": 120,
+      "base_rate": {
+        "charge_per_parcel": [
+          120
+        ],
+        "charge": 120,
+        "group_name": "Default group",
+        "vat": 120,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "formula",
+        "rate_types": [
+          "formula"
+        ],
+        "total_calculated_weight": 3
+      },
+      "service_level": {
+        "id": 0,
+        "code": "SDX",
+        "name": "Same Day Express",
+        "group_code": "SDX",
+        "description": "To ensure timely processing, kindly book your shipment before 14:00. Our standard turnaround time is 8-10 hours, subject to flight availability. Please note that deliveries scheduled after 18:00 will incur an after-hours surcharge of 741.75 (VAT included), which is not reflected in the base price. For any inquiries or assistance, feel free to contact our dedicated support team at sdxrequest@thecourierguy.co.za. We’re here to assist you promptly.",
+        "delivery_date_from": "2026-10-21T09:00:00+02:00",
+        "delivery_date_to": "2026-10-21T14:00:00+02:00",
+        "collection_date": "2026-10-21T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T14:00:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": false
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Airline surcharge",
+          "charge": 120,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 120,
+          "vat_type": "standard",
+          "description": "Temporary surcharge applied to airfreight shipments due to increased aviation fuel costs imposed by airlines."
+        },
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge",
+          "charge": 120,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 120,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 3,
+      "actual_weight": 2,
+      "volumetric_weight": 3
+    }
+  ],
+  "_redacted": "account ids zeroed; prices replaced by rank-preserving placeholders (100, 110, …)"
+}
