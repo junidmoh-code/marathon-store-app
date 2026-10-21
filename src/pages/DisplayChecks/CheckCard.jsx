@@ -14,7 +14,23 @@
 // inert/disabled — PR 7 wires the handler and the confirm sheet.
 
 import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, PANEL, META } from "./tokens";
-import { formatSaTime, isNoStock } from "./feedModel";
+import { formatSaTime, isNoStock, isOnlinePick } from "./feedModel";
+import { PACKER_INSTRUCTION } from "../../utils/onlineOrders";
+
+// WEBSITE ORDER PICK (kind "online_pick", docs/ONLINE-ORDERS.md): same card,
+// but it says so — a green WEB-#### badge and the packer instruction — and its
+// action reads as a pick, not a display check. Green is this module's one
+// non-palette colour on purpose: it must never be mistaken for a check.
+const WEB_GREEN = "#4ACA7A";
+export function OnlineBadge({ record }) {
+  return (
+    <span style={{ ...META, fontSize: 10.5, letterSpacing: "0.12em", color: WEB_GREEN, fontWeight: 700,
+                   background: "rgba(74,202,122,.12)", border: "1px solid rgba(74,202,122,.45)", borderRadius: 999,
+                   padding: "3px 9px", display: "inline-block", whiteSpace: "nowrap" }}>
+      WEBSITE · {record.ref || "—"}{Number(record.qty) > 1 ? ` · ×${Number(record.qty)}` : ""}
+    </span>
+  );
+}
 
 const IMG = 96; // 1:1 product image, feed spec
 
@@ -30,6 +46,16 @@ function Chip({ label, color, bg, border }) {
 
 // The result tag on a completed card. no_stock overridden by a manager reads amber.
 function ResultTag({ record }) {
+  if (isOnlinePick(record)) {
+    const who = (record.completedBy && (record.completedBy.name || record.completedBy.uid)) || "—";
+    const handed = record.result === "handed";
+    return (
+      <div style={{ ...META, fontSize: 11, color: handed ? WEB_GREEN : AMBER, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span>{handed ? "✓ HANDED TO PACKER" : "✗ NOT FOUND"}</span>
+        <span style={{ color: "rgba(233,238,255,.4)" }}>· {String(who).toUpperCase()} · {formatSaTime(record.completedAt)}</span>
+      </div>
+    );
+  }
   const noStock = isNoStock(record);
   const overridden = noStock && record.resultOverridden === true;
   const who = (record.completedBy && (record.completedBy.name || record.completedBy.uid)) || "—";
@@ -49,6 +75,7 @@ export default function CheckCard({ check, variant, onOpen }) {
   const held = variant === "waiting";
   const completed = variant === "completed";
   const isRepeat = !!check.repeatOf;
+  const online = isOnlinePick(check);
 
   const name = check.productName || "Unknown";
   const size = check.size && check.size !== "_" ? String(check.size) : null;
@@ -77,6 +104,7 @@ export default function CheckCard({ check, variant, onOpen }) {
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0, flex: 1 }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {online && <OnlineBadge record={check} />}
             {isRepeat && <Chip label="REPEAT" color={AMBER} bg="rgba(232,165,74,.12)" border="rgba(232,165,74,.4)" />}
             {held && <Chip label="WAITING ON STOCK" color="rgba(233,238,255,.5)" bg="rgba(255,255,255,.04)" border="rgba(255,255,255,.1)" />}
           </div>
@@ -86,9 +114,12 @@ export default function CheckCard({ check, variant, onOpen }) {
           </div>
           <div style={{ ...META, fontSize: 11, color: "rgba(233,238,255,.5)", display: "flex", gap: 10, flexWrap: "wrap" }}>
             {size && <span style={{ fontFamily: MONO }}>{size}</span>}
-            {soldAt && <span>SOLD {soldAt}</span>}
-            {saleCount > 1 && <span style={{ color: BLUE_SOFT }}>×{saleCount}</span>}
+            {!online && soldAt && <span>SOLD {soldAt}</span>}
+            {!online && saleCount > 1 && <span style={{ color: BLUE_SOFT }}>×{saleCount}</span>}
           </div>
+          {online && !completed && (
+            <div style={{ fontFamily: FONT, fontSize: 13, fontWeight: 650, color: WEB_GREEN }}>{PACKER_INSTRUCTION}</div>
+          )}
         </div>
       </div>
 
@@ -106,12 +137,12 @@ export default function CheckCard({ check, variant, onOpen }) {
                 fontFamily: FONT, fontSize: 14.5, fontWeight: 700, width: "100%",
                 padding: "12px 14px", borderRadius: 12, minHeight: 48,
                 cursor: onOpen ? "pointer" : "default",
-                color: onOpen ? "#04102e" : "rgba(233,238,255,.4)",
-                background: onOpen ? BLUE : "rgba(74,127,255,.10)",
+                color: onOpen ? (online ? "#04140a" : "#04102e") : "rgba(233,238,255,.4)",
+                background: onOpen ? (online ? WEB_GREEN : BLUE) : "rgba(74,127,255,.10)",
                 border: onOpen ? "none" : "1px solid rgba(74,127,255,.2)",
               }}
             >
-              Check Display
+              {online ? "Pick for website order" : "Check Display"}
             </button>
           )}
     </div>

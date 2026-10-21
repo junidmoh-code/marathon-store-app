@@ -88,7 +88,8 @@ const {
   isStaleTombstone,
   resolveAssignment,
 } = require("./lib.cjs");
-const { storesOf } = require("../lib/network-registry.cjs");
+const { storesOf, locationName } = require("../lib/network-registry.cjs");
+const { applyOnlineOrderOutcome } = require("./onlineOrder.cjs");
 const { loadSettingsFor } = require("./settings.cjs");
 const { guardedMutate } = require("./guardedTransaction.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
@@ -164,8 +165,17 @@ async function applyInPlace(db, store, saDate, key, preRead, action, opts) {
 // save the compliance record — otherwise it vanishes with no trace. So preserve
 // it (idempotent, keyed by checkId) FIRST, and only reap once it's safely
 // archived; if the archive can't be written, skip the reap and retry next sweep.
-async function reapTombstone(db, store, saDate, key, preRead) {
+//
+// A completed WEBSITE-ORDER pick (kind online_pick) has a second durable copy:
+// its order line. Same rule — re-apply it (idempotent, from the record alone)
+// before the tombstone goes, and skip the reap if it cannot land. Nothing
+// else in the sweep touches an online_pick: it is never held.
+async function reapTombstone(db, store, saDate, key, preRead, storeName) {
   const checkId = preRead.checkId;
+  if (!(await applyOnlineOrderOutcome(db, store, preRead, { storeName }))) {
+    console.error("wakeHeldChecks: online order write before reap failed, skipping reap this pass");
+    return false;
+  }
   const arcDate = preRead.completedSaDate
     || (Number.isFinite(Number(preRead.completedAt)) ? saDateStringFromMs(Number(preRead.completedAt)) : null);
   if (checkId && arcDate) {
@@ -216,7 +226,7 @@ async function runWakeSweep({ db, nowMs }) {
       if (!record) continue;
 
       if (record.status === "completed") {
-        if (isStaleTombstone(record, saDate) && await reapTombstone(db, store, saDate, key, record)) reaped++;
+        if (isStaleTombstone(record, saDate) && await reapTombstone(db, store, saDate, key, record, locationName(network, store))) reaped++;
         continue;
       }
       if (record.status !== "held") continue; // open → nothing to do (staff's now)

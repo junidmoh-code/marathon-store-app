@@ -109,6 +109,7 @@ import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
 import NetworkSettingsCard from "./components/admin/NetworkSettingsCard";
+import OnlineOrdersSettingsCard from "./components/admin/OnlineOrdersSettingsCard";
 import ShippingCard from "./components/admin/ShippingCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
 import { changeProductType, saveProductPatch, useLiveProduct } from "./components/admin/productSave";
@@ -179,6 +180,8 @@ import { PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH } from "./util
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
+import OnlinePickCard from "./components/onlineOrders/OnlinePickCard";
+import { useOnlinePicks, useOnlineOrdersEnabled, pickQueueRows } from "./components/onlineOrders/onlinePicks";
 import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
@@ -3033,6 +3036,14 @@ const RoleIcons = {
       <path d="M5.5 16.5V12h13v4.5"/>
     </svg>
   ),
+  online_orders: (
+    // A shopping bag with a cursor arrow on it: an order placed on the website.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 7h14l-1.2 13a1 1 0 0 1-1 .9H7.2a1 1 0 0 1-1-.9z"/>
+      <path d="M9 7V5.5a3 3 0 0 1 6 0V7"/>
+      <path d="m10.5 11.5 4.5 2-2 .7-.7 2z"/>
+    </svg>
+  ),
   mirror_fleet: (
     // lucide-style "tablet + arrow down": a device with a copy coming into it.
     // Deliberately NOT a cloud — the point of this screen is the devices, not
@@ -3539,6 +3550,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // stock and the credit scope. Super-admin ONLY. GATE 1 of 3; the route
       // gate and the card's own check are the others, and the RTDB rule on
       // /network is what actually refuses the write.
+      // Online orders — the staff-feed switch for website orders, the order
+      // prefix, and every order that needs a person. Super-admin ONLY. GATE 1
+      // of 3; the route gate and the card's own check are the others, and the
+      // RTDB rules on /config/onlineOrders and /online_orders refuse the writes.
+      isSuperAdmin && { key:"online_orders", icon:RoleIcons.online_orders, name:"Online Orders", desc:"Website orders · staff switch · needs attention", onClick:()=>(window.location.hash = "#admin/online-orders") },
       // Shipping — the numbers a Courier Guy parcel is computed from, a "test an
       // order" panel with live quotes, and the (disabled) live-booking switch.
       // Super-admin ONLY. GATE 1 of 3; the route gate and the card's own check
@@ -12489,6 +12505,11 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Read-only until a hub is picked; LaybyTab/banner filter by selectedHub.
   const laybys = useLaybys();
   const laybyPulls = useLaybyPulls();
+  // ── Website order picks (docs/ONLINE-ORDERS.md) ──────────────────────────
+  // This hub's OPEN /online_picks, by the indexed locStatus query — nothing is
+  // subscribed until a hub is picked AND /config/onlineOrders/enabled is true.
+  const onlineOrdersOn = useOnlineOrdersEnabled();
+  const onlinePicks = useOnlinePicks(selectedHub, onlineOrdersOn);
   // Which layby sub-queue to open on next mount. The exceptions banner flips this
   // to "exceptions" so a tap jumps straight there; keyed remount applies it.
   const [laybySub, setLaybySub] = useState("receiving");
@@ -12815,7 +12836,13 @@ function WarehouseView({ products = [], orders, onExit }) {
   // queue feeder so both the visible list AND every pill count/badge drop them in
   // one place. Regular orders always carry a validated non-empty customerName, and
   // layby pull rows have no customerName, so this can't hide a real order.
-  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders];
+  // Website order picks join the same queue the same way: Incoming, stamped
+  // now so the 3-day window never hides one, rendered by OnlinePickCard below
+  // (one "Handed over" tap — no print, no transfer, no stock movement).
+  const hubOnlinePicks = onlineOrdersOn
+    ? pickQueueRows(onlinePicks, { hub: selectedHub, incomingStatus: STATUS.INCOMING, nowIso: serverNowIso() })
+    : [];
+  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders, ...hubOnlinePicks];
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
@@ -13842,6 +13869,14 @@ function WarehouseView({ products = [], orders, onExit }) {
             // Layby pull request — render the real PullCard inline (same L-xxxxx
             // invoice + Sent/Reject/Return); it actions via markPullSent, never the
             // order print flow.
+            // Website order pick — its own card, actioned by one multi-path
+            // update (pick + order line → handed); never the order print flow.
+            if (order.isOnlinePick) {
+              return (
+                <OnlinePickCard pick={order._pick} hub={selectedHub}
+                  onHanded={(p) => { setPrintToast({ kind:"ok", text:`${p.ref || "Website order"} handed over.` }); setTimeout(() => setPrintToast(null), 4000); }}/>
+              );
+            }
             if (order.isLayby) {
               return (
                 <PullCard pull={order._pull} selectedHub={selectedHub} nowMs={nowTick}
@@ -20637,6 +20672,9 @@ function AppInner() {
   // authorization happens at the mount below, and the RTDB rule on /network
   // is what actually refuses the write.
   const wantNetwork = hash === "#admin/network" || hash === "#admin/network/";
+  // /#admin/online-orders — ONLINE ORDERS. Recognises the HASH only and grants
+  // nothing; the mount below gates, and the RTDB rules refuse.
+  const wantOnlineOrders = hash === "#admin/online-orders" || hash === "#admin/online-orders/";
   // /#admin/shipping — SHIPPING. Recognises the HASH only and grants nothing;
   // authorization happens at the mount below, and the RTDB rule on
   // /config/shipping is what actually refuses the write.
@@ -20916,6 +20954,11 @@ function AppInner() {
   } else if (wantNewArrivals) {
     view = (isSuperAdmin || hasPermission("shopify_publish"))
       ? <NewArrivalsScreen api={newArrivalsApi} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantOnlineOrders) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    view = isSuperAdmin
+      ? <OnlineOrdersSettingsCard authUser={authUser} onExit={() => (window.location.hash = "")} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantNetwork) {
     // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────

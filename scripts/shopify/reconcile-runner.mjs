@@ -321,6 +321,54 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   });
 }
 
+// ── WEBSITE ORDERS FIRST (2026-10-21) ────────────────────────────────────────
+// orders-poll.mjs pulls new Shopify orders in and writes their HOLDS
+// (/online_reservations) before reconcile.mjs pushes a single number to
+// Shopify — so a unit a customer has just bought is never pushed back onto the
+// storefront by the same tick (docs/ONLINE-ORDERS.md). It runs under THIS
+// lock, as `child`, so every guarantee above covers it too: the lock names it,
+// a stop kills it, nothing overlaps it.
+//
+// It can never cost the reconcile its tick: a poll that fails or hangs is
+// logged (its own file, logs/orders-poll.log, plus one line here) and the
+// reconcile runs regardless. ONLINE_ORDERS_POLL=0 switches the step off.
+const ORDERS_LOG = join(LOG_DIR, "orders-poll.log");
+const ORDERS_TIMEOUT_MS = 3 * 60 * 1000;
+function ordersLog(line) {
+  try {
+    let size = 0;
+    try { size = statSync(ORDERS_LOG).size; } catch { /* none yet */ }
+    if (size >= MAX_LOG_BYTES) { try { renameSync(ORDERS_LOG, `${ORDERS_LOG}.1`); } catch { /* raced */ } }
+    appendFileSync(ORDERS_LOG, `${stamp()}  ${line}\n`);
+  } catch { /* the orders log is a convenience; the reconcile log still gets the verdict */ }
+}
+if (process.env.ONLINE_ORDERS_POLL !== "0") {
+  const code = await new Promise((resolvePoll) => {
+    child = spawn(process.execPath, [join(HERE, "orders-poll.mjs"), "--commit"], {
+      cwd: REPO, env: process.env, stdio: ["ignore", "pipe", "pipe"],
+    });
+    lockOwners.childPid = child.pid;
+    try { writeLockAtomically(); } catch { /* recorded on the reconcile spawn below */ }
+    let carry = "";
+    const take = (chunk) => {
+      const parts = (carry + chunk.toString()).split("\n");
+      carry = parts.pop() ?? "";
+      for (const l of parts) if (l.trim()) ordersLog(l.trimEnd());
+    };
+    child.stdout.on("data", take);
+    child.stderr.on("data", take);
+    const timer = setTimeout(() => {
+      ordersLog(`✗ orders poll still running after ${ORDERS_TIMEOUT_MS / 60000} min — stopped; the reconcile goes ahead`);
+      try { child.kill("SIGKILL"); } catch { /* gone */ }
+    }, ORDERS_TIMEOUT_MS);
+    child.on("error", (e) => { clearTimeout(timer); ordersLog(`✗ could not start orders-poll.mjs: ${String(e?.message || e)}`); resolvePoll(-1); });
+    child.on("close", (c) => { clearTimeout(timer); if (carry.trim()) ordersLog(carry.trimEnd()); resolvePoll(c); });
+  });
+  child = null;
+  if (shuttingDown) { release(); process.exit(130); }
+  if (code !== 0) log(`⚠ orders poll exited ${code} — see logs/orders-poll.log; reconciling anyway`);
+}
+
 child = spawn(process.execPath, [join(HERE, "reconcile.mjs"), "--commit"], {
   cwd: REPO,
   env: process.env,

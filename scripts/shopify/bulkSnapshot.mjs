@@ -24,7 +24,7 @@ export function bulkQuery(locationId) {
       edges { node { id
         variants { edges { node { id title inventoryPolicy
           inventoryItem { id tracked
-            inventoryLevel(locationId: "${locationId}") { quantities(names: ["available", "on_hand"]) { name quantity } }
+            inventoryLevel(locationId: "${locationId}") { quantities(names: ["available", "on_hand", "committed"]) { name quantity } }
           }
         } } }
       } }
@@ -36,6 +36,9 @@ export function bulkQuery(locationId) {
  * PURE: the JSONL Shopify returns → Map(productGid → { variants, baseline }).
  * `variants` has readProductVariants' shape; `baseline` maps inventory item →
  * on_hand, readAvailable's shape — so planProduct takes them unchanged.
+ * `committed` maps inventory item → units Shopify holds for unfulfilled
+ * orders, which planProduct needs to subtract website holds without counting
+ * a unit twice (see onlineHoldAdjustment in inventorySync.mjs).
  */
 export function parseSnapshot(jsonl) {
   const products = new Map();
@@ -44,7 +47,7 @@ export function parseSnapshot(jsonl) {
   for (const line of lines) {
     const o = JSON.parse(line);
     if (o.__parentId) variantLines.push(o);
-    else if (String(o.id).includes("/Product/")) products.set(o.id, { variants: [], baseline: new Map() });
+    else if (String(o.id).includes("/Product/")) products.set(o.id, { variants: [], baseline: new Map(), committed: new Map() });
   }
   for (const v of variantLines) {
     const p = products.get(v.__parentId);
@@ -60,6 +63,8 @@ export function parseSnapshot(jsonl) {
     if (itemId && Array.isArray(qs)) {
       const q = qs.find((x) => x.name === "on_hand") ?? qs.find((x) => x.name === "available");
       p.baseline.set(itemId, q?.quantity ?? 0);
+      const c = qs.find((x) => x.name === "committed");
+      if (c) p.committed.set(itemId, c.quantity ?? 0);
     }
   }
   return products;

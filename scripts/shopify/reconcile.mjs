@@ -62,7 +62,7 @@ import {
   MEDIA_PENDING_PATH, MEDIA_PRODUCTS_PER_TICK,
 } from "./mediaSync.mjs";
 import {
-  networkTotals, requireSingleLocation, setAvailable, readAvailable,
+  networkTotals, requireSingleLocation, setAvailable, readLevels,
   TRACKED_VARIANT, untrackedVariants, enforceTracking, InventoryMovedError,
 } from "./inventory.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct, releaseClaim } from "./idMap.mjs";
@@ -95,7 +95,7 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 // shopifyInventoryDirty trigger writes, so a product that is ALREADY live keeps
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
-import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames } from "./inventorySync.mjs";
+import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, releasedBySize, onlineHoldAdjustment } from "./inventorySync.mjs";
 import { sweepMovements } from "./movementSync.mjs";
 import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
 import { drainAutoPublish } from "./autoPublish.mjs";
@@ -1143,7 +1143,7 @@ for (const { pid, want } of capped) {
     // that predates it. See setAvailable in inventory.mjs for the bug this
     // ordering fixes.
     const invLocId = await requireSingleLocation(graphql);
-    const invBaseline = await readAvailable(
+    const { onHand: invBaseline, committed: invCommitted } = await readLevels(
       graphql, invLocId,
       Object.values(finalMap.variants).map((v) => v.shopifyInventoryItemId).filter(Boolean),
     );
@@ -1157,6 +1157,15 @@ for (const { pid, want } of capped) {
       if (cells) tree[loc] = { [pid]: cells };
     }
     const totals = networkTotals(tree, pid, sizes);
+    // Website-order holds come off before the push, exactly as on every other
+    // push path (onlineHoldAdjustment, inventorySync.mjs).
+    const holdsNode = (await db.ref(`online_reservations/${pid}`).get()).val();
+    const heldBySize = reservedBySize(holdsNode);
+    const releasedHeld = releasedBySize(holdsNode);
+    for (const [sizeKey, v] of Object.entries(finalMap.variants)) {
+      if (!(sizeKey in totals)) continue;
+      totals[sizeKey] = Math.max(0, totals[sizeKey] - onlineHoldAdjustment(heldBySize[sizeKey], invCommitted.get(v.shopifyInventoryItemId), releasedHeld[sizeKey]));
+    }
 
     // ── TRACKING, ENFORCED ON EVERY RUN ──────────────────────────────────────
     // Not just at creation. This is the SELF-HEALING half: it re-checks the

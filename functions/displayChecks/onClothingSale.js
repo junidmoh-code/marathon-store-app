@@ -41,7 +41,10 @@
 
 const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
-const { isTriggerStoreEnabled, isDisplaySale, normStoreSettings, isRegistryStore } = require("./lib.cjs");
+const {
+  isTriggerStoreEnabled, isDisplaySale, normStoreSettings, isRegistryStore,
+  isOnlineSaleChannel, saleChannelPath,
+} = require("./lib.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 
 if (!admin.apps.length) {
@@ -84,6 +87,19 @@ exports.onClothingSale = onValueCreated(
     if (!isTriggerStoreEnabled(store, network, settings)) return;
     const product = (await admin.database().ref(`products/${m.productId}`).get()).val();
     if (!isDisplaySale(product, m.size, normStoreSettings(settings).scope, m.productId)) return;   // one product get
+    // The WEBSITE pack sale (channel "online", docs/ONLINE-ORDERS.md): the unit
+    // left the floor at pick time and was answered for there (the online_pick
+    // record). Last, so it costs one exact read only for a sale that would
+    // otherwise have raised a check — and nothing for a movement with no sale link.
+    // A failed read raises the check anyway: a stray check on a pack sale is a
+    // tap to dismiss, a till sale's lost check is a display nobody refills.
+    const channelPath = saleChannelPath(m.link && m.link.saleId);
+    if (channelPath) {
+      let channel = null;
+      try { channel = (await admin.database().ref(channelPath).get()).val(); }
+      catch (err) { console.warn("onClothingSale: sale channel read failed; treating as a till sale:", err && err.message); }
+      if (isOnlineSaleChannel(channel)) return;
+    }
 
     const db = admin.database();
     await processDisplaySale(db, {

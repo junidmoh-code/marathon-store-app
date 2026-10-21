@@ -176,19 +176,35 @@ export async function requireSingleLocation(graphql) {
 // itself and the next push writes the app's not-yet-lowered count, offering
 // that unit again until the POS sale lands. And if the POS sale lands first,
 // Shopify is one short until the order ships. Both settle on the next push.
+// (2026-10-21: the first of those is now closed. Website orders are pulled in
+// and held at /online_reservations until Yasmin packs them, and the push takes
+// off the part of a hold Shopify is no longer committing — exactly the unit an
+// admin-side fulfilment releases. onlineHoldAdjustment, inventorySync.mjs.)
 // The read and the compare-and-set are on the same quantity, on_hand.
 export const PUSHED_QUANTITY = "on_hand";
 
 export async function readAvailable(graphql, locationId, inventoryItemIds) {
+  return (await readLevels(graphql, locationId, inventoryItemIds)).onHand;
+}
+
+// The same read, also returning `committed` — the units Shopify holds for web
+// orders it has taken and not fulfilled. The push needs it to subtract
+// website-order holds (/online_reservations) without hiding a unit twice:
+// Shopify already keeps a committed unit off sale (available = on_hand −
+// committed), so only the part of a hold Shopify is NOT committing may come off
+// on_hand. See onlineHoldAdjustment in inventorySync.mjs.
+// → { onHand: Map(id → on_hand), committed: Map(id → committed) }
+export async function readLevels(graphql, locationId, inventoryItemIds) {
   const out = new Map();
-  if (!inventoryItemIds.length) return out;
+  const committed = new Map();
+  if (!inventoryItemIds.length) return { onHand: out, committed };
   const data = await graphql(
     `query ($ids: [ID!]!, $loc: ID!) {
       nodes(ids: $ids) {
         ... on InventoryItem {
           id
           inventoryLevel(locationId: $loc) {
-            quantities(names: ["available", "on_hand"]) { name quantity }
+            quantities(names: ["available", "on_hand", "committed"]) { name quantity }
           }
         }
       }
@@ -207,8 +223,10 @@ export async function readAvailable(graphql, locationId, inventoryItemIds) {
     // the same number (nothing committed).
     const q = qs.find((x) => x.name === PUSHED_QUANTITY) ?? qs.find((x) => x.name === "available");
     out.set(n.id, q?.quantity ?? 0);
+    const c = qs.find((x) => x.name === "committed");
+    if (c) committed.set(n.id, c.quantity ?? 0);
   }
-  return out;
+  return { onHand: out, committed };
 }
 
 // ── EVERY VARIANT ON THE PRODUCT, AND WHETHER SHOPIFY IS COUNTING IT ─────────

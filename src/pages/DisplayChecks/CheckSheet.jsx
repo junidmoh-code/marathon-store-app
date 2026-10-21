@@ -10,6 +10,12 @@
 // N × size — check the shelf again") and only re-calls with override:true if the
 // staff member insists ("Still not there"). The number is the voice (§8.7).
 //
+// A WEBSITE ORDER PICK (kind "online_pick") gets its own two results instead:
+//   • Handed to packer → result "handed"
+//   • Not found        → result "not_found"
+// Same callable; the server refuses a display verdict on a pick (and the
+// reverse), never soft-blocks a "Not found", and flips the order line itself.
+//
 // On success the sheet closes; the feed's live listener moves the card out of
 // Outstanding into Completed on its own — nothing to refetch.
 
@@ -17,7 +23,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT, MONO, BLUE, AMBER, INK, PANEL, META } from "./tokens";
-import { formatSaTime } from "./feedModel";
+import { formatSaTime, isOnlinePick } from "./feedModel";
+import { OnlineBadge } from "./CheckCard";
+import { PACKER_INSTRUCTION } from "../../utils/onlineOrders";
 import StyleCodeCapture from "./StyleCodeCapture";
 
 const completeDisplayCheck = httpsCallable(functions, "completeDisplayCheck");
@@ -85,6 +93,7 @@ export default function CheckSheet({ store, check, onClose, styleCodeProgress, p
   const name = check.productName || "Unknown";
   const size = check.size && check.size !== "_" ? String(check.size) : null;
   const soldAt = formatSaTime(check.lastSoldAt || check.firstSoldAt || check.createdAt);
+  const online = isOnlinePick(check);
 
   async function complete(result, force) {
     setBusy(true); setError(null);
@@ -143,8 +152,9 @@ export default function CheckSheet({ store, check, onClose, styleCodeProgress, p
             <div style={{ fontFamily: FONT, fontSize: 17, fontWeight: 720, color: INK, lineHeight: 1.2 }}>{name}</div>
             <div style={{ ...META, fontSize: 11, marginTop: 4, display: "flex", gap: 10 }}>
               {size && <span style={{ fontFamily: MONO }}>{size}</span>}
-              {soldAt && <span>SOLD {soldAt}</span>}
+              {!online && soldAt && <span>SOLD {soldAt}</span>}
             </div>
+            {online && <div style={{ marginTop: 8 }}><OnlineBadge record={check} /></div>}
           </div>
         </div>
 
@@ -167,7 +177,30 @@ export default function CheckSheet({ store, check, onClose, styleCodeProgress, p
           />
         )}
 
-        {override ? (
+        {online && (
+          <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: "#4ACA7A", border: "1px solid rgba(74,202,122,.35)",
+                        background: "rgba(74,202,122,.08)", borderRadius: 12, padding: "12px 14px" }}>
+            {PACKER_INSTRUCTION}
+          </div>
+        )}
+
+        {online ? (
+          // ── A website order pick: its own two results ──
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <button type="button" disabled={busy} onClick={() => complete("handed")} style={btn("#4ACA7A", "#04140a")}>
+              Handed to packer
+            </button>
+            <button type="button" disabled={busy} onClick={() => complete("not_found")}
+                    style={btn("rgba(255,255,255,.06)", INK)}>
+              Not found
+            </button>
+            <button type="button" disabled={busy} onClick={onClose}
+                    style={{ ...META, fontSize: 11, background: "none", border: "none",
+                             color: "rgba(233,238,255,.4)", cursor: busy ? "default" : "pointer", padding: "8px" }}>
+              Cancel
+            </button>
+          </div>
+        ) : override ? (
           // ── Soft-block: the system contradicts the no-stock claim, calmly ──
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div style={{ border: `1px solid ${AMBER}`, borderRadius: 14, padding: "16px 16px",

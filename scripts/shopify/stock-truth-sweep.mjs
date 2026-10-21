@@ -146,13 +146,13 @@ async function rollback(file) {
 async function judgeFromSnapshot(pid, snapshot, locNames, published) {
   const desired = await desiredFor(db, pid, locNames);
   if (!desired) return { pid, skipped: "no shopify_sync id map", permanent: true };
-  const { map, totals } = desired;
+  const { map, totals, reserved, released } = desired;
   const gid = map.shopifyProductId ?? null;
   const shop = gid ? snapshot.get(gid) : null;
   // Not in the snapshot = not ACTIVE on Shopify (draft, archived or deleted):
   // nothing can be bought from it, so there is nothing to correct.
   if (!shop) return { pid, gid, ok: true, inactive: true, drift: [], untracked: [], shopifyUnits: 0, appUnits: 0 };
-  const plan = planProduct({ map, variants: shop.variants, baseline: shop.baseline, totals });
+  const plan = planProduct({ map, variants: shop.variants, baseline: shop.baseline, totals, reserved, released, committed: shop.committed });
   // `published`: on at least one sales channel. An ACTIVE product on none
   // cannot be bought, so its drift is corrected but never counted as oversell.
   const base = { pid, gid, published: published ? published.has(gid) : true, drift: plan.drift, untracked: plan.untracked, ...plan.meta, ...plan.stale };

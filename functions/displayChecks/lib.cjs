@@ -133,6 +133,9 @@ function isDisplaySale(product, rawSize, scope, productId) {
 function saleLinesForDisplay({ sale, network }) {
   const s = sale && typeof sale === "object" ? sale : null;
   if (!s || s.status !== "completed" || (s.type !== "sale" && s.type !== "exchange")) return [];
+  // The website pack sale: its units left the floor at pick time (the
+  // online_pick record) — same rule as onClothingSale's channel skip.
+  if (isOnlineSaleChannel(s.channel)) return [];
   const reg = require("../lib/network-registry.cjs");
   const loc = reg.locationOf(network || SEED_REGISTRY, s.storeId);
   if (!loc || loc.type !== "store" || loc.live === true) return [];
@@ -543,7 +546,9 @@ function isStaleTombstone(record, todaySaDate) {
 //    as evidence (the system contradicting a person, calmly, with a number).
 // Returns exactly one of:
 //   { kind:"reject", code }                     code ∈ not-found | stale-check |
-//                                               already-completed | not-open | bad-result
+//                                               already-completed | not-open | bad-result |
+//                                               wrong-kind (a known result of the other
+//                                               record kind — see online_pick below)
 //   { kind:"needs_override", stockQty }          no_stock but stock>0 and no override
 //   { kind:"complete", overridden }              proceed; overridden true iff it was
 //                                               a no_stock close over real stock
@@ -558,9 +563,17 @@ function completionDecision({ record, expectedCheckId, result, override, stockQt
     return { kind: "reject", code: "already-completed" };
   }
   if (record.status !== "open") return { kind: "reject", code: "not-open" };
-  if (result !== "confirmed" && result !== "no_stock") {
-    return { kind: "reject", code: "bad-result" };
+  // Each record kind has its own two results (resultFitsRecord). A known result
+  // of the OTHER kind is "wrong-kind" — a client that sent "confirmed" for an
+  // online pick (or "handed" for a display check) is told exactly that, never
+  // allowed to close the record with a verdict that means something else.
+  if (!resultFitsRecord(record, result)) {
+    return { kind: "reject", code: ALL_RESULTS.includes(result) ? "wrong-kind" : "bad-result" };
   }
+  // An online pick has no soft-block: "Not found" is not contradicted by the
+  // stock cell — the cell is what routed the order there in the first place,
+  // and the person at the rail is the only evidence that the unit is gone.
+  if (isOnlinePickRecord(record)) return { kind: "complete", overridden: false };
   const stock = Number(stockQty) || 0;
   if (result === "no_stock" && stock > 0 && override !== true) {
     return { kind: "needs_override", stockQty: stock };
@@ -578,7 +591,7 @@ function buildCompletedRecord(record, { result, nowMs, saDate, actor, overridden
   const next = {
     ...record,
     status: "completed",
-    result,                            // "confirmed" | "no_stock"
+    result,                            // "confirmed" | "no_stock" (online pick: "handed" | "not_found")
     completedAt: nowMs,
     completedSaDate: saDate,           // server SA day of completion (day-node key)
     completedBy: actor || null,        // { uid, name, email } — the logged-in user, NO PIN
@@ -607,7 +620,123 @@ function completionFlipMutation({ expectedCheckId, result, nowMs, saDate, actor,
   };
 }
 
+// ── WEBSITE ORDERS: the "online_pick" record kind ─────────────────────────────
+// The Mac mini (scripts/shopify/, contract docs/ONLINE-ORDERS.md) writes a
+// display-check-SHAPED record at /displayChecks_active/{store}/online__{orderId}__{i}
+// for a website order line routed to a shop's floor. It rides the display-check
+// feed and callable because that is where the shop's staff already look and how
+// they already close work — but it is not a display check: it is a pick, its two
+// verdicts are "handed" (to the packer) and "not_found", and it never counts in
+// any compliance figure. Functions are CJS and cannot import the ES module
+// src/utils/onlineOrders.js, so the four strings below are MIRRORED from it
+// (same mirror-with-a-header-comment pattern as TRIGGER_STORE_FLAGS above);
+// the online-orders test pins them against the source.
+const ONLINE_PICK_KIND = "online_pick";
+const ONLINE_ORDERS_PATH = "online_orders";
+const ONLINE_LINE_HANDED = "handed";
+const ONLINE_LINE_NOT_FOUND = "not_found";
+
+const DISPLAY_RESULTS = Object.freeze(["confirmed", "no_stock"]);
+const ONLINE_PICK_RESULTS = Object.freeze([ONLINE_LINE_HANDED, ONLINE_LINE_NOT_FOUND]);
+const ALL_RESULTS = Object.freeze([...DISPLAY_RESULTS, ...ONLINE_PICK_RESULTS]);
+
+function isOnlinePickRecord(record) {
+  return !!record && typeof record === "object" && record.kind === ONLINE_PICK_KIND;
+}
+
+// The verdicts a record of this kind may be closed with — and ONLY those.
+function resultFitsRecord(record, result) {
+  return (isOnlinePickRecord(record) ? ONLINE_PICK_RESULTS : DISPLAY_RESULTS).includes(result);
+}
+
+// The pack sale (marathon-pos-app's Online Orders tab) is written with
+// channel "online". Its sold movements must not raise display checks: the
+// unit left the floor at PICK time, through the online_pick record, and a
+// second check for the same unit would send staff to restock a display that
+// was already answered for. Exact string — anything else is a till sale.
+function isOnlineSaleChannel(channel) {
+  return channel === "online";
+}
+
+// The exact path of a sale's channel, or null when the id cannot be a key
+// (a malformed link must cost nothing — never a ref() that throws, never a
+// read of /pos/sales itself).
+function saleChannelPath(saleId) {
+  if (typeof saleId !== "string" || !saleId || /[.#$[\]/]/.test(saleId)) return null;
+  return `pos/sales/${saleId}/channel`;
+}
+
+// What a COMPLETED online_pick record does to its order, as a root multi-path
+// update — pure, so the heal path re-derives the identical write from the
+// record alone (completedAt / completedBy are on it) and a retry is a no-op
+// in effect. `order` is the /online_orders/{orderId} value read just before.
+// Returns { updates } (possibly empty: nothing to do) or { skip: reason }.
+//
+// It refuses, rather than writes, whenever the order has moved on without this
+// record: packed/cancelled are terminal (contract); a line that is cancelled,
+// or routed to ANOTHER location (Settings → Resolve rerouted it), or in any
+// status this record could not have produced (reroute, no_stock, unresolved,
+// needs_attention, pick) is not this record's to flip — a late completion of a
+// stale entry must never mark the rerouted line handed.
+//
+// not_found ALSO opens the order's attention. If that attention is already
+// this one (kind not_found, same `at`), it is left exactly as it is — so a
+// retry never strips the poller's `mailedAt` stamp and re-sends the email.
+function onlineOrderOutcomeUpdates({ record, store, storeName, order }) {
+  if (!isOnlinePickRecord(record)) return { skip: "not-online-pick" };
+  if (record.status !== "completed" || !ONLINE_PICK_RESULTS.includes(record.result)) return { skip: "not-completed" };
+  const orderId = record.orderId;
+  const i = Number(record.lineIndex);
+  if (typeof orderId !== "string" || !orderId || /[.#$[\]/]/.test(orderId)
+      || !Number.isInteger(i) || i < 0) return { skip: "bad-record" };
+  if (!order || typeof order !== "object") return { skip: "no-order" };
+  if (order.status === "packed" || order.status === "cancelled" || order.status === "fulfilled_elsewhere") return { skip: "order-closed" };
+  const line = order.lines ? order.lines[i] : null;
+  if (!line || typeof line !== "object") return { skip: "no-line" };
+  const src = line.source || {};
+  if (src.locationId != null && src.locationId !== store) return { skip: "line-elsewhere" };
+  if (!["display", ONLINE_LINE_HANDED, ONLINE_LINE_NOT_FOUND].includes(src.status)) return { skip: "line-moved-on" };
+  // The line's CURRENT feed entry must be this record. A line Junid re-routed
+  // (Settings → Resolve) gets a fresh entry key (…__{i}_r1), so a late answer
+  // on — or the reap of — the entry it had before can never flip the new one.
+  if (src.entryKey && src.entryKey !== `displayChecks_active/${store}/${record.dedupeKey}`) return { skip: "stale-entry" };
+
+  const at = Number(record.completedAt);
+  const by = (record.completedBy && record.completedBy.uid) || null;
+  const base = `${ONLINE_ORDERS_PATH}/${orderId}`;
+  const linePath = `${base}/lines/${i}/source`;
+  const updates = {};
+  if (record.result === ONLINE_LINE_HANDED) {
+    updates[`${linePath}/status`] = ONLINE_LINE_HANDED;
+    updates[`${linePath}/handedAt`] = at;
+    updates[`${linePath}/handedBy`] = by;
+    return { updates };
+  }
+  updates[`${linePath}/status`] = ONLINE_LINE_NOT_FOUND;
+  const att = order.attention;
+  const sameAttention = att && att.kind === ONLINE_LINE_NOT_FOUND && Number(att.at) === at;
+  if (!sameAttention) {
+    const size = record.size && record.size !== "_" ? ` size ${record.size}` : "";
+    updates[`${base}/attention`] = {
+      kind: ONLINE_LINE_NOT_FOUND,
+      reason: `Not found at ${storeName || store} (${record.productName || record.productId || "item"}${size})`,
+      at,
+    };
+  }
+  updates[`${base}/attentionOpen`] = true;
+  updates[`${base}/status`] = "needs_attention";
+  return { updates };
+}
+
 module.exports = {
+  ONLINE_PICK_KIND,
+  ONLINE_PICK_RESULTS,
+  DISPLAY_RESULTS,
+  isOnlinePickRecord,
+  resultFitsRecord,
+  isOnlineSaleChannel,
+  saleChannelPath,
+  onlineOrderOutcomeUpdates,
   TRIGGER_STORE_FLAGS,
   triggerStoreFlags,
   triggerStores,

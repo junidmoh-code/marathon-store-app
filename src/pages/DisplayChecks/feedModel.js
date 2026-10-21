@@ -23,6 +23,8 @@
 // Held checks are excluded from `assigned`/`done` on purpose: a held check is
 // nobody's failure to action (design §2, §8.10).
 
+import { ONLINE_PICK_KIND } from "../../utils/onlineOrders";
+
 // SA-time "HH:MM" for a sale/complete timestamp. Accepts an ISO string (movement
 // ts) or an epoch-ms number (createdAt/completedAt). Timezone is pinned to
 // Africa/Johannesburg so the device clock never enters. Invalid → "".
@@ -47,6 +49,20 @@ function sortByTsDesc(items, field) {
   return [...items].sort((a, b) => ms(b[field]) - ms(a[field]));
 }
 
+// ── WEBSITE ORDER PICKS (kind "online_pick", docs/ONLINE-ORDERS.md) ──────────
+// The Mac mini puts website order lines routed to a shop's floor into this same
+// feed, so staff see them where they already look. They are NOT display checks:
+// they are listed (outstanding / completed) but count in NO compliance figure —
+// not the Today strip, not Analytics, not anyone's tally. Every stat below is
+// computed over complianceOnly(); a pick is answered "Handed to packer" or
+// "Not found", which says nothing about how a display is kept.
+export function isOnlinePick(record) {
+  return !!record && record.kind === ONLINE_PICK_KIND;
+}
+export function complianceOnly(items) {
+  return (Array.isArray(items) ? items : []).filter((r) => r && typeof r === "object" && !isOnlinePick(r));
+}
+
 // Is this a real completed result of type no-stock? Anything that isn't the
 // explicit "no_stock" result reads as a confirmed display (the common case).
 export function isNoStock(record) {
@@ -66,10 +82,13 @@ export function deriveFeed(activeItems, completedItems) {
   const waiting = sortByTsDesc(active.filter((r) => r.status === "held"), "heldAt");
   const completed = sortByTsDesc(completedRaw, "completedAt");
 
-  const confirmed = completed.filter((r) => !isNoStock(r)).length;
-  const noStock = completed.length - confirmed;
-  const done = completed.length;                 // resolved either way
-  const assigned = outstanding.length + done;    // held excluded from the denominator
+  // Stats: display checks only (online picks are listed, never scored).
+  const scoredOutstanding = complianceOnly(outstanding);
+  const scoredCompleted = complianceOnly(completed);
+  const confirmed = scoredCompleted.filter((r) => !isNoStock(r)).length;
+  const noStock = scoredCompleted.length - confirmed;
+  const done = scoredCompleted.length;           // resolved either way
+  const assigned = scoredOutstanding.length + done; // held excluded from the denominator
   const completionPct = assigned > 0 ? Math.round((done / assigned) * 100) : 0;
 
   return {
@@ -79,7 +98,7 @@ export function deriveFeed(activeItems, completedItems) {
     stats: {
       assigned,
       done,
-      outstanding: outstanding.length,
+      outstanding: scoredOutstanding.length,
       waiting: waiting.length,
       confirmed,
       noStock,
