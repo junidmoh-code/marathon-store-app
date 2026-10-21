@@ -3,7 +3,7 @@
 // clock. orders-poll.mjs does the reading and writing; this decides what is
 // written. The contract is docs/ONLINE-ORDERS.md.
 import {
-  onlineOrderRef, ONLINE_PICK_KIND, PACKER_INSTRUCTION, ORDER_STATUS, LINE_STATUS,
+  ONLINE_PICK_KIND, PACKER_INSTRUCTION, ORDER_STATUS, LINE_STATUS,
   ATTENTION_KIND, HOLDING_STATUSES, deriveOrderStatus,
 } from "../../../src/utils/onlineOrders.js";
 
@@ -111,9 +111,11 @@ export function buildLine({ index, item, resolved, piece }) {
   });
 }
 
-export function buildOrder({ node, lines, nowMs }) {
+export function buildOrder({ node, lines, nowMs, ref }) {
+  if (!ref) throw new Error("buildOrder: the order has no minted ref");
   const order = {
-    ref: onlineOrderRef(node.number),
+    // The three-letter code (orderRefs.mjs). The Shopify number is orderNumber.
+    ref,
     orderNumber: node.number,
     shopifyGid: node.id,
     shopifyName: node.name,

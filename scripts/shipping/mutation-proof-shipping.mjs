@@ -53,7 +53,7 @@ const MUTATIONS = [
     from: "const ambiguous = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;", to: "const ambiguous = false;" },
   { id: "L8", file: BOOK, guard: "live refuses without a collection contact / with no box",
     from: "  if (plan.liveBlockers.length) {", to: "  if (false) {" },
-  { id: "L9", file: ORDER, guard: "the WEB- ref is never used as the /online_orders key",
+  { id: "L9", file: ORDER, guard: "the order code is never used as the /online_orders key",
     from: "return first(order?.key, order?.id, gidTail);", to: "return first(order?.key, order?.id, gidTail, order?.ref);" },
   { id: "L10", file: BOOK, guard: "live is re-read AFTER the claim — a switch-off mid-quote stops the booking",
     from: "  if (!(await readLive(db))) {\n    await claimRef.set(", to: "  if (false) {\n    await claimRef.set(" },

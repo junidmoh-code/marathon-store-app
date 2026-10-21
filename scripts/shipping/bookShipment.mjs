@@ -60,13 +60,13 @@ async function defaultDeps(deps) {
   return out;
 }
 
-// The /online_orders key (the Shopify order id), never the WEB- ref.
+// The /online_orders key (the Shopify order id, digits), never the order's code.
 function orderKey(order) {
   const key = keyOf(order);
   if (!key) throw new Error("bookShipment: the order carries no /online_orders key (key, id or shopifyGid)");
-  // A WEB- ref passed as id/key would put the claim on a junk node the real
-  // order never sees — and the one-booking guard with it.
-  if (/^web-/i.test(key)) throw new Error(`bookShipment: "${key}" is an order REF, not its /online_orders key`);
+  // A ref (KQZ) passed as id/key would put the claim on a junk node the real
+  // order never sees — and the one-booking guard with it. Keys are digits.
+  if (!/^\d+$/.test(key)) throw new Error(`bookShipment: "${key}" is not an /online_orders key (the Shopify order id)`);
   return assertSafeSegment(key, "order key");
 }
 

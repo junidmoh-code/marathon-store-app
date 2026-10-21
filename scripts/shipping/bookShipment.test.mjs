@@ -25,8 +25,8 @@ function fakeClient({ createResult = shipmentLocker, createError = null } = {}) 
 }
 
 const ORDER = (over = {}) => ({
-  key: "W1001",
-  ref: "W1001",
+  key: "1001",
+  ref: "KQZ",
   lines: [{ category: "Footwear", subcategory: "Sneakers", name: "Runner", size: "9", qty: 1 }],
   shipping: { address: { street: "5 Esplanade Road", suburb: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441" } },
   customer: { name: "A Customer", phone: "0820000000", email: "a@example.com" },
@@ -36,7 +36,7 @@ const DOOR_ORDER = () => ORDER({ lines: [{ category: "Footwear", subcategory: "S
 
 const db = (live, extra = {}) => fakeDb({
   config: { shipping: { ...(live === undefined ? {} : { live }), collectionContact: CONTACT } },
-  online_orders: { W1001: ORDER() },
+  online_orders: { 1001: ORDER() },
   ...extra,
 });
 const deps = (d, client, logs = []) => ({ db: d, client, log: (l) => logs.push(l), now: () => 1_700_000_000_000 });
@@ -66,7 +66,7 @@ describe("bookShipment — dry run (live off)", () => {
       delivery_contact: { name: "A Customer", mobile_number: "0820000000", email: "a@example.com" },
       parcels: [{ parcel_description: "Retail", submitted_length_cm: 35, submitted_width_cm: 23, submitted_height_cm: 14, submitted_weight_kg: 1.5 }],
       service_level_code: "L2DM - ECO",
-      customer_reference: "W1001",
+      customer_reference: "KQZ",
       customer_reference_name: "Order no.",
       mute_notifications: false,
     });
@@ -136,12 +136,12 @@ describe("bookShipment — live", () => {
     const client = fakeClient();
     const res = await bookShipment(ORDER(), deps(d, client));
     expect(client.shipmentCalls().map((c) => c[0])).toEqual(["createShipment"]);
-    expect(client.shipmentCalls()[0][1].customer_reference).toBe("W1001");
+    expect(client.shipmentCalls()[0][1].customer_reference).toBe("KQZ");
     expect(res).toEqual({
       provider: "courier_guy", shipmentId: 0, waybill: "LD-TEST01", trackingReference: "TEST01",
       service: "L2DS - ECO", parcel: expect.objectContaining({ boxCode: "SHOE" }), cost: 100, bookedAt: 1_700_000_000_000,
     });
-    expect(d.root.online_orders.W1001.shipping).toMatchObject({ provider: "courier_guy", waybill: "LD-TEST01", courierBooking: { state: "booked" } });
+    expect(d.root.online_orders["1001"].shipping).toMatchObject({ provider: "courier_guy", waybill: "LD-TEST01", courierBooking: { state: "booked" } });
   });
 
   it("an order already carrying a shipmentId is never booked again", async () => {
@@ -153,7 +153,7 @@ describe("bookShipment — live", () => {
 
   it("a held claim (another packer, or a lost response) blocks a second booking", async () => {
     for (const state of ["booking", "unknown", "booked"]) {
-      const d = db(true, { online_orders: { W1001: { ref: "W1001", shipping: { courierBooking: { state } } } } });
+      const d = db(true, { online_orders: { 1001: { ref: "KQZ", shipping: { courierBooking: { state } } } } });
       const client = fakeClient();
       const res = await bookShipment(ORDER(), deps(d, client));
       expect(res.reason).toBe(`booking already ${state}`);
@@ -165,10 +165,10 @@ describe("bookShipment — live", () => {
     const bad = Object.assign(new Error("HTTP 400 invalid"), { status: 400 });
     const d1 = db(true);
     await expect(bookShipment(ORDER(), deps(d1, fakeClient({ createError: bad })))).rejects.toThrow(/400/);
-    expect(d1.root.online_orders.W1001.shipping.courierBooking.state).toBe("failed");
+    expect(d1.root.online_orders["1001"].shipping.courierBooking.state).toBe("failed");
     const d2 = db(true);
     await expect(bookShipment(ORDER(), deps(d2, fakeClient({ createError: Object.assign(new Error("HTTP 502"), { status: 502 }) })))).rejects.toThrow();
-    expect(d2.root.online_orders.W1001.shipping.courierBooking.state).toBe("unknown");
+    expect(d2.root.online_orders["1001"].shipping.courierBooking.state).toBe("unknown");
     // failed → a retry may book
     const client = fakeClient();
     await bookShipment(ORDER(), deps(d1, client));
@@ -176,7 +176,7 @@ describe("bookShipment — live", () => {
   });
 
   it("refuses live without a collection contact, and when no box fits", async () => {
-    const d = fakeDb({ config: { shipping: { live: true } }, online_orders: { W1001: { ref: "W1001" } } });
+    const d = fakeDb({ config: { shipping: { live: true } }, online_orders: { 1001: { ref: "KQZ" } } });
     const client = fakeClient();
     expect((await bookShipment(ORDER(), deps(d, client))).reason).toBe("collection_contact");
     const res = await bookShipment(ORDER({ lines: [{ category: "Footwear", subcategory: "Sneakers", size: "10", qty: 20 }] }), deps(db(true), client));
@@ -186,7 +186,7 @@ describe("bookShipment — live", () => {
 
   it("an illegal order key is refused before anything", async () => {
     const client = fakeClient();
-    await expect(bookShipment({ ...ORDER(), key: "a/b" }, deps(db(true), client))).rejects.toThrow(/Illegal RTDB path/);
+    await expect(bookShipment({ ...ORDER(), key: "a/b" }, deps(db(true), client))).rejects.toThrow(/not an \/online_orders key/);
     expect(client.calls).toEqual([]);
   });
 });
@@ -206,7 +206,7 @@ describe("cancelShipment", () => {
     const res = await cancelShipment(BOOKED(), deps(d, client));
     expect(client.calls).toEqual([["cancelShipment", "TEST01"]]);
     expect(res.cancelledAt).toBe(1_700_000_000_000);
-    expect(d.root.online_orders.W1001.shipping.courierBooking.state).toBe("cancelled");
+    expect(d.root.online_orders["1001"].shipping.courierBooking.state).toBe("cancelled");
   });
 
   it("no booking / already cancelled → nothing", async () => {
@@ -218,30 +218,30 @@ describe("cancelShipment", () => {
 });
 
 describe("the website-order ingester's real shape (feat/online-orders orderModel.mjs)", () => {
-  // /online_orders/{Shopify order id}; ref is a FIELD ("WEB-1042"), lines carry pid.
+  // /online_orders/{Shopify order id}; ref is a FIELD (the code "KQZ"), lines carry pid.
   const INGESTED = () => ({
-    ref: "WEB-1042", orderNumber: 1042, shopifyGid: "gid://shopify/Order/5551234", shopifyName: "#1042",
+    ref: "KQZ", orderNumber: 1042, shopifyGid: "gid://shopify/Order/5551234", shopifyName: "#1042",
     customer: { name: "Ann Bee", phone: "+27820000000", email: "ann@example.com" },
     shipping: { address: { name: "Ann Bee", address1: "5 Esplanade Road", address2: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa", phone: "+27820000000" } },
     lines: [{ pid: "p_x", title: "Item 7", category: "Clothing", size: "32", qty: 2 }],
   });
 
-  it("keys by the Shopify id, references by WEB-ref, classifies from /products/{pid}", async () => {
+  it("keys by the Shopify id, references by its code, classifies from /products/{pid}", async () => {
     const d = fakeDb({
       config: { shipping: { live: true, collectionContact: CONTACT } },
       products: { p_x: { name: "Item 7", category: "Clothing", subcategory: "Jeans & Denim" } },
-      online_orders: { 5551234: { ref: "WEB-1042" } },
+      online_orders: { 5551234: { ref: "KQZ" } },
     });
     const client = fakeClient();
     await bookShipment(INGESTED(), deps(d, client));
     const body = client.shipmentCalls()[0][1];
-    expect(body.customer_reference).toBe("WEB-1042");
+    expect(body.customer_reference).toBe("KQZ");
     expect(body.delivery_address).toMatchObject({ street_address: "5 Esplanade Road, Century City", zone: "WC", country: "ZA", code: "7441" });
     expect(body.delivery_contact).toEqual({ name: "Ann Bee", mobile_number: "+27820000000", email: "ann@example.com" });
     // "Item 7" says nothing; /products/p_x says jeans → 2 × 0.5 kg + the flat mailer
     expect(body.parcels[0]).toMatchObject({ submitted_height_cm: 8, submitted_weight_kg: 1.15 });
     expect(d.root.online_orders["5551234"].shipping.provider).toBe("courier_guy");
-    expect(d.root.online_orders["WEB-1042"]).toBeUndefined();
+    expect(d.root.online_orders["KQZ"]).toBeUndefined();
   });
 
   it("an order with no key at all is refused before any call — the ref is never used as a key", async () => {
@@ -253,9 +253,9 @@ describe("the website-order ingester's real shape (feat/online-orders orderModel
 });
 
 describe("review hardening (Sonnet architect review, PR #774)", () => {
-  it("a WEB- ref passed as the key is refused before any call", async () => {
+  it("a code passed as the key is refused before any call", async () => {
     const client = fakeClient();
-    await expect(bookShipment({ ...ORDER(), key: "WEB-1042" }, deps(db(true), client))).rejects.toThrow(/order REF/);
+    await expect(bookShipment({ ...ORDER(), key: "KQZ" }, deps(db(true), client))).rejects.toThrow(/not an \/online_orders key/);
     expect(client.calls).toEqual([]);
   });
 
@@ -280,12 +280,12 @@ describe("review hardening (Sonnet architect review, PR #774)", () => {
     const res = await bookShipment(ORDER(), deps(d, client));
     expect(res.dryRun).toBeTruthy();
     expect(client.shipmentCalls()).toEqual([]);
-    expect(d.root.online_orders.W1001.shipping.courierBooking.state).toBe("failed");
+    expect(d.root.online_orders["1001"].shipping.courierBooking.state).toBe("failed");
   });
 
   it("a quote over the spend ceiling is refused live, named in a dry run", async () => {
     const client = fakeClient();
-    const low = (live) => fakeDb({ config: { shipping: { live, collectionContact: CONTACT, maxChargeRand: 50 } }, online_orders: { W1001: { ref: "W1001" } } });
+    const low = (live) => fakeDb({ config: { shipping: { live, collectionContact: CONTACT, maxChargeRand: 50 } }, online_orders: { 1001: { ref: "KQZ" } } });
     expect((await bookShipment(ORDER(), deps(low(true), client))).reason).toMatch(/over the R50 ceiling/);
     expect((await bookShipment(ORDER(), deps(low(false), client))).liveBlockers).toEqual(["quote R100.00 is over the R50 ceiling"]);
     expect(client.shipmentCalls()).toEqual([]);
@@ -294,7 +294,7 @@ describe("review hardening (Sonnet architect review, PR #774)", () => {
   it("a 408 leaves the claim UNKNOWN (the create may have run)", async () => {
     const d = db(true);
     await expect(bookShipment(ORDER(), deps(d, fakeClient({ createError: Object.assign(new Error("HTTP 408"), { status: 408 }) })))).rejects.toThrow();
-    expect(d.root.online_orders.W1001.shipping.courierBooking.state).toBe("unknown");
+    expect(d.root.online_orders["1001"].shipping.courierBooking.state).toBe("unknown");
   });
 
   it("a booked waybill whose record write fails is kept on the claim and returned", async () => {
@@ -302,12 +302,12 @@ describe("review hardening (Sonnet architect review, PR #774)", () => {
     const realRef = d.ref;
     d.ref = (path) => {
       const r = realRef(path);
-      return path === "online_orders/W1001/shipping" ? { ...r, update: async () => { throw new Error("write refused"); } } : r;
+      return path === "online_orders/1001/shipping" ? { ...r, update: async () => { throw new Error("write refused"); } } : r;
     };
     const logs = [];
     const res = await bookShipment(ORDER(), deps(d, fakeClient(), logs));
     expect(res.waybill).toBe("LD-TEST01");
-    expect(d.root.online_orders.W1001.shipping.courierBooking).toMatchObject({ state: "booked", waybill: "LD-TEST01" });
+    expect(d.root.online_orders["1001"].shipping.courierBooking).toMatchObject({ state: "booked", waybill: "LD-TEST01" });
     expect(logs.join("\n")).toContain("BOOKED BUT NOT RECORDED LD-TEST01");
   });
 
@@ -324,8 +324,8 @@ describe("CodeRabbit review (PR #774)", () => {
     for (const createResult of [null, "", {}, { message: "ok" }]) {
       const d = db(true);
       await expect(bookShipment(ORDER(), deps(d, fakeClient({ createResult })))).rejects.toThrow(/named no shipment/);
-      expect(d.root.online_orders.W1001.shipping.courierBooking.state).toBe("unknown");
-      expect(d.root.online_orders.W1001.shipping.provider).toBeUndefined();
+      expect(d.root.online_orders["1001"].shipping.courierBooking.state).toBe("unknown");
+      expect(d.root.online_orders["1001"].shipping.provider).toBeUndefined();
     }
   });
 
@@ -335,8 +335,8 @@ describe("CodeRabbit review (PR #774)", () => {
       const d = db(true);
       const client = { ...fakeClient(), cancelShipment: async () => { throw Object.assign(new Error(`HTTP ${status}`), { status }); } };
       await expect(cancelShipment(BOOKED, deps(d, client))).rejects.toThrow();
-      expect(d.root.online_orders.W1001.shipping.cancel.state).toBe(state);
-      expect(d.root.online_orders.W1001.shipping.cancelledAt).toBeUndefined();
+      expect(d.root.online_orders["1001"].shipping.cancel.state).toBe(state);
+      expect(d.root.online_orders["1001"].shipping.cancelledAt).toBeUndefined();
     }
   });
 });

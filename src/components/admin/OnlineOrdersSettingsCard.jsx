@@ -7,9 +7,8 @@
 //      Warehouse queue, online entries in the shops' display-check feed, the
 //      POS walk-in guard. Written as { enabled, updatedAt, updatedBy }, the
 //      same shape as /config/transit's switch.
-//   2. THE PREFIX — ONLINE_ORDER_PREFIX, read-only. It is a constant in
-//      src/utils/onlineOrders.js shared with the Mac mini; changing it is a
-//      code change, so this screen only shows it.
+//   2. THE ORDER CODE — read-only: every order's ref is a three-letter code
+//      (KQZ, no I or O), minted by the Mac mini when the order is pulled in.
 //   3. NEEDS ATTENTION — every order with attentionOpen true, from ONE indexed
 //      query (orderByChild("attentionOpen").equalTo(true); NEEDS ".indexOn":
 //      ["attentionOpen"] on /online_orders). Normally empty, so it is
@@ -23,7 +22,7 @@ import { ref, onValue, update, query, orderByChild, equalTo } from "firebase/dat
 import { database } from "../../firebase";
 import { ADMIN_EMAIL } from "../PermissionsContext";
 import { serverNowMs } from "../../utils/serverTime";
-import { ONLINE_ORDER_PREFIX, ONLINE_ORDERS_PATH, ONLINE_ORDERS_CONFIG_PATH } from "../../utils/onlineOrders";
+import { ONLINE_ORDERS_PATH, ONLINE_ORDERS_CONFIG_PATH } from "../../utils/onlineOrders";
 import { attentionRows, resolveAttentionUpdates, resolveLabel, OPEN_STATUSES, openOrderRows, rungByHandUpdates } from "../onlineOrders/attention";
 
 const page = { minHeight: "100vh", background: "#000", color: "#f2f2f7", padding: 16, maxWidth: 760, margin: "0 auto", fontFamily: "-apple-system, system-ui, sans-serif", boxSizing: "border-box" };
@@ -165,9 +164,9 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
       </div>
 
       <div style={box}>
-        <div style={label}>Order prefix</div>
-        <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 18, marginTop: 8 }}>{ONLINE_ORDER_PREFIX}1234</div>
-        <div style={{ fontSize: 13, color: "#8e8e93", marginTop: 4 }}>Fixed in code (shared with the Mac mini).</div>
+        <div style={label}>Order code</div>
+        <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 18, marginTop: 8 }}>KQZ</div>
+        <div style={{ fontSize: 13, color: "#8e8e93", marginTop: 4 }}>Three letters (never I or O), unique for 180 days. The Shopify number stays on the order.</div>
       </div>
 
       <div style={box}>

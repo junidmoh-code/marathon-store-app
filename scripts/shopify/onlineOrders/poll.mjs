@@ -35,6 +35,7 @@ import {
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
 import { bookShipment, readLive } from "./shipping.mjs";
+import { mintOrderRef } from "./orderRefs.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 
 export const META_PATH = "online_orders_meta";
@@ -235,7 +236,8 @@ async function buildIngestedOrder(ctx, id, node) {
     for (const piece of routed[k]) lines.push(buildLine({ index: lines.length, item, resolved: r, piece }));
     k++;
   });
-  return buildOrder({ node, lines, nowMs: ctx.now });
+  const ref = await mintOrderRef(ctx.db, id, ctx.now, ctx.refRand ? { rand: ctx.refRand } : {});
+  return buildOrder({ node, lines, nowMs: ctx.now, ref });
 }
 
 /**

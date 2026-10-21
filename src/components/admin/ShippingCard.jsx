@@ -169,11 +169,18 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
     let seg;
     try { seg = assertSafeSegment(refInput.trim(), "order ref"); }
     catch { setOrderState("That is not a valid order ref."); return; }
-    // Orders are keyed by their Shopify order id; WEB-1042 is a field on the
-    // order, not a key, and finding it would mean reading every order.
-    if (/^web-/i.test(seg)) {
-      setOrderState(`${seg} is the order's reference. Type its /online_orders key — the Shopify order id (the number at the end of the order's Shopify admin URL).`);
-      return;
+    // Orders are keyed by their Shopify order id; the three-letter code (KQZ)
+    // is a field on the order, looked up through its registry by exact path.
+    if (/^[a-z]{3}$/i.test(seg)) {
+      const code = seg.toUpperCase();
+      try {
+        const claim = await get(ref(getDatabase(), `online_order_refs/${code}`));
+        if (!claim.exists()) { setOrderState(`No order has the code ${code}.`); return; }
+        seg = String(claim.val().orderId);
+      } catch (e) {
+        setOrderState(`Could not look up ${code}: ${e?.message || e}`);
+        return;
+      }
     }
     setOrderState("Reading…");
     try {
@@ -435,7 +442,7 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
       <div style={S.section}>
         <h2 style={S.h2}>Test an order</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <input aria-label="order ref" placeholder="/online_orders key (Shopify order id)" value={refInput}
+          <input aria-label="order ref" placeholder="Order code (KQZ) or Shopify order id" value={refInput}
             onChange={(e) => setRefInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") loadOrder(); }}
             style={{ ...S.text, flex: "1 1 200px" }} />
           <button style={S.btn} onClick={loadOrder}>Read order</button>

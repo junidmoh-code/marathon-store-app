@@ -88,6 +88,15 @@ function shopify({ orders = [], fos = [], fulfilErrors = [], byId = {} } = {}) {
   return { graphql, calls };
 }
 
+// Deterministic order codes: draws spell KQZ, then BCD, then EFG, … (a code
+// already claimed by another order is skipped by the mint, exactly as live).
+const ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+function codeSeq(codes = ["KQZ", "BCD", "EFG", "HJK"]) {
+  const draws = codes.flatMap((c) => [...c].map((ch) => (ALPHA.indexOf(ch) + 0.5) / ALPHA.length));
+  let i = 0;
+  return () => draws[i++ % draws.length];
+}
+
 function deps(f, sh, over = {}) {
   const mails = [];
   return {
@@ -100,6 +109,7 @@ function deps(f, sh, over = {}) {
       log: () => {},
       courier: fakeCourier(),
       courierLog: () => {}, // never write logs/courier.log from a test
+      refRand: codeSeq(),
       ...over,
     },
   };
@@ -115,7 +125,7 @@ describe("ingest", () => {
     const out = await runOrdersPoll(deps(f, sh).deps);
     expect(out.ingested).toBe(1);
     const o = order(f);
-    expect(o).toMatchObject({ ref: "WEB-1801", orderNumber: 1801, status: "new", customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" } });
+    expect(o).toMatchObject({ ref: "KQZ", orderNumber: 1801, status: "new", customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" } });
     expect(o.totals).toEqual({ subtotalCents: 150000, shippingCents: 10000, taxCents: 19565, totalCents: 160000, currency: "ZAR" });
     expect(o.lines.map((l) => [l.pid, l.size, l.qty, l.source.locationId, l.source.status])).toEqual([
       ["SNK", "8", 1, "hub1", "pick"],
@@ -125,7 +135,7 @@ describe("ingest", () => {
     ]);
     expect(lineAt(f, 2)).toMatchObject({ barcode: "6001", isFootwear: false, unitPriceCents: 25000, photoUrl: "https://x/tee.jpg" });
     expect(lineAt(f, 0)).toMatchObject({ isFootwear: true });
-    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2, ref: "WEB-1801", locs: { hub1: 1, hub2: 1 } });
+    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2, ref: "KQZ", locs: { hub1: 1, hub2: 1 } });
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 2, locs: { "marathon-pe": 1, hub2: 1 } });
     // The reconciler is told: both products' markers moved.
     expect(f.read("shopify_inventory_dirty")).toEqual({ SNK: 1, TEE: 1 });
@@ -185,7 +195,7 @@ describe("ingest", () => {
     expect(o.lines.at(-1)).toMatchObject({ title: "Mystery — XL", qty: 1, source: { status: "unresolved" } });
     expect(o.lines.at(-1).reason).toMatch(/not linked/);
     expect(d.mails).toHaveLength(1);
-    expect(d.mails[0].subject).toBe("Website order WEB-1801 needs attention");
+    expect(d.mails[0].subject).toBe("Website order KQZ needs attention");
     expect(order(f).attention.mailedAt).toBe(NOW);
     await runOrdersPoll(d.deps);
     expect(d.mails).toHaveLength(1);
@@ -213,9 +223,9 @@ describe("feed entries", () => {
     await runOrdersPoll(deps(f, shopify()).deps);
     const picks = f.read("online_picks");
     expect(Object.keys(picks).sort()).toEqual(["9001_0", "9001_1", "9001_3"]);
-    expect(picks["9001_0"]).toMatchObject({ kind: "online_pick", ref: "WEB-1801", locationId: "hub1", locStatus: "hub1|open", status: "open", qty: 1, size: "8", instruction: "Give to Yasmin at Marathon PE" });
+    expect(picks["9001_0"]).toMatchObject({ kind: "online_pick", ref: "KQZ", locationId: "hub1", locStatus: "hub1|open", status: "open", qty: 1, size: "8", instruction: "Give to Yasmin at Marathon PE" });
     const display = f.read("displayChecks_active/marathon-pe/online__9001__2");
-    expect(display).toMatchObject({ kind: "online_pick", status: "open", ref: "WEB-1801", productId: "TEE", size: "M", sizeKey: "M", qty: 1, orderId: "9001", lineIndex: 2, activatedSaDate: "2026-10-21" });
+    expect(display).toMatchObject({ kind: "online_pick", status: "open", ref: "KQZ", productId: "TEE", size: "M", sizeKey: "M", qty: 1, orderId: "9001", lineIndex: 2, activatedSaDate: "2026-10-21" });
     expect(display.checkId).toBeTruthy();
     expect(lineAt(f, 0).source.entryKey).toBe("online_picks/9001_0");
     expect(lineAt(f, 2).source.entryKey).toBe("displayChecks_active/marathon-pe/online__9001__2");
@@ -316,7 +326,7 @@ describe("Resolve → re-route", () => {
 
 describe("Shopify fulfilment after the pack", () => {
   const packed = (fulfil = {}) => world({
-    online_orders: { 9001: { ref: "WEB-1801", shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0, ...fulfil }, lines: [{ pid: "TEE", sizeKey: "M", qty: 1, source: { status: "handed" } }] } },
+    online_orders: { 9001: { ref: "KQZ", shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0, ...fulfil }, lines: [{ pid: "TEE", sizeKey: "M", qty: 1, source: { status: "handed" } }] } },
   });
   const fos = [{ id: "gid://shopify/FulfillmentOrder/7", status: "OPEN", lineItems: { nodes: [{ remainingQuantity: 1 }] } }];
 
@@ -346,7 +356,7 @@ describe("Shopify fulfilment after the pack", () => {
       const out = await runOrdersPoll(deps(f, shopify({ fos }), { courier }).deps);
       const booking = order(f).shipping.booking;
       expect(booking.skipped).toBe(true);
-      expect(booking.dryRun).toMatchObject({ customer_reference: "WEB-1801", delivery_address: { city: "Cape Town", zone: "WC", code: "7441" } });
+      expect(booking.dryRun).toMatchObject({ customer_reference: "KQZ", delivery_address: { city: "Cape Town", zone: "WC", code: "7441" } });
       expect(courier.calls.map(([op]) => op)).toEqual(["getRates", "getRates"]);
       // The fake client is the network boundary; this proves nothing behind
       // it (or beside it) reached for fetch either.
@@ -373,7 +383,7 @@ describe("Shopify fulfilment after the pack", () => {
     expect(order(f).shipping).toMatchObject({ provider: "courier_guy", waybill: "ABC123", booking: { waybill: "ABC123" } });
   });
 
-  describe("LIVE: no waybill, no fulfilment (go-live from WEB-1768)", () => {
+  describe("LIVE: no waybill, no fulfilment (go-live from order 1768)", () => {
     const liveOrder = (cfg = {}) => {
       const w = packed();
       Object.assign(w.online_orders[9001], {
@@ -509,14 +519,14 @@ describe("one bad order never stops the rest", () => {
     const later = shopifyOrder({ id: "gid://shopify/Order/9002", legacyResourceId: "9002", number: 1802, name: "#1802", updatedAt: "2026-10-21T09:40:00Z" });
     const out = await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder(), later] })).deps);
     expect(out.errors).toHaveLength(1);
-    expect(order(f, "9002").ref).toBe("WEB-1802");
+    expect(order(f, "9002").ref).toBe("BCD");
     expect(f.read("online_orders_meta/cursorMs")).toBe(Date.parse("2026-10-21T09:40:00Z"));
     expect(f.read("online_orders_meta/retry/9001")).toMatchObject({ name: "#1801", attempts: 1 });
     // The fault clears; the next tick's list no longer carries 9001 — it is fetched by id.
     const g = fakeDb(f.root);
     const out2 = await runOrdersPoll(deps(g, shopify({ orders: [], byId: { 9001: shopifyOrder() } })).deps);
     expect(out2.errors).toEqual([]);
-    expect(g.read("online_orders/9001").ref).toBe("WEB-1801");
+    expect(g.read("online_orders/9001").ref).toBe("KQZ");
     expect(g.read("online_orders_meta/retry")).toBeNull();
   });
 });
