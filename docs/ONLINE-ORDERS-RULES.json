@@ -38,8 +38,8 @@
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('online_orders').child($orderId).exists() && newData.val() === true"
       },
       "status": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && !(data.val() === 'packed' || data.val() === 'cancelled' || data.val() === 'fulfilled_elsewhere' || data.val() === 'release_requested') && newData.val() === 'needs_attention'",
-        ".validate": "!data.exists() || newData.val() === data.val() || !(data.val() === 'packed' || data.val() === 'cancelled' || data.val() === 'fulfilled_elsewhere' || data.val() === 'release_requested')"
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && !(data.val() === 'packed' || data.val() === 'cancelled' || data.val() === 'fulfilled_elsewhere' || data.val() === 'release_requested' || data.val() === 'closed') && newData.val() === 'needs_attention'",
+        ".validate": "!data.exists() || newData.val() === data.val() || !(data.val() === 'packed' || data.val() === 'cancelled' || data.val() === 'fulfilled_elsewhere' || data.val() === 'release_requested' || data.val() === 'closed')"
       }
     }
   },
@@ -73,5 +73,8 @@
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists() && newData.val() === auth.uid"
       }
     }
+  },
+  "online_escalations": {
+    ".read": "auth != null && ((auth.token.email === 'gunidmoh@gmail.com' && auth.token.email_verified === true) || root.child('users').child(auth.uid).child('permFlags').child('online_orders').val() === true)"
   }
 }

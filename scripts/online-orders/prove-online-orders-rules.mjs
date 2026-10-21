@@ -117,6 +117,16 @@ await allowed("one update flips the pick and the order line to handed", as(STAFF
 check("…and both landed", (await read("online_picks/9001_0/status")) === "handed" && (await read("online_orders/9001/lines/0/source/status")) === "handed");
 await denied("a cancelled pick cannot be handed over", as(STAFF, "PATCH", "", { "online_picks/9001_9/status": "handed", "online_picks/9001_9/locStatus": "hub1|handed" }));
 await denied("a handed pick cannot be reopened", as(STAFF, "PATCH", "online_picks/9001_0", { status: "open" }));
+
+// ── Escalation (docs/ONLINE-ORDERS.md § Escalation) ──
+await put("online_escalations/9001_0", { orderId: "9001", lineIndex: 0, phase: "await" });
+await allowed("Junid reads the escalations list", as(OWNER, "GET", "online_escalations"));
+await denied("hub staff cannot read the escalations list", as(STAFF, "GET", "online_escalations"));
+await denied("nobody but the server writes the escalations list", as(OWNER, "PUT", "online_escalations/9001_0/phase", "done"));
+await allowed("Junid sets a line's escalation override", as(OWNER, "PUT", "online_orders/9001/lines/0/escalationOverride", { kind: "unavailable", by: "owner", at: NOW }));
+await denied("hub staff cannot set an escalation override", as(STAFF, "PUT", "online_orders/9001/lines/0/escalationOverride", { kind: "unavailable", by: "hubstaff", at: NOW }));
+await put("online_orders/9012", { ref: "ZZZ", status: "closed", lines: [{ lineId: "l0", pid: "P", qty: 1, source: { status: "resolved" } }] });
+await denied("a closed order cannot be put back to needs_attention by staff", as(STAFF, "PUT", "online_orders/9012/status", "needs_attention"));
 await denied("handedBy must be the person tapping", as(STAFF, "PATCH", "online_orders/9001/lines/1/source", { status: "handed", handedBy: "someoneelse" }));
 await denied("staff cannot mark a line packed", as(STAFF, "PATCH", "online_orders/9001/lines/1/source", { status: "packed" }));
 await denied("staff cannot move a line elsewhere", as(STAFF, "PATCH", "online_orders/9001/lines/1/source", { locationId: "trophy" }));

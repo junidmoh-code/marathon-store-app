@@ -99,6 +99,15 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
 | `unresolved` | the Shopify variant is not in `/shopify_sync` → order needs attention |
 | `reroute` | Settings → Resolve sent it back; the poller routes it again |
 | `cancelled` | the order was cancelled before pack |
+| `resolving` | escalating (below); `locationId` is where the units are being sent |
+| `unavailable` | the escalation chain ran out; the customer agent has the line |
+| `resolved` | settled off the parcel: credit, refund, or Junid's "resolved by hand" |
+| `moved` | came good after the order was packed; ships in follow-up `movedTo` |
+
+`resolving`, `unavailable`, `resolved` and `moved` are PARKED: Pack does not
+wait for them (no basket tick) and the order is `ready` once every other line
+is handed. An order whose lines are all settled (none live, none resolving or
+unavailable) is `closed` (terminal).
 
 `entryKey` is the feed entry the poller created; its presence is what makes the
 backfill idempotent.
@@ -222,6 +231,110 @@ return flow, which credits the cell the ledger says each line came from.
 attention and stamps `attention.mailedAt`. Settings → Online orders lists every
 `attentionOpen` order; Resolve sends bad lines back to `reroute` (or a failed
 fulfil back to `pending`) and clears the attention.
+
+## Escalation (owner spec 2026-10-21)
+
+A line whose place cannot produce it — a shop's **Not found** on the Website
+orders strip, a hub marking the line's hub order **Out of Stock** (the poller
+already turns that into `no_stock` at that hub), or routing's `no_stock` —
+climbs a fixed chain of the EXISTING request primitives instead of
+stopping at "needs attention". Pure machine: `src/utils/onlineEscalation.js`;
+IO: `scripts/shopify/onlineOrders/escalate.mjs`, run in the poll tick for every
+open order before it is kept, and for packed orders that still have a resolving
+line. Only while `/config/onlineOrders/enabled` is true and
+`/config/onlineOrders/escalationOff` is not true (kill switch).
+
+```
+non-footwear, home = the shop it was routed to
+  round 1: Hub 2 → shop (Shop Refill card)  →  Central → Hub 2 (refill row)
+  round 2: the shop again, CHECK PROPERLY  →  Hub 2 → shop  →  Central → Hub 2
+  → unavailable
+non-footwear, home = Hub 2 (no shop had it)
+  round 1: Central → Hub 2   round 2: Hub 2 CHECK PROPERLY → Central → Hub 2
+footwear, home = the hub that rejected (no_stock: Hub 1)
+  round 1: Central → hub
+  round 2: Central sent but the hub rejected again → Central once more
+           Central rejected → the hub once more, CHECK PROPERLY
+  → unavailable
+```
+
+- **A request that is fulfilled** moved stock at once, but the box lands next
+  morning: the line waits until **11:00 SAST the next working day (Mon–Sat)**
+  and then goes back on the normal pick / display path at the place the stock
+  was sent (fresh entry key, `routeGen` + 1). Handed → the escalation is done.
+  Not found again → the next step.
+- **Primitives.** Hub 2 → shop: a manual Shop Refill card at `/orders/R###-1`,
+  the exact `placeRefillRequests` shape plus `onlineRef`, `onlineOrderKey`,
+  `onlineLineIndex`, `onlineEscalationKey`; Hub 2 answers it on its Clothing
+  tab (`clothingRefillStatus` available / rejected). Central → hub: a
+  `/refill_requests/web_{orderId}_{i}_r{round}s{step}` row, the on-hold /
+  Missing Sneakers shape with `createdFrom.via: "online_escalation"`,
+  `earlyRelease` (pickable now) and `onlineRef`; Central answers it on its queue
+  (fulfilled / Out of Stock). The refill scan never withdraws an
+  `online_escalation` row as `already_in_stock` (refill-engine.cjs) — the
+  dispute IS that the cell's count is wrong. A system withdrawal of any other
+  kind counts as a rejection. Re-checks are a fresh display entry / fresh hub
+  orders (`routeGen` + 1) with `checkProperly: true` — a red **CHECK PROPERLY —
+  website order** banner on the Website orders strip, the display-check card
+  and sheet, and the hub's Warehouse-queue order card.
+- **The ref shows on every receiving feed**: Hub 2's Clothing card and
+  Central's queue row carry a green **WEBSITE · {code}** badge; hub orders and
+  the strip already show the code.
+- **Restart-safe.** A raise writes its intent on the line
+  (`escalation.pending`, deterministic `escKey`; a card's R-number is drawn
+  once and kept in the intent), then create-if-absent at that key, then commits
+  the transition. A crash anywhere re-runs from the intent and finds its own
+  record. A recycled R-number held by another card is redrawn, never
+  overwritten. Observations are re-read every tick; a repeated one is a no-op.
+- **Holds** follow the line: a `resolving` line is held at the destination of
+  its current request (`locs`), so the walk-in guard protects the units when
+  they land. `unavailable` / `resolved` / `moved` lines hold nothing.
+- **Attention.** The order's `not_found` / `no_stock` attention is cleared when
+  the chain takes the line over — Junid is not emailed for a line that is
+  being escalated. A hub's Out of Stock is turned into `no_stock` by the keep
+  step itself, so escalation runs again right after it in the same tick,
+  before the attention mailer.
+- **After a partial pack** a line that comes good ships as a **follow-up order**
+  `/online_orders/{orderId}f{i}` (ref `{code}-F{i+1}` — key-safe, it prefixes
+  the follow-up's hub order keys; `followUpOf`, same
+  `shopifyGid`, one line): its own hold, pick, pack sale and partial
+  fulfilment. The parent line becomes `moved`; `followUps/{id}: true` on the
+  parent. A Shopify cancellation cancels the follow-ups with the parent.
+
+### Line fields
+
+```
+escalation: { chain: "other"|"footwear", home, round: 1|2, idx, phase,
+              request?: { kind: "store_order"|"refill", key, from, to, at },
+              pending?: { kind, key, escKey, from, to, at },
+              waitUntil?, deliverAt?, checkProperly?, delivered?, centralRejected?,
+              attempts: [{ location, action, result, key?, by?, at }] }
+escalationOverride: { kind: "unavailable"|"resolved", by, at, appliedAt? }   ← Settings
+```
+
+`phase`: `raise` · `await` · `wait` · `deliver` · `unavailable` · `done` · `resolved`.
+
+### `/online_escalations/{orderId}_{i}` (registry)
+
+A mirror of every open escalation for Settings and for the tick (packed
+orders are not in the status queries): `{ orderId, lineIndex, ref, title, size,
+qty, phase, round, where, next, nextAt, updatedAt, agent? }`. Removed when the
+line is found or resolved; an `unavailable` row stays until the customer agent
+closes it.
+
+## Partial pack
+
+Pack enables when every line is In basket or PARKED. The pack sale carries only
+the basket lines; `packedLines: { [i]: true }` on the order names them. Hold
+rows are nulled only for pid/sizes no unpacked line still holds (the poller
+re-syncs a packed order's resolving holds every tick anyway). Shopify: the
+poller fulfils only the packed lines' Shopify line items
+(`partialFulfil.mjs`): a baseline of units already fulfilled per line item is
+recorded at `fulfil/baseline` before the first attempt, and each attempt
+fulfils `baseline + packed − fulfilled-now`, so an ambiguous 5xx that applied
+is never fulfilled twice, even when one Shopify line is split over a shipped
+and a resolving app line. A pack that shipped every line fulfils the whole
+order exactly as before.
 
 ## Out of scope (seam left)
 

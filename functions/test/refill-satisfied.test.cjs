@@ -381,3 +381,19 @@ test("the new pass changes nothing when every open request is short", () => {
   assert.deepStrictEqual(plan.satisfiedClosures, []);
   assert.ok(plan.intents.length > 0, "the normal deficit loop is untouched");
 });
+
+// ── WEBSITE-ORDER ESCALATION ROWS ARE NEVER "ALREADY IN STOCK" ───────────────
+// escalate.mjs raises Central → hub BECAUSE the hub's cell claims a unit
+// nobody could find (owner spec 2026-10-21: ignore on-hand, over policy).
+
+test("an online_escalation row is not withdrawn by a cell that claims enough", () => {
+  const plan = computeRefillPlan(base({
+    stock: { hub1: { boot: { 7: cell(3) } }, hub2: {}, central: { boot: { 7: cell(40) } } },
+    refillRequests: {
+      web_9001_1_r1s0: missingSneakerReq({ qty: 1, createdFrom: { manual: true, source: "central", via: "online_escalation", ref: "WEB-1801" } }),
+      r2: missingSneakerReq({ size: "7", qty: 1 }),
+    },
+  }));
+  // The ordinary lock-less row beside it still goes (the rule is narrow).
+  assert.deepStrictEqual(satisfiedIds(plan), ["r2"]);
+});

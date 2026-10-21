@@ -269,8 +269,9 @@ describe("feed entries", () => {
       expect(lineAt(f, 0).source.status).toBe("pick"); // hub1 has not sent yet
     });
 
-    it("Out of Stock at the hub → no_stock, the order needs attention, Junid is emailed", async () => {
+    it("escalation off: Out of Stock at the hub → no_stock, the order needs attention, Junid is emailed", async () => {
       const f = on(); await first(f);
+      await f.db.ref("config/onlineOrders/escalationOff").set(true);
       await f.db.ref("orders/KQZ-1").update({ status: "out_of_stock" });
       const d = deps(f, shopify());
       await runOrdersPoll(d.deps);
@@ -278,6 +279,18 @@ describe("feed entries", () => {
       expect(order(f)).toMatchObject({ status: "needs_attention", attentionOpen: true });
       expect(order(f).attention.reason).toMatch(/hub1 marked it out of stock/);
       expect(d.mails).toHaveLength(1);
+    });
+
+    it("escalation on: Out of Stock at the hub → Central is asked for that hub IN THE SAME TICK, and nobody is emailed", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "out_of_stock" });
+      const d = deps(f, shopify());
+      await runOrdersPoll(d.deps);
+      expect(lineAt(f, 0).source).toEqual({ status: "resolving", locationId: "hub1" });
+      expect(lineAt(f, 0).escalation).toMatchObject({ chain: "footwear", home: "hub1", phase: "await", request: { kind: "refill", from: "central", to: "hub1" } });
+      expect(f.read(`refill_requests/${lineAt(f, 0).escalation.request.key}`)).toMatchObject({ requestingLocation: "hub1", createdFrom: { via: "online_escalation", ref: "KQZ" }, onlineRef: "KQZ" });
+      expect(order(f).attentionOpen).toBeUndefined();
+      expect(d.mails).toEqual([]);
     });
 
     it("sent in another size → needs attention (Shopify sold the ordered size), never silently handed", async () => {
@@ -418,7 +431,7 @@ describe("the old way, while the switch is off", () => {
 
 describe("Resolve → re-route", () => {
   it("routes a no_stock line again once stock exists, under a fresh entry key", async () => {
-    const f = fakeDb(world({ stock: {}, config: { onlineOrders: { enabled: true } } }));
+    const f = fakeDb(world({ stock: {}, config: { onlineOrders: { enabled: true, escalationOff: true } } }));
     await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder({ lineItems: { nodes: [shopifyOrder().lineItems.nodes[1]] } })] })).deps);
     expect(lineAt(f, 0).source.status).toBe("no_stock");
     // Stock arrives; Junid presses Resolve (Settings writes exactly this).

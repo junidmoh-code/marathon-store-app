@@ -294,6 +294,7 @@ function SizeLine({ row, remaining, canAct, busy, msg, fulfilOpen, onToggleFulfi
           <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}><SizeTag size={row.size} /></span>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: BLUE, fontVariantNumeric: "tabular-nums" }}>×{remaining}</span>
           {sent > 0 && <span style={{ fontSize: 11, color: GRAY }}>· {sent} sent</span>}
+          {row.webRef && <span data-web-ref style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".08em", color: "#4ACA7A", border: "1px solid rgba(74,202,122,.45)", borderRadius: 999, padding: "1px 7px" }}>WEBSITE · {row.webRef}</span>}
         </span>
         <button disabled={busy} onClick={onToggleFulfil}
                 style={{ ...BTN, ...SHRINKABLE, padding: "10px 16px",
@@ -375,6 +376,9 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         size: String(r.size), qty: r.qty || 1, sent: Number(r.sentQty) || 0,
         createdAt: r.createdAt, createdMs: parseMs(r.createdAt),
         earlyRelease: r.earlyRelease, shadow: !!r.shadow, _r: r,
+        // A website-order escalation (docs/ONLINE-ORDERS.md § Escalation):
+        // the customer's parcel waits on this one, so the row says whose.
+        webRef: typeof r.onlineRef === "string" ? r.onlineRef : null,
         // NO SHOP NAME (owner order 2026-10-03). A pass-through request is
         // raised at a hub FOR the shops it feeds (r.forDests — the engine
         // reconciles the leg against their need), but Central's packers read

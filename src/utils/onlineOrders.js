@@ -62,9 +62,12 @@ export const ORDER_STATUS = Object.freeze({
   // Junid pressed "Rung by hand at a till" in Settings: the poller closes the
   // order's feed entries and releases its holds, then sets fulfilled_elsewhere.
   RELEASE_REQUESTED: "release_requested",
+  // Nothing left to ship and nothing left to resolve: every line was
+  // credited, refunded, resolved by hand or moved to a follow-up. Terminal.
+  CLOSED: "closed",
 });
 
-export const TERMINAL_STATUSES = Object.freeze(["packed", "cancelled", "fulfilled_elsewhere"]);
+export const TERMINAL_STATUSES = Object.freeze(["packed", "cancelled", "fulfilled_elsewhere", "closed"]);
 
 // Orders whose lines still hold stock.
 export const HOLDING_STATUSES = Object.freeze(["new", "picking", "ready", "needs_attention"]);
@@ -79,7 +82,17 @@ export const LINE_STATUS = Object.freeze({
   UNRESOLVED: "unresolved",
   REROUTE: "reroute",
   CANCELLED: "cancelled",
+  // Escalation (src/utils/onlineEscalation.js, docs/ONLINE-ORDERS.md § Escalation):
+  RESOLVING: "resolving",     // climbing the chain; held where the units are going
+  UNAVAILABLE: "unavailable", // the chain ran out; the customer agent has it
+  RESOLVED: "resolved",       // credited / refunded / resolved by hand — ships nothing
+  MOVED: "moved",             // came good after the pack; ships in a follow-up order
 });
+
+// Lines Pack does not wait for: they are not in the parcel and need no basket
+// tick. A `resolving` line can still come good — after a pack it ships in a
+// follow-up order of its own.
+export const PARKED_LINE_STATUSES = Object.freeze(["resolving", "unavailable", "resolved", "moved"]);
 
 // A line in one of these puts its order in needs_attention.
 export const ATTENTION_LINE_STATUSES = Object.freeze(["no_stock", "not_found", "needs_attention", "unresolved"]);
@@ -127,7 +140,16 @@ export function deriveOrderStatus(order, { enabled = false } = {}) {
   if (!lines.length) return ORDER_STATUS.NEEDS_ATTENTION;
   const st = (l) => l?.source?.status;
   if (lines.some((l) => ATTENTION_LINE_STATUSES.includes(st(l)))) return ORDER_STATUS.NEEDS_ATTENTION;
-  if (lines.every((l) => st(l) === LINE_STATUS.HANDED)) return ORDER_STATUS.READY;
-  if (enabled && lines.every((l) => st(l) === LINE_STATUS.HANDED || l?.source?.entryKey)) return ORDER_STATUS.PICKING;
+  // Parked lines (escalating, unavailable, resolved off) are not waited for.
+  const live = lines.filter((l) => !PARKED_LINE_STATUSES.includes(st(l)) && st(l) !== LINE_STATUS.CANCELLED);
+  if (!live.length) {
+    // Nothing to pack. Still waiting while a line climbs or the customer has
+    // not chosen; closed once every line is settled.
+    const open = lines.some((l) => st(l) === LINE_STATUS.RESOLVING || st(l) === LINE_STATUS.UNAVAILABLE);
+    if (!open) return ORDER_STATUS.CLOSED;
+    return enabled ? ORDER_STATUS.PICKING : ORDER_STATUS.NEW;
+  }
+  if (live.every((l) => st(l) === LINE_STATUS.HANDED)) return ORDER_STATUS.READY;
+  if (enabled && live.every((l) => st(l) === LINE_STATUS.HANDED || l?.source?.entryKey)) return ORDER_STATUS.PICKING;
   return ORDER_STATUS.NEW;
 }

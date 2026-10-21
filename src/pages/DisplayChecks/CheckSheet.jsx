@@ -24,7 +24,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT, MONO, BLUE, AMBER, INK, PANEL, META } from "./tokens";
 import { formatSaTime, isOnlinePick } from "./feedModel";
-import { OnlineBadge } from "./CheckCard";
+import { OnlineBadge, CheckProperlyBanner } from "./CheckCard";
 import { PACKER_INSTRUCTION } from "../../utils/onlineOrders";
 import StyleCodeCapture from "./StyleCodeCapture";
 
@@ -176,6 +176,8 @@ export default function CheckSheet({ store, check, onClose, styleCodeProgress, p
             progress={styleCodeProgress}
           />
         )}
+
+        {online && check.checkProperly === true && <CheckProperlyBanner />}
 
         {online && (
           <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: "#4ACA7A", border: "1px solid rgba(74,202,122,.35)",

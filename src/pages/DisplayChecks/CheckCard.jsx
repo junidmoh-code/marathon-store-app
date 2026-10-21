@@ -32,6 +32,18 @@ export function OnlineBadge({ record }) {
   );
 }
 
+// Escalation round 2 (docs/ONLINE-ORDERS.md § Escalation): the shop already
+// answered "Not found" once, Hub 2 and Central could not cover it, and the
+// item is asked of the shop again. Red, loud, impossible to skim past.
+export function CheckProperlyBanner() {
+  return (
+    <div role="alert" style={{ fontFamily: FONT, fontSize: 13.5, fontWeight: 800, letterSpacing: "0.04em", color: "#FF6B6B",
+                               background: "rgba(255,107,107,.14)", border: "2px solid #FF6B6B", borderRadius: 10, padding: "8px 10px" }}>
+      CHECK PROPERLY — website order
+    </div>
+  );
+}
+
 const IMG = 96; // 1:1 product image, feed spec
 
 function Chip({ label, color, bg, border }) {
@@ -117,6 +129,7 @@ export default function CheckCard({ check, variant, onOpen }) {
             {!online && soldAt && <span>SOLD {soldAt}</span>}
             {!online && saleCount > 1 && <span style={{ color: BLUE_SOFT }}>×{saleCount}</span>}
           </div>
+          {online && !completed && check.checkProperly === true && <CheckProperlyBanner />}
           {online && !completed && (
             <div style={{ fontFamily: FONT, fontSize: 13, fontWeight: 650, color: WEB_GREEN }}>{PACKER_INSTRUCTION}</div>
           )}
