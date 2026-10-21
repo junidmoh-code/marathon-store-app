@@ -14,7 +14,7 @@ true. Only Junid flips it, after the box measurement step.
 
 | | |
 |---|---|
-| Name in the portal | `marathon-pos` (Integrations → API keys, created 21 Oct 2026 11:16 by `distreda-794196`) |
+| Name in the portal | `marathon-pos` (Integrations → API keys, created 21 Oct 2026 by the account owner) |
 | MacBook | `COURIER_GUY_API_KEY` in the git-ignored `.env` at the repo root (chmod 600) |
 | Mac mini | `~/.config/marathon/courier.env` (chmod 600), `COURIER_GUY_API_KEY=…` |
 | Loader | `scripts/shipping/env.mjs` — real env wins, then repo `.env`, then the mini file |
@@ -30,9 +30,9 @@ both files, delete the old one.
 |---|---|
 | Account name / code | The Marathon / **MARDRO** |
 | Account id (API `account_id`) | **87207** |
-| Type | **Prepaid** (balance R 5,198.90 on 21 Oct 2026; "insufficient funds for the account" is a documented create error) |
+| Type | **Prepaid** — every booking draws on the balance ("insufficient funds for the account" is a documented create error) |
 | Invoicing | Daily |
-| Account users | 1 (owner `distreda-794196`) — the API key acts as that user |
+| Account users | 1 (the account owner) — the API key acts as that user |
 | Predominant delivery type | B2B (account setting) |
 | Cost centres | none |
 | Approvals setting | "Require approval for shipments created by account users" exists — **off**; not touched |
@@ -224,6 +224,9 @@ The one-line change is that file's body becoming:
 export { bookShipment } from "../../shipping/bookShipment.mjs";
 ```
 
-Its caller (`poll.mjs` shipOrder) must pass the order WITH its key — e.g.
-`bookShipment({ ...order, key: id })` — or rely on `order.shopifyGid`, which
-bookShipment already reads the key from.
+**Required with it:** `poll.mjs` shipOrder calls `bookShipment(order)` with the
+record only, and the record does not contain its own key. bookShipment then
+derives the key from `order.shopifyGid` (the ingester always writes it). If
+that ever changes, the call must become `bookShipment({ ...order, key: id })`.
+Without a key, bookShipment throws before any call; it never falls back to
+the WEB- ref.

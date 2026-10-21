@@ -64,10 +64,26 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
     },
     sneakerKids: {
       label: "Sneaker (kids, boxed)", lengthCm: 28, widthCm: 18, heightCm: 10,
-      bands: [{ upToSize: 99, kg: 0.7 }],
+      // Kids bands are on the EU scale: UK kids sizes run 10–13.5 then 1–6
+      // (not monotonic), so a UK size is converted first (estimateParcel.js
+      // toEuKidsSize). Toddler / little kids / grade school.
+      sizeScale: "euKids",
+      bands: [
+        { upToSize: 26, kg: 0.45 },
+        { upToSize: 33, kg: 0.6 },
+        { upToSize: 99, kg: 0.75 },
+      ],
       measured: false,
     },
-    slides: { label: "Slides / sandals", lengthCm: 31, widthCm: 13, heightCm: 9, kg: 0.6, measured: false },
+    slides: {
+      label: "Slides / sandals", lengthCm: 31, widthCm: 13, heightCm: 9,
+      bands: [
+        { upToSize: 6.5, kg: 0.5 },
+        { upToSize: 9.5, kg: 0.6 },
+        { upToSize: 99, kg: 0.7 },
+      ],
+      measured: false,
+    },
     foldedTop: { label: "Folded top (tee, jersey, hoodie, jacket)", lengthCm: 30, widthCm: 25, heightCm: 4, kg: 0.4, measured: false },
     foldedBottoms: { label: "Folded bottoms (pants, jeans, shorts)", lengthCm: 32, widthCm: 26, heightCm: 4, kg: 0.5, measured: false },
     tracksuitSet: { label: "Tracksuit set", lengthCm: 35, widthCm: 28, heightCm: 8, kg: 1.0, measured: false },

@@ -52,6 +52,18 @@ export function toUkAdultSize(n) {
   return n >= 36 && n <= 50 ? round2(n - 33.5) : n;
 }
 
+/**
+ * A kids size on the EU scale. EU 16+ as is. UK kids sizes repeat (toddler
+ * 3–9.5, junior 10–13.5, then 1–6), so 7–9.5 reads as toddler, below 7 as
+ * junior / grade school — an approximation; the band only steps weight.
+ */
+export function toEuKidsSize(n) {
+  if (!Number.isFinite(n)) return n;
+  if (n >= 16) return n;
+  if (n >= 10) return n + 17.5;
+  return n >= 7 ? n + 17 : n + 33;
+}
+
 export function isKidsShoe(line) {
   if (line?.kids === true) return true;
   const text = `${line?.name ?? ""} ${line?.title ?? ""} ${line?.subcategory ?? ""}`;
@@ -94,7 +106,8 @@ export function classifyLine(line) {
 /** kg for one unit of `kind`, stepped by size band where the kind has bands. */
 export function itemWeightKg(spec, line) {
   if (!Array.isArray(spec.bands)) return Number(spec.kg) || 0;
-  const n = toUkAdultSize(shoeSizeNumber(line?.size));
+  const raw = shoeSizeNumber(line?.size);
+  const n = spec.sizeScale === "euKids" ? toEuKidsSize(raw) : toUkAdultSize(raw);
   const bands = [...spec.bands].sort((a, b) => a.upToSize - b.upToSize);
   if (!Number.isFinite(n)) return Number(bands[Math.floor((bands.length - 1) / 2)]?.kg) || 0; // no size → middle band
   return Number((bands.find((b) => n <= b.upToSize) ?? bands[bands.length - 1]).kg) || 0;

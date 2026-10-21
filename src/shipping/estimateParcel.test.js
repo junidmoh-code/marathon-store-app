@@ -56,6 +56,14 @@ describe("footwear weight is stepped by size band", () => {
     ["", 1.3], ["XL", 1.3],
   ])("UK/EU %s → %s kg", (size, kg) => expect(itemWeightKg(spec, { size })).toBe(kg));
 
+  it.each([
+    ["22", 0.45], ["26", 0.45], ["27", 0.6], ["33", 0.6], ["34", 0.75],
+    ["UK 9", 0.45], ["7", 0.45], ["10", 0.6], ["13.5", 0.6], ["1", 0.75], ["5", 0.75], ["", 0.6],
+  ])("kids %s → %s kg (EU scale)", (size, kg) => expect(itemWeightKg(cfg.items.sneakerKids, { size })).toBe(kg));
+
+  it.each([["5", 0.5], ["8", 0.6], ["11", 0.7], ["EU 44", 0.7]])("slides %s → %s kg", (size, kg) =>
+    expect(itemWeightKg(cfg.items.slides, { size })).toBe(kg));
+
   it("band edges are inclusive at upToSize", () => {
     expect(itemWeightKg(spec, { size: "6.5" })).toBe(1.1);
     expect(itemWeightKg(spec, { size: "7" })).toBe(1.3);
@@ -84,7 +92,7 @@ describe("estimateParcel — single items, every category", () => {
   });
 
   it("kids sneaker → shoe mailer, lighter", () => {
-    expect(estimateParcel([sneaker("30")])).toMatchObject({ boxCode: "SHOE", actualKg: 0.9, lockerSize: "M" });
+    expect(estimateParcel([sneaker("30")])).toMatchObject({ boxCode: "SHOE", actualKg: 0.8, lockerSize: "M" });
   });
 
   it("slides → shoe mailer (9 cm is too thick for the flat mailer)", () => {

@@ -296,7 +296,7 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
                 <span style={{ display: "inline-flex", gap: 8, flexWrap: "wrap" }}>
                   {it.bands.map((b, i) => (
                     <span key={i} style={{ display: "inline-flex", gap: 4, alignItems: "center", fontSize: 13 }}>
-                      ≤ UK <Num label={`${it.label} band ${i + 1} size`} value={b.upToSize} step={0.5}
+                      ≤ {it.sizeScale === "euKids" ? "EU" : "UK"} <Num label={`${it.label} band ${i + 1} size`} value={b.upToSize} step={0.5}
                         onChange={(v) => patch((c) => { c.items[k].bands[i].upToSize = v; return c; })} />
                       <Num label={`${it.label} band ${i + 1} kg`} value={b.kg} step={0.05}
                         onChange={(v) => patch((c) => { c.items[k].bands[i].kg = v; return c; })} /> kg
