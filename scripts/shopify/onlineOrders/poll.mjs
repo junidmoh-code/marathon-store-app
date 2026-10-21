@@ -523,7 +523,18 @@ async function syncHolds(ctx, id, order) {
 async function shipOrder(ctx, id, order) {
   const { db, graphql, now, log } = ctx;
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
-  const booking = await bookShipment(order);
+  // The order is passed as read from /online_orders — it carries shopifyGid,
+  // which bookShipment derives the order's key from. The poll's own db is
+  // passed so booking never opens a second connection, and `deps.courier`
+  // (tests inject a fake) replaces the real Courier Guy client. A courier
+  // failure is recorded and never blocks the Shopify fulfilment below.
+  let booking;
+  try {
+    booking = await bookShipment(order, { db, ...(ctx.courier ? { client: ctx.courier } : {}) });
+  } catch (e) {
+    booking = { skipped: true, error: String(e?.message || e).slice(0, 300) };
+    log(`  ! ${order.ref}: courier booking failed — ${booking.error}`);
+  }
   if (booking && !order.shipping?.booking) {
     await db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/booking`).set({ ...booking, at: now });
   }

@@ -1,6 +1,21 @@
 import { describe, it, expect } from "vitest";
 import { runOrdersPoll, attentionMail } from "./poll.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
+import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
+import lockerRates from "../../shipping/fixtures/rates-locker-capetown.json";
+
+// Courier Guy, faked: rates from the recorded fixtures; a shipment call is
+// recorded so a test can prove none happened. Every poll test gets one, so no
+// test ever constructs the real client.
+function fakeCourier() {
+  const calls = [];
+  return {
+    calls,
+    getRates: async (body) => { calls.push(["getRates", body]); return body.collection_pickup_point_id ? lockerRates : doorRates; },
+    createShipment: async (body) => { calls.push(["createShipment", body]); throw new Error("createShipment must not be reached"); },
+    cancelShipment: async (ref) => { calls.push(["cancelShipment", ref]); throw new Error("cancelShipment must not be reached"); },
+  };
+}
 
 const NOW = Date.parse("2026-10-21T10:00:00Z");
 const GO_LIVE = Date.parse("2026-10-21T09:00:00Z");
@@ -76,6 +91,7 @@ function deps(f, sh, over = {}) {
       increment, saDate: () => "2026-10-21",
       resolveAssignment: ({ roster }) => roster?.days?.wed?.uid ?? null,
       log: () => {},
+      courier: fakeCourier(),
       ...over,
     },
   };
@@ -304,6 +320,41 @@ describe("Shopify fulfilment after the pack", () => {
     const create = sh.calls.find((c) => c.query.includes("fulfillmentCreate"));
     expect(create.vars.fulfillment).toEqual({ lineItemsByFulfillmentOrder: [{ fulfillmentOrderId: fos[0].id }], notifyCustomer: true, trackingInfo: { number: "TRK123" } });
     expect(order(f)).toMatchObject({ fulfilState: "done", fulfil: { state: "done", attempts: 1 }, shipping: { booking: { skipped: true } } });
+  });
+
+  it("pack step with /config/shipping/live false: the dry run is recorded, no shipment call, no network", async () => {
+    const realFetch = globalThis.fetch;
+    let fetched = 0;
+    globalThis.fetch = async () => { fetched++; throw new Error("network is forbidden in this test"); };
+    try {
+      const w = packed({ trackingNumber: "TRK9" });
+      Object.assign(w.online_orders[9001], {
+        customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
+        shipping: { address: { name: "Thandi M", address1: "5 Esplanade Road", address2: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
+      });
+      w.config.shipping = { live: false };
+      const f = fakeDb(w);
+      const courier = fakeCourier();
+      const out = await runOrdersPoll(deps(f, shopify({ fos }), { courier }).deps);
+      const booking = order(f).shipping.booking;
+      expect(booking.skipped).toBe(true);
+      expect(booking.dryRun).toMatchObject({ customer_reference: "WEB-1801", delivery_address: { city: "Cape Town", zone: "WC", code: "7441" } });
+      expect(courier.calls.map(([op]) => op)).toEqual(["getRates", "getRates"]);
+      expect(fetched).toBe(0);
+      expect(out.fulfilled).toBe(1); // the Shopify fulfilment still went ahead
+      expect(f.read("online_orders/9001/shipping/provider") == null).toBe(true); // never booked
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("a courier failure is recorded and never blocks the fulfilment", async () => {
+    const f = fakeDb(packed());
+    const courier = { getRates: async () => { throw new Error("x"); } };
+    const boom = { ...deps(f, shopify({ fos }), { courier }).deps, db: f.db };
+    const out = await runOrdersPoll(boom);
+    expect(out.fulfilled).toBe(1);
+    expect(order(f).shipping.booking.skipped).toBe(true);
   });
 
   it("a fulfilment that failed before and now lands clears its attention", async () => {
