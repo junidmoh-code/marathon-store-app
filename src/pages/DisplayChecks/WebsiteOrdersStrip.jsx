@@ -64,7 +64,7 @@ function Row({ store, row, handover }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: INK, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.productName || "Item"}</div>
         <div style={{ fontFamily: MONO, fontSize: 12, color: "rgba(233,238,255,.6)", marginTop: 2 }}>
-          {size ? `SIZE ${size} · ` : ""}QTY {row.qty || 1} · <span style={{ color: GREEN, fontWeight: 700 }}>{row.ref || "—"}</span>
+          {size ? `SIZE ${size} · ` : ""}QTY {row.qty || 1} · <span style={{ color: GREEN, fontWeight: 700 }}>{row.orderNumber != null ? `#${row.orderNumber}` : (row.ref || "—")}</span>
         </div>
         {/* Escalation round 2: this shop answered Not found once already. */}
         {row.checkProperly === true && <div role="alert" data-testid="web-check-properly" style={{ marginTop: 6 }}><CheckProperlyBanner /></div>}

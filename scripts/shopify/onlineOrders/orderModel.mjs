@@ -3,7 +3,7 @@
 // clock. orders-poll.mjs does the reading and writing; this decides what is
 // written. The contract is docs/ONLINE-ORDERS.md.
 import {
-  ONLINE_PICK_KIND, PACKER_INSTRUCTION, PACKING_STORE, ORDER_STATUS, LINE_STATUS,
+  orderLabel, ONLINE_PICK_KIND, PACKER_INSTRUCTION, PACKING_STORE, ORDER_STATUS, LINE_STATUS,
   ATTENTION_KIND, HOLDING_STATUSES, deriveOrderStatus,
 } from "../../../src/utils/onlineOrders.js";
 
@@ -111,11 +111,10 @@ export function buildLine({ index, item, resolved, piece }) {
   });
 }
 
-export function buildOrder({ node, lines, nowMs, ref }) {
-  if (!ref) throw new Error("buildOrder: the order has no minted ref");
+export function buildOrder({ node, lines, nowMs }) {
   const order = {
-    // The three-letter code (orderRefs.mjs). The Shopify number is orderNumber.
-    ref,
+    // The order's NAME is its Shopify number (orderLabel → "#1768"); the
+    // three-letter codes belong to its hub order units, not to the order.
     orderNumber: node.number,
     shopifyGid: node.id,
     shopifyName: node.name,
@@ -156,7 +155,7 @@ export function holdRowsFor(order) {
     // holds it now (moved).
     if (st === LINE_STATUS.CANCELLED || st === LINE_STATUS.UNAVAILABLE || st === LINE_STATUS.RESOLVED || st === LINE_STATUS.MOVED) continue;
     const key = `${line.pid}/${line.sizeKey}`;
-    const row = rows[key] || (rows[key] = { qty: 0, ref: order.ref, locs: {} });
+    const row = rows[key] || (rows[key] = { qty: 0, ref: orderLabel(order), locs: {} });
     const q = Number(line.qty) || 0;
     row.qty += q;
     // Fulfilled in the Shopify admin before the pack (switch on): Shopify has
@@ -213,7 +212,7 @@ export function hubOrderKeys(ref, orderLines, index) {
   return qty === 1 ? [base] : Array.from({ length: qty }, (_, u) => `${base}-${u + 1}`);
 }
 
-export function hubOrderRecord({ key, line, onlineOrderId, lineIndex, section, nowIso }) {
+export function hubOrderRecord({ key, line, onlineOrderId, lineIndex, section, nowIso, orderNumber = null, unit = 0 }) {
   const hub = line.source.locationId;
   return {
     id: key,
@@ -254,6 +253,10 @@ export function hubOrderRecord({ key, line, onlineOrderId, lineIndex, section, n
     channel: "online",
     onlineOrderId: String(onlineOrderId),
     onlineLineIndex: lineIndex,
+    // The website order's Shopify number (the POS collect-by-code shows it)
+    // and which unit of the line this code is (one code per pair).
+    ...(orderNumber != null ? { onlineOrderNumber: orderNumber } : {}),
+    onlineUnit: unit,
     // Escalation round 2: this hub already marked it Out of Stock once.
     ...(line.source?.checkProperly === true ? { checkProperly: true } : {}),
   };
@@ -305,7 +308,7 @@ export function displayEntry({ orderId, order, index, line, checkId, nowMs, saDa
     activatedAt: nowMs,
     activatedSaDate: saDate,
     assignedTo: assignedTo || null,
-    orderId, ref: order.ref, lineIndex: index,
+    orderId, ref: orderLabel(order), orderNumber: order.orderNumber ?? null, lineIndex: index,
     instruction: PACKER_INSTRUCTION,
     // Escalation round 2: the shop said "Not found" once already.
     checkProperly: line.source?.checkProperly === true ? true : null,

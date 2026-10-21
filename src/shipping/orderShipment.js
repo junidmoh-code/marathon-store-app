@@ -43,7 +43,12 @@ export function orderKey(order) {
 
 /** The order's reference — what TCG gets as customer_reference. */
 export function orderRef(order) {
-  return first(order?.ref, order?.orderRef, order?.name, order?.order_number, order?.orderNumber, order?.id);
+  // The Shopify order number ("#1768") — what the customer and Junid know the
+  // order by (owner decision 2026-10-21); the old per-order code only as a
+  // fallback for orders pulled in before it.
+  const n = order?.orderNumber ?? order?.order_number;
+  if (n != null && String(n) !== "") return `#${n}`;
+  return first(order?.name, order?.ref, order?.orderRef, order?.id);
 }
 
 /**

@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runOrdersPoll, attentionMail } from "./poll.mjs";
+import { candidateCode } from "./orderRefs.mjs";
+// The hub-unit code poll.mjs mints for order 9001 line i, unit u, routeGen g (attempt k).
+const C = (i, u = 0, g = 0, k = 0, id = "9001") => candidateCode(`${id}:${i}:${u}:${g}`, k);
 import { hubOrderRecord } from "./orderModel.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
@@ -126,7 +129,7 @@ describe("ingest", () => {
     const out = await runOrdersPoll(deps(f, sh).deps);
     expect(out.ingested).toBe(1);
     const o = order(f);
-    expect(o).toMatchObject({ ref: "KQZ", orderNumber: 1801, status: "new", customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" } });
+    expect(o).toMatchObject({ orderNumber: 1801, status: "new", customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" } });
     expect(o.totals).toEqual({ subtotalCents: 150000, shippingCents: 10000, taxCents: 19565, totalCents: 160000, currency: "ZAR" });
     expect(o.lines.map((l) => [l.pid, l.size, l.qty, l.source.locationId, l.source.status])).toEqual([
       ["SNK", "8", 1, "hub1", "pick"],
@@ -136,7 +139,7 @@ describe("ingest", () => {
     ]);
     expect(lineAt(f, 2)).toMatchObject({ barcode: "6001", isFootwear: false, unitPriceCents: 25000, photoUrl: "https://x/tee.jpg" });
     expect(lineAt(f, 0)).toMatchObject({ isFootwear: true });
-    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2, ref: "KQZ", locs: { hub1: 1, hub2: 1 } });
+    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2, ref: "#1801", locs: { hub1: 1, hub2: 1 } });
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 2, locs: { "marathon-pe": 1, hub2: 1 } });
     // The reconciler is told: both products' markers moved.
     expect(f.read("shopify_inventory_dirty")).toEqual({ SNK: 1, TEE: 1 });
@@ -196,7 +199,7 @@ describe("ingest", () => {
     expect(o.lines.at(-1)).toMatchObject({ title: "Mystery — XL", qty: 1, source: { status: "unresolved" } });
     expect(o.lines.at(-1).reason).toMatch(/not linked/);
     expect(d.mails).toHaveLength(1);
-    expect(d.mails[0].subject).toBe("Website order KQZ needs attention");
+    expect(d.mails[0].subject).toBe("Website order #1801 needs attention");
     expect(order(f).attention.mailedAt).toBe(NOW);
     await runOrdersPoll(d.deps);
     expect(d.mails).toHaveLength(1);
@@ -223,11 +226,11 @@ describe("feed entries", () => {
     await f.db.ref("config/onlineOrders/enabled").set(true);
     await runOrdersPoll(deps(f, shopify()).deps);
     // HUB-ROUTED LINES ARE HUB ORDERS — the Assistant's /orders shape, field for
-    // field, keyed by the order's code (three hub units → KQZ-1, -2, -4).
+    // field, each UNIT keyed by its own three-letter code (three hub units → three codes).
     const hubOrders = f.read("orders");
-    expect(Object.keys(hubOrders).sort()).toEqual(["KQZ-1", "KQZ-2", "KQZ-4"]);
+    expect(Object.keys(hubOrders).sort()).toEqual([C(0), C(1), C(3)].sort());
     const expected = {
-      id: "KQZ-1", productId: "SNK", productName: "Air Runner", productPhoto: null, productPhotoUrl: "https://x/snk.jpg",
+      id: C(0), productId: "SNK", productName: "Air Runner", productPhoto: null, productPhotoUrl: "https://x/snk.jpg",
       size: "8", sentSize: null, productType: "sneaker",
       customerName: "Shopify", customerPhone: null, customerId: null, customerCode: null, customerPending: false,
       hub: "hub1", placedAtHub: "hub1", placedStore: "central", destShop: "marathon-pe", section: 2,
@@ -236,18 +239,18 @@ describe("feed entries", () => {
       readyAt: null, outOfStockAt: null, comingTomorrowAt: null, collectedAt: null,
       displayRefillScheduledAt: null, displayRefillHub: null, displayRefillStatus: null, displayRefilledAt: null,
       displayRefillStockDepletedAt: null, displayRefilledBy: null,
-      channel: "online", onlineOrderId: "9001", onlineLineIndex: 0,
+      channel: "online", onlineOrderId: "9001", onlineLineIndex: 0, onlineOrderNumber: 1801, onlineUnit: 0,
     };
     // The pure record carries every Assistant field (nulls included)…
-    expect(hubOrderRecord({ key: "KQZ-1", line: lineAt(f, 0), onlineOrderId: "9001", lineIndex: 0, section: 2, nowIso: "2026-10-21T10:00:00.000Z" })).toEqual(expected);
+    expect(hubOrderRecord({ key: C(0), line: lineAt(f, 0), onlineOrderId: "9001", lineIndex: 0, section: 2, nowIso: "2026-10-21T10:00:00.000Z", orderNumber: 1801, unit: 0 })).toEqual(expected);
     // …and RTDB stores it as it stores an Assistant order: nulls dropped.
-    expect(hubOrders["KQZ-1"]).toEqual(Object.fromEntries(Object.entries(expected).filter(([, v]) => v !== null)));
-    expect(hubOrders["KQZ-4"]).toMatchObject({ productType: "clothing", hub: "hub2", size: "M" });
+    expect(hubOrders[C(0)]).toEqual(Object.fromEntries(Object.entries(expected).filter(([, v]) => v !== null)));
+    expect(hubOrders[C(3)]).toMatchObject({ productType: "clothing", hub: "hub2", size: "M" });
     expect(f.read("online_picks")).toBeNull(); // the old hub feed is gone
     const display = f.read("displayChecks_active/marathon-pe/online__9001__2");
-    expect(display).toMatchObject({ kind: "online_pick", status: "open", ref: "KQZ", productId: "TEE", size: "M", sizeKey: "M", qty: 1, orderId: "9001", lineIndex: 2, activatedSaDate: "2026-10-21" });
+    expect(display).toMatchObject({ kind: "online_pick", status: "open", ref: "#1801", orderNumber: 1801, productId: "TEE", size: "M", sizeKey: "M", qty: 1, orderId: "9001", lineIndex: 2, activatedSaDate: "2026-10-21" });
     expect(display.checkId).toBeTruthy();
-    expect(lineAt(f, 0).source).toMatchObject({ entryKey: "orders/KQZ-1", orderKeys: ["KQZ-1"] });
+    expect(lineAt(f, 0).source).toMatchObject({ entryKey: `orders/${C(0)}`, orderKeys: [C(0)] });
     expect(lineAt(f, 2).source.entryKey).toBe("displayChecks_active/marathon-pe/online__9001__2");
     expect(order(f).status).toBe("picking");
     // Idempotent: a further tick creates nothing new.
@@ -263,7 +266,7 @@ describe("feed entries", () => {
 
     it("Mark as Sent (ready) → the line is handed, from the hub that sent it (the Pack deducts there)", async () => {
       const f = on(); await first(f);
-      await f.db.ref("orders/KQZ-2").update({ status: "ready", readyAt: "x" }); // Hub 2 sent line 1
+      await f.db.ref(`orders/${C(1)}`).update({ status: "ready", readyAt: "x" }); // Hub 2 sent line 1
       await tick(f);
       expect(lineAt(f, 1).source).toMatchObject({ status: "handed", locationId: "hub2", handedBy: "hub" });
       expect(lineAt(f, 0).source.status).toBe("pick"); // hub1 has not sent yet
@@ -272,7 +275,7 @@ describe("feed entries", () => {
     it("escalation off: Out of Stock at the hub → no_stock, the order needs attention, Junid is emailed", async () => {
       const f = on(); await first(f);
       await f.db.ref("config/onlineOrders/escalationOff").set(true);
-      await f.db.ref("orders/KQZ-1").update({ status: "out_of_stock" });
+      await f.db.ref(`orders/${C(0)}`).update({ status: "out_of_stock" });
       const d = deps(f, shopify());
       await runOrdersPoll(d.deps);
       expect(lineAt(f, 0).source).toMatchObject({ status: "no_stock", reason: "hub1 marked it out of stock" });
@@ -283,19 +286,19 @@ describe("feed entries", () => {
 
     it("escalation on: Out of Stock at the hub → Central is asked for that hub IN THE SAME TICK, and nobody is emailed", async () => {
       const f = on(); await first(f);
-      await f.db.ref("orders/KQZ-1").update({ status: "out_of_stock" });
+      await f.db.ref(`orders/${C(0)}`).update({ status: "out_of_stock" });
       const d = deps(f, shopify());
       await runOrdersPoll(d.deps);
       expect(lineAt(f, 0).source).toEqual({ status: "resolving", locationId: "hub1" });
       expect(lineAt(f, 0).escalation).toMatchObject({ chain: "footwear", home: "hub1", phase: "await", request: { kind: "refill", from: "central", to: "hub1" } });
-      expect(f.read(`refill_requests/${lineAt(f, 0).escalation.request.key}`)).toMatchObject({ requestingLocation: "hub1", createdFrom: { via: "online_escalation", ref: "KQZ" }, onlineRef: "KQZ" });
+      expect(f.read(`refill_requests/${lineAt(f, 0).escalation.request.key}`)).toMatchObject({ requestingLocation: "hub1", createdFrom: { via: "online_escalation", ref: "#1801" }, onlineRef: "#1801" });
       expect(order(f).attentionOpen).toBeUndefined();
       expect(d.mails).toEqual([]);
     });
 
     it("sent in another size → needs attention (Shopify sold the ordered size), never silently handed", async () => {
       const f = on(); await first(f);
-      await f.db.ref("orders/KQZ-1").update({ status: "ready", sentSize: "9" });
+      await f.db.ref(`orders/${C(0)}`).update({ status: "ready", sentSize: "9" });
       await tick(f);
       expect(lineAt(f, 0).source).toMatchObject({ status: "needs_attention", reason: "hub1 sent size 9, the website sold size 8" });
       expect(order(f).status).toBe("needs_attention");
@@ -303,49 +306,49 @@ describe("feed entries", () => {
 
     it("after the Pack the hub orders close as collected (off the Warehouse queue and the TV)", async () => {
       const f = on(); await first(f);
-      await f.db.ref("orders/KQZ-1").update({ status: "ready" });
-      await f.db.ref("orders/KQZ-4").update({ status: "out_of_stock" });
+      await f.db.ref(`orders/${C(0)}`).update({ status: "ready" });
+      await f.db.ref(`orders/${C(3)}`).update({ status: "out_of_stock" });
       await f.db.ref("online_orders/9001").update({ status: "packed", pack: { saleId: "S1" }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 } });
       await runOrdersPoll(deps(f, shopify({ fos: [] })).deps);
-      expect(f.read("orders/KQZ-1")).toMatchObject({ status: "collected", collectedAt: "2026-10-21T10:00:00.000Z" });
-      expect(f.read("orders/KQZ-2")).toMatchObject({ status: "collected" });
-      expect(f.read("orders/KQZ-4").status).toBe("out_of_stock"); // never rewritten
+      expect(f.read(`orders/${C(0)}`)).toMatchObject({ status: "collected", collectedAt: "2026-10-21T10:00:00.000Z" });
+      expect(f.read(`orders/${C(1)}`)).toMatchObject({ status: "collected" });
+      expect(f.read(`orders/${C(3)}`).status).toBe("out_of_stock"); // never rewritten
     });
 
     it("a cancelled order whose unit was already SENT leaves that hub order alone", async () => {
       const f = on(); await first(f);
-      await f.db.ref("orders/KQZ-1").update({ status: "ready" });
+      await f.db.ref(`orders/${C(0)}`).update({ status: "ready" });
       await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z", updatedAt: "2026-10-21T09:50:00Z" })] })).deps);
-      expect(f.read("orders/KQZ-1").status).toBe("ready");
-      expect(f.read("orders/KQZ-2")).toBeNull();
+      expect(f.read(`orders/${C(0)}`).status).toBe("ready");
+      expect(f.read(`orders/${C(1)}`)).toBeNull();
     });
 
     it("a key already holding SOMEONE ELSE's record (a code reused after 180 days) is never adopted — the line gets its own", async () => {
       const f = on();
-      await f.db.ref("orders/KQZ-1").set({ id: "KQZ-1", channel: "online", onlineOrderId: "7000", onlineLineIndex: 0, status: "collected", hub: "hub1" });
+      await f.db.ref(`orders/${C(0)}`).set({ id: C(0), channel: "online", onlineOrderId: "7000", onlineLineIndex: 0, status: "collected", hub: "hub1" });
       await first(f);
-      expect(lineAt(f, 0).source.orderKeys).toEqual(["KQZ-1-b"]);
-      expect(f.read("orders/KQZ-1-b")).toMatchObject({ onlineOrderId: "9001", onlineLineIndex: 0, status: "incoming" });
-      expect(f.read("orders/KQZ-1").onlineOrderId).toBe("7000"); // untouched
+      expect(lineAt(f, 0).source.orderKeys).toEqual([C(0, 0, 0, 1)]);
+      expect(f.read(`orders/${C(0, 0, 0, 1)}`)).toMatchObject({ onlineOrderId: "9001", onlineLineIndex: 0, status: "incoming" });
+      expect(f.read(`orders/${C(0)}`).onlineOrderId).toBe("7000"); // untouched
       await tick(f);
       expect(lineAt(f, 0).source.status).toBe("pick"); // the old order's "collected" was never read as ours
     });
 
     it("a cancelled order whose pair the hub already SENT raises an attention (return it to the hub)", async () => {
       const f = on(); await first(f);
-      await f.db.ref("orders/KQZ-1").update({ status: "ready" });
+      await f.db.ref(`orders/${C(0)}`).update({ status: "ready" });
       const d = deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z", updatedAt: "2026-10-21T09:50:00Z" })] }));
       await runOrdersPoll(d.deps);
       expect(order(f)).toMatchObject({ status: "cancelled", attentionOpen: true });
-      expect(order(f).attention.reason).toMatch(/KQZ-1 from hub1.*return it to the hub/);
+      expect(order(f).attention.reason).toMatch(new RegExp(`${C(0)} from hub1.*return it to the hub`));
     });
 
     it("never touches a shop's own order that happens to share a key", async () => {
       const f = on();
-      await f.db.ref("orders/KQZ-1").set({ id: "KQZ-1", customerName: "Thabo", status: "incoming" });
+      await f.db.ref(`orders/${C(0)}`).set({ id: C(0), customerName: "Thabo", status: "incoming" });
       await first(f);
-      expect(f.read("orders/KQZ-1")).toEqual({ id: "KQZ-1", customerName: "Thabo", status: "incoming" }); // create-if-absent
-      expect(lineAt(f, 0).source.orderKeys).toEqual(["KQZ-1-b"]);
+      expect(f.read(`orders/${C(0)}`)).toEqual({ id: C(0), customerName: "Thabo", status: "incoming" }); // create-if-absent
+      expect(lineAt(f, 0).source.orderKeys).toEqual([C(0, 0, 0, 1)]);
     });
   });
 
@@ -380,7 +383,7 @@ describe("cancellation", () => {
     expect(order(f).status).toBe("cancelled");
     expect(order(f).lines.every((l) => l.source.status === "cancelled")).toBe(true);
     expect(f.read("online_reservations")).toBeNull();
-    expect(f.read("orders/KQZ-1")).toBeNull(); // not yet sent → off the hub's queue
+    expect(f.read(`orders/${C(0)}`)).toBeNull(); // not yet sent → off the hub's queue
     expect(f.read("displayChecks_active/marathon-pe/online__9001__2")).toMatchObject({ status: "completed", result: "cancelled", completedSaDate: "2026-10-21" });
     expect(f.read("shopify_inventory_dirty")).toEqual({ SNK: 2, TEE: 2 });
   });
@@ -424,7 +427,7 @@ describe("the old way, while the switch is off", () => {
     await runOrdersPoll(deps(f, shopify()).deps);
     expect(order(f).status).toBe("fulfilled_elsewhere");
     expect(f.read("online_reservations")).toBeNull();
-    expect(f.read("orders/KQZ-1")).toBeNull();
+    expect(f.read(`orders/${C(0)}`)).toBeNull();
     expect(f.read("displayChecks_active/marathon-pe/online__9001__2")).toMatchObject({ status: "completed", result: "cancelled" });
   });
 });
@@ -443,7 +446,7 @@ describe("Resolve → re-route", () => {
     expect(o.lines.map((l) => [l.qty, l.source.locationId, l.source.status, l.routeGen])).toEqual([[1, "trophy", "display", 1], [1, "hub2", "pick", 1]]);
     expect(o.lines[0].lineId).toBe("l0");
     expect(o.lines[0].source.entryKey).toBe("displayChecks_active/trophy/online__9001__0_r1");
-    expect(o.lines[1].source).toMatchObject({ entryKey: "orders/KQZ-2r1", orderKeys: ["KQZ-2r1"] });
+    expect(o.lines[1].source).toMatchObject({ entryKey: `orders/${C(1, 0, 1)}`, orderKeys: [C(1, 0, 1)] });
     expect(o.status).toBe("picking");
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 2, locs: { trophy: 1, hub2: 1 } });
   });
@@ -644,14 +647,14 @@ describe("one bad order never stops the rest", () => {
     const later = shopifyOrder({ id: "gid://shopify/Order/9002", legacyResourceId: "9002", number: 1802, name: "#1802", updatedAt: "2026-10-21T09:40:00Z" });
     const out = await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder(), later] })).deps);
     expect(out.errors).toHaveLength(1);
-    expect(order(f, "9002").ref).toBe("BCD");
+    expect(order(f, "9002")).toMatchObject({ orderNumber: 1802 }); // named by its Shopify number; no per-order code
     expect(f.read("online_orders_meta/cursorMs")).toBe(Date.parse("2026-10-21T09:40:00Z"));
     expect(f.read("online_orders_meta/retry/9001")).toMatchObject({ name: "#1801", attempts: 1 });
     // The fault clears; the next tick's list no longer carries 9001 — it is fetched by id.
     const g = fakeDb(f.root);
     const out2 = await runOrdersPoll(deps(g, shopify({ orders: [], byId: { 9001: shopifyOrder() } })).deps);
     expect(out2.errors).toEqual([]);
-    expect(g.read("online_orders/9001").ref).toBe("KQZ");
+    expect(g.read("online_orders/9001")).toMatchObject({ orderNumber: 1801 });
     expect(g.read("online_orders_meta/retry")).toBeNull();
   });
 });
@@ -723,8 +726,42 @@ describe("before the rules are pasted", () => {
 describe("attentionMail", () => {
   it("names the order, the reason and where to resolve it", () => {
     const m = attentionMail({ ref: "WEB-1", shopifyName: "#1", customer: { name: "A" }, attention: { reason: "R" } });
-    expect(m.subject).toBe("Website order WEB-1 needs attention");
+    expect(m.subject).toBe("Website order #1 needs attention"); // the Shopify name, never the old code
     expect(m.text).toContain("R");
     expect(m.text).toContain("Settings → Online orders");
+  });
+});
+
+describe("one three-letter code per hub order UNIT (owner decision 2026-10-21)", () => {
+  const twoPairs = () => shopifyOrder({ lineItems: { nodes: [shopifyOrder().lineItems.nodes[0]] } }); // Air Runner 8 ×2 → hub1 + hub2
+
+  it("two pairs on one order → two hub orders, two DIFFERENT letter-only codes (no I, no O), both claimed", async () => {
+    const f = fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
+    await runOrdersPoll(deps(f, shopify({ orders: [twoPairs()] })).deps);
+    const codes = Object.keys(f.read("orders"));
+    expect(codes).toHaveLength(2);
+    expect(new Set(codes).size).toBe(2);
+    for (const c of codes) expect(c).toMatch(/^[A-HJ-NP-Z]{3}$/);
+    for (const c of codes) expect(f.read(`online_order_refs/${c}`)).toMatchObject({ kind: "hub_unit" });
+    expect(order(f).ref).toBeUndefined(); // the order itself has no code — it is #1801
+    expect(Object.values(f.read("orders")).map((r) => r.onlineOrderNumber)).toEqual([1801, 1801]);
+  });
+
+  it("a re-run lands on the SAME codes — never a second hub order for one pair", async () => {
+    const f = fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
+    await runOrdersPoll(deps(f, shopify({ orders: [twoPairs()] })).deps);
+    const before = Object.keys(f.read("orders")).sort();
+    // A crash after the hub orders landed but before the line recorded them:
+    for (const i of [0, 1]) await f.db.ref(`online_orders/9001/lines/${i}/source`).set({ locationId: lineAt(f, i).source.locationId, status: "pick" });
+    await runOrdersPoll(deps(f, shopify()).deps);
+    expect(Object.keys(f.read("orders")).sort()).toEqual(before);
+    expect([lineAt(f, 0).source.orderKeys, lineAt(f, 1).source.orderKeys].flat().sort()).toEqual(before);
+  });
+
+  it("a code another unit holds (< 180 days) is never reused — the next candidate is taken", async () => {
+    const f = fakeDb(world({ config: { onlineOrders: { enabled: true } }, online_order_refs: { [C(0)]: { orderId: "7777:0:0:0", at: Date.parse("2026-10-20T00:00:00Z") } } }));
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    expect(lineAt(f, 0).source.orderKeys).toEqual([C(0, 0, 0, 1)]);
+    expect(f.read(`online_order_refs/${C(0)}/orderId`)).toBe("7777:0:0:0");
   });
 });

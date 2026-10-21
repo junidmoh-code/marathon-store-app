@@ -24,7 +24,7 @@
 // No whole-node reads: orders by exact id or by an indexed status query; stock
 // and holds by exact cell path; the variant map by exact pid.
 import {
-  ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_ORDERS_CONFIG_PATH, PACKING_STORE,
+  ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_ORDERS_CONFIG_PATH, PACKING_STORE, orderLabel,
   ORDER_STATUS, LINE_STATUS, ATTENTION_KIND, COURIER_COMPANY, HOLDING_STATUSES, TERMINAL_STATUSES, deriveOrderStatus,
 } from "../../../src/utils/onlineOrders.js";
 import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "../../../src/utils/sizeKey.js";
@@ -32,11 +32,11 @@ import { productIsFootwear } from "../../../src/utils/footwearLine.js";
 import { availableAt, routeLines, ROUTED_LOCATIONS } from "./routing.mjs";
 import {
   isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
-  displayKey, displayEntry, hubOrderKeys, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
+  displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig } from "./shipping.mjs";
-import { mintOrderRef } from "./orderRefs.mjs";
+import { mintHubCode } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
 import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs";
 import { fulfilParcel } from "./partialFulfil.mjs";
@@ -160,8 +160,8 @@ export async function runOrdersPoll(deps) {
         ctx.summary.kept++;
       }
       catch (e) {
-        ctx.summary.errors.push(`${order?.ref ?? id}: ${String(e?.message || e)}`);
-        log(`  ✗ ${order?.ref ?? id}: ${String(e?.message || e)}`);
+        ctx.summary.errors.push(`${orderLabel(order ?? {}) || id}: ${String(e?.message || e)}`);
+        log(`  ✗ ${orderLabel(order ?? {}) || id}: ${String(e?.message || e)}`);
       }
     }
   }
@@ -182,8 +182,8 @@ export async function runOrdersPoll(deps) {
     for (const [id, order] of Object.entries(pending)) {
       try { await shipOrder(ctx, id, order); }
       catch (e) {
-        ctx.summary.errors.push(`${order?.ref ?? id} fulfil: ${String(e?.message || e)}`);
-        log(`  ✗ ${order?.ref ?? id} fulfil: ${String(e?.message || e)}`);
+        ctx.summary.errors.push(`${orderLabel(order ?? {}) || id} fulfil: ${String(e?.message || e)}`);
+        log(`  ✗ ${orderLabel(order ?? {}) || id} fulfil: ${String(e?.message || e)}`);
       }
     }
   }
@@ -231,7 +231,7 @@ async function handleShopifyOrder(ctx, node) {
       return { ...cur, shopifyFulfilledAt: Date.parse(node.updatedAt) || ctx.now, updatedAt: ctx.now };
     });
     if (res.committed && res.snapshot.val()) {
-      log(`  ~ ${res.snapshot.val().ref}: fulfilled in the Shopify admin before the pack — still held, released on Shopify's side`);
+      log(`  ~ ${orderLabel(res.snapshot.val())}: fulfilled in the Shopify admin before the pack — still held, released on Shopify's side`);
       await syncHolds(ctx, id, res.snapshot.val());
     }
     return;
@@ -244,7 +244,7 @@ async function handleShopifyOrder(ctx, node) {
   const res = await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => (cur == null ? order : undefined));
   if (!res.committed) return;
   ctx.summary.ingested++;
-  log(`  + ${order.ref} ${order.customer?.name ?? ""}: ${linesOf(order).map((l) => `${l.title}${l.size && l.size !== "_" ? ` ${l.size}` : ""} ×${l.qty} → ${l.source?.locationId ? `${placeName(l.source.locationId)} (${l.source.status})` : l.source?.status}`).join(", ")}`);
+  log(`  + ${orderLabel(order)} ${order.customer?.name ?? ""}: ${linesOf(order).map((l) => `${l.title}${l.size && l.size !== "_" ? ` ${l.size}` : ""} ×${l.qty} → ${l.source?.locationId ? `${placeName(l.source.locationId)} (${l.source.status})` : l.source?.status}`).join(", ")}`);
   await maintainOrder(ctx, id, res.snapshot.val());
 }
 
@@ -266,8 +266,7 @@ async function buildIngestedOrder(ctx, id, node) {
     for (const piece of routed[k]) lines.push(buildLine({ index: lines.length, item, resolved: r, piece }));
     k++;
   });
-  const ref = await mintOrderRef(ctx.db, id, ctx.now, ctx.refRand ? { rand: ctx.refRand } : {});
-  return buildOrder({ node, lines, nowMs: ctx.now, ref });
+  return buildOrder({ node, lines, nowMs: ctx.now });
 }
 
 /**
@@ -355,7 +354,7 @@ async function cancelOrder(ctx, id, node) {
   if (!res.committed || !order) return;
   if (order.status === ORDER_STATUS.PACKED) {
     ctx.summary.flagged++;
-    log(`  ‼ ${order.ref}: cancelled on Shopify AFTER it was packed — flagged for Junid`);
+    log(`  ‼ ${orderLabel(order)}: cancelled on Shopify AFTER it was packed — flagged for Junid`);
     // Follow-ups only exist for packed orders: they, the chain and the
     // agent stop here (Sonnet review, PR #778).
     await syncHolds(ctx, id, order);
@@ -364,7 +363,7 @@ async function cancelOrder(ctx, id, node) {
     return;
   }
   ctx.summary.cancelled++;
-  log(`  − ${order.ref}: cancelled on Shopify — hold released`);
+  log(`  − ${orderLabel(order)}: cancelled on Shopify — hold released`);
   await cancelEntries(ctx, { ...order, key: id });
   await syncHolds(ctx, id, order);
   await dropEscalations(ctx, id, order);
@@ -437,7 +436,7 @@ async function releaseFulfilledElsewhere(ctx, id, node, { why = "fulfilled in th
   const order = res.snapshot.val();
   if (!res.committed || !order) return;
   ctx.summary.handledElsewhere = (ctx.summary.handledElsewhere || 0) + 1;
-  log(`  ~ ${order.ref}: ${why} — handled the old way, hold released`);
+  log(`  ~ ${orderLabel(order)}: ${why} — handled the old way, hold released`);
   await cancelEntries(ctx, { ...order, key: id });
   await syncHolds(ctx, id, order);
   await dropEscalations(ctx, id, order);
@@ -626,26 +625,27 @@ async function maintainOrder(ctx, id, order) {
 async function createEntry(ctx, orderId, order, index, line) {
   const { db, now } = ctx;
   if (line.source.status === LINE_STATUS.PICK) {
-    // The hub's own Warehouse queue: one /orders record per unit, created only
-    // if absent (a re-run never re-opens or overwrites one the hub has acted on).
-    const wanted = hubOrderKeys(order.ref, linesOf(order), index);
+    // The hub's own Warehouse queue: one /orders record per UNIT, keyed by
+    // that unit's own three-letter code (owner decision 2026-10-21 — one code
+    // per pair). Codes are deterministic per (order, line, unit, routeGen), so a
+    // re-run lands on the same code and adopts its own record; a code whose
+    // /orders key holds someone else's record is skipped (mintHubCode taken).
     const section = await packingSection(ctx);
     const nowIso = new Date(now).toISOString();
+    const qty = Math.max(1, Number(line.qty) || 1);
+    const gen = Number(line.routeGen) || 0;
     const keys = [];
-    for (const base of wanted) {
-      // A key may already hold a record that is NOT this line's — a code reused
-      // after 180 days, or a shop's own order. Never adopt it: take the next
-      // free suffix (KQZ → KQZ-b, -c …) so this line gets its own record.
-      for (let n = 0; n < 26; n++) {
-        const key = n === 0 ? base : `${base}-${String.fromCharCode(97 + n)}`;
-        assertSafeSegment(key, "hub order key");
-        const res = await db.ref(`orders/${key}`).transaction((cur) => {
-          if (cur == null) return hubOrderRecord({ key, line, onlineOrderId: orderId, lineIndex: index, section, nowIso });
-          return undefined;
-        });
-        const rec = res.snapshot?.val?.();
-        if (res.committed || (rec && rec.onlineOrderId === String(orderId) && Number(rec.onlineLineIndex) === index)) { keys.push(key); break; }
-      }
+    const ours = (rec, u) => rec && rec.onlineOrderId === String(orderId) && Number(rec.onlineLineIndex) === index && Number(rec.onlineUnit ?? 0) === u;
+    for (let u = 0; u < qty; u++) {
+      const owner = `${orderId}:${index}:${u}:${gen}`;
+      const key = await mintHubCode(db, owner, now, { taken: async (code) => { const rec = await ctx.get(`orders/${code}`); return !!rec && !ours(rec, u); } });
+      assertSafeSegment(key, "hub order key");
+      const res = await db.ref(`orders/${key}`).transaction((cur) => {
+        if (cur == null) return hubOrderRecord({ key, line, onlineOrderId: orderId, lineIndex: index, section, nowIso, orderNumber: order.orderNumber ?? null, unit: u });
+        return undefined;
+      });
+      const rec = res.snapshot?.val?.();
+      if (res.committed || ours(rec, u)) keys.push(key);
     }
     if (!keys.length) return null;
     return { entryKey: `orders/${keys[0]}`, orderKeys: keys };
@@ -743,7 +743,7 @@ async function shipOrder(ctx, id, order) {
     });
   } catch (e) {
     booking = { skipped: true, error: String(e?.message || e).slice(0, 300) };
-    log(`  ! ${order.ref}: courier booking failed — ${booking.error}`);
+    log(`  ! ${orderLabel(order)}: courier booking failed — ${booking.error}`);
   }
   const prior = order.shipping?.booking;
   // A real booking replaces a recorded dry run; nothing replaces a real one.
@@ -754,7 +754,7 @@ async function shipOrder(ctx, id, order) {
       // JSON round trip: RTDB refuses undefined and NaN (NaN becomes null).
       await db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/booking`).set(JSON.parse(JSON.stringify({ ...result, at: now })));
     } catch (e) {
-      log(`  ! ${order.ref}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
+      log(`  ! ${orderLabel(order)}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
     }
   }
   // ── LIVE: no waybill, no fulfilment ────────────────────────────────────────
@@ -771,7 +771,7 @@ async function shipOrder(ctx, id, order) {
     ? booking.waybill
     : (booking?.reason === "already booked" || /booking already booked/.test(String(booking?.reason)) ? booked : null);
   let live = false;
-  try { live = await readLive(db); } catch (e) { live = true; log(`  ! ${order.ref}: could not read the live switch — holding (${String(e?.message || e).slice(0, 120)})`); }
+  try { live = await readLive(db); } catch (e) { live = true; log(`  ! ${orderLabel(order)}: could not read the live switch — holding (${String(e?.message || e).slice(0, 120)})`); }
   if (live && !waybill) {
     const why = String(booking?.error || booking?.reason || "no waybill came back").slice(0, 300);
     await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
@@ -783,7 +783,7 @@ async function shipOrder(ctx, id, order) {
       updatedAt: now,
     });
     ctx.summary.courierFailed = (ctx.summary.courierFailed ?? 0) + 1;
-    log(`  ✗ ${order.ref}: courier not booked (${why}) — "Packed, courier not booked"; Shopify waits`);
+    log(`  ✗ ${orderLabel(order)}: courier not booked (${why}) — "Packed, courier not booked"; Shopify waits`);
     return;
   }
   const attempts = Math.min(MAX_FULFIL_ATTEMPTS_SHOWN, (Number(order.fulfil?.attempts) || 0) + 1);
@@ -817,7 +817,7 @@ async function shipOrder(ctx, id, order) {
       updatedAt: now,
     });
     ctx.summary.fulfilled++;
-    log(`  ✓ ${order.ref}: fulfilled on Shopify${out.alreadyDone ? " (it already was)" : ", customer notified"}`);
+    log(`  ✓ ${orderLabel(order)}: fulfilled on Shopify${out.alreadyDone ? " (it already was)" : ", customer notified"}`);
     return;
   }
   // The sale stands. The order says "Packed, Shopify not updated" with a Retry,
@@ -833,7 +833,7 @@ async function shipOrder(ctx, id, order) {
     updatedAt: now,
   });
   ctx.summary.fulfilFailed++;
-  log(`  ✗ ${order.ref}: Shopify fulfilment failed (${out.error}) — "Packed, Shopify not updated"`);
+  log(`  ✗ ${orderLabel(order)}: Shopify fulfilment failed (${out.error}) — "Packed, Shopify not updated"`);
 }
 
 // ── 4. One email per attention ───────────────────────────────────────────────
@@ -848,7 +848,7 @@ async function mailAttention(ctx) {
     try {
       await send(attentionMail(order));
     } catch (e) {
-      log(`  ✗ ${order.ref}: attention email not sent (${String(e?.message || e)}) — retried next tick`);
+      log(`  ✗ ${orderLabel(order)}: attention email not sent (${String(e?.message || e)}) — retried next tick`);
       continue;
     }
     // Stamp THIS attention only: one cleared or replaced meanwhile is left alone.
@@ -858,7 +858,7 @@ async function mailAttention(ctx) {
       return { ...cur, mailedAt: ctx.now };
     });
     ctx.summary.mailed++;
-    log(`  ✉ ${order.ref}: Junid emailed (${order.attention.kind})`);
+    log(`  ✉ ${orderLabel(order)}: Junid emailed (${order.attention.kind})`);
   }
 }
 
@@ -866,9 +866,9 @@ export function attentionMail(order) {
   const a = order.attention || {};
   const who = order.customer?.name ? ` for ${order.customer.name}` : "";
   return {
-    subject: `Website order ${order.ref} needs attention`,
+    subject: `Website order ${orderLabel(order)} needs attention`,
     text: [
-      `Website order ${order.ref}${who} needs attention.`,
+      `Website order ${orderLabel(order)}${who} needs attention.`,
       "",
       a.reason || "(no reason recorded)",
       "",
@@ -912,6 +912,6 @@ async function refreshEstimate(ctx, id, order) {
     const est = await estimateForOrder({ ...order, key: id }, { db: ctx.db, rawConfig: ctx.shippingConfigRaw, sig });
     await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/estimate`).set(JSON.parse(JSON.stringify({ ...est, at: ctx.now })));
   } catch (e) {
-    ctx.log(`  ! ${order.ref}: parcel estimate not written — ${String(e?.message || e).slice(0, 160)}`);
+    ctx.log(`  ! ${orderLabel(order)}: parcel estimate not written — ${String(e?.message || e).slice(0, 160)}`);
   }
 }

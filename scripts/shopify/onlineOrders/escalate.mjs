@@ -17,7 +17,7 @@
 // Clothing tab; a refill row by Central on its queue — the existing screens,
 // the existing stock movements. This only asks.
 import {
-  ONLINE_ORDERS_PATH, LINE_STATUS, ORDER_STATUS, ATTENTION_KIND, PARKED_LINE_STATUSES,
+  ONLINE_ORDERS_PATH, LINE_STATUS, ORDER_STATUS, ATTENTION_KIND, PARKED_LINE_STATUSES, orderLabel,
 } from "../../../src/utils/onlineOrders.js";
 import { linesOf } from "./orderModel.mjs";
 import {
@@ -63,7 +63,7 @@ export function storeOrderCard({ key, line, order, orderId, lineIndex, to, from,
     displayRefilledAt: null, displayRefillStockDepletedAt: null, displayRefilledBy: null,
     clothingRefillStatus: null, clothingRefilledAt: null, clothingOutOfStockAt: null, clothingRefilledBy: null,
     // The website order this card is for — shown on Hub 2's card.
-    onlineRef: order.ref, onlineOrderKey: orderId, onlineLineIndex: lineIndex, onlineEscalationKey: escKey,
+    onlineRef: orderLabel(order), onlineOrderKey: orderId, onlineLineIndex: lineIndex, onlineEscalationKey: escKey,
   };
 }
 
@@ -76,10 +76,10 @@ export function refillRow({ line, order, orderId, lineIndex, to, from, nowIso, n
     requestingLocation: to,
     status: "open",
     createdAt: nowIso,
-    createdFrom: { manual: true, source: from, via: ESCALATION_VIA, ref: order.ref, orderKey: orderId, lineIndex },
+    createdFrom: { manual: true, source: from, via: ESCALATION_VIA, ref: orderLabel(order), orderKey: orderId, lineIndex },
     // A customer's parcel is waiting: pickable now, not at the next window.
-    earlyRelease: { at: nowMs, by: "online-escalation", reason: `Website order ${order.ref}` },
-    onlineRef: order.ref,
+    earlyRelease: { at: nowMs, by: "online-escalation", reason: `Website order ${orderLabel(order)}` },
+    onlineRef: orderLabel(order),
   };
 }
 
@@ -150,8 +150,8 @@ export async function escalateOrder(ctx, orderId, order, helpers = {}) {
     try {
       if (await escalateLine(ctx, orderId, order, i, line, helpers)) changed = true;
     } catch (e) {
-      ctx.summary.errors.push(`${order.ref ?? orderId} line ${i + 1} escalation: ${String(e?.message || e)}`);
-      ctx.log(`  ✗ ${order.ref ?? orderId} line ${i + 1}: escalation — ${String(e?.message || e)}`);
+      ctx.summary.errors.push(`${orderLabel(order)} line ${i + 1} escalation: ${String(e?.message || e)}`);
+      ctx.log(`  ✗ ${orderLabel(order)} line ${i + 1}: escalation — ${String(e?.message || e)}`);
     }
   }
   if (changed) await clearEscalatedAttention(ctx, orderId, now);
@@ -184,7 +184,7 @@ async function escalateLine(ctx, orderId, order, i, line0, helpers) {
     });
     if (!next) return false;
     if (helpers.cancelLine && !FAILED_LINE.has(st)) await helpers.cancelLine(line);
-    log(`  ⤴ ${order.ref} line ${i + 1}: ${line.title}${line.size && line.size !== "_" ? ` ${line.size}` : ""} — ${st} at ${line.source?.locationId ?? "nowhere"}; escalating (${esc.chain}, home ${esc.home})`);
+    log(`  ⤴ ${orderLabel(order)} line ${i + 1}: ${line.title}${line.size && line.size !== "_" ? ` ${line.size}` : ""} — ${st} at ${line.source?.locationId ?? "nowhere"}; escalating (${esc.chain}, home ${esc.home})`);
     ctx.summary.escalated = (ctx.summary.escalated || 0) + 1;
     line = next;
     changed = true;
@@ -204,7 +204,7 @@ async function escalateLine(ctx, orderId, order, i, line0, helpers) {
       // The request still open at Hub 2 / Central is withdrawn: nobody should
       // move stock toward a line Junid has settled.
       if (before.escalation?.phase === ESC_PHASE.AWAIT && before.escalation.request) await withdrawRequest(ctx, orderId, i, before.escalation);
-      log(`  ⤴ ${order.ref} line ${i + 1}: ${override.kind === "unavailable" ? "marked unavailable" : "resolved by hand"} by Junid`);
+      log(`  ⤴ ${orderLabel(order)} line ${i + 1}: ${override.kind === "unavailable" ? "marked unavailable" : "resolved by hand"} by Junid`);
       line = next;
       changed = true;
     }
@@ -258,7 +258,7 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
           // R-numbers recycle daily: an old card holds this number. Forget the
           // intent; the next tick draws a fresh number.
           await lineTxn(ctx, orderId, i, (cur) => (cur.escalation?.pending?.key === pending.key ? { ...cur, escalation: { ...cur.escalation, pending: null } } : undefined));
-          log(`  ! ${order.ref} line ${i + 1}: card ${pending.key} already exists for something else — redrawn next tick`);
+          log(`  ! ${orderLabel(order)} line ${i + 1}: card ${pending.key} already exists for something else — redrawn next tick`);
           return null;
         }
       }
@@ -268,7 +268,7 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
         if (!sameSpot(cur.escalation, esc) || cur.escalation.pending?.escKey !== escKey) return undefined;
         return lineForEscalation(cur, stepEscalation(cur.escalation, { type: "raised", request }, { nowMs: now }));
       });
-      if (next) log(`  ⤴ ${order.ref} line ${i + 1}: asked ${pending.from} → ${pending.to} (${pending.kind === STEP.REFILL ? "refill request" : "Shop Refill card"} ${pending.key})`);
+      if (next) log(`  ⤴ ${orderLabel(order)} line ${i + 1}: asked ${pending.from} → ${pending.to} (${pending.kind === STEP.REFILL ? "refill request" : "Shop Refill card"} ${pending.key})`);
       return next;
     }
     case "recheck": {
@@ -292,7 +292,7 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
         if (!sameSpot(cur.escalation, esc)) return undefined;
         return lineForEscalation(cur, stepEscalation(cur.escalation, { type: "request", ...seen }, { nowMs: now }));
       });
-      if (next) log(`  ⤴ ${order.ref} line ${i + 1}: ${act.request.from} ${seen.outcome} ${key}${next.escalation.phase === ESC_PHASE.WAIT ? ` — back on the list ${iso(next.escalation.waitUntil)}` : ""}`);
+      if (next) log(`  ⤴ ${orderLabel(order)} line ${i + 1}: ${act.request.from} ${seen.outcome} ${key}${next.escalation.phase === ESC_PHASE.WAIT ? ` — back on the list ${iso(next.escalation.waitUntil)}` : ""}`);
       return next;
     }
     case "tick": {
@@ -310,7 +310,7 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
         if (!sameSpot(cur.escalation, esc) || cur.escalation.delivered) return undefined;
         return deliveredLine(cur, cur.escalation, now);
       });
-      if (next) log(`  ⤴ ${order.ref} line ${i + 1}: back on the ${next.source.status} list at ${next.source.locationId}${next.source.checkProperly ? " — CHECK PROPERLY" : ""}`);
+      if (next) log(`  ⤴ ${orderLabel(order)} line ${i + 1}: back on the ${next.source.status} list at ${next.source.locationId}${next.source.checkProperly ? " — CHECK PROPERLY" : ""}`);
       return next;
     }
     case "watch_line": {
@@ -331,8 +331,8 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
         if (!esc.mixedMailedAt) {
           const marked = await lineTxn(ctx, orderId, i, (cur) => (sameSpot(cur.escalation, esc) && !cur.escalation.mixedMailedAt ? { ...cur, escalation: { ...cur.escalation, mixedMailedAt: now } } : undefined));
           if (marked && ctx.send) {
-            try { await ctx.send({ subject: `Website order ${order.ref}: a hub sent part of a line and marked the rest Out of Stock`, text: `${line.title} ×${line.qty} at ${line.source.locationId}. Not re-requested automatically (units would move twice). Settings → Online orders → Escalations: resolve it by hand or mark it unavailable.` }); }
-            catch (e) { log(`  ✗ ${order.ref}: mixed-hub email not sent (${String(e?.message || e)})`); }
+            try { await ctx.send({ subject: `Website order ${orderLabel(order)}: a hub sent part of a line and marked the rest Out of Stock`, text: `${line.title} ×${line.qty} at ${line.source.locationId}. Not re-requested automatically (units would move twice). Settings → Online orders → Escalations: resolve it by hand or mark it unavailable.` }); }
+            catch (e) { log(`  ✗ ${orderLabel(order)}: mixed-hub email not sent (${String(e?.message || e)})`); }
           }
         }
         return null;
@@ -379,11 +379,11 @@ async function staleAlert(ctx, orderId, order, i, line, esc) {
   const marked = await lineTxn(ctx, orderId, i, (cur) => (sameSpot(cur.escalation, esc) && !cur.escalation.staleMailedAt ? { ...cur, escalation: { ...cur.escalation, staleMailedAt: ctx.now } } : undefined));
   if (!marked) return;
   try {
-    await ctx.send({ subject: `Website order ${order.ref}: nobody has answered ${esc.request.from === "central" ? "Central" : "Hub 2"} for a day`, text: [
+    await ctx.send({ subject: `Website order ${orderLabel(order)}: nobody has answered ${esc.request.from === "central" ? "Central" : "Hub 2"} for a day`, text: [
       `${line.title}${line.size && line.size !== "_" ? ` size ${line.size}` : ""} ×${line.qty}: ${esc.request.kind === STEP.REFILL ? "refill request" : "Shop Refill card"} ${esc.request.key} (${esc.request.from} → ${esc.request.to}) has been open since ${new Date(at).toISOString().slice(0, 16).replace("T", " ")} UTC.`,
       "", "Settings → Online orders → Escalations: mark it unavailable now (the customer is asked), or resolved by hand.",
     ].join("\n") });
-  } catch (e) { ctx.log(`  ✗ ${order.ref}: stale-request email not sent (${String(e?.message || e)})`); }
+  } catch (e) { ctx.log(`  ✗ ${orderLabel(order)}: stale-request email not sent (${String(e?.message || e)})`); }
 }
 
 // ── A line that comes good after its order was packed ships on its own ──────
@@ -395,8 +395,8 @@ export const followUpId = (orderId, i) => `${orderId}f${i}`;
 /** The follow-up order record carrying `line` (already on its pick / display path). */
 export function followUpRecord({ order, orderId, i, line, parentLine, nowMs }) {
   return {
-    // Key-safe: the ref becomes the follow-up's hub order keys (hubOrderKeys).
-    ref: `${order.ref}-F${i + 1}`,
+    // No ref: the follow-up is named by the same Shopify number (orderLabel
+    // adds "(follow-up)"); its hub units get their own codes.
     orderNumber: order.orderNumber, shopifyGid: order.shopifyGid, shopifyName: order.shopifyName,
     followUpOf: orderId, followUpLine: i,
     createdAt: nowMs, ingestedAt: nowMs, updatedAt: nowMs,
@@ -424,7 +424,7 @@ async function deliverFollowUp(ctx, orderId, order, i, esc) {
     return { ...cur, escalation: { ...cur.escalation, phase: ESC_PHASE.DONE, doneAt: now, movedTo: fid }, source: { status: LINE_STATUS.MOVED, movedTo: fid } };
   });
   if (next) {
-    log(`  ⤴ ${order.ref} line ${i + 1}: came good after the pack — ships as ${follow.ref}`);
+    log(`  ⤴ ${orderLabel(order)} line ${i + 1}: came good after the pack — ships as ${orderLabel(follow)}`);
   }
   return next;
 }
@@ -458,7 +458,7 @@ export async function mirror(ctx, orderId, order, i, line) {
   }
   const d = describeEscalation(esc, { nowMs: ctx.now });
   await ctx.db.ref(`${ESCALATIONS_PATH}/${key}`).update(clean({
-    orderId, lineIndex: i, ref: order.ref, title: line.title || null, size: line.size ?? null, qty: Number(line.qty) || 1,
+    orderId, lineIndex: i, ref: orderLabel(order), title: line.title || null, size: line.size ?? null, qty: Number(line.qty) || 1,
     phase: esc.phase, round: esc.round, where: d.where, next: d.next, nextAt: d.nextAt ?? null,
     updatedAt: ctx.now,
   }));

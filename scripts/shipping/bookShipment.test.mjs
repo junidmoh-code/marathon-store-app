@@ -236,7 +236,7 @@ describe("the website-order ingester's real shape (feat/online-orders orderModel
     lines: [{ pid: "p_x", title: "Item 7", category: "Clothing", size: "32", qty: 2 }],
   });
 
-  it("keys by the Shopify id, references by its code, classifies from /products/{pid}", async () => {
+  it("keys by the Shopify id, references by the Shopify order number, classifies from /products/{pid}", async () => {
     const d = fakeDb({
       config: { shipping: { live: true, collectionContact: CONTACT } },
       products: { p_x: { name: "Item 7", category: "Clothing", subcategory: "Jeans & Denim" } },
@@ -245,7 +245,7 @@ describe("the website-order ingester's real shape (feat/online-orders orderModel
     const client = fakeClient();
     await bookShipment(INGESTED(), deps(d, client));
     const body = client.shipmentCalls()[0][1];
-    expect(body.customer_reference).toBe("KQZ");
+    expect(body.customer_reference).toBe("#1042"); // owner decision 2026-10-21: the Shopify number, never a code
     expect(body.delivery_address).toMatchObject({ street_address: "5 Esplanade Road, Century City", zone: "WC", country: "ZA", code: "7441" });
     expect(body.delivery_contact).toEqual({ name: "Ann Bee", mobile_number: "+27820000000", email: "ann@example.com" });
     // "Item 7" says nothing; /products/p_x says jeans → 2 × 0.5 kg + the flat mailer

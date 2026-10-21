@@ -14,7 +14,7 @@
 //                      (never both a credit and a refund from the code)
 // Every action: logged on the line (resolution/log) and to the log file.
 // Every credit or refund: Junid is emailed at once.
-import { ONLINE_ORDERS_PATH, LINE_STATUS, ORDER_STATUS } from "../../../src/utils/onlineOrders.js";
+import { ONLINE_ORDERS_PATH, LINE_STATUS, ORDER_STATUS, orderLabel } from "../../../src/utils/onlineOrders.js";
 import { stockSizeKey } from "../../../src/utils/sizeKey.js";
 import { ESCALATIONS_PATH, followUpId, followUpRecord } from "../../shopify/onlineOrders/escalate.mjs";
 import { linesOf } from "../../shopify/onlineOrders/orderModel.mjs";
@@ -90,7 +90,10 @@ async function handleLine(ctx, key, row) {
   const orderId = row.orderId;
   const i = Number(row.lineIndex);
   if (typeof orderId !== "string" || !Number.isInteger(i)) return;
-  const order = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}`);
+  const raw = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}`);
+  // Every message and log names the order by its Shopify number ("#1768");
+  // `ref` here is display-only (nothing below writes it back as an identifier).
+  const order = raw ? { ...raw, ref: orderLabel(raw) } : null;
   const line = order ? linesOf(order)[i] : null;
   if (!order || !line) { await setAgentRow(ctx, key, null); return; }
   // Only an order still open (or packed, for its leftover lines) is the

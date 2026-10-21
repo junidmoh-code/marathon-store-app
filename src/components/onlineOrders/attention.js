@@ -19,6 +19,7 @@
 // flag left true would sit in the list for ever with nothing to show.
 
 import { ATTENTION_KIND, ATTENTION_LINE_STATUSES, LINE_STATUS, ONLINE_ORDERS_PATH, ORDER_STATUS } from "../../utils/onlineOrders";
+import { orderLabel } from "../../utils/onlineOrders";
 
 const REROUTE_KINDS = new Set([
   ATTENTION_KIND.UNRESOLVED, ATTENTION_KIND.NO_STOCK, ATTENTION_KIND.NOT_FOUND, ATTENTION_KIND.WALKIN_OVERRIDE,
@@ -78,7 +79,7 @@ export function attentionRows(val) {
     .filter(([, o]) => o && typeof o === "object" && o.attentionOpen === true)
     .map(([orderId, o]) => ({
       orderId,
-      ref: o.ref || orderId,
+      ref: orderLabel(o),
       customer: o.customer?.name || "—",
       kind: o.attention?.kind || "unknown",
       reason: o.attention?.reason || "",
@@ -116,7 +117,7 @@ export function openOrderRows(byStatus) {
   for (const val of Object.values(byStatus || {})) {
     for (const [orderId, o] of Object.entries(val || {})) {
       if (!o || typeof o !== "object" || !OPEN_STATUSES.includes(o.status)) continue;
-      rows.push({ orderId, ref: o.ref || orderId, customer: o.customer?.name || "—", status: o.status, createdAt: Number(o.createdAt) || 0, lines: orderLineEntries(o).length });
+      rows.push({ orderId, ref: orderLabel(o), customer: o.customer?.name || "—", status: o.status, createdAt: Number(o.createdAt) || 0, lines: orderLineEntries(o).length });
     }
   }
   return rows.sort((a, b) => b.createdAt - a.createdAt);
