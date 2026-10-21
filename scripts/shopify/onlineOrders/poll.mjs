@@ -34,11 +34,12 @@ import {
   isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   displayKey, displayEntry, hubOrderKeys, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
-import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
+import { fetchOrdersUpdatedSince, fetchOrderById } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig } from "./shipping.mjs";
 import { mintOrderRef } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
 import { escalateOrder, ESCALATIONS_PATH } from "./escalate.mjs";
+import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 
 export const META_PATH = "online_orders_meta";
@@ -688,7 +689,7 @@ async function syncHolds(ctx, id, order) {
 
 // ── 3. Shopify fulfilment after the pack ─────────────────────────────────────
 async function shipOrder(ctx, id, order) {
-  const { db, graphql, now, log } = ctx;
+  const { db, now, log } = ctx;
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
   await closeHubOrders(ctx, { ...order, key: id });
   // The order goes to bookShipment WITH its key (the record carries
@@ -763,8 +764,9 @@ async function shipOrder(ctx, id, order) {
     // customer, carrier "The Courier Guy" (the typed tracking field is gone;
     // an older order's typed number still counts when there is no waybill).
     const trackingNumber = waybill || order.fulfil?.trackingNumber || null;
-    out = await fulfilOnShopify(graphql, {
-      orderGid: order.shopifyGid,
+    // Only the lines in this parcel (partialFulfil.mjs) when a pack left lines
+    // resolving or this is a follow-up; the whole order otherwise, as before.
+    out = await fulfilParcel(ctx, id, order, {
       trackingNumber,
       trackingCompany: waybill ? COURIER_COMPANY : null,
     });
