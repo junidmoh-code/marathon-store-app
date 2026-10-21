@@ -200,6 +200,22 @@ describe("footwear: the hub marks its order Out of Stock → Central", () => {
   });
 });
 
+describe("a hub Out of Stock on an order ALREADY needing attention", () => {
+  it("is escalated in the same tick (the order is not queried again — the second pass after keep does it)", async () => {
+    const lines = [
+      tee({ source: { status: "unresolved" }, pid: undefined, reason: "not linked" }),
+      snk({ source: { locationId: "hub1", status: "pick", entryKey: "orders/LEV-2", orderKeys: ["LEV-2"] } }),
+    ];
+    const f = fakeDb(world({ lines, order: { status: "needs_attention", attention: { kind: "unresolved", reason: "x", at: NOW - 1, mailedAt: NOW - 1 }, attentionOpen: true },
+      over: { orders: { "LEV-2": { id: "LEV-2", channel: "online", onlineOrderId: "9001", onlineLineIndex: 1, hub: "hub1", status: "out_of_stock" } } } }));
+    const d = deps(f);
+    await runOrdersPoll(d.deps);
+    expect(line(f, 1).source).toEqual({ status: "resolving", locationId: "hub1" });
+    expect(f.read("refill_requests/web_9001_1_r1s0")).toMatchObject({ requestingLocation: "hub1" });
+    expect(d.mails).toEqual([]);
+  });
+});
+
 describe("crash recovery", () => {
   it("a card write that fails leaves the intent; the next tick writes exactly one card under the SAME number", async () => {
     const broken = fakeDb(world(), { failWritesUnder: "orders/" });

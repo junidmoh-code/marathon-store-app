@@ -156,6 +156,25 @@ describe("replies — read by code first", () => {
     expect(h.mails.at(-1).text).toMatch(/It is being processed/);
   });
 
+  it("an unclear reply seen on two ticks is answered once (the reply is claimed)", async () => {
+    const f = fakeDb(world());
+    const h = harness(f);
+    await h.run();
+    const inbox = { replies: async () => [reply("hmm what is this", 5)] };
+    await h.run({ inbox });
+    await h.run({ inbox });
+    expect(h.mails).toHaveLength(2);
+    expect(conv(f).outbound).toBe(2);
+  });
+
+  it("two agent runs at once open ONE conversation and send ONE offer", async () => {
+    const f = fakeDb(world());
+    const h = harness(f);
+    await Promise.all([h.run(), h.run()]);
+    expect(h.mails).toHaveLength(1);
+    expect(conv(f).outbound).toBe(1);
+  });
+
   it("the same reply is acted on once, however many ticks see it", async () => {
     const f = fakeDb(world());
     const h = harness(f);
