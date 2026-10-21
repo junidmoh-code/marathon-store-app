@@ -167,6 +167,15 @@ describe("replies — read by code first", () => {
     expect(conv(f).outbound).toBe(2);
   });
 
+  it("two runs at once that both see the same new reply act on it once (the claim, not the read filter)", async () => {
+    const f = fakeDb(world());
+    const h = harness(f);
+    await h.run();
+    const inbox = { replies: async () => [reply("hmm what is this", 6)] };
+    await Promise.all([h.run({ inbox }), h.run({ inbox })]);
+    expect(h.mails).toHaveLength(2);
+  });
+
   it("two agent runs at once open ONE conversation and send ONE offer", async () => {
     const f = fakeDb(world());
     const h = harness(f);
