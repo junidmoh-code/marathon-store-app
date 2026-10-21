@@ -9,6 +9,10 @@
 //      same shape as /config/transit's switch.
 //   2. THE ORDER CODE — read-only: every order's ref is a three-letter code
 //      (KQZ, no I or O), minted by the Mac mini when the order is pulled in.
+//   4. ESCALATIONS — /online_escalations (the Mac mini's small mirror of every
+//      line climbing the escalation chain or with the customer agent): where
+//      it is, what is next and when, and two escape hatches for Junid only,
+//      "Mark unavailable now" and "Resolved by hand" (escalations.js).
 //   3. NEEDS ATTENTION — every order with attentionOpen true, from ONE indexed
 //      query (orderByChild("attentionOpen").equalTo(true); NEEDS ".indexOn":
 //      ["attentionOpen"] on /online_orders). Normally empty, so it is
@@ -23,6 +27,7 @@ import { database } from "../../firebase";
 import { ADMIN_EMAIL } from "../PermissionsContext";
 import { serverNowMs } from "../../utils/serverTime";
 import { ONLINE_ORDERS_PATH, ONLINE_ORDERS_CONFIG_PATH } from "../../utils/onlineOrders";
+import { escalationRows, overrideUpdates } from "../onlineOrders/escalations";
 import { attentionRows, resolveAttentionUpdates, resolveLabel, OPEN_STATUSES, openOrderRows, rungByHandUpdates } from "../onlineOrders/attention";
 
 const page = { minHeight: "100vh", background: "#000", color: "#f2f2f7", padding: 16, maxWidth: 760, margin: "0 auto", fontFamily: "-apple-system, system-ui, sans-serif", boxSizing: "border-box" };
@@ -58,6 +63,26 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
   const isOwner = !!authUser && authUser.email === ADMIN_EMAIL;
   const [cfg, setCfg] = useState({ settled: false, enabled: false, error: false });
   const [att, setAtt] = useState({ settled: false, rows: [], error: false });
+  const [esc, setEsc] = useState({ settled: false, rows: [], error: false });
+  const [confirmEsc, setConfirmEsc] = useState(null); // `${key}|${kind}`
+  useEffect(() => {
+    if (!isOwner) return undefined;
+    return onValue(ref(database, "online_escalations"),
+      (snap) => setEsc({ settled: true, rows: escalationRows(snap.val()), error: false }),
+      () => setEsc({ settled: true, rows: [], error: true }));
+  }, [isOwner]);
+  const escHatch = async (r, kind) => {
+    // One override per line at a time: the other button is locked while it saves.
+    if (typeof busy === "string" && busy.startsWith(`${r.key}|`)) return;
+    const k = `${r.key}|${kind}`;
+    if (confirmEsc !== k) { setConfirmEsc(k); return; }
+    setConfirmEsc(null); setBusy(k); setMsg(null);
+    try {
+      await write(overrideUpdates(r, kind, authUser?.uid, now()));
+      setMsg({ text: `${r.ref} line ${r.lineIndex + 1}: ${kind === "unavailable" ? "marked unavailable" : "resolved by hand"} — the Mac mini applies it on its next run.` });
+    } catch (e) { setMsg({ bad: true, text: `${r.ref} not saved: ${String(e?.message || e)}` }); }
+    setBusy(null);
+  };
   const [open, setOpen] = useState({});
   const [releasing, setReleasing] = useState(null);
   const [confirming, setConfirming] = useState(false);
@@ -193,6 +218,37 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
             </div>
           );
         })}
+      </div>
+      <div style={box}>
+        <div style={label}>Escalations{esc.settled && !esc.error ? ` (${esc.rows.length})` : ""}</div>
+        <div style={{ fontSize: 13, color: "#8e8e93", marginTop: 4 }}>
+          Lines a shop or hub could not find, being asked of Hub 2 and Central, then of the customer.
+        </div>
+        {!esc.settled && <p style={{ color: "#8e8e93" }}>Reading…</p>}
+        {esc.error && <p style={{ color: "#ff6961" }}>The list could not be read — the rule for /online_escalations may be missing (docs/ONLINE-ORDERS-RULES.json).</p>}
+        {esc.settled && !esc.error && esc.rows.length === 0 && <p style={{ color: "#8e8e93" }}>Nothing is being escalated.</p>}
+        {esc.rows.map((r) => (
+          <div key={r.key} style={row} data-testid="escalation-row">
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 700 }}>{r.ref} <span style={{ fontWeight: 400, color: "#8e8e93" }}>· line {r.lineIndex + 1} · {r.title}{r.size ? ` size ${r.size}` : ""}{r.qty > 1 ? ` ×${r.qty}` : ""}</span></div>
+              <div style={{ fontSize: 13, marginTop: 3 }}>{r.where}</div>
+              <div style={{ fontSize: 13, color: "#8e8e93", marginTop: 3 }}>Next: {r.next}{r.nextAt ? ` · ${saWhen(r.nextAt)}` : ""}</div>
+              {r.agent && <div style={{ fontSize: 13, color: "#0a84ff", marginTop: 3 }}>{r.agent}</div>}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+              {r.canMarkUnavailable && (
+                <button type="button" style={{ ...btn, ...(confirmEsc === `${r.key}|unavailable` ? { background: "#3a1212", color: "#ff6961" } : {}) }}
+                  disabled={typeof busy === "string" && busy.startsWith(`${r.key}|`)} onClick={() => escHatch(r, "unavailable")}>
+                  {confirmEsc === `${r.key}|unavailable` ? "Tap again — ask the customer" : "Mark unavailable now"}
+                </button>
+              )}
+              <button type="button" style={{ ...btn, ...(confirmEsc === `${r.key}|resolved` ? { background: "#3a1212", color: "#ff6961" } : {}) }}
+                disabled={typeof busy === "string" && busy.startsWith(`${r.key}|`)} onClick={() => escHatch(r, "resolved")}>
+                {confirmEsc === `${r.key}|resolved` ? "Tap again — stop everything" : "Resolved by hand"}
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
       <div style={box}>
         <div style={label}>Open orders ({openRows.length})</div>

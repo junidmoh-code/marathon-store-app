@@ -1442,6 +1442,12 @@ function computeRefillPlan(snapshot) {
         // row it may still be retired below once the shop's own cell covers
         // it (Sonnet review, PR #673).
       }
+      // A WEBSITE-ORDER ESCALATION row (scripts/shopify/onlineOrders/
+      // escalate.mjs) is raised precisely BECAUSE the destination's cell
+      // claims units nobody could find: "already in stock" is the very thing
+      // it disputes. Owner spec 2026-10-21: over policy, ignoring on-hand. A
+      // person answers it (send / Out of Stock); the scan never withdraws it.
+      if (r.createdFrom && r.createdFrom.via === "online_escalation") continue;
       // A destination the scan did not load has NO stock in `stock` and would
       // read as 0 — silence, not a wrong withdrawal. Being explicit anyway, so
       // a future route change can never turn "not loaded" into "not needed".

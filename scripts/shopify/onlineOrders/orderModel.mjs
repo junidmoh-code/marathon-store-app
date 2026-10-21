@@ -143,10 +143,18 @@ const linesOf = (order) => (Array.isArray(order?.lines) ? order.lines : Object.v
  */
 export function holdRowsFor(order) {
   const rows = {};
-  if (!HOLDING_STATUSES.includes(order?.status)) return rows;
+  // A PACKED order still holds the lines it shipped without — the ones still
+  // climbing the escalation chain (they ship in a follow-up when they come good).
+  const packed = order?.status === ORDER_STATUS.PACKED;
+  if (!HOLDING_STATUSES.includes(order?.status) && !packed) return rows;
   for (const line of linesOf(order)) {
     if (!line?.pid || !line.sizeKey) continue;
-    if (line.source?.status === LINE_STATUS.CANCELLED) continue;
+    const st = line.source?.status;
+    if (packed && st !== LINE_STATUS.RESOLVING) continue;
+    // Settled lines hold nothing: no unit exists (unavailable), the customer
+    // took credit / a refund / another item (resolved), or a follow-up order
+    // holds it now (moved).
+    if (st === LINE_STATUS.CANCELLED || st === LINE_STATUS.UNAVAILABLE || st === LINE_STATUS.RESOLVED || st === LINE_STATUS.MOVED) continue;
     const key = `${line.pid}/${line.sizeKey}`;
     const row = rows[key] || (rows[key] = { qty: 0, ref: order.ref, locs: {} });
     const q = Number(line.qty) || 0;
@@ -246,6 +254,8 @@ export function hubOrderRecord({ key, line, onlineOrderId, lineIndex, section, n
     channel: "online",
     onlineOrderId: String(onlineOrderId),
     onlineLineIndex: lineIndex,
+    // Escalation round 2: this hub already marked it Out of Stock once.
+    ...(line.source?.checkProperly === true ? { checkProperly: true } : {}),
   };
 }
 
@@ -297,6 +307,8 @@ export function displayEntry({ orderId, order, index, line, checkId, nowMs, saDa
     assignedTo: assignedTo || null,
     orderId, ref: order.ref, lineIndex: index,
     instruction: PACKER_INSTRUCTION,
+    // Escalation round 2: the shop said "Not found" once already.
+    checkProperly: line.source?.checkProperly === true ? true : null,
   });
 }
 

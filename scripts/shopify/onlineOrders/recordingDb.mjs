@@ -31,7 +31,10 @@ export function recordingDb(db, log) {
       get: async () => snap(await read(path)),
       set: async (v) => { overlay.set(path, v ?? null); log(`set ${path} = ${short(v)}`); },
       update: async (v) => { log(`update ${path} ${short(v)}`); },
-      push: () => ({ key: real.push().key }),
+      push: () => {
+        const key = real.push().key;
+        return { key, set: async (v) => { overlay.set(`${path}/${key}`, v ?? null); log(`set ${path}/${key} = ${short(v)}`); } };
+      },
       transaction: async (fn) => {
         const cur = await read(path);
         const next = fn(cur);

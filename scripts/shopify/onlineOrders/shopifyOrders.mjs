@@ -115,3 +115,104 @@ export async function fulfilOnShopify(graphql, { orderGid, trackingNumber = null
   }
   return { ok: true, fulfillmentIds };
 }
+
+// ── PARTIAL fulfilment — only the lines that were packed ───────────────────
+// A pack may ship some lines and leave others resolving (escalation), and a
+// follow-up order ships one line later. Shopify must show exactly what left:
+// fulfilmentCreate with fulfillmentOrderLineItems for those Shopify line items.
+//
+// IDEMPOTENT ACROSS AN AMBIGUOUS FAILURE: one Shopify line item can be split
+// over two app lines (one shipped, one resolving), so "what is still open" is
+// not "what we owe". The caller records a BASELINE — units of each line item
+// already fulfilled before this pack — once, before the first attempt; each
+// attempt then fulfils baseline + packed − fulfilled-now, which is 0 after a
+// 5xx that had in fact applied.
+
+const PARTIAL_FIELDS = `
+  id cancelledAt
+  lineItems(first: 100) { nodes { id currentQuantity unfulfilledQuantity } }
+  fulfillmentOrders(first: 20) {
+    nodes { id status lineItems(first: 100) { nodes { id remainingQuantity lineItem { id } } } }
+  }`;
+
+async function readForPartial(graphql, orderGid) {
+  const data = await graphql(`query ($id: ID!) { order(id: $id) { ${PARTIAL_FIELDS} } }`, { id: orderGid });
+  return data.order ?? null;
+}
+
+const fulfilledNow = (li) => Math.max(0, (Number(li.currentQuantity) || 0) - (Number(li.unfulfilledQuantity) || 0));
+
+/** { [lineItemGid]: units already fulfilled } — the baseline to record before the first attempt. */
+export async function fulfilmentBaseline(graphql, orderGid) {
+  const order = await readForPartial(graphql, orderGid);
+  if (!order) return null;
+  const out = {};
+  for (const li of order.lineItems?.nodes ?? []) out[li.id] = fulfilledNow(li);
+  return out;
+}
+
+/** Pure: the fulfilmentOrderLineItems to send. `want` = { lineItemGid: units owed now }. */
+export function partialFulfilmentPlan(fulfillmentOrders, want) {
+  const left = { ...want };
+  const plan = [];
+  for (const fo of fulfillmentOrders) {
+    if (fo.status !== "OPEN" && fo.status !== "IN_PROGRESS") continue;
+    const items = [];
+    for (const foli of fo.lineItems?.nodes ?? []) {
+      const lid = foli.lineItem?.id;
+      const owe = Math.min(Number(left[lid]) || 0, Number(foli.remainingQuantity) || 0);
+      if (owe > 0) { items.push({ id: foli.id, quantity: owe }); left[lid] -= owe; }
+    }
+    if (items.length) plan.push({ fulfillmentOrderId: fo.id, fulfillmentOrderLineItems: items });
+  }
+  return plan;
+}
+
+/**
+ * Fulfil `packed` ({ lineItemGid: units in this parcel }) on top of `baseline`.
+ * → { ok: true, fulfillmentIds, alreadyDone? } | { ok: false, error }
+ */
+export async function fulfilLinesOnShopify(graphql, { orderGid, packed, baseline, trackingNumber = null, trackingCompany = null, notifyCustomer = true }) {
+  const order = await readForPartial(graphql, orderGid);
+  if (!order) return { ok: false, error: "Shopify no longer has this order" };
+  const want = {};
+  for (const li of order.lineItems?.nodes ?? []) {
+    if (!(li.id in packed)) continue;
+    const owe = (Number(baseline?.[li.id]) || 0) + (Number(packed[li.id]) || 0) - fulfilledNow(li);
+    if (owe > 0) want[li.id] = owe;
+  }
+  if (!Object.keys(want).length) return { ok: true, fulfillmentIds: [], alreadyDone: true };
+  const plan = partialFulfilmentPlan(order.fulfillmentOrders?.nodes ?? [], want);
+  // Owed but not coverable (on hold, scheduled, closed, or short): never
+  // "done" — the fulfil-failed attention tells Junid (Sonnet review, PR #778).
+  const covered = {};
+  for (const e of plan) for (const fo of order.fulfillmentOrders?.nodes ?? []) if (fo.id === e.fulfillmentOrderId) {
+    for (const it of e.fulfillmentOrderLineItems) { const lid = (fo.lineItems?.nodes ?? []).find((x) => x.id === it.id)?.lineItem?.id; if (lid) covered[lid] = (covered[lid] || 0) + it.quantity; }
+  }
+  const short = Object.entries(want).filter(([lid, n]) => (covered[lid] || 0) < n);
+  if (short.length) return { ok: false, error: `Shopify has no open fulfilment for ${short.map(([lid, n]) => `${n - (covered[lid] || 0)} unit(s) of line item ${lid.split("/").pop()}`).join(", ")} (on hold, scheduled or closed?)` };
+  // One fulfilment per fulfilment order (each may sit at its own Shopify
+  // location). A failure part-way is safe: the retry re-reads and owes less.
+  const fulfillmentIds = [];
+  for (const entry of plan) {
+    const fulfillment = {
+      lineItemsByFulfillmentOrder: [entry],
+      notifyCustomer,
+      ...(trackingNumber ? { trackingInfo: { number: String(trackingNumber), ...(trackingCompany ? { company: trackingCompany } : {}) } } : {}),
+    };
+    const data = await graphql(
+      `mutation ($fulfillment: FulfillmentInput!) {
+        fulfillmentCreate(fulfillment: $fulfillment) {
+          fulfillment { id status }
+          userErrors { field message }
+        }
+      }`,
+      { fulfillment },
+      { mutation: true },
+    );
+    const errs = data.fulfillmentCreate?.userErrors ?? [];
+    if (errs.length) return { ok: false, error: errs.map((e) => e.message).join("; "), fulfillmentIds };
+    if (data.fulfillmentCreate?.fulfillment?.id) fulfillmentIds.push(data.fulfillmentCreate.fulfillment.id);
+  }
+  return { ok: true, fulfillmentIds };
+}

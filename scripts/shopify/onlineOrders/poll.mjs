@@ -9,7 +9,8 @@
 //   1. PULL   orders Shopify changed since the cursor (and created since
 //             go-live): new paid unfulfilled ones are written, routed and held;
 //             cancelled ones are released (or flagged, if already packed).
-//   2. KEEP   every open order: re-route lines Junid sent back (Resolve),
+//   2. KEEP   every open order: escalate lines whose place failed (switch on;
+//             escalate.mjs), re-route lines Junid sent back (Resolve),
 //             create the feed entries a line is missing while the switch is on
 //             (this is also the backfill when he turns it on), re-derive the
 //             status, raise attention, and make the hold rows match the lines.
@@ -33,10 +34,12 @@ import {
   isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   displayKey, displayEntry, hubOrderKeys, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
-import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
+import { fetchOrdersUpdatedSince, fetchOrderById } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig } from "./shipping.mjs";
 import { mintOrderRef } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
+import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs";
+import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 
 export const META_PATH = "online_orders_meta";
@@ -72,6 +75,9 @@ export async function runOrdersPoll(deps) {
   const now = await deps.nowMs();
   const ctx = { ...deps, get, now, summary: { ingested: 0, cancelled: 0, flagged: 0, kept: 0, entries: 0, holds: 0, fulfilled: 0, fulfilFailed: 0, mailed: 0, errors: [], missingIndex: new Set() } };
   ctx.enabled = (await get(`${ONLINE_ORDERS_CONFIG_PATH}/enabled`)) === true;
+  // Escalation (escalate.mjs) raises requests staff see: only with the feeds
+  // on, and never while Junid's kill switch says off.
+  ctx.escalate = ctx.enabled && (await get(`${ONLINE_ORDERS_CONFIG_PATH}/escalationOff`)) !== true;
 
   // ── 1. PULL ────────────────────────────────────────────────────────────────
   const meta = (await get(META_PATH)) || {};
@@ -130,16 +136,39 @@ export async function runOrdersPoll(deps) {
   }
 
   // ── 2. KEEP ────────────────────────────────────────────────────────────────
+  const kept = new Set();
   for (const status of HOLDING_STATUSES) {
     const found = await queryEq(ctx, "status", status);
-    for (const [id, order] of Object.entries(found)) {
-      try { await maintainOrder(ctx, id, order); ctx.summary.kept++; }
+    for (const [id, order0] of Object.entries(found)) {
+      kept.add(id);
+      let order = order0;
+      try {
+        // Escalation raises requests staff see, so only with the switch on.
+        if (ctx.escalate && await escalateOrder(ctx, id, order, escalationHelpers(ctx))) {
+          order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+        }
+        await maintainOrder(ctx, id, order);
+        // The keep step itself may just have turned a line no_stock (a hub
+        // marked its order Out of Stock): escalate it in THIS tick, before the
+        // attention mailer below would email Junid about it.
+        if (ctx.escalate) {
+          const fresh = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+          if (fresh && linesOf(fresh).some(needsEscalationStart) && await escalateOrder(ctx, id, fresh, escalationHelpers(ctx))) {
+            await maintainOrder(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`));
+          }
+        }
+        ctx.summary.kept++;
+      }
       catch (e) {
         ctx.summary.errors.push(`${order?.ref ?? id}: ${String(e?.message || e)}`);
         log(`  ✗ ${order?.ref ?? id}: ${String(e?.message || e)}`);
       }
     }
   }
+
+  // Packed orders whose leftover lines are still climbing the chain: they are
+  // not in the status queries above, so the registry names them.
+  if (ctx.escalate) await keepPackedEscalations(ctx, kept);
 
   // Junid's "Rung by hand at a till" (Settings): close entries, release holds.
   for (const id of Object.keys(await queryEq(ctx, "status", ORDER_STATUS.RELEASE_REQUESTED))) {
@@ -306,6 +335,10 @@ async function cancelOrder(ctx, id, node) {
       if (cur.cancelledAfterPack) return undefined;
       return {
         ...cur, cancelledAfterPack: true, shopifyCancelledAt: Date.parse(node.cancelledAt) || now, updatedAt: now,
+        // The parcel stands (Junid refunds or takes it back), but nothing
+        // LEFT on the order may ship or climb any more: lines still resolving
+        // or with the customer agent are cancelled with the order.
+        lines: linesOf(cur).map((l) => (PARKED_OPEN.has(l?.source?.status) ? { ...l, source: { status: LINE_STATUS.CANCELLED } } : l)),
         attention: { kind: ATTENTION_KIND.CANCELLED_AFTER_PACK, reason: `Cancelled on Shopify after it was packed (sale ${cur.pack?.saleId ?? "?"}) — refund or return it by hand`, at: now },
         attentionOpen: true,
       };
@@ -323,12 +356,75 @@ async function cancelOrder(ctx, id, node) {
   if (order.status === ORDER_STATUS.PACKED) {
     ctx.summary.flagged++;
     log(`  ‼ ${order.ref}: cancelled on Shopify AFTER it was packed — flagged for Junid`);
+    // Follow-ups only exist for packed orders: they, the chain and the
+    // agent stop here (Sonnet review, PR #778).
+    await syncHolds(ctx, id, order);
+    await dropEscalations(ctx, id, order);
+    for (const fid of Object.keys(order.followUps || {})) await cancelOrder(ctx, fid, node);
     return;
   }
   ctx.summary.cancelled++;
   log(`  − ${order.ref}: cancelled on Shopify — hold released`);
   await cancelEntries(ctx, { ...order, key: id });
   await syncHolds(ctx, id, order);
+  await dropEscalations(ctx, id, order);
+  // A follow-up (a line that came good after the pack) is the same Shopify
+  // order: cancelled with it.
+  for (const fid of Object.keys(order.followUps || {})) {
+    await cancelOrder(ctx, fid, node);
+  }
+}
+
+async function dropEscalations(ctx, id, order) {
+  const lines = linesOf(order);
+  for (let i = 0; i < lines.length; i++) {
+    const esc = lines[i]?.escalation;
+    if (!esc) continue;
+    // The request still open at Hub 2 / Central goes too (untouched only) —
+    // nobody moves stock toward a cancelled or hand-rung order (CodeRabbit).
+    if (esc.phase === "await" && esc.request) await withdrawRequest(ctx, id, i, esc);
+    await ctx.db.ref(`${ESCALATIONS_PATH}/${id}_${i}`).set(null);
+  }
+}
+
+// Lines a cancellation after the pack stops: nothing shipped, nothing settled.
+const PARKED_OPEN = new Set([LINE_STATUS.RESOLVING, LINE_STATUS.UNAVAILABLE, LINE_STATUS.PICK, LINE_STATUS.DISPLAY]);
+
+const needsEscalationStart = (l) => !l?.escalation && (l?.source?.status === LINE_STATUS.NO_STOCK || l?.source?.status === LINE_STATUS.NOT_FOUND);
+
+// An override on a line still on a list closes what it had there (hub orders, a display entry).
+const escalationHelpers = (ctx) => ({ cancelLine: (line) => cancelLineEntries(ctx, line) });
+// Lines a packed order moves into a follow-up close what they had on a list
+// first (the follow-up raises its own, under the follow-up's id).
+const withFollowUpCancel = (ctx) => { ctx.cancelLineForFollowUp ??= (line) => cancelLineEntries(ctx, line); return ctx; };
+
+async function keepPackedEscalations(ctx, kept) {
+  const reg = (await ctx.get(ESCALATIONS_PATH)) || {};
+  const ids = new Set(Object.values(reg).map((r) => r?.orderId).filter((oid) => typeof oid === "string" && !kept.has(oid)));
+  for (const id of ids) {
+    try {
+      assertSafeSegment(id, "order id");
+      const order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+      if (!order) { for (const [k, r] of Object.entries(reg)) if (r?.orderId === id) await ctx.db.ref(`${ESCALATIONS_PATH}/${k}`).set(null); continue; }
+      if (order.status !== ORDER_STATUS.PACKED) continue;
+      const changed = await escalateOrder(withFollowUpCancel(ctx), id, order, escalationHelpers(ctx));
+      // Every tick, not only on a change: the POS pack nulls the order's hold
+      // rows in its one atomic write, including the resolving lines' — this
+      // puts those back before the reconcile that follows pushes stock.
+      const after = changed ? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`) : order;
+      await syncHolds(ctx, id, after);
+      // A follow-up made just now holds and gets its entry THIS tick — the
+      // parent stopped holding that line a moment ago (no gap for a walk-in).
+      for (const fid of Object.keys(after?.followUps || {})) {
+        if (kept.has(fid)) continue;
+        const fu = await ctx.get(`${ONLINE_ORDERS_PATH}/${fid}`);
+        if (fu && !isTerminal(fu.status)) { kept.add(fid); await maintainOrder(ctx, fid, fu); }
+      }
+    } catch (e) {
+      ctx.summary.errors.push(`${id} escalation: ${String(e?.message || e)}`);
+      ctx.log(`  ✗ ${id}: escalation — ${String(e?.message || e)}`);
+    }
+  }
 }
 
 async function releaseFulfilledElsewhere(ctx, id, node, { why = "fulfilled in the Shopify admin with the switch off" } = {}) {
@@ -344,6 +440,7 @@ async function releaseFulfilledElsewhere(ctx, id, node, { why = "fulfilled in th
   log(`  ~ ${order.ref}: ${why} — handled the old way, hold released`);
   await cancelEntries(ctx, { ...order, key: id });
   await syncHolds(ctx, id, order);
+  await dropEscalations(ctx, id, order);
 }
 
 async function cancelEntries(ctx, order) {
@@ -603,9 +700,12 @@ async function syncHolds(ctx, id, order) {
     touched.add(key);
   }
   if (touched.size && Object.keys(want).length) {
-    const status = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}/status`);
-    if (!HOLDING_STATUSES.includes(status)) {
-      for (const key of Object.keys(want)) await db.ref(`${ONLINE_RESERVATIONS_PATH}/${key}/${id}`).set(null);
+    // Re-read: a pack landing meanwhile removes what the packed lines held
+    // (a packed order still holds only its resolving lines).
+    const fresh = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+    const still = fresh && fresh.status !== order.status ? holdRowsFor(fresh) : want;
+    for (const key of Object.keys(want)) {
+      if (!still[key]) await db.ref(`${ONLINE_RESERVATIONS_PATH}/${key}/${id}`).set(null);
     }
   }
   // The reconciler pushes a product when its dirty marker moves — so a hold
@@ -618,7 +718,7 @@ async function syncHolds(ctx, id, order) {
 
 // ── 3. Shopify fulfilment after the pack ─────────────────────────────────────
 async function shipOrder(ctx, id, order) {
-  const { db, graphql, now, log } = ctx;
+  const { db, now, log } = ctx;
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
   await closeHubOrders(ctx, { ...order, key: id });
   // The order goes to bookShipment WITH its key (the record carries
@@ -693,8 +793,9 @@ async function shipOrder(ctx, id, order) {
     // customer, carrier "The Courier Guy" (the typed tracking field is gone;
     // an older order's typed number still counts when there is no waybill).
     const trackingNumber = waybill || order.fulfil?.trackingNumber || null;
-    out = await fulfilOnShopify(graphql, {
-      orderGid: order.shopifyGid,
+    // Only the lines in this parcel (partialFulfil.mjs) when a pack left lines
+    // resolving or this is a follow-up; the whole order otherwise, as before.
+    out = await fulfilParcel(ctx, id, order, {
       trackingNumber,
       trackingCompany: waybill ? COURIER_COMPANY : null,
     });

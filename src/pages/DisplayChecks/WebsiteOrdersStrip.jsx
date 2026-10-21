@@ -18,6 +18,7 @@ import { getDatabase, ref, get } from "firebase/database";
 import { functions } from "../../firebase";
 import { FONT, MONO, INK, PANEL, META } from "./tokens";
 import { ONLINE_ORDERS_CONFIG_PATH } from "../../utils/onlineOrders";
+import { CheckProperlyBanner } from "./CheckCard";
 
 export const DEFAULT_HANDOVER_TEXT = "Give to Till 2";
 const RED = "#FF453A";
@@ -65,6 +66,8 @@ function Row({ store, row, handover }) {
         <div style={{ fontFamily: MONO, fontSize: 12, color: "rgba(233,238,255,.6)", marginTop: 2 }}>
           {size ? `SIZE ${size} · ` : ""}QTY {row.qty || 1} · <span style={{ color: GREEN, fontWeight: 700 }}>{row.ref || "—"}</span>
         </div>
+        {/* Escalation round 2: this shop answered Not found once already. */}
+        {row.checkProperly === true && <div role="alert" data-testid="web-check-properly" style={{ marginTop: 6 }}><CheckProperlyBanner /></div>}
         <div style={{ fontFamily: FONT, fontSize: 13, color: INK, marginTop: 4 }}>{`Pull and ${handover.charAt(0).toLowerCase()}${handover.slice(1)}`}</div>
         {error && <div style={{ fontFamily: FONT, fontSize: 12, color: RED, marginTop: 4 }}>{error}</div>}
       </div>

@@ -12712,6 +12712,9 @@ function WarehouseView({ products = [], orders, onExit }) {
         // card-level createdAt can no longer stand in for it.
         createdAt: o.createdAt,
         qty: o.qty || 1,
+        // A website-order escalation (docs/ONLINE-ORDERS.md § Escalation):
+        // the card names the order its size is for.
+        webRef: typeof o.onlineRef === "string" ? o.onlineRef : null,
         status: o.clothingRefillStatus || null,
         refilledQty: o.clothingRefilledQty ?? null,   // units actually sent (partial-aware)
         refilledCountedQty: o.clothingRefilledCountedQty ?? null,     // portion that was a real hub transfer
@@ -13950,6 +13953,13 @@ function WarehouseView({ products = [], orders, onExit }) {
                       <svg width="10" height="10" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                       {order.customerName}{order.customerPhone ? ` · ${order.customerPhone}` : ""}
                     </div>
+                    {/* A website order the hub already marked Out of Stock once —
+                        escalation round 2 (docs/ONLINE-ORDERS.md § Escalation). */}
+                    {order.channel === "online" && order.checkProperly === true && (
+                      <div role="alert" style={{ marginTop:6, padding:"6px 9px", borderRadius:8, background:"rgba(255,107,107,.14)", border:"2px solid #FF6B6B", color:"#FF6B6B", fontSize:12, fontWeight:900, letterSpacing:".04em" }}>
+                        CHECK PROPERLY — website order
+                      </div>
+                    )}
                     {(order.requestDisplay || order.requestDisplayPartner) && (
                       <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginTop:3 }}>
                         {order.requestDisplay && <span style={{ background:"rgba(60,110,255,.1)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.25)", borderRadius:10, padding:"1px 7px", fontSize:9, fontWeight:600 }}>Display</span>}
@@ -14882,6 +14892,11 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
                 {batch.shadow ? "AUTO (SHADOW)" : "AUTO"}
               </span>
             )}
+            {[...new Set((batch.items || []).map((it) => it.webRef).filter(Boolean))].map((r) => (
+              <span key={r} data-web-ref style={{ marginLeft:6, fontSize:9, fontWeight:800, color:"#4ACA7A", border:"1px solid rgba(74,202,122,.45)", borderRadius:5, padding:"1px 5px", verticalAlign:"middle", letterSpacing:".06em" }}>
+                WEBSITE · {r}
+              </span>
+            ))}
           </div>
         </div>
         <span style={{ flexShrink:0, fontSize:10.5, fontWeight:700, color:BLUE_L, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"3px 9px", whiteSpace:"nowrap" }}>
@@ -14933,7 +14948,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
                     ✕
                   </button>
                   <div style={{ display:"flex", alignItems:"baseline", justifyContent:"space-between", marginBottom:5 }}>
-                    <span style={{ fontSize:12, color:BLUE_L, fontWeight:700 }}><SizeTag size={it.size} /></span>
+                    <span style={{ fontSize:12, color:BLUE_L, fontWeight:700 }}><SizeTag size={it.size} />{it.webRef && <span data-web-ref style={{ marginLeft:4, fontSize:8.5, fontWeight:800, color:"#4ACA7A" }}>{it.webRef}</span>}</span>
                     <span style={{ fontSize:9, color:"rgba(255,255,255,.4)" }}>×{it.qty}</span>
                   </div>
                   {rejected ? (
