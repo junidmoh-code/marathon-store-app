@@ -358,14 +358,30 @@ function saleCheckOf({ poolKey, used, sale, saleCustomerId }) {
  * Only acts on the settlement that attached THIS sale id; anything else
  * (reversed, re-settled) is "gone" and the breadcrumb is simply cleared.
  */
-function laterSaleCheckDecision(current, { saleId, saleCheck, at, ageMs, maxAgeMs }) {
+function laterSaleCheckDecision(current, { saleId, saleCheck, at, ageMs, maxAgeMs, poolKey = null }) {
   if (!current?.used || current.status !== "used" || current.used.sale?.saleId !== saleId) {
     return { ok: false, code: "gone", message: "the settlement no longer holds that sale" };
   }
-  if (current.used.sale.verified === true) return { ok: true, already: true, outcome: "done" };
+  // A verified sale whose remainder is held ONLY for want of the sale becomes
+  // the customer's credit (promoted: the caller mints it). Also on a sale an
+  // earlier pass already verified — the records that pass left on hold.
+  const promote = (base) => {
+    // Only on a sale THIS pass read back and matched — never on the strength
+    // of an earlier verified stamp alone (the sale may since have changed).
+    if (!poolKey || saleCheck?.state !== "verified" || !promotableHoldOf(base)) return null;
+    const remainder = promotedRemainderOf(poolKey, base, at);
+    return remainder ? { ...base, used: { ...base.used, remainder } } : null;
+  };
+  if (current.used.sale.verified === true) {
+    const promoted = promote(current);
+    if (promoted) return { ok: true, outcome: "done", promoted: true, value: promoted };
+    return { ok: true, already: true, outcome: "done" };
+  }
   if (saleCheck?.state === "verified") {
     const { saleMismatch: _s, ...rest } = current.used;
-    return { ok: true, outcome: "done", value: { ...current, used: { ...rest, sale: { ...current.used.sale, verified: true, verifiedAt: at } } } };
+    const verified = { ...current, used: { ...rest, sale: { ...current.used.sale, verified: true, verifiedAt: at } } };
+    const promoted = promote(verified);
+    return promoted ? { ok: true, outcome: "done", promoted: true, value: promoted } : { ok: true, outcome: "done", value: verified };
   }
   const why = saleCheck?.state === "mismatch" ? saleCheck.why
     : ageMs > maxAgeMs ? "the sale this payment was attached to never reached the server" : null;
@@ -383,6 +399,50 @@ function flagSaleMismatchDecision(current, { saleId, legCents, why, at }) {
     ok: true,
     value: { ...current, used: { ...current.used, saleMismatch: { saleId: String(saleId ?? ""), legCents: legCents ?? null, why: String(why ?? ""), at } } },
   };
+}
+
+// ─── A HOLD THAT ONLY WAITED FOR THE SALE (Deran's R1,000, 21 Oct 2026) ─────
+// A till that queues its sale through the offline outbox calls the attach
+// within milliseconds of ringing it, before the outbox has landed the record —
+// so the attach finds no sale and HOLDS the remainder "because the sale could
+// not be checked". The scan checks that very sale a few minutes later, but used
+// to stamp it verified and leave the hold standing: the confirmed customer's
+// credit never appeared and Junid had to issue it by hand. That hold's ONLY
+// reason is gone once the sale reads back right, so the later check now turns
+// it into the credit the attach would have minted had the sale been there.
+// A hold for any OTHER reason (no confirmed customer), one the owner already
+// allocated, or one Junid settled by hand (resolvedByHand) is never touched.
+const SALE_ABSENT_HOLD = "the sale was not on the server when the payment was attached, so it could not be checked";
+
+/** A hold that exists only for want of the sale, whatever its follow-up
+ *  status — it becomes credit once the sale verifies (the till's slip prints
+ *  it as "to follow"). */
+function awaitingSaleHoldOf(current) {
+  const used = current?.used;
+  const r = used?.remainder;
+  return !!(r && current.status === "used"
+    && r.disposition === "unallocated"
+    && r.holdReason === SALE_ABSENT_HOLD
+    && (r.status === "held" || r.status === "pending")
+    && !r.resolvedByHand && !r.allocatedAt
+    && used.customerConfirmed === true);
+}
+
+/** …and may be promoted NOW: HELD only. A pending hold is the attach's own
+ *  follow-up still in flight — promoting under it would let its late "held"
+ *  flip land on the credit (architect review, this PR); the scan keeps the
+ *  sale check and promotes it on a later pass. */
+function promotableHoldOf(current) {
+  return awaitingSaleHoldOf(current) && current.used.remainder.status === "held";
+}
+
+/** The credit plan a promotable hold becomes once its sale is verified — the
+ *  plan remainderPlanOf would have stamped at a verified attach. Null when the
+ *  customer id cannot be a credit (it then stays held, as before). */
+function promotedRemainderOf(poolKey, current, at) {
+  const plan = remainderPlanOf(poolKey, current.used, current.amountCents);
+  if (!plan || plan.disposition !== "credit") return null;
+  return { ...plan, promotedAt: at, promotedFrom: "sale-verified" };
 }
 
 function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poolKey, saleCheck }) {
@@ -413,7 +473,7 @@ function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poo
   // unverified attach keeps it for the owner.
   const used = { ...(verified ? held : current.used), sale: { saleId, receiptNumber: receiptNumber ?? null, at, verified } };
   const remainder = remainderPlanOf(poolKey, used, current.amountCents, {
-    holdReason: verified ? null : "the sale was not on the server when the payment was attached, so it could not be checked",
+    holdReason: verified ? null : SALE_ABSENT_HOLD,
   });
   if (remainder) used.remainder = remainder;
   return { ok: true, value: { ...current, used } };
@@ -433,6 +493,11 @@ function allocateRemainderDecision(current, { poolKey, at, customerId, customerN
     return refuse("no-remainder", "This payment has no held remainder to allocate.");
   }
   const r = current.used.remainder;
+  // Junid already gave this money to the customer by hand — allocating it
+  // too would pay it twice.
+  if (r.resolvedByHand) {
+    return refuse("resolved-by-hand", `This remainder was already issued by hand${r.resolvedByHand.creditId ? ` (credit ${r.resolvedByHand.creditId})` : ""} — nothing was allocated.`);
+  }
   if (r.disposition === "credit") {
     if (r.customerId === customerId) return { ok: true, already: true };
     return refuse("already-credited",
@@ -467,6 +532,12 @@ function allocateRemainderDecision(current, { poolKey, at, customerId, customerN
 function remainderStatusDecision(current, { status, at }) {
   if (!current?.used?.remainder) {
     return refuse("no-remainder", "No remainder on this settlement.");
+  }
+  // A "held" flip is for an UNALLOCATED remainder only: one promoted or
+  // allocated to credit meanwhile must never be parked as held (it would then
+  // never be minted — architect review, this PR).
+  if (status === "held" && current.used.remainder.disposition !== "unallocated") {
+    return refuse("not-unallocated", "This remainder has become store credit — it is not held.");
   }
   if (current.used.remainder.status === status) return { ok: true, already: true };
   return {
@@ -637,4 +708,5 @@ module.exports = {
   pendingRemainderScanAction,
   releaseHoldDecision, RELEASE_REASON_MIN,
   saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
+  SALE_ABSENT_HOLD, promotableHoldOf, awaitingSaleHoldOf,
 };

@@ -454,7 +454,9 @@ test("the scan verifies an attach made before its sale reached the server — an
   const usedRec = { attemptId: "P-1", at: 5, cashierUid: "cashier-uid", customerId: "0821234567", customerConfirmed: true, appliedCents: 5000,
     sale: { saleId: "S-late", receiptNumber: "1", at: 6, verified: false } };
   dbState.reads["eft_pending_sale_checks"] = { [K1]: { at: Date.now() - 60_000, saleId: "S-late" } };
-  dbState.pool[`eft_pool/${K1}/used`] = usedRec;
+  // The scan reads the whole pool RECORD (one record, never the node) — the
+  // promotion of a held remainder needs its status and amount, not just used.
+  dbState.pool[`eft_pool/${K1}`] = { ...PAY, status: "used", used: usedRec, amountCents: 100000 };
   dbState.reads["pos/sales/S-late"] = { customerId: "0821234567", payments: { p: { method: "eft", amount: 50000, eftPoolKey: K1 } } };
   dbState.txCurrent = { ...PAY, status: "used", used: usedRec, amountCents: 100000 };
   await eftRemainderScan();
@@ -465,6 +467,54 @@ test("the scan verifies an attach made before its sale reached the server — an
   assert.equal(dbState.txNext?.used?.sale?.verified, true);
   delete dbState.reads["eft_pending_sale_checks"];
   delete dbState.reads["pos/sales/S-late"];
+  resetPool();
+});
+
+// Deran's R1,000 (21 Oct 2026): the attach ran before the outbox landed the
+// sale, so the remainder was HELD; the scan's later check must turn it into the
+// confirmed customer's credit — breadcrumb first, then the promoted plan.
+test("the scan PROMOTES a remainder held only because the sale was not on the server yet", async () => {
+  resetPool();
+  dbState.sets = {};
+  const usedRec = { attemptId: "P-1", at: 5, cashierUid: "cashier-uid", customerId: "27785056874", customerName: "Deran", customerConfirmed: true, appliedCents: 15000, storeId: "pe", tillId: "till-2",
+    sale: { saleId: "S-46291", receiptNumber: "S-46291", at: 6, verified: false },
+    remainder: { cents: 100000, disposition: "unallocated", customerId: null, customerName: null, creditId: null, status: "held",
+      holdReason: "the sale was not on the server when the payment was attached, so it could not be checked" } };
+  const rec = { ...PAY, status: "used", amountCents: 115000, used: usedRec };
+  dbState.reads["eft_pending_sale_checks"] = { [K1]: { at: Date.now() - 60_000, saleId: "S-46291" } };
+  dbState.pool[`eft_pool/${K1}`] = rec;
+  dbState.reads["pos/sales/S-46291"] = { customerId: "27785056874", payments: { p: { method: "eft", amount: 15000, eftPoolKey: K1 } } };
+  dbState.txCurrent = rec;
+  await eftRemainderScan();
+  assert.ok(dbState.sets[`eft_pending_remainders/${K1}`], "the remainder breadcrumb is down before the promotion");
+  const r = dbState.txNext?.used?.remainder;
+  assert.equal(r?.disposition, "credit");
+  assert.equal(r?.customerId, "27785056874");
+  assert.equal(r?.cents, 100000);
+  assert.equal(dbState.txNext.used.sale.verified, true);
+  delete dbState.reads["eft_pending_sale_checks"];
+  delete dbState.reads["pos/sales/S-46291"];
+  resetPool();
+});
+
+test("the scan KEEPS the sale check when a verified sale's hold is still pending — a later pass promotes it", async () => {
+  resetPool();
+  dbState.sets = {};
+  const usedRec = { attemptId: "P-1", at: 5, cashierUid: "cashier-uid", customerId: "27785056874", customerConfirmed: true, appliedCents: 15000,
+    sale: { saleId: "S-46291", receiptNumber: "S-46291", at: 6, verified: false },
+    remainder: { cents: 100000, disposition: "unallocated", status: "pending",
+      holdReason: "the sale was not on the server when the payment was attached, so it could not be checked" } };
+  const rec = { ...PAY, status: "used", amountCents: 115000, used: usedRec };
+  dbState.reads["eft_pending_sale_checks"] = { [K1]: { at: Date.now() - 60_000, saleId: "S-46291" } };
+  dbState.pool[`eft_pool/${K1}`] = rec;
+  dbState.reads["pos/sales/S-46291"] = { customerId: "27785056874", payments: { p: { method: "eft", amount: 15000, eftPoolKey: K1 } } };
+  dbState.txCurrent = rec;
+  const realLog = console.log; const lines = []; console.log = (...a) => { lines.push(a.join(" ")); };
+  try { await eftRemainderScan(); } finally { console.log = realLog; }
+  assert.equal(dbState.txNext?.used?.remainder?.disposition, "unallocated", "not promoted under a pending follow-up");
+  assert.match(lines.find((l) => l.startsWith("eftRemainderScan done")) ?? "", /"waited":[1-9]/, "the sale check is kept (waited), not cleared");
+  delete dbState.reads["eft_pending_sale_checks"];
+  delete dbState.reads["pos/sales/S-46291"];
   resetPool();
 });
 

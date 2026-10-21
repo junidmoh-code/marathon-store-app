@@ -110,7 +110,7 @@ const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN, releaseHoldDecision,
-  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision, formatRand,
+  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision, formatRand, promotableHoldOf, awaitingSaleHoldOf,
 } = require("../lib/eft-settle.cjs");
 const {
   EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck, paymentFingerprint,
@@ -403,6 +403,10 @@ async function finishRemainder(key) {
     await db.ref(`pos/creditLedger/${claim.customerId}`)
       .transaction((cur) => ledgerApplyDecision(cur, claim, ServerValue.TIMESTAMP, stamp));
     await db.ref(`pos/storeCreditQueue/${claim.creditId}`).remove(); // sides landed — consume the claim
+    // A remainder that was HELD before it became credit (an owner allocate, or
+    // a hold the later sale check promoted) leaves the owner's list here, on
+    // every pass — idempotent, so a crash before it is healed by the retry.
+    await db.ref(`eft_unallocated/${key}`).remove();
     const flip = await runPoolTransaction(key, (cur) => remainderStatusDecision(cur, { status: "issued", at: Date.now() }));
     if (!flip.ok) {
       // The one way this refuses: the owner REVERSED the settlement while the
@@ -418,10 +422,18 @@ async function finishRemainder(key) {
 
   // No customer to credit: the difference is HELD, visibly, never swallowed.
   await db.ref(`eft_unallocated/${key}`).set(buildUnallocatedRecord(key, record, now));
-  await runPoolTransaction(key, (cur) => remainderStatusDecision(cur, { status: "held", at: Date.now() }));
+  const heldFlip = await runPoolTransaction(key, (cur) => remainderStatusDecision(cur, { status: "held", at: Date.now() }));
+  if (!heldFlip.ok && heldFlip.code === "not-unallocated") {
+    // Promoted or allocated to credit while this ran: the credit path owns it
+    // now — take back the list entry just written, and leave the breadcrumb.
+    await db.ref(`eft_unallocated/${key}`).remove();
+    return { ...summary, status: "pending" };
+  }
   await db.ref(`${PENDING_PATH}/${key}`).remove(); // terminal — /eft_unallocated is the record now
-  console.log(`eftPool: remainder of ${r.cents}c on ${key} HELD unallocated (no customer on the sale)`);
-  return { ...summary, status: "held" };
+  console.log(`eftPool: remainder of ${r.cents}c on ${key} HELD unallocated (${r.holdReason || "no customer on the sale"})`);
+  // creditOnVerify: held only until the sale reads back — the scan will make
+  // it the confirmed customer's credit (the till's slip says so).
+  return { ...summary, status: "held", creditOnVerify: awaitingSaleHoldOf(record) };
 }
 
 /** The owner's allocate names a customer by id or by phone; resolve it
@@ -1012,31 +1024,51 @@ exports.eftRemainderScan = onSchedule(
 
     // FIX 5, LATER HALF: attaches made before their sale reached the server.
     const checks = (await db.ref(SALE_CHECK_PATH).once("value")).val() || {};
-    let verified = 0, flagged = 0;
+    let verified = 0, flagged = 0, promoted = 0;
     for (const [key, crumb] of Object.entries(checks)) {
       const saleId = typeof crumb?.saleId === "string" ? crumb.saleId : "";
       if (!/^[0-9a-f]{40}$/.test(key) || !/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) {
         await db.ref(`${SALE_CHECK_PATH}/${key}`).remove(); cleared++; continue;
       }
       try {
-        const [saleSnap, usedSnap] = await Promise.all([
+        const [saleSnap, recordSnap] = await Promise.all([
           db.ref(`pos/sales/${saleId}`).once("value"),
-          db.ref(`${EFT_POOL_PATH}/${key}/used`).once("value"),
+          db.ref(`${EFT_POOL_PATH}/${key}`).once("value"),
         ]);
         const sale = saleSnap.val();
+        const record = recordSnap.val();
         const saleCheck = saleCheckOf({
-          poolKey: key, used: usedSnap.val(), sale,
+          poolKey: key, used: record?.used ?? null, sale,
           saleCustomerId: sale ? await followMerges(sale.customerId ?? null) : undefined,
         });
+        // A hold that may be PROMOTED to credit below: the remainder breadcrumb
+        // goes down FIRST, like every other mint, so a crash between the
+        // transaction and the mint leaves a pending plan the scan finishes.
+        if (promotableHoldOf(record)) {
+          await db.ref(`${PENDING_PATH}/${key}`).set({ at: now });
+        }
         const ageMs = now - (Number.isInteger(crumb.at) ? crumb.at : 0);
         const d = await runPoolTransaction(key, (cur) => laterSaleCheckDecision(cur, {
-          saleId, saleCheck, at: Date.now(), ageMs, maxAgeMs: SALE_CHECK_MAX_AGE_MS,
+          saleId, saleCheck, at: Date.now(), ageMs, maxAgeMs: SALE_CHECK_MAX_AGE_MS, poolKey: key,
         }));
         if (d.outcome === "wait") { waited++; continue; }
         if (d.outcome === "flagged") {
           flagged++;
           console.error(`EFT_SALE_MISMATCH: ${key} sale ${saleId} — ${saleCheck.state === "mismatch" ? saleCheck.why : "never reached the server"}`);
         } else if (d.outcome === "done") verified++;
+        if (d.outcome === "done" && !d.promoted && awaitingSaleHoldOf(record) && record.used.remainder.status === "pending") {
+          // Verified, but the hold's own follow-up has not parked it as held
+          // yet: keep the sale check, so a later pass promotes it (re-reading
+          // the sale) instead of stranding it (architect re-check, this PR).
+          waited++; continue;
+        }
+        if (d.promoted) {
+          // The sale is verified and the hold's only reason is gone: the
+          // confirmed customer's credit is minted now (clears the hold too).
+          const r = await finishRemainder(key);
+          promoted++;
+          console.log(`EFT_REMAINDER_PROMOTED: ${key} sale ${saleId} — ${r?.cents}c → store credit ${r?.creditId} (${r?.status})`);
+        }
         await db.ref(`${SALE_CHECK_PATH}/${key}`).remove();
       } catch (err) {
         stuck++;
@@ -1077,6 +1109,6 @@ exports.eftRemainderScan = onSchedule(
     } catch (err) {
       console.error("EFT_ENFORCEMENT_SCAN_STUCK:", err?.message || err);
     }
-    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged, backfilled, breaches }));
+    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged, promoted, backfilled, breaches }));
   },
 );
