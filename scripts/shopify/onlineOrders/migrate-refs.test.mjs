@@ -27,11 +27,11 @@ describe("migrate WEB-#### → code", () => {
   it("--commit recodes the OPEN order everywhere its ref was copied; cancelled and coded orders are left", async () => {
     const f = fakeDb(world());
     const out = await migrateRefs(f.db, { commit: true, now: 1, rand: seq("KQZBCD"), log: () => {} });
-    expect(out.map((o) => [o.from, o.to])).toEqual([["WEB-1769", "KQZ"], ["WEB-1768", "BCD"]]);
-    expect(f.read("online_orders/18960504520853")).toMatchObject({ ref: "BCD", orderNumber: 1768, refMigratedFrom: "WEB-1768" });
-    expect(f.read("online_reservations/CAP/_/18960504520853/ref")).toBe("BCD");
-    expect(f.read("displayChecks_active/marathon-pe/online__18960504520853__0/ref")).toBe("BCD");
-    expect(f.read("online_order_refs/BCD")).toEqual({ orderId: "18960504520853", at: 1 });
+    expect(out.map((o) => [o.from, o.to])).toEqual([["WEB-1768", "KQZ"], ["WEB-1769", "BCD"]]); // "new" before "picking"
+    expect(f.read("online_orders/18960504520853")).toMatchObject({ ref: "KQZ", orderNumber: 1768, refMigratedFrom: "WEB-1768" });
+    expect(f.read("online_reservations/CAP/_/18960504520853/ref")).toBe("KQZ");
+    expect(f.read("displayChecks_active/marathon-pe/online__18960504520853__0/ref")).toBe("KQZ");
+    expect(f.read("online_order_refs/KQZ")).toEqual({ orderId: "18960504520853", at: 1 });
     // A hub line still linked to the retired /online_picks feed is unlinked.
     expect(f.read("online_orders/18960000000001/lines/0/source/entryKey") == null).toBe(true);
     expect(f.read("online_orders/18960491249813/ref")).toBe("WEB-1767");
