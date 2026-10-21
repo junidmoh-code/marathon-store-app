@@ -366,7 +366,9 @@ function laterSaleCheckDecision(current, { saleId, saleCheck, at, ageMs, maxAgeM
   // the customer's credit (promoted: the caller mints it). Also on a sale an
   // earlier pass already verified — the records that pass left on hold.
   const promote = (base) => {
-    if (!poolKey || !promotableHoldOf(base)) return null;
+    // Only on a sale THIS pass read back and matched — never on the strength
+    // of an earlier verified stamp alone (the sale may since have changed).
+    if (!poolKey || saleCheck?.state !== "verified" || !promotableHoldOf(base)) return null;
     const remainder = promotedRemainderOf(poolKey, base, at);
     return remainder ? { ...base, used: { ...base.used, remainder } } : null;
   };
@@ -418,7 +420,10 @@ function promotableHoldOf(current) {
   return !!(r && current.status === "used"
     && r.disposition === "unallocated"
     && r.holdReason === SALE_ABSENT_HOLD
-    && (r.status === "held" || r.status === "pending")
+    // HELD only: a pending hold is the attach's own follow-up still in
+    // flight — promoting under it would let its late "held" flip land on the
+    // credit (architect review, this PR). The next scan pass gets it.
+    && r.status === "held"
     && !r.resolvedByHand && !r.allocatedAt
     && used.customerConfirmed === true);
 }
@@ -519,6 +524,12 @@ function allocateRemainderDecision(current, { poolKey, at, customerId, customerN
 function remainderStatusDecision(current, { status, at }) {
   if (!current?.used?.remainder) {
     return refuse("no-remainder", "No remainder on this settlement.");
+  }
+  // A "held" flip is for an UNALLOCATED remainder only: one promoted or
+  // allocated to credit meanwhile must never be parked as held (it would then
+  // never be minted — architect review, this PR).
+  if (status === "held" && current.used.remainder.disposition !== "unallocated") {
+    return refuse("not-unallocated", "This remainder has become store credit — it is not held.");
   }
   if (current.used.remainder.status === status) return { ok: true, already: true };
   return {

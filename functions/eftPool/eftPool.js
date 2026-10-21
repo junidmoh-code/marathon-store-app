@@ -422,7 +422,13 @@ async function finishRemainder(key) {
 
   // No customer to credit: the difference is HELD, visibly, never swallowed.
   await db.ref(`eft_unallocated/${key}`).set(buildUnallocatedRecord(key, record, now));
-  await runPoolTransaction(key, (cur) => remainderStatusDecision(cur, { status: "held", at: Date.now() }));
+  const heldFlip = await runPoolTransaction(key, (cur) => remainderStatusDecision(cur, { status: "held", at: Date.now() }));
+  if (!heldFlip.ok && heldFlip.code === "not-unallocated") {
+    // Promoted or allocated to credit while this ran: the credit path owns it
+    // now — take back the list entry just written, and leave the breadcrumb.
+    await db.ref(`eft_unallocated/${key}`).remove();
+    return { ...summary, status: "pending" };
+  }
   await db.ref(`${PENDING_PATH}/${key}`).remove(); // terminal — /eft_unallocated is the record now
   console.log(`eftPool: remainder of ${r.cents}c on ${key} HELD unallocated (${r.holdReason || "no customer on the sale"})`);
   // creditOnVerify: held only until the sale reads back — the scan will make
@@ -1038,7 +1044,7 @@ exports.eftRemainderScan = onSchedule(
         // A hold that may be PROMOTED to credit below: the remainder breadcrumb
         // goes down FIRST, like every other mint, so a crash between the
         // transaction and the mint leaves a pending plan the scan finishes.
-        if (promotableHoldOf(record) && saleCheck.state === "verified") {
+        if (promotableHoldOf(record)) {
           await db.ref(`${PENDING_PATH}/${key}`).set({ at: now });
         }
         const ageMs = now - (Number.isInteger(crumb.at) ? crumb.at : 0);

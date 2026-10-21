@@ -36,7 +36,7 @@ async function resolveByHand() {
     db.ref(`pos/storeCredits/${HAND.creditId}`).once("value").then((s) => s.val()),
   ]);
   const r = rec?.used?.remainder;
-  if (!r || r.disposition !== "unallocated" || r.cents !== HAND.cents || rec.used.customerId !== HAND.customerId) {
+  if (!r || r.disposition !== "unallocated" || r.status !== "held" || r.cents !== HAND.cents || rec.used.customerId !== HAND.customerId) {
     console.log(`${HAND.key}: not the expected held R1,000 — left alone`, JSON.stringify(r)); return;
   }
   if (r.resolvedByHand) { console.log(`${HAND.key}: already resolvedByHand`); return; }
@@ -58,12 +58,14 @@ async function resolveByHand() {
 async function requeuePromotion() {
   const rec = (await db.ref(`eft_pool/${PROMOTE.key}`).once("value")).val();
   const r = rec?.used?.remainder;
-  if (!r || r.disposition !== "unallocated" || r.cents !== PROMOTE.cents || rec.used.customerId !== PROMOTE.customerId || r.resolvedByHand) {
+  if (!r || r.disposition !== "unallocated" || r.status !== "held" || r.cents !== PROMOTE.cents || rec.used.customerId !== PROMOTE.customerId || r.resolvedByHand) {
     console.log(`${PROMOTE.key}: not the expected held R40 — left alone`, JSON.stringify(r)); return;
   }
   const since = rec.used.at;
   const txns = (await db.ref(`pos/creditLedger/${PROMOTE.customerId}/txns`).orderByChild("at").startAt(since).once("value")).val() || {};
-  const handIssued = Object.values(txns).filter((t) => t?.kind === "credit" && t.amount === PROMOTE.cents);
+  // Any positive R40 since the sale, whatever its kind/source — a hand credit
+  // must never be doubled.
+  const handIssued = Object.values(txns).filter((t) => t?.amount === PROMOTE.cents);
   if (handIssued.length) { console.log(`${PROMOTE.key}: a R40 credit already exists since the sale — left alone`, JSON.stringify(handIssued)); return; }
   console.log(`${PROMOTE.key}: re-queue the sale check for ${rec.used.sale?.saleId} — the scan promotes R40 to ${PROMOTE.customerId}`);
   if (!EXECUTE) return;

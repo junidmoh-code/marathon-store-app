@@ -49,8 +49,17 @@ stayed held for ever.
    and the credit is minted in the same call. The scan is the backstop, at
    most one run later.
 3. **Slip (marathon-pos-app)**: the sale slip prints **Store credit issued**
-   and the **Store Credit Balance** including it. This covers EFT leftover and
-   refund/exchange credit.
+   and the **Store Credit Balance** including it. This covers EFT leftover,
+   refund/exchange credit and a layby deposit refunded as credit. A leftover
+   still waiting for its sale to sync prints as **Store credit to follow** and
+   is left out of the balance until it is minted. Reprints from sale history
+   show the balance row only, because the issued amount is not on
+   `/pos/sales`.
+4. **Race guards (architect review)**: only a hold whose status is `held` is
+   promoted. A hold still `pending` belongs to the attach's own follow-up, and
+   the next pass picks it up. A late "held" flip is refused once the remainder
+   has become credit. Promotion requires that this pass read the sale back and
+   matched it.
 
 ## Did the two bugs share a cause?
 

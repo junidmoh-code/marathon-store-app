@@ -10,7 +10,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  attachSaleDecision, saleCheckOf, laterSaleCheckDecision, allocateRemainderDecision,
+  attachSaleDecision, saleCheckOf, laterSaleCheckDecision, allocateRemainderDecision, remainderStatusDecision,
   promotableHoldOf, SALE_ABSENT_HOLD, eftCreditIdOf,
 } = require("../lib/eft-settle.cjs");
 const { buildEftCreditClaim, eftCreditMirrorRecord, ledgerApplyDecision } = require("../lib/eft-credit.cjs");
@@ -137,4 +137,32 @@ test("the promoted credit, minted at PE, is spendable at a DIFFERENT store (Trop
   for (const store of ["trophy", "marathon-pe", "marathon-pine", "concrete"]) {
     assert.equal(creditSpendableAt(registry, mirror, store), true, store);
   }
+});
+
+// Architect review, this PR: the attach's own follow-up (pending → held) must
+// not race a promotion into a credit that is then parked as "held" for ever.
+test("RACE: a hold still PENDING (the attach's follow-up in flight) is not promoted — the next pass is", () => {
+  const pending = attachWith(null).value; // status "pending"
+  assert.equal(pending.used.remainder.status, "pending");
+  const d = later(pending, s46291);
+  assert.notEqual(d.promoted, true);
+  assert.equal(d.value.used.remainder.disposition, "unallocated");
+});
+
+test("RACE: a late 'held' flip is refused on a remainder that has become credit", () => {
+  const heldRec = attachWith(null).value;
+  heldRec.used.remainder.status = "held";
+  const promoted = later(heldRec, s46291).value;
+  const flip = remainderStatusDecision(promoted, { status: "held", at: 1 });
+  assert.equal(flip.ok, false);
+  assert.equal(flip.code, "not-unallocated");
+  assert.equal(remainderStatusDecision(promoted, { status: "issued", at: 1 }).ok, true, "the mint's own flip still lands");
+});
+
+test("an earlier verified stamp alone never promotes — this pass must read the sale back and match", () => {
+  const heldRec = attachWith(null).value;
+  heldRec.used.remainder.status = "held";
+  heldRec.used.sale = { ...heldRec.used.sale, verified: true };
+  assert.notEqual(later(heldRec, null).promoted, true, "sale gone");
+  assert.notEqual(later(heldRec, { ...s46291, customerId: "someone-else" }).promoted, true, "sale now names another customer");
 });
