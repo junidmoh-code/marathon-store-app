@@ -38,6 +38,7 @@ const KIND_WORDS = {
   walkin_override: "Sold to a walk-in",
   cancelled_after_pack: "Cancelled after packing",
   fulfil_failed: "Packed, Shopify not updated",
+  courier_failed: "Packed, courier not booked",
 };
 
 // The switch's one write, the /config/transit shape.

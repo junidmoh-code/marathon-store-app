@@ -103,3 +103,14 @@ describe("Rung by hand at a till", () => {
     expect(rows.map((r) => [r.ref, r.lines])).toEqual([["WEB-2", 2], ["WEB-1", 1]]);
   });
 });
+
+describe("courier_failed (Packed, courier not booked)", () => {
+  it("Resolve is 'Retry courier' and only puts the order back to pending", async () => {
+    const { resolveLabel, resolveAttentionUpdates } = await import("./attention.js");
+    expect(resolveLabel("courier_failed")).toBe("Retry courier");
+    expect(resolveAttentionUpdates("9001", { attention: { kind: "courier_failed" } })).toEqual({
+      "online_orders/9001/attention": null, "online_orders/9001/attentionOpen": null,
+      "online_orders/9001/fulfilState": "pending", "online_orders/9001/fulfil/state": "pending",
+    });
+  });
+});

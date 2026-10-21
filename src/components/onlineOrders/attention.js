@@ -39,6 +39,7 @@ export function orderLineEntries(order) {
 export function resolveLabel(kind) {
   if (REROUTE_KINDS.has(kind)) return "Re-route";
   if (kind === ATTENTION_KIND.FULFIL_FAILED) return "Retry Shopify";
+  if (kind === ATTENTION_KIND.COURIER_FAILED) return "Retry courier";
   if (kind === ATTENTION_KIND.CANCELLED_AFTER_PACK) return "Acknowledge";
   return null;
 }
@@ -61,7 +62,9 @@ export function resolveAttentionUpdates(orderId, order) {
     }
     return out;
   }
-  if (kind === ATTENTION_KIND.FULFIL_FAILED) {
+  // Both hand the order back to the Mac mini: it re-runs the courier booking
+  // (only if there is no waybill yet), then the Shopify fulfilment. Never a sale.
+  if (kind === ATTENTION_KIND.FULFIL_FAILED || kind === ATTENTION_KIND.COURIER_FAILED) {
     return { ...clear, [`${base}/fulfilState`]: "pending", [`${base}/fulfil/state`]: "pending" };
   }
   if (kind === ATTENTION_KIND.CANCELLED_AFTER_PACK) return clear;
