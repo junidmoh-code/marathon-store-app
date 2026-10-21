@@ -534,7 +534,11 @@ async function shipOrder(ctx, id, order) {
   // otherwise the order would stay pending and be re-quoted every tick.
   let booking;
   try {
-    booking = await bookShipment({ ...order, key: id }, { db, ...(ctx.courier ? { client: ctx.courier } : {}) });
+    booking = await bookShipment({ ...order, key: id }, {
+      db,
+      ...(ctx.courier ? { client: ctx.courier } : {}),
+      ...(ctx.courierLog ? { log: ctx.courierLog } : {}), // default: logs/courier.log
+    });
   } catch (e) {
     booking = { skipped: true, error: String(e?.message || e).slice(0, 300) };
     log(`  ! ${order.ref}: courier booking failed — ${booking.error}`);

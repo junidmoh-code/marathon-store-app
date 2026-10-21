@@ -99,6 +99,7 @@ function deps(f, sh, over = {}) {
       resolveAssignment: ({ roster }) => roster?.days?.wed?.uid ?? null,
       log: () => {},
       courier: fakeCourier(),
+      courierLog: () => {}, // never write logs/courier.log from a test
       ...over,
     },
   };
@@ -347,6 +348,8 @@ describe("Shopify fulfilment after the pack", () => {
       expect(booking.skipped).toBe(true);
       expect(booking.dryRun).toMatchObject({ customer_reference: "WEB-1801", delivery_address: { city: "Cape Town", zone: "WC", code: "7441" } });
       expect(courier.calls.map(([op]) => op)).toEqual(["getRates", "getRates"]);
+      // The fake client is the network boundary; this proves nothing behind
+      // it (or beside it) reached for fetch either.
       expect(fetched).toBe(0);
       expect(out.fulfilled).toBe(1); // the Shopify fulfilment still went ahead
       expect(f.read("online_orders/9001/shipping/provider") == null).toBe(true); // never booked
