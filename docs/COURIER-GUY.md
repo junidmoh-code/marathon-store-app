@@ -165,9 +165,8 @@ Every number the estimator uses is editable there with an **unmeasured**
 marker; tick "measured" once a number is real. The live switch is shown
 disabled ("Enable after measurement"); nothing on the card books.
 
-"Test an order" takes the order's **/online_orders key** — the Shopify order
-id (the website-order ingester keys orders by it; `WEB-1042` is a field, not a
-key). It reads that one order, shows the parcel, and "Get live quotes" asks
+"Test an order" takes the order's three-letter code (KQZ — looked up through
+`/online_order_refs/{code}`) or its /online_orders key (the Shopify order id). It reads that one order, shows the parcel, and "Get live quotes" asks
 the Mac mini's quote runner for door + locker rates.
 
 ## Rules (not deployed by this build — paste into database.rules.json)
@@ -230,3 +229,22 @@ derives the key from `order.shopifyGid` (the ingester always writes it). If
 that ever changes, the call must become `bookShipment({ ...order, key: id })`.
 Without a key, bookShipment throws before any call; it never falls back to
 the WEB- ref.
+
+## The parcel rule (Junid, 21 Oct 2026)
+
+The sneaker box is the unit — 34 × 23 × 13 cm outer (range 33–35 / 22–24 /
+12–14, midpoint until measured; editable on the Shipping card).
+
+- Each pair (adult; kids and slides too unless the card says otherwise) = one
+  shoebox parcel, 1.3 kg with the pair (size bands 1.2 / 1.3 / 1.4).
+- Soft and small goods are stuffed into the order's shoeboxes — weight only —
+  first box first, up to 1.2 kg each (editable); the overflow gets its own flat
+  parcel only when every shoebox is full.
+- No footwear: the smallest flat box from the box list.
+- N pairs = ONE shipment with N shoebox parcels, unless "combine pairs" is on.
+- Chargeable = max(actual, volumetric) per parcel.
+- Door-to-door for every order (the drop box is off until locker costing rules
+  exist; a locker is only ever asked for a one-parcel shipment).
+
+The poller writes the estimate to `online_orders/{id}/shipping/estimate`; the
+POS order card shows it before Pack, and bookShipment sends every parcel.

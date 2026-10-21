@@ -16,7 +16,7 @@ webhook). The pack step is the only writer of an `channel: "online"` sale.
 
 | What | Where | Default |
 |---|---|---|
-| Staff-visible feeds (hub picks, display entries, walk-in guard) | `/config/onlineOrders/enabled` | absent = **off** |
+| Staff-visible feeds (hub orders, the Display Checks strip, walk-in guard) | `/config/onlineOrders/enabled` | absent = **off** |
 | The POS Online Orders tab | `/users/{uid}/permissions` contains `online_orders` **and** `/users/{uid}/permFlags/online_orders === true` (rules read the flag) | Junid only |
 
 Orders poll in and reserve from day one, whatever the switch says. When the
@@ -32,7 +32,7 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
        ├─ /online_reservations/{pid}/{size}/{orderId}   the hold
        ├─ routeLine() per line               source {locationId, status}
        └─ when /config/onlineOrders/enabled:
-            pick    → /online_picks/{orderId}_{i}                 (hub Warehouse queue)
+            pick    → /orders/{code}[-n] (customer "Shopify", channel online) — the hub's own Warehouse queue + the TV
             display → /displayChecks_active/{store}/online__{orderId}__{i}  (shop feed)
   hub "Handed over" / shop "Handed to packer"  → line source.status "handed"
   POS Online Orders tab (marathon-pe): basket by scan / tap → Pack
@@ -55,7 +55,7 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
 
 | Field | Meaning |
 |---|---|
-| `ref` | `WEB-{order number}`; the prefix is `ONLINE_ORDER_PREFIX` (`src/utils/onlineOrders.js`) |
+| `ref` | a three-letter code (KQZ: A–Z without I/O), unique for 180 days via `/online_order_refs/{code} = {orderId, at}`; the Shopify number is `orderNumber` |
 | `orderNumber`, `shopifyGid`, `shopifyName` | Shopify identity |
 | `status` | `new` · `picking` · `ready` · `needs_attention` · `packed` · `cancelled` · `fulfilled_elsewhere` · `release_requested` (indexed) |
 | `customer` | `{ name, phone, email }` |
@@ -181,16 +181,19 @@ waits for it), `lastRunAt`.
 
 ## Feeds (only while the switch is on)
 
-- `/online_picks/{orderId}_{i}` — `{ kind: "online_pick", orderId, ref, lineIndex,
-  locationId, locStatus: "hub1|open", productId, size, qty, title, photoUrl,
-  instruction: "Give to Yasmin at Marathon PE", status: open|handed|cancelled, createdAt }`.
-  Listed in the hub's Warehouse queue by `orderByChild("locStatus").equalTo("{hub}|open")`.
-  "Handed over" is one tap: the pick and the order line flip to `handed` in one
-  update. No transfer, no movement.
-- `/displayChecks_active/{store}/online__{orderId}__{i}` — a display-check record
-  with `kind: "online_pick"`, `ref`, `orderId`, `lineIndex`, `qty`, `instruction`.
-  Verdicts "Handed to packer" (`handed`) and "Not found" (`not_found`) go through
-  the existing `completeDisplayCheck` callable, which also flips the order line.
+- **Hub orders** (`/orders/{code}`, `{code}-{line}`, `{code}-{line}-{unit}`): the
+  EXISTING store-order record the Assistant writes, field for field, one per
+  unit, with `customerName: "Shopify"`, `customerPhone: null` (so no customer
+  message of any kind), `channel: "online"`, `onlineOrderId`, `onlineLineIndex`.
+  Hub 1/Hub 2 Mark as Sent as usual — **no stock moves on Send for channel
+  online** (`src/utils/dispatchStockPolicy.js`). The TV shows the code and never
+  speaks it. The poller copies the hub's outcome onto the line (sent → handed,
+  from that hub; out of stock → no_stock; other size → needs_attention) and
+  marks the hub orders collected after the Pack. The POS never sells or indexes
+  a channel-online order — the Pack is the one deduction.
+- **Display Checks strip** ("Website orders", top of Today): the shop's
+  `kind: "online_pick"` display-check records (same gate, same locks), "Pull and
+  give to Till 2" (`/config/onlineOrders/handoverText`), Handed over / Not found.
 
 ## Pack (POS)
 
