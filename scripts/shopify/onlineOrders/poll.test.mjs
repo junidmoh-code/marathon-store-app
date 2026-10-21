@@ -315,6 +315,18 @@ describe("feed entries", () => {
     });
   });
 
+  it("the parcels the POS shows before Pack are on the order (the parcel rule), rewritten only when the lines change", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    const est = order(f).shipping.estimate;
+    // 2 pairs (SNK ×2) = 2 shoeboxes; the 2 tees ride inside them.
+    expect(est).toMatchObject({ parcelCount: 2 });
+    expect(est.parcels.map((p) => p.kind)).toEqual(["shoebox", "shoebox"]);
+    const n = f.writes.length;
+    await runOrdersPoll(deps(f, shopify()).deps);
+    expect(f.writes.slice(n).filter(([, p]) => p.includes("/shipping/estimate"))).toEqual([]);
+  });
+
   it("every line handed → ready", async () => {
     const f = fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
     await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
@@ -436,7 +448,7 @@ describe("Shopify fulfilment after the pack", () => {
       const booking = order(f).shipping.booking;
       expect(booking.skipped).toBe(true);
       expect(booking.dryRun).toMatchObject({ customer_reference: "KQZ", delivery_address: { city: "Cape Town", zone: "WC", code: "7441" } });
-      expect(courier.calls.map(([op]) => op)).toEqual(["getRates", "getRates"]);
+      expect(courier.calls.map(([op]) => op)).toEqual(["getRates"]); // door-to-door: one quote
       // The fake client is the network boundary; this proves nothing behind
       // it (or beside it) reached for fetch either.
       expect(fetched).toBe(0);

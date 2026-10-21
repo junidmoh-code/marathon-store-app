@@ -59,13 +59,13 @@ describe("bookShipment — dry run (live off)", () => {
     expect(res.skipped).toBe(true);
     expect(res.dryRun).toEqual({
       collection_address: expect.objectContaining({ company: "Bhoola Centre Shop Nr 9", code: "4001" }),
-      collection_pickup_point_id: "CG0000",
-      collection_pickup_point_provider: "tcg-locker",
       collection_contact: CONTACT,
       delivery_address: { type: "residential", company: "", street_address: "5 Esplanade Road", local_area: "Century City", city: "Cape Town", zone: "WC", country: "ZA", code: "7441" },
       delivery_contact: { name: "A Customer", mobile_number: "0820000000", email: "a@example.com" },
-      parcels: [{ parcel_description: "Retail", submitted_length_cm: 35, submitted_width_cm: 23, submitted_height_cm: 14, submitted_weight_kg: 1.5 }],
-      service_level_code: "L2DM - ECO",
+      // The parcel rule: one pair = one shoebox, 34×23×13, 1.3 kg (size 9).
+      parcels: [{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.3 }],
+      // Door-to-door: the cheapest door service quoted (Cape Town → ECO).
+      service_level_code: "ECO",
       customer_reference: "KQZ",
       customer_reference_name: "Order no.",
       mute_notifications: false,
@@ -74,12 +74,22 @@ describe("bookShipment — dry run (live off)", () => {
     expect(logs.join("\n")).toContain(JSON.stringify(res.dryRun));
   });
 
-  it("a parcel over the drop-box threshold is a door booking on the cheapest door service", async () => {
+  it("ten pairs = ONE shipment of ten shoebox parcels, door-to-door on the cheapest door service", async () => {
     const client = fakeClient();
     const res = await bookShipment(DOOR_ORDER(), deps(db(false), client));
+    expect(res.dryRun.parcels).toHaveLength(10);
+    expect(res.dryRun.parcels.every((p) => p.submitted_length_cm === 34 && p.submitted_height_cm === 13)).toBe(true);
     expect(res.dryRun.service_level_code).toBe("ECO");
     expect(res.dryRun).not.toHaveProperty("collection_pickup_point_id");
     expect(res.quote).toMatchObject({ mode: "door", code: "ECO" });
+  });
+
+  it("with the drop box switched ON, a one-parcel order may go from a locker", async () => {
+    const client = fakeClient();
+    const d = fakeDb({ config: { shipping: { live: false, collectionContact: CONTACT, dropBox: { enabled: true } } }, online_orders: { 1001: { ref: "KQZ" } } });
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(client.calls.map((c) => c[0])).toEqual(["getRates", "getRates"]);
+    expect(res.dryRun).toMatchObject({ collection_pickup_point_id: "CG0000", service_level_code: "L2DM - ECO" });
   });
 
   it("an empty collection contact still dry-runs, naming what would stop a live booking", async () => {
@@ -100,7 +110,7 @@ describe("bookShipment — dry run (live off)", () => {
   it("rates are allowed with live off (they book nothing)", async () => {
     const client = fakeClient();
     await bookShipment(ORDER(), deps(db(false), client));
-    expect(client.calls.map((c) => c[0])).toEqual(["getRates", "getRates"]);
+    expect(client.calls.map((c) => c[0])).toEqual(["getRates"]); // door-to-door: one quote
   });
 
   it("writes nothing to the order", async () => {
@@ -116,7 +126,7 @@ describe("THE LIVE-FLAG GUARD — no shipment call can be reached unless live ==
     ["locker", ORDER()],
     ["door", DOOR_ORDER()],
     ["booked", ORDER({ shipping: { ...ORDER().shipping, provider: "courier_guy", shipmentId: 1, waybill: "LD-X", trackingReference: "X" } })],
-    ["oversize", ORDER({ lines: [{ category: "Footwear", subcategory: "Sneakers", size: "10", qty: 20 }] })],
+    ["oversize", ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty: 30 }] })],
   ];
   for (const live of NOT_LIVE) {
     for (const [name, order] of ORDERS) {
@@ -139,7 +149,7 @@ describe("bookShipment — live", () => {
     expect(client.shipmentCalls()[0][1].customer_reference).toBe("KQZ");
     expect(res).toEqual({
       provider: "courier_guy", shipmentId: 0, waybill: "LD-TEST01", trackingReference: "TEST01",
-      service: "L2DS - ECO", parcel: expect.objectContaining({ boxCode: "SHOE" }), cost: 100, bookedAt: 1_700_000_000_000,
+      service: "L2DS - ECO", parcel: expect.objectContaining({ parcelCount: 1 }), cost: 100, bookedAt: 1_700_000_000_000,
     });
     expect(d.root.online_orders["1001"].shipping).toMatchObject({ provider: "courier_guy", waybill: "LD-TEST01", courierBooking: { state: "booked" } });
   });
@@ -179,7 +189,7 @@ describe("bookShipment — live", () => {
     const d = fakeDb({ config: { shipping: { live: true } }, online_orders: { 1001: { ref: "KQZ" } } });
     const client = fakeClient();
     expect((await bookShipment(ORDER(), deps(d, client))).reason).toBe("collection_contact");
-    const res = await bookShipment(ORDER({ lines: [{ category: "Footwear", subcategory: "Sneakers", size: "10", qty: 20 }] }), deps(db(true), client));
+    const res = await bookShipment(ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty: 30 }] }), deps(db(true), client));
     expect(res.reason).toMatch(/no standard box fits/);
     expect(client.shipmentCalls()).toEqual([]);
   });

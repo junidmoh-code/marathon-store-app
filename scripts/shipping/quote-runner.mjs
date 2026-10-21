@@ -36,16 +36,20 @@ export async function answerQuoteRequest({ db, client, id, req, now = Date.now()
       return null;
     }
     const cfg = mergeShippingConfig((await db.ref("config/shipping").get()).val());
-    const parcel = req.parcel ?? {};
+    // A request carries the shipment's parcels (the parcel rule); an older
+    // card sent one `parcel`.
+    const parcels = Array.isArray(req.parcels) ? req.parcels : [req.parcel ?? {}];
+    const dropBoxOn = cfg.dropBox?.enabled === true;
     const quoted = await quoteParcel(client, {
       collectionAddress: req.collectionAddress ?? cfg.collectionAddress,
       deliveryAddress: req.deliveryAddress,
-      parcel,
-      dropBox: req.dropBox ?? { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider },
+      parcels,
+      dropBox: dropBoxOn ? { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider } : null,
     });
     answer.door = quoted.door;
     answer.locker = quoted.locker;
-    const eligible = !!chooseLocker([parcel.lengthCm, parcel.widthCm, parcel.heightCm].map(Number), Number(parcel.actualKg), cfg.dropBox);
+    const one = parcels.length === 1 ? parcels[0] : null;
+    const eligible = !!one && !!chooseLocker([one.lengthCm, one.widthCm, one.heightCm].map(Number), Number(one.actualKg), cfg.dropBox);
     const chosen = chooseRate({ door: quoted.door.rates, locker: quoted.locker.rates }, { dropBoxEligible: eligible }, cfg);
     answer.chosen = chosen ? { mode: chosen.mode, code: chosen.rate.code, name: chosen.rate.name, rate: chosen.rate.rate } : null;
   } catch (err) {

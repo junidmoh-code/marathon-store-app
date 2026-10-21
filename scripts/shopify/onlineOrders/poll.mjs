@@ -34,7 +34,7 @@ import {
   displayKey, displayEntry, hubOrderKeys, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
-import { bookShipment, readLive } from "./shipping.mjs";
+import { bookShipment, readLive, estimateForOrder } from "./shipping.mjs";
 import { mintOrderRef } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
@@ -497,6 +497,9 @@ async function maintainOrder(ctx, id, order) {
   ctx.summary.entries += entryKeys.size;
   // (d) HOLDS follow the lines, whatever the commit did.
   await syncHolds(ctx, id, committed || order);
+  // (e) THE PARCELS the POS shows before Pack — recomputed only when the lines
+  // change. Best-effort: a parcel estimate never blocks the order.
+  await refreshEstimate(ctx, id, committed || order);
 }
 
 // → { entryKey, orderKeys? } — what the line's source records about its entry.
@@ -750,5 +753,16 @@ async function closeHubOrders(ctx, order) {
         return { ...cur, status: "collected", collectedAt: iso, updatedAt: iso };
       });
     }
+  }
+}
+
+async function refreshEstimate(ctx, id, order) {
+  if (!order || isTerminal(order.status) || order.status === ORDER_STATUS.PACKED) return;
+  try {
+    const est = await estimateForOrder({ ...order, key: id }, { db: ctx.db });
+    if (order.shipping?.estimate?.sig === est.sig) return;
+    await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/estimate`).set(JSON.parse(JSON.stringify({ ...est, at: ctx.now })));
+  } catch (e) {
+    ctx.log(`  ! ${order.ref}: parcel estimate not written — ${String(e?.message || e).slice(0, 160)}`);
   }
 }

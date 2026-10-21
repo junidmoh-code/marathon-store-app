@@ -93,7 +93,7 @@ describe("the live switch", () => {
     expect(r.path).toBe("config/shipping");
     expect(payload).not.toHaveProperty("live");
     expect(payload.volumetricDivisor).toBe(5000);
-    expect(Object.keys(payload).sort()).toEqual(["boxes", "collectionAddress", "collectionContact", "divisorByServiceGroup", "doorServiceCode", "dropBox", "excludeServiceCodes", "items", "maxChargeRand", "volumetricDivisor"]);
+    expect(Object.keys(payload).sort()).toEqual(["boxes", "collectionAddress", "collectionContact", "divisorByServiceGroup", "doorServiceCode", "dropBox", "excludeServiceCodes", "items", "maxChargeRand", "shoebox", "volumetricDivisor"]);
   });
 
   it("every unmeasured seed carries the marker", async () => {
@@ -154,7 +154,7 @@ describe("test an order", () => {
     expect(pushMock.mock.calls[0][0].path).toBe("shipping_quotes/requests");
     expect(setMock).toHaveBeenCalledTimes(1);
     expect(setMock.mock.calls[0][0].path).toBe("shipping_quotes/requests/req1");
-    expect(setMock.mock.calls[0][1]).toMatchObject({ ref: "W1001", parcel: { lengthCm: 35, widthCm: 23, heightCm: 14, actualKg: 1.5 } });
+    expect(setMock.mock.calls[0][1]).toMatchObject({ ref: "W1001", parcels: [{ lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.3 }] });
     expect(onValueMock.mock.calls.map((c) => c[0].path)).toEqual(["shipping_quotes/answers/req1"]);
   });
 });

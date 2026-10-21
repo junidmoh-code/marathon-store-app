@@ -35,7 +35,7 @@ import { mergeShippingConfig } from "../../src/shipping/shippingConfig.js";
 import { chooseRate } from "../../src/shipping/chooseService.js";
 import { orderLines, deliveryAddress, deliveryContact, orderRef, orderKey as keyOf } from "../../src/shipping/orderShipment.js";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
-import { quoteParcel, tcgParcel, lockerCollection } from "./quote.mjs";
+import { quoteParcel, tcgParcels, lockerCollection } from "./quote.mjs";
 import { fileLogger } from "./courier-client.mjs";
 
 export const LIVE_PATH = "config/shipping/live";
@@ -105,8 +105,11 @@ export async function planShipment(order, { db, client, products = null }) {
     ...(!parcel.fits ? ["no standard box fits"] : []),
   ];
 
-  const dropBox = { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider };
-  const quoted = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: address, parcel, dropBox });
+  // The locker is only asked when the drop box is ON (door-to-door otherwise).
+  const dropBox = cfg.dropBox?.enabled
+    ? { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider }
+    : null;
+  const quoted = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: address, parcels: parcel.parcels, dropBox });
   const chosen = chooseRate({ door: quoted.door.rates, locker: quoted.locker.rates }, parcel, cfg);
   if (!chosen) {
     return { ok: false, reason: `no usable rate (door: ${quoted.door.error ?? "none"}; locker: ${quoted.locker.error ?? "none"})`, parcel, quoted };
@@ -124,7 +127,8 @@ export async function planShipment(order, { db, client, products = null }) {
     collection_contact: { name: collectionContact.name ?? "", mobile_number: collectionContact.mobile_number ?? "", email: collectionContact.email ?? "" },
     delivery_address: address,
     delivery_contact: contact,
-    parcels: [tcgParcel(parcel)],
+    // ONE shipment, every parcel of the parcel rule (N shoeboxes + any flat box).
+    parcels: tcgParcels(parcel.parcels),
     service_level_code: chosen.rate.code,
     customer_reference: ref,
     customer_reference_name: "Order no.",
@@ -260,4 +264,26 @@ export async function cancelShipment(order, deps = {}) {
   await db.ref(`online_orders/${key}/shipping`).update(patch);
   log(`cancelShipment ${key} CANCELLED ${trackingReference}`);
   return { ...s, ...patch };
+}
+
+/**
+ * The parcels an order will ship as — the parcel rule over its lines, with
+ * the live /config/shipping — in the small shape the POS order card shows
+ * before Pack. No rates, no network. `sig` changes when the lines do.
+ */
+export async function estimateForOrder(order, { db, products = null }) {
+  const cfg = mergeShippingConfig((await db.ref("config/shipping").get()).val());
+  const lines = orderLines(order, products ?? (await productsFor(db, order)));
+  const sig = lines.map((l) => `${l.productId}|${l.size}|${l.qty}`).join(";");
+  const est = estimateParcel(lines, cfg);
+  return {
+    sig,
+    parcelCount: est.parcelCount,
+    chargeableKg: est.chargeableKg,
+    parcels: est.parcels.map((p) => ({
+      kind: p.kind, boxCode: p.boxCode, lengthCm: p.lengthCm, widthCm: p.widthCm, heightCm: p.heightCm,
+      actualKg: p.actualKg, chargeableKg: p.chargeableKg, items: p.contents.length,
+      ...(p.contents.length ? { contents: p.contents.map((c) => c.kind) } : {}),
+    })),
+  };
 }

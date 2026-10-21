@@ -28,7 +28,7 @@ import { assertSafeSegment } from "../../utils/sizeKey.js";
 
 export const QUOTE_TIMEOUT_MS = 60_000;
 
-const EDITABLE_KEYS = ["collectionAddress", "collectionContact", "volumetricDivisor", "divisorByServiceGroup", "items", "boxes", "dropBox", "doorServiceCode", "excludeServiceCodes", "maxChargeRand"];
+const EDITABLE_KEYS = ["collectionAddress", "collectionContact", "shoebox", "volumetricDivisor", "divisorByServiceGroup", "items", "boxes", "dropBox", "doorServiceCode", "excludeServiceCodes", "maxChargeRand"];
 
 export const RULE_TEXT = `"config": {
   "shipping": {
@@ -105,6 +105,18 @@ function RatesList({ title, block }) {
       ))}
     </div>
   );
+}
+
+// "1 sneaker, 2 tops, 1 cap" — what is in one parcel.
+const KIND_WORDS = {
+  sneakerAdult: ["sneaker", "sneakers"], sneakerKids: ["kids sneaker", "kids sneakers"], slides: ["slides", "slides"],
+  foldedTop: ["top", "tops"], foldedBottoms: ["bottoms", "bottoms"], tracksuitSet: ["tracksuit", "tracksuits"],
+  cap: ["cap", "caps"], bag: ["bag", "bags"], perfume: ["perfume", "perfumes"], accessory: ["accessory", "accessories"],
+};
+export function summariseContents(contents) {
+  const n = {};
+  for (const c of contents || []) n[c.kind] = (n[c.kind] || 0) + 1;
+  return Object.entries(n).map(([k, c]) => `${c} ${(KIND_WORDS[k] || [k, k])[c === 1 ? 0 : 1]}`).join(", ");
 }
 
 export default function ShippingCard({ authUser, products = null, onExit }) {
@@ -217,14 +229,9 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
         ref: orderRef(order) || order.key,
         collectionAddress: cfg.collectionAddress,
         deliveryAddress: test.addr.address,
-        parcel: {
-          lengthCm: test.parcel.lengthCm, widthCm: test.parcel.widthCm,
-          heightCm: test.parcel.heightCm, actualKg: test.parcel.actualKg,
-        },
-        dropBox: {
-          pickupPointId: cfg.dropBox.pickupPointId,
-          pickupPointProvider: cfg.dropBox.pickupPointProvider,
-        },
+        parcels: test.parcel.parcels.map((p) => ({
+          lengthCm: p.lengthCm, widthCm: p.widthCm, heightCm: p.heightCm, actualKg: p.actualKg,
+        })),
         requestedAt: Date.now(),
         by: authUser?.email ?? null,
       });
@@ -327,6 +334,27 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
             </div>
           );
         })}
+      </div>
+
+      {/* ── the shoebox: the unit every pair ships in ── */}
+      <div style={S.section}>
+        <h2 style={S.h2}>The sneaker box (each pair is one parcel)</h2>
+        <div style={S.row}>
+          <span style={S.label}>Outer size</span>
+          <Dims obj={cfg.shoebox} prefix="shoebox" onChange={(next) => patch((c) => { c.shoebox = next; return c; })} />
+          <Measured value={cfg.shoebox?.measured} onChange={(v) => patch((c) => { c.shoebox.measured = v; return c; })} />
+        </div>
+        <div style={S.row}>
+          <span style={S.label}>Soft goods stuffed into each box, up to</span>
+          <Num label="shoebox fill budget kg" value={cfg.shoebox?.fillBudgetKg} step={0.1}
+            onChange={(v) => patch((c) => { c.shoebox.fillBudgetKg = v; return c; })} /><span style={S.muted}>kg</span>
+        </div>
+        <div style={S.row}>
+          <span style={S.label}>Combine pairs into one box</span>
+          <input type="checkbox" aria-label="combine pairs" checked={cfg.shoebox?.combinePairs === true}
+            onChange={(e) => patch((c) => { c.shoebox.combinePairs = e.target.checked; return c; })} />
+          <span style={S.muted}>off: N pairs ship as N shoebox parcels in one shipment</span>
+        </div>
       </div>
 
       {/* ── boxes ── */}
@@ -463,10 +491,16 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
               )}
               {test.parcelError && <div style={{ color: "#ff453a", fontSize: 13 }}>{test.parcelError}</div>}
               {test.parcel && (
-                <div style={{ marginTop: 10, fontSize: 14 }}>
-                  <div><b>{test.parcel.boxCode ?? "No standard box fits"}</b> · {test.parcel.lengthCm}×{test.parcel.widthCm}×{test.parcel.heightCm} cm</div>
-                  <div>{test.parcel.actualKg} kg actual · {test.parcel.volumetricKg} kg volumetric · <b>{test.parcel.chargeableKg} kg chargeable</b></div>
-                  <div>{test.parcel.dropBoxEligible ? `Drop box — locker ${test.parcel.lockerSize}` : "Door collection"} · {test.parcel.service}</div>
+                <div style={{ marginTop: 10, fontSize: 14 }} data-testid="ship-parcels">
+                  <div><b>{test.parcel.parcelCount} {test.parcel.parcelCount === 1 ? "parcel" : "parcels"}</b> · {test.parcel.chargeableKg} kg chargeable in all</div>
+                  {test.parcel.parcels.map((p, i) => (
+                    <div key={i} style={{ marginTop: 4 }}>
+                      {i + 1}. <b>{p.kind === "shoebox" ? "Shoebox" : p.boxCode ?? "No standard box fits"}</b> · {p.lengthCm}×{p.widthCm}×{p.heightCm} cm
+                      · {p.actualKg} kg actual · {p.volumetricKg} kg vol · <b>{p.chargeableKg} kg</b>
+                      <span style={S.muted}> — {summariseContents(p.contents)}</span>
+                    </div>
+                  ))}
+                  <div style={{ marginTop: 4 }}>{test.parcel.dropBoxEligible ? `Drop box — locker ${test.parcel.lockerSize}` : "Door-to-door"} · {test.parcel.service}</div>
                   {test.parcel.guessed.length > 0 && <div style={{ color: "#ff9f0a", fontSize: 13 }}>Guessed as a folded top: {test.parcel.guessed.join(", ")}</div>}
                   {test.parcel.unmeasured.length > 0 && <div style={{ color: "#ff9f0a", fontSize: 13 }}>Built from unmeasured: {test.parcel.unmeasured.join(", ")}</div>}
                   <button style={{ ...S.primary, marginTop: 10 }} onClick={requestQuotes} disabled={quote?.state === "waiting"}>Get live quotes</button>

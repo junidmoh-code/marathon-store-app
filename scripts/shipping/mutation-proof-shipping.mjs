@@ -72,7 +72,7 @@ const MUTATIONS = [
 
   // ── THE ESTIMATOR ────────────────────────────────────────────────────────
   { id: "E1", file: EST, guard: "chargeable = max(actual, volumetric)",
-    from: "const chargeableKg = Math.max(actualKg, volumetricKg);", to: "const chargeableKg = actualKg;" },
+    from: "chargeableKg: Math.max(parcel.actualKg, volumetricKg)", to: "chargeableKg: parcel.actualKg" },
   { id: "E2", file: EST, guard: "a size band includes its upper edge",
     from: "bands.find((b) => n <= b.upToSize)", to: "bands.find((b) => n < b.upToSize)" },
   { id: "E3", file: EST, guard: "fit is tested in any orientation",
@@ -86,13 +86,25 @@ const MUTATIONS = [
   { id: "E7", file: EST, guard: "items in a column STACK (heights add)",
     from: "    c.h += it.h;", to: "    c.h = Math.max(c.h, it.h);" },
   { id: "E8", file: EST, guard: "the box's own weight is counted",
-    from: "items.reduce((s, it) => s + it.kg, 0) + tare)", to: "items.reduce((s, it) => s + it.kg, 0))" },
+    from: "items.reduce((t, it) => t + it.kg, 0) + (best ? Number(best.box.tareKg) || 0 : 0)", to: "items.reduce((t, it) => t + it.kg, 0)" },
   { id: "E9", file: EST, guard: "volumetric uses the configured divisor",
-    from: "const volumetricKg = round2((lengthCm * widthCm * heightCm) / divisor);", to: "const volumetricKg = round2((lengthCm * widthCm * heightCm) / 5000);" },
+    from: "round2((parcel.lengthCm * parcel.widthCm * parcel.heightCm) / divisor)", to: "round2((parcel.lengthCm * parcel.widthCm * parcel.heightCm) / 5000)" },
   { id: "E10", file: EST, guard: "a disabled drop box means door, always",
     from: "  if (!dropBox?.enabled) return null;\n", to: "\n" },
   { id: "E11", file: EST, guard: "each unit is its own item (qty expands)",
     from: "for (let i = 0; i < qty; i++) items.push(", to: "for (let i = 0; i < Math.min(qty, 1); i++) items.push(" },
+
+  // ── THE PARCEL RULE (the shoebox is the unit) ──
+  { id: "B1", file: EST, guard: "soft goods stuff a shoebox only up to its fill budget",
+    from: "b.stuffedKg + it.kg <= b.budget + 1e-9", to: "true" },
+  { id: "B2", file: EST, guard: "stuffed goods add their weight to the shoebox",
+    from: "actualKg: round2(b.base.actualKg + b.stuffedKg)", to: "actualKg: b.base.actualKg" },
+  { id: "B3", file: EST, guard: "every pair is its own shoebox parcel",
+    from: "    for (const p of pairs) {", to: "    for (const p of pairs.slice(0, 1)) {" },
+  { id: "B4", file: EST, guard: "overflow fills the NEXT shoebox before a flat parcel is made",
+    from: "const room = boxes.find(", to: "const room = boxes.slice(0, 1).find(" },
+  { id: "B5", file: EST, guard: "pairs are only combined when the card's switch is on",
+    from: "if (pairs.length && sb.combinePairs === true) {", to: "if (pairs.length) {" },
 
   // ── THE RATE CHOICE ──────────────────────────────────────────────────────
   { id: "R1", file: CHOOSE, guard: "an excluded service (SDX) is never chosen",
