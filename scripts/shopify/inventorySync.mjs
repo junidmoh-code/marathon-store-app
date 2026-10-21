@@ -36,10 +36,11 @@
 // clearing none. Markers are the fast path, not the only path.
 
 import {
-  networkTotals, requireSingleLocation, setAvailable, readAvailable,
+  networkTotals, requireSingleLocation, setAvailable, readAvailable, readLevels,
   readProductVariants, untrackedVariants, enforceTracking,
   ONLINE_EXCLUDED_LOCATIONS,
 } from "./inventory.mjs";
+import { ONLINE_RESERVATIONS_PATH, heldUnits } from "../../src/utils/onlineOrders.js";
 
 // The node the trigger writes to and this sweep drains.
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -97,7 +98,56 @@ export async function desiredFor(db, pid, locNames = null) {
   const tree = {};
   const cellSets = await Promise.all(locs.map((loc) => db.ref(`stock/${loc}/${pid}`).get().then((s) => s.val())));
   locs.forEach((loc, i) => { if (cellSets[i]) tree[loc] = { [pid]: cellSets[i] }; });
-  return { map, totals: networkTotals(tree, pid, sizes) };
+  // Website-order holds for this product: ONE point read of its own
+  // reservation node (docs/ONLINE-ORDERS.md), read with the stock it adjusts.
+  const reserved = reservedBySize(await readReservations(db, pid));
+  return { map, totals: networkTotals(tree, pid, sizes), reserved };
+}
+
+// /online_reservations/{pid} → { [sizeKey]: units held by open website orders }.
+// A failed read must not stop a push (the push is what corrects oversell); it
+// is logged and treated as no holds — today's behaviour.
+async function readReservations(db, pid) {
+  try {
+    return (await db.ref(`${ONLINE_RESERVATIONS_PATH}/${pid}`).get()).val();
+  } catch (e) {
+    console.error(`  ⚠ ${pid}: website-order holds unreadable (${String(e?.message || e)}) — pushed without them`);
+    return null;
+  }
+}
+
+export function reservedBySize(node) {
+  const out = {};
+  for (const [sizeKey, cell] of Object.entries(node || {})) {
+    const n = heldUnits(cell);
+    if (n > 0) out[sizeKey] = n;
+  }
+  return out;
+}
+
+/**
+ * ── WEBSITE HOLDS, WITHOUT HIDING A UNIT TWICE ────────────────────────────────
+ * Units to take off the app's count for one size before it is pushed as
+ * on_hand: max(0, reserved − committed).
+ *
+ * `reserved` is what open website orders hold in the app (/online_reservations),
+ * from arrival until Yasmin packs them — the app's stock only falls at the pack.
+ * `committed` is what Shopify itself is holding for unfulfilled orders, and
+ * Shopify already keeps that off sale (available = on_hand − committed). So:
+ *   order open on both sides       reserved 1, committed 1 → subtract 0
+ *   fulfilled in the Shopify admin  reserved 1, committed 0 → subtract 1
+ *     (Shopify lowered on_hand itself; pushing the app's un-lowered count
+ *      would put the sold unit back on sale — the gap PUSHED_QUANTITY's note
+ *      in inventory.mjs describes)
+ *   not yet pulled in by the poller reserved 0, committed 1 → subtract 0
+ * Subtracting the whole reservation instead would show every open order's
+ * unit as gone twice. `committed` unknown (no level read) counts as 0, which
+ * only ever under-sells.
+ */
+export function onlineHoldAdjustment(reserved, committed) {
+  const r = Math.max(0, Number(reserved) || 0);
+  const c = Math.max(0, Number(committed) || 0);
+  return Math.max(0, r - c);
 }
 
 /**
@@ -140,7 +190,7 @@ export async function locationNames(db) {
  * sweep's bulk snapshot (stock-truth-sweep.mjs) use, so "what is wrong with
  * this listing" cannot depend on which of them asked.
  */
-export function planProduct({ map, variants, baseline, totals }) {
+export function planProduct({ map, variants, baseline, totals, reserved = null, committed = null }) {
   const mapped = Object.entries(map?.variants || {})
     .filter(([, v]) => v?.shopifyInventoryItemId)
     .map(([sizeKey, v]) => ({ sizeKey, inventoryItemId: v.shopifyInventoryItemId }));
@@ -152,7 +202,14 @@ export function planProduct({ map, variants, baseline, totals }) {
     .filter((v) => v.inventoryItemId && !mappedIds.has(v.inventoryItemId))
     .map((v) => ({ sizeKey: `unmapped:${v.title}`, inventoryItemId: v.inventoryItemId, unmapped: true }));
   const items = [
-    ...mapped.map((i) => ({ ...i, quantity: totals[i.sizeKey] ?? 0 })),
+    // Website holds come off here, per size, so every push path — the
+    // per-tick sync, the nightly sweep's judgement, the CLI — subtracts them
+    // the same way. `reserved` null (an older caller) subtracts nothing.
+    ...mapped.map((i) => ({
+      ...i,
+      quantity: Math.max(0, (totals[i.sizeKey] ?? 0) -
+        onlineHoldAdjustment(reserved?.[i.sizeKey], committed?.get?.(i.inventoryItemId))),
+    })),
     // An unmapped item Shopify did not answer for is simply not written: it is
     // not one of ours to report as stale, and it cannot be compare-and-set.
     ...unmapped.filter((i) => baseline.has(i.inventoryItemId)).map((i) => ({ ...i, quantity: 0 })),
@@ -241,12 +298,12 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   }
   const mappedIds = Object.values(map.variants).map((v) => v?.shopifyInventoryItemId).filter(Boolean);
   const extraIds = (variants || []).map((v) => v.inventoryItemId).filter((id) => id && !mappedIds.includes(id));
-  const baseline = await readAvailable(graphql, locId, [...mappedIds, ...extraIds]);
+  const { onHand: baseline, committed } = await readLevels(graphql, locId, [...mappedIds, ...extraIds]);
 
   // NOW the stock snapshot, strictly after the baseline.
   const desired = await desiredFor(db, pid, locNames);
   if (!desired) return { pid, skipped: "no shopify_sync id map", permanent: true };
-  const plan = planProduct({ map, variants, baseline, totals: desired.totals });
+  const plan = planProduct({ map, variants, baseline, totals: desired.totals, reserved: desired.reserved, committed });
   const { known, drift, untracked, stale, meta } = plan;
 
   // ── AN ENTIRELY UNKNOWN ID MAP HAS TWO VERY DIFFERENT CAUSES ──────────────

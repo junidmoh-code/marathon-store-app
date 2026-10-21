@@ -1,0 +1,94 @@
+// ── Website orders: the vocabulary every writer and reader shares ────────────
+// The contract is docs/ONLINE-ORDERS.md. This module is plain ESM with no
+// imports beyond sizeKey, so the Mac mini scripts (scripts/shopify/) and the
+// store app import the SAME constants — the prefix in particular exists once.
+import { stockSizeKey } from "./sizeKey.js";
+
+// "WEB-1234". One constant; nothing else spells the prefix.
+export const ONLINE_ORDER_PREFIX = "WEB-";
+
+export const onlineOrderRef = (orderNumber) => `${ONLINE_ORDER_PREFIX}${orderNumber}`;
+
+// Paths. /online_reservations rows are keyed by the stock cell's size key.
+export const ONLINE_ORDERS_PATH = "online_orders";
+export const ONLINE_RESERVATIONS_PATH = "online_reservations";
+export const ONLINE_PICKS_PATH = "online_picks";
+export const ONLINE_ORDERS_CONFIG_PATH = "config/onlineOrders";
+
+export const reservationCellPath = (pid, size) =>
+  `${ONLINE_RESERVATIONS_PATH}/${pid}/${stockSizeKey(size)}`;
+
+// The one instruction every pick and display entry carries.
+export const PACKER_INSTRUCTION = "Give to Yasmin at Marathon PE";
+export const PACKING_STORE = "marathon-pe";
+
+// Feed entry kind, on /online_picks rows and on display-check records.
+export const ONLINE_PICK_KIND = "online_pick";
+
+export const ORDER_STATUS = Object.freeze({
+  NEW: "new",
+  PICKING: "picking",
+  READY: "ready",
+  NEEDS_ATTENTION: "needs_attention",
+  PACKED: "packed",
+  CANCELLED: "cancelled",
+});
+
+// Orders whose lines still hold stock.
+export const HOLDING_STATUSES = Object.freeze(["new", "picking", "ready", "needs_attention"]);
+
+export const LINE_STATUS = Object.freeze({
+  PICK: "pick",
+  DISPLAY: "display",
+  HANDED: "handed",
+  NO_STOCK: "no_stock",
+  NOT_FOUND: "not_found",
+  NEEDS_ATTENTION: "needs_attention",
+  UNRESOLVED: "unresolved",
+  REROUTE: "reroute",
+  CANCELLED: "cancelled",
+});
+
+// A line in one of these puts its order in needs_attention.
+export const ATTENTION_LINE_STATUSES = Object.freeze(["no_stock", "not_found", "needs_attention", "unresolved"]);
+
+export const ATTENTION_KIND = Object.freeze({
+  UNRESOLVED: "unresolved",
+  NO_STOCK: "no_stock",
+  NOT_FOUND: "not_found",
+  WALKIN_OVERRIDE: "walkin_override",
+  CANCELLED_AFTER_PACK: "cancelled_after_pack",
+  FULFIL_FAILED: "fulfil_failed",
+});
+
+/**
+ * Units of `pid/size` held at `loc` by website orders, from the reservation
+ * cell's value ({ [orderId]: { qty, ref, locs } }). With no `loc`, every held
+ * unit. Never negative; a malformed row counts as nothing.
+ */
+export function heldUnits(cell, loc = null) {
+  let n = 0;
+  for (const row of Object.values(cell || {})) {
+    if (!row || typeof row !== "object") continue;
+    const q = loc == null ? Number(row.qty) : Number(row.locs?.[loc]);
+    if (Number.isFinite(q) && q > 0) n += q;
+  }
+  return n;
+}
+
+/**
+ * The status an open order should show, from its lines. Packed and cancelled
+ * are terminal. `enabled` is /config/onlineOrders/enabled: while it is off no
+ * feed entry exists, so an order cannot be "picking".
+ */
+export function deriveOrderStatus(order, { enabled = false } = {}) {
+  const status = order?.status;
+  if (status === ORDER_STATUS.PACKED || status === ORDER_STATUS.CANCELLED) return status;
+  const lines = Array.isArray(order?.lines) ? order.lines.filter(Boolean) : Object.values(order?.lines || {}).filter(Boolean);
+  if (!lines.length) return ORDER_STATUS.NEEDS_ATTENTION;
+  const st = (l) => l?.source?.status;
+  if (lines.some((l) => ATTENTION_LINE_STATUSES.includes(st(l)))) return ORDER_STATUS.NEEDS_ATTENTION;
+  if (lines.every((l) => st(l) === LINE_STATUS.HANDED)) return ORDER_STATUS.READY;
+  if (enabled && lines.every((l) => st(l) === LINE_STATUS.HANDED || l?.source?.entryKey)) return ORDER_STATUS.PICKING;
+  return ORDER_STATUS.NEW;
+}
