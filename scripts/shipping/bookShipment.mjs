@@ -33,7 +33,7 @@
 import { estimateParcel } from "../../src/shipping/estimateParcel.js";
 import { mergeShippingConfig } from "../../src/shipping/shippingConfig.js";
 import { chooseRate } from "../../src/shipping/chooseService.js";
-import { orderLines, deliveryAddress, deliveryContact, orderRef } from "../../src/shipping/orderShipment.js";
+import { orderLines, deliveryAddress, deliveryContact, orderRef, orderKey as keyOf } from "../../src/shipping/orderShipment.js";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { quoteParcel, tcgParcel, lockerCollection } from "./quote.mjs";
 import { fileLogger } from "./courier-client.mjs";
@@ -55,15 +55,33 @@ async function defaultDeps(deps) {
   return out;
 }
 
+// The /online_orders key (the Shopify order id), never the WEB- ref.
 function orderKey(order) {
-  return assertSafeSegment(String(order?.key ?? order?.ref ?? orderRef(order)).replace(/^#/, ""), "order key");
+  const key = keyOf(order);
+  if (!key) throw new Error("bookShipment: the order carries no /online_orders key (key, id or shopifyGid)");
+  return assertSafeSegment(key, "order key");
+}
+
+// Each line's /products record, by exact path, for its subcategory — the
+// order lines carry pid + category only. One small read per distinct product.
+async function productsFor(db, order) {
+  const raw = Array.isArray(order?.lines) ? order.lines : Object.values(order?.lines ?? {});
+  const pids = [...new Set(raw.map((l) => l?.pid ?? l?.productId).filter(Boolean))];
+  const out = {};
+  for (const pid of pids) {
+    try {
+      const snap = await db.ref(`products/${assertSafeSegment(pid, "productId")}`).get();
+      if (snap.exists()) out[pid] = snap.val();
+    } catch { /* an unreadable product classifies by its line alone */ }
+  }
+  return out;
 }
 
 /** Everything up to (not including) the shipment call. Pure apart from rates. */
 export async function planShipment(order, { db, client, products = null }) {
   const cfg = mergeShippingConfig((await db.ref("config/shipping").get()).val());
-  const ref = orderRef(order) || order?.key || "";
-  const lines = orderLines(order, products);
+  const ref = orderRef(order);
+  const lines = orderLines(order, products ?? (await productsFor(db, order)));
   const parcel = estimateParcel(lines, cfg);
   const { address, missing: addrMissing } = deliveryAddress(order);
   const { contact, missing: contactMissing } = deliveryContact(order);

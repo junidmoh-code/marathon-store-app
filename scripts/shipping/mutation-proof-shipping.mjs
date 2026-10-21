@@ -25,6 +25,7 @@ const CLIENT = "scripts/shipping/courier-client.mjs";
 const EST = "src/shipping/estimateParcel.js";
 const CHOOSE = "src/shipping/chooseService.js";
 const CARD = "src/components/admin/ShippingCard.jsx";
+const ORDER = "src/shipping/orderShipment.js";
 const TESTS = ["src/shipping", "scripts/shipping", "src/components/admin/ShippingCard.gate.test.jsx"];
 
 const CHILD_ENV = {
@@ -52,6 +53,8 @@ const MUTATIONS = [
     from: "const ambiguous = !(err?.status >= 400 && err?.status < 500);", to: "const ambiguous = false;" },
   { id: "L8", file: BOOK, guard: "live refuses without a collection contact / with no box",
     from: "  if (plan.liveBlockers.length) {", to: "  if (false) {" },
+  { id: "L9", file: ORDER, guard: "the WEB- ref is never used as the /online_orders key",
+    from: "return first(order?.key, order?.id, gidTail);", to: "return first(order?.key, order?.id, gidTail, order?.ref);" },
   { id: "C1", file: CLIENT, guard: "a create is NEVER retried on 5xx (a retry could book twice)",
     from: "createShipment: (body) => call(\"POST\", \"/shipments\", { body, retry5xx: false }),", to: "createShipment: (body) => call(\"POST\", \"/shipments\", { body, retry5xx: true })," },
   { id: "C2", file: CLIENT, guard: "the API key is redacted from every log line",

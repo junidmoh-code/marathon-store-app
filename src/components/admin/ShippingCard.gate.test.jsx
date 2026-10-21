@@ -129,6 +129,14 @@ describe("test an order", () => {
     expect(text(tree)).toContain("not a valid order ref");
   });
 
+  it("a WEB- ref is explained, not searched for (that would read every order)", async () => {
+    const tree = await render(ADMIN);
+    await act(async () => { byLabel(tree, "order ref").props.onChange({ target: { value: "WEB-1042" } }); });
+    await act(async () => { button(tree, "Read order").props.onClick(); });
+    expect(getMock.mock.calls.map((c) => c[0].path)).toEqual(["config/shipping"]);
+    expect(text(tree)).toContain("Shopify order id");
+  });
+
   it("live quotes: one request write, one answer listener, nothing else", async () => {
     store = { online_orders: { W1001: ORDER } };
     const tree = await render(ADMIN);

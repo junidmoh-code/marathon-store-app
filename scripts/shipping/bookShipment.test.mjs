@@ -216,3 +216,37 @@ describe("cancelShipment", () => {
     expect(client.calls).toEqual([]);
   });
 });
+
+describe("the website-order ingester's real shape (feat/online-orders orderModel.mjs)", () => {
+  // /online_orders/{Shopify order id}; ref is a FIELD ("WEB-1042"), lines carry pid.
+  const INGESTED = () => ({
+    ref: "WEB-1042", orderNumber: 1042, shopifyGid: "gid://shopify/Order/5551234", shopifyName: "#1042",
+    customer: { name: "Ann Bee", phone: "+27820000000", email: "ann@example.com" },
+    shipping: { address: { name: "Ann Bee", address1: "5 Esplanade Road", address2: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa", phone: "+27820000000" } },
+    lines: [{ pid: "p_x", title: "Item 7", category: "Clothing", size: "32", qty: 2 }],
+  });
+
+  it("keys by the Shopify id, references by WEB-ref, classifies from /products/{pid}", async () => {
+    const d = fakeDb({
+      config: { shipping: { live: true, collectionContact: CONTACT } },
+      products: { p_x: { name: "Item 7", category: "Clothing", subcategory: "Jeans & Denim" } },
+    });
+    const client = fakeClient();
+    await bookShipment(INGESTED(), deps(d, client));
+    const body = client.shipmentCalls()[0][1];
+    expect(body.customer_reference).toBe("WEB-1042");
+    expect(body.delivery_address).toMatchObject({ street_address: "5 Esplanade Road, Century City", zone: "WC", country: "ZA", code: "7441" });
+    expect(body.delivery_contact).toEqual({ name: "Ann Bee", mobile_number: "+27820000000", email: "ann@example.com" });
+    // "Item 7" says nothing; /products/p_x says jeans → 2 × 0.5 kg + the flat mailer
+    expect(body.parcels[0]).toMatchObject({ submitted_height_cm: 8, submitted_weight_kg: 1.15 });
+    expect(d.root.online_orders["5551234"].shipping.provider).toBe("courier_guy");
+    expect(d.root.online_orders["WEB-1042"]).toBeUndefined();
+  });
+
+  it("an order with no key at all is refused before any call — the ref is never used as a key", async () => {
+    const client = fakeClient();
+    const { shopifyGid, ...noKey } = INGESTED();
+    await expect(bookShipment(noKey, deps(db(true), client))).rejects.toThrow(/no \/online_orders key/);
+    expect(client.calls).toEqual([]);
+  });
+});

@@ -30,6 +30,17 @@ export function tcgZone(province) {
   return ZONES[p.toLowerCase()] ?? p;
 }
 
+/**
+ * The order's KEY in /online_orders — where its shipping object lives. The
+ * website-order ingester keys orders by the Shopify order's numeric id
+ * (legacyResourceId) and carries `ref` ("WEB-1042") as a field, so the ref is
+ * NEVER a key: writing under it would mint a junk order. "" when unknown.
+ */
+export function orderKey(order) {
+  const gidTail = str(order?.shopifyGid).match(/\/(\d+)$/)?.[1];
+  return first(order?.key, order?.id, gidTail);
+}
+
 /** The order's reference — what TCG gets as customer_reference. */
 export function orderRef(order) {
   return first(order?.ref, order?.orderRef, order?.name, order?.order_number, order?.orderNumber, order?.id);
@@ -45,9 +56,10 @@ export function orderLines(order, products = null) {
     : order?.lines && typeof order.lines === "object" ? Object.values(order.lines)
     : [];
   return raw.map((l) => {
-    const p = (products && l?.productId && products[l.productId]) || null;
+    const pid = l?.productId ?? l?.pid ?? null;
+    const p = (products && pid && products[pid]) || null;
     return {
-      productId: l?.productId ?? null,
+      productId: pid,
       kind: l?.kind ?? undefined,
       category: first(l?.category, p?.category),
       subcategory: first(l?.subcategory, p?.subcategory),

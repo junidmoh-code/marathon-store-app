@@ -164,6 +164,12 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
     let seg;
     try { seg = assertSafeSegment(refInput.trim(), "order ref"); }
     catch { setOrderState("That is not a valid order ref."); return; }
+    // Orders are keyed by their Shopify order id; WEB-1042 is a field on the
+    // order, not a key, and finding it would mean reading every order.
+    if (/^web-/i.test(seg)) {
+      setOrderState(`${seg} is the order's reference. Type its /online_orders key — the Shopify order id (the number at the end of the order's Shopify admin URL).`);
+      return;
+    }
     setOrderState("Reading…");
     try {
       const snap = await get(ref(getDatabase(), `online_orders/${seg}`));
@@ -413,7 +419,7 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
       <div style={S.section}>
         <h2 style={S.h2}>Test an order</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <input aria-label="order ref" placeholder="/online_orders ref" value={refInput}
+          <input aria-label="order ref" placeholder="/online_orders key (Shopify order id)" value={refInput}
             onChange={(e) => setRefInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") loadOrder(); }}
             style={{ ...S.text, flex: "1 1 200px" }} />
           <button style={S.btn} onClick={loadOrder}>Read order</button>
@@ -422,7 +428,7 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
         {test && (
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12 }}>
             <div style={{ flex: "1 1 280px" }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>{orderRef(order) || order.key}</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{orderRef(order) || order.key} <span style={S.muted}>· /online_orders/{order.key}</span></div>
               {test.lines.map((l, i) => (
                 <div key={i} style={{ fontSize: 13 }}>{l.qty} × {l.name || l.productId} {l.size && `(${l.size})`}</div>
               ))}

@@ -49,3 +49,17 @@ describe("orderShipment", () => {
     expect(tcgZone("Somewhere")).toBe("Somewhere");
   });
 });
+
+describe("orderKey", () => {
+  it("key, id, or the Shopify gid's numeric tail — never the ref", async () => {
+    const { orderKey } = await import("./orderShipment.js");
+    expect(orderKey({ key: "k1", ref: "WEB-1" })).toBe("k1");
+    expect(orderKey({ id: 77, ref: "WEB-1" })).toBe("77");
+    expect(orderKey({ shopifyGid: "gid://shopify/Order/5551234", ref: "WEB-1" })).toBe("5551234");
+    expect(orderKey({ ref: "WEB-1" })).toBe("");
+  });
+  it("pid lines", () => {
+    expect(orderLines({ lines: [{ pid: "p1", title: "T", size: "M", qty: 1 }] }, { p1: { category: "Clothing", subcategory: "T-Shirts" } })[0])
+      .toMatchObject({ productId: "p1", category: "Clothing", subcategory: "T-Shirts", name: "T" });
+  });
+});
