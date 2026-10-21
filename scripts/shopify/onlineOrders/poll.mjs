@@ -35,6 +35,7 @@ import {
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
 import { bookShipment } from "./shipping.mjs";
+import { createCourierClient } from "../../shipping/courier-client.mjs";
 
 export const META_PATH = "online_orders_meta";
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -536,7 +537,11 @@ async function shipOrder(ctx, id, order) {
   try {
     booking = await bookShipment({ ...order, key: id }, {
       db,
-      ...(ctx.courier ? { client: ctx.courier } : {}),
+      // A BOUNDED client: the ship sweep is serial and fulfilment waits on
+      // this, so reads get 2 attempts × 15 s (≈31 s worst case, door and
+      // locker in parallel) instead of the default 4 × 20 s. Built once per
+      // poll; a missing key throws here and is caught below.
+      client: ctx.courier ?? (ctx.courierClient ??= createCourierClient({ maxAttempts: 2, timeoutMs: 15_000 })),
       ...(ctx.courierLog ? { log: ctx.courierLog } : {}), // default: logs/courier.log
     });
   } catch (e) {
@@ -558,7 +563,10 @@ async function shipOrder(ctx, id, order) {
   const attempts = Math.min(MAX_FULFIL_ATTEMPTS_SHOWN, (Number(order.fulfil?.attempts) || 0) + 1);
   let out;
   try {
-    out = await fulfilOnShopify(graphql, { orderGid: order.shopifyGid, trackingNumber: order.fulfil?.trackingNumber || null });
+    // A real Courier Guy booking's waybill is the tracking number Shopify
+    // sends the customer, unless the packer typed one.
+    const waybill = booking && !booking.skipped ? booking.waybill : null;
+    out = await fulfilOnShopify(graphql, { orderGid: order.shopifyGid, trackingNumber: order.fulfil?.trackingNumber || waybill || null });
   } catch (e) {
     out = { ok: false, error: String(e?.message || e) };
   }

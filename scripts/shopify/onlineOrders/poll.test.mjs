@@ -358,6 +358,21 @@ describe("Shopify fulfilment after the pack", () => {
     }
   });
 
+  it("a real booking's waybill becomes the Shopify tracking number when none was typed", async () => {
+    const w = packed();
+    Object.assign(w.online_orders[9001], {
+      customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
+      shipping: { address: { address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
+    });
+    w.config.shipping = { live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" } };
+    const f = fakeDb(w);
+    const courier = { ...fakeCourier(), createShipment: async () => ({ id: 7, short_tracking_reference: "ABC123", charged_amount: 100 }) };
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "ABC123" });
+    expect(order(f).shipping).toMatchObject({ provider: "courier_guy", waybill: "ABC123", booking: { waybill: "ABC123" } });
+  });
+
   it("a courier failure is recorded and never blocks the fulfilment", async () => {
     const f = fakeDb(packed());
     const courier = { getRates: async () => { throw new Error("x"); } };
