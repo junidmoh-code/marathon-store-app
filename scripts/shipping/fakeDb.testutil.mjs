@@ -19,6 +19,15 @@ export function fakeDb(initial = {}) {
       set: async (v) => { writes.push({ op: "set", path, v }); write(path, v); },
       update: async (obj) => { writes.push({ op: "update", path, v: obj }); for (const [k, v] of Object.entries(obj)) write(`${path}/${k}`, v); },
       remove: async () => { writes.push({ op: "remove", path }); write(path, null); },
+      // RTDB semantics: return undefined to abort, a value to commit it.
+      transaction: async (fn) => {
+        const cur = read(path);
+        const next = fn(cur == null ? null : JSON.parse(JSON.stringify(cur)));
+        if (next === undefined) return { committed: false, snapshot: { val: () => cur ?? null } };
+        writes.push({ op: "transaction", path, v: next });
+        write(path, next);
+        return { committed: true, snapshot: { val: () => next } };
+      },
     }),
   };
 }

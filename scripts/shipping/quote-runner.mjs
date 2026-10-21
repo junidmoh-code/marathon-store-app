@@ -13,13 +13,13 @@
 // long since timed out); answers older than ANSWER_TTL_MS are pruned at start.
 //
 //   node scripts/shipping/quote-runner.mjs          (what launchd runs)
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { createCourierClient, fileLogger } from "./courier-client.mjs";
 import { quoteParcel } from "./quote.mjs";
 import { chooseRate } from "../../src/shipping/chooseService.js";
 import { mergeShippingConfig } from "../../src/shipping/shippingConfig.js";
 import { chooseLocker } from "../../src/shipping/estimateParcel.js";
+import { adminDb } from "./adminDb.mjs";
 
 export const REQUESTS_PATH = "shipping_quotes/requests";
 export const ANSWERS_PATH = "shipping_quotes/answers";
@@ -58,10 +58,7 @@ export async function answerQuoteRequest({ db, client, id, req, now = Date.now()
 
 async function main() {
   const log = fileLogger();
-  const require = createRequire(new URL("../../functions/package.json", import.meta.url));
-  const admin = require("firebase-admin");
-  admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
-  const db = admin.database();
+  const db = adminDb();
   const client = createCourierClient({ log });
 
   // Prune yesterday's answers once at start; they are only ever read for a minute.

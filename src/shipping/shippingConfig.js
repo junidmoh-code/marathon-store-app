@@ -35,6 +35,10 @@ export const ITEM_KINDS = Object.freeze([
 
 export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   collectionAddress: COLLECTION_ADDRESS,
+  // Who TCG contacts at collection (needs a mobile and/or email). Left EMPTY on
+  // purpose — this repo is public — and a live booking refuses until Junid
+  // fills it in on the Shipping card. A dry run shows the gap.
+  collectionContact: { name: "The Marathon", mobile_number: "", email: "" },
 
   // TCG's doc states no divisor. Measured: ECO + every locker service
   // ÷4000; PRI, SDX and the local LPx/LSx services ÷5000. The estimator

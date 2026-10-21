@@ -28,7 +28,7 @@ import { assertSafeSegment } from "../../utils/sizeKey.js";
 
 export const QUOTE_TIMEOUT_MS = 60_000;
 
-const EDITABLE_KEYS = ["collectionAddress", "volumetricDivisor", "divisorByServiceGroup", "items", "boxes", "dropBox", "doorServiceCode", "excludeServiceCodes"];
+const EDITABLE_KEYS = ["collectionAddress", "collectionContact", "volumetricDivisor", "divisorByServiceGroup", "items", "boxes", "dropBox", "doorServiceCode", "excludeServiceCodes"];
 
 export const RULE_TEXT = `"config": {
   "shipping": {
@@ -393,6 +393,20 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
               onChange={(e) => patch((c) => { c.collectionAddress[f] = e.target.value; return c; })} style={{ ...S.text, flex: "1 1 220px" }} />
           </div>
         ))}
+      </div>
+
+      <div style={S.section}>
+        <h2 style={S.h2}>Collection contact (Courier Guy calls or emails them)</h2>
+        {[["name", "name"], ["mobile_number", "mobile"], ["email", "email"]].map(([f, label]) => (
+          <div key={f} style={S.row}>
+            <span style={S.label}>{label}</span>
+            <input aria-label={`collection contact ${label}`} value={cfg.collectionContact?.[f] ?? ""}
+              onChange={(e) => patch((c) => { c.collectionContact = { ...(c.collectionContact ?? {}), [f]: e.target.value }; return c; })} style={{ ...S.text, flex: "1 1 220px" }} />
+          </div>
+        ))}
+        {!cfg.collectionContact?.mobile_number && !cfg.collectionContact?.email && (
+          <div style={{ color: "#ff9f0a", fontSize: 13, marginTop: 6 }}>A mobile or email is needed before anything can be booked.</div>
+        )}
       </div>
 
       {/* ── test an order ── */}
