@@ -35,6 +35,7 @@ import {
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
 import { bookShipment } from "./shipping.mjs";
+import { createCourierClient } from "../../shipping/courier-client.mjs";
 
 export const META_PATH = "online_orders_meta";
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -523,14 +524,49 @@ async function syncHolds(ctx, id, order) {
 async function shipOrder(ctx, id, order) {
   const { db, graphql, now, log } = ctx;
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
-  const booking = await bookShipment(order);
-  if (booking && !order.shipping?.booking) {
-    await db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/booking`).set({ ...booking, at: now });
+  // The order goes to bookShipment WITH its key (the record carries
+  // shopifyGid too, which bookShipment can derive the key from — the explicit
+  // key removes any doubt). The poll's own db is passed so booking never opens
+  // a second connection, and `deps.courier` (tests inject a fake) replaces the
+  // real Courier Guy client.
+  //
+  // NOTHING COURIER-SIDE MAY BLOCK THE FULFILMENT BELOW: a booking error is
+  // recorded, and a record that cannot be written is logged and skipped —
+  // otherwise the order would stay pending and be re-quoted every tick.
+  let booking;
+  try {
+    booking = await bookShipment({ ...order, key: id }, {
+      db,
+      // A BOUNDED client: the ship sweep is serial and fulfilment waits on
+      // this, so reads get 2 attempts × 15 s (≈31 s worst case, door and
+      // locker in parallel) instead of the default 4 × 20 s. Built once per
+      // poll; a missing key throws here and is caught below.
+      client: ctx.courier ?? (ctx.courierClient ??= createCourierClient({ maxAttempts: 2, timeoutMs: 15_000 })),
+      ...(ctx.courierLog ? { log: ctx.courierLog } : {}), // default: logs/courier.log
+    });
+  } catch (e) {
+    booking = { skipped: true, error: String(e?.message || e).slice(0, 300) };
+    log(`  ! ${order.ref}: courier booking failed — ${booking.error}`);
+  }
+  const prior = order.shipping?.booking;
+  // A real booking replaces a recorded dry run; nothing replaces a real one.
+  if (booking && (!prior || (prior.skipped && !booking.skipped))) {
+    // "already booked" returns the order's whole shipping node — never nest it.
+    const { shipping: _whole, ...result } = booking;
+    try {
+      // JSON round trip: RTDB refuses undefined and NaN (NaN becomes null).
+      await db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/booking`).set(JSON.parse(JSON.stringify({ ...result, at: now })));
+    } catch (e) {
+      log(`  ! ${order.ref}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
+    }
   }
   const attempts = Math.min(MAX_FULFIL_ATTEMPTS_SHOWN, (Number(order.fulfil?.attempts) || 0) + 1);
   let out;
   try {
-    out = await fulfilOnShopify(graphql, { orderGid: order.shopifyGid, trackingNumber: order.fulfil?.trackingNumber || null });
+    // A real Courier Guy booking's waybill is the tracking number Shopify
+    // sends the customer, unless the packer typed one.
+    const waybill = booking && !booking.skipped ? booking.waybill : null;
+    out = await fulfilOnShopify(graphql, { orderGid: order.shopifyGid, trackingNumber: order.fulfil?.trackingNumber || waybill || null });
   } catch (e) {
     out = { ok: false, error: String(e?.message || e) };
   }

@@ -1,6 +1,28 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runOrdersPoll, attentionMail } from "./poll.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
+import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
+import lockerRates from "../../shipping/fixtures/rates-locker-capetown.json";
+
+// NO TEST IN THIS FILE MAY REACH THE NETWORK (Courier Guy, Shopify, mail):
+// fetch throws for every test, and a test that wants to count calls swaps in
+// its own counter.
+let fetchGuard;
+beforeEach(() => { fetchGuard = vi.spyOn(globalThis, "fetch").mockImplementation(() => { throw new Error("NETWORK IS FORBIDDEN IN TESTS"); }); });
+afterEach(() => fetchGuard.mockRestore());
+
+// Courier Guy, faked: rates from the recorded fixtures; a shipment call is
+// recorded so a test can prove none happened. Every poll test gets one, so no
+// test ever constructs the real client.
+function fakeCourier() {
+  const calls = [];
+  return {
+    calls,
+    getRates: async (body) => { calls.push(["getRates", body]); return body.collection_pickup_point_id ? lockerRates : doorRates; },
+    createShipment: async (body) => { calls.push(["createShipment", body]); throw new Error("createShipment must not be reached"); },
+    cancelShipment: async (ref) => { calls.push(["cancelShipment", ref]); throw new Error("cancelShipment must not be reached"); },
+  };
+}
 
 const NOW = Date.parse("2026-10-21T10:00:00Z");
 const GO_LIVE = Date.parse("2026-10-21T09:00:00Z");
@@ -76,6 +98,8 @@ function deps(f, sh, over = {}) {
       increment, saDate: () => "2026-10-21",
       resolveAssignment: ({ roster }) => roster?.days?.wed?.uid ?? null,
       log: () => {},
+      courier: fakeCourier(),
+      courierLog: () => {}, // never write logs/courier.log from a test
       ...over,
     },
   };
@@ -304,6 +328,79 @@ describe("Shopify fulfilment after the pack", () => {
     const create = sh.calls.find((c) => c.query.includes("fulfillmentCreate"));
     expect(create.vars.fulfillment).toEqual({ lineItemsByFulfillmentOrder: [{ fulfillmentOrderId: fos[0].id }], notifyCustomer: true, trackingInfo: { number: "TRK123" } });
     expect(order(f)).toMatchObject({ fulfilState: "done", fulfil: { state: "done", attempts: 1 }, shipping: { booking: { skipped: true } } });
+  });
+
+  it("pack step with /config/shipping/live false: the dry run is recorded, no shipment call, no network", async () => {
+    const realFetch = globalThis.fetch;
+    let fetched = 0;
+    globalThis.fetch = async () => { fetched++; throw new Error("network is forbidden in this test"); };
+    try {
+      const w = packed({ trackingNumber: "TRK9" });
+      Object.assign(w.online_orders[9001], {
+        customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
+        shipping: { address: { name: "Thandi M", address1: "5 Esplanade Road", address2: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
+      });
+      w.config.shipping = { live: false };
+      const f = fakeDb(w);
+      const courier = fakeCourier();
+      const out = await runOrdersPoll(deps(f, shopify({ fos }), { courier }).deps);
+      const booking = order(f).shipping.booking;
+      expect(booking.skipped).toBe(true);
+      expect(booking.dryRun).toMatchObject({ customer_reference: "WEB-1801", delivery_address: { city: "Cape Town", zone: "WC", code: "7441" } });
+      expect(courier.calls.map(([op]) => op)).toEqual(["getRates", "getRates"]);
+      // The fake client is the network boundary; this proves nothing behind
+      // it (or beside it) reached for fetch either.
+      expect(fetched).toBe(0);
+      expect(out.fulfilled).toBe(1); // the Shopify fulfilment still went ahead
+      expect(f.read("online_orders/9001/shipping/provider") == null).toBe(true); // never booked
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("a real booking's waybill becomes the Shopify tracking number when none was typed", async () => {
+    const w = packed();
+    Object.assign(w.online_orders[9001], {
+      customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
+      shipping: { address: { address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
+    });
+    w.config.shipping = { live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" } };
+    const f = fakeDb(w);
+    const courier = { ...fakeCourier(), createShipment: async () => ({ id: 7, short_tracking_reference: "ABC123", charged_amount: 100 }) };
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "ABC123" });
+    expect(order(f).shipping).toMatchObject({ provider: "courier_guy", waybill: "ABC123", booking: { waybill: "ABC123" } });
+  });
+
+  it("a courier failure is recorded and never blocks the fulfilment", async () => {
+    const f = fakeDb(packed());
+    const courier = { getRates: async () => { throw new Error("x"); } };
+    const boom = { ...deps(f, shopify({ fos }), { courier }).deps, db: f.db };
+    const out = await runOrdersPoll(boom);
+    expect(out.fulfilled).toBe(1);
+    expect(order(f).shipping.booking.skipped).toBe(true);
+  });
+
+  it("a booking record that cannot be written never blocks the fulfilment", async () => {
+    const f = fakeDb(packed());
+    const realRef = f.db.ref.bind(f.db);
+    const db = { ...f.db, ref: (path) => {
+      const r = realRef(path);
+      return path === "online_orders/9001/shipping/booking" ? { ...r, set: async () => { throw new Error("Cannot set NaN"); } } : r;
+    } };
+    const out = await runOrdersPoll({ ...deps(f, shopify({ fos })).deps, db });
+    expect(out.fulfilled).toBe(1);
+    expect(order(f).fulfilState).toBe("done");
+  });
+
+  it("a real booking replaces a recorded dry run; the whole shipping node is never nested", async () => {
+    const f = fakeDb(packed());
+    await f.db.ref("online_orders/9001/shipping").update({ booking: { skipped: true, dryRun: { x: 1 } }, shipmentId: 5, provider: "courier_guy", waybill: "LD-1" });
+    await runOrdersPoll(deps(f, shopify({ fos })).deps);
+    // shipmentId present → bookShipment says "already booked" (skipped) — the dry run stays, nothing nested
+    expect(order(f).shipping.booking).toMatchObject({ skipped: true, dryRun: { x: 1 } });
+    expect(order(f).shipping.booking.shipping).toBeUndefined();
   });
 
   it("a fulfilment that failed before and now lands clears its attention", async () => {
