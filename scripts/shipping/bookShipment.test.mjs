@@ -153,7 +153,7 @@ describe("bookShipment — live", () => {
 
   it("a held claim (another packer, or a lost response) blocks a second booking", async () => {
     for (const state of ["booking", "unknown", "booked"]) {
-      const d = db(true, { online_orders: { W1001: { shipping: { courierBooking: { state } } } } });
+      const d = db(true, { online_orders: { W1001: { ref: "W1001", shipping: { courierBooking: { state } } } } });
       const client = fakeClient();
       const res = await bookShipment(ORDER(), deps(d, client));
       expect(res.reason).toBe(`booking already ${state}`);
@@ -176,7 +176,7 @@ describe("bookShipment — live", () => {
   });
 
   it("refuses live without a collection contact, and when no box fits", async () => {
-    const d = fakeDb({ config: { shipping: { live: true } } });
+    const d = fakeDb({ config: { shipping: { live: true } }, online_orders: { W1001: { ref: "W1001" } } });
     const client = fakeClient();
     expect((await bookShipment(ORDER(), deps(d, client))).reason).toBe("collection_contact");
     const res = await bookShipment(ORDER({ lines: [{ category: "Footwear", subcategory: "Sneakers", size: "10", qty: 20 }] }), deps(db(true), client));
@@ -230,6 +230,7 @@ describe("the website-order ingester's real shape (feat/online-orders orderModel
     const d = fakeDb({
       config: { shipping: { live: true, collectionContact: CONTACT } },
       products: { p_x: { name: "Item 7", category: "Clothing", subcategory: "Jeans & Denim" } },
+      online_orders: { 5551234: { ref: "WEB-1042" } },
     });
     const client = fakeClient();
     await bookShipment(INGESTED(), deps(d, client));
@@ -248,5 +249,72 @@ describe("the website-order ingester's real shape (feat/online-orders orderModel
     const { shopifyGid, ...noKey } = INGESTED();
     await expect(bookShipment(noKey, deps(db(true), client))).rejects.toThrow(/no \/online_orders key/);
     expect(client.calls).toEqual([]);
+  });
+});
+
+describe("review hardening (Sonnet architect review, PR #774)", () => {
+  it("a WEB- ref passed as the key is refused before any call", async () => {
+    const client = fakeClient();
+    await expect(bookShipment({ ...ORDER(), key: "WEB-1042" }, deps(db(true), client))).rejects.toThrow(/order REF/);
+    expect(client.calls).toEqual([]);
+  });
+
+  it("no order at the key → refused, nothing minted, no shipment call", async () => {
+    const d = fakeDb({ config: { shipping: { live: true, collectionContact: CONTACT } } });
+    const client = fakeClient();
+    expect((await bookShipment(ORDER({ key: "999" }), deps(d, client))).reason).toBe("no order at /online_orders/999");
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(d.root.online_orders).toBeUndefined();
+  });
+
+  it("live switched off after the claim → no create, claim released", async () => {
+    const d = db(true);
+    const client = fakeClient();
+    const realGet = d.ref;
+    let liveReads = 0;
+    d.ref = (path) => {
+      const r = realGet(path);
+      if (path !== "config/shipping/live") return r;
+      return { ...r, get: async () => { liveReads++; return { exists: () => true, val: () => liveReads === 1 } ; } };
+    };
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res.dryRun).toBeTruthy();
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(d.root.online_orders.W1001.shipping.courierBooking.state).toBe("failed");
+  });
+
+  it("a quote over the spend ceiling is refused live, named in a dry run", async () => {
+    const client = fakeClient();
+    const low = (live) => fakeDb({ config: { shipping: { live, collectionContact: CONTACT, maxChargeRand: 50 } }, online_orders: { W1001: { ref: "W1001" } } });
+    expect((await bookShipment(ORDER(), deps(low(true), client))).reason).toMatch(/over the R50 ceiling/);
+    expect((await bookShipment(ORDER(), deps(low(false), client))).liveBlockers).toEqual(["quote R100.00 is over the R50 ceiling"]);
+    expect(client.shipmentCalls()).toEqual([]);
+  });
+
+  it("a 408 leaves the claim UNKNOWN (the create may have run)", async () => {
+    const d = db(true);
+    await expect(bookShipment(ORDER(), deps(d, fakeClient({ createError: Object.assign(new Error("HTTP 408"), { status: 408 }) })))).rejects.toThrow();
+    expect(d.root.online_orders.W1001.shipping.courierBooking.state).toBe("unknown");
+  });
+
+  it("a booked waybill whose record write fails is kept on the claim and returned", async () => {
+    const d = db(true);
+    const realRef = d.ref;
+    d.ref = (path) => {
+      const r = realRef(path);
+      return path === "online_orders/W1001/shipping" ? { ...r, update: async () => { throw new Error("write refused"); } } : r;
+    };
+    const logs = [];
+    const res = await bookShipment(ORDER(), deps(d, fakeClient(), logs));
+    expect(res.waybill).toBe("LD-TEST01");
+    expect(d.root.online_orders.W1001.shipping.courierBooking).toMatchObject({ state: "booked", waybill: "LD-TEST01" });
+    expect(logs.join("\n")).toContain("BOOKED BUT NOT RECORDED LD-TEST01");
+  });
+
+  it("a non-finite charge is recorded as null, never NaN", async () => {
+    const d = db(true);
+    const res = await bookShipment(ORDER(), deps(d, fakeClient({ createResult: { id: 7, short_tracking_reference: "ABC", charged_amount: "n/a", rate: "n/a" } })));
+    expect(res.cost).toBeNull();
+    expect(res.waybill).toBe("ABC");
   });
 });

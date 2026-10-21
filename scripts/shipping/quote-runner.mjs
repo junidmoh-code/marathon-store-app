@@ -61,9 +61,15 @@ async function main() {
   const db = adminDb();
   const client = createCourierClient({ log });
 
-  // Prune yesterday's answers once at start; they are only ever read for a minute.
-  const old = await db.ref(ANSWERS_PATH).orderByChild("answeredAt").endAt(Date.now() - ANSWER_TTL_MS).get();
-  if (old.exists()) await Promise.all(Object.keys(old.val()).map((k) => db.ref(`${ANSWERS_PATH}/${k}`).remove()));
+  // Answers are only ever read for a minute: prune day-old ones at start and hourly.
+  const prune = async () => {
+    try {
+      const old = await db.ref(ANSWERS_PATH).orderByChild("answeredAt").endAt(Date.now() - ANSWER_TTL_MS).get();
+      if (old.exists()) await Promise.all(Object.keys(old.val()).map((k) => db.ref(`${ANSWERS_PATH}/${k}`).remove()));
+    } catch (err) { log(`quote-runner prune failed: ${err?.message || err}`); }
+  };
+  await prune();
+  setInterval(prune, 3600_000);
 
   const inFlight = new Set();
   db.ref(REQUESTS_PATH).on("child_added", async (snap) => {
@@ -73,6 +79,10 @@ async function main() {
     try {
       const a = await answerQuoteRequest({ db, client, id, req: snap.val() });
       log(`quote-runner ${id} ${a ? (a.error ? `error ${a.error}` : `chosen ${a.chosen?.code ?? "none"}`) : "expired"}`);
+    } catch (err) {
+      // A failed answer/remove write must not kill the listener (KeepAlive
+      // would restart it straight into the same request — a crash loop).
+      log(`quote-runner ${id} write failed: ${err?.message || err}`);
     } finally {
       inFlight.delete(id);
     }

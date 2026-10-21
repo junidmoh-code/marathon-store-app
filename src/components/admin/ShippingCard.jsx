@@ -28,7 +28,7 @@ import { assertSafeSegment } from "../../utils/sizeKey.js";
 
 export const QUOTE_TIMEOUT_MS = 60_000;
 
-const EDITABLE_KEYS = ["collectionAddress", "collectionContact", "volumetricDivisor", "divisorByServiceGroup", "items", "boxes", "dropBox", "doorServiceCode", "excludeServiceCodes"];
+const EDITABLE_KEYS = ["collectionAddress", "collectionContact", "volumetricDivisor", "divisorByServiceGroup", "items", "boxes", "dropBox", "doorServiceCode", "excludeServiceCodes", "maxChargeRand"];
 
 export const RULE_TEXT = `"config": {
   "shipping": {
@@ -386,6 +386,14 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
           <input aria-label="excluded services" value={(cfg.excludeServiceCodes ?? []).join(", ")}
             onChange={(e) => patch((c) => { c.excludeServiceCodes = e.target.value.split(",").map((s) => s.trim()).filter(Boolean); return c; })} style={S.text} />
           <span style={S.muted}>)</span>
+        </div>
+      </div>
+
+      <div style={S.section}>
+        <h2 style={S.h2}>Spend ceiling</h2>
+        <div style={S.row}>
+          <span style={S.label}>Never book a parcel quoted above (R, incl. VAT)</span>
+          <Num label="max charge rand" value={cfg.maxChargeRand} step={10} onChange={(v) => patch((c) => { c.maxChargeRand = v; return c; })} />
         </div>
       </div>
 

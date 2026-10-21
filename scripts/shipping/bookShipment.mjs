@@ -40,6 +40,11 @@ import { fileLogger } from "./courier-client.mjs";
 
 export const LIVE_PATH = "config/shipping/live";
 
+// RTDB refuses undefined and NaN anywhere in a write; a booking that is
+// already paid for must never fail on its own record.
+const finiteOrNull = (n) => (Number.isFinite(Number(n)) ? Number(n) : null);
+const plain = (v) => JSON.parse(JSON.stringify(v ?? null));
+
 /** The one place `live` is decided. Only the boolean true books. */
 export async function readLive(db) {
   const snap = await db.ref(LIVE_PATH).get();
@@ -59,6 +64,9 @@ async function defaultDeps(deps) {
 function orderKey(order) {
   const key = keyOf(order);
   if (!key) throw new Error("bookShipment: the order carries no /online_orders key (key, id or shopifyGid)");
+  // A WEB- ref passed as id/key would put the claim on a junk node the real
+  // order never sees — and the one-booking guard with it.
+  if (/^web-/i.test(key)) throw new Error(`bookShipment: "${key}" is an order REF, not its /online_orders key`);
   return assertSafeSegment(key, "order key");
 }
 
@@ -102,6 +110,12 @@ export async function planShipment(order, { db, client, products = null }) {
   const chosen = chooseRate({ door: quoted.door.rates, locker: quoted.locker.rates }, parcel, cfg);
   if (!chosen) {
     return { ok: false, reason: `no usable rate (door: ${quoted.door.error ?? "none"}; locker: ${quoted.locker.error ?? "none"})`, parcel, quoted };
+  }
+  // THE SPEND CEILING. The account is prepaid; an order that quotes above
+  // this is booked by a person in the portal, not by this code.
+  const ceiling = Number(cfg.maxChargeRand);
+  if (Number.isFinite(ceiling) && ceiling > 0 && chosen.rate.rate > ceiling) {
+    liveBlockers.push(`quote R${chosen.rate.rate.toFixed(2)} is over the R${ceiling} ceiling`);
   }
 
   const payload = {
@@ -153,33 +167,54 @@ export async function bookShipment(order, deps = {}) {
     log(`bookShipment ${key} REFUSED ${plan.liveBlockers.join(", ")}`);
     return { skipped: true, reason: plan.liveBlockers.join(", ") };
   }
+  // The order must exist at that key — never mint a node by booking.
+  if (!(await db.ref(`online_orders/${key}/ref`).get()).exists()) {
+    log(`bookShipment ${key} REFUSED no order at /online_orders/${key}`);
+    return { skipped: true, reason: `no order at /online_orders/${key}` };
+  }
   const claimRef = db.ref(`online_orders/${key}/shipping/courierBooking`);
   const claim = await claimRef.transaction((cur) => (cur && cur.state !== "failed" ? undefined : { state: "booking", at: now() }));
   if (!claim.committed) {
     return { skipped: true, reason: `booking already ${claim.snapshot?.val()?.state ?? "claimed"}` };
   }
 
+  // Re-read live AFTER winning the claim: the quotes took seconds, and a
+  // switch turned off in that window must still stop this booking.
+  if (!(await readLive(db))) {
+    await claimRef.set({ state: "failed", at: now(), error: "live switched off before booking" });
+    log(`bookShipment ${key} DRY RUN (live switched off mid-booking)`);
+    return { skipped: true, dryRun: plan.payload, parcel: plan.parcel };
+  }
+
   let res;
   try {
     res = await client.createShipment(plan.payload);
   } catch (err) {
-    const ambiguous = !(err?.status >= 400 && err?.status < 500);
+    // 408 means the request may still have run — as ambiguous as a 5xx.
+    const ambiguous = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;
     await claimRef.set({ state: ambiguous ? "unknown" : "failed", at: now(), error: String(err?.message || err).slice(0, 300) });
     log(`bookShipment ${key} CREATE ${ambiguous ? "UNKNOWN" : "FAILED"} ${err?.message || err}`);
     throw err;
   }
   const shipping = {
     provider: "courier_guy",
-    shipmentId: res?.id ?? null,
+    shipmentId: finiteOrNull(res?.id),
     waybill: res?.custom_tracking_reference || res?.short_tracking_reference || null,
     trackingReference: res?.short_tracking_reference ?? null,
     service: res?.service_level_code ?? plan.chosen.rate.code,
-    parcel: plan.parcel,
-    cost: Number(res?.charged_amount ?? res?.rate ?? plan.chosen.rate.rate),
+    parcel: plain(plan.parcel),
+    cost: finiteOrNull(res?.charged_amount ?? res?.rate ?? plan.chosen.rate.rate),
     bookedAt: now(),
   };
-  await db.ref(`online_orders/${key}/shipping`).update({ ...shipping, courierBooking: { state: "booked", at: shipping.bookedAt } });
   log(`bookShipment ${key} BOOKED ${shipping.waybill} ${shipping.service} R${shipping.cost}`);
+  try {
+    await db.ref(`online_orders/${key}/shipping`).update({ ...shipping, courierBooking: { state: "booked", at: shipping.bookedAt } });
+  } catch (err) {
+    // The waybill exists and is paid for. Keep at least the claim's record of
+    // it, so nothing books it again and a person can find it.
+    log(`bookShipment ${key} BOOKED BUT NOT RECORDED ${shipping.waybill}: ${err?.message || err}`);
+    await claimRef.set({ state: "booked", at: shipping.bookedAt, shipmentId: shipping.shipmentId, waybill: shipping.waybill }).catch(() => {});
+  }
   return shipping;
 }
 

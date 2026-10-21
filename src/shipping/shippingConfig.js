@@ -111,6 +111,11 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   // books the cheapest door service actually quoted, excluding these.
   doorServiceCode: "ECO",
   excludeServiceCodes: ["SDX"],
+
+  // A live booking refuses any order whose chosen quote is above this (rand,
+  // incl. VAT); a person books it in the portal instead. The locker L is
+  // R193.60 and a 3 kg Cape Town ECO R143.52 (21 Oct 2026).
+  maxChargeRand: 300,
 });
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);

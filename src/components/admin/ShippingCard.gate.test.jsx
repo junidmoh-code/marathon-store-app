@@ -93,7 +93,7 @@ describe("the live switch", () => {
     expect(r.path).toBe("config/shipping");
     expect(payload).not.toHaveProperty("live");
     expect(payload.volumetricDivisor).toBe(5000);
-    expect(Object.keys(payload).sort()).toEqual(["boxes", "collectionAddress", "collectionContact", "divisorByServiceGroup", "doorServiceCode", "dropBox", "excludeServiceCodes", "items", "volumetricDivisor"]);
+    expect(Object.keys(payload).sort()).toEqual(["boxes", "collectionAddress", "collectionContact", "divisorByServiceGroup", "doorServiceCode", "dropBox", "excludeServiceCodes", "items", "maxChargeRand", "volumetricDivisor"]);
   });
 
   it("every unmeasured seed carries the marker", async () => {

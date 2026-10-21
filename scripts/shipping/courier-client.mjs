@@ -101,6 +101,8 @@ export function createCourierClient({
             ...(body ? { "Content-Type": "application/json" } : {}),
           },
           body: body ? JSON.stringify(body) : undefined,
+          // The Bearer header must never follow a redirect to another host.
+          redirect: "error",
           signal: ctrl.signal,
         });
         text = await res.text();
