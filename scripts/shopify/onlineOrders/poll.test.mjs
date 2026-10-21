@@ -369,8 +369,73 @@ describe("Shopify fulfilment after the pack", () => {
     const courier = { ...fakeCourier(), createShipment: async () => ({ id: 7, short_tracking_reference: "ABC123", charged_amount: 100 }) };
     const sh = shopify({ fos });
     await runOrdersPoll(deps(f, sh, { courier }).deps);
-    expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "ABC123" });
+    expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "ABC123", company: "The Courier Guy" });
     expect(order(f).shipping).toMatchObject({ provider: "courier_guy", waybill: "ABC123", booking: { waybill: "ABC123" } });
+  });
+
+  describe("LIVE: no waybill, no fulfilment (go-live from WEB-1768)", () => {
+    const liveOrder = (cfg = {}) => {
+      const w = packed();
+      Object.assign(w.online_orders[9001], {
+        customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
+        shipping: { address: { address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
+      });
+      w.config.shipping = { live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg };
+      return w;
+    };
+    const failing = (err) => ({ ...fakeCourier(), createShipment: async () => { throw err; } });
+
+    it("a failed live booking holds the fulfilment: courier_failed, attention, Junid emailed, no Shopify write", async () => {
+      const f = fakeDb(liveOrder());
+      const sh = shopify({ fos });
+      const d = deps(f, sh, { courier: failing(Object.assign(new Error("HTTP 400 bad address"), { status: 400 })) });
+      const out = await runOrdersPoll(d.deps);
+      expect(out.fulfilled).toBe(0);
+      expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false);
+      expect(order(f)).toMatchObject({ status: "packed", fulfilState: "courier_failed", attentionOpen: true, attention: { kind: "courier_failed" } });
+      expect(order(f).courierError).toMatch(/400/);
+      expect(d.mails).toHaveLength(1);
+      expect(f.writes.some(([, p]) => p.startsWith("pos/"))).toBe(false); // never a second sale
+    });
+
+    it("a live booking refused before the call (over the ceiling) also holds", async () => {
+      const f = fakeDb(liveOrder({ maxChargeRand: 10 }));
+      const sh = shopify({ fos });
+      await runOrdersPoll(deps(f, sh).deps);
+      expect(order(f).fulfilState).toBe("courier_failed");
+      expect(order(f).courierError).toMatch(/ceiling/);
+      expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false);
+    });
+
+    it("Retry (back to pending) re-runs the booking only, then fulfils with the waybill and clears the attention", async () => {
+      const f = fakeDb(liveOrder());
+      await runOrdersPoll(deps(f, shopify({ fos }), { courier: failing(Object.assign(new Error("HTTP 400"), { status: 400 })) }).deps);
+      expect(order(f).fulfilState).toBe("courier_failed");
+      await f.db.ref("online_orders/9001").update({ fulfilState: "pending", "fulfil/state": "pending" }); // the POS Retry
+      const sh = shopify({ fos });
+      const courier = { ...fakeCourier(), createShipment: async () => ({ id: 8, short_tracking_reference: "RTY777", charged_amount: 120 }) };
+      await runOrdersPoll(deps(f, sh, { courier }).deps);
+      expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "RTY777", company: "The Courier Guy" });
+      expect(order(f)).toMatchObject({ fulfilState: "done", shipping: { waybill: "RTY777" } });
+      expect(order(f).attention).toBeUndefined();
+      expect(order(f).courierError).toBeUndefined();
+    });
+
+    it("an already-booked order fulfils with the waybill it has", async () => {
+      const w = liveOrder();
+      w.online_orders[9001].shipping = { ...w.online_orders[9001].shipping, provider: "courier_guy", shipmentId: 5, waybill: "LD-1" };
+      const f = fakeDb(w);
+      const sh = shopify({ fos });
+      await runOrdersPoll(deps(f, sh).deps);
+      expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "LD-1", company: "The Courier Guy" });
+    });
+
+    it("live OFF: a courier error never holds the fulfilment", async () => {
+      const w = liveOrder(); w.config.shipping.live = false;
+      const f = fakeDb(w);
+      const out = await runOrdersPoll(deps(f, shopify({ fos }), { courier: { getRates: async () => { throw new Error("down"); } } }).deps);
+      expect(out.fulfilled).toBe(1);
+    });
   });
 
   it("a courier failure is recorded and never blocks the fulfilment", async () => {

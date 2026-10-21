@@ -42,6 +42,11 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
   orders-poll.mjs next tick: bookShipment(order) (→ {skipped:true}) then
        Shopify fulfillmentCreate (notifyCustomer true, tracking if typed)
        failure → fulfilState "failed", "Packed, Shopify not updated", Retry
+       live courier booking (docs/COURIER-GUY.md): the waybill is the Shopify
+       tracking number, carrier "The Courier Guy", notifyCustomer true; with
+       /config/shipping/live on and no waybill → fulfilState "courier_failed",
+       "Packed, courier not booked", attention courier_failed (Junid emailed),
+       POS Retry re-runs the booking only
 ```
 
 ## `/online_orders/{orderId}`
@@ -64,7 +69,7 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
 | `attentionOpen` | `true` while `attention` is unresolved (indexed — the Settings list) |
 | `packClaim` | `{ saleId, by, at }` — the pack's single-flight claim; its saleId is reused by every retry |
 | `pack` | `{ saleId, by, at }` after the sale lands |
-| `fulfilState` | `pending` · `done` · `failed` (indexed) |
+| `fulfilState` | `pending` · `done` · `failed` · `courier_failed` (indexed). `courier_failed` = live Courier Guy booking did not happen; Shopify waits; POS Retry → `pending` re-runs the booking only |
 | `fulfil` | `{ state, attempts, error?, at?, trackingNumber? }` |
 | `cancelledAfterPack` | true when Shopify cancelled an order already packed (left alone, flagged) |
 | `overrides/{pushId}` | walk-in overrides: `{ by, byName, at, storeId, tillId, productId, size, loc }` |

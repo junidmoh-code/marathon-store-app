@@ -24,7 +24,7 @@
 // and holds by exact cell path; the variant map by exact pid.
 import {
   ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_PICKS_PATH, ONLINE_ORDERS_CONFIG_PATH,
-  ORDER_STATUS, LINE_STATUS, ATTENTION_KIND, HOLDING_STATUSES, TERMINAL_STATUSES, deriveOrderStatus,
+  ORDER_STATUS, LINE_STATUS, ATTENTION_KIND, COURIER_COMPANY, HOLDING_STATUSES, TERMINAL_STATUSES, deriveOrderStatus,
 } from "../../../src/utils/onlineOrders.js";
 import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "../../../src/utils/sizeKey.js";
 import { productIsFootwear } from "../../../src/utils/footwearLine.js";
@@ -34,7 +34,7 @@ import {
   pickKey, displayKey, pickEntry, displayEntry, attentionFromLines, placeName,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
-import { bookShipment } from "./shipping.mjs";
+import { bookShipment, readLive } from "./shipping.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 
 export const META_PATH = "online_orders_meta";
@@ -560,13 +560,44 @@ async function shipOrder(ctx, id, order) {
       log(`  ! ${order.ref}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
     }
   }
+  // ── LIVE: no waybill, no fulfilment ────────────────────────────────────────
+  // With /config/shipping/live on, the customer's Shopify notification must
+  // carry the waybill, so a booking that did not happen (failed, refused,
+  // unconfirmed) HOLDS the fulfilment: "Packed, courier not booked", Junid is
+  // emailed through the attention path, and the POS Retry puts the order back
+  // to pending — the next tick re-runs the booking only, never the sale.
+  // Live off: unchanged — the dry run is recorded and Shopify is fulfilled.
+  const waybill = booking && !booking.skipped
+    ? booking.waybill
+    : (booking?.reason === "already booked" ? order.shipping?.waybill ?? null : null);
+  let live = false;
+  try { live = await readLive(db); } catch (e) { live = true; log(`  ! ${order.ref}: could not read the live switch — holding (${String(e?.message || e).slice(0, 120)})`); }
+  if (live && !waybill) {
+    const why = String(booking?.error || booking?.reason || "no waybill came back").slice(0, 300);
+    await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
+      fulfilState: "courier_failed",
+      "fulfil/state": "courier_failed",
+      courierError: why,
+      attention: { kind: ATTENTION_KIND.COURIER_FAILED, reason: `Packed, but Courier Guy was not booked: ${why}`, at: now },
+      attentionOpen: true,
+      updatedAt: now,
+    });
+    ctx.summary.courierFailed = (ctx.summary.courierFailed ?? 0) + 1;
+    log(`  ✗ ${order.ref}: courier not booked (${why}) — "Packed, courier not booked"; Shopify waits`);
+    return;
+  }
   const attempts = Math.min(MAX_FULFIL_ATTEMPTS_SHOWN, (Number(order.fulfil?.attempts) || 0) + 1);
   let out;
   try {
-    // A real Courier Guy booking's waybill is the tracking number Shopify
-    // sends the customer, unless the packer typed one.
-    const waybill = booking && !booking.skipped ? booking.waybill : null;
-    out = await fulfilOnShopify(graphql, { orderGid: order.shopifyGid, trackingNumber: order.fulfil?.trackingNumber || waybill || null });
+    // The Courier Guy waybill is the tracking number Shopify sends the
+    // customer, carrier "The Courier Guy" (the typed tracking field is gone;
+    // an older order's typed number still counts when there is no waybill).
+    const trackingNumber = waybill || order.fulfil?.trackingNumber || null;
+    out = await fulfilOnShopify(graphql, {
+      orderGid: order.shopifyGid,
+      trackingNumber,
+      trackingCompany: waybill ? COURIER_COMPANY : null,
+    });
   } catch (e) {
     out = { ok: false, error: String(e?.message || e) };
   }
@@ -580,7 +611,8 @@ async function shipOrder(ctx, id, order) {
       ...(out.alreadyDone ? { "fulfil/alreadyDone": true } : {}),
       // A fulfilment that failed before and has now landed takes its
       // attention with it, or it would sit in Settings for ever.
-      ...(order.attention?.kind === ATTENTION_KIND.FULFIL_FAILED ? { attention: null, attentionOpen: null } : {}),
+      ...([ATTENTION_KIND.FULFIL_FAILED, ATTENTION_KIND.COURIER_FAILED].includes(order.attention?.kind) ? { attention: null, attentionOpen: null } : {}),
+      courierError: null,
       updatedAt: now,
     });
     ctx.summary.fulfilled++;

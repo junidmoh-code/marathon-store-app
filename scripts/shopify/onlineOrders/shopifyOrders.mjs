@@ -86,7 +86,7 @@ export async function openFulfillmentOrders(graphql, orderGid) {
  * admin out of habit is simply done.
  * → { ok: true, fulfillmentIds, alreadyDone? } | { ok: false, error }
  */
-export async function fulfilOnShopify(graphql, { orderGid, trackingNumber = null }) {
+export async function fulfilOnShopify(graphql, { orderGid, trackingNumber = null, trackingCompany = null }) {
   const { missing, open } = await openFulfillmentOrders(graphql, orderGid);
   if (missing) return { ok: false, error: "Shopify no longer has this order" };
   if (!open.length) return { ok: true, fulfillmentIds: [], alreadyDone: true };
@@ -95,7 +95,9 @@ export async function fulfilOnShopify(graphql, { orderGid, trackingNumber = null
     const fulfillment = {
       lineItemsByFulfillmentOrder: [{ fulfillmentOrderId: fo.id }],
       notifyCustomer: true,
-      ...(trackingNumber ? { trackingInfo: { number: String(trackingNumber) } } : {}),
+      ...(trackingNumber
+        ? { trackingInfo: { number: String(trackingNumber), ...(trackingCompany ? { company: String(trackingCompany) } : {}) } }
+        : {}),
     };
     const data = await graphql(
       `mutation ($fulfillment: FulfillmentInput!) {

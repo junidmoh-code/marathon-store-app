@@ -67,7 +67,14 @@ export const ATTENTION_KIND = Object.freeze({
   WALKIN_OVERRIDE: "walkin_override",
   CANCELLED_AFTER_PACK: "cancelled_after_pack",
   FULFIL_FAILED: "fulfil_failed",
+  // Packed, but the live Courier Guy booking did not happen (failed, refused
+  // or unconfirmed). The Shopify fulfilment waits for it; the POS Retry
+  // re-runs the booking only.
+  COURIER_FAILED: "courier_failed",
 });
+
+// The carrier name Shopify shows the customer next to the waybill.
+export const COURIER_COMPANY = "The Courier Guy";
 
 /**
  * Units of `pid/size` held at `loc` by website orders, from the reservation
