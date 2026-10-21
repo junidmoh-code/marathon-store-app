@@ -24,7 +24,7 @@
 // and holds by exact cell path; the variant map by exact pid.
 import {
   ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_PICKS_PATH, ONLINE_ORDERS_CONFIG_PATH,
-  ORDER_STATUS, LINE_STATUS, ATTENTION_KIND, HOLDING_STATUSES, deriveOrderStatus,
+  ORDER_STATUS, LINE_STATUS, ATTENTION_KIND, HOLDING_STATUSES, TERMINAL_STATUSES, deriveOrderStatus,
 } from "../../../src/utils/onlineOrders.js";
 import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "../../../src/utils/sizeKey.js";
 import { productIsFootwear } from "../../../src/utils/footwearLine.js";
@@ -44,7 +44,7 @@ export const DIRTY_PATH = "shopify_inventory_dirty";
 export const CURSOR_OVERLAP_MS = 10 * 60 * 1000;
 export const MAX_FULFIL_ATTEMPTS_SHOWN = 99;
 
-const isTerminal = (s) => s === ORDER_STATUS.PACKED || s === ORDER_STATUS.CANCELLED;
+const isTerminal = (s) => TERMINAL_STATUSES.includes(s);
 
 // ── An indexed query that survives its index not being pasted yet ───────────
 // The /online_orders indexes are part of the rules block Junid pastes by hand
@@ -150,6 +150,18 @@ async function handleShopifyOrder(ctx, node) {
 
   if (node.cancelledAt) {
     if (existing) await cancelOrder(ctx, id, node);
+    return;
+  }
+  // ── THE OLD WAY, WHILE THE SWITCH IS OFF ───────────────────────────────────
+  // Until Junid turns the feeds on, staff still ring each web sale at a till
+  // by hand and fulfil it in the Shopify admin. That sale deducts the stock;
+  // a hold left standing would then hide the same unit a SECOND time on every
+  // push, for good. So an order Shopify shows fulfilled while the switch is
+  // off is let go — exactly today's behaviour. With the switch ON the hold
+  // stays until the pack (an admin fulfilment before the pack is the very gap
+  // the hold closes), and the walk-in guard stops the hand-rung slip.
+  if (existing && !ctx.enabled && node.displayFulfillmentStatus === "FULFILLED" && HOLDING_STATUSES.includes(existing.status)) {
+    await releaseFulfilledElsewhere(ctx, id, node);
     return;
   }
   if (existing || !isIngestible(node)) return;
@@ -258,6 +270,21 @@ async function cancelOrder(ctx, id, node) {
   }
   ctx.summary.cancelled++;
   log(`  − ${order.ref}: cancelled on Shopify — hold released`);
+  await cancelEntries(ctx, order);
+  await syncHolds(ctx, id, order);
+}
+
+async function releaseFulfilledElsewhere(ctx, id, node) {
+  const { db, now, log } = ctx;
+  const res = await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
+    if (cur == null) return null;
+    if (!HOLDING_STATUSES.includes(cur.status)) return undefined;
+    return { ...cur, status: ORDER_STATUS.FULFILLED_ELSEWHERE, fulfilledElsewhereAt: Date.parse(node.updatedAt) || now, updatedAt: now, attention: null, attentionOpen: null };
+  });
+  const order = res.snapshot.val();
+  if (!res.committed || !order) return;
+  ctx.summary.handledElsewhere = (ctx.summary.handledElsewhere || 0) + 1;
+  log(`  ~ ${order.ref}: fulfilled in the Shopify admin with the switch off — handled the old way, hold released`);
   await cancelEntries(ctx, order);
   await syncHolds(ctx, id, order);
 }

@@ -230,6 +230,25 @@ describe("cancellation", () => {
   });
 });
 
+describe("the old way, while the switch is off", () => {
+  it("an order fulfilled in the Shopify admin (rung by hand at a till) is let go: hold released, out of every list", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    const out = await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder({ displayFulfillmentStatus: "FULFILLED", updatedAt: "2026-10-21T09:55:00Z" })] })).deps);
+    expect(out.handledElsewhere).toBe(1);
+    expect(order(f).status).toBe("fulfilled_elsewhere");
+    expect(f.read("online_reservations")).toBeNull();
+  });
+
+  it("with the switch ON the same admin fulfilment keeps the hold until the pack", async () => {
+    const f = fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder({ displayFulfillmentStatus: "FULFILLED" })] })).deps);
+    expect(order(f).status).toBe("picking");
+    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2 });
+  });
+});
+
 describe("Resolve → re-route", () => {
   it("routes a no_stock line again once stock exists, under a fresh entry key", async () => {
     const f = fakeDb(world({ stock: {}, config: { onlineOrders: { enabled: true } } }));

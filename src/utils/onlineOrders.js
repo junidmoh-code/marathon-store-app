@@ -32,7 +32,12 @@ export const ORDER_STATUS = Object.freeze({
   NEEDS_ATTENTION: "needs_attention",
   PACKED: "packed",
   CANCELLED: "cancelled",
+  // Fulfilled in the Shopify admin while the switch was OFF: handled the old
+  // way (rung by hand at a till), so the app lets go of it. Terminal.
+  FULFILLED_ELSEWHERE: "fulfilled_elsewhere",
 });
+
+export const TERMINAL_STATUSES = Object.freeze(["packed", "cancelled", "fulfilled_elsewhere"]);
 
 // Orders whose lines still hold stock.
 export const HOLDING_STATUSES = Object.freeze(["new", "picking", "ready", "needs_attention"]);
@@ -77,13 +82,13 @@ export function heldUnits(cell, loc = null) {
 }
 
 /**
- * The status an open order should show, from its lines. Packed and cancelled
- * are terminal. `enabled` is /config/onlineOrders/enabled: while it is off no
+ * The status an open order should show, from its lines. Packed, cancelled and
+ * fulfilled_elsewhere are terminal. `enabled` is /config/onlineOrders/enabled: while it is off no
  * feed entry exists, so an order cannot be "picking".
  */
 export function deriveOrderStatus(order, { enabled = false } = {}) {
   const status = order?.status;
-  if (status === ORDER_STATUS.PACKED || status === ORDER_STATUS.CANCELLED) return status;
+  if (TERMINAL_STATUSES.includes(status)) return status;
   const lines = Array.isArray(order?.lines) ? order.lines.filter(Boolean) : Object.values(order?.lines || {}).filter(Boolean);
   if (!lines.length) return ORDER_STATUS.NEEDS_ATTENTION;
   const st = (l) => l?.source?.status;

@@ -690,7 +690,7 @@ function onlineOrderOutcomeUpdates({ record, store, storeName, order }) {
   if (typeof orderId !== "string" || !orderId || /[.#$[\]/]/.test(orderId)
       || !Number.isInteger(i) || i < 0) return { skip: "bad-record" };
   if (!order || typeof order !== "object") return { skip: "no-order" };
-  if (order.status === "packed" || order.status === "cancelled") return { skip: "order-closed" };
+  if (order.status === "packed" || order.status === "cancelled" || order.status === "fulfilled_elsewhere") return { skip: "order-closed" };
   const line = order.lines ? order.lines[i] : null;
   if (!line || typeof line !== "object") return { skip: "no-line" };
   const src = line.source || {};

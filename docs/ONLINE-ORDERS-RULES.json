@@ -38,7 +38,7 @@
         ".validate": "newData.val() === true"
       },
       "status": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && data.val() !== 'packed' && data.val() !== 'cancelled'",
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && data.val() !== 'packed' && data.val() !== 'cancelled' && data.val() !== 'fulfilled_elsewhere'",
         ".validate": "newData.val() === 'needs_attention'"
       }
     }

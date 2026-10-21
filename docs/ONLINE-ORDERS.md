@@ -52,7 +52,7 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
 |---|---|
 | `ref` | `WEB-{order number}`; the prefix is `ONLINE_ORDER_PREFIX` (`src/utils/onlineOrders.js`) |
 | `orderNumber`, `shopifyGid`, `shopifyName` | Shopify identity |
-| `status` | `new` · `picking` · `ready` · `needs_attention` · `packed` · `cancelled` (indexed) |
+| `status` | `new` · `picking` · `ready` · `needs_attention` · `packed` · `cancelled` · `fulfilled_elsewhere` (indexed) |
 | `customer` | `{ name, phone, email }` |
 | `shipping` | `{ address: {…}, provider, tracking }` — `provider` is null today (RTDB stores null as absent; read it as `shipping?.provider ?? null`) |
 | `totals` | `{ subtotalCents, shippingCents, taxCents, totalCents, currency }` |
@@ -97,7 +97,13 @@ backfill idempotent.
 
 ### Order status (the poller recomputes it; `deriveOrderStatus`)
 
-- `packed` / `cancelled` never change back.
+- `packed` / `cancelled` / `fulfilled_elsewhere` never change back.
+- **Switch off and Shopify shows the order fulfilled** → `fulfilled_elsewhere`, hold
+  released. Until Junid turns the feeds on, staff still ring web sales by hand and
+  fulfil them in the Shopify admin; that sale deducted the stock, and a hold left
+  standing would hide the unit a second time on every push. With the switch on,
+  an admin fulfilment before the pack keeps the hold (that is the gap the hold
+  closes) and the walk-in guard stops a hand-rung slip.
 - any line `no_stock`/`not_found`/`needs_attention`/`unresolved` → `needs_attention`
 - all lines `handed` → `ready`
 - switch on and every line has its feed entry → `picking`
