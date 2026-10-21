@@ -48,5 +48,9 @@ export async function fulfilParcel(ctx, id, order, { trackingNumber = null, trac
   }
   const baseline = {};
   for (const gid of Object.keys(packed)) baseline[gid] = Number(stored[tail(gid)]) || 0;
-  return fulfilLinesOnShopify(ctx.graphql, { orderGid: order.shopifyGid, packed, baseline, trackingNumber, trackingCompany });
+  // A parcel carrying a swapped item is fulfilled against the ORIGINAL
+  // Shopify line: Shopify's shipping email would name the wrong product, so it
+  // is not sent (the customer agent already confirmed the swap by email).
+  const swapped = linesOf(order).some((l, i) => l?.swappedFrom && (order.followUpOf || order.packedLines?.[i]));
+  return fulfilLinesOnShopify(ctx.graphql, { orderGid: order.shopifyGid, packed, baseline, trackingNumber, trackingCompany, notifyCustomer: !swapped });
 }

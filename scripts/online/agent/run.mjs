@@ -39,6 +39,9 @@ export async function runCustomerAgent(deps) {
   const reg = (await get(ESCALATIONS_PATH)) || {};
   for (const [key, row] of Object.entries(reg)) {
     if (!row || typeof row !== "object") continue;
+    // needs_junid: handed to Junid — listed in Settings until he resolves it
+    // by hand (the escalation's own mirror then removes the row).
+    if (row.agent?.state === "needs_junid") continue;
     const open = row.phase === "unavailable" || (row.agent && row.agent.state && row.agent.state !== "closed");
     if (!open) continue;
     try {
@@ -129,13 +132,14 @@ async function handleLine(ctx, key, row) {
       ]);
       await record(ctx, orderId, i, order.ref, "second_unavailable", { note: "Junid emailed; no second conversation" });
     }
-    await setAgentRow(ctx, key, null);
+    await setAgentRow(ctx, key, { state: "needs_junid" }); // stays listed until Junid resolves it
     return;
   }
   await retryUnsent(ctx, orderId, order, i, line);
   if (conv.state === "offering") return offering(ctx, key, orderId, order, i, line);
   if (conv.state === "credited_window") return creditedWindow(ctx, key, orderId, order, i, line);
-  if (conv.state === "closed" || conv.state === "no_contact") await setAgentRow(ctx, key, null);
+  if (conv.state === "no_contact") await setAgentRow(ctx, key, { state: "needs_junid" });
+  else if (conv.state === "closed") await setAgentRow(ctx, key, null);
 }
 
 async function openConversation(ctx, key, orderId, order, i, line) {
@@ -150,7 +154,7 @@ async function openConversation(ctx, key, orderId, order, i, line) {
       `${line.title}${line.size ? ` size ${line.size}` : ""} ×${line.qty} is unavailable (the escalation chain ran out).`,
       `The order has no customer email${phone ? `; phone ${phone}` : ""}. Please contact them by hand: ${rands(paidCents(line))} paid for this line.`,
     ]);
-    await setAgentRow(ctx, key, null);
+    await setAgentRow(ctx, key, { state: "needs_junid" }); // stays listed until Junid resolves it
     return;
   }
   // The storefront listing name — never the app's product name (brands).

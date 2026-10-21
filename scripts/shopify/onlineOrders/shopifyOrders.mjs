@@ -172,7 +172,7 @@ export function partialFulfilmentPlan(fulfillmentOrders, want) {
  * Fulfil `packed` ({ lineItemGid: units in this parcel }) on top of `baseline`.
  * → { ok: true, fulfillmentIds, alreadyDone? } | { ok: false, error }
  */
-export async function fulfilLinesOnShopify(graphql, { orderGid, packed, baseline, trackingNumber = null, trackingCompany = null }) {
+export async function fulfilLinesOnShopify(graphql, { orderGid, packed, baseline, trackingNumber = null, trackingCompany = null, notifyCustomer = true }) {
   const order = await readForPartial(graphql, orderGid);
   if (!order) return { ok: false, error: "Shopify no longer has this order" };
   const want = {};
@@ -197,7 +197,7 @@ export async function fulfilLinesOnShopify(graphql, { orderGid, packed, baseline
   for (const entry of plan) {
     const fulfillment = {
       lineItemsByFulfillmentOrder: [entry],
-      notifyCustomer: true,
+      notifyCustomer,
       ...(trackingNumber ? { trackingInfo: { number: String(trackingNumber), ...(trackingCompany ? { company: trackingCompany } : {}) } } : {}),
     };
     const data = await graphql(

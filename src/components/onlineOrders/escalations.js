@@ -14,6 +14,7 @@ const AGENT_WORDS = {
   offering: "Customer offered alternatives — waiting for a reply",
   credited_window: "Store credit given — refund still possible",
   closed: "Closed",
+  needs_junid: "Handed to Junid — contact the customer by hand, then Resolved by hand",
 };
 
 /** Registry → rows, oldest-first by their next action time, then by ref. */

@@ -146,3 +146,19 @@ describe("owed but not coverable", () => {
     expect(out.error).toMatch(/no open fulfilment for 1 unit/);
   });
 });
+
+describe("a swapped item ships without Shopify's own email", () => {
+  it("notifyCustomer is false for a follow-up carrying a swapped line", async () => {
+    const { fulfilParcel } = await import("./partialFulfil.mjs");
+    const LI2 = "gid://shopify/LineItem/2";
+    const sent = [];
+    const graphql = async (q, v) => {
+      if (q.includes("fulfillmentCreate")) { sent.push(v.fulfillment); return { fulfillmentCreate: { fulfillment: { id: "f" }, userErrors: [] } }; }
+      return { order: { id: "o", lineItems: { nodes: [{ id: LI2, currentQuantity: 1, unfulfilledQuantity: 1 }] }, fulfillmentOrders: { nodes: [{ id: "FO1", status: "OPEN", lineItems: { nodes: [{ id: "FOL1", remainingQuantity: 1, lineItem: { id: LI2 } }] } }] } } };
+    };
+    const db = { ref: () => ({ set: async () => {} }) };
+    const out = await fulfilParcel({ graphql, db }, "9001f0", { followUpOf: "9001", shopifyGid: "o", lines: [{ shopifyLineItemId: LI2, qty: 1, swappedFrom: { title: "x" } }] });
+    expect(out.ok).toBe(true);
+    expect(sent[0].notifyCustomer).toBe(false);
+  });
+});

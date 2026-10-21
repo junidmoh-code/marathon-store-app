@@ -417,3 +417,14 @@ describe("Sonnet final review", () => {
     expect(f.read("online_orders/9001/followUps")).toEqual({ "9001f0": true });
   });
 });
+
+describe("Fable final review", () => {
+  it("a line handed to Junid (no email on the order) stays listed for him", async () => {
+    const f = fakeDb(world({ order: { customer: { name: "X" } } }));
+    const h = harness(f);
+    await h.run();
+    expect(f.read("online_escalations/9001_0/agent")).toMatchObject({ state: "needs_junid" });
+    await h.run();
+    expect(h.junid).toHaveLength(1);
+  });
+});
