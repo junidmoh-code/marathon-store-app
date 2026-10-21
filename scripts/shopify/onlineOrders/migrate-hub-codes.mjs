@@ -16,10 +16,8 @@
 //   node scripts/shopify/onlineOrders/migrate-hub-codes.mjs            dry run
 //   node scripts/shopify/onlineOrders/migrate-hub-codes.mjs --commit
 import { createRequire } from "node:module";
-import { ONLINE_ORDERS_PATH, HOLDING_STATUSES, LINE_STATUS, orderLabel } from "../../../src/utils/onlineOrders.js";
-import { linesOf } from "./orderModel.mjs";
-import { mintHubCode } from "./orderRefs.mjs";
-import { migrationPlan, nextPointer, oldStillMatches } from "./hubCodeMigration.mjs";
+import { ONLINE_ORDERS_PATH, HOLDING_STATUSES } from "../../../src/utils/onlineOrders.js";
+import { migrateOrder } from "./hubCodeMigration.mjs";
 import { serverNowMs } from "../publishNode.mjs";
 
 const COMMIT = process.argv.includes("--commit");
@@ -32,48 +30,6 @@ const say = (s) => console.log(`${COMMIT ? "" : "[dry] "}${s}`);
 
 for (const status of HOLDING_STATUSES) {
   const found = (await db.ref(ONLINE_ORDERS_PATH).orderByChild("status").equalTo(status).get()).val() || {};
-  for (const [id, order] of Object.entries(found)) {
-    const label = orderLabel(order);
-    const { units, displays } = migrationPlan(order);
-    say(`${order.ref ?? "?"} → ${label} (${id}): ${units.length} hub unit(s), ${displays.length} strip entr${displays.length === 1 ? "y" : "ies"}`);
-    const newKeys = {}; // i → [codes]
-    for (const { i, u, gen, oldKey } of units) {
-      const rec = (await db.ref(`orders/${oldKey}`).get()).val();
-      if (rec && Number.isInteger(rec.onlineUnit)) { (newKeys[i] ||= [])[u] = oldKey; say(`  line ${i + 1} unit ${u + 1}: ${oldKey} already a unit code`); continue; }
-      if (!rec || rec.channel !== "online" || rec.onlineOrderId !== String(id)) { say(`  line ${i + 1} unit ${u + 1}: ${oldKey} is not this order's hub order — left alone`); continue; }
-      const owner = `${id}:${i}:${u}:${gen}`;
-      const code = COMMIT
-        ? await mintHubCode(db, owner, now, { taken: async (c) => { const r = (await db.ref(`orders/${c}`).get()).val(); return !!r && !(r.onlineOrderId === String(id) && Number(r.onlineLineIndex) === i && Number(r.onlineUnit) === u); } })
-        : `(new code for ${owner})`;
-      say(`  line ${i + 1} unit ${u + 1}: ${oldKey} (${rec.status}, ${rec.hub}) → ${code}`);
-      (newKeys[i] ||= [])[u] = code;
-      if (!COMMIT) continue;
-      const copy = { ...rec, id: code, onlineOrderNumber: order.orderNumber ?? null, onlineUnit: u, migratedFrom: oldKey, updatedAt: new Date(now).toISOString() };
-      const res = await db.ref(`orders/${code}`).transaction((cur) => (cur == null ? copy : undefined));
-      const there = res.snapshot.val();
-      if (!res.committed && !(there && there.migratedFrom === oldKey)) throw new Error(`orders/${code} is taken`);
-      // Removed only if it is STILL what was copied — a hub "sent" / "out of
-      // stock" landing meanwhile keeps the old record (and is reported).
-      const del = await db.ref(`orders/${oldKey}`).transaction((cur) => (oldStillMatches(cur, rec, id) ? null : undefined));
-      if (!del.committed) {
-        await db.ref(`orders/${code}`).set(null);
-        delete newKeys[i][u];
-        say(`  ! ${oldKey} changed while being moved — kept as it is; re-run the migration`);
-      }
-    }
-    if (COMMIT) {
-      for (const [i, codes] of Object.entries(newKeys)) {
-        const oldKeys = linesOf(order)[i].source.orderKeys;
-        await db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines/${i}/source`).transaction((cur) => {
-          if (!cur || JSON.stringify(cur.orderKeys) !== JSON.stringify(oldKeys)) return undefined; // moved meanwhile
-          return { ...cur, ...nextPointer(oldKeys, codes) };
-        });
-      }
-      for (const key of displays) {
-        await db.ref(key).transaction((cur) => (cur ? { ...cur, orderNumber: order.orderNumber ?? null, ref: label } : undefined));
-      }
-    }
-    for (const [i, l] of linesOf(order).entries()) if (l?.source?.status === LINE_STATUS.PICK && !newKeys[i]) say(`  line ${i + 1}: on a hub list with no hub order yet — the poller raises it with a unit code`);
-  }
+  for (const [id, order] of Object.entries(found)) await migrateOrder(db, id, order, { nowMs: now, commit: COMMIT, say });
 }
 process.exit(0);
