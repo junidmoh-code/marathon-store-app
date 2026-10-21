@@ -27,13 +27,14 @@ test("useTvOrders bounds /orders by the shared range, on BOTH of its sources", (
   // comparison, which is what the server query does.
   const hook = app.match(/function useTvOrders\(\) \{[\s\S]{0,3000}?\n\}/);
   expect(hook, "useTvOrders should exist").toBeTruthy();
-  // The live path, unchanged.
+  // The live path: the numeric range plus the website-order code ranges.
   expect(hook[0]).toContain('ref(database, "orders")');
   expect(hook[0]).toContain("orderByKey()");
-  expect(hook[0]).toContain("startAt(TV_ORDER_KEY_START)");
-  expect(hook[0]).toContain("endAt(TV_ORDER_KEY_END)");
-  // The mirrored path, bounded by the same two constants and nothing else.
-  expect(hook[0]).toContain("key >= TV_ORDER_KEY_START && key <= TV_ORDER_KEY_END");
+  expect(hook[0]).toContain("[[TV_ORDER_KEY_START, TV_ORDER_KEY_END], ...TV_ONLINE_ORDER_KEY_RANGES]");
+  expect(hook[0]).toContain("startAt(a), endAt(b)");
+  expect(hook[0]).toContain("tvRowsOf(snap.val())");
+  // The mirrored path, bounded by the same constants and the same code test.
+  expect(hook[0]).toContain("(key >= TV_ORDER_KEY_START && key <= TV_ORDER_KEY_END) || keyInTvOnlineOrdersRange(key)");
   // And both end in the SAME shaping function — defined once, called from
   // each path — so the rows the kiosk renders cannot differ by source.
   expect(hook[0]).toContain("const shapeTvOrders = useCallback(");

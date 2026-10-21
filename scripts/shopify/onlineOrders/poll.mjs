@@ -23,7 +23,7 @@
 // No whole-node reads: orders by exact id or by an indexed status query; stock
 // and holds by exact cell path; the variant map by exact pid.
 import {
-  ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_PICKS_PATH, ONLINE_ORDERS_CONFIG_PATH,
+  ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_ORDERS_CONFIG_PATH, PACKING_STORE,
   ORDER_STATUS, LINE_STATUS, ATTENTION_KIND, COURIER_COMPANY, HOLDING_STATUSES, TERMINAL_STATUSES, deriveOrderStatus,
 } from "../../../src/utils/onlineOrders.js";
 import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "../../../src/utils/sizeKey.js";
@@ -31,11 +31,12 @@ import { productIsFootwear } from "../../../src/utils/footwearLine.js";
 import { availableAt, routeLines, ROUTED_LOCATIONS } from "./routing.mjs";
 import {
   isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
-  pickKey, displayKey, pickEntry, displayEntry, attentionFromLines, placeName,
+  displayKey, displayEntry, hubOrderKeys, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
 import { bookShipment, readLive } from "./shipping.mjs";
 import { mintOrderRef } from "./orderRefs.mjs";
+import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 
 export const META_PATH = "online_orders_meta";
@@ -346,21 +347,31 @@ async function releaseFulfilledElsewhere(ctx, id, node, { why = "fulfilled in th
 }
 
 async function cancelEntries(ctx, order) {
-  for (const line of linesOf(order)) {
-    const key = line?.source?.entryKey;
-    if (key) await cancelEntry(ctx, key);
-  }
+  for (const line of linesOf(order)) await cancelLineEntries(ctx, line);
+}
+
+async function cancelLineEntries(ctx, line) {
+  const keys = Array.isArray(line?.source?.orderKeys) ? line.source.orderKeys : [];
+  if (keys.length) { for (const k of keys) await cancelHubOrder(ctx, k); return; }
+  if (line?.source?.entryKey) await cancelEntry(ctx, line.source.entryKey);
+}
+
+// A cancelled website order's hub order: gone from the Warehouse queue if the
+// hub has not sent it yet; if it was already sent, it is left as it is (the
+// unit is on its way to Marathon PE) and the order's attention says so.
+async function cancelHubOrder(ctx, key) {
+  const { db, log } = ctx;
+  const path = `orders/${key}`;
+  const res = await db.ref(path).transaction((cur) => {
+    if (cur == null) return null;
+    if (cur.channel !== "online") return undefined; // never touch a shop's own order
+    return cur.status === "incoming" || cur.status === "coming_tomorrow" ? null : undefined;
+  });
+  if (!res.committed && res.snapshot?.val()) log(`  ~ hub order ${key} was already sent — left for the shop to return`);
 }
 
 async function cancelEntry(ctx, entryKey) {
   const { db, now } = ctx;
-  if (entryKey.startsWith(`${ONLINE_PICKS_PATH}/`)) {
-    const cur = await ctx.get(entryKey);
-    if (cur && cur.status === "open") {
-      await db.ref(entryKey).update({ status: "cancelled", locStatus: `${cur.locationId}|cancelled`, cancelledAt: now });
-    }
-    return;
-  }
   if (entryKey.startsWith("displayChecks_active/")) {
     // A completed TOMBSTONE, never a delete — the display-check invariant
     // (completeCheck.js). The reaper clears it like any other.
@@ -415,7 +426,30 @@ async function maintainOrder(ctx, id, order) {
       });
     });
     // The rerouted lines' old entries (a walk-in override leaves one open).
-    for (const i of reroute) if (before[i]?.source?.entryKey) await cancelEntry(ctx, before[i].source.entryKey);
+    for (const i of reroute) await cancelLineEntries(ctx, before[i]);
+  }
+
+  // (a2) WHAT THE HUB DID — a line on a hub order follows its /orders record(s):
+  // sent → handed (from the hub that sent it: the Pack deducts THERE), out of
+  // stock → no_stock, sent in another size → needs attention. Exact reads.
+  for (let i = 0; i < before.length; i++) {
+    const l = changed.get(i) || before[i];
+    const keys = l?.source?.orderKeys;
+    if (!Array.isArray(keys) || !keys.length || l.source.status !== LINE_STATUS.PICK) continue;
+    const records = [];
+    for (const k of keys) records.push(await ctx.get(`orders/${k}`));
+    const out = hubOutcome(l, records);
+    if (!out) continue;
+    changed.set(i, {
+      ...l,
+      source: {
+        ...l.source,
+        status: out.status,
+        ...(out.locationId ? { locationId: out.locationId } : {}),
+        ...(out.reason ? { reason: out.reason } : {}),
+        ...(out.status === LINE_STATUS.HANDED ? { handedAt: now, handedBy: "hub" } : {}),
+      },
+    });
   }
 
   const lines = before.map((l, i) => changed.get(i) || l).concat(appended);
@@ -427,8 +461,8 @@ async function maintainOrder(ctx, id, order) {
       const line = lines[i];
       const st = line?.source?.status;
       if ((st !== LINE_STATUS.PICK && st !== LINE_STATUS.DISPLAY) || line.source.entryKey) continue;
-      const key = await createEntry(ctx, id, order, i, line);
-      if (key) entryKeys.set(i, key);
+      const entry = await createEntry(ctx, id, { ...order, lines }, i, line);
+      if (entry) entryKeys.set(i, entry);
     }
   }
 
@@ -446,9 +480,9 @@ async function maintainOrder(ctx, id, order) {
     const next = { ...cur };
     next.lines = curLines.map((l, i) => {
       let line = changed.get(i) || l;
-      if (entryKeys.has(i)) line = { ...line, source: { ...line.source, entryKey: entryKeys.get(i) } };
+      if (entryKeys.has(i)) line = { ...line, source: { ...line.source, ...entryKeys.get(i) } };
       return line;
-    }).concat(appended.map((l, n) => (entryKeys.has(before.length + n) ? { ...l, source: { ...l.source, entryKey: entryKeys.get(before.length + n) } } : l)));
+    }).concat(appended.map((l, n) => (entryKeys.has(before.length + n) ? { ...l, source: { ...l.source, ...entryKeys.get(before.length + n) } } : l)));
     const status = deriveOrderStatus(next, { enabled });
     if (status === ORDER_STATUS.NEEDS_ATTENTION && !next.attention) {
       const attention = attentionFromLines(next, now);
@@ -465,12 +499,22 @@ async function maintainOrder(ctx, id, order) {
   await syncHolds(ctx, id, committed || order);
 }
 
+// → { entryKey, orderKeys? } — what the line's source records about its entry.
 async function createEntry(ctx, orderId, order, index, line) {
   const { db, now } = ctx;
   if (line.source.status === LINE_STATUS.PICK) {
-    const path = `${ONLINE_PICKS_PATH}/${pickKey(orderId, index, line.routeGen)}`;
-    if (!(await ctx.get(path))) await db.ref(path).set(pickEntry({ orderId, order, index, line, nowMs: now }));
-    return path;
+    // The hub's own Warehouse queue: one /orders record per unit, created only
+    // if absent (a re-run never re-opens or overwrites one the hub has acted on).
+    const keys = hubOrderKeys(order.ref, linesOf(order), index);
+    const section = await packingSection(ctx);
+    const nowIso = new Date(now).toISOString();
+    for (const key of keys) {
+      assertSafeSegment(key, "hub order key");
+      await db.ref(`orders/${key}`).transaction((cur) => (cur == null
+        ? hubOrderRecord({ key, line, onlineOrderId: orderId, lineIndex: index, section, nowIso })
+        : undefined));
+    }
+    return { entryKey: `orders/${keys[0]}`, orderKeys: keys };
   }
   const store = line.source.locationId;
   const path = `displayChecks_active/${store}/${displayKey(orderId, index, line.routeGen)}`;
@@ -484,7 +528,20 @@ async function createEntry(ctx, orderId, order, index, line) {
     const checkId = db.ref(`displayChecks_active/${store}`).push().key;
     await db.ref(path).set(displayEntry({ orderId, order, index, line, checkId, nowMs: now, saDate, assignedTo }));
   }
-  return path;
+  return { entryKey: path };
+}
+
+// Marathon PE's section from the LIVE network registry (as the Assistant
+// stamps it on a new order); the seed registry when it cannot be read.
+async function packingSection(ctx) {
+  if (ctx.packingSection !== undefined) return ctx.packingSection;
+  // ONE exact path: the store's own registry node, normalised the same way the
+  // app normalises the whole registry (absent → the seed's values).
+  let net = null;
+  try { net = normalizeNetwork({ locations: { [PACKING_STORE]: await ctx.get(`network/locations/${PACKING_STORE}`) } }); } catch { net = null; }
+  const loc = locationOf(net || SEED_REGISTRY, PACKING_STORE) || locationOf(SEED_REGISTRY, PACKING_STORE);
+  ctx.packingSection = loc && loc.type === "store" ? loc.section ?? null : null;
+  return ctx.packingSection;
 }
 
 /**
@@ -526,6 +583,7 @@ async function syncHolds(ctx, id, order) {
 async function shipOrder(ctx, id, order) {
   const { db, graphql, now, log } = ctx;
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
+  await closeHubOrders(ctx, order);
   // The order goes to bookShipment WITH its key (the record carries
   // shopifyGid too, which bookShipment can derive the key from — the explicit
   // key removes any doubt). The poll's own db is passed so booking never opens
@@ -677,4 +735,20 @@ export function attentionMail(order) {
       `Shopify order ${order.shopifyName ?? ""}`.trim(),
     ].join("\n"),
   };
+}
+
+// After the Pack: the hub orders behind the order are done — "collected", the
+// way a till marks a shop order collected — so they leave the Warehouse queue
+// and the TV. Idempotent; never touches an out-of-stock or foreign record.
+async function closeHubOrders(ctx, order) {
+  const iso = new Date(ctx.now).toISOString();
+  for (const line of linesOf(order)) {
+    for (const key of Array.isArray(line?.source?.orderKeys) ? line.source.orderKeys : []) {
+      await ctx.db.ref(`orders/${key}`).transaction((cur) => {
+        if (cur == null || cur.channel !== "online") return undefined;
+        if (cur.status === "collected" || cur.status === "out_of_stock") return undefined;
+        return { ...cur, status: "collected", collectedAt: iso, updatedAt: iso };
+      });
+    }
+  }
 }

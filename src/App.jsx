@@ -150,7 +150,7 @@ import { shownEntry, pickedEntry, ALTERNATIVES_LOG_PATH } from "./components/sto
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useNetwork } from "./utils/useNetwork";
-import { TV_ORDER_KEY_START, TV_ORDER_KEY_END } from "./utils/tvOrdersRange";
+import { TV_ORDER_KEY_START, TV_ORDER_KEY_END, TV_ONLINE_ORDER_KEY_RANGES, keyInTvOnlineOrdersRange, tvRowsOf } from "./utils/tvOrdersRange";
 import { currentNetwork } from "./utils/networkStore";
 import { wallAllows, storesOf, backStockHubsOf } from "./utils/networkRegistry";
 import { useMySections } from "./utils/useMySections";
@@ -180,8 +180,7 @@ import { PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH } from "./util
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
-import OnlinePickCard from "./components/onlineOrders/OnlinePickCard";
-import { useOnlinePicks, useOnlineOrdersEnabled, pickQueueRows } from "./components/onlineOrders/onlinePicks";
+import { dispatchSkipsStock } from "./utils/dispatchStockPolicy";
 import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
@@ -1119,23 +1118,26 @@ function useTvOrders() {
     // src/utils/tvOrdersRange.js for why the range is what it is.
     const inRange = {};
     for (const [key, value] of Object.entries(data)) {
-      if (key >= TV_ORDER_KEY_START && key <= TV_ORDER_KEY_END) inRange[key] = value;
+      if ((key >= TV_ORDER_KEY_START && key <= TV_ORDER_KEY_END) || keyInTvOnlineOrdersRange(key)) inRange[key] = value;
     }
     setOrders(shapeTvOrders(Object.keys(inRange).length ? inRange : null));
   }, [live, mirrored.settled, mirrored.value, shapeTvOrders]);
 
   useEffect(() => {
     if (!authReady || !live) return undefined;
-    const readRef = query(
-      ref(database, "orders"),
-      orderByKey(), startAt(TV_ORDER_KEY_START), endAt(TV_ORDER_KEY_END)
-    );
-    const unsub = onValue(readRef, (snap) => {
-      setOrders(shapeTvOrders(snap.val()));
-    }, (err) => {
-      console.warn("Firebase read error on /orders (TV key range):", err);
-    });
-    return () => unsub();
+    // The numeric range, plus the two website-order code ranges
+    // (tvOrdersRange.js) — merged into one list. Each is a key range: no index.
+    const ranges = [[TV_ORDER_KEY_START, TV_ORDER_KEY_END], ...TV_ONLINE_ORDER_KEY_RANGES];
+    const parts = ranges.map(() => null);
+    const unsubs = ranges.map(([a, b], i) => onValue(
+      query(ref(database, "orders"), orderByKey(), startAt(a), endAt(b)),
+      (snap) => {
+        parts[i] = i === 0 ? (snap.val() || {}) : tvRowsOf(snap.val()); // codes only — never a prefixed store's "P001"
+        setOrders(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean))));
+      },
+      (err) => { console.warn("Firebase read error on /orders (TV key range):", err); },
+    ));
+    return () => unsubs.forEach((u) => u());
   }, [authReady, live, shapeTvOrders]);
   return orders;
 }
@@ -12505,11 +12507,6 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Read-only until a hub is picked; LaybyTab/banner filter by selectedHub.
   const laybys = useLaybys();
   const laybyPulls = useLaybyPulls();
-  // ── Website order picks (docs/ONLINE-ORDERS.md) ──────────────────────────
-  // This hub's OPEN /online_picks, by the indexed locStatus query — nothing is
-  // subscribed until a hub is picked AND /config/onlineOrders/enabled is true.
-  const onlineOrdersOn = useOnlineOrdersEnabled();
-  const onlinePicks = useOnlinePicks(selectedHub, onlineOrdersOn);
   // Which layby sub-queue to open on next mount. The exceptions banner flips this
   // to "exceptions" so a tap jumps straight there; keyed remount applies it.
   const [laybySub, setLaybySub] = useState("receiving");
@@ -12836,13 +12833,10 @@ function WarehouseView({ products = [], orders, onExit }) {
   // queue feeder so both the visible list AND every pill count/badge drop them in
   // one place. Regular orders always carry a validated non-empty customerName, and
   // layby pull rows have no customerName, so this can't hide a real order.
-  // Website order picks join the same queue the same way: Incoming, stamped
-  // now so the 3-day window never hides one, rendered by OnlinePickCard below
-  // (one "Handed over" tap — no print, no transfer, no stock movement).
-  const hubOnlinePicks = onlineOrdersOn
-    ? pickQueueRows(onlinePicks, { hub: selectedHub, incomingStatus: STATUS.INCOMING, nowIso: serverNowIso() })
-    : [];
-  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders, ...hubOnlinePicks];
+  // Website orders arrive here as ordinary /orders records (customer "Shopify",
+  // the order's three-letter code as the number) — the same queue, the same
+  // Mark as Sent; dispatch moves no stock for them (dispatchSkipsStock).
+  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders];
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
@@ -13214,6 +13208,12 @@ function WarehouseView({ products = [], orders, onExit }) {
     // Unfiltered-index lookup: a merged-away id resolves to its survivor, so
     // the footwear short-circuit below cannot silently fail open into a second
     // hub→shop deduction for an order placed against the losing record.
+    // A WEBSITE order (channel "online") never moves stock on Send, footwear or
+    // clothing: its one deduction is the POS Pack, from the hub that sent it
+    // (utils/dispatchStockPolicy.js). Checked FIRST and independently of the
+    // catalogue, so no product lookup can make it fall through.
+    const skip = dispatchSkipsStock(order);
+    if (skip) return { moved: false, reason: skip, skipped: true };
     const orderProduct = resolveProductById(order.productId);
     if (isFootwearLine(orderProduct, sentSize ?? order.size)) {
       return { moved: false, reason: "footwear_sells_from_hub", skipped: true };
@@ -13869,14 +13869,6 @@ function WarehouseView({ products = [], orders, onExit }) {
             // Layby pull request — render the real PullCard inline (same L-xxxxx
             // invoice + Sent/Reject/Return); it actions via markPullSent, never the
             // order print flow.
-            // Website order pick — its own card, actioned by one multi-path
-            // update (pick + order line → handed); never the order print flow.
-            if (order.isOnlinePick) {
-              return (
-                <OnlinePickCard pick={order._pick} hub={selectedHub}
-                  onHanded={(p) => { setPrintToast({ kind:"ok", text:`${p.ref || "Website order"} handed over.` }); setTimeout(() => setPrintToast(null), 4000); }}/>
-              );
-            }
             if (order.isLayby) {
               return (
                 <PullCard pull={order._pull} selectedHub={selectedHub} nowMs={nowTick}
@@ -21452,6 +21444,9 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
     for (const o of (orders || [])) {
       const phraseTok = ANNOUNCE_PHRASE[o.status];
       if (!phraseTok) continue;
+      // A website order is on the board but is NEVER spoken: no customer is
+      // waiting at the counter for it (Junid, 2026-10-21).
+      if (o.channel === "online") continue;
       const k = announceKey(o);
       if (seen.has(k)) continue;
       // Unlocked but the vocabulary hasn't loaded yet → do NOT mark seen; leave the

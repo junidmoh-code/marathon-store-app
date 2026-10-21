@@ -25,3 +25,36 @@ export function keyInTvOrdersRange(key) {
   const k = String(key);
   return k >= TV_ORDER_KEY_START && k <= TV_ORDER_KEY_END && /^[0-9]/.test(k);
 }
+
+// ─── WEBSITE ORDERS ON THE BOARD ─────────────────────────────────────────────
+// A website order's hub orders are keyed by its three-letter code ("KQZ",
+// "KQZ-2", "KQZ-2-1" — letters A–Z without I/O, then optional suffixes). They
+// sit outside the numeric range above, so the board reads two more key ranges
+// that bracket every code and NO refill cart: carts are "R" + digits ("R123-…"),
+// and a digit sorts before every letter, so all of them fall below "RAA".
+//   ["AAA", "QZZ"]  codes A…Q      ["RAA", "ZZZ"]  codes R…Z
+// ( is the high end of the string range — never "tidy" it away.)
+export const TV_ONLINE_ORDER_KEY_RANGES = Object.freeze([
+  Object.freeze(["AAA", "QZZ"]),
+  Object.freeze(["RAA", "ZZZ"]),
+]);
+
+// The ranges also bracket a prefixed store's keys ("P001": Pine's own board)
+// — so a row is a website order only if its key IS a code: three letters (no
+// I/O), then nothing or "-…". Applied to both sources, like the numeric bound.
+const ONLINE_CODE_KEY = /^[A-HJ-NP-Z]{3}(?:-[0-9A-Za-z-]*)?$/;
+
+/** Would this /orders key reach the board as a website order? */
+export function keyInTvOnlineOrdersRange(key) {
+  const k = String(key);
+  return ONLINE_CODE_KEY.test(k) && TV_ONLINE_ORDER_KEY_RANGES.some(([a, b]) => k >= a && k <= b);
+}
+
+/** Keep only the board's rows from one range read (numeric keys, or website codes). */
+export function tvRowsOf(data) {
+  const out = {};
+  for (const [k, v] of Object.entries(data || {})) {
+    if ((k >= TV_ORDER_KEY_START && k <= TV_ORDER_KEY_END && /^[0-9]/.test(k)) || keyInTvOnlineOrdersRange(k)) out[k] = v;
+  }
+  return out;
+}

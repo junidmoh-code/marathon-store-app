@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runOrdersPoll, attentionMail } from "./poll.mjs";
+import { hubOrderRecord } from "./orderModel.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
 import lockerRates from "../../shipping/fixtures/rates-locker-capetown.json";
@@ -139,8 +140,8 @@ describe("ingest", () => {
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 2, locs: { "marathon-pe": 1, hub2: 1 } });
     // The reconciler is told: both products' markers moved.
     expect(f.read("shopify_inventory_dirty")).toEqual({ SNK: 1, TEE: 1 });
-    // Switch off → no feed anywhere.
-    expect(f.read("online_picks")).toBeNull();
+    // Switch off → no feed anywhere: no hub order, no display entry.
+    expect(f.read("orders")).toBeNull();
     expect(f.read("displayChecks_active")).toBeNull();
     // The Shopify query is bounded below by go-live.
     expect(sh.calls[0].vars.q).toContain(`created_at:>='2026-10-21T09:00:00Z'`);
@@ -218,22 +219,100 @@ describe("feed entries", () => {
     const f = fakeDb(world());
     const sh = shopify({ orders: [shopifyOrder()] });
     await runOrdersPoll(deps(f, sh).deps);
-    expect(f.read("online_picks")).toBeNull();
+    expect(f.read("orders")).toBeNull();
     await f.db.ref("config/onlineOrders/enabled").set(true);
     await runOrdersPoll(deps(f, shopify()).deps);
-    const picks = f.read("online_picks");
-    expect(Object.keys(picks).sort()).toEqual(["9001_0", "9001_1", "9001_3"]);
-    expect(picks["9001_0"]).toMatchObject({ kind: "online_pick", ref: "KQZ", locationId: "hub1", locStatus: "hub1|open", status: "open", qty: 1, size: "8", instruction: "Give to Yasmin at Marathon PE" });
+    // HUB-ROUTED LINES ARE HUB ORDERS — the Assistant's /orders shape, field for
+    // field, keyed by the order's code (three hub units → KQZ-1, -2, -4).
+    const hubOrders = f.read("orders");
+    expect(Object.keys(hubOrders).sort()).toEqual(["KQZ-1", "KQZ-2", "KQZ-4"]);
+    const expected = {
+      id: "KQZ-1", productId: "SNK", productName: "Air Runner", productPhoto: null, productPhotoUrl: "https://x/snk.jpg",
+      size: "8", sentSize: null, productType: "sneaker",
+      customerName: "Shopify", customerPhone: null, customerId: null, customerCode: null, customerPending: false,
+      hub: "hub1", placedAtHub: "hub1", placedStore: "central", destShop: "marathon-pe", section: 2,
+      requestDisplay: false, requestDisplayPartner: false, displayPairRequest: false, displayPairStore: null,
+      status: "incoming", createdAt: "2026-10-21T10:00:00.000Z", updatedAt: "2026-10-21T10:00:00.000Z",
+      readyAt: null, outOfStockAt: null, comingTomorrowAt: null, collectedAt: null,
+      displayRefillScheduledAt: null, displayRefillHub: null, displayRefillStatus: null, displayRefilledAt: null,
+      displayRefillStockDepletedAt: null, displayRefilledBy: null,
+      channel: "online", onlineOrderId: "9001", onlineLineIndex: 0,
+    };
+    // The pure record carries every Assistant field (nulls included)…
+    expect(hubOrderRecord({ key: "KQZ-1", line: lineAt(f, 0), onlineOrderId: "9001", lineIndex: 0, section: 2, nowIso: "2026-10-21T10:00:00.000Z" })).toEqual(expected);
+    // …and RTDB stores it as it stores an Assistant order: nulls dropped.
+    expect(hubOrders["KQZ-1"]).toEqual(Object.fromEntries(Object.entries(expected).filter(([, v]) => v !== null)));
+    expect(hubOrders["KQZ-4"]).toMatchObject({ productType: "clothing", hub: "hub2", size: "M" });
+    expect(f.read("online_picks")).toBeNull(); // the old hub feed is gone
     const display = f.read("displayChecks_active/marathon-pe/online__9001__2");
     expect(display).toMatchObject({ kind: "online_pick", status: "open", ref: "KQZ", productId: "TEE", size: "M", sizeKey: "M", qty: 1, orderId: "9001", lineIndex: 2, activatedSaDate: "2026-10-21" });
     expect(display.checkId).toBeTruthy();
-    expect(lineAt(f, 0).source.entryKey).toBe("online_picks/9001_0");
+    expect(lineAt(f, 0).source).toMatchObject({ entryKey: "orders/KQZ-1", orderKeys: ["KQZ-1"] });
     expect(lineAt(f, 2).source.entryKey).toBe("displayChecks_active/marathon-pe/online__9001__2");
     expect(order(f).status).toBe("picking");
     // Idempotent: a further tick creates nothing new.
     const n = f.writes.length;
     await runOrdersPoll(deps(f, shopify()).deps);
-    expect(f.writes.slice(n).filter(([, p]) => p.startsWith("online_picks") || p.startsWith("displayChecks_active"))).toEqual([]);
+    expect(f.writes.slice(n).filter(([, p]) => p.startsWith("orders") || p.startsWith("displayChecks_active"))).toEqual([]);
+  });
+
+  describe("hub orders follow what the hub does (the existing store-order route)", () => {
+    const on = () => fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
+    const tick = async (f) => runOrdersPoll(deps(f, shopify()).deps);
+    const first = async (f) => runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+
+    it("Mark as Sent (ready) → the line is handed, from the hub that sent it (the Pack deducts there)", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-2").update({ status: "ready", readyAt: "x" }); // Hub 2 sent line 1
+      await tick(f);
+      expect(lineAt(f, 1).source).toMatchObject({ status: "handed", locationId: "hub2", handedBy: "hub" });
+      expect(lineAt(f, 0).source.status).toBe("pick"); // hub1 has not sent yet
+    });
+
+    it("Out of Stock at the hub → no_stock, the order needs attention, Junid is emailed", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "out_of_stock" });
+      const d = deps(f, shopify());
+      await runOrdersPoll(d.deps);
+      expect(lineAt(f, 0).source).toMatchObject({ status: "no_stock", reason: "hub1 marked it out of stock" });
+      expect(order(f)).toMatchObject({ status: "needs_attention", attentionOpen: true });
+      expect(order(f).attention.reason).toMatch(/hub1 marked it out of stock/);
+      expect(d.mails).toHaveLength(1);
+    });
+
+    it("sent in another size → needs attention (Shopify sold the ordered size), never silently handed", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "ready", sentSize: "9" });
+      await tick(f);
+      expect(lineAt(f, 0).source).toMatchObject({ status: "needs_attention", reason: "hub1 sent size 9, the website sold size 8" });
+      expect(order(f).status).toBe("needs_attention");
+    });
+
+    it("after the Pack the hub orders close as collected (off the Warehouse queue and the TV)", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "ready" });
+      await f.db.ref("orders/KQZ-4").update({ status: "out_of_stock" });
+      await f.db.ref("online_orders/9001").update({ status: "packed", pack: { saleId: "S1" }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 } });
+      await runOrdersPoll(deps(f, shopify({ fos: [] })).deps);
+      expect(f.read("orders/KQZ-1")).toMatchObject({ status: "collected", collectedAt: "2026-10-21T10:00:00.000Z" });
+      expect(f.read("orders/KQZ-2")).toMatchObject({ status: "collected" });
+      expect(f.read("orders/KQZ-4").status).toBe("out_of_stock"); // never rewritten
+    });
+
+    it("a cancelled order whose unit was already SENT leaves that hub order alone", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "ready" });
+      await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z", updatedAt: "2026-10-21T09:50:00Z" })] })).deps);
+      expect(f.read("orders/KQZ-1").status).toBe("ready");
+      expect(f.read("orders/KQZ-2")).toBeNull();
+    });
+
+    it("never touches a shop's own order that happens to share a key", async () => {
+      const f = on();
+      await f.db.ref("orders/KQZ-1").set({ id: "KQZ-1", customerName: "Thabo", status: "incoming" });
+      await first(f);
+      expect(f.read("orders/KQZ-1")).toEqual({ id: "KQZ-1", customerName: "Thabo", status: "incoming" }); // create-if-absent
+    });
   });
 
   it("every line handed → ready", async () => {
@@ -255,7 +334,7 @@ describe("cancellation", () => {
     expect(order(f).status).toBe("cancelled");
     expect(order(f).lines.every((l) => l.source.status === "cancelled")).toBe(true);
     expect(f.read("online_reservations")).toBeNull();
-    expect(f.read("online_picks/9001_0")).toMatchObject({ status: "cancelled", locStatus: "hub1|cancelled" });
+    expect(f.read("orders/KQZ-1")).toBeNull(); // not yet sent → off the hub's queue
     expect(f.read("displayChecks_active/marathon-pe/online__9001__2")).toMatchObject({ status: "completed", result: "cancelled", completedSaDate: "2026-10-21" });
     expect(f.read("shopify_inventory_dirty")).toEqual({ SNK: 2, TEE: 2 });
   });
@@ -299,7 +378,7 @@ describe("the old way, while the switch is off", () => {
     await runOrdersPoll(deps(f, shopify()).deps);
     expect(order(f).status).toBe("fulfilled_elsewhere");
     expect(f.read("online_reservations")).toBeNull();
-    expect(f.read("online_picks/9001_0")).toMatchObject({ status: "cancelled" });
+    expect(f.read("orders/KQZ-1")).toBeNull();
     expect(f.read("displayChecks_active/marathon-pe/online__9001__2")).toMatchObject({ status: "completed", result: "cancelled" });
   });
 });
@@ -318,7 +397,7 @@ describe("Resolve → re-route", () => {
     expect(o.lines.map((l) => [l.qty, l.source.locationId, l.source.status, l.routeGen])).toEqual([[1, "trophy", "display", 1], [1, "hub2", "pick", 1]]);
     expect(o.lines[0].lineId).toBe("l0");
     expect(o.lines[0].source.entryKey).toBe("displayChecks_active/trophy/online__9001__0_r1");
-    expect(o.lines[1].source.entryKey).toBe("online_picks/9001_1_r1");
+    expect(o.lines[1].source).toMatchObject({ entryKey: "orders/KQZ-2r1", orderKeys: ["KQZ-2r1"] });
     expect(o.status).toBe("picking");
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 2, locs: { trophy: 1, hub2: 1 } });
   });
@@ -552,7 +631,7 @@ describe("invariants", () => {
     // Collections, a whole location's stock, a product's whole reservation
     // node, a store's whole display feed: none of these may be read.
     const WHOLE = [
-      /^(online_orders|online_reservations|online_picks|stock|shopify_sync|products|displayChecks_active|users)$/,
+      /^(online_orders|online_reservations|online_order_refs|orders|network|stock|shopify_sync|products|displayChecks_active|users)$/,
       /^stock\/[^/]+(\/[^/]+)?$/,
       /^online_reservations\/[^/]+$/,
       /^displayChecks_active\/[^/]+$/,
