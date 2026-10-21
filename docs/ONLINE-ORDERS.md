@@ -52,7 +52,7 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
 |---|---|
 | `ref` | `WEB-{order number}`; the prefix is `ONLINE_ORDER_PREFIX` (`src/utils/onlineOrders.js`) |
 | `orderNumber`, `shopifyGid`, `shopifyName` | Shopify identity |
-| `status` | `new` · `picking` · `ready` · `needs_attention` · `packed` · `cancelled` · `fulfilled_elsewhere` (indexed) |
+| `status` | `new` · `picking` · `ready` · `needs_attention` · `packed` · `cancelled` · `fulfilled_elsewhere` · `release_requested` (indexed) |
 | `customer` | `{ name, phone, email }` |
 | `shipping` | `{ address: {…}, provider, tracking }` — `provider` is null today (RTDB stores null as absent; read it as `shipping?.provider ?? null`) |
 | `totals` | `{ subtotalCents, shippingCents, taxCents, totalCents, currency }` |
@@ -68,6 +68,9 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
 | `fulfil` | `{ state, attempts, error?, at?, trackingNumber? }` |
 | `cancelledAfterPack` | true when Shopify cancelled an order already packed (left alone, flagged) |
 | `overrides/{pushId}` | walk-in overrides: `{ by, byName, at, storeId, tillId, productId, size, loc }` |
+| `shopifyFulfilledAt` | Shopify shows the order fulfilled (admin) while the switch is on; its holds carry `released` |
+| `handledByHand` | `{ by, at }` — Junid pressed "Rung by hand at a till" (status `release_requested` until the poller releases it) |
+| `fulfilledElsewhereAt` | when the poller let the order go as handled the old way |
 
 ### Line
 
@@ -115,7 +118,7 @@ Shopify not updated** while `fulfilState` is `failed`).
 
 ## `/online_reservations/{pid}/{sizeKey}/{orderId}`
 
-`{ qty, ref, locs: { [locationId]: qty }, at }` — one row per order holding that
+`{ qty, ref, locs: { [locationId]: qty }, released?, at }` — one row per order holding that
 pid/size. The **count is the sum of the rows' `qty`**, so two writers never
 contend on a counter, and a row is replaced (not incremented), so a re-run is
 idempotent. `locs` names where the held units are routed (a `no_stock` unit
@@ -127,7 +130,10 @@ removed by the pack's atomic update and by cancellation.
 
 Readers:
 
-- **Reconciler** (`inventorySync.mjs`): pushes `on_hand = app − max(0, reserved − committed)`.
+- **Reconciler** (`inventorySync.mjs`): pushes `on_hand = app − (released + max(0, reserved − released − committed))`.
+  `released` is the part of a hold whose order Shopify has already fulfilled (the
+  poller stamps it): it comes off in full, because `committed` counts EVERY
+  unfulfilled order on the variant — including ones the app never pulled in.
   Shopify already holds an unfulfilled order's units as `committed`
   (`available = on_hand − committed`), so subtracting the whole reservation would
   hide each unit twice. The difference is what Shopify does NOT already hold —
@@ -150,6 +156,23 @@ nothing           → { locationId: null, status: "no_stock" }  order needs_atte
 A quantity is never split inside one line: qty 2 with one at PE becomes two
 lines (PE ×1, then the next location ×1). Footwear that neither hub holds is
 `no_stock` rather than a pick sent to an empty hub.
+
+A shop whose own Display Checks switch is off is never routed to: it could
+neither see nor close the entry.
+
+## Settings → Online orders: "Rung by hand at a till"
+
+Every open order is listed with a release. It writes `status: release_requested`;
+the poller closes the order's feed entries, releases its holds and sets
+`fulfilled_elsewhere`. The POS refuses to pack it and the rules refuse a pack
+over it. Use it for orders pulled in while staff still rang web sales by hand.
+
+## Poller bookkeeping (`online_orders_meta`, server-only)
+
+`goLiveAtMs` (set once, first run — older orders are never pulled in),
+`cursorMs` (updated_at window, re-read 10 min behind), `retry/{orderId}` (an
+order that failed is parked and fetched by id every tick; the cursor never
+waits for it), `lastRunAt`.
 
 ## Feeds (only while the switch is on)
 

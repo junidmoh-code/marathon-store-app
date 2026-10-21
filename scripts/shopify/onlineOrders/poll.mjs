@@ -270,12 +270,25 @@ async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}) {
     for (const loc of ROUTED_LOCATIONS) stockQty[loc] = Number(await ctx.get(`stock/${loc}/${r.pid}/${r.sizeKey}/qty`)) || 0;
     const holdsCell = await ctx.get(`${ONLINE_RESERVATIONS_PATH}/${r.pid}/${r.sizeKey}`);
     const free = availableAt({ stockQty, holdsCell, orderId });
+    // A shop whose Display Checks are switched off has no feed to show the
+    // entry on and cannot close it (completeDisplayCheck refuses), so it is
+    // not a place a line can come from (PR #775 spec review).
+    for (const shop of ["marathon-pe", "trophy"]) if (!(await displayFeedOn(ctx, shop))) free[shop] = 0;
     // Units THIS order's other lines already hold there (a re-route excludes
     // the order's own rows, so its untouched lines are subtracted here).
     for (const [loc, q] of Object.entries(ownOther[key] || {})) free[loc] = Math.max(0, (free[loc] || 0) - q);
     out[key] = free;
   }
   return out;
+}
+
+// The shop's own Display Checks switch, as the feed and the callable judge it
+// (functions/displayChecks lib.cjs isTriggerStoreEnabled), injected by the CLI.
+// Asked once per tick per shop. No judge injected (tests) → on.
+async function displayFeedOn(ctx, shop) {
+  ctx.displayFeed ||= {};
+  if (!(shop in ctx.displayFeed)) ctx.displayFeed[shop] = ctx.displayFeedEnabled ? await ctx.displayFeedEnabled(shop) !== false : true;
+  return ctx.displayFeed[shop];
 }
 
 // ── Cancellation ─────────────────────────────────────────────────────────────

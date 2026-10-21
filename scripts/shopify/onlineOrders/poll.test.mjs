@@ -134,6 +134,13 @@ describe("ingest", () => {
     expect(f.read("online_orders")).toBeNull();
   });
 
+  it("a shop with Display Checks switched off is never routed to", async () => {
+    const f = fakeDb(world());
+    const sh = shopify({ orders: [shopifyOrder({ lineItems: { nodes: [shopifyOrder().lineItems.nodes[1]] } })] });
+    await runOrdersPoll({ ...deps(f, sh).deps, displayFeedEnabled: async (shop) => shop !== "marathon-pe" });
+    expect(order(f).lines.map((l) => [l.qty, l.source.locationId])).toEqual([[2, "hub2"]]);
+  });
+
   it("other orders' holds count against availability", async () => {
     const f = fakeDb(world({ online_reservations: { SNK: { 8: { other: { qty: 1, ref: "WEB-1", locs: { hub1: 1 } } } } } }));
     const sh = shopify({ orders: [shopifyOrder({ lineItems: { nodes: [shopifyOrder().lineItems.nodes[0]] } })] });

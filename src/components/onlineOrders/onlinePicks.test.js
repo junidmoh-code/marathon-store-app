@@ -46,9 +46,9 @@ describe("handedOverUpdates — the one Handed over write", () => {
     expect(u["online_picks/5550001_0/locStatus"]).not.toBe(pickLocStatus("hub1", "open"));
   });
 
-  it("a device with no uid still names the hub, never writes null or undefined", () => {
-    const u = handedOverUpdates(pick(), { hub: "hub2", uid: null, nowMs: 5 });
-    expect(u["online_picks/5550001_0/handedBy"]).toBe("hub2");
+  it("a device with no signed-in user cannot hand over (the rules accept only handedBy === auth.uid)", () => {
+    expect(() => handedOverUpdates(pick(), { hub: "hub2", uid: null, nowMs: 5 })).toThrow(/sign in/);
+    const u = handedOverUpdates(pick(), { hub: "hub2", uid: "u9", nowMs: 5 });
     expect(Object.values(u).every((v) => v !== undefined && v !== null)).toBe(true);
   });
 

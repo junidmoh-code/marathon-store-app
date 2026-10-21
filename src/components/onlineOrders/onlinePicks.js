@@ -44,9 +44,10 @@ export function handedOverUpdates(pick, { hub, uid, nowMs }) {
   }
   if (!keySafe(hub)) throw new Error("handedOverUpdates: no hub");
   if (!Number.isFinite(nowMs)) throw new Error("handedOverUpdates: no time");
-  // Who: the signed-in uid. A hub device with no uid at all still says WHICH
-  // hub handed it over rather than writing a null that reads as "nobody".
-  const by = uid || hub;
+  // Who: the signed-in uid — the rules accept no one else (handedBy ===
+  // auth.uid), so a device with no signed-in user cannot hand over at all.
+  if (!keySafe(uid)) throw new Error("handedOverUpdates: sign in before handing over");
+  const by = uid;
   const p = `${ONLINE_PICKS_PATH}/${id}`;
   const s = `${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/source`;
   return {
