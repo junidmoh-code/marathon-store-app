@@ -34,7 +34,7 @@ import {
   displayKey, displayEntry, hubOrderKeys, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
-import { bookShipment, readLive, estimateForOrder } from "./shipping.mjs";
+import { bookShipment, readLive, estimateForOrder, estimateSig } from "./shipping.mjs";
 import { mintOrderRef } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
@@ -327,7 +327,7 @@ async function cancelOrder(ctx, id, node) {
   }
   ctx.summary.cancelled++;
   log(`  − ${order.ref}: cancelled on Shopify — hold released`);
-  await cancelEntries(ctx, order);
+  await cancelEntries(ctx, { ...order, key: id });
   await syncHolds(ctx, id, order);
 }
 
@@ -342,18 +342,32 @@ async function releaseFulfilledElsewhere(ctx, id, node, { why = "fulfilled in th
   if (!res.committed || !order) return;
   ctx.summary.handledElsewhere = (ctx.summary.handledElsewhere || 0) + 1;
   log(`  ~ ${order.ref}: ${why} — handled the old way, hold released`);
-  await cancelEntries(ctx, order);
+  await cancelEntries(ctx, { ...order, key: id });
   await syncHolds(ctx, id, order);
 }
 
 async function cancelEntries(ctx, order) {
-  for (const line of linesOf(order)) await cancelLineEntries(ctx, line);
+  const sent = [];
+  for (const line of linesOf(order)) sent.push(...(await cancelLineEntries(ctx, line)));
+  // A pair the hub already SENT is on its way to (or at) Marathon PE while the
+  // hub still counts it: someone must return it. Junid is told.
+  if (sent.length && order?.key) {
+    await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${order.key}`).update({
+      attention: { kind: ATTENTION_KIND.CANCELLED_AFTER_PACK, reason: `Cancelled on Shopify after the hub sent it (${sent.map((s) => `${s.key} from ${s.hub ?? "the hub"}`).join(", ")}) — return it to the hub`, at: ctx.now },
+      attentionOpen: true,
+    });
+  }
 }
 
 async function cancelLineEntries(ctx, line) {
   const keys = Array.isArray(line?.source?.orderKeys) ? line.source.orderKeys : [];
-  if (keys.length) { for (const k of keys) await cancelHubOrder(ctx, k); return; }
+  const sent = [];
+  if (keys.length) {
+    for (const k of keys) { const r = await cancelHubOrder(ctx, k); if (r) sent.push(r); }
+    return sent;
+  }
   if (line?.source?.entryKey) await cancelEntry(ctx, line.source.entryKey);
+  return sent;
 }
 
 // A cancelled website order's hub order: gone from the Warehouse queue if the
@@ -367,7 +381,12 @@ async function cancelHubOrder(ctx, key) {
     if (cur.channel !== "online") return undefined; // never touch a shop's own order
     return cur.status === "incoming" || cur.status === "coming_tomorrow" ? null : undefined;
   });
-  if (!res.committed && res.snapshot?.val()) log(`  ~ hub order ${key} was already sent — left for the shop to return`);
+  const left = res.snapshot?.val();
+  if (!res.committed && left && left.channel === "online" && (left.status === "ready" || left.status === "collected")) {
+    log(`  ~ hub order ${key} was already sent — left for the shop to return`);
+    return { sent: true, key, hub: left.hub ?? null };
+  }
+  return null;
 }
 
 async function cancelEntry(ctx, entryKey) {
@@ -437,7 +456,11 @@ async function maintainOrder(ctx, id, order) {
     const keys = l?.source?.orderKeys;
     if (!Array.isArray(keys) || !keys.length || l.source.status !== LINE_STATUS.PICK) continue;
     const records = [];
-    for (const k of keys) records.push(await ctx.get(`orders/${k}`));
+    for (const k of keys) {
+      const r = await ctx.get(`orders/${k}`);
+      // Only THIS order's THIS line's record — never one a reused key points at.
+      records.push(r && r.onlineOrderId === String(id) && Number(r.onlineLineIndex) === i ? r : null);
+    }
     const out = hubOutcome(l, records);
     if (!out) continue;
     changed.set(i, {
@@ -508,15 +531,26 @@ async function createEntry(ctx, orderId, order, index, line) {
   if (line.source.status === LINE_STATUS.PICK) {
     // The hub's own Warehouse queue: one /orders record per unit, created only
     // if absent (a re-run never re-opens or overwrites one the hub has acted on).
-    const keys = hubOrderKeys(order.ref, linesOf(order), index);
+    const wanted = hubOrderKeys(order.ref, linesOf(order), index);
     const section = await packingSection(ctx);
     const nowIso = new Date(now).toISOString();
-    for (const key of keys) {
-      assertSafeSegment(key, "hub order key");
-      await db.ref(`orders/${key}`).transaction((cur) => (cur == null
-        ? hubOrderRecord({ key, line, onlineOrderId: orderId, lineIndex: index, section, nowIso })
-        : undefined));
+    const keys = [];
+    for (const base of wanted) {
+      // A key may already hold a record that is NOT this line's — a code reused
+      // after 180 days, or a shop's own order. Never adopt it: take the next
+      // free suffix (KQZ → KQZ-b, -c …) so this line gets its own record.
+      for (let n = 0; n < 26; n++) {
+        const key = n === 0 ? base : `${base}-${String.fromCharCode(97 + n)}`;
+        assertSafeSegment(key, "hub order key");
+        const res = await db.ref(`orders/${key}`).transaction((cur) => {
+          if (cur == null) return hubOrderRecord({ key, line, onlineOrderId: orderId, lineIndex: index, section, nowIso });
+          return undefined;
+        });
+        const rec = res.snapshot?.val?.();
+        if (res.committed || (rec && rec.onlineOrderId === String(orderId) && Number(rec.onlineLineIndex) === index)) { keys.push(key); break; }
+      }
     }
+    if (!keys.length) return null;
     return { entryKey: `orders/${keys[0]}`, orderKeys: keys };
   }
   const store = line.source.locationId;
@@ -586,7 +620,7 @@ async function syncHolds(ctx, id, order) {
 async function shipOrder(ctx, id, order) {
   const { db, graphql, now, log } = ctx;
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
-  await closeHubOrders(ctx, order);
+  await closeHubOrders(ctx, { ...order, key: id });
   // The order goes to bookShipment WITH its key (the record carries
   // shopifyGid too, which bookShipment can derive the key from — the explicit
   // key removes any doubt). The poll's own db is passed so booking never opens
@@ -630,9 +664,12 @@ async function shipOrder(ctx, id, order) {
   // emailed through the attention path, and the POS Retry puts the order back
   // to pending — the next tick re-runs the booking only, never the sale.
   // Live off: unchanged — the dry run is recorded and Shopify is fulfilled.
+  // An earlier tick's booking: on the order, or — if its record write failed
+  // ("booked but not recorded") — on the claim, where bookShipment kept it.
+  const booked = order.shipping?.waybill ?? (order.shipping?.courierBooking?.state === "booked" ? order.shipping.courierBooking.waybill ?? null : null);
   const waybill = booking && !booking.skipped
     ? booking.waybill
-    : (booking?.reason === "already booked" ? order.shipping?.waybill ?? null : null);
+    : (booking?.reason === "already booked" || /booking already booked/.test(String(booking?.reason)) ? booked : null);
   let live = false;
   try { live = await readLive(db); } catch (e) { live = true; log(`  ! ${order.ref}: could not read the live switch — holding (${String(e?.message || e).slice(0, 120)})`); }
   if (live && !waybill) {
@@ -740,6 +777,8 @@ export function attentionMail(order) {
   };
 }
 
+const ownsHubOrder = (rec, orderId) => rec && String(rec.onlineOrderId) === String(orderId);
+
 // After the Pack: the hub orders behind the order are done — "collected", the
 // way a till marks a shop order collected — so they leave the Warehouse queue
 // and the TV. Idempotent; never touches an out-of-stock or foreign record.
@@ -748,7 +787,10 @@ async function closeHubOrders(ctx, order) {
   for (const line of linesOf(order)) {
     for (const key of Array.isArray(line?.source?.orderKeys) ? line.source.orderKeys : []) {
       await ctx.db.ref(`orders/${key}`).transaction((cur) => {
-        if (cur == null || cur.channel !== "online") return undefined;
+        // null on the cold pass (never undefined, which aborts without asking
+        // the server); writing null over an absent record changes nothing.
+        if (cur == null) return null;
+        if (!ownsHubOrder(cur, order.key ?? cur.onlineOrderId) || cur.channel !== "online") return undefined;
         if (cur.status === "collected" || cur.status === "out_of_stock") return undefined;
         return { ...cur, status: "collected", collectedAt: iso, updatedAt: iso };
       });
@@ -758,9 +800,15 @@ async function closeHubOrders(ctx, order) {
 
 async function refreshEstimate(ctx, id, order) {
   if (!order || isTerminal(order.status) || order.status === ORDER_STATUS.PACKED) return;
+  // Nothing to ship (every line cancelled): no estimate, and no error each tick.
+  if (!linesOf(order).some((l) => l?.pid && (Number(l.qty) || 0) > 0 && l.source?.status !== LINE_STATUS.CANCELLED)) return;
   try {
-    const est = await estimateForOrder({ ...order, key: id }, { db: ctx.db });
-    if (order.shipping?.estimate?.sig === est.sig) return;
+    // ONE config read per tick; the products are only read when the signature
+    // (lines + config) has actually changed.
+    if (ctx.shippingConfigRaw === undefined) ctx.shippingConfigRaw = (await ctx.db.ref("config/shipping").get()).val();
+    const sig = estimateSig(order, ctx.shippingConfigRaw);
+    if (order.shipping?.estimate?.sig === sig) return;
+    const est = await estimateForOrder({ ...order, key: id }, { db: ctx.db, rawConfig: ctx.shippingConfigRaw, sig });
     await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/estimate`).set(JSON.parse(JSON.stringify({ ...est, at: ctx.now })));
   } catch (e) {
     ctx.log(`  ! ${order.ref}: parcel estimate not written — ${String(e?.message || e).slice(0, 160)}`);

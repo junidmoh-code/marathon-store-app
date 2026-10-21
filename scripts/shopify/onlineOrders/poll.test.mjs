@@ -307,11 +307,32 @@ describe("feed entries", () => {
       expect(f.read("orders/KQZ-2")).toBeNull();
     });
 
+    it("a key already holding SOMEONE ELSE's record (a code reused after 180 days) is never adopted — the line gets its own", async () => {
+      const f = on();
+      await f.db.ref("orders/KQZ-1").set({ id: "KQZ-1", channel: "online", onlineOrderId: "7000", onlineLineIndex: 0, status: "collected", hub: "hub1" });
+      await first(f);
+      expect(lineAt(f, 0).source.orderKeys).toEqual(["KQZ-1-b"]);
+      expect(f.read("orders/KQZ-1-b")).toMatchObject({ onlineOrderId: "9001", onlineLineIndex: 0, status: "incoming" });
+      expect(f.read("orders/KQZ-1").onlineOrderId).toBe("7000"); // untouched
+      await tick(f);
+      expect(lineAt(f, 0).source.status).toBe("pick"); // the old order's "collected" was never read as ours
+    });
+
+    it("a cancelled order whose pair the hub already SENT raises an attention (return it to the hub)", async () => {
+      const f = on(); await first(f);
+      await f.db.ref("orders/KQZ-1").update({ status: "ready" });
+      const d = deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z", updatedAt: "2026-10-21T09:50:00Z" })] }));
+      await runOrdersPoll(d.deps);
+      expect(order(f)).toMatchObject({ status: "cancelled", attentionOpen: true });
+      expect(order(f).attention.reason).toMatch(/KQZ-1 from hub1.*return it to the hub/);
+    });
+
     it("never touches a shop's own order that happens to share a key", async () => {
       const f = on();
       await f.db.ref("orders/KQZ-1").set({ id: "KQZ-1", customerName: "Thabo", status: "incoming" });
       await first(f);
       expect(f.read("orders/KQZ-1")).toEqual({ id: "KQZ-1", customerName: "Thabo", status: "incoming" }); // create-if-absent
+      expect(lineAt(f, 0).source.orderKeys).toEqual(["KQZ-1-b"]);
     });
   });
 

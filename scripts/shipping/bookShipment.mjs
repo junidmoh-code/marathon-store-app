@@ -271,11 +271,21 @@ export async function cancelShipment(order, deps = {}) {
  * the live /config/shipping — in the small shape the POS order card shows
  * before Pack. No rates, no network. `sig` changes when the lines do.
  */
-export async function estimateForOrder(order, { db, products = null }) {
-  const cfg = mergeShippingConfig((await db.ref("config/shipping").get()).val());
+/** The estimate's signature: the order's lines AND the config they are packed with. */
+export function estimateSig(order, rawConfig) {
+  const raw = Array.isArray(order?.lines) ? order.lines : Object.values(order?.lines ?? {});
+  const lines = raw.map((l) => `${l?.pid ?? l?.productId}|${l?.size}|${l?.qty}`).join(";");
+  let h = 0;
+  for (const c of JSON.stringify(rawConfig ?? null)) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return `${lines}#${(h >>> 0).toString(36)}`;
+}
+
+export async function estimateForOrder(order, { db, products = null, rawConfig, sig }) {
+  const raw = rawConfig !== undefined ? rawConfig : (await db.ref("config/shipping").get()).val();
+  const cfg = mergeShippingConfig(raw);
   const lines = orderLines(order, products ?? (await productsFor(db, order)));
-  const sig = lines.map((l) => `${l.productId}|${l.size}|${l.qty}`).join(";");
   const est = estimateParcel(lines, cfg);
+  sig = sig ?? estimateSig(order, raw);
   return {
     sig,
     parcelCount: est.parcelCount,
