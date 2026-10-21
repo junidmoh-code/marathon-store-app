@@ -16,6 +16,14 @@ const pushed = (plan, k) => plan.known.find((i) => i.sizeKey === k).quantity;
 const sellable = (plan, k, committed) => pushed(plan, k) - committed;
 
 describe("onlineHoldAdjustment", () => {
+  it("a hold Shopify has already fulfilled comes off in full, never netted against other orders' committed units", () => {
+    // Order A (held, fulfilled in the admin) + order B the app never pulled in (committed 1).
+    expect(onlineHoldAdjustment(1, 1, 1)).toBe(1);
+    expect(onlineHoldAdjustment(2, 1, 1)).toBe(1);
+    expect(onlineHoldAdjustment(2, 0, 1)).toBe(2);
+    expect(onlineHoldAdjustment(1, 0, 5)).toBe(1); // never more than is held
+  });
+
   it("subtracts only the part of a hold Shopify is not committing", () => {
     expect(onlineHoldAdjustment(1, 1)).toBe(0);
     expect(onlineHoldAdjustment(1, 0)).toBe(1);

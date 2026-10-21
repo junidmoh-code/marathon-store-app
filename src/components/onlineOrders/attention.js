@@ -84,3 +84,37 @@ export function attentionRows(val) {
     }))
     .sort((a, b) => (b.at || 0) - (a.at || 0));
 }
+
+// ── "Rung by hand at a till" ─────────────────────────────────────────────────
+// Until the switch goes on, staff still ring web sales by hand. An order pulled
+// in during that time and rung by hand must never be packed as well (the pack
+// would deduct the same units a second time), so Junid can let any open order
+// go from here. The write only ASKS: status release_requested. The Mac mini
+// poller closes its feed entries (display entries are server-only) and
+// releases its holds on its next tick, then marks it fulfilled_elsewhere. The
+// POS refuses to pack a release_requested order, and the rules refuse a pack
+// over it.
+export const OPEN_STATUSES = Object.freeze(["new", "picking", "ready", "needs_attention"]);
+
+export function rungByHandUpdates(orderId, { by, at }) {
+  if (typeof orderId !== "string" || !orderId || /[.#$[\]/]/.test(orderId)) return null;
+  const base = `${ONLINE_ORDERS_PATH}/${orderId}`;
+  return {
+    [`${base}/status`]: ORDER_STATUS.RELEASE_REQUESTED,
+    [`${base}/handledByHand`]: { by, at },
+    [`${base}/attention`]: null,
+    [`${base}/attentionOpen`]: null,
+  };
+}
+
+/** The open-order queries' values merged → rows, newest order first. */
+export function openOrderRows(byStatus) {
+  const rows = [];
+  for (const val of Object.values(byStatus || {})) {
+    for (const [orderId, o] of Object.entries(val || {})) {
+      if (!o || typeof o !== "object" || !OPEN_STATUSES.includes(o.status)) continue;
+      rows.push({ orderId, ref: o.ref || orderId, customer: o.customer?.name || "—", status: o.status, createdAt: Number(o.createdAt) || 0, lines: orderLineEntries(o).length });
+    }
+  }
+  return rows.sort((a, b) => b.createdAt - a.createdAt);
+}

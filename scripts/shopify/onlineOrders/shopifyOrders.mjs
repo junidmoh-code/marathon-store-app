@@ -51,6 +51,12 @@ export async function fetchOrdersUpdatedSince(graphql, { sinceMs, createdSinceMs
   return out;
 }
 
+/** One order by its numeric id, with the same fields as the list. */
+export async function fetchOrderById(graphql, id) {
+  const data = await graphql(`query ($id: ID!) { order(id: $id) { ${ORDER_FIELDS} } }`, { id: `gid://shopify/Order/${id}` });
+  return data.order ?? null;
+}
+
 /** The order's fulfilment orders that still have units to ship. */
 export async function openFulfillmentOrders(graphql, orderGid) {
   const data = await graphql(

@@ -41,12 +41,17 @@ describe("OnlineOrdersSettingsCard", () => {
     expect(onValueMock).not.toHaveBeenCalled();
   });
 
-  it("the owner reads the switch scalar and ONE indexed attentionOpen query, never the node", async () => {
+  it("the owner reads the switch scalar and indexed /online_orders queries only, never the node", async () => {
     await render(ADMIN);
     const targets = onValueMock.mock.calls.map(([r]) => r);
-    expect(targets.map((r) => r.path).sort()).toEqual(["config/onlineOrders/enabled", "online_orders"]);
-    const q = targets.find((r) => r.path === "online_orders");
-    expect(q.constraints).toEqual([{ orderByChild: "attentionOpen" }, { equalTo: true }]);
+    expect(targets.filter((r) => r.path !== "online_orders").map((r) => r.path)).toEqual(["config/onlineOrders/enabled"]);
+    const qs = targets.filter((r) => r.path === "online_orders").map((r) => r.constraints);
+    expect(qs).toEqual(expect.arrayContaining([
+      [{ orderByChild: "attentionOpen" }, { equalTo: true }],
+      ...["new", "picking", "ready", "needs_attention"].map((st) => [{ orderByChild: "status" }, { equalTo: st }]),
+    ]));
+    expect(qs).toHaveLength(5);
+    expect(qs.every((c) => c && c.length === 2)).toBe(true);
   });
 
   it("switchUpdate is the /config/transit shape", () => {

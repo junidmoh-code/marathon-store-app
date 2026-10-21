@@ -38,7 +38,8 @@
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('online_orders').child($orderId).exists() && newData.val() === true"
       },
       "status": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && data.val() !== 'packed' && data.val() !== 'cancelled' && data.val() !== 'fulfilled_elsewhere' && newData.val() === 'needs_attention'"
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && !(data.val() === 'packed' || data.val() === 'cancelled' || data.val() === 'fulfilled_elsewhere' || data.val() === 'release_requested') && newData.val() === 'needs_attention'",
+        ".validate": "!data.exists() || newData.val() === data.val() || !(data.val() === 'packed' || data.val() === 'cancelled' || data.val() === 'fulfilled_elsewhere' || data.val() === 'release_requested')"
       }
     }
   },

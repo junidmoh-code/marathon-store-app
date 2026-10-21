@@ -95,7 +95,7 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 // shopifyInventoryDirty trigger writes, so a product that is ALREADY live keeps
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
-import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, onlineHoldAdjustment } from "./inventorySync.mjs";
+import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, releasedBySize, onlineHoldAdjustment } from "./inventorySync.mjs";
 import { sweepMovements } from "./movementSync.mjs";
 import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
 import { drainAutoPublish } from "./autoPublish.mjs";
@@ -1159,10 +1159,12 @@ for (const { pid, want } of capped) {
     const totals = networkTotals(tree, pid, sizes);
     // Website-order holds come off before the push, exactly as on every other
     // push path (onlineHoldAdjustment, inventorySync.mjs).
-    const heldBySize = reservedBySize((await db.ref(`online_reservations/${pid}`).get()).val());
+    const holdsNode = (await db.ref(`online_reservations/${pid}`).get()).val();
+    const heldBySize = reservedBySize(holdsNode);
+    const releasedHeld = releasedBySize(holdsNode);
     for (const [sizeKey, v] of Object.entries(finalMap.variants)) {
       if (!(sizeKey in totals)) continue;
-      totals[sizeKey] = Math.max(0, totals[sizeKey] - onlineHoldAdjustment(heldBySize[sizeKey], invCommitted.get(v.shopifyInventoryItemId)));
+      totals[sizeKey] = Math.max(0, totals[sizeKey] - onlineHoldAdjustment(heldBySize[sizeKey], invCommitted.get(v.shopifyInventoryItemId), releasedHeld[sizeKey]));
     }
 
     // ── TRACKING, ENFORCED ON EVERY RUN ──────────────────────────────────────

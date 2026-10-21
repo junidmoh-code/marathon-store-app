@@ -149,6 +149,10 @@ export function holdRowsFor(order) {
     const row = rows[key] || (rows[key] = { qty: 0, ref: order.ref, locs: {} });
     const q = Number(line.qty) || 0;
     row.qty += q;
+    // Fulfilled in the Shopify admin before the pack (switch on): Shopify has
+    // already taken the unit off on_hand and no longer commits it, so the push
+    // must subtract THIS hold outright (inventorySync.mjs onlineHoldAdjustment).
+    if (order.shopifyFulfilledAt) row.released = (row.released || 0) + q;
     const loc = line.source?.locationId;
     if (loc) row.locs[loc] = (row.locs[loc] || 0) + q;
   }
@@ -160,7 +164,8 @@ export function holdRowsFor(order) {
 export function sameHold(a, b) {
   if (!a || !b) return !a && !b;
   const locs = (r) => JSON.stringify(Object.entries(r.locs || {}).sort());
-  return Number(a.qty) === Number(b.qty) && a.ref === b.ref && locs(a) === locs(b);
+  return Number(a.qty) === Number(b.qty) && a.ref === b.ref && locs(a) === locs(b)
+    && (Number(a.released) || 0) === (Number(b.released) || 0);
 }
 
 // ── Feed entries ─────────────────────────────────────────────────────────────

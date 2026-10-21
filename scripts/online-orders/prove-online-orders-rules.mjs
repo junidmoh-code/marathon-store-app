@@ -153,14 +153,29 @@ await denied("the packer can only ever RELEASE a hold, never write one", as(PACK
 await allowed("Retry puts a failed fulfilment back to pending", as(PACKER, "PATCH", "online_orders/9001", { fulfilState: "pending", "fulfil/state": "pending" }));
 await denied("a cashier without the permission cannot pack", as(CASHIER, "PATCH", "", { "online_orders/9001/status": "packed" }));
 
+console.log("\n── a pack can never land on a closed order (reviewer finding) ──");
+await put("online_orders/9003", order({ status: "cancelled" }));
+await put("online_orders/9004", order({ status: "release_requested" }));
+await put("online_orders/9005", order({ status: "fulfilled_elsewhere" }));
+for (const id of ["9003", "9004", "9005"]) {
+  await denied(`the whole pack update is refused on a ${(await read(`online_orders/${id}/status`))} order`, as(PACKER, "PATCH", "", {
+    [`online_orders/${id}/status`]: "packed", [`online_orders/${id}/pack`]: { saleId: "S9", by: "yasmin", at: NOW },
+  }));
+}
+await denied("…nor can Junid's own client reopen a packed order", as(OWNER, "PUT", "online_orders/9002/status", "new"));
+await allowed("…but rewriting the same status is harmless", as(PACKER, "PUT", "online_orders/9002/status", "packed"));
+
 console.log("\n── Settings → Online orders (Junid) ──");
 await allowed("Junid turns the staff switch on", as(OWNER, "PUT", "config/onlineOrders", { enabled: true, updatedAt: NOW, updatedBy: "owner" }));
 await denied("nobody else can", as(PACKER, "PUT", "config/onlineOrders/enabled", false));
 await denied("…not even an unverified claim of his email", as(FAKE_OWNER, "PUT", "config/onlineOrders/enabled", false));
-await allowed("Resolve: lines back to reroute, attention cleared, status new", as(OWNER, "PATCH", "online_orders/9001", {
+await put("online_orders/9007", order({ status: "needs_attention", attentionOpen: true, attention: { kind: "no_stock", reason: "x", at: 1 } }));
+await allowed("Resolve: lines back to reroute, attention cleared, status new", as(OWNER, "PATCH", "online_orders/9007", {
   "lines/1/source/status": "reroute", attention: null, attentionOpen: null, status: "new",
 }));
-await denied("staff cannot Resolve", as(STAFF, "PATCH", "online_orders/9001", { attention: null, attentionOpen: null, status: "new" }));
+await put("online_orders/9006", order({ status: "picking" }));
+await allowed("Rung by hand at a till: an open order → release_requested", as(OWNER, "PUT", "online_orders/9006/status", "release_requested"));
+await denied("staff cannot Resolve", as(STAFF, "PATCH", "online_orders/9007", { attention: null, attentionOpen: null, status: "new" }));
 check("the existing config children still have their own rules", JSON.stringify(candidate.rules.config.transit) === JSON.stringify(base.rules.config.transit));
 
 stop();

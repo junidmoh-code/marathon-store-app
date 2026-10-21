@@ -51,10 +51,11 @@ function shopifyOrder(over = {}) {
 }
 
 // A Shopify double: orders come from `orders`, fulfilment from `fos`.
-function shopify({ orders = [], fos = [], fulfilErrors = [] } = {}) {
+function shopify({ orders = [], fos = [], fulfilErrors = [], byId = {} } = {}) {
   const calls = [];
   const graphql = async (query, vars) => {
     calls.push({ query, vars });
+    if (/order\(id: \$id\) \{\s+id legacyResourceId/.test(query)) return { order: byId[vars.id.split("/").pop()] ?? null };
     if (query.includes("orders(")) return { orders: { nodes: orders, pageInfo: { hasNextPage: false } } };
     if (query.includes("fulfillmentOrders(")) return { order: { id: vars.id, cancelledAt: null, fulfillmentOrders: { nodes: fos } } };
     if (query.includes("fulfillmentCreate")) {
@@ -240,12 +241,25 @@ describe("the old way, while the switch is off", () => {
     expect(f.read("online_reservations")).toBeNull();
   });
 
-  it("with the switch ON the same admin fulfilment keeps the hold until the pack", async () => {
+  it("with the switch ON the same admin fulfilment keeps the hold until the pack — marked released on Shopify's side", async () => {
     const f = fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
     await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
     await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder({ displayFulfillmentStatus: "FULFILLED" })] })).deps);
     expect(order(f).status).toBe("picking");
-    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2 });
+    expect(order(f).shopifyFulfilledAt).toBeTruthy();
+    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2, released: 2 });
+    expect(f.read("shopify_inventory_dirty/SNK")).toBe(2); // the push is told
+  });
+
+  it("Rung by hand at a till (Settings): entries closed, holds released, fulfilled_elsewhere", async () => {
+    const f = fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref("online_orders/9001/status").set("release_requested");
+    await runOrdersPoll(deps(f, shopify()).deps);
+    expect(order(f).status).toBe("fulfilled_elsewhere");
+    expect(f.read("online_reservations")).toBeNull();
+    expect(f.read("online_picks/9001_0")).toMatchObject({ status: "cancelled" });
+    expect(f.read("displayChecks_active/marathon-pe/online__9001__2")).toMatchObject({ status: "completed", result: "cancelled" });
   });
 });
 
@@ -285,6 +299,15 @@ describe("Shopify fulfilment after the pack", () => {
     expect(order(f)).toMatchObject({ fulfilState: "done", fulfil: { state: "done", attempts: 1 }, shipping: { booking: { skipped: true } } });
   });
 
+  it("a fulfilment that failed before and now lands clears its attention", async () => {
+    const f = fakeDb(packed());
+    await f.db.ref("online_orders/9001").update({ attention: { kind: "fulfil_failed", reason: "x", at: 1, mailedAt: 2 }, attentionOpen: true });
+    await runOrdersPoll(deps(f, shopify({ fos })).deps);
+    expect(order(f).fulfilState).toBe("done");
+    expect(order(f).attention).toBeUndefined();
+    expect(order(f).attentionOpen).toBeUndefined();
+  });
+
   it("sends no tracking when none was typed", async () => {
     const f = fakeDb(packed());
     const sh = shopify({ fos });
@@ -308,6 +331,24 @@ describe("Shopify fulfilment after the pack", () => {
     await runOrdersPoll(deps(f, sh).deps);
     expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false);
     expect(order(f)).toMatchObject({ fulfilState: "done", fulfil: { alreadyDone: true } });
+  });
+});
+
+describe("one bad order never stops the rest", () => {
+  it("is parked and retried by id; the cursor moves on", async () => {
+    const f = fakeDb(world(), { failWritesUnder: "online_orders/9001" });
+    const later = shopifyOrder({ id: "gid://shopify/Order/9002", legacyResourceId: "9002", number: 1802, name: "#1802", updatedAt: "2026-10-21T09:40:00Z" });
+    const out = await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder(), later] })).deps);
+    expect(out.errors).toHaveLength(1);
+    expect(order(f, "9002").ref).toBe("WEB-1802");
+    expect(f.read("online_orders_meta/cursorMs")).toBe(Date.parse("2026-10-21T09:40:00Z"));
+    expect(f.read("online_orders_meta/retry/9001")).toMatchObject({ name: "#1801", attempts: 1 });
+    // The fault clears; the next tick's list no longer carries 9001 — it is fetched by id.
+    const g = fakeDb(f.root);
+    const out2 = await runOrdersPoll(deps(g, shopify({ orders: [], byId: { 9001: shopifyOrder() } })).deps);
+    expect(out2.errors).toEqual([]);
+    expect(g.read("online_orders/9001").ref).toBe("WEB-1801");
+    expect(g.read("online_orders_meta/retry")).toBeNull();
   });
 });
 

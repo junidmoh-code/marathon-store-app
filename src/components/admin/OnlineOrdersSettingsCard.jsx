@@ -24,7 +24,7 @@ import { database } from "../../firebase";
 import { ADMIN_EMAIL } from "../PermissionsContext";
 import { serverNowMs } from "../../utils/serverTime";
 import { ONLINE_ORDER_PREFIX, ONLINE_ORDERS_PATH, ONLINE_ORDERS_CONFIG_PATH } from "../../utils/onlineOrders";
-import { attentionRows, resolveAttentionUpdates, resolveLabel } from "../onlineOrders/attention";
+import { attentionRows, resolveAttentionUpdates, resolveLabel, OPEN_STATUSES, openOrderRows, rungByHandUpdates } from "../onlineOrders/attention";
 
 const page = { minHeight: "100vh", background: "#000", color: "#f2f2f7", padding: 16, maxWidth: 760, margin: "0 auto", fontFamily: "-apple-system, system-ui, sans-serif", boxSizing: "border-box" };
 const box = { border: "1px solid #2c2c2e", borderRadius: 10, padding: 14, background: "#1c1c1e", marginTop: 16 };
@@ -58,6 +58,8 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
   const isOwner = !!authUser && authUser.email === ADMIN_EMAIL;
   const [cfg, setCfg] = useState({ settled: false, enabled: false, error: false });
   const [att, setAtt] = useState({ settled: false, rows: [], error: false });
+  const [open, setOpen] = useState({});
+  const [releasing, setReleasing] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(null);
@@ -74,6 +76,17 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
     return onValue(q,
       (s) => setAtt({ settled: true, rows: attentionRows(s.val()), error: false }),
       () => setAtt({ settled: true, rows: [], error: true }));
+  }, [isOwner]);
+
+  // Every open order — one indexed query per open status.
+  useEffect(() => {
+    if (!isOwner) return undefined;
+    const offs = OPEN_STATUSES.map((st) => onValue(
+      query(ref(database, ONLINE_ORDERS_PATH), orderByChild("status"), equalTo(st)),
+      (s) => setOpen((prev) => ({ ...prev, [st]: s.val() })),
+      () => setOpen((prev) => ({ ...prev, [st]: null })),
+    ));
+    return () => offs.forEach((off) => off());
   }, [isOwner]);
 
   if (!isOwner) {
@@ -105,6 +118,16 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
     catch (e) { setMsg({ bad: true, text: `${r.ref} not saved: ${String(e?.message || e)}` }); }
     setBusy(null);
   };
+
+  const release = async (r) => {
+    const updates = rungByHandUpdates(r.orderId, { by: authUser.uid, at: now() });
+    if (!updates) return;
+    setBusy(r.orderId); setMsg(null);
+    try { await write(updates); setMsg({ text: `${r.ref} released — the Mac mini closes its picks and holds on its next run.` }); }
+    catch (e) { setMsg({ bad: true, text: `${r.ref} not saved: ${String(e?.message || e)}` }); }
+    setReleasing(null); setBusy(null);
+  };
+  const openRows = openOrderRows(open);
 
   return (
     <div style={page}>
@@ -170,6 +193,28 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
             </div>
           );
         })}
+      </div>
+      <div style={box}>
+        <div style={label}>Open orders ({openRows.length})</div>
+        <div style={{ fontSize: 13, color: "#8e8e93", marginTop: 4 }}>
+          An order already rung at a till by hand must not be packed as well. Release it here and its picks and holds go.
+        </div>
+        {openRows.map((r) => (
+          <div key={r.orderId} style={row}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 700 }}>{r.ref} <span style={{ fontWeight: 400, color: "#8e8e93" }}>· {r.customer} · {r.lines} line{r.lines === 1 ? "" : "s"}</span></div>
+              <div style={{ fontSize: 12, color: "#8e8e93", marginTop: 3 }}>{r.status}{r.createdAt ? ` · ${saWhen(r.createdAt)}` : ""}</div>
+            </div>
+            {releasing !== r.orderId ? (
+              <button type="button" style={{ ...btn, flexShrink: 0 }} disabled={busy === r.orderId} onClick={() => setReleasing(r.orderId)}>Rung by hand at a till</button>
+            ) : (
+              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                <button type="button" style={{ ...btn, background: "#3a1212", color: "#ff6961" }} disabled={busy === r.orderId} onClick={() => release(r)}>{busy === r.orderId ? "Saving…" : "Release it"}</button>
+                <button type="button" style={btn} onClick={() => setReleasing(null)}>Cancel</button>
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );

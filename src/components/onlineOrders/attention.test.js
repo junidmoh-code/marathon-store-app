@@ -1,7 +1,7 @@
 // ─── WEBSITE ORDERS — Settings → Online orders: Resolve ───────────────────────
 // Run: npx vitest run src/components/onlineOrders/attention.test.js
 import { describe, it, expect } from "vitest";
-import { resolveAttentionUpdates, attentionRows, resolveLabel, orderLineEntries } from "./attention.js";
+import { resolveAttentionUpdates, attentionRows, resolveLabel, orderLineEntries, rungByHandUpdates, openOrderRows } from "./attention.js";
 
 const order = (kind, lines, over = {}) => ({
   ref: "WEB-7", status: "needs_attention", customer: { name: "Thandi" },
@@ -82,5 +82,24 @@ describe("attentionRows", () => {
 
   it("orderLineEntries ignores non-index keys", () => {
     expect(orderLineEntries({ lines: { 0: { a: 1 }, foo: { b: 2 } } }).map(([i]) => i)).toEqual([0]);
+  });
+});
+
+describe("Rung by hand at a till", () => {
+  it("only asks: release_requested, who and when, attention cleared", () => {
+    expect(rungByHandUpdates("9001", { by: "u", at: 5 })).toEqual({
+      "online_orders/9001/status": "release_requested",
+      "online_orders/9001/handledByHand": { by: "u", at: 5 },
+      "online_orders/9001/attention": null,
+      "online_orders/9001/attentionOpen": null,
+    });
+    expect(rungByHandUpdates("a/b", { by: "u", at: 5 })).toBeNull();
+  });
+  it("lists open orders only, newest first", () => {
+    const rows = openOrderRows({
+      new: { a: { ref: "WEB-1", status: "new", createdAt: 1, lines: [{}] } },
+      ready: { b: { ref: "WEB-2", status: "ready", createdAt: 2, lines: [{}, {}] }, c: { ref: "WEB-3", status: "packed", createdAt: 3 } },
+    });
+    expect(rows.map((r) => [r.ref, r.lines])).toEqual([["WEB-2", 2], ["WEB-1", 1]]);
   });
 });

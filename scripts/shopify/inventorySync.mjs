@@ -100,8 +100,8 @@ export async function desiredFor(db, pid, locNames = null) {
   locs.forEach((loc, i) => { if (cellSets[i]) tree[loc] = { [pid]: cellSets[i] }; });
   // Website-order holds for this product: ONE point read of its own
   // reservation node (docs/ONLINE-ORDERS.md), read with the stock it adjusts.
-  const reserved = reservedBySize(await readReservations(db, pid));
-  return { map, totals: networkTotals(tree, pid, sizes), reserved };
+  const holds = await readReservations(db, pid);
+  return { map, totals: networkTotals(tree, pid, sizes), reserved: reservedBySize(holds), released: releasedBySize(holds) };
 }
 
 // /online_reservations/{pid} → { [sizeKey]: units held by open website orders }.
@@ -125,6 +125,23 @@ export function reservedBySize(node) {
   return out;
 }
 
+// Units of those holds whose order Shopify has ALREADY fulfilled (the poller
+// stamps `released` on the row when it sees the admin fulfilment). Shopify no
+// longer commits them, so they come off in full — never netted against
+// `committed`, which can belong to an order the app never pulled in.
+export function releasedBySize(node) {
+  const out = {};
+  for (const [sizeKey, cell] of Object.entries(node || {})) {
+    let n = 0;
+    for (const row of Object.values(cell || {})) {
+      const q = Number(row?.released);
+      if (Number.isFinite(q) && q > 0) n += q;
+    }
+    if (n > 0) out[sizeKey] = n;
+  }
+  return out;
+}
+
 /**
  * ── WEBSITE HOLDS, WITHOUT HIDING A UNIT TWICE ────────────────────────────────
  * Units to take off the app's count for one size before it is pushed as
@@ -143,11 +160,19 @@ export function reservedBySize(node) {
  * Subtracting the whole reservation instead would show every open order's
  * unit as gone twice. `committed` unknown (no level read) counts as 0, which
  * only ever under-sells.
+ *
+ * `released` (reviewer finding, PR #775): `committed` is EVERY unfulfilled
+ * order on the variant, including ones the app never pulled in (rung by hand
+ * before go-live, unpaid EFT). Netting an admin-fulfilled hold against those
+ * would leave its unit on sale. So a hold the poller has seen fulfilled on
+ * Shopify is subtracted outright, and only the rest is netted:
+ *   released + max(0, (reserved − released) − committed).
  */
-export function onlineHoldAdjustment(reserved, committed) {
+export function onlineHoldAdjustment(reserved, committed, released = 0) {
   const r = Math.max(0, Number(reserved) || 0);
   const c = Math.max(0, Number(committed) || 0);
-  return Math.max(0, r - c);
+  const gone = Math.min(r, Math.max(0, Number(released) || 0));
+  return gone + Math.max(0, r - gone - c);
 }
 
 /**
@@ -190,7 +215,7 @@ export async function locationNames(db) {
  * sweep's bulk snapshot (stock-truth-sweep.mjs) use, so "what is wrong with
  * this listing" cannot depend on which of them asked.
  */
-export function planProduct({ map, variants, baseline, totals, reserved = null, committed = null }) {
+export function planProduct({ map, variants, baseline, totals, reserved = null, committed = null, released = null }) {
   const mapped = Object.entries(map?.variants || {})
     .filter(([, v]) => v?.shopifyInventoryItemId)
     .map(([sizeKey, v]) => ({ sizeKey, inventoryItemId: v.shopifyInventoryItemId }));
@@ -208,7 +233,7 @@ export function planProduct({ map, variants, baseline, totals, reserved = null, 
     ...mapped.map((i) => ({
       ...i,
       quantity: Math.max(0, (totals[i.sizeKey] ?? 0) -
-        onlineHoldAdjustment(reserved?.[i.sizeKey], committed?.get?.(i.inventoryItemId))),
+        onlineHoldAdjustment(reserved?.[i.sizeKey], committed?.get?.(i.inventoryItemId), released?.[i.sizeKey])),
     })),
     // An unmapped item Shopify did not answer for is simply not written: it is
     // not one of ours to report as stale, and it cannot be compare-and-set.
@@ -303,7 +328,7 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   // NOW the stock snapshot, strictly after the baseline.
   const desired = await desiredFor(db, pid, locNames);
   if (!desired) return { pid, skipped: "no shopify_sync id map", permanent: true };
-  const plan = planProduct({ map, variants, baseline, totals: desired.totals, reserved: desired.reserved, committed });
+  const plan = planProduct({ map, variants, baseline, totals: desired.totals, reserved: desired.reserved, released: desired.released, committed });
   const { known, drift, untracked, stale, meta } = plan;
 
   // ── AN ENTIRELY UNKNOWN ID MAP HAS TWO VERY DIFFERENT CAUSES ──────────────

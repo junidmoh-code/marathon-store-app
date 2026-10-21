@@ -35,6 +35,9 @@ export const ORDER_STATUS = Object.freeze({
   // Fulfilled in the Shopify admin while the switch was OFF: handled the old
   // way (rung by hand at a till), so the app lets go of it. Terminal.
   FULFILLED_ELSEWHERE: "fulfilled_elsewhere",
+  // Junid pressed "Rung by hand at a till" in Settings: the poller closes the
+  // order's feed entries and releases its holds, then sets fulfilled_elsewhere.
+  RELEASE_REQUESTED: "release_requested",
 });
 
 export const TERMINAL_STATUSES = Object.freeze(["packed", "cancelled", "fulfilled_elsewhere"]);
@@ -88,7 +91,7 @@ export function heldUnits(cell, loc = null) {
  */
 export function deriveOrderStatus(order, { enabled = false } = {}) {
   const status = order?.status;
-  if (TERMINAL_STATUSES.includes(status)) return status;
+  if (TERMINAL_STATUSES.includes(status) || status === ORDER_STATUS.RELEASE_REQUESTED) return status;
   const lines = Array.isArray(order?.lines) ? order.lines.filter(Boolean) : Object.values(order?.lines || {}).filter(Boolean);
   if (!lines.length) return ORDER_STATUS.NEEDS_ATTENTION;
   const st = (l) => l?.source?.status;

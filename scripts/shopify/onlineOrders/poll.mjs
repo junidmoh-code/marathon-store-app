@@ -33,7 +33,7 @@ import {
   isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   pickKey, displayKey, pickEntry, displayEntry, attentionFromLines, placeName,
 } from "./orderModel.mjs";
-import { fetchOrdersUpdatedSince, fulfilOnShopify } from "./shopifyOrders.mjs";
+import { fetchOrdersUpdatedSince, fetchOrderById, fulfilOnShopify } from "./shopifyOrders.mjs";
 import { bookShipment } from "./shipping.mjs";
 
 export const META_PATH = "online_orders_meta";
@@ -90,19 +90,38 @@ export async function runOrdersPoll(deps) {
       sinceMs: Math.max(goLiveAtMs, cursorMs - CURSOR_OVERLAP_MS),
       createdSinceMs: goLiveAtMs,
     });
+    // ── ONE BAD ORDER MUST NOT STOP THE REST (reviewer finding, PR #775) ──
+    // The cursor moves past every order seen. One that fails is parked in
+    // online_orders_meta/retry/{id} and fetched again BY ID every tick until
+    // it goes through — so a single order that keeps failing can never hold
+    // the cursor back until newer orders fall out of the window.
     let advanceTo = cursorMs;
-    let failed = false;
-    for (const node of nodes) {
+    const retry = deps.pretendGoLiveMs != null ? {} : ((await get(`${META_PATH}/retry`)) || {});
+    const seen = new Set();
+    const attempt = async (node) => {
+      const id = String(node.legacyResourceId || numericId(node.id));
+      seen.add(id);
       try {
         await handleShopifyOrder(ctx, node);
-        if (!failed) advanceTo = Math.max(advanceTo, Date.parse(node.updatedAt) || 0);
+        if (retry[id]) await db.ref(`${META_PATH}/retry/${id}`).set(null);
       } catch (e) {
-        // The cursor stops BEFORE a failed order, so it is read again next
-        // tick; everything after it is idempotent and simply re-seen.
-        failed = true;
-        ctx.summary.errors.push(`${node?.name ?? "order"}: ${String(e?.message || e)}`);
-        log(`  ✗ ${node?.name ?? "order"}: ${String(e?.message || e)}`);
+        const error = String(e?.message || e);
+        ctx.summary.errors.push(`${node?.name ?? id}: ${error}`);
+        log(`  ✗ ${node?.name ?? id}: ${error} — parked, retried by id next tick`);
+        await db.ref(`${META_PATH}/retry/${id}`).set({ name: node?.name ?? null, attempts: (Number(retry[id]?.attempts) || 0) + 1, error: error.slice(0, 300), at: now });
       }
+    };
+    for (const node of nodes) {
+      await attempt(node);
+      advanceTo = Math.max(advanceTo, Date.parse(node.updatedAt) || 0);
+    }
+    for (const id of Object.keys(retry)) {
+      if (seen.has(id)) continue;
+      let node = null;
+      try { node = await fetchOrderById(graphql, id); }
+      catch (e) { log(`  ✗ parked order ${id}: could not be fetched (${String(e?.message || e)}) — retried next tick`); continue; }
+      if (node) await attempt(node);
+      else { log(`  ‼ parked order ${id} is gone from Shopify — dropped from the retry list`); await db.ref(`${META_PATH}/retry/${id}`).set(null); }
     }
     if (advanceTo > cursorMs) await db.ref(`${META_PATH}/cursorMs`).set(advanceTo);
   }
@@ -117,6 +136,12 @@ export async function runOrdersPoll(deps) {
         log(`  ✗ ${order?.ref ?? id}: ${String(e?.message || e)}`);
       }
     }
+  }
+
+  // Junid's "Rung by hand at a till" (Settings): close entries, release holds.
+  for (const id of Object.keys(await queryEq(ctx, "status", ORDER_STATUS.RELEASE_REQUESTED))) {
+    try { await releaseFulfilledElsewhere(ctx, id, null, { why: "marked rung by hand at a till (Settings)" }); }
+    catch (e) { ctx.summary.errors.push(`${id}: ${String(e?.message || e)}`); log(`  ✗ ${id}: ${String(e?.message || e)}`); }
   }
 
   // ── 3. SHIP ────────────────────────────────────────────────────────────────
@@ -162,6 +187,21 @@ async function handleShopifyOrder(ctx, node) {
   // the hold closes), and the walk-in guard stops the hand-rung slip.
   if (existing && !ctx.enabled && node.displayFulfillmentStatus === "FULFILLED" && HOLDING_STATUSES.includes(existing.status)) {
     await releaseFulfilledElsewhere(ctx, id, node);
+    return;
+  }
+  // Switch ON: the order still goes through the pick and the pack (that is the
+  // only stock deduction), but Shopify no longer commits its units — the hold
+  // rows say so (`released`), and the push subtracts them outright.
+  if (existing && ctx.enabled && node.displayFulfillmentStatus === "FULFILLED" && HOLDING_STATUSES.includes(existing.status) && !existing.shopifyFulfilledAt) {
+    const res = await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
+      if (cur == null) return null;
+      if (!HOLDING_STATUSES.includes(cur.status) || cur.shopifyFulfilledAt) return undefined;
+      return { ...cur, shopifyFulfilledAt: Date.parse(node.updatedAt) || ctx.now, updatedAt: ctx.now };
+    });
+    if (res.committed && res.snapshot.val()) {
+      log(`  ~ ${res.snapshot.val().ref}: fulfilled in the Shopify admin before the pack — still held, released on Shopify's side`);
+      await syncHolds(ctx, id, res.snapshot.val());
+    }
     return;
   }
   if (existing || !isIngestible(node)) return;
@@ -274,17 +314,17 @@ async function cancelOrder(ctx, id, node) {
   await syncHolds(ctx, id, order);
 }
 
-async function releaseFulfilledElsewhere(ctx, id, node) {
+async function releaseFulfilledElsewhere(ctx, id, node, { why = "fulfilled in the Shopify admin with the switch off" } = {}) {
   const { db, now, log } = ctx;
   const res = await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
     if (cur == null) return null;
-    if (!HOLDING_STATUSES.includes(cur.status)) return undefined;
-    return { ...cur, status: ORDER_STATUS.FULFILLED_ELSEWHERE, fulfilledElsewhereAt: Date.parse(node.updatedAt) || now, updatedAt: now, attention: null, attentionOpen: null };
+    if (!HOLDING_STATUSES.includes(cur.status) && cur.status !== ORDER_STATUS.RELEASE_REQUESTED) return undefined;
+    return { ...cur, status: ORDER_STATUS.FULFILLED_ELSEWHERE, fulfilledElsewhereAt: Date.parse(node?.updatedAt) || now, updatedAt: now, attention: null, attentionOpen: null };
   });
   const order = res.snapshot.val();
   if (!res.committed || !order) return;
   ctx.summary.handledElsewhere = (ctx.summary.handledElsewhere || 0) + 1;
-  log(`  ~ ${order.ref}: fulfilled in the Shopify admin with the switch off — handled the old way, hold released`);
+  log(`  ~ ${order.ref}: ${why} — handled the old way, hold released`);
   await cancelEntries(ctx, order);
   await syncHolds(ctx, id, order);
 }
@@ -489,6 +529,9 @@ async function shipOrder(ctx, id, order) {
       "fulfil/at": now,
       "fulfil/error": null,
       ...(out.alreadyDone ? { "fulfil/alreadyDone": true } : {}),
+      // A fulfilment that failed before and has now landed takes its
+      // attention with it, or it would sit in Settings for ever.
+      ...(order.attention?.kind === ATTENTION_KIND.FULFIL_FAILED ? { attention: null, attentionOpen: null } : {}),
       updatedAt: now,
     });
     ctx.summary.fulfilled++;
