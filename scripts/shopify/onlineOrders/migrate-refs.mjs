@@ -23,6 +23,13 @@ export async function migrateRefs(db, { commit = false, now = Date.now(), log = 
       if (!commit) { log(`would recode ${order.ref} (order ${id})`); done.push({ id, from: order.ref, to: null }); continue; }
       const code = await mintOrderRef(db, id, now, rand ? { rand } : {});
       const updates = { [`${ONLINE_ORDERS_PATH}/${id}/ref`]: code, [`${ONLINE_ORDERS_PATH}/${id}/refMigratedFrom`]: order.ref };
+      linesOf(order).forEach((l, i) => {
+        // A hub line made before hub orders points at the retired /online_picks
+        // feed: unlink it so the poller mints its /orders record (Fable review).
+        if (typeof l?.source?.entryKey === "string" && l.source.entryKey.startsWith("online_picks/")) {
+          updates[`${ONLINE_ORDERS_PATH}/${id}/lines/${i}/source/entryKey`] = null;
+        }
+      });
       for (const l of linesOf(order)) {
         if (l?.pid && l.sizeKey) {
           const hold = (await db.ref(`${ONLINE_RESERVATIONS_PATH}/${l.pid}/${l.sizeKey}/${id}`).get()).val();

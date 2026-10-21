@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { keyInTvOnlineOrdersRange, keyInTvOrdersRange, tvRowsOf, TV_ONLINE_ORDER_KEY_RANGES } from "./tvOrdersRange";
 
 describe("website orders reach the TV by their code — and nothing else does", () => {
-  it.each(["KQZ", "AAA", "ZZZ", "QZZ", "RAA", "KQZ-2", "KQZ-2-1", "KQZ-2r1"])("%s is on the board", (k) => {
+  it.each(["KQZ", "AAA", "ZZZ", "QZZ", "QZZ-2", "ZZZ-1", "ZZZ-2-1", "RAA", "KQZ-2", "KQZ-2-1", "KQZ-2r1", "KQZ-1-b"])("%s is on the board", (k) => {
     expect(keyInTvOnlineOrdersRange(k)).toBe(true);
   });
   it.each(["R123-abc", "R9", "P001", "C001", "042", "KIZ", "KOZ", "KQ", "KQZA", "SHDW-1", ""])("%s is not a website order", (k) => {

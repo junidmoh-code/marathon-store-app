@@ -229,3 +229,26 @@ Courier booking and waybills. `shipping.provider` is null and
 `bookShipment(order)` (`scripts/shopify/onlineOrders/shipping.mjs`) returns
 `{ skipped: true }`. Waybill numbers are handwritten; the Pack step has an
 optional tracking-number field.
+
+## Decisions taken without asking (2026-10-21 go-live)
+
+- **No Shopify "fulfilment note" carries the code.** `FulfillmentInput` has no
+  note field, and writing an order note or tag needs `write_orders`, which the
+  app is not granted. The code reaches the customer as the Courier Guy
+  customer reference; Shopify gets the waybill as the tracking number.
+- **Uniqueness by registry, not index**: `/online_order_refs/{code}` is claimed
+  in one transaction — atomic, exact path, never a scan.
+- **Not found takes two taps** on the Display Checks strip: it is not undone by
+  the next tap and it emails Junid.
+- **Multi-unit hub orders** are keyed `KQZ-{line}`, `KQZ-{line}-{unit}`,
+  `KQZ-{line}r{gen}` after a re-route, and `…-b` if a key is already held by
+  someone else's record. Scanning any of these labels at the POS confirms like
+  the bare code.
+- **The TV never speaks a website order** (no customer at the counter), and
+  **the Mac mini closes the hub orders** as collected after the Pack (a lettered
+  key can never be rung at a till).
+- **Remaining gap:** order edits made in Shopify after pull-in are not picked up.
+- **Watch after go-live:** the TV's two code ranges also bracket any future
+  lettered keys (Pine's `P001`, a Pine refill cart `RP001-…`); they are dropped
+  client-side, so they cost a download. None exist today (census 2026-10-21:
+  565 numeric, 2,531 `R###-…`).
