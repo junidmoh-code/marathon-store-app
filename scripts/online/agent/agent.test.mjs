@@ -48,6 +48,7 @@ function harness(f, { replies = [], scopes = [], connected = false, at = NOW, mo
     },
     inbox,
     findAlternatives: async () => OFFERS,
+    listingTitle: async () => "Cotton crew tee in white",
     scopes: async () => new Set(scopes),
     graphql: async (q, v) => { gql.push({ q, v }); if (/storeCreditAccountCredit/.test(q)) return { storeCreditAccountCredit: { storeCreditAccountTransaction: { id: "gid://shopify/StoreCreditAccountTransaction/1" }, userErrors: [] } }; if (/order\(id: \$id\) \{ id customer/.test(q)) return { order: { id: v.id, customer: { id: "gid://shopify/Customer/7" } } }; throw new Error(`unexpected ${q.slice(0, 40)}`); },
   };
@@ -67,6 +68,9 @@ describe("first message", () => {
     expect(m.to).toBe("thandi@example.com");
     expect(m.subject).toBe("Your order LEV — [LEV item l0]");
     expect(m.text).toContain("Hi Thandi,");
+    // The storefront listing name, never the app's product name.
+    expect(m.text).toContain("The item: Cotton crew tee in white, size M.");
+    expect(m.text).not.toContain("Club Tee,");
     expect(m.text).toContain("1. Club Tee Navy — R240 — https://marathonclub.co.za/products/club-tee-navy");
     expect(m.text).toContain("2. Club Tee Sand — R300 — https://marathonclub.co.za/products/club-tee-sand");
     expect(m.text).toMatch(/"credit" for store credit of R250, or "refund" for a refund of R250/);

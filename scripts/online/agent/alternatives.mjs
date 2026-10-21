@@ -76,3 +76,14 @@ export async function findAlternatives({ graphql, get, line, orderId }) {
   }
   return out;
 }
+
+/**
+ * The storefront LISTING name of the line's product (Shopify's title — the
+ * compliance-cleaned public name, no brand added). Messages may be forwarded,
+ * so the app's own product name (which can carry a brand) is never used.
+ */
+export async function listingTitle(graphql, line) {
+  if (!line?.productGid) return null;
+  const d = await graphql(`query ($id: ID!) { product(id: $id) { title } }`, { id: line.productGid });
+  return d.product?.title || null;
+}

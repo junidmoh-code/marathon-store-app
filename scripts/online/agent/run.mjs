@@ -134,6 +134,10 @@ async function openConversation(ctx, key, orderId, order, i, line) {
     await setAgentRow(ctx, key, null);
     return;
   }
+  // The storefront listing name — never the app's product name (brands).
+  let itemTitle = null;
+  try { itemTitle = ctx.listingTitle ? await ctx.listingTitle(line) : null; }
+  catch (e) { ctx.log(`! ${order.ref}: listing name not read (${String(e?.message || e)})`); }
   let offers = [];
   try { offers = await ctx.findAlternatives({ line, orderId }); }
   catch (e) { ctx.log(`! ${order.ref}: alternatives not found (${String(e?.message || e)}) — offering credit / refund only`); }
@@ -141,7 +145,7 @@ async function openConversation(ctx, key, orderId, order, i, line) {
   const made = await lineTxn(ctx, orderId, i, (cur) => {
     if (cur.resolution?.conversation) return undefined;
     return { ...cur, resolution: { ...(cur.resolution || {}), conversation: {
-      state: "offering", startedAt: ctx.now, tag, email, phone, outbound: 0,
+      state: "offering", startedAt: ctx.now, tag, email, phone, outbound: 0, itemTitle: itemTitle || "the item you ordered",
       offers: offers.map((o) => ({ pid: o.pid, size: o.size, sizeKey: o.sizeKey, title: o.title, url: o.url, priceCents: o.priceCents, locationId: o.locationId, status: o.status, photoUrl: o.photoUrl, category: o.category, productGid: o.productGid })),
     } } };
   });
@@ -176,12 +180,16 @@ async function deliver(ctx, orderId, order, i, line, slot, kind, extra) {
   const offers = Object.values(conv.offers || {});
   let words = fallbackWords(kind);
   try {
-    const w = await ctx.model.words(kind, { firstName: firstName(order), item: line.title, size: line.size });
+    const w = await ctx.model.words(kind, { firstName: firstName(order) });
     const opening = acceptModelText(w?.opening);
     const closing = acceptModelText(w?.closing, 200);
     if (opening && closing) words = { opening, closing };
   } catch (e) { ctx.log(`! ${order.ref}: model words failed (${String(e?.message || e)}) — the plain wording is used`); }
-  const mail = composeMessage(kind, { ref: order.ref, firstName: firstName(order), line, offers, amountCents: extra.amountCents ?? null, words });
+  // Before a swap the line still names the app's product: the customer sees
+  // the LISTING name kept on the conversation. After a swap it is the
+  // alternative's listing name already.
+  const shown = line.swappedFrom ? line : { ...line, title: conv.itemTitle || "the item you ordered" };
+  const mail = composeMessage(kind, { ref: order.ref, firstName: firstName(order), line: shown, offers, amountCents: extra.amountCents ?? null, words });
   try {
     await ctx.mailer({ to: conv.email, subject: mail.subject, text: mail.text });
   } catch (e) {

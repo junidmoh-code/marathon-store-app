@@ -16,7 +16,8 @@
 // Firebase Admin via ADC; mail = the shop mailbox (CARD_RECON_IMAP_USER /
 // CARD_RECON_IMAP_PASSWORD, .env); ANTHROPIC_API_KEY (.env);
 // ~/.config/marathon/customer-agent.env: BROADCAST_SERVICE_TOKEN (WhatsApp
-// gateway), CUSTOMER_AGENT_TEST_EMAIL (the synthetic run's only recipient).
+// gateway), CUSTOMER_AGENT_TEST_EMAIL (the synthetic run's only recipient),
+// CUSTOMER_AGENT_ANTHROPIC_API_KEY (preferred over .env's ANTHROPIC_API_KEY).
 import { createRequire } from "node:module";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -28,7 +29,7 @@ import { serverNowMs } from "../shopify/publishNode.mjs";
 import { recordingDb } from "../shopify/onlineOrders/recordingDb.mjs";
 import { fakeDb } from "../shopify/onlineOrders/fakeDb.testutil.mjs";
 import { runCustomerAgent, AGENT_META } from "./agent/run.mjs";
-import { findAlternatives } from "./agent/alternatives.mjs";
+import { findAlternatives, listingTitle } from "./agent/alternatives.mjs";
 import { grantedScopes } from "./agent/money.mjs";
 
 const COMMIT = process.argv.includes("--commit");
@@ -115,8 +116,10 @@ function gateway() {
 
 // ── the model: words and one classification, nothing else ───────────────────
 async function claude(system, user, schema, maxTokens = 400) {
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY is not set");
+  // The agent's own key first (customer-agent.env): the repo .env's key can be
+  // a different project's and was found revoked on 2026-10-21.
+  const key = process.env.CUSTOMER_AGENT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error("no Anthropic key (CUSTOMER_AGENT_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY)");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
@@ -198,6 +201,7 @@ async function synthetic() {
     whatsapp: null, model,
     inbox: { replies: async () => [] },
     findAlternatives: ({ line: l, orderId }) => findAlternatives({ graphql, get: async (p) => (await liveDb.ref(p).get()).val(), line: l, orderId }),
+    listingTitle: (l) => listingTitle(graphql, l),
     scopes: async () => grantedScopes(graphql),
     graphql: async () => { throw new Error("synthetic run: no Shopify money call is made"); },
   };
@@ -231,6 +235,7 @@ try {
     model,
     inbox: imapInbox(),
     findAlternatives: ({ line, orderId }) => findAlternatives({ graphql, get: async (p) => (await liveDb.ref(p).get()).val(), line, orderId }),
+    listingTitle: (l) => listingTitle(graphql, l),
     scopes: async () => (scopeCache ??= await grantedScopes(graphql)),
     graphql,
   });
