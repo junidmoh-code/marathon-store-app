@@ -1,6 +1,10 @@
 {
   "online_orders": {
-    ".indexOn": ["status", "fulfilState", "attentionOpen"],
+    ".indexOn": [
+      "status",
+      "fulfilState",
+      "attentionOpen"
+    ],
     ".read": "auth != null && ((auth.token.email === 'gunidmoh@gmail.com' && auth.token.email_verified === true) || root.child('users').child(auth.uid).child('permFlags').child('online_orders').val() === true)",
     "$orderId": {
       ".write": "auth != null && ((auth.token.email === 'gunidmoh@gmail.com' && auth.token.email_verified === true) || root.child('users').child(auth.uid).child('permFlags').child('online_orders').val() === true)",
@@ -17,29 +21,24 @@
               ".validate": "newData.isNumber()"
             },
             "handedBy": {
-              ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists()",
-              ".validate": "newData.val() === auth.uid"
+              ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists() && newData.val() === auth.uid"
             }
           }
         }
       },
       "overrides": {
         "$overrideId": {
-          ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && !data.exists() && root.child('online_orders').child($orderId).exists()",
-          ".validate": "newData.hasChildren(['by', 'at', 'productId', 'loc'])"
+          ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && !data.exists() && root.child('online_orders').child($orderId).exists() && newData.hasChildren(['by', 'at', 'productId', 'loc'])"
         }
       },
       "attention": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('online_orders').child($orderId).exists()",
-        ".validate": "newData.child('kind').val() === 'walkin_override' || root.child('online_orders').child($orderId).child('attention').val() === newData.val()"
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('online_orders').child($orderId).exists() && newData.child('kind').val() === 'walkin_override'"
       },
       "attentionOpen": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('online_orders').child($orderId).exists()",
-        ".validate": "newData.val() === true"
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('online_orders').child($orderId).exists() && newData.val() === true"
       },
       "status": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && data.val() !== 'packed' && data.val() !== 'cancelled' && data.val() !== 'fulfilled_elsewhere'",
-        ".validate": "newData.val() === 'needs_attention'"
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && data.val() !== 'packed' && data.val() !== 'cancelled' && data.val() !== 'fulfilled_elsewhere' && newData.val() === 'needs_attention'"
       }
     }
   },
@@ -54,24 +53,23 @@
     }
   },
   "online_picks": {
-    ".indexOn": ["locStatus"],
+    ".indexOn": [
+      "locStatus"
+    ],
     ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
     "$pickId": {
       "status": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.val() === 'open'",
-        ".validate": "newData.val() === 'handed'"
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.val() === 'open' && newData.val() === 'handed'"
       },
       "locStatus": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists()",
-        ".validate": "newData.val() === data.parent().child('locationId').val() + '|handed'"
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && newData.val() === data.parent().child('locationId').val() + '|handed'"
       },
       "handedAt": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists()",
         ".validate": "newData.isNumber()"
       },
       "handedBy": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists()",
-        ".validate": "newData.val() === auth.uid"
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists() && newData.val() === auth.uid"
       }
     }
   }
