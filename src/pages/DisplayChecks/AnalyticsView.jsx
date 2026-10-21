@@ -10,7 +10,7 @@
 
 import { useMemo } from "react";
 import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, GLASS_BG, GLASS_BORDER, PANEL, META } from "./tokens";
-import { deriveFeed } from "./feedModel";
+import { deriveFeed, complianceOnly } from "./feedModel";
 import { SHOP_LABELS } from "../../utils/stores";
 
 const toMs = (v) => (v == null || v === "" ? NaN : (typeof v === "number" ? v : Date.parse(v)));
@@ -47,7 +47,10 @@ function Section({ title, children }) {
 // Feed arrives as props from the module shell's ONE lifted listener (shared with
 // Today) — no own subscription, so Today↔Analytics never doubles or churns it.
 export default function AnalyticsView({ store, wide, activeItems, completedItems, ready }) {
-  const feed = useMemo(() => deriveFeed(activeItems || [], completedItems || []), [activeItems, completedItems]);
+  // Website order picks (kind online_pick) share the feed but are not display
+  // checks: they are dropped HERE, before anything is derived, so no KPI, the
+  // average time or the by-staff tally can ever count a hand-over.
+  const feed = useMemo(() => deriveFeed(complianceOnly(activeItems), complianceOnly(completedItems)), [activeItems, completedItems]);
   const { stats, waiting, completed } = feed;
 
   // Average completion time (open → completed) over today's completed checks.

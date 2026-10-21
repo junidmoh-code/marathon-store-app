@@ -20,6 +20,16 @@
 // node and the active tombstone disagreeing — the loser's transaction aborts
 // before it archives; the winner archives exactly what it committed.
 //
+// WEBSITE ORDERS (kind "online_pick", docs/ONLINE-ORDERS.md): the Mac mini
+// writes display-check-shaped records for website order lines routed to a
+// shop's floor. They close through THIS callable with their own two results,
+// "handed" (to the packer) and "not_found" — never confirmed/no_stock, and a
+// display check never takes theirs (lib.cjs resultFitsRecord). No stock
+// soft-block. After the committed flip, and on every heal of an
+// already-completed one, the order line is flipped too (onlineOrder.cjs);
+// the call reports ok only once the archive, the log AND that order write
+// have all landed.
+//
 // NO PIN: identity is request.auth (uid + verified email) — the logged-in user,
 // stamped as completedBy. DEPLOY (scoped): firebase deploy --only functions:completeDisplayCheck
 
@@ -34,8 +44,15 @@ const {
   saMonthOfDate,
   completionDecision,
   completionFlipMutation,
+  isOnlinePickRecord,
+  DISPLAY_RESULTS,
+  ONLINE_PICK_RESULTS,
 } = require("./lib.cjs");
+
+const ALL_RESULTS = [...DISPLAY_RESULTS, ...ONLINE_PICK_RESULTS];
 const { guardedMutate } = require("./guardedTransaction.cjs");
+const { applyOnlineOrderOutcome } = require("./onlineOrder.cjs");
+const { locationName, SEED_REGISTRY } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { loadStoreSettings } = require("./settings.cjs");
 
@@ -54,6 +71,7 @@ const ERROR_CODE = {
   "already-completed": "failed-precondition",
   "not-open": "failed-precondition",
   "bad-result": "invalid-argument",
+  "wrong-kind": "invalid-argument", // a display verdict on an online pick, or the reverse
   "archive-failed": "unavailable", // RETRYABLE: flip committed but the durable copy didn't land — retry re-heals
 };
 
@@ -68,6 +86,15 @@ async function setWithRetry(ref, value, attempts = 3) {
   }
 }
 
+// Audit type per result. The online_pick results get their own names so the
+// log never reads a hand-over as a display confirmation.
+const COMPLETED_LOG_TYPE = Object.freeze({
+  confirmed: "completed_confirmed",
+  no_stock: "completed_no_stock",
+  handed: "completed_handed",
+  not_found: "completed_not_found",
+});
+
 // Archive a committed completed record to the day node + write the audit log,
 // both idempotent (deterministic keys) and reproducible FROM THE RECORD ALONE —
 // so a reconcile/retry re-runs it identically without re-reading stock. This is
@@ -81,7 +108,7 @@ async function archiveAndLog(db, store, record) {
   const archived = await setWithRetry(db.ref(`displayChecks/${store}/${saDate}/${checkId}`), record);
   const logged = await setWithRetry(db.ref(`displayChecks_log/${store}/${saMonthOfDate(saDate)}/${checkId}_completed`), {
     checkId,
-    type: result === "no_stock" ? "completed_no_stock" : "completed_confirmed",
+    type: COMPLETED_LOG_TYPE[result] || `completed_${result}`,
     at: record.completedAt,
     actor: record.completedBy || null,
     payload: {
@@ -100,7 +127,7 @@ async function archiveAndLog(db, store, record) {
 //   { kind:"reject", code }
 //   { kind:"needs_override", stockQty }
 //   { kind:"ok", result, completedAt, overridden }
-async function runComplete(db, { store, key, checkId, result, override, actor, nowMs }) {
+async function runComplete(db, { store, key, checkId, result, override, actor, nowMs, storeName }) {
   const saDate = saDateStringFromMs(nowMs);
   const activeRef = db.ref(`displayChecks_active/${store}/${key}`);
   const preRead = (await activeRef.get()).val();
@@ -110,7 +137,7 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   // soft-block is advisory — the read is a snapshot, not re-checked inside the
   // flip; the qty is recorded as evidence of what the system saw, not a lock.
   let stockQty = 0;
-  if (result === "no_stock" && preRead && preRead.productId) {
+  if (result === "no_stock" && preRead && preRead.productId && !isOnlinePickRecord(preRead)) {
     const sk = preRead.sizeKey || stockSizeKey(preRead.size);
     stockQty = Number((await db.ref(`stock/${store}/${preRead.productId}/${sk}/qty`).get()).val()) || 0;
   }
@@ -120,13 +147,20 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   // (Codex P1: a "done" check that's invisible in the feed and unaudited). The
   // tombstone stays committed, so the client's retry re-heals through the
   // already-completed path below.
-  const okOrRetry = (record) => archiveAndLog(db, store, record).then((ok) =>
+  // An online_pick's order write is part of the same durable step: the shop's
+  // "Handed to packer" is only done once the order line says so too.
+  const name = storeName || locationName(SEED_REGISTRY, store);
+  const durable = (record) => Promise.all([
+    archiveAndLog(db, store, record),
+    applyOnlineOrderOutcome(db, store, record, { storeName: name }),
+  ]).then(([a, o]) => a && o);
+  const okOrRetry = (record) => durable(record).then((ok) =>
     ok ? { kind: "ok", result: record.result, completedAt: record.completedAt, overridden: !!record.resultOverridden }
        : { kind: "reject", code: "archive-failed" });
   // Already completed → WRITE-ONCE: reject (the first result stands). But still
   // ENSURE the durable copy exists (a prior flip may have committed then failed
   // to archive); only if that heal can't land do we ask the client to retry.
-  const healThenReject = (record) => archiveAndLog(db, store, record).then((ok) =>
+  const healThenReject = (record) => durable(record).then((ok) =>
     ({ kind: "reject", code: ok ? "already-completed" : "archive-failed" }));
 
   const decision = completionDecision({ record: preRead, expectedCheckId: checkId, result, override: override === true, stockQty });
@@ -193,10 +227,13 @@ exports.completeDisplayCheck = onCall(
         || !checkId || typeof checkId !== "string") {
       throw new HttpsError("invalid-argument", "store, key and checkId are required.");
     }
-    if (result !== "confirmed" && result !== "no_stock") {
-      throw new HttpsError("invalid-argument", "result must be 'confirmed' or 'no_stock'.");
+    // Which of the four fits THIS record is decided against the record itself
+    // (completionDecision → "wrong-kind"), not here.
+    if (!ALL_RESULTS.includes(result)) {
+      throw new HttpsError("invalid-argument", "result must be 'confirmed', 'no_stock', 'handed' or 'not_found'.");
     }
-    if (!isTriggerStoreEnabled(store, await loadNetwork(admin.database()), await loadStoreSettings(admin.database(), store))) {
+    const network = await loadNetwork(admin.database());
+    if (!isTriggerStoreEnabled(store, network, await loadStoreSettings(admin.database(), store))) {
       throw new HttpsError("failed-precondition", "Display Checks is not enabled for this store.");
     }
 
@@ -225,7 +262,10 @@ exports.completeDisplayCheck = onCall(
       email,
     };
 
-    const out = await runComplete(db, { store, key, checkId, result, override: override === true, actor, nowMs: Date.now() });
+    const out = await runComplete(db, {
+      store, key, checkId, result, override: override === true, actor, nowMs: Date.now(),
+      storeName: locationName(network, store),
+    });
     if (out.kind === "reject") {
       throw new HttpsError(ERROR_CODE[out.code] || "failed-precondition", out.code);
     }

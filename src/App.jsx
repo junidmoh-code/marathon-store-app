@@ -178,6 +178,8 @@ import { PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH } from "./util
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
+import OnlinePickCard from "./components/onlineOrders/OnlinePickCard";
+import { useOnlinePicks, useOnlineOrdersEnabled, pickQueueRows } from "./components/onlineOrders/onlinePicks";
 import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
@@ -12474,6 +12476,11 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Read-only until a hub is picked; LaybyTab/banner filter by selectedHub.
   const laybys = useLaybys();
   const laybyPulls = useLaybyPulls();
+  // ── Website order picks (docs/ONLINE-ORDERS.md) ──────────────────────────
+  // This hub's OPEN /online_picks, by the indexed locStatus query — nothing is
+  // subscribed until a hub is picked AND /config/onlineOrders/enabled is true.
+  const onlineOrdersOn = useOnlineOrdersEnabled();
+  const onlinePicks = useOnlinePicks(selectedHub, onlineOrdersOn);
   // Which layby sub-queue to open on next mount. The exceptions banner flips this
   // to "exceptions" so a tap jumps straight there; keyed remount applies it.
   const [laybySub, setLaybySub] = useState("receiving");
@@ -12800,7 +12807,13 @@ function WarehouseView({ products = [], orders, onExit }) {
   // queue feeder so both the visible list AND every pill count/badge drop them in
   // one place. Regular orders always carry a validated non-empty customerName, and
   // layby pull rows have no customerName, so this can't hide a real order.
-  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders];
+  // Website order picks join the same queue the same way: Incoming, stamped
+  // now so the 3-day window never hides one, rendered by OnlinePickCard below
+  // (one "Handed over" tap — no print, no transfer, no stock movement).
+  const hubOnlinePicks = onlineOrdersOn
+    ? pickQueueRows(onlinePicks, { hub: selectedHub, incomingStatus: STATUS.INCOMING, nowIso: serverNowIso() })
+    : [];
+  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders, ...hubOnlinePicks];
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
@@ -13827,6 +13840,14 @@ function WarehouseView({ products = [], orders, onExit }) {
             // Layby pull request — render the real PullCard inline (same L-xxxxx
             // invoice + Sent/Reject/Return); it actions via markPullSent, never the
             // order print flow.
+            // Website order pick — its own card, actioned by one multi-path
+            // update (pick + order line → handed); never the order print flow.
+            if (order.isOnlinePick) {
+              return (
+                <OnlinePickCard pick={order._pick} hub={selectedHub}
+                  onHanded={(p) => { setPrintToast({ kind:"ok", text:`${p.ref || "Website order"} handed over.` }); setTimeout(() => setPrintToast(null), 4000); }}/>
+              );
+            }
             if (order.isLayby) {
               return (
                 <PullCard pull={order._pull} selectedHub={selectedHub} nowMs={nowTick}
