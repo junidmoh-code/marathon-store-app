@@ -345,6 +345,17 @@ describe("invariants", () => {
   });
 });
 
+describe("before the rules are pasted", () => {
+  it("still pulls new orders in and holds them when the server refuses the indexed queries", async () => {
+    const f = fakeDb(world(), { missingIndexes: ["status", "fulfilState", "attentionOpen"] });
+    const out = await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    expect(out.ingested).toBe(1);
+    expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2 });
+    expect([...out.missingIndex].sort()).toEqual(["attentionOpen", "fulfilState", "status"]);
+    expect(out.errors).toEqual([]);
+  });
+});
+
 describe("attentionMail", () => {
   it("names the order, the reason and where to resolve it", () => {
     const m = attentionMail({ ref: "WEB-1", shopifyName: "#1", customer: { name: "A" }, attention: { reason: "R" } });

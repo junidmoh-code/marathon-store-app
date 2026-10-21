@@ -10,7 +10,19 @@ export function recordingDb(db, log) {
     const s = JSON.stringify(v);
     return s && s.length > 300 ? `${s.slice(0, 300)}…` : s;
   };
-  const read = async (path) => (overlay.has(path) ? overlay.get(path) : (await db.ref(path).get()).val());
+  // The nearest "written" ancestor answers for its children too, so a dry
+  // run that created an order reads back that order's status.
+  const read = async (path) => {
+    const segs = path.split("/").filter(Boolean);
+    for (let i = segs.length; i > 0; i--) {
+      const anc = segs.slice(0, i).join("/");
+      if (!overlay.has(anc)) continue;
+      let v = overlay.get(anc);
+      for (const k of segs.slice(i)) v = v == null ? null : (v[k] ?? null);
+      return v;
+    }
+    return (await db.ref(path).get()).val();
+  };
   const snap = (v) => ({ val: () => v, exists: () => v != null });
   const ref = (path) => {
     const real = db.ref(path);

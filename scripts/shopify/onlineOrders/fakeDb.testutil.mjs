@@ -31,7 +31,7 @@ function normalize(v) {
   return v;
 }
 
-export function fakeDb(initial = {}, { failWritesUnder = null } = {}) {
+export function fakeDb(initial = {}, { failWritesUnder = null, missingIndexes = [] } = {}) {
   let root = normalize(clone(initial)) || {};
   const writes = [];
   let keySeq = 0;
@@ -102,6 +102,7 @@ export function fakeDb(initial = {}, { failWritesUnder = null } = {}) {
     orderByChild: (child) => ({
       equalTo: (value) => ({
         get: async () => {
+          if (missingIndexes.includes(child)) throw new Error(`Index not defined, add ".indexOn": "${child}", for path "/${path}", to the rules`);
           const node = at(path) || {};
           const out = {};
           for (const [k, v] of Object.entries(node)) if (v && v[child] === value) out[k] = v;

@@ -9,6 +9,7 @@
 //                                                   prints what it WOULD write
 //   node scripts/shopify/orders-poll.mjs --commit   the real tick
 //   … --no-shopify                                  skip Shopify (keep/backfill only)
+//   … --pretend-go-live=<ISO>                       dry run only: route older orders
 //
 // Credentials: Shopify through scripts/shopify/env.mjs (.env); Firebase Admin
 // through Application Default Credentials; the attention email through the
@@ -22,6 +23,15 @@ import { runOrdersPoll } from "./onlineOrders/poll.mjs";
 import { recordingDb } from "./onlineOrders/recordingDb.mjs";
 
 const COMMIT = process.argv.includes("--commit");
+// Dry run only: --pretend-go-live=2026-10-20T00:00:00Z shows how orders from
+// before the real go-live WOULD be pulled in and routed. Never with --commit —
+// those orders were rung by hand and must never be held or packed again.
+const pretendArg = process.argv.find((a) => a.startsWith("--pretend-go-live="));
+const pretendGoLiveMs = pretendArg ? Date.parse(pretendArg.split("=")[1]) : null;
+if (pretendArg && (COMMIT || !Number.isFinite(pretendGoLiveMs))) {
+  console.error("✗ --pretend-go-live takes an ISO date and is for dry runs only");
+  process.exit(2);
+}
 const NO_SHOPIFY = process.argv.includes("--no-shopify");
 // Junid's inbox — the address every alarm already goes to (card-recon,
 // write-off digest). Fixed here, never read from .env.
@@ -58,6 +68,7 @@ const started = Date.now();
 try {
   const summary = await runOrdersPoll({
     db,
+    pretendGoLiveMs,
     graphql: NO_SHOPIFY ? null : graphql,
     nowMs: () => serverNowMs(liveDb),
     send: COMMIT ? mailSender() : null,
@@ -67,6 +78,7 @@ try {
     log: (line) => console.log(line),
   });
   const s = summary;
+  if (s.missingIndex.size) console.log(`⚠ RULES NOT PASTED: /online_orders needs .indexOn [${[...s.missingIndex].join(", ")}] (docs/ONLINE-ORDERS.md)`);
   const busy = s.ingested || s.cancelled || s.flagged || s.entries || s.holds || s.fulfilled || s.fulfilFailed || s.mailed || s.errors.length;
   console.log(
     busy

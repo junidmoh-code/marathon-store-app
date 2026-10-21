@@ -46,16 +46,36 @@ export const MAX_FULFIL_ATTEMPTS_SHOWN = 99;
 
 const isTerminal = (s) => s === ORDER_STATUS.PACKED || s === ORDER_STATUS.CANCELLED;
 
+// ── An indexed query that survives its index not being pasted yet ───────────
+// The /online_orders indexes are part of the rules block Junid pastes by hand
+// (docs/ONLINE-ORDERS.md). Until he does, the server refuses the query
+// outright. That must not stop the tick: pulling orders in and holding their
+// stock use exact reads only and are the part that protects the storefront.
+// So a refused query skips its own phase, says so on every tick, and nothing
+// else changes. Any OTHER error still throws.
+async function queryEq(ctx, child, value) {
+  try {
+    return (await ctx.db.ref(ONLINE_ORDERS_PATH).orderByChild(child).equalTo(value).get()).val() || {};
+  } catch (e) {
+    if (!/index not defined/i.test(String(e?.message || e))) throw e;
+    ctx.summary.missingIndex.add(child);
+    return {};
+  }
+}
+
 export async function runOrdersPoll(deps) {
   const { db, graphql, log = () => {} } = deps;
   const get = async (path) => (await db.ref(path).get()).val();
   const now = await deps.nowMs();
-  const ctx = { ...deps, get, now, summary: { ingested: 0, cancelled: 0, flagged: 0, kept: 0, entries: 0, holds: 0, fulfilled: 0, fulfilFailed: 0, mailed: 0, errors: [] } };
+  const ctx = { ...deps, get, now, summary: { ingested: 0, cancelled: 0, flagged: 0, kept: 0, entries: 0, holds: 0, fulfilled: 0, fulfilFailed: 0, mailed: 0, errors: [], missingIndex: new Set() } };
   ctx.enabled = (await get(`${ONLINE_ORDERS_CONFIG_PATH}/enabled`)) === true;
 
   // ── 1. PULL ────────────────────────────────────────────────────────────────
   const meta = (await get(META_PATH)) || {};
-  let goLiveAtMs = Number(meta.goLiveAtMs);
+  // `pretendGoLiveMs` is the dry run's lens only (orders-poll.mjs refuses it
+  // with --commit): it shows what older orders WOULD route to without moving
+  // the real line.
+  let goLiveAtMs = Number(deps.pretendGoLiveMs ?? meta.goLiveAtMs);
   if (!Number.isFinite(goLiveAtMs) || goLiveAtMs <= 0) {
     // FIRST RUN. Orders older than this were rung through the POS by hand
     // (the practice until now); pulling them in would hold — and at pack,
@@ -64,7 +84,7 @@ export async function runOrdersPoll(deps) {
     await db.ref(`${META_PATH}/goLiveAtMs`).set(goLiveAtMs);
     log(`first run: website orders created from ${new Date(goLiveAtMs).toISOString()} on are pulled in; older ones stay manual`);
   }
-  const cursorMs = Number(meta.cursorMs) || goLiveAtMs;
+  const cursorMs = deps.pretendGoLiveMs != null ? goLiveAtMs : (Number(meta.cursorMs) || goLiveAtMs);
   if (graphql) {
     const nodes = await fetchOrdersUpdatedSince(graphql, {
       sinceMs: Math.max(goLiveAtMs, cursorMs - CURSOR_OVERLAP_MS),
@@ -89,7 +109,7 @@ export async function runOrdersPoll(deps) {
 
   // ── 2. KEEP ────────────────────────────────────────────────────────────────
   for (const status of HOLDING_STATUSES) {
-    const found = (await db.ref(ONLINE_ORDERS_PATH).orderByChild("status").equalTo(status).get()).val() || {};
+    const found = await queryEq(ctx, "status", status);
     for (const [id, order] of Object.entries(found)) {
       try { await maintainOrder(ctx, id, order); ctx.summary.kept++; }
       catch (e) {
@@ -101,7 +121,7 @@ export async function runOrdersPoll(deps) {
 
   // ── 3. SHIP ────────────────────────────────────────────────────────────────
   if (graphql) {
-    const pending = (await db.ref(ONLINE_ORDERS_PATH).orderByChild("fulfilState").equalTo("pending").get()).val() || {};
+    const pending = await queryEq(ctx, "fulfilState", "pending");
     for (const [id, order] of Object.entries(pending)) {
       try { await shipOrder(ctx, id, order); }
       catch (e) {
@@ -114,6 +134,9 @@ export async function runOrdersPoll(deps) {
   // ── 4. TELL ────────────────────────────────────────────────────────────────
   await mailAttention(ctx);
 
+  if (ctx.summary.missingIndex.size) {
+    log(`  ⚠ /online_orders has no index on ${[...ctx.summary.missingIndex].join(", ")} — the rules block in docs/ONLINE-ORDERS.md is not pasted yet; open orders are not swept, fulfilled or emailed until it is (new orders are still pulled in and held)`);
+  }
   await db.ref(`${META_PATH}/lastRunAt`).set(now);
   return ctx.summary;
 }
@@ -464,7 +487,7 @@ async function shipOrder(ctx, id, order) {
 // ── 4. One email per attention ───────────────────────────────────────────────
 async function mailAttention(ctx) {
   const { db, send, log } = ctx;
-  const open = (await db.ref(ONLINE_ORDERS_PATH).orderByChild("attentionOpen").equalTo(true).get()).val() || {};
+  const open = await queryEq(ctx, "attentionOpen", true);
   const unmailed = Object.entries(open).filter(([, o]) => o?.attention && !o.attention.mailedAt);
   if (!unmailed.length) return;
   if (!send) { log(`  ⚠ ${unmailed.length} attention email(s) not sent — no mail sender on this machine; retried next tick`); return; }
