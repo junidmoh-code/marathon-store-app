@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the website-order customer agent (Mac mini), the same
+  mechanism as com.marathon.shopifyreconcile: a user LaunchAgent, KeepAlive +
+  ThrottleInterval (the 2026-08-31 lesson: StartInterval agents can silently
+  stop firing), one tick per run, then exit. Every 5 minutes.
+
+  Overlap is harmless by construction: every send reserves a slot, every reply
+  and every money action is claimed in a transaction on the order line
+  (docs/ONLINE-CUSTOMER-AGENT.md).
+
+  CREDENTIALS: none here. .env at the repo root (Shopify, the shop mailbox,
+  ANTHROPIC_API_KEY); ~/.config/marathon/customer-agent.env (600) for the
+  WhatsApp gateway token and the synthetic run's test address; Firebase Admin
+  via GOOGLE_APPLICATION_CREDENTIALS. Only PATHS appear here.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.customeragent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/online/customer-agent.mjs</string>
+    <string>--commit</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/customer-agent.launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/customer-agent.launchd.err.log</string>
+</dict>
+</plist>

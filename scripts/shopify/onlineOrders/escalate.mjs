@@ -320,23 +320,28 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
 // that one Shopify line. The parent line becomes "moved" and stops holding.
 export const followUpId = (orderId, i) => `${orderId}f${i}`;
 
-async function deliverFollowUp(ctx, orderId, order, i, esc) {
-  const { db, now, log } = ctx;
-  const fid = followUpId(orderId, i);
-  const parentLine = linesOf(order)[i];
-  const line = deliveredLine({ ...parentLine, escalation: esc }, esc, now);
-  const follow = {
+/** The follow-up order record carrying `line` (already on its pick / display path). */
+export function followUpRecord({ order, orderId, i, line, parentLine, nowMs }) {
+  return {
     // Key-safe: the ref becomes the follow-up's hub order keys (hubOrderKeys).
     ref: `${order.ref}-F${i + 1}`,
     orderNumber: order.orderNumber, shopifyGid: order.shopifyGid, shopifyName: order.shopifyName,
     followUpOf: orderId, followUpLine: i,
-    createdAt: now, ingestedAt: now, updatedAt: now,
+    createdAt: nowMs, ingestedAt: nowMs, updatedAt: nowMs,
     ...(order.customer ? { customer: order.customer } : {}),
     ...(order.shipping?.address ? { shipping: { address: order.shipping.address } } : {}),
     totals: { subtotalCents: (Number(line.unitPriceCents) || 0) * (Number(line.qty) || 1), currency: order.totals?.currency || "ZAR" },
     lines: [{ ...line, lineId: `${parentLine.lineId || `l${i}`}f` }],
     status: ORDER_STATUS.NEW,
   };
+}
+
+async function deliverFollowUp(ctx, orderId, order, i, esc) {
+  const { db, now, log } = ctx;
+  const fid = followUpId(orderId, i);
+  const parentLine = linesOf(order)[i];
+  const line = deliveredLine({ ...parentLine, escalation: esc }, esc, now);
+  const follow = followUpRecord({ order, orderId, i, line, parentLine, nowMs: now });
   const res = await db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).transaction((cur) => (cur == null ? clean(follow) : undefined));
   if (!res.committed && !res.snapshot.val()) return null;
   const next = await lineTxn(ctx, orderId, i, (cur) => {
