@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the Shipping card's live Courier Guy quotes
+  (scripts/shipping/quote-runner.mjs), 21 Oct 2026. One long-lived listener on
+  /shipping_quotes/requests; RATES ONLY — it never books or cancels. KeepAlive
+  restarts it if it dies; ThrottleInterval keeps a crash loop to one start a
+  minute. The key is read from ~/.config/marathon/courier.env (chmod 600) by
+  scripts/shipping/env.mjs — never from this file.
+  INSTALL: copy to ~/Library/LaunchAgents, mkdir -p logs, then
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marathon.shippingquotes.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.shippingquotes</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/shipping/quote-runner.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- The same RTDB service account the Shopify reconciler uses. -->
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-shippingquotes.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-shippingquotes.err.log</string>
+</dict>
+</plist>

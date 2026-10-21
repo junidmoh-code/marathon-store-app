@@ -1,0 +1,268 @@
+{
+  "message": "Success",
+  "service_days": {
+    "collection_service_days": null,
+    "delivery_service_days": null
+  },
+  "rates": [
+    {
+      "rate": 100,
+      "rate_excluding_vat": 100,
+      "base_rate": {
+        "charge_per_parcel": [
+          100
+        ],
+        "charge": 100,
+        "group_name": "Default group",
+        "vat": 100,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "formula",
+        "rate_types": [
+          "formula"
+        ],
+        "total_calculated_weight": 2
+      },
+      "service_level": {
+        "id": 0,
+        "code": "LPF",
+        "legacy_code": "LOF",
+        "name": "Local Priority Flyer",
+        "group_code": "LPF",
+        "description": "Collection must be booked by 14:00, and ready by 14:30, to be delivered during the next business day.",
+        "delivery_date_from": "2026-10-21T16:00:00+02:00",
+        "delivery_date_to": "2026-10-22T15:00:00+02:00",
+        "collection_date": "2026-10-21T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T15:00:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": false
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge",
+          "charge": 100,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 100,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 2,
+      "actual_weight": 2,
+      "volumetric_weight": 2
+    },
+    {
+      "rate": 110,
+      "rate_excluding_vat": 110,
+      "base_rate": {
+        "charge_per_parcel": [
+          110
+        ],
+        "charge": 110,
+        "group_name": "Default group",
+        "vat": 110,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "formula",
+        "rate_types": [
+          "formula"
+        ],
+        "total_calculated_weight": 2
+      },
+      "service_level": {
+        "id": 0,
+        "code": "LPP",
+        "legacy_code": "LOX",
+        "name": "Local Priority Parcel",
+        "group_code": "LPP",
+        "description": "Collection must be booked by 14:00, and ready by 14:30, to be delivered during the next business day.",
+        "delivery_date_from": "2026-10-21T16:00:00+02:00",
+        "delivery_date_to": "2026-10-22T15:00:00+02:00",
+        "collection_date": "2026-10-21T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T15:00:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": false
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge",
+          "charge": 110,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 110,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 2,
+      "actual_weight": 2,
+      "volumetric_weight": 2
+    },
+    {
+      "rate": 120,
+      "rate_excluding_vat": 120,
+      "base_rate": {
+        "charge_per_parcel": [
+          120
+        ],
+        "charge": 120,
+        "group_name": "Default group",
+        "vat": 120,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "formula",
+        "rate_types": [
+          "formula"
+        ],
+        "total_calculated_weight": 2
+      },
+      "service_level": {
+        "id": 0,
+        "code": "LSF",
+        "name": "Local Same Day Flyer",
+        "group_code": "LSF",
+        "description": "Collection must be booked by 10:30, and ready by 11:00, to be delivered by 17:00 the same day.",
+        "delivery_date_from": "2026-10-22T09:00:00+02:00",
+        "delivery_date_to": "2026-10-22T15:00:00+02:00",
+        "collection_date": "2026-10-22T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T10:30:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": false
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge",
+          "charge": 120,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 120,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 2,
+      "actual_weight": 2,
+      "volumetric_weight": 2
+    },
+    {
+      "rate": 130,
+      "rate_excluding_vat": 130,
+      "base_rate": {
+        "charge_per_parcel": [
+          130
+        ],
+        "charge": 130,
+        "group_name": "Default group",
+        "vat": 130,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "flat",
+        "rate_types": [
+          "flat"
+        ],
+        "total_calculated_weight": 3
+      },
+      "service_level": {
+        "id": 0,
+        "code": "LSP",
+        "legacy_code": "LSE",
+        "name": "Local Same Day Parcel",
+        "group_code": "LSP",
+        "description": "Collection must be booked by 10:30, and ready by 11:00, to be delivered by 17:00 the same day.",
+        "delivery_date_from": "2026-10-22T09:00:00+02:00",
+        "delivery_date_to": "2026-10-22T15:00:00+02:00",
+        "collection_date": "2026-10-22T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T10:30:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": false
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge",
+          "charge": 130,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 130,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 3,
+      "actual_weight": 2,
+      "volumetric_weight": 3
+    },
+    {
+      "rate": 140,
+      "rate_excluding_vat": 140,
+      "base_rate": {
+        "charge_per_parcel": [
+          140
+        ],
+        "charge": 140,
+        "group_name": "Default group",
+        "vat": 140,
+        "vat_type": "standard",
+        "vat_percentage": 15,
+        "rate_formula_type": "formula",
+        "rate_types": [
+          "formula"
+        ],
+        "total_calculated_weight": 3
+      },
+      "service_level": {
+        "id": 0,
+        "code": "SDX",
+        "name": "Same Day Express",
+        "group_code": "SDX",
+        "description": "To ensure timely processing, kindly book your shipment before 14:00. Our standard turnaround time is 8-10 hours, subject to flight availability. Please note that deliveries scheduled after 18:00 will incur an after-hours surcharge of 741.75 (VAT included), which is not reflected in the base price. For any inquiries or assistance, feel free to contact our dedicated support team at sdxrequest@thecourierguy.co.za. We’re here to assist you promptly.",
+        "delivery_date_from": "2026-10-21T09:00:00+02:00",
+        "delivery_date_to": "2026-10-21T14:00:00+02:00",
+        "collection_date": "2026-10-21T08:00:00+02:00",
+        "collection_cut_off_time": "2026-10-21T14:00:00+02:00",
+        "vat_type": "standard",
+        "insurance_disabled": false
+      },
+      "surcharges": [],
+      "rate_adjustments": [
+        {
+          "id": 0,
+          "group_id": 0,
+          "name": "Fuel surcharge",
+          "charge": 140,
+          "is_opt_in": false,
+          "opted_in_by_default": false,
+          "vat": 140,
+          "vat_type": "standard",
+          "description": ""
+        }
+      ],
+      "time_based_rate_adjustments": [],
+      "extras": [],
+      "charged_weight": 3,
+      "actual_weight": 2,
+      "volumetric_weight": 3
+    }
+  ],
+  "_redacted": "account ids zeroed; prices replaced by rank-preserving placeholders (100, 110, …)"
+}
