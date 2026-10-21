@@ -813,7 +813,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
           <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
             {g.rows.map((row) => (
               <div key={row.rowKey} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ flex: 1, fontSize: 12, color: GRAY }}>size {String(row.size)} ×{row.qty || 1} · raised {fmtSaDateTime(row.createdAt)}</span>
+                <span style={{ flex: 1, fontSize: 12, color: GRAY }}>size {String(row.size)} ×{row.qty || 1} · raised {fmtSaDateTime(row.createdAt)}{row.webRef && <span data-web-ref style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: "#4ACA7A" }}>WEBSITE · {row.webRef}</span>}</span>
                 {actorRole === "admin" && row.origin === "request" && (
                   <button onClick={() => releaseNow(row)} disabled={releasingId !== null}
                           style={{ border: "1px solid rgba(74,127,255,.5)", background: "rgba(74,127,255,.12)", color: "#cfe0ff",

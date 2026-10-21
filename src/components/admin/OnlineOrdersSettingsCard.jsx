@@ -72,6 +72,8 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
       () => setEsc({ settled: true, rows: [], error: true }));
   }, [isOwner]);
   const escHatch = async (r, kind) => {
+    // One override per line at a time: the other button is locked while it saves.
+    if (typeof busy === "string" && busy.startsWith(`${r.key}|`)) return;
     const k = `${r.key}|${kind}`;
     if (confirmEsc !== k) { setConfirmEsc(k); return; }
     setConfirmEsc(null); setBusy(k); setMsg(null);
@@ -236,12 +238,12 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
             <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
               {r.canMarkUnavailable && (
                 <button type="button" style={{ ...btn, ...(confirmEsc === `${r.key}|unavailable` ? { background: "#3a1212", color: "#ff6961" } : {}) }}
-                  disabled={busy === `${r.key}|unavailable`} onClick={() => escHatch(r, "unavailable")}>
+                  disabled={typeof busy === "string" && busy.startsWith(`${r.key}|`)} onClick={() => escHatch(r, "unavailable")}>
                   {confirmEsc === `${r.key}|unavailable` ? "Tap again — ask the customer" : "Mark unavailable now"}
                 </button>
               )}
               <button type="button" style={{ ...btn, ...(confirmEsc === `${r.key}|resolved` ? { background: "#3a1212", color: "#ff6961" } : {}) }}
-                disabled={busy === `${r.key}|resolved`} onClick={() => escHatch(r, "resolved")}>
+                disabled={typeof busy === "string" && busy.startsWith(`${r.key}|`)} onClick={() => escHatch(r, "resolved")}>
                 {confirmEsc === `${r.key}|resolved` ? "Tap again — stop everything" : "Resolved by hand"}
               </button>
             </div>

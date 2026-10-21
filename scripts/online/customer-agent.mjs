@@ -247,8 +247,10 @@ try {
     findAlternatives: ({ line, orderId }) => findAlternatives({ graphql, get: async (p) => (await liveDb.ref(p).get()).val(), line, orderId }),
     listingTitle: (l) => listingTitle(graphql, l),
     offerStillAvailable: (a) => offerStillAvailable({ get: async (p) => (await liveDb.ref(p).get()).val(), ...a }),
-    scopes: async () => (scopeCache ??= await grantedScopes(graphql)),
-    graphql,
+    // A DRY RUN never touches money: no scopes → every credit / refund takes
+    // the "email Junid" path, and that email is only printed.
+    scopes: COMMIT ? async () => (scopeCache ??= await grantedScopes(graphql)) : async () => new Set(),
+    graphql: COMMIT ? graphql : async (q) => { if (/mutation/.test(q)) throw new Error("dry run: no Shopify mutation"); return graphql(q); },
   });
   if (COMMIT && mail) await dailySummary(liveDb, await serverNowMs(liveDb), (m) => mail.send({ to: NOTIFY_TO, ...m })).catch((e) => logLine(`✗ daily summary: ${e.message}`));
   const busy = summary.opened || summary.sent || summary.replies || summary.swaps || summary.credits || summary.refunds || summary.errors.length;

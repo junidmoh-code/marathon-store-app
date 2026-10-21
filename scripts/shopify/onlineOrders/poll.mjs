@@ -38,7 +38,7 @@ import { fetchOrdersUpdatedSince, fetchOrderById } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig } from "./shipping.mjs";
 import { mintOrderRef } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
-import { escalateOrder, ESCALATIONS_PATH } from "./escalate.mjs";
+import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs";
 import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 
@@ -378,7 +378,12 @@ async function cancelOrder(ctx, id, node) {
 async function dropEscalations(ctx, id, order) {
   const lines = linesOf(order);
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i]?.escalation) await ctx.db.ref(`${ESCALATIONS_PATH}/${id}_${i}`).set(null);
+    const esc = lines[i]?.escalation;
+    if (!esc) continue;
+    // The request still open at Hub 2 / Central goes too (untouched only) —
+    // nobody moves stock toward a cancelled or hand-rung order (CodeRabbit).
+    if (esc.phase === "await" && esc.request) await withdrawRequest(ctx, id, i, esc);
+    await ctx.db.ref(`${ESCALATIONS_PATH}/${id}_${i}`).set(null);
   }
 }
 

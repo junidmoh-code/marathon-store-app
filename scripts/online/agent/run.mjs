@@ -348,9 +348,11 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
 
 // ── credit / refund ─────────────────────────────────────────────────────────
 async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
-  const amount = paidCents(line);
+  let amount = paidCents(line);
   const res = await money(ctx, orderId, order, i, line, kind, amount, messageKind === "auto_credit" ? "no reply in 48 hours" : `the customer chose ${kind}`);
   if (!res) return;
+  // What Shopify actually refunded (it may suggest less than the line).
+  if (Number.isInteger(res.paidCents) && res.paidCents > 0) amount = res.paidCents;
   const windowUntil = messageKind === "auto_credit" ? ctx.now + REFUND_WINDOW_MS : null;
   await lineTxn(ctx, orderId, i, (cur) => ({
     ...cur,

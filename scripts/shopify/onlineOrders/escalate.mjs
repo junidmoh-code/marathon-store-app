@@ -340,7 +340,7 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
 // Untouched only: a card Hub 2 has not answered is removed (as a cancelled
 // hub order is); a refill row nobody is picking or has sent is cancelled
 // no_longer_needed. Anything already moving is left to the people moving it.
-async function withdrawRequest(ctx, orderId, i, esc) {
+export async function withdrawRequest(ctx, orderId, i, esc) {
   const { kind, key } = esc.request;
   if (kind === STEP.REFILL) {
     await ctx.db.ref(`refill_requests/${key}`).transaction((cur) => {

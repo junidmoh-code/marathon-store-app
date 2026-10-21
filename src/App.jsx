@@ -14948,7 +14948,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
                     ✕
                   </button>
                   <div style={{ display:"flex", alignItems:"baseline", justifyContent:"space-between", marginBottom:5 }}>
-                    <span style={{ fontSize:12, color:BLUE_L, fontWeight:700 }}><SizeTag size={it.size} /></span>
+                    <span style={{ fontSize:12, color:BLUE_L, fontWeight:700 }}><SizeTag size={it.size} />{it.webRef && <span data-web-ref style={{ marginLeft:4, fontSize:8.5, fontWeight:800, color:"#4ACA7A" }}>{it.webRef}</span>}</span>
                     <span style={{ fontSize:9, color:"rgba(255,255,255,.4)" }}>×{it.qty}</span>
                   </div>
                   {rejected ? (

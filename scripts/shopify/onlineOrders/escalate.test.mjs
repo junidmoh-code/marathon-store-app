@@ -391,3 +391,16 @@ describe("Sonnet-review guards", () => {
     expect(f.read("online_orders/9001/attentionOpen")).toBe(true);
   });
 });
+
+describe("cancelled / rung by hand while a request is open", () => {
+  it("the untouched Shop Refill card is withdrawn with the order", async () => {
+    const f = fakeDb(world());
+    await tick(f);
+    expect(f.read("orders/R001-1")).toBeTruthy();
+    await f.db.ref("online_orders/9001/status").set("release_requested");
+    await tick(f, NOW + 60e3);
+    expect(f.read("online_orders/9001/status")).toBe("fulfilled_elsewhere");
+    expect(f.read("orders/R001-1")).toBeNull();
+    expect(f.read("online_escalations")).toBeNull();
+  });
+});

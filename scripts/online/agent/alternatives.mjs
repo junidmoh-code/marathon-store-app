@@ -50,6 +50,10 @@ export async function findAlternatives({ graphql, get, line, orderId }) {
     if (!v || !p.handle) continue;
     pool.push({ gid: p.id, title: p.title, handle: p.handle, priceCents: cents(v.price), variantTitle: v.title });
   }
+  // Never offer what the code would refuse: nothing dearer than was paid
+  // per unit (a swapped line's ceiling is its original price).
+  const ceiling = Number.isInteger(line.originalUnitPriceCents) ? line.originalUnitPriceCents : target;
+  for (let k = pool.length - 1; k >= 0; k--) if (pool[k].priceCents > ceiling) pool.splice(k, 1);
   pool.sort((a, b) => Math.abs(a.priceCents - target) - Math.abs(b.priceCents - target) || a.priceCents - b.priceCents);
   const out = [];
   for (const c of pool) {
