@@ -75,6 +75,6 @@
     }
   },
   "online_escalations": {
-    ".read": "auth != null && ((auth.token.email === 'gunidmoh@gmail.com' && auth.token.email_verified === true) || root.child('users').child(auth.uid).child('permFlags').child('online_orders').val() === true)"
+    ".read": "auth != null && auth.token.email === 'gunidmoh@gmail.com' && auth.token.email_verified === true"
   }
 }

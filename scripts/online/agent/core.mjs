@@ -122,9 +122,9 @@ const FALLBACK = {
   offer: { opening: "We're so sorry — the item below from your order turned out not to be available after all. We looked everywhere for it before writing to you.", closing: "Thank you for your patience, and sorry again." },
   costs_more: { opening: "Thank you for choosing so quickly.", closing: "Sorry about that." },
   swapped: { opening: "Done — we've swapped the item on your order.", closing: "Thank you for sticking with us." },
-  credit: { opening: "Done — we've put the amount back on your account as store credit.", closing: "Thank you, and sorry again for the trouble." },
+  credit: { opening: "Thank you for letting us know — store credit it is.", closing: "Thank you, and sorry again for the trouble." },
   refund: { opening: "We've started your refund for this item.", closing: "Sorry again for the trouble." },
-  auto_credit: { opening: "We didn't hear back from you, so we've put the amount for the missing item on your account as store credit, so you are not out of pocket.", closing: "Sorry again for the trouble." },
+  auto_credit: { opening: "We didn't hear back from you, so we're making sure you're not out of pocket for the missing item.", closing: "Sorry again for the trouble." },
   unclear: { opening: "Thanks for your reply — we just want to be sure we do the right thing.", closing: "Thank you." },
   refund_after_credit: { opening: "No problem — we'll swap the store credit for a refund instead.", closing: "Sorry again for the trouble." },
 };
@@ -139,7 +139,10 @@ const itemWords = (line) => `${line.title}${line.size && line.size !== "_" ? `, 
  * The full message. `kind` picks the facts; `words` = { opening, closing }
  * from the model (already accepted) or the fallback.
  */
-export function composeMessage(kind, { ref, firstName, line, offers = [], amountCents = null, words, refundWindowDays = 14 }) {
+export function composeMessage(kind, { ref, firstName, line, offers = [], amountCents = null, words, refundWindowDays = 14, pending = false }) {
+  // `pending`: the store credit is being added by hand (the API scope is not
+  // granted, or Shopify refused) — never told as done when it is not.
+  const creditState = pending ? "It is being added to your account and will show there within a day." : "It is on your account now.";
   const hi = firstName ? `Hi ${firstName},` : "Hi,";
   const parts = [hi, "", words.opening, ""];
   const tag = subjectTag(ref, line);
@@ -157,9 +160,9 @@ export function composeMessage(kind, { ref, firstName, line, offers = [], amount
     parts.push(`If we don't hear from you in 48 hours we'll put ${rands(paidCents(line))} on your account as store credit, and you can still ask for a refund instead for 14 days after that.`);
   } else if (kind === "swapped") {
     parts.push(`Your new item: ${itemWords(line)}. It ships to you as soon as it is packed.`);
-    if (amountCents > 0) parts.push(`It costs less than what you paid, so ${rands(amountCents)} goes back to you as store credit.`);
+    if (amountCents > 0) parts.push(`It costs less than what you paid, so ${rands(amountCents)} goes back to you as store credit. ${creditState}`);
   } else if (kind === "credit" || kind === "auto_credit") {
-    parts.push(`Store credit: ${rands(amountCents)}, for ${itemWords(line)}.`);
+    parts.push(`Store credit: ${rands(amountCents)}, for ${itemWords(line)}. ${creditState}`);
     if (kind === "auto_credit") parts.push(`If you'd rather have a refund, reply "refund" within ${refundWindowDays} days.`);
   } else if (kind === "refund") {
     parts.push(`Refund: ${rands(amountCents)}, for ${itemWords(line)}. It is being processed and goes back to the card or account you paid with.`);

@@ -163,7 +163,7 @@ async function send(ctx, orderId, order, i, line, kind, extra = {}) {
     const c = cur.resolution?.conversation;
     if (!c || !canSend(c)) return undefined;
     slot = (Number(c.outbound) || 0) + 1;
-    return { ...cur, resolution: { ...cur.resolution, conversation: { ...c, outbound: slot, lastOutboundAt: ctx.now, sends: { ...(c.sends || {}), [slot]: { kind, at: ctx.now, ...(extra.amountCents != null ? { amountCents: extra.amountCents } : {}) } } } } };
+    return { ...cur, resolution: { ...cur.resolution, conversation: { ...c, outbound: slot, lastOutboundAt: ctx.now, sends: { ...(c.sends || {}), [slot]: { kind, at: ctx.now, ...(extra.amountCents != null ? { amountCents: extra.amountCents } : {}), ...(extra.pending ? { pending: true } : {}) } } } } };
   });
   if (!reserved) {
     await record(ctx, orderId, i, order.ref, "not_sent", { kind, note: `the ${MAX_OUTBOUND}-message cap is reached` });
@@ -189,7 +189,7 @@ async function deliver(ctx, orderId, order, i, line, slot, kind, extra) {
   // the LISTING name kept on the conversation. After a swap it is the
   // alternative's listing name already.
   const shown = line.swappedFrom ? line : { ...line, title: conv.itemTitle || "the item you ordered" };
-  const mail = composeMessage(kind, { ref: order.ref, firstName: firstName(order), line: shown, offers, amountCents: extra.amountCents ?? null, words });
+  const mail = composeMessage(kind, { ref: order.ref, firstName: firstName(order), line: shown, offers, amountCents: extra.amountCents ?? null, words, pending: !!extra.pending });
   try {
     await ctx.mailer({ to: conv.email, subject: mail.subject, text: mail.text });
   } catch (e) {
@@ -215,7 +215,7 @@ async function retryUnsent(ctx, orderId, order, i, line) {
   const sends = line.resolution?.conversation?.sends || {};
   for (const [n, s] of Object.entries(sends)) {
     if (s && !s.sentAt && s.failedAt && (Number(s.tries) || 0) < 2) {
-      await deliver(ctx, orderId, order, i, line, Number(n), s.kind, { amountCents: s.amountCents });
+      await deliver(ctx, orderId, order, i, line, Number(n), s.kind, { amountCents: s.amountCents, pending: !!s.pending });
     }
   }
 }
@@ -241,7 +241,19 @@ async function offering(ctx, key, orderId, order, i, line) {
     if (!(await send(ctx, orderId, order, i, line, "unclear"))) await setAgentRow(ctx, key, { state: "offering", needsJunid: true });
     return;
   }
-  if (ctx.now - Number(conv.startedAt) >= NO_REPLY_MS) {
+  // The 48 hours run from the offer the customer actually RECEIVED. An offer
+  // that never went out (both attempts failed) is Junid's, never a silent credit.
+  const first = conv.sends?.[1] || (Array.isArray(conv.sends) ? conv.sends[1] : null);
+  if (!first?.sentAt) {
+    if (first?.failedAt && (Number(first.tries) || 0) >= 2 && !conv.undeliveredMailedAt) {
+      await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, undeliveredMailedAt: ctx.now } } }));
+      await tellJunid(ctx, `Website order ${order.ref}: the offer email to the customer could not be sent`, [
+        `${line.title} is unavailable; the offer to ${conv.email} failed twice. Nothing has been credited. Please contact them by hand.`,
+      ]);
+    }
+    return;
+  }
+  if (ctx.now - Number(first.sentAt) >= NO_REPLY_MS) {
     return settle(ctx, key, orderId, order, i, line, "credit", "auto_credit");
   }
 }
@@ -307,8 +319,8 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
   ctx.summary.swaps++;
   await record(ctx, orderId, i, order.ref, "swapped", { note: `${line.title} → ${offer.title} at ${offer.locationId}${packed ? " (ships as a follow-up)" : ""}` });
   const swapped = { ...line, ...newLine(line) };
-  if (judged.creditCents > 0) await money(ctx, orderId, order, i, swapped, "credit", judged.creditCents, "swap difference");
-  await send(ctx, orderId, order, i, swapped, "swapped", { amountCents: judged.creditCents });
+  const diff = judged.creditCents > 0 ? await money(ctx, orderId, order, i, swapped, "credit", judged.creditCents, "swap difference") : null;
+  await send(ctx, orderId, order, i, swapped, "swapped", { amountCents: judged.creditCents, pending: !!diff && diff.via !== "api" });
   await setAgentRow(ctx, key, null);
 }
 
@@ -323,7 +335,7 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
     source: { status: LINE_STATUS.RESOLVED },
     resolution: { ...cur.resolution, outcome: { kind: messageKind, amountCents: amount, at: ctx.now }, conversation: { ...cur.resolution.conversation, state: windowUntil ? "credited_window" : "closed", ...(windowUntil ? { refundWindowUntil: windowUntil } : { closedAt: ctx.now }) } },
   }));
-  await send(ctx, orderId, order, i, line, messageKind, { amountCents: amount });
+  await send(ctx, orderId, order, i, line, messageKind, { amountCents: amount, pending: res.via !== "api" });
   await setAgentRow(ctx, key, windowUntil ? { state: "credited_window", until: windowUntil } : null);
 }
 

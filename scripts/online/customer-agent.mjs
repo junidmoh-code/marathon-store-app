@@ -137,9 +137,9 @@ const WHAT = {
   offer: "the item they ordered turned out not to be available; we are offering alternatives (listed separately)",
   costs_more: "they picked an alternative that costs more than they paid; we won't charge more, so we're re-offering",
   swapped: "we swapped the item for the alternative they chose",
-  credit: "we gave them store credit for the missing item, as they asked",
+  credit: "they chose store credit for the missing item; it is being arranged",
   refund: "we started the refund they asked for",
-  auto_credit: "they didn't reply within 48 hours so we gave store credit automatically",
+  auto_credit: "they didn't reply within 48 hours so store credit is being arranged automatically",
   unclear: "we couldn't tell what they wanted from their reply; we're asking again",
   refund_after_credit: "they asked for a refund instead of the store credit; we're arranging it",
 };
@@ -161,14 +161,20 @@ async function dailySummary(db, nowMs, send) {
   const sa = new Date(nowMs + 2 * 3600e3);
   if (sa.getUTCHours() < 18) return;
   const day = sa.toISOString().slice(0, 10);
-  const meta = (await db.ref(`${AGENT_META}/lastSummaryDay`).get()).val();
-  if (meta === day) return;
-  const events = Object.values((await db.ref(`${AGENT_META}/days/${day}`).get()).val() || {});
-  const lines = events.length
-    ? events.sort((a, b) => a.at - b.at).map((e) => `${new Date(e.at + 2 * 3600e3).toISOString().slice(11, 16)}  ${e.ref} line ${Number(e.lineIndex) + 1}: ${e.action}${e.note ? ` — ${e.note}` : ""}`)
-    : ["No customer-agent activity today."];
+  const last = (await db.ref(`${AGENT_META}/lastSummary`).get()).val() || {};
+  if (last.day === day) return;
+  // Everything since the previous summary — the evening after 18:00 included
+  // (it lands in YESTERDAY's day node, read here too).
+  const since = Number(last.at) || 0;
+  const yday = new Date(nowMs + 2 * 3600e3 - 86400e3).toISOString().slice(0, 10);
+  const events = [];
+  for (const d of [yday, day]) events.push(...Object.values((await db.ref(`${AGENT_META}/days/${d}`).get()).val() || {}));
+  const fresh = events.filter((e) => Number(e.at) > since && Number(e.at) <= nowMs).sort((a, b) => a.at - b.at);
+  const lines = fresh.length
+    ? fresh.map((e) => `${new Date(e.at + 2 * 3600e3).toISOString().slice(5, 16).replace("T", " ")}  ${e.ref} line ${Number(e.lineIndex) + 1}: ${e.action}${e.note ? ` — ${e.note}` : ""}`)
+    : ["No customer-agent activity since the last summary."];
   await send({ subject: `Website orders — customer agent, ${day}`, text: lines.join("\n") });
-  await db.ref(`${AGENT_META}/lastSummaryDay`).set(day);
+  await db.ref(`${AGENT_META}/lastSummary`).set({ day, at: nowMs });
 }
 
 // ── synthetic: an in-memory line, real everything else, one test inbox ──────

@@ -53,7 +53,9 @@ export function storeOrderCard({ key, line, order, orderId, lineIndex, to, from,
     productPhoto: null, productPhotoUrl: line.photoUrl ?? null,
     size: line.size == null ? "_" : String(line.size), sentSize: null, qty: Number(line.qty) || 1,
     customerName: "Shop Refill", customerPhone: null,
-    hub: from, placedAtHub: from, placedStore: to, destShop: to,
+    // placedStore: the placing store MODE, as placeRefillRequests writes it
+    // (Marathon PE and Trophy are both "central"); destShop is the shop.
+    hub: from, placedAtHub: from, placedStore: "central", destShop: to,
     productType: "clothing", requestDisplay: false, requestDisplayPartner: false,
     status: "incoming", createdAt: nowIso, updatedAt: nowIso,
     readyAt: null, outOfStockAt: null, comingTomorrowAt: null, collectedAt: null,

@@ -149,6 +149,29 @@ describe("replies — read by code first", () => {
     expect(j.subject).toMatch(/BY HAND/);
     expect(j.text).toMatch(/#1801/);
     expect(h.gql).toEqual([]);
+    // Never told "done" when it is waiting on Junid.
+    expect(h.mails.at(-1).text).toContain("Store credit: R250, for Cotton crew tee in white, size M. It is being added to your account and will show there within a day.");
+    expect(h.mails.at(-1).text).not.toMatch(/on your account now/);
+  });
+
+  it("with the scope granted the credit is done through the API and the customer is told it is on their account", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    await h.run({ inbox: { replies: async () => [reply("credit")] } });
+    expect(line(f).resolution.money).toMatchObject({ state: "done", via: "api" });
+    expect(h.mails.at(-1).text).toContain("It is on your account now.");
+  });
+
+  it("an offer that never went out is never followed by a silent credit — Junid is told", async () => {
+    const f = fakeDb(world());
+    const h = harness(f);
+    h.deps.mailer = async () => { throw new Error("SMTP down"); };
+    await h.run({ mailer: h.deps.mailer });
+    await h.run({ mailer: h.deps.mailer, nowMs: async () => NOW + 60e3 });
+    await h.run({ mailer: h.deps.mailer, nowMs: async () => NOW + 49 * H });
+    expect(line(f).resolution.money).toBeUndefined();
+    expect(h.junid.some((m) => /could not be sent/.test(m.subject))).toBe(true);
   });
 
   it("free text goes to ONE model classification, validated by code", async () => {
