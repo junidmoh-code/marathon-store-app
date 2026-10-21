@@ -57,7 +57,7 @@ stayed held for ever.
 Partly. Bug 1 was the credit never being created (the race plus no
 promotion). Bug 2 was separate: the slip never carried an issued-credit line,
 and its balance was computed before the mint, so it would have been wrong even
-when the credit did land (Junid's R100 slip showed the old balance). Both show
+when the credit did land: on Junid's R100 test the slip's balance was the Payment screen's pre-sale figure, without the R100. Both show
 up in the same place, which is the attach response the till ignored. That
 response now drives the slip.
 

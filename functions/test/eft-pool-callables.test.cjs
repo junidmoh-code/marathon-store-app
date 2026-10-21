@@ -470,6 +470,33 @@ test("the scan verifies an attach made before its sale reached the server — an
   resetPool();
 });
 
+// Deran's R1,000 (21 Oct 2026): the attach ran before the outbox landed the
+// sale, so the remainder was HELD; the scan's later check must turn it into the
+// confirmed customer's credit — breadcrumb first, then the promoted plan.
+test("the scan PROMOTES a remainder held only because the sale was not on the server yet", async () => {
+  resetPool();
+  dbState.sets = {};
+  const usedRec = { attemptId: "P-1", at: 5, cashierUid: "cashier-uid", customerId: "27785056874", customerName: "Deran", customerConfirmed: true, appliedCents: 15000, storeId: "pe", tillId: "till-2",
+    sale: { saleId: "S-46291", receiptNumber: "S-46291", at: 6, verified: false },
+    remainder: { cents: 100000, disposition: "unallocated", customerId: null, customerName: null, creditId: null, status: "held",
+      holdReason: "the sale was not on the server when the payment was attached, so it could not be checked" } };
+  const rec = { ...PAY, status: "used", amountCents: 115000, used: usedRec };
+  dbState.reads["eft_pending_sale_checks"] = { [K1]: { at: Date.now() - 60_000, saleId: "S-46291" } };
+  dbState.pool[`eft_pool/${K1}`] = rec;
+  dbState.reads["pos/sales/S-46291"] = { customerId: "27785056874", payments: { p: { method: "eft", amount: 15000, eftPoolKey: K1 } } };
+  dbState.txCurrent = rec;
+  await eftRemainderScan();
+  assert.ok(dbState.sets[`eft_pending_remainders/${K1}`], "the remainder breadcrumb is down before the promotion");
+  const r = dbState.txNext?.used?.remainder;
+  assert.equal(r?.disposition, "credit");
+  assert.equal(r?.customerId, "27785056874");
+  assert.equal(r?.cents, 100000);
+  assert.equal(dbState.txNext.used.sale.verified, true);
+  delete dbState.reads["eft_pending_sale_checks"];
+  delete dbState.reads["pos/sales/S-46291"];
+  resetPool();
+});
+
 test("the scan backfills spent pre-fix payments one bounded page at a time, then stops", async () => {
   resetPool();
   delete dbState.reads["_migrations/eftFingerprintBackfill"];
