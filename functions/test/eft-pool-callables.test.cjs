@@ -454,7 +454,9 @@ test("the scan verifies an attach made before its sale reached the server — an
   const usedRec = { attemptId: "P-1", at: 5, cashierUid: "cashier-uid", customerId: "0821234567", customerConfirmed: true, appliedCents: 5000,
     sale: { saleId: "S-late", receiptNumber: "1", at: 6, verified: false } };
   dbState.reads["eft_pending_sale_checks"] = { [K1]: { at: Date.now() - 60_000, saleId: "S-late" } };
-  dbState.pool[`eft_pool/${K1}/used`] = usedRec;
+  // The scan reads the whole pool RECORD (one record, never the node) — the
+  // promotion of a held remainder needs its status and amount, not just used.
+  dbState.pool[`eft_pool/${K1}`] = { ...PAY, status: "used", used: usedRec, amountCents: 100000 };
   dbState.reads["pos/sales/S-late"] = { customerId: "0821234567", payments: { p: { method: "eft", amount: 50000, eftPoolKey: K1 } } };
   dbState.txCurrent = { ...PAY, status: "used", used: usedRec, amountCents: 100000 };
   await eftRemainderScan();
