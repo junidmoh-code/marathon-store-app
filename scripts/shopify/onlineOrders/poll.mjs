@@ -523,20 +523,33 @@ async function syncHolds(ctx, id, order) {
 async function shipOrder(ctx, id, order) {
   const { db, graphql, now, log } = ctx;
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
-  // The order is passed as read from /online_orders — it carries shopifyGid,
-  // which bookShipment derives the order's key from. The poll's own db is
-  // passed so booking never opens a second connection, and `deps.courier`
-  // (tests inject a fake) replaces the real Courier Guy client. A courier
-  // failure is recorded and never blocks the Shopify fulfilment below.
+  // The order goes to bookShipment WITH its key (the record carries
+  // shopifyGid too, which bookShipment can derive the key from — the explicit
+  // key removes any doubt). The poll's own db is passed so booking never opens
+  // a second connection, and `deps.courier` (tests inject a fake) replaces the
+  // real Courier Guy client.
+  //
+  // NOTHING COURIER-SIDE MAY BLOCK THE FULFILMENT BELOW: a booking error is
+  // recorded, and a record that cannot be written is logged and skipped —
+  // otherwise the order would stay pending and be re-quoted every tick.
   let booking;
   try {
-    booking = await bookShipment(order, { db, ...(ctx.courier ? { client: ctx.courier } : {}) });
+    booking = await bookShipment({ ...order, key: id }, { db, ...(ctx.courier ? { client: ctx.courier } : {}) });
   } catch (e) {
     booking = { skipped: true, error: String(e?.message || e).slice(0, 300) };
     log(`  ! ${order.ref}: courier booking failed — ${booking.error}`);
   }
-  if (booking && !order.shipping?.booking) {
-    await db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/booking`).set({ ...booking, at: now });
+  const prior = order.shipping?.booking;
+  // A real booking replaces a recorded dry run; nothing replaces a real one.
+  if (booking && (!prior || (prior.skipped && !booking.skipped))) {
+    // "already booked" returns the order's whole shipping node — never nest it.
+    const { shipping: _whole, ...result } = booking;
+    try {
+      // JSON round trip: RTDB refuses undefined and NaN (NaN becomes null).
+      await db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/booking`).set(JSON.parse(JSON.stringify({ ...result, at: now })));
+    } catch (e) {
+      log(`  ! ${order.ref}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
+    }
   }
   const attempts = Math.min(MAX_FULFIL_ATTEMPTS_SHOWN, (Number(order.fulfil?.attempts) || 0) + 1);
   let out;

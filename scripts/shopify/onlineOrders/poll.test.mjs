@@ -1,8 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runOrdersPoll, attentionMail } from "./poll.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
 import lockerRates from "../../shipping/fixtures/rates-locker-capetown.json";
+
+// NO TEST IN THIS FILE MAY REACH THE NETWORK (Courier Guy, Shopify, mail):
+// fetch throws for every test, and a test that wants to count calls swaps in
+// its own counter.
+let fetchGuard;
+beforeEach(() => { fetchGuard = vi.spyOn(globalThis, "fetch").mockImplementation(() => { throw new Error("NETWORK IS FORBIDDEN IN TESTS"); }); });
+afterEach(() => fetchGuard.mockRestore());
 
 // Courier Guy, faked: rates from the recorded fixtures; a shipment call is
 // recorded so a test can prove none happened. Every poll test gets one, so no
@@ -355,6 +362,27 @@ describe("Shopify fulfilment after the pack", () => {
     const out = await runOrdersPoll(boom);
     expect(out.fulfilled).toBe(1);
     expect(order(f).shipping.booking.skipped).toBe(true);
+  });
+
+  it("a booking record that cannot be written never blocks the fulfilment", async () => {
+    const f = fakeDb(packed());
+    const realRef = f.db.ref.bind(f.db);
+    const db = { ...f.db, ref: (path) => {
+      const r = realRef(path);
+      return path === "online_orders/9001/shipping/booking" ? { ...r, set: async () => { throw new Error("Cannot set NaN"); } } : r;
+    } };
+    const out = await runOrdersPoll({ ...deps(f, shopify({ fos })).deps, db });
+    expect(out.fulfilled).toBe(1);
+    expect(order(f).fulfilState).toBe("done");
+  });
+
+  it("a real booking replaces a recorded dry run; the whole shipping node is never nested", async () => {
+    const f = fakeDb(packed());
+    await f.db.ref("online_orders/9001/shipping").update({ booking: { skipped: true, dryRun: { x: 1 } }, shipmentId: 5, provider: "courier_guy", waybill: "LD-1" });
+    await runOrdersPoll(deps(f, shopify({ fos })).deps);
+    // shipmentId present → bookShipment says "already booked" (skipped) — the dry run stays, nothing nested
+    expect(order(f).shipping.booking).toMatchObject({ skipped: true, dryRun: { x: 1 } });
+    expect(order(f).shipping.booking.shipping).toBeUndefined();
   });
 
   it("a fulfilment that failed before and now lands clears its attention", async () => {
