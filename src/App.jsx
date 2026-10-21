@@ -109,6 +109,7 @@ import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
 import NetworkSettingsCard from "./components/admin/NetworkSettingsCard";
+import OnlineOrdersSettingsCard from "./components/admin/OnlineOrdersSettingsCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
 import { changeProductType, saveProductPatch, useLiveProduct } from "./components/admin/productSave";
 import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
@@ -3025,6 +3026,14 @@ const RoleIcons = {
       <path d="M5.5 16.5V12h13v4.5"/>
     </svg>
   ),
+  online_orders: (
+    // A shopping bag with a cursor arrow on it: an order placed on the website.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 7h14l-1.2 13a1 1 0 0 1-1 .9H7.2a1 1 0 0 1-1-.9z"/>
+      <path d="M9 7V5.5a3 3 0 0 1 6 0V7"/>
+      <path d="m10.5 11.5 4.5 2-2 .7-.7 2z"/>
+    </svg>
+  ),
   mirror_fleet: (
     // lucide-style "tablet + arrow down": a device with a copy coming into it.
     // Deliberately NOT a cloud — the point of this screen is the devices, not
@@ -3531,6 +3540,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // stock and the credit scope. Super-admin ONLY. GATE 1 of 3; the route
       // gate and the card's own check are the others, and the RTDB rule on
       // /network is what actually refuses the write.
+      // Online orders — the staff-feed switch for website orders, the order
+      // prefix, and every order that needs a person. Super-admin ONLY. GATE 1
+      // of 3; the route gate and the card's own check are the others, and the
+      // RTDB rules on /config/onlineOrders and /online_orders refuse the writes.
+      isSuperAdmin && { key:"online_orders", icon:RoleIcons.online_orders, name:"Online Orders", desc:"Website orders · staff switch · needs attention", onClick:()=>(window.location.hash = "#admin/online-orders") },
       isSuperAdmin && { key:"network", icon:RoleIcons.network, name:"Network", desc:"Sections · Solve and Auto-refill per location · Concrete's back stock · credit scope", onClick:()=>(window.location.hash = "#admin/network") },
       // Device codes — the 4-digit code every phone on MC's login needs
       // (src/device/enrolment.js). Junid, or an enrolled device whose person may
@@ -20643,6 +20657,9 @@ function AppInner() {
   // authorization happens at the mount below, and the RTDB rule on /network
   // is what actually refuses the write.
   const wantNetwork = hash === "#admin/network" || hash === "#admin/network/";
+  // /#admin/online-orders — ONLINE ORDERS. Recognises the HASH only and grants
+  // nothing; the mount below gates, and the RTDB rules refuse.
+  const wantOnlineOrders = hash === "#admin/online-orders" || hash === "#admin/online-orders/";
   // /#admin/devices — DEVICE CODES. Recognises the HASH only and grants
   // nothing; the deviceEnrolmentAdmin callable is what actually refuses.
   const wantDeviceCodes = hash === "#admin/devices" || hash === "#admin/devices/";
@@ -20918,6 +20935,11 @@ function AppInner() {
   } else if (wantNewArrivals) {
     view = (isSuperAdmin || hasPermission("shopify_publish"))
       ? <NewArrivalsScreen api={newArrivalsApi} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantOnlineOrders) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    view = isSuperAdmin
+      ? <OnlineOrdersSettingsCard authUser={authUser} onExit={() => (window.location.hash = "")} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantNetwork) {
     // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────

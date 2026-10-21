@@ -1,0 +1,78 @@
+{
+  "online_orders": {
+    ".indexOn": ["status", "fulfilState", "attentionOpen"],
+    ".read": "auth != null && ((auth.token.email === 'gunidmoh@gmail.com' && auth.token.email_verified === true) || root.child('users').child(auth.uid).child('permFlags').child('online_orders').val() === true)",
+    "$orderId": {
+      ".write": "auth != null && ((auth.token.email === 'gunidmoh@gmail.com' && auth.token.email_verified === true) || root.child('users').child(auth.uid).child('permFlags').child('online_orders').val() === true)",
+      "lines": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        "$i": {
+          "source": {
+            "status": {
+              ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && (newData.val() === 'handed' || newData.val() === 'needs_attention')",
+              ".validate": "newData.isString()"
+            },
+            "handedAt": {
+              ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists()",
+              ".validate": "newData.isNumber()"
+            },
+            "handedBy": {
+              ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists()",
+              ".validate": "newData.val() === auth.uid"
+            }
+          }
+        }
+      },
+      "overrides": {
+        "$overrideId": {
+          ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && !data.exists() && root.child('online_orders').child($orderId).exists()",
+          ".validate": "newData.hasChildren(['by', 'at', 'productId', 'loc'])"
+        }
+      },
+      "attention": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('online_orders').child($orderId).exists()",
+        ".validate": "newData.child('kind').val() === 'walkin_override' || root.child('online_orders').child($orderId).child('attention').val() === newData.val()"
+      },
+      "attentionOpen": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('online_orders').child($orderId).exists()",
+        ".validate": "newData.val() === true"
+      },
+      "status": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists() && data.val() !== 'packed' && data.val() !== 'cancelled'",
+        ".validate": "newData.val() === 'needs_attention'"
+      }
+    }
+  },
+  "online_reservations": {
+    "$pid": {
+      "$sizeKey": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        "$orderId": {
+          ".write": "auth != null && !newData.exists() && ((auth.token.email === 'gunidmoh@gmail.com' && auth.token.email_verified === true) || root.child('users').child(auth.uid).child('permFlags').child('online_orders').val() === true)"
+        }
+      }
+    }
+  },
+  "online_picks": {
+    ".indexOn": ["locStatus"],
+    ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+    "$pickId": {
+      "status": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.val() === 'open'",
+        ".validate": "newData.val() === 'handed'"
+      },
+      "locStatus": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.exists()",
+        ".validate": "newData.val() === data.parent().child('locationId').val() + '|handed'"
+      },
+      "handedAt": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists()",
+        ".validate": "newData.isNumber()"
+      },
+      "handedBy": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && data.parent().exists()",
+        ".validate": "newData.val() === auth.uid"
+      }
+    }
+  }
+}
