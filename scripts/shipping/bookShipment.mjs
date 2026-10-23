@@ -273,13 +273,17 @@ export async function cancelShipment(order, deps = {}) {
  * the live /config/shipping — in the small shape the POS order card shows
  * before Pack. No rates, no network. `sig` changes when the lines do.
  */
-/** The estimate's signature: the order's lines AND the config they are packed with. */
+// Bump when the RULE changes: every open order's estimate is then rewritten on
+// the poller's next tick (2 = one parcel, never split — 2026-10-23).
+export const ESTIMATE_RULE_VERSION = 2;
+
+/** The estimate's signature: the order's lines, the config they are packed with, AND the rule version. */
 export function estimateSig(order, rawConfig) {
   const raw = Array.isArray(order?.lines) ? order.lines : Object.values(order?.lines ?? {});
   const lines = raw.map((l) => `${l?.pid ?? l?.productId}|${l?.size}|${l?.qty}`).join(";");
   let h = 0;
   for (const c of JSON.stringify(rawConfig ?? null)) h = (h * 31 + c.charCodeAt(0)) | 0;
-  return `${lines}#${(h >>> 0).toString(36)}`;
+  return `${lines}#${(h >>> 0).toString(36)}#v${ESTIMATE_RULE_VERSION}`;
 }
 
 export async function estimateForOrder(order, { db, products = null, rawConfig, sig }) {
@@ -295,6 +299,7 @@ export async function estimateForOrder(order, { db, products = null, rawConfig, 
     parcels: est.parcels.map((p) => ({
       kind: p.kind, boxCode: p.boxCode, lengthCm: p.lengthCm, widthCm: p.widthCm, heightCm: p.heightCm,
       actualKg: p.actualKg, chargeableKg: p.chargeableKg, items: p.contents.length,
+      pairs: p.pairs ?? 0, overflowBundles: p.overflowBundles ?? 0, ...(p.layout ? { layout: p.layout } : {}),
       ...(p.contents.length ? { contents: p.contents.map((c) => c.kind) } : {}),
     })),
   };

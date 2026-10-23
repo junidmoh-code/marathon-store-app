@@ -94,17 +94,17 @@ const MUTATIONS = [
   { id: "E11", file: EST, guard: "each unit is its own item (qty expands)",
     from: "for (let i = 0; i < qty; i++) items.push(", to: "for (let i = 0; i < Math.min(qty, 1); i++) items.push(" },
 
-  // ── THE PARCEL RULE (the shoebox is the unit) ──
-  { id: "B1", file: EST, guard: "soft goods stuff a shoebox only up to its fill budget",
-    from: "b.stuffedKg + it.kg <= b.budget + 1e-9", to: "true" },
-  { id: "B2", file: EST, guard: "stuffed goods add their weight to the shoebox",
-    from: "actualKg: round2(b.base.actualKg + b.stuffedKg)", to: "actualKg: b.base.actualKg" },
-  { id: "B3", file: EST, guard: "every pair is its own shoebox parcel",
-    from: "    for (const p of pairs) {", to: "    for (const p of pairs.slice(0, 1)) {" },
-  { id: "B4", file: EST, guard: "overflow fills the NEXT shoebox before a flat parcel is made",
-    from: "const room = boxes.find(", to: "const room = boxes.slice(0, 1).find(" },
-  { id: "B5", file: EST, guard: "pairs are only combined when the card's switch is on",
-    from: "if (pairs.length && sb.combinePairs === true) {", to: "if (pairs.length) {" },
+  // ── THE PARCEL RULE (ONE parcel, never split — 2026-10-23) ──
+  { id: "B1", file: EST, guard: "soft goods stuff the shoeboxes only up to the fill budget",
+    from: "if (stuffedKg + it.kg <= budget + 1e-9) stuffedKg += it.kg;", to: "if (true) stuffedKg += it.kg;" },
+  { id: "B2", file: EST, guard: "the parcel weighs everything in it",
+    from: "const actualKg = round2(items.reduce((t, it) => t + it.kg, 0));", to: "const actualKg = round2(pairs.reduce((t, it) => t + it.kg, 0));" },
+  { id: "B3", file: EST, guard: "every pair is in the stack (never a second parcel, never a dropped pair)",
+    from: "const stack = shoeboxStack(pairs.length, sb);", to: "const stack = shoeboxStack(1, sb);" },
+  { id: "B4", file: EST, guard: "the arrangement with the smallest LONGEST side wins",
+    from: "if (!best || dims[0] < best.dims[0] || (dims[0] === best.dims[0] && v < best.v)) best = { columns, rows, dims, v };", to: "if (!best) best = { columns, rows, dims, v };" },
+  { id: "B5", file: EST, guard: "overflow adds height per bundle",
+    from: "heightCm: stack.heightCm + overflowBundles * bundleCm,", to: "heightCm: stack.heightCm," },
 
   // ── THE RATE CHOICE ──────────────────────────────────────────────────────
   { id: "R1", file: CHOOSE, guard: "an excluded service (SDX) is never chosen",

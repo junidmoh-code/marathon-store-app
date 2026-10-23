@@ -47,20 +47,20 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   volumetricDivisor: 4000,
   divisorByServiceGroup: { ECO: 4000, L2D: 4000, L2L: 4000, PRI: 5000, SDX: 5000, LPF: 5000, LPP: 5000, LSF: 5000, LSP: 5000 },
 
-  // ── THE PARCEL RULE (Junid, 2026-10-21) ──────────────────────────────────
-  // The sneaker box is the unit. Each pair (and, unless its item says
-  // otherwise, each kids pair and each pair of slides) ships as ONE shoebox
-  // parcel. Soft and small goods are STUFFED into the order's shoeboxes —
-  // their weight only, no dimensions — up to fillBudgetKg per box, first box
-  // first; only when every shoebox is full does the overflow get its own flat
-  // parcel. No footwear: the soft goods go in the smallest flat box that fits.
-  // combinePairs (off): when on, all pairs share one box from the box list.
+  // ── THE PARCEL RULE (Junid, 2026-10-23: ONE parcel, never split) ─────────
+  // The sneaker box is the unit of SIZE. Every pair (and, unless its item says
+  // otherwise, each kids pair and each pair of slides) is one shoebox; the
+  // order's shoeboxes are stacked / set side by side into ONE parcel (the
+  // arrangement with the smallest longest side). Soft and small goods are
+  // STUFFED inside — weight only, no size — up to fillBudgetKg per pair; what
+  // overflows adds overflowBundleCm to the height per fill-budget of weight.
+  // No footwear: one flat box from the box list sized to the folded stack.
   shoebox: {
     label: "Sneaker box (outer)",
     // Measured range 33–35 × 22–24 × 12–14 cm; the midpoint until measured.
     lengthCm: 34, widthCm: 23, heightCm: 13,
     fillBudgetKg: 1.2,
-    combinePairs: false,
+    overflowBundleCm: 3,
     measured: false,
   },
 
