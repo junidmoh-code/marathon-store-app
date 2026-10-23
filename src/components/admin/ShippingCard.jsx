@@ -338,7 +338,7 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
 
       {/* ── the shoebox: the unit every pair ships in ── */}
       <div style={S.section}>
-        <h2 style={S.h2}>The sneaker box (each pair is one parcel)</h2>
+        <h2 style={S.h2}>The sneaker box (the order ships as ONE parcel)</h2>
         <div style={S.row}>
           <span style={S.label}>Outer size</span>
           <Dims obj={cfg.shoebox} prefix="shoebox" onChange={(next) => patch((c) => { c.shoebox = next; return c; })} />
@@ -350,10 +350,9 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
             onChange={(v) => patch((c) => { c.shoebox.fillBudgetKg = v; return c; })} /><span style={S.muted}>kg</span>
         </div>
         <div style={S.row}>
-          <span style={S.label}>Combine pairs into one box</span>
-          <input type="checkbox" aria-label="combine pairs" checked={cfg.shoebox?.combinePairs === true}
-            onChange={(e) => patch((c) => { c.shoebox.combinePairs = e.target.checked; return c; })} />
-          <span style={S.muted}>off: N pairs ship as N shoebox parcels in one shipment</span>
+          <span style={S.label}>Each overflow bundle adds</span>
+          <Num label="overflow bundle cm" value={cfg.shoebox?.overflowBundleCm} step={1}
+            onChange={(v) => patch((c) => { c.shoebox.overflowBundleCm = v; return c; })} /><span style={S.muted}>cm to the height — soft goods past the fill budget ride on top</span>
         </div>
       </div>
 

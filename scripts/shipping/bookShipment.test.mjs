@@ -74,11 +74,12 @@ describe("bookShipment — dry run (live off)", () => {
     expect(logs.join("\n")).toContain(JSON.stringify(res.dryRun));
   });
 
-  it("ten pairs = ONE shipment of ten shoebox parcels, door-to-door on the cheapest door service", async () => {
+  it("ten pairs = ONE shipment of ONE parcel (the shoeboxes stacked), door-to-door on the cheapest door service", async () => {
     const client = fakeClient();
     const res = await bookShipment(DOOR_ORDER(), deps(db(false), client));
-    expect(res.dryRun.parcels).toHaveLength(10);
-    expect(res.dryRun.parcels.every((p) => p.submitted_length_cm === 34 && p.submitted_height_cm === 13)).toBe(true);
+    expect(res.dryRun.parcels).toHaveLength(1);
+    expect(res.dryRun.parcels[0]).toMatchObject({ submitted_length_cm: 34, submitted_width_cm: 46, submitted_height_cm: 65 });
+    expect(res.dryRun.parcels[0].submitted_weight_kg).toBeGreaterThanOrEqual(12); // ten pairs, size-banded
     expect(res.dryRun.service_level_code).toBe("ECO");
     expect(res.dryRun).not.toHaveProperty("collection_pickup_point_id");
     expect(res.quote).toMatchObject({ mode: "door", code: "ECO" });

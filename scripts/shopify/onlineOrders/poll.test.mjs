@@ -356,9 +356,10 @@ describe("feed entries", () => {
     const f = fakeDb(world());
     await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
     const est = order(f).shipping.estimate;
-    // 2 pairs (SNK ×2) = 2 shoeboxes; the 2 tees ride inside them.
-    expect(est).toMatchObject({ parcelCount: 2 });
-    expect(est.parcels.map((p) => p.kind)).toEqual(["shoebox", "shoebox"]);
+    // 2 pairs (SNK ×2) = ONE parcel, the two shoeboxes stacked (34×23×26); the 2 tees ride inside.
+    expect(est).toMatchObject({ parcelCount: 1 });
+    expect(est.parcels).toHaveLength(1);
+    expect(est.parcels[0]).toMatchObject({ kind: "shoebox", lengthCm: 34, widthCm: 23, heightCm: 26, pairs: 2 });
     const n = f.writes.length;
     await runOrdersPoll(deps(f, shopify()).deps);
     expect(f.writes.slice(n).filter(([, p]) => p.includes("/shipping/estimate"))).toEqual([]);

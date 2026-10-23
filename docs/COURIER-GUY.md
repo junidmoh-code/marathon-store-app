@@ -230,21 +230,29 @@ that ever changes, the call must become `bookShipment({ ...order, key: id })`.
 Without a key, bookShipment throws before any call; it never falls back to
 the WEB- ref.
 
-## The parcel rule (Junid, 21 Oct 2026)
+## The parcel rule (Junid, 23 Oct 2026 — ONE parcel, never split)
 
-The sneaker box is the unit — 34 × 23 × 13 cm outer (range 33–35 / 22–24 /
-12–14, midpoint until measured; editable on the Shipping card).
+An order ALWAYS ships as ONE parcel. The sneaker box is the unit of size —
+34 × 23 × 13 cm outer (range 33–35 / 22–24 / 12–14, midpoint until measured;
+editable on the Shipping card).
 
-- Each pair (adult; kids and slides too unless the card says otherwise) = one
-  shoebox parcel, 1.3 kg with the pair (size bands 1.2 / 1.3 / 1.4).
-- Soft and small goods are stuffed into the order's shoeboxes — weight only —
-  first box first, up to 1.2 kg each (editable); the overflow gets its own flat
-  parcel only when every shoebox is full.
-- No footwear: the smallest flat box from the box list.
-- N pairs = ONE shipment with N shoebox parcels, unless "combine pairs" is on.
-- Chargeable = max(actual, volumetric) per parcel.
+- 1 pair = one shoebox 34×23×13; 2 pairs = two stacked 34×23×26; 3 pairs
+  34×23×39; 4 pairs 2×2 side by side 34×46×26 — of every stack / side-by-side
+  grid the one with the SMALLEST LONGEST SIDE wins (ties → smaller volume).
+- Soft goods (caps, tees, perfume …) are stuffed inside at no extra size until
+  the fill budget is used (1.2 kg per pair, editable); past that, each overflow
+  bundle (one per fill budget of weight) adds 3 cm to the height (editable). A
+  bag or anything else that is neither rides on top the same way.
+- No footwear: one flat box from the box list sized to the folded stack.
+- Weight = everything in it. Chargeable = max(actual, volumetric) for that one
+  parcel. Footwear weight keeps its size bands (1.2 / 1.3 / 1.4 kg).
 - Door-to-door for every order (the drop box is off until locker costing rules
-  exist; a locker is only ever asked for a one-parcel shipment).
+  exist; the one parcel may go to a locker only when it fits one).
+
+The 21 Oct rule (N pairs = N shoebox parcels, a "combine pairs" switch) is
+gone. `estimateSig` carries `ESTIMATE_RULE_VERSION`, so every open order's
+estimate is rewritten on the poller's first tick after the rule changes.
 
 The poller writes the estimate to `online_orders/{id}/shipping/estimate`; the
-POS order card shows it before Pack, and bookShipment sends every parcel.
+POS order card shows "Ships as 1 parcel — <dims>, <kg>" before Pack, and
+bookShipment sends that one parcel.
