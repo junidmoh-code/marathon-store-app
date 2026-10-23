@@ -21,8 +21,8 @@ describe("causeOfOver", () => {
     expect(causeOfOver({ ...base, tracked: false })).toBe("untracked");
     expect(causeOfOver({ ...base, allLocations: 3, excludedUnits: 2 }, { dirty: true })).toBe("excluded-only");
   });
-  it("excluded units that do not cover Shopify's number are not the cause", () => {
-    expect(causeOfOver({ ...base, allLocations: 2, excludedUnits: 1 })).toBe("unexplained");
+  it("excluded units must cover the WHOLE overage", () => {
+    expect(causeOfOver({ ...base, allLocations: 3, excludedUnits: 1 })).toBe("unexplained");
   });
   it("then a waiting marker, then a movement since the sweep", () => {
     expect(causeOfOver(base, { dirty: true, movedSinceSweep: true })).toBe("pending-push");
@@ -40,7 +40,9 @@ describe("auditSummary", () => {
       { shopify: 0, app: 0, sellable: Infinity },
       { shopify: 2, app: 0, sellable: 2, cause: "unmanaged" },
       { shopify: -1, app: 0, sellable: 0 },
+      { shopify: 0, app: 5, sellable: 0, staleMap: true },
     ]);
+    expect(s.staleMap).toBe(1);
     expect(s).toMatchObject({ variants: 6, above: 2, below: 1, equal: 3, unitsAbove: 4, unitsBelow: 1 });
     expect(s.byCause).toEqual({ "pending-push": { variants: 1, units: 2 }, unmanaged: { variants: 1, units: 2 } });
     expect(s).toMatchObject({ sellableAtZero: 2, sellableAtZeroUnits: 2, unlimitedAtZero: 1 });

@@ -3,79 +3,120 @@
 //   node scripts/shopify/web-sales-vs-app.mjs [YYYY-MM-DD]     (default 2026-10-01)
 //
 // READ-ONLY. There is no Shopify order webhook: a web sale leaves /stock only
-// through a POS slip (before the 21 Oct 2026 go-live) or the pack (after it).
-// For every Shopify order line since the date, this looks for an app `sold`
-// movement of the same product and size at or after the order (6 h slack),
-// each movement used once. A FULFILLED line with none is a sale the app never
-// learned of, and the nightly sweep re-offers its unit. The match is generous
-// (any sale of that product+size counts), so the gap it reports is a floor.
+// through a POS slip (before the 21 Oct 2026 go-live) or the pack (after it,
+// docs/ONLINE-ORDERS.md — the pack writes ordinary `sold` movements).
 //
-// READS: Shopify orders; /shopify_publish by its state index; one
-// /shopify_sync/{pid}/shopifyProductId per listed pid; /stock_movements by its
-// ts index from the date; /online_orders by its status index; and, per
-// unmatched fulfilled line, that product's cells at the counted locations.
+// For every FULFILLED Shopify order line since the date (current quantity, so
+// refunds and edits are out), this looks for an app `sold` movement that can
+// account for it, each movement used once, most specific first:
+//   1. same product, same size, from 7 days BEFORE the order on (a till sale
+//      rung first and the web order raised afterwards still counts)
+//   2. same product, another size            → "wrong size?"
+//   3. a sibling record (same style code, or the same normalised name), any
+//      size                                  → "sibling?"
+// A line none of these explains is a web sale the app never learned of. Sizes
+// come from the order's VARIANT id through /shopify_sync/{pid}/variants (the
+// pusher's own map), never the variant title.
+//
+// Lines on products with no listed app product are counted and skipped.
+// Post-go-live lines are joined to /online_orders/{orderId} to say which path
+// failed (pack vs admin fulfilment).
+//
+// READS: Shopify orders; /shopify_publish by its state index; per pid on an
+// order, /shopify_sync/{pid}; /stock_movements by its ts index from 7 days
+// before the date (~0.5 MB/day); /products/{pid}/{name,styleCode} for the pids
+// those sales and lines touch; /online_orders/{id}/status per post-go-live
+// order; per unexplained line, that product's cells at the counted locations.
 import { createRequire } from "module";
-const R = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
-const { graphql } = await import(R+"/scripts/shopify/client.mjs");
-const { stockSizeKey } = await import(R+"/src/utils/sizeKey.js");
-const require = createRequire(R+"/functions/package.json");
+import { graphql } from "./client.mjs";
+import { networkTotals } from "./inventory.mjs";
+import { locationNames } from "./inventorySync.mjs";
+import { ONLINE_ORDERS_PATH } from "../../src/utils/onlineOrders.js";
+import { matchWebLine, siblingKeys } from "./webSales.mjs";
+
+const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
 admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 const db = admin.database();
+
 const SINCE = process.argv[2] || "2026-10-01";
-// orders
-const orders = []; let after = null;
-do { const d = await graphql(`query($a:String,$q:String!){orders(first:100,after:$a,query:$q,sortKey:CREATED_AT){pageInfo{hasNextPage endCursor} nodes{id name createdAt cancelledAt displayFinancialStatus displayFulfillmentStatus fulfillments{createdAt} lineItems(first:50){nodes{quantity variantTitle product{id}}}}}}`, { a: after, q: `created_at:>=${SINCE}` });
-  orders.push(...d.orders.nodes); after = d.orders.pageInfo.hasNextPage ? d.orders.pageInfo.endCursor : null; } while (after);
-// gid -> pid via listed pids
-const listed = (await db.ref("shopify_publish").orderByChild("state").equalTo("live").get()).val() || {};
+const GO_LIVE = Date.parse("2026-10-21T12:31:00Z");   // website orders live, 14:31 SAST
+let bytes = 0;
+const get = async (path, q = (r) => r) => { const v = (await q(db.ref(path)).get()).val(); bytes += Buffer.byteLength(JSON.stringify(v ?? null)); return v; };
+
+const orders = [];
+let after = null;
+do {
+  const d = await graphql(`query($a:String,$q:String!){orders(first:100,after:$a,query:$q,sortKey:CREATED_AT){pageInfo{hasNextPage endCursor}
+    nodes{id name createdAt cancelledAt displayFulfillmentStatus lineItems(first:100){nodes{currentQuantity variant{id} product{id}}}}}}`,
+  { a: after, q: `created_at:>=${SINCE}` });
+  orders.push(...d.orders.nodes);
+  after = d.orders.pageInfo.hasNextPage ? d.orders.pageInfo.endCursor : null;
+} while (after);
+
+const listed = (await get("shopify_publish", (r) => r.orderByChild("state").equalTo("live"))) || {};
 const gidToPid = new Map();
-await Promise.all(Object.keys(listed).map(async (p) => { const g = (await db.ref(`shopify_sync/${p}/shopifyProductId`).get()).val(); if (g) gidToPid.set(g, p); }));
-// movements since
-const mv = Object.values((await db.ref("stock_movements").orderByChild("ts").startAt(SINCE).get()).val() || {});
-const sold = mv.filter((m) => m.type === "sold");
-const online = (await db.ref("online_orders").orderByChild("status").equalTo("packed").get()).val() || {};
-const onlineNames = new Set(Object.values(online).map((o) => o.name || o.orderName || o.shopifyName));
-const used = new Set();
-const out = { matched: 0, unmatched: [], cancelled: 0, unmappedLines: 0, lines: 0 };
+await Promise.all(Object.keys(listed).map(async (p) => { const g = (await get(`shopify_sync/${p}/shopifyProductId`)); if (g) gidToPid.set(g, p); }));
+
+// Variant gid → size key, from the id maps of the products on these orders.
+const variantSize = new Map();
+const orderPids = new Set();
+for (const o of orders) for (const li of o.lineItems.nodes) { const p = gidToPid.get(li.product?.id); if (p) orderPids.add(p); }
+await Promise.all([...orderPids].map(async (pid) => {
+  const vars = (await get(`shopify_sync/${pid}/variants`)) || {};
+  for (const [sizeKey, v] of Object.entries(vars)) if (v?.shopifyVariantId) variantSize.set(v.shopifyVariantId, sizeKey);
+}));
+
+const fromIso = new Date(Date.parse(SINCE) - 7 * 864e5).toISOString();
+const sold = Object.values((await get("stock_movements", (r) => r.orderByChild("ts").startAt(fromIso))) || {})
+  .filter((m) => m.type === "sold" && m.productId);
+
+// Name + style code for every product the lines or the sales touch.
+const meta = new Map();
+await Promise.all([...new Set([...orderPids, ...sold.map((m) => m.productId)])].map(async (pid) => {
+  const [name, styleCode] = await Promise.all([get(`products/${pid}/name`), get(`products/${pid}/styleCode`)]);
+  meta.set(pid, siblingKeys({ name, styleCode }));
+}));
+
+const lines = [];
+let unlisted = 0, unsized = 0, cancelled = 0;
 for (const o of orders) {
-  if (o.cancelledAt) { out.cancelled++; continue; }
+  if (o.cancelledAt) { cancelled++; continue; }
+  if (o.displayFulfillmentStatus !== "FULFILLED") continue;
   for (const li of o.lineItems.nodes) {
+    if (!(li.currentQuantity > 0)) continue;
     const pid = gidToPid.get(li.product?.id);
-    out.lines++;
-    if (!pid) { out.unmappedLines++; continue; }
-    const size = stockSizeKey(li.variantTitle === "One Size" ? "_" : li.variantTitle);
-    const t = Date.parse(o.createdAt) - 6 * 3600e3;
-    let need = li.quantity;
-    for (const m of sold) {
-      if (need <= 0) break;
-      const k = m.ts + m.productId + m.size + (m.link?.saleId || "");
-      if (used.has(k) || m.productId !== pid || stockSizeKey(m.size) !== size || Date.parse(m.ts) < t) continue;
-      used.add(k); need -= Number(m.qty) || 1;
-    }
-    const anySize = sold.some((m) => m.productId === pid && Date.parse(m.ts) >= t);
-    const anyMove = mv.some((m) => m.productId === pid && Date.parse(m.ts) >= t && m.type !== "sold");
-    if (need <= 0) out.matched++; else out.unmatched.push((o.displayFulfillmentStatus === "FULFILLED" ? "F " : "U ") + (anySize ? "[other size sold] " : "") + (anyMove ? "[other movement] " : "") + `${o.name} ${o.createdAt.slice(0,16)} ${o.displayFulfillmentStatus} fulfilled ${o.fulfillments?.[0]?.createdAt?.slice(0,16) || "-"} ${pid} ${size} ×${li.quantity}`);
+    if (!pid) { unlisted++; continue; }
+    const size = variantSize.get(li.variant?.id);
+    if (size == null) { unsized++; continue; }
+    lines.push({ order: o.name, orderGid: o.id, createdAt: Date.parse(o.createdAt), pid, size, qty: li.currentQuantity });
   }
 }
-console.log(`orders since ${SINCE}: ${orders.length} (${out.cancelled} cancelled); lines ${out.lines}, ${out.unmappedLines} with no listed app product`);
-console.log(`lines with a matching app 'sold' movement: ${out.matched}; WITHOUT: ${out.unmatched.length}`);
-for (const u of out.unmatched) console.log("  " + u);
-const F = out.unmatched.filter((u) => u.startsWith("F "));
-console.log(`FULFILLED with no matching sale: ${F.length} line(s) (${F.filter((u) => /other size sold/.test(u)).length} where the same product sold in another size)`);
-const fulfilledLines = orders.filter((o) => !o.cancelledAt && o.displayFulfillmentStatus === "FULFILLED").reduce((n, o) => n + o.lineItems.nodes.length, 0);
-console.log(`fulfilled lines total: ${fulfilledLines}`);
-const { networkTotals } = await import(R+"/scripts/shopify/inventory.mjs");
-const { locationNames } = await import(R+"/scripts/shopify/inventorySync.mjs");
+// Oldest first, so an earlier order takes the earlier sale.
+lines.sort((a, b) => a.createdAt - b.createdAt);
+const result = matchWebLine(lines, sold, meta);
+
+const tally = { exact: 0, wrongSize: 0, sibling: 0, none: 0 };
+for (const r of result) tally[r.match]++;
+const none = result.filter((r) => r.match === "none");
+console.log(`orders since ${SINCE}: ${orders.length} (${cancelled} cancelled); fulfilled lines judged: ${lines.length}; skipped: ${unlisted} on unlisted products, ${unsized} with no id-map size`);
+console.log(`explained: ${tally.exact} same product+size · ${tally.wrongSize} same product, other size (wrong size?) · ${tally.sibling} sibling record (style code / name)`);
+console.log(`NOT explained by any app sale: ${none.length} line(s) — ${none.filter((r) => r.createdAt < GO_LIVE).length} before go-live (POS slip era), ${none.filter((r) => r.createdAt >= GO_LIVE).length} after`);
+
 const locs = await locationNames(db);
-let live = 0, units = 0;
-for (const u of F) {
-  const [, pid, size] = u.match(/ (p\d+) (\S+) ×/);
+let offered = 0, offeredUnits = 0;
+for (const r of none) {
+  let status = "";
+  if (r.createdAt >= GO_LIVE) {
+    const s = await get(`${ONLINE_ORDERS_PATH}/${String(r.orderGid).split("/").pop()}/status`);
+    status = ` · app order: ${s ?? "NONE (admin-fulfilled, never ingested)"}`;
+  }
   const tree = {};
-  for (const l of locs) { const c = (await db.ref(`stock/${l}/${pid}`).get()).val(); if (c) tree[l] = { [pid]: c }; }
-  const q = networkTotals(tree, pid, [size])[size] ?? 0;
-  if (q > 0) { live++; units += q; console.log(`  still offered: ${u.replace(/^F (\[[^\]]+\] )*/, "")} — app pool now ${q}`); }
+  for (const l of locs) { const c = await get(`stock/${l}/${r.pid}`); if (c) tree[l] = { [r.pid]: c }; }
+  const q = networkTotals(tree, r.pid, [r.size])[r.size] ?? 0;
+  if (q > 0) { offered++; offeredUnits += q; }
+  console.log(`  ${r.order} ${new Date(r.createdAt).toISOString().slice(0, 10)} ${r.pid} ${r.size} ×${r.qty} · app pool now ${q}${status}`);
 }
-console.log(`of the ${F.length}: ${live} size(s) still have app stock online (${units} unit(s)) — the website offers them`);
-console.log("packed online orders in app:", Object.keys(online).length);
+console.log(`of those, ${offered} size(s) still have app stock online (${offeredUnits} unit(s)) — the website offers them`);
+console.log(`rtdb read: ${bytes.toLocaleString()} B`);
 process.exit(0);

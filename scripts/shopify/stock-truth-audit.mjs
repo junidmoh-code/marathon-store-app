@@ -35,6 +35,7 @@ import { readShopSnapshot } from "./bulkSnapshot.mjs";
 import { ONLINE_RESERVATIONS_PATH } from "../../src/utils/onlineOrders.js";
 import { sellable, causeOfOver, auditSummary } from "./stockAudit.mjs";
 import { SEARCH_INDEX_PATH } from "./searchIndexDoc.mjs";
+import { shallowKeys } from "../lib/rtdbPaged.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -102,7 +103,8 @@ async function main() {
     const rows = (await get("stock_movements", (r) => r.orderByChild("ts").startAt(new Date(lastSweepAt).toISOString()))) || {};
     for (const m of Object.values(rows)) if (m?.productId) movedSince.add(m.productId);
   }
-  const dirty = new Set(Object.keys((await get(DIRTY_PATH)) || {}));
+  const dirty = new Set(await shallowKeys(admin.app(), DIRTY_PATH));
+  if (lastSweepAt && Date.now() - lastSweepAt > 36 * 3600e3) log(`⚠ the last nightly sweep is ${Math.round((Date.now() - lastSweepAt) / 3600e3)} h old — the movement window read is wide`);
 
   const rows = [];
   const products = new Map();   // pid → { gid, cells per location, sizes }
@@ -172,7 +174,7 @@ async function main() {
   log(`variants compared: ${s.variants} (${products.size} listed products + ${orphanGids.length} storefront listing(s) with no listed app product)`);
   log(`Shopify ABOVE the app: ${s.above} variant(s), ${s.unitsAbove} unit(s)`);
   log(`Shopify BELOW the app: ${s.below} variant(s), ${s.unitsBelow} unit(s)`);
-  log(`equal: ${s.equal}`);
+  log(`equal: ${s.equal}; id-map items Shopify does not have (not compared): ${s.staleMap}`);
   log(`sellable on Shopify at ZERO app stock: ${s.sellableAtZero} variant(s) (${s.sellableAtZeroUnits} unit(s), ${s.unlimitedAtZero} unlimited)`);
   log(`public storefront says AVAILABLE at zero app stock: ${sfAtZero.length} variant(s)`);
   log(`public storefront says SOLD OUT with app stock: ${sfMissingButApp.length} variant(s)`);

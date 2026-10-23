@@ -42,7 +42,7 @@ export function causeOfOver(row, ctx = {}) {
   if (row.unmanaged) return "unmanaged";
   if (row.unmapped || row.staleMap) return "stale-map";
   if (row.tracked !== true || row.inventoryPolicy !== "DENY") return "untracked";
-  if ((Number(row.allLocations) || 0) >= (Number(row.shopify) || 0) && (Number(row.excludedUnits) || 0) > 0) return "excluded-only";
+  if ((Number(row.excludedUnits) || 0) > 0 && (Number(row.app) || 0) + (Number(row.excludedUnits) || 0) >= (Number(row.shopify) || 0)) return "excluded-only";
   if (ctx.dirty) return "pending-push";
   if (ctx.movedSinceSweep) return "moved-since-sweep";
   return "unexplained";
@@ -54,12 +54,15 @@ export function causeOfOver(row, ctx = {}) {
  */
 export function auditSummary(rows) {
   const s = {
-    variants: 0, above: 0, below: 0, equal: 0,
+    variants: 0, staleMap: 0, above: 0, below: 0, equal: 0,
     unitsAbove: 0, unitsBelow: 0,
     sellableAtZero: 0, sellableAtZeroUnits: 0, unlimitedAtZero: 0,
     byCause: {},
   };
   for (const r of rows || []) {
+    // An id-map item Shopify does not have was not compared: a mapping fault,
+    // counted on its own and never as stock above or below.
+    if (r.staleMap) { s.staleMap = (s.staleMap || 0) + 1; continue; }
     s.variants++;
     const shop = Math.max(0, Number(r.shopify) || 0);
     const app = Math.max(0, Number(r.app) || 0);

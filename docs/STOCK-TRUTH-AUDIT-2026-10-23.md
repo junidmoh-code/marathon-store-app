@@ -49,23 +49,39 @@ A web sale is deducted only by a POS slip (before the 21 Oct go-live) or by the
 pack (after it). There is no webhook, so a missed slip leaves the unit in the
 app, and the next push puts it back on the site.
 
-Shopify orders created since 1 Oct, matched line by line against app `sold`
-movements for the same product and size, placed after the order:
+I matched every fulfilled Shopify order line since 1 Oct against app `sold`
+movements, using `node scripts/shopify/web-sales-vs-app.mjs 2026-10-01`.
 
-- 329 lines, 279 of them fulfilled
-- **50 fulfilled lines have no matching app sale.** For 15 of them the same
-  product sold in another size, which may be a slip rung at the wrong size.
-- **29 of those 50 sizes still have app stock online (78 units)**, so the site
-  offers them. Where the pool is 1, that unit may be the one already shipped.
-- The two "below" variants are this case, caught before the sweep re-adds them:
-  - `p1780741990887` size 5.5, order #1757
-  - `p1782917447848` XXL, order #1761 (fulfilled 23 Oct 13:20, Trophy still 2)
+- Sizes come from the order's variant id through the pusher's id map.
+- Quantities are current, so refunds and edits are excluded.
+- Each sale is used once.
+- A sale counts if it was rung up to 7 days before the order.
+- The matcher accepts, in order: the same size, then another size of the same
+  product, then a sibling record with the same style code or the same words
+  in the name.
 
-  Tonight's 02:30 sweep will push the app's number back up and re-offer both.
+| fulfilled lines | 279 |
+|---|---|
+| same product + size | 234 |
+| same product, other size (wrong size rung?) | 15 |
+| sibling record | 6 |
+| **no app sale at all** | **24** (23 before go-live, the POS-slip era; 1 after) |
+| of those, sizes still with app stock online | 12 (39 units in those sizes) |
 
-The matcher is generous: any sale of that product and size after the order
-counts. The true gap is therefore at least this large. Re-run with
-`node scripts/shopify/web-sales-vs-app.mjs 2026-10-01`.
+- Where the pool is 1, the unit on sale may be the very pair already shipped:
+  #1627 size 11, #1700 M, #1709 5.5, #1714 8, #1721 S, #1736 4.
+- #1761 (`p1782917447848` XXL) was fulfilled on 23 Oct at 13:20 and Trophy
+  still holds 2. This is one of the two "below" variants. Tonight's 02:30 sweep
+  will push the app's 2 back over Shopify's 1 and re-offer the shipped unit.
+- The other "below" variant is #1757 (`p1780741990887` size 5.5). A sale does
+  match that line, but the app is still 1 above Shopify.
+- After go-live, #1776's perfume line is `packed` in the app with no `sold`
+  movement for that product. The pack-path deduction failed for that line.
+  Another session's #1776 fixes are on the Mac mini's checkout.
+
+This count is not a floor. A slip rung on an unrelated record, or with a
+different name, would not be found. Even so, 23 lines in three weeks with no
+sale of the product or of any sibling is evidence that slips are being missed.
 
 **Not corrected.** This is the brief's stop condition. Whether to deduct
 the missed units, add an order webhook, or keep slips is the owner's decision.
@@ -92,18 +108,32 @@ The floor does not stop a publish. It hides products from the Awaiting tab
 them out of the auto-publish queue (`autoPublishOne`). The reconciler never
 checks units, so a person who could find the product could still publish it.
 
-From `node scripts/shopify/review-hidden-census.mjs`: 2,178 products are hidden.
+From `node scripts/shopify/review-hidden-census.mjs`: 2,178 products are
+hidden. Value is online units × retailPrice.
 
-| online units | products | units | retail | otherwise publishable* | already graded |
-|---|---|---|---|---|---|
-| 0 | 1,120 | 0 | R0 | 1,099 | 109 |
-| 1 | 514 | 514 | R230,308 | 474 | 17 |
-| 2 | 329 | 658 | R295,532 | 303 | 23 |
-| 3 | 215 | 645 | R290,205 | 196 | 15 |
-| **1–3** | **1,058** | **1,817** | **R816,045** | **973** | **55** |
+| online units | products | units | retail | otherwise publishable* |
+|---|---|---|---|---|
+| 0 | 1,120 | 0 | R0 | 997 |
+| 1 | 514 | 514 | R230,308 | 458 |
+| 2 | 329 | 658 | R295,532 | 282 |
+| 3 | 215 | 645 | R290,205 | 181 |
+| **1–3** | **1,058** | **1,817** | **R816,045** | **921** |
 
-\* Has a photo, a retail price, sizes and a name the publisher accepts. The
-grade is not counted, because the auto-publish agent sets Excellent itself.
+\* "Otherwise publishable" means the auto-publish agent's own `readiness()`
+passes, and the product has a retail price and sizes. `readiness()` checks for
+a photo and an acceptable name, that it is merchandise, never live and not
+blocked. The grade is not required, because the agent sets Excellent itself.
+Only 55 of the 1,058 are graded today.
+
+Of the 1,058 products with 1–3 units, these are not ready:
+
+| reason | products |
+|---|---|
+| blocked | 36 |
+| live before (a person decides) | 16 |
+| no photo | 6 |
+| no name | 2 |
+| no retail price | 78 |
 
 The one-line change to show single pairs is `REVIEW_MIN_UNITS = 1` in
 `reviewStock.mjs`. After that, re-run `review-instock-pass.mjs --commit` to

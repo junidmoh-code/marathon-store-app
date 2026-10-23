@@ -6,9 +6,10 @@
 // (reviewStock.mjs REVIEW_MIN_UNITS — the Awaiting-review floor): how many
 // online units it has (networkTotals, the pusher's own sum, at the locations
 // the website sells from), what those units are worth at retailPrice, and
-// whether it is otherwise publishable today — photo, price > 0, sizes,
-// condition grade, and a name the publisher would accept (the auto-publish
-// agent's own readiness()). `--min N` reports what a different floor would
+// whether it is otherwise publishable today — the auto-publish agent's own
+// readiness() (photo, acceptable name, merchandise, never live, not blocked),
+// price > 0 and sizes; the condition grade is reported, not required (the
+// agent sets Excellent itself). Value = ONLINE units x retailPrice. `--min N` reports what a different floor would
 // bring back.
 //
 // READS: shallow keys of the hidden node, then per pid /products/{pid},
@@ -58,22 +59,28 @@ await pool(pids, 16, async (pid) => {
     priceOk: price > 0,
     sizes: sizes.length > 0,
     grade: CONDITIONS.includes(node?.condition),
-    nameOk: ready.ready || !/name/.test(ready.why || ""),
+    // readiness() is the auto-publish agent's own gate: product exists, is
+    // merchandise, never been live, not blocked, has a photo and an
+    // acceptable name. It stops at the first failure, so it is used whole.
+    ready: ready.ready === true,
   };
   rows.push({ pid, name: product?.name ?? null, units, price, value: units * price, ...checks, readyWhy: ready.ready ? null : ready.why });
 });
 
 const sum = (rs, f) => rs.reduce((a, r) => a + f(r), 0);
 const band = (lo, hi) => rows.filter((r) => r.units >= lo && r.units <= hi);
-const publishable = (r) => r.photo && r.priceOk && r.sizes && r.nameOk;
+const publishable = (r) => r.ready && r.priceOk && r.sizes;
 console.log(`hidden by the ${REVIEW_MIN_UNITS}-unit floor: ${rows.length} product(s)`);
 for (const [label, rs] of [["0 units online", band(0, 0)], ["1 unit", band(1, 1)], ["2 units", band(2, 2)], ["3 units", band(3, 3)], [`${REVIEW_MIN_UNITS}+ (stale entry)`, band(REVIEW_MIN_UNITS, Infinity)]]) {
   console.log(`  ${label.padEnd(18)} ${String(rs.length).padStart(5)} product(s) · ${String(sum(rs, (r) => r.units)).padStart(5)} unit(s) · R${sum(rs, (r) => r.value).toLocaleString("en-ZA")} retail · ${rs.filter(publishable).length} otherwise publishable (${rs.filter((r) => publishable(r) && r.grade).length} already graded)`);
 }
 const withStock = rows.filter((r) => r.units >= MIN);
 console.log(`\nwith ≥${MIN} unit(s): ${withStock.length} product(s), ${sum(withStock, (r) => r.units)} unit(s), R${sum(withStock, (r) => r.value).toLocaleString("en-ZA")} retail`);
-console.log(`  photo ${withStock.filter((r) => r.photo).length} · price ${withStock.filter((r) => r.priceOk).length} · sizes ${withStock.filter((r) => r.sizes).length} · grade ${withStock.filter((r) => r.grade).length} · acceptable name ${withStock.filter((r) => r.nameOk).length}`);
-console.log(`  otherwise publishable (photo+price+sizes+name): ${withStock.filter(publishable).length}; of those already graded: ${withStock.filter((r) => publishable(r) && r.grade).length}`);
+console.log(`  photo ${withStock.filter((r) => r.photo).length} · price ${withStock.filter((r) => r.priceOk).length} · sizes ${withStock.filter((r) => r.sizes).length} · grade ${withStock.filter((r) => r.grade).length} · auto-publish ready ${withStock.filter((r) => r.ready).length}`);
+const why = {};
+for (const r of withStock) if (!r.ready) why[r.readyWhy] = (why[r.readyWhy] || 0) + 1;
+for (const [w, n] of Object.entries(why).sort((a, b) => b[1] - a[1])) console.log(`    not ready: ${w} — ${n}`);
+console.log(`  otherwise publishable (agent-ready + price + sizes): ${withStock.filter(publishable).length}; of those already graded: ${withStock.filter((r) => publishable(r) && r.grade).length}`);
 console.log(`rtdb read: ${bytes.toLocaleString()} B`);
 if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify(rows, null, 1));
 process.exit(0);
