@@ -123,8 +123,12 @@ async function main() {
     const totals = networkTotals(tree, pid, sizes);
     const allLoc = networkTotals(tree, pid, sizes, new Set());
     const plan = planProduct({ map, variants: shop.variants, baseline: shop.baseline, totals, reserved: reservedBySize(holds), released: releasedBySize(holds), committed: shop.committed });
-    if (plan.allUnknown) issues.deadMap.push(pid);
-    else if (plan.stale.staleVariants?.length) issues.partialMap.push(`${pid}: ${plan.stale.staleVariants.join(",")}`);
+    // Stale = no such variant on the listing (a variant with no level at the
+    // location is real, and plan.stale would wrongly include it).
+    const vIds = new Set(shop.variants.map((v) => v.inventoryItemId));
+    const staleSizes = plan.mapped.filter((i) => !vIds.has(i.inventoryItemId)).map((i) => i.sizeKey);
+    if (staleSizes.length && staleSizes.length === plan.mapped.length) issues.deadMap.push(pid);
+    else if (staleSizes.length) issues.partialMap.push(`${pid}: ${staleSizes.join(",")}`);
     products.set(pid, { gid, tree, sizes, name: listedNodes[pid]?.cleanName || null });
     const vByItem = new Map(shop.variants.map((v) => [v.inventoryItemId, v]));
     for (const it of [...plan.known, ...plan.unknown]) {
