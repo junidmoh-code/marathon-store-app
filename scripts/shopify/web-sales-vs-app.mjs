@@ -47,9 +47,12 @@ const get = async (path, q = (r) => r) => { const v = (await q(db.ref(path)).get
 const orders = [];
 let after = null;
 do {
-  const d = await graphql(`query($a:String,$q:String!){orders(first:100,after:$a,query:$q,sortKey:CREATED_AT){pageInfo{hasNextPage endCursor}
-    nodes{id name createdAt cancelledAt displayFulfillmentStatus lineItems(first:100){nodes{currentQuantity variant{id} product{id}}}}}}`,
+  // Small pages: a nested connection is priced at first × first, and the
+  // shop's single-query ceiling is 1,000 points.
+  const d = await graphql(`query($a:String,$q:String!){orders(first:20,after:$a,query:$q,sortKey:CREATED_AT){pageInfo{hasNextPage endCursor}
+    nodes{id name createdAt cancelledAt displayFulfillmentStatus lineItems(first:40){pageInfo{hasNextPage} nodes{currentQuantity variant{id} product{id}}}}}}`,
   { a: after, q: `created_at:>=${SINCE}` });
+  for (const o of d.orders.nodes) if (o.lineItems.pageInfo.hasNextPage) throw new Error(`${o.name} has more than 40 lines — raise the page size before trusting the count`);
   orders.push(...d.orders.nodes);
   after = d.orders.pageInfo.hasNextPage ? d.orders.pageInfo.endCursor : null;
 } while (after);

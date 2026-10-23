@@ -32,6 +32,13 @@ describe("matchWebLine", () => {
     expect(matchWebLine([{ pid: "p1", size: "8", qty: 1, createdAt: T }], [{ productId: "p2", size: "8", qty: 1, ts: iso(T) }], meta)[0].match).toBe("sibling");
     expect(matchWebLine([{ pid: "p3", size: "8", qty: 1, createdAt: T }], [{ productId: "p4", size: "8", qty: 1, ts: iso(T) }], meta)[0].match).toBe("sibling");
   });
+  it("a line that cannot be covered in full consumes nothing", () => {
+    const r = matchWebLine(
+      [{ pid: "p1", size: "8", qty: 2, createdAt: T }, { pid: "p1", size: "8", qty: 1, createdAt: T + 1 }],
+      [{ productId: "p1", size: "8", qty: 1, ts: iso(T + 10) }],
+    );
+    expect(r.map((x) => x.match)).toEqual(["none", "exact"]);
+  });
   it("a multi-unit sale covers several lines", () => {
     const r = matchWebLine(
       [{ pid: "p1", size: "8", qty: 1, createdAt: T }, { pid: "p1", size: "8", qty: 1, createdAt: T + 1 }],

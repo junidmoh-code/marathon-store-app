@@ -108,7 +108,7 @@ async function main() {
 
   const rows = [];
   const products = new Map();   // pid → { gid, cells per location, sizes }
-  const issues = { noMap: [], inactive: [], deadMap: [] };
+  const issues = { noMap: [], inactive: [], deadMap: [], partialMap: [] };
   await pool(pids, 12, async (pid) => {
     const map = await get(`shopify_sync/${pid}`);
     if (!map?.variants) { issues.noMap.push(pid); return; }
@@ -124,6 +124,7 @@ async function main() {
     const allLoc = networkTotals(tree, pid, sizes, new Set());
     const plan = planProduct({ map, variants: shop.variants, baseline: shop.baseline, totals, reserved: reservedBySize(holds), released: releasedBySize(holds), committed: shop.committed });
     if (plan.allUnknown) issues.deadMap.push(pid);
+    else if (plan.stale.staleVariants?.length) issues.partialMap.push(`${pid}: ${plan.stale.staleVariants.join(",")}`);
     products.set(pid, { gid, tree, sizes, name: listedNodes[pid]?.cleanName || null });
     const vByItem = new Map(shop.variants.map((v) => [v.inventoryItemId, v]));
     for (const it of [...plan.known, ...plan.unknown]) {
@@ -138,7 +139,9 @@ async function main() {
         tracked: v.tracked, inventoryPolicy: v.inventoryPolicy,
         allLocations: it.unmapped ? 0 : allLoc[it.sizeKey] ?? 0,
         excludedUnits: it.unmapped ? 0 : (allLoc[it.sizeKey] ?? 0) - (totals[it.sizeKey] ?? 0),
-        unmapped: !!it.unmapped, staleMap: !it.unmapped && !shop.baseline.has(it.inventoryItemId),
+        // Stale = the listing has no such variant. A variant with no level at
+        // the location is real and stays in the comparison (on_hand unknown → 0).
+        unmapped: !!it.unmapped, staleMap: !it.unmapped && !vByItem.has(it.inventoryItemId),
         storefront: sf.get(gid)?.variants.get(String(v.title)) ?? null,
       };
       if (row.shopify > row.app) row.cause = causeOfOver(row, { dirty: dirty.has(pid), movedSinceSweep: movedSince.has(pid) });
@@ -180,7 +183,8 @@ async function main() {
   log(`public storefront says SOLD OUT with app stock: ${sfMissingButApp.length} variant(s)`);
   log("by cause (Shopify above app):");
   for (const [c, b] of Object.entries(s.byCause).sort((a, b) => b[1].units - a[1].units)) log(`  ${c.padEnd(18)} ${b.variants} variant(s), ${b.units} unit(s)`);
-  log(`listed but no id map: ${issues.noMap.length}; listed but not ACTIVE on Shopify: ${issues.inactive.length}; id map unknown to Shopify: ${issues.deadMap.length}`);
+  log(`listed but no id map: ${issues.noMap.length}; listed but not ACTIVE on Shopify: ${issues.inactive.length}; id map unknown to Shopify: ${issues.deadMap.length}; id map partly unknown: ${issues.partialMap.length}`);
+  for (const l of issues.partialMap.slice(0, 20)) log(`  partial id map — ${l}`);
   for (const r of sfAtZero.slice(0, 40)) log(`  ⚠ ${r.pid || r.gid} ${r.sizeKey}: storefront available, app ${r.app}, Shopify on_hand ${r.shopify} committed ${r.committed} — ${r.cause || "?"}`);
 
   // Search index: does its cached inStock agree with Shopify's sellable now?

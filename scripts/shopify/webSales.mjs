@@ -29,15 +29,18 @@ export function siblingKeys({ name, styleCode } = {}) {
 export function matchWebLine(lines, sold, meta = new Map()) {
   const pool = sold.map((m) => ({ pid: m.productId, size: stockSizeKey(m.size), left: Number(m.qty) || 1, at: Date.parse(m.ts) }))
     .sort((a, b) => a.at - b.at);
+  // All or nothing: a line the eligible sales cannot cover in full consumes
+  // nothing, so a smaller later line can still be explained by them.
   const take = (line, pred) => {
+    const eligible = pool.filter((m) => m.left > 0 && m.at >= line.createdAt - LOOKBACK_MS && pred(m));
+    if (eligible.reduce((n, m) => n + m.left, 0) < line.qty) return false;
     let need = line.qty;
-    for (const m of pool) {
+    for (const m of eligible) {
       if (need <= 0) break;
-      if (m.left <= 0 || m.at < line.createdAt - LOOKBACK_MS || !pred(m)) continue;
       const n = Math.min(need, m.left);
       m.left -= n; need -= n;
     }
-    return need <= 0;
+    return true;
   };
   const sib = (a, b) => { const ka = meta.get(a); const kb = meta.get(b); if (!ka || !kb || a === b) return false; for (const k of ka) if (kb.has(k)) return true; return false; };
   // Pass 1 for every line before any looser pass, so a loose match never
