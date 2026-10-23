@@ -61,6 +61,7 @@ import {
 import { describeOff } from "./publishAudit";
 import { RECONCILE_MAX_APPLY } from "./publishShared";
 import { topCategory, UNCATEGORIZED_TOP } from "../../utils/productCategory.js";
+import { productMatchesQuery } from "../../utils/productSearch.js";
 import {
   loadPipelineNodes, loadPublishKeys, loadReviewHidden, loadNodesFor, publishProduct, setCondition,
 } from "./shopifyPublishStore";
@@ -526,12 +527,16 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // Bunny x Indoor Benito" — never the cleaned listing name the website shows.
   // The person searching is holding the shoe, not reading the storefront.
   // Style codes match too, because that is the other string on the label.
+  // THE SAME MATCHER AS THE STOCK SCREENS (productSearch.js): every word must
+  // appear, in any order, typo-tolerant, plus barcodes/sku. This was a
+  // whole-phrase substring, so "Birkenstock Arizona Taupe" missed "Birkenstock
+  // Taupe Arizona" here while Counted Stock found it (Junid, 2026-10-23).
   const q = debouncedQuery.trim().toLowerCase();
   const matchesQuery = useCallback((p) => {
     if (!q) return true;
     // typeof-guarded: a malformed non-string styleCode would coerce to
     // "[object Object]" and false-match any search containing "object".
-    return String(p.name || "").toLowerCase().includes(q) ||
+    return productMatchesQuery(p, q) ||
            (typeof p.styleCode === "string" && p.styleCode.toLowerCase().includes(q));
   }, [q]);
 

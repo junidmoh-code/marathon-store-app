@@ -1488,6 +1488,22 @@ test("search matches the ORIGINAL catalogue name, and NOT the cleaned website na
   });
 });
 
+test("search matches words in ANY order, like the stock screens (productSearch.js)", async () => {
+  await withFakeTimers(async () => {
+    let tree;
+    await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+    await flush(); await flush();
+    // Catalogue name is "Plain tee white": the words reversed must still find it.
+    await typeSearch(tree, "white plain");
+    let out = texts(tree);
+    expect(out).toContain("Plain tee white");
+    expect(out).not.toContain("Plain tee black");
+    // A word the name does not carry still excludes it — every token must match.
+    await typeSearch(tree, "white plain hoodie");
+    expect(texts(tree)).not.toContain("Plain tee white");
+  });
+});
+
 test("search matches the style code on the label", async () => {
   await withFakeTimers(async () => {
     let tree;
