@@ -71,6 +71,7 @@ import { countReject, thisDevicePaused } from "../../device/rejectCount";
 import { PAUSED_MESSAGE } from "../../device/deviceRejects";
 import { claimPickTxn, releasePickTxn, newPickToken, pickInProgress } from "./pickMarker";
 import { nameOf, isStore } from "./sectionRouting";
+import { capSaleRowsToPolicy, policyKeepFor } from "./saleRowPolicyCap";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -101,6 +102,39 @@ const fmtSaDateTime = (iso) => {
   if (!Number.isFinite(t)) return "—";
   return new Date(t).toLocaleString("en-GB", { timeZone: "Africa/Johannesburg", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 };
+
+// Explicit /stock_targets rows for the products a sale row names — read by key,
+// once per (dest, product), so the policy cap below sees the row an owner set
+// exactly as the engine does. A product whose read has not come back yet is
+// ABSENT from the map until then, and the cap falls back to the group policy
+// meanwhile — never uncapped (over-asking is the failure this guards). A
+// FAILED read is not "no row": it stays absent and is retried every 30 s.
+// The map is keyed to its destination and dropped when the hub changes.
+const EXPLICIT_RETRY_MS = 30000;
+function useExplicitTargetRows(dest, pids) {
+  const [state, setState] = useState({ dest, rows: {} });
+  const rows = state.dest === dest ? state.rows : {};
+  const [attempt, setAttempt] = useState(0);
+  const wanted = pids.join("|");
+  useEffect(() => {
+    let live = true;
+    let retry = null;
+    const missing = pids.filter((pid) => !(pid in rows));
+    if (!dest || missing.length === 0) return undefined;
+    Promise.all(missing.map((pid) => get(ref(database, `stock_targets/${dest}/${pid}`))
+      .then((snap) => ({ pid, row: snap.val() || null }))
+      .catch(() => ({ pid, failed: true }))))
+      .then((results) => {
+        if (!live) return;
+        const got = results.filter((r) => !r.failed);
+        if (got.length) setState((cur) => ({ dest, rows: { ...(cur.dest === dest ? cur.rows : {}), ...Object.fromEntries(got.map((r) => [r.pid, r.row])) } }));
+        if (got.length < results.length) retry = setTimeout(() => setAttempt((n) => n + 1), EXPLICIT_RETRY_MS);
+      });
+    return () => { live = false; if (retry) clearTimeout(retry); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dest, wanted, attempt]);
+  return rows;
+}
 
 // Live-ticking server-corrected "now", once a minute for the whole queue.
 function useNowMinute() {
@@ -294,6 +328,7 @@ function SizeLine({ row, remaining, canAct, busy, msg, fulfilOpen, onToggleFulfi
           <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}><SizeTag size={row.size} /></span>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: BLUE, fontVariantNumeric: "tabular-nums" }}>×{remaining}</span>
           {sent > 0 && <span style={{ fontSize: 11, color: GRAY }}>· {sent} sent</span>}
+          {row.policyCap && <span data-policy-cap style={{ fontSize: 11, color: GRAY }}>· keeps {row.policyCap.keep}</span>}
           {row.webRef && <span data-web-ref style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".08em", color: "#4ACA7A", border: "1px solid rgba(74,202,122,.45)", borderRadius: 999, padding: "1px 7px" }}>WEBSITE · {row.webRef}</span>}
         </span>
         <button disabled={busy} onClick={onToggleFulfil}
@@ -390,13 +425,30 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     });
   }, [allRequests, DEST_LOC, lineFilter, byId]);
 
+  // SALE ROWS NEVER ASK PAST JUNID'S POLICY (saleRowPolicyCap.js — the 23 Oct
+  // ×3 incident). A footwear cell's sale rows may together ask only for
+  // keep − on hand − open requests; the rest is trimmed, and a row with no
+  // room left moves to the "already covered" detail with its evidence.
+  const salePids = useMemo(() => [...new Set(saleRows.map((r) => r.productId).filter(Boolean))].sort(), [saleRows]);
+  const explicitRows = useExplicitTargetRows(DEST_LOC, salePids);
+  const cappedSale = useMemo(() => {
+    const ctx = { config: engineConfig || {}, productsById: byId, destCells, explicitRows };
+    return capSaleRowsToPolicy(saleRows, {
+      requests: requestRows.filter((r) => !r.shadow),
+      destCells,
+      // Explicit row not read yet → the group policy alone (explicitRows has
+      // no entry, so resolveTarget falls through to it), never uncapped.
+      keepFor: (pid, size) => policyKeepFor(ctx, DEST_LOC, pid, size),
+    });
+  }, [saleRows, requestRows, engineConfig, byId, destCells, explicitRows, DEST_LOC]);
+
   // Gate EVERYTHING through the release windows — request rows and sale rows in
   // one partition, then the destination-shelf "already covered" split on the
   // released request rows only (a sale cell has no lock semantics).
   const { pick, waiting, covered, shadows } = useMemo(() => {
     const real = requestRows.filter((r) => !r.shadow);
     const shadows = requestRows.filter((r) => r.shadow);
-    const gate = partitionReleased([...real, ...saleRows], now, windows);
+    const gate = partitionReleased([...real, ...cappedSale.rows], now, windows);
     const releasedReq = gate.released.filter((r) => r.origin === "request");
     const releasedSale = gate.released.filter((r) => r.origin === "sale");
     const split = partitionSatisfied(releasedReq.map((r) => r._r), destCells, lockedIds);
@@ -407,7 +459,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       covered: split.covered,
       shadows,
     };
-  }, [requestRows, saleRows, now, windows, destCells, lockedIds]);
+  }, [requestRows, cappedSale, now, windows, destCells, lockedIds]);
 
   // ── REQUEST-ROW ACTIONS — movement shapes unchanged (see header) ───────────
   // PARTIAL FULFILMENT (owner correction 2026-08-08): sending fewer units than
@@ -782,11 +834,11 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     pickUnits: unitsOf(pick),
     waitingCount: waiting.length,
     waitingUnits: unitsOf(waiting),
-    coveredCount: covered.length,
+    coveredCount: covered.length + cappedSale.covered.length,
     windowsDisabled: windows.disabled,
     nextLabel: windows.disabled ? "" : saTimeLabel(nextReleaseMs(now, windows)),
   });
-  const hasDetail = waiting.length > 0 || covered.length > 0;
+  const hasDetail = waiting.length > 0 || covered.length > 0 || cappedSale.covered.length > 0;
   const statusLine = (
     <button type="button" onClick={() => hasDetail && setDetailOpen((v) => !v)}
             style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "transparent",
@@ -833,6 +885,16 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
             <b style={{ color: GREEN }}>Already covered:</b>{" "}
             <b style={{ color: "rgba(255,255,255,.85)" }}>{byId.get(r.productId)?.name || r.productId}</b>{" "}
             size {String(r.size)} — asked ×{r.qty || 1}, {r.onHand} on the shelf at {destLabel}. The engine withdraws it on its next scan.
+          </span>
+        </div>
+      ))}
+      {cappedSale.covered.map((r) => (
+        <div key={`cov-${r.rowKey}`} data-policy-covered={r.rowKey} style={{ ...CARD, padding: "9px 12px", opacity: 0.85 }}>
+          <span style={{ fontSize: 12, color: GRAY }}>
+            <b style={{ color: GREEN }}>Already covered:</b>{" "}
+            <b style={{ color: "rgba(255,255,255,.85)" }}>{byId.get(r.productId)?.name || r.productName || r.productId}</b>{" "}
+            size {String(r.size)} — {destLabel} keeps {r.policyCap.keep}, has {r.policyCap.onHand} on the shelf
+            {r.policyCap.inbound > 0 ? ` and ${r.policyCap.inbound} on the way` : ""}. Nothing to send.
           </span>
         </div>
       ))}
