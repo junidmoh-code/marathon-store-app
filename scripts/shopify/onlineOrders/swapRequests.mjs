@@ -18,12 +18,12 @@
 //             emailed what to collect) or "we_absorb" (recorded, no email).
 // The pack (POS) refuses while any request is pending.
 import { ONLINE_ORDERS_PATH, orderLabel } from "../../../src/utils/onlineOrders.js";
-import { swapOnlineOrderLine } from "../../lib/swap-line.mjs";
+import { swapOnlineOrderLine, afterSwap } from "../../lib/swap-line.mjs";
 import { money } from "../../online/agent/run.mjs";
 import { rands } from "../../online/agent/core.mjs";
 import { linesOf } from "./orderModel.mjs";
 
-export const SWAP_REQUEST = Object.freeze({ PENDING: "pending", APPLYING: "applying", APPLIED: "applied", REFUSED: "refused" });
+export const SWAP_REQUEST = Object.freeze({ PENDING: "pending", APPLYING: "applying", APPLIED: "applied", REFUSED: "refused", CANCELLED: "cancelled" });
 // A claim with no outcome this long (a crash mid-swap) is decided again: the
 // swap's own guard (`expect`) refuses a line that already changed.
 export const STUCK_APPLY_MS = 5 * 60 * 1000;
@@ -51,8 +51,13 @@ export async function applySwapRequests(ctx, id, order) {
     // THIS request: finish it (the money step is idempotent), never refuse it.
     const already = req.state === SWAP_REQUEST.APPLYING ? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}/lines/${Number(req.lineIndex)}`) : null;
     if (already?.swappedFrom?.requestId === rid) {
+      // The clean-up again (idempotent): old hub order / strip entry, return
+      // to shelf, holds — whatever the crash left undone.
       const o = already.resolution?.outcome || {};
-      out = { ok: true, resumed: true, summary: `${orderLabel(order)} updated: ${already.swappedFrom.title || already.swappedFrom.pid} → ${already.title || already.pid} (resumed)`, creditCents: Number(o.creditCents) || 0, extraCents: Number(o.extraCents) || 0, returns: [] };
+      const fresh = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+      const to = `${already.title || already.pid}${already.size && already.size !== "_" ? ` ${already.size}` : ""}`;
+      const done = await afterSwap({ db: ctx.db, orderKey: id, i: Number(req.lineIndex), order: fresh || order, swappedFrom: already.swappedFrom, to, newPid: already.pid, newSizeKey: already.sizeKey, by: clean(req.by) || null, via: "pos", now: ctx.now, inc: ctx.increment, route: already.source });
+      out = { ok: true, resumed: true, summary: `${orderLabel(order)} updated: ${already.swappedFrom.title || already.swappedFrom.pid} → ${to} (resumed)`, creditCents: Number(o.creditCents) || 0, extraCents: Number(o.extraCents) || 0, returns: done.returns };
     } else {
       try {
         out = await swapOnlineOrderLine({
@@ -63,6 +68,11 @@ export async function applySwapRequests(ctx, id, order) {
           displayFeedOn: ctx.displayFeedEnabled ? async (shop) => (await ctx.displayFeedEnabled(shop)) !== false : null,
         });
       } catch (e) {
+        // The line may already be swapped (a failure in the clean-up after it):
+        // never call that "refused" — the request stays claimed and the next
+        // tick past STUCK_APPLY_MS resumes it above.
+        const stamped = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}/lines/${Number(req.lineIndex)}/swappedFrom/requestId`).catch(() => null);
+        if (stamped === rid) { ctx.log(`  ✗ ${orderLabel(order)}: swap landed but its clean-up failed (${String(e?.message || e)}) — resumed on a later tick`); continue; }
         out = { ok: false, refused: `the swap failed: ${String(e?.message || e).slice(0, 200)}` };
       }
     }
@@ -75,7 +85,7 @@ export async function applySwapRequests(ctx, id, order) {
     ctx.summary.swaps = (ctx.summary.swaps || 0) + 1;
     // The difference BEFORE the request says applied: a crash in between
     // resumes above and settles again (money() finds its own slot).
-    await settleDifference(ctx, id, req, out);
+    await settleDifference(ctx, id, { ...req, id: rid }, out);
     await ctx.db.ref(path).update(clean({ state: SWAP_REQUEST.APPLIED, summary: out.summary, appliedAt: ctx.now, creditCents: out.creditCents || 0, extraCents: out.extraCents || 0, returns: out.returns?.length || 0 }));
   }
   return applied;
@@ -111,6 +121,9 @@ async function settleDifference(ctx, id, req, out) {
     return;
   }
   if (out.extraCents > 0 && req.priceDecision === "customer_pays") {
+    // Once per request, whatever a resume does.
+    const mark = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/swapRequests/${req.id || ""}/collectMailedAt`).transaction((cur) => (cur == null ? ctx.now : undefined));
+    if (req.id && !mark.committed) return;
     await tell(`Website order ${order.ref}: the customer agreed to pay ${rands(out.extraCents)} more — collect it`, [
       `${out.summary}`,
       `Swapped at the POS by ${who}. The new item costs ${rands(out.extraCents)} more than what was paid; the customer agreed to pay the difference.`,

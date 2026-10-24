@@ -828,7 +828,7 @@ async function shipOrder(ctx, id, order) {
     // A swapped line: Shopify fulfilled the ORIGINAL line item, which the app
     // never deducted. Push both products again now, so the original is never
     // left sold out on the website (the reconciler sets on_hand from app stock).
-    const swapped = linesOf(order).flatMap((l) => (l?.swappedFrom?.pid ? [l.swappedFrom.pid, l.pid] : []));
+    const swapped = linesOf(order).flatMap((l) => (l?.swappedFrom?.pid ? [l.originalPid, l.swappedFrom.pid, l.pid] : []));
     for (const pid of new Set(swapped.filter(Boolean))) await db.ref(`${DIRTY_PATH}/${pid}`).set(ctx.increment(1));
     log(`  ✓ ${orderLabel(order)}: fulfilled on Shopify${out.alreadyDone ? " (it already was)" : ", customer notified"}`);
     return;

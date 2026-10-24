@@ -12,7 +12,7 @@ if (!args.order || args.line == null || !args.pid) {
   console.error("usage: --order <orderKey> --line <index> --pid <newPid> --size <size|_> [--dry] [--allow-higher]");
   process.exit(2);
 }
-const r = await swapOnlineOrderLine({ orderKey: String(args.order), lineIndex: Number(args.line), newPid: String(args.pid), size: args.size ?? "_", dry: args.dry === "true", allowHigher: args["allow-higher"] === "true", log: (m) => console.log(m) });
+const r = await swapOnlineOrderLine({ orderKey: String(args.order), lineIndex: Number(args.line), newPid: String(args.pid), size: args.size ?? "_", dry: args.dry === "true", allowHigher: args["allow-higher"] === "true", via: "cli" });
 console.log(r.summary);
 if (r.plan) {
   const p = r.plan;

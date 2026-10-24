@@ -374,8 +374,18 @@ Jimmy (`scripts/swap-online-order-line.mjs`, in its own process), the POS
   change). The poller's keep pass applies it FIRST (`swapRequests.mjs`), then
   the same pass raises the new hub order (routeGen + 1 → a fresh three-letter
   code) or strip entry, the hold and the parcel estimate. `state` →
-  `applied {summary, creditCents, extraCents}` or `refused {why}`. The POS
-  refuses Pack while any request is pending.
+  `applied {summary, creditCents, extraCents}` or `refused {why}`; the POS may
+  take back a request still `pending` (`cancelled`). The POS refuses Pack while
+  any request is pending, and re-reads the order after its pack claim.
+- **Atomic with the pack**: the swap is ONE transaction on the order — refused
+  when a `packClaim` / `pack` exists — and clears the old item's `basket/{i}`,
+  `basketBy/{i}` and `codesIn/{old codes}` in the same write. The clean-up
+  (`afterSwap`) is idempotent and rebuilt from `swappedFrom` (it keeps the old
+  `entryKey` and `escalation`), so a crash after the line landed is finished by
+  a later tick (`swappedFrom.requestId`), never reported as refused.
+- **A second swap** on a line whose first swap recorded a price difference is
+  refused (one money slot per line; Junid changes it by hand). `originalPid`
+  keeps the product Shopify lists on the line through any number of swaps.
 - **The swap**: the line (guarded on pid/size/status/routeGen) becomes the new
   product routed by the live router against free stock; `swappedFrom = { pid,
   size, sizeKey, title, photoUrl, unitPriceCents, locationId, status,

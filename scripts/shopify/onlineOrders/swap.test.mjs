@@ -35,6 +35,7 @@ function world(over = {}) {
     products: {
       SNK: { name: "Air Runner", categoryKey: "sneakers", category: "Footwear", sizes: ["8", "9"], retailPrice: 500, photoUrl: "https://x/snk.jpg" },
       KAP: { name: "Kapri White", categoryKey: "sneakers", category: "Footwear", sizes: ["8"], retailPrice: 500, photoUrl: "https://x/kap.jpg" },
+      BLK: { name: "Kapri Black", categoryKey: "sneakers", category: "Footwear", sizes: ["8"], retailPrice: 500 },
       TEE: { name: "Club Tee", categoryKey: "tees", category: "Clothing", sizes: ["M"], barcodes: { M: "6001" }, retailPrice: 250, photoUrl: "https://x/tee.jpg" },
       POLO: { name: "Club Polo", categoryKey: "tees", category: "Clothing", sizes: ["M"], barcodes: { M: "7001" }, retailPrice: 200, photoUrl: "https://x/polo.jpg" },
       JKT: { name: "Club Jacket", categoryKey: "jackets", category: "Clothing", sizes: ["M"], barcodes: { M: "8001" }, retailPrice: 900 },
@@ -45,7 +46,7 @@ function world(over = {}) {
       TEE: { shopifyProductId: P(222), variants: { M: { shopifyVariantId: V(222001), shopifyInventoryItemId: "inv-tee-m" } } },
     },
     stock: {
-      hub1: { SNK: { 8: { qty: 1 } }, KAP: { 8: { qty: 1 } } },
+      hub1: { SNK: { 8: { qty: 1 } }, KAP: { 8: { qty: 1 } }, BLK: { 8: { qty: 1 } } },
       hub2: {},
       "marathon-pe": { TEE: { M: { qty: 1 } }, JKT: { M: { qty: 1 } } },
       trophy: { POLO: { M: { qty: 2 } } },
@@ -286,7 +287,7 @@ describe("one swap, two callers: the customer agent and the POS leave the same l
     const out = await swapOnlineOrderLine({ db: fm.db, orderKey: "9001", lineIndex: 0, newPid: "POLO", size: "M", by: YASMIN, via: "pos", now: NOW, increment });
     expect(out.ok).toBe(true);
     const posLine = fm.read("online_orders/9001/lines/0");
-    const shape = (l) => ({ keys: Object.keys(l).filter((k) => !["barcode", "isFootwear", "category", "resolution"].includes(k)).sort(), from: Object.keys(l.swappedFrom).filter((k) => k !== "hubOrders" && k !== "locationId").sort(), outcome: Object.keys(l.resolution.outcome).filter((k) => !["extraCents", "priceDecision"].includes(k)).sort() });
+    const shape = (l) => ({ keys: Object.keys(l).filter((k) => !["barcode", "isFootwear", "category", "resolution"].includes(k)).sort(), from: Object.keys(l.swappedFrom).filter((k) => !["hubOrders", "locationId", "entryKey", "escalation"].includes(k)).sort(), outcome: Object.keys(l.resolution.outcome).filter((k) => !["extraCents", "priceDecision"].includes(k)).sort() });
     // (An unavailable line has no place, so the agent's swappedFrom carries no
     // locationId — RTDB drops a null; the POS line's says where it was.)
     expect(shape(posLine)).toEqual(shape(agentLine));
@@ -352,5 +353,71 @@ describe("the reconciler after a swap (the Shopify order is never edited)", () =
     expect(order(f).fulfilState).toBe("done");
     expect(f.read("shopify_inventory_dirty/TEE")).toBeGreaterThan(before.TEE);
     expect(f.read("shopify_inventory_dirty/POLO")).toBeGreaterThan(before.POLO);
+  });
+});
+
+describe("review fixes (Sonnet architect, PR #788)", () => {
+  it("a pack claimed since the read: the swap is refused in the SAME transaction, nothing written", async () => {
+    const { f, h } = await ingested();
+    await f.db.ref("online_orders/9001/packClaim").set({ saleId: "S1", by: "u1", at: NOW });
+    await ask(f, 1, "POLO", "M");
+    await h.tick();
+    expect(request(f)).toMatchObject({ state: "refused" });
+    expect(request(f).why).toMatch(/being packed/);
+    expect(line(f, 1).pid).toBe("TEE");
+    expect(f.read("displayChecks_active/marathon-pe/online__9001__1").status).toBe("open");
+  });
+
+  it("the clean-up failed after the line landed: never 'refused'; a later tick finishes it (old hub order gone, new code raised)", async () => {
+    const { f, h } = await ingested();
+    const old = C(0);
+    await ask(f, 0, "KAP", "8");
+    // A database that refuses every hub-order write: the line commits, the clean-up throws.
+    const broken = { ...f.db, ref: (p) => (String(p).startsWith("orders/") ? { ...f.db.ref(p), transaction: async () => { throw new Error("network"); } } : f.db.ref(p)) };
+    await expect(swapOnlineOrderLine({ db: broken, orderKey: "9001", lineIndex: 0, newPid: "KAP", size: "8", by: YASMIN, via: "pos", requestId: "r1", expect: { pid: "SNK", sizeKey: "8" }, now: NOW, increment })).rejects.toThrow("network");
+    expect(line(f, 0).pid).toBe("KAP");
+    expect(f.read(`orders/${old}`)).toMatchObject({ status: "incoming" }); // left behind by the crash
+    await f.db.ref("online_orders/9001/swapRequests/r1").update({ state: "applying", claimedAt: NOW - 10 * 60e3 });
+    await h.tick();
+    expect(request(f)).toMatchObject({ state: "applied" });
+    expect(f.read(`orders/${old}`)).toBeNull();
+    expect(line(f, 0).source.orderKeys).toEqual([C(0, 1)]);
+  });
+
+  it("a second swap on a line that already owes the customer money is refused (the money would be wrong)", async () => {
+    const { f, h } = await ingested();
+    await ask(f, 1, "POLO", "M");
+    await h.tick();
+    await ask(f, 1, "JKT", "M", { rid: "r2", priceDecision: "we_absorb" });
+    await h.tick();
+    expect(request(f, "r2")).toMatchObject({ state: "refused" });
+    expect(request(f, "r2").why).toMatch(/already swapped with a price difference/);
+    expect(line(f, 1).pid).toBe("POLO");
+  });
+
+  it("two same-price swaps: the line still names the product Shopify lists (originalPid), pushed after the fulfilment", async () => {
+    const { f, h } = await ingested();
+    await ask(f, 0, "KAP", "8");
+    await h.tick();
+    await ask(f, 0, "BLK", "8", { rid: "r2" });
+    await h.tick();
+    expect(line(f, 0)).toMatchObject({ pid: "BLK", originalPid: "SNK", swappedFrom: { pid: "KAP" } });
+  });
+
+  it("customer pays: Junid is asked to collect ONCE per request", async () => {
+    const { f, h } = await ingested();
+    await ask(f, 1, "JKT", "M", { priceDecision: "customer_pays" });
+    await h.tick();
+    expect(f.read("online_orders/9001/swapRequests/r1/collectMailedAt")).toBe(NOW);
+    expect(h.mails.filter((m) => /collect it/.test(m.subject))).toHaveLength(1);
+  });
+
+  it("a cancelled request (the packer took it back) is never applied", async () => {
+    const { f, h } = await ingested();
+    await ask(f, 1, "POLO", "M");
+    await f.db.ref("online_orders/9001/swapRequests/r1/state").set("cancelled");
+    await h.tick();
+    expect(line(f, 1).pid).toBe("TEE");
+    expect(request(f).state).toBe("cancelled");
   });
 });

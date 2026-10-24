@@ -77,6 +77,11 @@ export function swapFromRecord(line, { at, by = null, via, hubOrders = [], reque
     photoUrl: line.photoUrl ?? null, unitPriceCents: line.unitPriceCents,
     locationId: line.source?.locationId ?? null, status: line.source?.status ?? null,
     ...(hubOrders.length ? { hubOrders } : {}),
+    // What the clean-up (afterSwap) needs to run again after a crash: the old
+    // strip entry and the old escalation (its open request is withdrawn).
+    ...(!hubOrders.length && line.source?.entryKey ? { entryKey: line.source.entryKey } : {}),
+    ...(line.escalation ? { escalation: line.escalation } : {}),
+    qty: Number(line.qty) || 1,
     at, by, via,
     ...(requestId ? { requestId } : {}),
   });
@@ -99,6 +104,9 @@ export function swappedLine(cur, item, { swappedFrom, outcome, resolution }) {
     ...(item.barcode !== undefined ? { barcode: item.barcode ?? null } : {}),
     unitPriceCents: item.priceCents,
     originalUnitPriceCents: Number.isInteger(cur.originalUnitPriceCents) ? cur.originalUnitPriceCents : cur.unitPriceCents,
+    // The product Shopify still lists (and fulfils) on this line, whatever
+    // number of swaps later: pushed again after the fulfilment (poll.mjs).
+    originalPid: cur.originalPid || cur.pid,
     swappedFrom, routeGen: (Number(cur.routeGen) || 0) + 1,
     escalationGen: (Number(cur.escalationGen) || 0) + 1,
     source: { locationId: item.locationId, status: item.status },
@@ -158,6 +166,13 @@ export async function swapOnlineOrderLine({
   if (line.pid === newPid && String(line.sizeKey ?? "_") === sizeKey) return refuse("the line already is that product and size");
   if (priceDecision != null && !PRICE_DECISIONS.includes(priceDecision)) return refuse(`unknown price decision ${priceDecision}`);
 
+  // A SECOND swap on a line whose first one left money owed or to collect
+  // would be judged against the original price again and its difference
+  // could never be recorded (one money slot per line): refused, Junid's.
+  const prior = line.swappedFrom ? line.resolution?.outcome : null;
+  if (line.swappedFrom && (line.resolution?.money || Number(prior?.creditCents) > 0 || Number(prior?.extraCents) > 0)) {
+    return refuse(`this line was already swapped with a price difference recorded (${Number(prior?.creditCents) > 0 ? `${rands(prior.creditCents)} owed to the customer` : `${rands(prior?.extraCents || 0)} extra`}) — a second swap would get the money wrong; Junid changes it by hand`);
+  }
   const priceCents = Math.round(Number(product.retailPrice ?? product.price) * 100) || 0;
   const judged = judgeSwap(line, { priceCents });
   const paid = paidCents(line);
@@ -188,8 +203,10 @@ export async function swapOnlineOrderLine({
   };
   const summary = `#${ref} updated: ${plan.from} → ${plan.to}, ${piece.status === "display" ? "display pick" : "pick"} raised at ${placeName(piece.locationId)}`;
   if (dry) return { ok: true, dry: true, summary: `DRY RUN — ${summary}`, plan, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents };
-
-  // ── 1. The line (first, guarded: a line someone moved meanwhile is left alone).
+  // ── 1. The line — ONE transaction on the order, so it is atomic with what a
+  // pack does: a pack claimed (or landed) since the read refuses the swap, and
+  // the old item's basket tick / pair codes / who-ticked go in the same write
+  // (the replacement must be confirmed in hand afresh).
   const swappedFrom = swapFromRecord(line, { at: now, by, via, hubOrders: oldKeys, requestId });
   const item = {
     pid: newPid, size: size == null || size === "" ? "_" : String(size), sizeKey, title: product.name,
@@ -197,46 +214,72 @@ export async function swapOnlineOrderLine({
     barcode: product.barcodes?.[sizeKey] ?? (sizes.length <= 1 ? product.barcode ?? null : null),
     priceCents, locationId: piece.locationId, status: piece.status,
   };
-  const outcome = clean({ kind: "swap", pid: newPid, size: item.size, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents || null, priceDecision: plan.price.decision, at: now, by: whoName(by), via });
+  const outcome = clean({ kind: "swap", pid: newPid, size: item.size, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents || null, priceDecision: plan.price.decision, at: now, by: whoName(by), via, ...(requestId ? { requestId } : {}) });
   const expectKey = `${line.pid}|${line.sizeKey ?? ""}|${line.source?.status ?? ""}|${Number(line.routeGen) || 0}`;
-  const res = await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}/lines/${i}`).transaction((cur) => {
-    if (cur == null) return null; // the cold pass; the server value decides
-    if (`${cur.pid}|${cur.sizeKey ?? ""}|${cur.source?.status ?? ""}|${Number(cur.routeGen) || 0}` !== expectKey) return undefined;
+  let why = null;
+  const res = await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}`).transaction((ord) => {
+    if (ord == null) return null; // the cold pass; the server value decides
+    if (ord.status === "packed" || CLOSED_ORDER.has(ord.status)) { why = `the order is ${ord.status}`; return undefined; }
+    if (ord.packClaim || ord.pack) { why = "the order is being packed"; return undefined; }
+    const cur = linesOf(ord)[i];
+    if (!cur || `${cur.pid}|${cur.sizeKey ?? ""}|${cur.source?.status ?? ""}|${Number(cur.routeGen) || 0}` !== expectKey) { why = "the line changed meanwhile"; return undefined; }
     // An open customer-agent conversation is closed: the line is settled by this swap.
     const conv = cur.resolution?.conversation;
     const resolution = { ...(cur.resolution || {}), outcome, ...(conv && conv.state !== "closed" ? { conversation: { ...conv, state: "closed", closedAt: now, closedBy: via } } : {}) };
-    return swappedLine(cur, item, { swappedFrom, outcome, resolution });
+    const next = { ...ord, lines: Array.isArray(ord.lines) ? [...ord.lines] : { ...ord.lines } };
+    next.lines[i] = swappedLine(cur, item, { swappedFrom, outcome, resolution });
+    const drop = (node, key) => { if (node && typeof node === "object" && key in node) { const c = Array.isArray(node) ? [...node] : { ...node }; if (Array.isArray(c)) c[key] = null; else delete c[key]; return c; } return node; };
+    next.basket = drop(ord.basket, i);
+    next.basketBy = drop(ord.basketBy, i);
+    for (const k of oldKeys) next.codesIn = drop(next.codesIn ?? ord.codesIn, k);
+    next.updatedAt = now;
+    return clean(next);
   });
-  if (!res.committed || !res.snapshot.val()) return refuse("the line changed meanwhile; nothing written to it", { plan });
-  const gen = Number(res.snapshot.val().routeGen) || 0;
-  // The basket tick and pair codes confirmed for the OLD item say nothing about
-  // the new one: the replacement must be scanned / confirmed in hand afresh.
-  await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}/basket/${i}`).set(null);
-  for (const k of oldKeys) await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}/codesIn/${k}`).set(null);
+  if (!res.committed || !res.snapshot.val()) return refuse(`${why || "the order changed meanwhile"}; nothing written`, { plan });
+  const after = res.snapshot.val();
+  const gen = Number(linesOf(after)[i]?.routeGen) || 0;
+  const done = await afterSwap({ db, orderKey, i, order: after, swappedFrom, to: plan.to, newPid, newSizeKey: sizeKey, by, via, now, inc, route: piece });
+  log(summary);
+  for (const n of done.notes) log(`  ${n}`);
+  return { ok: true, summary, plan, notes: done.notes, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents, returns: done.returns, swappedFrom, gen };
+}
 
-  // ── 2. The old line's list state, and 3. what goes back to the shelf.
+/**
+ * Steps 2–4 of a swap that has landed: the old line's list state, return to
+ * shelf, the holds, Shopify's nudge. IDEMPOTENT — rebuilt from `swappedFrom`
+ * alone, so a crash after the line was written is finished by running it
+ * again (swapRequests.mjs resumes with it). → { notes, returns }
+ */
+export async function afterSwap({ db, orderKey, i, order, swappedFrom, to, newPid, newSizeKey, by, via, now, inc, route }) {
   const notes = [];
+  const ref = order.orderNumber || orderKey;
+  const gen = Number(linesOf(order)[i]?.routeGen) || 0;
+  const oldKeys = Array.isArray(swappedFrom.hubOrders) ? swappedFrom.hubOrders : [];
+  const from = lineLabel(swappedFrom);
   const back = { hubOrders: [], at: null };
   for (const k of oldKeys) {
     const r = await db.ref(`orders/${k}`).transaction((cur) => {
       if (cur == null) return null;
       if (cur.channel !== "online" || String(cur.onlineOrderId) !== String(orderKey) || Number(cur.onlineLineIndex) !== i) return undefined;
+      // Not sent yet: gone from the hub's queue (the established cancel, as a
+      // Shopify cancellation does) — the line's log and swappedFrom say why.
       if (cur.status === "incoming" || cur.status === "coming_tomorrow") return null;
       if (cur.status === "ready" || cur.status === "collected") {
         if (cur.returnToShelf) return undefined;
-        return { ...cur, returnToShelf: clean({ at: now, by: whoName(by), orderNumber: order.orderNumber ?? null, swappedTo: plan.to, note: `Website order #${ref} swapped this for ${plan.to} — put it back on the shelf` }), updatedAt: new Date(now).toISOString() };
+        return { ...cur, returnToShelf: clean({ at: now, by: whoName(by), orderNumber: order.orderNumber ?? null, swappedTo: to, note: `Website order #${ref} swapped this for ${to} — put it back on the shelf` }), updatedAt: new Date(now).toISOString() };
       }
       return undefined;
     });
     const left = r.snapshot?.val();
     if (left && left.returnToShelf && (left.status === "ready" || left.status === "collected")) {
       back.hubOrders.push(k);
-      back.at = left.hub || line.source?.locationId || null;
+      back.at = left.hub || swappedFrom.locationId || null;
       notes.push(`hub order ${k} was already sent by ${placeName(left.hub)}: marked RETURN TO SHELF`);
-    } else if (!left) notes.push(`hub order ${k} cancelled (removed from ${placeName(line.source?.locationId)}'s queue)`);
-    else notes.push(`hub order ${k} left as it is (${left.status})`);
+    } else if (!left) notes.push(`hub order ${k} cancelled (removed from ${placeName(swappedFrom.locationId)}'s queue)`);
+    else notes.push(`hub order ${k} left as it is (${left.status}: the hub already answered it)`);
   }
   let handedEntry = false;
+  const oldEntry = swappedFrom.entryKey || null;
   if (oldEntry && oldEntry.startsWith("displayChecks_active/")) {
     const r = await db.ref(oldEntry).transaction((cur) => {
       if (cur == null) return null;
@@ -247,48 +290,48 @@ export async function swapOnlineOrderLine({
     handedEntry = !!left && left.status === "completed" && left.result === LINE_STATUS.HANDED;
     notes.push(handedEntry ? "display entry was already handed over" : "display entry closed");
   }
-  if (plan.willWithdrawRequest) {
+  const esc = swappedFrom.escalation;
+  if (esc?.phase === "await" && esc.request) {
     await withdrawRequest({ db, now }, String(orderKey), i, esc);
     notes.push(`escalation request ${esc.request.key} withdrawn (only if untouched)`);
   }
   if (esc) await db.ref(`${ESCALATIONS_PATH}/${orderKey}_${i}`).set(null);
 
-  const handed = line.source?.status === LINE_STATUS.HANDED || handedEntry || back.hubOrders.length > 0;
-  let returnRec = null;
+  const handed = swappedFrom.status === LINE_STATUS.HANDED || handedEntry || back.hubOrders.length > 0;
+  const returns = [];
   if (handed) {
-    const loc = back.at || line.source?.locationId || null;
+    const loc = back.at || swappedFrom.locationId || null;
     const rid = `${i}_${gen}`;
-    returnRec = clean({
-      lineIndex: i, pid: line.pid, size: line.size ?? null, sizeKey: line.sizeKey ?? null, title: line.title, photoUrl: line.photoUrl ?? null,
-      qty: Number(line.qty) || 1, locationId: loc, hubOrders: back.hubOrders.length ? back.hubOrders : null,
-      swappedTo: plan.to, at: now, by: whoName(by), via, state: "open",
+    const returnRec = clean({
+      lineIndex: i, pid: swappedFrom.pid, size: swappedFrom.size ?? null, sizeKey: swappedFrom.sizeKey ?? null, title: swappedFrom.title, photoUrl: swappedFrom.photoUrl ?? null,
+      qty: Number(swappedFrom.qty) || 1, locationId: loc, hubOrders: back.hubOrders.length ? back.hubOrders : null,
+      swappedTo: to, at: now, by: whoName(by), via, state: "open",
     });
-    // A shop other than the packing store sees it on its own Website orders strip.
-    if (loc && loc !== PACKING_STORE && !back.hubOrders.length && ["trophy", "marathon-pe"].includes(loc)) {
+    // Trophy sees it on its own Website orders strip (Yasmin is at the packing store).
+    if (loc === "trophy" && !back.hubOrders.length) {
       const key = `${displayKey(orderKey, i, gen)}__return`;
       returnRec.entryKey = `displayChecks_active/${loc}/${key}`;
       await db.ref(returnRec.entryKey).transaction((cur) => (cur == null ? clean({
         kind: ONLINE_RETURN_KIND, checkId: db.ref(`displayChecks_active/${loc}`).push().key,
-        productId: line.pid, productName: line.title, size: line.size == null || line.size === "" ? "_" : String(line.size), sizeKey: line.sizeKey,
-        dedupeKey: key, photoUrl: line.photoUrl, qty: Number(line.qty) || 1, saleCount: Number(line.qty) || 1,
+        productId: swappedFrom.pid, productName: swappedFrom.title, size: swappedFrom.size == null || swappedFrom.size === "" ? "_" : String(swappedFrom.size), sizeKey: swappedFrom.sizeKey,
+        dedupeKey: key, photoUrl: swappedFrom.photoUrl, qty: returnRec.qty, saleCount: returnRec.qty,
         status: "open", createdAt: now, activatedAt: now, activatedSaDate: saDate(now),
         orderId: String(orderKey), lineIndex: i, returnId: rid, ref: `#${ref}`, orderNumber: order.orderNumber ?? null,
         instruction: "Put back on the floor — the website customer swapped it",
       }) : undefined));
     }
     await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}/returns/${rid}`).transaction((cur) => (cur == null ? returnRec : undefined));
-    notes.push(`RETURN TO SHELF: ${plan.from} goes back to ${placeName(loc)} (nothing was deducted for it)`);
+    returns.push(returnRec);
+    notes.push(`RETURN TO SHELF: ${from} goes back to ${placeName(loc)} (nothing was deducted for it)`);
   }
 
-  // ── 4. The record, the holds, Shopify's nudge.
-  await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}/lines/${i}/resolution/log`).push().set(clean({ at: now, action: "swapped", note: `${plan.from} → ${plan.to} at ${placeName(piece.locationId)}${handed ? " (old item: return to shelf)" : ""}`, by: whoName(by), via }));
-  const after = await get(`${ONLINE_ORDERS_PATH}/${orderKey}`);
-  const want = holdRowsFor(after || {});
-  for (const key of new Set([line.pid && line.sizeKey ? `${line.pid}/${line.sizeKey}` : null, `${newPid}/${sizeKey}`].filter(Boolean))) {
+  // One log entry per swap (a deterministic key: a re-run writes the same one).
+  await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}/lines/${i}/resolution/log/swap_r${gen}`).set(clean({ at: now, action: "swapped", note: `${from} → ${to}${route ? ` at ${placeName(route.locationId)}` : ""}${handed ? " (old item: return to shelf)" : ""}`, by: whoName(by), via }));
+  const fresh = (await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}`).get()).val() || order;
+  const want = holdRowsFor(fresh);
+  for (const key of new Set([swappedFrom.pid && swappedFrom.sizeKey ? `${swappedFrom.pid}/${swappedFrom.sizeKey}` : null, `${newPid}/${newSizeKey}`].filter(Boolean))) {
     await db.ref(`${ONLINE_RESERVATIONS_PATH}/${key}/${orderKey}`).set(want[key] ? { ...want[key], at: now } : null);
   }
-  if (inc) for (const pid of new Set([line.pid, newPid].filter(Boolean))) await db.ref(`${DIRTY_PATH}/${pid}`).set(inc(1));
-  log(summary);
-  for (const n of notes) log(`  ${n}`);
-  return { ok: true, summary, plan, notes, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents, returns: returnRec ? [returnRec] : [], swappedFrom };
+  if (inc) for (const pid of new Set([swappedFrom.pid, newPid].filter(Boolean))) await db.ref(`${DIRTY_PATH}/${pid}`).set(inc(1));
+  return { notes, returns };
 }
