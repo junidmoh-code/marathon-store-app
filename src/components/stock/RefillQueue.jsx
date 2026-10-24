@@ -1,4 +1,4 @@
-// ─── THE REFILL QUEUE — one list, one design (owner spec 2026-08-08) ─────────
+// ─── THE REFILL QUEUE (lock proof — do not merge) — one list, one design (owner spec 2026-08-08) ─────────
 // Every ask a hub can act on renders here as an ORDINARY REQUEST LINE — one row
 // per (product, size), identical layout, identical actions (Fulfil / Out of
 // Stock), whatever raised it:
