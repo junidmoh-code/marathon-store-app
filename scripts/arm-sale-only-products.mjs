@@ -40,6 +40,12 @@ admin.initializeApp({
 });
 const db = admin.database();
 const EXECUTE = process.argv.includes("--execute");
+// --rollback: remove exactly the rows this script wrote (source policy_target,
+// prevAbsent, set from 11:41Z on 24 Oct — the writer stamps setBy with the admin email), through the same writer — the removal is in history too.
+// Used 24 Oct 13:46: the Clothing-Sold tabs these 11 were counted from have not
+// been mounted since 12 Jul (#202), so the products were never being refilled
+// by sales and arming them would have ADDED scan requests nobody approved.
+const ROLLBACK = process.argv.includes("--rollback");
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 const RUNNER = "arm-sale-only-products-20261024";
 
@@ -84,6 +90,26 @@ for (const p of PLAN) {
 }
 console.log(`${EXECUTE ? "EXECUTE" : "DRY RUN"} — ${plan.length} products`);
 for (const p of plan) console.log(`  ${p.loc.padEnd(12)} ${p.name.padEnd(30)} under ${p.under} (${p.from} ${p.numbers}) sizes ${p.sizes.join(",")} → ${p.rows.length ? "arm" : "already has rows, skip"}`);
+if (ROLLBACK) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dir = path.join(os.homedir(), "marathon-rollbacks", `arm-sale-only-products-ROLLBACK-${stamp}`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "stock_targets-before.json"), JSON.stringify(Object.fromEntries(plan.map((p) => [`stock_targets/${p.loc}/${p.pid}`, p.live])), null, 2));
+  const out = [];
+  for (const p of plan) {
+    const mine = Object.entries(p.live).filter(([, r]) => r && r.source === "policy_target" && r.prevAbsent === true && String(r.setAt || "") >= "2026-10-24T11:41:00").map(([k]) => k);
+    if (!mine.length) { out.push({ pid: p.pid, skipped: "no row written by this script" }); continue; }
+    const expected = Object.fromEntries(mine.map((k) => [k, p.live[k]]));
+    const res = await applyCategoryPolicy({ db, callerEmail: ADMIN_EMAIL, adminEmail: ADMIN_EMAIL, callerUid: RUNNER, nowMs: Date.now(),
+      data: { action: "setProductTargets", loc: p.loc, pid: p.pid, rows: [], remove: mine, expected } });
+    const after = await get(`stock_targets/${p.loc}/${p.pid}`);
+    out.push({ loc: p.loc, pid: p.pid, name: p.name, removed: mine, historyId: res?.historyId ?? null, after });
+    console.log(`  removed ${p.loc} ${p.name} ${mine.join(",")} → history ${res?.historyId ?? JSON.stringify(res).slice(0, 60)}; now ${JSON.stringify(after)}`);
+  }
+  fs.writeFileSync(path.join(dir, "rollback-log.json"), JSON.stringify(out, null, 2));
+  console.log(`log: ${path.join(dir, "rollback-log.json")}`);
+  process.exit(0);
+}
 if (!EXECUTE) process.exit(0);
 
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
