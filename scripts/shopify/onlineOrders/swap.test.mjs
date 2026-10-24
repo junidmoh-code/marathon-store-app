@@ -155,6 +155,20 @@ describe("swap before the pick (clothing)", () => {
     expect(f.writes.slice(n).filter(([, p]) => p.includes("/lines/1/") && !p.includes("estimate"))).toEqual([]);
   });
 
+  it("a crash after the swap landed (request still 'applying'): the next tick finishes THAT request — applied, owed once, never refused", async () => {
+    const { f, h } = await ingested();
+    await ask(f, 1, "POLO", "M");
+    // The first run: claimed, swapped, then died before saying so.
+    await f.db.ref("online_orders/9001/swapRequests/r1").update({ state: "applying", claimedAt: NOW - 10 * 60e3 });
+    const first = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "POLO", size: "M", by: YASMIN, via: "pos", requestId: "r1", expect: { pid: "TEE", sizeKey: "M" }, now: NOW, increment });
+    expect(first.ok).toBe(true);
+    await h.tick();
+    expect(request(f)).toMatchObject({ state: "applied", creditCents: 5000 });
+    expect(line(f, 1).routeGen).toBe(1); // swapped once, not twice
+    expect(line(f, 1).resolution.money).toMatchObject({ kind: "credit", amountCents: 5000, state: "manual" });
+    expect(h.mails.filter((m) => /store credit R50/.test(m.subject))).toHaveLength(1);
+  });
+
   it("a stale request (the line changed since Yasmin looked) is refused, nothing written", async () => {
     const { f, h } = await ingested();
     await f.db.ref("online_orders/9001/swapRequests/r1").set({ lineIndex: 1, pid: "POLO", size: "M", expectPid: "SOMETHING-ELSE", expectSizeKey: "M", by: YASMIN, at: NOW, state: "pending" });

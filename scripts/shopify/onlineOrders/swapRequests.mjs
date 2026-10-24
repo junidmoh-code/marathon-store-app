@@ -46,16 +46,25 @@ export async function applySwapRequests(ctx, id, order) {
     });
     if (!claim.committed || !claim.snapshot.val()) continue;
     let out;
-    try {
-      out = await swapOnlineOrderLine({
-        db: ctx.db, orderKey: id, lineIndex: Number(req.lineIndex), newPid: String(req.pid || ""), size: req.size ?? "_",
-        priceDecision: req.priceDecision || null, by: clean(req.by) || null, via: "pos",
-        expect: { pid: req.expectPid ?? null, sizeKey: req.expectSizeKey ?? null },
-        now: ctx.now, increment: ctx.increment, log: (m) => ctx.log(`  ${m}`),
-        displayFeedOn: ctx.displayFeedEnabled ? async (shop) => (await ctx.displayFeedEnabled(shop)) !== false : null,
-      });
-    } catch (e) {
-      out = { ok: false, refused: `the swap failed: ${String(e?.message || e).slice(0, 200)}` };
+    // RESUME: a crash after the swap landed but before this request said so.
+    // The line carries the request id the swap stamped on it — that swap was
+    // THIS request: finish it (the money step is idempotent), never refuse it.
+    const already = req.state === SWAP_REQUEST.APPLYING ? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}/lines/${Number(req.lineIndex)}`) : null;
+    if (already?.swappedFrom?.requestId === rid) {
+      const o = already.resolution?.outcome || {};
+      out = { ok: true, resumed: true, summary: `${orderLabel(order)} updated: ${already.swappedFrom.title || already.swappedFrom.pid} → ${already.title || already.pid} (resumed)`, creditCents: Number(o.creditCents) || 0, extraCents: Number(o.extraCents) || 0, returns: [] };
+    } else {
+      try {
+        out = await swapOnlineOrderLine({
+          db: ctx.db, orderKey: id, lineIndex: Number(req.lineIndex), newPid: String(req.pid || ""), size: req.size ?? "_",
+          priceDecision: req.priceDecision || null, by: clean(req.by) || null, via: "pos", requestId: rid,
+          expect: { pid: req.expectPid ?? null, sizeKey: req.expectSizeKey ?? null },
+          now: ctx.now, increment: ctx.increment, log: (m) => ctx.log(`  ${m}`),
+          displayFeedOn: ctx.displayFeedEnabled ? async (shop) => (await ctx.displayFeedEnabled(shop)) !== false : null,
+        });
+      } catch (e) {
+        out = { ok: false, refused: `the swap failed: ${String(e?.message || e).slice(0, 200)}` };
+      }
     }
     if (!out.ok) {
       await ctx.db.ref(path).update({ state: SWAP_REQUEST.REFUSED, why: String(out.refused || out.summary || "refused").slice(0, 400), refusedAt: ctx.now });
@@ -64,8 +73,10 @@ export async function applySwapRequests(ctx, id, order) {
     }
     applied = true;
     ctx.summary.swaps = (ctx.summary.swaps || 0) + 1;
-    await ctx.db.ref(path).update(clean({ state: SWAP_REQUEST.APPLIED, summary: out.summary, appliedAt: ctx.now, creditCents: out.creditCents || 0, extraCents: out.extraCents || 0, returns: out.returns?.length || 0 }));
+    // The difference BEFORE the request says applied: a crash in between
+    // resumes above and settles again (money() finds its own slot).
     await settleDifference(ctx, id, req, out);
+    await ctx.db.ref(path).update(clean({ state: SWAP_REQUEST.APPLIED, summary: out.summary, appliedAt: ctx.now, creditCents: out.creditCents || 0, extraCents: out.extraCents || 0, returns: out.returns?.length || 0 }));
   }
   return applied;
 }

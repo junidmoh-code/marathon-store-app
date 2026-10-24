@@ -71,13 +71,14 @@ const whoName = (by) => (typeof by === "string" ? by : by?.name || null);
 const saDate = (ms) => new Date(ms + 2 * 3600e3).toISOString().slice(0, 10);
 
 /** What the line WAS, kept on the swapped line (the card strikes it through: "Replaced by …, who, when"). */
-export function swapFromRecord(line, { at, by = null, via, hubOrders = [] }) {
+export function swapFromRecord(line, { at, by = null, via, hubOrders = [], requestId = null }) {
   return clean({
     pid: line.pid, size: line.size ?? null, sizeKey: line.sizeKey ?? null, title: line.title,
     photoUrl: line.photoUrl ?? null, unitPriceCents: line.unitPriceCents,
     locationId: line.source?.locationId ?? null, status: line.source?.status ?? null,
     ...(hubOrders.length ? { hubOrders } : {}),
     at, by, via,
+    ...(requestId ? { requestId } : {}),
   });
 }
 
@@ -130,7 +131,7 @@ async function defaultAvailable({ get, orderKey, order, i, pid, sizeKey, display
  */
 export async function swapOnlineOrderLine({
   orderKey, lineIndex, newPid, size, dry = false, allowHigher = false, priceDecision = null,
-  by = null, via = "cli", expect = null, db = null, admin = null, increment = null, now = Date.now(), log = () => {}, displayFeedOn = null,
+  by = null, via = "cli", requestId = null, expect = null, db = null, admin = null, increment = null, now = Date.now(), log = () => {}, displayFeedOn = null,
 }) {
   if (!db) ({ db, admin } = openDb());
   const get = async (p) => (await db.ref(p).get()).val();
@@ -189,7 +190,7 @@ export async function swapOnlineOrderLine({
   if (dry) return { ok: true, dry: true, summary: `DRY RUN — ${summary}`, plan, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents };
 
   // ── 1. The line (first, guarded: a line someone moved meanwhile is left alone).
-  const swappedFrom = swapFromRecord(line, { at: now, by, via, hubOrders: oldKeys });
+  const swappedFrom = swapFromRecord(line, { at: now, by, via, hubOrders: oldKeys, requestId });
   const item = {
     pid: newPid, size: size == null || size === "" ? "_" : String(size), sizeKey, title: product.name,
     photoUrl: product.photoUrl || product.photo || null, category: product.category ?? null, isFootwear,
