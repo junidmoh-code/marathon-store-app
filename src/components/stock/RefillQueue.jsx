@@ -107,25 +107,31 @@ const fmtSaDateTime = (iso) => {
 // once per (dest, product), so the policy cap below sees the row an owner set
 // exactly as the engine does. A product whose read has not come back yet is
 // ABSENT from the map, and saleRowPolicyCap leaves its rows uncapped until it
-// is: never cap on a guess while an explicit row might say more.
+// is: never cap on a guess while an explicit row might say more. A FAILED read
+// is not "no row": it stays absent and is retried every 30 s, so one dropped
+// read cannot leave a product uncapped for the life of the screen.
+const EXPLICIT_RETRY_MS = 30000;
 function useExplicitTargetRows(dest, pids) {
   const [rows, setRows] = useState({});
+  const [attempt, setAttempt] = useState(0);
   const wanted = pids.join("|");
   useEffect(() => {
     let live = true;
+    let retry = null;
     const missing = pids.filter((pid) => !(pid in rows));
     if (!dest || missing.length === 0) return undefined;
     Promise.all(missing.map((pid) => get(ref(database, `stock_targets/${dest}/${pid}`))
-      .then((snap) => [pid, snap.val() || null])
-      .catch(() => null)))
-      .then((pairs) => {
+      .then((snap) => ({ pid, row: snap.val() || null }))
+      .catch(() => ({ pid, failed: true }))))
+      .then((results) => {
         if (!live) return;
-        const got = pairs.filter(Boolean);
-        if (got.length) setRows((cur) => ({ ...cur, ...Object.fromEntries(got) }));
+        const got = results.filter((r) => !r.failed);
+        if (got.length) setRows((cur) => ({ ...cur, ...Object.fromEntries(got.map((r) => [r.pid, r.row])) }));
+        if (got.length < results.length) retry = setTimeout(() => setAttempt((n) => n + 1), EXPLICIT_RETRY_MS);
       });
-    return () => { live = false; };
+    return () => { live = false; if (retry) clearTimeout(retry); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dest, wanted]);
+  }, [dest, wanted, attempt]);
   return rows;
 }
 

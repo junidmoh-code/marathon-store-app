@@ -112,6 +112,14 @@ describe("capSaleRowsToPolicy — the 23 Oct incident", () => {
     expect(covered[0].policyCap.inbound).toBe(2);
   });
 
+  it("a partly-sent open request counts its REMAINDER (qty) as inbound, not qty − sent", () => {
+    const empty = ctxFor({ cells: { pAJ1: cellsOf({ 9: 0 }) } });
+    // keep 2, nothing on hand, a request with 2 still to come (1 already sent) → room 0.
+    const { rows: out, covered } = capWith(empty, [row("pAJ1", "9", 3)], [{ productId: "pAJ1", size: "9", qty: 2, sent: 1 }]);
+    expect(out).toEqual([]);
+    expect(covered[0].policyCap.inbound).toBe(2);
+  });
+
   it("units already sent are never taken back — the cap applies to what is left", () => {
     const empty = ctxFor({ cells: { pAJ1: cellsOf({ 9: 1 }) } });
     const { rows: out } = capWith(empty, [row("pAJ1", "9", 3, { sent: 1 })]);

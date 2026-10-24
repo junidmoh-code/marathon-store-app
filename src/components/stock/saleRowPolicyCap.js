@@ -87,7 +87,8 @@ const onHandAt = (destCells, pid, size) => {
  * Cap sale rows to the policy room of their cell.
  *
  * @param saleRows  pendingSaleRows output (qty = asked, sent = already sent)
- * @param requests  open request rows for the same destination ({productId, size, qty, sent})
+ * @param requests  open request rows for the same destination ({productId, size, qty});
+ *                  qty is the REMAINDER still to come (sent units already left it)
  * @param keepFor   (pid, size) → number | null  (policyKeepFor bound to a ctx)
  * @param destCells decoded hub cells
  * @returns { rows, covered } — `rows` keeps the input order; a trimmed row
@@ -99,7 +100,9 @@ export function capSaleRowsToPolicy(saleRows = [], { requests = [], keepFor, des
   for (const r of requests || []) {
     if (!r || !r.productId || r.size == null) continue;
     const key = `${r.productId}|${engineSizeKey(r.size)}`;
-    const left = Math.max((Number(r.qty) || 1) - (Number(r.sent) || 0), 0);
+    // A REQUEST row's qty is already the remainder (a partial send lowers qty
+    // and raises sentQty), unlike a sale row's qty, which is the total asked.
+    const left = Math.max(Number(r.qty) || 1, 0);
     inboundByCell.set(key, (inboundByCell.get(key) || 0) + left);
   }
   const decision = new Map();       // rowKey → { give, ev } for capped cells

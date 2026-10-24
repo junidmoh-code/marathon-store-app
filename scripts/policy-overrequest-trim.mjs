@@ -86,7 +86,7 @@ const pids = [...new Set([...demand.values()].map((d) => d.pid))];
 const get = async (p) => (await db.ref(p).get()).val();
 const product = {}, cells = {}, targets = {}, responses = {}, openReq = {};
 await Promise.all(pids.map(async (pid) => {
-  product[pid] = { name: await get(`products/${pid}/name`), categoryKey: await get(`products/${pid}/categoryKey`) };
+  product[pid] = { name: await get(`products/${pid}/name`), categoryKey: await get(`products/${pid}/categoryKey`), category: await get(`products/${pid}/category`) };
   for (const h of HUBS) {
     cells[`${h}|${pid}`] = await get(`stock/${h}/${pid}`);
     targets[`${h}|${pid}`] = await get(`stock_targets/${h}/${pid}`);
@@ -103,7 +103,13 @@ for (const r of Object.values(reqs)) {
   openReq[k] = (openReq[k] || 0) + Math.max(1, Number(r.qty) || 1);
 }
 
+// The queue's footwear gate (saleRowPolicyCap isPolicyFootwearLine): an
+// explicit row only caps a footwear line, never anything else.
+const FOOTWEAR_KEYS = ["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"];
+const isFootwearLine = (p, size) => /^\d+(\.\d+)?$/.test(String(size).trim())
+  && (p?.categoryKey ? FOOTWEAR_KEYS.includes(p.categoryKey) : p?.category === "Footwear");
 const keepFor = (hub, pid, size) => {
+  if (!isFootwearLine(product[pid], size)) return null;
   const row = targets[`${hub}|${pid}`]?.[enc(size)];
   if (row && typeof row.target === "number") return { keep: row.target, source: "explicit" };
   if (group?.armed && group.memberCategoryKeys?.includes(product[pid]?.categoryKey)) {
@@ -155,6 +161,9 @@ for (const r of toClose) {
   const live = (await db.ref(p).get()).val();
   if (live && typeof live.response === "string") { log.push({ path: p, skipped: "answered meanwhile", live }); continue; }
   if ((Number(live?.fulfilledQty) || 0) !== r.sent) { log.push({ path: p, skipped: "sent count moved meanwhile", live }); continue; }
+  // Re-check the shelf too: a sale since the census can reopen room.
+  const liveOnHand = Math.max(0, Number((await db.ref(`stock/${r.hub}/${r.pid}/${enc(r.size)}/qty`).get()).val()) || 0);
+  if (Math.max(0, r.keep - liveOnHand - r.inbound) > 0) { log.push({ path: p, skipped: "room reopened meanwhile", liveOnHand }); continue; }
   await db.ref(p).update({
     response: "policy_trimmed",
     respondedOn,
