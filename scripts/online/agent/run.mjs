@@ -23,6 +23,7 @@ import {
   canSend, moneyAllowed, judgeSwap, acceptModelText, fallbackWords, composeMessage, subjectTag, whatsappText,
 } from "./core.mjs";
 import { CREDIT_SCOPE, REFUND_SCOPE, issueStoreCredit, refundLine } from "./money.mjs";
+import { swappedLine, swapFromRecord } from "../../lib/swap-line.mjs";
 
 export const AGENT_META = "online_orders_meta/customerAgent";
 const AGENT_STATUSES = new Set(["new", "picking", "ready", "needs_attention", "packed"]);
@@ -318,21 +319,14 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
   // The swap: the line becomes the new item, routed where the offer found it.
   const fresh = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}`);
   const packed = fresh?.status === ORDER_STATUS.PACKED;
-  const swappedFrom = { pid: line.pid, size: line.size ?? null, sizeKey: line.sizeKey ?? null, title: line.title, unitPriceCents: line.unitPriceCents };
-  const newLine = (cur) => {
-    const { escalation: _e, escalationOverride: _o, ...rest } = cur;
-    return {
-      ...rest,
-      pid: offer.pid, size: offer.size, sizeKey: offer.sizeKey || stockSizeKey(offer.size), title: offer.title,
-      photoUrl: offer.photoUrl ?? null, category: offer.category ?? cur.category ?? null,
-      unitPriceCents: offer.priceCents,
-      originalUnitPriceCents: Number.isInteger(cur.originalUnitPriceCents) ? cur.originalUnitPriceCents : cur.unitPriceCents,
-      swappedFrom, routeGen: (Number(cur.routeGen) || 0) + 1,
-      escalationGen: (Number(cur.escalationGen) || 0) + 1,
-      source: { locationId: offer.locationId, status: offer.status },
-      resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, state: "closed", closedAt: ctx.now }, outcome: { kind: "swap", pid: offer.pid, size: offer.size, creditCents: judged.creditCents, at: ctx.now } },
-    };
-  };
+  // THE swap's own line builder (scripts/lib/swap-line.mjs): a customer's pick
+  // leaves the same record as Jimmy's or the POS "Replace".
+  const swappedFrom = swapFromRecord(line, { at: ctx.now, by: "customer agent", via: "agent" });
+  const outcome = { kind: "swap", pid: offer.pid, size: offer.size, creditCents: judged.creditCents, at: ctx.now, by: "customer agent", via: "agent" };
+  const newLine = (cur) => swappedLine(cur, { ...offer, sizeKey: offer.sizeKey || stockSizeKey(offer.size) }, {
+    swappedFrom, outcome,
+    resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, state: "closed", closedAt: ctx.now }, outcome },
+  });
   if (packed) {
     // The parcel has gone: the new item ships on its own.
     const fid = followUpId(orderId, i);
@@ -341,7 +335,7 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
     const res = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).transaction((cur) => (cur == null ? clean(follow) : undefined));
     if (!res.committed && !res.snapshot.val()) return;
     await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
-    await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, state: "closed", closedAt: ctx.now }, outcome: { kind: "swap", pid: offer.pid, size: offer.size, creditCents: judged.creditCents, at: ctx.now, movedTo: fid } } }));
+    await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, state: "closed", closedAt: ctx.now }, outcome: { ...outcome, movedTo: fid } } }));
   } else {
     const done = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation?.state === "offering" ? newLine(cur) : undefined));
     if (!done) return;

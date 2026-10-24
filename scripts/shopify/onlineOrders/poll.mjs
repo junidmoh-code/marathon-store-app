@@ -41,6 +41,7 @@ import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/
 import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs";
 import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
+import { applySwapRequests } from "./swapRequests.mjs";
 
 export const META_PATH = "online_orders_meta";
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -143,6 +144,11 @@ export async function runOrdersPoll(deps) {
       kept.add(id);
       let order = order0;
       try {
+        // The POS "Replace" (swapRequests.mjs) first: the rest of the pass
+        // then raises the new line's hub order / strip entry and its hold.
+        if (order?.swapRequests && await applySwapRequests(ctx, id, order)) {
+          order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+        }
         // Escalation raises requests staff see, so only with the switch on.
         if (ctx.escalate && await escalateOrder(ctx, id, order, escalationHelpers(ctx))) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
@@ -819,6 +825,11 @@ async function shipOrder(ctx, id, order) {
       updatedAt: now,
     });
     ctx.summary.fulfilled++;
+    // A swapped line: Shopify fulfilled the ORIGINAL line item, which the app
+    // never deducted. Push both products again now, so the original is never
+    // left sold out on the website (the reconciler sets on_hand from app stock).
+    const swapped = linesOf(order).flatMap((l) => (l?.swappedFrom?.pid ? [l.originalPid, l.swappedFrom.pid, l.pid] : []));
+    for (const pid of new Set(swapped.filter(Boolean))) await db.ref(`${DIRTY_PATH}/${pid}`).set(ctx.increment(1));
     log(`  ✓ ${orderLabel(order)}: fulfilled on Shopify${out.alreadyDone ? " (it already was)" : ", customer notified"}`);
     return;
   }

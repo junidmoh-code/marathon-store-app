@@ -360,6 +360,61 @@ is never fulfilled twice, even when one Shopify line is split over a shipped
 and a resolving app line. A pack that shipped every line fulfils the whole
 order exactly as before.
 
+## Swap a line (Replace) — owner spec 2026-10-24
+
+ONE implementation: `scripts/lib/swap-line.mjs` `swapOnlineOrderLine`. Callers:
+Jimmy (`scripts/swap-online-order-line.mjs`, in its own process), the POS
+"Replace" button (through the poller, below), and the customer agent's pick
+(it builds its line with the same `swappedLine` / `swapFromRecord`).
+
+- **POS → poller.** The till cannot mint a hub code or close a strip entry, so
+  it writes `/online_orders/{id}/swapRequests/{rid}` =
+  `{ lineIndex, pid, size, expectPid, expectSizeKey, priceDecision?, by: {uid, name}, at, state: "pending" }`
+  (the order-level write the `online_orders` permission already has — no rule
+  change). The poller's keep pass applies it FIRST (`swapRequests.mjs`), then
+  the same pass raises the new hub order (routeGen + 1 → a fresh three-letter
+  code) or strip entry, the hold and the parcel estimate. `state` →
+  `applied {summary, creditCents, extraCents}` or `refused {why}`; the POS may
+  take back a request still `pending` (`cancelled`). The POS refuses Pack while
+  any request is pending, and re-reads the order after its pack claim.
+- **Atomic with the pack**: the swap is ONE transaction on the order — refused
+  when a `packClaim` / `pack` exists — and clears the old item's `basket/{i}`,
+  `basketBy/{i}` and `codesIn/{old codes}` in the same write. The clean-up
+  (`afterSwap`) is idempotent and rebuilt from `swappedFrom` (it keeps the old
+  `entryKey` and `escalation`), so a crash after the line landed is finished by
+  a later tick (`swappedFrom.requestId`), never reported as refused.
+- **A second swap** on a line whose first swap recorded a price difference is
+  refused (one money slot per line; Junid changes it by hand). `originalPid`
+  keeps the product Shopify lists on the line through any number of swaps.
+- **The swap**: the line (guarded on pid/size/status/routeGen) becomes the new
+  product routed by the live router against free stock; `swappedFrom = { pid,
+  size, sizeKey, title, photoUrl, unitPriceCents, locationId, status,
+  hubOrders?, at, by, via }`; `originalUnitPriceCents` keeps what was paid;
+  `resolution.outcome = { kind: "swap", pid, size, creditCents, extraCents?,
+  priceDecision?, at, by, via }`. Old hub order(s) still incoming are removed
+  (the established cancel), an open strip entry is tombstoned `cancelled`, an
+  open escalation request is withdrawn (untouched only), the registry row goes.
+  Holds are recomputed (`holdRowsFor`) for both products at once.
+- **Return to shelf**: an item already handed over (hub order `ready` /
+  `collected`, a strip entry answered Handed over, a line `handed`) →
+  `/online_orders/{id}/returns/{i}_{gen} = { lineIndex, pid, size, title,
+  locationId, hubOrders?, entryKey?, swappedTo, at, by, via, state: "open" }`;
+  the hub order gets `returnToShelf {at, by, note}` (a green RETURN TO SHELF
+  banner on the hub's order card); a Trophy item gets a strip row of kind
+  `online_return` ("Put back", closed through `completeDisplayCheck` with
+  result `put_back`, which sets the return `done`). The POS card lists open
+  returns with "Put back" (writes `state: "done"`, and the hub order's
+  `returnToShelf.doneAt`). **No stock moves**: nothing was ever deducted.
+- **Money** (nothing charged or credited from the POS): cheaper → the agent's
+  `money()` slot with no Shopify scope (`resolution.money {kind: credit, state:
+  manual, via: junid_email}`) and its "PLEASE DO THIS BY HAND" email to Junid;
+  dearer → only with the second tap: `customer_pays` (Junid emailed to collect)
+  or `we_absorb` (recorded).
+- **Shopify** is never edited: the Pack deducts the replacement at its routed
+  location and fulfils the ORIGINAL line item; after the fulfilment the poller
+  marks both products dirty, so the reconciler sets the original's on_hand back
+  to its app count (it was never deducted) — it is not left sold out.
+
 ## Out of scope (seam left)
 
 Courier booking and waybills. `shipping.provider` is null and

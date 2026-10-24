@@ -13971,6 +13971,12 @@ function WarehouseView({ products = [], orders, onExit }) {
                     </div>
                     {/* A website order the hub already marked Out of Stock once —
                         escalation round 2 (docs/ONLINE-ORDERS.md § Escalation). */}
+                    {/* A website order swapped after the hub sent this pair (scripts/lib/swap-line.mjs). */}
+                    {order.channel === "online" && order.returnToShelf && !order.returnToShelf.doneAt && (
+                      <div role="alert" data-testid="hub-return-to-shelf" style={{ marginTop:6, padding:"6px 9px", borderRadius:8, background:"rgba(74,202,128,.14)", border:"2px solid #4ACA7A", color:"#4ACA7A", fontSize:12, fontWeight:900, letterSpacing:".04em" }}>
+                        RETURN TO SHELF — the website customer swapped it; put this pair back
+                      </div>
+                    )}
                     {order.channel === "online" && order.checkProperly === true && (
                       <div role="alert" style={{ marginTop:6, padding:"6px 9px", borderRadius:8, background:"rgba(255,107,107,.14)", border:"2px solid #FF6B6B", color:"#FF6B6B", fontSize:12, fontWeight:900, letterSpacing:".04em" }}>
                         CHECK PROPERLY — website order

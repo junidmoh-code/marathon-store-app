@@ -573,7 +573,7 @@ function completionDecision({ record, expectedCheckId, result, override, stockQt
   // An online pick has no soft-block: "Not found" is not contradicted by the
   // stock cell — the cell is what routed the order there in the first place,
   // and the person at the rail is the only evidence that the unit is gone.
-  if (isOnlinePickRecord(record)) return { kind: "complete", overridden: false };
+  if (isOnlinePickRecord(record) || isOnlineReturnRecord(record)) return { kind: "complete", overridden: false };
   const stock = Number(stockQty) || 0;
   if (result === "no_stock" && stock > 0 && override !== true) {
     return { kind: "needs_override", stockQty: stock };
@@ -635,17 +635,27 @@ const ONLINE_PICK_KIND = "online_pick";
 const ONLINE_ORDERS_PATH = "online_orders";
 const ONLINE_LINE_HANDED = "handed";
 const ONLINE_LINE_NOT_FOUND = "not_found";
+// A swapped line's old item going back to the floor (scripts/lib/swap-line.mjs,
+// mirrored from src/utils/onlineOrders.js ONLINE_RETURN_KIND): one verdict.
+const ONLINE_RETURN_KIND = "online_return";
+const ONLINE_RETURN_PUT_BACK = "put_back";
 
 const DISPLAY_RESULTS = Object.freeze(["confirmed", "no_stock"]);
 const ONLINE_PICK_RESULTS = Object.freeze([ONLINE_LINE_HANDED, ONLINE_LINE_NOT_FOUND]);
-const ALL_RESULTS = Object.freeze([...DISPLAY_RESULTS, ...ONLINE_PICK_RESULTS]);
+const ONLINE_RETURN_RESULTS = Object.freeze([ONLINE_RETURN_PUT_BACK]);
+const ALL_RESULTS = Object.freeze([...DISPLAY_RESULTS, ...ONLINE_PICK_RESULTS, ...ONLINE_RETURN_RESULTS]);
 
 function isOnlinePickRecord(record) {
   return !!record && typeof record === "object" && record.kind === ONLINE_PICK_KIND;
 }
 
+function isOnlineReturnRecord(record) {
+  return !!record && typeof record === "object" && record.kind === ONLINE_RETURN_KIND;
+}
+
 // The verdicts a record of this kind may be closed with — and ONLY those.
 function resultFitsRecord(record, result) {
+  if (isOnlineReturnRecord(record)) return ONLINE_RETURN_RESULTS.includes(result);
   return (isOnlinePickRecord(record) ? ONLINE_PICK_RESULTS : DISPLAY_RESULTS).includes(result);
 }
 
@@ -683,6 +693,7 @@ function saleChannelPath(saleId) {
 // this one (kind not_found, same `at`), it is left exactly as it is — so a
 // retry never strips the poller's `mailedAt` stamp and re-sends the email.
 function onlineOrderOutcomeUpdates({ record, store, storeName, order }) {
+  if (isOnlineReturnRecord(record)) return onlineReturnUpdates({ record, order });
   if (!isOnlinePickRecord(record)) return { skip: "not-online-pick" };
   if (record.status !== "completed" || !ONLINE_PICK_RESULTS.includes(record.result)) return { skip: "not-completed" };
   const orderId = record.orderId;
@@ -700,6 +711,10 @@ function onlineOrderOutcomeUpdates({ record, store, storeName, order }) {
   // (Settings → Resolve) gets a fresh entry key (…__{i}_r1), so a late answer
   // on — or the reap of — the entry it had before can never flip the new one.
   if (src.entryKey && src.entryKey !== `displayChecks_active/${store}/${record.dedupeKey}`) return { skip: "stale-entry" };
+  // A line swapped a moment ago has no entry yet: an answer on the entry it had
+  // BEFORE (an older routeGen) is not the new line's (scripts/lib/swap-line.mjs).
+  const gen = Number(line.routeGen) || 0;
+  if (!src.entryKey && record.dedupeKey !== `online__${orderId}__${i}${gen > 0 ? `_r${gen}` : ""}`) return { skip: "stale-entry" };
 
   const at = Number(record.completedAt);
   const by = (record.completedBy && record.completedBy.uid) || null;
@@ -728,7 +743,32 @@ function onlineOrderOutcomeUpdates({ record, store, storeName, order }) {
   return { updates };
 }
 
+// A completed online_return ("Put back") closes the order's return record —
+// only an open one, only this record's (returnId + entry). Moves no stock.
+function onlineReturnUpdates({ record, order }) {
+  if (record.status !== "completed" || !ONLINE_RETURN_RESULTS.includes(record.result)) return { skip: "not-completed" };
+  const orderId = record.orderId;
+  const rid = record.returnId;
+  if (typeof orderId !== "string" || !orderId || /[.#$[\]/]/.test(orderId)
+      || typeof rid !== "string" || !rid || /[.#$[\]/]/.test(rid)) return { skip: "bad-record" };
+  if (!order || typeof order !== "object") return { skip: "no-order" };
+  const ret = order.returns ? order.returns[rid] : null;
+  if (!ret || typeof ret !== "object") return { skip: "no-return" };
+  if (ret.state !== "open") return { updates: {} };
+  const base = `${ONLINE_ORDERS_PATH}/${orderId}/returns/${rid}`;
+  return { updates: {
+    [`${base}/state`]: "done",
+    [`${base}/doneAt`]: Number(record.completedAt) || null,
+    [`${base}/doneBy`]: (record.completedBy && record.completedBy.name) || null,
+    [`${base}/doneByUid`]: (record.completedBy && record.completedBy.uid) || null,
+    [`${base}/doneVia`]: "strip",
+  } };
+}
+
 module.exports = {
+  ONLINE_RETURN_KIND,
+  ONLINE_RETURN_RESULTS,
+  isOnlineReturnRecord,
   ONLINE_PICK_KIND,
   ONLINE_PICK_RESULTS,
   DISPLAY_RESULTS,

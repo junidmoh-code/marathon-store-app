@@ -23,7 +23,7 @@
 // Held checks are excluded from `assigned`/`done` on purpose: a held check is
 // nobody's failure to action (design §2, §8.10).
 
-import { ONLINE_PICK_KIND } from "../../utils/onlineOrders";
+import { ONLINE_PICK_KIND, ONLINE_RETURN_KIND } from "../../utils/onlineOrders";
 
 // SA-time "HH:MM" for a sale/complete timestamp. Accepts an ISO string (movement
 // ts) or an epoch-ms number (createdAt/completedAt). Timezone is pinned to
@@ -56,8 +56,13 @@ function sortByTsDesc(items, field) {
 // not the Today strip, not Analytics, not anyone's tally. Every stat below is
 // computed over complianceOnly(); a pick is answered "Handed to packer" or
 // "Not found", which says nothing about how a display is kept.
+// A swapped line's RETURN TO SHELF (kind "online_return", scripts/lib/swap-line.mjs)
+// rides the same strip and is excluded the same way.
 export function isOnlinePick(record) {
-  return !!record && record.kind === ONLINE_PICK_KIND;
+  return !!record && (record.kind === ONLINE_PICK_KIND || record.kind === ONLINE_RETURN_KIND);
+}
+export function isOnlineReturn(record) {
+  return !!record && record.kind === ONLINE_RETURN_KIND;
 }
 export function complianceOnly(items) {
   return (Array.isArray(items) ? items : []).filter((r) => r && typeof r === "object" && !isOnlinePick(r));
