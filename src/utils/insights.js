@@ -178,6 +178,33 @@ function noteNameCollision(seen, name, productId, onCollision) {
   console.warn(msg);
 }
 
+// ─── PAIRS SOLD, ONCE EACH (Junid, 24 Oct 2026) ─────────────────────────────
+// "Replace what sold" counts PAIRS SOLD — the /restock_log rows the POS writes
+// when an order is collected or a walk-in is rung up — never the times an
+// order was marked ready. A ready is a pull for a customer, not a sale: on
+// 23 Oct one 16-pair order placed and readied three times asked Central for
+// ×3 of every size while one POS sale took one pair each.
+//
+// One sale = at most one line per pair. An ORDER row names its pair (one
+// order number per pair), so a second row for the same sale, order, product
+// and size is a double write and counts once. A WALK-IN row is written once
+// PER UNIT with no order number (POS logFootwearSold: qty 2 = two identical
+// rows), so walk-in rows are never merged — they are the pairs.
+export function soldPairEntries(entries) {
+  const seen = new Set();
+  const out = [];
+  for (const e of entries || []) {
+    if (!e) continue;
+    if (e.saleId && e.orderNumber != null && e.orderNumber !== "") {
+      const k = `${e.saleId}|${e.orderNumber}|${e.productId ?? e.productName ?? ""}|${e.size ?? ""}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+    }
+    out.push(e);
+  }
+  return out;
+}
+
 // Today's-sales group builder (moved from App.jsx so it sits next to
 // restockCountsFromLog — the two MUST share sourceGroupKey, see above).
 // entries = restock_log/{SA-date} rows the POS writes on every collected order:

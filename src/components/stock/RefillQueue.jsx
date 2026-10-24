@@ -439,6 +439,9 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // Explicit row not read yet → the group policy alone (explicitRows has
       // no entry, so resolveTarget falls through to it), never uncapped.
       keepFor: (pid, size) => policyKeepFor(ctx, DEST_LOC, pid, size),
+      // Junid, 24 Oct: requests come only from the scan versus policy — a
+      // policy cell's sale rows are never work here.
+      scanOnly: true,
     });
   }, [saleRows, requestRows, engineConfig, byId, destCells, explicitRows, DEST_LOC]);
 
@@ -894,7 +897,8 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
             <b style={{ color: GREEN }}>Already covered:</b>{" "}
             <b style={{ color: "rgba(255,255,255,.85)" }}>{byId.get(r.productId)?.name || r.productName || r.productId}</b>{" "}
             size {String(r.size)} — {destLabel} keeps {r.policyCap.keep}, has {r.policyCap.onHand} on the shelf
-            {r.policyCap.inbound > 0 ? ` and ${r.policyCap.inbound} on the way` : ""}. Nothing to send.
+            {r.policyCap.inbound > 0 ? ` and ${r.policyCap.inbound} on the way` : ""}.
+            {r.policyCap.scan ? " The hourly scan asks for this size by policy — nothing to send from here." : " Nothing to send."}
           </span>
         </div>
       ))}

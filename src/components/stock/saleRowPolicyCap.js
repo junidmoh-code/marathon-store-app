@@ -34,6 +34,14 @@
 // hub. Without that, a hub cell sold to zero would read as a dead size, the
 // keep would resolve 0, and the cap would switch itself off exactly when the
 // row matters most. An explicit row of 0 still caps to 0 — that is a decision.
+//
+// ═══ THE SCAN OWNS A POLICY CELL (Junid, 24 Oct 2026) ═══════════════════════
+// "A refill request is raised ONLY by the scan comparing what is on hand
+// against policy." With `scanOnly`, a footwear cell whose keep resolves is the
+// hourly scan's: its sale rows are never pickable work, whatever the room —
+// they move to `covered` (evidence `scan: true`), and the scan asks for the
+// size when on hand falls to the policy's ask-at point. The room arithmetic
+// above stays as the backstop for callers that do not pass `scanOnly`.
 import { resolveTarget, engineSizeKey } from "./seatingCore";
 import { productIsFootwear, sizeLooksLikeShoe } from "../../utils/footwearLine";
 
@@ -95,11 +103,12 @@ const onHandAt = (destCells, pid, size) => {
  *                  qty is the REMAINDER still to come (sent units already left it)
  * @param keepFor   (pid, size) → number | null  (policyKeepFor bound to a ctx)
  * @param destCells decoded hub cells
+ * @param scanOnly  true → a cell whose keep resolves asks NOTHING here (the scan owns it)
  * @returns { rows, covered } — `rows` keeps the input order; a trimmed row
  *          carries `policyCap: { asked, keep, onHand, inbound }`. Every input
  *          row lands in exactly one of the two lists.
  */
-export function capSaleRowsToPolicy(saleRows = [], { requests = [], keepFor, destCells = {} } = {}) {
+export function capSaleRowsToPolicy(saleRows = [], { requests = [], keepFor, destCells = {}, scanOnly = false } = {}) {
   const inboundByCell = new Map();
   for (const r of requests || []) {
     if (!r || !r.productId || r.size == null) continue;
@@ -123,13 +132,13 @@ export function capSaleRowsToPolicy(saleRows = [], { requests = [], keepFor, des
     if (typeof keep !== "number" || !Number.isFinite(keep) || keep < 0) continue;
     const onHand = onHandAt(destCells, productId, size);
     const inbound = inboundByCell.get(key) || 0;
-    let room = Math.max(0, keep - onHand - inbound);
+    let room = scanOnly ? 0 : Math.max(0, keep - onHand - inbound);
     const ordered = [...rows].sort((a, b) => (a.createdMs - b.createdMs) || String(a.rowKey).localeCompare(String(b.rowKey)));
     for (const row of ordered) {
       const remaining = Math.max((Number(row.qty) || 1) - (Number(row.sent) || 0), 0);
       const give = Math.min(remaining, room);
       room -= give;
-      if (give < remaining) decision.set(row.rowKey, { give, ev: { asked: Number(row.qty) || 1, keep, onHand, inbound } });
+      if (give < remaining || scanOnly) decision.set(row.rowKey, { give, ev: { asked: Number(row.qty) || 1, keep, onHand, inbound, ...(scanOnly ? { scan: true } : {}) } });
     }
   }
   const out = [];
@@ -137,7 +146,7 @@ export function capSaleRowsToPolicy(saleRows = [], { requests = [], keepFor, des
   for (const row of saleRows || []) {
     const d = row && decision.get(row.rowKey);
     if (!d) { out.push(row); continue; }
-    if (d.give === 0) covered.push({ ...row, policyCap: d.ev });
+    if (d.give === 0 || scanOnly) covered.push({ ...row, policyCap: d.ev });
     else out.push({ ...row, qty: (Number(row.sent) || 0) + d.give, policyCap: d.ev });
   }
   return { rows: out, covered };
