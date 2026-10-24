@@ -13,10 +13,10 @@
 
 "use strict";
 
-const { isOnlinePickRecord, onlineOrderOutcomeUpdates } = require("./lib.cjs");
+const { isOnlinePickRecord, isOnlineReturnRecord, onlineOrderOutcomeUpdates } = require("./lib.cjs");
 
 async function applyOnlineOrderOutcome(db, store, record, { storeName } = {}) {
-  if (!isOnlinePickRecord(record)) return true;
+  if (!isOnlinePickRecord(record) && !isOnlineReturnRecord(record)) return true;
   const orderId = record.orderId;
   if (typeof orderId !== "string" || !orderId || /[.#$[\]/]/.test(orderId)) {
     console.error("online_pick: record has no usable orderId; the order cannot be told", record.checkId);

@@ -34,6 +34,18 @@ async function renderStrip(rows) {
   return tree;
 }
 
+describe("Website orders strip — RETURN TO SHELF (a swapped line's old item)", () => {
+  const RET = { ...ROW, key: "online__9__0_r1__return", checkId: "R1", kind: "online_return", returnId: "0_1" };
+  it("says put it back, shows ONE button, and Put back → completeDisplayCheck(put_back) for THIS row", async () => {
+    const tree = await renderStrip([RET]);
+    expect(all(tree)).toContain("RETURN TO SHELF");
+    expect(byTestId(tree, "web-handed")).toHaveLength(0);
+    expect(byTestId(tree, "web-notfound")).toHaveLength(0);
+    await act(async () => { byTestId(tree, "web-put-back")[0].props.onClick(); });
+    expect(callMock).toHaveBeenCalledWith({ store: "marathon-pe", key: "online__9__0_r1__return", checkId: "R1", result: "put_back", override: false });
+  });
+});
+
 describe("Website orders strip", () => {
   it("is hidden when nothing is waiting", async () => {
     expect((await renderStrip([])).toJSON()).toBeNull();

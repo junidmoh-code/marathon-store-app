@@ -63,6 +63,9 @@ export const PACKING_STORE = "marathon-pe";
 
 // Feed entry kind, on /online_picks rows and on display-check records.
 export const ONLINE_PICK_KIND = "online_pick";
+// A swapped line's old item, already handed over, going back to a shop's floor
+// (scripts/lib/swap-line.mjs). One verdict: "put_back". Moves no stock.
+export const ONLINE_RETURN_KIND = "online_return";
 
 export const ORDER_STATUS = Object.freeze({
   NEW: "new",

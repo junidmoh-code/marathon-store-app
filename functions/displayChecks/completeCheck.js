@@ -47,9 +47,10 @@ const {
   isOnlinePickRecord,
   DISPLAY_RESULTS,
   ONLINE_PICK_RESULTS,
+  ONLINE_RETURN_RESULTS,
 } = require("./lib.cjs");
 
-const ALL_RESULTS = [...DISPLAY_RESULTS, ...ONLINE_PICK_RESULTS];
+const ALL_RESULTS = [...DISPLAY_RESULTS, ...ONLINE_PICK_RESULTS, ...ONLINE_RETURN_RESULTS];
 const { guardedMutate } = require("./guardedTransaction.cjs");
 const { applyOnlineOrderOutcome } = require("./onlineOrder.cjs");
 const { locationName, SEED_REGISTRY } = require("../lib/network-registry.cjs");
@@ -93,6 +94,7 @@ const COMPLETED_LOG_TYPE = Object.freeze({
   no_stock: "completed_no_stock",
   handed: "completed_handed",
   not_found: "completed_not_found",
+  put_back: "completed_put_back",
 });
 
 // Archive a committed completed record to the day node + write the audit log,
