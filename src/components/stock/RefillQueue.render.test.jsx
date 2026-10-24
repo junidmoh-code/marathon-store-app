@@ -59,6 +59,12 @@ vi.mock("../PermissionsContext", () => ({ usePermissions: () => ({ ...perm }) })
 const applyMovementMock = vi.fn(() => Promise.resolve({ ok: true }));
 vi.mock("./applyMovement", () => ({ applyMovement: (...a) => applyMovementMock(...a) }));
 vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toISOString(), serverNowMs: () => NOW }));
+// These cases exercise the SALE-ROW machinery (Fulfil / Out of Stock on a
+// sale line, release windows over sale cells). Sale-raised requests are OFF
+// live (config/saleRaisedRequests.js, Junid 24 Oct) — the machinery stays for
+// the day they are switched back on, so it is tested with the switch ON here.
+// saleRaisedOff.render.test.jsx pins the live setting: no sale row is work.
+vi.mock("../../config/saleRaisedRequests", () => ({ SALE_RAISED_REQUESTS: true }));
 
 const { default: RefillQueue } = await import("./RefillQueue.jsx");
 const { pendingSaleRows } = await import("./refillQueueCore.js");

@@ -84,3 +84,41 @@ covered rows move to "Already covered" with their numbers.
 `maxFootwearIntentsPerRun` was left at 25: the code clamps 0 back to 25
 (`Math.max(1, …)`), and pausing the engine would stop every Hub 1 sneaker
 refill without touching this leak.
+
+## Sale-raised requests switched off (Junid's decision, 24 Oct)
+
+**Which flows raised requests from sales.** Only Hub 2's "replace what sold"
+lines in the Refill Queue. The Clothing-Sold refill tabs (shop clothing from
+ledger `sold` movements) have not been mounted since 12 Jul (#202): shop
+clothing has been scan-only since then.
+
+**Products relying on them with no policy (Hub 2, last 6 days of POS sales):**
+39 product/size pairs; 36 already under a scan policy (27 by the footwear-all
+group, 9 by explicit rows). The 3 without:
+- Kids soccerboot (size 32): no category key, and the footwear map names no
+  size 32, so there is no existing policy to arm it under. Needs Junid.
+- Adidas Samba White Blue Pink (6) and Air Jordan pink/white (8): the policy
+  resolves 0 (explicit 0 or a dead size), which is governed, not missing.
+
+**Arming correction.** A first census also counted the unmounted Clothing-Sold
+tabs. Eleven shop products from that count (2 Adidas bags at PE, 8 glasses and
+a belt at Trophy) were armed through the policy writer at 13:41 SAST and
+**removed through the same writer at 13:45**, when it was found they were never
+being refilled by sales. No scan ran in between, and no request exists for any
+of them. Both steps are in `engine_policy_history`. Snapshots are in
+`~/marathon-rollbacks/arm-sale-only-products-*`.
+
+**Switch.** `src/config/saleRaisedRequests.js` `SALE_RAISED_REQUESTS = false`:
+no sale line is pickable work, policy or not. The lines stay visible as
+"Already covered", and the Hub 2 badge counts none of them.
+
+## The till's sale log was missing order collections (POS #560)
+
+The 23 Oct 12:06 sale (PE till 2) collected 19 hub orders. Since POS
+`32184dd7` (11 Oct 21:48), the sale log was written only after **every** order
+close in the sale landed. A close that did not land dropped the whole sale from
+`restock_log` and `insights_log`. 1–24 Oct, 841 of 2,084 sales that should have
+logged rows logged none or only some (1,140 order pairs), about 5 a day before
+12 Oct and 47–87 a day after, at the PE and Trophy tills. For 891 of those
+orders the close never even claimed `pos/orderPickups`. POS #560 logs the
+collected orders from the sale itself.

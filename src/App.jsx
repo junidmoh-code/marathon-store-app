@@ -164,6 +164,7 @@ import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequen
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests, useEngineConfig } from "./components/stock/useStock";
 import { policyKeepFor } from "./components/stock/saleRowPolicyCap";
 import { useExplicitTargetRows } from "./components/stock/useExplicitTargetRows";
+import { SALE_RAISED_REQUESTS } from "./config/saleRaisedRequests";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { sendDisplayRow, closeDisplayRow, closeDisplayRowForPartnerSale } from "./components/stock/displayRowStore";
 import { hasOpenDisplayRequest, otherOpenDisplayRequests, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
@@ -3384,7 +3385,14 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   const restockToday = useRestockLogRaw(today);
   // Card Slip: start its ~2 KB registry read now, so the screen is ready at the tap.
   usePrefetchSlipTerminals(hasSlipScope(homePerm), homeUser?.uid);
-  const sourceBadge = (restockToday || []).length;
+  // "To restock" counted today's POS sale rows — every sale read as a restock
+  // request. With sale-raised requests OFF (config/saleRaisedRequests.js) only
+  // the scan raises requests, so the badge counts the open requests themselves
+  // (mirrored node — no extra download).
+  const openRefillRequests = useRefillRequests("open");
+  const sourceBadge = SALE_RAISED_REQUESTS
+    ? (restockToday || []).length
+    : (openRefillRequests || []).filter((r) => r && !r.shadow).length;
   // assistant badge = today's placed orders. A wall-walk display request
   // (displayRequestCore.js) is a warehouse task, not a placed order.
   const assistantBadge = orders ? orders.filter(o =>
@@ -16946,9 +16954,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     return [...out].sort();
   }, [restockLogToday, restockLogPast]);
   const badgeExplicitRows = useExplicitTargetRows(badgeHub, badgePids);
-  const scanOwnsCell = useCallback((h, pid, size) => !!pid
+  // Sale-raised requests OFF (config/saleRaisedRequests.js): no sale cell is
+  // work, so none counts on the badge.
+  const scanOwnsCell = useCallback((h, pid, size) => !SALE_RAISED_REQUESTS || (!!pid
     && policyKeepFor({ config: badgeEngineConfig || {}, productsById, destCells: {},
-      explicitRows: h === badgeHub ? badgeExplicitRows : null }, h, pid, size) != null,
+      explicitRows: h === badgeHub ? badgeExplicitRows : null }, h, pid, size) != null),
   [badgeEngineConfig, productsById, badgeHub, badgeExplicitRows]);
   const productForKey = useCallback((key, cellProduct) => {
     const direct = productsById.get(key);
