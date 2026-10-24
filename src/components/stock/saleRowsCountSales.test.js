@@ -25,6 +25,9 @@ describe("soldPairEntries — one sale = at most one line per pair", () => {
   it("a double-written order row counts once", () => {
     expect(soldPairEntries([order("051"), order("051")])).toHaveLength(1);
   });
+  it("a double-written order row with no sale id counts once too", () => {
+    expect(soldPairEntries([order("051", { saleId: null }), order("051", { saleId: null })])).toHaveLength(1);
+  });
   it("two orders in one sale are two pairs", () => {
     expect(soldPairEntries([order("051"), order("052")])).toHaveLength(2);
   });

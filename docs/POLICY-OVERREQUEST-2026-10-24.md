@@ -22,7 +22,7 @@
 
 ## When it really started (data, 1 Jul – 24 Oct)
 
-`scripts`-free census, by key/`ts` range only: per SA day, Hub 2 sneaker
+Read-only census, by key/`ts` range only: per SA day, Hub 2 sneaker
 sale-row asks (distinct ready orders) against pairs that actually left Hub 2
 (sold or sent out, same day + 2).
 

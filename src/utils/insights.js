@@ -195,8 +195,10 @@ export function soldPairEntries(entries) {
   const out = [];
   for (const e of entries || []) {
     if (!e) continue;
-    if (e.saleId && e.orderNumber != null && e.orderNumber !== "") {
-      const k = `${e.saleId}|${e.orderNumber}|${e.productId ?? e.productName ?? ""}|${e.size ?? ""}`;
+    // The order number alone names the pair for the day (it is daily-scoped and
+    // one per pair), so a double write is caught with or without a sale id.
+    if (e.orderNumber != null && e.orderNumber !== "") {
+      const k = `${e.orderNumber}|${e.productId ?? e.productName ?? ""}|${e.size ?? ""}`;
       if (seen.has(k)) continue;
       seen.add(k);
     }

@@ -163,6 +163,7 @@ import {
 import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey, orderKeyFromInput } from "./utils/orderNumbering";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests, useEngineConfig } from "./components/stock/useStock";
 import { policyKeepFor } from "./components/stock/saleRowPolicyCap";
+import { useExplicitTargetRows } from "./components/stock/useExplicitTargetRows";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { sendDisplayRow, closeDisplayRow, closeDisplayRowForPartnerSale } from "./components/stock/displayRowStore";
 import { hasOpenDisplayRequest, otherOpenDisplayRequests, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
@@ -1932,30 +1933,36 @@ function relativeTimeFromIso(iso) {
 // Raw OOS log for today — real-time stream, no compilation needed.
 function useRestockLogRaw(date) {
   const authReady = useAuthReady();
-  const [entries, setEntries] = useState([]);
+  const [entries, setEntries] = useState(null);   // { date, rows }
   // One day of /restock_log. Small on its own, but the whole node is 8.0 MB
   // and already mirrored, so reading one day from the local copy costs
   // nothing at all rather than a subscription per day viewed.
   const mirrored = useMirroredPath(date ? `restock_log/${date}` : null, authReady && !!date);
   const live = mirrored.verdict === "fallback";
+  // Entries are stamped with the date they were read for: across SA midnight
+  // the date moves before the new day's snapshot lands, and the old day's rows
+  // must not be served under the new date meanwhile (Sonnet architect, #784).
+  const stamp = (rows) => setEntries({ date, rows });
 
   useEffect(() => {
     if (live || !mirrored.settled) return;
     const data = mirrored.value;
-    setEntries(data ? Object.values(data).filter(Boolean) : []);
+    stamp(data ? Object.values(data).filter(Boolean) : []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live, mirrored.settled, mirrored.value]);
 
   useEffect(() => {
     if (!authReady || !date || !live) return undefined;
     const unsub = onValue(ref(database, `restock_log/${date}`), snap => {
       const data = snap.val();
-      if (!data) { setEntries([]); return; }
-      setEntries(Object.values(data).filter(Boolean));
+      stamp(data ? Object.values(data).filter(Boolean) : []);
     });
     return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authReady, date, live]);
-  return entries;
+  return entries && entries.date === date ? entries.rows : EMPTY_RESTOCK_ROWS;
 }
+const EMPTY_RESTOCK_ROWS = Object.freeze([]);
 
 // computeRestockCounts (today's-sales group builder) lives in utils/insights.js
 // beside restockCountsFromLog — the two feeds meet at the same
@@ -16928,10 +16935,21 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const productsById = useMemo(() => new Map((products || []).map((p) => [p.id, p])), [products]);
   // A footwear cell under Junid's policy is the hourly scan's (RefillQueue
   // scanOnly): its sale rows are never work, so the badge must not count them.
+  // Explicit /stock_targets rows come from the SAME reader the queue uses, so
+  // the badge and the list agree cell for cell (Sonnet architect, #784). Only
+  // Hub 2 is reactive today; the reader is keyed to one destination.
   const badgeEngineConfig = useEngineConfig();
+  const badgeHub = REACTIVE_REFILL_HUBS[0] || null;
+  const badgePids = useMemo(() => {
+    const out = new Set();
+    for (const e of [...(restockLogToday || []), ...Object.values(restockLogPast).flat()]) if (e?.productId) out.add(e.productId);
+    return [...out].sort();
+  }, [restockLogToday, restockLogPast]);
+  const badgeExplicitRows = useExplicitTargetRows(badgeHub, badgePids);
   const scanOwnsCell = useCallback((h, pid, size) => !!pid
-    && policyKeepFor({ config: badgeEngineConfig || {}, productsById, destCells: {} }, h, pid, size) != null,
-  [badgeEngineConfig, productsById]);
+    && policyKeepFor({ config: badgeEngineConfig || {}, productsById, destCells: {},
+      explicitRows: h === badgeHub ? badgeExplicitRows : null }, h, pid, size) != null,
+  [badgeEngineConfig, productsById, badgeHub, badgeExplicitRows]);
   const productForKey = useCallback((key, cellProduct) => {
     const direct = productsById.get(key);
     if (direct) return direct;
@@ -16980,7 +16998,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       const withPhotos = {};
       Object.entries(counts).forEach(([key, product]) => {
         const ph = photoFor(product);
-        withPhotos[key] = { ...product, photoUrl: ph.photoUrl, photo: ph.photo };
+        // The catalogue's photo first; a /restock_log row carries its own, so a
+        // pid-less or twin row the catalogue cannot place keeps it.
+        withPhotos[key] = { ...product, photoUrl: ph.photoUrl ?? product.photoUrl ?? null, photo: ph.photo || product.photo || "" };
       });
       rows.push(...pendingSaleRows({
         counts: withPhotos,
