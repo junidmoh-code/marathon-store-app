@@ -77,7 +77,7 @@ async function settleDifference(ctx, id, req, out) {
   if (!fresh) return;
   const order = { ...fresh, ref: orderLabel(fresh) };
   const line = linesOf(fresh)[i];
-  const who = req.by?.name || req.by?.uid || "the packer";
+  const who = req.by?.name || "the packer";
   const tell = async (subject, lines) => {
     if (!ctx.send) { ctx.log(`  ⚠ ${order.ref}: Junid NOT emailed (no mail sender on this machine): ${subject}`); return; }
     try { await ctx.send({ subject, text: lines.join("\n") }); }

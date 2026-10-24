@@ -67,7 +67,7 @@ const NOT_SWAPPABLE = new Set([LINE_STATUS.MOVED, LINE_STATUS.RESOLVED, LINE_STA
 const CLOSED_ORDER = new Set(["packed", "cancelled", "fulfilled_elsewhere", "closed", "release_requested"]);
 
 const lineLabel = (l) => `${l?.title || "?"}${l?.size && l.size !== "_" ? ` ${l.size}` : ""}`;
-const whoName = (by) => (typeof by === "string" ? by : by?.name || by?.uid || null);
+const whoName = (by) => (typeof by === "string" ? by : by?.name || null);
 const saDate = (ms) => new Date(ms + 2 * 3600e3).toISOString().slice(0, 10);
 
 /** What the line WAS, kept on the swapped line (the card strikes it through: "Replaced by …, who, when"). */
@@ -208,6 +208,10 @@ export async function swapOnlineOrderLine({
   });
   if (!res.committed || !res.snapshot.val()) return refuse("the line changed meanwhile; nothing written to it", { plan });
   const gen = Number(res.snapshot.val().routeGen) || 0;
+  // The basket tick and pair codes confirmed for the OLD item say nothing about
+  // the new one: the replacement must be scanned / confirmed in hand afresh.
+  await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}/basket/${i}`).set(null);
+  for (const k of oldKeys) await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}/codesIn/${k}`).set(null);
 
   // ── 2. The old line's list state, and 3. what goes back to the shelf.
   const notes = [];

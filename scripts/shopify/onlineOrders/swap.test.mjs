@@ -216,12 +216,18 @@ describe("swap after the handover — RETURN TO SHELF", () => {
     await f.db.ref(`orders/${old}/status`).set("ready");
     await h.tick(); // the poller copies "sent" → handed
     expect(line(f, 0).source.status).toBe("handed");
+    // Yasmin had already confirmed the pair (its code) and the basket tick.
+    await f.db.ref("online_orders/9001/codesIn").set({ [old]: true });
+    await f.db.ref("online_orders/9001/basket").set({ 0: true });
     await ask(f, 0, "KAP", "8");
     await h.tick();
     expect(f.read(`orders/${old}`)).toMatchObject({ status: "ready", returnToShelf: { by: "Yasmin", swappedTo: "Kapri White 8" } });
     expect(Object.values(order(f).returns)).toEqual([expect.objectContaining({ lineIndex: 0, pid: "SNK", locationId: "hub1", hubOrders: [old], state: "open", by: "Yasmin" })]);
     expect(f.read("stock/hub1/SNK/8/qty")).toBe(1);
     expect(line(f, 0).source).toMatchObject({ status: "pick", orderKeys: [C(0, 1)] });
+    // The replacement is NOT in the basket: the old pair's confirmations went with it.
+    expect(order(f).basket?.[0]).toBeUndefined();
+    expect(order(f).codesIn?.[old]).toBeUndefined();
   });
 
   it("a Trophy item already handed over: a Put back row on Trophy's strip", async () => {

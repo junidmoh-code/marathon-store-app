@@ -759,7 +759,8 @@ function onlineReturnUpdates({ record, order }) {
   return { updates: {
     [`${base}/state`]: "done",
     [`${base}/doneAt`]: Number(record.completedAt) || null,
-    [`${base}/doneBy`]: (record.completedBy && (record.completedBy.name || record.completedBy.uid)) || null,
+    [`${base}/doneBy`]: (record.completedBy && record.completedBy.name) || null,
+    [`${base}/doneByUid`]: (record.completedBy && record.completedBy.uid) || null,
     [`${base}/doneVia`]: "strip",
   } };
 }

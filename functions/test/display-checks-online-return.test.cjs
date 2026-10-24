@@ -62,7 +62,7 @@ test("Put back: tombstone + log, the order's return record is done (who, when) â
   assert.equal(db.state.root.displayChecks_active[STORE][KEY].result, "put_back");
   assert.equal(db.state.root.displayChecks_log[STORE]["2026-10"]["cR1_completed"].type, "completed_put_back");
   const after = db.state.root.online_orders["5550001"];
-  assert.deepEqual(after.returns["1_1"], { ...before.returns["1_1"], state: "done", doneAt: NOW, doneBy: "Lee", doneVia: "strip" });
+  assert.deepEqual(after.returns["1_1"], { ...before.returns["1_1"], state: "done", doneAt: NOW, doneBy: "Lee", doneByUid: "u-lee", doneVia: "strip" });
   assert.deepEqual(after.lines, before.lines);
   assert.equal(after.status, "picking");
   assert.equal(db.state.root.stock, undefined);
