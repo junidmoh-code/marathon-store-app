@@ -1,0 +1,23 @@
+name: junid-approved
+# Fails any PR that touches policy, targets, the refill engine, request creation
+# or the Refill Queue unless it carries the label "junid-approved".
+# Rules: CLAUDE.md, "Junid's rules". Paths and patterns: .github/scripts/junid-approved-guard.sh
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  junid-approved:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Guard
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: bash .github/scripts/junid-approved-guard.sh "$BASE_SHA" "$HEAD_SHA" "$LABELS"

@@ -1,0 +1,44 @@
+# Policy, targets, the refill engine, request creation and the Refill Queue.
+# Changes here need Junid (see CLAUDE.md, "Junid's rules"); the junid-approved
+# workflow enforces the label. Keep this list in step with
+# .github/scripts/junid-approved-guard.sh GUARDED_PATHS.
+/functions/lib/refill-engine.cjs           @junidmoh-code
+/functions/refill-scan.cjs                 @junidmoh-code
+/functions/lib/policy-*.cjs                @junidmoh-code
+/functions/lib/category-policy*.cjs        @junidmoh-code
+/functions/lib/central-fed.cjs             @junidmoh-code
+/functions/lib/first-batch.cjs             @junidmoh-code
+/functions/lib/shop-source-rule.cjs        @junidmoh-code
+/functions/lib/refusal-writeoff.cjs        @junidmoh-code
+/src/components/stock/RefillQueue.jsx      @junidmoh-code
+/src/components/stock/refillQueueCore.js   @junidmoh-code
+/src/components/stock/refillSatisfied.js   @junidmoh-code
+/src/components/stock/saleRowPolicyCap.js  @junidmoh-code
+/src/components/stock/seatingCore.js       @junidmoh-code
+/src/components/stock/seatingStore.js      @junidmoh-code
+/src/components/stock/SeatingActions.jsx   @junidmoh-code
+/src/components/stock/targetOverride.js    @junidmoh-code
+/src/components/stock/policyTemplate.js    @junidmoh-code
+/src/components/stock/EnginePolicyCard.jsx @junidmoh-code
+/src/components/stock/enginePolicyCore.js  @junidmoh-code
+/src/components/stock/armingCore.js        @junidmoh-code
+/src/components/stock/armingStore.js       @junidmoh-code
+/src/components/stock/centralFed.js        @junidmoh-code
+/src/components/stock/firstBatchCore.js    @junidmoh-code
+/src/components/stock/solvePlan.js         @junidmoh-code
+/src/components/stock/missingFootwearCore.js @junidmoh-code
+/src/components/stock/MissingFootwear.jsx  @junidmoh-code
+/src/components/stock/missingProductsCore.js @junidmoh-code
+/src/components/stock/onHoldRefill.js      @junidmoh-code
+/src/components/stock/releaseWindows.js    @junidmoh-code
+/src/components/stock/NoTargetQueue.jsx    @junidmoh-code
+/src/components/stock/IntroduceExisting.jsx @junidmoh-code
+/src/components/stock/introduceExistingCore.js @junidmoh-code
+/src/config/enginePolicy.js                @junidmoh-code
+/src/utils/insights.js                     @junidmoh-code
+/src/utils/onlineEscalation.js             @junidmoh-code
+/database.rules.json                       @junidmoh-code
+/CLAUDE.md                                 @junidmoh-code
+/.github/CODEOWNERS                        @junidmoh-code
+/.github/scripts/junid-approved-guard.sh   @junidmoh-code
+/.github/workflows/junid-approved.yml      @junidmoh-code
