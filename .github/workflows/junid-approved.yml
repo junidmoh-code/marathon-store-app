@@ -1,23 +1,53 @@
 name: junid-approved
 # Fails any PR that touches policy, targets, the refill engine, request creation
-# or the Refill Queue unless it carries the label "junid-approved".
-# Rules: CLAUDE.md, "Junid's rules". Paths and patterns: .github/scripts/junid-approved-guard.sh
+# or the Refill Queue unless Junid (junidmoh-code) added the label
+# "junid-approved". Rules: CLAUDE.md, "Junid's rules".
+# Paths and patterns: .github/scripts/junid-approved-guard.sh
+#
+# pull_request_target, so the guard script and this workflow run from the BASE
+# branch: a PR cannot edit the check that judges it. The PR's code is never
+# executed — its commits are only fetched and diffed.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, labeled, unlabeled]
 permissions:
   contents: read
   pull-requests: read
+  issues: read
+concurrency:
+  group: junid-approved-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   junid-approved:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the base branch (the guard runs from here)
+        uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the PR head for diffing only
+        run: git fetch --no-tags origin "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/pr/head"
+      - name: Was the label added by Junid?
+        id: approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'junid-approved') }}
+        run: |
+          approved=no
+          if [[ "$HAS_LABEL" == "true" ]]; then
+            actor=$(gh api "repos/$REPO/issues/$PR/events" --paginate \
+              --jq '[.[] | select(.event=="labeled" and .label.name=="junid-approved")] | last | .actor.login // ""')
+            echo "label last added by: ${actor:-unknown}"
+            [[ "$actor" == "junidmoh-code" ]] && approved=yes
+          fi
+          echo "approved=$approved" >> "$GITHUB_OUTPUT"
       - name: Guard
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-        run: bash .github/scripts/junid-approved-guard.sh "$BASE_SHA" "$HEAD_SHA" "$LABELS"
+          APPROVED: ${{ steps.approval.outputs.approved }}
+        run: bash .github/scripts/junid-approved-guard.sh "$BASE_SHA" "$HEAD_SHA" "$APPROVED"
