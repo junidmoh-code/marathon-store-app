@@ -56,8 +56,12 @@ export function policyKeepFor(ctx, dest, pid, size) {
   const product = ctx.productsById?.get(pid);
   if (!product || !isPolicyFootwearLine(product, size)) return null;
   const k = engineSizeKey(size);
+  // A sale row also proves the hub CARRIES the product: if its cells have not
+  // loaded (or hold no row for it yet), seat one empty cell so the carriedOnly
+  // gate does not switch the cap off while the screen is still loading.
+  const destCells = ctx.destCells?.[pid] ? ctx.destCells : { ...(ctx.destCells || {}), [pid]: { [k]: { qty: 0 } } };
   const stock = {
-    [dest]: ctx.destCells || {},
+    [dest]: destCells,
     // The dead-size answer — see the header. One unit of exactly this size,
     // at a location no policy names.
     [SOLD_MARK]: { [pid]: { [k]: { qty: 1 } } },

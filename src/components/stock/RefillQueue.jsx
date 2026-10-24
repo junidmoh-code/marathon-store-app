@@ -106,13 +106,14 @@ const fmtSaDateTime = (iso) => {
 // Explicit /stock_targets rows for the products a sale row names — read by key,
 // once per (dest, product), so the policy cap below sees the row an owner set
 // exactly as the engine does. A product whose read has not come back yet is
-// ABSENT from the map, and saleRowPolicyCap leaves its rows uncapped until it
-// is: never cap on a guess while an explicit row might say more. A FAILED read
-// is not "no row": it stays absent and is retried every 30 s, so one dropped
-// read cannot leave a product uncapped for the life of the screen.
+// ABSENT from the map until then, and the cap falls back to the group policy
+// meanwhile — never uncapped (over-asking is the failure this guards). A
+// FAILED read is not "no row": it stays absent and is retried every 30 s.
+// The map is keyed to its destination and dropped when the hub changes.
 const EXPLICIT_RETRY_MS = 30000;
 function useExplicitTargetRows(dest, pids) {
-  const [rows, setRows] = useState({});
+  const [state, setState] = useState({ dest, rows: {} });
+  const rows = state.dest === dest ? state.rows : {};
   const [attempt, setAttempt] = useState(0);
   const wanted = pids.join("|");
   useEffect(() => {
@@ -126,7 +127,7 @@ function useExplicitTargetRows(dest, pids) {
       .then((results) => {
         if (!live) return;
         const got = results.filter((r) => !r.failed);
-        if (got.length) setRows((cur) => ({ ...cur, ...Object.fromEntries(got.map((r) => [r.pid, r.row])) }));
+        if (got.length) setState((cur) => ({ dest, rows: { ...(cur.dest === dest ? cur.rows : {}), ...Object.fromEntries(got.map((r) => [r.pid, r.row])) } }));
         if (got.length < results.length) retry = setTimeout(() => setAttempt((n) => n + 1), EXPLICIT_RETRY_MS);
       });
     return () => { live = false; if (retry) clearTimeout(retry); };
@@ -435,7 +436,9 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     return capSaleRowsToPolicy(saleRows, {
       requests: requestRows.filter((r) => !r.shadow),
       destCells,
-      keepFor: (pid, size) => (pid in explicitRows ? policyKeepFor(ctx, DEST_LOC, pid, size) : null),
+      // Explicit row not read yet → the group policy alone (explicitRows has
+      // no entry, so resolveTarget falls through to it), never uncapped.
+      keepFor: (pid, size) => policyKeepFor(ctx, DEST_LOC, pid, size),
     });
   }, [saleRows, requestRows, engineConfig, byId, destCells, explicitRows, DEST_LOC]);
 

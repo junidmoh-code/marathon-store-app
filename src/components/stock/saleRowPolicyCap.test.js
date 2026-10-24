@@ -44,8 +44,6 @@ describe("policyKeepFor — Junid's per-size map, armed", () => {
     for (const s of ["3", "4", "5", "5.5"]) expect(policyKeepFor(ctx, "hub2", "pAJ1", s)).toBe(2);
   });
   it("Hub 1 resolves the same numbers", () => {
-    // destCells are the cells of the hub asked about; none → carriedOnly gate.
-    expect(policyKeepFor({ ...ctx, destCells: {} }, "hub1", "pAJ1", "9")).toBeNull();
     const h1 = { ...ctx, destCells: { pAJ1: cellsOf({ 9: 0 }) } };
     expect(policyKeepFor(h1, "hub1", "pAJ1", "9")).toBe(2);
     expect(policyKeepFor(h1, "hub1", "pAJ1", "7")).toBe(3);
@@ -66,6 +64,9 @@ describe("policyKeepFor — Junid's per-size map, armed", () => {
     expect(policyKeepFor(c, "hub2", "pNope", "9")).toBeNull();
     expect(policyKeepFor({ ...c, config: { policyGroups: { "footwear-all": { ...CONFIG.policyGroups["footwear-all"], armed: false } } } }, "hub2", "pAJ1", "9")).toBeNull();
     expect(policyKeepFor({ ...c, productsById: new Map([["pAJ1", { ...AJ1, sizes: [...AJ1.sizes, "14"] }]]) }, "hub2", "pAJ1", "14")).toBeNull();
+  });
+  it("hub cells not loaded yet still cap — the sale row proves the hub carries the product", () => {
+    expect(policyKeepFor({ ...ctx, destCells: {} }, "hub2", "pAJ1", "9")).toBe(2);
   });
   it("RTDB drops an empty size map — a location entry with NO sizes child arms nothing", () => {
     // Real RTDB never stores `sizes: {}`; writing it deletes the key. The fake
