@@ -7,7 +7,7 @@
 //
 // Census (24 Oct, sale-raised lines: Hub 2 sneaker lines, last 6 days; shop
 // clothing-sold lines, last 14 days): 681 product/location pairs, 653 already
-// under a scan policy, 28 not. Of those 28 this script arms the 10 that an
+// under a scan policy, 28 not. Of those 28 this script arms the 10 (11 with a pair that sold during the run) that an
 // existing category policy fits; the rest are left and reported:
 //   - 6 paper bags (PE/Trophy): Junid reversed the paper-bag policy (18 Oct) —
 //     never re-armed without him
@@ -56,6 +56,8 @@ const PLAN = [
   { loc: "trophy", pid: "p1783323795785", name: "Hermès Glasses", under: "sunglasses", from: "trophy" },
   { loc: "trophy", pid: "p1783323795779", name: "Off-White Glasses", under: "sunglasses", from: "trophy" },
   { loc: "trophy", pid: "p1783322642153", name: "Belt", under: "belts", from: "trophy" },
+  // Sold after the first census (24 Oct 13:40) — same category as the other glasses.
+  { loc: "trophy", pid: "p1783323795778", name: "Emporio Armani Glasses", under: "sunglasses", from: "trophy" },
 ];
 
 const get = async (p) => (await db.ref(p).get()).val();
