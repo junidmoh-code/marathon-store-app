@@ -155,6 +155,18 @@ console.log(`snapshot: ${path.join(dir, "restock_requests-before.json")}`);
 
 const respondedOn = new Date(nowMs).toISOString();
 const log = [];
+// Open requests re-read right before the writes: one cancelled since the
+// census would otherwise leave inbound too high and close a row that needs
+// a refill (CodeRabbit #783).
+const liveInbound = {};
+{
+  const fresh = (await db.ref("refill_requests").orderByKey().startAt(pushKeyFor(windowStartMs - 14 * 864e5)).get()).val() || {};
+  for (const q of Object.values(fresh)) {
+    if (!q || q.status !== "open" || !HUBS.includes(q.requestingLocation)) continue;
+    const k = `${q.requestingLocation}|${q.productId}|${enc(q.size)}`;
+    liveInbound[k] = (liveInbound[k] || 0) + Math.max(1, Number(q.qty) || 1);
+  }
+}
 for (const r of toClose) {
   const p = `restock_requests/${r.date}/${r.pid}/${enc(r.size)}`;
   // Re-read the leaf: a picker may have answered it since the census above.
@@ -163,7 +175,8 @@ for (const r of toClose) {
   if ((Number(live?.fulfilledQty) || 0) !== r.sent) { log.push({ path: p, skipped: "sent count moved meanwhile", live }); continue; }
   // Re-check the shelf too: a sale since the census can reopen room.
   const liveOnHand = Math.max(0, Number((await db.ref(`stock/${r.hub}/${r.pid}/${enc(r.size)}/qty`).get()).val()) || 0);
-  if (Math.max(0, r.keep - liveOnHand - r.inbound) > 0) { log.push({ path: p, skipped: "room reopened meanwhile", liveOnHand }); continue; }
+  const inboundNow = liveInbound[`${r.hub}|${r.pid}|${enc(r.size)}`] || 0;
+  if (Math.max(0, r.keep - liveOnHand - inboundNow) > 0) { log.push({ path: p, skipped: "room reopened meanwhile", liveOnHand, inboundNow }); continue; }
   await db.ref(p).update({
     response: "policy_trimmed",
     respondedOn,
