@@ -72,6 +72,7 @@ import { PAUSED_MESSAGE } from "../../device/deviceRejects";
 import { claimPickTxn, releasePickTxn, newPickToken, pickInProgress } from "./pickMarker";
 import { nameOf, isStore } from "./sectionRouting";
 import { capSaleRowsToPolicy, policyKeepFor } from "./saleRowPolicyCap";
+import { useExplicitTargetRows } from "./useExplicitTargetRows";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -102,39 +103,6 @@ const fmtSaDateTime = (iso) => {
   if (!Number.isFinite(t)) return "—";
   return new Date(t).toLocaleString("en-GB", { timeZone: "Africa/Johannesburg", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 };
-
-// Explicit /stock_targets rows for the products a sale row names — read by key,
-// once per (dest, product), so the policy cap below sees the row an owner set
-// exactly as the engine does. A product whose read has not come back yet is
-// ABSENT from the map until then, and the cap falls back to the group policy
-// meanwhile — never uncapped (over-asking is the failure this guards). A
-// FAILED read is not "no row": it stays absent and is retried every 30 s.
-// The map is keyed to its destination and dropped when the hub changes.
-const EXPLICIT_RETRY_MS = 30000;
-function useExplicitTargetRows(dest, pids) {
-  const [state, setState] = useState({ dest, rows: {} });
-  const rows = state.dest === dest ? state.rows : {};
-  const [attempt, setAttempt] = useState(0);
-  const wanted = pids.join("|");
-  useEffect(() => {
-    let live = true;
-    let retry = null;
-    const missing = pids.filter((pid) => !(pid in rows));
-    if (!dest || missing.length === 0) return undefined;
-    Promise.all(missing.map((pid) => get(ref(database, `stock_targets/${dest}/${pid}`))
-      .then((snap) => ({ pid, row: snap.val() || null }))
-      .catch(() => ({ pid, failed: true }))))
-      .then((results) => {
-        if (!live) return;
-        const got = results.filter((r) => !r.failed);
-        if (got.length) setState((cur) => ({ dest, rows: { ...(cur.dest === dest ? cur.rows : {}), ...Object.fromEntries(got.map((r) => [r.pid, r.row])) } }));
-        if (got.length < results.length) retry = setTimeout(() => setAttempt((n) => n + 1), EXPLICIT_RETRY_MS);
-      });
-    return () => { live = false; if (retry) clearTimeout(retry); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dest, wanted, attempt]);
-  return rows;
-}
 
 // Live-ticking server-corrected "now", once a minute for the whole queue.
 function useNowMinute() {
@@ -439,6 +407,9 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // Explicit row not read yet → the group policy alone (explicitRows has
       // no entry, so resolveTarget falls through to it), never uncapped.
       keepFor: (pid, size) => policyKeepFor(ctx, DEST_LOC, pid, size),
+      // Junid, 24 Oct: requests come only from the scan versus policy — a
+      // policy cell's sale rows are never work here.
+      scanOnly: true,
     });
   }, [saleRows, requestRows, engineConfig, byId, destCells, explicitRows, DEST_LOC]);
 
@@ -894,7 +865,8 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
             <b style={{ color: GREEN }}>Already covered:</b>{" "}
             <b style={{ color: "rgba(255,255,255,.85)" }}>{byId.get(r.productId)?.name || r.productName || r.productId}</b>{" "}
             size {String(r.size)} — {destLabel} keeps {r.policyCap.keep}, has {r.policyCap.onHand} on the shelf
-            {r.policyCap.inbound > 0 ? ` and ${r.policyCap.inbound} on the way` : ""}. Nothing to send.
+            {r.policyCap.inbound > 0 ? ` and ${r.policyCap.inbound} on the way` : ""}.
+            {r.policyCap.scan ? " The hourly scan asks for this size by policy — nothing to send from here." : " Nothing to send."}
           </span>
         </div>
       ))}

@@ -161,7 +161,9 @@ import {
   insightsStoreOptions, insightsBucketKey, insightsStoreMatcher,
 } from "./utils/sectionRouting";
 import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey, orderKeyFromInput } from "./utils/orderNumbering";
-import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests, useEngineConfig } from "./components/stock/useStock";
+import { policyKeepFor } from "./components/stock/saleRowPolicyCap";
+import { useExplicitTargetRows } from "./components/stock/useExplicitTargetRows";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { sendDisplayRow, closeDisplayRow, closeDisplayRowForPartnerSale } from "./components/stock/displayRowStore";
 import { hasOpenDisplayRequest, otherOpenDisplayRequests, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
@@ -182,7 +184,7 @@ import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/La
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { dispatchSkipsStock } from "./utils/dispatchStockPolicy";
 import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
-import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
+import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, computeRestockCounts, soldPairEntries, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { onHoldRefillPlan, holdReleaseUpdate } from "./components/stock/onHoldRefill";
 import { crMovementId, crLineCreatedAt, mergeActiveCRBatches, pendingUnits } from "./components/stock/crQueueGrouping";
@@ -1931,30 +1933,36 @@ function relativeTimeFromIso(iso) {
 // Raw OOS log for today — real-time stream, no compilation needed.
 function useRestockLogRaw(date) {
   const authReady = useAuthReady();
-  const [entries, setEntries] = useState([]);
+  const [entries, setEntries] = useState(null);   // { date, rows }
   // One day of /restock_log. Small on its own, but the whole node is 8.0 MB
   // and already mirrored, so reading one day from the local copy costs
   // nothing at all rather than a subscription per day viewed.
   const mirrored = useMirroredPath(date ? `restock_log/${date}` : null, authReady && !!date);
   const live = mirrored.verdict === "fallback";
+  // Entries are stamped with the date they were read for: across SA midnight
+  // the date moves before the new day's snapshot lands, and the old day's rows
+  // must not be served under the new date meanwhile (Sonnet architect, #784).
+  const stamp = (rows) => setEntries({ date, rows });
 
   useEffect(() => {
     if (live || !mirrored.settled) return;
     const data = mirrored.value;
-    setEntries(data ? Object.values(data).filter(Boolean) : []);
+    stamp(data ? Object.values(data).filter(Boolean) : []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live, mirrored.settled, mirrored.value]);
 
   useEffect(() => {
     if (!authReady || !date || !live) return undefined;
     const unsub = onValue(ref(database, `restock_log/${date}`), snap => {
       const data = snap.val();
-      if (!data) { setEntries([]); return; }
-      setEntries(Object.values(data).filter(Boolean));
+      stamp(data ? Object.values(data).filter(Boolean) : []);
     });
     return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authReady, date, live]);
-  return entries;
+  return entries && entries.date === date ? entries.rows : EMPTY_RESTOCK_ROWS;
 }
+const EMPTY_RESTOCK_ROWS = Object.freeze([]);
 
 // computeRestockCounts (today's-sales group builder) lives in utils/insights.js
 // beside restockCountsFromLog — the two feeds meet at the same
@@ -16871,6 +16879,31 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // A refused pair simply never generates an entry, which is why no reversal is
   // needed: there is nothing to undo, rather than something to remember to undo.
   const restockLogToday = useRestockLogRaw(todayDate);
+  // ── PAST DAYS COUNT SALES TOO (Junid, 24 Oct 2026) ─────────────────────────
+  // The note above made TODAY sale-driven on 30 Jul (#288). The past-day
+  // stragglers were left counting insights_log "ready" events (#183), and
+  // became pickable queue lines on 8 Aug (#337) — so every cell still open at
+  // midnight was re-counted by readies. On 23 Oct one 16-pair order placed and
+  // readied three times asked ×3 of every size against one POS sale. Past days
+  // now read the SAME /restock_log the POS writes for today, one SA day each
+  // (mirrored; HISTORY_RETENTION_DAYS = 5, so five fixed hooks).
+  const restockLogPast1 = useRestockLogRaw(getSAPastDateString(1));
+  const restockLogPast2 = useRestockLogRaw(getSAPastDateString(2));
+  const restockLogPast3 = useRestockLogRaw(getSAPastDateString(3));
+  const restockLogPast4 = useRestockLogRaw(getSAPastDateString(4));
+  const restockLogPast5 = useRestockLogRaw(getSAPastDateString(5));
+  const restockLogPast = useMemo(() => ({
+    [getSAPastDateString(1)]: restockLogPast1, [getSAPastDateString(2)]: restockLogPast2,
+    [getSAPastDateString(3)]: restockLogPast3, [getSAPastDateString(4)]: restockLogPast4,
+    [getSAPastDateString(5)]: restockLogPast5,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [todayDate, restockLogPast1, restockLogPast2, restockLogPast3, restockLogPast4, restockLogPast5]);
+  // One SA day's sold pairs at one hub: the POS rows filed under that hub,
+  // one per pair (soldPairEntries), minus pairs whose order came back.
+  const soldEntriesFor = useCallback((entries, h, returnedIds = null) =>
+    soldPairEntries((entries || []).filter((e) => e
+      && (e.hub || e.placedAtHub || fallbackHub(currentNetwork(), e.destShop, "hub1")) === h
+      && !(returnedIds && e.orderNumber != null && returnedIds.has(e.orderNumber)))), []);
   // WHICH HUBS REACT is asked of the network registry (reactiveRefillHubs): the
   // LIVE hub behind each live shop's everyday stock. On the registry as it
   // stands that is ["hub2"] — the constant this name used to be imported as
@@ -16888,10 +16921,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     // entries used to default INTO hub1 (`|| "hub1"`) — they now surface
     // nowhere, which is the ordered behaviour: nothing reactive at hub1.
     REACTIVE_REFILL_HUBS.forEach((h) => {
-      out[h] = computeRestockCounts((restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || fallbackHub(currentNetwork(), e.destShop, "hub1")) === h));
+      out[h] = computeRestockCounts(soldEntriesFor(restockLogToday, h));
     });
     return out;
-  }, [restockLogToday, REACTIVE_REFILL_HUBS]);
+  }, [restockLogToday, REACTIVE_REFILL_HUBS, soldEntriesFor]);
 
   // ── The SNEAKERS / CLOTHING line split (Hub 2 toggle) ──────────────────────
   // Classified by isFootwearLine on the CATALOGUE record + the line's size —
@@ -16900,6 +16933,23 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // CLOTHING side (deterministic, and the safe direction: nothing footwear-
   // routed on a guess).
   const productsById = useMemo(() => new Map((products || []).map((p) => [p.id, p])), [products]);
+  // A footwear cell under Junid's policy is the hourly scan's (RefillQueue
+  // scanOnly): its sale rows are never work, so the badge must not count them.
+  // Explicit /stock_targets rows come from the SAME reader the queue uses, so
+  // the badge and the list agree cell for cell (Sonnet architect, #784). Only
+  // Hub 2 is reactive today; the reader is keyed to one destination.
+  const badgeEngineConfig = useEngineConfig();
+  const badgeHub = REACTIVE_REFILL_HUBS[0] || null;
+  const badgePids = useMemo(() => {
+    const out = new Set();
+    for (const e of [...(restockLogToday || []), ...Object.values(restockLogPast).flat()]) if (e?.productId) out.add(e.productId);
+    return [...out].sort();
+  }, [restockLogToday, restockLogPast]);
+  const badgeExplicitRows = useExplicitTargetRows(badgeHub, badgePids);
+  const scanOwnsCell = useCallback((h, pid, size) => !!pid
+    && policyKeepFor({ config: badgeEngineConfig || {}, productsById, destCells: {},
+      explicitRows: h === badgeHub ? badgeExplicitRows : null }, h, pid, size) != null,
+  [badgeEngineConfig, productsById, badgeHub, badgeExplicitRows]);
   const productForKey = useCallback((key, cellProduct) => {
     const direct = productsById.get(key);
     if (direct) return direct;
@@ -16930,7 +16980,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [todayDate]);
   const saleRowsFor = useCallback((h, cellFilter) => {
-    const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || fallbackHub(currentNetwork(), e.destShop, "hub1")) === h);
+    const hubEntries = soldEntriesFor(restockLogToday, h);
     const rows = pendingSaleRows({
       counts: rawCountsByHub[h],
       responses: allResponses[todayDate] || {},
@@ -16942,13 +16992,15 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     });
     pastDates.forEach((dateStr) => {
       const returned = returnedOrderIdsOnSADate(returnsLog, dateStr);
-      const counts = restockCountsFromLog({ log: insightsLog, dateStr, hub: h, returnedIds: returned });
+      const counts = computeRestockCounts(soldEntriesFor(restockLogPast[dateStr], h, returned));
       // The log carries no photo — join it from the catalog BY PRODUCT ID
       // (name join only for pid-less legacy records, twins refuse to guess).
       const withPhotos = {};
       Object.entries(counts).forEach(([key, product]) => {
         const ph = photoFor(product);
-        withPhotos[key] = { ...product, photoUrl: ph.photoUrl, photo: ph.photo };
+        // The catalogue's photo first; a /restock_log row carries its own, so a
+        // pid-less or twin row the catalogue cannot place keeps it.
+        withPhotos[key] = { ...product, photoUrl: ph.photoUrl ?? product.photoUrl ?? null, photo: ph.photo || product.photo || "" };
       });
       rows.push(...pendingSaleRows({
         counts: withPhotos,
@@ -16962,7 +17014,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     });
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restockLogToday, rawCountsByHub, allResponses, fulfilProgress, todayDate, pastDates, insightsLog, returnsLog, photoFor]);
+  }, [restockLogToday, restockLogPast, soldEntriesFor, rawCountsByHub, allResponses, fulfilProgress, todayDate, pastDates, returnsLog, photoFor]);
 
   // Today's answered cells — the quiet "Completed today" list with Undo.
   const completedSaleFor = useCallback((h, cellFilter) => {
@@ -16991,14 +17043,14 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const todayResponses = allResponses[todayDate] || {};
 
     REACTIVE_REFILL_HUBS.forEach(h => {
-      const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || fallbackHub(currentNetwork(), e.destShop, "hub1")) === h);
-      const counts2 = computeRestockCounts(hubEntries);
+      const counts2 = computeRestockCounts(soldEntriesFor(restockLogToday, h));
       Object.entries(counts2).forEach(([key, product]) => {
         const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
         Object.entries(product.sizes || {}).forEach(([size, count]) => {
           // Same dual-read (pid key, then legacy name key) as the queue rows —
           // the badge must never promise work the list doesn't show.
           if (todayResponses[key]?.[size] || (legacyKey && todayResponses[legacyKey]?.[size])) return;
+          if (scanOwnsCell(h, product.productId, size)) return;
           counts[h] = (counts[h] || 0) + (typeof count === "number" ? count : 1);
         });
       });
@@ -17009,11 +17061,12 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       const returned = returnedOrderIdsOnSADate(returnsLog, dateStr);
       const dayResponses = allResponses[dateStr] || {};
       REACTIVE_REFILL_HUBS.forEach(h => {
-        const counts2 = restockCountsFromLog({ log: insightsLog, dateStr, hub: h, returnedIds: returned });
+        const counts2 = computeRestockCounts(soldEntriesFor(restockLogPast[dateStr], h, returned));
         Object.entries(counts2).forEach(([key, product]) => {
           const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
           Object.entries(product.sizes || {}).forEach(([size, count]) => {
             if (dayResponses[key]?.[size] || (legacyKey && dayResponses[legacyKey]?.[size])) return;
+            if (scanOwnsCell(h, product.productId, size)) return;
             counts[h] = (counts[h] || 0) + (typeof count === "number" ? count : 1);
           });
         });
@@ -17039,7 +17092,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     });
 
     return counts;
-  }, [restockLogToday, allResponses, todayDate, insightsLog, returnsLog, allRefillRequests, sectionTabLoc, sectionShopLocs, REACTIVE_REFILL_HUBS]);
+  }, [restockLogToday, restockLogPast, soldEntriesFor, scanOwnsCell, allResponses, todayDate, returnsLog, allRefillRequests, sectionTabLoc, sectionShopLocs, REACTIVE_REFILL_HUBS]);
 
   // DEBUG — paste in browser console to inspect counted vs leaked orders.
   // Removed once you've verified the math is right. Lives in useEffect so it
