@@ -3385,7 +3385,14 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   const restockToday = useRestockLogRaw(today);
   // Card Slip: start its ~2 KB registry read now, so the screen is ready at the tap.
   usePrefetchSlipTerminals(hasSlipScope(homePerm), homeUser?.uid);
-  const sourceBadge = (restockToday || []).length;
+  // "To restock" counted today's POS sale rows — every sale read as a restock
+  // request. With sale-raised requests OFF (config/saleRaisedRequests.js) only
+  // the scan raises requests, so the badge counts the open requests themselves
+  // (mirrored node — no extra download).
+  const openRefillRequests = useRefillRequests("open");
+  const sourceBadge = SALE_RAISED_REQUESTS
+    ? (restockToday || []).length
+    : (openRefillRequests || []).filter((r) => r && !r.shadow).length;
   // assistant badge = today's placed orders. A wall-walk display request
   // (displayRequestCore.js) is a warehouse task, not a placed order.
   const assistantBadge = orders ? orders.filter(o =>

@@ -46,6 +46,8 @@ const EXECUTE = process.argv.includes("--execute");
 // been mounted since 12 Jul (#202), so the products were never being refilled
 // by sales and arming them would have ADDED scan requests nobody approved.
 const ROLLBACK = process.argv.includes("--rollback");
+// A rollback is live only with --execute as well (Sonnet architect, #787).
+if (ROLLBACK && !EXECUTE) console.log("(--rollback without --execute: dry run)");
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 const RUNNER = "arm-sale-only-products-20261024";
 
@@ -97,7 +99,12 @@ if (ROLLBACK) {
   fs.writeFileSync(path.join(dir, "stock_targets-before.json"), JSON.stringify(Object.fromEntries(plan.map((p) => [`stock_targets/${p.loc}/${p.pid}`, p.live])), null, 2));
   const out = [];
   for (const p of plan) {
-    const mine = Object.entries(p.live).filter(([, r]) => r && r.source === "policy_target" && r.prevAbsent === true && String(r.setAt || "") >= "2026-10-24T11:41:00").map(([k]) => k);
+    // Exactly the rows this run wrote: our source, no previous row, the
+    // writer's admin stamp, and set inside the 24 Oct arming minutes — never
+    // a row the Engine Policy card wrote later on the same product.
+    const mine = Object.entries(p.live).filter(([, r]) => r && r.source === "policy_target" && r.prevAbsent === true
+      && r.setBy === ADMIN_EMAIL && String(r.setAt || "") >= "2026-10-24T11:41:00" && String(r.setAt || "") < "2026-10-24T11:45:00").map(([k]) => k);
+    if (!EXECUTE) { out.push({ pid: p.pid, wouldRemove: mine }); console.log(`  would remove ${p.loc} ${p.name} ${mine.join(",") || "(nothing)"}`); continue; }
     if (!mine.length) { out.push({ pid: p.pid, skipped: "no row written by this script" }); continue; }
     const expected = Object.fromEntries(mine.map((k) => [k, p.live[k]]));
     const res = await applyCategoryPolicy({ db, callerEmail: ADMIN_EMAIL, adminEmail: ADMIN_EMAIL, callerUid: RUNNER, nowMs: Date.now(),
