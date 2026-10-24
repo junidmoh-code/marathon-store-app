@@ -395,3 +395,24 @@ describe("restockCountsFromLog — the missing-hub default respects the wall", (
     expect(ids("hub2")).toEqual([]);
   });
 });
+
+describe("restockCountsFromLog — one pair per customer per cell per day (23 Oct ×3 incident)", () => {
+  const ev = (orderNumber, size, extra = {}) => ({
+    action: "ready", productType: "sneaker", placedAtHub: "hub2", productId: "pAJ1",
+    productName: "Air Jordan 1 SE Craft Tech Grey", size, orderNumber,
+    timestamp: "2026-10-23T07:37:00.000Z", customerPhone: "+27000000001", ...extra,
+  });
+  it("one order placed and readied three times counts ONE pair per size", () => {
+    const log = ["7", "8", "9"].flatMap((s, i) => [ev(`00${i}`, s), ev(`04${i}`, s), ev(`14${i}`, s)]);
+    const out = restockCountsFromLog({ log, dateStr: "2026-10-23", hub: "hub2" });
+    expect(out.pAJ1.sizes).toEqual({ 7: 1, 8: 1, 9: 1 });
+  });
+  it("two different customers still count two pairs", () => {
+    const log = [ev("001", "9"), ev("002", "9", { customerPhone: "+27000000002" })];
+    expect(restockCountsFromLog({ log, dateStr: "2026-10-23", hub: "hub2" }).pAJ1.sizes).toEqual({ 9: 2 });
+  });
+  it("events with no customer identity keep counting per order", () => {
+    const log = [ev("001", "9", { customerPhone: undefined }), ev("002", "9", { customerPhone: undefined })];
+    expect(restockCountsFromLog({ log, dateStr: "2026-10-23", hub: "hub2" }).pAJ1.sizes).toEqual({ 9: 2 });
+  });
+});

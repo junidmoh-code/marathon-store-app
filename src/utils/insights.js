@@ -241,10 +241,23 @@ export function restockCountsFromLog({ log, dateStr, hub, returnedIds, onNameCol
   );
   const result = {};
   const seenNames = new Map();
+  // ONE PAIR PER CUSTOMER PER CELL PER DAY (incident 2026-10-23). A "ready"
+  // event is an order being pulled, not a sale: one customer order of ten
+  // pairs, placed and marked ready three times at Hub 2, counted as three
+  // pairs of every size against a single POS sale and asked Central for ×3.
+  // A re-placed order for the SAME customer, product and size on one SA day is
+  // the same pair. Events with no customer identity keep counting per order.
+  const seenPairs = new Set();
   for (const e of dedupeByOrderNumber(raw)) {
     if (returnedIds && returnedIds.has(e.orderNumber)) continue;
     const size = e.size;
     if (!size) continue;
+    const who = e.customerPhone || e.customerCode || null;
+    if (who) {
+      const pairKey = `${who}|${e.productId || e.productName || ""}|${size}`;
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
+    }
     const name = e.productName || "Unknown";
     noteNameCollision(seenNames, name, e.productId, onNameCollision);
     // productId is the group key (sourceGroupKey) — identically-named twins get
