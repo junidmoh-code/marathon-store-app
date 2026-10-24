@@ -48,6 +48,14 @@ const EXECUTE = process.argv.includes("--execute");
 const ROLLBACK = process.argv.includes("--rollback");
 // A rollback is live only with --execute as well (Sonnet architect, #787).
 if (ROLLBACK && !EXECUTE) console.log("(--rollback without --execute: dry run)");
+// RETIRED PLAN: this list was rolled back on 24 Oct (its products were never
+// refilled by sales — see the --rollback note). Re-arming it would re-add the
+// rows nobody approved, so --execute is refused unless it is a rollback
+// (CodeRabbit, #787). The file stays as the record of what was done.
+if (EXECUTE && !ROLLBACK) {
+  console.error("arm-sale-only-products: this plan was rolled back on 24 Oct and is retired — refusing --execute.");
+  process.exit(2);
+}
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 const RUNNER = "arm-sale-only-products-20261024";
 
