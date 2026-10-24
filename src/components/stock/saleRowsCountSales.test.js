@@ -67,7 +67,23 @@ describe("REPLAY — Mike's 23 Oct triple order at Hub 2", () => {
     expect(covered.every((r) => r.policyCap.scan === true)).toBe(true);
   });
 
-  it("a product with no policy still gets its sold pair replaced, once", () => {
+  it("with sale-raised requests OFF, a product with no policy asks nothing either", () => {
+    const tee = [{ saleId: "-T", orderNumber: "090", productId: "pNoPolicy", productName: "x", size: "9", hub: "hub2" }];
+    const r = pendingSaleRows({ counts: computeRestockCounts(soldPairEntries(tee)), responses: {}, progress: {}, date: day, fallbackMs: 0 });
+    const { rows: pick, covered } = capSaleRowsToPolicy(r, { scanOnly: true, salesRaiseNothing: true, keepFor: () => null });
+    expect(pick).toEqual([]);
+    expect(covered).toHaveLength(1);
+    expect(covered[0].policyCap).toMatchObject({ keep: null, scan: true });
+  });
+
+  it("a pid-less legacy sale row is covered too, never dropped", () => {
+    const legacy = [{ origin: "sale", rowKey: "sale:d:legacy:9", productId: null, size: "9", qty: 1, sent: 0, createdMs: 0 }];
+    const { rows: pick, covered } = capSaleRowsToPolicy(legacy, { salesRaiseNothing: true, keepFor: () => null });
+    expect(pick).toEqual([]);
+    expect(covered).toHaveLength(1);
+  });
+
+  it("(switch back on) a product with no policy gets its sold pair replaced, once", () => {
     const tee = [{ saleId: "-T", orderNumber: "090", productId: "pNoPolicy", productName: "x", size: "9", hub: "hub2" },
                  { saleId: "-T", orderNumber: "090", productId: "pNoPolicy", productName: "x", size: "9", hub: "hub2" }];
     const r = pendingSaleRows({ counts: computeRestockCounts(soldPairEntries(tee)), responses: {}, progress: {}, date: day, fallbackMs: 0 });
@@ -84,8 +100,13 @@ describe("the queue never counts readies again (source pin)", () => {
   it("every sale-row builder goes through soldPairEntries", () => {
     expect((app.match(/computeRestockCounts\(soldEntriesFor\(/g) || []).length).toBe(4);
   });
-  it("the queue passes scanOnly", () => {
+  it("the queue passes scanOnly and the switch", () => {
     const q = readFileSync(new URL("./RefillQueue.jsx", import.meta.url), "utf8");
     expect(q).toMatch(/scanOnly:\s*true/);
+    expect(q).toMatch(/salesRaiseNothing:\s*!SALE_RAISED_REQUESTS/);
+  });
+  it("sale-raised requests are OFF", async () => {
+    const { SALE_RAISED_REQUESTS } = await import("../../config/saleRaisedRequests");
+    expect(SALE_RAISED_REQUESTS).toBe(false);
   });
 });

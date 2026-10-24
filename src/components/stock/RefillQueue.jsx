@@ -73,6 +73,7 @@ import { claimPickTxn, releasePickTxn, newPickToken, pickInProgress } from "./pi
 import { nameOf, isStore } from "./sectionRouting";
 import { capSaleRowsToPolicy, policyKeepFor } from "./saleRowPolicyCap";
 import { useExplicitTargetRows } from "./useExplicitTargetRows";
+import { SALE_RAISED_REQUESTS } from "../../config/saleRaisedRequests";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -410,6 +411,9 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // Junid, 24 Oct: requests come only from the scan versus policy — a
       // policy cell's sale rows are never work here.
       scanOnly: true,
+      // Junid, 24 Oct: sale-raised requests are OFF — no sale row is work,
+      // policy or not (config/saleRaisedRequests.js).
+      salesRaiseNothing: !SALE_RAISED_REQUESTS,
     });
   }, [saleRows, requestRows, engineConfig, byId, destCells, explicitRows, DEST_LOC]);
 
@@ -864,9 +868,11 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
           <span style={{ fontSize: 12, color: GRAY }}>
             <b style={{ color: GREEN }}>Already covered:</b>{" "}
             <b style={{ color: "rgba(255,255,255,.85)" }}>{byId.get(r.productId)?.name || r.productName || r.productId}</b>{" "}
-            size {String(r.size)} — {destLabel} keeps {r.policyCap.keep}, has {r.policyCap.onHand} on the shelf
-            {r.policyCap.inbound > 0 ? ` and ${r.policyCap.inbound} on the way` : ""}.
-            {r.policyCap.scan ? " The hourly scan asks for this size by policy — nothing to send from here." : " Nothing to send."}
+            size {String(r.size)} — {r.policyCap.keep == null
+              ? `sold ×${r.policyCap.asked}; no policy at ${destLabel}, and only the scan raises requests. Nothing to send from here.`
+              : <>{destLabel} keeps {r.policyCap.keep}, has {r.policyCap.onHand} on the shelf
+                {r.policyCap.inbound > 0 ? ` and ${r.policyCap.inbound} on the way` : ""}.
+                {r.policyCap.scan ? " The hourly scan asks for this size by policy — nothing to send from here." : " Nothing to send."}</>}
           </span>
         </div>
       ))}

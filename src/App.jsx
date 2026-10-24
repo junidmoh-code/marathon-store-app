@@ -164,6 +164,7 @@ import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequen
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests, useEngineConfig } from "./components/stock/useStock";
 import { policyKeepFor } from "./components/stock/saleRowPolicyCap";
 import { useExplicitTargetRows } from "./components/stock/useExplicitTargetRows";
+import { SALE_RAISED_REQUESTS } from "./config/saleRaisedRequests";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { sendDisplayRow, closeDisplayRow, closeDisplayRowForPartnerSale } from "./components/stock/displayRowStore";
 import { hasOpenDisplayRequest, otherOpenDisplayRequests, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
@@ -16946,9 +16947,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     return [...out].sort();
   }, [restockLogToday, restockLogPast]);
   const badgeExplicitRows = useExplicitTargetRows(badgeHub, badgePids);
-  const scanOwnsCell = useCallback((h, pid, size) => !!pid
+  // Sale-raised requests OFF (config/saleRaisedRequests.js): no sale cell is
+  // work, so none counts on the badge.
+  const scanOwnsCell = useCallback((h, pid, size) => !SALE_RAISED_REQUESTS || (!!pid
     && policyKeepFor({ config: badgeEngineConfig || {}, productsById, destCells: {},
-      explicitRows: h === badgeHub ? badgeExplicitRows : null }, h, pid, size) != null,
+      explicitRows: h === badgeHub ? badgeExplicitRows : null }, h, pid, size) != null),
   [badgeEngineConfig, productsById, badgeHub, badgeExplicitRows]);
   const productForKey = useCallback((key, cellProduct) => {
     const direct = productsById.get(key);
