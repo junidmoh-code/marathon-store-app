@@ -650,3 +650,128 @@ test("a refused merge releases its lock; an applied merge keeps a tombstone", as
   await run(db2);
   assert.ok(db2.data.product_merges_locks.pLoser, "applied merge keeps the lock as a tombstone");
 });
+
+// ─── THE SHOPIFY LINK FOLLOWS THE STOCK (Junid, 25 Oct 2026) ─────────────────
+// lib/merge-shopify-link.cjs. The loser's id map, claim and publish node move
+// to a survivor that has no listing, in the SAME atomic update as the stock.
+const GID = "gid://shopify/Product/9360134930581";
+const loserSyncNode = () => ({
+  shopifyProductId: GID,
+  variants: { "6": { shopifyVariantId: "gid://shopify/ProductVariant/1", shopifyInventoryItemId: "gid://shopify/InventoryItem/1" } },
+});
+const livePublish = () => ({ state: "live", liveState: "on", desiredState: "on", cleanName: "Low-top in black", photos: ["https://x/1.jpg"] });
+function linkedWorld(extra = {}) {
+  const w = baseWorld();
+  w.shopify_sync = { pLoser: loserSyncNode(), _claims: { "9360134930581": "pLoser" } };
+  w.shopify_publish = { pLoser: livePublish() };
+  return Object.assign(w, extra);
+}
+
+test("shopify link: a survivor with no listing takes the loser's — map, claim and publish node, in the one update", async () => {
+  const db = fakeDb(linkedWorld());
+  const out = await run(db);
+  assert.strictEqual(out.shopifyLink.action, "move");
+  assert.deepStrictEqual(db.data.shopify_sync.pSurvivor, loserSyncNode(), "variant ids carried exactly");
+  assert.strictEqual(db.data.shopify_sync.pLoser, undefined);
+  assert.strictEqual(db.data.shopify_sync._claims["9360134930581"], "pSurvivor");
+  assert.deepStrictEqual(db.data.shopify_publish.pSurvivor, livePublish(), "title and photos carried exactly");
+  assert.strictEqual(db.data.shopify_publish.pLoser, undefined);
+  const stockUpdate = db.updates.find((u) => Object.keys(u.patch).some((k) => k.startsWith("stock/")));
+  assert.ok(Object.keys(stockUpdate.patch).includes("shopify_sync/pSurvivor"), "the link moves in the SAME update as the stock");
+  const rec = db.data.product_merges[out.mergeId];
+  assert.deepStrictEqual(rec.before.shopifyLink.loserSync, loserSyncNode(), "reversal recipe holds the link");
+  assert.strictEqual(rec.before.shopifyLink.claimOwner, "pLoser");
+});
+
+test("shopify link: a survivor with its own listing keeps it; the loser's is left to go to 0", async () => {
+  const w = linkedWorld();
+  w.shopify_sync.pSurvivor = { shopifyProductId: "gid://shopify/Product/111" };
+  w.shopify_sync._claims["111"] = "pSurvivor";
+  const db = fakeDb(w);
+  const out = await run(db);
+  assert.strictEqual(out.shopifyLink.action, "keep-survivor");
+  assert.strictEqual(db.data.shopify_sync.pSurvivor.shopifyProductId, "gid://shopify/Product/111");
+  assert.deepStrictEqual(db.data.shopify_sync.pLoser, loserSyncNode(), "loser's map untouched");
+  assert.strictEqual(db.data.shopify_sync._claims["9360134930581"], "pLoser");
+});
+
+test("shopify link: no link on the loser changes nothing about Shopify", async () => {
+  const db = fakeDb(baseWorld());
+  const out = await run(db);
+  assert.strictEqual(out.shopifyLink.action, "none");
+  assert.strictEqual(db.data.shopify_sync, undefined);
+  assert.strictEqual(db.data.shopify_publish, undefined);
+});
+
+test("shopify link: a claim naming a THIRD record refuses the whole merge — nothing written", async () => {
+  const w = linkedWorld();
+  w.shopify_sync._claims["9360134930581"] = "pSomeoneElse";
+  const db = fakeDb(w);
+  const before = JSON.stringify(db.data);
+  await assert.rejects(run(db), (e) => e instanceof MergeRefused && /claimed by another record/.test(e.message));
+  const after = JSON.parse(JSON.stringify(db.data));
+  delete after.product_merges_locks;
+  const was = JSON.parse(before);
+  assert.deepStrictEqual(after, was, "stock, link and products untouched");
+});
+
+test("shopify link: a pending publish intent refuses — the survivor's record must not be pushed", async () => {
+  const w = linkedWorld();
+  w.shopify_publish.pLoser = { ...livePublish(), liveState: "off", desiredState: "on" };
+  const db = fakeDb(w);
+  await assert.rejects(run(db), (e) => e instanceof MergeRefused && /pending/.test(e.message));
+  assert.ok(db.data.stock.hub2.pLoser, "no stock moved");
+});
+
+test("shopify link: a reconciler write landing during preparation is fenced — nothing written", async () => {
+  const db = fakeDb(linkedWorld());
+  // skip=1: the first read is the preparation read; fire on the fence re-read.
+  db.afterGetOf("shopify_publish/pLoser", ({ setPath }) => setPath("shopify_publish/pLoser/updatedAt", 99), 1);
+  await assert.rejects(run(db), (e) => e instanceof MergeRefused && /Shopify listing/.test(e.message));
+  assert.ok(db.data.stock.hub2.pLoser, "no stock moved");
+  assert.strictEqual(db.data.shopify_publish.pLoser.updatedAt, 99, "the reconciler's write survives");
+  assert.strictEqual(db.data.shopify_sync.pSurvivor, undefined);
+});
+
+test("shopify link: the link fence reads are in flight with the stock fence (one round trip)", async () => {
+  const db = fakeDb(linkedWorld());
+  await run(db);
+  const peak = db.peakConcurrentPaths();
+  for (const want of ["shopify_sync/pLoser", "shopify_publish/pLoser", "shopify_sync/_claims/9360134930581", "stock/hub2/pSurvivor/6"]) {
+    assert.ok(peak.includes(want), `${want} must be in flight with the other fence reads — peak was [${peak.join(", ")}]`);
+  }
+});
+
+test("shopify link: open website-order holds on the loser refuse the merge — nothing written", async () => {
+  const db = fakeDb(linkedWorld({ online_reservations: { pLoser: { "6": { "1802": { qty: 1 } } } } }));
+  await assert.rejects(run(db), (e) => e instanceof MergeRefused && /website orders/.test(e.message));
+  assert.ok(db.data.stock.hub2.pLoser, "no stock moved");
+  assert.ok(db.data.shopify_sync.pLoser, "no link moved");
+});
+
+test("shopify link: a survivor with only an AWAITING publish node is not on Shopify — the loser's listing moves to it", async () => {
+  const w = linkedWorld();
+  w.shopify_publish.pSurvivor = { state: "awaiting", cleanName: "draft name" };
+  const db = fakeDb(w);
+  const out = await run(db);
+  assert.strictEqual(out.shopifyLink.action, "move");
+  assert.deepStrictEqual(db.data.shopify_publish.pSurvivor, livePublish());
+  assert.deepStrictEqual(db.data.product_merges[out.mergeId].before.shopifyLink.survivorPublish, { state: "awaiting", cleanName: "draft name" },
+    "the replaced node is kept for reversal");
+});
+
+test("shopify link: a survivor with a LIVE publish node keeps it even without an id map", async () => {
+  const w = linkedWorld();
+  w.shopify_publish.pSurvivor = { state: "live", liveState: "on", desiredState: "on" };
+  const db = fakeDb(w);
+  const out = await run(db);
+  assert.strictEqual(out.shopifyLink.action, "keep-survivor");
+  assert.deepStrictEqual(db.data.shopify_sync.pLoser, loserSyncNode());
+});
+
+test("shopify link: survivor sizes with no variant on the moved listing are named", async () => {
+  // Survivor carries 6 and 8; the loser listing only has a variant for 6.
+  const db = fakeDb(linkedWorld());
+  const out = await run(db);
+  assert.deepStrictEqual(out.shopifyLink.sizesWithoutVariant, ["8"]);
+});
