@@ -42,6 +42,7 @@ import { identityFor } from "../../utils/labelIdentity";
 import { useLabelIdentity } from "../../utils/labelIdentityStore";
 import { planMerge, outcomeLines } from "./mergeDisposition";
 import { loadCountedFor } from "./mergeDispositionStore";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const mergeProductsFn = httpsCallable(functions, "mergeProducts");
 
@@ -54,11 +55,12 @@ const PAGE = 40;
 // onto an empty array made the screen state the opposite of the truth.
 const PLAN_ERROR = "error";
 
-function Photo({ url, size = 88 }) {
-  if (!url) return <div style={{ width: size, height: size, borderRadius: 14, background: "rgba(120,150,255,.08)",
+function Photo({ product, size = 88 }) {
+  const empty = <div style={{ width: size, height: size, borderRadius: 14, background: "rgba(120,150,255,.08)",
                                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30 }}>👟</div>;
-  return <img src={url} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 14,
-                                        border: "1px solid rgba(255,255,255,.12)" }} />;
+  return <PrimaryPhoto product={product} fallback={empty}
+                       style={{ width: size, height: size, objectFit: "cover", borderRadius: 14,
+                                border: "1px solid rgba(255,255,255,.12)" }} />;
 }
 
 // Every stock cell of one product — the operator must SEE what they are joining.
@@ -94,7 +96,7 @@ function TargetRow({ product, identityMap, allStock, registry, onPick }) {
       <button type="button" onClick={onPick}
         style={{ display: "flex", alignItems: "flex-start", gap: 11, padding: 0, width: "100%",
                  textAlign: "left", cursor: "pointer", background: "transparent", border: "none", color: "inherit" }}>
-        <Photo url={product.photoUrl} size={72} />
+        <Photo product={product} size={72} />
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ fontSize: 14.5, fontWeight: 800, lineHeight: 1.3 }}>{rowLabel(product)}</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 6 }}>
@@ -466,7 +468,7 @@ export default function MergeProducts({
           // ── SCREEN 1: choose the target ────────────────────────────────────
           <>
             <div style={{ background: CARD, border: BORDER, borderRadius: 14, padding: 13, display: "flex", gap: 12, alignItems: "center", marginBottom: 18 }}>
-              <Photo url={loser?.photoUrl} size={60} />
+              <Photo product={loser} size={60} />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 12, color: GRAY }}>Merging away</div>
                 <div style={{ fontSize: 15.5, fontWeight: 800 }}>{loser ? rowLabel(loser) : ""}</div>
@@ -595,7 +597,7 @@ export default function MergeProducts({
                 { p: survivor, role: "SURVIVES", color: "#4ADE80", border: "rgba(74,222,128,.4)" }].map(({ p, role, color, border }) => (
                 <div key={p.id} style={{ background: CARD, border: `1px solid ${border}`, borderRadius: 16, padding: 12 }}>
                   <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: ".08em", color, marginBottom: 8 }}>{role}</div>
-                  <Photo url={p.photoUrl} size={88} />
+                  <Photo product={p} size={88} />
                   <div style={{ fontSize: 14.5, fontWeight: 800, margin: "8px 0 2px", lineHeight: 1.3 }}>{rowLabel(p)}</div>
                   {p.styleCode && <div style={{ fontSize: 11, color: GRAY, marginBottom: 6 }}>{p.styleCode}</div>}
                   <div style={{ marginTop: 8 }}>

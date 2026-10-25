@@ -343,7 +343,7 @@ export default function MoveExcess({ products = [], actorRole }) {
         const sectionHead = { display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, fontSize: 12.5 };
         return (
           <ProductCard key={c.key}
-            photo={c.photo} name={c.name}
+            photo={c.photo} productId={c.pid} name={c.name}
             badges={<>
               <Badge tone={BLUE_L}>{label(c.loc)}</Badge>
               <Badge tone={AMBER}>{c.totalExcess} ABOVE TARGET</Badge>

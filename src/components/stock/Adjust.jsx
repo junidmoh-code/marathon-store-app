@@ -11,9 +11,12 @@ import { labelFor } from "./locations";
 import { Card, Field, SizePicker, LocationPicker, NumberInput, TextInput, Toast, Empty } from "./widgets";
 import { GRAY, GREEN, RED, BLUE_L, BORDER, CARD, bGreen, input } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
-function Thumb({ url }) {
-  if (url) return <img src={url} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}
+function Thumb({ product }) {
+  const url = primaryPhotoUrl(product);
+  if (url) return <PrimaryPhoto product={product} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}
     style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 7, flexShrink: 0 }} />;
   return <div style={{ width: 32, height: 32, borderRadius: 7, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>👟</div>;
 }
@@ -79,7 +82,7 @@ export default function Adjust({ products, registry, actorRole, isAdmin }) {
         <Field label="Product">
           {product ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10, background: CARD, border: BORDER, borderRadius: 9, padding: "7px 10px" }}>
-              <Thumb url={product.photoUrl} />
+              <Thumb product={product} />
               <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{product.name}</div>
               <button onClick={() => { setProductId(""); setSize(""); setQ(""); }}
                 style={{ background: "transparent", border: "1px solid rgba(60,110,255,.3)", borderRadius: 8, padding: "5px 10px", color: BLUE_L, fontSize: 11.5, cursor: "pointer" }}>Change</button>
@@ -95,7 +98,7 @@ export default function Adjust({ products, registry, actorRole, isAdmin }) {
                   ) : matches.map(p => (
                     <button key={p.id} onClick={() => { setProductId(p.id); setSize(""); setQ(""); }}
                       style={{ display: "flex", alignItems: "center", gap: 9, textAlign: "left", background: CARD, border: BORDER, borderRadius: 9, padding: "6px 9px", cursor: "pointer" }}>
-                      <Thumb url={p.photoUrl} />
+                      <Thumb product={p} />
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontSize: 12.5, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
                         {p.category && <div style={{ fontSize: 10, color: GRAY }}>{p.category}</div>}

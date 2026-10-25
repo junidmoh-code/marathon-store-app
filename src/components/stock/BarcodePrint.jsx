@@ -16,6 +16,7 @@ import { Toast } from "./widgets";
 import { GLASS_SOLID, bGreen, bGhost, GRAY, GREEN, AMBER, BLUE_L, input } from "./ui";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 export default function BarcodePrint({ product, items, onClose }) {
   // items: [{ size, added }] — the sizes just saved, and units added per size.
@@ -65,7 +66,7 @@ export default function BarcodePrint({ product, items, onClose }) {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
           {/* Product photo — tap to view full. */}
           {product.photoUrl
-            ? <img src={product.photoUrl} alt="" onClick={() => setLightbox(true)}
+            ? <PrimaryPhoto product={product} alt="" onClick={() => setLightbox(true)}
                 onError={(e) => { e.currentTarget.style.display = "none"; }}
                 style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 8, flexShrink: 0, cursor: "zoom-in" }} />
             : <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>👟</div>}

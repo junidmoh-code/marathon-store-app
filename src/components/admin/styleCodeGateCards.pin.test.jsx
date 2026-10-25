@@ -76,7 +76,9 @@ describe("the intake gate's cards survived the lift into shared/", () => {
   it("renders BYTE-FOR-BYTE what SimilarCards rendered before the move", () => {
     const before = render(<SimilarCardsOriginal suggestions={SUGGESTIONS} onAddStock={() => {}} />);
     const after = render(<CandidateCards suggestions={SUGGESTIONS} onPick={() => {}} />);
-    expect(JSON.stringify(after.toJSON())).toBe(JSON.stringify(before.toJSON()));
+    // The photo is now <PrimaryPhoto> (one primary, list-size thumb), which adds lazy/async loading.
+    const afterJson = JSON.stringify(after.toJSON()).split('"loading":"lazy","decoding":"async",').join("");
+    expect(afterJson).toBe(JSON.stringify(before.toJSON()));
   });
 
   it("still caps at six rows — the seventh never renders", () => {

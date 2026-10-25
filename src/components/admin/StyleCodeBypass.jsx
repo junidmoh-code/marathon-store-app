@@ -23,6 +23,7 @@ import {
   BYPASS_NEEDS_DUPLICATE_CHECK, BYPASS_NEEDS_REASON,
 } from "./styleCodeGateLogic";
 import { searchProducts } from "../../utils/productSearch";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const BLUE = "#4A7FFF";
 const AMBER = "#FBBF24";
@@ -124,7 +125,7 @@ export default function StyleCodeBypass({ products, onCancel, onConfirm }) {
                                              background: "rgba(255,255,255,.04)", borderRadius: 10, padding: 8 }}>
                       <div style={{ width: 40, height: 40, borderRadius: 8, overflow: "hidden", flexShrink: 0,
                                     background: "rgba(255,255,255,.05)" }}>
-                        {m.photoUrl && <img src={m.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                        {m.photoUrl && <PrimaryPhoto product={m} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                       </div>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: 13, color: "#fff", fontWeight: 600 }}>{m.name || "Unnamed"}</div>

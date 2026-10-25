@@ -12,6 +12,8 @@
 
 import React from "react";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, FONT } from "./ui";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
 export function StatCard({ label, value, sub, tone = BLUE_L, onClick, wide }) {
   return (
@@ -80,12 +82,17 @@ export function Badge({ children, tone = BLUE_L }) {
 // The thumb stops its own click from reaching whatever it sits inside. Looking
 // at a picture is not the same act as choosing the thing in it — a shopper's
 // question ("is this the one?") must not commit the operator to a screen.
-export function PhotoThumb({ url, onOpen, size = 44, alt = "", fallback = "📦" }) {
-  if (url) {
+export function PhotoThumb({ url, product, productId, onOpen, size = 44, alt = "", fallback = "📦" }) {
+  // Given a product or id: its primary at list size. Without one: the url, exactly as before.
+  const live = product || (productId ? { id: productId, photoUrl: url } : null);
+  const full = live ? primaryPhotoUrl(live) || url : url;
+  if (full) {
+    const Img = live ? PrimaryPhoto : "img";
+    const srcProps = live ? { product: live, productId: productId ?? live.id, snapshot: url } : { src: url, loading: "lazy", decoding: "async" };
     return (
-      <img
-        src={url} alt={alt} loading="lazy" decoding="async"
-        onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(url); } : undefined}
+      <Img
+        {...srcProps} alt={alt}
+        onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(full); } : undefined}
         // A dead URL must leave the row's shape alone, so the element is hidden
         // rather than collapsed and the layout does not jump.
         onError={(e) => { e.currentTarget.style.visibility = "hidden"; }}
@@ -117,8 +124,9 @@ export function PhotoLightbox({ url, onClose }) {
   );
 }
 
-export function ProductCard({ photo, photos, onPhotoTap, name, badges, sub, right, children }) {
+export function ProductCard({ photo, photos, product, productId, onPhotoTap, name, badges, sub, right, children }) {
   const src = photo || (photos && photos[0]) || null;
+  const live = product || (productId ? { id: productId, photoUrl: src } : null);
   return (
     <div style={{ ...GLASS, marginBottom: 10, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 13px" }}>
@@ -126,7 +134,9 @@ export function ProductCard({ photo, photos, onPhotoTap, name, badges, sub, righ
           onClick={onPhotoTap}
           style={{ width: 54, height: 54, borderRadius: 11, flexShrink: 0, overflow: "hidden", background: "rgba(60,110,255,.1)", cursor: onPhotoTap ? "zoom-in" : "default" }}
         >
-          {src && <img src={src} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+          {live
+            ? <PrimaryPhoto product={live} productId={productId ?? live.id} snapshot={src} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            : src && <img src={src} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 13.5, color: "#fff", lineHeight: 1.25, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{name}</div>

@@ -6,6 +6,8 @@
 // plan verbatim; Cancel writes nothing. The skip-vs-overwrite choice for
 // already-priced products lives here too, defaulting to skip.
 
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+
 const fmt = (v) => (typeof v === "number" ? `R${v.toLocaleString("en-ZA", { maximumFractionDigits: 2 })}` : "—");
 
 const S = {
@@ -62,7 +64,7 @@ export default function BulkPricePreview({ title, subtitle, plan, busy = false,
         <div style={S.list}>
           {rows.map((r) => (
             <div key={r.pid} style={S.row}>
-              {r.photoUrl ? <img src={r.photoUrl} alt="" loading="lazy" style={{ width: 30, height: 30, borderRadius: 6, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} /> : null}
+              {r.photoUrl ? <PrimaryPhoto product={{ id: r.pid, photoUrl: r.photoUrl }} alt="" style={{ width: 30, height: 30, borderRadius: 6, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} /> : null}
               <div style={S.name}>{r.name}{(r.badge || r.overwrites) ? <span style={{ color: "#FBBF24", fontSize: 10, marginLeft: 6 }}>{r.badge || "overwrites"}</span> : null}</div>
               <Delta label="Stock" from={r.fromStock} to={r.toStock} />
               <Delta label="Retail" from={r.fromRetail} to={r.toRetail} />

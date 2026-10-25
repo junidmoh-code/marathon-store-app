@@ -48,6 +48,7 @@ import {
 } from "./styleCodeGateLogic";
 import { buildLinkSuggestions } from "../../utils/linkSuggestions";
 import CandidateCards from "../shared/CandidateCards";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const resolveStyleCodeFn = httpsCallable(functions, "resolveStyleCode");
 // Read-only any-token ownership — the pre-duplicate step's server half
@@ -656,7 +657,7 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
                   <div style={{ width: 84, height: 84, flexShrink: 0, borderRadius: 12, overflow: "hidden",
                                 background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     {full.photoUrl
-                      ? <img src={full.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ? <PrimaryPhoto product={full} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                       : <span style={{ ...meta, fontSize: 9 }}>NO IMAGE</span>}
                   </div>
                   <div style={{ minWidth: 0, flex: 1 }}>

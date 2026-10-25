@@ -24,6 +24,7 @@ import { FONT, MONO, INK, PANEL, META } from "./tokens";
 import { ONLINE_ORDERS_CONFIG_PATH } from "../../utils/onlineOrders";
 import { CheckProperlyBanner } from "./CheckCard";
 import { isOnlineReturn } from "./feedModel";
+import { PrimaryPhoto } from "../../components/shared/PrimaryPhoto.jsx";
 
 export const DEFAULT_HANDOVER_TEXT = "Give to Till 2";
 const RED = "#FF453A";
@@ -65,7 +66,7 @@ function Row({ store, row, handover }) {
   return (
     <div data-testid="web-row" style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 0", borderTop: "1px solid rgba(255,255,255,.06)" }}>
       {row.photoUrl
-        ? <img src={row.photoUrl} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 10, flex: "0 0 56px" }} />
+        ? <PrimaryPhoto product={{ id: row.productId, photoUrl: row.photoUrl }} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 10, flex: "0 0 56px" }} />
         : <div style={{ width: 56, height: 56, borderRadius: 10, background: "rgba(255,255,255,.05)", flex: "0 0 56px" }} />}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: INK, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.productName || "Item"}</div>

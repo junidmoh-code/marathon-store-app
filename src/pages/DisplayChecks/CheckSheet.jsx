@@ -27,6 +27,7 @@ import { formatSaTime, isOnlinePick } from "./feedModel";
 import { OnlineBadge, CheckProperlyBanner } from "./CheckCard";
 import { PACKER_INSTRUCTION } from "../../utils/onlineOrders";
 import StyleCodeCapture from "./StyleCodeCapture";
+import { PrimaryPhoto } from "../../components/shared/PrimaryPhoto.jsx";
 
 const completeDisplayCheck = httpsCallable(functions, "completeDisplayCheck");
 const FOCUSABLE = 'button:not([disabled]),[href],input:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -144,9 +145,8 @@ export default function CheckSheet({ store, check, onClose, styleCodeProgress, p
         <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
           <div style={{ width: 72, height: 72, flexShrink: 0, borderRadius: 12, overflow: "hidden",
                         background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            {check.photoUrl
-              ? <img src={check.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              : <span style={{ ...META, fontSize: 9 }}>NO IMAGE</span>}
+            <PrimaryPhoto product={product} productId={check.productId} snapshot={check.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              fallback={<span style={{ ...META, fontSize: 9 }}>NO IMAGE</span>} />
           </div>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontFamily: FONT, fontSize: 17, fontWeight: 720, color: INK, lineHeight: 1.2 }}>{name}</div>

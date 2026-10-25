@@ -83,6 +83,7 @@ import { useLabelIdentity, invalidateIdentity, noteRegistered } from "../../util
 import { TongueLabelReader } from "./TongueLabelReader.jsx";
 import MergeProducts from "./MergeProducts.jsx";
 import HubSneakerCount from "./HubSneakerCount.jsx";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const qtyOf = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
 
@@ -102,12 +103,10 @@ function shopCodesOf(product) {
 
 // ─── Shared bits ─────────────────────────────────────────────────────────────
 
-function Photo({ url, size = 96, radius = 14 }) {
-  if (!url) {
-    return <div style={{ width: size, height: size, borderRadius: radius, background: "rgba(120,150,255,.08)",
+function Photo({ product, size = 96, radius = 14 }) {
+  const empty = <div style={{ width: size, height: size, borderRadius: radius, background: "rgba(120,150,255,.08)",
                          display: "flex", alignItems: "center", justifyContent: "center", fontSize: size / 3, flexShrink: 0 }}>👟</div>;
-  }
-  return <img src={url} alt="" loading="lazy" decoding="async"
+  return <PrimaryPhoto product={product} fallback={empty}
               onError={(e) => { e.currentTarget.style.display = "none"; }}
               style={{ width: size, height: size, objectFit: "cover", borderRadius: radius, flexShrink: 0,
                        border: "1px solid rgba(255,255,255,.1)" }} />;
@@ -189,7 +188,7 @@ function LeftoverExits({ product, twin, busy, onMerge, onDeactivate }) {
                    padding: 10, borderRadius: 15, fontFamily: FONT, cursor: busy ? "not-allowed" : "pointer",
                    opacity: busy ? 0.45 : 1, background: "rgba(74,127,255,.13)",
                    border: "2px solid rgba(74,127,255,.55)", color: "#D7E3FF" }}>
-          <Photo url={twin.product.photoUrl} size={56} radius={12} />
+          <Photo product={twin.product} size={56} radius={12} />
           <span style={{ minWidth: 0, flex: 1 }}>
             <span style={{ display: "block", fontSize: 12, fontWeight: 800, letterSpacing: ".04em", color: BLUE_L }}>
               ⇄ MERGE INTO THIS ONE
@@ -1359,7 +1358,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                     onClick={() => { setPanel(registerPanelFor(p)); setQuery(""); ensureAllStock().catch(() => {}); }}
                     style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 12px", textAlign: "left", cursor: "pointer",
                              background: CARD, border: BORDER, borderRadius: 13 }}>
-                    <Photo url={p.photoUrl} size={52} radius={10} />
+                    <Photo product={p} size={52} radius={10} />
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
                       <div style={{ fontSize: 11.5, color: GRAY }}>
@@ -1402,7 +1401,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                       onClick={() => { setPanel(registerPanelFor(product)); ensureAllStock().catch(() => {}); }}
                       style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 12px", textAlign: "left", cursor: "pointer",
                                background: "rgba(12,16,30,.7)", border: "1px solid rgba(120,150,255,.22)", borderRadius: 13 }}>
-                      <Photo url={product.photoUrl} size={52} radius={10} />
+                      <Photo product={product} size={52} radius={10} />
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{product.name}</div>
                         <div style={{ fontSize: 11.5, color: GRAY }}>{hubQty} in stock here · not seen on the floor yet</div>
@@ -1473,7 +1472,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                     onClick={() => { setPanel(countPanelFor(p)); setQuery(""); }}
                     style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", textAlign: "left", cursor: "pointer",
                              background: CARD, border: BORDER, borderRadius: 12 }}>
-                    <Photo url={p.photoUrl} size={40} radius={9} />
+                    <Photo product={p} size={40} radius={9} />
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
                       <div style={{ fontSize: 11, color: GRAY }}>{realSizes(p).length} sizes</div>
@@ -1556,7 +1555,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
               <div key={product.id}
                    style={{ background: "rgba(12,16,30,.75)", border: "1px solid rgba(120,150,255,.28)", borderRadius: 18, padding: 16 }}>
                 <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-                  <Photo url={product.photoUrl} size={92} radius={14} />
+                  <Photo product={product} size={92} radius={14} />
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ fontSize: 17, fontWeight: 800, color: "#fff", lineHeight: 1.25 }}>{product.name}</div>
                     <div style={{ fontSize: 12.5, color: GRAY, marginTop: 4 }}>
@@ -1618,7 +1617,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                   <div key={product.id}
                        style={{ background: "rgba(12,16,30,.75)", border: "1px dashed rgba(255,196,107,.4)", borderRadius: 18, padding: 16 }}>
                     <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-                      <Photo url={product.photoUrl} size={64} radius={12} />
+                      <Photo product={product} size={64} radius={12} />
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontSize: 15.5, fontWeight: 800, color: "#fff", lineHeight: 1.25 }}>{product.name}</div>
                         <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>
@@ -1656,7 +1655,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                   <div key={product.id}
                        style={{ background: "rgba(12,16,30,.6)", border: "1px dashed rgba(120,150,255,.35)", borderRadius: 18, padding: 16 }}>
                     <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-                      <Photo url={product.photoUrl} size={64} radius={12} />
+                      <Photo product={product} size={64} radius={12} />
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontSize: 15.5, fontWeight: 800, color: "#fff", lineHeight: 1.25 }}>{product.name}</div>
                         <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>
@@ -1706,7 +1705,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                   <div key={product.id}
                        style={{ background: "rgba(12,16,30,.55)", border: "1px solid rgba(150,160,190,.25)", borderRadius: 18, padding: 16, opacity: .92 }}>
                     <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-                      <Photo url={product.photoUrl} size={64} radius={12} />
+                      <Photo product={product} size={64} radius={12} />
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontSize: 15.5, fontWeight: 800, color: "#D7DCEF", lineHeight: 1.25 }}>{product.name}</div>
                         <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>{deactivationLine(product)}</div>
@@ -1866,7 +1865,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         return (
           <Panel title="Is this the shoe?" onClose={() => setAliasConfirm(null)}>
             <div style={{ textAlign: "center" }}>
-              <Photo url={cand.photoUrl} size={220} radius={20} />
+              <Photo product={cand} size={220} radius={20} />
               <div style={{ fontSize: 22, fontWeight: 900, margin: "16px 0 6px", lineHeight: 1.3 }}>{cand.name}</div>
               <div style={{ fontSize: 12.5, color: GRAY, marginBottom: 20 }}>
                 Matched by this label's wording — confirm it and this reading files itself for next time.
@@ -2085,7 +2084,7 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
             <button key={p.id} type="button" disabled={busy} onClick={() => onPick(p)}
               style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 12px", textAlign: "left",
                        cursor: "pointer", background: CARD, border: BORDER, borderRadius: 13 }}>
-              <Photo url={p.photoUrl} size={52} radius={10} />
+              <Photo product={p} size={52} radius={10} />
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
                 <div style={{ fontSize: 11.5, color: GRAY }}>
@@ -2488,7 +2487,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
     <Panel title="Register display" onClose={onClose}>
       {/* The shoe the operator selected — photo, name, where its stock is. */}
       <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 10 }}>
-        <Photo url={product.photoUrl} size={84} />
+        <Photo product={product} size={84} />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>{product.name}</div>
           <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>Adds to {cleanupHubLabel(hub)} stock for the size you pick</div>
@@ -2609,7 +2608,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
             {[...conflictOwners, product].map((p, i) => (
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: 12,
                                        background: CARD, border: BORDER, borderRadius: 14 }}>
-                <Photo url={p.photoUrl} size={110} radius={12} />
+                <Photo product={p} size={110} radius={12} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15.5, fontWeight: 800, lineHeight: 1.3 }}>{p.name}</div>
                   <div style={{ fontSize: 11.5, color: GRAY, marginTop: 3 }}>
@@ -2876,7 +2875,7 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
   return (
     <Panel title="Count" onClose={onClose}>
       <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 18 }}>
-        <Photo url={product.photoUrl} size={84} />
+        <Photo product={product} size={84} />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>{product.name}</div>
           <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>{cleanupHubLabel(hub)} · scan, confirm, continue</div>
