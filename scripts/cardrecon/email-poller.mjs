@@ -518,6 +518,13 @@ async function captureOne(getToken, { attachment, message }) {
     // its own `terminalLabel` for exactly this reason; this is the same rule
     // applied to the intake feed.
     terminalLabel: extract.review?.terminal?.label || null,
+    // When the batch CLOSED and the till the machine stood on for it — so the
+    // capture screen ticks a till for TODAY's report only, never for an old
+    // batch re-printed today, and a moved machine is named by where it stood.
+    closedAt: Number.isFinite(submit.closedAt) ? submit.closedAt : null,
+    placeStoreId: submit.placeStoreId || null,
+    placeTillId: submit.placeTillId || null,
+    placeLabel: submit.placeLabel || null,
     batchKey: submit.batchKey,
     linesCaptured: submit.linesCaptured === true,
     warnings: submit.warnings || [],

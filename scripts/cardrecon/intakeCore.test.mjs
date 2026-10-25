@@ -154,6 +154,22 @@ describe("the terminal's name is stamped at capture, never resolved later", () =
     expect(row.tillId).toBe("till-1");
   });
 
+  it("carries when the batch closed and where a moved machine stood (25 Oct 2026)", () => {
+    const row = attachmentOutcome({
+      filename: "a.pdf",
+      capture: { recorded: true, batchKey: "52", tid: "67377843", storeId: "trophy", tillId: "till-1",
+                 terminalLabel: "Marathon Till 1", closedAt: 1792929376000,
+                 placeStoreId: "pe", placeTillId: "till-1", placeLabel: "Marathon Till 1", linesCaptured: true, warnings: [] },
+    });
+    expect(row.closedAt).toBe(1792929376000);
+    expect(row.placeStoreId).toBe("pe");
+    expect(row.placeTillId).toBe("till-1");
+    expect(row.placeLabel).toBe("Marathon Till 1");
+    expect(row.storeId).toBe("trophy");   // the filing key stays what it was
+    const old = attachmentOutcome({ filename: "a.pdf", capture: { recorded: true, batchKey: "1", tid: "X", linesCaptured: true, warnings: [] } });
+    expect(old.closedAt).toBeNull();
+  });
+
   it("a row captured before the field existed has none, and the TID is the fallback", () => {
     const row = attachmentOutcome({
       filename: "a.pdf",

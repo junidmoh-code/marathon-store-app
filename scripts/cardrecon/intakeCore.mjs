@@ -277,6 +277,12 @@ export function attachmentOutcome({ filename, capture, error }) {
       // 2026-09-18, which the reader falls back from to the TID — itself
       // immutable, which is why it is the fallback.
       terminalLabel: clip(capture.terminalLabel, 60) || null,
+      // When the batch closed (a time, not a figure) and where the machine
+      // stood for it. Absent on rows written before 25 Oct 2026.
+      closedAt: Number.isFinite(capture.closedAt) ? capture.closedAt : null,
+      placeStoreId: clip(capture.placeStoreId, 30) || null,
+      placeTillId: clip(capture.placeTillId, 30) || null,
+      placeLabel: clip(capture.placeLabel, 60) || null,
       linesCaptured: capture.linesCaptured === true,
       warnings: (capture.warnings || []).map((w) => text(w, 300)).filter(Boolean).slice(0, 6),
       reason: null,

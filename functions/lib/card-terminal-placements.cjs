@@ -62,6 +62,29 @@ function tillAt(row, atMs) {
 }
 
 /**
+ * The till a batch's window is reconciled on at capture: where the machine
+ * stood for ALL of [startMs, endMs) — its placement, else its registry row.
+ * null when a move falls inside the window (no one till holds it all); the
+ * caller then keeps the filing till and says so, and the owner's Card Recon
+ * splits the batch by placement.
+ *
+ * Before 25 Oct 2026 the capture side reconciled on the FILING till alone, so
+ * 67377843 — filed trophy/till-1, on Marathon Till 1 since 5 Oct — had every
+ * report say its own till's sales were "rung up on another till".
+ */
+function windowTill(row, startMs, endMs) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  const first = tillAt(row, startMs);
+  if (!first.storeId || !first.tillId) return null;
+  for (const p of terminalPlacements(row)) {
+    if (p.effectiveFrom <= startMs) continue;
+    if (p.effectiveFrom >= endMs) break;
+    if (p.storeId !== first.storeId || p.tillId !== first.tillId) return null;
+  }
+  return first;
+}
+
+/**
  * The placement that writes down where a row stands TODAY, for a row that has
  * none yet — so the first move records what it moved FROM. It starts at the
  * row's last known till move (`tillChangedAt`), else when the machine arrived
@@ -76,4 +99,4 @@ function seedPlacement(row) {
   };
 }
 
-module.exports = { placementKey, terminalPlacements, placementAt, tillAt, seedPlacement };
+module.exports = { placementKey, terminalPlacements, placementAt, tillAt, windowTill, seedPlacement };

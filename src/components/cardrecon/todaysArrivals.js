@@ -67,6 +67,14 @@ export function emailedArrivals(intakeNode, dayKey, dayOf) {
       // attachment is precisely the case a tick must not cover: the report
       // arrived and did NOT reconcile, which is the failure this whole feature
       // exists to make visible.
+      // AN OLD BATCH RE-PRINTED TODAY IS NOT TODAY'S REPORT. On 25 Oct 2026
+      // Trophy Till 1 emailed its 17 Sep batch 57 at 14:01 instead of the day's
+      // batch; it was recorded (it is a real report) and ticked the till as in
+      // while that day's card money still had no slip. A row that says when its
+      // batch closed must close on this day to count. Rows from before 25 Oct
+      // carry no closedAt and are judged as they always were.
+      const closed = Number(a?.closedAt);
+      if (a?.outcome === "recorded" && Number.isFinite(closed) && closed > 0 && dayOf(closed) !== dayKey) continue;
       if (a?.tid && (a?.outcome === "recorded" || isResend(a))) out.add(String(a.tid));
     }
   }
