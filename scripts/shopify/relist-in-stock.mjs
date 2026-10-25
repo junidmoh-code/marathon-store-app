@@ -57,6 +57,7 @@ const CHECK = flags.includes("--check");
 const BATCH = flags.includes("--batch") ? Number(flags[flags.indexOf("--batch") + 1]) : 100;
 const JSON_OUT = flags.includes("--json") ? flags[flags.indexOf("--json") + 1] : null;
 const LEDGER_DIR = join(homedir(), "marathon-rollbacks");
+// One ledger for the whole relist, whatever day a batch runs (append, never a new file).
 const LEDGER = join(LEDGER_DIR, "relist-2026-10-25.json");
 const BY = "script:relist-in-stock";
 if (COMMIT && !(BATCH > 0 && BATCH <= 100)) { console.error("--batch must be 1..100"); process.exit(2); }
@@ -73,7 +74,8 @@ const loadLedger = () => (existsSync(LEDGER) ? JSON.parse(readFileSync(LEDGER, "
 const saveLedger = (l) => { mkdirSync(LEDGER_DIR, { recursive: true }); writeFileSync(LEDGER, JSON.stringify(l, null, 1)); };
 
 async function snapshot() {
-  const online = await requireOnlineStorePublication(graphql);
+  // strict: a guessed publication would read the whole catalogue as unlisted.
+  const online = await requireOnlineStorePublication(graphql, { strict: true });
   const text = await runBulkQuery(graphql, relistBulkQuery(online), { log: (s) => console.error(s) });
   return parseRelistSnapshot(text);
 }
@@ -195,11 +197,13 @@ const todo = relist.filter((r) => !ledger.entries[r.pid]).slice(0, BATCH);
 let written = 0;
 for (const r of todo) {
   const res = await db.ref(`shopify_publish/${r.pid}`).transaction((cur) => relistIntent(cur, { now, by: BY, gid: r.gid }));
-  if (!res.committed) { console.log(`  ${r.pid}: changed since the census — left alone`); continue; }
+  if (!res.committed || res.snapshot.val()?.relistKeep !== now) { console.log(`  ${r.pid}: changed since the census — left alone`); continue; }
   ledger.entries[r.pid] = { gid: r.gid, units: r.units, before: r.before, writtenAt: now };
   written++;
+  // Saved per product: an intent written but not ledgered would never be drift-checked.
+  saveLedger(ledger);
 }
 saveLedger(ledger);
-console.log(`\nwrote ${written} relist intent(s); ${relist.length - Object.keys(ledger.entries).length} still to go. Ledger: ${LEDGER}`);
+console.log(`\nwrote ${written} relist intent(s); ${relist.filter((r) => !ledger.entries[r.pid]).length} still to go. Ledger: ${LEDGER}`);
 console.log("The reconciler applies them over the next few ticks. Then: --check");
 process.exit(0);

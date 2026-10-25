@@ -264,7 +264,8 @@ if (!COMMIT) {
     let action;
     if (want === "off") action = "UNPUBLISH";
     else if (isPriceRecord(dryProduct)) action = "REFUSE (not merchandise)";
-    else if (mapNode?.shopifyProductId && Number(node.relistKeep) > 0) action = "RELIST AS IT IS";
+    else if (mapNode?.shopifyProductId && Number(node.relistKeep) > 0 && Date.now() - Number(node.relistKeep) < RELIST_KEEP_TTL_MS &&
+             node.relistGid === mapNode.shopifyProductId) action = "RELIST AS IT IS";
     else action = mapNode?.shopifyProductId ? "PUBLISH" : "CREATE+PUBLISH";
     const title = action === "RELIST AS IT IS" ? "(Shopify's own title, untouched)" : node.cleanName || "(lexicon at apply time)";
     // The collection is resolvable from RTDB alone, so the dry run shows it —
@@ -1213,6 +1214,19 @@ for (const { pid, want } of capped) {
     for (const [sizeKey, v] of Object.entries(finalMap.variants)) {
       if (!(sizeKey in totals)) continue;
       totals[sizeKey] = Math.max(0, totals[sizeKey] - onlineHoldAdjustment(heldBySize[sizeKey], invCommitted.get(v.shopifyInventoryItemId), releasedHeld[sizeKey]));
+    }
+    // A relist exists to sell stock the app holds. Sold out since the census
+    // → not relisted (it stays off; the next census picks it up again).
+    // Not refuse(): that blocks the product and the census would never offer
+    // it again. The intent is simply withdrawn — off, flag cleared — so it is
+    // NOT re-applied next tick as an ordinary publish (which would push the
+    // record's title and photos).
+    if (relistAsIs && !Object.values(totals).some((q) => q > 0)) {
+      await failSafeUnpublish(gid);
+      await db.ref(`shopify_publish/${pid}`).update({ desiredState: "off", relistKeep: null, relistGid: null,
+                                                     updatedAt: await serverNowMs(db), updatedBy: UPDATED_BY });
+      results.push({ pid, ok: true, note: "relist withdrawn — no stock left online now; left off" });
+      continue;
     }
 
     // ── TRACKING, ENFORCED ON EVERY RUN ──────────────────────────────────────

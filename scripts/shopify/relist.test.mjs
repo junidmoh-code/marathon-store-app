@@ -82,7 +82,8 @@ describe("relistIntent", () => {
     expect(out).toMatchObject({ desiredState: "on", relistKeep: 5, relistGid: GID, updatedAt: 5, updatedBy: "s", blockedReason: null });
     expect(relistIntent(node({ liveState: "on", desiredState: "on" }), { now: 5, by: "s", gid: GID })).toBeUndefined();
     expect(relistIntent(node({ state: "blocked" }), { now: 5, by: "s", gid: GID })).toBeUndefined();
-    expect(relistIntent(null, { now: 5, by: "s", gid: GID })).toBeUndefined();
+    // null is the SDK's first local guess — returned as null so it reads the server, never aborted.
+    expect(relistIntent(null, { now: 5, by: "s", gid: GID })).toBeNull();
     expect(relistIntent(node(), { now: 5, by: "s" })).toBeUndefined(); // no planned gid, no intent
   });
 });
@@ -123,14 +124,27 @@ describe("reconcile.mjs relist branch", () => {
     expect(SRC).toMatch(/if \(fresh\.relistGid !== mapNode\.shopifyProductId\) \{\n\s+await refuse\(/);
     expect(SRC).toMatch(/if \(hasMediaModel\(fresh\) && fresh\.mediaSyncedSig !== pushSigFor\(fresh, product\)\) \{\n\s+await refuse\(/);
   });
-  it("any page edit cancels a pending relist-as-it-is (the mutators' stamp clears the flag)", async () => {
+  it("any page edit cancels a pending relist-as-it-is (every mutator's stamp clears the flag)", async () => {
     const { desiredStateMutator } = await import("../../src/components/shopify/publishMutators.js");
     const out = desiredStateMutator({ state: "live", liveState: "off", condition: "Excellent — no visible wear", relistKeep: 5, relistGid: GID }, { want: "off" }, { now: 9, uid: "u" });
     expect(out.next.relistKeep).toBeNull();
     expect(out.next.relistGid).toBeNull();
+    // Every mutator that returns a `next` spreads stamp(ctx) — none can skip it.
+    const MSRC = readFileSync(new URL("../../src/components/shopify/publishMutators.js", import.meta.url), "utf8");
+    const bodies = MSRC.split(/\nexport function /).slice(1).filter((b) => /Mutator\(/.test(b.split("\n")[0]));
+    expect(bodies.length).toBeGreaterThanOrEqual(8);
+    for (const b of bodies) {
+      const nexts = b.match(/next: \{/g)?.length || 0;
+      const stamps = b.match(/\.\.\.stamp\(ctx\)/g)?.length || 0;
+      expect({ fn: b.split("(")[0], stamps: stamps >= nexts }).toEqual({ fn: b.split("(")[0], stamps: true });
+    }
+    expect(MSRC).toMatch(/const stamp = \(ctx\) => \(\{ updatedAt: ctx\.now, updatedBy: ctx\.uid \?\? null, relistKeep: null, relistGid: null \}\);/);
+  });
+  it("a relist with no stock left at apply time is refused, not listed", () => {
+    expect(SRC).toMatch(/if \(relistAsIs && !Object\.values\(totals\)\.some\(\(q\) => q > 0\)\) \{/);
   });
   it("the tick advertises relistKeep so the relist script can refuse an old reconciler", () => {
-    expect(SRC).toMatch(/features: \{ relistKeep: 1 \}/);
+    expect(SRC).toMatch(/await writeReconcileState\(db, \{[\s\S]{0,1500}?\n\s+features: \{ relistKeep: 1 \},/);
   });
   it("the flag is one-shot: confirm and block both clear it", () => {
     const PN = readFileSync(new URL("./publishNode.mjs", import.meta.url), "utf8");

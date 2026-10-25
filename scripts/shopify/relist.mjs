@@ -121,9 +121,16 @@ export function relistVerdict({ product, node, shop, units }) {
  * The intent, as a transaction body on /shopify_publish/{pid}. Re-checks the
  * server's value: anything that is no longer "confirmed live, switched off,
  * not blocked, no intent to go on" is left alone (undefined = abort).
+ *
+ * A null `cur` is returned AS null, never aborted: the Admin SDK's first call
+ * is a local guess (null for a path nothing listens to), and returning null
+ * makes it fetch the real value and call again. Aborting there would refuse
+ * every product without ever reading it. If the node really is absent, the
+ * null "write" is a no-op and relist-in-stock.mjs reads committed + no value.
  */
 export function relistIntent(cur, { now, by, gid }) {
-  if (!cur || normalizedState(cur) !== "live" || isOnOrGoingOn(cur) || !gid) return undefined;
+  if (cur == null) return null;
+  if (normalizedState(cur) !== "live" || isOnOrGoingOn(cur) || !gid) return undefined;
   return { ...cur, desiredState: "on", blockedReason: null, relistKeep: now, relistGid: gid, updatedAt: now, updatedBy: by };
 }
 
