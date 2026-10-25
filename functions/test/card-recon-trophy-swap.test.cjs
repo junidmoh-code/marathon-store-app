@@ -163,3 +163,32 @@ test("a batch whose window a move cuts in two keeps the filing till and says so"
   assert.equal(rec.warnings.filter((w) => /moved to another till while this batch was open/.test(w)).length, 1, "said once, not once per side");
   assert.equal(submit.placeStoreId, "trophy");
 });
+
+test("a move away and back inside one window still says the machine moved (CodeRabbit, #799)", async () => {
+  const report = emailedLines({ tid: "67377843", batchNo: 53 });
+  const away = Date.parse("2026-08-29T11:00:00+02:00");
+  const back = Date.parse("2026-08-29T13:00:00+02:00");
+  const row = { ...TERMINALS["67377843"], placements: {
+    "at-0": { effectiveFrom: 0, label: "Trophy Till 1", storeId: "trophy", tillId: "till-1" },
+    [`at-${away}`]: { effectiveFrom: away, label: "Marathon Till 1", storeId: "pe", tillId: "till-1" },
+    [`at-${back}`]: { effectiveFrom: back, label: "Trophy Till 1", storeId: "trophy", tillId: "till-1" },
+  } };
+  const db = makeFakeDb({ config: { cardTerminals: { "67377843": row } } });
+  const { extract, submit } = await viaEmail(db, report);
+  assert.equal(extract.ok, true, extract.reason);
+  assert.equal(submit.ok, true, submit.reason);
+  const rec = (await db.ref("card_batches/trophy/67377843/53").once("value")).val();
+  assert.ok(rec.warnings.some((w) => /moved to another till while this batch was open/.test(w)));
+});
+
+test("an unlabelled placement leaves placeLabel null — never the filing row's label (CodeRabbit, #799)", async () => {
+  const report = emailedLines({ tid: "67377843", batchNo: 54 });
+  const row = { ...TERMINALS["67377843"], placements: {
+    [`at-${SWAP}`]: { effectiveFrom: SWAP, storeId: "pe", tillId: "till-1" },
+  } };
+  const db = makeFakeDb({ config: { cardTerminals: { "67377843": row } } });
+  const { submit } = await viaEmail(db, report);
+  assert.equal(submit.ok, true, submit.reason);
+  assert.equal(submit.placeStoreId, "pe");
+  assert.equal(submit.placeLabel, null);
+});

@@ -4075,24 +4075,27 @@ exports.cardTillSilenceScan = onSchedule(
     try {
       const inputs = await tillSilence.readTillSilenceInputs(db, { nowMs });
       verdict = tillSilence.assessTillSilence({ nowMs, ...inputs });
-      // Written on EVERY run, silent or not — cardReconHealthScan alarms when
-      // this stamp goes stale, which is how a scheduler that never fires is
-      // heard. No money here beyond what the owner-only node already holds.
-      await db.ref("card_till_silence").set({
-        checkedAt: nowMs,
-        days: verdict.days,
-        silent: verdict.silent.length ? verdict.silent : null,
-      });
     } catch (err) {
       // A check that dies must say so through the same email, never quietly.
       console.error(tillSilence.failureLine(err));
       return;
     }
+    // THE ALARM FIRST, the state write second: a write that throws must not
+    // swallow a silent till's email. (CodeRabbit, #799.)
     if (verdict.silent.length) {
       console.error(tillSilence.alarmLine(verdict.silent));
     } else {
       console.log(`cardTillSilenceScan: every till that took card money ${verdict.days.at(-1)} → ${verdict.days[0]} has a batch.`);
     }
+    // Written on EVERY run, silent or not — cardReconHealthScan alarms when
+    // this stamp goes stale, which is how a scheduler that never fires (or a
+    // write that keeps failing) is heard. No money here beyond what the
+    // owner-only node already holds.
+    await db.ref("card_till_silence").set({
+      checkedAt: nowMs,
+      days: verdict.days,
+      silent: verdict.silent.length ? verdict.silent : null,
+    });
   },
 );
 

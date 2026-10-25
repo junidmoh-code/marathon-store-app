@@ -898,13 +898,16 @@ const totalsAgree = (extraction, expected) => extraction.totalCents === expected
 function reconTerminalFor(terminal, startMs, endMs) {
   const at = windowTill(terminal, startMs, endMs);
   if (!at) {
-    const moved = Number.isFinite(startMs) && Number.isFinite(endMs)
-      && (tillAt(terminal, startMs).storeId !== tillAt(terminal, endMs).storeId
-        || tillAt(terminal, startMs).tillId !== tillAt(terminal, endMs).tillId);
+    // windowTill is null for a valid window ONLY when a placement inside it
+    // changes the till — including a move away and back, whose two ends
+    // agree. (CodeRabbit, #799.)
+    const moved = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
     return { recon: terminal, moved };
   }
   if (at.storeId === terminal.storeId && at.tillId === terminal.tillId) return { recon: terminal, moved: false };
-  return { recon: { ...terminal, storeId: at.storeId, tillId: at.tillId, label: at.label || terminal.label }, moved: false };
+  // placeLabel is the PLACEMENT's own label or null — never the filing row's,
+  // which names another till. (CodeRabbit, #799.)
+  return { recon: { ...terminal, storeId: at.storeId, tillId: at.tillId, placeLabel: at.label || null }, moved: false };
 }
 
 /** The sentence a record carries when its window spans a move of the machine. */
@@ -2086,7 +2089,7 @@ async function handleSubmit(db, request) {
     closedAt: Number.isFinite(extraction.closedAt) ? extraction.closedAt : null,
     placeStoreId: recon.storeId || null,
     placeTillId: recon.tillId || null,
-    placeLabel: recon.label || null,
+    placeLabel: recon === mapped ? (mapped.label || null) : (recon.placeLabel || null),
   };
 }
 
