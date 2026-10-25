@@ -173,6 +173,9 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
             await tellJunid(ctx, unclearMessage({ orderRef: orderLabel(order), lineIndex: i, line, esc: { request: { kind: rel.kind, key: rel.key, from: rel.from, to: rel.to } }, why: `it changed while the line was being re-ordered (${out.why || out.action})` }), { once: `${ONLINE_ORDERS_PATH}/${id}/requestAlerts/${rel.key}` });
           }
         }
+        // The rest of the step a crash may have cut short (all idempotent).
+        if (rel?.key) await ctx.db.ref(`${ESCALATIONS_PATH}/${id}_${i}`).set(null);
+        await clearAttentionIfSettled(ctx, id);
         await answer({ state: ORDER_NOW.ORDERED, routedTo: line.source?.locationId || null, resumed: true, ...(released ? { released } : {}) });
         rerouted = true; continue;
       }

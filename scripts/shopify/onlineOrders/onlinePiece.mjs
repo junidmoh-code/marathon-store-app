@@ -139,20 +139,25 @@ export async function releaseOnlinePiece(ctx, { orderId, orderRef, lineIndex, es
 export async function tellJunid(ctx, text, { once = null } = {}) {
   const log = ctx.log || (() => {});
   // No channel on this run: nothing is marked, so a run that has one still tells him.
-  if (!ctx.whatsappJunid && !ctx.send) { log(`  ⚠ Junid NOT told (no WhatsApp or mail on this run): ${text.split("\n")[0]}`); return; }
+  if (!ctx.whatsappJunid && !ctx.send) { log(`  ⚠ Junid NOT told (no WhatsApp or mail on this run): ${text.split("\n")[0]}`); return false; }
+  let marked = false;
   if (once) {
     try {
       const res = await ctx.db.ref(once).transaction((cur) => (cur == null ? ctx.now : undefined));
-      if (!res.committed) { log(`  · Junid already told about this (${once})`); return; }
+      if (!res.committed) { log(`  · Junid already told about this (${once})`); return true; }
+      marked = true;
     } catch { /* tell anyway */ }
   }
   try {
-    if (ctx.whatsappJunid) { await ctx.whatsappJunid(text); log(`  ✉ WhatsApp to Junid: ${text.split("\n")[0]}`); return; }
+    if (ctx.whatsappJunid) { await ctx.whatsappJunid(text); log(`  ✉ WhatsApp to Junid: ${text.split("\n")[0]}`); return true; }
   } catch (e) { log(`  ✗ WhatsApp to Junid failed (${String(e?.message || e)}) — emailing instead`); }
   try {
-    if (ctx.send) { await ctx.send({ subject: "Website order: a request needs your eye", text }); log(`  ✉ emailed Junid: ${text.split("\n")[0]}`); return; }
+    if (ctx.send) { await ctx.send({ subject: "Website order: a request needs your eye", text }); log(`  ✉ emailed Junid: ${text.split("\n")[0]}`); return true; }
   } catch (e) { log(`  ✗ email to Junid failed (${String(e?.message || e)})`); }
-  log(`  ⚠ Junid NOT told (no WhatsApp or mail on this run): ${text.split("\n")[0]}`);
+  // Nothing got through: the mark comes off, so the next attempt tries again.
+  if (marked) { try { await ctx.db.ref(once).set(null); } catch { /* the next tick re-marks */ } }
+  log(`  ⚠ Junid NOT told — both WhatsApp and email failed: ${text.split("\n")[0]}`);
+  return false;
 }
 
 /** The WhatsApp to Junid when the online piece cannot be told apart. PURE. */
