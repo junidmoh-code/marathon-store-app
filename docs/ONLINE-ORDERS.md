@@ -452,7 +452,7 @@ withdrawn; one holding more is reduced by exactly the line's quantity (Central
 One being picked / part-sent / answered → refused "already ordered … being
 worked on". One whose online piece cannot be told apart (no tag, another
 line's tag, less than the line's quantity) → nothing changes, refused, and
-Junid gets a WhatsApp (the mini's gateway; email if it is down). It is planned
+Junid gets a WhatsApp (queued in Jimmy's outbox on the mini — the linked WhatsApp session; email if that is missing or fails). It is planned
 before the line moves and applied by transaction after; every change is logged
 with before and after quantity (the tick log, the request's `onlineReleased`,
 `/online_orders/{id}/requestChanges/{at}_{i}`, and the answer's `released`).

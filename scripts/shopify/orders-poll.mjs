@@ -16,7 +16,7 @@
 // shop mailbox's SMTP (CARD_RECON_IMAP_USER / CARD_RECON_IMAP_PASSWORD in the
 // same .env — the card-recon poller's sender). None is ever printed.
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { graphql } from "./client.mjs";
@@ -39,11 +39,13 @@ const NO_SHOPIFY = process.argv.includes("--no-shopify");
 // Junid's inbox — the address every alarm already goes to (card-recon,
 // write-off digest). Fixed here, never read from .env.
 const NOTIFY_TO = "junidmoh@gmail.com";
-// Junid's WhatsApp (as Jimmy's src/jimmy/junid.js) and the mini's WhatsApp
-// gateway (marathon-broadcast-service, as scripts/online/customer-agent.mjs).
-// Fixed here; only the gateway's token is read, from the customer agent's env.
+// Junid's WhatsApp (as Jimmy's src/jimmy/junid.js). Messages to him go through
+// JIMMY'S OUTBOX — the one WhatsApp session on this mini that is linked and
+// delivering (the broadcast gateway on :8080 was found unlinked, QR waiting,
+// 25 Oct 2026). Queued exactly as marathon-dm-agent/bin/jimmy-send.mjs does;
+// the Jimmy service sends it on its next tick (about two minutes).
 const JUNID_WHATSAPP = "27813995333";
-const GATEWAY = "http://127.0.0.1:8080";
+const JIMMY_DB = join(homedir(), "marathon-dm-agent", "data", "agent.db");
 
 const fnRequire = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = fnRequire("firebase-admin");
@@ -74,24 +76,18 @@ function mailSender() {
   return (mail) => transport.sendMail({ from: user, to: NOTIFY_TO, subject: mail.subject, text: mail.text });
 }
 
-// "Tell me on WhatsApp" (Junid, 25 Oct 09:52). null when there is no token on
-// this machine — the caller then emails instead.
+// "Tell me on WhatsApp" (Junid, 25 Oct 09:52). null when Jimmy's outbox is not
+// on this machine — the caller then emails instead.
 function whatsappJunid() {
-  let token = process.env.BROADCAST_SERVICE_TOKEN;
-  if (!token) {
+  if (!existsSync(JIMMY_DB)) return null;
+  return async (text) => {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(JIMMY_DB);
     try {
-      // KEY=value, KEY="value", KEY='value', an `export ` prefix, a trailing # comment.
-      const m = /^\s*(?:export\s+)?BROADCAST_SERVICE_TOKEN\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#\n]+))/m.exec(readFileSync(join(homedir(), ".config/marathon/customer-agent.env"), "utf8"));
-      token = m ? (m[1] ?? m[2] ?? m[3] ?? "").trim() || null : null;
-    } catch { token = null; }
-  }
-  if (!token) return null;
-  return async (message) => {
-    const r = await fetch(`${GATEWAY}/api/message`, {
-      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ to: JUNID_WHATSAPP, message }), signal: AbortSignal.timeout(20000),
-    });
-    if (!r.ok) throw new Error(`WhatsApp gateway HTTP ${r.status}`);
+      db.exec("PRAGMA busy_timeout = 5000;");
+      db.prepare("INSERT INTO jimmy_outbox(to_person, kind, sub, text, media, ref, created_at) VALUES (?, 'junid', 'online_request', ?, NULL, 'orders-poll', ?)")
+        .run(JUNID_WHATSAPP, String(text), Date.now());
+    } finally { db.close(); }
   };
 }
 
