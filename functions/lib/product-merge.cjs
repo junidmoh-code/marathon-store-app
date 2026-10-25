@@ -30,9 +30,9 @@
 //     future scan of that code lands on the survivor.
 //   • The matching /duplicate_candidates pair row (if any) is closed "merged".
 //   • The loser's Shopify link (id map, claim, publish node) moves to the
-//     survivor when the survivor has none — lib/merge-shopify-link.cjs. When
-//     the survivor has its own listing, that one stays and the loser's goes
-//     to 0 with its stock.
+//     survivor when the survivor is not on Shopify — lib/merge-shopify-link.cjs.
+//     When the survivor has its own listing, that one stays and the loser's
+//     goes to 0 with its stock.
 //   • The full before-state of everything CHANGED is recorded first, under
 //     /product_merges/{mergeId} — the reversal recipe. (The loser's own record
 //     is not in it because the merge does not alter it beyond the pointer.)
@@ -403,19 +403,20 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
 
     // The Shopify link follows the stock (lib/merge-shopify-link.cjs).
     const lp = linkPaths(loserId, survivorId);
-    const [loserSync, survivorSync, loserPublish, survivorPublish] = await Promise.all(
-      [lp.loserSync, lp.survivorSync, lp.loserPublish, lp.survivorPublish]
+    const [loserSync, survivorSync, loserPublish, survivorPublish, loserHolds] = await Promise.all(
+      [lp.loserSync, lp.survivorSync, lp.loserPublish, lp.survivorPublish, lp.loserHolds]
         .map((path) => readOrRefuse(db, path, "The Shopify link could not be read — merge refused rather than guessed")));
     const claimPath = claimPathFor(loserSync && loserSync.shopifyProductId);
     const claimOwner = claimPath ? await readOrRefuse(db, claimPath, "The Shopify claim could not be read — merge refused rather than guessed") : null;
-    const link = planShopifyLinkMove({ loserId, survivorId, loserSync, survivorSync, loserPublish, survivorPublish, claimOwner });
+    // survivorSizeKeys already holds every size the survivor ends up with.
+    const link = planShopifyLinkMove({ loserId, survivorId, loserSync, survivorSync, loserPublish, survivorPublish, claimOwner, loserHolds, survivorSizeKeys: [...survivorSizeKeys] });
     if (link.action === "refuse") {
       throw new MergeRefused("failed-precondition", `The product being merged away can't be merged yet: ${link.reason}.`);
     }
     Object.assign(updates, link.updates);
     const linkFence = [
       [lp.loserSync, loserSync], [lp.survivorSync, survivorSync],
-      [lp.loserPublish, loserPublish], [lp.survivorPublish, survivorPublish],
+      [lp.loserPublish, loserPublish], [lp.survivorPublish, survivorPublish], [lp.loserHolds, loserHolds],
       ...(claimPath ? [[claimPath, claimOwner]] : []),
     ];
 
@@ -440,7 +441,7 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
         duplicateRow: frozen(dupRow),
         shopifyLink: link.action === "move" ? frozen(link.before) : null,
       },
-      shopifyLink: { action: link.action, gid: link.gid || null },
+      shopifyLink: { action: link.action, gid: link.gid || null, sizesWithoutVariant: link.sizesWithoutVariant || [] },
     };
 
     // ── THE DRIFT FENCE ──────────────────────────────────────────────────────
@@ -566,7 +567,7 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       duplicateRowClosed: !!dupRow,
       // "move": the listing now belongs to the survivor. "keep-survivor": the
       // survivor kept its own listing; the loser's (gid) goes to 0 with its stock.
-      shopifyLink: { action: link.action, gid: link.gid || null },
+      shopifyLink: { action: link.action, gid: link.gid || null, sizesWithoutVariant: link.sizesWithoutVariant || [] },
     };
   } catch (err) {
     // A refused or failed merge releases the lock; an APPLIED merge keeps it as

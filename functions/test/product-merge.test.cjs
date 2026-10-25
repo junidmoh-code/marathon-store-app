@@ -741,3 +741,37 @@ test("shopify link: the link fence reads are in flight with the stock fence (one
     assert.ok(peak.includes(want), `${want} must be in flight with the other fence reads — peak was [${peak.join(", ")}]`);
   }
 });
+
+test("shopify link: open website-order holds on the loser refuse the merge — nothing written", async () => {
+  const db = fakeDb(linkedWorld({ online_reservations: { pLoser: { "6": { "1802": { qty: 1 } } } } }));
+  await assert.rejects(run(db), (e) => e instanceof MergeRefused && /website orders/.test(e.message));
+  assert.ok(db.data.stock.hub2.pLoser, "no stock moved");
+  assert.ok(db.data.shopify_sync.pLoser, "no link moved");
+});
+
+test("shopify link: a survivor with only an AWAITING publish node is not on Shopify — the loser's listing moves to it", async () => {
+  const w = linkedWorld();
+  w.shopify_publish.pSurvivor = { state: "awaiting", cleanName: "draft name" };
+  const db = fakeDb(w);
+  const out = await run(db);
+  assert.strictEqual(out.shopifyLink.action, "move");
+  assert.deepStrictEqual(db.data.shopify_publish.pSurvivor, livePublish());
+  assert.deepStrictEqual(db.data.product_merges[out.mergeId].before.shopifyLink.survivorPublish, { state: "awaiting", cleanName: "draft name" },
+    "the replaced node is kept for reversal");
+});
+
+test("shopify link: a survivor with a LIVE publish node keeps it even without an id map", async () => {
+  const w = linkedWorld();
+  w.shopify_publish.pSurvivor = { state: "live", liveState: "on", desiredState: "on" };
+  const db = fakeDb(w);
+  const out = await run(db);
+  assert.strictEqual(out.shopifyLink.action, "keep-survivor");
+  assert.deepStrictEqual(db.data.shopify_sync.pLoser, loserSyncNode());
+});
+
+test("shopify link: survivor sizes with no variant on the moved listing are named", async () => {
+  // Survivor carries 6 and 8; the loser listing only has a variant for 6.
+  const db = fakeDb(linkedWorld());
+  const out = await run(db);
+  assert.deepStrictEqual(out.shopifyLink.sizesWithoutVariant, ["8"]);
+});
