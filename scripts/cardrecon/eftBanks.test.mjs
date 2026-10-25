@@ -67,6 +67,10 @@ describe("the Standard Bank reader — built from the real notification", () => 
       beneficiaryName: "ATUGAR TRADING",
       destBankName: "FIRST NATIONAL BANK",
       accountMask: "XXXXXXXXXXXX4321",
+      // The Aug 2026 layout prints no heading above the confirmation: the
+      // immediate marker cannot be read, so 7b refuses (fix 7b, 25 Oct).
+      paymentType: null,
+      immediate: null,
     });
   });
 
@@ -641,9 +645,9 @@ describe("immediate-payment signal (fix 7b)", () => {
     const garbled = REAL_ABSA_PDF_LINES.map((l, i, a) => (a[i - 1] === "Immediate payment:" ? "MAYBE" : l));
     expect(absr.parse(garbled).immediate).toBe(null);
   });
-  it("FNB and Standard Bank print no such field in the real samples — the reader returns nothing for it", () => {
+  it("FNB prints no such field; Standard Bank's older layout has no heading — unreadable (null), never assumed", () => {
     expect(fnbr.parse(FNB_LINES).immediate).toBeUndefined();
-    expect(sbr.parse(REAL_SB_PDF_LINES).immediate).toBeUndefined();
+    expect(sbr.parse(REAL_SB_PDF_LINES).immediate).toBe(null);
   });
   it("every reader's real sample names the destination bank as FNB (fix 7a input)", () => {
     for (const [r, lines] of [[capr, REAL_CAPITEC_PDF_LINES], [absr, REAL_ABSA_PDF_LINES], [fnbr, FNB_LINES], [sbr, REAL_SB_PDF_LINES]]) {

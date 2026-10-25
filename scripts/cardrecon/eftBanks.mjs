@@ -54,6 +54,56 @@ function labelledLine(lines, re, what) {
 //   Beneficiary reference OM82           ← what the PAYER typed — the matching key
 //   Amount R100.00
 //   Payment date and time 2026-08-30 23h48
+//
+// IMMEDIATE OR NOT — THE DOCUMENT'S HEADING, NOTHING ELSE (fix 7b, Junid,
+// 25 Oct 2026, from the real R710 payment of 2026-10-25):
+//   Dear MARATHON CLUB
+//   Immediate Payment Confirmation       ← the heading: immediate
+//   We confirm that the following payment has been made into your account from …
+// A non-immediate payment's heading is plain "Payment Confirmation" (Junid's
+// spec — no real non-immediate sample with a heading exists yet; the older
+// Aug–Oct layout printed no heading at all, and still refuses).
+//
+// THE FOOTER IS NEVER READ FOR THIS. Every Standard Bank confirmation, of any
+// type, ends with "Immediate payments may take a few hours." / "Non-immediate
+// payments … up to 24 hours" / "… three business days". The word "immediate"
+// anywhere in the document would therefore pass a scheduled payment. Only a
+// line that IS the heading — the whole line, nothing else on it — counts, and
+// it must stand above the "We confirm …" sentence, where the heading is.
+// No heading, two different headings, a heading merged into another line by
+// the PDF extraction, the sentence printed more than once, or a heading line
+// anywhere BELOW the sentence: `immediate` is null, and the pool refuses (eftCore
+// immediacyVerdict). The reader only ever runs on a message that passed DKIM
+// for standardbank.co.za (email-poller.mjs), so the heading is the bank's.
+const SB_HEADINGS = [
+  { re: /^immediate payment confirmation$/i, immediate: true, label: "Immediate Payment Confirmation" },
+  { re: /^payment confirmation$/i, immediate: false, label: "Payment Confirmation" },
+];
+const SB_CONFIRM_SENTENCE = /payment has been made into your account/i;
+
+/** @returns {{immediate:boolean|null, paymentType:string|null}} */
+export function standardBankHeading(lines) {
+  const norm = (l) => String(l ?? "").replace(/\s+/g, " ").trim();
+  const sentences = lines.filter((l) => SB_CONFIRM_SENTENCE.test(l)).length;
+  if (sentences !== 1) return { immediate: null, paymentType: null };
+  const sentenceAt = lines.findIndex((l) => SB_CONFIRM_SENTENCE.test(l));
+  const isHeading = (l) => SB_HEADINGS.find((x) => x.re.test(norm(l)));
+  // A heading below the confirmation is not where Standard Bank puts one: a
+  // second page, a quoted copy — refuse rather than pick.
+  if (lines.slice(sentenceAt + 1).some(isHeading)) return { immediate: null, paymentType: "heading below the confirmation" };
+  const above = lines.slice(0, sentenceAt);
+  // "Immediate" on its own line just above "Payment Confirmation" is a heading
+  // the extraction may have split — or may not. Unreadable, never guessed
+  // either way. (Spec review.)
+  if (above.some((l, i) => i > 0 && SB_HEADINGS[1].re.test(norm(l)) && /^immediate$/i.test(norm(above[i - 1])))) {
+    return { immediate: null, paymentType: "heading split across lines" };
+  }
+  const found = new Set(above.map(isHeading).filter(Boolean));
+  if (found.size !== 1) return { immediate: null, paymentType: found.size ? "contradictory headings" : null };
+  const [h] = found;
+  return { immediate: h.immediate, paymentType: h.label };
+}
+
 const standardBank = {
   id: "standardbank",
   domain: "standardbank.co.za",
@@ -123,6 +173,9 @@ const standardBank = {
     const when = labelledLine(lines, /^Payment date and time\s+(.+)$/i, "Payment date and time");
     const bankTs = when.ok && when.value ? parseBankTimestamp(when.value) : null;
 
+    // Fix 7b: immediate only by the heading (standardBankHeading, above).
+    const { immediate, paymentType } = standardBankHeading(lines);
+
     return {
       ok: true,
       amountCents,
@@ -133,6 +186,8 @@ const standardBank = {
       beneficiaryName: beneficiaryName.ok ? clip(beneficiaryName.value, 120) : null,
       destBankName: destBankName.ok ? clip(destBankName.value, 60) : null,
       accountMask: clip(account.value, 40),
+      paymentType,
+      immediate,
     };
   },
 };

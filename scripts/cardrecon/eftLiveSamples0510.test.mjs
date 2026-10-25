@@ -315,11 +315,13 @@ describe("fix 7 on the real 5 Oct notifications", () => {
     expect(timing.needsSample).toBeUndefined();
   });
 
-  it("Standard Bank: right account, but no immediate field exists — refused, needs a sample", () => {
+  it("Standard Bank (older layout, no heading): right account, immediate marker unreadable — refused", () => {
     const { parsed, dest, timing } = judge("standardbank.co.za", STANDARDBANK_0510);
     expect(parsed.amountCents).toBe(1000);
+    expect(parsed.immediate).toBe(null);
     expect(dest.ok).toBe(true);
     expect(timing.ok).toBe(false);
-    expect(timing.needsSample).toBe(true);
+    expect(timing.reason).toMatch(/could not be read/);
+    expect(timing.needsSample).toBeUndefined();
   });
 });

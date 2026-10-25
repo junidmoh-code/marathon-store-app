@@ -85,11 +85,14 @@ describe("7b — immediate payments only", () => {
     expect(n.reason).toMatch(/not an immediate payment/i);
   });
 
-  it("Standard Bank's real sample carries NO immediate field — refuses and names the sample it needs", () => {
-    const out = iv({ ...base, reader: "standardbank", immediate: null });
-    expect(out.ok).toBe(false);
-    expect(out.needsSample).toBe(true);
-    expect(out.reason).toMatch(/real .* sample/i);
+  it("Standard Bank: immediate only when the reader read the heading as immediate (25 Oct 2026)", () => {
+    expect(iv({ ...base, reader: "standardbank", immediate: true }).ok).toBe(true);
+    const plain = iv({ ...base, reader: "standardbank", immediate: false, paymentType: "Payment Confirmation" });
+    expect(plain.ok).toBe(false);
+    expect(plain.reason).toMatch(/not an immediate payment/i);
+    const unread = iv({ ...base, reader: "standardbank", immediate: null });
+    expect(unread.ok).toBe(false);
+    expect(unread.reason).toMatch(/could not be read/);
   });
 
   it("FNB has no printed field, but FNB-to-FNB is intra-bank immediate — passes; out to another bank does not", () => {
