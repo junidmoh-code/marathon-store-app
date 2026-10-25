@@ -20,6 +20,8 @@ import { productPhotoObjectPath } from "./utils/productPhotoPaths";
 import { dataURLToBlob, loadImageFile, encodeCompressed, prepareProductPhoto } from "./utils/productPhotoEncode";
 import { guideFor, missingPhotoSteps } from "./components/admin/photoGuides.js";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
+import { setPrimaryPhotoInApp, undoPrimaryPhotoInApp } from "./utils/primaryPhotoBrowser";
+import { undoTarget } from "./utils/primaryPhoto";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour } from "./utils/serverTime";
 import { getTodayKey, getNextOrderNumber, getNextRefillNumber } from "./utils/orderCounter";
 import { getDeviceId } from "./device/deviceId";
@@ -4075,11 +4077,14 @@ function AdminReviewPhotosTab({ products = [] }) {
   const approve = async (row) => {
     setBusyId(row.id);
     try {
-      await update(ref(database, `products/${row.id}`), { photoUrl: row.proposedUrl, photoUrlOriginal: row.originalUrl });
-      // The till reads a thumbnail, not photoUrl. Re-encode the approved
-      // proposal onto the product's one thumbnail path so the shop and the
-      // tills show the same picture. Never throws — see the helper.
-      await writeApprovedProposalThumb(row.id, row.proposedUrl);
+      // THE ONE WRITE (setPrimaryPhoto): the replaced photo goes to history
+      // (Undo photo brings it back), and the till thumbnail is rebuilt from
+      // the approved proposal BEFORE photoUrl moves.
+      const res = await setPrimaryPhotoInApp(row.id, {
+        product: products.find((x) => x.id === row.id) || {}, newUrl: row.proposedUrl, source: "ai_studio",
+        by: auth.currentUser?.email || auth.currentUser?.uid || null, extra: { photoUrlOriginal: row.originalUrl },
+      }, { rebuildThumb: writeApprovedProposalThumb });
+      if (!res.ok) throw new Error(res.message);
       await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "approved", decidedAt: serverNowMs() });
       return true;
     } catch (e) { setRunMsg(`Approve failed for “${row.name || row.id}”: ${e?.message || e}`); return false; }
@@ -7495,21 +7500,27 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           }
           const blob = dataURLToBlob(dataUrl);
           const sRef = storageRef(storage, productPhotoObjectPath(product.id));
-          // Bounded cache (NOT immutable): photo.jpg is overwritten in place on
-          // a re-shoot, so cap staleness at 7 days instead of a year.
-          await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
-          const url = await getDownloadURL(sRef);
-          // A re-shoot replaces BOTH objects: photo.jpg above and the offline
-          // thumbnail here, both at their deterministic paths, so a till can
-          // never keep serving a cached picture of the photo that was replaced.
-          // Never throws — a failed thumbnail must not fail the re-shoot.
-          await writeProductThumb(product.id, blob, { upload: uploadThumbObject, remove: removeThumbObject });
+          // THE ONE WRITE (setPrimaryPhoto). photo.jpg is overwritten in place,
+          // so the picture it holds now is copied into the photo history FIRST
+          // (Undo photo brings it back) — no copy, no overwrite. The thumbnail
+          // is encoded from the local blob, before photoUrl moves.
           // photoUpdatedAt: upload-time stamp for the AI Photo Studio "Recent"
           // view. Only human uploads stamp it — an approved AI re-shoot isn't
           // a new upload, so approve() deliberately leaves it alone.
           // A replaced photo makes the hi-res upload copy stale: clear it so the
           // New Arrivals pipeline generates from the photo the product now shows.
-          await update(ref(database, `products/${product.id}`), { photoUrl: url, photoUpdatedAt: serverNowMs(), photoSourceUrl: null });
+          const res = await setPrimaryPhotoInApp(product.id, {
+            product, overwrites: productPhotoObjectPath(product.id), source: "edit",
+            by: auth.currentUser?.email || auth.currentUser?.uid || null,
+            // Bounded cache (NOT immutable): photo.jpg is overwritten in place on
+            // a re-shoot, so cap staleness at 7 days instead of a year.
+            produce: async () => {
+              await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
+              return getDownloadURL(sRef);
+            },
+            extra: { photoUpdatedAt: serverNowMs(), photoSourceUrl: null },
+          }, { rebuildThumb: (pid) => writeProductThumb(pid, blob, { upload: uploadThumbObject, remove: removeThumbObject }) });
+          if (!res.ok) throw new Error(res.message);
         } catch (err) {
           console.error("photo upload failed:", err);
           alert("Failed to save photo. Please try again.");
@@ -7524,7 +7535,19 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
   const removePhoto = async () => {
     if (!product.photoUrl) return;
     if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
-    await save({ photoUrl: null }, "the photo removal");
+    // Through the one write: the photo goes to history, so Undo photo can bring it back.
+    const res = await setPrimaryPhotoInApp(product.id, { product, newUrl: null, source: "edit", by: auth.currentUser?.email || auth.currentUser?.uid || null });
+    setSaveError(res.ok ? null : res.message);
+  };
+  // UNDO PHOTO — the previous primary comes back everywhere at once (and the
+  // photo it replaces goes to history, so the undo can itself be undone).
+  const canUndoPhoto = !!undoTarget(product);
+  const undoPhoto = async () => {
+    setPhotoUploading(true);
+    try {
+      const res = await undoPrimaryPhotoInApp(product.id, { product, by: auth.currentUser?.email || auth.currentUser?.uid || null });
+      setSaveError(res.ok ? null : res.message);
+    } finally { setPhotoUploading(false); }
   };
 
   // ── THE PRINTED BARCODE (perfume) ─────────────────────────────────────────
@@ -7907,6 +7930,12 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
               <button onClick={removePhoto} disabled={photoUploading}
                       style={{ background:"rgba(180,40,40,.08)", border:"1px solid rgba(180,40,40,.25)", color:"#FF8888", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
                 Remove photo
+              </button>
+            )}
+            {canUndoPhoto && (
+              <button onClick={undoPhoto} disabled={photoUploading} title="Put the previous photo back"
+                      style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.18)", color:"rgba(255,255,255,.8)", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
+                ↶ Undo photo
               </button>
             )}
           </div>
