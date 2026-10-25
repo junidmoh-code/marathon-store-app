@@ -1517,3 +1517,32 @@ record lands, and a failed send is logged and changes nothing.
   stops the APPROVED emails from the next tick; `all` (or unset) sends every
   verdict. An unrecognised value sends every verdict and logs a warning.
 - A replay writes nothing and so emails nothing; a dry run never emails.
+
+## The guide reply to a customer who emailed their own proof (25 Oct 2026)
+
+A customer who paid and then emailed the proof of payment from their **own**
+mailbox (Gmail, Yahoo, …) is refused as **unknown bank sender** — correctly.
+Junid still gets the REJECTED verdict email, unchanged. The customer also gets
+**one** short email telling them to resend it from inside the banking app,
+and how to add marathon6631@gmail.com as the "notify by email" address.
+
+- **When it fires — all of these:** the poller has just written a *new*
+  `unknown-bank` record (a replay never replies); the sender is a personal
+  mailbox (`PERSONAL_MAIL_DOMAINS` — gmail, yahoo, outlook/hotmail, icloud,
+  mweb, telkomsa, …, exact domains); Gmail's own Authentication-Results shows
+  a DKIM pass signed by that domain or a DMARC pass for it (no reply to a
+  forged address); not a role/no-reply address and not the shop's own
+  (marathon6631, gunidmoh, junidmoh, plus `EFT_GUIDE_REPLY_NEVER`); no list,
+  bulk, auto-reply or bounce headers; and a PDF or picture attached (name,
+  type and size only — never opened).
+- **Never** for any other refusal (signature/DKIM failure, unreadable,
+  duplicate, not immediate, wrong account, stale date) — those may be scams.
+- **Rate limit:** one per sender address per SAST day, claimed at
+  `/eft_guide_replies/{day}/{sha256 of address}` (admin write, address never
+  stored) before sending; a failed send releases the claim. At most 5 per tick.
+- **What it says:** fixed text (`GUIDE_REPLY_TEXT` in
+  `scripts/cardrecon/guideReplyCore.mjs`). Never that money arrived, never
+  which check failed, never a bank, amount or anything read from their mail.
+  Sent as and reply-to marathon6631@gmail.com, `Auto-Submitted: auto-replied`.
+- **Kill switch:** `EFT_GUIDE_REPLY=off` in `~/marathon-store-app/.env`. Any
+  value other than on/off turns it OFF with a warning. A dry run never sends.
