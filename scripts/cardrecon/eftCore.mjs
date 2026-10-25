@@ -872,6 +872,9 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     return {
       ...base, outcome: "refused-account", destination,
       amountCents: parsed.amountCents,
+      // The bank's transaction id, so the refusal claims it (refusalFingerprint):
+      // a copy resent after the allowlist changes is held, never fresh money.
+      bankRef: clip(parsed.bankRef, 60) || null,
       reason: clip(redactAccountDigits(account?.reason || "The destination account was never checked — refused rather than assumed."), 400),
     };
   }
@@ -969,6 +972,90 @@ export function applyFingerprintHold(record, { fingerprint, holder, poolKey }) {
     };
   }
   return { ...record, fingerprint };
+}
+
+// ─── A TRANSACTION ID SEEN ONCE IS SEEN FOR GOOD (Junid, 25 Oct 2026) ────────
+// The fingerprint used to be claimed only by a RECORDED payment. A refusal —
+// not immediate, wrong account, dated before the cutoff — claimed nothing, so
+// its transaction id stayed free: once the reason no longer applied (the
+// Standard Bank immediate heading, #795; a cutoff moved back), a RESENT copy
+// of the same payment landed as fresh, spendable money. The R710 Standard
+// Bank payment of 25 Oct was exactly that: refused not-immediate, settled by
+// Junid by hand, and its id …2085 unclaimed.
+//
+// So every DKIM-verified notification whose bank transaction id was READ
+// claims that id, whatever the decision. The refusal keeps its outcome — it
+// is still refused — and now holds the money's one claim, so any later copy
+// is held-duplicate (applyFingerprintHold) and the settle refuses it
+// (claimHolderCheck). A forgery (refused-auth) has no parse and claims
+// nothing: a stranger cannot pre-claim a real customer's transaction id.
+
+/** The fingerprint a NON-recorded record claims, or null when it claims none. */
+export function refusalFingerprint(record) {
+  if (!record || record.outcome === "recorded" || HELD_OUTCOMES.includes(record.outcome)) return null;
+  if (record.auth?.verdict !== "pass") return null;
+  return paymentFingerprint({ reader: record.reader, bankRef: record.bankRef });
+}
+
+/**
+ * A refusal after its claim: still refused, now naming its fingerprint and,
+ * when another record already held that id, which one (a copy of money the
+ * pool already knows — shown on the owner's tab, never spendable either way).
+ */
+export function applyRefusalFingerprint(record, { fingerprint, holder, poolKey }) {
+  if (!fingerprint) return record;
+  if (holder === poolKey) return { ...record, fingerprint };
+  return { ...record, fingerprint, duplicateOf: holder ?? null };
+}
+
+// ─── A REFUSAL JUNID SETTLED BY HAND: ITS ID IS SPENT ───────────────────────
+// A refusal written BEFORE the change above claimed nothing, and when Junid
+// settled it by hand (a manual entry, used at a till) the manual record's
+// fingerprint is its own MANUAL-… id — the bank's id stays free, invisible to
+// the dedupe. claim-settled-bank-fingerprint.mjs closes that for one payment:
+// it claims the BANK's fingerprint as SPENT by the manual record, so a resent
+// copy is held at ingest and refused at the settle (duplicate-used). Pure:
+// the script reads the two records and writes only the fingerprint node —
+// never either pool record.
+const sameRef = (a, b) => {
+  const n = (x) => String(x ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return !!n(a) && n(a) === n(b);
+};
+
+/** @returns {{ok:true, fingerprint:string} | {ok:false, why:string}} */
+export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spender }) {
+  if (!refused) return { ok: false, why: `No /eft_pool record at ${refusedKey}.` };
+  if (!spender) return { ok: false, why: `No /eft_pool record at ${spenderKey}.` };
+  if (refusedKey === spenderKey) return { ok: false, why: "The refused record and the settling record must be two different records." };
+  const fingerprint = refusalFingerprint(refused);
+  if (!fingerprint) return { ok: false, why: `${refusedKey} is not a DKIM-verified bank refusal carrying a bank transaction id (outcome ${refused.outcome}).` };
+  if (spender.outcome !== "recorded" || spender.status !== "used") return { ok: false, why: `${spenderKey} is not a USED payment (outcome ${spender.outcome}, status ${spender.status ?? "none"}).` };
+  // Only Junid's hand entry settles a refusal: a bank record with this id
+  // would already hold the claim. (Sonnet architect review.)
+  if (spender.reader !== "manual" || !spender.manualEntry) return { ok: false, why: `${spenderKey} is not a manual entry — only Junid's hand entry settles a refused payment.` };
+  if (spender.amountCents !== refused.amountCents) return { ok: false, why: `The amounts differ (${refused.amountCents}c refused, ${spender.amountCents}c used) — not the same money.` };
+  if (!sameRef(spender.reference, refused.reference)) return { ok: false, why: `The references differ ("${clip(refused.reference, 40)}" refused, "${clip(spender.reference, 40)}" used) — not the same money.` };
+  return { ok: true, fingerprint };
+}
+
+/** RTDB step: the bank id is spent by `spenderKey`. An existing spender is never overwritten. */
+export function settledClaimStep({ spenderKey, refusedKey, at }) {
+  return (existing) => {
+    const mark = { spentBy: spenderKey, settledByHandFor: refusedKey, settledClaimAt: at };
+    if (existing === null || existing === undefined) return { poolKey: spenderKey, at, ...mark };
+    if (typeof existing !== "object" || typeof existing.spentBy === "string") return undefined;
+    return { ...existing, ...mark };
+  };
+}
+
+/**
+ * The one-off sweep over refusals written before refusals claimed their id
+ * (claim-refusal-fingerprints.mjs): what one record needs. Pure.
+ * @returns {null | {fingerprint:string}}  null: nothing to claim
+ */
+export function sweepRefusalClaim(record) {
+  const fingerprint = refusalFingerprint(record);
+  return fingerprint ? { fingerprint } : null;
 }
 
 // ─── SEVERAL PAYMENTS ON ONE MESSAGE ─────────────────────────────────────────
