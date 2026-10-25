@@ -25,7 +25,9 @@ test("App.jsx imports the shared path convention and the thumbnail writer", () =
 test("the add-product save writes a thumbnail from the same blob it uploaded", () => {
   const idx = app.indexOf("const sRef = storageRef(storage, productPhotoObjectPath(id));");
   expect(idx, "add-product photo upload should exist").toBeGreaterThan(-1);
-  const site = app.slice(idx, idx + 1200);
+  // 2200: the re-shoot now runs through setPrimaryPhoto (25 Oct 2026), whose
+  // archive-first comment sits between the upload and the thumbnail leg.
+  const site = app.slice(idx, idx + 2200);
   expect(site).toContain("writeProductThumb(id, form.photoBlob");
   expect(site).toContain("upload: uploadThumbObject");
   expect(site, "must pass the repair leg too").toContain("remove: removeThumbObject");
@@ -34,7 +36,9 @@ test("the add-product save writes a thumbnail from the same blob it uploaded", (
 test("the re-shoot writes a thumbnail from the same blob it uploaded", () => {
   const idx = app.indexOf("const sRef = storageRef(storage, productPhotoObjectPath(product.id));");
   expect(idx, "re-shoot photo upload should exist").toBeGreaterThan(-1);
-  const site = app.slice(idx, idx + 1200);
+  // 2200: the re-shoot now runs through setPrimaryPhoto (25 Oct 2026), whose
+  // archive-first comment sits between the upload and the thumbnail leg.
+  const site = app.slice(idx, idx + 2200);
   expect(site).toContain("writeProductThumb(product.id, blob");
   expect(site).toContain("upload: uploadThumbObject");
   // Without the repair leg, a re-shoot whose thumbnail write fails leaves the

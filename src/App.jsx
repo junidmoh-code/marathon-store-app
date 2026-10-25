@@ -7538,7 +7538,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
               return getDownloadURL(sRef);
             },
             extra: { photoUpdatedAt: serverNowMs(), photoSourceUrl: null },
-          }, { rebuildThumb: (pid) => writeProductThumb(pid, blob, { upload: uploadThumbObject, remove: removeThumbObject }) });
+          }, { rebuildThumb: async () => await writeProductThumb(product.id, blob, { upload: uploadThumbObject, remove: removeThumbObject }) });
           if (!res.ok) throw new Error(res.message);
         } catch (err) {
           console.error("photo upload failed:", err);
