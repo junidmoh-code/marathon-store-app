@@ -12,6 +12,9 @@ import { productPhotoThumbPath } from "./productPhotoPaths";
 import { serverNowMs } from "./serverTime";
 import { storagePathOfUrl, PHOTO_HISTORY_KEY } from "./primaryPhoto";
 import { setPrimaryPhoto, undoPrimaryPhoto } from "./setPrimaryPhoto";
+import { shopifyImagesOn, followItems } from "./primaryPhotoFollow";
+import { commitPublishMedia } from "../components/shopify/publishMediaCommit";
+import { browserPrimaryPhotoDeps } from "../components/shopify/appPhoto";
 
 const uploadThumbObject = (path, blob, metadata) => uploadBytes(storageRef(storage, path), blob, metadata);
 const removeThumbObject = (path) => deleteObject(storageRef(storage, path));
@@ -46,6 +49,17 @@ export const browserSetPrimaryDeps = {
   }),
   removeThumb: (pid) => removeThumbObject(productPhotoThumbPath(pid)),
   writeProduct: (pid, patch) => update(ref(database, `products/${pid}`), patch),
+  // The website follows (primaryPhotoFollow.js): from 28 Oct, the product's
+  // own publishing list takes the new photo first — through commitPublishMedia,
+  // the one way the app writes a publishing list. Best-effort by contract.
+  after: async (pid, { newUrl, source }) => {
+    if (!newUrl || source === "shopify_publish") return;
+    const cfg = (await get(ref(database, "config/primaryPhoto"))).val();
+    if (!shopifyImagesOn(serverNowMs(), cfg)) return;
+    const node = (await get(ref(database, `shopify_publish/${pid}`))).val();
+    const items = followItems(node, newUrl);
+    if (items) await commitPublishMedia({ id: pid, photoUrl: newUrl }, node, "set", items, browserPrimaryPhotoDeps);
+  },
 };
 
 /** Set the primary photo from the browser (see setPrimaryPhoto). */

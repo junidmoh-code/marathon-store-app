@@ -98,6 +98,7 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, releasedBySize, onlineHoldAdjustment } from "./inventorySync.mjs";
 import { sweepMovements } from "./movementSync.mjs";
 import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
+import { metaReadyFirstPhoto } from "./metaReadyCreate.mjs";
 import { drainAutoPublish } from "./autoPublish.mjs";
 import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
@@ -1070,7 +1071,12 @@ for (const { pid, want } of capped) {
         // must not show a half-replaced set — off the channel first, as the
         // fingerprint path does. Idempotent; the ON path re-publishes at the end.
         if (mediaCount > 0) await failSafeUnpublish(gid);
-        res = await syncProductMedia({ graphql, db, pid, gid, node: fresh, product, title, mode: "on",
+        // A product created THIS run leads with its Meta-ready photo from
+        // 28 Oct (metaReadyCreate.mjs); the reviewed list itself is unchanged.
+        const firstPhotoSource = createdNow
+          ? await metaReadyFirstPhoto({ db, nowMs: await serverNowMs(db), pid, firstUrl: desiredPushItems(fresh, product)[0]?.url, log: (l) => console.log(l) })
+          : null;
+        res = await syncProductMedia({ graphql, db, pid, gid, node: fresh, product, title, mode: "on", firstPhotoSource,
                                        log: (line) => console.log(line) });
       } catch (e) {
         res = { ok: false, error: String(e?.message || e) };
@@ -1119,7 +1125,12 @@ for (const { pid, want } of capped) {
       // refusals: off the channel, blocked with the reason, resumable (the
       // next run sees 0/partial media and re-attaches the reviewed set).
       try {
-        const { count } = await attachMedia(graphql, gid, mediaPlan);
+        // A product created THIS run leads with its Meta-ready photo from
+        // 28 Oct; the fingerprint below stays the reviewed set's own.
+        const metaFirst = createdNow
+          ? await metaReadyFirstPhoto({ db, nowMs: await serverNowMs(db), pid, firstUrl: mediaPlan[0]?.originalSource, log: (l) => console.log(l) })
+          : null;
+        const { count } = await attachMedia(graphql, gid, metaFirst ? [{ ...mediaPlan[0], originalSource: metaFirst }, ...mediaPlan.slice(1)] : mediaPlan);
         // The count rides beside the fingerprint so the media-list path can
         // later prove exactly which set this attached (mediaSync.mjs).
         await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp, mediaCount: mediaPlan.length });

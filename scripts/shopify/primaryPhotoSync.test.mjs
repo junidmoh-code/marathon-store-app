@@ -119,7 +119,9 @@ describe("runSync — the backfill, through the ONE write", () => {
     const { counts } = await runSync(["a", "b", "c", "d", "e"], io(db, md5s), { write: writeDeps(db, log), onReplaced: async (e) => ledger.push(e) });
     expect(counts).toMatchObject({ replaced: 1, failed: 0 });
     expect(db.get("products/a")).toEqual({ name: "A", styleCodeNormalised: "AAA", photoUrl: pub("a", "1"), photoUrlOriginal: staff("a"),
-                                           photoSource: { from: "shopify_publish", at: 1_790_000_000_000 } });
+                                           photoSource: { from: "shopify_publish", at: 1_790_000_000_000 },
+                                           // the replaced photo, in the photo history (this fake keeps update paths flat)
+                                           "photoHistory/1790000000000": { url: staff("a"), at: 1_790_000_000_000, source: "shopify_publish", replacedWith: pub("a", "1") } });
     expect(log).toEqual([["thumb", "a", pub("a", "1")], ["write", "a"]]);
     expect(db.get("products/d")).toBeUndefined(); // a gone product is never given a record
     expect(db.get("products/e/photoUrl")).toBe(staff("e")); // shared: skipped
@@ -146,14 +148,16 @@ describe("runSync — the backfill, through the ONE write", () => {
 });
 
 describe("rollbackEntry", () => {
-  it("restores the before-state; fields the sync created are DELETED (RTDB null), not left behind", async () => {
+  it("restores the before-state; fields the sync created are DELETED (RTDB null) — the photo-history pointer stays (photos are never deleted)", async () => {
     const db = fakeDb({ shopify_publish: { a: { photos: [pub("a", "1")] } }, products: { a: { name: "A", photoUrl: staff("a") } } });
     const ledger = [];
     await runSync(["a"], io(db, { "products/a/photo.jpg": "A0", "products/a/shopify/1.jpg": "A1" }), { write: writeDeps(db), onReplaced: async (e) => ledger.push(e) });
     const x = io(db, {});
     const r = await rollbackEntry(ledger[0], { readProduct: x.readProduct, writeProduct: async (pid, p) => db.update(`products/${pid}`, p), apply: true });
     expect(r.ok).toBe(true);
-    expect(db.get("products/a")).toEqual({ name: "A", photoUrl: staff("a") });
+    const { ["photoHistory/1790000000000"]: hist, ...rest } = db.get("products/a");
+    expect(rest).toEqual({ name: "A", photoUrl: staff("a") });
+    expect(hist).toMatchObject({ url: staff("a"), replacedWith: pub("a", "1") });
   });
   it("REFUSES when the app photo changed since the sync, and a dry run writes nothing", async () => {
     const db = fakeDb({ products: { a: { photoUrl: pub("a", "later") } } });
