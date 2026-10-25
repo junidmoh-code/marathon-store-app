@@ -427,7 +427,7 @@ button writes ONE request per line and route generation, single-flight
 /online_orders/{id}/orderNowRequests/{lineIndex}_{routeGen} =
   { lineIndex, expectPid, expectSizeKey, expectStatus, expectRouteGen,
     by: {uid, name}, at, state: "pending", previous?: [last 10 answers] }
-  → "ordered"      { routedTo, checked, withdrew?, answeredAt }
+  → "ordered"      { routedTo, checked, released?: {key, kind, action, before, after}, answeredAt }
   → "not_in_stock" { checked: { free: [{loc, free}], central }, answeredAt }
   → "refused"      { why, answeredAt }
 ```
@@ -442,11 +442,25 @@ and raises it exactly like a new Shopify line: hub order `/orders/{code}`
 (routeGen + 1, a fresh code) or a shop strip entry, the hold, the parcel
 estimate, the order status. Not routable → `not_in_stock`, the line untouched.
 
+An escalation request still open (`await`: a Central refill or Hub 2 Shop
+Refill card) — Junid, 25 Oct 09:52, `onlinePiece.mjs`: when the stock is found,
+ONLY the online order's piece of it is released. A request raised for this
+order and line (refill `createdFrom {via: "online_escalation", orderKey,
+lineIndex}`, card `onlineEscalationKey`) holding exactly the line's quantity is
+withdrawn; one holding more is reduced by exactly the line's quantity (Central
+3 = 1 online + 2 genuine → 2). A genuine refill is never cancelled or reduced.
+One being picked / part-sent / answered → refused "already ordered … being
+worked on". One whose online piece cannot be told apart (no tag, another
+line's tag, less than the line's quantity) → nothing changes, refused, and
+Junid gets a WhatsApp (the mini's gateway; email if it is down). It is planned
+before the line moves and applied by transaction after; every change is logged
+with before and after quantity (the tick log, the request's `onlineReleased`,
+`/online_orders/{id}/requestChanges/{at}_{i}`, and the answer's `released`).
+The same rule is used wherever a line's request is withdrawn (Junid's
+override, a line swap, a cancel — `escalate.mjs withdrawRequest`).
+
 Never twice: refused on a line already on a pick (`pick` / `display`), in
-`reroute`, mid-raise (`escalation.pending`), with an escalation request open
-(`await`: a Central refill or Hub 2 Shop Refill card not answered yet — it says
-which and since when; requests are never withdrawn or changed here, Junid:
-no change to refill request logic), sent and waiting for the box
+`reroute`, mid-raise (`escalation.pending`), sent and waiting for the box
 (`wait`), a line a hub already sent a unit of (`ready` / `collected` / a size
 sent — the wrong size, or a mixed qty > 1 answer), part of it in the basket, a
 replaced line (a re-route would undo the replacement), a line whose customer is
@@ -457,7 +471,7 @@ order's no_stock / not_found / walk-in attention is cleared when no line needs a
 person any more. A check that fails 3 times is answered "could not be checked"
 so the Pack is never blocked by it. The POS hides the button in the cases the
 poller would refuse. Nothing moves stock (the Pack is
-the one deduction); no refill policy, target or request logic changes. The
+the one deduction); no refill policy or target changes. The
 POS refuses Pack while a request is pending.
 
 ## Out of scope (seam left)
