@@ -57,6 +57,10 @@ import { simpleParser } from "mailparser";
 import nodemailer from "nodemailer";
 import { deliverNotices } from "./noticeCore.mjs";
 import { drainVerdictEmails, parseVerdictMode, verdictSenderOk, EFT_VERDICT_FROM_MAILBOX } from "./verdictMailCore.mjs";
+import {
+  guideReplyEligibility, drainGuideReplies, guideClaimPath, guideClaimStep, guideCountPath, guideCountStep,
+  parseGuideReplySwitch, parseNeverList, GUIDE_REPLY_NEVER_ENV_VAR,
+} from "./guideReplyCore.mjs";
 
 import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
@@ -242,6 +246,10 @@ function config() {
     eftAccountsConfigured: !!String(env.EFT_ALLOWED_ACCOUNTS ?? "").trim(),
     // Junid's verdict emails: "all" (default) or "rejected" — verdictMailCore.
     verdictMode: parseVerdictMode(env.EFT_VERDICT_EMAILS),
+    // Junid, 25 Oct 2026: the guide reply to a customer who emailed their own
+    // proof — "on" (default) or "off"; plus addresses never replied to.
+    guideReply: parseGuideReplySwitch(env.EFT_GUIDE_REPLY),
+    guideReplyNever: parseNeverList(env[GUIDE_REPLY_NEVER_ENV_VAR]),
     // FIX 8: the payment-date cutoff (EFT_PAYMENT_DATE_CUTOFF, YYYY-MM-DD SAST,
     // default in eftCore.mjs). A payment the BANK dates before this day is
     // refused — stale money the pool never saw is not new money. A value that
@@ -590,6 +598,12 @@ async function run() {
     verdictFrom = cfg.user;
     verdictMode = cfg.verdictMode.mode;
     if (cfg.verdictMode.warning) console.warn(`⚠ ${cfg.verdictMode.warning}`);
+    // The customer guide reply goes the same way, as the same mailbox — and
+    // only when that mailbox is the card-recon one (the guard just above).
+    if (cfg.guideReply.warning) console.warn(`⚠ ${cfg.guideReply.warning}`);
+    guideReplyOn = cfg.guideReply.on;
+    guideNever = cfg.guideReplyNever;
+    guideDb = db;
   }
   // FIX 8 — said on every tick, so the log always shows which cutoff decided:
   // a date, never a secret. A bad value is said every tick too, until fixed.
@@ -1117,7 +1131,66 @@ function emailVerdict(record, poolKey) {
   if (verdictSend) verdictQueue.push({ record, poolKey });
 }
 
+// ── THE CUSTOMER GUIDE REPLY (Junid, 25 Oct 2026) ───────────────────────────
+// Queued only by noteStrangerPayment, after it FRESHLY wrote an unknown-bank
+// record, and only when guideReplyEligibility says it is a real person's
+// proof from their own mailbox (guideReplyCore.mjs). Sent after the verdict
+// emails, once the mailbox is closed. Changes no record and no decision.
+let guideReplyOn = false;
+let guideNever = [];
+let guideDb = null;
+const guideQueue = [];
+
+function queueGuideReply({ record, poolKey, parsed }) {
+  // Isolated: nothing here may throw into noteStrangerPayment, or the message
+  // would stop flowing on to the card path. (Sonnet architect review.)
+  try {
+    if (!verdictSend || !guideReplyOn) return;
+    const fromAddress = parsed.from?.value?.[0]?.address || null;
+    const verdict = guideReplyEligibility({
+      record, fromAddress, headerLines: parsed.headerLines, attachments: parsed.attachments, never: guideNever,
+    });
+    if (!verdict.ok) { console.log(`  · EFT: no customer guide reply (${verdict.why})`); return; }
+    guideQueue.push({ to: verdict.to, inReplyTo: parsed.messageId || null, poolKey });
+  } catch (err) {
+    console.warn(`  ⚠ EFT customer guide reply not considered (${err?.message || err}) — the record stands`);
+  }
+}
+
+async function sendGuideReplies() {
+  // Isolated: this runs in the tick's finally, before the heartbeat.
+  try {
+    if (!verdictSend || !guideDb || !guideQueue.length) return;
+    const out = await drainGuideReplies({
+      queue: guideQueue.splice(0),
+      send: verdictSend,
+      // The path claimed is the path released — a send that fails across
+      // SAST midnight must free the slot it took, not the next day's.
+      claim: async ({ to, poolKey }) => {
+        const now = serverNowMs();
+        const path = guideClaimPath(to, now);
+        const res = await guideDb.ref(path).transaction(guideClaimStep({ at: now, poolKey }));
+        return res?.committed ? path : null;
+      },
+      countToday: async () => !!(await guideDb.ref(guideCountPath(serverNowMs())).transaction(guideCountStep()))?.committed,
+      release: (path) => guideDb.ref(path).remove(),
+    });
+    // The log never names the customer's address.
+    if (out.sent) console.log(`  · EFT: customer guide reply sent (${out.sent}) — how to resend the proof from the banking app`);
+    if (out.limited) console.log(`  · EFT: customer guide reply skipped (${out.limited}) — that sender was already answered today`);
+    if (out.capped) console.log(`  · EFT: customer guide reply skipped (${out.capped}) — past this tick's ceiling`);
+    if (out.dayCapped) console.log(`  · EFT: customer guide reply skipped (${out.dayCapped}) — past today's ceiling`);
+    if (out.error) console.warn(`  ⚠ EFT customer guide reply NOT sent (${out.error}) — ${out.unsent} dropped; the pool records stand`);
+  } catch (err) {
+    console.warn(`  ⚠ EFT customer guide replies failed this tick (${err?.message || err}) — the pool records stand`);
+  }
+}
+
 async function sendVerdicts() {
+  try { await sendVerdictEmails(); } finally { await sendGuideReplies(); }
+}
+
+async function sendVerdictEmails() {
   if (!verdictSend || !verdictQueue.length) return;
   const out = await drainVerdictEmails({ queue: verdictQueue.splice(0), mode: verdictMode, send: verdictSend, from: verdictFrom });
   // The log names the verdict and the check, never the amount.
@@ -1532,6 +1605,7 @@ async function noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity,
   unknownBankThisRun += 1;
   console.log(`  · EFT: unknown-bank — payment-shaped mail from ${fromDomain}, which is not a bank this pool knows. Nothing was read from it.`);
   emailVerdict(record, key);
+  queueGuideReply({ record, poolKey: key, parsed });
 }
 
 // ── THE TICK'S OWN EXIT ──────────────────────────────────────────────────────
