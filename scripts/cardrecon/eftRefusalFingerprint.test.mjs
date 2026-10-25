@@ -17,7 +17,7 @@ import {
   authenticationVerdict, destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff,
   parseAllowedAccounts, eftPoolRecord, eftMessageKey, eftPaymentKey, groupEftPayments,
   paymentFingerprint, fingerprintClaimStep, applyFingerprintHold,
-  refusalFingerprint, applyRefusalFingerprint, settledFingerprintPlan, settledClaimStep,
+  refusalFingerprint, applyRefusalFingerprint, settledFingerprintPlan, settledClaimStep, sweepRefusalClaim,
 } from "./eftCore.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
@@ -187,6 +187,17 @@ describe("refusalFingerprint — who claims", () => {
     expect(refusalFingerprint({ ...original, outcome: "recorded" })).toBe(null);
     expect(refusalFingerprint({ ...original, outcome: "held-duplicate" })).toBe(null);
   });
+  it("an ACCOUNT refusal now carries the bank id, so it claims it too — allowlisting the account later cannot float a resend", () => {
+    const wrongAccount = ingest(R710.map((l) => (l.startsWith("Beneficiary account number") ? "Beneficiary account number XXXXXXXXXXXXX9999" : l)), { messageId: "<acct@x>", receivedAt: ARRIVED, uid: 9 });
+    expect(wrongAccount.record.outcome).toBe("refused-account");
+    expect(wrongAccount.record.bankRef).toBe("261025SBGRPP00002085C00002085");
+    expect(refusalFingerprint(wrongAccount.record)).toBe(paymentFingerprint({ reader: "standardbank", bankRef: wrongAccount.record.bankRef }));
+  });
+  it("the sweep claims exactly what the poller now claims", () => {
+    expect(sweepRefusalClaim(original)).toEqual({ fingerprint: refusalFingerprint(original) });
+    expect(sweepRefusalClaim({ ...original, outcome: "recorded" })).toBe(null);
+    expect(sweepRefusalClaim({ ...original, auth: { verdict: "fail" } })).toBe(null);
+  });
   it("a refusal with no readable bank id claims nothing", () => {
     expect(refusalFingerprint({ ...original, outcome: "refused-parse", bankRef: null })).toBe(null);
   });
@@ -203,6 +214,12 @@ describe("settledFingerprintPlan / settledClaimStep — never the wrong money, n
     expect(plan({ spenderKey: "r" }).ok).toBe(false);
     expect(plan({ refused: { ...refused, auth: { verdict: "fail" } } }).ok).toBe(false);
   });
+  it("only a manual entry may be named as the spender", () => {
+    const manual = { ...used, manualEntry: { at: 1 } };
+    expect(plan({ spender: manual }).ok).toBe(true);
+    expect(plan({ spender: { ...manual, reader: "standardbank" } }).ok).toBe(false);
+    expect(plan({ spender: used }).ok).toBe(false);   // reader manual but no manualEntry stamp
+  });
   it("adds the spender to an existing claim, and never replaces a spender already there", () => {
     expect(settledClaimStep({ spenderKey: "m", refusedKey: "r", at: 9 })({ poolKey: "r", at: 1 })).toMatchObject({ poolKey: "r", spentBy: "m", settledByHandFor: "r" });
     expect(settledClaimStep({ spenderKey: "m", refusedKey: "r", at: 9 })({ poolKey: "x", at: 1, spentBy: "x" })).toBeUndefined();
@@ -215,6 +232,15 @@ describe("settledFingerprintPlan / settledClaimStep — never the wrong money, n
     expect(src).toMatch(/db\.ref\(path\)\.transaction\(settledClaimStep/);
     expect(src).toMatch(/const path = `\$\{EFT_FINGERPRINT_PATH\}\//);
   });
+});
+
+it("the sweep writes only fingerprint claims, create-only, and reads the pool in pages", () => {
+  const src = readFileSync(resolve(HERE, "claim-refusal-fingerprints.mjs"), "utf8");
+  const writes = [...src.matchAll(/\.(set|update|remove|transaction|push)\(/g)];
+  expect(writes).toHaveLength(1);
+  expect(src).toMatch(/db\.ref\(path\)\.transaction\(fingerprintClaimStep\(key,/);
+  expect(src).toMatch(/orderByKey\(\)/);
+  expect(src).toMatch(/limitToFirst\(PAGE\)/);
 });
 
 it("the poller claims a refusal's id before its pool write", () => {

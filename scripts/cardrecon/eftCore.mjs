@@ -872,6 +872,9 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     return {
       ...base, outcome: "refused-account", destination,
       amountCents: parsed.amountCents,
+      // The bank's transaction id, so the refusal claims it (refusalFingerprint):
+      // a copy resent after the allowlist changes is held, never fresh money.
+      bankRef: clip(parsed.bankRef, 60) || null,
       reason: clip(redactAccountDigits(account?.reason || "The destination account was never checked — refused rather than assumed."), 400),
     };
   }
@@ -1027,6 +1030,9 @@ export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spende
   const fingerprint = refusalFingerprint(refused);
   if (!fingerprint) return { ok: false, why: `${refusedKey} is not a DKIM-verified bank refusal carrying a bank transaction id (outcome ${refused.outcome}).` };
   if (spender.outcome !== "recorded" || spender.status !== "used") return { ok: false, why: `${spenderKey} is not a USED payment (outcome ${spender.outcome}, status ${spender.status ?? "none"}).` };
+  // Only Junid's hand entry settles a refusal: a bank record with this id
+  // would already hold the claim. (Sonnet architect review.)
+  if (spender.reader !== "manual" || !spender.manualEntry) return { ok: false, why: `${spenderKey} is not a manual entry — only Junid's hand entry settles a refused payment.` };
   if (spender.amountCents !== refused.amountCents) return { ok: false, why: `The amounts differ (${refused.amountCents}c refused, ${spender.amountCents}c used) — not the same money.` };
   if (!sameRef(spender.reference, refused.reference)) return { ok: false, why: `The references differ ("${clip(refused.reference, 40)}" refused, "${clip(spender.reference, 40)}" used) — not the same money.` };
   return { ok: true, fingerprint };
@@ -1040,6 +1046,16 @@ export function settledClaimStep({ spenderKey, refusedKey, at }) {
     if (typeof existing !== "object" || typeof existing.spentBy === "string") return undefined;
     return { ...existing, ...mark };
   };
+}
+
+/**
+ * The one-off sweep over refusals written before refusals claimed their id
+ * (claim-refusal-fingerprints.mjs): what one record needs. Pure.
+ * @returns {null | {fingerprint:string}}  null: nothing to claim
+ */
+export function sweepRefusalClaim(record) {
+  const fingerprint = refusalFingerprint(record);
+  return fingerprint ? { fingerprint } : null;
 }
 
 // ─── SEVERAL PAYMENTS ON ONE MESSAGE ─────────────────────────────────────────
