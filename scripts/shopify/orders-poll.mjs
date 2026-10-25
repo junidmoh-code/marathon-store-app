@@ -85,6 +85,8 @@ function whatsappJunid() {
     const db = new DatabaseSync(JIMMY_DB);
     try {
       db.exec("PRAGMA busy_timeout = 5000;");
+      // Never write into a database that is not Jimmy's (a fresh empty file, a moved one).
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jimmy_outbox'").get()) throw new Error("Jimmy's outbox table is not there");
       db.prepare("INSERT INTO jimmy_outbox(to_person, kind, sub, text, media, ref, created_at) VALUES (?, 'junid', 'online_request', ?, NULL, 'orders-poll', ?)")
         .run(JUNID_WHATSAPP, String(text), Date.now());
     } finally { db.close(); }

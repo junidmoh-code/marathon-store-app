@@ -303,7 +303,7 @@ describe("Order it now — after a release", () => {
   it("WhatsApp down → Junid is emailed instead", async () => {
     const mails = [];
     const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", qty: 3, createdFrom: { source: "scan" } }, requests: { "0_0": tap(0, shox()) } }));
-    await runOrdersPoll({ ...deps(f), send: async (m) => { mails.push(m); }, whatsappJunid: async () => { throw new Error("gateway down"); } });
+    await runOrdersPoll({ ...deps(f), send: async (m) => { mails.push(m); }, whatsappJunid: async () => { throw new Error("WhatsApp queue down"); } });
     const ours = mails.filter((m) => /a request needs your eye/.test(m.subject));
     expect(ours).toHaveLength(1);
     expect(ours[0].text).toMatch(/could not tell which part/);
@@ -313,7 +313,7 @@ describe("Order it now — after a release", () => {
 describe("Order it now — telling Junid when nothing gets through", () => {
   it("both channels down: the alert is NOT marked as sent, so the next tap tries again", async () => {
     const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", qty: 3, createdFrom: { source: "scan" } }, requests: { "0_0": tap(0, shox()) } }));
-    await runOrdersPoll({ ...deps(f), send: async () => { throw new Error("smtp down"); }, whatsappJunid: async () => { throw new Error("gateway down"); } });
+    await runOrdersPoll({ ...deps(f), send: async () => { throw new Error("smtp down"); }, whatsappJunid: async () => { throw new Error("WhatsApp queue down"); } });
     expect(f.read(`online_orders/9001/requestAlerts/${REFILL}`)).toBeNull();
     const wa = [];
     await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ ...tap(0, shox()), at: NOW });
