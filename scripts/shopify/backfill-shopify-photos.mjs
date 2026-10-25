@@ -27,7 +27,6 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import sharp from "sharp";
 import { graphql } from "./client.mjs";
 import { runBulkQuery } from "./bulkSnapshot.mjs";
 import { numericIdOf } from "./relist.mjs";
@@ -41,6 +40,7 @@ import { setPrimaryPhoto } from "../../src/utils/setPrimaryPhoto.js";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
+const sharp = require("sharp");
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: DB_URL, storageBucket: BUCKET });
 const db = admin.database();
 const bucket = admin.storage().bucket();
