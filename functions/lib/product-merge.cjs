@@ -29,6 +29,10 @@
 //   • Every /style_code_index claim owned by the loser is repointed, so a
 //     future scan of that code lands on the survivor.
 //   • The matching /duplicate_candidates pair row (if any) is closed "merged".
+//   • The loser's Shopify link (id map, claim, publish node) moves to the
+//     survivor when the survivor has none — lib/merge-shopify-link.cjs. When
+//     the survivor has its own listing, that one stays and the loser's goes
+//     to 0 with its stock.
 //   • The full before-state of everything CHANGED is recorded first, under
 //     /product_merges/{mergeId} — the reversal recipe. (The loser's own record
 //     is not in it because the merge does not alter it beyond the pointer.)
@@ -72,6 +76,7 @@
 const {
   COUNT_SESSIONS_PATH, COUNTED_PATH, countedCellKeys, countCellKey, countRecordCounts, planMerge,
 } = require("./merge-disposition.cjs");
+const { planShopifyLinkMove, linkPaths, claimPathFor } = require("./merge-shopify-link.cjs");
 
 const MERGE_LOCK_STALE_MS = 10 * 60 * 1000; // takeover window for a crashed merge
 
@@ -396,6 +401,24 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       updates[`duplicate_candidates/${pairId}/mergedBy`] = actor.uid;
     }
 
+    // The Shopify link follows the stock (lib/merge-shopify-link.cjs).
+    const lp = linkPaths(loserId, survivorId);
+    const [loserSync, survivorSync, loserPublish, survivorPublish] = await Promise.all(
+      [lp.loserSync, lp.survivorSync, lp.loserPublish, lp.survivorPublish]
+        .map((path) => readOrRefuse(db, path, "The Shopify link could not be read — merge refused rather than guessed")));
+    const claimPath = claimPathFor(loserSync && loserSync.shopifyProductId);
+    const claimOwner = claimPath ? await readOrRefuse(db, claimPath, "The Shopify claim could not be read — merge refused rather than guessed") : null;
+    const link = planShopifyLinkMove({ loserId, survivorId, loserSync, survivorSync, loserPublish, survivorPublish, claimOwner });
+    if (link.action === "refuse") {
+      throw new MergeRefused("failed-precondition", `The product being merged away can't be merged yet: ${link.reason}.`);
+    }
+    Object.assign(updates, link.updates);
+    const linkFence = [
+      [lp.loserSync, loserSync], [lp.survivorSync, survivorSync],
+      [lp.loserPublish, loserPublish], [lp.survivorPublish, survivorPublish],
+      ...(claimPath ? [[claimPath, claimOwner]] : []),
+    ];
+
     // The loser becomes a redirect. Record stays; the pointer is the only change.
     updates[`products/${loserId}/mergedInto`] = survivorId;
     updates[`products/${loserId}/mergedAt`] = now;
@@ -415,7 +438,9 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
         barcodes: frozen(barcodesRepointed),        // rows as they pointed before
         styleCodeIndex: frozen(styleCodesRepointed),
         duplicateRow: frozen(dupRow),
+        shopifyLink: link.action === "move" ? frozen(link.before) : null,
       },
+      shopifyLink: { action: link.action, gid: link.gid || null },
     };
 
     // ── THE DRIFT FENCE ──────────────────────────────────────────────────────
@@ -486,10 +511,14 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       p: probe(`${COUNTED_PATH}/${c.loc}/${c.sessionId}/${countCellKey(survivorId, c.sizeKey)}`),
       pl: probe(`${COUNTED_PATH}/${c.loc}/${c.sessionId}/${countCellKey(loserId, c.sizeKey)}`),
     }));
+    // The Shopify link records: the reconciler writes them every tick, and a
+    // move copies them whole — a write landing in between would be lost.
+    const linkProbes = linkFence.map(([path, seen]) => ({ path, seen, p: probe(path) }));
     const survivorLive = await Promise.all(survivorProbes.map((x) => x.p));
     const loserLive = await Promise.all(loserProbes.map((x) => x.p));
     const removalLive = await Promise.all(removalProbes.map((x) => x.p));
     const removalLoserLive = await Promise.all(removalProbes.map((x) => x.pl));
+    const linkLive = await Promise.all(linkProbes.map((x) => x.p));
 
     for (let i = 0; i < survivorProbes.length; i += 1) {
       const { loc, sCell } = survivorProbes[i];
@@ -521,6 +550,13 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       }
     }
 
+    for (let i = 0; i < linkProbes.length; i += 1) {
+      if (stableJson(linkLive[i].val()) !== stableJson(linkProbes[i].seen)) {
+        throw new MergeRefused("aborted",
+          "The Shopify listing of one of these products changed while the merge was being prepared. Nothing was changed — try again.");
+      }
+    }
+
     await db.ref().update(updates);
 
     return {
@@ -528,6 +564,9 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       barcodesRepointed: Object.keys(barcodesRepointed),
       styleCodesRepointed: Object.keys(styleCodesRepointed),
       duplicateRowClosed: !!dupRow,
+      // "move": the listing now belongs to the survivor. "keep-survivor": the
+      // survivor kept its own listing; the loser's (gid) goes to 0 with its stock.
+      shopifyLink: { action: link.action, gid: link.gid || null },
     };
   } catch (err) {
     // A refused or failed merge releases the lock; an APPLIED merge keeps it as
