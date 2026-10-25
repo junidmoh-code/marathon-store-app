@@ -103,10 +103,10 @@ function shopCodesOf(product) {
 
 // ─── Shared bits ─────────────────────────────────────────────────────────────
 
-function Photo({ product, size = 96, radius = 14 }) {
+function Photo({ product, size = 96, radius = 14, full = false }) {
   const empty = <div style={{ width: size, height: size, borderRadius: radius, background: "rgba(120,150,255,.08)",
                          display: "flex", alignItems: "center", justifyContent: "center", fontSize: size / 3, flexShrink: 0 }}>👟</div>;
-  return <PrimaryPhoto product={product} fallback={empty}
+  return <PrimaryPhoto product={product} fallback={empty} size={full ? "full" : "thumb"}
               onError={(e) => { e.currentTarget.style.display = "none"; }}
               style={{ width: size, height: size, objectFit: "cover", borderRadius: radius, flexShrink: 0,
                        border: "1px solid rgba(255,255,255,.1)" }} />;
@@ -1865,7 +1865,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         return (
           <Panel title="Is this the shoe?" onClose={() => setAliasConfirm(null)}>
             <div style={{ textAlign: "center" }}>
-              <Photo product={cand} size={220} radius={20} />
+              <Photo product={cand} size={220} radius={20} full />
               <div style={{ fontSize: 22, fontWeight: 900, margin: "16px 0 6px", lineHeight: 1.3 }}>{cand.name}</div>
               <div style={{ fontSize: 12.5, color: GRAY, marginBottom: 20 }}>
                 Matched by this label's wording — confirm it and this reading files itself for next time.

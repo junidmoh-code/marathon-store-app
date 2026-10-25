@@ -4098,7 +4098,7 @@ function AdminReviewPhotosTab({ products = [] }) {
       // the approved proposal BEFORE photoUrl moves.
       const res = await setPrimaryPhotoInApp(row.id, {
         product: products.find((x) => x.id === row.id) || {}, newUrl: row.proposedUrl, source: "ai_studio",
-        by: auth.currentUser?.email || auth.currentUser?.uid || null, extra: { photoUrlOriginal: row.originalUrl },
+        by: auth.currentUser?.uid || null, extra: { photoUrlOriginal: row.originalUrl },
       }, { rebuildThumb: writeApprovedProposalThumb });
       if (!res.ok) throw new Error(res.message);
       await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "approved", decidedAt: serverNowMs() });
@@ -7530,12 +7530,15 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           // New Arrivals pipeline generates from the photo the product now shows.
           const res = await setPrimaryPhotoInApp(product.id, {
             product, overwrites: productPhotoObjectPath(product.id), source: "edit",
-            by: auth.currentUser?.email || auth.currentUser?.uid || null,
+            by: auth.currentUser?.uid || null,
             // Bounded cache (NOT immutable): photo.jpg is overwritten in place on
             // a re-shoot, so cap staleness at 7 days instead of a year.
             produce: async () => {
               await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
-              return getDownloadURL(sRef);
+              // An overwrite can keep the same download token, so the URL would
+              // not change: the version tag makes every re-shoot a new photoUrl
+              // (mirror marker, Meta-ready trigger, Shopify follow all see it).
+              return `${await getDownloadURL(sRef)}&v=${Date.now()}`;
             },
             extra: { photoUpdatedAt: serverNowMs(), photoSourceUrl: null },
           }, { rebuildThumb: async () => await writeProductThumb(product.id, blob, { upload: uploadThumbObject, remove: removeThumbObject }) });
@@ -7555,7 +7558,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
     if (!product.photoUrl) return;
     if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
     // Through the one write: the photo goes to history, so Undo photo can bring it back.
-    const res = await setPrimaryPhotoInApp(product.id, { product, newUrl: null, source: "edit", by: auth.currentUser?.email || auth.currentUser?.uid || null });
+    const res = await setPrimaryPhotoInApp(product.id, { product, newUrl: null, source: "edit", by: auth.currentUser?.uid || null });
     setSaveError(res.ok ? null : res.message);
   };
   // UNDO PHOTO — the previous primary comes back everywhere at once (and the
@@ -7564,7 +7567,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
   const undoPhoto = async () => {
     setPhotoUploading(true);
     try {
-      const res = await undoPrimaryPhotoInApp(product.id, { product, by: auth.currentUser?.email || auth.currentUser?.uid || null });
+      const res = await undoPrimaryPhotoInApp(product.id, { product, by: auth.currentUser?.uid || null });
       setSaveError(res.ok ? null : res.message);
     } finally { setPhotoUploading(false); }
   };

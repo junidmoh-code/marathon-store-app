@@ -679,6 +679,7 @@ exports.primaryPhotoMetaReady = onValueWritten(
     region:         "europe-west1",
     memory:         "1GiB",
     timeoutSeconds: 120,
+    concurrency:    2,      // a few full-size rasters each — never 80 at once
     retry:          false,
   },
   async (event) => {

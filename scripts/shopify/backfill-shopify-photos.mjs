@@ -6,6 +6,7 @@
 //   node scripts/shopify/backfill-shopify-photos.mjs --sheet <dir>   … and before/after JPEGs of the replacements
 //   node scripts/shopify/backfill-shopify-photos.mjs --commit --batch 100   one batch, then its check
 //   … --exclude p1,p2     products a person looked at and refused (e.g. Shopify holds a screenshot)
+//   … --only p1,p2        commit EXACTLY these (the list a person looked at in the dry run)
 //
 // Decisions: shopifyPhotoBackfill.mjs. The write: src/utils/setPrimaryPhoto.js
 // (old photo → photo history, thumbnail before photoUrl, child keys only).
@@ -34,7 +35,7 @@ import { numericIdOf } from "./relist.mjs";
 import { thumbRebuilder, thumbRemover, productWriter, serverClock, BUCKET, DB_URL } from "./primaryPhotoNode.mjs";
 import {
   BACKFILL_BULK_QUERY, parseBackfillSnapshot, dhashFromGrey, shopifySized, linkVerdict, pictureVerdict,
-  sharedPictureConflicts, copyPathFor, batchCheck,
+  sharedPictureConflicts, copyPathFor, batchCheck, hamming, SAME_MAX,
 } from "./shopifyPhotoBackfill.mjs";
 import { primaryPhotoUrl, storagePathOfUrl, PHOTO_HISTORY_KEY } from "../../src/utils/primaryPhoto.js";
 import { setPrimaryPhoto } from "../../src/utils/setPrimaryPhoto.js";
@@ -88,9 +89,10 @@ console.log(`Shopify: ${shop.size} product(s); linked to an app product by id: $
 
 const rows = [];
 await pool(linked, 12, async ({ s, pid }) => {
-  const [mappedGid, photoUrl, photo, mergedInto, name, brand, cleanName] = await Promise.all([
+  const [mappedGid, photoUrl, photo, mergedInto, name, brand, cleanName, metaUrl] = await Promise.all([
     get(`shopify_sync/${pid}/shopifyProductId`), get(`products/${pid}/photoUrl`), get(`products/${pid}/photo`),
     get(`products/${pid}/mergedInto`), get(`products/${pid}/name`), get(`products/${pid}/brand`), get(`shopify_publish/${pid}/cleanName`),
+    get(`products/${pid}/photoMeta/url`),
   ]);
   const product = name == null && photoUrl == null ? null : { id: pid, photoUrl, photo, mergedInto, name, brand };
   const row = { pid, gid: s.id, title: s.title, shopUrl: s.image?.url ?? null, oldUrl: primaryPhotoUrl(product) };
@@ -102,7 +104,16 @@ await pool(linked, 12, async ({ s, pid }) => {
   } catch (e) {
     rows.push({ ...row, action: "skip", code: "unreadable", why: String(e?.message || e) }); return;
   }
-  rows.push({ ...row, ...pictureVerdict(row.shopHash, row.appHash) });
+  const v = pictureVerdict(row.shopHash, row.appHash);
+  // From 28 Oct a NEW listing leads with our Meta-ready copy of the primary:
+  // that is not a "better Shopify photo" and must never become the primary.
+  if (v.action === "replace" && typeof metaUrl === "string") {
+    try {
+      const metaHash = await dhash(await ourBuf(metaUrl));
+      if (hamming(metaHash, row.shopHash) <= SAME_MAX) { rows.push({ ...row, action: "skip", code: "meta-ready", why: "Shopify leads with our own Meta-ready copy" }); return; }
+    } catch { /* unreadable meta: judge as usual */ }
+  }
+  rows.push({ ...row, ...v });
 });
 
 const EXCLUDE = new Set((arg("--exclude") || "").split(",").filter(Boolean));
@@ -139,7 +150,11 @@ if (!COMMIT) { console.log("\ndry run — nothing written."); process.exit(0); }
 
 // ── one batch ─────────────────────────────────────────────────────────────────
 const ledger = loadLedger();
-const todo = todoAll.filter((r) => !ledger.entries[r.pid]).slice(0, BATCH);
+const ONLY = arg("--only") ? new Set(arg("--only").split(",").filter(Boolean)) : null;
+if (!ONLY) { console.error("REFUSED: --commit needs --only <pids> — the list a person checked in the dry run"); process.exit(2); }
+const notReplace = [...ONLY].filter((p) => !todoAll.some((r) => r.pid === p));
+if (notReplace.length) console.log(`  not (or no longer) a replacement, left alone: ${notReplace.join(", ")}`);
+const todo = todoAll.filter((r) => ONLY.has(r.pid) && !ledger.entries[r.pid]).slice(0, BATCH);
 const now = await serverClock(db);
 const deps = {
   now,
@@ -161,6 +176,9 @@ for (const r of todo) {
     product: { id: r.pid, photoUrl: r.oldUrl }, source: "shopify_backfill", by: BY,
     produce: async () => {
       const { buf, type } = await fetchBuf(r.shopUrl);
+      // The bytes about to become the primary must be the picture judged.
+      const got = await dhash(buf);
+      if (!(hamming(got, r.shopHash) <= SAME_MAX)) throw new Error(`the downloaded Shopify image is not the picture the dry run judged (distance ${hamming(got, r.shopHash)})`);
       const ext = /png/.test(type) ? "png" : /webp/.test(type) ? "webp" : "jpg";
       const path = copyPathFor(r.pid, now(), ext);
       const token = randomUUID();

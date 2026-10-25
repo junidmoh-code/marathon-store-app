@@ -8,8 +8,7 @@
 // and remove, the AI Studio approve, the Shopify backfill. The Shopify
 // publisher's list keeps its own entry point (primaryPhotoCore
 // .setShopifyPrimaryPhoto), which writes the same history through
-// primaryPhoto.primaryPhotoPatch. primaryPhotoWriteGuard.test.js fails on a
-// new writer of photoUrl that bypasses both.
+// primaryPhoto.primaryPhotoPatch.
 //
 // ORDER, and why:
 //   1. archive  — a re-shoot overwrites products/{pid}/photo.jpg IN PLACE, so
@@ -104,12 +103,22 @@ export async function setPrimaryPhoto(pid, { product, newUrl, produce = null, ov
   let thumb = null;
   if (next && typeof deps.rebuildThumb === "function") {
     try { thumb = await deps.rebuildThumb(pid, next); } catch (e) { thumb = { ok: false }; }
+    // No new thumbnail: the old one must not stand under the new photo's
+    // marker (#769) — none is better; lists fall back to the full photo.
+    if (!thumb?.ok && typeof deps.removeThumb === "function") { try { await deps.removeThumb(pid); } catch { /* best-effort */ } }
   }
   try {
-    await deps.writeProduct(pid, patch);
+    try { await deps.writeProduct(pid, patch); }
+    catch (first) {
+      // The overwrite already happened: one more try, so the history entry
+      // pointing at the archived copy is not lost to a blip.
+      if (!overwrites) throw first;
+      await deps.writeProduct(pid, patch);
+    }
   } catch (e) {
     if (thumb?.ok) await restoreThumb(pid, archived || current, deps);
-    return { ok: false, changed: false, patch, message: `The photo could not be changed (${String(e?.message || e)}).` };
+    return { ok: false, changed: false, patch, archivedAt: archivedCopy,
+             message: `The photo could not be changed (${String(e?.message || e)}).${archivedCopy ? ` The previous photo is kept at ${archivedCopy}` : ""}` };
   }
   // A removed photo: the stale thumbnail goes AFTER the record says "no photo".
   if (!next && typeof deps.removeThumb === "function") { try { await deps.removeThumb(pid); } catch { /* best-effort */ } }
