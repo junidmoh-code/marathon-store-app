@@ -415,6 +415,51 @@ Jimmy (`scripts/swap-online-order-line.mjs`, in its own process), the POS
   marks both products dirty, so the reconciler sets the original's on_hand back
   to its app count (it was never deducted) — it is not left sold out.
 
+## Order it now (POS) — owner spec 2026-10-25
+
+A grey line (`resolving`, `unavailable`, `no_stock`, `not_found`,
+`needs_attention`) stayed grey after the item was found and the stock fixed:
+the chain waits on its open request or has given up. The POS "Order it now"
+button writes ONE request per line and route generation, single-flight
+(a transaction on the exact key):
+
+```
+/online_orders/{id}/orderNowRequests/{lineIndex}_{routeGen} =
+  { lineIndex, expectPid, expectSizeKey, expectStatus, expectRouteGen,
+    by: {uid, name}, at, state: "pending", previous?: [last 10 answers] }
+  → "ordered"      { routedTo, checked, withdrew?, answeredAt }
+  → "not_in_stock" { checked: { free: [{loc, free}], central }, answeredAt }
+  → "refused"      { why, answeredAt }
+```
+
+The poller's keep pass (`orderNowRequests.mjs`, after the swap requests)
+re-checks live stock with the reads a new order's routing uses
+(`availabilityFor` + `routeLines`: the routed shops and hubs, minus what other
+website orders hold; Central's count is reported, never routed to). Routable
+in full → the line goes to `reroute` (escalation cleared,
+`orderNow {rid, by, at, appliedAt}` kept on the line) and the SAME pass routes
+and raises it exactly like a new Shopify line: hub order `/orders/{code}`
+(routeGen + 1, a fresh code) or a shop strip entry, the hold, the parcel
+estimate, the order status. Not routable → `not_in_stock`, the line untouched.
+
+Never twice: refused on a line already on a pick (`pick` / `display`), in
+`reroute`, mid-raise (`escalation.pending`), with an escalation request open
+(`await`: a Central refill or Hub 2 Shop Refill card not answered yet — it says
+which and since when; requests are never withdrawn or changed here, Junid:
+no change to refill request logic), sent and waiting for the box
+(`wait`), a line a hub already sent a unit of (`ready` / `collected` / a size
+sent — the wrong size, or a mixed qty > 1 answer), part of it in the basket, a
+replaced line (a re-route would undo the replacement), a line whose customer is
+being offered alternatives, Junid's pending override or a money action on the
+line, or an order being packed. Only `source.status` changes, so the re-route
+cancels the line's old hub orders / strip entry exactly as Resolve does; the
+order's no_stock / not_found / walk-in attention is cleared when no line needs a
+person any more. A check that fails 3 times is answered "could not be checked"
+so the Pack is never blocked by it. The POS hides the button in the cases the
+poller would refuse. Nothing moves stock (the Pack is
+the one deduction); no refill policy, target or request logic changes. The
+POS refuses Pack while a request is pending.
+
 ## Out of scope (seam left)
 
 Courier booking and waybills. `shipping.provider` is null and

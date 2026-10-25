@@ -42,6 +42,7 @@ import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs
 import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 import { applySwapRequests } from "./swapRequests.mjs";
+import { applyOrderNowRequests } from "./orderNowRequests.mjs";
 
 export const META_PATH = "online_orders_meta";
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -147,6 +148,12 @@ export async function runOrdersPoll(deps) {
         // The POS "Replace" (swapRequests.mjs) first: the rest of the pass
         // then raises the new line's hub order / strip entry and its hold.
         if (order?.swapRequests && await applySwapRequests(ctx, id, order)) {
+          order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+        }
+        // The POS "Order it now" (orderNowRequests.mjs): a grey line whose item
+        // is back in stock goes to reroute, and maintainOrder below routes and
+        // raises it exactly like a new order's line.
+        if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor, resolveVariant })) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
         // Escalation raises requests staff see, so only with the switch on.
@@ -538,11 +545,13 @@ async function maintainOrder(ctx, id, order) {
       const r = resolvedList[j];
       const gen = (Number(old.routeGen) || 0) + 1;
       const item = { id: old.shopifyLineItemId, title: old.title, variant: { id: old.variantId, product: { id: old.productGid } }, quantity: old.qty, discountedUnitPriceAfterAllDiscountsSet: { shopMoney: { amount: (Number(old.unitPriceCents) || 0) / 100 } } };
-      if (!r.pid) { changed.set(i, { ...buildLine({ index: i, item, resolved: r }), lineId: old.lineId, routeGen: gen }); return; }
+      // The POS "Order it now" record (who tapped, when) stays on the line.
+      const keep = old.orderNow ? { orderNow: old.orderNow } : {};
+      if (!r.pid) { changed.set(i, { ...buildLine({ index: i, item, resolved: r }), lineId: old.lineId, routeGen: gen, ...keep }); return; }
       const pieces = routed[k++];
       pieces.forEach((piece, n) => {
         const line = { ...buildLine({ index: n === 0 ? i : before.length + appended.length, item, resolved: r, piece }), routeGen: gen };
-        if (n === 0) changed.set(i, { ...line, lineId: old.lineId });
+        if (n === 0) changed.set(i, { ...line, lineId: old.lineId, ...keep });
         else appended.push(line);
       });
     });
