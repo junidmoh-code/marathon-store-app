@@ -50,3 +50,28 @@ describe("checkProductDelete", () => {
     expect((await checkProductDelete(fakeRead({ locations: registry }, { throwOn: "shopify_sync" }), "p1")).ok).toBe(false);
   });
 });
+
+describe("the review's cases (PR #797)", () => {
+  it("refuses a merged-away record — its node is the redirect", async () => {
+    const tree = { locations: registry, stock: {}, products: { p1: { mergedInto: "p2" } } };
+    const v = await checkProductDelete(fakeRead(tree), "p1");
+    expect(v.ok).toBe(false);
+    expect(v.message).toMatch(/merged into p2/);
+  });
+  it("refuses a pending first publish (desiredState, no state yet)", async () => {
+    const tree = { locations: registry, stock: {}, shopify_publish: { p1: { desiredState: "on" } } };
+    expect((await checkProductDelete(fakeRead(tree), "p1")).ok).toBe(false);
+  });
+});
+
+describe("App.jsx wiring", () => {
+  it("the product page's Delete checks before AND after the confirm, and surfaces a failed delete", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    const body = src.slice(src.indexOf("const handleDelete = async"), src.indexOf("const handleDelete = async") + 1200);
+    expect((body.match(/checkProductDelete\(/g) || []).length).toBe(2);
+    expect(body.indexOf("window.confirm")).toBeGreaterThan(body.indexOf("checkProductDelete("));
+    expect(body.lastIndexOf("checkProductDelete(")).toBeGreaterThan(body.indexOf("window.confirm"));
+    expect(src).not.toMatch(/remove\(ref\(database, `products\/\$\{id\}`\)\)\s*\.catch/);
+  });
+});

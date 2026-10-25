@@ -16,9 +16,12 @@
 // FAILS CLOSED: a read that throws is a refusal, never a pass.
 
 // Pure. `cells`: [{ loc, sizes }] for every location holding a node for this
-// product; `shopifyProductId` / `publishState`: the link, or null.
-export function judgeProductDelete({ cells = [], shopifyProductId = null, publishState = null } = {}) {
+// product; `shopifyProductId` / `publishState`: the link, or null;
+// `mergedInto`: set on a merged-away record, whose node IS the redirect that
+// old sales, scans and devices follow to the survivor.
+export function judgeProductDelete({ cells = [], shopifyProductId = null, publishState = null, mergedInto = null } = {}) {
   const reasons = [];
+  if (mergedInto) reasons.push(`it was merged into ${mergedInto} and its record is the redirect old sales and labels follow`);
   const held = cells.filter((c) => c && c.sizes > 0);
   if (held.length) reasons.push(`it has stock records at ${held.map((c) => c.loc).join(", ")}`);
   if (shopifyProductId || publishState) reasons.push("it is linked to a Shopify listing");
@@ -43,11 +46,14 @@ export async function checkProductDelete(read, pid) {
     const locs = [...new Set([...Object.keys(registry), "in_transit"])];
     const nodes = await Promise.all(locs.map((loc) => read(`stock/${loc}/${pid}`)));
     const cells = locs.map((loc, i) => ({ loc, sizes: nodes[i] && typeof nodes[i] === "object" ? Object.keys(nodes[i]).length : 0 }));
-    const [shopifyProductId, publishState] = await Promise.all([
+    // state OR desiredState: a first publish still pending has no state yet.
+    const [shopifyProductId, state, desiredState, mergedInto] = await Promise.all([
       read(`shopify_sync/${pid}/shopifyProductId`),
       read(`shopify_publish/${pid}/state`),
+      read(`shopify_publish/${pid}/desiredState`),
+      read(`products/${pid}/mergedInto`),
     ]);
-    return judgeProductDelete({ cells, shopifyProductId, publishState });
+    return judgeProductDelete({ cells, shopifyProductId, publishState: state ?? desiredState, mergedInto });
   } catch (e) {
     return { ok: false, reasons: ["read failed"], message: `Could not check this product (${String(e?.message || e)}), so it was not deleted.` };
   }

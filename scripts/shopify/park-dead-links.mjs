@@ -120,11 +120,12 @@ async function main() {
     const variants = await readSkus(gid);
     if (!variants) { log(`✗ ${pid}: Shopify has no product ${gid} — skipped`); continue; }
     const sku = skuOfVariants(variants);
-    const live = sku ? liveBySku.get(sku) || [] : [];
+    if (!sku) { log(`✗ ${pid}: the listing's SKU could not be read from its variants — not parked (the live-product check needs it)`); continue; }
+    const live = liveBySku.get(sku) || [];
     if (live.length) { log(`✗ ${pid}: SKU ${sku} is on a live product (${live.join("; ")}) — re-link by hand, not parked`); continue; }
     const dry = await zeroUnmanagedListing(graphql, gid, { commit: false, locationId: locId });
     if (!dry.ok) { log(`✗ ${pid}: ${dry.why}`); continue; }
-    log(`• ${pid} → ${gid} · SKU ${sku ?? "?"} · no live product has it · Shopify holds ${dry.shopifyUnits} unit(s)` +
+    log(`• ${pid} → ${gid} · SKU ${sku} · no live product has it · Shopify holds ${dry.shopifyUnits} unit(s)` +
       (node ? ` · stray product fields: ${Object.keys(node).join(",")}` : ""));
     plans.push({ pid, gid, claimKey, sku, sync, publish, claim, shopifyBefore: dry.drift.map((d) => ({ size: d.sizeKey, inventoryItemId: d.inventoryItemId, quantity: d.shopify })), dry });
   }

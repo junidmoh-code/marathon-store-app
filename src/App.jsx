@@ -805,9 +805,9 @@ function addProductToFirebase(product) {
     .catch(err => { console.warn("Add product failed:", err); throw err; });
 }
 
+// Rejects on failure — the caller must not leave the page as if it worked.
 function deleteProductFromFirebase(id) {
-  return remove(ref(database, `products/${id}`))
-    .catch(err => console.warn("Delete product failed:", err));
+  return remove(ref(database, `products/${id}`));
 }
 
 // ─── THE ONE PLACE A PRODUCT IS RENAMED ──────────────────────────────────────
@@ -7823,10 +7823,15 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
     if (deleteChecking) return;
     setDeleteChecking(true);
     try {
-      const verdict = await checkProductDelete(async (path) => (await get(ref(database, path))).val(), product.id);
+      const read = async (path) => (await get(ref(database, path))).val();
+      const verdict = await checkProductDelete(read, product.id);
       if (!verdict.ok) { alert(verdict.message); return; }
       if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
-      await deleteProductFromFirebase(product.id);
+      // Again after the dialog: stock can arrive while it sits open.
+      const again = await checkProductDelete(read, product.id);
+      if (!again.ok) { alert(again.message); return; }
+      try { await deleteProductFromFirebase(product.id); }
+      catch (err) { alert(`The product was not deleted: ${String(err?.message || err)}`); return; }
       onBack();
     } finally { setDeleteChecking(false); }
   };
