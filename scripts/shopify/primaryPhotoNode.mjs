@@ -6,13 +6,14 @@ import { createRequire } from "module";
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import sharp from "sharp";
 import { writeApprovedThumbFromUrl, writeProductThumb } from "../../src/utils/productThumb.js";
 import { PHOTO_THUMB_MAX_EDGE, productPhotoThumbPath } from "../../src/utils/productPhotoPaths.js";
 import { objectPathOf } from "../../src/components/shopify/primaryPhotoCore.js";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
+// functions/'s sharp, like firebase-admin: the mini's live checkout has no root node_modules.
+const sharp = require("sharp");
 
 export const DB_URL = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
 export const BUCKET = "marathon-club.firebasestorage.app";
