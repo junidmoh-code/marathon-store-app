@@ -78,6 +78,7 @@ import {
   EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText,
   eftMessageKey, createOnlyStep, eftPoolRecord,
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
+  refusalFingerprint, applyRefusalFingerprint,
   redactAccountDigits, domainOfAddress, parseAllowedAccountTails, parseAllowedAccounts,
   destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
@@ -1492,6 +1493,16 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
           .transaction(fingerprintClaimStep(poolKey, serverNowMs(), (d) => { holder = d.holder; }));
       }
       record = applyFingerprintHold(candidate, { fingerprint, holder, poolKey });
+    } else {
+      // A refusal claims its transaction id too (eftCore refusalFingerprint):
+      // a copy resent once the reason no longer applies is held, not fresh.
+      const fingerprint = refusalFingerprint(candidate);
+      if (fingerprint) {
+        let holder = null;
+        await db.ref(`${EFT_FINGERPRINT_PATH}/${fingerprint}`)
+          .transaction(fingerprintClaimStep(poolKey, serverNowMs(), (d) => { holder = d.holder; }));
+        record = applyRefusalFingerprint(candidate, { fingerprint, holder, poolKey });
+      }
     }
     let decision = null;
     // createOnlyStep: undefined = abort, keep what is there.
