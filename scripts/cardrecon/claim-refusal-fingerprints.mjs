@@ -10,9 +10,10 @@
 //   node scripts/cardrecon/claim-refusal-fingerprints.mjs [--execute]
 //
 // Without --execute it only reads and counts. An id already claimed is never
-// touched; when its holder is a DIFFERENT record that is still spendable
-// (recorded / unmatched), that is a copy of refused money already floating —
-// it is LISTED for Junid, and nothing is changed for it here. Writes only
+// touched; when its holder is a DIFFERENT record that was ADMITTED (outcome
+// recorded, whatever its status — unmatched, attached, used) or has vanished,
+// that is a copy of refused money that got in — it is LISTED for Junid with
+// its status, and nothing is changed for it here. Writes only
 // /eft_pool_fingerprints; never a pool record.
 import { createRequire } from "node:module";
 import { EFT_POOL_PATH, EFT_FINGERPRINT_PATH, fingerprintClaimStep, sweepRefusalClaim } from "./eftCore.mjs";
@@ -48,9 +49,14 @@ try {
       if (existing?.poolKey === key) { counts.alreadyTheirs++; continue; }
       if (existing) {
         counts.heldElsewhere++;
-        const holder = (await db.ref(`${EFT_POOL_PATH}/${existing.poolKey}`).once("value")).val();
-        if (holder?.outcome === "recorded" && holder.status === "unmatched" && !existing.spentBy) {
-          floating.push({ refused: key, spendableCopy: existing.poolKey, amountCents: holder.amountCents, reference: holder.reference });
+        const holderKey = typeof existing.poolKey === "string" ? existing.poolKey : null;
+        const holder = holderKey ? (await db.ref(`${EFT_POOL_PATH}/${holderKey}`).once("value")).val() : null;
+        if (!holder || holder.outcome === "recorded") {
+          floating.push({
+            refused: key, copy: holderKey ?? "(corrupt claim)",
+            state: holder ? `${holder.reader ?? "?"} ${holder.status ?? "?"}${existing.spentBy ? `, spent by ${existing.spentBy}` : ""}` : "holder record missing",
+            amountCents: holder?.amountCents ?? null, reference: holder?.reference ?? null,
+          });
         }
         continue;
       }
@@ -64,8 +70,8 @@ try {
   }
   console.log(`${EXECUTE ? "✓ swept" : "· dry run"}: ${JSON.stringify(counts)}${EXECUTE ? "" : " (claimed = would claim)"}`);
   if (floating.length) {
-    console.log("⚠ A SPENDABLE copy already holds a refused payment's bank id — check each against the bank statement:");
-    for (const f of floating) console.log(`   refused ${f.refused} · spendable ${f.spendableCopy} · ${f.amountCents}c · ${f.reference ?? "—"}`);
+    console.log("⚠ An ADMITTED copy (or a missing record) holds a refused payment's bank id — check each against the bank statement:");
+    for (const f of floating) console.log(`   refused ${f.refused} · copy ${f.copy} (${f.state}) · ${f.amountCents ?? "?"}c · ${f.reference ?? "—"}`);
   }
 } finally {
   await admin.app().delete();
