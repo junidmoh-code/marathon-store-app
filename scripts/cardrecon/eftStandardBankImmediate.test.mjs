@@ -138,6 +138,24 @@ describe("THE FOOTER IS NEVER THE MARKER", () => {
     expect(standardBankHeading(below).immediate).toBe(null);
   });
 
+  it("an immediate heading above, but ANY heading below the confirmation (a second page, a quoted copy) — refused", () => {
+    expect(standardBankHeading([...REAL_SB_IMMEDIATE_2510, "Payment Confirmation"]).immediate).toBe(null);
+    expect(standardBankHeading([...REAL_SB_IMMEDIATE_2510, "Immediate Payment Confirmation"]).immediate).toBe(null);
+  });
+
+  it("the confirmation sentence printed twice — refused, not read off the first copy", () => {
+    const twice = [...REAL_SB_IMMEDIATE_2510, "We confirm that the following payment has been made into your account from A CUSTOMER:"];
+    expect(standardBankHeading(twice).immediate).toBe(null);
+  });
+
+  it("a heading the extraction SPLIT ('Immediate' / 'Payment Confirmation') is unreadable — refused, never read either way", () => {
+    const split = REAL_SB_IMMEDIATE_2510.flatMap((l) => (l === HEADING ? ["Immediate", "Payment Confirmation"] : [l]));
+    expect(standardBankHeading(split)).toEqual({ immediate: null, paymentType: "heading split across lines" });
+    const { timing, record } = decide(split);
+    expect(timing.reason).toMatch(/could not be read/);
+    expect(record.outcome).toBe("refused-not-immediate");
+  });
+
   it("a heading the extraction merged into another line does not count", () => {
     const merged = withHeading(null).map((l) => (l === "Dear MARATHON CLUB" ? "Dear MARATHON CLUB Immediate Payment Confirmation" : l));
     expect(standardBankHeading(merged).immediate).toBe(null);
