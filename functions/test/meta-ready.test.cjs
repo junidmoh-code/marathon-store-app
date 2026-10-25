@@ -38,11 +38,33 @@ test("the plan: frame cut, product box → square of side box/0.8, centred, back
   assert.deepEqual(p.pad, { left: 0, top: 0, right: 0, bottom: 0 });
 });
 
-test("a product wider than its photo is extended past the edges, not shrunk", () => {
-  const px = studio(200, 100, 0, { x0: 5, y0: 20, x1: 195, y1: 80 });   // wide product, tight crop
+test("a product tight in a landscape photo: the square runs past the photo and is extended with the backdrop colour", () => {
+  // A 140×80 ellipse (a product has a rounded top, not a ruler-straight one) on a 200×100 grey studio.
+  const px = studio(200, 100, 0, { x0: 0, y0: 0, x1: 0, y1: 0 });
+  for (let y = 0; y < 100; y++) for (let x = 0; x < 200; x++) {
+    if (((x - 100) / 70) ** 2 + ((y - 50) / 40) ** 2 <= 1) { const i = (y * 200 + x) * 3; px[i] = 20; px[i + 1] = 30; px[i + 2] = 40; }
+  }
   const p = plan({ px, w: 200, h: 100 }, 200, 100);
-  assert.equal(p.side, 238);                 // 190 / 0.8
-  assert.ok(p.pad.top > 0 && p.pad.bottom > 0 && p.pad.left > 0 && p.pad.right > 0);
+  assert.deepEqual(p.frame, { t: 0, b: 0, l: 0, r: 0 });                  // a backdrop is never cut as a frame
+  assert.ok(Math.abs(p.side - 175) <= 3, `side ${p.side}`);              // ~140 / 0.8
+  assert.ok(p.pad.top > 0 && p.pad.bottom > 0);
+  assert.deepEqual(p.fill, { mode: "colour", colour: { r: 150, g: 160, b: 170 } });
+});
+
+test("a product on plain white is NOT a framed photo: white is its backdrop, filled edge to edge", () => {
+  const W = 200, H = 260, px = new Uint8Array(W * H * 3).fill(255);
+  for (let y = 80; y < 180; y++) for (let x = 60; x < 140; x++) { const i = (y * W + x) * 3; px[i] = 30; px[i + 1] = 60; px[i + 2] = 200; }
+  const p = plan({ px, w: W, h: H }, W, H);
+  assert.deepEqual(p.frame, { t: 0, b: 0, l: 0, r: 0 });
+  assert.equal(p.side, 125);
+  assert.equal(p.fill.mode, "colour");
+});
+
+test("a screenshot's dark border is cut like a white one", () => {
+  const W = 200, H = 300, px = new Uint8Array(W * H * 3).fill(18);   // dark UI
+  for (let y = 30; y < 270; y++) for (let x = 20; x < 180; x++) { const i = (y * W + x) * 3; px[i] = 150; px[i + 1] = 160; px[i + 2] = 170; }
+  for (let y = 120; y < 200; y++) for (let x = 70; x < 130; x++) { const i = (y * W + x) * 3; px[i] = 240; px[i + 1] = 20; px[i + 2] = 20; }
+  assert.deepEqual(whiteFrame(px, W, H), { t: 30, b: 30, l: 20, r: 20 });
 });
 
 test("a scene (non-uniform background) is mirrored outwards, not filled with a flat colour", () => {

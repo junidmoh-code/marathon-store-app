@@ -40,12 +40,15 @@ if (!pids) {
   // The website's live set, by its indexed `state` (the reconciler's own query).
   const live = (await db.ref("shopify_publish").orderByChild("state").equalTo("live").get()).val() || {};
   const on = Object.entries(live).filter(([, n]) => n?.liveState === "on").map(([p]) => p).sort();
+  // A fixed shuffle (seeded), so the sample spans the catalogue, not its oldest corner.
+  let seed = 20261025;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  for (let i = on.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [on[i], on[j]] = [on[j], on[i]]; }
   const byCat = new Map();
-  for (const pid of on) {
+  for (const pid of on.slice(0, 300)) {
     const cat = (await db.ref(`products/${pid}/categoryKey`).get()).val() || "other";
     if (!byCat.has(cat)) byCat.set(cat, []);
     byCat.get(cat).push(pid);
-    if ([...byCat.values()].reduce((a, l) => a + l.length, 0) > 600) break;
   }
   const lists = [...byCat.values()];
   pids = [];
