@@ -12,6 +12,7 @@ import {
 } from "./eftCore.mjs";
 import {
   guideReplyEligibility, guideReplyMail, drainGuideReplies, guideClaimPath, guideClaimStep, senderKey,
+  guideCountPath, guideCountStep, GUIDE_REPLIES_PER_DAY,
   senderVerified, hasProofAttachment, automatedMarker, parseGuideReplySwitch, parseNeverList,
   GUIDE_REPLY_TEXT, GUIDE_REPLY_SUBJECT, GUIDE_REPLY_FROM, GUIDE_REPLY_PATH, GUIDE_REPLIES_PER_TICK,
 } from "./guideReplyCore.mjs";
@@ -75,11 +76,18 @@ function harness() {
     claim: async ({ to, poolKey }) => {
       const path = guideClaimPath(to, now);
       const next = guideClaimStep({ at: now, poolKey })(store.has(path) ? store.get(path) : null);
+      if (next === undefined) return null;
+      store.set(path, next);
+      return path;
+    },
+    countToday: async () => {
+      const path = guideCountPath(now);
+      const next = guideCountStep()(store.has(path) ? store.get(path) : null);
       if (next === undefined) return false;
       store.set(path, next);
       return true;
     },
-    release: async ({ to }) => { store.delete(guideClaimPath(to, now)); },
+    release: async (path) => { store.delete(path); },
     ...over,
   });
   return { store, sent, drain, at: (ms) => { now = ms; } };
@@ -152,16 +160,47 @@ describe("the rate limit — one per sender per SAST day", () => {
   it("the claim stores a hash under the day, never the address", async () => {
     const h = harness();
     await h.drain(queueFor(customerMail()));
-    const [path, value] = [...h.store.entries()][0];
-    expect(path).toBe(`${GUIDE_REPLY_PATH}/2026-10-17/${senderKey("thandi.m@gmail.com")}`);
-    expect(JSON.stringify({ path, value })).not.toMatch(/thandi|gmail/i);
+    const path = `${GUIDE_REPLY_PATH}/2026-10-17/${senderKey("thandi.m@gmail.com")}`;
+    expect(h.store.has(path)).toBe(true);
+    expect(h.store.get(guideCountPath(DAY))).toBe(1);
+    expect(JSON.stringify([...h.store.entries()])).not.toMatch(/thandi|gmail/i);
   });
 
-  it("a failed send releases the claim (no reply was sent, so a later one may go)", async () => {
+  it("a send the server REFUSED releases the claim (nothing was delivered, so a later one may go)", async () => {
     const h = harness();
-    const out = await h.drain(queueFor(customerMail()), { send: async () => { throw new Error("421 try later"); } });
-    expect(out).toMatchObject({ sent: 0, unsent: 1, error: "421 try later" });
-    expect(h.store.size).toBe(0);
+    const refused = Object.assign(new Error("550 mailbox unavailable"), { responseCode: 550 });
+    const out = await h.drain(queueFor(customerMail()), { send: async () => { throw refused; } });
+    expect(out).toMatchObject({ sent: 0, unsent: 1, error: "550 mailbox unavailable" });
+    expect(h.store.has(guideClaimPath("thandi.m@gmail.com", DAY))).toBe(false);
+  });
+
+  it("a send that TIMED OUT keeps the claim — Gmail may have delivered it, so never a second today", async () => {
+    const h = harness();
+    const timeout = Object.assign(new Error("Timeout"), { code: "ETIMEDOUT" });
+    await h.drain(queueFor(customerMail()), { send: async () => { throw timeout; } });
+    expect(h.store.has(guideClaimPath("thandi.m@gmail.com", DAY))).toBe(true);
+    expect((await h.drain(queueFor(customerMail()))).sent).toBe(0);
+  });
+
+  it("release frees the slot it claimed, even across SAST midnight", async () => {
+    const h = harness();
+    const refused = Object.assign(new Error("552"), { responseCode: 552 });
+    const late = DAY + 8 * 3600 * 1000 + 59 * 60 * 1000;   // 23:59 SAST
+    h.at(late);
+    await h.drain(queueFor(customerMail()), { send: async () => { h.at(late + 120000); throw refused; } });
+    expect([...h.store.keys()].filter((k) => !k.endsWith("_count"))).toEqual([]);
+  });
+
+  it(`at most ${GUIDE_REPLIES_PER_DAY} a day in all, across ticks`, async () => {
+    const h = harness();
+    let sent = 0;
+    for (let t = 0; t < 10; t++) {
+      const queue = Array.from({ length: 5 }, (_, i) => queueFor(customerMail({ address: `t${t}c${i}@gmail.com` }))[0]);
+      sent += (await h.drain(queue)).sent;
+    }
+    expect(sent).toBe(GUIDE_REPLIES_PER_DAY);
+    h.at(NEXT_DAY);
+    expect((await h.drain(queueFor(customerMail()))).sent).toBe(1);
   });
 
   it("a claim that cannot be made sends nothing (fail closed)", async () => {
@@ -212,7 +251,10 @@ describe("spam, noise and non-proofs get NO reply", () => {
   it("bulk mail (Precedence: bulk)", () => no(customerMail({ headerLines: [ar("gmail.com"), { key: "precedence", line: "Precedence: bulk" }] }), /automated/));
   it("an auto-reply (Auto-Submitted)", () => no(customerMail({ headerLines: [ar("gmail.com"), { key: "auto-submitted", line: "Auto-Submitted: auto-replied" }] }), /automated/));
   it("a bounce (empty Return-Path)", () => no(customerMail({ headerLines: [ar("gmail.com"), { key: "return-path", line: "Return-Path: <>" }] }), /automated/));
-  it("a no-reply or role address", () => no(customerMail({ address: "noreply@gmail.com" }), /role/));
+  it("a no-reply or bounce address", () => {
+    no(customerMail({ address: "noreply@gmail.com" }), /role/);
+    no(customerMail({ address: "mailer-daemon@googlemail.com" }), /role/);
+  });
   it("a business or unknown-bank domain, not a personal mailbox", () => no(customerMail({ address: "payments@paymebank.example" }), /not a personal mailbox/));
   it("a subdomain posing as a personal provider", () => no(customerMail({ address: "x@gmail.com.evil.example" }), /not a personal mailbox/));
   it("a forged Gmail address — no DKIM / DMARC pass for gmail.com", () => no(customerMail({ headerLines: [{ key: "authentication-results", line: "Authentication-Results: mx.google.com; dkim=fail header.i=@gmail.com; spf=softfail; dmarc=fail header.from=gmail.com" }] }), /did not verify/));
@@ -277,6 +319,15 @@ describe("the pieces", () => {
     expect(typo.on).toBe(false);
     expect(typo.warning).toMatch(/OFF/);
   });
+  it("a Gmail user whose name starts like a role word is still a customer", () => {
+    const m = customerMail({ address: "info.jane@gmail.com" });
+    expect(guideReplyEligibility({ record: strangerRecord(m), ...m }).ok).toBe(true);
+  });
+  it("senderVerified accepts an SPF pass for the same domain (an ISP that does not DKIM-sign), never another domain", () => {
+    const line = (mf) => [{ key: "authentication-results", line: `Authentication-Results: mx.google.com; spf=pass (google.com: domain of ${mf} designates 1.2.3.4 as permitted sender) smtp.mailfrom=${mf}` }];
+    expect(senderVerified({ headerLines: line("thabo@mweb.co.za"), fromDomain: "mweb.co.za" })).toBe(true);
+    expect(senderVerified({ headerLines: line("x@evil.example"), fromDomain: "mweb.co.za" })).toBe(false);
+  });
   it("senderVerified accepts a DMARC pass when DKIM is signed by the provider's other domain", () => {
     expect(senderVerified({ headerLines: [{ key: "authentication-results", line: "Authentication-Results: mx.google.com; dkim=pass header.i=@outlook.com; spf=pass smtp.mailfrom=x@hotmail.com; dmarc=pass (p=NONE) header.from=hotmail.com" }], fromDomain: "hotmail.com" })).toBe(true);
   });
@@ -302,5 +353,12 @@ describe("the poller hooks it ONLY at a fresh unknown-bank write", () => {
   });
   it("Junid's verdict emails still go first, and a guide-reply failure cannot stop them", () => {
     expect(src).toMatch(/async function sendVerdicts\(\) \{\n {2}try \{ await sendVerdictEmails\(\); \} finally \{ await sendGuideReplies\(\); \}/);
+  });
+  it("queueing and sending are each wrapped, so a guide-reply error never reaches the tick or the card path", () => {
+    for (const name of ["function queueGuideReply(", "async function sendGuideReplies()"]) {
+      const body = src.slice(src.indexOf(name), src.indexOf("\n}\n", src.indexOf(name)));
+      expect(body).toMatch(/^[^\n]*\{\n(?: *\/\/[^\n]*\n)* {2}try \{/);
+      expect(body).toMatch(/\n {2}\} catch \(err\) \{/);
+    }
   });
 });

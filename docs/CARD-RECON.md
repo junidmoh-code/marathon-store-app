@@ -1530,8 +1530,9 @@ and how to add marathon6631@gmail.com as the "notify by email" address.
   `unknown-bank` record (a replay never replies); the sender is a personal
   mailbox (`PERSONAL_MAIL_DOMAINS` — gmail, yahoo, outlook/hotmail, icloud,
   mweb, telkomsa, …, exact domains); Gmail's own Authentication-Results shows
-  a DKIM pass signed by that domain or a DMARC pass for it (no reply to a
-  forged address); not a role/no-reply address and not the shop's own
+  a DKIM pass signed by that domain, a DMARC pass for it, or an SPF pass for
+  an envelope sender on it (no reply to a forged address); not a no-reply,
+  mailer-daemon, postmaster or bounce address and not the shop's own
   (marathon6631, gunidmoh, junidmoh, plus `EFT_GUIDE_REPLY_NEVER`); no list,
   bulk, auto-reply or bounce headers; and a PDF or picture attached (name,
   type and size only — never opened).
@@ -1539,7 +1540,10 @@ and how to add marathon6631@gmail.com as the "notify by email" address.
   duplicate, not immediate, wrong account, stale date) — those may be scams.
 - **Rate limit:** one per sender address per SAST day, claimed at
   `/eft_guide_replies/{day}/{sha256 of address}` (admin write, address never
-  stored) before sending; a failed send releases the claim. At most 5 per tick.
+  stored) before sending. A send the SMTP server refused releases the claim; a
+  timeout keeps it (Gmail may have delivered). At most 5 per tick and 30 a day
+  in all (`{day}/_count`). A reply skipped by a ceiling or a failed send is not
+  retried; Junid's REJECTED email for that message has gone regardless.
 - **What it says:** fixed text (`GUIDE_REPLY_TEXT` in
   `scripts/cardrecon/guideReplyCore.mjs`). Never that money arrived, never
   which check failed, never a bank, amount or anything read from their mail.

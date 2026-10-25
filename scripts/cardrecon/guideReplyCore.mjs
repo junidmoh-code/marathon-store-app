@@ -61,6 +61,10 @@ Marathon Club
 // poller's admin identity only; the address itself is never stored.
 export const GUIDE_REPLY_PATH = "eft_guide_replies";
 export const GUIDE_REPLIES_PER_TICK = 5;
+// And at most this many a day in all, counted at {day}/_count: anyone can open
+// Gmail accounts, and this mailbox's send quota also carries Junid's verdict
+// emails and the Unread notices. (Sonnet architect review.)
+export const GUIDE_REPLIES_PER_DAY = 30;
 
 // EFT_GUIDE_REPLY in the mini's .env: "on" (default) or "off" — the kill
 // switch. Anything else is OFF with a warning: a typo must never START mail
@@ -98,7 +102,9 @@ export const PERSONAL_MAIL_DOMAINS = [
   "mweb.co.za", "telkomsa.net", "vodamail.co.za", "webmail.co.za", "afrihost.co.za",
 ];
 
-const ROLE_LOCAL = /^(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|bounces?|notifications?|notify|alerts?|newsletters?|marketing|news|info|support|help|admin|billing|accounts?|service|system|daemon)(?:[+._-]|$)/i;
+// Personal providers only, so only the addresses no person reads — a Gmail
+// user called "info.jane" is still a customer. (Spec review.)
+const ROLE_LOCAL = /^(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|bounces?)(?:[+._-]|$)/i;
 
 // Mail no person typed: lists, bulk senders, auto-replies, bounces.
 const AUTOMATED_HEADERS = ["list-id", "list-unsubscribe", "list-post", "feedback-id", "x-autoreply", "x-autorespond", "x-auto-response-suppress"];
@@ -122,7 +128,9 @@ export function automatedMarker(headerLines) {
 /**
  * Did Gmail verify this personal mailbox really sent it? The TOPMOST
  * Authentication-Results is Gmail's own stamp (see eftCore.authenticationVerdict).
- * A DKIM pass signed by exactly the From domain, or a DMARC pass for it.
+ * A DKIM pass signed by exactly the From domain, a DMARC pass for it, or an
+ * SPF pass for an envelope sender on that domain (local ISPs such as mweb or
+ * telkomsa may not DKIM-sign; their own servers are still verified).
  * Without this, anyone could forge a victim's Gmail address and have the shop
  * email them — the backscatter the rate limit alone does not stop.
  */
@@ -141,6 +149,9 @@ export function senderVerified({ headerLines, fromDomain }) {
     }
     if (/^\s*dmarc\s*=\s*pass\b/i.test(seg)) {
       return (/\bheader\.from\s*=\s*([A-Za-z0-9.-]+)/i.exec(seg)?.[1] || "").toLowerCase() === dom;
+    }
+    if (/^\s*spf\s*=\s*pass\b/i.test(seg)) {
+      return (/\bsmtp\.mailfrom\s*=\s*[^\s@]*@([A-Za-z0-9.-]+)/i.exec(seg)?.[1] || "").toLowerCase() === dom;
     }
     return false;
   });
@@ -193,9 +204,31 @@ export function guideClaimPath(address, nowMs) {
   return `${GUIDE_REPLY_PATH}/${sastDate(nowMs)}/${senderKey(address)}`;
 }
 
+/** Where today's reply count lives (a key no sha256 hex can be). */
+export function guideCountPath(nowMs) {
+  return `${GUIDE_REPLY_PATH}/${sastDate(nowMs)}/_count`;
+}
+
 /** RTDB transaction step: claim only an empty slot; anything there aborts. */
 export function guideClaimStep(value) {
   return (current) => (current === null ? value : undefined);
+}
+
+/** RTDB transaction step: one more for today, or abort at the daily ceiling. */
+export function guideCountStep(cap = GUIDE_REPLIES_PER_DAY) {
+  return (current) => {
+    const n = Number.isInteger(current) ? current : 0;
+    return n < cap ? n + 1 : undefined;
+  };
+}
+
+/**
+ * Did the SMTP server definitely REFUSE it (a numbered reply), so nothing was
+ * delivered? A timeout or a dropped socket may come after Gmail accepted the
+ * message, so it keeps the claim: at worst no second reply today, never two.
+ */
+export function definitelyNotSent(err) {
+  return Number.isInteger(err?.responseCode) && err.responseCode >= 400;
 }
 
 /** The one email. Fixed text; only the address and the thread header vary. */
@@ -214,27 +247,38 @@ export function guideReplyMail({ to, inReplyTo }) {
 }
 
 /**
- * Send one tick's queued guide replies. Each is CLAIMED for the day before it
- * is sent; a claim that is already taken means this sender was answered today.
- * A failed send releases its claim and ends the round. NEVER throws.
- * @param {{queue:{to:string, inReplyTo?:string, poolKey:string}[], send:Function, claim:(item)=>Promise<boolean>, release:(item)=>Promise<any>, cap?:number}} p
+ * Send one tick's queued guide replies. Each sender is CLAIMED for the day
+ * before it is sent (a claim already taken means they were answered today),
+ * then counted against the daily ceiling. A send the server refused releases
+ * the sender's claim; any failed send ends the round. NEVER throws.
+ *
+ * What is skipped here is not retried: the unknown-bank record already exists,
+ * so a later tick never queues that message again. Junid's REJECTED email
+ * for it has gone regardless.
+ * @param {{queue:{to:string, inReplyTo?:string, poolKey:string}[], send:Function,
+ *   claim:(item)=>Promise<string|null>, countToday:()=>Promise<boolean>, release:(claimPath:string)=>Promise<any>, cap?:number}} p
  */
-export async function drainGuideReplies({ queue, send, claim, release, cap = GUIDE_REPLIES_PER_TICK }) {
-  const out = { sent: 0, limited: 0, capped: 0, unsent: 0, error: null };
+export async function drainGuideReplies({ queue, send, claim, countToday, release, cap = GUIDE_REPLIES_PER_TICK }) {
+  const out = { sent: 0, limited: 0, capped: 0, dayCapped: 0, unsent: 0, error: null };
   const items = Array.isArray(queue) ? queue : [];
   const why = (err) => clip(String(err?.response || err?.message || err), 200);
   for (let i = 0; i < items.length; i++) {
     if (out.sent >= cap) { out.capped = items.length - i; break; }
-    let claimed = false;
     // A claim that cannot be made is no reply: fail closed, never twice.
-    try { claimed = await claim(items[i]); } catch (err) { out.error = why(err); out.unsent += 1; continue; }
-    if (!claimed) { out.limited += 1; continue; }
+    let claimPath = null;
+    try { claimPath = await claim(items[i]); } catch (err) { out.error = why(err); out.unsent += 1; continue; }
+    if (!claimPath) { out.limited += 1; continue; }
+    let counted = false;
+    try { counted = await countToday(); } catch (err) { out.error = why(err); }
+    if (!counted) { out.dayCapped = items.length - i; break; }
     try {
       await send(guideReplyMail(items[i]));
       out.sent += 1;
     } catch (err) {
       out.error = why(err);
-      try { await release(items[i]); } catch { /* the slot stays taken: at worst no reply today */ }
+      if (definitelyNotSent(err)) {
+        try { await release(claimPath); } catch { /* the slot stays taken: at worst no reply today */ }
+      }
       out.unsent += items.length - i;
       break;
     }

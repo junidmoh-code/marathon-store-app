@@ -58,7 +58,7 @@ import nodemailer from "nodemailer";
 import { deliverNotices } from "./noticeCore.mjs";
 import { drainVerdictEmails, parseVerdictMode, verdictSenderOk, EFT_VERDICT_FROM_MAILBOX } from "./verdictMailCore.mjs";
 import {
-  guideReplyEligibility, guideReplyMail, drainGuideReplies, guideClaimPath, guideClaimStep,
+  guideReplyEligibility, drainGuideReplies, guideClaimPath, guideClaimStep, guideCountPath, guideCountStep,
   parseGuideReplySwitch, parseNeverList, GUIDE_REPLY_NEVER_ENV_VAR,
 } from "./guideReplyCore.mjs";
 
@@ -1142,31 +1142,48 @@ let guideDb = null;
 const guideQueue = [];
 
 function queueGuideReply({ record, poolKey, parsed }) {
-  if (!verdictSend || !guideReplyOn) return;
-  const fromAddress = parsed.from?.value?.[0]?.address || null;
-  const verdict = guideReplyEligibility({
-    record, fromAddress, headerLines: parsed.headerLines, attachments: parsed.attachments, never: guideNever,
-  });
-  if (!verdict.ok) { console.log(`  · EFT: no customer guide reply (${verdict.why})`); return; }
-  guideQueue.push({ to: verdict.to, inReplyTo: parsed.messageId || null, poolKey });
+  // Isolated: nothing here may throw into noteStrangerPayment, or the message
+  // would stop flowing on to the card path. (Sonnet architect review.)
+  try {
+    if (!verdictSend || !guideReplyOn) return;
+    const fromAddress = parsed.from?.value?.[0]?.address || null;
+    const verdict = guideReplyEligibility({
+      record, fromAddress, headerLines: parsed.headerLines, attachments: parsed.attachments, never: guideNever,
+    });
+    if (!verdict.ok) { console.log(`  · EFT: no customer guide reply (${verdict.why})`); return; }
+    guideQueue.push({ to: verdict.to, inReplyTo: parsed.messageId || null, poolKey });
+  } catch (err) {
+    console.warn(`  ⚠ EFT customer guide reply not considered (${err?.message || err}) — the record stands`);
+  }
 }
 
 async function sendGuideReplies() {
-  if (!verdictSend || !guideDb || !guideQueue.length) return;
-  const out = await drainGuideReplies({
-    queue: guideQueue.splice(0),
-    send: verdictSend,
-    claim: async ({ to, poolKey }) => {
-      const res = await guideDb.ref(guideClaimPath(to, serverNowMs())).transaction(guideClaimStep({ at: serverNowMs(), poolKey }));
-      return !!res?.committed;
-    },
-    release: ({ to }) => guideDb.ref(guideClaimPath(to, serverNowMs())).remove(),
-  });
-  // The log never names the customer's address.
-  if (out.sent) console.log(`  · EFT: customer guide reply sent (${out.sent}) — how to resend the proof from the banking app`);
-  if (out.limited) console.log(`  · EFT: customer guide reply skipped (${out.limited}) — that sender was already answered today`);
-  if (out.capped) console.log(`  · EFT: customer guide reply skipped (${out.capped}) — past this tick's ceiling`);
-  if (out.error) console.warn(`  ⚠ EFT customer guide reply NOT sent (${out.error}) — ${out.unsent} dropped; the pool records stand`);
+  // Isolated: this runs in the tick's finally, before the heartbeat.
+  try {
+    if (!verdictSend || !guideDb || !guideQueue.length) return;
+    const out = await drainGuideReplies({
+      queue: guideQueue.splice(0),
+      send: verdictSend,
+      // The path claimed is the path released — a send that fails across
+      // SAST midnight must free the slot it took, not the next day's.
+      claim: async ({ to, poolKey }) => {
+        const now = serverNowMs();
+        const path = guideClaimPath(to, now);
+        const res = await guideDb.ref(path).transaction(guideClaimStep({ at: now, poolKey }));
+        return res?.committed ? path : null;
+      },
+      countToday: async () => !!(await guideDb.ref(guideCountPath(serverNowMs())).transaction(guideCountStep()))?.committed,
+      release: (path) => guideDb.ref(path).remove(),
+    });
+    // The log never names the customer's address.
+    if (out.sent) console.log(`  · EFT: customer guide reply sent (${out.sent}) — how to resend the proof from the banking app`);
+    if (out.limited) console.log(`  · EFT: customer guide reply skipped (${out.limited}) — that sender was already answered today`);
+    if (out.capped) console.log(`  · EFT: customer guide reply skipped (${out.capped}) — past this tick's ceiling`);
+    if (out.dayCapped) console.log(`  · EFT: customer guide reply skipped (${out.dayCapped}) — past today's ceiling`);
+    if (out.error) console.warn(`  ⚠ EFT customer guide reply NOT sent (${out.error}) — ${out.unsent} dropped; the pool records stand`);
+  } catch (err) {
+    console.warn(`  ⚠ EFT customer guide replies failed this tick (${err?.message || err}) — the pool records stand`);
+  }
 }
 
 async function sendVerdicts() {
