@@ -804,7 +804,9 @@ test("page media strip: always visible, reorder writes the full ordered list, th
   // The new primary becomes the app photo (26 Sep).
   expect(calls.appPhoto).toEqual([{ pid: "p1", patch: { photoUrl: "https://firebasestorage.googleapis.com/b.jpg",
                                     photoUrlOriginal: "https://x/p1.jpg",
-                                    photoSource: { from: "shopify_publish", at: 1_790_000_000_000 } } }]);
+                                    photoSource: { from: "shopify_publish", at: 1_790_000_000_000 },
+                                    "photoHistory/1790000000000": { url: "https://x/p1.jpg", at: 1_790_000_000_000, by: null,
+                                      source: "shopify_publish", replacedWith: "https://firebasestorage.googleapis.com/b.jpg" } } }]);
   // Remove asks first, inline — no modal — then writes.
   await act(() => { button(tree, "Remove…").props.onClick(); });
   await flush();

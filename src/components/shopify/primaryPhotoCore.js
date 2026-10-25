@@ -73,7 +73,13 @@ export function appPhotoPatch(pid, product, oldPrimary, newPrimary, { at = null,
     const keep = current && !isDerivedPhoto(current) ? current : fallbackOriginal && !isDerivedPhoto(fallbackOriginal) ? fallbackOriginal : null;
     if (keep && keep !== newPrimary) patch.photoUrlOriginal = keep;
   }
-  if (Number.isFinite(at) && at > 0) patch.photoSource = { from: PHOTO_SOURCE_FROM, at };
+  if (Number.isFinite(at) && at > 0) {
+    patch.photoSource = { from: PHOTO_SOURCE_FROM, at };
+    // The photo being replaced goes to the product's photo history (Junid,
+    // 25 Oct 2026 — the same record setPrimaryPhoto writes), so the "Undo
+    // photo" button can bring it back. Pointer only; nothing is deleted.
+    if (current) patch[`photoHistory/${at}`] = { url: current, at, by: null, source: PHOTO_SOURCE_FROM, replacedWith: newPrimary };
+  }
   return patch;
 }
 
