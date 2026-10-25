@@ -358,6 +358,8 @@ export async function withdrawRequest(ctx, orderId, i, esc) {
   if (kind === STEP.REFILL) {
     const res = await ctx.db.ref(`refill_requests/${key}`).transaction((cur) => {
       if (cur == null) return null;
+      // Already withdrawn as no longer needed (a re-run after a crash): gone, as asked.
+      if (cur.status === "cancelled" && cur.cancelReason === "no_longer_needed") return cur;
       if (cur.status !== "open" || cur.picking || Number(cur.sentQty) > 0) return undefined;
       return { ...cur, status: "cancelled", cancelReason: "no_longer_needed", resolvedAt: new Date(ctx.now).toISOString() };
     });

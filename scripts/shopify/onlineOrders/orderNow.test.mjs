@@ -153,4 +153,54 @@ describe("Order it now", () => {
     expect(req(f)).toMatchObject({ state: ORDER_NOW.ORDERED, routedTo: "trophy" });
     expect(line0(f).source).toMatchObject({ status: "display", locationId: "trophy" });
   });
+
+  it("never twice: a hub already sent a unit of this line (the wrong size) → refused, the sent unit is not orphaned", async () => {
+    const l = shox({ escalation: undefined, source: { status: "needs_attention", locationId: "hub1", orderKeys: ["QGZ"], entryKey: "orders/QGZ", reason: "Hub 1 sent size 8" } });
+    const f = fakeDb(world({ lines: [l, tee()], refill: null, stock: { hub1: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": tap(0, l) },
+      over: { online_escalations: {}, orders: { QGZ: { channel: "online", onlineOrderId: "9001", onlineLineIndex: 0, status: "ready", sentSize: "8", hub: "hub1" } } } }));
+    await tick(f);
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.REFUSED });
+    expect(req(f).why).toMatch(/Hub 1 already sent a unit of this line \(QGZ\)/);
+    expect(line0(f).source.status).toBe("needs_attention");
+  });
+
+  it("a walk-in line whose hub order is still open: re-routed, the OLD hub order is cancelled, one live pick only; the attention is cleared", async () => {
+    const l = shox({ escalation: undefined, source: { status: "needs_attention", locationId: "hub1", orderKeys: ["QGZ"], entryKey: "orders/QGZ" } });
+    const f = fakeDb(world({ lines: [l, tee()], refill: null, stock: { hub2: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": tap(0, l) },
+      over: { online_escalations: {}, orders: { QGZ: { channel: "online", onlineOrderId: "9001", onlineLineIndex: 0, status: "incoming", hub: "hub1" } } } }));
+    f.db.ref("online_orders/9001").update({ status: "needs_attention", attention: { kind: "walkin_override", at: NOW - 1 }, attentionOpen: true });
+    await tick(f);
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.ORDERED, routedTo: "hub2" });
+    expect(f.read("orders/QGZ")).toBeNull();
+    const keys = line0(f).source.orderKeys;
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).not.toBe("QGZ");
+    expect(f.read("online_orders/9001/attention")).toBeNull();
+    expect(f.read("online_orders/9001/status")).toBe("picking");
+  });
+
+  it("a refill this feature already withdrew counts as gone on a re-run (not 'being worked on')", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "cancelled", cancelReason: "no_longer_needed" }, requests: { "0_0": tap(0, shox()) } }));
+    await tick(f);
+    expect(req(f).state).toBe(ORDER_NOW.ORDERED);
+  });
+
+  it("refused while the order is being packed, while Junid's override is pending, or with money on the line", () => {
+    const base = { enabled: true };
+    expect(orderNowBlocker({ ...base, line: shox(), req: tap(0, shox()), order: { packClaim: { saleId: "s" } } })).toMatch(/being packed/);
+    const ov = shox({ escalationOverride: { kind: "unavailable", by: "Junid", at: 1 } });
+    expect(orderNowBlocker({ ...base, line: ov, req: tap(0, ov) })).toMatch(/Junid's decision/);
+    const money = shox({ resolution: { money: { kind: "credit" } } });
+    expect(orderNowBlocker({ ...base, line: money, req: tap(0, money) })).toMatch(/refund, credit/);
+    expect(orderNowBlocker({ ...base, line: shox(), req: tap(0, shox()), order: { basket: { 0: true } }, i: 0 })).toMatch(/already in the basket/);
+  });
+
+  it("a check that keeps failing is answered after 3 attempts, so Pack is never blocked forever", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": { ...tap(0, shox()), state: "applying", claimedAt: NOW - 10 * 60e3, attempts: 2 } } }));
+    const orig = f.db.ref.bind(f.db);
+    f.db.ref = (p) => (String(p).startsWith("stock/central") ? { get: async () => { throw new Error("read timed out"); } } : orig(p));
+    await tick(f);
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.REFUSED });
+    expect(req(f).why).toMatch(/could not be checked \(read timed out\)/);
+  });
 });

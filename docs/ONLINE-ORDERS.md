@@ -445,8 +445,16 @@ estimate, the order status. Not routable → `not_in_stock`, the line untouched.
 
 Never twice: refused on a line already on a pick (`pick` / `display`), in
 `reroute`, mid-raise (`escalation.pending`), sent and waiting for the box
-(`wait`), a replaced line (a re-route would undo the replacement), or a line
-whose customer is being offered alternatives. Nothing moves stock (the Pack is
+(`wait`), a line a hub already sent a unit of (`ready` / `collected` / a size
+sent — the wrong size, or a mixed qty > 1 answer), part of it in the basket, a
+replaced line (a re-route would undo the replacement), a line whose customer is
+being offered alternatives, Junid's pending override or a money action on the
+line, or an order being packed. Only `source.status` changes, so the re-route
+cancels the line's old hub orders / strip entry exactly as Resolve does; the
+order's no_stock / not_found / walk-in attention is cleared when no line needs a
+person any more. A check that fails 3 times is answered "could not be checked"
+so the Pack is never blocked by it. The POS hides the button in the cases the
+poller would refuse. Nothing moves stock (the Pack is
 the one deduction); no refill policy, target or request logic changes. The
 POS refuses Pack while a request is pending.
 

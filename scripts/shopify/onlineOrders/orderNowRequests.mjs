@@ -35,6 +35,9 @@ import { withdrawRequest, ESCALATIONS_PATH } from "./escalate.mjs";
 
 export const ORDER_NOW = Object.freeze({ PENDING: "pending", APPLYING: "applying", ORDERED: "ordered", NOT_IN_STOCK: "not_in_stock", REFUSED: "refused" });
 export const STUCK_ORDER_NOW_MS = 5 * 60 * 1000;
+export const MAX_ATTEMPTS = 3;
+// Line statuses that hold an order in "needs attention" (orderModel deriveOrderStatus).
+const ATTENTION_LINE = new Set([LINE_STATUS.NO_STOCK, LINE_STATUS.NOT_FOUND, LINE_STATUS.NEEDS_ATTENTION, LINE_STATUS.UNRESOLVED]);
 // The grey lines: out of stock, being resolved, missing, given up on.
 export const ORDER_NOW_LINE = Object.freeze([LINE_STATUS.RESOLVING, LINE_STATUS.UNAVAILABLE, LINE_STATUS.NO_STOCK, LINE_STATUS.NOT_FOUND, LINE_STATUS.NEEDS_ATTENTION]);
 export const PLACE = Object.freeze({ hub1: "Hub 1", hub2: "Hub 2", "marathon-pe": "Marathon PE", trophy: "Trophy", central: "Central" });
@@ -48,8 +51,9 @@ const sameSpot = (a, b) => (!a && !b) || (a && b && a.phase === b.phase && a.rou
  *   req      the POS request (expectPid, expectSizeKey, expectRouteGen)
  *   enabled  /config/onlineOrders/enabled (no pick can be raised while off)
  */
-export function orderNowBlocker({ line, req, enabled }) {
+export function orderNowBlocker({ line, req, enabled, order = null, i = Number(req?.lineIndex) }) {
   if (!enabled) return "the website-order feeds are switched off, so no pick can be raised";
+  if (order?.packClaim || order?.pack) return "the order is being packed; nothing can be ordered on it now";
   if (!line?.pid) return "the line is gone";
   if (String(line.pid) !== String(req.expectPid ?? "") || String(line.sizeKey ?? "") !== String(req.expectSizeKey ?? "")) return "the line changed since the tap (another item or size); look again";
   if ((Number(line.routeGen) || 0) !== (Number(req.expectRouteGen) || 0)) return "the line was routed again since the tap; look again";
@@ -72,8 +76,40 @@ export function orderNowBlocker({ line, req, enabled }) {
     const by = Number(line.escalation.waitUntil) ? ` (by ${new Date(Number(line.escalation.waitUntil) + 2 * 3600e3).toISOString().slice(0, 16).replace("T", " ")})` : "";
     return `already ordered: it was sent to ${place(line.escalation.deliverAt) || "its shop"} and goes on the pick when the box lands${by}; not ordered twice`;
   }
-  if (line.awaitingCustomer || line.resolution?.conversation?.state === "offering") return "the customer is being offered alternatives for this line; settle that first";
+  if (line.awaitingCustomer || line.resolution?.conversation) return "the customer is being offered alternatives for this line; settle that first";
+  // A re-route rebuilds the line: Junid's pending decision or a money action on it would be lost.
+  if (line.escalationOverride && !line.escalationOverride.appliedAt) return "Junid's decision on this line (Settings) is still being applied";
+  if (line.resolution?.money || line.resolution?.outcome) return "a refund, credit or settlement is recorded on this line; ask Junid";
+  // Part of it is already here: a fresh pick would bring it a second time.
+  const codes = Array.isArray(line.source?.orderKeys) ? line.source.orderKeys : [];
+  if (order?.basket?.[i] || codes.some((c) => order?.codesIn?.[c] === true)) return "part of this line is already in the basket; not ordered twice";
   return null;
+}
+
+/** This line's hub orders that a hub already sent (ready / collected / a size sent). Exact reads. */
+async function sentHubUnits(ctx, id, i, line) {
+  const out = [];
+  for (const key of Array.isArray(line.source?.orderKeys) ? line.source.orderKeys : []) {
+    const rec = await ctx.get(`orders/${key}`);
+    if (!rec || rec.channel !== "online" || String(rec.onlineOrderId) !== String(id) || Number(rec.onlineLineIndex) !== i) continue;
+    if (rec.status === "ready" || rec.status === "collected" || rec.sentSize != null) out.push({ key, hub: rec.hub || null });
+  }
+  return out;
+}
+
+/**
+ * The order's no_stock / not_found / walk-in attention, cleared once no line
+ * needs a person any more (as Settings → Resolve clears it), so Junid is not
+ * emailed about a line that was just ordered. The keep step sets it again if
+ * the re-route comes out no_stock.
+ */
+async function clearAttentionIfSettled(ctx, id) {
+  await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
+    if (cur == null) return null;
+    if (!cur.attention || !["no_stock", "not_found", "walkin_override"].includes(cur.attention.kind)) return undefined;
+    if (linesOf(cur).some((l) => ATTENTION_LINE.has(l?.source?.status))) return undefined;
+    return { ...cur, attention: null, attentionOpen: null };
+  });
 }
 
 /** "Hub 1: 0 free, Hub 2: 0 free · Central has 3 (a refill, not a pick)". PURE. */
@@ -115,8 +151,13 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
       // RESUME: a crash after the line was sent to reroute but before this
       // request said so — the line carries this request's id.
       if (line?.orderNow?.rid === rid) { await answer({ state: ORDER_NOW.ORDERED, routedTo: line.source?.locationId || null, resumed: true }); rerouted = true; continue; }
-      const blocked = orderNowBlocker({ line, req, enabled: ctx.enabled });
+      const blocked = orderNowBlocker({ line, req, enabled: ctx.enabled, order: fresh, i });
       if (blocked) { await answer({ state: ORDER_NOW.REFUSED, why: blocked }); continue; }
+      // A hub already sent a unit of this line (the wrong size, or some units of
+      // a qty > 1 line before another said out of stock): that unit is on its way;
+      // a fresh pick of the full line would send it twice. Junid decides.
+      const sent = await sentHubUnits(ctx, id, i, line);
+      if (sent.length) { await answer({ state: ORDER_NOW.REFUSED, why: `${place(sent[0].hub) || "a hub"} already sent ${sent.length === 1 ? "a unit" : `${sent.length} units`} of this line (${sent.map((x) => x.key).join(", ")}); not ordered twice. Ask Junid` }); continue; }
 
       // ── Live stock, exactly as a new order is routed ──
       const r = await helpers.resolveVariant(ctx, line.variantId, line.productGid, line.title);
@@ -150,21 +191,28 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
       }
       const landed = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines/${i}`).transaction((cur) => {
         if (cur == null) return null; // the SDK's cold-cache pass: never abort on it
-        if (orderNowBlocker({ line: cur, req, enabled: true }) || !sameSpot(cur.escalation, esc)) return undefined;
-        return clean({ ...cur, escalation: null, source: { status: LINE_STATUS.REROUTE }, orderNow: { rid, by: req.by || null, at: Number(req.at) || ctx.now, appliedAt: ctx.now } });
+        if (orderNowBlocker({ line: cur, req, enabled: true, order: { ...fresh, lines: undefined }, i }) || !sameSpot(cur.escalation, esc)) return undefined;
+        // Only the status changes on `source`: its entryKey / orderKeys stay, so
+        // the re-route cancels the line's old hub orders / strip entry (as Resolve does).
+        return clean({ ...cur, escalation: null, source: { ...cur.source, status: LINE_STATUS.REROUTE }, orderNow: { rid, by: req.by || null, at: Number(req.at) || ctx.now, appliedAt: ctx.now } });
       });
       if (!landed.committed || !landed.snapshot.val()) {
         await answer({ state: ORDER_NOW.REFUSED, why: `the line changed while it was being ordered; look again${withdrew ? ` (${withdrew})` : ""}`, checked });
         continue;
       }
       if (esc) await ctx.db.ref(`${ESCALATIONS_PATH}/${id}_${i}`).set(null);
+      await clearAttentionIfSettled(ctx, id);
       rerouted = true;
       ctx.summary.orderNow = (ctx.summary.orderNow || 0) + 1;
       await answer({ state: ORDER_NOW.ORDERED, routedTo: pieces[0].locationId, checked, withdrew });
     } catch (e) {
       // Left "applying": a later tick past STUCK_ORDER_NOW_MS decides it again
-      // (every step above is guarded, so a repeat finds its own work).
-      ctx.log(`  ✗ ${orderLabel(order)} line ${Number(req.lineIndex) + 1}: Order it now failed (${String(e?.message || e)}); retried later`);
+      // (every step above is guarded, so a repeat finds its own work). After
+      // MAX_ATTEMPTS it is answered, so a failing check never blocks Pack forever.
+      const attempts = (Number(claim.snapshot.val()?.attempts) || 0) + 1;
+      ctx.log(`  ✗ ${orderLabel(order)} line ${Number(req.lineIndex) + 1}: Order it now failed (${String(e?.message || e)}); attempt ${attempts}`);
+      if (attempts >= MAX_ATTEMPTS) await answer({ state: ORDER_NOW.REFUSED, why: `stock could not be checked (${String(e?.message || e).slice(0, 120)}); tap Order it now again` }).catch(() => {});
+      else await ctx.db.ref(path).update({ attempts }).catch(() => {});
     }
   }
   return rerouted;
