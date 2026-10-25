@@ -103,7 +103,8 @@ describe("the call sites are wired", () => {
 
   it("App.jsx's shared ProductPhoto helper takes a productId and uses it", () => {
     expect(app).toContain("function ProductPhoto({ productId = null,");
-    expect(app).toContain("<MirroredImg productId={productId} src={src}");
+    // <PrimaryPhoto> reads the same mirror (useMirroredPhotoSrc) at list size.
+    expect(app).toContain("<PrimaryPhoto product={product || { id: productId, photoUrl: src }} productId={productId ?? product?.id}");
   });
 
   it("every ProductPhoto call site passes one", () => {
@@ -114,7 +115,7 @@ describe("the call sites are wired", () => {
   });
 
   it("no product-photo <img> is left in App.jsx's grids", () => {
-    // The three shapes the browse surfaces used. Each is now a MirroredImg.
+    // The three shapes the browse surfaces used. Each is now a <PrimaryPhoto>.
     expect(app).not.toMatch(/<img src=\{p\.photoUrl(\s|\})/);
     expect(app).not.toMatch(/<img src=\{p\.photoUrl \|\| ""\}/);
     expect(app).not.toMatch(/<img src=\{product\.photoUrl\} alt=\{product\.name\}/);

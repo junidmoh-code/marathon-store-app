@@ -21,10 +21,12 @@ describe("the product edit page", () => {
       /save\(\{ hasShoeBoxOption: next \}/, /save\(\{ name: next[ ,]/]) expect(body).toMatch(re);
   });
   it("has no write on /products/{id} left that could fail silently", () => {
-    // The photo upload is the one direct write left; it has its own alert.
+    // The photo goes through THE one write (setPrimaryPhoto, 25 Oct 2026):
+    // history, archive-before-overwrite, thumbnail first, and a failure SHOWN.
     const direct = body.match(/update\(ref\(database, `products\/\$\{product\.id\}`\)[^;]*;/g) || [];
-    expect(direct).toHaveLength(1);
-    expect(direct[0]).toMatch(/photoUrl: url/);
+    expect(direct).toHaveLength(0);
+    expect(body).toMatch(/setPrimaryPhotoInApp\(product\.id, \{\s*product, overwrites: productPhotoObjectPath\(product\.id\), source: "edit",/);
+    expect(body).toMatch(/if \(!res\.ok\) throw new Error\(res\.message\);/);
     expect(body).not.toMatch(/updateProductSizes\(|updateProductHubs\(|console\.warn\("update hasShoeBoxOption/);
   });
   it("never writes productType itself — the Type goes through setProductType", () => {

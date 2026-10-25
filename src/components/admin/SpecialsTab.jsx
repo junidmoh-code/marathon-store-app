@@ -19,6 +19,7 @@ import { buildSpecialStartPlan, buildSpecialEndPlan } from "../../utils/specials
 import BulkPricePreview from "./BulkPricePreview";
 import { serverNowIso } from "../../utils/serverTime";
 import { auth } from "../../firebase";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const fmt = (v) => (typeof v === "number" ? `R${v.toLocaleString("en-ZA", { maximumFractionDigits: 2 })}` : "—");
 const INPUT = { background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "8px 10px", fontSize: 12 };
@@ -48,6 +49,7 @@ export default function SpecialsTab({ products = [] }) {
   };
   useEffect(() => { refresh(); }, []);
 
+  const liveById = useMemo(() => new Map(products.filter((p) => p && p.id).map((p) => [p.id, p])), [products]);
   const active = useMemo(() => Object.entries(specials || {})
     .map(([pid, e]) => ({ pid, ...e }))
     .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || ""))), [specials]);
@@ -162,9 +164,8 @@ export default function SpecialsTab({ products = [] }) {
                 <input type="checkbox" checked={endSelected.has(e.pid)} onChange={() => toggleEnd(e.pid)}
                   aria-label={`End special on ${e.name || e.pid}`}
                   style={{ width: 16, height: 16, accentColor: "#FF6363", cursor: "pointer", flexShrink: 0 }} />
-                {e.photoUrl
-                  ? <img src={e.photoUrl} alt="" loading="lazy" style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
-                  : <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
+                <PrimaryPhoto product={liveById.get(e.pid)} productId={e.pid} snapshot={e.photoUrl} alt="" style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }}
+                  fallback={<div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.name}</div>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)", marginTop: 2 }}>
@@ -202,7 +203,7 @@ export default function SpecialsTab({ products = [] }) {
                 aria-label={`Select ${p.name || p.id}`}
                 style={{ width: 15, height: 15, accentColor: "#4A7FFF", flexShrink: 0 }} />
               {p.photoUrl
-                ? <img src={p.photoUrl} alt="" loading="lazy" style={{ width: 34, height: 34, borderRadius: 7, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+                ? <PrimaryPhoto product={p} alt="" style={{ width: 34, height: 34, borderRadius: 7, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
                 : <div style={{ width: 34, height: 34, borderRadius: 7, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
               <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
               <div style={{ fontSize: 12, color: "rgba(255,255,255,.6)", fontVariantNumeric: "tabular-nums" }}>{fmt(typeof p.retailPrice === "number" && p.retailPrice > 0 ? p.retailPrice : null)}</div>

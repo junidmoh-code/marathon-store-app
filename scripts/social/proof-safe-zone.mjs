@@ -89,7 +89,7 @@ for (const pid of pids) {
   const p = (await db.ref(`products/${pid}`).once("value")).val();
   if (!p) { check(false, `${pid}: no such product`); continue; }
   const name = p.displayName || p.name;
-  const photoUrl = (Array.isArray(p.photos) && p.photos[0]) || p.photoUrl;
+  const photoUrl = p.photoUrl || (Array.isArray(p.photos) && p.photos[0]); // the ONE primary photo first
   console.log(`\n${pid}  ${name}  R${p.retailPrice}`);
   if (!check(Boolean(photoUrl), "the product has a photograph")) continue;
 

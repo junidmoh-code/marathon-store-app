@@ -210,11 +210,11 @@ describe("buildCandidates — the other exclusions", () => {
   test("refuses a product with no photograph anywhere", () => {
     assert.equal(buildCandidates(world({ product: { photoUrl: null } })).length, 0);
   });
-  test("prefers the PUBLISHING photo over the record's hero", () => {
+  test("the product's ONE primary photo wins (Junid, 25 Oct 2026) — the publishing set's first photo follows it", () => {
     const c = buildCandidates(world({ photos: ["https://x/pub.jpg"] }))[0];
-    assert.equal(c.photoUrl, "https://x/pub.jpg");
+    assert.equal(c.photoUrl, "https://x/p1.jpg");
   });
-  test("falls back to the record's hero when the publishing set is empty or junk", () => {
+  test("the primary is used whatever the publishing set holds (empty or junk)", () => {
     assert.equal(buildCandidates(world({ photos: [] }))[0].photoUrl, "https://x/p1.jpg");
     assert.equal(buildCandidates(world({ photos: ["", "   ", null] }))[0].photoUrl, "https://x/p1.jpg");
   });

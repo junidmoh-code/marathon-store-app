@@ -21,6 +21,7 @@ import { sellableLocations, labelFor } from "./stock/locations";
 import { useWide } from "./stock/hooks";
 import { FONT } from "./stock/ui";
 import { withinScope } from "../utils/shopScope";
+import { PrimaryPhoto } from "./shared/PrimaryPhoto.jsx";
 
 const RANDS = (v) =>
   v == null || v === "" || isNaN(Number(v)) ? "" : `R${Number(v).toLocaleString("en-ZA")}`;
@@ -38,7 +39,7 @@ const chip = (on) => ({
 });
 
 function Thumb({ p, size = 44, radius = 10 }) {
-  if (p?.photoUrl) return <img src={p.photoUrl} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: radius, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
+  if (p?.photoUrl) return <PrimaryPhoto product={p} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: radius, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   return <div style={{ width: size, height: size, borderRadius: radius, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>{p?.photo || "👟"}</div>;
 }
 
@@ -208,7 +209,7 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
             )}
             <div style={{ width: "100%", aspectRatio: "1 / 1", position: "relative", background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 46 }}>
               {p.photoUrl
-                ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                ? <PrimaryPhoto product={p} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
                 : <span>{p.photo || "👟"}</span>}
             </div>
             <div style={{ padding: "11px 12px 12px" }}>

@@ -421,7 +421,7 @@ export async function sendNextQueuedVideo({ graphql, db, pid, node, product = nu
  * → { ok, error?, retryable, pending, notes[], writes }
  */
 export async function syncProductMedia({ graphql, db, pid, gid, node, product, title, mode = "live",
-                                         log = () => {}, pollMs = 2000, pollTries = 15 }) {
+                                         log = () => {}, pollMs = 2000, pollTries = 15, firstPhotoSource = null }) {
   const alt = String(title ?? "").trim();
   if (!alt) return { ok: false, retryable: false, error: "media alt text requires the validated listing name", pending: false, notes: [], writes: 0 };
   const listed = resolveMediaList(node, product).items;
@@ -466,7 +466,9 @@ export async function syncProductMedia({ graphql, db, pid, gid, node, product, t
     if (plan.createPhotos.length) {
       for (const m of plan.createPhotos) rec[m.id].createAttempts = (rec[m.id].createAttempts || 0) + 1;
       const made = await create(plan.createPhotos, "photo",
-        plan.createPhotos.map((m) => ({ originalSource: m.url, alt, mediaContentType: "IMAGE" })));
+        // firstPhotoSource: a NEW product's Meta-ready file for its first photo
+        // (reconcile.mjs, from 28 Oct) — the list item, its id and the sig are unchanged.
+        plan.createPhotos.map((m) => ({ originalSource: firstPhotoSource && m.id === desired[0].id ? firstPhotoSource : m.url, alt, mediaContentType: "IMAGE" })));
       log(`  media: +${made.length} photo(s)`);
     }
     // 2. Videos whose bytes Shopify already holds (sent once, by the runner).

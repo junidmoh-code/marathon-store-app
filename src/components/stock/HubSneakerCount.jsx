@@ -41,15 +41,18 @@ import {
   confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
 } from "./hubCountStore";
 import { loadOffShelfSources, offShelfForCell, expectedOnShelf } from "./offShelf";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
-function Thumb({ url, onOpen, size = 44 }) {
+function Thumb({ product, onOpen, size = 44 }) {
+  const url = primaryPhotoUrl(product);
   // "Image if cheap": the catalogue's existing thumbnail URL, lazy-loaded, and
   // only ever for the ≤50 rows on the current page. Tappable when a photo
   // exists — a counter matching a physical shoe to a row needs to SEE the shoe,
   // and a 44px thumb is not seeing it.
   if (url) {
     return (
-      <img src={url} alt="" loading="lazy" decoding="async"
+      <PrimaryPhoto product={product} alt=""
         onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(url); } : undefined}
         onError={(e) => { e.currentTarget.style.display = "none"; }}
         style={{ width: size, height: size, objectFit: "cover", borderRadius: 10, flexShrink: 0,
@@ -526,7 +529,7 @@ function CountList({
             ) : addMatches.map((p) => (
               <button key={p.id} onClick={() => onAdd(p)}
                 style={{ display: "flex", alignItems: "center", gap: 9, textAlign: "left", background: CARD, border: BORDER, borderRadius: 9, padding: "6px 9px", cursor: "pointer" }}>
-                <Thumb url={p.photoUrl} onOpen={onOpenPhoto} size={38} />
+                <Thumb product={p} onOpen={onOpenPhoto} size={38} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
                   <div style={{ fontSize: 10, color: GRAY }}>no stock cell at this hub — seeds from 0</div>
@@ -578,7 +581,7 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
     <div style={{ background: CARD, border: settled ? "1px solid rgba(74,222,128,.3)" : BORDER, borderRadius: 11, opacity: settled && !open ? 0.55 : 1 }}>
       <button onClick={onToggle}
         style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "transparent", border: "none", padding: "9px 10px", cursor: "pointer" }}>
-        <Thumb url={row.photoUrl} onOpen={onOpenPhoto} />
+        <Thumb product={row} onOpen={onOpenPhoto} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {settled && <span style={{ color: GREEN, marginRight: 5 }}>✓</span>}{row.name}

@@ -24,6 +24,7 @@ import { currentNetwork } from "../../utils/networkStore";
 import { installBarcodeListener, subscribeBarcode } from "../../components/stock/barcodeListener";
 import { FONT, MONO, BLUE, BLUE_SOFT, INK, GLASS_BG, GLASS_BORDER, PANEL, META } from "./tokens";
 import { dcSession } from "./session";
+import { PrimaryPhoto } from "../../components/shared/PrimaryPhoto.jsx";
 
 const ZERO_RED = "rgba(255,120,120,.85)"; // a zero is an answer too (§6) — muted red, never hidden
 const CLOTHING_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "2XL", "XXXL", "3XL", "4XL", "5XL"];
@@ -331,7 +332,7 @@ export default function AvailabilityView({ store, products, wide, active }) {
             <button key={p.id} onClick={() => pick(p)}
                     style={{ display: "flex", alignItems: "center", gap: 11, textAlign: "left", cursor: "pointer", background: selectedId === p.id ? "rgba(74,127,255,.12)" : "transparent", border: "1px solid " + (selectedId === p.id ? BLUE : "transparent"), borderRadius: 11, padding: "9px 10px", fontFamily: FONT }}>
               <span style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 9, overflow: "hidden", background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {(p.photoUrl || p.photo) ? <img src={p.photoUrl || p.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : null}
+                {(p.photoUrl || p.photo) ? <PrimaryPhoto product={p} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : null}
               </span>
               <span style={{ fontSize: 13.5, fontWeight: 600, color: INK, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
             </button>

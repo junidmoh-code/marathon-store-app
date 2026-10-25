@@ -24,11 +24,13 @@ describe("appPhotoPatch — the /products child patch", () => {
   it("a changed primary writes photoUrl, keeps the STAFF photo as the original, and stamps photoSource", () => {
     expect(appPhotoPatch("p1", { photoUrl: staff, styleCodeNormalised: "X" }, staff, pub("new"), { at: 5 })).toEqual({
       photoUrl: pub("new"), photoUrlOriginal: staff, photoSource: { from: PHOTO_SOURCE_FROM, at: 5 },
+      // The replaced photo goes to the photo history (Undo photo, 25 Oct 2026).
+      "photoHistory/5": { url: staff, at: 5, by: null, source: "shopify_publish", replacedWith: pub("new") },
     });
   });
   it("an original already kept is never overwritten by a swap between publishing photos", () => {
     expect(appPhotoPatch("p1", { photoUrl: pub("a"), photoUrlOriginal: staff }, pub("a"), pub("b"), { at: 5 }))
-      .toEqual({ photoUrl: pub("b"), photoSource: { from: PHOTO_SOURCE_FROM, at: 5 } });
+      .toEqual({ photoUrl: pub("b"), photoSource: { from: PHOTO_SOURCE_FROM, at: 5 }, "photoHistory/5": { url: pub("a"), at: 5, by: null, source: "shopify_publish", replacedWith: pub("b") } });
   });
   it("a re-shoot after a swap replaces the kept original with the photo the product shows now", () => {
     const reshot = `${B}products%2Fp1%2Fphoto.jpg?alt=media&token=z`;
@@ -63,7 +65,8 @@ describe("setShopifyPrimaryPhoto — THE one write", () => {
     expect(r).toMatchObject({ ok: true, changed: true, thumb: true });
     expect(d.log.map((x) => x[0])).toEqual(["thumb", "write"]);
     expect(d.log[1]).toEqual(["write", "p1", { photoUrl: pub("n"), photoUrlOriginal: staff,
-                                                photoSource: { from: "shopify_publish", at: 1_790_000_000_000 } }]);
+                                                photoSource: { from: "shopify_publish", at: 1_790_000_000_000 },
+                                                "photoHistory/1790000000000": { url: staff, at: 1_790_000_000_000, by: null, source: "shopify_publish", replacedWith: pub("n") } }]);
   });
   it("SAME CONTENT, DIFFERENT URL: equal Storage md5 → nothing written, nothing rebuilt", async () => {
     const d = fakeDeps({ md5: { [staff]: "abc==", [pub("n")]: "abc==" } });

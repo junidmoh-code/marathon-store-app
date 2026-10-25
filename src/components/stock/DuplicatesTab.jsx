@@ -33,11 +33,12 @@ import { decodeSizeKey } from "../../utils/sizeKey";
 import { formatSize } from "../../utils/sizeLabel";
 import { DeactivatedChip, useCanRetireProducts } from "./ProductActions.jsx";
 import MergeProducts from "./MergeProducts.jsx";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 import { GRAY, GREEN, AMBER, BLUE_L, BORDER, FONT, bGray, bBlue } from "./ui";
 
-function Photo({ url, size = 62 }) {
-  if (url) return <img src={url} alt="" loading="lazy" style={{ width: size, height: size, objectFit: "cover", borderRadius: 10, flexShrink: 0 }} />;
-  return <div style={{ width: size, height: size, borderRadius: 10, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.42, flexShrink: 0 }}>👟</div>;
+function Photo({ product, size = 62 }) {
+  const empty = <div style={{ width: size, height: size, borderRadius: 10, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.42, flexShrink: 0 }}>👟</div>;
+  return <PrimaryPhoto product={product} fallback={empty} style={{ width: size, height: size, objectFit: "cover", borderRadius: 10, flexShrink: 0 }} />;
 }
 
 const when = (ms) => (ms ? new Date(ms).toLocaleDateString("en-ZA", { day: "numeric", month: "short", year: "2-digit" }) : "never");
@@ -52,7 +53,7 @@ function MemberRow({ m, registry, recommended, chosen, onChoose }) {
         background: chosen ? "rgba(74,222,128,.09)" : "rgba(255,255,255,.02)",
         border: chosen ? "1px solid rgba(74,222,128,.5)" : BORDER,
       }}>
-      <Photo url={m.photoUrl} />
+      <Photo product={m} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", lineHeight: 1.3 }}>
           {m.name}

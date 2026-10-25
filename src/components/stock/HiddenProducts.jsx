@@ -99,7 +99,7 @@ export default function HiddenProducts({ products = [], cards = [], hiddenMap = 
         const p = byId.get(r.pid);
         return (
           <ProductCard key={r.pid}
-            photo={r.card?.photo || p?.photoUrl} name={r.card?.name || p?.name || r.pid}
+            photo={r.card?.photo || p?.photoUrl} product={p} productId={r.pid} name={r.card?.name || p?.name || r.pid}
             badges={<>
               {r.resolved
                 ? <Badge tone={GREEN}>NO LONGER MISSING</Badge>

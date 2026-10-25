@@ -28,7 +28,8 @@ describe("commitPublishMedia — every list write, the app photo follows the pri
     const { res, app } = await commitPublishMedia(product, null, "set", [ph("a"), { id: "s", type: "photo", url: staff }], deps);
     expect(res.ok).toBe(true);
     expect(app.changed).toBe(true);
-    expect(writes).toEqual([["p1", { photoUrl: pub("a"), photoUrlOriginal: staff, photoSource: { from: "shopify_publish", at: 7 } }]]);
+    expect(writes).toEqual([["p1", { photoUrl: pub("a"), photoUrlOriginal: staff, photoSource: { from: "shopify_publish", at: 7 },
+                                     "photoHistory/7": { url: staff, at: 7, by: null, source: "shopify_publish", replacedWith: pub("a") } }]]);
   });
   it("an append BEHIND the primary (another photo) never touches the app photo", async () => {
     const { app } = await commitPublishMedia({ id: "p1", photoUrl: pub("a") }, { media: [ph("a")] }, "append", [ph("b")], deps);

@@ -22,12 +22,15 @@ import { GLASS, CARD, GRAY, GREEN, RED, BLUE_L, AMBER, BORDER, bGreen, bGhost, i
 import { productMatchesQuery } from "../../utils/productSearch";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
 const DEFAULT_LOCATION = "marathon-pe";   // counts happen at Marathon PE by default
 
 // Product thumbnail (same pattern as Transfer / BarcodeCatalog). Tap to open full.
-function Thumb({ url, onOpen }) {
-  if (url) return <img src={url} alt="" loading="lazy" onClick={onOpen} onError={(e) => { e.currentTarget.style.display = "none"; }}
+function Thumb({ product, productId, onOpen }) {
+  const url = primaryPhotoUrl(product);
+  if (url) return <PrimaryPhoto product={product} productId={productId} alt="" loading="lazy" onClick={onOpen} onError={(e) => { e.currentTarget.style.display = "none"; }}
     style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 8, flexShrink: 0, cursor: "zoom-in" }} />;
   return <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>👟</div>;
 }
@@ -299,7 +302,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
                 <div key={gk} style={{ background: CARD, border: BORDER, borderRadius: 12, padding: 11 }}>
                   {/* Product header — tap to expand/collapse the size breakdown. */}
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <Thumb url={g.photoUrl} onOpen={() => g.photoUrl && setLightbox(g.photoUrl)} />
+                    <Thumb product={g.product} productId={g.pid} onOpen={() => g.photoUrl && setLightbox(g.photoUrl)} />
                     <div onClick={() => toggleExpand(gk)} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
                       <div style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.name}</div>
                       <div style={{ fontSize: 11, color: GRAY }}>

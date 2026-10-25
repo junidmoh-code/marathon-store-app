@@ -20,6 +20,8 @@ import { productPhotoObjectPath } from "./utils/productPhotoPaths";
 import { dataURLToBlob, loadImageFile, encodeCompressed, prepareProductPhoto } from "./utils/productPhotoEncode";
 import { guideFor, missingPhotoSteps } from "./components/admin/photoGuides.js";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
+import { setPrimaryPhotoInApp, undoPrimaryPhotoInApp } from "./utils/primaryPhotoBrowser";
+import { undoTarget } from "./utils/primaryPhoto";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour } from "./utils/serverTime";
 import { getTodayKey, getNextOrderNumber, getNextRefillNumber } from "./utils/orderCounter";
 import { getDeviceId } from "./device/deviceId";
@@ -27,6 +29,7 @@ import { InsightsLogContext } from "./insights/InsightsLogContext";
 import { useMirroredPath, useMirrorLeg } from "./offline/useMirroredPath";
 import { MirrorDot } from "./offline/MirrorDot.jsx";
 import { MirroredImg } from "./offline/MirroredImg.jsx";
+import { PrimaryPhoto } from "./components/shared/PrimaryPhoto.jsx";
 import { notePendingUpdate } from "./offline/pendingWrites";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
@@ -332,17 +335,20 @@ const _normPhotoKey = s => typeof s === "string"
   ? s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-')
   : "";
 
-// photoMap shape: { [productName]: { photoUrl, photo } }
-// Exact match first; falls back to normalized key (trim, collapse spaces, lowercase,
-// remove spaces around hyphens) to handle old order names that drifted from catalog.
-function ProductThumb({ name, photoMap, size = 40 }) {
+// photoMap shape: { [productName]: { id, photoUrl, photo }, [PHOTO_MAP_BY_ID]: { [id]: entry } }
+// By id first when the caller has one (a product or productId); then exact name;
+// then normalized key (trim, collapse spaces, lowercase, remove spaces around
+// hyphens) to handle old order names that drifted from catalog.
+const PHOTO_MAP_BY_ID = Symbol("photoMapById");
+function ProductThumb({ name, photoMap, size = 40, product = null, productId = null }) {
   const normName = _normPhotoKey(name);
-  const p   = photoMap?.[name] ?? (normName ? photoMap?.[normName] : undefined);
+  const byId = product || (productId != null ? photoMap?.[PHOTO_MAP_BY_ID]?.[productId] : undefined);
+  const p   = byId ?? photoMap?.[name] ?? (normName ? photoMap?.[normName] : undefined);
   if (!p) console.warn("[ProductThumb] no map entry for:", JSON.stringify(name));
   const url = p?.photoUrl;
   if (url && (url.startsWith("http") || url.startsWith("data:"))) {
     return (
-      <img src={url} alt={name}
+      <PrimaryPhoto product={p} productId={productId ?? p.id} alt={name}
         style={{ width:size, height:size, objectFit:"cover", borderRadius:RADIUS, flexShrink:0, border:"1px solid rgba(60,110,255,.12)" }}
         onError={e => { console.warn("[ProductThumb] photoUrl load failed:", name, url); e.currentTarget.style.display = "none"; }} />
     );
@@ -369,15 +375,27 @@ function ProductThumb({ name, photoMap, size = 40 }) {
 // serves the device's own 300px thumbnail instead of fetching the ~109 KB
 // original from Storage. Without one it behaves exactly as it always has, so
 // a call site that has no id is not a bug — it is simply not mirrored.
-function ProductPhoto({ productId = null, url, photo, size = 60, radius = 10, bg = "rgba(255,255,255,.08)" }) {
+//
+// `product` (the live one, when the caller has it) wins over `url`, which is
+// then only the snapshot saved on an order/line; `full` is for a detail view.
+function ProductPhoto({ productId = null, product = null, url, photo, size = 60, radius = 10, bg = "rgba(255,255,255,.08)", full = false }) {
   const src = url || (photo && (photo.startsWith("data:") || photo.startsWith("http")) ? photo : null);
   return (
     <div style={{ width:size, height:size, borderRadius:radius, background:bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
-      {src
-        ? <MirroredImg productId={productId} src={src} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} onError={e => { e.currentTarget.style.display = "none"; }}/>
-        : <ProductIcon size={Math.round(size * 0.5)} />}
+      <PrimaryPhoto product={product || { id: productId, photoUrl: src }} productId={productId ?? product?.id} snapshot={src}
+        size={full ? "full" : "thumb"} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} onError={e => { e.currentTarget.style.display = "none"; }}
+        fallback={<ProductIcon size={Math.round(size * 0.5)} />}/>
     </div>
   );
+}
+
+// The live product for an id, from a products array (one Map per array, cached).
+const _liveProductMaps = new WeakMap();
+function liveProductOf(products, id) {
+  if (!Array.isArray(products) || id == null) return null;
+  let m = _liveProductMaps.get(products);
+  if (!m) { m = new Map(products.filter(p => p && p.id).map(p => [p.id, p])); _liveProductMaps.set(products, m); }
+  return m.get(id) || null;
 }
 
 // All of a product's photos for the viewer: primary photoUrl first, then any kept
@@ -3933,7 +3951,7 @@ function RecentPickCard({ p, selected, onToggle }) {
                   border:"1px solid " + (selected ? "rgba(74,202,122,.65)" : "rgba(255,255,255,.08)"),
                   boxShadow: selected ? "0 0 0 1px rgba(74,202,122,.65), 0 4px 18px rgba(74,202,122,.14)" : "none",
                   transition:"border-color .15s ease, box-shadow .15s ease" }}>
-      <MirroredImg productId={p.id} src={p.photoUrl} alt="" loading="lazy" decoding="async" onLoad={() => setLoaded(true)}
+      <PrimaryPhoto product={p} alt="" onLoad={() => setLoaded(true)} fallback={<div style={{ width:"100%", aspectRatio:"1" }}/>}
            style={{ width:"100%", aspectRatio:"1", objectFit:"cover", display:"block",
                     opacity: loaded ? 1 : 0, transition:"opacity .25s ease" }}/>
       {!loaded && (
@@ -4075,11 +4093,14 @@ function AdminReviewPhotosTab({ products = [] }) {
   const approve = async (row) => {
     setBusyId(row.id);
     try {
-      await update(ref(database, `products/${row.id}`), { photoUrl: row.proposedUrl, photoUrlOriginal: row.originalUrl });
-      // The till reads a thumbnail, not photoUrl. Re-encode the approved
-      // proposal onto the product's one thumbnail path so the shop and the
-      // tills show the same picture. Never throws — see the helper.
-      await writeApprovedProposalThumb(row.id, row.proposedUrl);
+      // THE ONE WRITE (setPrimaryPhoto): the replaced photo goes to history
+      // (Undo photo brings it back), and the till thumbnail is rebuilt from
+      // the approved proposal BEFORE photoUrl moves.
+      const res = await setPrimaryPhotoInApp(row.id, {
+        product: products.find((x) => x.id === row.id) || {}, newUrl: row.proposedUrl, source: "ai_studio",
+        by: auth.currentUser?.uid || null, extra: { photoUrlOriginal: row.originalUrl },
+      }, { rebuildThumb: writeApprovedProposalThumb });
+      if (!res.ok) throw new Error(res.message);
       await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "approved", decidedAt: serverNowMs() });
       return true;
     } catch (e) { setRunMsg(`Approve failed for “${row.name || row.id}”: ${e?.message || e}`); return false; }
@@ -4352,7 +4373,7 @@ function AdminReviewPhotosTab({ products = [] }) {
                 <div key={p.id} onClick={() => toggleSel(p.id)}
                      style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 8px", borderRadius:9, cursor:"pointer",
                               background: on ? "rgba(74,202,122,.16)" : "rgba(255,255,255,.03)", border:"1px solid "+(on ? "rgba(74,202,122,.5)" : "rgba(255,255,255,.07)") }}>
-                  <MirroredImg productId={p.id} src={p.photoUrl} alt="" loading="lazy" decoding="async"
+                  <PrimaryPhoto product={p} alt="" fallback={<span style={{ width:38, height:38, borderRadius:7, background:"rgba(255,255,255,.08)", flexShrink:0 }}/>}
                        style={{ width:38, height:38, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
                   <span style={{ flex:1, minWidth:0, fontSize:12.5, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</span>
                   <span style={{ fontSize:15, color: on ? "#4ACA7A" : "rgba(255,255,255,.25)" }}>{on ? "✓" : "+"}</span>
@@ -5162,7 +5183,7 @@ function AdminReviewCategoriesTab({ products = [] }) {
                         border: checked ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.07)" }}>
             <input type="checkbox" checked={checked} readOnly
                    style={{ width:17, height:17, accentColor:"#4A7FFF", flexShrink:0, cursor:"pointer" }}/>
-            <MirroredImg productId={p.id} src={p.photoUrl || ""} alt="" loading="lazy"
+            <PrimaryPhoto product={p} alt="" fallback={<span style={{ width:40, height:40, borderRadius:7, background:"rgba(255,255,255,.08)", flexShrink:0 }}/>}
                  style={{ width:40, height:40, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
@@ -5515,7 +5536,7 @@ function MissingPricesTab({ products = [] }) {
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: liveSelected.has(p.id) ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (liveSelected.has(p.id) ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
                 <input type="checkbox" checked={liveSelected.has(p.id)} onChange={() => toggleSelect(p.id)}
                   style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: "pointer", flexShrink: 0 }} />
-                <MirroredImg productId={p.id} src={p.photoUrl || ""} alt="" loading="lazy"
+                <PrimaryPhoto product={p} alt="" fallback={<span style={{ width: 44, height: 44, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
                   style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
@@ -5564,7 +5585,8 @@ function MissingPricesTab({ products = [] }) {
             onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
               {/* Tap the photo to expand it; tap the expanded photo again to close. */}
-              <img src={editProduct.photoUrl || ""} alt=""
+              <PrimaryPhoto product={editProduct} alt=""
+                fallback={<span style={{ width: 48, height: 48, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
                 onClick={() => editProduct.photoUrl && setPhotoView({ url: editProduct.photoUrl, name: editProduct.name })}
                 title={editProduct.photoUrl ? "Tap to expand" : ""}
                 style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", cursor: editProduct.photoUrl ? "zoom-in" : "default", flexShrink: 0 }} />
@@ -5954,13 +5976,15 @@ function AiStudioView({ products, onExit }) {
   // Same name → photo lookup InsightsView builds for InsightReorderTab.
   const productPhotoMap = useMemo(() => {
     const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
-    const map = {};
+    const map = {}, byId = {};
     (products || []).forEach(p => {
       if (!p.name) return;
-      const entry = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
+      const entry = { id: p.id, photoUrl: p.photoUrl || null, photo: p.photo || "", photoUpdatedAt: p.photoUpdatedAt, thumbAt: p.thumbAt };
       map[p.name] = entry;
       map[normKey(p.name)] = entry;
+      if (p.id) byId[p.id] = entry;
     });
+    map[PHOTO_MAP_BY_ID] = byId;
     return map;
   }, [products]);
 
@@ -7375,7 +7399,7 @@ function AdminProductRow({ product }) {
            border:"1px solid rgba(255,255,255,.07)",
            borderRadius:14, padding:"10px 14px", marginBottom:8, cursor:"pointer",
          }}>
-      <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
+      <ProductPhoto productId={product.id} product={product} url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:16, fontWeight:600, color:"#fff", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{product.name}</div>
         <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:4, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{meta}</div>
@@ -7495,21 +7519,30 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           }
           const blob = dataURLToBlob(dataUrl);
           const sRef = storageRef(storage, productPhotoObjectPath(product.id));
-          // Bounded cache (NOT immutable): photo.jpg is overwritten in place on
-          // a re-shoot, so cap staleness at 7 days instead of a year.
-          await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
-          const url = await getDownloadURL(sRef);
-          // A re-shoot replaces BOTH objects: photo.jpg above and the offline
-          // thumbnail here, both at their deterministic paths, so a till can
-          // never keep serving a cached picture of the photo that was replaced.
-          // Never throws — a failed thumbnail must not fail the re-shoot.
-          await writeProductThumb(product.id, blob, { upload: uploadThumbObject, remove: removeThumbObject });
+          // THE ONE WRITE (setPrimaryPhoto). photo.jpg is overwritten in place,
+          // so the picture it holds now is copied into the photo history FIRST
+          // (Undo photo brings it back) — no copy, no overwrite. The thumbnail
+          // is encoded from the local blob, before photoUrl moves.
           // photoUpdatedAt: upload-time stamp for the AI Photo Studio "Recent"
           // view. Only human uploads stamp it — an approved AI re-shoot isn't
           // a new upload, so approve() deliberately leaves it alone.
           // A replaced photo makes the hi-res upload copy stale: clear it so the
           // New Arrivals pipeline generates from the photo the product now shows.
-          await update(ref(database, `products/${product.id}`), { photoUrl: url, photoUpdatedAt: serverNowMs(), photoSourceUrl: null });
+          const res = await setPrimaryPhotoInApp(product.id, {
+            product, overwrites: productPhotoObjectPath(product.id), source: "edit",
+            by: auth.currentUser?.uid || null,
+            // Bounded cache (NOT immutable): photo.jpg is overwritten in place on
+            // a re-shoot, so cap staleness at 7 days instead of a year.
+            produce: async () => {
+              await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
+              // An overwrite can keep the same download token, so the URL would
+              // not change: the version tag makes every re-shoot a new photoUrl
+              // (mirror marker, Meta-ready trigger, Shopify follow all see it).
+              return `${await getDownloadURL(sRef)}&v=${Date.now()}`;
+            },
+            extra: { photoUpdatedAt: serverNowMs(), photoSourceUrl: null },
+          }, { rebuildThumb: async () => await writeProductThumb(product.id, blob, { upload: uploadThumbObject, remove: removeThumbObject }) });
+          if (!res.ok) throw new Error(res.message);
         } catch (err) {
           console.error("photo upload failed:", err);
           alert("Failed to save photo. Please try again.");
@@ -7524,7 +7557,19 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
   const removePhoto = async () => {
     if (!product.photoUrl) return;
     if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
-    await save({ photoUrl: null }, "the photo removal");
+    // Through the one write: the photo goes to history, so Undo photo can bring it back.
+    const res = await setPrimaryPhotoInApp(product.id, { product, newUrl: null, source: "edit", by: auth.currentUser?.uid || null });
+    setSaveError(res.ok ? null : res.message);
+  };
+  // UNDO PHOTO — the previous primary comes back everywhere at once (and the
+  // photo it replaces goes to history, so the undo can itself be undone).
+  const canUndoPhoto = !!undoTarget(product);
+  const undoPhoto = async () => {
+    setPhotoUploading(true);
+    try {
+      const res = await undoPrimaryPhotoInApp(product.id, { product, by: auth.currentUser?.uid || null });
+      setSaveError(res.ok ? null : res.message);
+    } finally { setPhotoUploading(false); }
   };
 
   // ── THE PRINTED BARCODE (perfume) ─────────────────────────────────────────
@@ -7895,7 +7940,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           <div onClick={photos.length ? () => setGalleryView(photos) : undefined}
                title={photos.length > 1 ? `View ${photos.length} photos` : (photos.length ? "View photo" : undefined)}
                style={{ cursor: photos.length ? "zoom-in" : "default" }}>
-            <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+            <ProductPhoto productId={product.id} product={product} url={product.photoUrl} photo={product.photo} size={140} radius={12} full/>
           </div>
           <div style={{ flex:1, display:"flex", flexDirection:"column", gap:8 }}>
             <input ref={fileRef} type="file" accept="image/*" onChange={handlePhotoFile} style={{ display:"none" }} />
@@ -7907,6 +7952,12 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
               <button onClick={removePhoto} disabled={photoUploading}
                       style={{ background:"rgba(180,40,40,.08)", border:"1px solid rgba(180,40,40,.25)", color:"#FF8888", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
                 Remove photo
+              </button>
+            )}
+            {canUndoPhoto && (
+              <button onClick={undoPhoto} disabled={photoUploading} title="Put the previous photo back"
+                      style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.18)", color:"rgba(255,255,255,.8)", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
+                ↶ Undo photo
               </button>
             )}
           </div>
@@ -8284,7 +8335,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           </button>
           <div style={{ display:"flex", justifyContent:"center", padding:"4px 0" }}>
             <div onClick={photos.length ? () => setGalleryView(photos) : undefined} style={{ cursor: photos.length ? "zoom-in" : "default" }}>
-              <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={168} radius={16}/>
+              <ProductPhoto productId={product.id} product={product} url={product.photoUrl} photo={product.photo} size={168} radius={16} full/>
             </div>
           </div>
           <div>
@@ -8378,7 +8429,7 @@ function ClothingCard({ product, onAdd, onViewPhoto, allProducts = [] }) {
              title={product.photoUrl ? (product.gallery?.length ? `View ${productPhotos(product).length} photos` : "View full photo") : undefined}
              style={{ position:"relative", width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
           {product.photoUrl
-            ? <MirroredImg productId={product.id} src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
+            ? <PrimaryPhoto product={product} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
             : <span style={{ fontSize:36 }}>{product.photo}</span>}
           {product.gallery?.length > 0 && (
             <span style={{ position:"absolute", bottom:5, left:5, display:"inline-flex", alignItems:"center", gap:3, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:999 }}>
@@ -9254,7 +9305,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                   </div>
                 ) : groupedRefill.map(g => (
                   <div key={g.key} className="ad-line">
-                    <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👕")}</div>
+                    <div className="ad-li">{g.product?.photoUrl ? <PrimaryPhoto product={g.product} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👕")}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="ad-ln">{g.product?.name}</div>
                       <div className="ad-lm">Size {formatSize(g.size)}</div>
@@ -11848,7 +11899,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                       cropped ~45% of the shoe in this 140px-tall box on phone
                       and tablet too, not just the desktop grid. */}
                   {p.photoUrl
-                    ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
+                    ? <PrimaryPhoto product={p} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
                     : <span>{p.photo}</span>}
                   {/* View full photo(s) — opens the gallery viewer (primary + extra
                       angles) without triggering the card's add-to-cart tap. */}
@@ -11907,7 +11958,7 @@ function AssistantView({ products, onExit, orders = [] }) {
               <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
                 {selected.photoUrl
                   ? <div style={{ position:"relative" }}>
-                      <img src={selected.photoUrl} alt={selected.name} onClick={() => setFullPhoto(productPhotos(selected))}
+                      <PrimaryPhoto product={selected} alt={selected.name} onClick={() => setFullPhoto(productPhotos(selected))}
                            title={selected.gallery?.length ? `View ${productPhotos(selected).length} photos` : "View full photo"}
                            style={{ width:"56px", height:"56px", objectFit:"cover", borderRadius:RADIUS, cursor:"zoom-in" }} />
                       {selected.gallery?.length > 0 && (
@@ -12142,7 +12193,7 @@ function AssistantView({ products, onExit, orders = [] }) {
               {cart.map((item, idx) => ({ item, idx })).filter(({ item }) => isCustomerLine(item)).map(({ item, idx }, i, arr) => (
                 <div key={idx} style={{ display:"flex", alignItems:"center", gap:"0.75rem", padding:"0.45rem 0", borderBottom: i < arr.length-1 ? "1px solid rgba(60,110,255,.06)" : "none" }}>
                   {item.product.photoUrl
-                    ? <img src={item.product.photoUrl} alt="" style={{ width:34, height:34, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
+                    ? <PrimaryPhoto product={item.product} alt="" style={{ width:34, height:34, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
                     : <span style={{ fontSize:"1.3rem", flexShrink:0 }}>{item.product.photo}</span>}
                   <span style={{ flex:1, color:"#ccc", fontSize:"0.87rem" }}>{item.product.name}</span>
                   <span style={{ color:BLUE_L, fontWeight:"700", fontSize:"0.87rem", flexShrink:0 }}>{item.size ? `Sz ${item.size}` : "Display"}{item.qty > 1 ? ` × ${item.qty}` : ""}</span>
@@ -13815,7 +13866,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           </div>
           {!onHoldExpanded && onHoldOrders[0] && (
             <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,.06)" }}>
-              <ProductPhoto productId={onHoldOrders[0].productId} url={onHoldOrders[0].productPhotoUrl} photo={onHoldOrders[0].productPhoto} size={44} radius={8}/>
+              <ProductPhoto productId={onHoldOrders[0].productId} product={whProductsById[onHoldOrders[0].productId]} url={onHoldOrders[0].productPhotoUrl} photo={onHoldOrders[0].productPhoto} size={44} radius={8}/>
               <div style={{ fontSize:13, fontWeight:700, color:"#4A7FFF" }}>#{onHoldOrders[0].id}</div>
               <div style={{ fontSize:13, color:"rgba(255,255,255,.8)", flex:1 }}>{onHoldOrders[0].productName}{onHoldOrders[0].size ? ` — Size ${onHoldOrders[0].size}` : ""}</div>
               {onHoldOrders.length > 1 && <div style={{ fontSize:12, color:"#4A7FFF", fontWeight:600 }}>+{onHoldOrders.length - 1} more</div>}
@@ -13825,7 +13876,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             <div style={{ marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,.06)", display:"flex", flexDirection:"column", gap:10 }}>
               {onHoldOrders.map(order => (
                 <div key={order.id} style={{ background:"rgba(60,110,255,.05)", border:"1px solid rgba(60,110,255,.15)", borderRadius:12, padding:12, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-                  <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={40} radius={8}/>
+                  <ProductPhoto productId={order.productId} product={whProductsById[order.productId]} url={order.productPhotoUrl} photo={order.productPhoto} size={40} radius={8}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontWeight:800, color:"#6A9FFF", fontSize:14 }}>#{order.id}</div>
                     <div style={{ fontWeight:600, fontSize:13 }}>{order.productName}{order.size ? ` — Sz ${order.size}` : ""}</div>
@@ -13930,7 +13981,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                 {/* color bar */}
                 <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background:`linear-gradient(180deg,transparent,${barColor},transparent)` }}/>
                 <div style={{ padding:"12px 12px 12px 16px", display:"flex", alignItems:"flex-start", gap:11 }}>
-                  <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
+                  <ProductPhoto productId={order.productId} product={whProductsById[order.productId]} url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
                       <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>
@@ -14731,7 +14782,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
               return (
                 <div style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:14, opacity:0.85 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:8 }}>
-                    <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={44} radius={10}/>
+                    <ProductPhoto productId={order.productId} product={liveProductOf(products, order.productId)} url={order.productPhotoUrl} photo={order.productPhoto} size={44} radius={10}/>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                         <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:800, fontSize:"1rem", color:"rgba(255,255,255,.85)", lineHeight:1 }}>#{order.id}</span>
@@ -14898,7 +14949,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
         <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(photos); } : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:8 }}>
-          <ProductPhoto productId={batch.productId} url={batch.productPhotoUrl} photo={batch.productPhoto} size={38} radius={8}/>
+          <ProductPhoto productId={batch.productId} product={product} url={batch.productPhotoUrl} photo={batch.productPhoto} size={38} radius={8}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-3, bottom:-3, width:14, height:14, borderRadius:7, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -15128,7 +15179,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
             return (
               <div style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:14, opacity:0.85 }}>
                 <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:8 }}>
-                  <ProductPhoto productId={batch.productId} url={batch.productPhotoUrl} photo={batch.productPhoto} size={48} radius={10}/>
+                  <ProductPhoto productId={batch.productId} product={liveProductOf(products, batch.productId)} url={batch.productPhotoUrl} photo={batch.productPhoto} size={48} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                       <span style={{ fontWeight:700, color:"rgba(255,255,255,.85)", fontSize:13 }}>{batch.productName}</span>
@@ -15320,7 +15371,7 @@ function CustomerView({ orders, onExit }) {
               {/* HERO — compact, cohesive */}
               <div style={{ display: "flex", gap: 20, alignItems: "center", background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 22, padding: 20, boxShadow: "0 26px 60px -36px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: 16 }}>
                 <div style={{ width: 116, height: 116, borderRadius: 18, overflow: "hidden", border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 50, flexShrink: 0 }}>
-                  {found.productPhotoUrl ? <img src={found.productPhotoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} /> : (found.productPhoto || "👟")}
+                  {found.productPhotoUrl ? <PrimaryPhoto product={{ id: found.productId, photoUrl: found.productPhotoUrl }} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} /> : (found.productPhoto || "👟")}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -17542,7 +17593,7 @@ function ReturnsView({ orders, products = [], onExit }) {
     return (
       <div style={{ background:"rgba(255,255,255,.024)", border: isReturned ? "1px solid rgba(74,222,128,.28)" : isExpanded ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.08)", borderRadius:16, overflow:"hidden", transition:"border-color .18s, box-shadow .18s", boxShadow: isExpanded ? "0 18px 44px -26px rgba(74,127,255,.55)" : "none", opacity: isReturned ? .78 : 1 }}>
         <div style={{ display:"flex", alignItems:"center", gap:13, padding:14 }}>
-          <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
+          <ProductPhoto productId={order.productId} product={liveProductOf(products, order.productId)} url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span className="ret-siri" style={{ fontSize:14, fontWeight:800, letterSpacing:".04em", fontVariantNumeric:"tabular-nums" }}>#{order.id}</span>
@@ -18047,7 +18098,7 @@ function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, fil
               return (
                 <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderTop: i ? "1px solid rgba(255,255,255,.06)" : "none" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                    <ProductThumb name={e.productName} photoMap={productPhotoMap} size={34} />
+                    <ProductThumb name={e.productName} productId={e.productId} photoMap={productPhotoMap} size={34} />
                     <div style={{ minWidth: 0 }}>
                       <span style={{ fontWeight: 600, color: "#fff", fontSize: "0.88rem" }}>{e.productName}</span>
                       <span style={{ color: "rgba(233,238,255,.35)", marginLeft: "0.4rem", fontSize: "0.78rem" }}>Sz {e.size}</span>
@@ -18114,7 +18165,7 @@ function InsightProductSearchTab({ log, productPhotoMap, filterStart, filterEnd,
                 return (
                   <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.5rem 0", borderBottom:"1px solid rgba(60,110,255,.08)" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:"0.45rem" }}>
-                      <ProductThumb name={e.productName} photoMap={productPhotoMap} size={32} />
+                      <ProductThumb name={e.productName} productId={e.productId} photoMap={productPhotoMap} size={32} />
                       <div>
                         <span style={{ fontWeight:"600", color:"#fff", fontSize:"0.85rem" }}>{e.productName}</span>
                         <span style={{ color:"#555", fontSize:"0.78rem", marginLeft:"0.4rem" }}>Sz {e.size}</span>
@@ -19213,7 +19264,7 @@ function InsightReorderTab({ productPhotoMap }) {
                     return (
                       <div key={rec.productId || rec.productName} style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(60,110,255,.22)", borderLeft:`3px solid ${style.border}`, borderRadius:12, padding:"12px 14px" }}>
                         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                          <ProductThumb name={rec.productName} photoMap={productPhotoMap} size={40}/>
+                          <ProductThumb name={rec.productName} productId={rec.productId} photoMap={productPhotoMap} size={40}/>
                           <div style={{ flex:1, minWidth:0 }}>
                             <div style={{ fontWeight:700, fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{rec.productName || "(no name)"}</div>
                             <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3 }}>
@@ -19554,13 +19605,15 @@ function InsightsView({ onExit }) {
   // hyphens) so old order names that drifted from the catalog still resolve.
   const productPhotoMap = useMemo(() => {
     const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
-    const map = {};
+    const map = {}, byId = {};
     products.forEach(p => {
       if (!p.name) return;
-      const entry = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
+      const entry = { id: p.id, photoUrl: p.photoUrl || null, photo: p.photo || "", photoUpdatedAt: p.photoUpdatedAt, thumbAt: p.thumbAt };
       map[p.name] = entry;
       map[normKey(p.name)] = entry;
+      if (p.id) byId[p.id] = entry;
     });
+    map[PHOTO_MAP_BY_ID] = byId;
     return map;
   }, [products]);
 

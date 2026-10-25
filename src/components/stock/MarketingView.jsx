@@ -30,6 +30,7 @@ import { buildBulkChangePlan } from "../../utils/bulkPricing";
 import { asStoredPrice } from "../../utils/priceBatch";
 import { saveProductPrices, planProductPriceEdit } from "../admin/productPriceSave";
 import BulkPricePreview from "../admin/BulkPricePreview";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const count = (n) => new Intl.NumberFormat("en-ZA").format(n || 0);
 const fmt = (v) => (typeof v === "number" ? `R${v.toLocaleString("en-ZA", { maximumFractionDigits: 2 })}` : "—");
@@ -256,7 +257,7 @@ export default function MarketingView({ products, onExit }) {
               <div key={c.id} style={{ ...GLASS, overflow: "hidden", border: sel ? "1px solid rgba(74,127,255,.65)" : GLASS.border || "1px solid rgba(255,255,255,.08)" }}>
                 <div style={{ aspectRatio: "1 / 1", background: "rgba(255,255,255,.03)", position: "relative" }}>
                   {c.photo ? (
-                    <img src={c.photo} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                    <PrimaryPhoto product={c.product} productId={c.id} snapshot={c.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                   ) : (
                     <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,.16)", fontSize: 32, fontWeight: 800 }}>
                       {(c.name || "?").trim().charAt(0).toUpperCase()}
@@ -394,7 +395,7 @@ function PriceEditModal({ product, getCurrent, onSpecial, onClose, onSaved }) {
         onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
           {product.photoUrl
-            ? <img src={product.photoUrl} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+            ? <PrimaryPhoto product={product} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
             : <div style={{ width: 44, height: 44, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{product.name}</div>
