@@ -406,21 +406,20 @@ function displayNameOf(c) {
 }
 
 /**
- * The approved photo for a product: the New Arrivals studio photo where one
- * exists, else the storefront's lead photo, else the record's hero. An
- * approved studio photo REPLACES products/{pid}/photoUrl (see
- * newArrivals/sourcePhoto.cjs), so "studio" is photoUrl being a generated one.
- * Returns { url, studio } or null. Pure.
+ * The approved photo for a product: its ONE primary photo
+ * (products/{pid}/photoUrl — Junid, 25 Oct 2026), else the storefront's lead
+ * photo for a record with none. An approved studio photo REPLACES photoUrl
+ * (see newArrivals/sourcePhoto.cjs), so "studio" is photoUrl being a
+ * generated one. Returns { url, studio } or null. Pure.
  */
 function approvedPhoto(product, node) {
   const p = product || {};
-  if (p.photoUrl && isGeneratedPhoto(p.photoUrl)) return { url: String(p.photoUrl), studio: true };
+  if (typeof p.photoUrl === "string" && p.photoUrl.trim()) return { url: String(p.photoUrl), studio: isGeneratedPhoto(p.photoUrl) };
   const photos = Array.isArray(node && node.photos)
     ? node.photos
     : node && node.photos && typeof node.photos === "object" ? Object.values(node.photos) : [];
   const lead = photos.find((u) => typeof u === "string" && u.trim());
   if (lead) return { url: lead, studio: false };
-  if (typeof p.photoUrl === "string" && p.photoUrl.trim()) return { url: p.photoUrl, studio: false };
   return null;
 }
 

@@ -409,12 +409,12 @@ function buildCandidates({ liveNodes, products, stockByPid, salesByPid = {}, pos
     const product = (products || {})[pid];
     if (!product) continue;
 
-    // A post needs a photograph. The publishing set wins when the product has
-    // one (that is what the storefront leads with); otherwise the record's
-    // hero. A product with neither cannot be posted, and is not a failure to
-    // report — it is simply not a candidate.
+    // A post needs a photograph: the product's ONE primary photo
+    // (products/{pid}/photoUrl — Junid, 25 Oct 2026; the publishing set's
+    // first photo follows it since #760), else the publishing set's lead for
+    // a record with no photo of its own. Neither → not a candidate.
     const photos = Array.isArray(node.photos) ? node.photos.filter((u) => typeof u === "string" && u.trim()) : [];
-    const photoUrl = photos[0] || product.photoUrl;
+    const photoUrl = (typeof product.photoUrl === "string" && product.photoUrl.trim()) || photos[0];
     if (!photoUrl) continue;
 
     // ── TWO NAMES, AND THEY ARE NOT INTERCHANGEABLE ────────────────────────

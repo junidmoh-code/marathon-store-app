@@ -55,9 +55,9 @@ describe("price and photo resolver", () => {
     assert.equal(lb.formatRand(0), null);
   });
 
-  test("the New Arrivals studio photo wins where one exists", () => {
+  test("the product's ONE primary photo wins; a studio photo is flagged as one", () => {
     assert.deepEqual(lb.approvedPhoto({ photoUrl: STUDIO("p") }, { photos: [STAFF("p")] }), { url: STUDIO("p"), studio: true });
-    assert.deepEqual(lb.approvedPhoto({ photoUrl: STAFF("p") }, { photos: ["https://lead"] }), { url: "https://lead", studio: false });
+    assert.deepEqual(lb.approvedPhoto({ photoUrl: STAFF("p") }, { photos: ["https://lead"] }), { url: STAFF("p"), studio: false });
     // RTDB may hand an array back as an object.
     assert.deepEqual(lb.approvedPhoto({}, { photos: { 1: "https://lead" } }), { url: "https://lead", studio: false });
     // An emptied photos array is DELETED by RTDB, so the key is absent.
