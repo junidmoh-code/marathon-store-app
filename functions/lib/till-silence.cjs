@@ -115,7 +115,10 @@ function cardCentsOn(events, { storeId, tillId, startMs, endMs }) {
 function assessTillSilence({ nowMs, terminals, events, recordsByTid, lookbackDays = LOOKBACK_DAYS }) {
   const days = judgedDays(nowMs, lookbackDays);
   const rows = Array.isArray(events) ? events : Object.values(events || {});
-  const reg = Object.entries(terminals || {}).filter(([, r]) => r && typeof r === "object" && !isRetiredTerminal(r));
+  // RETIRED MACHINES COUNT UNTIL THEY RETIRED: a machine retired yesterday
+  // and replaced today still stood on its till yesterday, and yesterday's card
+  // money is judged against its records. (Sonnet architect review, #799.)
+  const reg = Object.entries(terminals || {}).filter(([, r]) => r && typeof r === "object");
 
   // till key → per-day { tids, label }
   const tills = new Map();
@@ -123,6 +126,7 @@ function assessTillSilence({ nowMs, terminals, events, recordsByTid, lookbackDay
     const activeFrom = Number(row.activeFrom);
     for (const d of days) {
       if (Number.isFinite(activeFrom) && activeFrom >= d.endMs) continue;   // not in the estate yet
+      if (isRetiredTerminal(row) && row.retiredAt <= d.startMs) continue;   // gone before the day began
       for (const t of tillsDuring(row, d.startMs, d.endMs)) {
         const key = `${t.storeId}/${t.tillId}`;
         if (!tills.has(key)) tills.set(key, { storeId: t.storeId, tillId: t.tillId, byDay: new Map() });
@@ -144,7 +148,7 @@ function assessTillSilence({ nowMs, terminals, events, recordsByTid, lookbackDay
     let reachedCovered = false;
     for (const d of days) {                       // yesterday first
       const slot = till.byDay.get(d.ymd);
-      if (!slot) break;                           // no machine stood here that day: the run ends
+      if (!slot) continue;                        // no machine stood here that day: nothing to judge
       const dayCents = cardCentsOn(rows, { storeId: till.storeId, tillId: till.tillId, startMs: d.startMs, endMs: d.endMs });
       if (dayCents <= 0) continue;                // no card money: neither counts nor breaks the run
       const covered = [...slot.tids].some((tid) =>
@@ -169,7 +173,6 @@ function assessTillSilence({ nowMs, terminals, events, recordsByTid, lookbackDay
   return { days: days.map((d) => d.ymd), silent };
 }
 
-const rand = (cents) => `R${(cents / 100).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/ /g, ",")}`;
 const shortDay = (ymd) => {
   const d = new Date(`${ymd}T12:00:00+02:00`);
   return `${d.getUTCDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getUTCMonth()]}`;
@@ -195,6 +198,38 @@ function alarmLine(silent) {
 }
 
 /**
+ * The line printed when the CHECK ITSELF fails — a read error, a crash. Same
+ * marker, same email: a watchdog that dies quietly is the failure this whole
+ * file exists to prevent.
+ */
+function failureLine(err) {
+  const why = String((err && err.message) || err || "no reason given").replace(/\s+/g, " ").slice(0, 300);
+  return `${MARKER} The till silence check itself FAILED this morning, so no till was judged: ${why}. `
+    + "Run `node scripts/cardrecon/till-silence-report.mjs` for the answer, and read the cardTillSilenceScan logs.";
+}
+
+/**
+ * Has the morning check stopped running? Decided every ten minutes by
+ * cardReconHealthScan (a scheduler that never fires prints nothing at all),
+ * from the `checkedAt` the check writes on every run. Stale after 26 hours —
+ * one missed 07:30 plus slack — and said at most once a day.
+ *
+ * @returns {string|null} the alarm line, or null
+ */
+const STALE_AFTER_MS = 26 * 60 * 60 * 1000;
+const STALE_REPEAT_MS = 24 * 60 * 60 * 1000;
+function staleCheckLine({ nowMs, checkedAt, lastStaleAlarmAt }) {
+  // null (never written) is NOT 0 — Number(null) would date it to 1970.
+  const last = checkedAt === null || checkedAt === undefined ? NaN : Number(checkedAt);
+  const fresh = Number.isFinite(last) && nowMs - last <= STALE_AFTER_MS;
+  if (fresh) return null;
+  if (Number.isFinite(Number(lastStaleAlarmAt)) && nowMs - Number(lastStaleAlarmAt) < STALE_REPEAT_MS) return null;
+  const since = Number.isFinite(last) ? `has not run since ${new Date(last + SAST_OFFSET_MS).toISOString().slice(0, 16).replace("T", " ")} SAST` : "has NEVER run";
+  return `${MARKER} The 07:30 till silence check ${since} — no till is being watched for card money with no batch. `
+    + "Check the cardTillSilenceScan function and its Cloud Scheduler job in marathon-club (europe-west1).";
+}
+
+/**
  * THE ONLY IO: the three bounded reads a run needs, all indexed — the
  * registry (six rows), /pos/paymentEvents by `at` over the lookback, and each
  * machine's /card_batches by `slip/closedAt` from the lookback's first day.
@@ -210,11 +245,12 @@ async function readTillSilenceInputs(db, { nowMs, lookbackDays = LOOKBACK_DAYS }
   const events = (await db.ref("pos/paymentEvents").orderByChild("at").startAt(fromMs).endAt(toMs - 1).once("value")).val() || {};
   const recordsByTid = {};
   for (const [tid, row] of Object.entries(terminals)) {
-    if (!row || typeof row !== "object" || isRetiredTerminal(row) || !row.storeId) continue;
+    if (!row || typeof row !== "object" || !row.storeId) continue;
+    if (isRetiredTerminal(row) && row.retiredAt < fromMs) continue;   // retired before the lookback
     recordsByTid[tid] = (await db.ref(`card_batches/${row.storeId}/${tid}`)
       .orderByChild("slip/closedAt").startAt(fromMs).once("value")).val() || {};
   }
   return { terminals, events, recordsByTid };
 }
 
-module.exports = { MARKER, readTillSilenceInputs, LOOKBACK_DAYS, sastYmd, sastDayStart, judgedDays, covers, cardCentsOn, assessTillSilence, alarmLine };
+module.exports = { MARKER, STALE_AFTER_MS, failureLine, staleCheckLine, readTillSilenceInputs, LOOKBACK_DAYS, sastYmd, sastDayStart, judgedDays, covers, cardCentsOn, assessTillSilence, alarmLine };

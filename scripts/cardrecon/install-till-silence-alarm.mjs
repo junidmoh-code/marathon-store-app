@@ -32,7 +32,7 @@ const require = createRequire(new URL("../../functions/package.json", import.met
 const { GoogleAuth } = require("google-auth-library");
 
 const PROJECT = "marathon-club";
-// THE MARKER. The same literal appears in functions/index.js. If these two ever
+// THE MARKER. The same literal is functions/lib/till-silence.cjs's MARKER. If these two ever
 // disagree the alarm is disconnected and every green check stays green, which
 // is the exact failure the whole feature exists to prevent — so --verify reads
 // the function source and asserts they match, rather than trusting a comment.
@@ -107,13 +107,16 @@ const log = (...a) => console.log(...a);
 const fail = (msg) => { console.error(`✗ ${msg}`); process.exitCode = 1; };
 
 // ── 1. the log filter the policy matches ─────────────────────────────────────
-// Scoped to the one function that writes the marker. A project-wide filter
-// would also match this script's own --test output and any future copy of the
-// string in an unrelated service, and an alarm that can be tripped by
-// something other than the thing it watches is not worth having.
+// Scoped to the TWO functions that write the marker: cardTillSilenceScan (a
+// silent till, or the check itself failing) and cardReconHealthScan (the
+// morning check has stopped running — a scheduler that never fires prints
+// nothing of its own). A project-wide filter would also match this script's
+// own --test output and any future copy of the string in an unrelated
+// service, and an alarm that can be tripped by something other than the
+// thing it watches is not worth having.
 const LOG_FILTER =
   `resource.type="cloud_run_revision" ` +
-  `AND resource.labels.service_name="cardtillsilencescan" ` +
+  `AND resource.labels.service_name=("cardtillsilencescan" OR "cardreconhealthscan") ` +
   `AND textPayload:"${MARKER}"`;
 
 /** Every page of a Monitoring list call — a match on page two must not lead
@@ -294,10 +297,19 @@ async function verifyMarkerInSource() {
   const { readFileSync } = await import("fs");
   const src = readFileSync(new URL("../../functions/index.js", import.meta.url), "utf8");
   const lib = readFileSync(new URL("../../functions/lib/till-silence.cjs", import.meta.url), "utf8");
-  if (!lib.includes(`const MARKER = "${MARKER}";`) || !lib.includes("return `${MARKER} ${parts.join(") || !src.includes("console.error(tillSilence.alarmLine(verdict.silent));")) {
+  const pins = [
+    lib.includes(`const MARKER = "${MARKER}";`),
+    lib.includes("return `${MARKER} ${parts.join("),
+    lib.includes("return `${MARKER} The till silence check itself FAILED"),
+    lib.includes("return `${MARKER} The 07:30 till silence check ${since}"),
+    src.includes("console.error(tillSilence.alarmLine(verdict.silent));"),
+    src.includes("console.error(tillSilence.failureLine(err));"),
+    src.includes("console.error(tillStale);"),
+  ];
+  if (pins.includes(false)) {
     return fail(`cardTillSilenceScan no longer emits the ${MARKER} marker the alert policy matches`);
   }
-  log("✓ functions/index.js + lib/till-silence.cjs still emit the marker");
+  log("✓ functions/index.js + lib/till-silence.cjs still emit the marker (silent till, failed check, stale check)");
 }
 
 async function emitTestAlarm() {

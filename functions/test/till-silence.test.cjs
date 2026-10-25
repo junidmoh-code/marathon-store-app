@@ -148,3 +148,41 @@ test("a till silent for the whole lookback says 7+ days; several tills share ONE
   assert.match(line, / · Marathon Till 1 \(pe\/till-1, terminal 67377843\): 2 days/);
   assert.equal(v.silent[0].storeId, "trophy", "longest silence first");
 });
+
+// ── Sonnet architect review, #799 ────────────────────────────────────────────
+const { failureLine, staleCheckLine, STALE_AFTER_MS } = require("../lib/till-silence.cjs");
+
+test("a machine retired yesterday and replaced today: yesterday is still judged on the old machine", () => {
+  const terminals = {
+    OLD1: { label: "Pine Till 1", storeId: "pine", tillId: "till-1", retiredAt: at("2026-10-25", "18:00") },
+    NEW1: { label: "Pine Till 1", storeId: "pine", tillId: "till-1", activeFrom: at("2026-10-26", "06:00") },
+  };
+  const events = legs(leg("pine", "till-1", "2026-10-25", "10:00", 5000));
+  assert.equal(assessTillSilence({ nowMs: MORNING, terminals, events, recordsByTid: {} }).silent[0].tids[0], "OLD1");
+  assert.deepEqual(assessTillSilence({ nowMs: MORNING, terminals, events,
+    recordsByTid: { OLD1: { 9: rec("2026-10-25", "09:00", "2026-10-25", "17:00") } } }).silent, []);
+});
+
+test("a day no machine stood on a till is skipped, not the end of the run", () => {
+  const terminals = { T1: { label: "Concrete Till 1", storeId: "concrete", tillId: "till-1", retiredAt: at("2026-10-24", "00:00") },
+    T2: { label: "Concrete Till 1", storeId: "concrete", tillId: "till-1", activeFrom: at("2026-10-25", "06:00") } };
+  const v = assessTillSilence({ nowMs: MORNING, terminals, recordsByTid: {},
+    events: legs(leg("concrete", "till-1", "2026-10-25", "10:00", 100), leg("concrete", "till-1", "2026-10-23", "10:00", 100)) });
+  assert.deepEqual(v.silent[0].missing, ["2026-10-25", "2026-10-23"]);
+});
+
+test("the check failing says so through the same marker", () => {
+  const line = failureLine(new Error("PERMISSION_DENIED\n at read"));
+  assert.ok(line.startsWith(`${MARKER} The till silence check itself FAILED this morning, so no till was judged: PERMISSION_DENIED at read.`), line);
+});
+
+test("a morning check that stops running is alarmed from the ten-minute watchdog, once a day", () => {
+  const now = MORNING + 3 * 60 * 60 * 1000;
+  assert.equal(staleCheckLine({ nowMs: now, checkedAt: MORNING }), null, "ran this morning");
+  assert.equal(staleCheckLine({ nowMs: now, checkedAt: now - STALE_AFTER_MS }), null, "exactly 26 h is still fresh");
+  const line = staleCheckLine({ nowMs: now, checkedAt: now - STALE_AFTER_MS - 1 });
+  assert.ok(line.startsWith(`${MARKER} The 07:30 till silence check has not run since `), line);
+  assert.match(staleCheckLine({ nowMs: now, checkedAt: null }), /has NEVER run/);
+  assert.equal(staleCheckLine({ nowMs: now, checkedAt: null, lastStaleAlarmAt: now - 60 * 60 * 1000 }), null, "said an hour ago");
+  assert.ok(staleCheckLine({ nowMs: now, checkedAt: null, lastStaleAlarmAt: now - 25 * 60 * 60 * 1000 }), "said again a day later");
+});

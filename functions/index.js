@@ -3989,6 +3989,7 @@ exports.syncCardReconClaim = require("./cardRecon/cardReconClaim.js").syncCardRe
 // stays green. The installer's --verify pins the two together.
 //   firebase deploy --only functions:cardReconHealthScan
 const { assessPollerHealth } = require("./lib/poller-health.cjs");
+const tillSilence = require("./lib/till-silence.cjs");
 
 function pollerAlarmLine(verdict) {
   const silence = verdict.staleMinutes === null
@@ -4005,11 +4006,24 @@ exports.cardReconHealthScan = onSchedule(
   { schedule: "*/10 * * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 60 },
   async () => {
     const db = admin.database();
-    const [beatSnap, healthSnap] = await Promise.all([
+    const [beatSnap, healthSnap, tillCheckSnap] = await Promise.all([
       db.ref("card_batch_poll_status/lastRunAt").once("value"),
       db.ref("card_batch_poll_health").once("value"),
+      db.ref("card_till_silence/checkedAt").once("value"),
     ]);
     const health = healthSnap.val() || {};
+    // THE MORNING TILL CHECK'S OWN DEAD-MAN SWITCH. cardTillSilenceScan runs
+    // once a day; if its scheduler never fires it prints nothing, so it is
+    // watched from here, every ten minutes, by the stamp it writes. The line
+    // carries ITS marker (CARD_TILL_SILENT_ALARM) and goes out through its
+    // policy, whose filter names this service too. At most once a day.
+    const tillStale = tillSilence.staleCheckLine({
+      nowMs: Date.now(), checkedAt: tillCheckSnap.val(), lastStaleAlarmAt: health.tillSilenceStaleAlarmAt,
+    });
+    if (tillStale) {
+      console.error(tillStale);
+      await db.ref("card_batch_poll_health/tillSilenceStaleAlarmAt").set(Date.now());
+    }
     const verdict = assessPollerHealth({
       nowMs: Date.now(),
       lastRunAt: beatSnap.val(),
@@ -4048,24 +4062,32 @@ exports.cardReconHealthScan = onSchedule(
 // the same reads read-only.
 //
 // THE MARKER IS LOAD-BEARING: the installer's --verify pins it to the lib.
-//   firebase deploy --only functions:cardTillSilenceScan
-const tillSilence = require("./lib/till-silence.cjs");
+// cardReconHealthScan watches this check's own `checkedAt` and emails (same
+// marker) when it goes 26 hours without running.
+//   firebase deploy --only functions:cardTillSilenceScan,functions:cardReconHealthScan
 
 exports.cardTillSilenceScan = onSchedule(
   { schedule: "30 7 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 },
   async () => {
     const db = admin.database();
     const nowMs = Date.now(); // the server's own clock — no client clock reaches a scheduled run
-    const inputs = await tillSilence.readTillSilenceInputs(db, { nowMs });
-    const verdict = tillSilence.assessTillSilence({ nowMs, ...inputs });
-    // Written on EVERY run, silent or not — a watchdog that only writes when
-    // it is unhappy is indistinguishable from one that has stopped. No money
-    // here beyond what the owner-only node already holds.
-    await db.ref("card_till_silence").set({
-      checkedAt: nowMs,
-      days: verdict.days,
-      silent: verdict.silent.length ? verdict.silent : null,
-    });
+    let verdict;
+    try {
+      const inputs = await tillSilence.readTillSilenceInputs(db, { nowMs });
+      verdict = tillSilence.assessTillSilence({ nowMs, ...inputs });
+      // Written on EVERY run, silent or not — cardReconHealthScan alarms when
+      // this stamp goes stale, which is how a scheduler that never fires is
+      // heard. No money here beyond what the owner-only node already holds.
+      await db.ref("card_till_silence").set({
+        checkedAt: nowMs,
+        days: verdict.days,
+        silent: verdict.silent.length ? verdict.silent : null,
+      });
+    } catch (err) {
+      // A check that dies must say so through the same email, never quietly.
+      console.error(tillSilence.failureLine(err));
+      return;
+    }
     if (verdict.silent.length) {
       console.error(tillSilence.alarmLine(verdict.silent));
     } else {

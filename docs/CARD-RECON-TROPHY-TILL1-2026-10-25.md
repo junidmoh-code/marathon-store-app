@@ -68,9 +68,21 @@ problem; 25 Oct #52 clean R7,495.
 ## What is fixed, and what is not code
 
 - Fixed in code: the false sentence; the capture side reconciling a moved
-  machine on its filing till; the Terminals sheet and capture cards naming
-  the filing till as where the machine stands; a stale batch ticking today.
-- Added: a morning email when a till took card money yesterday and no batch
-  covers it (`cardTillSilenceScan`, `CARD_TILL_SILENT_ALARM`).
+  machine on its filing till (it now uses the placement, and the record
+  carries `placeStoreId`/`placeTillId`); the Terminals sheet printing the
+  filing till as where the machine stands (it now shows where it stands and
+  names the filing key beside it); a stale batch ticking today.
+- Deliberately unchanged: the FILING key. 67377843's batches stay under
+  `card_batches/trophy/…` and its intake rows keep `storeId: trophy` — moving
+  a filing key would strand every batch already filed. The intake row now
+  also carries `placeStoreId`/`placeTillId`; no screen reads them yet, and the
+  capture cards are labelled by the registry label (already "Marathon Till 1").
+- Added: a morning email when a till took card money on a day no batch
+  covers (`cardTillSilenceScan`, 07:30 SAST, `CARD_TILL_SILENT_ALARM`). It
+  fires from the FIRST uncovered trading day, so a till that settles its batch
+  the next morning instead of the evening before will be named too — by
+  design ("no batch recorded by the next morning"). A crash in the check, or a
+  scheduler that stops firing (watched every 10 min by cardReconHealthScan),
+  sends the same email.
 - Not code: whoever is on Trophy Till 1 today should settle and send today's
   batch from 67325636 — it reprinted batch 57 instead.
