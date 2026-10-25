@@ -15,7 +15,7 @@ import { join } from "node:path";
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
 const sharp = require("sharp");
-const { makeMetaReady } = require("../../functions/lib/meta-ready.cjs");
+const { makeMetaReady } = require("./lib/meta-ready.cjs")   // relative to functions/package.json;
 
 admin.initializeApp({ credential: admin.credential.applicationDefault(),
   databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app", storageBucket: "marathon-club.firebasestorage.app" });
