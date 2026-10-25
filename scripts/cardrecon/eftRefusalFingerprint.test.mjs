@@ -116,6 +116,13 @@ describe("the R710 resend, after this fix", () => {
     expect(claimHolderCheck({ poolKey: resend.poolKey, holder: c.poolKey, spentBy: c.spentBy ?? null })).toMatchObject({ ok: false, code: "duplicate" });
   });
 
+  it("a resent copy that is ITSELF refused is still refused, and names the original it copies", () => {
+    const refusedCopy = ingest(R710_AS_READ_BEFORE, { messageId: "<copy2@myupdates2.standardbank.co.za>", receivedAt: RESENT + 60000, uid: 3 });
+    const written = claimAndDecide(claims, refusedCopy);
+    expect(written).toMatchObject({ outcome: "refused-not-immediate", duplicateOf: original.poolKey });
+    expect(written.status).toBeUndefined();
+  });
+
   it("re-reading the ORIGINAL email lands on its own key: same claim, still refused", () => {
     const again = ingest(R710_AS_READ_BEFORE, { messageId: "<orig@myupdates1.standardbank.co.za>", receivedAt: ARRIVED, uid: 1 });
     expect(again.poolKey).toBe(original.poolKey);
