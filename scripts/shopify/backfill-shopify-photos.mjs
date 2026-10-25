@@ -5,6 +5,7 @@
 //   node scripts/shopify/backfill-shopify-photos.mjs --json <file>   … and the rows as JSON
 //   node scripts/shopify/backfill-shopify-photos.mjs --sheet <dir>   … and before/after JPEGs of the replacements
 //   node scripts/shopify/backfill-shopify-photos.mjs --commit --batch 100   one batch, then its check
+//   … --exclude p1,p2     products a person looked at and refused (e.g. Shopify holds a screenshot)
 //
 // Decisions: shopifyPhotoBackfill.mjs. The write: src/utils/setPrimaryPhoto.js
 // (old photo → photo history, thumbnail before photoUrl, child keys only).
@@ -104,6 +105,8 @@ await pool(linked, 12, async ({ s, pid }) => {
   rows.push({ ...row, ...pictureVerdict(row.shopHash, row.appHash) });
 });
 
+const EXCLUDE = new Set((arg("--exclude") || "").split(",").filter(Boolean));
+for (const r of rows) if (EXCLUDE.has(r.pid) && r.action === "replace") Object.assign(r, { action: "skip", code: "excluded", why: "refused by a person after looking at the before/after" });
 const twins = sharedPictureConflicts(rows.filter((r) => r.action === "replace"));
 for (const r of rows) if (twins.has(r.pid) && r.action === "replace") Object.assign(r, { action: "skip", code: "shared-picture", why: "the same Shopify picture would go to more than one app product" });
 
