@@ -8,6 +8,7 @@ import { database, storage, auth, googleProvider, functions, functionsUS } from 
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { isDeactivated, orderSizeOut, browsableProducts, REACTIVATED_EVENT } from "./utils/deactivation";
+import { checkProductDelete } from "./utils/productDeleteGuard";
 import { ProductActionsButton, DeactivatedChip } from "./components/stock/ProductActions.jsx";
 import { showsDeactivated } from "./config/assistantVisibility";
 import { useAssistantVisibility } from "./config/useAssistantVisibility";
@@ -7814,10 +7815,20 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
   // Legacy / backfilled values appear here exactly as stored; products that
   // pre-date the backfill render as "—" until PR B's script runs.
 
-  const handleDelete = () => {
-    if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
-    deleteProductFromFirebase(product.id);
-    onBack();
+  // Only a record that never held stock and was never listed on Shopify may
+  // be deleted — see utils/productDeleteGuard.js for the nine listings an
+  // unguarded delete orphaned (Junid, 25 Oct 2026).
+  const [deleteChecking, setDeleteChecking] = useState(false);
+  const handleDelete = async () => {
+    if (deleteChecking) return;
+    setDeleteChecking(true);
+    try {
+      const verdict = await checkProductDelete(async (path) => (await get(ref(database, path))).val(), product.id);
+      if (!verdict.ok) { alert(verdict.message); return; }
+      if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
+      await deleteProductFromFirebase(product.id);
+      onBack();
+    } finally { setDeleteChecking(false); }
   };
 
   // Activity line — "Last sold X days ago · N orders all-time" from
@@ -8265,9 +8276,9 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       {/* DELETE */}
       <div style={{ height:1, background:"rgba(255,255,255,.08)", margin:"32px 14px 16px" }}/>
       <div style={{ padding:"0 14px 28px" }}>
-        <button onClick={handleDelete}
+        <button onClick={handleDelete} disabled={deleteChecking}
                 style={{ width:"100%", background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:15, fontWeight:600, padding:"14px", borderRadius:12, cursor:"pointer" }}>
-          Delete product
+          {deleteChecking ? "Checking…" : "Delete product"}
         </button>
       </div>
 
@@ -8348,7 +8359,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
             <span style={{ fontSize:10.5, fontWeight:700, color:"rgba(233,238,255,.6)", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:7, padding:"3px 9px" }}>{productHubs.length} hub{productHubs.length !== 1 ? "s" : ""}</span>
           </div>
           <div style={{ flex:1 }} />
-          <button onClick={handleDelete} style={{ background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:12.5, fontWeight:700, padding:"10px", borderRadius:11, cursor:"pointer", fontFamily:FONT }}>Delete product</button>
+          <button onClick={handleDelete} disabled={deleteChecking} style={{ background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:12.5, fontWeight:700, padding:"10px", borderRadius:11, cursor:"pointer", fontFamily:FONT }}>{deleteChecking ? "Checking…" : "Delete product"}</button>
         </aside>
         {/* MAIN */}
         <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
