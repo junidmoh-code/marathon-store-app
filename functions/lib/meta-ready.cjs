@@ -9,12 +9,12 @@
 // the Mac mini's reconciler and the test script all run the same code.
 //
 // THE STEPS (analysis on a ≤400px copy, the cut on the full-size photo):
-//   1. FRAME — flat bands along any edge are cut off: a photo letterboxed
-//      into a white square, a white mount, the dark border of a screenshot.
-//      A band is a row/column whose pixels are ≥ 92% within a small distance
-//      of one colour (the same colour band after band); at most 35% of a side
-//      is ever cut. A flat studio backdrop cut this way loses nothing — step 4
-//      fills with that same backdrop colour.
+//   1. FRAME — white or dark bands along the edges are cut off: a photo
+//      padded into a white square, a white mount, a screenshot's border. A
+//      band is a row/column ≥ 92% one colour (the same colour band after
+//      band); at most 35% of a side is ever cut. A grey or coloured studio
+//      backdrop is never cut, and neither is the white round a product shot
+//      on white (whiteFrame says how the two are told apart).
 //   2. BACKGROUND — the median colour of the inner image's outer ring, and
 //      how uniform that ring is.
 //   3. PRODUCT — every pixel clearly unlike the background; its bounding box
@@ -22,8 +22,8 @@
 //   4. SQUARE — side = the box's longer side ÷ 0.8, centred on the box. Where
 //      the square runs past the photo, the background is EXTENDED with its own
 //      colour (a flat backdrop). A scene is never extended — mirroring shows
-//      seams — so its square is CUT from the photo, centred on the product,
-//      as close to the 80% fill as the photo allows.
+//      seams — so its square is CUT from the photo: the short side, centred
+//      on the product (a scene's product box is not trusted to zoom by).
 //   5. 1080 × 1080 JPEG.
 "use strict";
 
@@ -50,10 +50,11 @@ function whiteFrame(px, w, h) {
     const c = [0, 1, 2].map((k) => median(pts.map((p) => p[k])));
     return pts.filter((p) => dist(p, c) <= BAND_DIST).length / pts.length >= BAND_SHARE ? c : null;
   };
-  // A FRAME, not a backdrop: the line just inside the run must be mostly
-  // something else. A flat studio backdrop runs on into the product's own
-  // lines (still mostly backdrop), so it is never cut; a white mount or a
-  // screenshot border meets the photo (≥ 90% different) and is.
+  // Only a white mount or a dark (screenshot) border is a frame — a grey or
+  // coloured flat band is a studio backdrop, never cut.
+  const frameColour = (c) => Math.min(...c) >= NEAR_WHITE || Math.max(...c) <= 45;
+  // → { k, share }: how many flat lines, and how much of the line just inside
+  // (its middle 60%, two pixels past the resampled seam) is still that colour.
   const run = (lineAt, n, cap) => {
     let k = 0, first = null;
     while (k < cap) {
@@ -61,21 +62,31 @@ function whiteFrame(px, w, h) {
       if (!c || (first && dist(c, first) > BAND_DIST)) break;
       first = first || c; k++;
     }
-    if (!k || k >= cap) return 0;
-    // The middle 60% of the line two pixels in (past the resampled seam; the
-    // ends may still be the perpendicular frame).
+    if (!k || k >= cap || !frameColour(first)) return { k: 0, share: 1 };
     const line = lineAt(Math.min(k + 2, n - 1));
     const mid = line.slice(Math.floor(line.length * 0.2), Math.ceil(line.length * 0.8));
-    return mid.filter((p) => dist(p, first) <= BAND_DIST).length / mid.length <= 0.1 ? k : 0;
+    return { k, share: mid.filter((p) => dist(p, first) <= BAND_DIST).length / mid.length };
   };
   const capH = Math.floor(h * MAX_TRIM), capW = Math.floor(w * MAX_TRIM);
   const row = (y) => Array.from({ length: w }, (_, x) => at(x, y));
-  const t = run((k) => row(k), h, capH);
-  const b = run((k) => row(h - 1 - k), h, capH);
-  const col = (x) => Array.from({ length: Math.max(1, h - b - t) }, (_, j) => at(x, t + j));
-  const l = run((k) => col(k), w, capW);
-  const r = run((k) => col(w - 1 - k), w, capW);
-  return { t, b, l, r };
+  const col = (x) => Array.from({ length: h }, (_, y) => at(x, y));
+  const T = run((k) => row(k), h, capH), B = run((k) => row(h - 1 - k), h, capH);
+  const L = run((k) => col(k), w, capW), R = run((k) => col(w - 1 - k), w, capW);
+  // BARS ON ONE AXIS (white left/right, or top/bottom — a photo padded to a
+  // square): cut when the photo inside is mostly something else (< 60% of the
+  // bar's colour; a white-and-grey mesh wall is ~40% near-white).
+  // BANDS ON BOTH AXES are either a mount round a photo or a product sitting
+  // on white: only a band whose inside line is ≥ 90% different is cut — a
+  // product on white touches its band with an edge that is still mostly white
+  // (it is the backdrop, filled edge to edge in step 4).
+  const both = (T.k || B.k) && (L.k || R.k);
+  const cut = (x) => (x.k && x.share < (both ? 0.1 : 0.6) ? x.k : 0);
+  const t = cut(T), b = cut(B);
+  // The side columns are re-read inside the cut rows, so a top/bottom bar
+  // never hides a left/right one.
+  const colIn = (x) => Array.from({ length: Math.max(1, h - b - t) }, (_, j) => at(x, t + j));
+  const L2 = L.k ? run((k) => colIn(k), w, capW) : L, R2 = R.k ? run((k) => colIn(w - 1 - k), w, capW) : R;
+  return { t, b, l: cut(L2), r: cut(R2) };
 }
 
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[s.length >> 1] : 0; };
@@ -140,21 +151,23 @@ function plan(a, W, H, { fill = FILL } = {}) {
   // Box in full-size pixels, relative to the inner image.
   const bx0 = box.x0 * sx - inner.left, bx1 = box.x1 * sx - inner.left;
   const by0 = box.y0 * sy - inner.top, by1 = box.y1 * sy - inner.top;
-  // A scene (not a flat backdrop) is CUT, never extended: a mirrored scene
-  // shows seams. The square is as close to the 80% fill as the photo allows,
-  // at most its short side (a tall product loses a sliver top or bottom).
+  // A SCENE (not a flat backdrop). Its "product" box can latch onto a part
+  // of the product (a print, a logo), so a scene is never zoomed by it:
+  //   the product fits the photo's short side → a short-side square is CUT,
+  //     centred on the product (no extension, no seam);
+  //   it does not (a dress in a portrait shot) → the whole long side is kept
+  //     and the square is extended with a BLURRED, enlarged copy of the photo
+  //     itself — background edge to edge, no seam, no flat band.
   const longest = Math.max(bx1 - bx0, by1 - by0);
   const short = Math.min(inner.width, inner.height);
-  // "The product" covering (nearly) the whole photo means it could not be told
-  // from a busy backdrop: then the square is simply the photo's short side.
-  const blind = !box.found || ((bx1 - bx0) >= inner.width * 0.9 && (by1 - by0) >= inner.height * 0.9);
-  const lost = !uniform;
-  const side = lost
-    ? (blind ? short : Math.min(short, Math.max(Math.round(longest), Math.round(longest / fill))))
-    : Math.round(longest / fill);
-  const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2;
+  const long = Math.max(inner.width, inner.height);
+  const fits = box.found && longest <= short * 0.94;
+  const cutIt = !uniform && (fits || !box.found);
+  const blurIt = !uniform && !cutIt;
+  const side = cutIt ? short : blurIt ? long : Math.round(longest / fill);
+  const cx = blurIt ? inner.width / 2 : (bx0 + bx1) / 2, cy = blurIt ? inner.height / 2 : (by0 + by1) / 2;
   let wx0 = Math.round(cx - side / 2), wy0 = Math.round(cy - side / 2);
-  if (lost) {   // cut, never extend: clamp the window inside the photo
+  if (cutIt) {   // cut, never extend: clamp the window inside the photo
     wx0 = Math.min(Math.max(0, wx0), inner.width - side);
     wy0 = Math.min(Math.max(0, wy0), inner.height - side);
   }
@@ -164,8 +177,8 @@ function plan(a, W, H, { fill = FILL } = {}) {
   crop.height = Math.min(inner.height, wy1) - crop.top;
   const pad = { left: Math.max(0, -wx0), top: Math.max(0, -wy0), right: Math.max(0, wx1 - inner.width), bottom: Math.max(0, wy1 - inner.height) };
   return {
-    frame, inner, crop, pad, side, found: box.found, cut: lost,
-    fill: uniform ? { mode: "colour", colour: { r: bg[0], g: bg[1], b: bg[2] } } : { mode: "cut" },
+    frame, inner, crop, pad, side, found: box.found,
+    fill: uniform ? { mode: "colour", colour: { r: bg[0], g: bg[1], b: bg[2] } } : blurIt ? { mode: "blur" } : { mode: "cut" },
   };
 }
 
@@ -183,12 +196,21 @@ async function makeMetaReady(sharp, input, { size = SIZE, fill = FILL } = {}) {
   // Inner (frame cut) → crop (window ∩ inner) → extend (window beyond inner).
   let img = sharp(full, { raw: { width: W, height: H, channels: fi.channels } }).removeAlpha().extract(p.inner);
   img = sharp(await img.raw().toBuffer(), { raw: { width: p.inner.width, height: p.inner.height, channels: 3 } }).extract(p.crop);
-  // Only a flat backdrop is ever extended, with its own colour (a scene is cut, pad = 0).
+  // A flat backdrop is extended with its own colour; a scene that does not
+  // fit is laid over a blurred, enlarged copy of itself; a cut scene has pad 0.
   let cur = { buf: await img.raw().toBuffer(), w: p.crop.width, h: p.crop.height };
+  const raw3 = (buf, w, h) => sharp(buf, { raw: { width: w, height: h, channels: 3 } });
   if (p.pad.left || p.pad.right || p.pad.top || p.pad.bottom) {
-    const out = await sharp(cur.buf, { raw: { width: cur.w, height: cur.h, channels: 3 } })
-      .extend({ ...p.pad, background: p.fill.colour }).raw().toBuffer({ resolveWithObject: true });
-    cur = { buf: out.data, w: out.info.width, h: out.info.height };
+    if (p.fill.mode === "blur") {
+      const side = cur.w + p.pad.left + p.pad.right;
+      const back = await raw3(cur.buf, cur.w, cur.h).resize(side, side, { fit: "cover" }).blur(30).modulate({ brightness: 0.92 }).removeAlpha().raw().toBuffer();
+      const front = await raw3(cur.buf, cur.w, cur.h).png().toBuffer();
+      const out = await sharp(await raw3(back, side, side).composite([{ input: front, left: p.pad.left, top: p.pad.top }]).png().toBuffer()).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      cur = { buf: out.data, w: out.info.width, h: out.info.height };
+    } else {
+      const out = await raw3(cur.buf, cur.w, cur.h).extend({ ...p.pad, background: p.fill.colour }).raw().toBuffer({ resolveWithObject: true });
+      cur = { buf: out.data, w: out.info.width, h: out.info.height };
+    }
   }
   const buffer = await sharp(cur.buf, { raw: { width: cur.w, height: cur.h, channels: 3 } })
     .resize(size, size, { fit: "fill" }).jpeg({ quality: 88, mozjpeg: true }).toBuffer();
