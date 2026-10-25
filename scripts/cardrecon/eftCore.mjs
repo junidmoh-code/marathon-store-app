@@ -614,9 +614,11 @@ export function destinationVerdict({ accountMask, destBankName, allowedAccounts,
 // is read from what the real documents print — never guessed:
 //   capitec       "Payment type Immediate Payment"           (reader: immediate)
 //   absa          "Immediate payment:" then "Y" / "N"        (reader: immediate)
-//   fnb, standardbank  NO such field in the real notifications this repo was
-//                 built from — they refuse with `needsSample`, until a real
-//                 immediate-payment sample shows where the bank says it.
+//   standardbank  the document HEADING "Immediate Payment Confirmation"
+//                 (plain "Payment Confirmation" is not) — never the footer,
+//                 which mentions immediate payments on every confirmation
+//                 (reader: immediate; Junid, 25 Oct 2026, real R710 sample)
+//   fnb           NO such field — see below.
 // Whatever a bank prints, a payment dated in the FUTURE of its own
 // notification's arrival is scheduled and refuses.
 export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
@@ -625,7 +627,7 @@ export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
 // destination, so a recorded FNB payment is FNB -> FNB: an intra-bank transfer,
 // which clears in real time. Immediate by its nature, not a guess (Junid's
 // rule, 5 Oct 2026). Gated below on the destination bank being FNB.
-export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb"];
+export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank"];
 
 /**
  * @param {{parsed:object, reader?:string, receivedAt:number|null}} p
