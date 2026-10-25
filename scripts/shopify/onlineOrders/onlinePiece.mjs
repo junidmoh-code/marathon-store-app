@@ -47,6 +47,8 @@ const qtyOf = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) :
 export function planRelease({ kind, record, orderId, lineIndex, escKey, piece }) {
   const p = qtyOf(piece);
   if (record == null) return { action: RELEASE.GONE, before: 0, after: 0, why: "the request is not there any more" };
+  // This line's piece already came off (a re-run after a crash): nothing more to take.
+  if (record.onlineReleased && record.onlineReleased.escKey === escKey) return { action: RELEASE.GONE, before: 0, after: 0, why: "this order's part was already taken back" };
   if (kind === STEP.REFILL) {
     if (record.status === "cancelled" && record.cancelReason === "no_longer_needed") {
       return { action: RELEASE.GONE, before: 0, after: 0, why: "already withdrawn as no longer needed" };
@@ -75,16 +77,26 @@ export function planRelease({ kind, record, orderId, lineIndex, escKey, piece })
 }
 
 /** The record as it should be after `plan` (undefined = abort; null = remove). PURE. */
-export function applyPlan(kind, record, plan, { nowMs, ref }) {
+export function applyPlan(kind, record, plan, { nowMs, ref, escKey = null }) {
   if (plan.action === RELEASE.CANCEL) {
     if (kind === STEP.REFILL) {
       return { ...record, status: "cancelled", cancelReason: "no_longer_needed", resolvedAt: new Date(nowMs).toISOString(),
-               onlineReleased: { qty: plan.before, at: nowMs, ref } };
+               onlineReleased: { qty: plan.before, at: nowMs, ref, escKey, before: plan.before, after: 0 } };
     }
     return null; // an untouched card is removed, as a cancelled hub order is (escalate.mjs withdrawRequest did the same)
   }
   if (plan.action === RELEASE.REDUCE) {
-    return { ...record, qty: plan.after, onlineReleased: { qty: plan.before - plan.after, at: nowMs, ref, before: plan.before, after: plan.after } };
+    // What is left is NOT the online order's any more: its tag comes off, so
+    // nothing can take it back a second time or mistake it for this line's
+    // request. The original tag is kept inside onlineReleased.
+    const released = { qty: plan.before - plan.after, at: nowMs, ref, escKey, before: plan.before, after: plan.after };
+    if (kind === STEP.REFILL) {
+      return { ...record, qty: plan.after, onlineRef: null,
+               createdFrom: { ...record.createdFrom, via: `${ESCALATION_VIA}_released` },
+               onlineReleased: { ...released, tag: record.createdFrom || null } };
+    }
+    return { ...record, qty: plan.after, onlineRef: null, onlineEscalationKey: null,
+             onlineReleased: { ...released, tag: record.onlineEscalationKey || null } };
   }
   return undefined;
 }
@@ -104,19 +116,43 @@ export async function releaseOnlinePiece(ctx, { orderId, orderRef, lineIndex, es
   const res = await ctx.db.ref(path).transaction((cur) => {
     if (cur == null) { plan = { action: RELEASE.GONE, before: 0, after: 0 }; return null; } // cold-cache pass: re-read, never abort
     plan = planRelease({ kind, record: cur, orderId, lineIndex, escKey, piece });
-    const next = applyPlan(kind, cur, plan, { nowMs: ctx.now, ref: orderRef });
+    const next = applyPlan(kind, cur, plan, { nowMs: ctx.now, ref: orderRef, escKey });
     return next === undefined ? undefined : next;
   });
   if (!plan) plan = { action: RELEASE.UNCLEAR, why: "the request could not be read" };
   const changed = (plan.action === RELEASE.CANCEL || plan.action === RELEASE.REDUCE) && res.committed;
   if (changed) {
     const what = kind === STEP.REFILL ? "refill request" : "Shop Refill card";
-    ctx.log(`  ⇣ ${orderRef} line ${lineIndex + 1}: ${what} ${key} ${plan.action === RELEASE.CANCEL ? "withdrawn" : "reduced"} ${plan.before} → ${plan.after} (the online order's ${plan.before - plan.after}; ${by})`);
+    (ctx.log || (() => {}))(`  ⇣ ${orderRef} line ${lineIndex + 1}: ${what} ${key} ${plan.action === RELEASE.CANCEL ? "withdrawn" : "reduced"} ${plan.before} → ${plan.after} (the online order's ${plan.before - plan.after}; ${by})`);
     await ctx.db.ref(`online_orders/${orderId}/requestChanges/${ctx.now}_${lineIndex}`).set({
       lineIndex, kind, key, action: plan.action, before: plan.before, after: plan.after, by, at: ctx.now,
     });
   }
   return { ...plan, changed, path };
+}
+
+/**
+ * WhatsApp to Junid (ctx.whatsappJunid); email (ctx.send) when WhatsApp is
+ * missing or fails; ONCE per request record (`once` = a path to mark), so a
+ * second tap on the same line does not send it again. Never throws.
+ */
+export async function tellJunid(ctx, text, { once = null } = {}) {
+  const log = ctx.log || (() => {});
+  // No channel on this run: nothing is marked, so a run that has one still tells him.
+  if (!ctx.whatsappJunid && !ctx.send) { log(`  ⚠ Junid NOT told (no WhatsApp or mail on this run): ${text.split("\n")[0]}`); return; }
+  if (once) {
+    try {
+      const res = await ctx.db.ref(once).transaction((cur) => (cur == null ? ctx.now : undefined));
+      if (!res.committed) { log(`  · Junid already told about this (${once})`); return; }
+    } catch { /* tell anyway */ }
+  }
+  try {
+    if (ctx.whatsappJunid) { await ctx.whatsappJunid(text); log(`  ✉ WhatsApp to Junid: ${text.split("\n")[0]}`); return; }
+  } catch (e) { log(`  ✗ WhatsApp to Junid failed (${String(e?.message || e)}) — emailing instead`); }
+  try {
+    if (ctx.send) { await ctx.send({ subject: "Website order: a request needs your eye", text }); log(`  ✉ emailed Junid: ${text.split("\n")[0]}`); return; }
+  } catch (e) { log(`  ✗ email to Junid failed (${String(e?.message || e)})`); }
+  log(`  ⚠ Junid NOT told (no WhatsApp or mail on this run): ${text.split("\n")[0]}`);
 }
 
 /** The WhatsApp to Junid when the online piece cannot be told apart. PURE. */

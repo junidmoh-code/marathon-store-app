@@ -292,8 +292,11 @@ export async function afterSwap({ db, orderKey, i, order, swappedFrom, to, newPi
   }
   const esc = swappedFrom.escalation;
   if (esc?.phase === "await" && esc.request) {
-    await withdrawRequest({ db, now }, String(orderKey), i, esc);
-    notes.push(`escalation request ${esc.request.key} withdrawn (only if untouched)`);
+    // The OLD line's quantity: the line already holds the new item. No WhatsApp leg here — an unclear
+    // request is left alone and said in the swap notes.
+    const rel = await withdrawRequest({ db, now }, String(orderKey), i, esc, { piece: Number(swappedFrom.qty) || null });
+    const said = { cancel: "withdrawn", reduce: `reduced ${rel.before} → ${rel.after}`, gone: "already gone", busy: "left alone (already being worked on)", unclear: "left alone — this order's part could not be told; check it by hand" };
+    notes.push(`escalation request ${esc.request.key} ${said[rel.action] || rel.action}`);
   }
   if (esc) await db.ref(`${ESCALATIONS_PATH}/${orderKey}_${i}`).set(null);
 

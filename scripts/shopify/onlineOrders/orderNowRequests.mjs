@@ -39,7 +39,7 @@ import { ONLINE_ORDERS_PATH, LINE_STATUS, orderLabel } from "../../../src/utils/
 import { linesOf } from "./orderModel.mjs";
 import { routeLines, routeFor } from "./routing.mjs";
 import { ESCALATIONS_PATH } from "./escalate.mjs";
-import { planRelease, releaseOnlinePiece, unclearMessage, RELEASE } from "./onlinePiece.mjs";
+import { planRelease, releaseOnlinePiece, unclearMessage, tellJunid, RELEASE } from "./onlinePiece.mjs";
 import { requestKey } from "../../../src/utils/onlineEscalation.js";
 
 export const ORDER_NOW = Object.freeze({ PENDING: "pending", APPLYING: "applying", ORDERED: "ordered", NOT_IN_STOCK: "not_in_stock", REFUSED: "refused" });
@@ -123,17 +123,6 @@ async function clearAttentionIfSettled(ctx, id) {
   });
 }
 
-/** WhatsApp to Junid (ctx.whatsappJunid); email when WhatsApp is not available; never throws. */
-async function tellJunid(ctx, text) {
-  try {
-    if (ctx.whatsappJunid) { await ctx.whatsappJunid(text); ctx.log(`  ✉ WhatsApp to Junid: ${text.split("\n")[0]}`); return; }
-  } catch (e) { ctx.log(`  ✗ WhatsApp to Junid failed (${String(e?.message || e)}) — emailing instead`); }
-  try {
-    if (ctx.send) { await ctx.send({ subject: "Website order: a request needs your eye", text }); return; }
-  } catch { /* logged below */ }
-  ctx.log(`  ⚠ Junid NOT told (no WhatsApp or mail here): ${text.split("\n")[0]}`);
-}
-
 /** "Hub 1: 0 free, Hub 2: 0 free · Central has 3 (a refill, not a pick)". PURE. */
 export function describeChecked(checked) {
   const free = (checked?.free || []).map((c) => `${place(c.loc)}: ${c.free} free`).join(", ");
@@ -172,7 +161,21 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
       const line = lines[i];
       // RESUME: a crash after the line was sent to reroute but before this
       // request said so — the line carries this request's id.
-      if (line?.orderNow?.rid === rid) { await answer({ state: ORDER_NOW.ORDERED, routedTo: line.source?.locationId || null, resumed: true }); rerouted = true; continue; }
+      if (line?.orderNow?.rid === rid) {
+        // The release the line recorded (if any) is finished here — idempotent:
+        // a piece already taken back reads as "gone".
+        const rel = line.orderNow.release;
+        let released = null;
+        if (rel?.key) {
+          const out = await releaseOnlinePiece(ctx, { orderId: id, orderRef: orderLabel(order), lineIndex: i, esc: { request: { kind: rel.kind, key: rel.key } }, escKey: rel.escKey, piece: rel.piece, by: `Order it now (${who}, resumed)` });
+          released = { key: rel.key, kind: rel.kind, action: out.action, before: out.before ?? null, after: out.after ?? null };
+          if (!out.changed && out.action !== RELEASE.GONE) {
+            await tellJunid(ctx, unclearMessage({ orderRef: orderLabel(order), lineIndex: i, line, esc: { request: { kind: rel.kind, key: rel.key, from: rel.from, to: rel.to } }, why: `it changed while the line was being re-ordered (${out.why || out.action})` }), { once: `${ONLINE_ORDERS_PATH}/${id}/requestAlerts/${rel.key}` });
+          }
+        }
+        await answer({ state: ORDER_NOW.ORDERED, routedTo: line.source?.locationId || null, resumed: true, ...(released ? { released } : {}) });
+        rerouted = true; continue;
+      }
       const blocked = orderNowBlocker({ line, req, enabled: ctx.enabled, order: fresh, i });
       if (blocked) { await answer({ state: ORDER_NOW.REFUSED, why: blocked }); continue; }
       // A hub already sent a unit of this line (the wrong size, or some units of
@@ -208,9 +211,9 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
         const record = await ctx.get(open.request.kind === "refill" ? `refill_requests/${open.request.key}` : `orders/${open.request.key}`);
         const plan = planRelease({ kind: open.request.kind, record, orderId: id, lineIndex: i, escKey, piece });
         const what = open.request.kind === "refill" ? `a refill from ${place(open.request.from)}` : `a Shop Refill card at ${place(open.request.from)}`;
-        if (plan.action === RELEASE.BUSY) { await answer({ state: ORDER_NOW.REFUSED, why: `already ordered: ${what} for this line (${open.request.key}) is being worked on (${plan.why}); not ordered twice`, checked }); continue; }
+        if (plan.action === RELEASE.BUSY) { await answer({ state: ORDER_NOW.REFUSED, why: `already ordered: ${what} for this line (${open.request.key}) is being worked on or answered (${plan.why}); not ordered twice`, checked }); continue; }
         if (plan.action === RELEASE.UNCLEAR) {
-          await tellJunid(ctx, unclearMessage({ orderRef: orderLabel(order), lineIndex: i, line, esc: open, why: plan.why }));
+          await tellJunid(ctx, unclearMessage({ orderRef: orderLabel(order), lineIndex: i, line, esc: open, why: plan.why }), { once: `${ONLINE_ORDERS_PATH}/${id}/requestAlerts/${open.request.key}` });
           await answer({ state: ORDER_NOW.REFUSED, why: `the stock is back, but which part of ${what} (${open.request.key}) is this order's could not be told (${plan.why}); nothing was changed and Junid has been told`, checked });
           continue;
         }
@@ -220,7 +223,14 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
         if (orderNowBlocker({ line: cur, req, enabled: true, order: { ...fresh, lines: undefined }, i }) || !sameSpot(cur.escalation, esc)) return undefined;
         // Only the status changes on `source`: its entryKey / orderKeys stay, so
         // the re-route cancels the line's old hub orders / strip entry (as Resolve does).
-        return clean({ ...cur, escalation: null, source: { ...cur.source, status: LINE_STATUS.REROUTE }, orderNow: { rid, by: req.by || null, at: Number(req.at) || ctx.now, appliedAt: ctx.now } });
+        // escalationGen + 1: a later chain on this line raises NEW keys and can
+        // never adopt the request this one leaves behind (requestKey's gen).
+        // `release` records what still has to come off, so a crash before it
+        // does is finished by the RESUME branch above.
+        return clean({ ...cur, escalation: null, ...(open ? { escalationGen: (Number(cur.escalationGen) || 0) + 1 } : {}),
+          source: { ...cur.source, status: LINE_STATUS.REROUTE },
+          orderNow: { rid, by: req.by || null, at: Number(req.at) || ctx.now, appliedAt: ctx.now,
+            ...(open ? { release: { kind: open.request.kind, key: open.request.key, from: open.request.from || null, to: open.request.to || null, escKey, piece } } : {}) } });
       });
       if (!landed.committed || !landed.snapshot.val()) {
         await answer({ state: ORDER_NOW.REFUSED, why: "the line changed while it was being ordered; look again", checked });
@@ -234,7 +244,7 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
         // It changed between the plan and the write (picked up, or re-tagged):
         // the line is already re-routed, so Junid must look at the request.
         if (!rel.changed && rel.action !== RELEASE.GONE) {
-          await tellJunid(ctx, unclearMessage({ orderRef: orderLabel(order), lineIndex: i, line, esc: open, why: `it changed while the line was being re-ordered (${rel.why || rel.action})` }));
+          await tellJunid(ctx, unclearMessage({ orderRef: orderLabel(order), lineIndex: i, line, esc: open, why: `it changed while the line was being re-ordered (${rel.why || rel.action})` }), { once: `${ONLINE_ORDERS_PATH}/${id}/requestAlerts/${open.request.key}` });
         }
       }
       if (esc) await ctx.db.ref(`${ESCALATIONS_PATH}/${id}_${i}`).set(null);

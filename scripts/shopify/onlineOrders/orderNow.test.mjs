@@ -258,3 +258,54 @@ describe("Order it now", () => {
     expect(req(f).why).toMatch(/could not be checked \(read timed out\)/);
   });
 });
+
+// ── Review fixes (Sonnet architect, #792) ─────────────────────────────────────
+describe("Order it now — after a release", () => {
+  const OURS = { via: "online_escalation", orderKey: "9001", lineIndex: 0, ref: "#1794" };
+  it("a reduced request loses its online tag (never taken back twice) and the line's next chain gets new keys", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 5 } } } }, refill: { status: "open", qty: 3, createdFrom: OURS }, requests: { "0_0": tap(0, shox()) } }));
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async () => {} });
+    const row = f.read(`refill_requests/${REFILL}`);
+    expect(row).toMatchObject({ qty: 2, createdFrom: { via: "online_escalation_released" }, onlineReleased: { before: 3, after: 2, escKey: REFILL, tag: OURS } });
+    expect(row.onlineRef).toBeUndefined();   // RTDB drops a null
+    expect(line0(f).escalationGen).toBe(1);
+    expect(line0(f).orderNow.release).toMatchObject({ kind: "refill", key: REFILL, piece: 1 });
+  });
+
+  it("a crash between the re-route and the release: the retry finishes it, once (3 → 2, never 2 → 1)", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 5 } } } }, refill: { status: "open", qty: 3, createdFrom: OURS }, requests: { "0_0": tap(0, shox()) } }));
+    // The state a crash leaves: the line already re-routed with its release recorded, the request untouched, "applying".
+    const l = { ...shox(), escalation: null, escalationGen: 1, source: { status: "reroute", locationId: "hub1" },
+      orderNow: { rid: "0_0", by: JUNID, at: NOW - 60e3, appliedAt: NOW - 600e3, release: { kind: "refill", key: REFILL, from: "central", to: "hub1", escKey: REFILL, piece: 1 } } };
+    await f.db.ref("online_orders/9001/lines/0").set(l);
+    await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ ...tap(0, shox()), state: "applying", claimedAt: NOW - 600e3 });
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async () => {} });
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ qty: 2, status: "open" });
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.ORDERED, resumed: true, released: { action: "reduce", before: 3, after: 2 } });
+    // A further retry finds the piece already taken back.
+    await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ ...tap(0, shox()), state: "applying", claimedAt: NOW - 600e3 });
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async () => {} });
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ qty: 2 });
+  });
+
+  it("Junid is told ONCE per request, however many taps", async () => {
+    const wa = [];
+    const genuine = { status: "open", qty: 3, createdFrom: { source: "scan" } };
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: genuine, requests: { "0_0": tap(0, shox()) } }));
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async (m) => { wa.push(m); } });
+    await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ ...tap(0, shox()), at: NOW });
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async (m) => { wa.push(m); } });
+    expect(wa).toHaveLength(1);
+    expect(req(f).state).toBe(ORDER_NOW.REFUSED);   // the second tap was answered too — just not re-sent
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ qty: 3, status: "open" });
+  });
+
+  it("WhatsApp down → Junid is emailed instead", async () => {
+    const mails = [];
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", qty: 3, createdFrom: { source: "scan" } }, requests: { "0_0": tap(0, shox()) } }));
+    await runOrdersPoll({ ...deps(f), send: async (m) => { mails.push(m); }, whatsappJunid: async () => { throw new Error("gateway down"); } });
+    const ours = mails.filter((m) => /a request needs your eye/.test(m.subject));
+    expect(ours).toHaveLength(1);
+    expect(ours[0].text).toMatch(/could not tell which part/);
+  });
+});

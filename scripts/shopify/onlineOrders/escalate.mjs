@@ -20,7 +20,7 @@ import {
   ONLINE_ORDERS_PATH, LINE_STATUS, ORDER_STATUS, ATTENTION_KIND, PARKED_LINE_STATUSES, orderLabel,
 } from "../../../src/utils/onlineOrders.js";
 import { linesOf } from "./orderModel.mjs";
-import { releaseOnlinePiece, RELEASE } from "./onlinePiece.mjs";
+import { releaseOnlinePiece, tellJunid, RELEASE } from "./onlinePiece.mjs";
 import {
   ESC_PHASE, ESC_TERMINAL, STEP, ESCALATION_VIA, startEscalation, stepEscalation, pendingAction,
   requestKey, requestOutcome, currentStep, describeEscalation,
@@ -356,16 +356,22 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
 // one whose online piece cannot be told apart is left as it is (and Junid is
 // told when this tick can reach him). Anything already moving is left to the
 // people moving it. Every change is logged with before and after quantity.
-export async function withdrawRequest(ctx, orderId, i, esc) {
-  const piece = Math.max(1, Number(await (ctx.get ? ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/qty`) : ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/qty`).get().then((s) => s.val()))) || 1);
+export async function withdrawRequest(ctx, orderId, i, esc, { piece = null } = {}) {
+  // The piece is the quantity the request was raised for. A caller whose line
+  // has already changed (a swap) passes the OLD line's quantity.
+  let qty = Number(piece);
+  if (!(qty >= 1)) {
+    const read = ctx.get ? await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/qty`) : (await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/qty`).get()).val();
+    qty = Math.max(1, Number(read) || 1);
+  }
   const log = ctx.log || (() => {});
   const rel = await releaseOnlinePiece({ ...ctx, log }, {
-    orderId, orderRef: `#${orderId}`, lineIndex: i, esc, escKey: requestKey(orderId, i, esc), piece, by: "withdrawn (the line no longer waits on it)",
+    orderId, orderRef: `#${orderId}`, lineIndex: i, esc, escKey: requestKey(orderId, i, esc), piece: qty, by: "withdrawn (the line no longer waits on it)",
   });
   if (rel.action === RELEASE.UNCLEAR) {
     const text = `Website order ${orderId}, line ${i + 1}: its open request ${esc.request.key} was due to be withdrawn, but which part is the online order's could not be told (${rel.why}). Nothing was changed — please check it by hand.`;
     log(`  ⚠ ${text}`);
-    try { if (ctx.whatsappJunid) await ctx.whatsappJunid(text); else if (ctx.send) await ctx.send({ subject: "Website order: a request needs your eye", text }); } catch { /* logged above */ }
+    await tellJunid({ ...ctx, log }, text, { once: `${ONLINE_ORDERS_PATH}/${orderId}/requestAlerts/${esc.request.key}` });
   }
   return rel;
 }

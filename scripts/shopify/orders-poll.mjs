@@ -80,8 +80,9 @@ function whatsappJunid() {
   let token = process.env.BROADCAST_SERVICE_TOKEN;
   if (!token) {
     try {
-      const m = /^\s*BROADCAST_SERVICE_TOKEN\s*=\s*"?([^"\n]+)"?\s*$/m.exec(readFileSync(join(homedir(), ".config/marathon/customer-agent.env"), "utf8"));
-      token = m ? m[1].trim() : null;
+      // KEY=value, KEY="value", KEY='value', an `export ` prefix, a trailing # comment.
+      const m = /^\s*(?:export\s+)?BROADCAST_SERVICE_TOKEN\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#\n]+))/m.exec(readFileSync(join(homedir(), ".config/marathon/customer-agent.env"), "utf8"));
+      token = m ? (m[1] ?? m[2] ?? m[3] ?? "").trim() || null : null;
     } catch { token = null; }
   }
   if (!token) return null;
