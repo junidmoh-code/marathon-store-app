@@ -10,7 +10,8 @@
 //             go-live): new paid unfulfilled ones are written, routed and held;
 //             cancelled ones are released (or flagged, if already packed).
 //   2. KEEP   every open order: escalate lines whose place failed (switch on;
-//             escalate.mjs), re-route lines Junid sent back (Resolve),
+//             escalate.mjs; a waiting line whose stock lands at Marathon PE
+//             is marked here first, peArrival.mjs), re-route lines Junid sent back (Resolve),
 //             create the feed entries a line is missing while the switch is on
 //             (this is also the backfill when he turns it on), re-derive the
 //             status, raise attention, and make the hold rows match the lines.
@@ -43,6 +44,7 @@ import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 import { applySwapRequests } from "./swapRequests.mjs";
 import { applyOrderNowRequests } from "./orderNowRequests.mjs";
+import { applyPeArrivals } from "./peArrival.mjs";
 
 export const META_PATH = "online_orders_meta";
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -154,6 +156,12 @@ export async function runOrdersPoll(deps) {
         // is back in stock goes to reroute, and maintainOrder below routes and
         // raises it exactly like a new order's line.
         if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor, resolveVariant })) {
+          order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+        }
+        // Stock that LANDED at Marathon PE for a waiting line (Junid, 25 Oct
+        // 16:37): the line is here, ready to pack, no pick — before the chain
+        // below would keep waiting on (or re-raise) its request.
+        if (ctx.enabled && await applyPeArrivals(ctx, id, order)) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
         // Escalation raises requests staff see, so only with the switch on.
