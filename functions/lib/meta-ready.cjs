@@ -147,9 +147,12 @@ function plan(a, W, H, { fill = FILL } = {}) {
   // wider than the short side is extended (mirrored).
   const longest = Math.max(bx1 - bx0, by1 - by0);
   const short = Math.min(inner.width, inner.height);
-  const lost = !uniform && (!box.found || longest <= short);
+  // "The product" covering (nearly) the whole photo means it could not be told
+  // from a busy backdrop: then the square is simply the photo's short side.
+  const blind = !box.found || ((bx1 - bx0) >= inner.width * 0.9 && (by1 - by0) >= inner.height * 0.9);
+  const lost = !uniform && (blind || longest <= short);
   const side = lost
-    ? (box.found ? Math.max(Math.round(longest), Math.min(short, Math.round(longest / fill))) : short)
+    ? (blind ? short : Math.max(Math.round(longest), Math.min(short, Math.round(longest / fill))))
     : Math.round(longest / fill);
   const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2;
   let wx0 = Math.round(cx - side / 2), wy0 = Math.round(cy - side / 2);
