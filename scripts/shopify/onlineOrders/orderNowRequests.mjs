@@ -20,18 +20,18 @@
 // hold and its parcel estimate. Nothing else raises anything.
 //
 // NEVER TWICE. A line already on a pick (status pick / display), already
-// being routed, or with a raise in flight is refused and says so. An open
-// escalation request (Central refill / Hub 2 Shop Refill card) is withdrawn
-// first, and only while nobody has touched it (escalate.mjs withdrawRequest);
-// one already being worked on is refused ("already ordered"). Requests are
-// keyed per line and route generation, and claimed in a transaction.
+// being routed, with a raise in flight, or with an escalation request open
+// (a Central refill / Hub 2 Shop Refill card not answered yet) is refused and
+// says so: that request IS the order. Requests are never withdrawn or changed
+// here (Junid: no change to refill request logic). Requests are keyed per line
+// and route generation, and claimed in a transaction.
 //
 // NOTHING HERE MOVES STOCK. Stock still deducts only at Pack. No refill
 // policy, target or request logic is touched.
 import { ONLINE_ORDERS_PATH, LINE_STATUS, orderLabel } from "../../../src/utils/onlineOrders.js";
 import { linesOf } from "./orderModel.mjs";
 import { routeLines, routeFor } from "./routing.mjs";
-import { withdrawRequest, ESCALATIONS_PATH } from "./escalate.mjs";
+import { ESCALATIONS_PATH } from "./escalate.mjs";
 
 export const ORDER_NOW = Object.freeze({ PENDING: "pending", APPLYING: "applying", ORDERED: "ordered", NOT_IN_STOCK: "not_in_stock", REFUSED: "refused" });
 export const STUCK_ORDER_NOW_MS = 5 * 60 * 1000;
@@ -70,6 +70,12 @@ export function orderNowBlocker({ line, req, enabled, order = null, i = Number(r
   // line that would quietly undo the replacement.
   if (line.swappedFrom) return "this line was replaced with another item; Order it now would undo that. Ask Junid";
   if (line.escalation?.pending) return "an order for this line is being raised right now; not ordered twice";
+  const open = line.escalation?.phase === "await" ? line.escalation.request : null;
+  if (open) {
+    const what = open.kind === "refill" ? `a refill from ${place(open.from)}` : `a Shop Refill card at ${place(open.from)}`;
+    const since = Number(open.at) ? ` since ${new Date(Number(open.at) + 2 * 3600e3).toISOString().slice(0, 16).replace("T", " ")}` : "";
+    return `already ordered: ${what} for this line (${open.key}) is open${since}; not ordered twice. It moves on when ${place(open.from)} answers it`;
+  }
   // Sent already: the stock moved when it was sent, but the box lands by
   // 11:00 the next working day, when the chain puts the line on the pick.
   if (line.escalation?.phase === "wait") {
@@ -177,18 +183,7 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
       const routedQty = pieces.filter((p) => p.locationId).reduce((s, p) => s + p.qty, 0);
       if (routedQty < qty) { await answer({ state: ORDER_NOW.NOT_IN_STOCK, checked }); continue; }
 
-      // ── Never twice: the open escalation request goes first, untouched only ──
       const esc = line.escalation;
-      let withdrew = null;
-      if (esc?.phase === "await" && esc.request) {
-        const out = await withdrawRequest(ctx, id, i, esc);
-        if (!out) {
-          const what = esc.request.kind === "refill" ? `a refill from ${place(esc.request.from)}` : `a Shop Refill card at ${place(esc.request.from)}`;
-          await answer({ state: ORDER_NOW.REFUSED, why: `already ordered: ${what} (${esc.request.key}) is being worked on; not ordered twice`, checked });
-          continue;
-        }
-        withdrew = `${esc.request.kind} ${esc.request.key} (${place(esc.request.from)}) withdrawn`;
-      }
       const landed = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines/${i}`).transaction((cur) => {
         if (cur == null) return null; // the SDK's cold-cache pass: never abort on it
         if (orderNowBlocker({ line: cur, req, enabled: true, order: { ...fresh, lines: undefined }, i }) || !sameSpot(cur.escalation, esc)) return undefined;
@@ -197,14 +192,14 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
         return clean({ ...cur, escalation: null, source: { ...cur.source, status: LINE_STATUS.REROUTE }, orderNow: { rid, by: req.by || null, at: Number(req.at) || ctx.now, appliedAt: ctx.now } });
       });
       if (!landed.committed || !landed.snapshot.val()) {
-        await answer({ state: ORDER_NOW.REFUSED, why: `the line changed while it was being ordered; look again${withdrew ? ` (${withdrew})` : ""}`, checked });
+        await answer({ state: ORDER_NOW.REFUSED, why: "the line changed while it was being ordered; look again", checked });
         continue;
       }
       if (esc) await ctx.db.ref(`${ESCALATIONS_PATH}/${id}_${i}`).set(null);
       await clearAttentionIfSettled(ctx, id);
       rerouted = true;
       ctx.summary.orderNow = (ctx.summary.orderNow || 0) + 1;
-      await answer({ state: ORDER_NOW.ORDERED, routedTo: pieces[0].locationId, checked, withdrew });
+      await answer({ state: ORDER_NOW.ORDERED, routedTo: pieces[0].locationId, checked });
     } catch (e) {
       // Left "applying": a later tick past STUCK_ORDER_NOW_MS decides it again
       // (every step above is guarded, so a repeat finds its own work). After

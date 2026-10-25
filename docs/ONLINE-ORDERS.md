@@ -436,15 +436,17 @@ The poller's keep pass (`orderNowRequests.mjs`, after the swap requests)
 re-checks live stock with the reads a new order's routing uses
 (`availabilityFor` + `routeLines`: the routed shops and hubs, minus what other
 website orders hold; Central's count is reported, never routed to). Routable
-in full → the open escalation request is withdrawn (untouched only, else
-refused "already ordered"), the line goes to `reroute` (escalation cleared,
+in full → the line goes to `reroute` (escalation cleared,
 `orderNow {rid, by, at, appliedAt}` kept on the line) and the SAME pass routes
 and raises it exactly like a new Shopify line: hub order `/orders/{code}`
 (routeGen + 1, a fresh code) or a shop strip entry, the hold, the parcel
 estimate, the order status. Not routable → `not_in_stock`, the line untouched.
 
 Never twice: refused on a line already on a pick (`pick` / `display`), in
-`reroute`, mid-raise (`escalation.pending`), sent and waiting for the box
+`reroute`, mid-raise (`escalation.pending`), with an escalation request open
+(`await`: a Central refill or Hub 2 Shop Refill card not answered yet — it says
+which and since when; requests are never withdrawn or changed here, Junid:
+no change to refill request logic), sent and waiting for the box
 (`wait`), a line a hub already sent a unit of (`ready` / `collected` / a size
 sent — the wrong size, or a mixed qty > 1 answer), part of it in the basket, a
 replaced line (a re-route would undo the replacement), a line whose customer is

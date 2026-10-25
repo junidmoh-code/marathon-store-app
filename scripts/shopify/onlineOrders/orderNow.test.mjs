@@ -61,52 +61,51 @@ const req = (f, rid = "0_0") => f.read(`online_orders/9001/orderNowRequests/${ri
 const line0 = (f) => f.read("online_orders/9001/lines/0");
 
 describe("Order it now", () => {
-  it("stock fixed at Hub 1: Central's untouched refill is withdrawn and a hub pick is raised through the new-order route", async () => {
+  it("never twice: Central's refill for the line is still open → says so; the refill and the line are untouched (no request logic changes)", async () => {
     const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": tap(0, shox()) } }));
+    await tick(f);
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.REFUSED, by: JUNID });
+    expect(req(f).why).toMatch(/^already ordered: a refill from Central for this line \(web_9001_0_r1s0\) is open since 2026-10-24 10:00; not ordered twice/);
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "open" });
+    expect(line0(f)).toMatchObject({ source: { status: "resolving" }, escalation: { phase: "await" } });
+  });
+
+  it("stock fixed at Hub 1 on a line Hub 1 said out of stock (no request open): a hub pick is raised through the new-order route", async () => {
+    const l = shox({ escalation: { chain: "footwear", home: "hub1", round: 1, idx: 0, phase: "unavailable", attempts: [] }, source: { status: "unavailable" } });
+    const f = fakeDb(world({ lines: [l, tee()], refill: null, stock: { hub1: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": tap(0, l) } }));
     await tick(f);
     const r = req(f);
     expect(r).toMatchObject({ state: ORDER_NOW.ORDERED, routedTo: "hub1", by: JUNID });
-    expect(r.withdrew).toMatch(/refill web_9001_0_r1s0 \(Central\) withdrawn/);
-    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "cancelled", cancelReason: "no_longer_needed" });
-    const l = line0(f);
-    expect(l.source).toMatchObject({ status: "pick", locationId: "hub1" });
-    expect(l.source.orderKeys).toHaveLength(1);
-    expect(l.escalation).toBeUndefined();
-    expect(l.routeGen).toBe(1);
-    expect(l.orderNow).toMatchObject({ rid: "0_0", by: JUNID, at: NOW - 60e3 });
-    const hub = f.read(`orders/${l.source.orderKeys[0]}`);
+    const ln = line0(f);
+    expect(ln.source).toMatchObject({ status: "pick", locationId: "hub1" });
+    expect(ln.source.orderKeys).toHaveLength(1);
+    expect(ln.escalation).toBeUndefined();
+    expect(ln.routeGen).toBe(1);
+    expect(ln.orderNow).toMatchObject({ rid: "0_0", by: JUNID, at: NOW - 60e3 });
+    const hub = f.read(`orders/${ln.source.orderKeys[0]}`);
     expect(hub).toMatchObject({ customerName: "Shopify", channel: "online", onlineOrderId: "9001", onlineLineIndex: 0 });
     expect(f.read("online_escalations/9001_0")).toBeNull();
     expect(f.read("online_reservations/SHX/7/9001")).toMatchObject({ qty: 1, locs: { hub1: 1 } });
     expect(f.read("online_orders/9001/status")).toBe("picking");
-    // No stock moved: only the Pack deducts.
-    expect(f.read("stock/hub1/SHX/7/qty")).toBe(1);
+    expect(f.read("stock/hub1/SHX/7/qty")).toBe(1); // nothing deducted: only the Pack does
   });
 
   it("not there yet: says where it looked and leaves the line grey", async () => {
-    const f = fakeDb(world({ stock: { central: { SHX: { 7: { qty: 2 } } } }, requests: { "0_0": tap(0, shox()) } }));
+    const un = shox({ escalation: { chain: "footwear", home: "hub1", round: 1, idx: 0, phase: "unavailable", attempts: [] }, source: { status: "unavailable" } });
+    const f = fakeDb(world({ lines: [un, tee()], stock: { central: { SHX: { 7: { qty: 2 } } } }, requests: { "0_0": tap(0, un) } }));
     await tick(f);
     const r = req(f);
     expect(r.state).toBe(ORDER_NOW.NOT_IN_STOCK);
     expect(r.checked).toEqual({ free: [{ loc: "hub1", free: 0 }, { loc: "hub2", free: 0 }], central: 2 });
     expect(describeChecked(r.checked)).toBe("Hub 1: 0 free, Hub 2: 0 free · Central has 2 (Central sends by refill, not a pick)");
-    expect(line0(f)).toMatchObject({ source: { status: "resolving" }, escalation: { phase: "await" } });
-    expect(f.read(`refill_requests/${REFILL}`).status).toBe("open");
+    expect(line0(f)).toMatchObject({ source: { status: "unavailable" }, escalation: { phase: "unavailable" } });
   });
 
   it("units another website order holds do not count", async () => {
-    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": tap(0, shox()) }, over: { online_reservations: { SHX: { 7: { 8888: { qty: 1, locs: { hub1: 1 } } } } } } }));
+    const un = shox({ escalation: undefined, source: { status: "no_stock", locationId: null } });
+    const f = fakeDb(world({ lines: [un, tee()], refill: null, stock: { hub1: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": tap(0, un) }, over: { online_escalations: {}, config: { onlineOrders: { enabled: true, escalationOff: true } }, online_reservations: { SHX: { 7: { 8888: { qty: 1, locs: { hub1: 1 } } } } } } }));
     await tick(f);
     expect(req(f).state).toBe(ORDER_NOW.NOT_IN_STOCK);
-  });
-
-  it("never twice: Central already picking the refill → refused, nothing raised, the refill stands", async () => {
-    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", picking: true }, requests: { "0_0": tap(0, shox()) } }));
-    await tick(f);
-    expect(req(f)).toMatchObject({ state: ORDER_NOW.REFUSED });
-    expect(req(f).why).toMatch(/already ordered: a refill from Central \(web_9001_0_r1s0\) is being worked on/);
-    expect(line0(f).source.status).toBe("resolving");
-    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "open", picking: true });
   });
 
   it("never twice: a line already on a pick, being routed, sent and on its way, or mid-raise is refused", () => {
@@ -121,15 +120,17 @@ describe("Order it now", () => {
     expect(orderNowBlocker({ ...base, line: raising, req: tap(0, raising) })).toMatch(/being raised right now/);
     const swapped = shox({ swappedFrom: { pid: "OLD" } });
     expect(orderNowBlocker({ ...base, line: swapped, req: tap(0, swapped) })).toMatch(/replaced/);
-    const offered = shox({ awaitingCustomer: { since: NOW, what: "pick an alternative", by: "jimmy-auto" } });
+    const offered = shox({ escalation: undefined, awaitingCustomer: { since: NOW, what: "pick an alternative", by: "jimmy-auto" } });
     expect(orderNowBlocker({ ...base, line: offered, req: tap(0, offered) })).toMatch(/offered alternatives/);
     expect(orderNowBlocker({ enabled: false, line: shox(), req: tap(0, shox()) })).toMatch(/switched off/);
     expect(orderNowBlocker({ ...base, line: shox(), req: tap(0, shox(), { expectSizeKey: "8" }) })).toMatch(/changed since the tap/);
-    expect(orderNowBlocker({ ...base, line: shox(), req: tap(0, shox()) })).toBeNull();
+    const free = shox({ escalation: undefined, source: { status: "no_stock" } });
+    expect(orderNowBlocker({ ...base, line: free, req: tap(0, free) })).toBeNull();
   });
 
   it("a request is answered once; a second tick does nothing more", async () => {
-    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 2 } } } }, requests: { "0_0": tap(0, shox()) } }));
+    const un = shox({ escalation: undefined, source: { status: "no_stock", locationId: null } });
+    const f = fakeDb(world({ lines: [un, tee()], refill: null, stock: { hub1: { SHX: { 7: { qty: 2 } } } }, requests: { "0_0": tap(0, un) }, over: { online_escalations: {}, config: { onlineOrders: { enabled: true, escalationOff: true } } } }));
     await tick(f);
     const code = line0(f).source.orderKeys[0];
     await tick(f, NOW + 120e3);
@@ -179,24 +180,20 @@ describe("Order it now", () => {
     expect(f.read("online_orders/9001/status")).toBe("picking");
   });
 
-  it("a refill this feature already withdrew counts as gone on a re-run (not 'being worked on')", async () => {
-    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "cancelled", cancelReason: "no_longer_needed" }, requests: { "0_0": tap(0, shox()) } }));
-    await tick(f);
-    expect(req(f).state).toBe(ORDER_NOW.ORDERED);
-  });
-
   it("refused while the order is being packed, while Junid's override is pending, or with money on the line", () => {
     const base = { enabled: true };
     expect(orderNowBlocker({ ...base, line: shox(), req: tap(0, shox()), order: { packClaim: { saleId: "s" } } })).toMatch(/being packed/);
-    const ov = shox({ escalationOverride: { kind: "unavailable", by: "Junid", at: 1 } });
+    const ov = shox({ escalation: undefined, escalationOverride: { kind: "unavailable", by: "Junid", at: 1 } });
     expect(orderNowBlocker({ ...base, line: ov, req: tap(0, ov) })).toMatch(/Junid's decision/);
-    const money = shox({ resolution: { money: { kind: "credit" } } });
+    const money = shox({ escalation: undefined, resolution: { money: { kind: "credit" } } });
     expect(orderNowBlocker({ ...base, line: money, req: tap(0, money) })).toMatch(/refund, credit/);
-    expect(orderNowBlocker({ ...base, line: shox(), req: tap(0, shox()), order: { basket: { 0: true } }, i: 0 })).toMatch(/already in the basket/);
+    const nb = shox({ escalation: undefined, source: { status: "no_stock" } });
+    expect(orderNowBlocker({ ...base, line: nb, req: tap(0, nb), order: { basket: { 0: true } }, i: 0 })).toMatch(/already in the basket/);
   });
 
   it("a check that keeps failing is answered after 3 attempts, so Pack is never blocked forever", async () => {
-    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": { ...tap(0, shox()), state: "applying", claimedAt: NOW - 10 * 60e3, attempts: 2 } } }));
+    const un = shox({ escalation: undefined, source: { status: "no_stock", locationId: null } });
+    const f = fakeDb(world({ lines: [un, tee()], refill: null, stock: { hub1: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": { ...tap(0, un), state: "applying", claimedAt: NOW - 10 * 60e3, attempts: 2 } }, over: { online_escalations: {}, config: { onlineOrders: { enabled: true, escalationOff: true } } } }));
     const orig = f.db.ref.bind(f.db);
     f.db.ref = (p) => (String(p).startsWith("stock/central") ? { get: async () => { throw new Error("read timed out"); } } : orig(p));
     await tick(f);
