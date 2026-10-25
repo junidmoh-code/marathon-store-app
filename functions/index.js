@@ -666,6 +666,32 @@ exports.shopifyInventoryDirty = onValueWritten(
   }
 );
 
+// ─── META-READY PHOTO: a square copy of every new primary photo ─────────────
+// Junid, 25 Oct 2026. Stored alongside the primary (products/{pid}/meta/…,
+// pointer /products/{pid}/photoMeta), never replacing it. All of it is in
+// primaryPhoto/metaReady.cjs and lib/meta-ready.cjs (sharp only — local,
+// free). retry: false — the reconciler makes a missing one at create time.
+//   firebase deploy --only functions:primaryPhotoMetaReady
+exports.primaryPhotoMetaReady = onValueWritten(
+  {
+    ref:            "/products/{pid}/photoUrl",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "1GiB",
+    timeoutSeconds: 120,
+    retry:          false,
+  },
+  async (event) => {
+    if (event.data.after.val() == null) return;   // a removed photo has nothing to copy
+    try {
+      const { ensureMetaReady } = require("./primaryPhoto/metaReady.cjs");
+      await ensureMetaReady({ db: admin.database(), bucket: admin.storage().bucket(STORAGE_BUCKET), sharp: require("sharp") }, event.params.pid);
+    } catch (e) {
+      console.error(`primaryPhotoMetaReady ${event.params.pid}: ${String(e?.message || e)}`);
+    }
+  }
+);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WhatsApp broadcast proxy (Phase 1)
 // ─────────────────────────────────────────────────────────────────────────────
