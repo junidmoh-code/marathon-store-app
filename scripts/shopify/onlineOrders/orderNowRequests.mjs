@@ -114,7 +114,7 @@ async function sentHubUnits(ctx, id, i, line) {
  * emailed about a line that was just ordered. The keep step sets it again if
  * the re-route comes out no_stock.
  */
-async function clearAttentionIfSettled(ctx, id) {
+export async function clearAttentionIfSettled(ctx, id) {
   await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
     if (cur == null) return null;
     if (!cur.attention || !["no_stock", "not_found", "walkin_override"].includes(cur.attention.kind)) return undefined;

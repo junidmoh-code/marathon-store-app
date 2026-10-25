@@ -474,6 +474,33 @@ poller would refuse. Nothing moves stock (the Pack is
 the one deduction); no refill policy or target changes. The
 POS refuses Pack while a request is pending.
 
+## Stock that lands at Marathon PE — owner spec 2026-10-25 16:37
+
+`scripts/shopify/onlineOrders/peArrival.mjs`, every tick with the switch on,
+before escalation. A WAITING line (`no_stock` with no escalation, or
+`resolving` in phase `raise` / `await` with no raise in flight) is watched at
+Marathon PE: free units = the live cell minus other orders' holds there minus
+this order's other lines there. "Lands" means the count ROSE while the line
+waited: the first look stores a low-water mark on the line
+(`lines/{i}/peWatch = { key: "pid/sizeKey", low, since }`), a sale lowers it,
+and only units above it are an arrival — a unit that was already there (a
+display pair, one a shop said Not found for) never makes a line ready by itself.
+When the whole quantity has landed: the open request is planned first with the
+Order it now rule (only this order's piece; one being worked on, answered or
+fulfilled is left to the chain and the line waits; one that cannot be told
+apart is left alone and Junid is told once); then ONE line transaction makes it
+`source = { locationId: "marathon-pe", status: "handed", handedAt, handedBy: "pe_stock" }`,
+the escalation `done` (`arrivedAtPe`), `escalationGen + 1`, a
+`resolution/log/pe_arrival_{at}` entry; then the piece is released
+(`requestChanges` logged), the registry row removed and the out-of-stock
+attention cleared when nothing else needs a person. The keep step re-derives
+the status and moves the hold to Marathon PE the same tick. No pick, no feed
+entry; nothing moves stock — the Pack deducts from Marathon PE. Not watched:
+`wait` / `deliver` (the chain's own delivery keeps its next-morning rule),
+`not_found`, `unavailable` / with the customer, an override pending, a
+half-sent multi-unit hub line, a packed order or one being packed, a part
+arrival.
+
 ## Out of scope (seam left)
 
 Courier booking and waybills. `shipping.provider` is null and
