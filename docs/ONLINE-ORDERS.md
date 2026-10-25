@@ -415,6 +415,41 @@ Jimmy (`scripts/swap-online-order-line.mjs`, in its own process), the POS
   marks both products dirty, so the reconciler sets the original's on_hand back
   to its app count (it was never deducted) — it is not left sold out.
 
+## Order it now (POS) — owner spec 2026-10-25
+
+A grey line (`resolving`, `unavailable`, `no_stock`, `not_found`,
+`needs_attention`) stayed grey after the item was found and the stock fixed:
+the chain waits on its open request or has given up. The POS "Order it now"
+button writes ONE request per line and route generation, single-flight
+(a transaction on the exact key):
+
+```
+/online_orders/{id}/orderNowRequests/{lineIndex}_{routeGen} =
+  { lineIndex, expectPid, expectSizeKey, expectStatus, expectRouteGen,
+    by: {uid, name}, at, state: "pending", previous?: [last 10 answers] }
+  → "ordered"      { routedTo, checked, withdrew?, answeredAt }
+  → "not_in_stock" { checked: { free: [{loc, free}], central }, answeredAt }
+  → "refused"      { why, answeredAt }
+```
+
+The poller's keep pass (`orderNowRequests.mjs`, after the swap requests)
+re-checks live stock with the reads a new order's routing uses
+(`availabilityFor` + `routeLines`: the routed shops and hubs, minus what other
+website orders hold; Central's count is reported, never routed to). Routable
+in full → the open escalation request is withdrawn (untouched only, else
+refused "already ordered"), the line goes to `reroute` (escalation cleared,
+`orderNow {rid, by, at, appliedAt}` kept on the line) and the SAME pass routes
+and raises it exactly like a new Shopify line: hub order `/orders/{code}`
+(routeGen + 1, a fresh code) or a shop strip entry, the hold, the parcel
+estimate, the order status. Not routable → `not_in_stock`, the line untouched.
+
+Never twice: refused on a line already on a pick (`pick` / `display`), in
+`reroute`, mid-raise (`escalation.pending`), sent and waiting for the box
+(`wait`), a replaced line (a re-route would undo the replacement), or a line
+whose customer is being offered alternatives. Nothing moves stock (the Pack is
+the one deduction); no refill policy, target or request logic changes. The
+POS refuses Pack while a request is pending.
+
 ## Out of scope (seam left)
 
 Courier booking and waybills. `shipping.provider` is null and

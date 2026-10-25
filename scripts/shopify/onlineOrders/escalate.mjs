@@ -352,21 +352,23 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
 // Untouched only: a card Hub 2 has not answered is removed (as a cancelled
 // hub order is); a refill row nobody is picking or has sent is cancelled
 // no_longer_needed. Anything already moving is left to the people moving it.
+/** Withdraw the line's open request, untouched only. → true when it is gone (withdrawn, or never there). */
 export async function withdrawRequest(ctx, orderId, i, esc) {
   const { kind, key } = esc.request;
   if (kind === STEP.REFILL) {
-    await ctx.db.ref(`refill_requests/${key}`).transaction((cur) => {
+    const res = await ctx.db.ref(`refill_requests/${key}`).transaction((cur) => {
       if (cur == null) return null;
       if (cur.status !== "open" || cur.picking || Number(cur.sentQty) > 0) return undefined;
       return { ...cur, status: "cancelled", cancelReason: "no_longer_needed", resolvedAt: new Date(ctx.now).toISOString() };
     });
-  } else {
-    await ctx.db.ref(`orders/${key}`).transaction((cur) => {
-      if (cur == null) return null;
-      if (cur.onlineEscalationKey !== requestKey(orderId, i, esc) || cur.clothingRefillStatus != null || cur.status !== "incoming") return undefined;
-      return null;
-    });
+    return !!res?.committed;
   }
+  const res = await ctx.db.ref(`orders/${key}`).transaction((cur) => {
+    if (cur == null) return null;
+    if (cur.onlineEscalationKey !== requestKey(orderId, i, esc) || cur.clothingRefillStatus != null || cur.status !== "incoming") return undefined;
+    return null;
+  });
+  return !!res?.committed;
 }
 
 // ── A request nobody answers ────────────────────────────────────────────────
