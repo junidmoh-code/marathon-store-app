@@ -21,10 +21,9 @@
 //      (rows/columns with < 1% such pixels are noise).
 //   4. SQUARE — side = the box's longer side ÷ 0.8, centred on the box. Where
 //      the square runs past the photo, the background is EXTENDED with its own
-//      colour (a flat backdrop) or mirrored outwards (a scene). When the
-//      product cannot be told from a busy backdrop (the box is nearly the
-//      whole photo), the square is CUT from the photo instead — centred,
-//      never mirrored — so no repeated seam appears at the edges.
+//      colour (a flat backdrop). A scene is never extended — mirroring shows
+//      seams — so its square is CUT from the photo, centred on the product,
+//      as close to the 80% fill as the photo allows.
 //   5. 1080 × 1080 JPEG.
 "use strict";
 
@@ -141,18 +140,17 @@ function plan(a, W, H, { fill = FILL } = {}) {
   // Box in full-size pixels, relative to the inner image.
   const bx0 = box.x0 * sx - inner.left, bx1 = box.x1 * sx - inner.left;
   const by0 = box.y0 * sy - inner.top, by1 = box.y1 * sy - inner.top;
-  // A scene (not a flat backdrop) is CUT, never extended, whenever the
-  // product fits the photo's short side: a mirrored scene shows seams. The
-  // square is as close to the 80% fill as the photo allows. Only a product
-  // wider than the short side is extended (mirrored).
+  // A scene (not a flat backdrop) is CUT, never extended: a mirrored scene
+  // shows seams. The square is as close to the 80% fill as the photo allows,
+  // at most its short side (a tall product loses a sliver top or bottom).
   const longest = Math.max(bx1 - bx0, by1 - by0);
   const short = Math.min(inner.width, inner.height);
   // "The product" covering (nearly) the whole photo means it could not be told
   // from a busy backdrop: then the square is simply the photo's short side.
   const blind = !box.found || ((bx1 - bx0) >= inner.width * 0.9 && (by1 - by0) >= inner.height * 0.9);
-  const lost = !uniform && (blind || longest <= short);
+  const lost = !uniform;
   const side = lost
-    ? (blind ? short : Math.max(Math.round(longest), Math.min(short, Math.round(longest / fill))))
+    ? (blind ? short : Math.min(short, Math.max(Math.round(longest), Math.round(longest / fill))))
     : Math.round(longest / fill);
   const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2;
   let wx0 = Math.round(cx - side / 2), wy0 = Math.round(cy - side / 2);
@@ -167,7 +165,7 @@ function plan(a, W, H, { fill = FILL } = {}) {
   const pad = { left: Math.max(0, -wx0), top: Math.max(0, -wy0), right: Math.max(0, wx1 - inner.width), bottom: Math.max(0, wy1 - inner.height) };
   return {
     frame, inner, crop, pad, side, found: box.found, cut: lost,
-    fill: uniform ? { mode: "colour", colour: { r: bg[0], g: bg[1], b: bg[2] } } : { mode: "mirror" },
+    fill: uniform ? { mode: "colour", colour: { r: bg[0], g: bg[1], b: bg[2] } } : { mode: "cut" },
   };
 }
 
@@ -185,25 +183,16 @@ async function makeMetaReady(sharp, input, { size = SIZE, fill = FILL } = {}) {
   // Inner (frame cut) → crop (window ∩ inner) → extend (window beyond inner).
   let img = sharp(full, { raw: { width: W, height: H, channels: fi.channels } }).removeAlpha().extract(p.inner);
   img = sharp(await img.raw().toBuffer(), { raw: { width: p.inner.width, height: p.inner.height, channels: 3 } }).extract(p.crop);
-  // sharp's mirror extension can reach at most one image-width; repeat until done.
+  // Only a flat backdrop is ever extended, with its own colour (a scene is cut, pad = 0).
   let cur = { buf: await img.raw().toBuffer(), w: p.crop.width, h: p.crop.height };
-  let pad = { ...p.pad };
-  while (pad.left || pad.right || pad.top || pad.bottom) {
-    const step = {
-      left: Math.min(pad.left, cur.w - 1), right: Math.min(pad.right, cur.w - 1),
-      top: Math.min(pad.top, cur.h - 1), bottom: Math.min(pad.bottom, cur.h - 1),
-    };
-    const ext = p.fill.mode === "colour"
-      ? { ...pad, background: p.fill.colour }
-      : { ...step, extendWith: "mirror" };
-    const out = await sharp(cur.buf, { raw: { width: cur.w, height: cur.h, channels: 3 } }).extend(ext).raw().toBuffer({ resolveWithObject: true });
-    const used = p.fill.mode === "colour" ? pad : step;
-    pad = { left: pad.left - used.left, right: pad.right - used.right, top: pad.top - used.top, bottom: pad.bottom - used.bottom };
+  if (p.pad.left || p.pad.right || p.pad.top || p.pad.bottom) {
+    const out = await sharp(cur.buf, { raw: { width: cur.w, height: cur.h, channels: 3 } })
+      .extend({ ...p.pad, background: p.fill.colour }).raw().toBuffer({ resolveWithObject: true });
     cur = { buf: out.data, w: out.info.width, h: out.info.height };
   }
   const buffer = await sharp(cur.buf, { raw: { width: cur.w, height: cur.h, channels: 3 } })
     .resize(size, size, { fit: "fill" }).jpeg({ quality: 88, mozjpeg: true }).toBuffer();
-  return { buffer, info: { width: size, height: size, fill: p.cut ? "cut" : p.fill.mode, frameCut: p.frame, productFound: p.found, sourceWidth: W, sourceHeight: H } };
+  return { buffer, info: { width: size, height: size, fill: p.fill.mode, frameCut: p.frame, productFound: p.found, sourceWidth: W, sourceHeight: H } };
 }
 
 module.exports = { SIZE, FILL, isNearWhite, whiteFrame, background, productBox, plan, makeMetaReady };

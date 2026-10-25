@@ -67,10 +67,14 @@ test("a screenshot's dark border is cut like a white one", () => {
   assert.deepEqual(whiteFrame(px, W, H), { t: 30, b: 30, l: 20, r: 20 });
 });
 
-test("a scene (non-uniform background) is mirrored outwards, not filled with a flat colour", () => {
+test("a scene (non-flat backdrop) is CUT to a square inside the photo — never extended, so no seams", () => {
   const W = 120, H = 160, px = new Uint8Array(W * H * 3);
   for (let i = 0; i < px.length; i++) px[i] = (i * 37) % 256;     // noisy scene
-  assert.equal(plan({ px, w: W, h: H }, W, H).fill.mode, "mirror");
+  const p = plan({ px, w: W, h: H }, W, H);
+  assert.equal(p.fill.mode, "cut");
+  assert.deepEqual(p.pad, { left: 0, top: 0, right: 0, bottom: 0 });
+  assert.equal(p.crop.width, p.crop.height);
+  assert.ok(p.crop.width <= 120);
 });
 
 test("end to end with sharp: 1080² JPEG, no white left on the edges of a framed studio shot", { skip: !sharp && "sharp not installed here" }, async () => {
