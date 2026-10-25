@@ -264,7 +264,7 @@ if (!COMMIT) {
     let action;
     if (want === "off") action = "UNPUBLISH";
     else if (isPriceRecord(dryProduct)) action = "REFUSE (not merchandise)";
-    else if (mapNode?.shopifyProductId && Number(node.relistKeep) > 0 && Date.now() - Number(node.relistKeep) < RELIST_KEEP_TTL_MS &&
+    else if (mapNode?.shopifyProductId && Number(node.relistKeep) > 0 && runStartedAt - Number(node.relistKeep) < RELIST_KEEP_TTL_MS &&
              node.relistGid === mapNode.shopifyProductId) action = "RELIST AS IT IS";
     else action = mapNode?.shopifyProductId ? "PUBLISH" : "CREATE+PUBLISH";
     const title = action === "RELIST AS IT IS" ? "(Shopify's own title, untouched)" : node.cleanName || "(lexicon at apply time)";
