@@ -227,7 +227,7 @@ describe("settledFingerprintPlan / settledClaimStep — never the wrong money, n
   });
   it("the script writes only the fingerprint node — never a pool record", () => {
     const src = readFileSync(resolve(HERE, "claim-settled-bank-fingerprint.mjs"), "utf8");
-    const writes = [...src.matchAll(/\.(set|update|remove|transaction|push)\(/g)];
+    const writes = [...src.matchAll(/\)\.(set|update|remove|transaction|push)\(/g)];   // calls on a ref(…), not on arrays
     expect(writes).toHaveLength(1);
     expect(src).toMatch(/db\.ref\(path\)\.transaction\(settledClaimStep/);
     expect(src).toMatch(/const path = `\$\{EFT_FINGERPRINT_PATH\}\//);
@@ -236,7 +236,7 @@ describe("settledFingerprintPlan / settledClaimStep — never the wrong money, n
 
 it("the sweep writes only fingerprint claims, create-only, and reads the pool in pages", () => {
   const src = readFileSync(resolve(HERE, "claim-refusal-fingerprints.mjs"), "utf8");
-  const writes = [...src.matchAll(/\.(set|update|remove|transaction|push)\(/g)];
+  const writes = [...src.matchAll(/\)\.(set|update|remove|transaction|push)\(/g)];   // calls on a ref(…), not on arrays
   expect(writes).toHaveLength(1);
   expect(src).toMatch(/db\.ref\(path\)\.transaction\(fingerprintClaimStep\(key,/);
   expect(src).toMatch(/orderByKey\(\)/);
