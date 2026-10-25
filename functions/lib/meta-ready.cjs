@@ -9,17 +9,22 @@
 // the Mac mini's reconciler and the test script all run the same code.
 //
 // THE STEPS (analysis on a ≤400px copy, the cut on the full-size photo):
-//   1. FRAME — near-white bands along any edge (a photo letterboxed into a
-//      white square, a white mount) are cut off. A band is a row/column whose
-//      pixels are ≥ 96% near-white; at most 35% of a side is ever cut.
+//   1. FRAME — flat bands along any edge are cut off: a photo letterboxed
+//      into a white square, a white mount, the dark border of a screenshot.
+//      A band is a row/column whose pixels are ≥ 92% within a small distance
+//      of one colour (the same colour band after band); at most 35% of a side
+//      is ever cut. A flat studio backdrop cut this way loses nothing — step 4
+//      fills with that same backdrop colour.
 //   2. BACKGROUND — the median colour of the inner image's outer ring, and
 //      how uniform that ring is.
 //   3. PRODUCT — every pixel clearly unlike the background; its bounding box
 //      (rows/columns with < 1% such pixels are noise).
 //   4. SQUARE — side = the box's longer side ÷ 0.8, centred on the box. Where
-//      the square runs past the photo, the background is EXTENDED: a uniform
-//      studio background is filled with its own colour; a scene is mirrored
-//      outwards, so it continues instead of ending in a band.
+//      the square runs past the photo, the background is EXTENDED with its own
+//      colour (a flat backdrop) or mirrored outwards (a scene). When the
+//      product cannot be told from a busy backdrop (the box is nearly the
+//      whole photo), the square is CUT from the photo instead — centred,
+//      never mirrored — so no repeated seam appears at the edges.
 //   5. 1080 × 1080 JPEG.
 "use strict";
 
@@ -27,7 +32,8 @@ const SIZE = 1080;
 const FILL = 0.8;
 const NEAR_WHITE = 235;          // min channel for "near-white"
 const WHITE_SPREAD = 14;         // max − min channel for "near-white" (not a pale colour)
-const BAND_SHARE = 0.96;
+const BAND_SHARE = 0.92;
+const BAND_DIST = 30;            // |Δr|+|Δg|+|Δb| from the band's colour
 const MAX_TRIM = 0.35;
 const ANALYSE = 400;
 
@@ -35,15 +41,41 @@ function isNearWhite(r, g, b) {
   return Math.min(r, g, b) >= NEAR_WHITE && Math.max(r, g, b) - Math.min(r, g, b) <= WHITE_SPREAD;
 }
 
-/** PURE: rows/cols of near-white frame on each side of an RGB raster. */
+/** PURE: the flat-band frame on each side of an RGB raster (rows/cols to cut). */
 function whiteFrame(px, w, h) {
-  const rowWhite = (y) => { let n = 0; for (let x = 0; x < w; x++) { const i = (y * w + x) * 3; if (isNearWhite(px[i], px[i + 1], px[i + 2])) n++; } return n / w >= BAND_SHARE; };
-  const colWhite = (x, y0, y1) => { let n = 0; for (let y = y0; y < y1; y++) { const i = (y * w + x) * 3; if (isNearWhite(px[i], px[i + 1], px[i + 2])) n++; } return n / Math.max(1, y1 - y0) >= BAND_SHARE; };
+  const at = (x, y) => { const i = (y * w + x) * 3; return [px[i], px[i + 1], px[i + 2]]; };
+  const dist = (a, c) => Math.abs(a[0] - c[0]) + Math.abs(a[1] - c[1]) + Math.abs(a[2] - c[2]);
+  // A line is flat when ≥ BAND_SHARE of it sits near its own median colour,
+  // and a run of bands must keep the colour it started with.
+  const flatColour = (pts) => {
+    const c = [0, 1, 2].map((k) => median(pts.map((p) => p[k])));
+    return pts.filter((p) => dist(p, c) <= BAND_DIST).length / pts.length >= BAND_SHARE ? c : null;
+  };
+  // A FRAME, not a backdrop: the line just inside the run must be mostly
+  // something else. A flat studio backdrop runs on into the product's own
+  // lines (still mostly backdrop), so it is never cut; a white mount or a
+  // screenshot border meets the photo (≥ 90% different) and is.
+  const run = (lineAt, n, cap) => {
+    let k = 0, first = null;
+    while (k < cap) {
+      const c = flatColour(lineAt(k));
+      if (!c || (first && dist(c, first) > BAND_DIST)) break;
+      first = first || c; k++;
+    }
+    if (!k || k >= cap) return 0;
+    // The middle 60% of the line two pixels in (past the resampled seam; the
+    // ends may still be the perpendicular frame).
+    const line = lineAt(Math.min(k + 2, n - 1));
+    const mid = line.slice(Math.floor(line.length * 0.2), Math.ceil(line.length * 0.8));
+    return mid.filter((p) => dist(p, first) <= BAND_DIST).length / mid.length <= 0.1 ? k : 0;
+  };
   const capH = Math.floor(h * MAX_TRIM), capW = Math.floor(w * MAX_TRIM);
-  let t = 0; while (t < capH && rowWhite(t)) t++;
-  let b = 0; while (b < capH && rowWhite(h - 1 - b)) b++;
-  let l = 0; while (l < capW && colWhite(l, t, h - b)) l++;
-  let r = 0; while (r < capW && colWhite(w - 1 - r, t, h - b)) r++;
+  const row = (y) => Array.from({ length: w }, (_, x) => at(x, y));
+  const t = run((k) => row(k), h, capH);
+  const b = run((k) => row(h - 1 - k), h, capH);
+  const col = (x) => Array.from({ length: Math.max(1, h - b - t) }, (_, j) => at(x, t + j));
+  const l = run((k) => col(k), w, capW);
+  const r = run((k) => col(w - 1 - k), w, capW);
   return { t, b, l, r };
 }
 
@@ -109,16 +141,22 @@ function plan(a, W, H, { fill = FILL } = {}) {
   // Box in full-size pixels, relative to the inner image.
   const bx0 = box.x0 * sx - inner.left, bx1 = box.x1 * sx - inner.left;
   const by0 = box.y0 * sy - inner.top, by1 = box.y1 * sy - inner.top;
-  const side = Math.round(Math.max(bx1 - bx0, by1 - by0) / fill);
+  // A busy backdrop: "the product" came out as (nearly) the whole photo.
+  const lost = !uniform && (!box.found || ((bx1 - bx0) >= inner.width * 0.9 && (by1 - by0) >= inner.height * 0.9));
+  const side = lost ? Math.min(inner.width, inner.height) : Math.round(Math.max(bx1 - bx0, by1 - by0) / fill);
   const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2;
-  const wx0 = Math.round(cx - side / 2), wy0 = Math.round(cy - side / 2);
+  let wx0 = Math.round(cx - side / 2), wy0 = Math.round(cy - side / 2);
+  if (lost) {   // cut, never extend: clamp the window inside the photo
+    wx0 = Math.min(Math.max(0, wx0), inner.width - side);
+    wy0 = Math.min(Math.max(0, wy0), inner.height - side);
+  }
   const wx1 = wx0 + side, wy1 = wy0 + side;
   const crop = { left: Math.max(0, wx0), top: Math.max(0, wy0) };
   crop.width = Math.min(inner.width, wx1) - crop.left;
   crop.height = Math.min(inner.height, wy1) - crop.top;
   const pad = { left: Math.max(0, -wx0), top: Math.max(0, -wy0), right: Math.max(0, wx1 - inner.width), bottom: Math.max(0, wy1 - inner.height) };
   return {
-    frame, inner, crop, pad, side, found: box.found,
+    frame, inner, crop, pad, side, found: box.found && !lost, cut: lost,
     fill: uniform ? { mode: "colour", colour: { r: bg[0], g: bg[1], b: bg[2] } } : { mode: "mirror" },
   };
 }
@@ -155,7 +193,7 @@ async function makeMetaReady(sharp, input, { size = SIZE, fill = FILL } = {}) {
   }
   const buffer = await sharp(cur.buf, { raw: { width: cur.w, height: cur.h, channels: 3 } })
     .resize(size, size, { fit: "fill" }).jpeg({ quality: 88, mozjpeg: true }).toBuffer();
-  return { buffer, info: { width: size, height: size, fill: p.fill.mode, frameCut: p.frame, productFound: p.found, sourceWidth: W, sourceHeight: H } };
+  return { buffer, info: { width: size, height: size, fill: p.cut ? "cut" : p.fill.mode, frameCut: p.frame, productFound: p.found, sourceWidth: W, sourceHeight: H } };
 }
 
 module.exports = { SIZE, FILL, isNearWhite, whiteFrame, background, productBox, plan, makeMetaReady };
