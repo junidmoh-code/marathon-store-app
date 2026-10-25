@@ -25,6 +25,20 @@ describe("which tills have today's emailed report", () => {
     expect([...emailedArrivals(node, day(TODAY), day)]).toEqual([]);
   });
 
+  // 25 Oct 2026, 14:01: Trophy Till 1 emailed its 17 Sep batch 57 instead of
+  // the day's batch. It was recorded — it is a real report — and ticked the
+  // till as in while R6,870 of that day's card money had no slip.
+  it("does NOT tick an old batch re-printed today — its batch must close today", () => {
+    const sep17 = Date.UTC(2026, 7, 17, 19, 16, 0);
+    const node = { m1: message({ attachments: [{ ...recorded("67325636"), batchKey: "57", closedAt: sep17 }] }) };
+    expect([...emailedArrivals(node, day(TODAY), day)]).toEqual([]);
+  });
+
+  it("ticks today's report that says when it closed", () => {
+    const node = { m1: message({ attachments: [{ ...recorded("67325636"), closedAt: TODAY - 60000 }] }) };
+    expect([...emailedArrivals(node, day(TODAY), day)]).toEqual(["67325636"]);
+  });
+
   it("does not tick yesterday's report", () => {
     const node = { m1: message({ receivedAt: YESTERDAY, attachments: [recorded("67365901")] }) };
     expect([...emailedArrivals(node, day(TODAY), day)]).toEqual([]);

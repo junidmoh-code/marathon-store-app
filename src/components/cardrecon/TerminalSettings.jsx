@@ -42,6 +42,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT } from "./cardReconStyles";
 import { captureMode, isRetiredTerminal } from "./terminalRegistry";
+import { tillNow } from "./slipScope";
 import { useNetwork } from "../../utils/useNetwork";
 import { sectionOf, sectionName } from "../../utils/networkRegistry";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
@@ -324,7 +325,8 @@ export default function TerminalSettings({ terminals, onClose }) {
   const { registry } = useNetwork();
   const groups = useMemo(() => storeGroups(stores, registry), [stores, registry]);
   // The server's day in South Africa — the latest day a terminal can start on.
-  const today = saDateStringAt(serverNowMs());
+  const nowMs = serverNowMs();
+  const today = saDateStringAt(nowMs);
 
   useEffect(() => {
     let live = true;
@@ -392,11 +394,18 @@ export default function TerminalSettings({ terminals, onClose }) {
 
       {stores && rows.map((r) => {
         const retired = isRetiredTerminal(r);
+        // WHERE IT STANDS NOW, not its filing key. On 25 Oct 2026 this line
+        // printed 67377843 as "Trophy · Till 1" — its filing key — three weeks
+        // after the swap put it on Marathon Till 1, and it was taken for
+        // Trophy's machine. The filing key is named only when it differs.
+        const here = tillNow(r, nowMs);
+        const filedElsewhere = here.storeId !== r.storeId || here.tillId !== r.tillId;
         return (
           <div key={r.tid} style={{ ...U.row, ...(retired ? U.rowRetired : null) }}>
             <div style={U.name}>{r.label || r.tid}</div>
-            <div style={U.meta}>
-              {r.tid} · {storeName(stores, r.storeId)} · {tillName(stores, r.storeId, r.tillId)} · {CAPTURE_LABEL[captureMode(r)]}
+            <div style={U.meta} data-testid={`ts-meta-${r.tid}`}>
+              {r.tid} · on {storeName(stores, here.storeId)} · {tillName(stores, here.storeId, here.tillId)} · {CAPTURE_LABEL[captureMode(r)]}
+              {filedElsewhere ? ` · batches filed under ${storeName(stores, r.storeId)} · ${tillName(stores, r.storeId, r.tillId)}` : ""}
               {r.mid ? ` · MID ${r.mid}` : ""}
               {retired ? ` · retired${r.replacedBy ? `, replaced by ${r.replacedBy}` : ""}` : ""}
             </div>

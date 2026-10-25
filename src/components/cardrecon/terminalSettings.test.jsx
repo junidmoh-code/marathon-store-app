@@ -94,11 +94,36 @@ describe("capture mode on the cards", () => {
 });
 
 describe("the settings sheet", () => {
+  // 25 Oct 2026: this line printed 67377843 as "Trophy · Till 1" — its filing
+  // key — three weeks after the 5 Oct swap had put it on Marathon Till 1, and
+  // it was taken for Trophy's machine. The line names where it stands NOW.
+  it("a moved machine is shown on the till it stands on, with its filing key named beside it", async () => {
+    ESTATE["67325636"] = {
+      label: "Trophy Till 1", mid: "100000002453164", storeId: "pe", tillId: "till-1",
+      placements: {
+        "at-1": { effectiveFrom: 1, label: "Marathon Till 1", storeId: "pe", tillId: "till-1" },
+        // before this suite's mocked server clock (21 Sep 2026)
+        "at-1789987560000": { effectiveFrom: 1789987560000, label: "Trophy Till 1", storeId: "trophy", tillId: "till-1" },
+      },
+    };
+    try {
+      const tree = await openSettings();
+      const meta = [].concat(tree.root.find((n) => n.props?.["data-testid"] === "ts-meta-67325636").props.children).join("");
+      expect(meta).toMatch(/^67325636 · on Trophy · Till 1 · /);
+      expect(meta).toContain("batches filed under Marathon PE · Till 1");
+      const still = [].concat(tree.root.find((n) => n.props?.["data-testid"] === "ts-meta-0000HP1X").props.children).join("");
+      expect(still).toMatch(/^0000HP1X · on Marathon PE · Till 2 · /);
+      expect(still).not.toContain("filed under");
+    } finally {
+      delete ESTATE["67325636"];
+    }
+  });
+
   it("lists every terminal, retired ones included, with store by trading name", async () => {
     const tree = await openSettings();
     const text = allText(tree.root);
     expect(fake.calls[0]).toEqual({ name: "cardTerminalAdmin", payload: { action: "options" } });
-    expect(tree.root.findAll((n) => n.type === "div" && /· Marathon PE ·/.test([].concat(n.props.children).join(""))).length).toBeGreaterThan(0);
+    expect(tree.root.findAll((n) => n.type === "div" && /· on Marathon PE ·/.test([].concat(n.props.children).join(""))).length).toBeGreaterThan(0);
     expect(text).toContain("Trophy Till 1");
   });
 

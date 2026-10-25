@@ -3989,6 +3989,7 @@ exports.syncCardReconClaim = require("./cardRecon/cardReconClaim.js").syncCardRe
 // stays green. The installer's --verify pins the two together.
 //   firebase deploy --only functions:cardReconHealthScan
 const { assessPollerHealth } = require("./lib/poller-health.cjs");
+const tillSilence = require("./lib/till-silence.cjs");
 
 function pollerAlarmLine(verdict) {
   const silence = verdict.staleMinutes === null
@@ -4005,11 +4006,24 @@ exports.cardReconHealthScan = onSchedule(
   { schedule: "*/10 * * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 60 },
   async () => {
     const db = admin.database();
-    const [beatSnap, healthSnap] = await Promise.all([
+    const [beatSnap, healthSnap, tillCheckSnap] = await Promise.all([
       db.ref("card_batch_poll_status/lastRunAt").once("value"),
       db.ref("card_batch_poll_health").once("value"),
+      db.ref("card_till_silence/checkedAt").once("value"),
     ]);
     const health = healthSnap.val() || {};
+    // THE MORNING TILL CHECK'S OWN DEAD-MAN SWITCH. cardTillSilenceScan runs
+    // once a day; if its scheduler never fires it prints nothing, so it is
+    // watched from here, every ten minutes, by the stamp it writes. The line
+    // carries ITS marker (CARD_TILL_SILENT_ALARM) and goes out through its
+    // policy, whose filter names this service too. At most once a day.
+    const tillStale = tillSilence.staleCheckLine({
+      nowMs: Date.now(), checkedAt: tillCheckSnap.val(), lastStaleAlarmAt: health.tillSilenceStaleAlarmAt,
+    });
+    if (tillStale) {
+      console.error(tillStale);
+      await db.ref("card_batch_poll_health/tillSilenceStaleAlarmAt").set(Date.now());
+    }
     const verdict = assessPollerHealth({
       nowMs: Date.now(),
       lastRunAt: beatSnap.val(),
@@ -4028,6 +4042,60 @@ exports.cardReconHealthScan = onSchedule(
     } else {
       console.log(`cardReconHealthScan: ${verdict.ok ? "ok" : `stale ${verdict.staleMinutes} min (already alerted)`}`);
     }
+  },
+);
+
+// ─── CARD RECON — cardTillSilenceScan (a till that took card money, no batch) ─
+// Junid, 25 Oct 2026: "Two consecutive silent days on a till that took card
+// money should never again be something Junid discovers himself."
+// cardReconHealthScan above watches the MAILBOX; this watches the TILLS. Every
+// morning at 07:30 SAST, on Google's scheduler (never on the Mac mini), it
+// judges the last seven days: any till a registered machine stood on that took
+// card money on a day no /card_batches record covers — counted back from
+// yesterday, skipping days with no card money — is named in ONE line carrying
+// the CARD_TILL_SILENT_ALARM marker, which Cloud Monitoring emails to
+// junidmoh@gmail.com with the line's own text (the till, its terminal, the
+// days, the card money; scripts/cardrecon/install-till-silence-alarm.mjs). A
+// till still silent tomorrow is named again, its day count higher. The
+// decision is pure and tested (lib/till-silence.cjs,
+// test/till-silence.test.cjs); scripts/cardrecon/till-silence-report.mjs runs
+// the same reads read-only.
+//
+// THE MARKER IS LOAD-BEARING: the installer's --verify pins it to the lib.
+// cardReconHealthScan watches this check's own `checkedAt` and emails (same
+// marker) when it goes 26 hours without running.
+//   firebase deploy --only functions:cardTillSilenceScan,functions:cardReconHealthScan
+
+exports.cardTillSilenceScan = onSchedule(
+  { schedule: "30 7 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 },
+  async () => {
+    const db = admin.database();
+    const nowMs = Date.now(); // the server's own clock — no client clock reaches a scheduled run
+    let verdict;
+    try {
+      const inputs = await tillSilence.readTillSilenceInputs(db, { nowMs });
+      verdict = tillSilence.assessTillSilence({ nowMs, ...inputs });
+    } catch (err) {
+      // A check that dies must say so through the same email, never quietly.
+      console.error(tillSilence.failureLine(err));
+      return;
+    }
+    // THE ALARM FIRST, the state write second: a write that throws must not
+    // swallow a silent till's email. (CodeRabbit, #799.)
+    if (verdict.silent.length) {
+      console.error(tillSilence.alarmLine(verdict.silent));
+    } else {
+      console.log(`cardTillSilenceScan: every till that took card money ${verdict.days.at(-1)} → ${verdict.days[0]} has a batch.`);
+    }
+    // Written on EVERY run, silent or not — cardReconHealthScan alarms when
+    // this stamp goes stale, which is how a scheduler that never fires (or a
+    // write that keeps failing) is heard. No money here beyond what the
+    // owner-only node already holds.
+    await db.ref("card_till_silence").set({
+      checkedAt: nowMs,
+      days: verdict.days,
+      silent: verdict.silent.length ? verdict.silent : null,
+    });
   },
 );
 

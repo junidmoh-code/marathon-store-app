@@ -74,7 +74,7 @@ const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, t
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { tillsFor } = require("../lib/network-registry.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
-const { tillAt } = require("../lib/card-terminal-placements.cjs");
+const { tillAt, windowTill } = require("../lib/card-terminal-placements.cjs");
 const { SLIP_SCOPE_FIELD, readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
 const { SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, shouldAttach, authorityOf, isStaffSlipRecord, buildSupportingSlip, carriedSlips, sameDaySuccessors } = require("../lib/card-supporting-slips.cjs");
 const {
@@ -815,7 +815,12 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, t
     return { existingKeys, comparison, write: { ok: false,
       reason: `Batch #${batchNo} is already captured, and this report does not agree with it: ${comparison.reason}. Nothing was recorded — tell Junid, and keep the slip.` } };
   }
-  return { existingKeys, comparison, write };
+  // reprintOpensAt is ALWAYS present, null when this is not a re-print. Left
+  // out, it read back `undefined` and the PDF path's `!== null` test took
+  // every ordinary report for a re-print: from 16 Oct (#730) to 25 Oct, 32 of
+  // 35 emailed reports opened with "re-printed … recorded as R0.00 for this
+  // day" — Trophy's R27,858 day on 24 Oct among them.
+  return { existingKeys, comparison, write, reprintOpensAt: null };
 }
 
 
@@ -879,6 +884,36 @@ function matchNotes(match) {
 // The money is all present; which sale is which is a different question from
 // whether any is missing.
 const totalsAgree = (extraction, expected) => extraction.totalCents === expected.cardCents;
+
+// ─── THE TILL A WINDOW IS RECONCILED ON ──────────────────────────────────────
+// The registry row's own storeId/tillId is the FILING key (/card_batches/
+// {storeId}/{tid}) and never moves with the machine. The till whose POS card
+// legs a batch is checked against is where the machine STOOD for the window —
+// its placement (lib/card-terminal-placements.cjs), exactly as the owner's
+// Card Recon reads it. Until 25 Oct 2026 the capture side used the filing key,
+// so 67377843 (filed trophy/till-1, on Marathon Till 1 since the 5 Oct swap)
+// was reconciled against Trophy's sales and every report said its own till's
+// were "rung up on another till". A window a move cuts in two keeps the filing
+// till (`moved: true`) and the record says so.
+function reconTerminalFor(terminal, startMs, endMs) {
+  const at = windowTill(terminal, startMs, endMs);
+  if (!at) {
+    // windowTill is null for a valid window ONLY when a placement inside it
+    // changes the till — including a move away and back, whose two ends
+    // agree. (CodeRabbit, #799.)
+    const moved = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
+    return { recon: terminal, moved };
+  }
+  if (at.storeId === terminal.storeId && at.tillId === terminal.tillId) return { recon: terminal, moved: false };
+  // placeLabel is the PLACEMENT's own label or null — never the filing row's,
+  // which names another till. (CodeRabbit, #799.)
+  return { recon: { ...terminal, storeId: at.storeId, tillId: at.tillId, placeLabel: at.label || null }, moved: false };
+}
+
+/** The sentence a record carries when its window spans a move of the machine. */
+function movedWindowNote(terminal) {
+  return `The machine was moved to another till while this batch was open, so these capture-time figures use its registered till (${terminal.storeId}/${terminal.tillId}). The owner's Card Recon splits the batch by where the machine stood at each transaction.`;
+}
 
 async function matchBatch(db, { extraction, terminal, summaryOnly = false }) {
   // A SUMMARY-ONLY CAPTURE HAS NOTHING TO MATCH. It has totals and no
@@ -1039,8 +1074,9 @@ async function handleTypedCapture(db, request, { picked, terminal, slip = null, 
   });
   if (!write.ok) return reject(write.reason);
 
+  const { recon, moved: movedInWindow } = reconTerminalFor(terminal, extraction.openedAt, extraction.closedAt);
   const expected = await computeExpectedCard(db, {
-    storeId: terminal.storeId, tillId: terminal.tillId,
+    storeId: recon.storeId, tillId: recon.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
   });
@@ -1062,6 +1098,7 @@ async function handleTypedCapture(db, request, { picked, terminal, slip = null, 
   ];
   const straddle = tillMoveWarning(picked, terminal, extraction.openedAt);
   if (straddle) warnings.push(straddle);
+  if (movedInWindow) warnings.push(movedWindowNote(terminal));
 
   const userDraftsRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${request.auth.uid}`);
   const draftRef = userDraftsRef.push();
@@ -1347,8 +1384,9 @@ async function handleExtract(db, request, opts = {}) {
   if (!write.ok) return reject(write.reason);
 
   // ── EXPECTED — the POS ledger's answer for the slip's own window ──
+  const { recon, moved: movedInWindow } = reconTerminalFor(terminal, extraction.openedAt, extraction.closedAt);
   const expected = await computeExpectedCard(db, {
-    storeId: terminal.storeId, tillId: terminal.tillId,
+    storeId: recon.storeId, tillId: recon.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
     ...slackFor(extraction),
@@ -1363,7 +1401,7 @@ async function handleExtract(db, request, opts = {}) {
   const match = reconciledByTotals
     ? null
     : await matchBatch(db, {
-    extraction, terminal, summaryOnly: !!summaryOnly,
+    extraction, terminal: recon, summaryOnly: !!summaryOnly,
   });
   // The SAME findings the PDF route reports. Computing a match and then
   // saying nothing about it left a manager unable to see that a machine had
@@ -1375,6 +1413,7 @@ async function handleExtract(db, request, opts = {}) {
   // variance on the one batch most likely to be looked at.
   const straddle = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
   if (straddle) warnings.push(straddle);
+  if (movedInWindow) warnings.push(movedWindowNote(terminal));
   if (declared) {
     warnings.unshift(...declaredNotes);
     warnings.unshift(`The total (${formatCents(declared.cents)}) was typed by ${request.auth.token?.email || request.auth.uid}, not read off the slip — the slip did not print it. Nobody has verified it against paper.`);
@@ -1643,7 +1682,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   // print, so a card leg rung in between is this day's variance, never lost.
   // Bounded by the same 7-day cap as any empty batch; past it, the window
   // computed above stands (and the POS report anchors it the same way).
-  if (reprintOpensAt !== null) {
+  if (Number.isFinite(reprintOpensAt)) {
     // An EMPTY batch has no span of its own, so its window is the report on
     // file → this print. A batch with lines keeps the window its lines give;
     // the report's own day is still told apart by the POS report (it adds R0).
@@ -1660,8 +1699,9 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
     ];
   }
 
+  const { recon, moved: movedInWindow } = reconTerminalFor(terminal, extraction.openedAt, extraction.closedAt);
   const expected = await computeExpectedCard(db, {
-    storeId: terminal.storeId, tillId: terminal.tillId,
+    storeId: recon.storeId, tillId: recon.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
     ...slackFor(extraction),
@@ -1675,7 +1715,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   const reconciledByTotals = totalsAgree(extraction, expected);
   const match = reconciledByTotals
     ? null
-    : await matchBatch(db, { extraction, terminal, summaryOnly });
+    : await matchBatch(db, { extraction, terminal: recon, summaryOnly });
 
   // A DERIVED WINDOW HAS NO SLACK, so say when legs land just outside it rather
   // than letting them show up only as a variance. This is a warning, never a
@@ -1691,6 +1731,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   // The same guard as the photo path.
   const straddleTill = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
   if (straddleTill) warnings.push(straddleTill);
+  if (movedInWindow) warnings.push(movedWindowNote(terminal));
   if (expected.tailLegs > 0) {
     warnings.push(
       `${expected.tailLegs} card leg${expected.tailLegs === 1 ? "" : "s"} on this till ` +
@@ -1927,8 +1968,9 @@ async function handleSubmit(db, request) {
   }
 
   // Recompute expected at the moment of record — the authoritative figure.
+  const { recon, moved: movedInWindow } = reconTerminalFor(mapped, extraction.openedAt, extraction.closedAt);
   const expected = await computeExpectedCard(db, {
-    storeId: terminal.storeId, tillId: terminal.tillId,
+    storeId: recon.storeId, tillId: recon.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
     ...slackFor(extraction),
@@ -1942,7 +1984,7 @@ async function handleSubmit(db, request) {
   const reconciledByTotals = totalsAgree(extraction, expected);
   const match = reconciledByTotals
     ? null
-    : await matchBatch(db, { extraction, terminal, summaryOnly: !!draft.summaryOnly });
+    : await matchBatch(db, { extraction, terminal: recon, summaryOnly: !!draft.summaryOnly });
   // The straddle warning is recomputed HERE too, against the registry as it
   // stands now: the till move can land between extract and submit, and the
   // record is written from this side. The draft's own warnings are kept — this
@@ -1973,7 +2015,7 @@ async function handleSubmit(db, request) {
     // The draft's warnings PLUS anything only now can know. Deduped, because
     // extract computed the straddle too and the same sentence twice on one
     // record reads like two findings.
-    warnings: [...new Set([...(draft.warnings || []), ...(straddleNow ? [straddleNow] : [])])],
+    warnings: [...new Set([...(draft.warnings || []), ...(straddleNow ? [straddleNow] : []), ...(movedInWindow ? [movedWindowNote(terminal)] : [])])],
     expected,
     cashiers: expected.cashiers,
     submittedBy: { uid: request.auth.uid, email: request.auth.token?.email || null },
@@ -2005,6 +2047,12 @@ async function handleSubmit(db, request) {
   // A STAFF SLIP THIS RECORD TAKES OVER FROM stays beside it, as a supporting
   // slip — the machine's report of its filing number, or Junid's correction,
   // outranks it but must not hide what was typed (lib/card-supporting-slips.cjs).
+  // WHERE THE MACHINE STOOD for this window, when that is not its filing till
+  // — the till the figures above were reconciled on (reconTerminalFor).
+  if (recon !== mapped) {
+    record.placeStoreId = recon.storeId;
+    record.placeTillId = recon.tillId;
+  }
   const carried = await carriedSlipsFor(db, terminal.storeId, extraction.tid, write.supersedes, record);
   if (carried) record[SUPPORTING_FIELD] = carried;
 
@@ -2033,6 +2081,15 @@ async function handleSubmit(db, request) {
     slipTotalCents: extraction.totalCents, // read off the slip in their hand
     linesCaptured: record.linesCaptured,
     warnings: draft.warnings || [],
+    // When the batch closed, and the till it was reconciled on. The mailbox
+    // poller stamps these on the intake row so the capture screen can tell
+    // TODAY's report from an old batch re-printed today (Trophy Till 1 sent
+    // its 17 Sep batch 57 on 25 Oct and was ticked as in), and name the till
+    // a moved machine stood on rather than its filing key.
+    closedAt: Number.isFinite(extraction.closedAt) ? extraction.closedAt : null,
+    placeStoreId: recon.storeId || null,
+    placeTillId: recon.tillId || null,
+    placeLabel: recon === mapped ? (mapped.label || null) : (recon.placeLabel || null),
   };
 }
 
