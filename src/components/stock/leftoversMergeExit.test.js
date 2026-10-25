@@ -98,7 +98,7 @@ describe("the exits block — merge primary, deactivate fallback", () => {
   });
   it("the twin row carries the candidate's PHOTO and opens the merge pre-picked", () => {
     const block = hc.slice(hc.indexOf("function LeftoverExits("), hc.indexOf("// One overlay to rule the flow"));
-    expect(block).toContain("<Photo url={twin.product.photoUrl}");
+    expect(block).toContain("<Photo product={twin.product}");
     expect(block).toContain("onMerge(product, twin.product)");
     // …and the escape hatch stays, because a photo nobody recognises must never
     // be the only door.

@@ -47,7 +47,7 @@ import { centralId } from "./sectionRouting";
 import { GLASS_SOLID, BLUE_L, GREEN, RED, GRAY, FONT } from "./ui";
 import { SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { usePermissions } from "../PermissionsContext";
-import { MirroredImg } from "../../offline/MirroredImg.jsx";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const bBtn = (bg, color = "#fff") => ({
   background: bg, color, border: "none", borderRadius: 10, padding: "0.65rem 1.2rem",
@@ -235,7 +235,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
           {product.photoUrl
-            ? <MirroredImg productId={product.id} src={product.photoUrl} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }}
+            ? <PrimaryPhoto product={product} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }}
                    style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />
             : <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>📦</div>}
           <div style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>

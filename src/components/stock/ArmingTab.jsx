@@ -380,7 +380,7 @@ export function ArmRow({ row, product, registry, locations, destinations, config
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {/* Looking is not choosing — the thumb opens full screen without
             expanding the row, exactly as the Seating tab's list does. */}
-        <PhotoThumb url={row.photoUrl} alt={row.name} onOpen={row.photoUrl ? onPhoto : undefined} />
+        <PhotoThumb url={row.photoUrl} product={product} productId={row.pid} alt={row.name} onOpen={row.photoUrl ? onPhoto : undefined} />
         <button
           onClick={onToggle}
           aria-expanded={open}

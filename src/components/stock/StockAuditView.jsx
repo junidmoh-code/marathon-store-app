@@ -34,6 +34,7 @@ import {
 } from "../../config/stockAudit";
 import { serverNowMs } from "../../utils/serverTime";
 import { markHubRowFixed, markRotationRowFixed } from "./stockAuditStore";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 // ── the palette ──────────────────────────────────────────────────────────────
 // Deliberately narrow, and deliberately without amber (owner, 2026-09-08).
@@ -88,13 +89,13 @@ const ANSWER = { out_of_stock: "Sold out", coming_tomorrow: "Tomorrow" };
 // A product picture, or the space one would have taken. The fixed box keeps
 // every row's text on the same left edge whether the photo loads, fails, or was
 // never there — a list that shifts under the eye is hard to walk.
-function Photo({ url }) {
+function Photo({ url, productId }) {
   return (
     <div style={{
       width: 38, height: 46, flexShrink: 0, borderRadius: 7, overflow: "hidden",
       background: "rgba(255,255,255,.045)",
     }}>
-      {url ? <img src={url} alt="" loading="lazy"
+      {url ? <PrimaryPhoto product={{ id: productId, photoUrl: url }} alt=""
         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} /> : null}
     </div>
   );
@@ -236,6 +237,7 @@ export default function StockAuditView({ onExit, products = [], myShop = null })
             {rows.map((r) => (
               <Row key={onHubs ? r.k : r.p}
                 photo={photoById.get(r.p)}
+                productId={r.p}
                 name={r.n}
                 detail={onHubs ? hubDetail(r) : rotationDetail(r)}
                 busy={busy === (onHubs ? r.k : r.p) || !resultsKnown}
@@ -265,10 +267,10 @@ function rotationDetail(r) {
   return r.slow ? `${sizes}   ·   slow` : sizes;
 }
 
-function Row({ photo, name, detail, busy, onFix }) {
+function Row({ photo, productId, name, detail, busy, onFix }) {
   return (
     <div style={{ display: "flex", gap: 13, alignItems: "center", padding: "13px 0", borderBottom: LINE }}>
-      <Photo url={photo} />
+      <Photo url={photo} productId={productId} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14.5, fontWeight: 600, letterSpacing: "-.01em", color: INK,
                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>

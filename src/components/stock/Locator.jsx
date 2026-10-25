@@ -13,10 +13,12 @@ import { searchProducts } from "../../utils/productSearch";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
 import ProductDisplayHistory from "./ProductDisplayHistory";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
 function Thumb({ product, size = 42 }) {
-  const url = product?.photoUrl;
-  if (url) return <img src={url} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 9, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
+  const url = primaryPhotoUrl(product);
+  if (url) return <PrimaryPhoto product={product} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 9, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   return <div style={{ width: size, height: size, borderRadius: 9, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>👟</div>;
 }
 

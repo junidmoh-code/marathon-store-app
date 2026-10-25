@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { formatSize } from "../../utils/sizeLabel";
-import { MirroredImg } from "../../offline/MirroredImg.jsx";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 // ─── THE ALTERNATIVES STRIP ──────────────────────────────────────────────────
 // Owner spec 2026-09-06. Under the refusal — which is unchanged, word for word
@@ -79,7 +79,7 @@ export function AlternativesStrip({ rows, requestedSize, onPick, onShown, compac
                      background: "rgba(255,255,255,.04)", color: "inherit", cursor: "pointer",
                      fontFamily: "inherit", overflow: "hidden" }}>
             <div style={{ position: "relative", width: "100%", aspectRatio: "3 / 4", background: "rgba(0,0,0,.25)" }}>
-              <MirroredImg productId={r.product.id} src={r.product.photoUrl} alt="" loading="lazy"
+              <PrimaryPhoto product={r.product} alt=""
                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
               {/* The size the customer actually asked for, called out on the
                   photo — it is the only fact that decides whether this row is

@@ -18,6 +18,7 @@ import { applyPriceBatch, restorePriceBatch, previewRestore, loadRecentBatches, 
 import { buildBulkChangePlan } from "../../utils/bulkPricing";
 import BulkPricePreview from "./BulkPricePreview";
 import { typeOf } from "../../utils/missingPrices";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const fmt = (v) => (typeof v === "number" ? `R${v.toLocaleString("en-ZA", { maximumFractionDigits: 2 })}` : "—");
 const PAGE_SIZE = 50;
@@ -250,7 +251,7 @@ export default function BulkPricingTab({ products = [] }) {
                 aria-label={`Select ${p.name || p.id}`}
                 style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: onSpecial ? "default" : "pointer", flexShrink: 0 }} />
               {p.photoUrl
-                ? <img src={p.photoUrl} alt="" loading="lazy" style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+                ? <PrimaryPhoto product={p} alt="" style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
                 : <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>

@@ -8,6 +8,7 @@
 
 import { formatSize } from "../../utils/sizeLabel";
 import { fmtR } from "./assistantOrderModel";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 export default function OrderLinesPanel({ grouped, units, onRemoveOne, onQuickAdd, onAddDisplayPartner, onCheckout,
                                           emptyHint = "Hover a product and tap a size." }) {
@@ -22,7 +23,7 @@ export default function OrderLinesPanel({ grouped, units, onRemoveOne, onQuickAd
           </div>
         ) : grouped.map(g => (
           <div key={g.key} className="ad-line">
-            <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👟")}</div>
+            <div className="ad-li">{g.product?.photoUrl ? <PrimaryPhoto product={g.product} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👟")}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="ad-ln">{g.product?.name}</div>
               <div className="ad-lm">

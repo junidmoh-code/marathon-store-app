@@ -42,6 +42,7 @@ import { TOP_CATEGORIES, UNCATEGORIZED_TOP } from "../../utils/productCategory";
 import { listsHolding } from "./attentionLists";
 import { useAttentionLists } from "./useAttentionLists";
 import { FONT, GLASS, GLASS_SOLID, GRAY, GREEN, RED, AMBER, BLUE_L, input } from "./ui";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const DAY_MS = 86400000;
 const PAGE = 48;
@@ -435,10 +436,11 @@ function AttentionCard({ row, view, lists, onAdd, onRemove }) {
     <div style={{ ...GLASS, overflow: "hidden" }}>
       <div style={{ position: "relative", aspectRatio: "1 / 1", background: "rgba(255,255,255,.03)", flexShrink: 0 }}>
         {showPhoto ? (
-          <img
-            src={row.photo}
+          <PrimaryPhoto
+            product={row.product}
+            productId={row.id}
+            snapshot={row.photo}
             alt=""
-            loading="lazy"
             onError={() => setFailed(true)}
             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
           />

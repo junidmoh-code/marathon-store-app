@@ -16,6 +16,7 @@
 import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, PANEL, META } from "./tokens";
 import { formatSaTime, isNoStock, isOnlinePick } from "./feedModel";
 import { PACKER_INSTRUCTION } from "../../utils/onlineOrders";
+import { PrimaryPhoto } from "../../components/shared/PrimaryPhoto.jsx";
 
 // WEBSITE ORDER PICK (kind "online_pick", docs/ONLINE-ORDERS.md): same card,
 // but it says so — a green WEB-#### badge and the packer instruction — and its
@@ -111,7 +112,7 @@ export default function CheckCard({ check, variant, onOpen }) {
                       background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.06)",
                       display: "flex", alignItems: "center", justifyContent: "center" }}>
           {check.photoUrl
-            ? <img src={check.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            ? <PrimaryPhoto product={{ id: check.productId, photoUrl: check.photoUrl }} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             : <span style={{ ...META, fontSize: 9, color: "rgba(233,238,255,.3)" }}>NO IMAGE</span>}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0, flex: 1 }}>

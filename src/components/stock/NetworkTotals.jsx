@@ -35,12 +35,14 @@ import { searchProducts } from "../../utils/productSearch";
 import { sortRows, visibleProducts, countedLocations } from "./networkTotalsCore";
 import { loadTotals, cachedTotals, totalsFailed, totalsReadAt, forgetTotals } from "./networkTotalsStore";
 import { onlineUnits } from "../../utils/onlinePool";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
 const PAGE = 25;
 
 function Thumb({ product, size = 44 }) {
-  const url = product?.photoUrl;
-  if (url) return <img src={url} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 10, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
+  const url = primaryPhotoUrl(product);
+  if (url) return <PrimaryPhoto product={product} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 10, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   return <div style={{ width: size, height: size, borderRadius: 10, background: "rgba(120,150,255,.08)", flexShrink: 0 }} />;
 }
 

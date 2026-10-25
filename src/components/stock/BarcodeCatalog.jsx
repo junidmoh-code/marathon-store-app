@@ -28,6 +28,8 @@ import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { scopedLocationIds, withinScope } from "../../utils/shopScope";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
 const keyOf = (pid, size) => `${pid}|${size}`;
 
@@ -45,8 +47,8 @@ function useWide(px = 1024) {
 
 // Product thumbnail — same pattern as Transfer/Locator (product.photoUrl). Tap to open full.
 function Thumb({ product, size = 40, onOpen }) {
-  const url = product?.photoUrl;
-  if (url) return <img src={url} alt="" onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(); } : undefined}
+  const url = primaryPhotoUrl(product);
+  if (url) return <PrimaryPhoto product={product} alt="" onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(); } : undefined}
     style={{ width: size, height: size, objectFit: "cover", borderRadius: 9, flexShrink: 0, cursor: onOpen ? "zoom-in" : "default" }}
     onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   return <div style={{ width: size, height: size, borderRadius: 9, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>👟</div>;

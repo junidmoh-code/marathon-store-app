@@ -46,6 +46,7 @@ import {
   groupedCategories, allCategories, labelForKey, isAssignable,
   needsAssignment, isLegacySneaker, isAssigned,
 } from "../../utils/productTaxonomy.js";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const BLUE = "#4A7FFF";
 const CARD = "rgba(12,16,30,.55)";
@@ -97,7 +98,7 @@ const AssignRow = memo(function AssignRow({ p, on, saving, busy, onToggle, onPho
           style={{ position: "relative", width: 52, height: 52, borderRadius: 10, overflow: "hidden",
                    flexShrink: 0, padding: 0, cursor: "zoom-in", background: "rgba(255,255,255,.04)",
                    border: "1px solid rgba(255,255,255,.07)" }}>
-          <img src={p.photoUrl} alt="" loading="lazy" decoding="async"
+          <PrimaryPhoto product={p} alt=""
                style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
           <span style={{ position: "absolute", right: 2, bottom: 2, width: 15, height: 15, borderRadius: 4,
                          background: "rgba(0,0,0,.62)", color: "#fff", fontSize: 9, lineHeight: "15px",

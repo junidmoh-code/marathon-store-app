@@ -253,6 +253,7 @@ export default function SeatingTab({ products, viewer, flash }) {
             >
               <PhotoThumb
                 url={p.photoUrl}
+                product={p}
                 alt={p.name}
                 onOpen={p.photoUrl ? (u) => setPhoto(u) : undefined}
               />
@@ -274,6 +275,7 @@ export default function SeatingTab({ products, viewer, flash }) {
           <ProductCard
             photo={product.photoUrl}
             photos={product.photos}
+            product={product}
             onPhotoTap={product.photoUrl ? () => setPhoto(product.photoUrl) : undefined}
             name={product.name}
             badges={<>

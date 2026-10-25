@@ -13,10 +13,13 @@ import { searchProducts } from "../../utils/productSearch";
 import { GRAY, GREEN, RED, BLUE_L, BORDER, CARD, input } from "./ui";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
 // Product thumbnail — tap target in search results / selected header.
-function Thumb({ url, size = 38 }) {
-  if (url) return <img src={url} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}
+function Thumb({ product, size = 38 }) {
+  const url = primaryPhotoUrl(product);
+  if (url) return <PrimaryPhoto product={product} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}
     style={{ width: size, height: size, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />;
   return <div style={{ width: size, height: size, borderRadius: 8, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.45, flexShrink: 0 }}>👟</div>;
 }
@@ -89,7 +92,7 @@ export default function MovementHistory({ products, registry }) {
             {matches.map(p => (
               <button key={p.id} onClick={() => { setProductId(p.id); setQ(""); }}
                 style={{ display: "flex", alignItems: "center", gap: 10, textAlign: "left", background: CARD, border: BORDER, borderRadius: 10, padding: "8px 10px", cursor: "pointer" }}>
-                <Thumb url={p.photoUrl} />
+                <Thumb product={p} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
                   {p.category && <div style={{ fontSize: 10.5, color: GRAY }}>{p.category}</div>}
@@ -104,7 +107,7 @@ export default function MovementHistory({ products, registry }) {
       {/* Selected product header — photo + name + change. */}
       {product && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, background: CARD, border: BORDER, borderRadius: 10, padding: "9px 11px", marginBottom: 10 }}>
-          <Thumb url={product.photoUrl} size={44} />
+          <Thumb product={product} size={44} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{product.name}</div>
             <div style={{ fontSize: 11, color: GRAY }}>{movements.length} movement(s)</div>

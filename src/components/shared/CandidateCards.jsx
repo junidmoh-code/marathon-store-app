@@ -20,7 +20,7 @@
 //   { product, code, field: "confirmed"|"pending"|null, reasons: [string] }
 
 import { formatStyleCodeForDisplay } from "../../utils/styleCode";
-import { MirroredImg } from "../../offline/MirroredImg.jsx";
+import { PrimaryPhoto } from "./PrimaryPhoto.jsx";
 
 const BLUE = "#4A7FFF";
 const meta = { fontSize: 12, color: "rgba(233,238,255,.45)", lineHeight: 1.5 };
@@ -52,7 +52,7 @@ export default function CandidateCards({
           <div style={{ width: photoSize, height: photoSize, flexShrink: 0, borderRadius: 12, overflow: "hidden",
                         background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             {s.product.photoUrl
-              ? <MirroredImg productId={s.product.id} src={s.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ? <PrimaryPhoto product={s.product} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               : <span style={{ ...meta, fontSize: 9 }}>NO IMAGE</span>}
           </div>
           <div style={{ minWidth: 0, flex: 1 }}>

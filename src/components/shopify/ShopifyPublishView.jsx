@@ -66,6 +66,8 @@ import {
   loadPipelineNodes, loadPublishKeys, loadReviewHidden, loadNodesFor, publishProduct, setCondition,
 } from "./shopifyPublishStore";
 import ShopifyProductPage from "./ShopifyProductPage";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
+import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
 const UNCAT = "Uncategorised";
 
@@ -125,13 +127,12 @@ function StateChip({ chip }) {
 
 // Same thumbnail treatment as LabelPrintView, plus lazy loading — rows exist
 // by the hundred per section and must not fetch a photo until scrolled to.
-// Shows the PUBLISHING primary (first of the effective photo set), so a
-// custom-ordered set changes what the row leads with — the thumb never lies
-// about what the storefront would lead with.
+// Shows the product's primary photo (the publisher's primary since #760); the
+// first of the effective photo set only when the product has none.
 function Thumb({ p, node }) {
-  const primary = effectivePhotoList(p, node).photos[0];
+  const primary = primaryPhotoUrl(p) || effectivePhotoList(p, node).photos[0];
   if (primary) {
-    return <img src={primary} alt="" loading="lazy"
+    return <PrimaryPhoto product={p} snapshot={primary} alt=""
                 style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 10, flexShrink: 0 }}
                 onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   }

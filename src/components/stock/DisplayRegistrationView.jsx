@@ -72,7 +72,7 @@ import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizePicker, HistoryToggle } from "./displayRowUi";
 import { FONT } from "./ui";
-import { MirroredImg } from "../../offline/MirroredImg.jsx";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 // THE WALLS COME FROM THE NETWORK REGISTRY: the LIVE shops (Marathon PE and
 // Trophy on the seed). Pine's displays are booked at Hub 3, which is not a
@@ -377,7 +377,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   };
 
   const Thumb = ({ p }) => (p?.photoUrl
-    ? <MirroredImg productId={p.id} src={p.photoUrl} alt="" style={sheet.thumb} />
+    ? <PrimaryPhoto product={p} alt="" style={sheet.thumb} />
     : <div style={{ ...sheet.thumb, display: "grid", placeItems: "center", fontSize: 20 }}>👟</div>);
 
   return (
