@@ -161,11 +161,11 @@ await pool(hidden.filter((p) => !mappedPids.has(p)), 16, async (pid) => {
 });
 
 const relist = rows.filter((r) => r.relist).sort((a, b) => a.pid.localeCompare(b.pid));
-const skipped = rows.filter((r) => !r.relist && r.code !== "no-stock");
+const skipped = rows.filter((r) => !r.relist && r.units >= 1);
 const byCode = {};
 for (const r of skipped) (byCode[r.code] ||= []).push(r);
 console.log(`\nunlisted on Shopify, linked to an app product: ${rows.length}`);
-console.log(`  with no stock online (left unlisted): ${rows.filter((r) => r.code === "no-stock").length}`);
+console.log(`  with no stock online (left unlisted): ${rows.filter((r) => !r.relist && !(r.units >= 1)).length}`);
 console.log(`  TO RELIST (stock 1+, as it is): ${relist.length} — ${relist.reduce((a, r) => a + r.units, 0)} unit(s)`);
 console.log(`  skipped with stock: ${skipped.length}`);
 for (const [code, rs] of Object.entries(byCode).sort((a, b) => b[1].length - a[1].length)) {
