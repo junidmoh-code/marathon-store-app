@@ -18,7 +18,10 @@ import { MAX_PUBLISH_PHOTOS, APP_STORAGE_PREFIX, normalizePhotoList, normalizeMe
          MAX_PUBLISH_MEDIA } from "./publishShared.js";
 import { buildOffRecord, offAuditFields } from "./publishAudit.js";
 
-const stamp = (ctx) => ({ updatedAt: ctx.now, updatedBy: ctx.uid ?? null });
+// Every edit from the page (or the auto-publish agent) also cancels a pending
+// "relist as it is" (relist-in-stock.mjs): a person who touched the product
+// meant an ordinary publish, so the reconciler must push what they changed.
+const stamp = (ctx) => ({ updatedAt: ctx.now, updatedBy: ctx.uid ?? null, relistKeep: null, relistGid: null });
 
 // What a publishing photo list may contain — the client-side mirror of the
 // media.mjs guards. Pinned to THIS app's bucket (the prefix now lives in

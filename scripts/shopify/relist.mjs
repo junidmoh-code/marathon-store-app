@@ -122,9 +122,9 @@ export function relistVerdict({ product, node, shop, units }) {
  * server's value: anything that is no longer "confirmed live, switched off,
  * not blocked, no intent to go on" is left alone (undefined = abort).
  */
-export function relistIntent(cur, { now, by }) {
-  if (!cur || normalizedState(cur) !== "live" || isOnOrGoingOn(cur)) return undefined;
-  return { ...cur, desiredState: "on", blockedReason: null, relistKeep: now, updatedAt: now, updatedBy: by };
+export function relistIntent(cur, { now, by, gid }) {
+  if (!cur || normalizedState(cur) !== "live" || isOnOrGoingOn(cur) || !gid) return undefined;
+  return { ...cur, desiredState: "on", blockedReason: null, relistKeep: now, relistGid: gid, updatedAt: now, updatedBy: by };
 }
 
 /**

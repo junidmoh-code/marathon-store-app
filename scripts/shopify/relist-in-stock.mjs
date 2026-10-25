@@ -130,9 +130,13 @@ const legacy = [];
 await pool(unlisted, 16, async (s) => {
   const pid = pidByNumeric.get(numericIdOf(s.id));
   if (!pid) { legacy.push({ gid: s.id, title: s.title, status: s.status }); return; }
-  const [product, node] = await Promise.all([get(`products/${pid}`), get(`shopify_publish/${pid}`)]);
+  const [product, node, mappedGid] = await Promise.all([get(`products/${pid}`), get(`shopify_publish/${pid}`), get(`shopify_sync/${pid}/shopifyProductId`)]);
   const units = product ? await unitsFor(pid, product) : 0;
-  const v = relistVerdict({ product, node, shop: s, units });
+  // The claim index and the record's own map must name the SAME product —
+  // the reconciler relists the map's gid, and the ledger checks this one.
+  const v = mappedGid !== s.id
+    ? { relist: false, code: "map-mismatch", why: `the claim says ${s.id} but the record maps to ${mappedGid || "nothing"}` }
+    : relistVerdict({ product, node, shop: s, units });
   rows.push({ pid, gid: s.id, title: s.title, status: s.status, published: s.published, units,
               offReason: node?.lastOff?.reasonCode ?? null, ...v,
               before: { title: s.title, handle: s.handle, mediaIds: s.mediaIds, variants: s.variants } });
@@ -190,7 +194,7 @@ const ledger = loadLedger();
 const todo = relist.filter((r) => !ledger.entries[r.pid]).slice(0, BATCH);
 let written = 0;
 for (const r of todo) {
-  const res = await db.ref(`shopify_publish/${r.pid}`).transaction((cur) => relistIntent(cur, { now, by: BY }));
+  const res = await db.ref(`shopify_publish/${r.pid}`).transaction((cur) => relistIntent(cur, { now, by: BY, gid: r.gid }));
   if (!res.committed) { console.log(`  ${r.pid}: changed since the census — left alone`); continue; }
   ledger.entries[r.pid] = { gid: r.gid, units: r.units, before: r.before, writtenAt: now };
   written++;

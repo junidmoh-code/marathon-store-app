@@ -112,7 +112,7 @@ export async function autoPublishOne(db, pid, { now, locNames }) {
 
   // The stock bar is re-checked NOW, not trusted from when it was queued.
   const j = await judgeProduct(db, pid, locNames);
-  // A positive 4+ verdict only — "show" alone also covers "cannot be judged".
+  // A positive in-stock verdict only — "show" alone also covers "cannot be judged".
   if (!j.inReview) return { outcome: "done", why: j.why };
   if ((await db.ref(`${HIDDEN_PATH}/${pid}`).get()).val() != null) return { outcome: "done", why: "hidden" };
 

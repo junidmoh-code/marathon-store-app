@@ -78,11 +78,12 @@ describe("onlineUnits", () => {
 
 describe("relistIntent", () => {
   it("sets desiredState on + the one-shot relistKeep flag, and re-checks the server's value", () => {
-    const out = relistIntent(node(), { now: 5, by: "s" });
-    expect(out).toMatchObject({ desiredState: "on", relistKeep: 5, updatedAt: 5, updatedBy: "s", blockedReason: null });
-    expect(relistIntent(node({ liveState: "on", desiredState: "on" }), { now: 5, by: "s" })).toBeUndefined();
-    expect(relistIntent(node({ state: "blocked" }), { now: 5, by: "s" })).toBeUndefined();
-    expect(relistIntent(null, { now: 5, by: "s" })).toBeUndefined();
+    const out = relistIntent(node(), { now: 5, by: "s", gid: GID });
+    expect(out).toMatchObject({ desiredState: "on", relistKeep: 5, relistGid: GID, updatedAt: 5, updatedBy: "s", blockedReason: null });
+    expect(relistIntent(node({ liveState: "on", desiredState: "on" }), { now: 5, by: "s", gid: GID })).toBeUndefined();
+    expect(relistIntent(node({ state: "blocked" }), { now: 5, by: "s", gid: GID })).toBeUndefined();
+    expect(relistIntent(null, { now: 5, by: "s", gid: GID })).toBeUndefined();
+    expect(relistIntent(node(), { now: 5, by: "s" })).toBeUndefined(); // no planned gid, no intent
   });
 });
 
@@ -117,8 +118,16 @@ describe("reconcile.mjs relist branch", () => {
     expect(SRC).toMatch(/const mediaModel = !relistAsIs && hasMediaModel\(fresh\);\n\s+if \(relistAsIs\) \{/);
     expect(SRC).toMatch(/const planFp = relistAsIs \? null : mediaFingerprint\(mediaPlan\);/);
   });
-  it("relisting only applies to a product already mapped to Shopify", () => {
-    expect(SRC).toMatch(/const relistAsIs = Number\(fresh\.relistKeep\) > 0 && !!mapNode\?\.shopifyProductId;/);
+  it("relisting only applies to a mapped product, within a day, for the gid it was planned against, with photos unchanged", () => {
+    expect(SRC).toMatch(/const relistAsIs = Number\(fresh\.relistKeep\) > 0 && !!mapNode\?\.shopifyProductId &&\n\s+runStartedAt - Number\(fresh\.relistKeep\) < RELIST_KEEP_TTL_MS;/);
+    expect(SRC).toMatch(/if \(fresh\.relistGid !== mapNode\.shopifyProductId\) \{\n\s+await refuse\(/);
+    expect(SRC).toMatch(/if \(hasMediaModel\(fresh\) && fresh\.mediaSyncedSig !== pushSigFor\(fresh, product\)\) \{\n\s+await refuse\(/);
+  });
+  it("any page edit cancels a pending relist-as-it-is (the mutators' stamp clears the flag)", async () => {
+    const { desiredStateMutator } = await import("../../src/components/shopify/publishMutators.js");
+    const out = desiredStateMutator({ state: "live", liveState: "off", condition: "Excellent — no visible wear", relistKeep: 5, relistGid: GID }, { want: "off" }, { now: 9, uid: "u" });
+    expect(out.next.relistKeep).toBeNull();
+    expect(out.next.relistGid).toBeNull();
   });
   it("the tick advertises relistKeep so the relist script can refuse an old reconciler", () => {
     expect(SRC).toMatch(/features: \{ relistKeep: 1 \}/);
@@ -126,5 +135,6 @@ describe("reconcile.mjs relist branch", () => {
   it("the flag is one-shot: confirm and block both clear it", () => {
     const PN = readFileSync(new URL("./publishNode.mjs", import.meta.url), "utf8");
     expect(PN.match(/relistKeep: null/g)?.length).toBe(2);
+    expect(PN.match(/relistGid: null/g)?.length).toBe(2);
   });
 });

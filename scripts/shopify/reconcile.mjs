@@ -106,6 +106,8 @@ import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // the constant.
 import { RECONCILE_MAX_APPLY as MAX_APPLY, normalizePhotoList } from "../../src/components/shopify/publishShared.js";
 const UPDATED_BY = "script:reconcile";
+// relist-in-stock.mjs's one-shot flag is ignored once this old.
+const RELIST_KEEP_TTL_MS = 24 * 60 * 60 * 1000;
 const flags = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
 const pidIdx = flags.indexOf("--pids");
@@ -763,8 +765,26 @@ for (const { pid, want } of capped) {
     // what Shopify holds, inventory from the current cells, collections, and
     // the publish itself. One-shot: confirmLiveState and markBlocked clear the
     // flag, so the next ordinary publish of this product is ordinary.
-    const relistAsIs = Number(fresh.relistKeep) > 0 && !!mapNode?.shopifyProductId;
-    if (relistAsIs) console.log("  relist as it is: title, description and photos on Shopify are left untouched");
+    // Honoured only for the Shopify product the relist was PLANNED against
+    // (the census reads that gid; an adoption since re-pointed the map →
+    // refuse rather than relist something nobody checked), and only for a
+    // day: a flag nothing consumed must never shape a later ordinary publish.
+    const relistAsIs = Number(fresh.relistKeep) > 0 && !!mapNode?.shopifyProductId &&
+      runStartedAt - Number(fresh.relistKeep) < RELIST_KEEP_TTL_MS;
+    if (relistAsIs) {
+      if (fresh.relistGid !== mapNode.shopifyProductId) {
+        await refuse(pid, `relist planned for ${fresh.relistGid || "no gid"} but the record now maps to ${mapNode.shopifyProductId} — re-run the relist census`);
+        continue;
+      }
+      // The photo list must still be what Shopify holds. A change since the
+      // census would be pushed by the live media phase the moment this goes
+      // on, and the catalogue's images are frozen.
+      if (hasMediaModel(fresh) && fresh.mediaSyncedSig !== pushSigFor(fresh, product)) {
+        await refuse(pid, "its photo list changed in the app since the relist was planned — relisting would push new photos to Shopify");
+        continue;
+      }
+      console.log("  relist as it is: title, description and photos on Shopify are left untouched");
+    }
 
     // Title: the reviewed cleanName wins while still trigger-free; else lexicon.
     // A relist keeps Shopify's own title (read below), so neither is needed.
@@ -1616,7 +1636,7 @@ if (!ONLY) try {
 }
 
 // ── Auto-publish (owner instruction 2026-10-03: no human review step) ───────
-// Products in the review list with 4+ units: AI name applied, Excellent,
+// Products in the review list with stock (REVIEW_MIN_UNITS+): AI name applied, Excellent,
 // publish INTENT written through the same mutators the buttons use. This run
 // already built its worklist, so they go to Shopify on the NEXT tick, through
 // every check the reconciler applies. Never touches a product that is on.
