@@ -129,12 +129,15 @@ export function automatedMarker(headerLines) {
  * Did Gmail verify this personal mailbox really sent it? The TOPMOST
  * Authentication-Results is Gmail's own stamp (see eftCore.authenticationVerdict).
  * A DKIM pass signed by exactly the From domain, a DMARC pass for it, or an
- * SPF pass for an envelope sender on that domain (local ISPs such as mweb or
- * telkomsa may not DKIM-sign; their own servers are still verified).
+ * SPF pass whose envelope sender is the From ADDRESS itself (local ISPs such
+ * as mweb or telkomsa may not DKIM-sign). DKIM and DMARC are domain-level:
+ * they rest on the provider letting an account send only as itself, which
+ * the big providers enforce. SPF is held to the whole address, because SPF
+ * alone would let any customer of a shared ISP pose as another.
  * Without this, anyone could forge a victim's Gmail address and have the shop
  * email them — the backscatter the rate limit alone does not stop.
  */
-export function senderVerified({ headerLines, fromDomain }) {
+export function senderVerified({ headerLines, fromDomain, fromAddress }) {
   const first = (Array.isArray(headerLines) ? headerLines : []).find((h) => String(h?.key ?? "").toLowerCase() === "authentication-results");
   if (!first || !fromDomain) return false;
   const value = unfoldHeader(first.line).replace(/^authentication-results\s*:\s*/i, "");
@@ -151,7 +154,8 @@ export function senderVerified({ headerLines, fromDomain }) {
       return (/\bheader\.from\s*=\s*([A-Za-z0-9.-]+)/i.exec(seg)?.[1] || "").toLowerCase() === dom;
     }
     if (/^\s*spf\s*=\s*pass\b/i.test(seg)) {
-      return (/\bsmtp\.mailfrom\s*=\s*[^\s@]*@([A-Za-z0-9.-]+)/i.exec(seg)?.[1] || "").toLowerCase() === dom;
+      const mailfrom = (/\bsmtp\.mailfrom\s*=\s*([^\s;]+@[A-Za-z0-9.-]+)/i.exec(seg)?.[1] || "").toLowerCase();
+      return !!fromAddress && mailfrom === String(fromAddress).trim().toLowerCase();
     }
     return false;
   });
@@ -189,7 +193,7 @@ export function guideReplyEligibility({ record, fromAddress, headerLines, attach
   if (ROLE_LOCAL.test(to.split("@")[0])) return { ok: false, why: "a role or no-reply address" };
   const automated = automatedMarker(headerLines);
   if (automated) return { ok: false, why: `automated mail (${automated})` };
-  if (!senderVerified({ headerLines, fromDomain: domain })) return { ok: false, why: "Gmail did not verify the sender" };
+  if (!senderVerified({ headerLines, fromDomain: domain, fromAddress: to })) return { ok: false, why: "Gmail did not verify the sender" };
   if (!hasProofAttachment(attachments)) return { ok: false, why: "no PDF or picture attached" };
   return { ok: true, to };
 }
@@ -254,7 +258,8 @@ export function guideReplyMail({ to, inReplyTo }) {
  *
  * What is skipped here is not retried: the unknown-bank record already exists,
  * so a later tick never queues that message again. Junid's REJECTED email
- * for it has gone regardless.
+ * for it has gone regardless. A send the server refused still used one of the
+ * day's count — at most one a tick, since a failed send ends the round.
  * @param {{queue:{to:string, inReplyTo?:string, poolKey:string}[], send:Function,
  *   claim:(item)=>Promise<string|null>, countToday:()=>Promise<boolean>, release:(claimPath:string)=>Promise<any>, cap?:number}} p
  */
@@ -269,8 +274,19 @@ export async function drainGuideReplies({ queue, send, claim, countToday, releas
     try { claimPath = await claim(items[i]); } catch (err) { out.error = why(err); out.unsent += 1; continue; }
     if (!claimPath) { out.limited += 1; continue; }
     let counted = false;
-    try { counted = await countToday(); } catch (err) { out.error = why(err); }
-    if (!counted) { out.dayCapped = items.length - i; break; }
+    try { counted = await countToday(); } catch (err) {
+      // No count, no send — and the sender's slot is given back, since
+      // nothing went to them.
+      out.error = why(err);
+      out.unsent += 1;
+      try { await release(claimPath); } catch { /* at worst no reply today */ }
+      continue;
+    }
+    if (!counted) {
+      try { await release(claimPath); } catch { /* at worst no reply today */ }
+      out.dayCapped = items.length - i;
+      break;
+    }
     try {
       await send(guideReplyMail(items[i]));
       out.sent += 1;

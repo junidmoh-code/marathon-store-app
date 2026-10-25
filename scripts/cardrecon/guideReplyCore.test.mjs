@@ -203,6 +203,21 @@ describe("the rate limit — one per sender per SAST day", () => {
     expect((await h.drain(queueFor(customerMail()))).sent).toBe(1);
   });
 
+  it("a day count that cannot be made sends nothing and gives the sender's slot back", async () => {
+    const h = harness();
+    const out = await h.drain(queueFor(customerMail()), { countToday: async () => { throw new Error("db down"); } });
+    expect(out).toMatchObject({ sent: 0, unsent: 1, dayCapped: 0, error: "db down" });
+    expect(h.sent).toHaveLength(0);
+    expect(h.store.has(guideClaimPath("thandi.m@gmail.com", DAY))).toBe(false);
+  });
+
+  it("past the day's ceiling the sender's slot is given back, too", async () => {
+    const h = harness();
+    const out = await h.drain(queueFor(customerMail()), { countToday: async () => false });
+    expect(out).toMatchObject({ sent: 0, dayCapped: 1 });
+    expect(h.store.has(guideClaimPath("thandi.m@gmail.com", DAY))).toBe(false);
+  });
+
   it("a claim that cannot be made sends nothing (fail closed)", async () => {
     const h = harness();
     const out = await h.drain(queueFor(customerMail()), { claim: async () => { throw new Error("db down"); } });
@@ -325,8 +340,10 @@ describe("the pieces", () => {
   });
   it("senderVerified accepts an SPF pass for the same domain (an ISP that does not DKIM-sign), never another domain", () => {
     const line = (mf) => [{ key: "authentication-results", line: `Authentication-Results: mx.google.com; spf=pass (google.com: domain of ${mf} designates 1.2.3.4 as permitted sender) smtp.mailfrom=${mf}` }];
-    expect(senderVerified({ headerLines: line("thabo@mweb.co.za"), fromDomain: "mweb.co.za" })).toBe(true);
-    expect(senderVerified({ headerLines: line("x@evil.example"), fromDomain: "mweb.co.za" })).toBe(false);
+    expect(senderVerified({ headerLines: line("thabo@mweb.co.za"), fromDomain: "mweb.co.za", fromAddress: "thabo@mweb.co.za" })).toBe(true);
+    expect(senderVerified({ headerLines: line("x@evil.example"), fromDomain: "mweb.co.za", fromAddress: "thabo@mweb.co.za" })).toBe(false);
+    // Another customer of the same ISP posing as Thabo: SPF passes for THEIR address, not his.
+    expect(senderVerified({ headerLines: line("attacker@mweb.co.za"), fromDomain: "mweb.co.za", fromAddress: "thabo@mweb.co.za" })).toBe(false);
   });
   it("senderVerified accepts a DMARC pass when DKIM is signed by the provider's other domain", () => {
     expect(senderVerified({ headerLines: [{ key: "authentication-results", line: "Authentication-Results: mx.google.com; dkim=pass header.i=@outlook.com; spf=pass smtp.mailfrom=x@hotmail.com; dmarc=pass (p=NONE) header.from=hotmail.com" }], fromDomain: "hotmail.com" })).toBe(true);
