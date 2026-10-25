@@ -545,8 +545,10 @@ async function maintainOrder(ctx, id, order) {
       const r = resolvedList[j];
       const gen = (Number(old.routeGen) || 0) + 1;
       const item = { id: old.shopifyLineItemId, title: old.title, variant: { id: old.variantId, product: { id: old.productGid } }, quantity: old.qty, discountedUnitPriceAfterAllDiscountsSet: { shopMoney: { amount: (Number(old.unitPriceCents) || 0) / 100 } } };
-      // The POS "Order it now" record (who tapped, when) stays on the line.
-      const keep = old.orderNow ? { orderNow: old.orderNow } : {};
+      // The POS "Order it now" record (who tapped, when) stays on the line, and
+      // so does escalationGen: the line's next escalation must raise NEW
+      // request keys, never adopt a request an earlier chain left behind.
+      const keep = { ...(old.orderNow ? { orderNow: old.orderNow } : {}), ...(Number(old.escalationGen) > 0 ? { escalationGen: Number(old.escalationGen) } : {}) };
       if (!r.pid) { changed.set(i, { ...buildLine({ index: i, item, resolved: r }), lineId: old.lineId, routeGen: gen, ...keep }); return; }
       const pieces = routed[k++];
       pieces.forEach((piece, n) => {

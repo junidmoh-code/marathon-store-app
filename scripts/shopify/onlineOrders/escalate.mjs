@@ -20,6 +20,7 @@ import {
   ONLINE_ORDERS_PATH, LINE_STATUS, ORDER_STATUS, ATTENTION_KIND, PARKED_LINE_STATUSES, orderLabel,
 } from "../../../src/utils/onlineOrders.js";
 import { linesOf } from "./orderModel.mjs";
+import { releaseOnlinePiece, tellJunid, RELEASE } from "./onlinePiece.mjs";
 import {
   ESC_PHASE, ESC_TERMINAL, STEP, ESCALATION_VIA, startEscalation, stepEscalation, pendingAction,
   requestKey, requestOutcome, currentStep, describeEscalation,
@@ -348,25 +349,31 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
   }
 }
 
-// ── Withdrawing an open request (Junid's override) ──────────────────────────
-// Untouched only: a card Hub 2 has not answered is removed (as a cancelled
-// hub order is); a refill row nobody is picking or has sent is cancelled
-// no_longer_needed. Anything already moving is left to the people moving it.
-export async function withdrawRequest(ctx, orderId, i, esc) {
-  const { kind, key } = esc.request;
-  if (kind === STEP.REFILL) {
-    await ctx.db.ref(`refill_requests/${key}`).transaction((cur) => {
-      if (cur == null) return null;
-      if (cur.status !== "open" || cur.picking || Number(cur.sentQty) > 0) return undefined;
-      return { ...cur, status: "cancelled", cancelReason: "no_longer_needed", resolvedAt: new Date(ctx.now).toISOString() };
-    });
-  } else {
-    await ctx.db.ref(`orders/${key}`).transaction((cur) => {
-      if (cur == null) return null;
-      if (cur.onlineEscalationKey !== requestKey(orderId, i, esc) || cur.clothingRefillStatus != null || cur.status !== "incoming") return undefined;
-      return null;
-    });
+// ── Withdrawing an open request (Junid's override, a line swap, a cancel) ───
+// ONLY the online order's piece (Junid, 25 Oct 09:52 — onlinePiece.mjs): a
+// request raised for this order and line is withdrawn, or reduced by exactly
+// the line's quantity when it holds more; a genuine refill is never touched;
+// one whose online piece cannot be told apart is left as it is (and Junid is
+// told when this tick can reach him). Anything already moving is left to the
+// people moving it. Every change is logged with before and after quantity.
+export async function withdrawRequest(ctx, orderId, i, esc, { piece = null } = {}) {
+  // The piece is the quantity the request was raised for. A caller whose line
+  // has already changed (a swap) passes the OLD line's quantity.
+  let qty = Number(piece);
+  if (!(qty >= 1)) {
+    const read = ctx.get ? await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/qty`) : (await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/qty`).get()).val();
+    qty = Math.max(1, Number(read) || 1);
   }
+  const log = ctx.log || (() => {});
+  const rel = await releaseOnlinePiece({ ...ctx, log }, {
+    orderId, orderRef: `#${orderId}`, lineIndex: i, esc, escKey: requestKey(orderId, i, esc), piece: qty, by: "withdrawn (the line no longer waits on it)",
+  });
+  if (rel.action === RELEASE.UNCLEAR) {
+    const text = `Website order ${orderId}, line ${i + 1}: its open request ${esc.request.key} was due to be withdrawn, but which part is the online order's could not be told (${rel.why}). Nothing was changed — please check it by hand.`;
+    log(`  ⚠ ${text}`);
+    await tellJunid({ ...ctx, log }, text, { once: `${ONLINE_ORDERS_PATH}/${orderId}/requestAlerts/${esc.request.key}` });
+  }
+  return rel;
 }
 
 // ── A request nobody answers ────────────────────────────────────────────────

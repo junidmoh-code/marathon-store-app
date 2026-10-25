@@ -16,6 +16,9 @@
 // shop mailbox's SMTP (CARD_RECON_IMAP_USER / CARD_RECON_IMAP_PASSWORD in the
 // same .env — the card-recon poller's sender). None is ever printed.
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { graphql } from "./client.mjs";
 import "./env.mjs";
 import { serverNowMs } from "./publishNode.mjs";
@@ -36,6 +39,11 @@ const NO_SHOPIFY = process.argv.includes("--no-shopify");
 // Junid's inbox — the address every alarm already goes to (card-recon,
 // write-off digest). Fixed here, never read from .env.
 const NOTIFY_TO = "junidmoh@gmail.com";
+// Junid's WhatsApp (as Jimmy's src/jimmy/junid.js) and the mini's WhatsApp
+// gateway (marathon-broadcast-service, as scripts/online/customer-agent.mjs).
+// Fixed here; only the gateway's token is read, from the customer agent's env.
+const JUNID_WHATSAPP = "27813995333";
+const GATEWAY = "http://127.0.0.1:8080";
 
 const fnRequire = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = fnRequire("firebase-admin");
@@ -66,6 +74,27 @@ function mailSender() {
   return (mail) => transport.sendMail({ from: user, to: NOTIFY_TO, subject: mail.subject, text: mail.text });
 }
 
+// "Tell me on WhatsApp" (Junid, 25 Oct 09:52). null when there is no token on
+// this machine — the caller then emails instead.
+function whatsappJunid() {
+  let token = process.env.BROADCAST_SERVICE_TOKEN;
+  if (!token) {
+    try {
+      // KEY=value, KEY="value", KEY='value', an `export ` prefix, a trailing # comment.
+      const m = /^\s*(?:export\s+)?BROADCAST_SERVICE_TOKEN\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s#\n]+))/m.exec(readFileSync(join(homedir(), ".config/marathon/customer-agent.env"), "utf8"));
+      token = m ? (m[1] ?? m[2] ?? m[3] ?? "").trim() || null : null;
+    } catch { token = null; }
+  }
+  if (!token) return null;
+  return async (message) => {
+    const r = await fetch(`${GATEWAY}/api/message`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: JUNID_WHATSAPP, message }), signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) throw new Error(`WhatsApp gateway HTTP ${r.status}`);
+  };
+}
+
 const started = Date.now();
 try {
   const summary = await runOrdersPoll({
@@ -74,6 +103,7 @@ try {
     graphql: NO_SHOPIFY ? null : graphql,
     nowMs: () => serverNowMs(liveDb),
     send: COMMIT ? mailSender() : null,
+    whatsappJunid: COMMIT ? whatsappJunid() : null,
     increment: (n) => admin.database.ServerValue.increment(n),
     resolveAssignment,
     // A shop with Display Checks off is never routed to (it could not see or

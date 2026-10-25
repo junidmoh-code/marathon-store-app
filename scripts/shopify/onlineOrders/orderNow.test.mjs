@@ -61,13 +61,70 @@ const req = (f, rid = "0_0") => f.read(`online_orders/9001/orderNowRequests/${ri
 const line0 = (f) => f.read("online_orders/9001/lines/0");
 
 describe("Order it now", () => {
-  it("never twice: Central's refill for the line is still open → says so; the refill and the line are untouched (no request logic changes)", async () => {
-    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, requests: { "0_0": tap(0, shox()) } }));
-    await tick(f);
-    expect(req(f)).toMatchObject({ state: ORDER_NOW.REFUSED, by: JUNID });
-    expect(req(f).why).toMatch(/^already ordered: a refill from Central for this line \(web_9001_0_r1s0\) is open since 2026-10-24 10:00; not ordered twice/);
-    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "open" });
+  // ── Junid, 25 Oct 09:52: only the online order's piece of an open request ──
+  const OURS = { via: "online_escalation", orderKey: "9001", lineIndex: 0, ref: "#1794" };
+  const wa = [];
+  const tickWa = (f) => runOrdersPoll({ ...deps(f), whatsappJunid: async (m) => { wa.push(m); } });
+  beforeEach(() => { wa.length = 0; });
+
+  it("a request raised FOR this order (qty 1): withdrawn 1 → 0, the line goes to the pick, the change is logged", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", createdFrom: OURS }, requests: { "0_0": tap(0, shox()) } }));
+    await tickWa(f);
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.ORDERED, routedTo: "hub1", released: { key: REFILL, action: "cancel", before: 1, after: 0 } });
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "cancelled", cancelReason: "no_longer_needed", qty: 1 });
+    expect(line0(f).source).toMatchObject({ status: "pick", locationId: "hub1" });
+    expect(Object.values(f.read("online_orders/9001/requestChanges"))).toEqual([expect.objectContaining({ key: REFILL, action: "cancel", before: 1, after: 0 })]);
+    expect(wa).toEqual([]);
+  });
+
+  it("a MIXED request (3 = 1 online + 2 genuine): reduced by exactly 1 → 2, still open for the 2 genuine", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 5 } } } }, refill: { status: "open", qty: 3, createdFrom: OURS }, requests: { "0_0": tap(0, shox()) } }));
+    await tickWa(f);
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "open", qty: 2, onlineReleased: { qty: 1, before: 3, after: 2 } });
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.ORDERED, released: { action: "reduce", before: 3, after: 2 } });
+    // Exactly the line's quantity is pulled, never more — Hub 1 holds 5.
+    const codes = line0(f).source.orderKeys;
+    expect(codes.length).toBe(1);
+    expect(f.read(`orders/${codes[0]}`)).toMatchObject({ onlineUnit: 0, hub: "hub1" });   // one hub order = one unit
+  });
+
+  it("a genuine refill (no website-order tag) is never cancelled or reduced: nothing changes, Junid gets a WhatsApp", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", qty: 3, createdFrom: { manual: false, source: "scan" } }, requests: { "0_0": tap(0, shox()) } }));
+    await tickWa(f);
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "open", qty: 3 });
+    expect(f.read(`refill_requests/${REFILL}`).onlineReleased).toBeUndefined();
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.REFUSED });
+    expect(req(f).why).toMatch(/could not be told .*nothing was changed and Junid has been told/);
     expect(line0(f)).toMatchObject({ source: { status: "resolving" }, escalation: { phase: "await" } });
+    expect(wa.length).toBe(1);
+    expect(wa[0]).toMatch(/#1794, line 1 .*could not tell which part of the refill request web_9001_0_r1s0/);
+    expect(f.read("online_orders/9001/requestChanges")).toBeNull();
+  });
+
+  it("can't tell: a tagged request holding LESS than the line asked for is left alone and Junid is told", async () => {
+    const two = shox({ qty: 2 });
+    const f = fakeDb(world({ lines: [two, tee()], stock: { hub1: { SHX: { 7: { qty: 3 } } } }, refill: { status: "open", qty: 1, createdFrom: OURS }, requests: { "0_0": tap(0, two) } }));
+    await tickWa(f);
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "open", qty: 1 });
+    expect(req(f).state).toBe(ORDER_NOW.REFUSED);
+    expect(wa.length).toBe(1);
+  });
+
+  it("a request Central is already picking is left to Central: refused as already ordered, nothing changes", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", picking: { by: "x" }, createdFrom: OURS }, requests: { "0_0": tap(0, shox()) } }));
+    await tickWa(f);
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.REFUSED });
+    expect(req(f).why).toMatch(/^already ordered: a refill from Central for this line \(web_9001_0_r1s0\) is being worked on/);
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "open" });
+    expect(line0(f).source.status).toBe("resolving");
+    expect(wa).toEqual([]);
+  });
+
+  it("no stock found: the request is not touched at all", async () => {
+    const f = fakeDb(world({ refill: { status: "open", createdFrom: OURS }, requests: { "0_0": tap(0, shox()) } }));
+    await tickWa(f);
+    expect(req(f).state).toBe(ORDER_NOW.NOT_IN_STOCK);
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ status: "open", qty: 1 });
   });
 
   it("stock fixed at Hub 1 on a line Hub 1 said out of stock (no request open): a hub pick is raised through the new-order route", async () => {
@@ -199,5 +256,68 @@ describe("Order it now", () => {
     await tick(f);
     expect(req(f)).toMatchObject({ state: ORDER_NOW.REFUSED });
     expect(req(f).why).toMatch(/could not be checked \(read timed out\)/);
+  });
+});
+
+// ── Review fixes (Sonnet architect, #792) ─────────────────────────────────────
+describe("Order it now — after a release", () => {
+  const OURS = { via: "online_escalation", orderKey: "9001", lineIndex: 0, ref: "#1794" };
+  it("a reduced request loses its online tag (never taken back twice) and the line's next chain gets new keys", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 5 } } } }, refill: { status: "open", qty: 3, createdFrom: OURS }, requests: { "0_0": tap(0, shox()) } }));
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async () => {} });
+    const row = f.read(`refill_requests/${REFILL}`);
+    expect(row).toMatchObject({ qty: 2, createdFrom: { via: "online_escalation_released" }, onlineReleased: { before: 3, after: 2, escKey: REFILL, tag: OURS } });
+    expect(row.onlineRef).toBeUndefined();   // RTDB drops a null
+    expect(line0(f).escalationGen).toBe(1);
+    expect(line0(f).orderNow.release).toMatchObject({ kind: "refill", key: REFILL, piece: 1 });
+  });
+
+  it("a crash between the re-route and the release: the retry finishes it, once (3 → 2, never 2 → 1)", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 5 } } } }, refill: { status: "open", qty: 3, createdFrom: OURS }, requests: { "0_0": tap(0, shox()) } }));
+    // The state a crash leaves: the line already re-routed with its release recorded, the request untouched, "applying".
+    const l = { ...shox(), escalation: null, escalationGen: 1, source: { status: "reroute", locationId: "hub1" },
+      orderNow: { rid: "0_0", by: JUNID, at: NOW - 60e3, appliedAt: NOW - 600e3, release: { kind: "refill", key: REFILL, from: "central", to: "hub1", escKey: REFILL, piece: 1 } } };
+    await f.db.ref("online_orders/9001/lines/0").set(l);
+    await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ ...tap(0, shox()), state: "applying", claimedAt: NOW - 600e3 });
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async () => {} });
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ qty: 2, status: "open" });
+    expect(req(f)).toMatchObject({ state: ORDER_NOW.ORDERED, resumed: true, released: { action: "reduce", before: 3, after: 2 } });
+    // A further retry finds the piece already taken back.
+    await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ ...tap(0, shox()), state: "applying", claimedAt: NOW - 600e3 });
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async () => {} });
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ qty: 2 });
+  });
+
+  it("Junid is told ONCE per request, however many taps", async () => {
+    const wa = [];
+    const genuine = { status: "open", qty: 3, createdFrom: { source: "scan" } };
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: genuine, requests: { "0_0": tap(0, shox()) } }));
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async (m) => { wa.push(m); } });
+    await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ ...tap(0, shox()), at: NOW });
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async (m) => { wa.push(m); } });
+    expect(wa).toHaveLength(1);
+    expect(req(f).state).toBe(ORDER_NOW.REFUSED);   // the second tap was answered too — just not re-sent
+    expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ qty: 3, status: "open" });
+  });
+
+  it("WhatsApp down → Junid is emailed instead", async () => {
+    const mails = [];
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", qty: 3, createdFrom: { source: "scan" } }, requests: { "0_0": tap(0, shox()) } }));
+    await runOrdersPoll({ ...deps(f), send: async (m) => { mails.push(m); }, whatsappJunid: async () => { throw new Error("gateway down"); } });
+    const ours = mails.filter((m) => /a request needs your eye/.test(m.subject));
+    expect(ours).toHaveLength(1);
+    expect(ours[0].text).toMatch(/could not tell which part/);
+  });
+});
+
+describe("Order it now — telling Junid when nothing gets through", () => {
+  it("both channels down: the alert is NOT marked as sent, so the next tap tries again", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", qty: 3, createdFrom: { source: "scan" } }, requests: { "0_0": tap(0, shox()) } }));
+    await runOrdersPoll({ ...deps(f), send: async () => { throw new Error("smtp down"); }, whatsappJunid: async () => { throw new Error("gateway down"); } });
+    expect(f.read(`online_orders/9001/requestAlerts/${REFILL}`)).toBeNull();
+    const wa = [];
+    await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ ...tap(0, shox()), at: NOW });
+    await runOrdersPoll({ ...deps(f), whatsappJunid: async (m) => { wa.push(m); } });
+    expect(wa).toHaveLength(1);
   });
 });

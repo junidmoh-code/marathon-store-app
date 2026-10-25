@@ -20,18 +20,27 @@
 // hold and its parcel estimate. Nothing else raises anything.
 //
 // NEVER TWICE. A line already on a pick (status pick / display), already
-// being routed, with a raise in flight, or with an escalation request open
-// (a Central refill / Hub 2 Shop Refill card not answered yet) is refused and
-// says so: that request IS the order. Requests are never withdrawn or changed
-// here (Junid: no change to refill request logic). Requests are keyed per line
-// and route generation, and claimed in a transaction.
+// being routed, or with a raise in flight is refused and says so. Requests
+// are keyed per line and route generation, and claimed in a transaction.
+//
+// AN OPEN REQUEST FOR THE LINE (Junid, 25 Oct 09:52 — onlinePiece.mjs): when
+// the stock is found, ONLY the online order's piece of it is released — a
+// request raised for this order and line is withdrawn (or, if it holds more,
+// reduced by exactly the line's quantity); a genuine refill is never
+// cancelled or reduced. It is planned BEFORE the line moves: one being worked
+// on is refused ("already ordered"), and one whose online piece cannot be
+// told apart is left exactly as it is and Junid is told on WhatsApp. Every
+// change is logged with its before and after quantity. The re-route then
+// pulls exactly the line's quantity, never more.
 //
 // NOTHING HERE MOVES STOCK. Stock still deducts only at Pack. No refill
-// policy, target or request logic is touched.
+// policy or target is touched.
 import { ONLINE_ORDERS_PATH, LINE_STATUS, orderLabel } from "../../../src/utils/onlineOrders.js";
 import { linesOf } from "./orderModel.mjs";
 import { routeLines, routeFor } from "./routing.mjs";
 import { ESCALATIONS_PATH } from "./escalate.mjs";
+import { planRelease, releaseOnlinePiece, unclearMessage, tellJunid, RELEASE } from "./onlinePiece.mjs";
+import { requestKey } from "../../../src/utils/onlineEscalation.js";
 
 export const ORDER_NOW = Object.freeze({ PENDING: "pending", APPLYING: "applying", ORDERED: "ordered", NOT_IN_STOCK: "not_in_stock", REFUSED: "refused" });
 export const STUCK_ORDER_NOW_MS = 5 * 60 * 1000;
@@ -70,12 +79,8 @@ export function orderNowBlocker({ line, req, enabled, order = null, i = Number(r
   // line that would quietly undo the replacement.
   if (line.swappedFrom) return "this line was replaced with another item; Order it now would undo that. Ask Junid";
   if (line.escalation?.pending) return "an order for this line is being raised right now; not ordered twice";
-  const open = line.escalation?.phase === "await" ? line.escalation.request : null;
-  if (open) {
-    const what = open.kind === "refill" ? `a refill from ${place(open.from)}` : `a Shop Refill card at ${place(open.from)}`;
-    const since = Number(open.at) ? ` since ${new Date(Number(open.at) + 2 * 3600e3).toISOString().slice(0, 16).replace("T", " ")}` : "";
-    return `already ordered: ${what} for this line (${open.key}) is open${since}; not ordered twice. It moves on when ${place(open.from)} answers it`;
-  }
+  // An open request (await) is NOT a blocker here: its online piece is
+  // released when the stock is found (applyOrderNowRequests, onlinePiece.mjs).
   // Sent already: the stock moved when it was sent, but the box lands by
   // 11:00 the next working day, when the chain puts the line on the pick.
   if (line.escalation?.phase === "wait") {
@@ -156,7 +161,24 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
       const line = lines[i];
       // RESUME: a crash after the line was sent to reroute but before this
       // request said so — the line carries this request's id.
-      if (line?.orderNow?.rid === rid) { await answer({ state: ORDER_NOW.ORDERED, routedTo: line.source?.locationId || null, resumed: true }); rerouted = true; continue; }
+      if (line?.orderNow?.rid === rid) {
+        // The release the line recorded (if any) is finished here — idempotent:
+        // a piece already taken back reads as "gone".
+        const rel = line.orderNow.release;
+        let released = null;
+        if (rel?.key) {
+          const out = await releaseOnlinePiece(ctx, { orderId: id, orderRef: orderLabel(order), lineIndex: i, esc: { request: { kind: rel.kind, key: rel.key } }, escKey: rel.escKey, piece: rel.piece, by: `Order it now (${who}, resumed)` });
+          released = { key: rel.key, kind: rel.kind, action: out.action, before: out.before ?? null, after: out.after ?? null };
+          if (!out.changed && out.action !== RELEASE.GONE) {
+            await tellJunid(ctx, unclearMessage({ orderRef: orderLabel(order), lineIndex: i, line, esc: { request: { kind: rel.kind, key: rel.key, from: rel.from, to: rel.to } }, why: `it changed while the line was being re-ordered (${out.why || out.action})` }), { once: `${ONLINE_ORDERS_PATH}/${id}/requestAlerts/${rel.key}` });
+          }
+        }
+        // The rest of the step a crash may have cut short (all idempotent).
+        if (rel?.key) await ctx.db.ref(`${ESCALATIONS_PATH}/${id}_${i}`).set(null);
+        await clearAttentionIfSettled(ctx, id);
+        await answer({ state: ORDER_NOW.ORDERED, routedTo: line.source?.locationId || null, resumed: true, ...(released ? { released } : {}) });
+        rerouted = true; continue;
+      }
       const blocked = orderNowBlocker({ line, req, enabled: ctx.enabled, order: fresh, i });
       if (blocked) { await answer({ state: ORDER_NOW.REFUSED, why: blocked }); continue; }
       // A hub already sent a unit of this line (the wrong size, or some units of
@@ -184,22 +206,55 @@ export async function applyOrderNowRequests(ctx, id, order, helpers) {
       if (routedQty < qty) { await answer({ state: ORDER_NOW.NOT_IN_STOCK, checked }); continue; }
 
       const esc = line.escalation;
+      // ── The line's open request: only the online order's piece, planned first ──
+      const open = esc?.phase === "await" && esc.request ? esc : null;
+      const piece = qty;
+      const escKey = open ? requestKey(id, i, open) : null;
+      if (open) {
+        const record = await ctx.get(open.request.kind === "refill" ? `refill_requests/${open.request.key}` : `orders/${open.request.key}`);
+        const plan = planRelease({ kind: open.request.kind, record, orderId: id, lineIndex: i, escKey, piece });
+        const what = open.request.kind === "refill" ? `a refill from ${place(open.request.from)}` : `a Shop Refill card at ${place(open.request.from)}`;
+        if (plan.action === RELEASE.BUSY) { await answer({ state: ORDER_NOW.REFUSED, why: `already ordered: ${what} for this line (${open.request.key}) is being worked on or answered (${plan.why}); not ordered twice`, checked }); continue; }
+        if (plan.action === RELEASE.UNCLEAR) {
+          await tellJunid(ctx, unclearMessage({ orderRef: orderLabel(order), lineIndex: i, line, esc: open, why: plan.why }), { once: `${ONLINE_ORDERS_PATH}/${id}/requestAlerts/${open.request.key}` });
+          await answer({ state: ORDER_NOW.REFUSED, why: `the stock is back, but which part of ${what} (${open.request.key}) is this order's could not be told (${plan.why}); nothing was changed and Junid has been told`, checked });
+          continue;
+        }
+      }
       const landed = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines/${i}`).transaction((cur) => {
         if (cur == null) return null; // the SDK's cold-cache pass: never abort on it
         if (orderNowBlocker({ line: cur, req, enabled: true, order: { ...fresh, lines: undefined }, i }) || !sameSpot(cur.escalation, esc)) return undefined;
         // Only the status changes on `source`: its entryKey / orderKeys stay, so
         // the re-route cancels the line's old hub orders / strip entry (as Resolve does).
-        return clean({ ...cur, escalation: null, source: { ...cur.source, status: LINE_STATUS.REROUTE }, orderNow: { rid, by: req.by || null, at: Number(req.at) || ctx.now, appliedAt: ctx.now } });
+        // escalationGen + 1: a later chain on this line raises NEW keys and can
+        // never adopt the request this one leaves behind (requestKey's gen).
+        // `release` records what still has to come off, so a crash before it
+        // does is finished by the RESUME branch above.
+        return clean({ ...cur, escalation: null, ...(open ? { escalationGen: (Number(cur.escalationGen) || 0) + 1 } : {}),
+          source: { ...cur.source, status: LINE_STATUS.REROUTE },
+          orderNow: { rid, by: req.by || null, at: Number(req.at) || ctx.now, appliedAt: ctx.now,
+            ...(open ? { release: { kind: open.request.kind, key: open.request.key, from: open.request.from || null, to: open.request.to || null, escKey, piece } } : {}) } });
       });
       if (!landed.committed || !landed.snapshot.val()) {
         await answer({ state: ORDER_NOW.REFUSED, why: "the line changed while it was being ordered; look again", checked });
         continue;
       }
+      // The line no longer waits on its request: release the online piece of it.
+      let released = null;
+      if (open) {
+        const rel = await releaseOnlinePiece(ctx, { orderId: id, orderRef: orderLabel(order), lineIndex: i, esc: open, escKey, piece, by: `Order it now (${who})` });
+        released = { key: open.request.key, kind: open.request.kind, action: rel.action, before: rel.before ?? null, after: rel.after ?? null };
+        // It changed between the plan and the write (picked up, or re-tagged):
+        // the line is already re-routed, so Junid must look at the request.
+        if (!rel.changed && rel.action !== RELEASE.GONE) {
+          await tellJunid(ctx, unclearMessage({ orderRef: orderLabel(order), lineIndex: i, line, esc: open, why: `it changed while the line was being re-ordered (${rel.why || rel.action})` }), { once: `${ONLINE_ORDERS_PATH}/${id}/requestAlerts/${open.request.key}` });
+        }
+      }
       if (esc) await ctx.db.ref(`${ESCALATIONS_PATH}/${id}_${i}`).set(null);
       await clearAttentionIfSettled(ctx, id);
       rerouted = true;
       ctx.summary.orderNow = (ctx.summary.orderNow || 0) + 1;
-      await answer({ state: ORDER_NOW.ORDERED, routedTo: pieces[0].locationId, checked });
+      await answer({ state: ORDER_NOW.ORDERED, routedTo: pieces[0].locationId, checked, ...(released ? { released } : {}) });
     } catch (e) {
       // Left "applying": a later tick past STUCK_ORDER_NOW_MS decides it again
       // (every step above is guarded, so a repeat finds its own work). After
