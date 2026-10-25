@@ -109,8 +109,8 @@ describe("autoPublishOne", () => {
     expect(pub(f).desiredState).toBeUndefined();
   });
 
-  it("re-checks stock NOW: 3 units is below the bar → not published", async () => {
-    const f = fakeDb(world({ node: undefined, stock: { pe: { p1: { M: { qty: 3 } } } } }));
+  it("re-checks stock NOW: 0 units is below the bar → not published", async () => {
+    const f = fakeDb(world({ node: undefined, stock: { pe: { p1: { M: { qty: 0 } } } } }));
     const r = await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] });
     expect(r.outcome).toBe("done");
     expect(pub(f)).toBeUndefined();
@@ -124,7 +124,7 @@ describe("autoPublishOne", () => {
       // The condition transaction runs between the two stock reads — a sale lands there.
       if (path === "shopify_publish/p1" && r.transaction) {
         const t = r.transaction;
-        r.transaction = async (u) => { const out = await t(u); f.store.stock.pe.p1.M.qty = 3; return out; };
+        r.transaction = async (u) => { const out = await t(u); f.store.stock.pe.p1.M.qty = 0; return out; };
       }
       return r;
     };
@@ -134,7 +134,7 @@ describe("autoPublishOne", () => {
   });
 
   it("Pine units do not count toward the bar", async () => {
-    const f = fakeDb(world({ node: undefined, stock: { pe: { p1: { M: { qty: 1 } } }, "marathon-pine": { p1: { M: { qty: 9 } } } } }));
+    const f = fakeDb(world({ node: undefined, stock: { pe: { p1: { M: { qty: 0 } } }, "marathon-pine": { p1: { M: { qty: 9 } } } } }));
     expect((await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] })).outcome).toBe("done");
     expect(pub(f)).toBeUndefined();
   });

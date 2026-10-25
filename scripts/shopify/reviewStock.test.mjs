@@ -34,14 +34,15 @@ describe("hasSellableStock IS networkTotals", () => {
     tree.hub1 = { p1: { "9": { qty: 4 } } };
     expect(hasSellableStock(tree, "p1", ["8", "9"])).toBe(true);
   });
-  it("the bar is 4 units, ALL SIZES TOGETHER, counted locations only", () => {
-    expect(REVIEW_MIN_UNITS).toBe(4);
-    // 3 units across two sizes and two shops: below the bar.
-    expect(hasSellableStock({ pe: { p1: { "8": { qty: 2 } } }, hub1: { p1: { "9": { qty: 1 } } } }, "p1", ["8", "9"])).toBe(false);
-    // 4 units across two sizes: at the bar.
-    expect(hasSellableStock({ pe: { p1: { "8": { qty: 2 } } }, hub1: { p1: { "9": { qty: 2 } } } }, "p1", ["8", "9"])).toBe(true);
+  it("the bar is ONE unit (the 4-unit rule went 2026-10-25), counted locations only", () => {
+    expect(REVIEW_MIN_UNITS).toBe(1);
+    // A single unit, anywhere the website sells from: in the list.
+    expect(hasSellableStock({ hub1: { p1: { "9": { qty: 1 } } } }, "p1", ["8", "9"])).toBe(true);
+    // 3 units across two sizes and two shops — hidden under the old bar, shown now.
+    expect(hasSellableStock({ pe: { p1: { "8": { qty: 2 } } }, hub1: { p1: { "9": { qty: 1 } } } }, "p1", ["8", "9"])).toBe(true);
+    expect(hasSellableStock({ pe: { p1: { "8": { qty: 0 } } } }, "p1", ["8"])).toBe(false);
     // Pine's units never count toward the bar.
-    const withPine = { pe: { p1: { "8": { qty: 3 } } }, "marathon-pine": { p1: { "8": { qty: 9 } } } };
+    const withPine = { pe: { p1: { "8": { qty: 0 } } }, "marathon-pine": { p1: { "8": { qty: 9 } } } };
     expect(hasSellableStock(withPine, "p1", ["8"])).toBe(false);
   });
   it("cannot judge a record with no sizes — null, never false", () => {
@@ -100,8 +101,15 @@ describe("sweepReviewStock", () => {
     expect(f.store.config.other).toEqual({ keep: true }); // siblings untouched
   });
 
-  it("HIDES a product with 3 units (below the 4-unit bar) and does not queue it", async () => {
-    const f = fakeDb(world({ stock: { pe: { p1: { "8": { qty: 2 }, "9": { qty: 1 } } } } }));
+  it("SHOWS and queues a product with 1 unit (the 4-unit bar is gone)", async () => {
+    const f = fakeDb(world({ hidden: 123, stock: { pe: { p1: { "8": { qty: 1 } } } } }));
+    const r = await sweepReviewStock(f.db, { commit: true, timestamp: TS });
+    expect(r.shown).toBe(1);
+    expect(f.store[AUTOPUBLISH_QUEUE_PATH].p1).toEqual({ queuedAt: TS });
+  });
+
+  it("HIDES a product with 0 units and does not queue it", async () => {
+    const f = fakeDb(world({ stock: { pe: { p1: { "8": { qty: 0 } } } } }));
     const r = await sweepReviewStock(f.db, { commit: true, timestamp: TS });
     expect(r.hidden).toBe(1);
     expect(f.store[AUTOPUBLISH_QUEUE_PATH]).toBeUndefined();
