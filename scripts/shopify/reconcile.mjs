@@ -106,6 +106,8 @@ import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // the constant.
 import { RECONCILE_MAX_APPLY as MAX_APPLY, normalizePhotoList } from "../../src/components/shopify/publishShared.js";
 const UPDATED_BY = "script:reconcile";
+// relist-in-stock.mjs's one-shot flag is ignored once this old.
+const RELIST_KEEP_TTL_MS = 24 * 60 * 60 * 1000;
 const flags = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
 const pidIdx = flags.indexOf("--pids");
@@ -262,8 +264,10 @@ if (!COMMIT) {
     let action;
     if (want === "off") action = "UNPUBLISH";
     else if (isPriceRecord(dryProduct)) action = "REFUSE (not merchandise)";
+    else if (mapNode?.shopifyProductId && Number(node.relistKeep) > 0 && runStartedAt - Number(node.relistKeep) < RELIST_KEEP_TTL_MS &&
+             node.relistGid === mapNode.shopifyProductId) action = "RELIST AS IT IS";
     else action = mapNode?.shopifyProductId ? "PUBLISH" : "CREATE+PUBLISH";
-    const title = node.cleanName || "(lexicon at apply time)";
+    const title = action === "RELIST AS IT IS" ? "(Shopify's own title, untouched)" : node.cleanName || "(lexicon at apply time)";
     // The collection is resolvable from RTDB alone, so the dry run shows it —
     // including the "none" answers, which are the ones worth seeing BEFORE a
     // publish rather than in the run log after it.
@@ -752,9 +756,45 @@ for (const { pid, want } of capped) {
     }
     if (!CONDITIONS.includes(fresh.condition)) { await refuse(pid, "condition unset — a product cannot go live without one"); continue; }
 
+    // ── RELIST AS IT IS (relist-in-stock.mjs, Junid 25 Oct 2026) ─────────────
+    // A product already on Shopify, switched off, put back on the Online Store
+    // EXACTLY as it is there: no productUpdate of title, handle, description,
+    // tags or SEO, and no media sync — "never change titles, descriptions or
+    // variant IDs", and the catalogue's images stay frozen. Everything that
+    // makes a listing SAFE still runs: the variant read-back (a size with no
+    // variant refuses), tracking, the canonical compliance validator against
+    // what Shopify holds, inventory from the current cells, collections, and
+    // the publish itself. One-shot: confirmLiveState and markBlocked clear the
+    // flag, so the next ordinary publish of this product is ordinary.
+    // Honoured only for the Shopify product the relist was PLANNED against
+    // (the census reads that gid; an adoption since re-pointed the map →
+    // refuse rather than relist something nobody checked), and only for a
+    // day: a flag nothing consumed must never shape a later ordinary publish.
+    const relistAsIs = Number(fresh.relistKeep) > 0 && !!mapNode?.shopifyProductId &&
+      runStartedAt - Number(fresh.relistKeep) < RELIST_KEEP_TTL_MS;
+    if (relistAsIs) {
+      if (fresh.relistGid !== mapNode.shopifyProductId) {
+        await refuse(pid, `relist planned for ${fresh.relistGid || "no gid"} but the record now maps to ${mapNode.shopifyProductId} — re-run the relist census`);
+        continue;
+      }
+      // The photo list must still be what Shopify holds. A change since the
+      // census would be pushed by the live media phase the moment this goes
+      // on, and the catalogue's images are frozen.
+      if (hasMediaModel(fresh) && fresh.mediaSyncedSig !== pushSigFor(fresh, product)) {
+        await refuse(pid, "its photo list changed in the app since the relist was planned — relisting would push new photos to Shopify");
+        continue;
+      }
+      console.log("  relist as it is: title, description and photos on Shopify are left untouched");
+    }
+
     // Title: the reviewed cleanName wins while still trigger-free; else lexicon.
+    // A relist keeps Shopify's own title (read below), so neither is needed.
     let title;
-    if (fresh.cleanName && isTriggerFree(fresh.cleanName)) {
+    if (relistAsIs) {
+      const cur = await graphql(`query ($id: ID!) { product(id: $id) { id title } }`, { id: mapNode.shopifyProductId });
+      if (!cur.product) { await refuse(pid, `${mapNode.shopifyProductId} not found on the shop — it cannot be relisted as it is`); continue; }
+      title = cur.product.title;
+    } else if (fresh.cleanName && isTriggerFree(fresh.cleanName)) {
       title = String(fresh.cleanName).trim();
     } else if (fresh.cleanName) {
       await refuse(pid, `cleanName trips the lexicon now (${triggersInText(fresh.cleanName).join(", ")}) — re-name it`);
@@ -784,9 +824,11 @@ for (const { pid, want } of capped) {
     // The reviewed publishing photo set (ordered, first = primary) wins over
     // the record's photoUrl/gallery; buildMediaPlan re-applies the HTTPS +
     // Storage-host guards to it, and preflight still 404-fails loudly.
-    let mediaPlan;
-    try { mediaPlan = buildMediaPlan(product, title, normalizePhotoList(fresh.photos)); }
-    catch (e) { await refuse(pid, String(e?.message || e)); continue; }
+    let mediaPlan = [];
+    if (!relistAsIs) {
+      try { mediaPlan = buildMediaPlan(product, title, normalizePhotoList(fresh.photos)); }
+      catch (e) { await refuse(pid, String(e?.message || e)); continue; }
+    }
 
     const payload = {
       title,
@@ -799,7 +841,9 @@ for (const { pid, want } of capped) {
       media: mediaPlan,
       variants: product.sku ? sizes.map((s) => ({ sku: `${product.sku}-${encodeSizeKey(s)}` })) : [],
     };
-    const preVerdict = validatePayload(payload);
+    // A relist pushes none of this payload; the canonical validator below
+    // judges what Shopify actually holds.
+    const preVerdict = relistAsIs ? { ok: true, violations: [] } : validatePayload(payload);
     if (!preVerdict.ok) {
       await refuse(pid, preVerdict.violations.map((v) => `${v.field}: ${v.problem}`).join("; "));
       continue;
@@ -852,7 +896,9 @@ for (const { pid, want } of capped) {
       }
     }
     const createdNow = !gid;
-    if (gid) {
+    if (gid && relistAsIs) {
+      console.log(`  /shopify_sync maps to ${gid} — relisting as it is (no field update)`);
+    } else if (gid) {
       // RECONCILE the mapped product's pushed fields from the CURRENT record —
       // a rename or condition change made while the product sat OFF must land
       // before it becomes visible again.
@@ -1007,13 +1053,16 @@ for (const { pid, want } of capped) {
     // certifying an unverified count match would let a stale or wrong photo
     // ship "verified" forever (reviewer finding, 2026-08-14). This happens
     // while the product is off the sales channel, invisible to customers.
-    const planFp = mediaFingerprint(mediaPlan);
+    const planFp = relistAsIs ? null : mediaFingerprint(mediaPlan);
     // THE MEDIA LIST PATH (photos AND videos). The product is off the channel
     // here, so this may create, reorder and remove freely; its photos are
     // READY before it returns ok, and its videos are queued for the media
     // phase at the end of the tick (never uploaded inside this batch).
-    const mediaModel = hasMediaModel(fresh);
-    if (mediaModel) {
+    const mediaModel = !relistAsIs && hasMediaModel(fresh);
+    if (relistAsIs) {
+      // Shopify's media is what the listing had when it was switched off.
+      // Left exactly as it is.
+    } else if (mediaModel) {
       let res;
       try {
         await preflightPhotoUrls(desiredPushItems(fresh, product).filter((m) => m.type === "photo").map((m) => m.url));
@@ -1166,6 +1215,19 @@ for (const { pid, want } of capped) {
       if (!(sizeKey in totals)) continue;
       totals[sizeKey] = Math.max(0, totals[sizeKey] - onlineHoldAdjustment(heldBySize[sizeKey], invCommitted.get(v.shopifyInventoryItemId), releasedHeld[sizeKey]));
     }
+    // A relist exists to sell stock the app holds. Sold out since the census
+    // → not relisted (it stays off; the next census picks it up again).
+    // Not refuse(): that blocks the product and the census would never offer
+    // it again. The intent is simply withdrawn — off, flag cleared — so it is
+    // NOT re-applied next tick as an ordinary publish (which would push the
+    // record's title and photos).
+    if (relistAsIs && !Object.values(totals).some((q) => q > 0)) {
+      await failSafeUnpublish(gid);
+      await db.ref(`shopify_publish/${pid}`).update({ desiredState: "off", relistKeep: null, relistGid: null,
+                                                     updatedAt: await serverNowMs(db), updatedBy: UPDATED_BY });
+      results.push({ pid, ok: true, note: "relist withdrawn — no stock left online now; left off" });
+      continue;
+    }
 
     // ── TRACKING, ENFORCED ON EVERY RUN ──────────────────────────────────────
     // Not just at creation. This is the SELF-HEALING half: it re-checks the
@@ -1272,7 +1334,9 @@ for (const { pid, want } of capped) {
     // Leave the intent unconsumed; the next run rebuilds the plan from the
     // new set (and re-syncs the media by fingerprint).
     let lastPlanFp = null;
-    if (mediaModel) {
+    if (relistAsIs) {
+      // No photo set is pushed, so none can be overtaken.
+    } else if (mediaModel) {
       // The media list's own signature: any change to what Shopify should hold.
       lastPlanFp = hasMediaModel(lastCheck) && pushSigFor(lastCheck, product) === pushSigFor(fresh, product) ? planFp : null;
     } else {
@@ -1586,7 +1650,7 @@ if (!ONLY) try {
 }
 
 // ── Auto-publish (owner instruction 2026-10-03: no human review step) ───────
-// Products in the review list with 4+ units: AI name applied, Excellent,
+// Products in the review list with stock (REVIEW_MIN_UNITS+): AI name applied, Excellent,
 // publish INTENT written through the same mutators the buttons use. This run
 // already built its worklist, so they go to Shopify on the NEXT tick, through
 // every check the reconciler applies. Never touches a product that is on.
@@ -1788,6 +1852,10 @@ if (COMMIT && !ONLY) {
     ...(inventoryCursorWritten ? { inventoryCursor } : {}),
     ...(markerCursorWritten ? { markerCursor } : {}),
     ...(mediaCursor ? { mediaCursor } : {}),
+    // What this reconciler understands. relist-in-stock.mjs refuses to write
+    // a relistKeep intent unless a recent tick stamped this: an older
+    // reconciler would ignore the flag and push the record's title and photos.
+    features: { relistKeep: 1 },
     updatedAt: runStartedAt,
   });
 }

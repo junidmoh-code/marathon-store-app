@@ -72,13 +72,22 @@ export function parseSnapshot(jsonl) {
 
 /** Run the bulk query, wait for it, download and parse it. */
 export async function readShopSnapshot(graphql, locationId, { fetchImpl = fetch, log = () => {} } = {}) {
+  const text = await runBulkQuery(graphql, bulkQuery(locationId), { fetchImpl, log });
+  return text == null ? new Map() : parseSnapshot(text);
+}
+
+/**
+ * Any read-only bulk query → the JSONL text Shopify hands back, or null when
+ * nothing matched. Shared by the sweep and relist-in-stock.mjs.
+ */
+export async function runBulkQuery(graphql, query, { fetchImpl = fetch, log = () => {} } = {}) {
   const started = Date.now();
   let op = null;
   // Another bulk query of this app may be running (only one at a time): wait.
   for (;;) {
     const res = await graphql(
       `mutation ($q: String!) { bulkOperationRunQuery(query: $q) { bulkOperation { id status } userErrors { field message } } }`,
-      { q: bulkQuery(locationId) }, { mutation: true },
+      { q: query }, { mutation: true },
     );
     const errs = res.bulkOperationRunQuery.userErrors || [];
     if (!errs.length) { op = res.bulkOperationRunQuery.bulkOperation; break; }
@@ -95,11 +104,10 @@ export async function readShopSnapshot(graphql, locationId, { fetchImpl = fetch,
     if (n.status === "COMPLETED") {
       // No file means nothing matched. The CALLER decides whether an empty
       // shop is believable (it checks against the published products).
-      if (!n.url) return new Map();
+      if (!n.url) return null;
       const res = await fetchImpl(n.url);
       if (!res.ok) throw new Error(`bulk snapshot download failed: HTTP ${res.status}`);
-      const snap = parseSnapshot(await res.text());
-      return snap;
+      return res.text();
     }
     if (["FAILED", "CANCELED", "EXPIRED"].includes(n.status)) throw new Error(`bulk snapshot ${n.status} (${n.errorCode || "no code"})`);
     if (Date.now() - started > BULK_TIMEOUT_MS) throw new Error(`bulk snapshot still ${n.status} after ${BULK_TIMEOUT_MS / 60000} min`);

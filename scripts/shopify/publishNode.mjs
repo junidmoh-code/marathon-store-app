@@ -224,6 +224,9 @@ export async function confirmLiveState(db, productId, liveState, updatedBy, { gi
     state: "live",
     liveState,
     blockedReason: null,
+    // A relist intent is one-shot (reconcile.mjs "RELIST AS IT IS").
+    relistKeep: null,
+    relistGid: null,
     ...(numericId ? { adminUrl: `https://admin.shopify.com/store/nu3ei8-0p/products/${numericId}` } : {}),
     ...(!numericId && clearAdminUrl ? { adminUrl: null } : {}),
     ...(liveState === "on" ? { liveAt: at } : {}),
@@ -255,6 +258,8 @@ export async function markBlocked(db, productId, reason, updatedBy, { wasTakenDo
     blockedReason: String(reason),
     blockedHandle: blockedHandle ? String(blockedHandle) : null,
     desiredState: "off",
+    relistKeep: null,
+    relistGid: null,
     // A refusal that ran failSafeUnpublish first has PROVED the product is off
     // the channel; recording it stops the node claiming `liveState: "on"` for
     // a product nobody can see. Refusals that never published leave the field

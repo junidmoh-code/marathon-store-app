@@ -152,7 +152,7 @@ async function markInventoryDirty({ db, increment, log = () => {} }, { loc, pid,
   const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
   if (!isLiveOn(node)) {
     // Not on the storefront, so in the review list: no inventory push, but the
-    // list may need to hide or show it. The bar is a TOTAL (4 units, all sizes
+    // list may need to hide or show it. The bar is a TOTAL (REVIEW_MIN_UNITS, all sizes
     // together — scripts/shopify/reviewStock.mjs), which any sellable change
     // can cross, so every sellable change is marked; the gate above has
     // already dropped the movements that change nothing sellable.

@@ -306,7 +306,7 @@ test("a product with no sellable stock is HIDDEN from Awaiting review, and the p
   expect(out).not.toContain("Plain tee black");     // hidden
   expect(out).toContain("Court sneaker grey");      // in stock — still there
   expect(out).toContain("hidden");
-  expect(out).toMatch(/1 product with fewer than 4 units is hidden/);
+  expect(out).toMatch(/1 product with no stock online is hidden/);
   // Hidden is not gone: its product page still opens by address.
   await act(() => { fakeWindow.location.hash = "shopify/p1"; });
   await flush();
@@ -319,7 +319,7 @@ test("with nothing hidden (or the hidden read failed → empty) every product is
   await flush();
   const out = texts(tree);
   expect(out).toContain("Plain tee black");
-  expect(out).not.toMatch(/fewer than 4 units/);
+  expect(out).not.toMatch(/no stock online is hidden|are hidden/);
 });
 
 test("the window fetches bodies for the rows on screen and no others; rows show the cleaned name read-only", async () => {

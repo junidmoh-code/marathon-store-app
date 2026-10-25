@@ -1187,8 +1187,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         {filter === "awaiting" && hiddenInReview > 0 && (
           <div style={{ fontSize: 11, color: GRAY, marginTop: 8 }}>
             {hiddenInReview === 1
-              ? "1 product with fewer than 4 units is hidden. It comes back at 4 or more."
-              : `${hiddenInReview} products with fewer than 4 units are hidden. They come back at 4 or more.`}
+              ? "1 product with no stock online is hidden. It comes back when stock arrives."
+              : `${hiddenInReview} products with no stock online are hidden. They come back when stock arrives.`}
           </div>
         )}
         {/* THE CATALOGUE — department, then shelf, as one-tap filter chips over

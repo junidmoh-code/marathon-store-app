@@ -1,6 +1,7 @@
 // ─── THE REVIEW LIST SHOWS ONLY WHAT IS WORTH SELLING ONLINE ─────────────────
-// (2026-10-03: the bar is REVIEW_MIN_UNITS units, not "any unit". Wording
-// below that says "no sellable stock" means "below the bar".)
+// (2026-10-03 the bar was raised to 4 units; 2026-10-25 Junid: "That rule
+// goes." — the bar is back to ONE sellable unit. A product with any stock at
+// the shops the website sells from is in the review list.)
 // docs/SHOPIFY-REVIEW-INSTOCK.md is the design. In short: a product that is not
 // on the storefront sits in the Shopify Publisher's review list, and a product
 // with no sellable stock must not sit there, because photo, name and review work
@@ -41,9 +42,11 @@ export const HIDDEN_PATH = "config/shopifyReviewHidden";
 export const MAX_PER_RUN = 200;
 
 // FEWER THAN THIS MANY UNITS (all sizes together, at the locations the website
-// sells from) → not worth a photo, a name or a listing (owner, 2026-10-03:
-// "it's not worth spending money to sell less than 4 items").
-export const REVIEW_MIN_UNITS = 4;
+// sells from) → hidden from the review list. Was 4 from 2026-10-03 ("it's not
+// worth spending money to sell less than 4 items"); Junid removed that rule on
+// 2026-10-25 — anything with stock is listed. relist-in-stock.mjs put back
+// what the 4-unit bar had kept off.
+export const REVIEW_MIN_UNITS = 1;
 
 // A product that passes the bar while sitting in the review list is queued for
 // the auto-publish agent (autoPublish.mjs), which accepts its name, sets
