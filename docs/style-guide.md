@@ -1,5 +1,12 @@
 # Marathon Club style guide — how the stylist puts an outfit together
 
+**Since 26 Oct 2026 the fits themselves are built by claude-opus-5-5 from
+the written rulebook in [`functions/lib/fit-rulebook.md`](../functions/lib/fit-rulebook.md)
+(one hero piece, at most 3 colours, matched formality, one statement piece,
+proportions, season, 10 named formulas) and scored by a separate critic call.
+This file still decides which products the stylist is offered (palette,
+menswear only, season, names).**
+
 This file is the stylist's rulebook. Every multi-product post (the lookbook
 poster, flat-lays, pairings and outfits) is chosen against it. **Junid edits
 this file**; the stylist reads `functions/lib/style-guide.json`, which is
