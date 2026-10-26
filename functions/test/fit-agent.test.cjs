@@ -125,6 +125,15 @@ describe("the house model", () => {
 });
 
 describe("buildFit — the budget and the photo notes", () => {
+  test("a piece the critic says to replace is refused if the stylist brings it back", async () => {
+    const f = fake([FIT({ pids: ["tee-g", "jean-b", "loub"], caption: "Brown suede Louboutins, a washed black graphic tee and slim black Diesel jeans. #MarathonClub" }), { ...CRIT(8, 3, 8, 9, "swap the tee"), replace: ["tee-g", "loub"] },
+      FIT({ pids: ["tee-g", "jean-b", "loub"], caption: "Brown suede Louboutins, a washed black graphic tee and slim black Diesel jeans. #MarathonClub" }), FIT(), CRIT(9, 9, 9, 9)]);
+    const r = await fa.buildFit({ ...OFFER, heroPid: "loub" }, f);
+    assert.equal(r.ok, true);
+    assert.match(r.rounds[1].problems.join(" "), /replace tee-g: they cannot be used again/);
+    assert.match(f.reqs[2].messages[0].content[1].text, /must NOT be used again: tee-g, loub/);
+    assert.ok(!r.rounds[1].problems.join(" ").includes("loub"), "the fixed hero is never banned");
+  });
   test("a round is not started when its stylist and critic together could pass the budget", async () => {
     const f = fake([FIT(), CRIT(7, 9, 9, 9)], 0.07);
     const r = await fa.buildFit(OFFER, f);

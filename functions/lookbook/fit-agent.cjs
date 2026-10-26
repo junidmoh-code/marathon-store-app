@@ -65,6 +65,8 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
   const log = deps.log || (() => {});
   const rounds = [];
   const feedback = [...earlier];
+  // Pieces the critic said must leave the fit: never offered back (a fixed hero excepted).
+  const banned = new Set();
   let spent = 0;
   const photos = new Map();
   // The prefix each role's last call cached: a rebuild reads it at $0.20/M.
@@ -90,7 +92,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
     }
     spent += answer.costUSD;
     cached.stylist = answer.cachedTokens || 0;
-    const read = fr.readStylistAnswer(answer.json, offer);
+    const read = fr.readStylistAnswer(answer.json, { ...offer, banned });
     if (!read.ok) {
       rounds.push({ round, fit: summary(read.fit), problems: read.problems, costUSD: answer.costUSD });
       log(`fit round ${round}: refused by the checks — ${read.problems.join("; ")}`);
@@ -134,6 +136,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
     rounds.push({ ...entry, scores: verdict.scores, min: verdict.min, reasons: verdict.reasons, seen: verdict.seen, fix: verdict.fix });
     log(`fit round ${round}: ${fit.theme} — colour ${verdict.scores.colour}, formality ${verdict.scores.formality}, theme ${verdict.scores.theme}, caption ${verdict.scores.caption}${verdict.pass ? " — PASS" : ` — rebuild: ${verdict.fix}`}`);
     if (verdict.pass) return { ok: true, fit, verdict, rounds, costUSD: spent };
+    for (const pid of verdict.replace) if (pid !== offer.heroPid && fit.pieces.some((p) => p.pid === pid)) banned.add(pid);
     feedback.push(fr.feedbackLine(fit, { verdict }));
   }
   return skip(`no fit scored ${fr.PASS_SCORE}+ on all four after ${fr.MAX_ROUNDS} rounds`);

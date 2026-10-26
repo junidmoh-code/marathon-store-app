@@ -244,7 +244,7 @@ function brandsNamed(caption, brands) {
  * `fit`: { formula, theme, hero, pieces (offered piece objects, slot order), colours, caption, why }.
  * `knownBrands`: every brand the caption could name; one not in the fit is a problem. Pure.
  */
-function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, season, knownBrands = [], heroPid = null, book = rulebook() }) {
+function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, season, knownBrands = [], heroPid = null, banned = new Set(), book = rulebook() }) {
   const problems = [];
   const a = json && typeof json === "object" ? json : {};
   const byPid = new Map(pieces.map((p) => [p.pid, p]));
@@ -252,6 +252,8 @@ function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, se
   const unknown = pids.filter((p) => !byPid.has(p));
   if (unknown.length) problems.push(`pids not in the catalogue: ${unknown.join(", ")}`);
   const chosen = pids.filter((p) => byPid.has(p)).map((p) => byPid.get(p));
+  const again = pids.filter((p) => banned.has(p));
+  if (again.length) problems.push(`the critic said to replace ${again.join(", ")}: they cannot be used again`);
   const perSlot = {};
   for (const p of chosen) perSlot[p.slot] = (perSlot[p.slot] || 0) + 1;
   const twice = Object.entries(perSlot).filter(([, n]) => n > 1).map(([s]) => s);
@@ -292,13 +294,14 @@ function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, se
 const CRITIC_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["colour", "formality", "theme", "caption", "seen", "fix"],
+  required: ["colour", "formality", "theme", "caption", "seen", "replace", "fix"],
   properties: {
     ...Object.fromEntries(CRITERIA.map((k) => [k, {
       type: "object", additionalProperties: false, required: ["score", "reason"],
       properties: { score: { type: "integer", description: "1 to 10" }, reason: { type: "string" } },
     }])),
     seen: { type: "array", items: { type: "object", additionalProperties: false, required: ["pid", "colour", "what"], properties: { pid: { type: "string" }, colour: { type: "string" }, what: { type: "string" } } }, description: "each piece as the photo shows it" },
+    replace: { type: "array", items: { type: "string" }, description: "pids of the pieces that must leave the fit (empty when only the caption or theme is wrong)" },
     fix: { type: "string", description: "what the stylist must change, or empty when every score is 8 or more" },
   },
 };
@@ -312,6 +315,7 @@ const CRITIC_BRIEF = [
   "- theme: does the theme name describe what the photos actually show? (Sage or mint green is not an earth tone.)",
   "- caption: is every item the caption names exactly what is in the photos (colour, fabric, brand)? Any piece called something it is not scores 4 or less. Also section 7.",
   `8 means a stylist would post it as is. Anything below ${PASS_SCORE} on any score is rebuilt, so be strict and specific in each reason.`,
+  "In 'replace', list the pid of every piece that must leave the fit for it to pass (never the hero when it is the reason the fit exists); leave it empty when only the caption or theme name is wrong.",
   "Be brief: each reason under 25 words, each 'what' under 10 words, the fix under 50 words.",
 ].join("\n");
 
@@ -363,6 +367,7 @@ function readCriticAnswer(json) {
   return {
     ok: true, pass: min >= PASS_SCORE, scores, min, reasons,
     seen: Array.isArray(a.seen) ? a.seen.slice(0, 8).map((s) => ({ pid: String(s.pid || ""), colour: String(s.colour || "").slice(0, 40), what: String(s.what || "").slice(0, 120) })) : [],
+    replace: Array.isArray(a.replace) ? a.replace.map(String).slice(0, 6) : [],
     fix: String(a.fix || "").slice(0, 600),
   };
 }
@@ -373,7 +378,8 @@ function feedbackLine(fit, { problems = null, verdict = null } = {}) {
   if (problems) return `${what} — refused by the checks: ${problems.join("; ")}`;
   const low = CRITERIA.filter((k) => verdict.scores[k] < PASS_SCORE).map((k) => `${k} ${verdict.scores[k]}/10 (${verdict.reasons[k]})`);
   const seen = verdict.seen.length ? ` The photos actually show: ${verdict.seen.map((s) => `${s.pid} ${s.colour} ${s.what}`).join("; ")}.` : "";
-  return `${what} — the critic scored ${low.join("; ")}.${seen} Fix: ${verdict.fix}`;
+  const out = verdict.replace && verdict.replace.length ? ` These pieces must NOT be used again: ${verdict.replace.join(", ")}.` : "";
+  return `${what} — the critic scored ${low.join("; ")}.${seen}${out} Fix: ${verdict.fix}`;
 }
 
 // ── COST ──────────────────────────────────────────────────────────────────
