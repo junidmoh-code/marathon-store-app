@@ -545,3 +545,35 @@ value holds every bank notification unread (warned each tick, heartbeat
 `eftErrors: 0`. Reviews: CodeRabbit rate-limited (spending cap); Sonnet
 architect, Fable spec-conformance and a Sonnet CodeRabbit-substitute pass —
 provenance in the PR comment.
+
+## 2026-10-26 — Outfit fits are built by an opus-5-5 stylist and scored by an opus-5-5 critic (PR #801, live at `0f0ec65c`)
+
+**What's true now.** The lookbook (socialStillAutopilot, Mon/Wed/Fri 07:00) and the reels'
+`outfit` posts (socialDailyAutopilot / generateSocialPosts) take their fit from
+`functions/lookbook/fit-agent.cjs`. The stylist follows `functions/lib/fit-rulebook.md`
+(edit that file, then redeploy the three functions it names). A critic sees the product
+photos and scores colour, formality, theme name and caption 1–10. Any score under 8 means a
+rebuild, at most 2. Then the fit is **skipped**: the lookbook day posts the current style
+(gate `critic`), and an outfit post is reported as skipped. The stylist's caption,
+already scored, is the post's caption. Only products in stock in ≥2 sizes are offered.
+
+**Budget.** At most $0.15 per outfit for stylist + critic + retries, enforced BEFORE
+each call: input priced at its worst, and each call's output ceiling is what is left (never
+under 1,000 tokens). There are no SDK retries, no fallback model, and a refusal or API error
+is a skip. Measured on 10 cards: $0.042–0.095 per finished fit (mean $0.066). The rest of a
+lookbook card (4K hero, thumbnails, vision checks) is ~$0.27–0.54.
+
+**Where to look.** `look.critic` on each post (final scores, reasons, every round),
+`social_fit_log/{saDate}/{postId | skip-ms | outfit-ms}`, and the critic's photo notes at
+`social_lookbook/seen/{pid}`. History entries now carry `formula`, and the last three are
+sent to the stylist for variety.
+
+**House model.** `social_lookbook/houseModel` holds 4 invented candidates (scripts/social/house-model.mjs).
+The best-scoring one (2) stands in until Junid picks (`--pick N`). After `decideBy` (27 Oct
+21:39 SAST) it is auto-picked and final (`--override` to change it). Scenes default to
+court / street / concrete wall outdoors in natural light (LOOKBOOK_SCENES overrides).
+
+**Known limit.** Live stock has few clean bottoms in two sizes (13 of 154 bottoms pass every
+rule, mostly cargos and washed or panelled denim). So designer-shoe fits (Clean Luxe) are
+often skipped, and the same few bottoms recur. On 26 Oct the Louboutin rebuild was skipped
+three times for exactly this reason.
