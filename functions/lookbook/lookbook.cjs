@@ -73,6 +73,7 @@ const MAX_CHOICES = 2;
  *     geminiApiKey — tags products the pre-warm has not reached
  * @param opts.look  force one named look (the samples); opts.month 1–12 (default: the SA month)
  * @param opts.rows  exactly this many rows; opts.requireSlots slots every outfit must have (the samples)
+ * @param opts.allowRecent  ignore the 14-day no-repeat (a never-posted rebuild sample; scripts only)
  * @param opts.hero  a pid every fit must be built around (a rebuild of a posted fit; scripts only)
  * @param opts.headwear "rotate" (default: one lookbook in three, from the history) | "off" | "allow" 
  * @param opts  { nowMs, used: Set of pids already posted today, maxAttempts: heroes
@@ -110,7 +111,7 @@ async function makeLookbook(db, deps, opts = {}) {
   return r;
 }
 
-async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate", hero: fixedHero = null } = {}, holder = {}) {
+async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate", hero: fixedHero = null, allowRecent = false } = {}, holder = {}) {
   const log = deps.log || (() => {});
   let costUSD = 0, thumbCostUSD = 0, stylistCostUSD = 0;
   const saDate = saDateStringFromMs(nowMs);
@@ -134,7 +135,8 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
   const recent = lookbook.recentLookbookPids(history);
   // The 14-day no-repeat: never picked, whatever the score, and never read,
   // so the loader's per-slot quota counts only products the stylist can use.
-  const blocked = lookbook.pidsWithinDays(history, saDate, 14);
+  // allowRecent: a never-posted sample rebuilding a posted fit may wear what recent lookbooks wore (scripts only).
+  const blocked = allowRecent ? new Set() : lookbook.pidsWithinDays(history, saDate, 14);
   // A fixed hero (a rebuild of a posted fit: scripts only) is offered whatever the no-repeat says.
   if (fixedHero) { blocked.delete(fixedHero); used = new Set([...used].filter((p) => p !== fixedHero)); }
   // Headwear in at most one lookbook in three (Junid, 19 Oct). Decided

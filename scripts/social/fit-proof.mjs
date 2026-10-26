@@ -114,7 +114,10 @@ for (const n of want) {
     const t0 = Date.now();
     const r = await makeLookbook(db, deps, {
       nowMs: Date.now(), used: isRebuild ? new Set(used) : new Set([...used, LOUB]), scene, headwear: "allow",
-      ...(isRebuild ? { hero: LOUB } : {}),
+      // The rebuild may wear pieces of the last 14 days' lookbooks (the slim
+      // black G-Star jeans among them): it is a sample of the same day's post,
+      // never posted. Production keeps the 14-day no-repeat.
+      ...(isRebuild ? { hero: LOUB, allowRecent: true } : {}),
     });
     const critic = (r.look && r.look.critic) || (r.critic ? require("./lookbook/fit-agent.cjs").criticRecord(r.critic) : null);
     const scored = critic ? critic.history.filter((h) => h.scores) : [];
@@ -133,7 +136,7 @@ for (const n of want) {
       const id = db.ref("social_posts").push().key;
       await db.ref(`social_posts/${id}`).set({
         status: "sample", kind: "lookbook", format: "feed", media: [{ type: "image", url }],
-        caption: `FIT PROOF ${n}${isRebuild ? " · the 26 Oct Louboutin post, rebuilt" : ""} · ${entry.theme} · critic before ${scoreText(entry.before)} → after ${scoreText(entry.after)} · ${entry.rounds} round(s) · stylist+critic $${entry.cost.fitUSD}. Not scheduled; never posted.\n\n${entry.caption}`,
+        caption: `FIT PROOF ${n}${isRebuild ? " · the 26 Oct Louboutin post, rebuilt (14-day no-repeat lifted for this sample)" : ""} · ${entry.theme} · critic before ${scoreText(entry.before)} → after ${scoreText(entry.after)} · ${entry.rounds} round(s) · stylist+critic $${entry.cost.fitUSD}. Not scheduled; never posted.\n\n${entry.caption}`,
         captionSource: "not-needed",
         products: entry.rows.map((x) => ({ pid: x.pid, name: x.name, price: x.price })),
         platforms: { instagram: false, facebook: false, tiktok: false }, scheduledAt: null,
