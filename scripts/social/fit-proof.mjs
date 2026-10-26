@@ -106,7 +106,8 @@ for (const c of Object.values(log.cards)) for (const pid of c.pids || []) used.a
 const want = ["00", ...Array.from({ length: CARDS }, (_, i) => String(i + 1).padStart(2, "0"))];
 let tries = 0;
 for (const n of want) {
-  while (!(log.cards[n] && log.cards[n].ok) && tries < want.length + 6) {
+  // A card marked final (the rebuild the critic refused on the final code) is not retried.
+  while (!(log.cards[n] && (log.cards[n].ok || log.cards[n].final)) && tries < want.length + 6) {
     tries++;
     const scene = SCENES[Number(n) % SCENES.length];
     const isRebuild = n === "00";
