@@ -43,11 +43,12 @@ const MAX_ROUNDS = 3;
 // Output ceilings. Both calls run at effort "low": an answer is a few hundred
 // tokens of JSON after a short think, and these bound the worst case the
 // budget check charges before each call.
-// Measured on live data (26 Oct): a stylist answer is 280–750 tokens with its
-// thinking; a critic answer 400–450 once its reasons are capped (it was
-// 500–1,050 before). The ceilings leave room above both.
-const STYLIST_MAX_TOKENS = 1200;
-const CRITIC_MAX_TOKENS = 900;
+// Measured on live data (26 Oct): a stylist answer is 280–800 tokens with its
+// thinking; a critic answer 400–900+ (its thinking alone reached 460, and a
+// 900 ceiling cut one off). The ceilings leave room above both; the budget
+// check prices them.
+const STYLIST_MAX_TOKENS = 1400;
+const CRITIC_MAX_TOKENS = 1400;
 // What a round keeps back for its critic before the stylist is called, until
 // a critic request of this run has been priced: a first critic call with its
 // rulebook cache write and four photos, at its worst.
