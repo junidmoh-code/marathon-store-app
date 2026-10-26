@@ -115,6 +115,10 @@ describe("the house model", () => {
     assert.equal(r.provisional, false);
     assert.throws(() => hm.pickUpdates(HM(), 7, { by: "junid", nowMs: 5 }), /no house-model candidate 7/);
   });
+  test("a tie on the score goes to the higher sum of the part-scores", () => {
+    const r = hm.rankCandidates({ candidates: { 1: { ...C(8), parts: { age: 7, hair: 8 } }, 2: { ...C(8), parts: { age: 9, hair: 8 } } } });
+    assert.equal(r[0].n, "2");
+  });
   test("a candidate outside the model folder is never used", () => {
     assert.deepEqual(hm.rankCandidates({ candidates: { 1: { path: "elsewhere/x.jpg", score: 10 } } }), []);
   });

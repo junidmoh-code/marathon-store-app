@@ -282,7 +282,7 @@ const CRITIC_SCHEMA = {
   properties: {
     ...Object.fromEntries(CRITERIA.map((k) => [k, {
       type: "object", additionalProperties: false, required: ["score", "reason"],
-      properties: { score: { type: "integer", minimum: 1, maximum: 10 }, reason: { type: "string" } },
+      properties: { score: { type: "integer", description: "1 to 10" }, reason: { type: "string" } },
     }])),
     seen: { type: "array", items: { type: "object", additionalProperties: false, required: ["pid", "colour", "what"], properties: { pid: { type: "string" }, colour: { type: "string" }, what: { type: "string" } } }, description: "each piece as the photo shows it" },
     fix: { type: "string", description: "what the stylist must change, or empty when every score is 8 or more" },

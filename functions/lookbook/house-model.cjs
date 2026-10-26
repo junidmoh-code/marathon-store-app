@@ -25,13 +25,17 @@ const MODEL_PATH = "social_lookbook/model";
 const REF_PREFIX = "aiStudio/social/lookbook/model/";
 const DECIDE_MS = 24 * 3600 * 1000;
 
-/** The candidates as [{ n, ...c }], best score first (ties: the lower number). Pure. */
+// A tie on the overall score goes to the higher sum of the brief's eight
+// part-scores (age, build, skin, hair, face, expression, light, realism).
+const partsSum = (c) => Object.values((c && c.parts) || {}).reduce((t, v) => t + (Number(v) || 0), 0);
+
+/** The candidates as [{ n, ...c }], best first (score, then part-score sum, then the lower number). Pure. */
 function rankCandidates(hm) {
   const c = (hm && hm.candidates) || {};
   return Object.entries(c)
     .filter(([, v]) => v && typeof v.path === "string" && v.path.startsWith(REF_PREFIX))
     .map(([n, v]) => ({ n: String(n), ...v }))
-    .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0) || Number(a.n) - Number(b.n));
+    .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0) || partsSum(b) - partsSum(a) || Number(a.n) - Number(b.n));
 }
 
 /**
