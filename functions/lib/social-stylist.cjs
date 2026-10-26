@@ -165,7 +165,7 @@ function chooseStyledPicks(kind, result, answerText, { month = 10 } = {}) {
 const FIT_SLOTS = ["hat", "jacket", "tee", "bottoms", "bag", "sneakers"];
 
 /** { offer, reason, excluded } for one outfit post. Pure. */
-function fitOfferForOutfit(candidates, { used = new Set(), tags = new Map(), month = 10 } = {}) {
+function fitOfferForOutfit(candidates, { used = new Set(), tags = new Map(), month = 10, seen = new Map() } = {}) {
   const spec = socialSelect.POST_KINDS.find((k) => k.key === "outfit");
   const pieces = (candidates || []).filter((c) => c && !used.has(c.pid)).map((c) => pieceOf(c, tags))
     .filter((p) => p && FIT_SLOTS.includes(p.slot) && !p.fullBody);
@@ -177,7 +177,7 @@ function fitOfferForOutfit(candidates, { used = new Set(), tags = new Map(), mon
     if (fitRules.sizeRefusal(p.ref.sizesInStock)) { excluded["in stock in fewer than two sizes"] = (excluded["in stock in fewer than two sizes"] || 0) + 1; continue; }
     offered.push({
       pid: p.pid, slot: p.slot, brand, name: p.websiteName || p.displayName, displayName: p.displayName,
-      price: p.price, tags: p.tags, sizes: p.ref.sizesInStock, fresh: p.fresh, photoUrl: p.ref.photoUrl, ref: p.ref,
+      price: p.price, tags: p.tags, sizes: p.ref.sizesInStock, fresh: p.fresh, photoUrl: p.ref.photoUrl, ref: p.ref, seen: seen.get(p.pid) || null,
     });
   }
   const core = [["tee", "jacket"], ["bottoms"], ["sneakers"]];

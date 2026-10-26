@@ -123,3 +123,25 @@ describe("the house model", () => {
     assert.deepEqual(hm.rankCandidates({ candidates: { 1: { path: "elsewhere/x.jpg", score: 10 } } }), []);
   });
 });
+
+describe("buildFit — the budget and the photo notes", () => {
+  test("a round is not started when its stylist and critic together could pass the budget", async () => {
+    const f = fake([FIT(), CRIT(7, 9, 9, 9)], 0.07);
+    const r = await fa.buildFit(OFFER, f);
+    assert.equal(r.ok, false);
+    assert.equal(f.reqs.length, 2, "round 2's stylist is never called, so nothing is spent on an answer nobody scores");
+    assert.match(r.reason, /round 2: a stylist call .* and its critic .* do not fit/);
+  });
+  test("the prefix a call just cached is priced at the cache-read rate", () => {
+    const req = fr.stylistRequest(OFFER);
+    assert.ok(fr.worstCaseUSD(req, { cachedTokens: 5000 }) < fr.worstCaseUSD(req) - 0.02);
+  });
+  test("what the critic saw in each photo is handed to remember(), for the next catalogues", async () => {
+    const f = fake([FIT(), { ...CRIT(9, 9, 9, 9), seen: [{ pid: "loub", colour: "taupe", what: "suede low-top with silver spikes" }] }]);
+    let got = null;
+    await fa.buildFit(OFFER, { ...f, remember: async (seen, pieces) => { got = { seen, pids: pieces.map((p) => p.pid) }; } });
+    assert.deepEqual(got.seen[0], { pid: "loub", colour: "taupe", what: "suede low-top with silver spikes" });
+    assert.deepEqual(got.pids, ["tee-w", "jean-b", "loub"]);
+    assert.match(fr.catalogueText([{ ...OFFER.pieces[3], seen: "taupe suede low-top with silver spikes" }], ["sneakers"]), /photo: taupe suede low-top with silver spikes/);
+  });
+});

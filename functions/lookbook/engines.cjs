@@ -34,13 +34,36 @@ const fitAgent = require("./fit-agent.cjs");
 const houseModel = require("./house-model.cjs");
 const fitRules = require("../lib/fit-rules.cjs");
 
-/** { build(offer, opts), budgetUSD }: the fit agent on opus-5-5 with the critic's photo reader. */
-function fitAgentFor({ Anthropic, apiKey, fetchImage, log }) {
+// ── THE CRITIC'S PHOTO NOTES ─────────────────────────────────────────────
+// What the critic saw in a product's photo ("taupe suede low-top with
+// silver spikes"), kept at social_lookbook/seen/{pid} so every later
+// catalogue tells the stylist what the photo shows instead of a tag that can
+// be wrong. Overwritten by the newest reading; point reads only.
+const SEEN_PATH = (pid) => `social_lookbook/seen/${pid}`;
+const SAFE_SEEN_PID = /^[A-Za-z0-9_-]{1,80}$/;
+async function readSeen(db, pids) {
+  const out = new Map();
+  await Promise.all([...new Set(pids)].filter((p) => SAFE_SEEN_PID.test(p)).map(async (pid) => {
+    const v = (await db.ref(SEEN_PATH(pid)).once("value")).val();
+    if (v && (v.colour || v.what)) out.set(pid, `${v.colour || ""} ${v.what || ""}`.trim().slice(0, 140));
+  }));
+  return out;
+}
+
+/** { build(offer, opts), score(fit), budgetUSD }: the fit agent on opus-5-5 with the critic's photo reader. */
+function fitAgentFor({ Anthropic, apiKey, fetchImage, log, db = null }) {
   const call = fitAgent.makeOpusCall({ Anthropic, apiKey });
   const photo = fitAgent.makePhotoReader(fetchImage);
+  const remember = db ? async (seen, pieces) => {
+    const mine = new Set(pieces.map((p) => p.pid));
+    const at = Date.now();
+    const u = {};
+    for (const s of seen || []) if (mine.has(s.pid) && SAFE_SEEN_PID.test(s.pid) && (s.colour || s.what)) u[SEEN_PATH(s.pid)] = { colour: s.colour || null, what: s.what || null, at };
+    if (Object.keys(u).length) await db.ref().update(u);
+  } : null;
   return {
     budgetUSD: fitRules.BUDGET_USD,
-    build: (offer, opts) => fitAgent.buildFit(offer, { call, photo, log }, opts),
+    build: (offer, opts) => fitAgent.buildFit(offer, { call, photo, log, remember }, opts),
     score: (fit) => fitAgent.scoreFit(fit, { call, photo }),
   };
 }
@@ -229,10 +252,11 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
     chooseOutfit: anthropicApiKey && Anthropic ? makeStylistChooser({ Anthropic, apiKey: anthropicApiKey }) : null,
     // The opus stylist and critic (fit-agent.cjs): the lookbook's fits since
     // 26 Oct. No Anthropic key (the thumbnail pre-warm) means no fits.
-    fitAgent: anthropicApiKey && Anthropic && fetchImage ? fitAgentFor({ Anthropic, apiKey: anthropicApiKey, fetchImage, log }) : null,
+    fitAgent: anthropicApiKey && Anthropic && fetchImage ? fitAgentFor({ Anthropic, apiKey: anthropicApiKey, fetchImage, log, db }) : null,
+    readSeen: (pids) => readSeen(db, pids),
     geminiApiKey,
     log, deadlineMs,
   };
 }
 
-module.exports = { engines, fitAgentFor, THUMB_DIR, THUMB_PATH, NBPRO_4K_FLAT_USD };
+module.exports = { engines, fitAgentFor, readSeen, THUMB_DIR, THUMB_PATH, NBPRO_4K_FLAT_USD };

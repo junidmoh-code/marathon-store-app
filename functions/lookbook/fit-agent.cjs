@@ -42,12 +42,13 @@ function makeOpusCall({ Anthropic, apiKey, timeoutMs = 90000 }) {
     const usage = msg.usage || {};
     const costUSD = fr.costOf(usage);
     const fail = (why) => { const e = new Error(why); e.costUSD = costUSD; e.usage = usage; throw e; };
+    if (process.env.FIT_DEBUG) console.log(`fit call: ${JSON.stringify({ in: usage.input_tokens, cw: usage.cache_creation_input_tokens, cr: usage.cache_read_input_tokens, out: usage.output_tokens, think: usage.output_tokens_details && usage.output_tokens_details.thinking_tokens, usd: +costUSD.toFixed(4) })}`);
     if (msg.stop_reason === "refusal") fail("the model refused");
     if (msg.stop_reason === "max_tokens") fail("the answer was cut off (max_tokens)");
     const text = (msg.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
     let json;
     try { json = JSON.parse(text); } catch { fail("the answer was not JSON"); }
-    return { json, usage, costUSD };
+    return { json, usage, costUSD, cachedTokens: (Number(usage.cache_creation_input_tokens) || 0) + (Number(usage.cache_read_input_tokens) || 0) };
   };
 }
 
@@ -66,14 +67,21 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
   const feedback = [...earlier];
   let spent = 0;
   const photos = new Map();
-  const afford = (req) => spent + fr.worstCaseUSD(req) <= budgetUSD + 1e-9;
+  // The prefix each role's last call cached: a rebuild reads it at $0.20/M.
+  const cached = { stylist: 0, critic: 0 };
+  const worst = (req, role) => fr.worstCaseUSD(req, { cachedTokens: cached[role] });
+  const afford = (req, role) => spent + worst(req, role) <= budgetUSD + 1e-9;
+  let criticWorst = 0;
   const summary = (fit) => fit && { formula: fit.formula, theme: fit.theme, pids: fit.pieces.map((p) => p.pid), hero: fit.hero ? fit.hero.pid : null };
   const skip = (reason) => ({ ok: false, reason, rounds, costUSD: spent });
 
   for (let round = 1; round <= fr.MAX_ROUNDS; round++) {
     // ── THE STYLIST ────────────────────────────────────────────────────
     const sreq = fr.stylistRequest({ ...offer, feedback });
-    if (!afford(sreq)) return skip(`round ${round}: the stylist call could cost up to $${fr.worstCaseUSD(sreq).toFixed(3)} and $${spent.toFixed(3)} of the $${budgetUSD} budget is spent`);
+    // A round starts only when its stylist AND its critic fit: a stylist
+    // answer the critic cannot afford to score is money spent on nothing.
+    const reserve = criticWorst || fr.CRITIC_RESERVE_USD;
+    if (spent + worst(sreq, "stylist") + reserve > budgetUSD + 1e-9) return skip(`round ${round}: a stylist call (up to $${worst(sreq, "stylist").toFixed(3)}) and its critic (up to $${reserve.toFixed(3)}) do not fit in what is left of the $${budgetUSD} budget ($${spent.toFixed(3)} spent)`);
     let answer;
     try { answer = await deps.call(sreq); } catch (e) {
       spent += (e && e.costUSD) || 0;
@@ -81,6 +89,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
       return skip(`the stylist call failed: ${String(e && e.message).slice(0, 160)}`);
     }
     spent += answer.costUSD;
+    cached.stylist = answer.cachedTokens || 0;
     const read = fr.readStylistAnswer(answer.json, offer);
     if (!read.ok) {
       rounds.push({ round, fit: summary(read.fit), problems: read.problems, costUSD: answer.costUSD });
@@ -102,9 +111,10 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
       if (ph) shots.push({ pid: p.pid, ...ph });
     }
     const creq = fr.criticRequest(fit, shots);
-    if (!afford(creq)) {
+    criticWorst = worst(creq, "critic");
+    if (!afford(creq, "critic")) {
       rounds.push({ round, fit: summary(fit), costUSD: answer.costUSD, error: "no budget left for the critic" });
-      return skip(`round ${round}: the critic call could cost up to $${fr.worstCaseUSD(creq).toFixed(3)} and $${spent.toFixed(3)} of the $${budgetUSD} budget is spent`);
+      return skip(`round ${round}: the critic call could cost up to $${worst(creq, "critic").toFixed(3)} and $${spent.toFixed(3)} of the $${budgetUSD} budget is spent`);
     }
     let crit;
     try { crit = await deps.call(creq); } catch (e) {
@@ -113,7 +123,9 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
       return skip(`the critic call failed: ${String(e && e.message).slice(0, 160)}`);
     }
     spent += crit.costUSD;
+    cached.critic = crit.cachedTokens || 0;
     const verdict = fr.readCriticAnswer(crit.json);
+    if (verdict.ok && deps.remember) { try { await deps.remember(verdict.seen, fit.pieces); } catch (e) { log(`fit: the photo notes were not saved (${String(e && e.message).slice(0, 80)})`); } }
     const entry = { round, fit: summary(fit), costUSD: answer.costUSD + crit.costUSD };
     if (!verdict.ok) {
       rounds.push({ ...entry, error: verdict.reason });

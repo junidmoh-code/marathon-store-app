@@ -4710,12 +4710,13 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
   // (lookbook/fit-agent.cjs, Junid 26 Oct). A fit the critic will not pass
   // after two rebuilds is skipped, never posted unscored.
   if (kind === "outfit") {
-    const o = socialStylist.fitOfferForOutfit(candidates, { used, tags, month });
+    const { fitAgentFor, readSeen } = require("./lookbook/engines.cjs");
+    const seen = await readSeen(db, candidates.map((c) => c.pid)).catch(() => new Map());
+    const o = socialStylist.fitOfferForOutfit(candidates, { used, tags, month, seen });
     if (!o.offer) return { picks: [], reason: o.reason, costUSD };
-    const { fitAgentFor } = require("./lookbook/engines.cjs");
     const { criticRecord } = require("./lookbook/fit-agent.cjs");
     const fitRules = require("./lib/fit-rules.cjs");
-    const agent = fitAgentFor({ Anthropic, apiKey: anthropicApiKey.value(), fetchImage: fetchImageBuffer, log: (m) => console.log(`social: ${m}`) });
+    const agent = fitAgentFor({ Anthropic, apiKey: anthropicApiKey.value(), fetchImage: fetchImageBuffer, log: (m) => console.log(`social: ${m}`), db });
     const res = await agent.build(o.offer, { budgetUSD: agent.budgetUSD });
     costUSD += res.costUSD;
     const critic = criticRecord(res);

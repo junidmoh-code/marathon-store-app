@@ -527,7 +527,7 @@ const CAPTION_BRANDS = [...new Set([
  * @returns { offer: { pieces, slots, core, optional, minPieces, maxPieces, season, kind, knownBrands } | null,
  *            reason, skipped, excluded }
  */
-function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), tags = new Map(), month = 10, noHeadwear = false, rows: exactRows = null, requireSlots = [] } = {}) {
+function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), tags = new Map(), month = 10, noHeadwear = false, rows: exactRows = null, requireSlots = [], hero = null, seen = new Map() } = {}) {
   const { pieces, skipped } = lookbookPieces(candidates, { recent, blocked, used, tags });
   const { eligible, excluded } = stylist.eligiblePieces(pieces, { month, noHeadwear });
   const offered = [];
@@ -537,7 +537,7 @@ function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = 
     offered.push({
       pid: p.pid, slot: p.slot, brand: p.row.brandLine, name: p.websiteName || p.row.name || p.row.nameLine.toLowerCase(),
       displayName: p.displayName || p.row.displayName, price: p.price, tags: p.tags, sizes: p.ref.sizesInStock,
-      fresh: p.fresh, photoUrl: p.row.photoUrl, row: p.row,
+      fresh: p.fresh, photoUrl: p.row.photoUrl, row: p.row, seen: seen.get(p.pid) || null,
     });
   }
   const season = stylist.seasonOf(month);
@@ -549,8 +549,12 @@ function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = 
   }
   const optional = SLOT_KEYS.filter((s) => !core.some((alts) => alts.includes(s)) && have.has(s) && !(s === "hat" && noHeadwear));
   const required = [...core, ...requireSlots.filter((s) => !core.some((alts) => alts.includes(s))).map((s) => [s])];
+  if (hero && !offered.some((p) => p.pid === hero)) {
+    return { offer: null, skipped, excluded, reason: `the hero ${hero} is not offered (not live, not menswear, or not in stock in two sizes)` };
+  }
   return {
     offer: {
+      heroPid: hero,
       pieces: offered, slots: SLOT_KEYS, core: required, optional,
       minPieces: exactRows || MIN_ROWS, maxPieces: exactRows || MAX_ROWS, season, kind: "lookbook", knownBrands: CAPTION_BRANDS,
     },

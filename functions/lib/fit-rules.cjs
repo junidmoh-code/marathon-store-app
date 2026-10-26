@@ -43,8 +43,15 @@ const MAX_ROUNDS = 3;
 // Output ceilings. Both calls run at effort "low": an answer is a few hundred
 // tokens of JSON after a short think, and these bound the worst case the
 // budget check charges before each call.
-const STYLIST_MAX_TOKENS = 2200;
-const CRITIC_MAX_TOKENS = 1400;
+// Measured on live data (26 Oct): a stylist answer is 280–750 tokens with its
+// thinking; a critic answer 400–450 once its reasons are capped (it was
+// 500–1,050 before). The ceilings leave room above both.
+const STYLIST_MAX_TOKENS = 1200;
+const CRITIC_MAX_TOKENS = 900;
+// What a round keeps back for its critic before the stylist is called, until
+// a critic request of this run has been priced: a first critic call with its
+// rulebook cache write and four photos, at its worst.
+const CRITIC_RESERVE_USD = 0.04;
 // Tokens an attached product photo costs at CRITIC_PHOTO_PX on its long side
 // (width x height / 750, rounded up): the budget check's estimate.
 const CRITIC_PHOTO_PX = 384;
@@ -146,7 +153,9 @@ function catalogueText(pieces, slots) {
       const t = p.tags || {};
       const colours = [t.dominant, t.secondary].filter(Boolean).join("/");
       const lux = luxuryBrand(p.brand, p.displayName) ? " · LUXURY" : "";
-      out.push(`- ${p.pid} | ${p.brand} — ${p.name} | shop name: ${p.displayName} | R${p.price} | tags: ${colours || "?"}, ${t.pattern || "?"}, ${t.silhouette || "?"}, ${t.family || "?"}, formality ${t.formality || "?"}${lux} | ${p.sizes ? `${p.sizes.inStock} sizes in stock` : ""}${p.fresh >= 0.75 ? " · new" : ""}`);
+      const shop = p.displayName && p.displayName.toLowerCase() !== `${p.brand} ${p.name}`.toLowerCase() ? ` (shop: ${p.displayName})` : "";
+      const seen = p.seen ? ` | photo: ${p.seen}` : "";
+      out.push(`- ${p.pid} | ${p.brand} — ${p.name}${shop} | R${p.price} | ${colours || "?"} ${t.pattern || "?"}, ${t.silhouette || "?"}, ${t.family || "?"}, f${t.formality || "?"}${lux}${p.fresh >= 0.75 ? ", new" : ""}${seen}`);
     }
   }
   return out.join("\n");
@@ -173,15 +182,19 @@ const STYLIST_SCHEMA = {
  * so both are cached and a rebuild pays for them at the cache-read rate.
  * Pure.
  */
-function stylistRequest({ pieces, slots, core, optional, minPieces, maxPieces, season, kind = "lookbook", feedback = [], book = rulebook() }) {
+function stylistRequest({ pieces, slots, core, optional, minPieces, maxPieces, season, kind = "lookbook", heroPid = null, feedback = [], book = rulebook() }) {
+  const forced = heroPid ? pieces.find((p) => p.pid === heroPid) : null;
   const formulas = formulasFor(season, book).map((f) => f.key);
   const brief = [
     `Build ONE ${kind === "lookbook" ? "head-to-toe outfit for a model to wear on our lookbook poster" : "complete outfit for a flat-lay post"}.`,
     `It is ${season} in South Africa.`,
     `Pieces: ${minPieces} to ${maxPieces}, at most one per slot. It must have: ${core.map((alts) => alts.join(" or ")).join(", ")}.${optional.length ? ` It may add: ${optional.join(", ")} (only when the piece helps the fit).` : ""}`,
     `Formulas allowed this season: ${formulas.join(", ")}.`,
-    "Use ONLY pids from the catalogue below. Prices and names are real; never change them. The colour tags come from a vision model and can be wrong: when a name and a tag disagree, think about what the photo most likely shows, and never build a theme on a doubtful tag.",
-    "Pick the hero first (rulebook section 1), then the formula it suits, then the supporting pieces.",
+    "Use ONLY pids from the catalogue below. Prices and names are real; never change them. Each line: pid | brand — name | price | colour tags, pattern, silhouette, family, formality 1-5 | photo: what a critic saw in the product photo, when known. The colour tags come from a vision model and can be wrong; a 'photo:' note is right. When a name and a tag disagree, never build a theme on the doubtful tag.",
+    "The caption names each piece ONLY with what the catalogue states for certain: the brand, the garment type and a colour the name or photo note confirms. Never add a detail you cannot see (plain, slim, raw, fabric, fit, sole, logo size): the critic checks every word against the photos.",
+    forced
+      ? `The hero is fixed: ${forced.pid} (${forced.brand} ${forced.name}). Choose the formula it suits, then the supporting pieces.`
+      : "Pick the hero first (rulebook section 1), then the formula it suits, then the supporting pieces.",
   ].join("\n");
   const user = [
     { type: "text", text: `${brief}\n\n# Catalogue (in stock, at least two sizes)\n${catalogueText(pieces, slots)}`, cache_control: { type: "ephemeral" } },
@@ -231,7 +244,7 @@ function brandsNamed(caption, brands) {
  * `fit`: { formula, theme, hero, pieces (offered piece objects, slot order), colours, caption, why }.
  * `knownBrands`: every brand the caption could name; one not in the fit is a problem. Pure.
  */
-function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, season, knownBrands = [], book = rulebook() }) {
+function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, season, knownBrands = [], heroPid = null, book = rulebook() }) {
   const problems = [];
   const a = json && typeof json === "object" ? json : {};
   const byPid = new Map(pieces.map((p) => [p.pid, p]));
@@ -247,6 +260,7 @@ function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, se
   if (chosen.length < minPieces || chosen.length > maxPieces) problems.push(`${chosen.length} pieces — the fit needs ${minPieces} to ${maxPieces}`);
   const hero = byPid.get(String(a.hero_pid || ""));
   if (!hero || !pids.includes(hero.pid)) problems.push("the hero piece is not one of the fit's pieces");
+  else if (heroPid && hero.pid !== heroPid) problems.push(`the hero must be ${heroPid}`);
   const allowed = formulasFor(season, book);
   const formula = allowed.find((f) => f.key === a.formula) || null;
   if (!formula) problems.push(`formula "${a.formula}" is not one of ${allowed.map((f) => f.key).join(", ")}`);
@@ -298,6 +312,7 @@ const CRITIC_BRIEF = [
   "- theme: does the theme name describe what the photos actually show? (Sage or mint green is not an earth tone.)",
   "- caption: is every item the caption names exactly what is in the photos (colour, fabric, brand)? Any piece called something it is not scores 4 or less. Also section 7.",
   `8 means a stylist would post it as is. Anything below ${PASS_SCORE} on any score is rebuilt, so be strict and specific in each reason.`,
+  "Be brief: each reason under 25 words, each 'what' under 10 words, the fix under 50 words.",
 ].join("\n");
 
 /**
@@ -372,18 +387,22 @@ function costOf(usage) {
 }
 
 /**
- * The most a request can cost: every input token at the cache-WRITE rate
- * (the dearest an input token can be) and every allowed output token. Text is
- * counted at 3 characters a token, which over-counts English. Pure.
+ * The most a request can cost. Text is counted at 2 characters a token
+ * (measured 2.2 on the catalogue: pids and prices tokenise densely), each
+ * photo at PHOTO_TOKENS, and every allowed output token. Input is charged
+ * at the cache-WRITE rate, except `cachedTokens`: the prefix the previous
+ * call of the same role in this run wrote or read seconds ago, which is
+ * charged at the cache-read rate (the cache lives five minutes). Pure.
  */
-function worstCaseUSD(req) {
+function worstCaseUSD(req, { cachedTokens = 0 } = {}) {
   let chars = 0, images = 0;
   const walk = (blocks) => { for (const b of Array.isArray(blocks) ? blocks : [{ type: "text", text: String(blocks) }]) { if (b.type === "image") images++; else chars += String(b.text || "").length; } };
   walk(req.system);
   for (const m of req.messages) walk(m.content);
   chars += JSON.stringify(req.schema || {}).length;
-  const inTok = Math.ceil(chars / 3) + images * PHOTO_TOKENS + 200;
-  return (inTok * PRICE.cacheWritePerMtok + req.maxTokens * PRICE.outPerMtok) / 1e6;
+  const inTok = Math.ceil(chars / 2) + images * PHOTO_TOKENS + 200;
+  const cached = Math.min(Math.max(0, cachedTokens), inTok);
+  return ((inTok - cached) * PRICE.cacheWritePerMtok + cached * PRICE.cacheReadPerMtok + req.maxTokens * PRICE.outPerMtok) / 1e6;
 }
 
 /** A theme as the poster's two header lines ("EARTH TONE|STREET" → ["EARTH TONE", "STREET"]). Pure. */
@@ -395,7 +414,7 @@ function headerOf(theme) {
 }
 
 module.exports = {
-  FIT_MODEL, PRICE, BUDGET_USD, PASS_SCORE, MAX_ROUNDS, CRITERIA, CRITIC_PHOTO_PX,
+  FIT_MODEL, PRICE, BUDGET_USD, PASS_SCORE, CRITIC_RESERVE_USD, MAX_ROUNDS, CRITERIA, CRITIC_PHOTO_PX,
   STYLIST_MAX_TOKENS, CRITIC_MAX_TOKENS, LUXURY_BRANDS,
   parseFormulas, rulebook, formulasFor, sizesInStock, sizeRefusal, luxuryBrand,
   catalogueText, stylistRequest, readStylistAnswer, themeAllowed, brandsNamed,

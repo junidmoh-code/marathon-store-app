@@ -73,6 +73,7 @@ const MAX_CHOICES = 2;
  *     geminiApiKey — tags products the pre-warm has not reached
  * @param opts.look  force one named look (the samples); opts.month 1–12 (default: the SA month)
  * @param opts.rows  exactly this many rows; opts.requireSlots slots every outfit must have (the samples)
+ * @param opts.hero  a pid every fit must be built around (a rebuild of a posted fit; scripts only)
  * @param opts.headwear "rotate" (default: one lookbook in three, from the history) | "off" | "allow" 
  * @param opts  { nowMs, used: Set of pids already posted today, maxAttempts: heroes
  *               generated before the text gate gives up (production: 1); the model
@@ -100,7 +101,7 @@ async function historySlots(db, history, saDate = null) {
   return out;
 }
 
-async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate" } = {}) {
+async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate", hero: fixedHero = null } = {}) {
   const log = deps.log || (() => {});
   let costUSD = 0, thumbCostUSD = 0, stylistCostUSD = 0;
   const saDate = saDateStringFromMs(nowMs);
@@ -125,11 +126,13 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   // The 14-day no-repeat: never picked, whatever the score, and never read,
   // so the loader's per-slot quota counts only products the stylist can use.
   const blocked = lookbook.pidsWithinDays(history, saDate, 14);
+  // A fixed hero (a rebuild of a posted fit: scripts only) is offered whatever the no-repeat says.
+  if (fixedHero) { blocked.delete(fixedHero); used = new Set([...used].filter((p) => p !== fixedHero)); }
   // Headwear in at most one lookbook in three (Junid, 19 Oct). Decided
   // before the load, so a resting day reads no hats at all.
   const noHeadwear = headwear === "off" || (headwear === "rotate" && lookbook.headwearRests(await historySlots(db, history, saDate), saDate));
   if (noHeadwear) log("lookbook: no headwear today (one lookbook in three)");
-  const { candidates } = await loadLookbookCandidates(db, { nowMs, skip: new Set([...blocked, ...used]), skipSlots: noHeadwear ? new Set(["hat"]) : new Set(),
+  const { candidates } = await loadLookbookCandidates(db, { nowMs, include: new Set(fixedHero ? [fixedHero] : []), skip: new Set([...blocked, ...used]), skipSlots: noHeadwear ? new Set(["hat"]) : new Set(),
     skipHeadwear: ["beanie", "bucket", "visor"].filter((k) => !stylist.seasonRulesFor(stylist.seasonOf(saMonth)).headwear.includes(k)) });
   // Every candidate's style tags: cached, tagged now (a few), or read from its name.
   const tagRun = await ensureStyleTags(db, candidates.map((c) => {
@@ -174,8 +177,11 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     // fit rebuilt once, inside the same $0.15.
     const runs = [];
     let feedback = [];
+    // What the critic has seen in these products' photos before.
+    let seen = new Map();
+    if (deps.readSeen) { try { seen = await deps.readSeen(candidates.map((c) => c.pid)); } catch (e) { log(`stylist: photo notes unreadable (${String(e && e.message).slice(0, 80)})`); } }
     for (let run = 0; run < 2 && !picked; run++) {
-      const o = lookbook.fitOffer(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, noHeadwear, rows: exactRows, requireSlots });
+      const o = lookbook.fitOffer(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, noHeadwear, rows: exactRows, requireSlots, hero: fixedHero, seen });
       if (run === 0 && Object.keys(o.excluded || {}).length) log(`stylist: not offered — ${Object.entries(o.excluded).map(([k, n]) => `${k} ×${n}`).join("; ")}`);
       if (!o.offer) { fitResult = { ok: false, reason: o.reason, rounds: runs.flat(), costUSD: stylistCostUSD - tagRun.costUSD }; break; }
       const spent = runs.reduce((t, r) => t + r.costUSD, 0);
