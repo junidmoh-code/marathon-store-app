@@ -4706,6 +4706,33 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
   if (first) costUSD += tagRun.costUSD;
   const tags = tagRun.tags;
   const month = Number(saDateForUsage(Date.now()).slice(5, 7));
+  // ── AN OUTFIT IS BUILT BY THE OPUS STYLIST AND SCORED BY THE CRITIC ─────
+  // (lookbook/fit-agent.cjs, Junid 26 Oct). A fit the critic will not pass
+  // after two rebuilds is skipped, never posted unscored.
+  if (kind === "outfit") {
+    const o = socialStylist.fitOfferForOutfit(candidates, { used, tags, month });
+    if (!o.offer) return { picks: [], reason: o.reason, costUSD };
+    const { fitAgentFor } = require("./lookbook/engines.cjs");
+    const { criticRecord } = require("./lookbook/fit-agent.cjs");
+    const fitRules = require("./lib/fit-rules.cjs");
+    const agent = fitAgentFor({ Anthropic, apiKey: anthropicApiKey.value(), fetchImage: fetchImageBuffer, log: (m) => console.log(`social: ${m}`) });
+    const res = await agent.build(o.offer, { budgetUSD: agent.budgetUSD });
+    costUSD += res.costUSD;
+    const critic = criticRecord(res);
+    const saDate = saDateForUsage(Date.now());
+    const logKey = `social_fit_log/${saDate}/outfit-${Date.now()}`;
+    if (!res.ok) {
+      try { await db.ref(logKey).set({ at: Date.now(), kind, gate: "critic", reason: String(res.reason).slice(0, 300), critic }); } catch { /* the post's skip reason says it too */ }
+      return { picks: [], reason: `the fit was skipped: ${res.reason}`, costUSD };
+    }
+    const f = res.fit, v = res.verdict;
+    const look = {
+      key: f.formula, name: f.theme, note: f.why, source: "opus", hero: f.hero ? f.hero.pid : null,
+      score: Math.round(fitRules.CRITERIA.reduce((t, k) => t + v.scores[k], 0) / fitRules.CRITERIA.length * 10), critic,
+    };
+    console.log(`social: stylist outfit — ${f.theme}, critic ${JSON.stringify(v.scores)}, ${res.rounds.length} round(s), $${res.costUSD.toFixed(4)}`);
+    return { picks: f.pieces.map((p) => p.ref), reason: null, look, caption: f.caption, fitLogKey: logKey, costUSD };
+  }
   let res = socialStylist.styledPicksForKind(kind, candidates, { used, tags, month });
   if (!res.picks.length) return { ...res, costUSD };
   let answer = "";
@@ -4724,13 +4751,15 @@ async function generateOnePost(db, {
   kind, format, style, platforms, styleKit, library, candidates, used,
   signal, geminiApiKey, status, scheduledAt, updatedBy, saDate,
 }) {
-  let picks, reason, look = null, stylistCostUSD = 0;
+  let picks, reason, look = null, stylistCostUSD = 0, stylistCaption = null, fitLogKey = null;
   if (socialStylist.STYLED_KINDS.has(kind)) {
     // The stylist failing (an unreadable tag, a bad record) must not cost the
-    // day its post: the unstyled picker that ran before it takes over.
+    // day its post: the unstyled picker that ran before it takes over. Not an
+    // outfit: since 26 Oct an outfit is only ever a fit the critic passed.
     try {
-      ({ picks, reason, look = null, costUSD: stylistCostUSD = 0 } = await pickStyledPost(db, kind, candidates, used, geminiApiKey));
+      ({ picks, reason, look = null, costUSD: stylistCostUSD = 0, caption: stylistCaption = null, fitLogKey = null } = await pickStyledPost(db, kind, candidates, used, geminiApiKey));
     } catch (err) {
+      if (kind === "outfit") return { ok: false, skipped: { kind, format, reason: `the stylist failed: ${String(err && err.message).slice(0, 160)}`, noStock: true } };
       console.warn(`social: the stylist failed for a ${kind} — picking it unstyled: ${err && err.message}`);
       // Unstyled, but still men's and still a real name (Junid, 19 Oct): the
       // name-level rules need no tags.
@@ -4867,9 +4896,13 @@ async function generateOnePost(db, {
     const { caption: writtenCaption, source: captionSource, reason: captionReason } =
       format === "story" && !wantsTwin
         ? { caption: socialCaption.fallbackCaption({ kind, products: picks }), source: "not-needed", reason: null }
-        : await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
-    // The stylist's "why this works" is the caption's last paragraph.
-    const caption = captionSource === "not-needed" ? writtenCaption : socialStill.withStylingNote(writtenCaption, look && look.note);
+        : stylistCaption && socialCaption.readCaption(stylistCaption).ok
+          // The opus stylist's caption, already scored 8+ for accuracy by the critic.
+          ? { caption: socialCaption.readCaption(stylistCaption).caption, source: "stylist", reason: null }
+          : await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
+    // The stylist's "why this works" is the caption's last paragraph, unless
+    // the stylist wrote the caption itself (the critic scored it as it is).
+    const caption = captionSource === "not-needed" || captionSource === "stylist" ? writtenCaption : socialStill.withStylingNote(writtenCaption, look && look.note);
     // ── THE STORY'S OWN CAPTION FIELDS, ALL THREE OF THEM ───────────────────
     // A story keeps the plain line whether or not a caption was written for
     // its twin, because nothing can show a story's caption and putting a
@@ -4982,6 +5015,11 @@ async function generateOnePost(db, {
     await db.ref().update({
       ...socialTwin.twinWriteUpdates(SOCIAL_POSTS_PATH, postId, record, twinId, twin),
       ...socialLibrary.libraryWriteUpdates(postId, record, { isTwin: false }),
+      // The fit's score and reasons, per post (Junid, 26 Oct).
+      ...(fitLogKey && look && look.critic ? { [fitLogKey]: {
+        at: Date.now(), kind, postId, theme: look.name, formula: look.key, pids: picks.map((p) => p.pid),
+        names: picks.map((p) => p.displayName || p.name), caption: String(caption || "").slice(0, 2200), critic: look.critic,
+      } } : {}),
     });
 
     for (const p of picks) used.add(p.pid);
@@ -5666,6 +5704,20 @@ const LOOKBOOK_HERO_ATTEMPTS = Math.min(2, Math.max(1, Number(process.env.LOOKBO
 // The lookbook's own write: story + feed twin + album entry + the 14-lookbook
 // memory, in ONE update, after its three files are uploaded. A failure removes
 // the uploads and is reported as a gate, so the day still falls back.
+// social_fit_log/{saDate}/{postId | skip-ms}: one entry per fit the opus
+// stylist built, posted or skipped: theme, pieces, final scores, every
+// round's scores and reasons, and the cost.
+function fitLogEntry(made, nowMs, { postId = null, gate = null, reason = null } = {}) {
+  const critic = (made.look && made.look.critic) || (made.critic ? require("./lookbook/fit-agent.cjs").criticRecord(made.critic) : null);
+  return {
+    at: nowMs, kind: "lookbook", postId, gate, reason: reason ? String(reason).slice(0, 300) : null,
+    theme: (made.look && made.look.name) || null, formula: (made.look && made.look.key) || null,
+    pids: (made.rows || []).map((r) => r.pid), names: (made.rows || []).map((r) => r.displayName || r.name || r.pid),
+    caption: made.caption ? String(made.caption).slice(0, 2200) : null,
+    critic,
+  };
+}
+
 async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platforms }) {
   const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
   const uploaded = [];
@@ -5688,8 +5740,14 @@ async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platfor
     // same caption call every other feed post uses. A failure falls back to
     // the plain line and never loses the poster. The stylist's note ("why
     // this works") is its last paragraph.
-    const written = await writeSocialCaption({ kind: "outfit", picks, link, styleNotes: [] });
-    const caption = socialStill.withStylingNote(written.caption, made.look && made.look.note);
+    // Since 26 Oct the opus stylist writes the caption and the critic has
+    // already scored it against the photos (caption accuracy 8+), so it is
+    // used as it is: no second writer, no note appended that nobody checked.
+    const fromStylist = made.caption ? socialCaption.readCaption(made.caption) : null;
+    const written = fromStylist && fromStylist.ok
+      ? { caption: fromStylist.caption, source: "stylist", reason: null }
+      : await writeSocialCaption({ kind: "outfit", picks, link, styleNotes: [] });
+    const caption = written.source === "stylist" ? written.caption : socialStill.withStylingNote(written.caption, made.look && made.look.note);
     const { source, reason } = written;
     const twinId = STORY_ALSO_POSTS_TO_FEED ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
     const twin = twinId
@@ -5699,6 +5757,8 @@ async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platfor
       ...socialTwin.twinWriteUpdates(SOCIAL_POSTS_PATH, postId, record, twinId, twin),
       ...socialLibrary.libraryWriteUpdates(postId, record, { isTwin: false }),
       [`social_lookbook/history/${saDate}`]: socialLookbook.historyEntry(made.rows, nowMs),
+      // The fit's score and reasons, per post (Junid, 26 Oct).
+      ...(made.look && made.look.critic ? { [`social_fit_log/${saDate}/${postId}`]: fitLogEntry(made, nowMs, { postId }) } : {}),
     });
     return { ok: true, postId, twinId };
   } catch (err) {
@@ -5851,6 +5911,10 @@ exports.socialStillAutopilot = onSchedule(
           gate = "save"; reason = w.reason;
         } else {
           gate = made.gate; reason = made.reason;
+          // A fit the critic would not pass is logged too: what was tried and why it was skipped.
+          if (made.critic) {
+            try { await db.ref(`social_fit_log/${saDate}/skip-${Date.now()}`).set(fitLogEntry(made, Date.now(), { gate, reason })); } catch (e) { console.warn(`socialStillAutopilot: the fit log could not be written: ${e && e.message}`); }
+          }
         }
         console.warn(`socialStillAutopilot ${saDate}: lookbook failed the ${gate} gate — posting the current style instead: ${reason}`);
       }

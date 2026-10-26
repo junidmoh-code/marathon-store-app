@@ -281,6 +281,32 @@ function scoreOutfit(pieces, ctx = {}) {
 }
 
 /**
+ * EXCLUDED before scoring or styling: not menswear, or a hat this season or
+ * this rotation does not allow. Counted, so a starved day says why. The
+ * scorer and the opus stylist (lookbook/fit-agent.cjs) are offered the same
+ * pieces. Pure.
+ * @returns { eligible, excluded: { reason: count } }
+ */
+function eligiblePieces(pieces, { month = 1, noHeadwear = false, menswear = true, guide = GUIDE } = {}) {
+  const season = seasonOf(month, guide);
+  const sr = seasonRulesFor(season, guide);
+  const excluded = {};
+  const exclude = (why) => { excluded[why] = (excluded[why] || 0) + 1; return false; };
+  const eligible = (pieces || []).filter((p) => {
+    if (menswear !== false) { const why = menswearRefusal(p); if (why) return exclude(why); }
+    if (p.slot === "hat") {
+      if (noHeadwear) return exclude("headwear rests (one lookbook in three)");
+      const kind = headwearOf(p);
+      // A hat of unknown kind only where the season allows a beanie too: in
+      // summer a hat must be KNOWN to be a cap.
+      if (kind ? !sr.headwear.includes(kind) : !sr.headwear.includes("beanie")) return exclude(kind ? `a ${kind} in a Durban ${season}` : `headwear that is not named a ${sr.headwear.join("/")} in a Durban ${season}`);
+    }
+    return true;
+  });
+  return { eligible, excluded };
+}
+
+/**
  * Enumerate, refuse, score and shortlist.
  *
  * @param pieces [{ pid, slot, price|null, fresh 0–1, tags, categoryKey?, fullBody?, displayName?, websiteName?, ref }]
@@ -317,22 +343,7 @@ function styleOutfits(pieces, opts = {}) {
   const forced = opts.look ? guide.looks.find((l) => l.key === opts.look) || null : null;
   if (opts.look && !forced) throw new Error(`styleOutfits: unknown look "${opts.look}"`);
   const looks = forced ? [forced] : guide.looks;
-  const sr = seasonRulesFor(season, guide);
-  // ── 0. EXCLUDED before scoring: not menswear, or a hat this season or
-  // this rotation does not allow. Counted, so a starved day says why.
-  const excluded = {};
-  const exclude = (why) => { excluded[why] = (excluded[why] || 0) + 1; return false; };
-  const eligible = pieces.filter((p) => {
-    if (opts.menswear !== false) { const why = menswearRefusal(p); if (why) return exclude(why); }
-    if (p.slot === "hat") {
-      if (opts.noHeadwear) return exclude("headwear rests (one lookbook in three)");
-      const kind = headwearOf(p);
-      // A hat of unknown kind only where the season allows a beanie too: in
-      // summer a hat must be KNOWN to be a cap.
-      if (kind ? !sr.headwear.includes(kind) : !sr.headwear.includes("beanie")) return exclude(kind ? `a ${kind} in a Durban ${season}` : `headwear that is not named a ${sr.headwear.join("/")} in a Durban ${season}`);
-    }
-    return true;
-  });
+  const { eligible, excluded } = eligiblePieces(pieces, { month: opts.month || 1, noHeadwear: opts.noHeadwear, menswear: opts.menswear, guide });
   // Each plan enumerates from its own per-slot shortlist: a look's palette
   // (so an earth-tone look is not starved by six black tees), and one with no
   // palette at all. With lookSlots a look's plan has only its declared
@@ -536,6 +547,7 @@ function headerFor(lookKey, guide = GUIDE) {
 }
 
 module.exports = {
+  eligiblePieces,
   GUIDE, ORDER, ACCESSORY_SLOTS, FALLBACK_HEADER, NOTE_MAX,
   seasonOf, seasonRulesFor, menswearRefusal, headwearOf, isKnitwear, layerPenalty, lookAllows, hardRule, isMono, colourScore, silhouetteScore, familyScore, formalityScore, seasonScore,
   lookMatch, bestLook, scoreOutfit, styleOutfits, shortlistOf,

@@ -69,7 +69,7 @@ describe("makeLookbook", () => {
     const db = seed();
     let sentParts = null;
     const d = deps(db, { generateHero: async (parts) => { sentParts = parts; return { buffer: await img(), mime: "image/jpeg", costUSD: 0.134, engine: "nbpro" }; } });
-    const r = await makeLookbook(db, d, { month: 5, minHeroPx: 0, nowMs: NOW });
+    const r = await makeLookbook(db, d, { month: 5, minHeroPx: 0, nowMs: NOW, scene: "concrete" });
     assert.equal(r.ok, true, r.reason);
     assert.deepEqual(r.rows.map((x) => x.slot), ["hat", "jacket", "tee", "bottoms", "sneakers"]);
     assert.equal(r.total.value, 150 + 400 + 250 + 300 + 600);
@@ -77,7 +77,8 @@ describe("makeLookbook", () => {
     assert.equal(r.rows[0].nameLine, "CAP FITTED WITH CURVED BRIM");
     assert.equal(r.costUSD, 0.134);
     assert.equal(r.scene, "concrete");
-    assert.match(sentParts[0].text, /MUST be a Black man with dark skin/);
+    assert.match(sentParts[0].text, /MUST be a young South African Black man in his early 20s/);
+    assert.match(sentParts[0].text, /low fade/);
     assert.match(sentParts[0].text, /board-formed concrete wall/);
     assert.doesNotMatch(sentParts[0].text, /palm/);
     assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), 1);
@@ -455,5 +456,71 @@ describe("makeLookbook — the stylist", () => {
     const r = await makeLookbook(db, deps(db), { month: 5, minHeroPx: 0, nowMs: NOW });
     assert.equal(r.ok, true, r.reason);
     assert.ok(r.rows.some((x) => x.slot === "tee"));
+  });
+});
+
+describe("makeLookbook — the opus stylist and critic (Junid, 26 Oct)", () => {
+  const PASS = { colour: 9, formality: 9, theme: 8, caption: 9 };
+  const agent = (result) => {
+    const seen = [];
+    return { seen, budgetUSD: 0.15, build: async (offer, opts) => { seen.push({ offer, opts }); return typeof result === "function" ? result(offer, seen.length) : result; } };
+  };
+  const fitOf = (offer, pids, over = {}) => ({
+    formula: "court-classic", theme: "Court Classic", hero: offer.pieces.find((p) => p.pid === "s1"),
+    pieces: offer.slots.flatMap((s) => offer.pieces.filter((p) => p.slot === s && pids.includes(p.pid))),
+    colours: ["black", "white"], caption: "A boxy black tee, mesh shorts and suede low-tops. #MarathonClub", why: "Relaxed and quiet.", ...over,
+  });
+  test("the agent's fit is the poster: its rows, its theme as the header, its caption, every round on the look", async () => {
+    const db = seed();
+    const a = agent((offer) => ({ ok: true, fit: fitOf(offer, ["t1", "b1", "s1"]), verdict: { scores: PASS, min: 8 }, rounds: [{ round: 1, scores: PASS, min: 8, reasons: {}, fit: { theme: "Court Classic", pids: ["t1", "b1", "s1"] }, costUSD: 0.05 }], costUSD: 0.05 }));
+    const d = deps(db, { fitAgent: a, chooseOutfit: async () => { throw new Error("the scorer's tie-break must not run"); } });
+    const r = await makeLookbook(db, d, { month: 10, minHeroPx: 0, nowMs: NOW, headwear: "off" });
+    assert.equal(r.ok, true, r.reason);
+    assert.deepEqual(r.rows.map((x) => x.pid).sort(), ["b1", "s1", "t1"]);
+    assert.equal(r.look.name, "Court Classic");
+    assert.deepEqual(r.look.header, ["COURT", "CLASSIC"]);
+    assert.equal(r.look.source, "opus");
+    assert.equal(r.look.score, 88);
+    assert.equal(r.look.critic.passed, true);
+    assert.equal(r.look.critic.rounds, 1);
+    assert.match(r.caption, /boxy black tee/);
+    assert.ok(r.stylistCostUSD >= 0.05);
+    // Offered: in stock, men's, a summer-season core of tee, bottoms, sneakers.
+    const offered = a.seen[0].offer.pieces.map((p) => p.pid);
+    assert.ok(offered.includes("t1") && offered.includes("s1"));
+    assert.equal(a.seen[0].opts.budgetUSD, 0.15);
+  });
+  test("a fit the critic would not pass is SKIPPED: the critic gate, no hero generated", async () => {
+    const db = seed();
+    const d = deps(db, { fitAgent: agent({ ok: false, reason: "no fit scored 8+ on all four after 3 rounds", rounds: [{ round: 1 }, { round: 2 }, { round: 3 }], costUSD: 0.12 }) });
+    const r = await makeLookbook(db, d, { month: 10, minHeroPx: 0, nowMs: NOW });
+    assert.equal(r.ok, false);
+    assert.equal(r.gate, "critic");
+    assert.match(r.reason, /fit was skipped: no fit scored 8\+/);
+    assert.equal(d.calls.gen, 0);
+    assert.equal(r.critic.rounds.length, 3);
+  });
+  test("a product in stock in one size of several is never offered", async () => {
+    const db = seed();
+    db.root.products.t1.sizes = ["S", "M", "L"];          // t1: only M in stock
+    db.root.products.t2.sizes = ["M", "L"];
+    db.root.stock.shop1.t2 = { M: { qty: 1 }, L: { qty: 2 } };
+    const a = agent((offer) => ({ ok: true, fit: fitOf(offer, ["t2", "b1", "s1"]), verdict: { scores: PASS, min: 8 }, rounds: [], costUSD: 0.04 }));
+    const r = await makeLookbook(db, deps(db, { fitAgent: a }), { month: 10, minHeroPx: 0, nowMs: NOW, headwear: "off" });
+    assert.equal(r.ok, true, r.reason);
+    const offered = a.seen[0].offer.pieces.map((p) => p.pid);
+    assert.ok(!offered.includes("t1"), "t1 has one size of three in stock");
+    assert.ok(offered.includes("t2"));
+  });
+  test("a chosen piece whose photo fails is taken out and the fit rebuilt once, inside the same budget", async () => {
+    const db = seed();
+    const a = agent((offer, n) => ({ ok: true, fit: fitOf(offer, n === 1 ? ["t1", "b1", "s1"] : ["t2", "b1", "s1"]), verdict: { scores: PASS, min: 8 }, rounds: [], costUSD: 0.04 }));
+    const d = deps(db, { fitAgent: a, fetchImage: async (u) => { if (/t1/.test(u)) throw new Error("404"); return { buffer: await img(), contentType: "image/jpeg" }; } });
+    const r = await makeLookbook(db, d, { month: 10, minHeroPx: 0, nowMs: NOW, headwear: "off" });
+    assert.equal(r.ok, true, r.reason);
+    assert.ok(r.rows.some((x) => x.pid === "t2"));
+    assert.equal(a.seen.length, 2);
+    assert.ok(Math.abs(a.seen[1].opts.budgetUSD - 0.11) < 1e-9);
+    assert.ok(!a.seen[1].offer.pieces.some((p) => p.pid === "t1"));
   });
 });

@@ -27,7 +27,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { stockSizeKey, ONLINE_EXCLUDED_LOCATIONS } = require("./social-select.cjs");
+const { sizesInStock } = require("./social-select.cjs");
 
 const RULEBOOK_PATH = path.join(__dirname, "fit-rulebook.md");
 const FIT_MODEL = "claude-opus-5-5";
@@ -109,24 +109,6 @@ function formulasFor(season, book = rulebook()) {
 }
 
 // ── WHO IS OFFERED ────────────────────────────────────────────────────────
-/**
- * Sizes of a product with at least one unit at a location that ships
- * (social-select availableUnits counts units; this counts sizes). Pure.
- */
-function sizesInStock(stockByLocation, sizes) {
-  const totals = {};
-  for (const s of Array.isArray(sizes) ? sizes : []) totals[stockSizeKey(s)] = 0;
-  for (const [loc, cells] of Object.entries(stockByLocation || {})) {
-    if (ONLINE_EXCLUDED_LOCATIONS.has(loc) || !cells || typeof cells !== "object") continue;
-    for (const [k, cell] of Object.entries(cells)) {
-      if (!(k in totals)) continue;
-      const qty = cell !== null && typeof cell === "object" ? cell.qty : cell;
-      totals[k] += Math.max(0, Number(qty) || 0);
-    }
-  }
-  return { inStock: Object.values(totals).filter((n) => n > 0).length, sizes: Object.keys(totals).length };
-}
-
 /**
  * Junid's rule: only products in stock in at least 2 sizes. A product with
  * ONE size on its record (a cap, a bag) cannot have two: it qualifies in its

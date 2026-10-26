@@ -21,6 +21,7 @@ const { cleanProductName } = require("./product-name.cjs");
 const { BRANDS: DESIGN_BRANDS } = require("./social-design.cjs");
 const stylist = require("./stylist.cjs");
 const styleTags = require("./style-tags.cjs");
+const fitRules = require("./fit-rules.cjs");
 
 // ── THE SIX ROWS, HEAD TO TOE ────────────────────────────────────────────────
 // `keys` are products/{pid}/categoryKey values from the live catalogue (the
@@ -478,6 +479,86 @@ function recentLookbookPids(history, depth = HISTORY_DEPTH) {
 }
 
 /**
+ * The candidates as stylist pieces, each with its poster row: resolveRow's
+ * refusals (no slot, price, photo, brand or usable name) are skipped and
+ * listed. `used` and `blocked` are never offered. Pure.
+ * @returns { pieces, skipped }
+ */
+function lookbookPieces(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), tags = new Map() } = {}) {
+  const skipped = [];
+  const pieces = [];
+  for (const c of candidates || []) {
+    if (!c || !c.pid || used.has(c.pid) || blocked.has(c.pid)) continue;
+    const r = resolveRow(c);
+    if (r.skip) {
+      if (lookbookSlot(c.product)) skipped.push({ pid: c.pid, slot: lookbookSlot(c.product), why: r.skip });
+      continue;
+    }
+    const p = c.product || {};
+    const fresh = ((recent.has(r.row.pid) ? 0 : 4) + (r.row.studio ? 1 : 0) + r.row.newNorm + 0.5 * r.row.score) / 6.5;
+    pieces.push({
+      pid: r.row.pid, slot: r.row.slot, price: r.row.price, fresh, categoryKey: String(p.categoryKey || "").toLowerCase(),
+      tags: tags.get(c.pid) || styleTags.nameTags({ name: p.name, websiteName: c.name, brand: p.brand, categoryKey: p.categoryKey }),
+      displayName: displayNameOf(c), websiteName: c.name || "",
+      label: `${r.row.brandLine} ${r.row.nameLine}`.trim(), row: r.row, ref: c,
+    });
+  }
+  return { pieces, skipped };
+}
+
+// Every brand a caption could name: the brands the names are read with, the
+// style guide's families and the rulebook's luxury list. A caption naming one
+// that is not in the fit is refused (lib/fit-rules readStylistAnswer).
+// Brands that are also everyday caption words ("on", "a polo", "the boss",
+// "essentials") are not checked: they would refuse honest captions.
+const CAPTION_PLAIN_WORDS = new Set(["polo", "boss", "hugo", "essentials", "represent", "supreme", "champion", "creed", "brooks", "crocs", "columbia", "replay", "umbro", "lotto", "kappa", "oakley", "jordan", "armani", "levi s"]);
+const CAPTION_BRANDS = [...new Set([
+  ...KNOWN_BRANDS,
+  ...Object.values(require("./style-guide.json").families || {}).flatMap((f) => f.brands || []),
+  ...fitRules.LUXURY_BRANDS,
+])].filter((b) => b.length > 3 && !CAPTION_PLAIN_WORDS.has(b.toLowerCase()));
+
+/**
+ * What the opus stylist (lookbook/fit-agent.cjs) is offered for a lookbook:
+ * the same pieces the scorer would see (lookbookPieces, then
+ * stylist.eligiblePieces: menswear, the season's headwear, the hat
+ * rotation), less anything not in stock in at least two sizes (Junid,
+ * 26 Oct; a one-size accessory in its one size). Pure.
+ * @returns { offer: { pieces, slots, core, optional, minPieces, maxPieces, season, kind, knownBrands } | null,
+ *            reason, skipped, excluded }
+ */
+function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), tags = new Map(), month = 10, noHeadwear = false, rows: exactRows = null, requireSlots = [] } = {}) {
+  const { pieces, skipped } = lookbookPieces(candidates, { recent, blocked, used, tags });
+  const { eligible, excluded } = stylist.eligiblePieces(pieces, { month, noHeadwear });
+  const offered = [];
+  for (const p of eligible) {
+    const why = fitRules.sizeRefusal(p.ref && p.ref.sizesInStock);
+    if (why) { excluded[`in stock in fewer than two sizes`] = (excluded["in stock in fewer than two sizes"] || 0) + 1; continue; }
+    offered.push({
+      pid: p.pid, slot: p.slot, brand: p.row.brandLine, name: p.websiteName || p.row.name || p.row.nameLine.toLowerCase(),
+      displayName: p.displayName || p.row.displayName, price: p.price, tags: p.tags, sizes: p.ref.sizesInStock,
+      fresh: p.fresh, photoUrl: p.row.photoUrl, row: p.row,
+    });
+  }
+  const season = stylist.seasonOf(month);
+  const core = CORE_SLOTS;
+  const have = new Set(offered.map((p) => p.slot));
+  const missing = core.filter((alts) => !alts.some((s) => have.has(s))).map((alts) => alts.join("/"));
+  if (missing.length) {
+    return { offer: null, skipped, excluded, reason: `no eligible outfit — nothing in stock in two sizes for: ${missing.join(", ")}` };
+  }
+  const optional = SLOT_KEYS.filter((s) => !core.some((alts) => alts.includes(s)) && have.has(s) && !(s === "hat" && noHeadwear));
+  const required = [...core, ...requireSlots.filter((s) => !core.some((alts) => alts.includes(s))).map((s) => [s])];
+  return {
+    offer: {
+      pieces: offered, slots: SLOT_KEYS, core: required, optional,
+      minPieces: exactRows || MIN_ROWS, maxPieces: exactRows || MAX_ROWS, season, kind: "lookbook", knownBrands: CAPTION_BRANDS,
+    },
+    reason: null, skipped, excluded,
+  };
+}
+
+/**
  * Pick the outfit: at most one product per slot, head to toe, chosen by the
  * STYLIST (lib/stylist.cjs) against docs/style-guide.md.
  *
@@ -514,24 +595,7 @@ function recentLookbookPids(history, depth = HISTORY_DEPTH) {
  *          `style: true` on a refusal means outfits existed but all broke the style guide.
  */
 function pickLookbookOutfit(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), prefer = PRICE_PREFER, tags = new Map(), month = 10, look = null, noHeadwear = false, rows: exactRows = null, requireSlots = [] } = {}) {
-  const skipped = [];
-  const pieces = [];
-  for (const c of candidates || []) {
-    if (!c || !c.pid || used.has(c.pid) || blocked.has(c.pid)) continue;
-    const r = resolveRow(c);
-    if (r.skip) {
-      if (lookbookSlot(c.product)) skipped.push({ pid: c.pid, slot: lookbookSlot(c.product), why: r.skip });
-      continue;
-    }
-    const p = c.product || {};
-    const fresh = ((recent.has(r.row.pid) ? 0 : 4) + (r.row.studio ? 1 : 0) + r.row.newNorm + 0.5 * r.row.score) / 6.5;
-    pieces.push({
-      pid: r.row.pid, slot: r.row.slot, price: r.row.price, fresh, categoryKey: String(p.categoryKey || "").toLowerCase(),
-      tags: tags.get(c.pid) || styleTags.nameTags({ name: p.name, websiteName: c.name, brand: p.brand, categoryKey: p.categoryKey }),
-      displayName: displayNameOf(c), websiteName: c.name || "",
-      label: `${r.row.brandLine} ${r.row.nameLine}`.trim(), row: r.row, ref: c,
-    });
-  }
+  const { pieces, skipped } = lookbookPieces(candidates, { recent, blocked, used, tags });
   const minRows = exactRows || MIN_ROWS, maxRows = exactRows || MAX_ROWS;
   const filled = SLOT_KEYS.filter((k) => pieces.some((x) => x.slot === k));
   const missingSlots = SLOT_KEYS.filter((k) => !filled.includes(k));
@@ -746,11 +810,38 @@ const LOOKBOOK_SCENE_DEFS = {
     light: "Light: soft overcast daylight, no hard shadows. Grade: muted, editorial, slightly desaturated greens, natural skin tones.",
     calm: "Keep the upper-left of the frame calm and uncluttered — soft foliage and sky only — and the paving below his shoes plain.",
   },
+  // ── REAL SOUTH AFRICAN LOCATIONS, NATURAL LIGHT (Junid, 26 Oct) ─────────
+  // "Natural light, real South African outdoor and urban settings (courts,
+  // streets, concrete walls), not studio fake." The default rotation since
+  // then; concrete and garden stay defined for LOOKBOOK_SCENES.
+  court: {
+    key: "court",
+    floor: "the court's painted asphalt",
+    location: "Location: an outdoor public basketball court in a South African township or city park (Soweto, Durban), photographed on location. Behind him: a chain-link fence, a weathered steel hoop on a pole, and low trees beyond. Real, lived-in: scuffed court paint, cracks in the asphalt.",
+    light: "Light: real late-afternoon South African sun, warm and low from one side, natural shadows on the court; open sky. Grade: natural, true-to-life colour, real skin tones, like a 35mm street photograph. Not a studio, no studio lighting, no backdrop.",
+    calm: "Keep the upper-left of the frame calm and uncluttered (sky, fence or trees only, no hoop or backboard there) and the court surface below his shoes plain.",
+  },
+  street: {
+    key: "street",
+    floor: "the pavement",
+    location: "Location: a real inner-city street in Johannesburg or Durban (Maboneng, Braamfontein, Florida Road), photographed on location: a wide concrete pavement, a weathered painted wall or a shuttered shopfront behind him, a kerb and the edge of the road. No readable signs, posters, graffiti lettering, number plates or shop names anywhere in frame.",
+    light: "Light: natural daylight, soft open shade of a building with warm sunlight further down the street. Grade: natural, true-to-life colour, real skin tones, like a 35mm street photograph. Not a studio, no studio lighting, no backdrop.",
+    calm: "Keep the upper-left of the frame calm and uncluttered (a plain stretch of wall) and the pavement below his shoes plain.",
+  },
+  wall: {
+    key: "wall",
+    floor: "the concrete pavement",
+    location: "Location: outdoors in a South African city, in front of a long raw board-formed concrete wall (a parkade, a stadium or a freeway retaining wall), photographed on location. A strip of concrete pavement at his feet, a hint of sky at the very top.",
+    light: "Light: real midday-to-afternoon South African sun raking across the wall from one side, crisp natural shadow of his body on the concrete. Grade: natural, true-to-life colour, real skin tones, like a 35mm street photograph. Not a studio, no studio lighting, no backdrop.",
+    calm: "Keep the upper-left of the frame calm and uncluttered (plain concrete wall) and the pavement below his shoes plain.",
+  },
 };
 const LOOKBOOK_SCENE_KEYS = Object.keys(LOOKBOOK_SCENE_DEFS);
 // Concrete only since go-live (owner, 19 Oct): the garden stays defined and
 // LOOKBOOK_SCENES='["concrete","garden"]' brings the alternation back.
-const DEFAULT_LOOKBOOK_SCENES = ["concrete"];
+// Real outdoor South African locations in turn since 26 Oct (Junid: "not
+// studio fake"); LOOKBOOK_SCENES='["concrete"]' brings the indoor room back.
+const DEFAULT_LOOKBOOK_SCENES = ["court", "street", "wall"];
 
 /** LOOKBOOK_SCENES as configured, deduplicated, in the given order. Pure. */
 function parseLookbookScenes(raw) {
@@ -800,7 +891,8 @@ function sceneFor(saDate, scenes, lookbookDays) {
 // Owner review of sample 01: the model is a Black man, dark skin, athletic,
 // in his 20s or 30s. A HARD requirement: it is in every hero prompt, and the
 // vision check below refuses a hero where he is not visibly Black.
-const MODEL_DESCRIPTION = "a Black man with dark skin, athletic build, in his mid-20s to early 30s";
+// The house model since 26 Oct (Junid): one invented man, the brand's face.
+const MODEL_DESCRIPTION = "a young South African Black man in his early 20s, slim athletic build, dark brown skin, a clean low fade haircut (short, neat, sharp hairline), clean-shaven or very light stubble, a calm confident expression";
 const MODEL_REQUIREMENT = `The model MUST be ${MODEL_DESCRIPTION}. This is a hard requirement.`;
 
 // ── THE HERO PROMPT ──────────────────────────────────────────────────────────
@@ -833,11 +925,12 @@ function buildHeroPrompt(rows, { scene = LOOKBOOK_SCENE_DEFS[DEFAULT_LOOKBOOK_SC
 // Made once (scripts/social/lookbook-model-ref.mjs) and attached to every hero.
 function buildModelRefPrompt() {
   return [
-    "Studio portrait photograph for a casting reference, portrait orientation.",
+    "Photograph for a casting reference, portrait orientation, taken outdoors on location in South Africa.",
     MODEL_REQUIREMENT,
-    "Head and shoulders to mid-chest, facing the camera, neutral relaxed expression, short natural hair, no headwear, no glasses, no jewellery.",
+    "He is an invented person: not a celebrity, athlete, influencer or any real individual, and not a likeness of one.",
+    "Head and shoulders to mid-chest, facing the camera, calm confident expression, no headwear, no glasses, no jewellery.",
     "He wears a plain white crew-neck T-shirt with no logo.",
-    "Plain mid-grey seamless studio backdrop, soft even studio light, natural skin texture.",
+    "Behind him, softly out of focus: a raw concrete wall in a South African city. Natural daylight in open shade, soft and even on his face; true skin texture and tone. Not a studio, no studio lighting, no backdrop.",
     "No text, no logos, no watermark.",
   ].join("\n");
 }
@@ -1043,7 +1136,7 @@ module.exports = {
   LOOKBOOK_SLOTS, SLOT_KEYS, MIN_ROWS, HISTORY_DEPTH, READS_PER_SLOT,
   STILL_FORMAT_KEYS, DEFAULT_STILL_FORMATS,
   lookbookSlot, guessSlot, priceOf, formatRand, approvedPhoto, resolveRow,
-  recentLookbookPids, pidsWithinDays, pickLookbookOutfit, chooseLookbookOutfit, lookbookChoicePrompt, historyEntry,
+  recentLookbookPids, pidsWithinDays, lookbookPieces, fitOffer, CAPTION_BRANDS, pickLookbookOutfit, chooseLookbookOutfit, lookbookChoicePrompt, historyEntry,
   parseStillFormats, stillCalendar,
   parseLookbookDays, isJsonList, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, readModelCheck, anchorsFor,

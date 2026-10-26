@@ -41,6 +41,9 @@ const { loadLookbookCandidates, loadLookbookHistory } = require("./load.cjs");
 const { resolveThumb } = require("./thumbs.cjs");
 const { ensureStyleTags } = require("./style-tags-io.cjs");
 const { saDateStringFromMs } = require("../lib/sa-time.cjs");
+const fitRules = require("../lib/fit-rules.cjs");
+const { criticRecord } = require("./fit-agent.cjs");
+const CRITERIA_MEAN = (scores) => fitRules.CRITERIA.reduce((t, k) => t + scores[k], 0) / fitRules.CRITERIA.length;
 
 // New products tagged by vision during one run (the pre-warm tags the rest);
 // past this the stylist reads their names. One tag is ~$0.0003.
@@ -141,8 +144,69 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
   const cut = deps.cutout || defaultCutout;
   const exclude = new Set(used);
   const ready = new Map();          // pid → { thumb, contentType, cutout, thumbSource }
-  let picked = null, choices = 0;
-  for (let round = 0; round < 8; round++) {
+  // Each row's photo and panel picture, one at a time: each cut-out holds an
+  // ONNX session's worth of memory, and six in parallel is how a 2 GiB
+  // instance dies (architect review, B2). A row that fails joins `exclude`.
+  const prepare = async (rowsToPrep) => {
+    for (const r of rowsToPrep.filter((x) => !ready.has(x.pid))) await (async () => {
+      try {
+        const img = await deps.fetchImage(r.photoUrl);
+        // The panel picture: studio photo, cached clean shot, a new clean
+        // shot, or the shop photo cut out (thumbs.cjs). The shop photo stays
+        // the hero's reference either way: it is the real product.
+        const t = await resolveThumb(r, img, { thumbDeadlineMs, ...deps, cutout: cut, log });
+        thumbCostUSD += t.costUSD || 0;
+        if (!t.cutout) { log(`lookbook: ${r.pid} has no clean picture (${t.source}: ${(t.tried || []).join(", ")}) — skipping it`); exclude.add(r.pid); return; }
+        ready.set(r.pid, { thumb: img.buffer, contentType: img.contentType, cutout: t.cutout, thumbSource: t.source });
+      } catch (e) {
+        log(`lookbook: photo for ${r.pid} failed (${e && e.message}) — skipping it`);
+        exclude.add(r.pid);
+      }
+    })();
+    return rowsToPrep.every((r) => ready.has(r.pid));
+  };
+  let picked = null, choices = 0, fitResult = null;
+  if (deps.fitAgent) {
+    // ── THE OPUS STYLIST AND CRITIC (lookbook/fit-agent.cjs) ─────────────
+    // Built from the rulebook, scored by the critic on the real photos,
+    // rebuilt at most twice, else SKIPPED: the day posts the current style
+    // rather than a bad fit. A row whose photo fails is taken out and the
+    // fit rebuilt once, inside the same $0.15.
+    const runs = [];
+    let feedback = [];
+    for (let run = 0; run < 2 && !picked; run++) {
+      const o = lookbook.fitOffer(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, noHeadwear, rows: exactRows, requireSlots });
+      if (run === 0 && Object.keys(o.excluded || {}).length) log(`stylist: not offered — ${Object.entries(o.excluded).map(([k, n]) => `${k} ×${n}`).join("; ")}`);
+      if (!o.offer) { fitResult = { ok: false, reason: o.reason, rounds: runs.flat(), costUSD: stylistCostUSD - tagRun.costUSD }; break; }
+      const spent = runs.reduce((t, r) => t + r.costUSD, 0);
+      const res = await deps.fitAgent.build(o.offer, { budgetUSD: deps.fitAgent.budgetUSD - spent, feedback });
+      runs.push(res);
+      stylistCostUSD += res.costUSD;
+      fitResult = { ...res, rounds: runs.flatMap((r) => r.rounds), costUSD: spent + res.costUSD };
+      if (!res.ok) break;
+      const rowsOf = res.fit.pieces.map((x) => x.row);
+      if (await prepare(rowsOf)) {
+        const f = res.fit, v = res.verdict;
+        picked = {
+          rows: rowsOf.map((r) => ({ ...r, ...ready.get(r.pid) })),
+          caption: f.caption,
+          look: {
+            key: f.formula, name: f.theme, header: fitRules.headerOf(f.theme), note: f.why,
+            score: Math.round(CRITERIA_MEAN(v.scores) * 10), source: "opus", choice: 1, of: 1,
+            hero: f.hero ? f.hero.pid : null, colours: f.colours,
+            critic: criticRecord(fitResult),
+          },
+        };
+        break;
+      }
+      feedback = [`${rowsOf.filter((r) => exclude.has(r.pid)).map((r) => r.pid).join(", ")} had no usable photo: build the fit again without it`];
+      fitResult = { ...fitResult, ok: false, reason: "a chosen piece had no usable photo" };
+    }
+    if (!picked) {
+      costUSD += thumbCostUSD + stylistCostUSD;
+      return { ok: false, gate: "critic", reason: `the fit was skipped: ${(fitResult && fitResult.reason) || "no fit"}`, costUSD, attempts, thumbCostUSD, stylistCostUSD, critic: fitResult };
+    }
+  } else for (let round = 0; round < 8; round++) {
     let p = lookbook.pickLookbookOutfit(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, look, noHeadwear, rows: exactRows, requireSlots });
     if (p.reason) return { ok: false, gate: p.style ? "style" : "outfit", reason: p.reason, costUSD: costUSD + thumbCostUSD + stylistCostUSD, thumbCostUSD, stylistCostUSD, attempts };
     if (round === 0 && Object.keys(p.excluded || {}).length) log(`stylist: removed before scoring — ${Object.entries(p.excluded).map(([k, n]) => `${k} ×${n}`).join("; ")}`);
@@ -158,24 +222,8 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
       } catch (e) { log(`stylist: the choice call failed (${String(e && e.message).slice(0, 100)}) — the top score stands`); }
     }
     p = lookbook.chooseLookbookOutfit(p, answer, { month: saMonth });
-    const fresh = p.rows.filter((r) => !ready.has(r.pid));
-    // One at a time: each cut-out holds an ONNX session's worth of memory, and
-    // six in parallel is how a 2 GiB instance dies (architect review, B2).
-    for (const r of fresh) await (async () => {
-      try {
-        const img = await deps.fetchImage(r.photoUrl);
-        // The panel picture: studio photo, cached clean shot, a new clean
-        // shot, or the shop photo cut out (thumbs.cjs). The shop photo stays
-        // the hero's reference either way: it is the real product.
-        const t = await resolveThumb(r, img, { thumbDeadlineMs, ...deps, cutout: cut, log });
-        thumbCostUSD += t.costUSD || 0;
-        if (!t.cutout) { log(`lookbook: ${r.pid} has no clean picture (${t.source}: ${(t.tried || []).join(", ")}) — skipping it`); exclude.add(r.pid); return; }
-        ready.set(r.pid, { thumb: img.buffer, contentType: img.contentType, cutout: t.cutout, thumbSource: t.source });
-      } catch (e) {
-        log(`lookbook: photo for ${r.pid} failed (${e && e.message}) — skipping it`);
-        exclude.add(r.pid);
-      }
-    })();
+    // One at a time (prepare, above).
+    await prepare(p.rows);
     if (p.rows.every((r) => ready.has(r.pid))) {
       picked = { ...p, rows: p.rows.map((r) => ({ ...r, ...ready.get(r.pid) })) };
       break;
@@ -307,6 +355,10 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     return {
       ok: true, rows, total: poster.total, poster, costUSD, thumbCostUSD, stylistCostUSD, engine, attempts, check, modelCheck, located, anchors, body, hero, prompt,
       look: lookInfo,
+      // The opus stylist's caption, already scored by the critic, and every
+      // round's scores and reasons, for the post record and the fit log.
+      caption: picked.caption || null,
+      critic: fitResult,
       styled: picked.styled ? {
         score: picked.styled.score, parts: picked.styled.parts, reasoning: picked.styled.reasoning,
         tags: Object.fromEntries(picked.styled.pieces.map((x) => [x.pid, x.tags])),
