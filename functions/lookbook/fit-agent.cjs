@@ -74,18 +74,25 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
   // The prefix each role's last call cached: a rebuild reads it at $0.20/M.
   const cached = { stylist: 0, critic: 0 };
   const worst = (req, role) => fr.worstCaseUSD(req, { cachedTokens: cached[role] });
-  const afford = (req, role) => spent + worst(req, role) <= budgetUSD + 1e-9;
-  let criticWorst = 0;
+  // A request's input at its worst (no output), and the output ceiling the
+  // budget left can pay for after `keep` more dollars are held back.
+  const inputWorst = (req, role) => worst({ ...req, maxTokens: 0 }, role);
+  const OUT = fr.PRICE.outPerMtok / 1e6;
+  const ceiling = (inUSD, max, keep = 0) => Math.min(max, Math.floor((budgetUSD - spent - inUSD - keep) / OUT));
+  let criticInput = 0;
   const summary = (fit) => fit && { formula: fit.formula, theme: fit.theme, pids: fit.pieces.map((p) => p.pid), hero: fit.hero ? fit.hero.pid : null };
   const skip = (reason) => ({ ok: false, reason, rounds, costUSD: spent });
 
   for (let round = 1; round <= fr.MAX_ROUNDS; round++) {
     // ── THE STYLIST ────────────────────────────────────────────────────
     const sreq = fr.stylistRequest({ ...offer, feedback });
-    // A round starts only when its stylist AND its critic fit: a stylist
-    // answer the critic cannot afford to score is money spent on nothing.
-    const reserve = criticWorst || fr.CRITIC_RESERVE_USD;
-    if (spent + worst(sreq, "stylist") + reserve > budgetUSD + 1e-9) return skip(`round ${round}: a stylist call (up to $${worst(sreq, "stylist").toFixed(3)}) and its critic (up to $${reserve.toFixed(3)}) do not fit in what is left of the $${budgetUSD} budget ($${spent.toFixed(3)} spent)`);
+    // A round starts only when its stylist AND its critic fit, each with room
+    // for MIN_OUT_TOKENS: a stylist answer the critic cannot afford to score
+    // is money spent on nothing. The stylist's ceiling is what is left once
+    // the critic's share is held back.
+    const criticKeep = (criticInput || fr.CRITIC_INPUT_RESERVE_USD) + fr.MIN_OUT_TOKENS * OUT;
+    sreq.maxTokens = ceiling(inputWorst(sreq, "stylist"), fr.STYLIST_MAX_TOKENS, criticKeep);
+    if (sreq.maxTokens < fr.MIN_OUT_TOKENS) return skip(`round ${round}: a stylist call and its critic do not fit in what is left of the $${budgetUSD} budget ($${spent.toFixed(3)} spent)`);
     let answer;
     try { answer = await deps.call(sreq); } catch (e) {
       // An error with no usage (a timeout, a 5xx) may still have been billed: charged at its worst case.
@@ -116,8 +123,9 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
       if (ph) shots.push({ pid: p.pid, ...ph });
     }
     const creq = fr.criticRequest(fit, shots);
-    criticWorst = worst(creq, "critic");
-    if (!afford(creq, "critic")) {
+    criticInput = inputWorst(creq, "critic");
+    creq.maxTokens = ceiling(criticInput, fr.CRITIC_MAX_TOKENS);
+    if (creq.maxTokens < fr.MIN_OUT_TOKENS) {
       rounds.push({ round, fit: summary(fit), costUSD: answer.costUSD, error: "no budget left for the critic" });
       return skip(`round ${round}: the critic call could cost up to $${worst(creq, "critic").toFixed(3)} and $${spent.toFixed(3)} of the $${budgetUSD} budget is spent`);
     }

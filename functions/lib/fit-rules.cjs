@@ -49,10 +49,14 @@ const MAX_ROUNDS = 3;
 // check prices them.
 const STYLIST_MAX_TOKENS = 1400;
 const CRITIC_MAX_TOKENS = 1400;
-// What a round keeps back for its critic before the stylist is called, until
-// a critic request of this run has been priced: a first critic call with its
-// rulebook cache write and four photos, at its worst.
-const CRITIC_RESERVE_USD = 0.04;
+// No call is made with less room than this to answer in (every answer seen
+// so far fits; a cut-off answer is a failed call). Each call's ceiling is the
+// smaller of its MAX and what the budget left can pay for (fit-agent.cjs).
+const MIN_OUT_TOKENS = 1000;
+// The critic's input at its worst, kept back before the stylist is called
+// until a critic request of this run has been priced: a first critic call
+// with its rulebook cache write and four photos.
+const CRITIC_INPUT_RESERVE_USD = 0.02;
 // Tokens an attached product photo costs at CRITIC_PHOTO_PX on its long side
 // (width x height / 750, rounded up): the budget check's estimate.
 const CRITIC_PHOTO_PX = 384;
@@ -454,7 +458,7 @@ function headerOf(theme) {
 }
 
 module.exports = {
-  FIT_MODEL, PRICE, BUDGET_USD, PASS_SCORE, CRITIC_RESERVE_USD, MAX_ROUNDS, CRITERIA, CRITIC_PHOTO_PX,
+  FIT_MODEL, PRICE, BUDGET_USD, PASS_SCORE, MIN_OUT_TOKENS, CRITIC_INPUT_RESERVE_USD, MAX_ROUNDS, CRITERIA, CRITIC_PHOTO_PX,
   STYLIST_MAX_TOKENS, CRITIC_MAX_TOKENS, LUXURY_BRANDS,
   parseFormulas, rulebook, formulasFor, trimOptional, sizesInStock, sizeRefusal, luxuryBrand,
   catalogueText, stylistRequest, readStylistAnswer, themeAllowed, brandsNamed,

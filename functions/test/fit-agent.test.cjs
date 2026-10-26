@@ -145,7 +145,20 @@ describe("buildFit — the budget and the photo notes", () => {
     const r = await fa.buildFit(OFFER, f);
     assert.equal(r.ok, false);
     assert.equal(f.reqs.length, 2, "round 2's stylist is never called, so nothing is spent on an answer nobody scores");
-    assert.match(r.reason, /round 2: a stylist call .* and its critic .* do not fit/);
+    assert.match(r.reason, /round 2: a stylist call and its critic do not fit/);
+  });
+  test("adversarial: every call bills its full worst case, the fit never passes — the total still never exceeds $0.15", async () => {
+    const reqs = [];
+    let n = 0;
+    const call = async (req) => {
+      reqs.push(req);
+      const json = (n++ % 2 === 0) ? FIT() : CRIT(7, 7, 7, 7);
+      return { json, costUSD: fr.worstCaseUSD(req), cachedTokens: 0 };
+    };
+    const r = await fa.buildFit(OFFER, { call, photo: async () => ({ base64: "eA==", mediaType: "image/jpeg" }) });
+    assert.equal(r.ok, false);
+    assert.ok(r.costUSD <= fr.BUDGET_USD + 1e-9, `spent ${r.costUSD}`);
+    assert.ok(reqs.every((q) => q.maxTokens >= fr.MIN_OUT_TOKENS));
   });
   test("the prefix a call just cached is priced at the cache-read rate", () => {
     const req = fr.stylistRequest(OFFER);
