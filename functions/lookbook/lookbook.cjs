@@ -111,7 +111,7 @@ async function makeLookbook(db, deps, opts = {}) {
   return r;
 }
 
-async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate", hero: fixedHero = null, allowRecent = false } = {}, holder = {}) {
+async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate", hero: fixedHero = null, allowRecent = false, avoidFormulas = null } = {}, holder = {}) {
   const log = deps.log || (() => {});
   let costUSD = 0, thumbCostUSD = 0, stylistCostUSD = 0;
   const saDate = saDateStringFromMs(nowMs);
@@ -196,7 +196,9 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
       if (run === 0 && Object.keys(o.excluded || {}).length) log(`stylist: not offered — ${Object.entries(o.excluded).map(([k, n]) => `${k} ×${n}`).join("; ")}`);
       if (!o.offer) { fitResult = { ok: false, reason: o.reason, rounds: runs.flatMap((r) => r.rounds), costUSD: runs.reduce((t, r) => t + r.costUSD, 0) }; break; }
       const spent = runs.reduce((t, r) => t + r.costUSD, 0);
-      const res = await deps.fitAgent.build(o.offer, { budgetUSD: deps.fitAgent.budgetUSD - spent, feedback });
+      // Variety: the stylist is told the last lookbooks' formulas.
+      const avoid = avoidFormulas || lookbook.recentFormulas(history, 3);
+      const res = await deps.fitAgent.build({ ...o.offer, avoidFormulas: avoid }, { budgetUSD: deps.fitAgent.budgetUSD - spent, feedback });
       runs.push(res);
       stylistCostUSD += res.costUSD;
       fitResult = { ...res, rounds: runs.flatMap((r) => r.rounds), costUSD: spent + res.costUSD };

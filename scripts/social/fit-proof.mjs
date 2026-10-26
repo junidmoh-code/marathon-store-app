@@ -118,6 +118,8 @@ for (const n of want) {
       // black G-Star jeans among them): it is a sample of the same day's post,
       // never posted. Production keeps the 14-day no-repeat.
       ...(isRebuild ? { hero: LOUB, allowRecent: true } : {}),
+      // Variety across the proof, as production gets it from the lookbook history.
+      avoidFormulas: Object.values(log.cards).filter((c) => c.ok && c.formula).sort((a, b) => (a.at < b.at ? 1 : -1)).map((c) => c.formula).slice(0, 3),
     });
     const critic = (r.look && r.look.critic) || (r.critic ? require("./lookbook/fit-agent.cjs").criticRecord(r.critic) : null);
     const scored = critic ? critic.history.filter((h) => h.scores) : [];

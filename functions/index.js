@@ -5763,7 +5763,7 @@ async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platfor
     await db.ref().update({
       ...socialTwin.twinWriteUpdates(SOCIAL_POSTS_PATH, postId, record, twinId, twin),
       ...socialLibrary.libraryWriteUpdates(postId, record, { isTwin: false }),
-      [`social_lookbook/history/${saDate}`]: socialLookbook.historyEntry(made.rows, nowMs),
+      [`social_lookbook/history/${saDate}`]: socialLookbook.historyEntry(made.rows, nowMs, made.look),
       // The fit's score and reasons, per post (Junid, 26 Oct).
       ...(made.look && made.look.critic ? { [`social_fit_log/${saDate}/${postId}`]: fitLogEntry(made, nowMs, { postId }) } : {}),
     });

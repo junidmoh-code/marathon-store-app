@@ -187,3 +187,15 @@ describe("the poster header", () => {
     assert.deepEqual(fr.headerOf("Clean Luxe"), ["CLEAN", "LUXE"]);
   });
 });
+
+describe("variety", () => {
+  test("the stylist is told the recent formulas and to choose another", () => {
+    const req = fr.stylistRequest({ ...CTX, optional: [], avoidFormulas: ["blue-denim", "blue-denim"] });
+    assert.match(req.messages[0].content[0].text, /The last posts were blue-denim, blue-denim: choose a DIFFERENT formula/);
+  });
+  test("recentFormulas reads the lookbook history newest first", () => {
+    const lb = require("../lib/social-lookbook.cjs");
+    assert.deepEqual(lb.recentFormulas({ "2026-10-21": { formula: "a" }, "2026-10-23": {}, "2026-10-26": { formula: "b" } }), ["b", "a"]);
+    assert.equal(lb.historyEntry([{ pid: "x", slot: "tee" }], 1, { key: "clean-luxe" }).formula, "clean-luxe");
+  });
+});

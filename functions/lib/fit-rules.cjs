@@ -205,7 +205,7 @@ const STYLIST_SCHEMA = {
  * so both are cached and a rebuild pays for them at the cache-read rate.
  * Pure.
  */
-function stylistRequest({ pieces, slots, core, optional, minPieces, maxPieces, season, kind = "lookbook", heroPid = null, feedback = [], book = rulebook() }) {
+function stylistRequest({ pieces, slots, core, optional, minPieces, maxPieces, season, kind = "lookbook", heroPid = null, avoidFormulas = [], feedback = [], book = rulebook() }) {
   const forced = heroPid ? pieces.find((p) => p.pid === heroPid) : null;
   const formulas = formulasFor(season, book).map((f) => f.key);
   const brief = [
@@ -213,6 +213,7 @@ function stylistRequest({ pieces, slots, core, optional, minPieces, maxPieces, s
     `It is ${season} in South Africa.`,
     `Pieces: ${minPieces} to ${maxPieces}, at most one per slot. It must have: ${core.map((alts) => alts.join(" or ")).join(", ")}.${optional.length ? ` It may add: ${optional.join(", ")} (only when the piece helps the fit).` : ""}`,
     `Formulas allowed this season: ${formulas.join(", ")}.`,
+    ...(avoidFormulas.length ? [`The last posts were ${avoidFormulas.join(", ")}: choose a DIFFERENT formula unless the catalogue cannot dress any other well.`] : []),
     "Use ONLY pids from the catalogue below. Prices and names are real; never change them. Each line: pid | brand — name | price | colour tags, pattern, silhouette, family, formality 1-5 | photo: what a critic saw in the product photo, when known. The colour tags come from a vision model and can be wrong; a 'photo:' note is right. When a name and a tag disagree, never build a theme on the doubtful tag.",
     "The caption names each piece ONLY with what the catalogue states for certain: the brand, the garment type and a colour the name or photo note confirms. Never add a detail you cannot see (plain, slim, raw, fabric, fit, sole, logo size): the critic checks every word against the photos.",
     forced

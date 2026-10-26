@@ -701,8 +701,13 @@ function pidsWithinDays(history, saDate, days = 14) {
 }
 
 /** The history entry a finished lookbook writes. Pure. */
-function historyEntry(rows, atMs) {
-  return { pids: (rows || []).map((r) => r.pid), slots: (rows || []).map((r) => r.slot), at: atMs };
+function historyEntry(rows, atMs, look = null) {
+  return { pids: (rows || []).map((r) => r.pid), slots: (rows || []).map((r) => r.slot), at: atMs, ...(look && look.key ? { formula: look.key } : {}) };
+}
+
+/** The formulas of the last `n` lookbooks, newest first (entries before 26 Oct have none). Pure. */
+function recentFormulas(history, n = 3) {
+  return Object.keys(history || {}).sort().reverse().map((d) => history[d] && history[d].formula).filter((f) => typeof f === "string" && f).slice(0, n);
 }
 
 // ── THE ROTATION ─────────────────────────────────────────────────────────────
@@ -1142,7 +1147,7 @@ module.exports = {
   LOOKBOOK_SLOTS, SLOT_KEYS, MIN_ROWS, HISTORY_DEPTH, READS_PER_SLOT,
   STILL_FORMAT_KEYS, DEFAULT_STILL_FORMATS,
   lookbookSlot, guessSlot, priceOf, formatRand, approvedPhoto, resolveRow,
-  recentLookbookPids, pidsWithinDays, lookbookPieces, fitOffer, CAPTION_BRANDS, pickLookbookOutfit, chooseLookbookOutfit, lookbookChoicePrompt, historyEntry,
+  recentLookbookPids, pidsWithinDays, lookbookPieces, fitOffer, recentFormulas, CAPTION_BRANDS, pickLookbookOutfit, chooseLookbookOutfit, lookbookChoicePrompt, historyEntry,
   parseStillFormats, stillCalendar,
   parseLookbookDays, isJsonList, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, readModelCheck, anchorsFor,
