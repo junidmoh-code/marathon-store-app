@@ -32,7 +32,11 @@ const READ_BATCH = 20;
 // Worst case 6 x 8 x 12 = 576 product point reads; a normal day ~300.
 // 14, not 10, since 19 Oct: the tags remove women's and untagged pieces
 // AFTER the load, so a slot reads a few spare.
-const ROUNDS = 12;
+// 20 since 26 Oct: the bottoms queue is 154 deep on live data (41 of them
+// football jerseys a title calls "shorts") and twelve rounds found 3 bottoms
+// for the opus stylist, so every fit wore the same trousers. A slot that is
+// full stops reading after the first round, so only a starved slot pays.
+const ROUNDS = 20;
 const WANT_PER_SLOT = 14;
 
 /**

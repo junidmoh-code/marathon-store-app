@@ -68,7 +68,8 @@ async function resolveRef(hm, model, { nowMs = Date.now(), pick = null } = {}) {
   const ranked = rankCandidates(hm);
   if (hm && ranked.length && !hm.picked) {
     const best = ranked[0];
-    if (nowMs >= Number(hm.decideBy || 0) && pick) {
+    // No deadline recorded is "not yet", never "already passed".
+    if (Number(hm.decideBy) > 0 && nowMs >= Number(hm.decideBy) && pick) {
       await pick(pickUpdates(hm, best.n, { by: "auto", nowMs }));
       return { path: best.path, contentType: best.contentType || "image/jpeg", house: best.n, provisional: false, auto: true };
     }

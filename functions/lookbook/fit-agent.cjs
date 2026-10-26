@@ -30,7 +30,9 @@ const fr = require("../lib/fit-rules.cjs");
  */
 function makeOpusCall({ Anthropic, apiKey, timeoutMs = 90000 }) {
   const Ctor = Anthropic.default || Anthropic;
-  const client = new Ctor({ apiKey, timeout: timeoutMs, maxRetries: 1 });
+  // No SDK retries: a timed-out call may still be billed, and a retry the
+  // budget never priced could take a fit past $0.15. One attempt, one price.
+  const client = new Ctor({ apiKey, timeout: timeoutMs, maxRetries: 0 });
   return async function call(req) {
     const msg = await client.messages.create({
       model: fr.FIT_MODEL,
@@ -86,7 +88,8 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
     if (spent + worst(sreq, "stylist") + reserve > budgetUSD + 1e-9) return skip(`round ${round}: a stylist call (up to $${worst(sreq, "stylist").toFixed(3)}) and its critic (up to $${reserve.toFixed(3)}) do not fit in what is left of the $${budgetUSD} budget ($${spent.toFixed(3)} spent)`);
     let answer;
     try { answer = await deps.call(sreq); } catch (e) {
-      spent += (e && e.costUSD) || 0;
+      // An error with no usage (a timeout, a 5xx) may still have been billed: charged at its worst case.
+      spent += e && Number.isFinite(e.costUSD) ? e.costUSD : worst(sreq, "stylist");
       rounds.push({ round, error: `stylist: ${String(e && e.message).slice(0, 160)}`, costUSD: (e && e.costUSD) || 0 });
       return skip(`the stylist call failed: ${String(e && e.message).slice(0, 160)}`);
     }
@@ -120,7 +123,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
     }
     let crit;
     try { crit = await deps.call(creq); } catch (e) {
-      spent += (e && e.costUSD) || 0;
+      spent += e && Number.isFinite(e.costUSD) ? e.costUSD : worst(creq, "critic");
       rounds.push({ round, fit: summary(fit), error: `critic: ${String(e && e.message).slice(0, 160)}`, costUSD: answer.costUSD + ((e && e.costUSD) || 0) });
       return skip(`the critic call failed: ${String(e && e.message).slice(0, 160)}`);
     }

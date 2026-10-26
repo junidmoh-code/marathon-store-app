@@ -119,6 +119,12 @@ describe("the house model", () => {
     const r = hm.rankCandidates({ candidates: { 1: { ...C(8), parts: { age: 7, hair: 8 } }, 2: { ...C(8), parts: { age: 9, hair: 8 } } } });
     assert.equal(r[0].n, "2");
   });
+  test("candidates with no recorded deadline are never auto-picked", async () => {
+    let wrote = null;
+    const r = await hm.resolveRef(HM({ decideBy: undefined }), null, { nowMs: 9e12, pick: async (u) => { wrote = u; } });
+    assert.equal(r.provisional, true);
+    assert.equal(wrote, null);
+  });
   test("a candidate outside the model folder is never used", () => {
     assert.deepEqual(hm.rankCandidates({ candidates: { 1: { path: "elsewhere/x.jpg", score: 10 } } }), []);
   });

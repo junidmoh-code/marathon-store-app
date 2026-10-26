@@ -101,7 +101,16 @@ async function historySlots(db, history, saDate = null) {
   return out;
 }
 
-async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate", hero: fixedHero = null } = {}) {
+// A fit the critic passed whose poster then fails a later gate (cap, time,
+// text, model, render) still carries its rounds, for the fit log.
+async function makeLookbook(db, deps, opts = {}) {
+  const holder = {};
+  const r = await makeLookbookInner(db, deps, opts, holder);
+  if (r && !r.ok && !r.critic && holder.fit) r.critic = holder.fit;
+  return r;
+}
+
+async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate", hero: fixedHero = null } = {}, holder = {}) {
   const log = deps.log || (() => {});
   let costUSD = 0, thumbCostUSD = 0, stylistCostUSD = 0;
   const saDate = saDateStringFromMs(nowMs);
@@ -183,7 +192,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
     for (let run = 0; run < 2 && !picked; run++) {
       const o = lookbook.fitOffer(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, noHeadwear, rows: exactRows, requireSlots, hero: fixedHero, seen });
       if (run === 0 && Object.keys(o.excluded || {}).length) log(`stylist: not offered — ${Object.entries(o.excluded).map(([k, n]) => `${k} ×${n}`).join("; ")}`);
-      if (!o.offer) { fitResult = { ok: false, reason: o.reason, rounds: runs.flat(), costUSD: stylistCostUSD - tagRun.costUSD }; break; }
+      if (!o.offer) { fitResult = { ok: false, reason: o.reason, rounds: runs.flatMap((r) => r.rounds), costUSD: runs.reduce((t, r) => t + r.costUSD, 0) }; break; }
       const spent = runs.reduce((t, r) => t + r.costUSD, 0);
       const res = await deps.fitAgent.build(o.offer, { budgetUSD: deps.fitAgent.budgetUSD - spent, feedback });
       runs.push(res);
@@ -203,6 +212,7 @@ async function makeLookbook(db, deps, { nowMs = Date.now(), used = new Set(), ma
             critic: criticRecord(fitResult),
           },
         };
+        holder.fit = fitResult;
         break;
       }
       feedback = [`${rowsOf.filter((r) => exclude.has(r.pid)).map((r) => r.pid).join(", ")} had no usable photo: build the fit again without it`];

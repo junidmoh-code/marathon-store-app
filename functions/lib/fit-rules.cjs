@@ -70,8 +70,12 @@ const LUXURY_BRANDS = [
 // The till spells some of them its own way ("CHRISTINA LOUBOUTIN").
 const LUXURY_ALIASES = [[/\blouboutin\b/i, "Christian Louboutin"], [/\bmc\s*queen\b/i, "Alexander McQueen"]];
 // Words a caption may not use (the online-only policy, as social-caption's prompt states it).
-const SHOP_WORDS = /\b(in[\s-]?store|visit us|come see us|pop in|our (?:shop|store|branch)|branch(?:es)?)\b/i;
-const PRICE_WORDS = /(?:\bR\s?\d[\d,\s]*\b|\brand(?:s)?\s+\d|\b\d+\s?rand\b|\bon sale\b|\bdiscount)/i;
+// "pop in" only as a visit ("pop in to the store"), never "a pop in green".
+const SHOP_WORDS = /\b(in[\s-]?store|visit us|come see us|pop (?:in|into|by)(?: to)? (?:our|the|a) (?:shop|store|branch)|our (?:shop|store|branch)|branch(?:es)?)\b/i;
+// R + digits is a price only in capitals ("R1,300"); "NMD r1" and "the R1" model are
+// caught by needing two digits or a separator.
+const PRICE_WORDS = /(?:\bZAR\b)|(?:\brand(?:s)?\s+\d|\b\d+\s?rand\b|\bon sale\b|\bdiscount|\d+\s?%\s?off\b)/i;
+const PRICE_CAPITAL = /\bR ?\d[\d,]{2,}/;
 
 // ── THE FORMULA TABLE ─────────────────────────────────────────────────────
 /** The `<!-- config: formulas -->` table of a rulebook text. Throws on anything malformed. Pure. */
@@ -232,10 +236,14 @@ function themeAllowed(formula, theme) {
 
 /** Brand names a caption mentions, from a list of known brands. Pure. */
 function brandsNamed(caption, brands) {
-  const low = ` ${String(caption || "").toLowerCase().replace(/#\S+/g, " ")} `;
+  const text = String(caption || "");
+  const low = ` ${text.toLowerCase().replace(/#\S+/g, " ")} `;
+  // A hashtag names a brand too: #gucci, #ChristianLouboutin.
+  const tags = new Set((text.match(/#[\p{L}\p{N}_]+/gu) || []).map((t) => t.slice(1).toLowerCase()));
+  const squash = (b) => b.toLowerCase().replace(/[^a-z0-9]/g, "");
   return brands.filter((b) => {
     const re = new RegExp(`[^a-z]${b.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[\s-]+/g, "[\\s-]*")}[^a-z]`);
-    return re.test(low);
+    return re.test(low) || tags.has(squash(b));
   });
 }
 
@@ -276,7 +284,7 @@ function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, se
   if (caption.length < 12) problems.push("no caption");
   if (caption.length > 2200) problems.push("the caption is over Instagram's 2,200 characters");
   if (SHOP_WORDS.test(caption)) problems.push("the caption mentions a shop (online store only)");
-  if (PRICE_WORDS.test(caption)) problems.push("the caption mentions a price or a sale");
+  if (PRICE_CAPITAL.test(caption) || PRICE_WORDS.test(caption.replace(/\bR ?\d[\d,]*/gi, ""))) problems.push("the caption mentions a price or a sale");
   if (/https?:\/\//i.test(caption)) problems.push("the caption writes a link (it is added automatically)");
   if ((caption.match(/#[\p{L}\p{N}_]+/gu) || []).length > 8) problems.push("more than eight hashtags");
   const inFit = chosen.map((p) => `${p.brand} ${p.displayName}`).join(" ");

@@ -511,7 +511,7 @@ function lookbookPieces(candidates, { recent = new Set(), blocked = new Set(), u
 // that is not in the fit is refused (lib/fit-rules readStylistAnswer).
 // Brands that are also everyday caption words ("on", "a polo", "the boss",
 // "essentials") are not checked: they would refuse honest captions.
-const CAPTION_PLAIN_WORDS = new Set(["polo", "boss", "hugo", "essentials", "represent", "supreme", "champion", "creed", "brooks", "crocs", "columbia", "replay", "umbro", "lotto", "kappa", "oakley", "jordan", "armani", "levi s"]);
+const CAPTION_PLAIN_WORDS = new Set(["polo", "boss", "hugo", "essentials", "represent", "supreme", "champion", "creed", "brooks", "crocs", "columbia", "replay", "umbro", "lotto", "kappa", "oakley", "jordan", "armani", "levi s", "off white", "off-white", "new era", "marathon club"]);
 const CAPTION_BRANDS = [...new Set([
   ...KNOWN_BRANDS,
   ...Object.values(require("./style-guide.json").families || {}).flatMap((f) => f.brands || []),

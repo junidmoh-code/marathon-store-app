@@ -102,6 +102,19 @@ describe("the stylist's answer, checked by code", () => {
       ["Louboutins with a Lacoste-clean white tee and black jeans. #x", /not in the fit: Lacoste/],
     ]) assert.ok(fr.readStylistAnswer({ ...GOOD, caption: cap }, CTX).problems.some((p) => why.test(p)), String(why));
   });
+  test("honest captions pass: a model name with R1, a colour pop in green, an off-white tee (review of the branch)", () => {
+    for (const cap of [
+      "Brown suede Louboutins with a plain white Hugo Boss tee, the kind of R1 energy that needs no logo. Black Diesel jeans. #MarathonClub",
+      "Brown suede Louboutins: a pop in green would be too much, so a white Hugo Boss tee and black Diesel jeans. #MarathonClub",
+      "Brown suede Louboutins, an off-white Hugo Boss tee and black Diesel jeans. #MarathonClub",
+    ]) assert.deepEqual(fr.readStylistAnswer({ ...GOOD, caption: cap }, { ...CTX, knownBrands: [...CTX.knownBrands, "Off-White"].filter((b) => b !== "Off-White") }).problems, [], cap);
+  });
+  test("a stranger brand in a hashtag, 'ZAR' and '% off' are refused", () => {
+    assert.ok(fr.readStylistAnswer({ ...GOOD, caption: "Louboutins, white Hugo Boss tee, black Diesel jeans. #Lacoste" }, CTX).problems.some((p) => /not in the fit: Lacoste/.test(p)));
+    assert.ok(fr.readStylistAnswer({ ...GOOD, caption: "Louboutins, white tee, black jeans for 1299 ZAR. #x" }, CTX).problems.some((p) => /price/.test(p)));
+    assert.ok(fr.readStylistAnswer({ ...GOOD, caption: "Louboutins, white tee, black jeans, 20% off. #x" }, CTX).problems.some((p) => /price/.test(p)));
+    assert.ok(fr.readStylistAnswer({ ...GOOD, caption: "Louboutins, white tee, black jeans. Pop in to the store. #x" }, CTX).problems.some((p) => /shop/.test(p)));
+  });
   test("the till's Louboutin spelling still counts as the brand in the fit", () => {
     const offer = OFFER.map((p) => (p.pid === "loub" ? { ...p, brand: "Christian Louboutin", displayName: "CHRISTINA LOUBOUTIN LOUIS BROWN" } : p));
     assert.deepEqual(fr.readStylistAnswer({ ...GOOD, caption: "Christian Louboutin in brown suede, white tee, black jeans. #MarathonClub" }, { ...CTX, pieces: offer }).problems, []);

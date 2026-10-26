@@ -4685,6 +4685,9 @@ async function claimImageGeneration(db, saDate) {
 // by every post in it, so its style tags are read once per run.
 const socialStylist = require("./lib/social-stylist.cjs");
 const STYLE_TAGS_BY_RUN = new WeakMap();
+// A run whose outfit fit was skipped does not pay for another: the offer
+// would be the same products, and the critic the same answer.
+const OUTFIT_SKIPPED_BY_RUN = new WeakMap();
 const RUN_STYLE_TAGS = 12;
 async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
   const { ensureStyleTags } = require("./lookbook/style-tags-io.cjs");
@@ -4710,6 +4713,7 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
   // (lookbook/fit-agent.cjs, Junid 26 Oct). A fit the critic will not pass
   // after two rebuilds is skipped, never posted unscored.
   if (kind === "outfit") {
+    if (OUTFIT_SKIPPED_BY_RUN.has(candidates)) return { picks: [], reason: `the fit was skipped earlier this run: ${OUTFIT_SKIPPED_BY_RUN.get(candidates)}`, costUSD };
     const { fitAgentFor, readSeen } = require("./lookbook/engines.cjs");
     const seen = await readSeen(db, candidates.map((c) => c.pid)).catch(() => new Map());
     const o = socialStylist.fitOfferForOutfit(candidates, { used, tags, month, seen });
@@ -4724,6 +4728,7 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
     const logKey = `social_fit_log/${saDate}/outfit-${Date.now()}`;
     if (!res.ok) {
       try { await db.ref(logKey).set({ at: Date.now(), kind, gate: "critic", reason: String(res.reason).slice(0, 300), critic }); } catch { /* the post's skip reason says it too */ }
+      OUTFIT_SKIPPED_BY_RUN.set(candidates, String(res.reason).slice(0, 160));
       return { picks: [], reason: `the fit was skipped: ${res.reason}`, costUSD };
     }
     const f = res.fit, v = res.verdict;
@@ -4760,7 +4765,7 @@ async function generateOnePost(db, {
     try {
       ({ picks, reason, look = null, costUSD: stylistCostUSD = 0, caption: stylistCaption = null, fitLogKey = null } = await pickStyledPost(db, kind, candidates, used, geminiApiKey));
     } catch (err) {
-      if (kind === "outfit") return { ok: false, skipped: { kind, format, reason: `the stylist failed: ${String(err && err.message).slice(0, 160)}`, noStock: true } };
+      if (kind === "outfit") return { ok: false, skipped: { kind, format, reason: `the stylist failed: ${String(err && err.message).slice(0, 160)}`, noStock: true, costUSD: 0 } };
       console.warn(`social: the stylist failed for a ${kind} — picking it unstyled: ${err && err.message}`);
       // Unstyled, but still men's and still a real name (Junid, 19 Oct): the
       // name-level rules need no tags.
@@ -4770,7 +4775,8 @@ async function generateOnePost(db, {
   } else {
     ({ picks, reason } = socialSelect.pickForKind(kind, candidates, { used }));
   }
-  if (!picks.length) return { ok: false, skipped: { kind, format, reason, noStock: true } };
+  // A skipped fit still spent its stylist and critic calls: the cost goes with the skip.
+  if (!picks.length) return { ok: false, skipped: { kind, format, reason, noStock: true, ...(stylistCostUSD ? { costUSD: +stylistCostUSD.toFixed(6) } : {}) } };
 
   const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
   const spec = socialSelect.POST_KINDS.find((k) => k.key === kind);
