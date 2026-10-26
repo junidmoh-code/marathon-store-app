@@ -115,6 +115,10 @@ describe("the stylist's answer, checked by code", () => {
     assert.ok(fr.readStylistAnswer({ ...GOOD, caption: "Louboutins, white tee, black jeans, 20% off. #x" }, CTX).problems.some((p) => /price/.test(p)));
     assert.ok(fr.readStylistAnswer({ ...GOOD, caption: "Louboutins, white tee, black jeans. Pop in to the store. #x" }, CTX).problems.some((p) => /shop/.test(p)));
   });
+  test("Levi's in the fit and in the caption is not a stranger to 'levis' (live, 26 Oct)", () => {
+    const offer = OFFER.map((p) => (p.pid === "jean-black" ? { ...p, brand: "Levi's", displayName: "Levi's 501 black" } : p));
+    assert.deepEqual(fr.readStylistAnswer({ ...GOOD, caption: "Brown suede Louboutins, a plain white Hugo Boss tee and black Levi's 501s. #MarathonClub" }, { ...CTX, pieces: offer, knownBrands: [...CTX.knownBrands, "levis"] }).problems, []);
+  });
   test("the till's Louboutin spelling still counts as the brand in the fit", () => {
     const offer = OFFER.map((p) => (p.pid === "loub" ? { ...p, brand: "Christian Louboutin", displayName: "CHRISTINA LOUBOUTIN LOUIS BROWN" } : p));
     assert.deepEqual(fr.readStylistAnswer({ ...GOOD, caption: "Christian Louboutin in brown suede, white tee, black jeans. #MarathonClub" }, { ...CTX, pieces: offer }).problems, []);

@@ -260,8 +260,11 @@ function themeAllowed(formula, theme) {
 }
 
 /** Brand names a caption mentions, from a list of known brands. Pure. */
+// Apostrophes and accents off before matching: "Levi's" is "levis", "Stüssy" is "stussy".
+const plainText = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/['’`]/g, "");
 function brandsNamed(caption, brands) {
-  const text = String(caption || "");
+  const text = plainText(caption);
+  brands = brands.map(plainText);
   const low = ` ${text.toLowerCase().replace(/#\S+/g, " ")} `;
   // A hashtag names a brand too: #gucci, #ChristianLouboutin.
   const tags = new Set((text.match(/#[\p{L}\p{N}_]+/gu) || []).map((t) => t.slice(1).toLowerCase()));
