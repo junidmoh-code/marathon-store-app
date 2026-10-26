@@ -132,6 +132,25 @@ function sizeRefusal(stock) {
   return `only ${s.inStock} size${s.inStock === 1 ? "" : "s"} in stock`;
 }
 
+/**
+ * The offer trimmed for the stylist's catalogue: every core-slot piece, and
+ * at most `perOptional` of each optional slot (freshest first; a fixed hero
+ * always stays). Sixteen bags were a quarter of every stylist call and no
+ * fit needs more than one (26 Oct). Pure.
+ */
+function trimOptional(pieces, core, { perOptional = 6, keep = null } = {}) {
+  const coreSlots = new Set(core.flat());
+  const bySlot = new Map();
+  for (const p of pieces) { if (!bySlot.has(p.slot)) bySlot.set(p.slot, []); bySlot.get(p.slot).push(p); }
+  const out = [];
+  for (const [slot, list] of bySlot) {
+    if (coreSlots.has(slot)) { out.push(...list); continue; }
+    const sorted = list.slice().sort((a, b) => (b.fresh || 0) - (a.fresh || 0) || (a.pid < b.pid ? -1 : 1));
+    out.push(...sorted.filter((p, i) => i < perOptional || p.pid === keep));
+  }
+  return pieces.filter((p) => out.includes(p));
+}
+
 /** The brand line's tier: "luxury" for the rulebook's designer list, else null. Pure. */
 function luxuryBrand(...names) {
   const text = names.filter(Boolean).join(" ");
@@ -333,6 +352,11 @@ const CRITIC_BRIEF = [
  * [{ pid, base64, mediaType }] in the fit's order. Pure.
  */
 function criticRequest(fit, photos, { book = rulebook() } = {}) {
+  // The critic needs the rules and the ONE formula the fit claims, not all ten
+  // rows: ~1.5k tokens less on every critic call (measured 26 Oct).
+  const cut = book.text.indexOf("## 8.");
+  const rules = cut > 0 ? book.text.slice(0, cut).trim() : book.text;
+  const f = book.formulas.find((x) => x.key === fit.formula);
   const content = [];
   fit.pieces.forEach((p, i) => {
     const ph = photos.find((x) => x.pid === p.pid);
@@ -341,7 +365,7 @@ function criticRequest(fit, photos, { book = rulebook() } = {}) {
     else content.push({ type: "text", text: "(no photo could be loaded for this piece: judge it from its name and score caption accuracy no higher than 7)" });
   });
   content.push({ type: "text", text: [
-    `FORMULA: ${fit.formula}`,
+    `FORMULA: ${fit.formula}${f ? ` — ${f.name}. Hero: ${f.hero}. Tops: ${f.tops}. Bottoms: ${f.bottoms}. Colours: ${f.colours}.` : ""}`,
     `THEME NAME on the poster: ${fit.theme}`,
     `COLOURS the stylist claims: ${fit.colours.join(", ")}`,
     "CAPTION:",
@@ -350,7 +374,7 @@ function criticRequest(fit, photos, { book = rulebook() } = {}) {
     "Answer with the JSON object only.",
   ].join("\n") });
   return {
-    system: [{ type: "text", text: `${CRITIC_BRIEF}\n\n# The rulebook\n\n${book.text}`, cache_control: { type: "ephemeral" } }],
+    system: [{ type: "text", text: `${CRITIC_BRIEF}\n\n# The rulebook (sections 1–7; the fit's formula is given with the fit)\n\n${rules}`, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content }],
     schema: CRITIC_SCHEMA,
     maxTokens: CRITIC_MAX_TOKENS,
@@ -430,7 +454,7 @@ function headerOf(theme) {
 module.exports = {
   FIT_MODEL, PRICE, BUDGET_USD, PASS_SCORE, CRITIC_RESERVE_USD, MAX_ROUNDS, CRITERIA, CRITIC_PHOTO_PX,
   STYLIST_MAX_TOKENS, CRITIC_MAX_TOKENS, LUXURY_BRANDS,
-  parseFormulas, rulebook, formulasFor, sizesInStock, sizeRefusal, luxuryBrand,
+  parseFormulas, rulebook, formulasFor, trimOptional, sizesInStock, sizeRefusal, luxuryBrand,
   catalogueText, stylistRequest, readStylistAnswer, themeAllowed, brandsNamed,
   criticRequest, readCriticAnswer, feedbackLine, costOf, worstCaseUSD, headerOf,
   STYLIST_SCHEMA, CRITIC_SCHEMA,

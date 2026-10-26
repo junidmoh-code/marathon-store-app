@@ -166,6 +166,21 @@ describe("cost", () => {
   });
 });
 
+describe("trimming the offer", () => {
+  test("core slots keep every piece; an optional slot keeps its six freshest, and a fixed hero always", () => {
+    const bags = Array.from({ length: 10 }, (_, i) => ({ pid: `bag${i}`, slot: "bag", fresh: i / 10 }));
+    const out = fr.trimOptional([...OFFER, ...bags], CTX.core, { keep: "bag0" });
+    assert.equal(out.filter((p) => p.slot === "tee").length, 2);
+    assert.deepEqual(out.filter((p) => p.slot === "bag").map((p) => p.pid).sort(), ["bag0", "bag4", "bag5", "bag6", "bag7", "bag8", "bag9"]);
+  });
+  test("the critic gets the rules and only the fit's own formula", () => {
+    const fit = fr.readStylistAnswer(GOOD, CTX).fit;
+    const req = fr.criticRequest(fit, []);
+    assert.ok(!req.system[0].text.includes("config: formulas"));
+    assert.match(req.messages[0].content.slice(-1)[0].text, /FORMULA: clean-luxe — Clean Luxe\. Hero: a designer/);
+  });
+});
+
 describe("the poster header", () => {
   test("two lines, the longer half first", () => {
     assert.deepEqual(fr.headerOf("Earth Tone Street"), ["EARTH TONE", "STREET"]);

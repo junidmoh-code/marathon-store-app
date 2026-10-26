@@ -181,6 +181,7 @@ function fitOfferForOutfit(candidates, { used = new Set(), tags = new Map(), mon
     });
   }
   const core = [["tee", "jacket"], ["bottoms"], ["sneakers"]];
+  offered.splice(0, offered.length, ...fitRules.trimOptional(offered, core));
   const have = new Set(offered.map((p) => p.slot));
   const missing = core.filter((alts) => !alts.some((s) => have.has(s))).map((alts) => alts.join("/"));
   if (missing.length) return { offer: null, excluded, reason: `the stylist found no outfit in live stock: nothing in two sizes for ${missing.join(", ")}` };

@@ -549,6 +549,8 @@ function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = 
   }
   const optional = SLOT_KEYS.filter((s) => !core.some((alts) => alts.includes(s)) && have.has(s) && !(s === "hat" && noHeadwear));
   const required = [...core, ...requireSlots.filter((s) => !core.some((alts) => alts.includes(s))).map((s) => [s])];
+  const trimmed = fitRules.trimOptional(offered, required, { keep: hero });
+  offered.splice(0, offered.length, ...trimmed);
   if (hero && !offered.some((p) => p.pid === hero)) {
     return { offer: null, skipped, excluded, reason: `the hero ${hero} is not offered (not live, not menswear, or not in stock in two sizes)` };
   }
