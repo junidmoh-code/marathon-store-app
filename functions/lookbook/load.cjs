@@ -32,18 +32,23 @@ const READ_BATCH = 20;
 // Worst case 6 x 8 x 12 = 576 product point reads; a normal day ~300.
 // 14, not 10, since 19 Oct: the tags remove women's and untagged pieces
 // AFTER the load, so a slot reads a few spare.
-const ROUNDS = 12;
+// 20 since 26 Oct: the bottoms queue is 154 deep on live data (41 of them
+// football jerseys a title calls "shorts") and twelve rounds found 3 bottoms
+// for the opus stylist, so every fit wore the same trousers. A slot that is
+// full stops reading after the first round, so only a starved slot pays.
+const ROUNDS = 20;
 const WANT_PER_SLOT = 14;
 
 /**
  * @param db  an RTDB handle (admin.database() or a test fake)
  * @param opts.nowMs
  * @param opts.liveNodes optional: an already-fetched live query result
+ * @param opts.include pids read first in their slot (a fixed hero)
  * @param opts.skip  pids never read (the 14-day no-repeat, today's used): they
  *                   would not count toward a slot's WANT_PER_SLOT anyway
  * @returns { candidates, reads: { products, stock }, liveCount }
  */
-async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null, readsPerSlot = lookbook.READS_PER_SLOT, skip = new Set(), skipSlots = new Set(), skipHeadwear = [] } = {}) {
+async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null, readsPerSlot = lookbook.READS_PER_SLOT, skip = new Set(), skipSlots = new Set(), skipHeadwear = [], include = new Set() } = {}) {
   const live = liveNodes || ((await db.ref("shopify_publish").orderByChild("state").equalTo("live").once("value")).val() || {});
   const queues = new Map(lookbook.SLOT_KEYS.map((k) => [k, []]));
   for (const [pid, n] of Object.entries(live)) {
@@ -57,7 +62,8 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
     if (g && !skipSlots.has(g)) queues.get(g).push({ pid, liveAt: Number(n.liveAt) || 0 });
   }
   // Newest first: the bias to new arrivals starts in what is read at all.
-  for (const q of queues.values()) q.sort((a, b) => b.liveAt - a.liveAt || (a.pid < b.pid ? -1 : 1));
+  // `include` (a fixed hero) is read first, whatever its age.
+  for (const q of queues.values()) q.sort((a, b) => include.has(b.pid) - include.has(a.pid) || b.liveAt - a.liveAt || (a.pid < b.pid ? -1 : 1));
 
   const locSnap = await db.ref("locations").once("value");
   const locations = Object.keys(locSnap.val() || {}).filter((id) => !socialSelect.ONLINE_EXCLUDED_LOCATIONS.has(id));

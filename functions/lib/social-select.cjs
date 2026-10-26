@@ -202,6 +202,27 @@ function availableUnits(stockByLocation, sizes) {
 }
 
 /**
+ * Sizes with at least one unit at a location that ships, and sizes on the
+ * record: { inStock, sizes }. availableUnits counts units; this counts sizes,
+ * for the fit rule "in stock in at least two sizes" (lib/fit-rules.cjs).
+ * Pure.
+ */
+function sizesInStock(stockByLocation, sizes) {
+  const totals = {};
+  for (const size of Array.isArray(sizes) ? sizes : []) totals[stockSizeKey(size)] = 0;
+  for (const [loc, cells] of Object.entries(stockByLocation || {})) {
+    if (ONLINE_EXCLUDED_LOCATIONS.has(loc)) continue;
+    if (!cells || typeof cells !== "object") continue;
+    for (const [key, cell] of Object.entries(cells)) {
+      if (!(key in totals)) continue;
+      const qty = cell !== null && typeof cell === "object" ? cell.qty : cell;
+      totals[key] += Math.max(0, Number(qty) || 0);
+    }
+  }
+  return { inStock: Object.values(totals).filter((n) => n > 0).length, sizes: Object.keys(totals).length };
+}
+
+/**
  * The handle the storefront actually serves for this product.
  *
  * The reconciler sets Shopify's handle EXPLICITLY from the clean listing title
@@ -463,6 +484,7 @@ function buildCandidates({ liveNodes, products, stockByPid, salesByPid = {}, pos
       photos: photos.length ? photos : [product.photoUrl].filter(Boolean),
       units: Math.max(0, Number((salesByPid || {})[pid]) || 0),
       available,
+      sizesInStock: sizesInStock((stockByPid || {})[pid], product.sizes),
       slot: outfitSlot(product),
       liveAt: Number(node.liveAt) || 0,
       retailPrice: Number(product.retailPrice) || null,
@@ -629,5 +651,5 @@ module.exports = {
   WARDROBE_CONTEXT, contextsOf, sharedContext, fitsWith,
   POST_KINDS, KIND_KEYS, OUTFIT_SLOTS, UNSELLABLE_LOCATIONS, ONLINE_EXCLUDED_LOCATIONS,
   REPOST_COOLDOWN_DAYS, W_SALES, W_NEW, NEW_FULL_DAYS, NEW_ZERO_DAYS,
-  availableUnits, stockSizeKey, productHandle, outfitSlot, buildCandidates, pickForKind,
+  availableUnits, sizesInStock, stockSizeKey, productHandle, outfitSlot, buildCandidates, pickForKind,
 };

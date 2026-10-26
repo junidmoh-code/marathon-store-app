@@ -418,20 +418,22 @@ describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
     assert.equal(lb.stripStyleCodes("Nike Air Force 1"), "Nike Air Force 1");
   });
 
-  test("LOOKBOOK_SCENES: concrete first by default; config order, dedup, unknowns dropped", () => {
-    // Concrete only since go-live (19 Oct); the garden is still a valid key.
-    assert.deepEqual(lb.parseLookbookScenes(undefined), ["concrete"]);
+  test("LOOKBOOK_SCENES: real SA outdoor locations by default; config order, dedup, unknowns dropped", () => {
+    // Court, street, concrete wall since 26 Oct (Junid: "not studio fake");
+    // concrete and garden are still valid keys.
+    const OUT = ["court", "street", "wall"];
+    assert.deepEqual(lb.parseLookbookScenes(undefined), OUT);
     assert.deepEqual(lb.parseLookbookScenes('["garden","concrete","garden"]'), ["garden", "concrete"]);
-    assert.deepEqual(lb.parseLookbookScenes('["beach"]'), ["concrete"]);
-    assert.deepEqual(lb.parseLookbookScenes("garden"), ["concrete"]);
+    assert.deepEqual(lb.parseLookbookScenes('["beach"]'), OUT);
+    assert.deepEqual(lb.parseLookbookScenes("garden"), OUT);
     assert.deepEqual(lb.parseLookbookScenes('["GARDEN"]'), ["garden"]);
   });
 
   test("sceneFor: alternates per LOOKBOOK day, concrete on the first (Mon 19 Oct)", () => {
     const S = lb.parseLookbookScenes('["concrete","garden"]'), D = ["mon", "wed", "fri"];
     const at = (d) => lb.sceneFor(d, S, D).key;
-    // the default is concrete every lookbook day
-    assert.deepEqual(["2026-10-19", "2026-10-21", "2026-10-23"].map((d) => lb.sceneFor(d, lb.parseLookbookScenes(), D).key), ["concrete", "concrete", "concrete"]);
+    // the default rotates court, street, wall per lookbook day
+    assert.deepEqual(["2026-10-19", "2026-10-21", "2026-10-23", "2026-10-26"].map((d) => lb.sceneFor(d, lb.parseLookbookScenes(), D).key), ["court", "street", "wall", "court"]);
     assert.deepEqual(["2026-10-19", "2026-10-21", "2026-10-23", "2026-10-26", "2026-10-28"].map(at),
       ["concrete", "garden", "concrete", "garden", "concrete"]);
     // a non-lookbook day reads as the next lookbook day; days before the epoch keep alternating
@@ -445,7 +447,7 @@ describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
   test("the hero prompt: the model requirement every time, the scene's floor in the composition", () => {
     const rows = [{ slot: "tee", displayName: "Nike Tee White" }];
     const c = lb.buildHeroPrompt(rows, { scene: "concrete" });
-    assert.match(c, /The model MUST be a Black man with dark skin, athletic build, in his mid-20s to early 30s/);
+    assert.match(c, /The model MUST be a young South African Black man in his early 20s, slim athletic build, dark brown skin, a clean low fade haircut/);
     assert.match(c, /shoes rest on the concrete floor/);
     assert.match(c, /poured concrete floor/);
     assert.match(c, /no plants/i);
@@ -454,7 +456,10 @@ describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
     assert.match(g, /palm trees/);
     assert.match(g, /shoes rest on the paving/);
     assert.match(g, /MODEL REFERENCE photo/);
-    assert.match(lb.buildModelRefPrompt(), /MUST be a Black man/);
+    assert.match(lb.buildModelRefPrompt(), /MUST be a young South African Black man/);
+    assert.match(lb.buildModelRefPrompt(), /invented person: not a celebrity/);
+    assert.match(lb.buildModelRefPrompt(), /Not a studio/);
+    for (const k of ["court", "street", "wall"]) assert.match(lb.buildHeroPrompt(rows, { scene: k }), /Not a studio, no studio lighting/);
   });
 
   test("readModelCheck: only an explicit true passes", () => {

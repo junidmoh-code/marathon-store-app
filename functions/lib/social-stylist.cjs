@@ -24,7 +24,8 @@
 const socialSelect = require("./social-select.cjs");
 const styleTags = require("./style-tags.cjs");
 const stylist = require("./stylist.cjs");
-const { displayNameRefusal, displayNameOf } = require("./social-lookbook.cjs");
+const { displayNameRefusal, displayNameOf, posterBrand, CAPTION_BRANDS } = require("./social-lookbook.cjs");
+const fitRules = require("./fit-rules.cjs");
 
 const STYLED_KINDS = new Set(["pairing", "outfit", "flatlay"]);
 // The stylist's slot for a social outfit slot (social-select SLOT_MATCHERS).
@@ -155,4 +156,44 @@ function chooseStyledPicks(kind, result, answerText, { month = 10 } = {}) {
   };
 }
 
-module.exports = { STYLED_KINDS, stylistSlot, pieceOf, nameEligible, styledPicksForKind, styledChoicePrompt, chooseStyledPicks };
+// ── THE OPUS STYLIST'S OFFER FOR AN OUTFIT POST (26 Oct) ─────────────────────
+// The reels' "outfit" flat-lay is built by the same opus-5-5 stylist and
+// critic as the lookbook (lookbook/fit-agent.cjs): offered the pieces the
+// scorer would see, less anything not in stock in two sizes. Tracksuits and
+// other full-body pieces are not offered: the rulebook has no formula for
+// them. Fragrance is not a garment and is not offered either.
+const FIT_SLOTS = ["hat", "jacket", "tee", "bottoms", "bag", "sneakers"];
+
+/** { offer, reason, excluded } for one outfit post. Pure. */
+function fitOfferForOutfit(candidates, { used = new Set(), tags = new Map(), month = 10, seen = new Map() } = {}) {
+  const spec = socialSelect.POST_KINDS.find((k) => k.key === "outfit");
+  const pieces = (candidates || []).filter((c) => c && !used.has(c.pid)).map((c) => pieceOf(c, tags))
+    .filter((p) => p && FIT_SLOTS.includes(p.slot) && !p.fullBody);
+  const { eligible, excluded } = stylist.eligiblePieces(pieces, { month });
+  const offered = [];
+  for (const p of eligible) {
+    const brand = posterBrand(p.ref.product);
+    if (!brand || !p.price || !p.ref.photoUrl) { excluded["no brand, price or photo"] = (excluded["no brand, price or photo"] || 0) + 1; continue; }
+    if (fitRules.sizeRefusal(p.ref.sizesInStock)) { excluded["in stock in fewer than two sizes"] = (excluded["in stock in fewer than two sizes"] || 0) + 1; continue; }
+    offered.push({
+      pid: p.pid, slot: p.slot, brand, name: p.websiteName || p.displayName, displayName: p.displayName,
+      price: p.price, tags: p.tags, sizes: p.ref.sizesInStock, fresh: p.fresh, photoUrl: p.ref.photoUrl, ref: p.ref, seen: seen.get(p.pid) || null,
+    });
+  }
+  const core = [["tee", "jacket"], ["bottoms"], ["sneakers"]];
+  offered.splice(0, offered.length, ...fitRules.trimOptional(offered, core));
+  const have = new Set(offered.map((p) => p.slot));
+  const missing = core.filter((alts) => !alts.some((s) => have.has(s))).map((alts) => alts.join("/"));
+  if (missing.length) return { offer: null, excluded, reason: `the stylist found no outfit in live stock: nothing in two sizes for ${missing.join(", ")}` };
+  return {
+    offer: {
+      pieces: offered, slots: FIT_SLOTS, core, optional: FIT_SLOTS.filter((s) => !core.flat().includes(s) && have.has(s)),
+      minPieces: spec.minProducts, maxPieces: Math.min(spec.maxProducts, FIT_SLOTS.length), season: stylist.seasonOf(month), kind: "outfit",
+      knownBrands: CAPTION_BRANDS,
+    },
+    reason: null, excluded,
+  };
+}
+
+module.exports = {
+  FIT_SLOTS, fitOfferForOutfit, STYLED_KINDS, stylistSlot, pieceOf, nameEligible, styledPicksForKind, styledChoicePrompt, chooseStyledPicks };

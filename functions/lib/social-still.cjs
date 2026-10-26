@@ -63,6 +63,10 @@ function lookField(look) {
     note: look.note ? String(look.note).slice(0, 200) : null,
     score: Number.isFinite(Number(look.score)) ? Number(look.score) : null,
     source: look.source || null,
+    // The opus critic's final scores and every round (lookbook/fit-agent
+    // criticRecord): what Junid reads to see why a fit went out.
+    ...(look.critic ? { critic: look.critic } : {}),
+    ...(look.hero ? { hero: look.hero } : {}),
   };
 }
 
