@@ -101,8 +101,13 @@ async function upload(n, buffer) {
 }
 const scoreText = (s) => (s ? fitRules.CRITERIA.map((k) => `${k} ${s[k]}`).join(", ") : "—");
 
+// Each card has a different hero: the earlier cards' sneakers are held out.
+// Tops and bottoms may repeat across cards, as they do across real days
+// (production holds out only the last 14 days of POSTED lookbooks). Holding
+// out every piece of every card starved the bottoms by card 06 (26 Oct).
 const used = new Set();
-for (const c of Object.values(log.cards)) for (const pid of c.pids || []) used.add(pid);
+const heroOf = (c) => (c.rows || []).filter((r) => r.slot === "sneakers").map((r) => r.pid);
+for (const c of Object.values(log.cards)) if (c.ok) for (const pid of heroOf(c)) used.add(pid);
 const want = ["00", ...Array.from({ length: CARDS }, (_, i) => String(i + 1).padStart(2, "0"))];
 let tries = 0;
 for (const n of want) {
@@ -147,7 +152,7 @@ for (const n of want) {
         createdAt: Date.now(), updatedAt: Date.now(), updatedBy: "script:fit-proof",
       });
       entry.postId = id; entry.url = url;
-      for (const pid of entry.pids) used.add(pid);
+      for (const pid of heroOf(entry)) used.add(pid);
       console.log(`card ${n}: ${entry.theme} · before ${scoreText(entry.before)} → after ${scoreText(entry.after)} · ${entry.rounds} round(s) · fit $${entry.cost.fitUSD} · total $${entry.cost.totalUSD}`);
     } else {
       console.log(`card ${n}: ${r.gate} — ${r.reason}`);
