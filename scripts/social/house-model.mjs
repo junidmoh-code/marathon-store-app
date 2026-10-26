@@ -53,6 +53,11 @@ if (has("status")) {
 
 if (arg("pick")) {
   if (!hmNow) throw new Error("no candidates yet: run --candidates first");
+  // A pick is final (an auto-pick included): changing the face needs --override.
+  if (hmNow.picked && String(hmNow.picked) !== String(arg("pick")) && !has("override")) {
+    console.error(`candidate ${hmNow.picked} is already the house model (${hmNow.pickedBy}) — pass --override to change the face`);
+    process.exit(1);
+  }
   const u = houseModel.pickUpdates(hmNow, arg("pick"), { by: has("auto") ? "auto" : "junid", nowMs: Date.now() });
   await db.ref().update(u);
   console.log(`house model is candidate ${arg("pick")} (${u[houseModel.MODEL_PATH].path})`);

@@ -158,7 +158,7 @@ for (const n of want) {
       console.log(`card ${n}: ${r.gate} — ${r.reason}`);
       log.skipped = [...(log.skipped || []), entry];
       // The products the skipped fit tried stay available; a rebuild that cannot find a fit stops here.
-      if (isRebuild) { log.cards[n] = entry; await save(); break; }
+      if (isRebuild) { entry.final = true; log.cards[n] = entry; await save(); break; }
       await save();
       continue;
     }

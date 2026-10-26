@@ -544,6 +544,8 @@ function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = 
   const core = CORE_SLOTS;
   const have = new Set(offered.map((p) => p.slot));
   const missing = core.filter((alts) => !alts.some((s) => have.has(s))).map((alts) => alts.join("/"));
+  // A required extra slot (the samples' --with) with nothing offered is a refusal now, not three rounds of refused answers.
+  for (const s of requireSlots) if (!have.has(s)) missing.push(s);
   if (missing.length) {
     return { offer: null, skipped, excluded, reason: `no eligible outfit — nothing in stock in two sizes for: ${missing.join(", ")}` };
   }

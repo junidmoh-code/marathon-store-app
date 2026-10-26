@@ -2,8 +2,9 @@
 
 The stylist (claude-opus-5-5) is sent this file word for word every time it
 builds an outfit, and the critic scores the outfit against it. **Junid edits
-this file.** Redeploy `functions:socialStillAutopilot` and
-`functions:socialAutopilot` after an edit. A test
+this file.** Redeploy `functions:socialStillAutopilot`,
+`functions:socialDailyAutopilot` and `functions:generateSocialPosts` after an
+edit. A test
 (`functions/test/fit-rules.test.cjs`) fails on a formula table the code
 cannot read. The colour palette, menswear-only rule, season rules and name
 rules in `docs/style-guide.md` still decide which products are offered to

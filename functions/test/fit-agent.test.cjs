@@ -173,3 +173,18 @@ describe("buildFit — the budget and the photo notes", () => {
     assert.match(fr.catalogueText([{ ...OFFER.pieces[3], seen: "taupe suede low-top with silver spikes" }], ["sneakers"]), /photo: taupe suede low-top with silver spikes/);
   });
 });
+
+describe("buildFit — the cache is trusted only while it lives (CodeRabbit on #801)", () => {
+  test("a rebuild more than four minutes after the last call is priced as a cache miss", async () => {
+    let t = 0;
+    const reqs = [];
+    const answers = [FIT(), CRIT(7, 9, 9, 9), FIT(), CRIT(9, 9, 9, 9)];
+    const call = async (req) => { reqs.push(req); t += 5 * 60 * 1000; return { json: answers.shift(), costUSD: 0.01, cachedTokens: 8000 }; };
+    await fa.buildFit(OFFER, { call, photo: async () => ({ base64: "eA==", mediaType: "image/jpeg" }), now: () => t });
+    const fresh = [];
+    t = 0;
+    const answers2 = [FIT(), CRIT(7, 9, 9, 9), FIT(), CRIT(9, 9, 9, 9)];
+    await fa.buildFit(OFFER, { call: async (req) => { fresh.push(req); return { json: answers2.shift(), costUSD: 0.01, cachedTokens: 8000 }; }, photo: async () => ({ base64: "eA==", mediaType: "image/jpeg" }), now: () => t });
+    assert.ok(reqs[2].maxTokens <= fresh[2].maxTokens, "a stale cache never buys a bigger ceiling");
+  });
+});

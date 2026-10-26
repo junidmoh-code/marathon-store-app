@@ -23,6 +23,9 @@
 "use strict";
 
 const fr = require("../lib/fit-rules.cjs");
+// How long a cached prefix is trusted for pricing: well inside the API's
+// five-minute cache lifetime.
+const CACHE_TRUST_MS = 4 * 60 * 1000;
 
 /**
  * The model call both roles use: (request) → { json, usage, costUSD }.
@@ -71,9 +74,15 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
   const banned = new Set();
   let spent = 0;
   const photos = new Map();
-  // The prefix each role's last call cached: a rebuild reads it at $0.20/M.
+  // The prefix each role's last call cached: a rebuild reads it at $0.20/M,
+  // but only while the cache certainly lives. It lasts five minutes from the
+  // last use; past CACHE_TRUST_MS (photos can be slow) the next call is priced
+  // as a full miss (CodeRabbit on #801).
   const cached = { stylist: 0, critic: 0 };
-  const worst = (req, role) => fr.worstCaseUSD(req, { cachedTokens: cached[role] });
+  const cachedAt = { stylist: 0, critic: 0 };
+  const now = deps.now || Date.now;
+  const trusted = (role) => (now() - cachedAt[role] < CACHE_TRUST_MS ? cached[role] : 0);
+  const worst = (req, role) => fr.worstCaseUSD(req, { cachedTokens: trusted(role) });
   // A request's input at its worst (no output), and the output ceiling the
   // budget left can pay for after `keep` more dollars are held back.
   const inputWorst = (req, role) => worst({ ...req, maxTokens: 0 }, role);
@@ -101,7 +110,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
       return skip(`the stylist call failed: ${String(e && e.message).slice(0, 160)}`);
     }
     spent += answer.costUSD;
-    cached.stylist = answer.cachedTokens || 0;
+    cached.stylist = answer.cachedTokens || 0; cachedAt.stylist = now();
     const read = fr.readStylistAnswer(answer.json, { ...offer, banned });
     if (!read.ok) {
       rounds.push({ round, fit: summary(read.fit), problems: read.problems, costUSD: answer.costUSD });
@@ -136,7 +145,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
       return skip(`the critic call failed: ${String(e && e.message).slice(0, 160)}`);
     }
     spent += crit.costUSD;
-    cached.critic = crit.cachedTokens || 0;
+    cached.critic = crit.cachedTokens || 0; cachedAt.critic = now();
     const verdict = fr.readCriticAnswer(crit.json);
     if (verdict.ok && deps.remember) { try { await deps.remember(verdict.seen, fit.pieces); } catch (e) { log(`fit: the photo notes were not saved (${String(e && e.message).slice(0, 80)})`); } }
     const entry = { round, fit: summary(fit), costUSD: answer.costUSD + crit.costUSD };
