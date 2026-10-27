@@ -1043,6 +1043,32 @@ export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spende
   return { ok: true, fingerprint };
 }
 
+// ─── …AND ONE REFUSED FOR WANT OF A READER ───────────────────────────────────
+// A "No payment-notification reader exists" refusal (refused-parse, reader
+// null) stored no bank id, and its raw text has the id's digits struck out
+// (redactAccountDigits) — so settledFingerprintPlan has nothing to claim. The
+// Nedbank R350 of 27 Oct 2026 was exactly that: four copies refused before
+// the reader existed, settled by Junid by hand. Once the reader ships, the
+// SAME message's document, fetched again from the mailbox and read by it,
+// supplies the id. This is the refusal as the reader now sees it — accepted
+// only when the stored raw text begins with that very document (so a
+// different message's PDF cannot stand in for it) and the record passed
+// DKIM. The result goes to settledFingerprintPlan unchanged. Pure.
+/** @returns {{ok:true, refused:object} | {ok:false, why:string}} */
+export function rereadRefusal({ record, readerId, parse, docText }) {
+  if (!record) return { ok: false, why: "No refused record." };
+  if (record.outcome !== "refused-parse" || record.reader) {
+    return { ok: false, why: `Not a missing-reader refusal (outcome ${record.outcome}, reader ${record.reader ?? "none"}) — use claim-settled-bank-fingerprint.mjs.` };
+  }
+  if (record.auth?.verdict !== "pass") return { ok: false, why: "The record did not pass DKIM — a forgery's document never claims a bank id." };
+  if (!readerId || !parse?.ok) return { ok: false, why: `The message's document does not read as a payment (${clip(parse?.reason, 120) || "no reader claimed it"}).` };
+  const head = redactAccountDigits(String(docText ?? "").trim()).slice(0, 1000);
+  if (head.length < 40 || !String(record.rawText ?? "").startsWith(head)) {
+    return { ok: false, why: "The document fetched from the mailbox is not the one this record refused (its stored raw text does not begin with it)." };
+  }
+  return { ok: true, refused: { ...record, reader: readerId, bankRef: parse.bankRef ?? null, amountCents: parse.amountCents, reference: parse.reference ?? null } };
+}
+
 /** RTDB step: the bank id is spent by `spenderKey`. An existing spender is never overwritten. */
 export function settledClaimStep({ spenderKey, refusedKey, at }) {
   return (existing) => {
