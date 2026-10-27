@@ -72,7 +72,13 @@ async function documentsOf(client, messageId) {
     const out = await pdfToLines(att.content, { grouping: "bucket" });
     if (out.ok) docs.push(out.lines);
   }
-  return { ok: true, fromDomain: verdict.fromDomain, docs };
+  // The poller's own derivation of the two (email-poller.mjs, `message`), so
+  // rereadRefusal compares like with like.
+  const header = {
+    from: parsed.from?.text ?? null,
+    receivedAt: parsed.date instanceof Date && !Number.isNaN(parsed.date.getTime()) ? parsed.date.getTime() : null,
+  };
+  return { ok: true, fromDomain: verdict.fromDomain, docs, header };
 }
 
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: DATABASE_URL });
@@ -95,7 +101,7 @@ try {
         .filter((x) => x.r);
       if (claimed.length !== 1) { plans.push({ refusedKey, ok: false, why: `${claimed.length} of the message's PDFs are read as a payment — exactly one is needed.` }); continue; }
       const [{ lines, r }] = claimed;
-      const view = rereadRefusal({ record, readerId: r.id, parse: r.parse(lines), docText: lines.join("\n") });
+      const view = rereadRefusal({ record, readerId: r.id, parse: r.parse(lines), docText: lines.join("\n"), fetched: fetched.header });
       if (!view.ok) { plans.push({ refusedKey, ...view }); continue; }
       plans.push({ refusedKey, ...settledFingerprintPlan({ refusedKey, refused: view.refused, spenderKey, spender }), amountCents: view.refused.amountCents });
     }

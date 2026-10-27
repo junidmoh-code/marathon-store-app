@@ -1054,13 +1054,24 @@ export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spende
 // only when the stored raw text begins with that very document (so a
 // different message's PDF cannot stand in for it) and the record passed
 // DKIM. The result goes to settledFingerprintPlan unchanged. Pure.
+//
+// The raw-text prefix is a CONSISTENCY check, not identity: redaction strikes
+// digit runs, so two ids differing only inside a struck run read the same.
+// Identity is the Message-ID (the script's exact search) PLUS, here, the
+// fetched message's own arrival time and sender, which must match the record.
+// (Sonnet architect review.)
+export const REREAD_ARRIVAL_TOLERANCE_MS = 5 * 60 * 1000;
 /** @returns {{ok:true, refused:object} | {ok:false, why:string}} */
-export function rereadRefusal({ record, readerId, parse, docText }) {
+export function rereadRefusal({ record, readerId, parse, docText, fetched }) {
   if (!record) return { ok: false, why: "No refused record." };
   if (record.outcome !== "refused-parse" || record.reader) {
     return { ok: false, why: `Not a missing-reader refusal (outcome ${record.outcome}, reader ${record.reader ?? "none"}) — use claim-settled-bank-fingerprint.mjs.` };
   }
   if (record.auth?.verdict !== "pass") return { ok: false, why: "The record did not pass DKIM — a forgery's document never claims a bank id." };
+  const sameFrom = clip(fetched?.from, 200) === clip(record.from, 200);
+  const arrival = Number.isInteger(fetched?.receivedAt) && Number.isInteger(record.receivedAt)
+    && Math.abs(fetched.receivedAt - record.receivedAt) <= REREAD_ARRIVAL_TOLERANCE_MS;
+  if (!sameFrom || !arrival) return { ok: false, why: "The message fetched from the mailbox does not match the record's sender and arrival time — not the refused message." };
   if (!readerId || !parse?.ok) return { ok: false, why: `The message's document does not read as a payment (${clip(parse?.reason, 120) || "no reader claimed it"}).` };
   const head = redactAccountDigits(String(docText ?? "").trim()).slice(0, 1000);
   if (head.length < 40 || !String(record.rawText ?? "").startsWith(head)) {

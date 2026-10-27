@@ -230,12 +230,14 @@ describe("the 27 Oct R350, settled by hand by Junid, can never re-float", () => 
   const refusedParse = {
     at: RECEIVED + 5000, receivedAt: RECEIVED, outcome: "refused-parse", reader: null,
     auth: { verdict: "pass", fromDomain: "nedbank.co.za", dkimDomain: "nedbank.co.za" },
-    messageId: message(1).messageId,
+    messageId: message(1).messageId, from: message(1).from,
     rawText: redactAccountDigits(`${REAL_NEDBANK_2710.join("\n")}\n────────\n${BODY}`),
     reason: "No payment-notification reader exists for nedbank.co.za yet.",
   };
   const manual = { outcome: "recorded", status: "used", reader: "manual", manualEntry: { by: "Junid" }, amountCents: 35000, reference: "CUSTREF", bankRef: "MANUAL-FFFFFFFFFFFF" };
   const docText = REAL_NEDBANK_2710.join("\n");
+  // The fetched message's own From and Date, as the script derives them.
+  const FETCHED = { from: message(1).from, receivedAt: RECEIVED };
   const parse = selectReader({ fromDomain: "nedbank.co.za", lines: REAL_NEDBANK_2710 }).parse(REAL_NEDBANK_2710);
 
   it("the stored refusal has no bank id to claim, so the old script cannot mark it", () => {
@@ -243,7 +245,7 @@ describe("the 27 Oct R350, settled by hand by Junid, can never re-float", () => 
     expect(refusedParse.rawText).not.toContain("1a2b3c4d-1111-2222-a333-0b0c0d0e0f1");
   });
   it("re-read from its own message, it yields the bank id, spent by Junid's manual record", () => {
-    const view = rereadRefusal({ record: refusedParse, readerId: "nedbank", parse, docText });
+    const view = rereadRefusal({ record: refusedParse, readerId: "nedbank", parse, docText, fetched: FETCHED });
     expect(view.ok).toBe(true);
     const plan = settledFingerprintPlan({ refusedKey: KEY_A, refused: view.refused, spenderKey: MANUAL_KEY, spender: manual });
     expect(plan).toEqual({ ok: true, fingerprint: paymentFingerprint({ reader: "nedbank", bankRef: parse.bankRef }) });
@@ -262,17 +264,29 @@ describe("the 27 Oct R350, settled by hand by Junid, can never re-float", () => 
   it("a different message's document cannot stand in for the refused one", () => {
     const other = swap("Amount : R350.00", "Amount : R1410.00");
     const otherParse = selectReader({ fromDomain: "nedbank.co.za", lines: other }).parse(other);
-    expect(rereadRefusal({ record: refusedParse, readerId: "nedbank", parse: otherParse, docText: other.join("\n") }).ok).toBe(false);
+    expect(rereadRefusal({ record: refusedParse, readerId: "nedbank", parse: otherParse, docText: other.join("\n"), fetched: FETCHED }).ok).toBe(false);
+  });
+  it("ids differing only inside struck-out digits read alike — the message's sender and arrival time still bind it", () => {
+    const realId = swap("Reference Number : 1a2b3c4d-1111-2222-a333-0b0c0d0e0f1", "Reference Number : 12345678-1234-1234-1234-123456789012");
+    const twinId = swap("Reference Number : 1a2b3c4d-1111-2222-a333-0b0c0d0e0f1", "Reference Number : 87654321-4321-4321-4321-000000789012");
+    const rec = { ...refusedParse, rawText: redactAccountDigits(realId.join("\n")) };
+    const twinParse = selectReader({ fromDomain: "nedbank.co.za", lines: twinId }).parse(twinId);
+    // The raw text alone cannot tell them apart (the consistency check passes)…
+    expect(rereadRefusal({ record: rec, readerId: "nedbank", parse: twinParse, docText: twinId.join("\n"), fetched: FETCHED }).ok).toBe(true);
+    // …so a different message — later arrival, or another sender — refuses.
+    expect(rereadRefusal({ record: rec, readerId: "nedbank", parse: twinParse, docText: twinId.join("\n"), fetched: { ...FETCHED, receivedAt: RECEIVED + 3600000 } }).ok).toBe(false);
+    expect(rereadRefusal({ record: rec, readerId: "nedbank", parse: twinParse, docText: twinId.join("\n"), fetched: { ...FETCHED, from: "\"Nedbank\" <other@nedbank.co.za>" } }).ok).toBe(false);
+    expect(rereadRefusal({ record: rec, readerId: "nedbank", parse: twinParse, docText: twinId.join("\n") }).ok).toBe(false);
   });
   it("a different payment (other amount) is never marked spent by the R350 manual record", () => {
-    const view = rereadRefusal({ record: refusedParse, readerId: "nedbank", parse, docText });
+    const view = rereadRefusal({ record: refusedParse, readerId: "nedbank", parse, docText, fetched: FETCHED });
     const plan = settledFingerprintPlan({ refusedKey: KEY_A, refused: { ...view.refused, amountCents: 141000 }, spenderKey: MANUAL_KEY, spender: manual });
     expect(plan.ok).toBe(false);
   });
   it("refuses a forgery's record, a record that already had a reader, and an unreadable document", () => {
-    expect(rereadRefusal({ record: { ...refusedParse, auth: { verdict: "fail" } }, readerId: "nedbank", parse, docText }).ok).toBe(false);
-    expect(rereadRefusal({ record: { ...refusedParse, reader: "nedbank" }, readerId: "nedbank", parse, docText }).ok).toBe(false);
-    expect(rereadRefusal({ record: { ...refusedParse, outcome: "refused-not-immediate" }, readerId: "nedbank", parse, docText }).ok).toBe(false);
-    expect(rereadRefusal({ record: refusedParse, readerId: "nedbank", parse: { ok: false, reason: "x" }, docText }).ok).toBe(false);
+    expect(rereadRefusal({ record: { ...refusedParse, auth: { verdict: "fail" } }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
+    expect(rereadRefusal({ record: { ...refusedParse, reader: "nedbank" }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
+    expect(rereadRefusal({ record: { ...refusedParse, outcome: "refused-not-immediate" }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
+    expect(rereadRefusal({ record: refusedParse, readerId: "nedbank", parse: { ok: false, reason: "x" }, docText, fetched: FETCHED }).ok).toBe(false);
   });
 });
