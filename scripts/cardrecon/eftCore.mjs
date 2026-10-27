@@ -633,16 +633,35 @@ export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
 // rule, 5 Oct 2026). Gated below on the destination bank being FNB.
 export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank", "nedbank"];
 
+// ─── …AND SINCE 27 OCT 2026, IMMEDIATE IS NO LONGER REQUIRED ─────────────────
+// Junid, 27 Oct 2026, after a clean Nedbank "Internet payment" (R1,410) and a
+// Capitec "Regular Payment" refused for not being immediate: "allow payment
+// to be accepted even if they're not immediate payments as long as payment is
+// clean". So the poller passes requireImmediate:false by default, and a
+// payment that passes DKIM, the reader, the destination (7a), the date cutoff
+// (fix 8) and the bank-id dedupe is recorded whatever its payment type. A
+// payment dated AFTER its notification arrived is still refused: that is a
+// scheduled payment, not a clean one. EFT_REQUIRE_IMMEDIATE=yes in the mini's
+// .env restores the immediate-only rule without a code change. The pure
+// function's own default stays strict, so a caller that forgets the flag
+// refuses rather than admits.
+export const EFT_REQUIRE_IMMEDIATE_ENV_VAR = "EFT_REQUIRE_IMMEDIATE";
+/** "yes"/"true"/"1"/"on" → true; anything else, including unset → false. */
+export function parseRequireImmediate(raw) {
+  return /^(1|yes|true|on)$/i.test(String(raw ?? "").trim());
+}
+
 /**
- * @param {{parsed:object, reader?:string, receivedAt:number|null}} p
+ * @param {{parsed:object, reader?:string, receivedAt:number|null, requireImmediate?:boolean}} p
  * @returns {{ok:true} | {ok:false, reason:string, needsSample?:true}}
  */
-export function immediacyVerdict({ parsed, reader, receivedAt }) {
+export function immediacyVerdict({ parsed, reader, receivedAt, requireImmediate = true }) {
   const id = reader ?? parsed?.reader ?? null;
   if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)
     && parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS) {
     return { ok: false, reason: "The payment is dated after its notification arrived — a scheduled / future-dated payment, not an immediate one." };
   }
+  if (requireImmediate === false) return { ok: true };
   if (!IMMEDIATE_SIGNAL_READERS.includes(id)) {
     return {
       ok: false, needsSample: true,

@@ -81,6 +81,7 @@ import {
   refusalFingerprint, applyRefusalFingerprint,
   redactAccountDigits, domainOfAddress, parseAllowedAccountTails, parseAllowedAccounts,
   destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
+  parseRequireImmediate, EFT_REQUIRE_IMMEDIATE_ENV_VAR,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
 import { selectReader, noReaderReason } from "./eftBanks.mjs";
@@ -261,6 +262,8 @@ function config() {
     // tick either: the card-slip path and the heartbeat keep running.
     // (Sonnet architect review, #765.)
     eftPaymentDateCutoff: parsePaymentDateCutoff(env.EFT_PAYMENT_DATE_CUTOFF),
+    // Junid, 27 Oct 2026: off unless set — see immediacyVerdict (eftCore.mjs).
+    eftRequireImmediate: parseRequireImmediate(env[EFT_REQUIRE_IMMEDIATE_ENV_VAR]),
     eftPaymentDateCutoffSource: sourceOf(EFT_CUTOFF_ENV_VAR),
     dryRun: process.argv.includes("--dry-run"),
   };
@@ -613,6 +616,10 @@ async function run() {
     guideNever = cfg.guideReplyNever;
     guideDb = db;
   }
+  // Which immediacy rule decided, said every tick (Junid, 27 Oct 2026).
+  console.log(cfg.eftRequireImmediate
+    ? `· EFT: immediate payments only (${EFT_REQUIRE_IMMEDIATE_ENV_VAR}=yes)`
+    : `· EFT: non-immediate payments accepted when clean; future-dated still refuses (${EFT_REQUIRE_IMMEDIATE_ENV_VAR} unset)`);
   // FIX 8 — said on every tick, so the log always shows which cutoff decided:
   // a date, never a secret. A bad value is said every tick too, until fixed.
   if (cfg.eftPaymentDateCutoff.ok) {
@@ -835,6 +842,7 @@ async function run() {
       // FIX 8: the cutoff this tick refused stale payments against — a date,
       // so the owner can see from the heartbeat which cutoff is live.
       eftPaymentDateCutoff: cfg.eftPaymentDateCutoff.ok ? cfg.eftPaymentDateCutoff.date : "INVALID",
+      eftRequireImmediate: cfg.eftRequireImmediate,
       // Messages the EFT reader THREW on this tick (left unread, retried) — a
       // persistent environment failure must not hide behind a healthy beat.
       eftErrors,
@@ -1433,7 +1441,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
           })
           : null;
         const timing = group.parse.ok
-          ? immediacyVerdict({ parsed: group.parse, reader: group.readerId, receivedAt: message.receivedAt })
+          ? immediacyVerdict({ parsed: group.parse, reader: group.readerId, receivedAt: message.receivedAt, requireImmediate: cfg.eftRequireImmediate })
           : null;
         // FIX 8 — dated on or after the cutoff BY THE BANK (group.parse.bankTs,
         // the bank's own printed payment date). message.receivedAt is
