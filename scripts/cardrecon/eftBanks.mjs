@@ -578,10 +578,138 @@ const absa = {
   },
 };
 
+// ─── NEDBANK ─────────────────────────────────────────────────────────────────
+// Built from the five REAL Nedbank notifications of 2026-10-27 (11:19–11:30
+// SAST, "Nedbank" <Notification@nedbank.co.za>, DKIM pass for nedbank.co.za).
+// The email BODY says only "A payment has been made to your account. To view
+// the details of the payment, please open the attached PDF file." — it carries
+// no amount, account or id, and never claims anything here (no detect() match).
+// EVERY FIELD IS IN THE ATTACHED Proof_Of_Payment.pdf. Layout, verbatim from
+// pdfText (fixture in eftNedbank.test.mjs, sanitised):
+//
+//   Notification of Payment
+//   Nedbank Limited confirms that the following payment has been made:
+//   Date of Payment : 27/10/2026             ← DAY-FIRST, date only, no time
+//   Reference Number : 388e74ec-4314-…       ← the BANK's own transaction id
+//   Beneficiary details
+//   Recipient : Marathon
+//   Amount : R350.00
+//   Recipient Reference : Ricardo            ← what the PAYER typed
+//   :                                        ← the second column's colons,
+//   Bank FIRST NATIONAL BANK                 ←  split off their labels by
+//   :                                        ←  the extraction: "Bank",
+//   Account Number ...776625                 ←  "Account Number" and "Channel"
+//   :                                        ←  read with or without one
+//   Channel Internet payment                 ← how it was paid (see below)
+//   Payer details
+//   Paid from Account Holder : A CUSTOMER
+//   …
+//   Payments may take up to three business days. Please check your account
+//   to verify the existence of the funds.    ← the FOOTER, on every copy
+//   Security Code D6CA…                      ← differs per copy; never read
+//
+// The four 11:19–11:29 copies were ONE payment resent (same Reference Number,
+// amount and reference, a fresh Security Code each time); 11:30 was another.
+//
+// IMMEDIATE OR NOT — THE "Channel" LINE, NEVER THE FOOTER. Every real sample
+// so far prints "Channel Internet payment" — a normal interbank EFT, which
+// Nedbank's own footer says "may take up to three business days" and tells
+// the recipient to check the account for. That is not money received, so it
+// reads immediate:false and the pool refuses it (eftCore immediacyVerdict),
+// exactly as Absa "Immediate payment: N" does. "Channel Immediate payment"
+// reads immediate:true — the phrase Capitec prints; no real Nedbank immediate
+// sample exists yet, so it is the one value accepted on spec, and a sample
+// that prints anything else refuses as unreadable until a reader is taught it.
+// Any other channel ("App payment", "Branch", …) is unknown: null, refused.
+// Like Standard Bank's, the footer is the same on every copy and is never read.
+//
+// THE DATE IS DAY-FIRST and carries no time: "27/10/2026" can only be 27 Oct.
+// capitecTimestamp already reads that shape exactly (and refuses 31/02); a
+// date-only bankTs is the start of that SAST day, which is what the cutoff
+// (fix 8) compares, and a payment dated after the day its notification arrived
+// still refuses as future-dated (immediacyVerdict).
+const NEDBANK_CHANNELS = [
+  { re: /^internet payment$/i, immediate: false },
+  { re: /^immediate payment$/i, immediate: true },
+];
+
+const nedbank = {
+  id: "nedbank",
+  domain: "nedbank.co.za",
+  /** Content, not sender: the title, Nedbank's confirmation sentence and the
+   *  labelled amount. The generic email body matches none of them. */
+  detect(lines) {
+    const has = (re) => lines.some((l) => re.test(l));
+    return has(/^Notification of Payment$/i)
+      && has(/Nedbank Limited confirms that the following payment has been made/i)
+      && has(/^Amount\s*:/i);
+  },
+  parse(lines) {
+    const take = (re, what) => labelledLine(lines, re, what);
+
+    // ONE PAYMENT PER DOCUMENT, counted on the bank's own Reference Number —
+    // the rule every reader keeps: a reprint and two identical payments are
+    // indistinguishable from here, so more than one block refuses.
+    const blocks = lines.filter((l) => /^Reference Number\s*:/i.test(l)).length;
+    if (blocks > 1) {
+      return { ok: false, reason: `This document holds ${blocks} payment blocks — a reprint and two identical payments cannot be told apart here. Handle it by hand.` };
+    }
+
+    // THE AMOUNT — required, exact, single.
+    const amount = take(/^Amount\s*:\s*(.+)$/i, "Amount line");
+    if (!amount.ok) return { ok: false, reason: `Nedbank notification: ${amount.why}.` };
+    if (amount.value === null) return { ok: false, reason: "Nedbank notification carries no Amount line." };
+    const amountCents = parseRandsToCents(amount.value);
+    if (amountCents === null) {
+      return { ok: false, reason: `Nedbank Amount line reads "${clip(amount.value, 60)}", which does not parse exactly as a rand amount.` };
+    }
+    if (amountCents <= 0) return { ok: false, reason: "The amount is zero or negative — not an incoming payment." };
+
+    // THE DESTINATION ACCOUNT — required: the allowlist check depends on it.
+    // Printed masked ("...776625"); destinationVerdict checks every digit shown.
+    const account = take(/^Account Number\s*:?\s*(\S+)\s*$/i, "Account Number");
+    if (!account.ok) return { ok: false, reason: `Nedbank notification: ${account.why}.` };
+    if (account.value === null) return { ok: false, reason: "No Account Number could be read from this Nedbank notification (the line may be absent, or merged with another column) — the destination account cannot be checked." };
+
+    // THE BANK'S OWN ID — required here, not just for the hold: without it a
+    // resend could not be told from a second payment.
+    const bankRef = take(/^Reference Number\s*:\s*(.+)$/i, "Reference Number");
+    if (!bankRef.ok) return { ok: false, reason: `Nedbank notification: ${bankRef.why}.` };
+    // "Recipient Reference" is what the PAYER typed — the matching key.
+    const reference = take(/^Recipient Reference\s*:\s*(.*)$/i, "Recipient Reference");
+    if (!reference.ok) return { ok: false, reason: `Nedbank notification: ${reference.why}.` };
+    const beneficiaryName = take(/^Recipient\s*:\s*(.+)$/i, "Recipient");
+    const destBankName = take(/^Bank\s*:?\s+(.+)$/i, "Bank");
+    const payer = take(/^Paid from Account Holder\s*:\s*(.+)$/i, "Paid from Account Holder");
+
+    const when = take(/^Date of Payment\s*:\s*(.+)$/i, "Date of Payment");
+    const bankTs = when.ok && when.value ? capitecTimestamp(when.value) : null;
+
+    const channel = take(/^Channel\s*:?\s+(.+)$/i, "Channel");
+    const paymentType = channel.ok && channel.value ? clip(channel.value, 60) : null;
+    const known = paymentType === null ? null : NEDBANK_CHANNELS.find((c) => c.re.test(paymentType.replace(/\s+/g, " ")));
+    const immediate = known ? known.immediate : null;
+
+    return {
+      ok: true,
+      amountCents,
+      reference: reference.value ? clip(reference.value, 140) : null,
+      payer: payer.ok && payer.value ? clip(redactAccountDigits(payer.value), 120) : null,
+      bankTs,
+      bankRef: bankRef.value ? clip(bankRef.value, 60) : null,
+      beneficiaryName: beneficiaryName.ok && beneficiaryName.value ? clip(beneficiaryName.value, 120) : null,
+      destBankName: destBankName.ok && destBankName.value ? clip(destBankName.value, 60) : null,
+      accountMask: clip(account.value, 40),
+      paymentType,
+      immediate,
+    };
+  },
+};
+
 // ─── THE REGISTRY ────────────────────────────────────────────────────────────
 // Adding a bank = adding a reader here + its domain to EFT_ALLOWED_DOMAINS in
 // eftCore.mjs. Nothing else changes.
-export const EFT_READERS = [standardBank, fnb, capitec, absa];
+export const EFT_READERS = [standardBank, fnb, capitec, absa, nedbank];
 
 /**
  * Which reader claims this document, by CONTENT. The sending domain narrows

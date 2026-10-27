@@ -618,6 +618,10 @@ export function destinationVerdict({ accountMask, destBankName, allowedAccounts,
 //                 (plain "Payment Confirmation" is not) — never the footer,
 //                 which mentions immediate payments on every confirmation
 //                 (reader: immediate; Junid, 25 Oct 2026, real R710 sample)
+//   nedbank       "Channel Internet payment" is NOT immediate (Nedbank's own
+//                 footer: "may take up to three business days … check your
+//                 account"); "Channel Immediate payment" is (reader: immediate;
+//                 real samples 27 Oct 2026 — all "Internet payment")
 //   fnb           NO such field — see below.
 // Whatever a bank prints, a payment dated in the FUTURE of its own
 // notification's arrival is scheduled and refuses.
@@ -627,7 +631,7 @@ export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
 // destination, so a recorded FNB payment is FNB -> FNB: an intra-bank transfer,
 // which clears in real time. Immediate by its nature, not a guess (Junid's
 // rule, 5 Oct 2026). Gated below on the destination bank being FNB.
-export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank"];
+export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank", "nedbank"];
 
 /**
  * @param {{parsed:object, reader?:string, receivedAt:number|null}} p
@@ -676,7 +680,8 @@ export function immediacyVerdict({ parsed, reader, receivedAt }) {
 // THE DATE IS THE BANK'S, NEVER THE MAILBOX'S. `bankTs` is the payment date
 // the bank printed in its own notification — the same field the immediacy
 // check reads: Standard Bank "Payment date and time", FNB "Date Actioned",
-// Capitec "Payment date", Absa "Payment date" (eftBanks.mjs) — the day the
+// Capitec "Payment date", Absa "Payment date", Nedbank "Date of Payment"
+// (eftBanks.mjs) — the day the
 // money moved. The email's arrival time (`receivedAt`) is NOT used and must
 // never be a fallback: forwarding an old proof of payment makes it arrive
 // today, which is exactly the case this gate exists to refuse. A notification
@@ -1036,6 +1041,43 @@ export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spende
   if (spender.amountCents !== refused.amountCents) return { ok: false, why: `The amounts differ (${refused.amountCents}c refused, ${spender.amountCents}c used) — not the same money.` };
   if (!sameRef(spender.reference, refused.reference)) return { ok: false, why: `The references differ ("${clip(refused.reference, 40)}" refused, "${clip(spender.reference, 40)}" used) — not the same money.` };
   return { ok: true, fingerprint };
+}
+
+// ─── …AND ONE REFUSED FOR WANT OF A READER ───────────────────────────────────
+// A "No payment-notification reader exists" refusal (refused-parse, reader
+// null) stored no bank id, and its raw text has the id's digits struck out
+// (redactAccountDigits) — so settledFingerprintPlan has nothing to claim. The
+// Nedbank R350 of 27 Oct 2026 was exactly that: four copies refused before
+// the reader existed, settled by Junid by hand. Once the reader ships, the
+// SAME message's document, fetched again from the mailbox and read by it,
+// supplies the id. This is the refusal as the reader now sees it — accepted
+// only when the stored raw text begins with that very document (so a
+// different message's PDF cannot stand in for it) and the record passed
+// DKIM. The result goes to settledFingerprintPlan unchanged. Pure.
+//
+// The raw-text prefix is a CONSISTENCY check, not identity: redaction strikes
+// digit runs, so two ids differing only inside a struck run read the same.
+// Identity is the Message-ID (the script's exact search) PLUS, here, the
+// fetched message's own arrival time and sender, which must match the record.
+// (Sonnet architect review.)
+export const REREAD_ARRIVAL_TOLERANCE_MS = 5 * 60 * 1000;
+/** @returns {{ok:true, refused:object} | {ok:false, why:string}} */
+export function rereadRefusal({ record, readerId, parse, docText, fetched }) {
+  if (!record) return { ok: false, why: "No refused record." };
+  if (record.outcome !== "refused-parse" || record.reader) {
+    return { ok: false, why: `Not a missing-reader refusal (outcome ${record.outcome}, reader ${record.reader ?? "none"}) — use claim-settled-bank-fingerprint.mjs.` };
+  }
+  if (record.auth?.verdict !== "pass") return { ok: false, why: "The record did not pass DKIM — a forgery's document never claims a bank id." };
+  const sameFrom = clip(fetched?.from, 200) === clip(record.from, 200);
+  const arrival = Number.isInteger(fetched?.receivedAt) && Number.isInteger(record.receivedAt)
+    && Math.abs(fetched.receivedAt - record.receivedAt) <= REREAD_ARRIVAL_TOLERANCE_MS;
+  if (!sameFrom || !arrival) return { ok: false, why: "The message fetched from the mailbox does not match the record's sender and arrival time — not the refused message." };
+  if (!readerId || !parse?.ok) return { ok: false, why: `The message's document does not read as a payment (${clip(parse?.reason, 120) || "no reader claimed it"}).` };
+  const head = redactAccountDigits(String(docText ?? "").trim()).slice(0, 1000);
+  if (head.length < 40 || !String(record.rawText ?? "").startsWith(head)) {
+    return { ok: false, why: "The document fetched from the mailbox is not the one this record refused (its stored raw text does not begin with it)." };
+  }
+  return { ok: true, refused: { ...record, reader: readerId, bankRef: parse.bankRef ?? null, amountCents: parse.amountCents, reference: parse.reference ?? null } };
 }
 
 /** RTDB step: the bank id is spent by `spenderKey`. An existing spender is never overwritten. */

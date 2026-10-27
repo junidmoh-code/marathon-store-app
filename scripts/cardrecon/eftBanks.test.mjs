@@ -127,11 +127,12 @@ describe("the Standard Bank reader — built from the real notification", () => 
 
 describe("the missing-reader refusal is a work order", () => {
   it("an unknown bank names the domain and where the reader goes", () => {
-    // Nedbank: allowlisted as a bank customers pay from, no reader yet. Its
+    // TymeBank: allowlisted as a bank customers pay from, no reader yet. Its
     // notification therefore refuses with a work order rather than a guess —
-    // which is the whole state of that bank until a real PDF arrives.
-    const reason = noReaderReason("nedbank.co.za");
-    expect(reason).toContain("nedbank.co.za");
+    // which is the whole state of that bank until a real PDF arrives. (Nedbank
+    // was this example until its reader shipped, 27 Oct 2026.)
+    const reason = noReaderReason("tymebank.co.za");
+    expect(reason).toContain("tymebank.co.za");
     expect(reason).toContain("eftBanks.mjs");
   });
   it("a known bank whose layout stopped matching says the format may have changed", () => {
