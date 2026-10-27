@@ -40,11 +40,22 @@ export async function issueStoreCredit(graphql, { orderGid, amountCents, currenc
 }
 
 /**
+ * The idempotency key of one line refund. API 2026-04+ (this app is on 2026-07)
+ * REQUIRES @idempotent on refundCreate (Shopify changelog "Making idempotency
+ * mandatory for inventory adjustments and refund mutations"; without it the
+ * call fails: "The @idempotent directive is required for this mutation but was
+ * not provided."). Stable for the same order, line, quantity and amount, so a
+ * repeat of the same refund is the same refund on Shopify, never a second one.
+ */
+export const refundKey = ({ orderGid, lineItemId, quantity, cents }) =>
+  `refund-line-${String(orderGid).split("/").pop()}-${String(lineItemId).split("/").pop()}-q${quantity}-${cents}`;
+
+/**
  * Refund ONE line through the order's own gateway (Payfast, via Shopify). The
  * amount is the smaller of what we owe and what Shopify suggests for that
  * line — never more than either. → { ok: true, id, amountCents } | { ok: false, error }
  */
-export async function refundLine(graphql, { orderGid, lineItemId, quantity, amountCents }) {
+export async function refundLine(graphql, { orderGid, lineItemId, quantity, amountCents, idempotencyKey = null }) {
   const s = await graphql(
     `query ($id: ID!, $items: [RefundLineItemInput!]) {
       order(id: $id) {
@@ -64,10 +75,10 @@ export async function refundLine(graphql, { orderGid, lineItemId, quantity, amou
   const pay = Math.min(amountCents, suggested);
   if (!(pay > 0)) return { ok: false, error: "nothing refundable on this line" };
   const d = await graphql(
-    `mutation ($input: RefundInput!) {
-      refundCreate(input: $input) { refund { id } userErrors { field message } }
+    `mutation ($input: RefundInput!, $key: String!) {
+      refundCreate(input: $input) @idempotent(key: $key) { refund { id } userErrors { field message } }
     }`,
-    { input: {
+    { key: idempotencyKey || refundKey({ orderGid, lineItemId, quantity, cents: pay }), input: {
       orderId: orderGid,
       notify: true,
       refundLineItems: [{ lineItemId, quantity, restockType: "NO_RESTOCK" }],
