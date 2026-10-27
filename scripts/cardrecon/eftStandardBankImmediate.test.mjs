@@ -190,6 +190,6 @@ describe("trusted only from DKIM-verified Standard Bank mail", () => {
   });
 });
 
-it("only Standard Bank changed: the reader set is the same four", () => {
-  expect(EFT_READERS.map((r) => r.id)).toEqual(["standardbank", "fnb", "capitec", "absa"]);
+it("only Standard Bank changed: the reader set is the same four (Nedbank added later, 27 Oct 2026)", () => {
+  expect(EFT_READERS.map((r) => r.id)).toEqual(["standardbank", "fnb", "capitec", "absa", "nedbank"]);
 });
