@@ -633,39 +633,48 @@ export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
 // rule, 5 Oct 2026). Gated below on the destination bank being FNB.
 export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank", "nedbank"];
 
-// ─── …AND SINCE 27 OCT 2026, IMMEDIATE IS NO LONGER REQUIRED ─────────────────
-// Junid, 27 Oct 2026, after a clean Nedbank "Internet payment" (R1,410) and a
-// Capitec "Regular Payment" refused for not being immediate: "allow payment
-// to be accepted even if they're not immediate payments as long as payment is
-// clean". So the poller passes requireImmediate:false by default, and a
-// payment that passes DKIM, the reader, the destination (7a), the date cutoff
-// (fix 8) and the bank-id dedupe is recorded whatever its payment type. A
-// payment dated AFTER its notification arrived is still refused: that is a
-// scheduled payment, not a clean one. EFT_REQUIRE_IMMEDIATE=yes in the mini's
-// .env restores the immediate-only rule without a code change. The pure
-// function's own default stays strict, so a caller that forgets the flag
-// refuses rather than admits.
-export const EFT_REQUIRE_IMMEDIATE_ENV_VAR = "EFT_REQUIRE_IMMEDIATE";
-/** "yes"/"true"/"1"/"on" → true; anything else, including unset → false. */
-export function parseRequireImmediate(raw) {
-  return /^(1|yes|true|on)$/i.test(String(raw ?? "").trim());
+// ─── DATE-PHASED: IMMEDIATE REQUIRED ONLY BEFORE 27 OCT 2026 ────────────────
+// Junid, 27 Oct 2026. Keyed on the BANK'S printed payment date (parsed.bankTs,
+// the same field the cutoff reads), as a SAST calendar day — never the email's
+// arrival time, never the clock:
+//
+//   bank date >= 2026-10-27            accepted, immediate OR regular
+//   2026-10-20 .. 2026-10-26           accepted only if IMMEDIATE (rules below)
+//   bank date <  2026-10-20            refused by the cutoff (paymentDateVerdict)
+//
+// A reader that cannot say immediate-vs-regular cannot prove a pre-27
+// payment immediate, so it refuses; a 27+ payment does not need it. A payment
+// dated after its notification arrived is refused whatever its date: that is
+// a scheduled payment. No bank date at all is not "27 or later": it falls to
+// the immediate rule here and is refused by the cutoff anyway.
+export const IMMEDIATE_NOT_REQUIRED_FROM = "2026-10-27";
+
+/** Is this bank date on or after the day immediacy stopped being required? */
+export function immediacyRequiredFor(bankTs) {
+  if (!Number.isInteger(bankTs)) return true;
+  return sastDate(bankTs) < IMMEDIATE_NOT_REQUIRED_FROM;
 }
 
 /**
- * @param {{parsed:object, reader?:string, receivedAt:number|null, requireImmediate?:boolean}} p
+ * @param {{parsed:object, reader?:string, receivedAt:number|null}} p
  * @returns {{ok:true} | {ok:false, reason:string, needsSample?:true}}
  */
-export function immediacyVerdict({ parsed, reader, receivedAt, requireImmediate = true }) {
+export function immediacyVerdict({ parsed, reader, receivedAt }) {
   const id = reader ?? parsed?.reader ?? null;
+  // Future-dated by the clock (15-minute tolerance) OR by the SAST calendar
+  // day: a date-only bank (Nedbank, Absa) prints tomorrow as tomorrow's
+  // midnight, which a notification arriving after 23:45 would otherwise slip
+  // under the tolerance — and from 27 Oct nothing else stops it. (Sonnet
+  // architect review, date-phased PR.)
   if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)
-    && parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS) {
+    && (parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS || sastDate(parsed.bankTs) > sastDate(receivedAt))) {
     return { ok: false, reason: "The payment is dated after its notification arrived — a scheduled / future-dated payment, not an immediate one." };
   }
-  if (requireImmediate === false) return { ok: true };
+  if (!immediacyRequiredFor(parsed?.bankTs)) return { ok: true };
   if (!IMMEDIATE_SIGNAL_READERS.includes(id)) {
     return {
       ok: false, needsSample: true,
-      reason: `The ${id || "unknown"} notification format this pool reads carries no field saying whether the payment was IMMEDIATE. Until a real ${id || "bank"} immediate-payment sample shows where it says so, its payments refuse rather than guess.`,
+      reason: `The ${id || "unknown"} notification format this pool reads carries no field saying whether the payment was IMMEDIATE, and a payment the bank dates before ${IMMEDIATE_NOT_REQUIRED_FROM} must be immediate — refused rather than guessed.`,
     };
   }
   if (id === "fnb") {
@@ -680,7 +689,7 @@ export function immediacyVerdict({ parsed, reader, receivedAt, requireImmediate 
   return {
     ok: false,
     reason: parsed?.immediate === false
-      ? `Not an immediate payment (the bank prints "${clip(parsed.paymentType, 60) || "not immediate"}") — a scheduled or normal-clearing payment may not clear, so it cannot settle a sale.`
+      ? `Not an immediate payment (the bank prints "${clip(parsed.paymentType, 60) || "not immediate"}"), and a payment the bank dates before ${IMMEDIATE_NOT_REQUIRED_FROM} must be immediate to settle a sale.`
       : "The bank's immediate-payment field could not be read from this notification — refused rather than assumed.",
   };
 }
