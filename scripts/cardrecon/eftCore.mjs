@@ -618,6 +618,10 @@ export function destinationVerdict({ accountMask, destBankName, allowedAccounts,
 //                 (plain "Payment Confirmation" is not) — never the footer,
 //                 which mentions immediate payments on every confirmation
 //                 (reader: immediate; Junid, 25 Oct 2026, real R710 sample)
+//   nedbank       "Channel Internet payment" is NOT immediate (Nedbank's own
+//                 footer: "may take up to three business days … check your
+//                 account"); "Channel Immediate payment" is (reader: immediate;
+//                 real samples 27 Oct 2026 — all "Internet payment")
 //   fnb           NO such field — see below.
 // Whatever a bank prints, a payment dated in the FUTURE of its own
 // notification's arrival is scheduled and refuses.
@@ -627,7 +631,7 @@ export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
 // destination, so a recorded FNB payment is FNB -> FNB: an intra-bank transfer,
 // which clears in real time. Immediate by its nature, not a guess (Junid's
 // rule, 5 Oct 2026). Gated below on the destination bank being FNB.
-export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank"];
+export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank", "nedbank"];
 
 /**
  * @param {{parsed:object, reader?:string, receivedAt:number|null}} p
@@ -676,7 +680,8 @@ export function immediacyVerdict({ parsed, reader, receivedAt }) {
 // THE DATE IS THE BANK'S, NEVER THE MAILBOX'S. `bankTs` is the payment date
 // the bank printed in its own notification — the same field the immediacy
 // check reads: Standard Bank "Payment date and time", FNB "Date Actioned",
-// Capitec "Payment date", Absa "Payment date" (eftBanks.mjs) — the day the
+// Capitec "Payment date", Absa "Payment date", Nedbank "Date of Payment"
+// (eftBanks.mjs) — the day the
 // money moved. The email's arrival time (`receivedAt`) is NOT used and must
 // never be a fallback: forwarding an old proof of payment makes it arrive
 // today, which is exactly the case this gate exists to refuse. A notification

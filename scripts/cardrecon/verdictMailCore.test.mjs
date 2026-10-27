@@ -125,8 +125,8 @@ describe("REJECTED — every reason the confirmer can refuse names its check", (
     },
     {
       name: "unparseable — no reader for this bank's format",
-      record: decide({ p: { ok: false, reason: noReaderReason("nedbank.co.za") } }),
-      outcome: "refused-parse", check: "Unreadable notification", says: /No payment-notification reader exists for nedbank\.co\.za/,
+      record: decide({ p: { ok: false, reason: noReaderReason("tymebank.co.za") } }),
+      outcome: "refused-parse", check: "Unreadable notification", says: /No payment-notification reader exists for tymebank\.co\.za/,
     },
   ];
 
