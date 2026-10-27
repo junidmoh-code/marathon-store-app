@@ -123,7 +123,26 @@ try {
     else {
       // The server's clock, not this machine's (serverNowMs, as in the poller).
       const offset = (await db.ref(".info/serverTimeOffset").once("value")).val() || 0;
-      const res = await db.ref(path).transaction(settledClaimStep({ spenderKey, refusedKey: refusedKeys[0], at: Date.now() + offset }));
+      // A claim already held by a record OUTSIDE these copies and the spender
+      // is some other pool record of this money — stamping spentBy over it
+      // would silently make that record unspendable. Refused, inside the
+      // transaction so a retry sees the same rule; Junid looks at it.
+      // (CodeRabbit, this PR.)
+      const owners = new Set([spenderKey, ...refusedKeys]);
+      const step = settledClaimStep({ spenderKey, refusedKey: refusedKeys[0], at: Date.now() + offset });
+      let foreign = null;
+      const res = await db.ref(path).transaction((existing) => {
+        foreign = null;
+        if (existing && typeof existing === "object" && typeof existing.poolKey === "string" && !owners.has(existing.poolKey)) {
+          foreign = existing.poolKey;
+          return undefined;
+        }
+        return step(existing);
+      });
+      if (foreign) {
+        console.error(`✗ ${path} is held by ${foreign}, which is not one of these copies or the spender — nothing written. Check that record by hand.`);
+        process.exitCode = 1;
+      }
       console.log(`${res.committed ? "✓ marked spent" : "· unchanged (a spender is already recorded)"}: ${JSON.stringify(res.snapshot.val())}`);
     }
   }
