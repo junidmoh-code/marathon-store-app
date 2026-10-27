@@ -101,6 +101,10 @@ describe("bank date 2026-10-20 .. 2026-10-26: immediate only", () => {
     expect(c.reason).toMatch(/before 2026-10-27 must be immediate/);
     expect(ned("26/10/2026", "Internet payment").outcome).toBe("refused-not-immediate");
   });
+  it("2026-10-23 (mid-window) immediate → accepted, regular → refused", () => {
+    expect(cap("23/10/2026 14:00", "Immediate Payment").outcome).toBe("recorded");
+    expect(cap("23/10/2026 14:00", "Regular Payment").outcome).toBe("refused-not-immediate");
+  });
   it("2026-10-20 (the first live day) immediate → accepted, regular → refused", () => {
     expect(cap("20/10/2026 00:00", "Immediate Payment").outcome).toBe("recorded");
     expect(cap("20/10/2026 00:00", "Regular Payment").outcome).toBe("refused-not-immediate");
@@ -152,6 +156,17 @@ describe("a reader with no immediate signal: pre-27 refused, 27+ accepted", () =
 describe("every other check is unchanged on a 27+ payment", () => {
   it("future-dated (dated after its notification arrived) still refuses", () => {
     expect(cap("30/10/2026 10:15", "Regular Payment").outcome).toBe("refused-not-immediate");
+  });
+  it("a date-only bank's TOMORROW arriving at 23:50 SAST is future-dated, not slipped under the 15-minute tolerance", () => {
+    const lines = nedbank("28/10/2026", "Internet payment");
+    const reader = selectReader({ fromDomain: "nedbank.co.za", lines });
+    const parsed = reader.parse(lines);
+    const late = Date.parse("2026-10-27T23:50:00+02:00");
+    expect(parsed.bankTs - late).toBeLessThan(15 * 60 * 1000);
+    expect(immediacyVerdict({ parsed, reader: reader.id, receivedAt: late }).reason).toMatch(/future-dated/);
+    // …while the same day, arriving the same evening, is fine.
+    const today = reader.parse(nedbank("27/10/2026", "Internet payment"));
+    expect(immediacyVerdict({ parsed: today, reader: reader.id, receivedAt: late })).toEqual({ ok: true });
   });
   it("wrong account still refuses", () => {
     const lines = capitec("27/10/2026 10:15", "Regular Payment").map((l) => (l.startsWith("Account number") ? "Account number 62900009999" : l));

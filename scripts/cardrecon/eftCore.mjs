@@ -661,8 +661,13 @@ export function immediacyRequiredFor(bankTs) {
  */
 export function immediacyVerdict({ parsed, reader, receivedAt }) {
   const id = reader ?? parsed?.reader ?? null;
+  // Future-dated by the clock (15-minute tolerance) OR by the SAST calendar
+  // day: a date-only bank (Nedbank, Absa) prints tomorrow as tomorrow's
+  // midnight, which a notification arriving after 23:45 would otherwise slip
+  // under the tolerance — and from 27 Oct nothing else stops it. (Sonnet
+  // architect review, date-phased PR.)
   if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)
-    && parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS) {
+    && (parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS || sastDate(parsed.bankTs) > sastDate(receivedAt))) {
     return { ok: false, reason: "The payment is dated after its notification arrived — a scheduled / future-dated payment, not an immediate one." };
   }
   if (!immediacyRequiredFor(parsed?.bankTs)) return { ok: true };

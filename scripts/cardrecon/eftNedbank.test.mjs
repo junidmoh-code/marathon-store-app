@@ -294,3 +294,24 @@ describe("the 27 Oct R350, settled by hand by Junid, can never re-float", () => 
   });
 });
 
+// ─── DATE-PHASED: A 27 OCT INTERNET PAYMENT IS ACCEPTED — DEDUPE STILL HOLDS ─
+describe("dated 27 Oct, the real 'Internet payment' is recorded — and every copy guard still holds", () => {
+  it("the real notification is recorded, spendable", () => {
+    expect(decide(REAL_NEDBANK_2710).record).toMatchObject({ outcome: "recorded", status: "unmatched", reader: "nedbank" });
+  });
+  it("a resend of it is held, never a second spendable record", () => {
+    const store = new Map();
+    expect(ingest(store, KEY_A, decide(REAL_NEDBANK_2710, { n: 1 }).record)).toMatchObject({ outcome: "recorded", status: "unmatched" });
+    expect(ingest(store, KEY_B, decide(REAL_NEDBANK_2710, { n: 2 }).record)).toMatchObject({ outcome: "held-duplicate", duplicateOf: KEY_A });
+  });
+  it("a hand-settled payment's copies stay held, and the settle refuses them", () => {
+    const fp = paymentFingerprint({ reader: "nedbank", bankRef: "1a2b3c4d-1111-2222-a333-0b0c0d0e0f1" });
+    const store = new Map([[fp, settledClaimStep({ spenderKey: MANUAL_KEY, refusedKey: KEY_A, at: RECEIVED })(null)]]);
+    expect(ingest(store, KEY_B, decide(REAL_NEDBANK_2710).record)).toMatchObject({ outcome: "held-duplicate", duplicateOf: MANUAL_KEY });
+    expect(claimHolderCheck({ poolKey: KEY_B, holder: MANUAL_KEY, spentBy: MANUAL_KEY })).toMatchObject({ ok: false, code: "duplicate-used" });
+  });
+  it("wrong bank and forged mail still refuse", () => {
+    expect(decide(swap("Bank FIRST NATIONAL BANK", "Bank NEDBANK")).record.outcome).toBe("refused-account");
+    expect(decide(REAL_NEDBANK_2710, { auth: FORGED_AUTH }).record.outcome).toBe("refused-auth");
+  });
+});
