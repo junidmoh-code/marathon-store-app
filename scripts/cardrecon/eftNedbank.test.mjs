@@ -13,7 +13,7 @@ import {
   authenticationVerdict, destinationVerdict, immediacyVerdict, paymentDateVerdict,
   parsePaymentDateCutoff, parseAllowedAccounts, eftPoolRecord, applyFingerprintHold,
   applyRefusalFingerprint, refusalFingerprint, paymentFingerprint, fingerprintClaimStep,
-  rereadRefusal, settledFingerprintPlan, settledClaimStep, redactAccountDigits, sastDate,
+  rereadRefusal, settledFingerprintPlan, settledClaimStep, redactAccountDigits, sastDate, parseRequireImmediate,
 } from "./eftCore.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
@@ -288,5 +288,53 @@ describe("the 27 Oct R350, settled by hand by Junid, can never re-float", () => 
     expect(rereadRefusal({ record: { ...refusedParse, reader: "nedbank" }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
     expect(rereadRefusal({ record: { ...refusedParse, outcome: "refused-not-immediate" }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
     expect(rereadRefusal({ record: refusedParse, readerId: "nedbank", parse: { ok: false, reason: "x" }, docText, fetched: FETCHED }).ok).toBe(false);
+  });
+});
+
+// ─── JUNID, 27 OCT 2026: NON-IMMEDIATE IS ACCEPTED WHEN CLEAN ───────────────
+describe("immediate is no longer required (EFT_REQUIRE_IMMEDIATE unset — the poller's default)", () => {
+  /** The poller's chain with the poller's default flag. */
+  const live = (lines, opts = {}) => {
+    const reader = selectReader({ fromDomain: "nedbank.co.za", lines });
+    const parsed = reader.parse(lines);
+    const account = destinationVerdict({ accountMask: parsed.accountMask, destBankName: parsed.destBankName, allowedAccounts: ALLOWED, configured: true });
+    const received = opts.received ?? RECEIVED;
+    const timing = immediacyVerdict({ parsed, reader: reader.id, receivedAt: received, requireImmediate: parseRequireImmediate(opts.flag) });
+    const dated = paymentDateVerdict({ parsed, cutoff: parsePaymentDateCutoff(undefined) });
+    return eftPoolRecord({ message: { ...message(opts.n ?? 1), receivedAt: received }, verdict: opts.auth ?? NED_AUTH, parsed, account, timing, dated, reader: reader.id, rawText: lines.join("\n"), at: received + 5000 });
+  };
+  it("the real 'Channel Internet payment' notification is now recorded, spendable", () => {
+    expect(live(REAL_NEDBANK_2710)).toMatchObject({ outcome: "recorded", status: "unmatched", amountCents: 35000, reader: "nedbank" });
+  });
+  it("an unknown channel is accepted too — immediacy no longer decides", () => {
+    expect(live(swap("Channel Internet payment", "Channel App payment")).outcome).toBe("recorded");
+  });
+  it("still clean-only: future-dated, wrong account, wrong bank, before the cutoff, forged — all refuse", () => {
+    expect(live(swap("Date of Payment : 27/10/2026", "Date of Payment : 30/10/2026")).outcome).toBe("refused-not-immediate");
+    expect(live(swap("Account Number ...004321", "Account Number ...998877")).outcome).toBe("refused-account");
+    expect(live(swap("Bank FIRST NATIONAL BANK", "Bank NEDBANK")).outcome).toBe("refused-account");
+    expect(live(swap("Date of Payment : 27/10/2026", "Date of Payment : 19/10/2026")).outcome).toBe("refused-stale-date");
+    expect(live(REAL_NEDBANK_2710, { auth: FORGED_AUTH }).outcome).toBe("refused-auth");
+  });
+  it("a resend of an accepted Internet payment is held, never a second spendable record", () => {
+    const store = new Map();
+    expect(ingest(store, KEY_A, live(REAL_NEDBANK_2710, { n: 1 }))).toMatchObject({ outcome: "recorded", status: "unmatched" });
+    expect(ingest(store, KEY_B, live(REAL_NEDBANK_2710, { n: 2 }))).toMatchObject({ outcome: "held-duplicate", duplicateOf: KEY_A });
+  });
+  it("a hand-settled payment's copies stay held even now that Internet payments are accepted", () => {
+    const fp = paymentFingerprint({ reader: "nedbank", bankRef: "1a2b3c4d-1111-2222-a333-0b0c0d0e0f1" });
+    const store = new Map([[fp, settledClaimStep({ spenderKey: MANUAL_KEY, refusedKey: KEY_A, at: RECEIVED })(null)]]);
+    const rec = ingest(store, KEY_B, live(REAL_NEDBANK_2710));
+    expect(rec).toMatchObject({ outcome: "held-duplicate", duplicateOf: MANUAL_KEY });
+    expect(claimHolderCheck({ poolKey: KEY_B, holder: MANUAL_KEY, spentBy: MANUAL_KEY }).ok).toBe(false);
+  });
+  it("EFT_REQUIRE_IMMEDIATE=yes restores the immediate-only rule", () => {
+    for (const v of ["yes", "YES", "true", "1", "on"]) expect(parseRequireImmediate(v), v).toBe(true);
+    for (const v of [undefined, "", "no", "false", "0", "off", "nonsense"]) expect(parseRequireImmediate(v), String(v)).toBe(false);
+    expect(live(REAL_NEDBANK_2710, { flag: "yes" }).outcome).toBe("refused-not-immediate");
+  });
+  it("the pure function's own default stays strict (a caller that forgets the flag refuses)", () => {
+    const parsed = selectReader({ fromDomain: "nedbank.co.za", lines: REAL_NEDBANK_2710 }).parse(REAL_NEDBANK_2710);
+    expect(immediacyVerdict({ parsed, reader: "nedbank", receivedAt: RECEIVED }).ok).toBe(false);
   });
 });

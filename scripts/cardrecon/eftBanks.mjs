@@ -476,7 +476,9 @@ const capitec = {
 // "Immediate payment: N" says the money may only land by midnight rather than
 // at once. Junid decided (fix 7b) that only an immediate payment may become a
 // spendable record, so the reader returns it as `immediate` and the pool
-// refuses anything not immediate (eftCore.mjs immediacyVerdict).
+// refuses anything not immediate (eftCore.mjs immediacyVerdict) — only while
+// EFT_REQUIRE_IMMEDIATE=yes since 27 Oct 2026; by default a clean
+// non-immediate payment is accepted and `immediate` is informational.
 const ABSA_LABELISH = /.+:\s*$|.+:\s.+/;
 function absaLabelValue(lines, re, what) {
   const hits = [];
@@ -622,6 +624,9 @@ const absa = {
 // that prints anything else refuses as unreadable until a reader is taught it.
 // Any other channel ("App payment", "Branch", …) is unknown: null, refused.
 // Like Standard Bank's, the footer is the same on every copy and is never read.
+// SINCE 27 OCT 2026 THIS ONLY DECIDES WHEN EFT_REQUIRE_IMMEDIATE=yes. Junid
+// accepts clean non-immediate payments, so by default an "Internet payment"
+// is recorded and the channel is informational (eftCore immediacyVerdict).
 //
 // THE DATE IS DAY-FIRST and carries no time: "27/10/2026" can only be 27 Oct.
 // capitecTimestamp already reads that shape exactly (and refuses 31/02); a
