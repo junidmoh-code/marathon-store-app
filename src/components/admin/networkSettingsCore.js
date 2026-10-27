@@ -9,6 +9,7 @@
 import {
   NETWORK_PATH, DEFAULT_CATEGORY, CREDIT_SCOPES, AUTO_REFILL_MODES, locationOf, seedPayload, normalizeNetwork,
 } from "../../utils/networkRegistry";
+import { DEFAULT_LOCATIONS } from "../stock/locations";
 
 const stamp = (nowMs, uid) => ({ [`${NETWORK_PATH}/updatedAt`]: nowMs, [`${NETWORK_PATH}/updatedBy`]: uid || null });
 const fail = (error) => ({ ok: false, error });
@@ -86,8 +87,9 @@ export function creditScopeUpdate(scope, nowMs, uid, currentScope = null) {
 // two new locations in /locations ONLY when they are absent — the movement
 // rule validates from/to against /locations, so stock cannot be received at
 // Concrete until they exist. Existing /locations records are never touched.
+// ONE definition: the record is the DEFAULT_LOCATIONS seed entry.
 const NEW_STOCK_LOCATIONS = Object.freeze({
-  concrete: { id: "concrete", label: "Concrete", kind: "store", sellable: true, active: true },
+  [SWITCHABLE_STORE]: { ...DEFAULT_LOCATIONS.find((l) => l.id === SWITCHABLE_STORE) },
 });
 
 export function seedUpdate(rawNetwork, stockLocations, nowMs, uid) {

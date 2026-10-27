@@ -39,6 +39,10 @@ export const DEFAULT_LOCATIONS = [
   { id: "marathon-pe",   label: "Marathon PE",    kind: "store",     sellable: true,  active: true },
   { id: "trophy",        label: "Trophy",         kind: "store",     sellable: true,  active: true },
   { id: "marathon-pine", label: "Pine",           kind: "store",     sellable: true,  active: true },
+  // Concrete (Section 1, with Pine and Hub 3) — a STORE with no stockroom:
+  // stock sent to it lands in the shop. The live /locations record is this
+  // one; "Set up the network" registers it from here (networkSettingsCore).
+  { id: "concrete",      label: "Concrete",       kind: "store",     sellable: true,  active: true },
   { id: "in_transit",    label: "In Transit",     kind: "transit",   sellable: false, active: true },
 ];
 
