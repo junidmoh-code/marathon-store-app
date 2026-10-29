@@ -106,6 +106,9 @@
 //                   spender — so the bank's later notification is filed as
 //                   already settled, never floated again. Floats nothing;
 //                   manual entry (above) stays instant and proof-free.
+//                   A PHOTO (jpg/png/heic) is accepted too: Junid types the
+//                   identity from it (no OCR) and the image is kept in
+//                   Storage at eftProofs/{key}/{entryId}.{ext}.
 //   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry,functions:eftPoolManualApprove
 
 "use strict";
@@ -142,13 +145,15 @@ const {
 } = require("../lib/eft-manual.cjs");
 const {
   MANUAL_APPROVED_LOG_PATH, MANUAL_APPROVED_LIST_LIMIT, MANUAL_APPROVED_BY,
-  approvedKeyOf, approvedInputCheck, proofIdentityOf, manualApprovedRecord, isManualApproved,
+  approvedKeyOf, approvedInputCheck, keyedIdentityCheck, proofStoragePathOf, proofIdentityOf, manualApprovedRecord, isManualApproved,
   approvedClaimDecision, approvedClaimStep, approvedTwinSettleCheck, approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
 } = require("../lib/eft-manual-approved.cjs");
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
 const { parseAllowedAccounts, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
 const { maskAccountValue } = require("../lib/eft-text.cjs");
 const { pdfToLines } = require("../cardRecon/pdfText.js");
+const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
+const { createHash } = require("node:crypto");
 const { issuingStamp } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 
@@ -1023,19 +1028,43 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   const input = approvedInputCheck(data);
   if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
 
-  // THE DOCUMENT → LINES → READER → PARSE, exactly the poller's path.
-  const extracted = await pdfToLines(input.pdf, { grouping: "bucket" });
-  if (!extracted.ok) throw new HttpsError("invalid-argument", extracted.reason, { code: "unreadable-proof" });
-  const reader = selectReaderByContent(extracted.lines);
-  if (!reader) {
-    throw new HttpsError("invalid-argument", "That PDF is not a payment notification this pool has a reader for (Standard Bank, FNB, Capitec, Absa, Nedbank). Float the payment by hand instead.", { code: "no-reader" });
+  const configured = String(eftAllowedAccounts.value() ?? "").trim();
+  let reader, parse, lines, alsoSyntheticRef = null;
+  if (input.kind === "image") {
+    // A PHOTO: nothing to parse, and no OCR. Junid typed the identity from
+    // it; keyedIdentityCheck shapes those fields as the bank's reader would
+    // have parsed them, so the identity below is the poller's own.
+    // The destination of a photo is checked by keyedDestinationOf against the
+    // allowlist (nothing printed to read); with no usable allowlist, refuse
+    // as the PDF path does rather than key against nothing.
+    const allowedAccounts = parseAllowedAccounts(configured);
+    if (!allowedAccounts.length) {
+      const reason = configured
+        ? `${EFT_ACCOUNTS_ENV_VAR} is set but holds no usable account number. Every proof refuses here until it is fixed.`
+        : `No account allowlist is configured for Cloud Functions — set the ${EFT_ACCOUNTS_ENV_VAR} secret (firebase functions:secrets:set). Until then every proof refuses here, deliberately.`;
+      throw new HttpsError("failed-precondition", reason, { code: "wrong-destination" });
+    }
+    const keyed = keyedIdentityCheck(data, { allowedAccounts, now });
+    if (!keyed.ok) throw new HttpsError("invalid-argument", keyed.message, { code: keyed.code });
+    reader = { id: keyed.readerId };
+    parse = keyed.parse;
+    lines = keyed.lines;
+    alsoSyntheticRef = keyed.alsoSyntheticRef;
+  } else {
+    // THE DOCUMENT → LINES → READER → PARSE, exactly the poller's path.
+    const extracted = await pdfToLines(input.pdf, { grouping: "bucket" });
+    if (!extracted.ok) throw new HttpsError("invalid-argument", extracted.reason, { code: "unreadable-proof" });
+    reader = selectReaderByContent(extracted.lines);
+    if (!reader) {
+      throw new HttpsError("invalid-argument", "That PDF is not a payment notification this pool has a reader for (Standard Bank, FNB, Capitec, Absa, Nedbank). Float the payment by hand instead.", { code: "no-reader" });
+    }
+    parse = reader.parse(extracted.lines);
+    lines = extracted.lines;
   }
-  const parse = reader.parse(extracted.lines);
   const identity = proofIdentityOf(parse, reader.id);
   if (!identity.ok) throw new HttpsError("failed-precondition", identity.message, { code: identity.code, reader: reader.id });
 
   // PAID INTO THE SHOP'S OWN ACCOUNT — the poller's own check, same code.
-  const configured = String(eftAllowedAccounts.value() ?? "").trim();
   const account = destinationVerdict({
     accountMask: parse.accountMask, destBankName: parse.destBankName,
     allowedAccounts: parseAllowedAccounts(configured), configured: !!configured,
@@ -1071,17 +1100,77 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   if (decision.action === "refuse") {
     throw new HttpsError("failed-precondition", decision.message, { code: decision.code, key: decision.key ?? null });
   }
+  // A PHOTO OF AN ABSA PROOF with both a transaction number and a payer also
+  // claims the synthetic identity (lib: keyedIdentityCheck) — judged by the
+  // same decision, so a bank record waiting under it refuses here too.
+  const also = alsoSyntheticRef ? { fingerprint: paymentFingerprint({ reader: reader.id, syntheticRef: alsoSyntheticRef }) } : null;
+  if (also?.fingerprint && also.fingerprint !== identity.fingerprint) {
+    also.path = `${EFT_FINGERPRINT_PATH}/${also.fingerprint}`;
+    const alsoClaim = (await db.ref(also.path).once("value")).val();
+    const alsoHolder = alsoClaim && typeof alsoClaim === "object" && typeof alsoClaim.poolKey === "string" && alsoClaim.poolKey !== key
+      ? (await db.ref(`${EFT_POOL_PATH}/${alsoClaim.poolKey}`).once("value")).val()
+      : null;
+    also.decision = approvedClaimDecision({ approvedKey: key, claim: alsoClaim, holderRecord: alsoHolder, now });
+    if (also.decision.action === "refuse") {
+      throw new HttpsError("failed-precondition", also.decision.message, { code: also.decision.code, key: also.decision.key ?? null });
+    }
+  }
+  // THE PHOTO IS THE EVIDENCE: stored before the claim and the record are
+  // written (the slip photos' order), with the Admin SDK — no client writes
+  // eftProofs/. A claim or record that does not land takes the file back out.
+  let proof = null;
+  if (input.kind === "image") {
+    const sha256 = createHash("sha256").update(input.image).digest("hex");
+    proof = {
+      kind: "image",
+      path: proofStoragePathOf(key, input.entryId, sha256, input.imageType.ext),
+      contentType: input.imageType.contentType,
+      bytes: input.image.length,
+      sha256,
+      alsoFingerprint: also?.path ? also.fingerprint : null,
+    };
+    try {
+      // Create-only: the path names the bytes, so an existing file IS this
+      // image (a retry) — never overwritten.
+      await admin.storage().bucket(STORAGE_BUCKET).file(proof.path).save(input.image, {
+        resumable: false,
+        contentType: proof.contentType,
+        preconditionOpts: { ifGenerationMatch: 0 },
+        metadata: { cacheControl: "private, max-age=31536000, immutable" },
+      });
+    } catch (err) {
+      if (err?.code !== 412) throw err;
+    }
+  }
+  const dropProof = async () => {
+    if (proof) { try { await admin.storage().bucket(STORAGE_BUCKET).file(proof.path).delete(); } catch { /* best effort */ } }
+  };
   let claimed = null;
-  await db.ref(claimPath).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: decision.holder ?? null }, (d) => { claimed = d; }));
+  try {
+    await db.ref(claimPath).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: decision.holder ?? null }, (d) => { claimed = d; }));
+  } catch (err) { await dropProof(); throw err; }
   if (claimed?.spentBy !== key) {
+    await dropProof();
     throw new HttpsError("aborted", "The payment's identity changed hands while this was being registered — check the pool and try again.", { code: "claim-moved", holder: claimed?.holder ?? null });
+  }
+  if (also?.path) {
+    let alsoClaimed = null;
+    try {
+      await db.ref(also.path).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: also.decision.holder ?? null }, (d) => { alsoClaimed = d; }));
+    } catch (err) { await dropProof(); throw err; }
+    if (alsoClaimed?.spentBy !== key) {
+      // The primary claim stays this approval's; a retry finds it "own" and
+      // tries the synthetic identity again.
+      await dropProof();
+      throw new HttpsError("aborted", "The payment's identity changed hands while this was being registered — check the pool and try again.", { code: "claim-moved", holder: alsoClaimed?.holder ?? null });
+    }
   }
 
   const built = manualApprovedRecord({
-    key, readerId: reader.id, parse, lines: extracted.lines, identity, destination, actor, at: now,
-    note: input.note, filename: input.filename, entryId: input.entryId,
+    key, readerId: reader.id, parse, lines, identity, destination, actor, at: now,
+    note: input.note, filename: input.filename, entryId: input.entryId, proof,
   });
-  if (!built.ok) throw new HttpsError("internal", built.message, { code: built.code });
+  if (!built.ok) { await dropProof(); throw new HttpsError("internal", built.message, { code: built.code }); }
   const record = built.value;
   // THE LOG ROW FIRST, create-only, then the record create-if-absent — the
   // manual entry's order, for the manual entry's reasons.
@@ -1091,11 +1180,13 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   if (already) {
     const winner = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
     if (winner?.manualApproved?.at !== now) await db.ref(`${MANUAL_APPROVED_LOG_PATH}/${approvedLogKeyOf(now, key)}`).remove();
+    // A concurrent upload won: its photo is the evidence, this one is spare.
+    if (proof && winner?.manualApproved?.proof?.path !== proof.path) await dropProof();
     if (winner && isManualApproved(winner)) return approvedResponse({ ...winner, approvedKey: key }, { already: true });
   }
   // The key, the bank and the amount only: the reference is the payer's
   // (often a phone number) and the note is free text — neither belongs in a log.
-  console.log(`EFT_MANUAL_APPROVED: ${key} ${reader.id} ${record.amountCents}c ${identity.synthetic ? "synthetic identity" : "bank id"}${decision.action === "spend" ? ` (spent the id held by refused ${decision.holder})` : ""} by ${MANUAL_APPROVED_BY} (${actor.uid})`);
+  console.log(`EFT_MANUAL_APPROVED: ${key} ${reader.id} ${record.amountCents}c ${identity.synthetic ? "synthetic identity" : "bank id"}${proof ? " keyed from a photo" : ""}${decision.action === "spend" ? ` (spent the id held by refused ${decision.holder})` : ""} by ${MANUAL_APPROVED_BY} (${actor.uid})`);
   return approvedResponse(record, { already: false });
 });
 

@@ -130,3 +130,41 @@ deploy (created 29 Oct 2026, version 1, same value as the mini's `.env`):
     firebase deploy --only functions:eftPoolManualApprove   # new; binds EFT_ALLOWED_ACCOUNTS
     firebase deploy --only functions:eftPoolSettle          # releaseHold accepts held-possible-duplicate
     # the poller: git pull on ~/marathon-store-app, restart com.marathon.cardreconpoll
+
+## A photo of the proof (29 Oct 2026, later)
+
+`eftPoolManualApprove` also takes a **photo / screenshot** (JPEG, PNG or HEIC,
+told apart by magic bytes, ≤ 7 MB). It is **not OCR'd**: Junid types the
+identity and `keyedIdentityCheck` shapes it as the bank's reader would have
+parsed it, so `proofIdentityOf` builds the poller's own fingerprint. From
+there it is the PDF path unchanged (destination, claim, record, log).
+
+Input (alongside `entryId`, optional `filename`, `note`):
+
+| field | |
+|---|---|
+| `imageBase64` | the image (a `data:` prefix is fine). Never together with `pdfBase64`. |
+| `bank` | `standardbank` · `fnb` · `capitec` · `absa` · `nedbank` |
+| `amountCents` | positive integer |
+| `paymentDate` | `YYYY-MM-DD`, the bank's payment day (SAST); not future, ≤ 1 year old |
+| `reference` | the payer's reference as shown (1–80 chars); may be empty only on Absa without a transaction id |
+| `bankRef` | the bank's transaction id — **required except Absa**. Copy the label the poller reads: Standard Bank **Reference number**, FNB **Trace ID**, Capitec **Notification number**, Absa **Transaction number**, Nedbank **Reference Number** (spaces/case ignored). A mistyped id cannot be caught here; the settle's twin rule (same amount + reference, on/after the day) still refuses the bank's copy at the till |
+| `payer` | as shown — **required on Absa without a transaction id** (the synthetic identity uses it) |
+| `accountTail` | optional destination account digits; empty = the shop's own. Required when `EFT_ALLOWED_ACCOUNTS` holds more than one account (Absa's synthetic identity carries the last four) |
+
+The image is stored with the Admin SDK at
+`eftProofs/{approval key}/{entryId}-{sha256[0..16]}.{jpg|png|heic}`, create-only (bucket
+`marathon-club.firebasestorage.app`; no client rule — clients cannot read or
+write it; view it in the Firebase console — there is no client read rule) and recorded on `manualApproved.proof {kind, path, contentType,
+bytes, sha256}` with `manualApproved.keyedByHand: true`. The response adds
+`keyedByHand: true` and `proofPath`. A refused claim deletes the stored file.
+
+The keyed payer is redacted exactly as the reader redacts it (account-like
+digit runs) so the synthetic identity matches. An **Absa photo with both a
+transaction number and a payer also claims the synthetic identity**
+(`manualApproved.alsoFingerprint`): the app screenshot and the emailed
+notice can disagree on whether the number is printed, and whichever the
+notice carries is taken. Error codes: `bad-bank`, `bad-amount`, `bad-date`,
+`bad-reference`, `bad-payer`, `bad-bank-ref`, `bank-ref-required`,
+`payer-required`, `bad-account`, `account-required`, `wrong-destination`,
+`not-an-image`, `bad-proof`, `proof-too-big`, `two-proofs`.
