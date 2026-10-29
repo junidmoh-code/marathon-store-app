@@ -85,7 +85,22 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
   const worst = (req, role) => fr.worstCaseUSD(req, { cachedTokens: trusted(role) });
   // A request's input at its worst (no output), and the output ceiling the
   // budget left can pay for after `keep` more dollars are held back.
-  const inputWorst = (req, role) => worst({ ...req, maxTokens: 0 }, role);
+  //
+  // Once a role has made a call, its prompt's real token counts are known
+  // (the API's usage): the next request of that role is priced from them,
+  // its cached prefix at the read rate (while trusted) and only what it adds
+  // estimated (2 characters a token) at the write rate. Estimating the whole
+  // 18,000-character prompt again left Thursday's Louboutin rebuild 750
+  // tokens of room in round 2 when the real figure was ~1,300 (29 Oct).
+  const last = { stylist: null, critic: null };
+  const estTok = (req) => Math.ceil(fr.worstCaseUSD({ ...req, maxTokens: 0 }) * 1e6 / fr.PRICE.cacheWritePerMtok);
+  const inputWorst = (req, role) => {
+    const l = last[role];
+    if (!l || !l.usage || !trusted(role)) return worst({ ...req, maxTokens: 0 }, role);
+    const prefix = (Number(l.usage.cache_read_input_tokens) || 0) + (Number(l.usage.cache_creation_input_tokens) || 0);
+    const added = Math.max(0, estTok(req) - estTok(l.req));
+    return (prefix * fr.PRICE.cacheReadPerMtok + ((Number(l.usage.input_tokens) || 0) + added) * fr.PRICE.cacheWritePerMtok) / 1e6;
+  };
   const OUT = fr.PRICE.outPerMtok / 1e6;
   const ceiling = (inUSD, max, keep = 0) => Math.min(max, Math.floor((budgetUSD - spent - inUSD - keep) / OUT));
   // The last critic request, re-priced at each round start: its rulebook
@@ -119,6 +134,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
     }
     spent += answer.costUSD;
     cached.stylist = answer.cachedTokens || 0; cachedAt.stylist = now();
+    last.stylist = { req: sreq, usage: answer.usage || null };
     const read = fr.readStylistAnswer(answer.json, { ...offer, banned });
     if (!read.ok) {
       rounds.push({ round, fit: summary(read.fit), problems: read.problems, costUSD: answer.costUSD });
@@ -154,6 +170,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
     }
     spent += crit.costUSD;
     cached.critic = crit.cachedTokens || 0; cachedAt.critic = now();
+    last.critic = { req: creq, usage: crit.usage || null };
     const verdict = fr.readCriticAnswer(crit.json);
     if (verdict.ok && deps.remember) { try { await deps.remember(verdict.seen, fit.pieces); } catch (e) { log(`fit: the photo notes were not saved (${String(e && e.message).slice(0, 80)})`); } }
     const entry = { round, fit: summary(fit), costUSD: answer.costUSD + crit.costUSD };
