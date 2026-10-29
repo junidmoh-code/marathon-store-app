@@ -57,8 +57,8 @@ export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, absaSyn
 // functions/lib/eft-banks.cjs, shared with eftPoolManualApprove) can use them
 // from Cloud Functions. Re-exported here unchanged: every importer still reads
 // them from eftCore.
-const { parseBankTimestamp, redactAccountDigits, sastDate } = require("./lib/eft-text.cjs");
-export { parseBankTimestamp, redactAccountDigits, sastDate };
+const { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue } = require("./lib/eft-text.cjs");
+export { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue };
 const { parseAllowedAccounts, destinationVerdict, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR } = require("./lib/eft-destination.cjs");
 export { parseAllowedAccounts, destinationVerdict, EFT_ACCOUNTS_ENV_VAR };
 
@@ -335,18 +335,7 @@ export function htmlToText(html) {
 // redactAccountDigits lives in functions/lib/eft-text.cjs (re-exported above):
 // any run of six or more digits keeps its last three, dates excepted.
 
-/**
- * The stored/rendered form of a destination account value. Today's banks print
- * it masked already ("XXXXXXXXXXXX6625") and this changes nothing — but a bank
- * that prints the FULL number must not put a complete account number into the
- * database and onto a screen. Digits beyond the last four become X.
- * (Independent adversarial review, v2.)
- */
-export function maskAccountValue(value) {
-  const s = String(value ?? "");
-  if (!s) return null;
-  return s.replace(/\d(?=(?:\D*\d){4})/g, "X");
-}
+// maskAccountValue: functions/lib/eft-text.cjs, re-exported above.
 
 // A cheap "is this even about a payment?" cue, used ONLY to decide whether an
 // unrecognised bank message deserves a pool refusal or is ordinary bank mail

@@ -4156,13 +4156,19 @@ exports.shopifyInventoryHealthScan = onSchedule(
 // server-side): a typed reference + amount becomes a spendable pool record,
 // consumed once through the same settle, and shown at the till exactly like a
 // bank-confirmed payment (the provenance stays with Junid).
-//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry
+// eftPoolManualApprove (29 Oct 2026) is Junid's proof-of-payment ledger: an
+// uploaded proof is read by the same per-bank reader the poller uses and its
+// identity registered as approved by hand, so the bank's later notification
+// is filed as settled and never floated again. It floats nothing; manual
+// entry stays instant and proof-free. Reads the EFT_ALLOWED_ACCOUNTS secret.
+//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry,functions:eftPoolManualApprove
 exports.eftPoolSearch = require("./eftPool/eftPool.js").eftPoolSearch;
 exports.eftPoolSettle = require("./eftPool/eftPool.js").eftPoolSettle;
 exports.eftPoolReverse = require("./eftPool/eftPool.js").eftPoolReverse;
 exports.eftRemainderScan = require("./eftPool/eftPool.js").eftRemainderScan;
 exports.eftEnforcementStatus = require("./eftPool/eftPool.js").eftEnforcementStatus;
 exports.eftPoolManualEntry = require("./eftPool/eftPool.js").eftPoolManualEntry;
+exports.eftPoolManualApprove = require("./eftPool/eftPool.js").eftPoolManualApprove;
 
 // ─── ENGINE POLICY — setCategoryPolicy ────────────────────────────────────────
 // The ONLY supported way to change /config/refillEngine/categoryPolicy: the

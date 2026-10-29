@@ -89,4 +89,17 @@ function redactAccountDigits(text) {
     /^\d{4}-\d{2}-\d{2}( \d{2})?$/.test(run) ? run : `⋯${run.replace(/\D/g, "").slice(-3)}`);
 }
 
-module.exports = { clip, parseBankTimestamp, sastDate, redactAccountDigits, SAST_OFFSET_MS };
+/**
+ * The stored/rendered form of a destination account value. Today's banks print
+ * it masked already ("XXXXXXXXXXXX6625") and this changes nothing — but a bank
+ * that prints the FULL number must not put a complete account number into the
+ * database and onto a screen. Digits beyond the last four become X.
+ * (Independent adversarial review, v2.)
+ */
+function maskAccountValue(value) {
+  const s = String(value ?? "");
+  if (!s) return null;
+  return s.replace(/\d(?=(?:\D*\d){4})/g, "X");
+}
+
+module.exports = { clip, parseBankTimestamp, sastDate, redactAccountDigits, maskAccountValue, SAST_OFFSET_MS };
