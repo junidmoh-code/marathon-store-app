@@ -50,8 +50,17 @@ const require = createRequire(new URL("../../functions/package.json", import.met
 const { parseRandsToCents } = require("./lib/card-recon.cjs");
 // The payment fingerprint is SHARED with the settle callable — one definition,
 // so what the poller claims is exactly what the till's settle re-checks.
-const { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH } = require("./lib/eft-fingerprint.cjs");
-export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH };
+const { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, absaSyntheticRef, isSyntheticIdentity, syntheticIdentityOf } = require("./lib/eft-fingerprint.cjs");
+export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, absaSyntheticRef, isSyntheticIdentity, syntheticIdentityOf };
+// The bank-timestamp parser, the account-digit sweep and the SAST day moved to
+// functions/lib/eft-text.cjs on 29 Oct 2026 so the per-bank readers (now
+// functions/lib/eft-banks.cjs, shared with eftPoolManualApprove) can use them
+// from Cloud Functions. Re-exported here unchanged: every importer still reads
+// them from eftCore.
+const { parseBankTimestamp, redactAccountDigits, sastDate } = require("./lib/eft-text.cjs");
+export { parseBankTimestamp, redactAccountDigits, sastDate };
+const { parseAllowedAccounts, destinationVerdict, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR } = require("./lib/eft-destination.cjs");
+export { parseAllowedAccounts, destinationVerdict, EFT_ACCOUNTS_ENV_VAR };
 
 export const EFT_POOL_PATH = "eft_pool";
 
@@ -320,71 +329,11 @@ export function htmlToText(html) {
 }
 
 // ─── THE BANK'S OWN TIMESTAMP ────────────────────────────────────────────────
-// SA is UTC+2 with no daylight saving; the offset is a constant, same as the
-// card slips. Only shapes the bank is known to print are accepted; anything
-// else is null. (Until fix 8 a null date was cosmetic — the record landed and
-// receivedAt carried it. Now the date gates the money: paymentDateVerdict
-// refuses a payment whose bank date is null, and receivedAt never stands in.)
-const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
-const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-
-export function parseBankTimestamp(str) {
-  const s = String(str ?? "").trim();
-  if (!s) return null;
-  let y, mo, d, h = 0, mi = 0, sec = 0;
-  // 2026/08/30 14:41:56 · 2026-08-30 14:41
-  let m = /^(\d{4})[/-](\d{2})[/-](\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(s);
-  if (m) {
-    [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])];
-    if (m[4]) [h, mi, sec] = [Number(m[4]), Number(m[5]), Number(m[6] ?? 0)];
-  } else if ((m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2})h(\d{2})$/.exec(s))) {
-    // 2026-08-30 23h48 — Standard Bank's printed shape (real notification,
-    // 2026-08-30).
-    [y, mo, d, h, mi] = [Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])];
-  } else {
-    // 30 Aug 2026 · 30 August 2026 14:41
-    m = /^(\d{1,2}) ([A-Za-z]{3,9}) (\d{4})(?: (\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(s);
-    if (!m) return null;
-    const month = MONTHS[m[2].slice(0, 3).toLowerCase()];
-    if (month === undefined) return null;
-    [d, mo, y] = [Number(m[1]), month, Number(m[3])];
-    if (m[4]) [h, mi, sec] = [Number(m[4]), Number(m[5]), Number(m[6] ?? 0)];
-  }
-  if (d < 1 || d > 31 || h > 23 || mi > 59 || sec > 59) return null;
-  const utc = Date.UTC(y, mo, d, h, mi, sec) - SAST_OFFSET_MS;
-  // Date.UTC rolls Feb 30 into March; round-trip to refuse the phantom.
-  const check = new Date(utc + SAST_OFFSET_MS);
-  if (check.getUTCFullYear() !== y || check.getUTCMonth() !== mo || check.getUTCDate() !== d) return null;
-  return utc;
-}
+// parseBankTimestamp lives in functions/lib/eft-text.cjs (re-exported above).
 
 // ─── ACCOUNT NUMBERS DO NOT GET STORED ───────────────────────────────────────
-// The notification body can carry the paying account, and the raw text is kept
-// with every record precisely so refusals are diagnosable — so anything that
-// looks like an account number is struck out on the way in: any run of six or
-// more digits keeps its last three and loses the rest. Over-striking is the
-// right direction; the cost is a vaguer diagnostic, not a leaked account.
-// (The EXTRACTED reference is deliberately not swept: it is the customer's own
-// typed matching key — often a phone number — and destroying it would destroy
-// the thing the pool exists to search on. It is a field the payer chose to
-// write, not a field the bank printed about an account.)
-export function redactAccountDigits(text) {
-  if (typeof text !== "string" || !text) return text;
-  // Grouped forms too ("6283 4519 234", "62-834-519") — six or more digits
-  // however they are spaced or dashed. This eats grouped AMOUNTS as well,
-  // which is the accepted cost: over-striking a diagnostic is fine,
-  // under-striking an account is not. (Delta review.)
-  //
-  // EXCEPT A DATE. "2026-08-30 23h48" is digits joined by dashes and a space,
-  // and striking it out of a refusal's raw text deletes the very field the
-  // format is judged by. END-ANCHORED, deliberately: a run that merely STARTS
-  // like a date ("1234-56-789012", or an account riding one space after a
-  // real date) must still be swept — only a run that IS a date (plus at most
-  // the hour "23" that a "23h48" contributes before the 'h' breaks the run)
-  // is exempt. (Delta review, v2 — the prefix test exempted whole runs.)
-  return text.replace(/\d(?:[ -]?\d){5,}/g, (run) =>
-    /^\d{4}-\d{2}-\d{2}( \d{2})?$/.test(run) ? run : `⋯${run.replace(/\D/g, "").slice(-3)}`);
-}
+// redactAccountDigits lives in functions/lib/eft-text.cjs (re-exported above):
+// any run of six or more digits keeps its last three, dates excepted.
 
 /**
  * The stored/rendered form of a destination account value. Today's banks print
@@ -505,7 +454,7 @@ export function unknownBankRecord({ message, fromDomain, rawText, at }) {
 // unmatched tail refuses — each as outcome "refused-account", distinct from
 // auth and parse refusals, because the person reading the feed does different
 // things about them.
-export const EFT_ACCOUNTS_ENV_VAR = "EFT_ALLOWED_ACCOUNTS";
+// EFT_ACCOUNTS_ENV_VAR: functions/lib/eft-destination.cjs, re-exported above.
 
 /** "62123456625, 4009" → ["6625","4009"] — the last four digits of each entry. */
 export function parseAllowedAccountTails(raw) {
@@ -541,71 +490,10 @@ export function accountVerdict({ accountMask, allowedTails, configured }) {
 }
 
 // ─── FIX 7a: PAID INTO JUNID'S OWN FNB ACCOUNT ───────────────────────────────
-// accountVerdict above compares only the LAST FOUR digits and never looks at
-// the bank: a proof of payment to a Capitec or Absa account that happens to
-// end in the same four digits passed. destinationVerdict replaces it in the
-// poller and checks BOTH things every reader already parses from the real
-// documents (eftBanks.mjs): the destination BANK, which must be FNB by its own
-// printed name, and the destination ACCOUNT, which must agree with one of the
-// configured FULL account numbers on EVERY digit the document shows — all
-// eleven when Capitec or Absa print it whole, seven when FNB shows "..3456625",
-// four when Standard Bank masks it. Fewer than four visible digits is
-// uncheckable and refuses, as before.
-// Absa prints FNB's legal entity instead: "Beneficiary bank name: FIRSTRAND"
-// (real Absa notifications, 5 Oct 2026 — the 1 Sep sample printed "FIRST
-// NATIONAL BANK"). FNB is a division of FirstRand Bank Limited, and the full
-// account number is still checked digit for digit below. Exact names only —
-// "FIRSTRAND NAMIBIA" and the like stay refused.
-const FNB_BANK_NAMES = new Set(["FIRSTNATIONALBANK", "FNB", "FIRSTRAND", "FIRSTRANDBANK", "FIRSTRANDBANKLIMITED"]);
-
-/** "62900004321, 6200-000-9092" → ["62900004321","62000009092"] — full digit
- *  strings (at least four digits each); never logged. */
-export function parseAllowedAccounts(raw) {
-  return String(raw ?? "")
-    .split(",")
-    .map((s) => s.replace(/\D/g, ""))
-    .filter((digits) => digits.length >= 4);
-}
-
-/**
- * @returns {{ok:true, tail:string} | {ok:false, reason:string}}
- */
-export function destinationVerdict({ accountMask, destBankName, allowedAccounts, configured }) {
-  const bank = String(destBankName ?? "").toUpperCase().replace(/[^A-Z]/g, "");
-  if (!FNB_BANK_NAMES.has(bank)) {
-    return { ok: false, reason: destBankName
-      ? `This payment was made to "${clip(destBankName, 60)}", not to First National Bank — the shop is paid only into its own FNB account.`
-      : "The proof of payment does not say which bank the money was paid to, so it cannot be confirmed as paid into the shop's FNB account." };
-  }
-  const visible = String(accountMask ?? "").replace(/\D/g, "");
-  if (visible.length < 4) {
-    return { ok: false, reason: `The destination account prints as "${clip(accountMask, 40)}" — fewer than four visible digits, so it cannot be checked.` };
-  }
-  if (!Array.isArray(allowedAccounts) || !allowedAccounts.length) {
-    return { ok: false, reason: configured
-      ? `${EFT_ACCOUNTS_ENV_VAR} is set but holds no usable account number. Every payment refuses here until it is fixed.`
-      : `No account allowlist is configured — set ${EFT_ACCOUNTS_ENV_VAR} in the .env on the mini (the FULL account number). Until then every payment refuses here, deliberately.` };
-  }
-  const tail = visible.slice(-4);
-  const sameTail = allowedAccounts.filter((a) => a.endsWith(tail));
-  if (!sameTail.length) {
-    return { ok: false, reason: `This payment credits an account ending ${tail}, which is not the shop's own account.` };
-  }
-  // When the document prints the account IN FULL (no mask placeholder), it must
-  // EQUAL a configured account exactly — a complete printed number must not pass
-  // merely by being the suffix of a longer configured number. Suffix matching is
-  // for a genuinely MASKED number (Standard Bank "XXXX…6625", FNB "..776625"),
-  // where only the trailing digits are shown. (CodeRabbit, this PR.)
-  const masked = /[x*]/i.test(String(accountMask ?? "")) || /\.{2,}/.test(String(accountMask ?? ""));
-  const matches = masked
-    ? sameTail.some((a) => a.length >= visible.length && a.endsWith(visible))
-    : sameTail.some((a) => a === visible);
-  if (matches) return { ok: true, tail };
-  if (sameTail.every((a) => a.length < visible.length)) {
-    return { ok: false, reason: `The document prints ${visible.length} digits of the destination account but ${EFT_ACCOUNTS_ENV_VAR} holds only the last ${Math.max(...sameTail.map((a) => a.length))} — put the shop's full account number there so every printed digit can be checked.` };
-  }
-  return { ok: false, reason: `This payment credits an account ending ${tail} whose other printed digits are not the shop's own account.` };
-}
+// destinationVerdict, parseAllowedAccounts and FNB_BANK_NAMES live in
+// functions/lib/eft-destination.cjs since 29 Oct 2026 (eftPoolManualApprove
+// checks an uploaded proof's destination with the same code); re-exported
+// above, unchanged.
 
 // ─── FIX 7b: IMMEDIATE PAYMENTS ONLY ─────────────────────────────────────────
 // A notification for a scheduled, future-dated or normal-clearing payment is
@@ -737,11 +625,6 @@ export function parsePaymentDateCutoff(raw) {
     return { ok: false, reason: `${EFT_CUTOFF_ENV_VAR} reads "${clip(raw, 40)}", which is not a calendar date written YYYY-MM-DD (for example ${DEFAULT_EFT_PAYMENT_DATE_CUTOFF}).` };
   }
   return { ok: true, date: s, startMs };
-}
-
-/** The SAST calendar day of a bank timestamp, as the bank would print it. */
-export function sastDate(ms) {
-  return new Date(ms + SAST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
 /**
@@ -901,6 +784,11 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     beneficiaryName: clip(parsed.beneficiaryName, 120) || null,
     destBankName: clip(parsed.destBankName, 60) || null,
   };
+  // THE IDENTITY WITHOUT A BANK ID (29 Oct 2026): an Absa notice that prints
+  // no transaction number identifies itself by payer + account + day + amount
+  // + reference (syntheticIdentityOf). Carried on every record that carries
+  // a bankRef, so a refusal claims it exactly as it would claim a bank id.
+  const syntheticRef = syntheticIdentityOf(parsed, reader);
   if (!account || account.ok !== true) {
     return {
       ...base, outcome: "refused-account", destination,
@@ -908,6 +796,7 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
       // The bank's transaction id, so the refusal claims it (refusalFingerprint):
       // a copy resent after the allowlist changes is held, never fresh money.
       bankRef: clip(parsed.bankRef, 60) || null,
+      syntheticRef,
       reason: clip(redactAccountDigits(account?.reason || "The destination account was never checked — refused rather than assumed."), 400),
     };
   }
@@ -919,6 +808,7 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
       amountCents: parsed.amountCents,
       reference: parsed.reference ?? null,
       bankRef: clip(parsed.bankRef, 60) || null,
+      syntheticRef,
       paymentType: clip(parsed.paymentType, 60) || null,
       needsSample: timing?.needsSample === true,
       // The reason quotes the bank-printed payment-type field; redact any
@@ -936,6 +826,7 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
       amountCents: parsed.amountCents,
       reference: parsed.reference ?? null,
       bankRef: clip(parsed.bankRef, 60) || null,
+      syntheticRef,
       bankTs: Number.isInteger(parsed.bankTs) ? parsed.bankTs : null,
       cutoff: typeof dated?.cutoff === "string" ? dated.cutoff : null,
       reason: clip(redactAccountDigits(dated?.reason || "Whether this payment is dated on or after the cutoff was never checked — refused rather than assumed."), 400),
@@ -950,6 +841,7 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     payer: parsed.payer,
     bankTs: parsed.bankTs,
     bankRef: clip(parsed.bankRef, 60) || null,
+    syntheticRef,
     destination,
     accountTail: account.tail,
   };
@@ -968,11 +860,25 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
 //   · otherwise the claim is this record's and it is stored live, carrying
 //     its fingerprint.
 //
+//   · the fingerprint is SYNTHETIC (an Absa notice with no transaction
+//     number, 29 Oct 2026) and already claimed by another record → the pool
+//     cannot tell a resent copy from a second identical payment → the first
+//     one stays confirmed and this one is "held-possible-duplicate": not
+//     spendable, and never auto-released — but the OWNER may release it after
+//     checking the statement (eftPoolSettle releaseHold; releaseHoldDecision
+//     gives it an identity of its own), which is how a genuine second
+//     payment of the same amount from the same payer on the same day is
+//     floated by hand.
+//   · the claim was written by eftPoolManualApprove — Junid approved this
+//     money from an uploaded proof before the bank's notification arrived →
+//     the notification is the bank's copy of a settled payment →
+//     "held-duplicate" naming the approval (approvedByHand), never released.
+//
 // Held records keep every field — amount, reference, payer, destination — so
 // the owner sees exactly what arrived; they simply carry no `status`, and
 // both the search and the settle refuse anything whose outcome is not
 // "recorded". The quarantine is the owner-only /eft_pool node itself.
-export const HELD_OUTCOMES = ["held-duplicate", "held-no-bankref"];
+export const HELD_OUTCOMES = ["held-duplicate", "held-no-bankref", "held-possible-duplicate"];
 
 /**
  * @param {object} record     eftPoolRecord's output
@@ -982,8 +888,10 @@ export const HELD_OUTCOMES = ["held-duplicate", "held-no-bankref"];
  *                                     after this run (null: no claim made, or
  *                                     a corrupt claim — nobody clean holds it)
  * @param {string} p.poolKey           the key this record is about to land on
+ * @param {boolean} [p.manualApproved] the claim was written by Junid's
+ *                                     proof-of-payment approval (eftPoolManualApprove)
  */
-export function applyFingerprintHold(record, { fingerprint, holder, poolKey }) {
+export function applyFingerprintHold(record, { fingerprint, holder, poolKey, manualApproved = false }) {
   if (!record || record.outcome !== "recorded") return record;
   const { status: _status, ...held } = record;
   if (!fingerprint) {
@@ -994,6 +902,25 @@ export function applyFingerprintHold(record, { fingerprint, holder, poolKey }) {
     };
   }
   if (holder !== poolKey) {
+    if (holder && manualApproved) {
+      return {
+        ...held,
+        outcome: "held-duplicate",
+        fingerprint,
+        duplicateOf: holder,
+        approvedByHand: holder,
+        reason: "The bank's notification for a payment Junid already approved by hand from its proof of payment — the money is settled under the approval record. HELD, never spendable.",
+      };
+    }
+    if (holder && isSyntheticIdentity(record)) {
+      return {
+        ...held,
+        outcome: "held-possible-duplicate",
+        fingerprint,
+        duplicateOf: holder,
+        reason: "An Absa notice with no transaction number, identical to one the pool already holds — same payer, account, day, amount and reference. A resent copy and a genuine second payment cannot be told apart here, so it is HELD for review, not spendable. The first stays confirmed; if the statement shows two payments, the owner can release this one.",
+      };
+    }
     return {
       ...held,
       outcome: "held-duplicate",
@@ -1027,7 +954,7 @@ export function applyFingerprintHold(record, { fingerprint, holder, poolKey }) {
 export function refusalFingerprint(record) {
   if (!record || record.outcome === "recorded" || HELD_OUTCOMES.includes(record.outcome)) return null;
   if (record.auth?.verdict !== "pass") return null;
-  return paymentFingerprint({ reader: record.reader, bankRef: record.bankRef });
+  return paymentFingerprint({ reader: record.reader, bankRef: record.bankRef, syntheticRef: record.syntheticRef });
 }
 
 /**

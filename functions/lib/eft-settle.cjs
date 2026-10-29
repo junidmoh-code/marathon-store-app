@@ -36,7 +36,7 @@
 // eftCore.mjs's; this module redefines none of it.
 "use strict";
 
-const { paymentFingerprint } = require("./eft-fingerprint.cjs");
+const { paymentFingerprint, normaliseBankRef } = require("./eft-fingerprint.cjs");
 
 /** A refusal the callable turns into an HttpsError; `message` is written to be
  *  read out at the counter. */
@@ -636,6 +636,19 @@ function reverseDecision(current, { at, by, reason }) {
 const RELEASE_REASON_MIN = 3;
 const RELEASE_REASON_MAX = 300;
 
+//
+// A POSSIBLE DUPLICATE (29 Oct 2026) — an Absa notice with no transaction
+// number whose synthetic identity another record already holds — IS
+// releasable, and that is the whole point of holding it instead of filing it
+// as a duplicate: the pool could not tell a resent copy from a second
+// identical payment, and the owner, with the statement open, can. Released,
+// it must be spendable ONCE on its own: the base identity is the first
+// record's (its claim names that record and the settle would refuse this one
+// as a copy), so the release RE-KEYS it — the synthetic identity gains the
+// release moment, the record carries a fingerprint of its own, and the settle
+// claims that fresh fingerprint create-only. A THIRD notice with the same
+// base identity is held against the first again and reviewed again; nothing
+// ever releases itself.
 function releaseHoldDecision(current, { at, by, reason }) {
   if (!current || typeof current !== "object") return refuse("not-found", "That record is no longer in the pool.");
   if (current.outcome === "held-duplicate") {
@@ -646,21 +659,27 @@ function releaseHoldDecision(current, { at, by, reason }) {
   // owner can release it the same way, or it would be stranded.
   const legacyIdless = current.outcome === "recorded" && current.status === "unmatched"
     && !paymentFingerprint(current) && !current.releasedFromHold;
-  if (current.outcome !== "held-no-bankref" && !legacyIdless) {
-    return refuse("not-held", "Only a payment held for having no bank transaction id can be released.");
+  const possibleDuplicate = current.outcome === "held-possible-duplicate"
+    && typeof current.syntheticRef === "string" && !normaliseBankRef(current.bankRef);
+  if (current.outcome !== "held-no-bankref" && !legacyIdless && !possibleDuplicate) {
+    return refuse("not-held", "Only a payment held for having no bank transaction id, or an Absa notice held as a possible duplicate, can be released.");
   }
   const why = String(reason ?? "").trim();
   if (why.length < RELEASE_REASON_MIN) return refuse("bad-reason", "Say how you checked it — the reason stays on the record.");
   if (!Number.isInteger(at)) return refuse("bad-time", "The release carries no server time — refused.");
-  return {
-    ok: true,
-    value: {
-      ...current,
-      outcome: "recorded",
-      status: "unmatched",
-      releasedFromHold: { at, by: String(by ?? ""), reason: why.slice(0, RELEASE_REASON_MAX), from: current.outcome === "recorded" ? "recorded-before-fix" : "held-no-bankref" },
-    },
+  const from = current.outcome === "recorded" ? "recorded-before-fix" : current.outcome;
+  const rekeyed = possibleDuplicate
+    ? { syntheticRef: `${current.syntheticRef}|RELEASED:${at}`, heldFingerprint: current.fingerprint ?? null }
+    : {};
+  const value = {
+    ...current,
+    ...rekeyed,
+    outcome: "recorded",
+    status: "unmatched",
+    releasedFromHold: { at, by: String(by ?? ""), reason: why.slice(0, RELEASE_REASON_MAX), from },
   };
+  if (possibleDuplicate) value.fingerprint = paymentFingerprint(value);
+  return { ok: true, value };
 }
 
 /**

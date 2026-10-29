@@ -24,6 +24,7 @@
 // PURE by the house rule the functions/lib modules follow: no IMAP, no
 // firebase-admin, no fetch, no clock. Tested in intakeCore.test.mjs.
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 
 // ─── .env, PARSED ONCE, IN ONE PLACE ─────────────────────────────────────────
 // Deliberately not a dependency: it is a dozen lines, and a package that reads
@@ -136,11 +137,11 @@ export function redactMoney(text) {
 }
 
 /** Bounded, trimmed text for a record a person will read. */
-export function clip(value, max = 200) {
-  const s = typeof value === "string" ? value.trim() : "";
-  if (!s) return null;
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-}
+// clip moved to functions/lib/eft-text.cjs on 29 Oct 2026 (the per-bank EFT
+// readers now run in Cloud Functions too); re-exported here unchanged.
+const requireFromFunctions = createRequire(new URL("../../functions/package.json", import.meta.url));
+const { clip } = requireFromFunctions("./lib/eft-text.cjs");
+export { clip };
 
 /**
  * The dedupe key for a message.
