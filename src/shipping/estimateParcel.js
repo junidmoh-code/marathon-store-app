@@ -170,6 +170,11 @@ export function fitsInLayers(items, outer) {
     else groups.set(key, { l: it.l, w: it.w, h: it.h, n: 1 });
   }
   const [x, y, z] = outer.map(Number);
+  // A box or item with a missing, zero or negative side (a bad Shipping card
+  // row) never claims a fit.
+  const positive = (n) => Number.isFinite(n) && n > 0;
+  if (![x, y, z].every(positive)) return false;
+  if (![...groups.values()].every((g) => [g.l, g.w, g.h].every(positive))) return false;
   for (const [a, b, up] of [[x, y, z], [x, z, y], [y, z, x]]) {
     let height = 0;
     for (const g of groups.values()) {
@@ -177,7 +182,7 @@ export function fitsInLayers(items, outer) {
       if (perLayer === 0) { height = Infinity; break; }
       height += Math.ceil(g.n / perLayer) * g.h;
     }
-    if (height <= up) return true;
+    if (height <= up + 1e-9) return true;   // 3 × 8.4 is 25.200000000000003
   }
   return false;
 }

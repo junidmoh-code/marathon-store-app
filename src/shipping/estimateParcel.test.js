@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  estimateParcel, classifyLine, itemWeightKg, chooseLocker, shoeSizeNumber, toUkAdultSize, shoeboxStack,
+  estimateParcel, classifyLine, itemWeightKg, chooseLocker, shoeSizeNumber, toUkAdultSize, shoeboxStack, fitsInLayers,
 } from "./estimateParcel.js";
 import { DEFAULT_SHIPPING_CONFIG, mergeShippingConfig, ITEM_KINDS } from "./shippingConfig.js";
 
@@ -201,6 +201,15 @@ describe("THE PARCEL RULE — the details", () => {
   it("side by side still wins when layers can't: a tee + a perfume lie next to each other in FLAT", () => {
     const r = estimateParcel([T(1), { category: "Perfume", qty: 1 }]);
     expect(r.parcels[0]).toMatchObject({ kind: "box", boxCode: "FLAT" });
+  });
+
+  it("layers: a bad box row never fits, and decimal heights fit exactly", () => {
+    const cap = { l: 26, w: 19, h: 12, kg: 0.15 };
+    expect(fitsInLayers([cap], [-1, 40, 30])).toBe(false);
+    expect(fitsInLayers([cap], [0, 40, 30])).toBe(false);
+    expect(fitsInLayers([cap], [Number.NaN, 40, 30])).toBe(false);
+    expect(fitsInLayers([{ ...cap, h: 0 }], [55, 40, 35])).toBe(false);
+    expect(fitsInLayers([1, 2, 3].map(() => ({ ...cap, h: 8.4 })), [26, 19, 25.2])).toBe(true);
   });
 
   it("door-to-door by default: the drop box is off", () => {
