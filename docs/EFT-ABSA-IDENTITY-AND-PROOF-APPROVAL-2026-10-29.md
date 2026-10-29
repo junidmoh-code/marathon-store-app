@@ -130,3 +130,31 @@ deploy (created 29 Oct 2026, version 1, same value as the mini's `.env`):
     firebase deploy --only functions:eftPoolManualApprove   # new; binds EFT_ALLOWED_ACCOUNTS
     firebase deploy --only functions:eftPoolSettle          # releaseHold accepts held-possible-duplicate
     # the poller: git pull on ~/marathon-store-app, restart com.marathon.cardreconpoll
+
+## A photo of the proof (29 Oct 2026, later)
+
+`eftPoolManualApprove` also takes a **photo / screenshot** (JPEG, PNG or HEIC,
+told apart by magic bytes, ≤ 7 MB). It is **not OCR'd**: Junid types the
+identity and `keyedIdentityCheck` shapes it as the bank's reader would have
+parsed it, so `proofIdentityOf` builds the poller's own fingerprint. From
+there it is the PDF path unchanged (destination, claim, record, log).
+
+Input (alongside `entryId`, optional `filename`, `note`):
+
+| field | |
+|---|---|
+| `imageBase64` | the image (a `data:` prefix is fine). Never together with `pdfBase64`. |
+| `bank` | `standardbank` · `fnb` · `capitec` · `absa` · `nedbank` |
+| `amountCents` | positive integer |
+| `paymentDate` | `YYYY-MM-DD`, the bank's payment day (SAST); not future, ≤ 1 year old |
+| `reference` | the payer's reference as shown (1–80 chars) |
+| `bankRef` | the bank's transaction id — **required except Absa** |
+| `payer` | as shown — **required on Absa without a transaction id** (the synthetic identity uses it) |
+| `accountTail` | optional destination account digits; empty = the shop's own (first in `EFT_ALLOWED_ACCOUNTS`) |
+
+The image is stored with the Admin SDK at
+`eftProofs/{approval key}/{entryId}.{jpg|png|heic}` (bucket
+`marathon-club.firebasestorage.app`; no client rule — clients cannot read or
+write it) and recorded on `manualApproved.proof {kind, path, contentType,
+bytes, sha256}` with `manualApproved.keyedByHand: true`. The response adds
+`keyedByHand: true` and `proofPath`. A refused claim deletes the stored file.
