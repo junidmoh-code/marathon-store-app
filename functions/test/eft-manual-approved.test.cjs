@@ -75,7 +75,7 @@ const { eftPoolManualApprove, eftPoolManualEntry } = require("../eftPool/eftPool
 test.after(() => { Module._cache = require.cache; });
 
 const { paymentFingerprint, claimHolderCheck, fingerprintClaimStep } = require("../lib/eft-fingerprint.cjs");
-const { approvedKeyOf, approvedInputCheck, approvedClaimDecision, approvedClaimStep, isManualApproved, manualApprovedRecord, proofIdentityOf, approvedLogKeyOf } = require("../lib/eft-manual-approved.cjs");
+const { approvedKeyOf, approvedInputCheck, approvedClaimDecision, approvedClaimStep, isManualApproved, manualApprovedRecord, proofIdentityOf, approvedLogKeyOf, approvedTwinSettleCheck, imageKindOf, keyedIdentityCheck } = require("../lib/eft-manual-approved.cjs");
 const { selectReaderByContent, EFT_READERS } = require("../lib/eft-banks.cjs");
 const { publicEftView } = require("../lib/eft-pool.cjs");
 const { settleDecision } = require("../lib/eft-settle.cjs");
@@ -448,4 +448,260 @@ test("no allowlist configured for Cloud Functions names the SECRET, not the mini
   const e = await rejects(upload(OWNER), "failed-precondition", "wrong-destination");
   assert.match(e.message, /secret/);
   assert.doesNotMatch(e.message, /\.env on the mini/);
+});
+
+// ─── A PHOTO OF THE PROOF — the identity keyed by Junid (29 Oct 2026) ────────
+// No OCR: the screenshot is kept as evidence and Junid types what it shows.
+// What must hold: the keyed identity is the POLLER'S OWN fingerprint for the
+// bank's notification (Absa synthetic, Nedbank and transaction-id banks), so
+// the notice arriving later is held-duplicate and refused at the settle; a
+// non-owner is refused before anything is decoded or stored; garbage is
+// refused with nothing written; the PDF path is unchanged.
+const storageState = { saved: {}, deleted: [] };
+fakeAdmin.storage = () => ({
+  bucket: (name) => ({
+    file: (p) => ({
+      save: async (buf, opts) => { storageState.saved[p] = { buf, opts, bucket: name }; },
+      delete: async () => { storageState.deleted.push(p); },
+    }),
+  }),
+});
+const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("JFIF-fixture-bytes")]);
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("png-fixture")]);
+const HEIC = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypheic"), Buffer.from("heic-fixture")]);
+const NEDBANK_NOTICE = [
+  "Notification of Payment", "Nedbank Limited confirms that the following payment has been made:",
+  "Date of Payment : 27/10/2026", "Reference Number : 1a2b3c4d-1111-2222-a333-0b0c0d0e0f1",
+  "Beneficiary details", "Recipient : Marathon", "Amount : R350.00", "Recipient Reference : Custref", ":",
+  "Bank FIRST NATIONAL BANK", ":", "Account Number ...004321", ":", "Channel Internet payment",
+  "Payer details", "Paid from Account Holder : A CUSTOMER",
+];
+// The keyed date is checked against the server clock (not in the future, not
+// over a year old): pinned to 29 Oct 2026 so these fixtures never age out.
+const realNow = Date.now;
+const PINNED_NOW = Date.UTC(2026, 9, 29, 10, 0, 0);
+test.after(() => { Date.now = realNow; });
+function resetImg() { reset(); storageState.saved = {}; storageState.deleted = []; Date.now = () => PINNED_NOW; }
+const photo = (who, fields, extra = {}) => eftPoolManualApprove({ ...who, data: {
+  entryId: "PA-IMG00001", imageBase64: `data:image/jpeg;base64,${JPEG.toString("base64")}`, filename: "Screenshot.jpg", ...fields, ...extra,
+} });
+const ABSA_KEYED = { bank: "absa", amountCents: 190000, paymentDate: "2026-10-27", reference: "zanele", payer: "Mrs S. Soap" };
+
+// The poller's side, for a notice: its reader's parse → fingerprint → claim
+// → applyFingerprintHold. Returns the filed record and the claim it saw.
+async function bankNoticeArrives(readerId, lines) {
+  const parse = EFT_READERS.find((r) => r.id === readerId).parse(lines);
+  assert.equal(parse.ok, true, parse.reason);
+  const identity = proofIdentityOf(parse, readerId);
+  assert.equal(identity.ok, true);
+  let seen = null;
+  const claimPath = `eft_pool_fingerprints/${identity.fingerprint}`;
+  assert.equal(fingerprintClaimStep("b".repeat(40), 99, (d) => { seen = d; })(dbState.fingerprints[claimPath] ?? null) === undefined, true, "the approval's claim is not overwritten");
+  const { applyFingerprintHold } = await import("../../scripts/cardrecon/eftCore.mjs");
+  const notification = {
+    outcome: "recorded", status: "unmatched", reader: readerId, bankRef: identity.bankRef, syntheticRef: identity.syntheticRef,
+    amountCents: parse.amountCents, reference: parse.reference, payer: parse.payer, bankTs: parse.bankTs,
+  };
+  const held = applyFingerprintHold(notification, { fingerprint: identity.fingerprint, poolKey: "b".repeat(40), holder: seen.holder, manualApproved: seen.manualApproved });
+  return { held, seen, identity, notification };
+}
+
+test("PHOTO, Absa with no transaction number: the keyed identity IS the notice's synthetic identity; the image is stored; the notice is held and refused at the settle", async () => {
+  resetImg();
+  const out = await photo(OWNER, ABSA_KEYED, { note: "screenshot on the counter" });
+  assert.equal(out.ok, true);
+  assert.equal(out.already, false);
+  assert.equal(out.reader, "absa");
+  assert.equal(out.synthetic, true);
+  assert.equal(out.amountCents, 190000);
+  assert.equal(out.status, "used");
+  assert.equal(out.keyedByHand, true);
+  // The very identity the Absa reader builds from the real notice.
+  const fromNotice = proofIdentityOf(EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN), "absa");
+  assert.equal(out.key, approvedKeyOf(fromNotice.fingerprint));
+  const rec = dbState.pool[`eft_pool/${out.key}`];
+  assert.ok(isManualApproved(rec));
+  assert.equal(rec.syntheticRef, "ABSA|MRSSSOAP|4321|2026-10-27|190000|ZANELE");
+  assert.equal(rec.destination.accountTail, "4321", "no account typed → the shop's own");
+  assert.equal(rec.auth.verdict, "manual-approved");
+  assert.match(rec.subject, /Photo/);
+  assert.match(rec.rawText, /Keyed by hand/);
+  assert.equal(rec.used.outsidePos.actorName, "Junid");
+  // The evidence: stored under the approval, with the Admin SDK, as a JPEG.
+  const path = `eftProofs/${out.key}/PA-IMG00001.jpg`;
+  assert.equal(out.proofPath, path);
+  assert.deepEqual(Object.keys(storageState.saved), [path]);
+  assert.ok(storageState.saved[path].buf.equals(JPEG));
+  assert.equal(storageState.saved[path].opts.contentType, "image/jpeg");
+  assert.equal(storageState.saved[path].bucket, "marathon-club.firebasestorage.app");
+  assert.deepEqual(rec.manualApproved.proof, { kind: "image", path, contentType: "image/jpeg", bytes: JPEG.length, sha256: require("node:crypto").createHash("sha256").update(JPEG).digest("hex") });
+  assert.equal(rec.manualApproved.keyedByHand, true);
+  assert.equal(rec.manualApproved.note, "screenshot on the counter");
+  const logRow = Object.values(dbState.logs)[0];
+  assert.equal(logRow.keyedByHand, true);
+  assert.equal(logRow.proofPath, path);
+  // The bank's notification, later: held-duplicate naming the approval, never floated.
+  const { held, seen, notification } = await bankNoticeArrives("absa", ABSA_NO_TXN);
+  assert.equal(held.outcome, "held-duplicate");
+  assert.equal(held.approvedByHand, out.key);
+  assert.equal(held.status, undefined, "not spendable");
+  assert.equal(claimHolderCheck({ poolKey: "b".repeat(40), holder: seen.holder, spentBy: seen.spentBy }).code, "duplicate-used");
+  // And even as a recorded copy, the settle's twin rule refuses it.
+  assert.equal(approvedTwinSettleCheck({ poolKey: "b".repeat(40), record: notification, siblings: [[out.key, rec]] }).code, "twin-used");
+});
+
+test("PHOTO, Nedbank: keyed by its Reference Number; the notice arriving later is held and refused", async () => {
+  resetImg();
+  const out = await photo(OWNER, { bank: "nedbank", amountCents: 35000, paymentDate: "2026-10-27", reference: "Custref", bankRef: "1A2B3C4D 1111 2222 A333 0B0C0D0E0F1" }, {
+    imageBase64: PNG.toString("base64"), filename: "IMG_2210.PNG",
+  });
+  assert.equal(out.reader, "nedbank");
+  assert.equal(out.synthetic, false);
+  assert.ok(storageState.saved[`eftProofs/${out.key}/PA-IMG00001.png`], "stored as a PNG");
+  const { held, seen, identity } = await bankNoticeArrives("nedbank", NEDBANK_NOTICE);
+  assert.equal(out.key, approvedKeyOf(identity.fingerprint), "typed with spaces and capitals, it is the notice's id");
+  assert.equal(held.outcome, "held-duplicate");
+  assert.equal(held.approvedByHand, out.key);
+  assert.equal(claimHolderCheck({ poolKey: "b".repeat(40), holder: seen.holder, spentBy: seen.spentBy }).code, "duplicate-used");
+});
+
+test("PHOTO, a transaction-id bank (Standard Bank) and Absa WITH a transaction number: keyed by the bank's id", async () => {
+  resetImg();
+  const sb = await photo(OWNER, { bank: "standardbank", amountCents: 10000, paymentDate: "2026-10-27", reference: "OM82", bankRef: "4149999999" }, {
+    imageBase64: HEIC.toString("base64"),
+  });
+  assert.equal(sb.bankRef, "4149999999");
+  assert.ok(storageState.saved[`eftProofs/${sb.key}/PA-IMG00001.heic`], "a HEIC photo is accepted");
+  const { held } = await bankNoticeArrives("standardbank", SB);
+  assert.equal(held.outcome, "held-duplicate");
+  assert.equal(held.approvedByHand, sb.key);
+
+  const absa = await photo(OWNER, { ...ABSA_KEYED, payer: undefined, bankRef: "ABS12345" }, { entryId: "PA-IMG00002" });
+  assert.equal(absa.synthetic, false);
+  assert.equal(absa.key, approvedKeyOf(paymentFingerprint({ reader: "absa", bankRef: "ABS12345" })));
+  const withTxn = ABSA_NO_TXN.map((l) => (l === "Transaction number:" ? "Transaction number: ABS12345" : l));
+  const later = await bankNoticeArrives("absa", withTxn);
+  assert.equal(later.held.outcome, "held-duplicate");
+  assert.equal(later.held.approvedByHand, absa.key);
+});
+
+test("PHOTO, the same identity again is the same approval — nothing re-stored, nothing re-written", async () => {
+  resetImg();
+  const first = await photo(OWNER, ABSA_KEYED);
+  const before = JSON.stringify(dbState);
+  const again = await photo(OWNER, { ...ABSA_KEYED, payer: "MRS S SOAP" }, { entryId: "PA-IMG00009" });
+  assert.equal(again.already, true);
+  assert.equal(again.key, first.key);
+  assert.equal(JSON.stringify(dbState), before);
+  assert.equal(Object.keys(storageState.saved).length, 1);
+  // A PDF of the same payment is the same approval too.
+  pdfLines = ABSA_NO_TXN;
+  assert.equal((await upload(OWNER)).key, first.key);
+});
+
+test("PHOTO, only Junid: a manager, an unverified owner token and no sign-in are refused before anything is decoded or stored", async () => {
+  resetImg();
+  await rejects(photo(MANAGER, ABSA_KEYED), "permission-denied", "owner-only");
+  await rejects(photo(UNVERIFIED_OWNER, ABSA_KEYED), "permission-denied", "owner-only");
+  await rejects(eftPoolManualApprove({ auth: null, data: { entryId: "PA-IMG00001", imageBase64: JPEG.toString("base64"), ...ABSA_KEYED } }), "permission-denied");
+  assert.deepEqual(storageState.saved, {});
+  assert.deepEqual(dbState.pool, {});
+  assert.deepEqual(dbState.fingerprints, {});
+});
+
+test("PHOTO, garbage is refused with nothing stored or written", async () => {
+  resetImg();
+  const bad = [
+    [{ ...ABSA_KEYED, bank: "bank of mars" }, "bad-bank"],
+    [{ ...ABSA_KEYED, bank: undefined }, "bad-bank"],
+    [{ ...ABSA_KEYED, amountCents: 0 }, "bad-amount"],
+    [{ ...ABSA_KEYED, amountCents: 1900.5 }, "bad-amount"],
+    [{ ...ABSA_KEYED, amountCents: "190000" }, "bad-amount"],
+    [{ ...ABSA_KEYED, amountCents: 1e12 }, "bad-amount"],
+    [{ ...ABSA_KEYED, paymentDate: "27/10/2026" }, "bad-date"],
+    [{ ...ABSA_KEYED, paymentDate: "2026-02-30" }, "bad-date"],
+    [{ ...ABSA_KEYED, paymentDate: "2099-01-01" }, "bad-date"],
+    [{ ...ABSA_KEYED, paymentDate: "2020-01-01" }, "bad-date"],
+    [{ ...ABSA_KEYED, reference: "" }, "bad-reference"],
+    [{ ...ABSA_KEYED, reference: "---" }, "bad-reference"],
+    [{ ...ABSA_KEYED, reference: "ok\nDROP" }, "bad-reference"],
+    [{ ...ABSA_KEYED, reference: "x".repeat(81) }, "bad-reference"],
+    [{ ...ABSA_KEYED, payer: 42 }, "bad-payer"],
+    [{ ...ABSA_KEYED, payer: "12345" }, "bad-payer"],
+    [{ ...ABSA_KEYED, bankRef: "ab1" }, "bad-bank-ref"],
+    [{ ...ABSA_KEYED, bankRef: { id: 1 } }, "bad-bank-ref"],
+    [{ ...ABSA_KEYED, payer: "" }, "payer-required"],
+    [{ bank: "nedbank", amountCents: 35000, paymentDate: "2026-10-27", reference: "Custref" }, "bank-ref-required"],
+    [{ bank: "fnb", amountCents: 35000, paymentDate: "2026-10-27", reference: "Custref", bankRef: "  " }, "bank-ref-required"],
+    [{ ...ABSA_KEYED, accountTail: "9999" }, "wrong-destination"],
+    [{ ...ABSA_KEYED, accountTail: "43x1" }, "bad-account"],
+  ];
+  for (const [fields, code] of bad) await rejects(photo(OWNER, fields), "invalid-argument", code);
+  await rejects(photo(OWNER, ABSA_KEYED, { imageBase64: Buffer.from("GIF89a-not-allowed").toString("base64") }), "invalid-argument", "not-an-image");
+  await rejects(photo(OWNER, ABSA_KEYED, { imageBase64: "%%%" }), "invalid-argument", "bad-proof");
+  await rejects(photo(OWNER, ABSA_KEYED, { imageBase64: "A".repeat(10 * 1024 * 1024) }), "invalid-argument", "proof-too-big");
+  await rejects(photo(OWNER, ABSA_KEYED, { pdfBase64: PDF }), "invalid-argument", "two-proofs");
+  secretValue = "";
+  const e = await rejects(photo(OWNER, ABSA_KEYED), "failed-precondition", "wrong-destination");
+  assert.match(e.message, /EFT_ALLOWED_ACCOUNTS/);
+  assert.deepEqual(storageState.saved, {});
+  assert.deepEqual(dbState.pool, {});
+  assert.deepEqual(dbState.fingerprints, {});
+  assert.deepEqual(dbState.logs, {});
+});
+
+test("PHOTO: a typed destination account that IS the shop's is accepted", async () => {
+  resetImg(); secretValue = "62000009092, 62900004321";
+  const out = await photo(OWNER, { ...ABSA_KEYED, accountTail: "4321" });
+  assert.equal(dbState.pool[`eft_pool/${out.key}`].destination.accountTail, "4321");
+  assert.equal(out.key, approvedKeyOf(proofIdentityOf(EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN), "absa").fingerprint));
+});
+
+test("PHOTO: a refused claim takes the stored image back out", async () => {
+  resetImg();
+  const parse = EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN);
+  const fp = proofIdentityOf(parse, "absa").fingerprint;
+  // The decision judges a refused holder "spend"; the claim then changes hands before the write.
+  const H = "h".repeat(40);
+  dbState.fingerprints[`eft_pool_fingerprints/${fp}`] = { poolKey: H, at: 1 };
+  dbState.pool[`eft_pool/${H}`] = { outcome: "refused-stale-date", reader: "absa" };
+  const orig = fakeAdmin.storage;
+  fakeAdmin.storage = () => ({ bucket: (name) => ({ file: (p) => ({
+    save: async (buf, opts) => { storageState.saved[p] = { buf, opts, bucket: name }; dbState.fingerprints[`eft_pool_fingerprints/${fp}`] = { poolKey: "o".repeat(40), at: 2, spentBy: "o".repeat(40) }; },
+    delete: async () => { storageState.deleted.push(p); },
+  }) }) });
+  try {
+    await rejects(photo(OWNER, ABSA_KEYED), "aborted", "claim-moved");
+  } finally { fakeAdmin.storage = orig; }
+  assert.equal(storageState.deleted.length, 1);
+  assert.equal(storageState.deleted[0], Object.keys(storageState.saved)[0]);
+  assert.deepEqual(Object.keys(dbState.pool), [`eft_pool/${H}`], "no approval record");
+});
+
+test("the PDF path is unchanged: no keyedByHand, no stored file, no proof on the record", async () => {
+  resetImg(); pdfLines = ABSA_NO_TXN;
+  const out = await upload(OWNER);
+  assert.equal(out.keyedByHand, undefined);
+  assert.equal(out.proofPath, undefined);
+  assert.deepEqual(Object.keys(out).sort(), ["already", "amountCents", "at", "bankRef", "bankTs", "by", "key", "ok", "payer", "reader", "reference", "status", "synthetic"]);
+  const rec = dbState.pool[`eft_pool/${out.key}`];
+  assert.equal(rec.manualApproved.proof, undefined);
+  assert.equal(rec.manualApproved.keyedByHand, undefined);
+  assert.equal(rec.subject, "Proof of payment (absa) approved by hand by Junid");
+  assert.deepEqual(storageState.saved, {});
+  assert.equal(Object.values(dbState.logs)[0].proofPath, undefined);
+});
+
+test("imageKindOf and keyedIdentityCheck, as data", () => {
+  assert.equal(imageKindOf(JPEG).contentType, "image/jpeg");
+  assert.equal(imageKindOf(PNG).contentType, "image/png");
+  assert.equal(imageKindOf(HEIC).contentType, "image/heic");
+  assert.equal(imageKindOf(Buffer.from("%PDF-1.4 not an image")), null);
+  assert.equal(imageKindOf(null), null);
+  const ok = keyedIdentityCheck(ABSA_KEYED, { allowedAccounts: ["62900004321"], now: PINNED_NOW });
+  assert.equal(keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-10-30" }, { allowedAccounts: ["62900004321"], now: PINNED_NOW }).code, "bad-date", "tomorrow (SAST) is the future");
+  assert.equal(ok.ok, true);
+  assert.equal(ok.readerId, "absa");
+  assert.equal(ok.parse.bankTs, EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN).bankTs, "the date is the reader's own bank timestamp");
+  assert.equal(ok.parse.accountMask, "62900004321");
 });
