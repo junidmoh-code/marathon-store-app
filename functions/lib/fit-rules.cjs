@@ -462,7 +462,7 @@ function headerOf(theme) {
 
 module.exports = {
   FIT_MODEL, PRICE, BUDGET_USD, PASS_SCORE, MIN_OUT_TOKENS, CRITIC_INPUT_RESERVE_USD, MAX_ROUNDS, CRITERIA, CRITIC_PHOTO_PX,
-  STYLIST_MAX_TOKENS, CRITIC_MAX_TOKENS, LUXURY_BRANDS,
+  STYLIST_MAX_TOKENS, CRITIC_MAX_TOKENS, LUXURY_BRANDS, PHOTO_TOKENS,
   parseFormulas, rulebook, formulasFor, trimOptional, sizesInStock, sizeRefusal, luxuryBrand,
   catalogueText, stylistRequest, readStylistAnswer, themeAllowed, brandsNamed,
   criticRequest, readCriticAnswer, feedbackLine, costOf, worstCaseUSD, headerOf,
