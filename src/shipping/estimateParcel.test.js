@@ -198,6 +198,11 @@ describe("THE PARCEL RULE — the details", () => {
     expect(r.parcels[0]).toMatchObject({ kind: "box", boxCode: "LARGE" });
   });
 
+  it("side by side still wins when layers can't: a tee + a perfume lie next to each other in FLAT", () => {
+    const r = estimateParcel([T(1), { category: "Perfume", qty: 1 }]);
+    expect(r.parcels[0]).toMatchObject({ kind: "box", boxCode: "FLAT" });
+  });
+
   it("door-to-door by default: the drop box is off", () => {
     expect(estimateParcel([T(1)])).toMatchObject({ dropBoxEligible: false, service: "ECO" });
   });
