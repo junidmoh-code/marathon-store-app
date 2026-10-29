@@ -382,11 +382,41 @@ test("NEVER on the amount: a query that resolves to a DIFFERENT payment, or to t
   // The query names the OTHER payment (same amount) — this key is refused.
   let e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "other9999" })), "failed-precondition");
   assert.equal(e.details.code, "not-matched");
-  // Two payments with the same reference: ambiguous → refused for either.
-  dbState.tail = { [K1]: PAY, [K2]: { ...PAY, bankRef: "Z9Z9Z9Z9", at: 2 } };
-  e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "junid1234" })), "failed-precondition");
+  // Two payments with references a prefix apart: ambiguous → refused.
+  dbState.tail = { [K1]: PAY, [K2]: { ...PAY, reference: "JUNID12345", bankRef: "Z9Z9Z9Z9", at: 2 } };
+  e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "junid123" })), "failed-precondition");
   assert.equal(e.details.code, "not-matched");
   assert.deepEqual(dbState.txPaths, []);
+});
+
+test("two separate payments with the SAME reference settle one after the other, each whole, no customer (29 Oct 2026)", async () => {
+  resetPool();
+  const twin = { ...PAY, bankRef: "Z9Z9Z9Z9", at: 2 };
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  dbState.pool[`eft_pool/${K2}`] = twin;
+  dbState.tail = { [K1]: PAY, [K2]: twin };
+  // First leg.
+  dbState.txCurrent = PAY;
+  let out = await eftPoolSettle(settleReq(K1, { attemptId: "P-1", customerId: null, confirmedCustomerId: null, matchQuery: "junid1234" }));
+  assert.equal(out.ok, true);
+  const first = dbState.txNext;
+  assert.equal(first.status, "used");
+  assert.equal(first.used.wholePaymentMatched, true);
+  assert.ok(dbState.txPaths.includes(`eft_pool/${K1}`));
+  // K1 is now spent on the record; the same query must still find K2.
+  dbState.pool[`eft_pool/${K1}`] = first;
+  dbState.tail = { [K1]: first, [K2]: twin };
+  dbState.txNext = undefined; dbState.txPaths = []; dbState.transactions = 0;
+  dbState.txCurrent = twin;
+  out = await eftPoolSettle(settleReq(K2, { attemptId: "P-2", customerId: null, confirmedCustomerId: null, matchQuery: "junid1234" }));
+  assert.equal(out.ok, true);
+  assert.equal(dbState.transactions, 1);
+  assert.ok(dbState.txPaths.includes(`eft_pool/${K2}`));
+  assert.ok(!dbState.txPaths.includes(`eft_pool/${K1}`), "K1 is not touched again");
+  assert.equal(dbState.txNext.status, "used");
+  assert.equal(dbState.txNext.used.wholePaymentMatched, true);
+  assert.equal(dbState.txNext.bankRef, "Z9Z9Z9Z9");
+  resetPool();
 });
 
 test("with a customer on the sale, the confirmed-customer rule is exactly as before", async () => {

@@ -88,14 +88,22 @@ test("a typo is forgiven — and two edits only on a long reference", () => {
   assert.deepEqual(searchEftPool(POOL, "zanele").results, [], "a reference nobody has");
 });
 
-test("AMBIGUOUS → nothing at all, and the till is told to ask for the bank's transaction id", () => {
+test("SAME reference, separate payments → one row each, initials only (29 Oct 2026)", () => {
   const pool = { ...POOL, k6: pay({ reference: "NKOSI", payer: "ZANELE NKOSI", bankRef: "77777777", amountCents: 1, at: 7 }) };
   const out = searchEftPool(pool, "nkosi");
+  assert.deepEqual(out.results.map((r) => r.key), ["k4", "k6"]);
+  assert.deepEqual(leakedNames(out), []);
+  assert.equal(JSON.stringify(out).includes("77777777"), false, "bank id never echoed");
+  // …and the bank id finds the one.
+  assert.deepEqual(searchEftPool(pool, "77777777").results.map((r) => r.key), ["k6"]);
+});
+
+test("AMBIGUOUS between DIFFERENT references → nothing at all", () => {
+  const pool = { ...POOL, k6: pay({ reference: "NKOSIZ", payer: "ZANELE NKOSI", bankRef: "77777777", amountCents: 1, at: 7 }) };
+  const out = searchEftPool(pool, "nkos");
   assert.deepEqual(out.results, []);
   assert.equal(out.ambiguous, true);
   assert.equal(JSON.stringify(out).includes("ZANELE"), false);
-  // …and the bank id settles it.
-  assert.equal(searchEftPool(pool, "77777777").results[0]?.key, "k6");
 });
 
 test("a used payment comes back as USED — when and which slip, never whose sale or which cashier", () => {

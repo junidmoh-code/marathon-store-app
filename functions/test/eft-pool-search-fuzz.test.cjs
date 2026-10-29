@@ -71,8 +71,14 @@ function oracle(pool, q) {
   const cands = exact.length ? exact : near;
   if (!cands.length) return { keys: [] };
   const un = cands.filter(([, x]) => x.status === "unmatched");
-  if (un.length === 1) return { keys: [un[0][0]] };
-  if (un.length === 0 && cands.length === 1) return { keys: [cands[0][0]] };
+  const rows = un.length ? un : cands;
+  if (rows.length === 1) return { keys: [rows[0][0]] };
+  // Separate payments sharing ONE reference: a row each, oldest first, at
+  // most six (29 Oct 2026). Different references: nothing.
+  const refs = new Set(rows.map(([, x]) => norm(x.reference)));
+  if (exact.length && refs.size === 1 && !refs.has("")) {
+    return { keys: [...rows].sort(([ka, a], [kb, b]) => a.at - b.at || (ka < kb ? -1 : 1)).slice(0, 6).map(([k]) => k) };
+  }
   return { keys: [], ambiguous: true };
 }
 
@@ -96,7 +102,7 @@ test("fuzz: an amount string never finds a payment by its amount", () => {
   }
 });
 
-test("fuzz: at most one result, exactly the oracle's, and never a name or owner material", () => {
+test("fuzz: exactly the oracle's rows, and never a name or owner material", () => {
   const r = rng(23);
   for (let round = 0; round < 400; round++) {
     const pool = {};
