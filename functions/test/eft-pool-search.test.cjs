@@ -285,12 +285,15 @@ test("two separate payments sharing a reference BOTH show, each by its own key, 
     first: recorded({ reference: "SIPHO", amountCents: 30000, bankRef: "TRACE0001", at: 10 }),
     other: recorded({ reference: "THANDI", bankRef: "TRACE0003", at: 15 }),
   };
-  for (const q of ["sipho", "SIPHO", "sip"]) {
+  for (const q of ["sipho", "SIPHO", "si-pho"]) {
     const out = searchEftPool(pool, q);
     assert.deepEqual(out.results.map((r) => r.key), ["first", "second"], q);
     assert.equal(out.ambiguous, undefined);
     for (const r of out.results) assert.equal(r.status, "unmatched");
   }
+  // Only the reference typed in full lists them: its start says "keep typing".
+  assert.deepEqual(searchEftPool(pool, "sip").results, []);
+  assert.equal(searchEftPool(pool, "sip").partial, true);
   // Each one is still found alone by its bank id.
   assert.deepEqual(keys(pool, "trace0002"), ["second"]);
   // The first used: the second stays visible and selectable.

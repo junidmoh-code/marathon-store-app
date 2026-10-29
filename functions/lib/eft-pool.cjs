@@ -64,8 +64,10 @@
 // into one, collapseCopies), never by the reference string. So when every
 // candidate carries the SAME reference, each one is returned as its own row
 // (oldest first, at most EFT_SEARCH_LIMIT) and the cashier picks against the
-// proof — amount and time are on every row. Candidates with DIFFERENT
-// references (a prefix or a typo away from two payments) are still nothing:
+// proof — amount and time are on every row. Only on the reference typed IN
+// FULL (exact rank): the start of a common reference ("REN" for RENT) still
+// lists nobody — "keep typing" (architect review, 29 Oct 2026). Candidates
+// with DIFFERENT references (a prefix or a typo away from two payments) are still nothing:
 // "keep typing".
 //
 // The record shape is eftCore.mjs's (scripts/cardrecon), stored by the mailbox
@@ -344,7 +346,7 @@ function searchEftPool(poolTail, query) {
   // payments, told apart by their own identity — see the header). Anything
   // else is an ambiguity between references.
   const refs = new Set(rows.map((h) => normaliseText(h.record.reference)));
-  const sameReference = refs.size === 1 && !refs.has("");
+  const sameReference = best === 0 && refs.size === 1 && !refs.has("");
   if (rows.length > 1 && !sameReference) return { results: [], searched, ambiguous: true, ...(best > 0 ? { partial: true } : {}) };
   const at = (h) => (Number.isInteger(h.record.at) ? h.record.at : Infinity);
   const picks = [...rows].sort((a, b) => at(a) - at(b) || (a.key < b.key ? -1 : 1)).slice(0, EFT_SEARCH_LIMIT);

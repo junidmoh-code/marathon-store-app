@@ -76,7 +76,7 @@ function oracle(pool, q) {
   // Separate payments sharing ONE reference: a row each, oldest first, at
   // most six (29 Oct 2026). Different references: nothing.
   const refs = new Set(rows.map(([, x]) => norm(x.reference)));
-  if (refs.size === 1 && !refs.has("")) {
+  if (exact.length && refs.size === 1 && !refs.has("")) {
     return { keys: [...rows].sort(([ka, a], [kb, b]) => a.at - b.at || (ka < kb ? -1 : 1)).slice(0, 6).map(([k]) => k) };
   }
   return { keys: [], ambiguous: true };
