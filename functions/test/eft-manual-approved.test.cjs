@@ -638,15 +638,22 @@ test("PHOTO, garbage is refused with nothing stored or written", async () => {
     [{ bank: "fnb", amountCents: 35000, paymentDate: "2026-10-27", reference: "Custref", bankRef: "  " }, "bank-ref-required"],
     [{ ...ABSA_KEYED, accountTail: "9999" }, "wrong-destination"],
     [{ ...ABSA_KEYED, accountTail: "43x1" }, "bad-account"],
+    [{ ...ABSA_KEYED, payer: "x".repeat(121) }, "bad-payer"],
+    [{ ...ABSA_KEYED, bankRef: "1".repeat(61) }, "bad-bank-ref"],
+    [{ ...ABSA_KEYED, paymentDate: "2025-10-27" }, "bad-date"],
   ];
   for (const [fields, code] of bad) await rejects(photo(OWNER, fields), "invalid-argument", code);
   await rejects(photo(OWNER, ABSA_KEYED, { imageBase64: Buffer.from("GIF89a-not-allowed").toString("base64") }), "invalid-argument", "not-an-image");
   await rejects(photo(OWNER, ABSA_KEYED, { imageBase64: "%%%" }), "invalid-argument", "bad-proof");
+  await rejects(photo(OWNER, ABSA_KEYED, { imageBase64: "data:image/jpeg;base64," }), "invalid-argument", "no-proof");
   await rejects(photo(OWNER, ABSA_KEYED, { imageBase64: "A".repeat(10 * 1024 * 1024) }), "invalid-argument", "proof-too-big");
   await rejects(photo(OWNER, ABSA_KEYED, { pdfBase64: PDF }), "invalid-argument", "two-proofs");
   secretValue = "";
   const e = await rejects(photo(OWNER, ABSA_KEYED), "failed-precondition", "wrong-destination");
   assert.match(e.message, /EFT_ALLOWED_ACCOUNTS/);
+  secretValue = "no digits here";
+  assert.match((await rejects(photo(OWNER, ABSA_KEYED), "failed-precondition", "wrong-destination")).message, /no usable account/);
+  assert.equal(keyedIdentityCheck(ABSA_KEYED, { allowedAccounts: ["62900004321"] }).code, "no-clock", "the helper never fails open without a clock");
   assert.deepEqual(storageState.saved, {});
   assert.deepEqual(dbState.pool, {});
   assert.deepEqual(dbState.fingerprints, {});
@@ -767,4 +774,21 @@ test("PHOTO review fixes: a stored file already there (412, a retry of the same 
     const out = await photo(OWNER, ABSA_KEYED);
     assert.equal(out.ok, true);
   } finally { fakeAdmin.storage = orig; }
+});
+
+test("PHOTO: a claim transaction that throws takes the stored photo back out", async () => {
+  resetImg();
+  const realDb = fakeAdmin.database;
+  fakeAdmin.database = Object.assign(() => {
+    const db = realDb();
+    return { ref: (p) => {
+      const r = db.ref(p);
+      return p.startsWith("eft_pool_fingerprints/") ? { ...r, transaction: async () => { throw new Error("rtdb down"); } } : r;
+    } };
+  }, realDb);
+  try {
+    await assert.rejects(photo(OWNER, ABSA_KEYED), /rtdb down/);
+  } finally { fakeAdmin.database = realDb; }
+  assert.equal(storageState.deleted.length, 1);
+  assert.deepEqual(dbState.pool, {});
 });

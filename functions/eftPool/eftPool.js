@@ -1034,10 +1034,17 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     // A PHOTO: nothing to parse, and no OCR. Junid typed the identity from
     // it; keyedIdentityCheck shapes those fields as the bank's reader would
     // have parsed them, so the identity below is the poller's own.
-    if (!configured) {
-      throw new HttpsError("failed-precondition", `No account allowlist is configured for Cloud Functions — set the ${EFT_ACCOUNTS_ENV_VAR} secret (firebase functions:secrets:set). Until then every proof refuses here, deliberately.`, { code: "wrong-destination" });
+    // The destination of a photo is checked by keyedDestinationOf against the
+    // allowlist (nothing printed to read); with no usable allowlist, refuse
+    // as the PDF path does rather than key against nothing.
+    const allowedAccounts = parseAllowedAccounts(configured);
+    if (!allowedAccounts.length) {
+      const reason = configured
+        ? `${EFT_ACCOUNTS_ENV_VAR} is set but holds no usable account number. Every proof refuses here until it is fixed.`
+        : `No account allowlist is configured for Cloud Functions — set the ${EFT_ACCOUNTS_ENV_VAR} secret (firebase functions:secrets:set). Until then every proof refuses here, deliberately.`;
+      throw new HttpsError("failed-precondition", reason, { code: "wrong-destination" });
     }
-    const keyed = keyedIdentityCheck(data, { allowedAccounts: parseAllowedAccounts(configured), now });
+    const keyed = keyedIdentityCheck(data, { allowedAccounts, now });
     if (!keyed.ok) throw new HttpsError("invalid-argument", keyed.message, { code: keyed.code });
     reader = { id: keyed.readerId };
     parse = keyed.parse;
@@ -1108,9 +1115,9 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
       throw new HttpsError("failed-precondition", also.decision.message, { code: also.decision.code, key: also.decision.key ?? null });
     }
   }
-  // THE PHOTO IS THE EVIDENCE: stored before anything is claimed or
-  // recorded (the slip photos' order), with the Admin SDK — no client writes
-  // eftProofs/. A refused claim below takes the file back out.
+  // THE PHOTO IS THE EVIDENCE: stored before the claim and the record are
+  // written (the slip photos' order), with the Admin SDK — no client writes
+  // eftProofs/. A claim or record that does not land takes the file back out.
   let proof = null;
   if (input.kind === "image") {
     const sha256 = createHash("sha256").update(input.image).digest("hex");
@@ -1139,14 +1146,18 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     if (proof) { try { await admin.storage().bucket(STORAGE_BUCKET).file(proof.path).delete(); } catch { /* best effort */ } }
   };
   let claimed = null;
-  await db.ref(claimPath).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: decision.holder ?? null }, (d) => { claimed = d; }));
+  try {
+    await db.ref(claimPath).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: decision.holder ?? null }, (d) => { claimed = d; }));
+  } catch (err) { await dropProof(); throw err; }
   if (claimed?.spentBy !== key) {
     await dropProof();
     throw new HttpsError("aborted", "The payment's identity changed hands while this was being registered — check the pool and try again.", { code: "claim-moved", holder: claimed?.holder ?? null });
   }
   if (also?.path) {
     let alsoClaimed = null;
-    await db.ref(also.path).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: also.decision.holder ?? null }, (d) => { alsoClaimed = d; }));
+    try {
+      await db.ref(also.path).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: also.decision.holder ?? null }, (d) => { alsoClaimed = d; }));
+    } catch (err) { await dropProof(); throw err; }
     if (alsoClaimed?.spentBy !== key) {
       // The primary claim stays this approval's; a retry finds it "own" and
       // tries the synthetic identity again.
@@ -1159,7 +1170,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     key, readerId: reader.id, parse, lines, identity, destination, actor, at: now,
     note: input.note, filename: input.filename, entryId: input.entryId, proof,
   });
-  if (!built.ok) throw new HttpsError("internal", built.message, { code: built.code });
+  if (!built.ok) { await dropProof(); throw new HttpsError("internal", built.message, { code: built.code }); }
   const record = built.value;
   // THE LOG ROW FIRST, create-only, then the record create-if-absent — the
   // manual entry's order, for the manual entry's reasons.
@@ -1169,6 +1180,8 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   if (already) {
     const winner = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
     if (winner?.manualApproved?.at !== now) await db.ref(`${MANUAL_APPROVED_LOG_PATH}/${approvedLogKeyOf(now, key)}`).remove();
+    // A concurrent upload won: its photo is the evidence, this one is spare.
+    if (proof && winner?.manualApproved?.proof?.path !== proof.path) await dropProof();
     if (winner && isManualApproved(winner)) return approvedResponse({ ...winner, approvedKey: key }, { already: true });
   }
   // The key, the bank and the amount only: the reference is the payer's

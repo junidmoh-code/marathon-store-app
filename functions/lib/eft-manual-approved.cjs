@@ -116,6 +116,7 @@ function approvedInputCheck(data) {
   if (hasPdf && hasImage) return { ok: false, code: "two-proofs", message: "Send the PDF or the photo, not both." };
   if (hasImage) {
     const img = decodeBase64(d.imageBase64, PROOF_IMAGE_MAX_BYTES);
+    if (img.empty) return { ok: false, code: "no-proof", message: "Attach the photo or screenshot of the proof of payment." };
     if (img.tooBig) return { ok: false, code: "proof-too-big", message: "That photo is bigger than 7 MB — send a screenshot, or a smaller photo." };
     if (!img.ok) return { ok: false, code: "bad-proof", message: "The proof did not upload cleanly — try again." };
     const type = imageKindOf(img.buf);
@@ -123,7 +124,7 @@ function approvedInputCheck(data) {
     return { ok: true, kind: "image", entryId, image: img.buf, imageType: type, filename, note };
   }
   const dec = decodeBase64(d.pdfBase64, PROOF_MAX_BYTES);
-  if (dec.empty) return { ok: false, code: "no-proof", message: "Attach the proof of payment PDF." };
+  if (dec.empty) return { ok: false, code: "no-proof", message: "Attach the proof of payment — the bank's PDF, or a photo or screenshot of it." };
   if (dec.tooBig) return { ok: false, code: "proof-too-big", message: "That PDF is bigger than 5 MB — a proof of payment is a one-page bank document." };
   if (!dec.ok) return { ok: false, code: "bad-proof", message: "The proof did not upload cleanly — try again." };
   const pdf = dec.buf;
@@ -136,7 +137,7 @@ function approvedInputCheck(data) {
 // ─── THE KEYED IDENTITY OF A PHOTO ───────────────────────────────────────────
 const KEYED_AMOUNT_MAX_CENTS = 100_000_000; // R1,000,000 — no shop EFT comes near it
 const KEYED_REFERENCE_MAX = 80;
-const KEYED_PAYER_MAX = 60;
+const KEYED_PAYER_MAX = 120; // the reader's own clip
 const KEYED_BANK_REF_MAX = 60;
 const KEYED_MAX_AGE_DAYS = 366;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
@@ -194,10 +195,9 @@ function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
   const date = typeof d.paymentDate === "string" ? d.paymentDate.trim() : "";
   const bankTs = /^\d{4}-\d{2}-\d{2}$/.test(date) ? parseBankTimestamp(date) : null;
   if (!Number.isInteger(bankTs)) return { ok: false, code: "bad-date", message: "Type the payment date the proof shows, as YYYY-MM-DD." };
-  if (Number.isInteger(now)) {
-    if (date > sastDate(now)) return { ok: false, code: "bad-date", message: "The payment date is in the future — check the date on the proof." };
-    if (now - bankTs > KEYED_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) return { ok: false, code: "bad-date", message: "The payment date is more than a year ago — check the date on the proof." };
-  }
+  if (!Number.isInteger(now)) return { ok: false, code: "no-clock", message: "The server clock is missing — not registered." };
+  if (date > sastDate(now)) return { ok: false, code: "bad-date", message: "The payment date is in the future — check the date on the proof." };
+  if (now - bankTs > KEYED_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) return { ok: false, code: "bad-date", message: "The payment date is more than a year ago — check the date on the proof." };
   const reference = typeof d.reference === "string" ? d.reference.trim() : d.reference == null ? "" : null;
   const absaNoTxn = bank === "absa" && (d.bankRef == null || (typeof d.bankRef === "string" && d.bankRef.trim() === ""));
   if (reference === "" && absaNoTxn) {

@@ -148,14 +148,14 @@ Input (alongside `entryId`, optional `filename`, `note`):
 | `amountCents` | positive integer |
 | `paymentDate` | `YYYY-MM-DD`, the bank's payment day (SAST); not future, ≤ 1 year old |
 | `reference` | the payer's reference as shown (1–80 chars); may be empty only on Absa without a transaction id |
-| `bankRef` | the bank's transaction id — **required except Absa** |
+| `bankRef` | the bank's transaction id — **required except Absa**. Copy the label the poller reads: Standard Bank **Reference number**, FNB **Trace ID**, Capitec **Notification number**, Absa **Transaction number**, Nedbank **Reference Number** (spaces/case ignored). A mistyped id cannot be caught here; the settle's twin rule (same amount + reference, on/after the day) still refuses the bank's copy at the till |
 | `payer` | as shown — **required on Absa without a transaction id** (the synthetic identity uses it) |
 | `accountTail` | optional destination account digits; empty = the shop's own. Required when `EFT_ALLOWED_ACCOUNTS` holds more than one account (Absa's synthetic identity carries the last four) |
 
 The image is stored with the Admin SDK at
 `eftProofs/{approval key}/{entryId}-{sha256[0..16]}.{jpg|png|heic}`, create-only (bucket
 `marathon-club.firebasestorage.app`; no client rule — clients cannot read or
-write it) and recorded on `manualApproved.proof {kind, path, contentType,
+write it; view it in the Firebase console — there is no client read rule) and recorded on `manualApproved.proof {kind, path, contentType,
 bytes, sha256}` with `manualApproved.keyedByHand: true`. The response adds
 `keyedByHand: true` and `proofPath`. A refused claim deletes the stored file.
 
