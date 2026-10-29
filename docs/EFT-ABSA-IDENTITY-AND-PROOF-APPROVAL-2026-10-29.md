@@ -147,14 +147,24 @@ Input (alongside `entryId`, optional `filename`, `note`):
 | `bank` | `standardbank` · `fnb` · `capitec` · `absa` · `nedbank` |
 | `amountCents` | positive integer |
 | `paymentDate` | `YYYY-MM-DD`, the bank's payment day (SAST); not future, ≤ 1 year old |
-| `reference` | the payer's reference as shown (1–80 chars) |
+| `reference` | the payer's reference as shown (1–80 chars); may be empty only on Absa without a transaction id |
 | `bankRef` | the bank's transaction id — **required except Absa** |
 | `payer` | as shown — **required on Absa without a transaction id** (the synthetic identity uses it) |
-| `accountTail` | optional destination account digits; empty = the shop's own (first in `EFT_ALLOWED_ACCOUNTS`) |
+| `accountTail` | optional destination account digits; empty = the shop's own. Required when `EFT_ALLOWED_ACCOUNTS` holds more than one account (Absa's synthetic identity carries the last four) |
 
 The image is stored with the Admin SDK at
-`eftProofs/{approval key}/{entryId}.{jpg|png|heic}` (bucket
+`eftProofs/{approval key}/{entryId}-{sha256[0..16]}.{jpg|png|heic}`, create-only (bucket
 `marathon-club.firebasestorage.app`; no client rule — clients cannot read or
 write it) and recorded on `manualApproved.proof {kind, path, contentType,
 bytes, sha256}` with `manualApproved.keyedByHand: true`. The response adds
 `keyedByHand: true` and `proofPath`. A refused claim deletes the stored file.
+
+The keyed payer is redacted exactly as the reader redacts it (account-like
+digit runs) so the synthetic identity matches. An **Absa photo with both a
+transaction number and a payer also claims the synthetic identity**
+(`manualApproved.alsoFingerprint`): the app screenshot and the emailed
+notice can disagree on whether the number is printed, and whichever the
+notice carries is taken. Error codes: `bad-bank`, `bad-amount`, `bad-date`,
+`bad-reference`, `bad-payer`, `bad-bank-ref`, `bank-ref-required`,
+`payer-required`, `bad-account`, `account-required`, `wrong-destination`,
+`not-an-image`, `bad-proof`, `proof-too-big`, `two-proofs`.

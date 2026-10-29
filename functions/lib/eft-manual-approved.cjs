@@ -65,7 +65,7 @@ const MANUAL_APPROVED_REASON = "Approved by hand from the uploaded proof of paym
 // megabytes is far above any real one and far below the callable's own limit.
 const PROOF_MAX_BYTES = 5 * 1024 * 1024;
 // A phone photo is bigger than a bank PDF; 7 MB of image is ~9.4 MB of
-// base64, inside the callable's 10 MB request limit.
+// base64 — far above any screenshot, well inside the callable's request limit.
 const PROOF_IMAGE_MAX_BYTES = 7 * 1024 * 1024;
 const PROOF_STORAGE_PREFIX = "eftProofs";
 const PROOF_NOTE_MAX = 200;
@@ -144,17 +144,21 @@ const BANK_NAMES = { standardbank: "Standard Bank", fnb: "FNB", capitec: "Capite
 const KEYED_READER_IDS = EFT_READERS.map((r) => r.id);
 
 /** The shop's account the photo's money went into: the one ending with the
- *  typed digits, or — none typed — the first configured (Marathon's). */
+ *  typed digits, or — none typed — the shop's own when exactly one is
+ *  configured. Absa's synthetic identity carries the account's last four, so
+ *  a guess between two accounts would key the wrong identity: refused. */
 function keyedDestinationOf(accountTail, allowedAccounts) {
   const accounts = Array.isArray(allowedAccounts) ? allowedAccounts : [];
   if (accountTail == null || accountTail === "") {
-    return accounts.length ? { ok: true, accountMask: accounts[0] } : { ok: true, accountMask: null };
+    if (accounts.length > 1) return { ok: false, code: "account-required", message: "The shop has more than one account — type the last digits of the account the proof says the money went into." };
+    return { ok: true, accountMask: accounts[0] ?? null };
   }
   const digits = String(accountTail).replace(/[\s-]/g, "");
   if (!/^\d{4,20}$/.test(digits)) return { ok: false, code: "bad-account", message: "The destination account must be digits (at least the last four) — or leave it empty for the shop's own account." };
-  const hit = accounts.find((a) => a.endsWith(digits));
-  if (!hit) return { ok: false, code: "wrong-destination", message: `This payment credits an account ending ${digits.slice(-4)}, which is not the shop's own account.` };
-  return { ok: true, accountMask: hit };
+  const hits = accounts.filter((a) => a.endsWith(digits));
+  if (!hits.length) return { ok: false, code: "wrong-destination", message: `This payment credits an account ending ${digits.slice(-4)}, which is not the shop's own account.` };
+  if (hits.length > 1) return { ok: false, code: "account-required", message: "More than one of the shop's accounts ends with those digits — type more of the account number." };
+  return { ok: true, accountMask: hits[0] };
 }
 
 /**
@@ -163,11 +167,19 @@ function keyedDestinationOf(accountTail, allowedAccounts) {
  *   bank         one of the reader ids (standardbank, fnb, capitec, absa, nedbank)
  *   amountCents  positive integer
  *   paymentDate  "YYYY-MM-DD", the bank's payment day (SAST), not in the future
- *   reference    the payer's reference, as the proof prints it
+ *   reference    the payer's reference, as the proof prints it (may be empty
+ *                only on Absa without a transaction id: a payer who typed
+ *                none still paid once, and the synthetic identity allows it)
  *   bankRef      the bank's transaction id — REQUIRED except on Absa
  *   payer        as printed — REQUIRED on Absa without a transaction id
- *   accountTail  optional: the destination account digits (default the shop's)
- * @returns {{ok:true, readerId, parse, lines}|{ok:false, code, message}}
+ *   accountTail  optional: the destination account digits (default the shop's;
+ *                required when more than one account is configured)
+ *
+ * ABSA WITH BOTH a transaction number AND a payer: the app's screenshot and
+ * the emailed notice can disagree on whether the number is printed (Absa
+ * leaves it blank on some notices), so the approval ALSO claims the synthetic
+ * identity (`alsoSyntheticRef`) — whichever the notice carries is taken.
+ * @returns {{ok:true, readerId, parse, lines, alsoSyntheticRef}|{ok:false, code, message}}
  */
 function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
   const d = data && typeof data === "object" ? data : {};
@@ -186,8 +198,11 @@ function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
     if (date > sastDate(now)) return { ok: false, code: "bad-date", message: "The payment date is in the future — check the date on the proof." };
     if (now - bankTs > KEYED_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) return { ok: false, code: "bad-date", message: "The payment date is more than a year ago — check the date on the proof." };
   }
-  const reference = typeof d.reference === "string" ? d.reference.trim() : "";
-  if (!reference || reference.length > KEYED_REFERENCE_MAX || CONTROL_CHARS.test(reference) || !/[A-Za-z0-9]/.test(reference)) {
+  const reference = typeof d.reference === "string" ? d.reference.trim() : d.reference == null ? "" : null;
+  const absaNoTxn = bank === "absa" && (d.bankRef == null || (typeof d.bankRef === "string" && d.bankRef.trim() === ""));
+  if (reference === "" && absaNoTxn) {
+    // allowed: see above
+  } else if (!reference || reference.length > KEYED_REFERENCE_MAX || CONTROL_CHARS.test(reference) || !/[A-Za-z0-9]/.test(reference)) {
     return { ok: false, code: "bad-reference", message: `Type the reference the proof shows (up to ${KEYED_REFERENCE_MAX} characters).` };
   }
   const payerRaw = d.payer == null ? "" : typeof d.payer === "string" ? d.payer.trim() : null;
@@ -206,25 +221,31 @@ function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
   }
   const dest = keyedDestinationOf(d.accountTail, allowedAccounts);
   if (!dest.ok) return dest;
+  // The payer as the READER stores it (account-like digit runs struck out)
+  // — the synthetic identity is built from that, so it must be here too.
+  const payer = payerRaw ? clip(redactAccountDigits(payerRaw), 120) : null;
   const parse = {
-    ok: true, amountCents, reference, payer: payerRaw || null, bankTs, bankRef: refRaw || null,
+    ok: true, amountCents, reference: reference || null, payer, bankTs, bankRef: refRaw || null,
     accountMask: dest.accountMask, destBankName: "FIRST NATIONAL BANK", beneficiaryName: null,
   };
+  const alsoSyntheticRef = bank === "absa" && refRaw && payer ? syntheticIdentityOf({ ...parse, bankRef: null }, "absa") : null;
   const lines = [
     `Keyed by hand by ${MANUAL_APPROVED_BY} from a photo of the proof of payment (not read by machine).`,
     `Bank: ${BANK_NAMES[bank]}`,
     `Amount: R${(amountCents / 100).toFixed(2)}`,
     `Payment date: ${date}`,
-    `Reference: ${reference}`,
-    ...(payerRaw ? [`Payer: ${payerRaw}`] : []),
+    `Reference: ${reference || "(none)"}`,
+    ...(payer ? [`Payer: ${payer}`] : []),
     ...(refRaw ? [`Transaction id: ${refRaw}`] : []),
   ];
-  return { ok: true, readerId: bank, parse, lines };
+  return { ok: true, readerId: bank, parse, lines, alsoSyntheticRef };
 }
 
-/** Where the photo is kept: one folder per approval, one file per upload. */
-function proofStoragePathOf(approvedKey, entryId, ext) {
-  return `${PROOF_STORAGE_PREFIX}/${approvedKey}/${entryId}.${ext}`;
+/** Where the photo is kept: one folder per approval, one file per upload and
+ *  content (the hash prefix), written create-only — evidence is never
+ *  overwritten, and a retry of the same bytes lands on the same file. */
+function proofStoragePathOf(approvedKey, entryId, sha256, ext) {
+  return `${PROOF_STORAGE_PREFIX}/${approvedKey}/${entryId}-${String(sha256).slice(0, 16)}.${ext}`;
 }
 
 /**
@@ -290,6 +311,7 @@ function manualApprovedRecord({ key, readerId, parse, lines, identity, destinati
       filename: filename ?? null,
       entryId,
       ...(photo ? { keyedByHand: true, proof: { kind: "image", path: proof.path, contentType: proof.contentType, bytes: proof.bytes, sha256: proof.sha256 } } : {}),
+      ...(photo && proof.alsoFingerprint ? { alsoFingerprint: proof.alsoFingerprint } : {}),
     },
   };
   const used = markUsedOutsidePosDecision(unmatched, { at, actorUid: actor?.uid, actorName: MANUAL_APPROVED_BY, reason: MANUAL_APPROVED_REASON });

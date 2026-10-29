@@ -528,13 +528,15 @@ test("PHOTO, Absa with no transaction number: the keyed identity IS the notice's
   assert.match(rec.rawText, /Keyed by hand/);
   assert.equal(rec.used.outsidePos.actorName, "Junid");
   // The evidence: stored under the approval, with the Admin SDK, as a JPEG.
-  const path = `eftProofs/${out.key}/PA-IMG00001.jpg`;
+  const sha = require("node:crypto").createHash("sha256").update(JPEG).digest("hex");
+  const path = `eftProofs/${out.key}/PA-IMG00001-${sha.slice(0, 16)}.jpg`;
   assert.equal(out.proofPath, path);
   assert.deepEqual(Object.keys(storageState.saved), [path]);
   assert.ok(storageState.saved[path].buf.equals(JPEG));
   assert.equal(storageState.saved[path].opts.contentType, "image/jpeg");
+  assert.deepEqual(storageState.saved[path].opts.preconditionOpts, { ifGenerationMatch: 0 }, "create-only: evidence is never overwritten");
   assert.equal(storageState.saved[path].bucket, "marathon-club.firebasestorage.app");
-  assert.deepEqual(rec.manualApproved.proof, { kind: "image", path, contentType: "image/jpeg", bytes: JPEG.length, sha256: require("node:crypto").createHash("sha256").update(JPEG).digest("hex") });
+  assert.deepEqual(rec.manualApproved.proof, { kind: "image", path, contentType: "image/jpeg", bytes: JPEG.length, sha256: sha });
   assert.equal(rec.manualApproved.keyedByHand, true);
   assert.equal(rec.manualApproved.note, "screenshot on the counter");
   const logRow = Object.values(dbState.logs)[0];
@@ -557,7 +559,7 @@ test("PHOTO, Nedbank: keyed by its Reference Number; the notice arriving later i
   });
   assert.equal(out.reader, "nedbank");
   assert.equal(out.synthetic, false);
-  assert.ok(storageState.saved[`eftProofs/${out.key}/PA-IMG00001.png`], "stored as a PNG");
+  assert.ok(Object.keys(storageState.saved)[0].endsWith(".png"), "stored as a PNG");
   const { held, seen, identity } = await bankNoticeArrives("nedbank", NEDBANK_NOTICE);
   assert.equal(out.key, approvedKeyOf(identity.fingerprint), "typed with spaces and capitals, it is the notice's id");
   assert.equal(held.outcome, "held-duplicate");
@@ -571,7 +573,7 @@ test("PHOTO, a transaction-id bank (Standard Bank) and Absa WITH a transaction n
     imageBase64: HEIC.toString("base64"),
   });
   assert.equal(sb.bankRef, "4149999999");
-  assert.ok(storageState.saved[`eftProofs/${sb.key}/PA-IMG00001.heic`], "a HEIC photo is accepted");
+  assert.ok(Object.keys(storageState.saved).some((k) => k.startsWith(`eftProofs/${sb.key}/PA-IMG00001-`) && k.endsWith(".heic")), "a HEIC photo is accepted");
   const { held } = await bankNoticeArrives("standardbank", SB);
   assert.equal(held.outcome, "held-duplicate");
   assert.equal(held.approvedByHand, sb.key);
@@ -622,7 +624,8 @@ test("PHOTO, garbage is refused with nothing stored or written", async () => {
     [{ ...ABSA_KEYED, paymentDate: "2026-02-30" }, "bad-date"],
     [{ ...ABSA_KEYED, paymentDate: "2099-01-01" }, "bad-date"],
     [{ ...ABSA_KEYED, paymentDate: "2020-01-01" }, "bad-date"],
-    [{ ...ABSA_KEYED, reference: "" }, "bad-reference"],
+    [{ ...ABSA_KEYED, reference: "", bankRef: "ABS12345" }, "bad-reference"],
+    [{ ...ABSA_KEYED, reference: 42 }, "bad-reference"],
     [{ ...ABSA_KEYED, reference: "---" }, "bad-reference"],
     [{ ...ABSA_KEYED, reference: "ok\nDROP" }, "bad-reference"],
     [{ ...ABSA_KEYED, reference: "x".repeat(81) }, "bad-reference"],
@@ -704,4 +707,64 @@ test("imageKindOf and keyedIdentityCheck, as data", () => {
   assert.equal(ok.readerId, "absa");
   assert.equal(ok.parse.bankTs, EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN).bankTs, "the date is the reader's own bank timestamp");
   assert.equal(ok.parse.accountMask, "62900004321");
+});
+
+test("PHOTO review fixes: a payer with an account-like digit run keys the READER's redacted payer", async () => {
+  resetImg();
+  const lines = ABSA_NO_TXN.map((l) => (l === "Payment made by: MRS S SOAP" ? "Payment made by: J SMITH 0821234567" : l));
+  const out = await photo(OWNER, { ...ABSA_KEYED, payer: "J Smith 0821234567" });
+  const later = await bankNoticeArrives("absa", lines);
+  assert.equal(out.key, approvedKeyOf(later.identity.fingerprint), "same identity as the notice");
+  assert.equal(later.held.outcome, "held-duplicate");
+  assert.doesNotMatch(dbState.pool[`eft_pool/${out.key}`].payer, /0821234567/);
+});
+
+test("PHOTO review fixes: two shop accounts → the account digits are required; an ambiguous tail is refused", async () => {
+  resetImg(); secretValue = "62000004321, 62900004321";
+  await rejects(photo(OWNER, ABSA_KEYED), "invalid-argument", "account-required");
+  await rejects(photo(OWNER, { ...ABSA_KEYED, accountTail: "4321" }), "invalid-argument", "account-required");
+  const out = await photo(OWNER, { ...ABSA_KEYED, accountTail: "62900004321" });
+  assert.equal(out.key, approvedKeyOf(proofIdentityOf(EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN), "absa").fingerprint));
+});
+
+test("PHOTO review fixes: an Absa payment with NO reference keys the notice's identity; other banks still need one", async () => {
+  resetImg();
+  const lines = ABSA_NO_TXN.map((l) => (l.startsWith("Reference on beneficiary statement:") ? "Reference on beneficiary statement:" : l));
+  const notice = EFT_READERS.find((r) => r.id === "absa").parse(lines);
+  assert.equal(notice.ok, true, notice.reason);
+  const out = await photo(OWNER, { ...ABSA_KEYED, reference: "" });
+  assert.equal(out.key, approvedKeyOf(proofIdentityOf(notice, "absa").fingerprint));
+  await rejects(photo(OWNER, { ...ABSA_KEYED, reference: "", bankRef: "ABS12345" }, { entryId: "PA-IMG00002" }), "invalid-argument", "bad-reference");
+  await rejects(photo(OWNER, { bank: "fnb", amountCents: 100, paymentDate: "2026-10-27", reference: "", bankRef: "TRACE1234" }, { entryId: "PA-IMG00003" }), "invalid-argument", "bad-reference");
+});
+
+test("PHOTO review fixes: Absa with a transaction number AND a payer also claims the synthetic identity — a notice printing the number blank is held too", async () => {
+  resetImg();
+  const out = await photo(OWNER, { ...ABSA_KEYED, bankRef: "ABS12345" });
+  assert.equal(out.key, approvedKeyOf(paymentFingerprint({ reader: "absa", bankRef: "ABS12345" })));
+  const blank = await bankNoticeArrives("absa", ABSA_NO_TXN);
+  assert.equal(blank.held.outcome, "held-duplicate", "the blank-number notice finds the synthetic claim");
+  assert.equal(blank.held.approvedByHand, out.key);
+  assert.equal(claimHolderCheck({ poolKey: "b".repeat(40), holder: blank.seen.holder, spentBy: blank.seen.spentBy }).code, "duplicate-used");
+  const printed = await bankNoticeArrives("absa", ABSA_NO_TXN.map((l) => (l === "Transaction number:" ? "Transaction number: ABS12345" : l)));
+  assert.equal(printed.held.outcome, "held-duplicate");
+  assert.equal(dbState.pool[`eft_pool/${out.key}`].manualApproved.alsoFingerprint, blank.identity.fingerprint);
+  // And a bank record already waiting under the synthetic identity refuses the approval, nothing claimed.
+  resetImg();
+  const fp = blank.identity.fingerprint;
+  dbState.fingerprints[`eft_pool_fingerprints/${fp}`] = { poolKey: "c".repeat(40), at: 1 };
+  dbState.pool[`eft_pool/${"c".repeat(40)}`] = { outcome: "recorded", status: "unmatched", reader: "absa" };
+  await rejects(photo(OWNER, { ...ABSA_KEYED, bankRef: "ABS12345" }), "failed-precondition", "bank-record-waiting");
+  assert.equal(Object.keys(dbState.fingerprints).length, 1);
+  assert.deepEqual(storageState.saved, {});
+});
+
+test("PHOTO review fixes: a stored file already there (412, a retry of the same bytes) is not an error", async () => {
+  resetImg();
+  const orig = fakeAdmin.storage;
+  fakeAdmin.storage = () => ({ bucket: () => ({ file: () => ({ save: async () => { const e = new Error("exists"); e.code = 412; throw e; }, delete: async () => {} }) }) });
+  try {
+    const out = await photo(OWNER, ABSA_KEYED);
+    assert.equal(out.ok, true);
+  } finally { fakeAdmin.storage = orig; }
 });

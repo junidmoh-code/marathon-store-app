@@ -1029,7 +1029,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
 
   const configured = String(eftAllowedAccounts.value() ?? "").trim();
-  let reader, parse, lines;
+  let reader, parse, lines, alsoSyntheticRef = null;
   if (input.kind === "image") {
     // A PHOTO: nothing to parse, and no OCR. Junid typed the identity from
     // it; keyedIdentityCheck shapes those fields as the bank's reader would
@@ -1042,6 +1042,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     reader = { id: keyed.readerId };
     parse = keyed.parse;
     lines = keyed.lines;
+    alsoSyntheticRef = keyed.alsoSyntheticRef;
   } else {
     // THE DOCUMENT → LINES → READER → PARSE, exactly the poller's path.
     const extracted = await pdfToLines(input.pdf, { grouping: "bucket" });
@@ -1092,29 +1093,66 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   if (decision.action === "refuse") {
     throw new HttpsError("failed-precondition", decision.message, { code: decision.code, key: decision.key ?? null });
   }
+  // A PHOTO OF AN ABSA PROOF with both a transaction number and a payer also
+  // claims the synthetic identity (lib: keyedIdentityCheck) — judged by the
+  // same decision, so a bank record waiting under it refuses here too.
+  const also = alsoSyntheticRef ? { fingerprint: paymentFingerprint({ reader: reader.id, syntheticRef: alsoSyntheticRef }) } : null;
+  if (also?.fingerprint && also.fingerprint !== identity.fingerprint) {
+    also.path = `${EFT_FINGERPRINT_PATH}/${also.fingerprint}`;
+    const alsoClaim = (await db.ref(also.path).once("value")).val();
+    const alsoHolder = alsoClaim && typeof alsoClaim === "object" && typeof alsoClaim.poolKey === "string" && alsoClaim.poolKey !== key
+      ? (await db.ref(`${EFT_POOL_PATH}/${alsoClaim.poolKey}`).once("value")).val()
+      : null;
+    also.decision = approvedClaimDecision({ approvedKey: key, claim: alsoClaim, holderRecord: alsoHolder, now });
+    if (also.decision.action === "refuse") {
+      throw new HttpsError("failed-precondition", also.decision.message, { code: also.decision.code, key: also.decision.key ?? null });
+    }
+  }
   // THE PHOTO IS THE EVIDENCE: stored before anything is claimed or
   // recorded (the slip photos' order), with the Admin SDK — no client writes
   // eftProofs/. A refused claim below takes the file back out.
   let proof = null;
   if (input.kind === "image") {
+    const sha256 = createHash("sha256").update(input.image).digest("hex");
     proof = {
       kind: "image",
-      path: proofStoragePathOf(key, input.entryId, input.imageType.ext),
+      path: proofStoragePathOf(key, input.entryId, sha256, input.imageType.ext),
       contentType: input.imageType.contentType,
       bytes: input.image.length,
-      sha256: createHash("sha256").update(input.image).digest("hex"),
+      sha256,
+      alsoFingerprint: also?.path ? also.fingerprint : null,
     };
-    await admin.storage().bucket(STORAGE_BUCKET).file(proof.path).save(input.image, {
-      resumable: false,
-      contentType: proof.contentType,
-      metadata: { cacheControl: "private, max-age=31536000, immutable" },
-    });
+    try {
+      // Create-only: the path names the bytes, so an existing file IS this
+      // image (a retry) — never overwritten.
+      await admin.storage().bucket(STORAGE_BUCKET).file(proof.path).save(input.image, {
+        resumable: false,
+        contentType: proof.contentType,
+        preconditionOpts: { ifGenerationMatch: 0 },
+        metadata: { cacheControl: "private, max-age=31536000, immutable" },
+      });
+    } catch (err) {
+      if (err?.code !== 412) throw err;
+    }
   }
+  const dropProof = async () => {
+    if (proof) { try { await admin.storage().bucket(STORAGE_BUCKET).file(proof.path).delete(); } catch { /* best effort */ } }
+  };
   let claimed = null;
   await db.ref(claimPath).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: decision.holder ?? null }, (d) => { claimed = d; }));
   if (claimed?.spentBy !== key) {
-    if (proof) { try { await admin.storage().bucket(STORAGE_BUCKET).file(proof.path).delete(); } catch { /* best effort */ } }
+    await dropProof();
     throw new HttpsError("aborted", "The payment's identity changed hands while this was being registered — check the pool and try again.", { code: "claim-moved", holder: claimed?.holder ?? null });
+  }
+  if (also?.path) {
+    let alsoClaimed = null;
+    await db.ref(also.path).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: also.decision.holder ?? null }, (d) => { alsoClaimed = d; }));
+    if (alsoClaimed?.spentBy !== key) {
+      // The primary claim stays this approval's; a retry finds it "own" and
+      // tries the synthetic identity again.
+      await dropProof();
+      throw new HttpsError("aborted", "The payment's identity changed hands while this was being registered — check the pool and try again.", { code: "claim-moved", holder: alsoClaimed?.holder ?? null });
+    }
   }
 
   const built = manualApprovedRecord({
