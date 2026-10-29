@@ -72,6 +72,11 @@ function normaliseBankRef(raw) {
 // Anything else is not one this module built and identifies nothing.
 const SYNTHETIC_REF = /^[A-Z0-9|:-]{12,300}$/;
 const normaliseText = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+// Bounded, so the identity plus a release suffix ("|RELEASED:<ms>") always
+// fits SYNTHETIC_REF: a payer or reference longer than any bank prints is
+// clipped, never a reason to lose the identity.
+const SYNTHETIC_PAYER_MAX = 40;
+const SYNTHETIC_REFERENCE_MAX = 80;
 
 /**
  * The synthetic identity of an Absa notice that prints no transaction number
@@ -82,10 +87,10 @@ const normaliseText = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g,
  * a payer who typed none still paid once.
  */
 function absaSyntheticRef({ payer, accountMask, bankTs, amountCents, reference } = {}) {
-  const who = normaliseText(payer);
+  const who = normaliseText(payer).slice(0, SYNTHETIC_PAYER_MAX);
   const digits = String(accountMask ?? "").replace(/\D/g, "");
   if (!who || digits.length < 4 || !Number.isInteger(bankTs) || !Number.isInteger(amountCents) || amountCents <= 0) return null;
-  return `ABSA|${who}|${digits.slice(-4)}|${sastDate(bankTs)}|${amountCents}|${normaliseText(reference)}`;
+  return `ABSA|${who}|${digits.slice(-4)}|${sastDate(bankTs)}|${amountCents}|${normaliseText(reference).slice(0, SYNTHETIC_REFERENCE_MAX)}`;
 }
 
 /**

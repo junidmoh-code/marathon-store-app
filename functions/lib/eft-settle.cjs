@@ -607,6 +607,14 @@ function releaseDecision(current, { attemptId, at, reason }) {
  * module's to touch.
  */
 function reverseDecision(current, { at, by, reason }) {
+  // A PROOF-OF-PAYMENT APPROVAL IS A LEDGER ENTRY, NOT A SETTLEMENT (29 Oct
+  // 2026). It was never gated by DKIM, immediacy or the cutoff — it exists
+  // only so the bank's later copy is filed as settled — so reversing it would
+  // mint ungated spendable money (and, with the hand-floated entry for the
+  // same payment still in the pool, a double float). Never reversed.
+  if (current && typeof current === "object" && current.manualApproved && typeof current.manualApproved === "object") {
+    return refuse("approval-not-reversible", "This is a proof-of-payment approval, not a settlement — it never floated money, so there is nothing to reverse. The bank's own notification stays filed against it.");
+  }
   if (!current || current.status !== "used" || !current.used) {
     return refuse("not-used", "This payment is not settled against anything — there is nothing to reverse.");
   }
@@ -678,7 +686,12 @@ function releaseHoldDecision(current, { at, by, reason }) {
     status: "unmatched",
     releasedFromHold: { at, by: String(by ?? ""), reason: why.slice(0, RELEASE_REASON_MAX), from },
   };
-  if (possibleDuplicate) value.fingerprint = paymentFingerprint(value);
+  if (possibleDuplicate) {
+    value.fingerprint = paymentFingerprint(value);
+    // A released copy with no fingerprint of its own would settle under the
+    // owner-released no-id exemption with no claim at all. Never.
+    if (!value.fingerprint) return refuse("no-identity", "This payment's identity could not be re-keyed for release — not released.");
+  }
   return { ok: true, value };
 }
 

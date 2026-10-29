@@ -879,8 +879,11 @@ export const HELD_OUTCOMES = ["held-duplicate", "held-no-bankref", "held-possibl
  * @param {string} p.poolKey           the key this record is about to land on
  * @param {boolean} [p.manualApproved] the claim was written by Junid's
  *                                     proof-of-payment approval (eftPoolManualApprove)
+ * @param {string|null} [p.spentBy]    the record the claim names as spender —
+ *                                     the approval itself (its holder may be
+ *                                     an earlier refusal of the same id)
  */
-export function applyFingerprintHold(record, { fingerprint, holder, poolKey, manualApproved = false }) {
+export function applyFingerprintHold(record, { fingerprint, holder, poolKey, manualApproved = false, spentBy = null }) {
   if (!record || record.outcome !== "recorded") return record;
   const { status: _status, ...held } = record;
   if (!fingerprint) {
@@ -897,7 +900,7 @@ export function applyFingerprintHold(record, { fingerprint, holder, poolKey, man
         outcome: "held-duplicate",
         fingerprint,
         duplicateOf: holder,
-        approvedByHand: holder,
+        approvedByHand: spentBy ?? holder,
         reason: "The bank's notification for a payment Junid already approved by hand from its proof of payment — the money is settled under the approval record. HELD, never spendable.",
       };
     }
@@ -1142,7 +1145,7 @@ export function eftRetryPlan({ poolKey, record, seenRow, at }) {
     return { ok: false, why: `That record is a RECORDED payment (${record.status}). A recorded payment is evidence and is never re-run.` };
   }
   if (HELD_OUTCOMES.includes(record.outcome)) {
-    return { ok: false, why: `That payment is HELD (${record.outcome}). A hold is never re-run: a resent copy stays held for ever, and a payment with no bank transaction id is released by the owner from the EFT payments tab after checking the statement.` };
+    return { ok: false, why: `That payment is HELD (${record.outcome}). A hold is never re-run: a resent copy stays held for ever; a payment with no bank transaction id, or an Absa possible duplicate, is released by the owner from the EFT payments tab after checking the statement.` };
   }
   if (record.outcome === "unknown-bank") {
     return { ok: false, why: "That is an unknown-bank sighting, not a refusal: the message was never claimed or marked read, so there is nothing to undo. Add the bank's domain to EFT_ALLOWED_DOMAINS and a reader, and the next tick reads it." };

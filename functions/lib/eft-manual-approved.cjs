@@ -165,7 +165,12 @@ function isManualApproved(record) {
  *   refuse   the bank's own record is in the pool unused (use that one), or
  *            the money was already used
  */
-function approvedClaimDecision({ approvedKey, claim, holderRecord }) {
+// A claim younger than this with NO pool record behind it is the poller
+// mid-write (it claims first, writes the record after): not a stale refusal
+// to stamp over, but a live bank record about to land. Try again later.
+const CLAIM_SETTLING_MS = 5 * 60 * 1000;
+
+function approvedClaimDecision({ approvedKey, claim, holderRecord, now = null }) {
   if (!claim || typeof claim !== "object" || typeof claim.poolKey !== "string") {
     return claim == null ? { action: "create" } : { action: "refuse", code: "claim-corrupt", message: "The payment's identity claim could not be read cleanly — not registered. Ask for it to be looked at." };
   }
@@ -183,7 +188,43 @@ function approvedClaimDecision({ approvedKey, claim, holderRecord }) {
       message: "The bank's own notification for this payment is already in the pool, unused — the cashier can use that one at the till, or mark it used. No approval by proof is needed.",
     };
   }
+  if ((r === null || r === undefined) && Number.isInteger(now) && Number.isInteger(claim.at) && now - claim.at < CLAIM_SETTLING_MS) {
+    return { action: "refuse", code: "claim-settling", key: claim.poolKey, message: "The bank's notification for this payment is being recorded right now — wait a minute and try again, or use it at the till once it shows." };
+  }
   return { action: "spend", holder: claim.poolKey };
+}
+
+/**
+ * SETTLE-TIME: the record about to be spent is the bank's record of money
+ * Junid approved from its proof — matched NOT by identity (the proof and the
+ * emailed notice can be different documents: one may print the transaction
+ * number the other leaves blank, or format the payer differently, so their
+ * fingerprints can differ) but the way the manual twin is matched: same
+ * amount, same normalised reference, and the bank dates it on or after the
+ * day of the approval's own bank date (a payment from last week with the
+ * same reference and amount is a different payment). Refused: the money was
+ * settled under the approval. One sentence, no provenance, for the till
+ * (Junid, 20 Oct 2026).
+ * @returns {{ok:true}|{ok:false, code:string, message:string}}
+ */
+const normaliseRef = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const DAY_MS = 24 * 60 * 60 * 1000;
+function approvedTwinSettleCheck({ poolKey, record, siblings }) {
+  if (!record || record.outcome !== "recorded" || isManualApproved(record)) return { ok: true };
+  const ref = normaliseRef(record.reference);
+  if (!ref) return { ok: true };
+  const paidAt = Number.isInteger(record.bankTs) ? record.bankTs : Number.isInteger(record.receivedAt) ? record.receivedAt : record.at;
+  for (const [key, other] of siblings ?? []) {
+    if (key === poolKey || !isManualApproved(other)) continue;
+    if (other.amountCents !== record.amountCents || normaliseRef(other.reference) !== ref) continue;
+    const approvedPaidAt = Number.isInteger(other.bankTs) ? other.bankTs : other.manualApproved.at;
+    if (Number.isInteger(paidAt) && Number.isInteger(approvedPaidAt) && paidAt < approvedPaidAt - DAY_MS) continue;
+    return {
+      ok: false, code: "twin-used",
+      message: "This payment — the same reference and amount — was already used. It cannot be used again. If the customer really paid twice, ask Junid.",
+    };
+  }
+  return { ok: true };
 }
 
 /**
@@ -275,5 +316,6 @@ module.exports = {
   MANUAL_APPROVED_BY, MANUAL_APPROVED_LOG_PATH, MANUAL_APPROVED_LIST_LIMIT, MANUAL_APPROVED_REASON,
   PROOF_MAX_BYTES, PROOF_NOTE_MAX,
   approvedKeyOf, approvedInputCheck, proofIdentityOf, manualApprovedRecord, isManualApproved,
-  approvedClaimDecision, approvedClaimStep, approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
+  approvedClaimDecision, approvedClaimStep, approvedTwinSettleCheck, CLAIM_SETTLING_MS,
+  approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
 };

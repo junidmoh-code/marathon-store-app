@@ -365,3 +365,87 @@ test("eftPoolManualEntry floats a typed reference and amount with NO proof — u
   // approval callable would have refused that very request as having none.
   assert.equal(approvedInputCheck({ entryId: "ME-00000001", reference: "Thabo 0821", amountCents: 55000 }).code, "no-proof");
 });
+
+// ─── ARCHITECT REVIEW (Sonnet, PR #810) — the gaps it found, pinned ──────────
+test("an approval is NEVER reversed: eftPoolReverse would otherwise mint ungated spendable money", async () => {
+  reset(); pdfLines = ABSA_NO_TXN;
+  const out = await upload(OWNER);
+  const rec = dbState.pool[`eft_pool/${out.key}`];
+  const { reverseDecision } = require("../lib/eft-settle.cjs");
+  const d = reverseDecision(rec, { at: 99, by: "gunidmoh@gmail.com", reason: "undo" });
+  assert.equal(d.ok, false);
+  assert.equal(d.code, "approval-not-reversible");
+  const { eftPoolReverse } = require("../eftPool/eftPool.js");
+  dbState.txCurrent = rec;
+  await rejects(eftPoolReverse({ ...OWNER, data: { poolKey: out.key, reason: "undo the ledger entry" } }), "failed-precondition", "approval-not-reversible");
+  assert.equal(dbState.pool[`eft_pool/${out.key}`].status, "used", "still used");
+});
+
+test("the poller's claim-then-write gap: a fresh claim with no record behind it is 'claim-settling', never stamped spent", async () => {
+  reset(); pdfLines = ABSA_NO_TXN;
+  const parse = EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN);
+  const fp = proofIdentityOf(parse, "absa").fingerprint;
+  dbState.fingerprints[`eft_pool_fingerprints/${fp}`] = { poolKey: "c".repeat(40), at: Date.now() - 1000 };
+  await rejects(upload(OWNER), "failed-precondition", "claim-settling");
+  assert.equal(dbState.fingerprints[`eft_pool_fingerprints/${fp}`].spentBy, undefined);
+  // A stale claim with no record is a refusal long gone: stamped.
+  dbState.fingerprints[`eft_pool_fingerprints/${fp}`] = { poolKey: "c".repeat(40), at: Date.now() - 60 * 60 * 1000 };
+  assert.equal((await upload(OWNER)).ok, true);
+  assert.equal(approvedClaimDecision({ approvedKey: "a".repeat(40), claim: { poolKey: "h".repeat(40), at: 1000 }, holderRecord: null, now: 2000 }).code, "claim-settling");
+  assert.deepEqual(approvedClaimDecision({ approvedKey: "a".repeat(40), claim: { poolKey: "h".repeat(40), at: 1000 }, holderRecord: null, now: 10 * 60 * 1000 }), { action: "spend", holder: "h".repeat(40) });
+});
+
+test("a bank record for approved money that carries a DIFFERENT fingerprint (the proof printed an id, the notice did not) is refused at the settle as a twin", async () => {
+  reset(); pdfLines = ABSA_NO_TXN.map((l) => (l === "Transaction number:" ? "Transaction number: 80D2F2AB5A-7" : l));
+  const out = await upload(OWNER);
+  assert.equal(out.synthetic, false);
+  const approval = dbState.pool[`eft_pool/${out.key}`];
+  const { approvedTwinSettleCheck } = require("../lib/eft-manual-approved.cjs");
+  // The emailed notice: same money, blank transaction number → synthetic identity, a different fingerprint, recorded live by the poller.
+  const notice = { outcome: "recorded", status: "unmatched", reader: "absa", bankRef: null, syntheticRef: "ABSA|MRSSSOAP|4321|2026-10-27|190000|ZANELE", amountCents: 190000, reference: "zanele", payer: "MRS S SOAP", bankTs: approval.bankTs, at: approval.at + 5000 };
+  assert.notEqual(paymentFingerprint(notice), paymentFingerprint(approval));
+  const check = approvedTwinSettleCheck({ poolKey: "9".repeat(40), record: notice, siblings: [[out.key, approval]] });
+  assert.equal(check.ok, false);
+  assert.equal(check.code, "twin-used");
+  assert.doesNotMatch(check.message, /approv|proof|Junid approved/i, "the till learns nothing about provenance");
+  // A payment from a week EARLIER with the same reference and amount is a different payment.
+  const earlier = { ...notice, bankTs: approval.bankTs - 7 * 24 * 3600 * 1000 };
+  assert.equal(approvedTwinSettleCheck({ poolKey: "9".repeat(40), record: earlier, siblings: [[out.key, approval]] }).ok, true);
+  // A different amount or reference is not a twin.
+  assert.equal(approvedTwinSettleCheck({ poolKey: "9".repeat(40), record: { ...notice, amountCents: 100000 }, siblings: [[out.key, approval]] }).ok, true);
+  assert.equal(approvedTwinSettleCheck({ poolKey: "9".repeat(40), record: { ...notice, reference: "other" }, siblings: [[out.key, approval]] }).ok, true);
+  // …and the settle callable runs it: the till is refused before any transaction.
+  const { eftPoolSettle } = require("../eftPool/eftPool.js");
+  dbState.pool[`eft_pool/${"9".repeat(40)}`] = notice;
+  dbState.tail = { [out.key]: approval, ["9".repeat(40)]: notice };
+  dbState.reads["users/cashier-uid/posAccess/isActive"] = true;
+  dbState.reads["users/cashier-uid/posAccess/displayName"] = "Ahmed";
+  const CASHIER = { auth: { uid: "cashier-uid", token: { email: "ahmed@marathon.internal" } } };
+  await rejects(eftPoolSettle({ ...CASHIER, data: { action: "settle", poolKey: "9".repeat(40), attemptId: "att-1", appliedCents: 190000, storeId: "trophy", tillId: "t1", matchQuery: "zanele" } }), "failed-precondition", "twin-used");
+});
+
+test("a later copy of approved money names the APPROVAL as approvedByHand even when a refusal holds the claim", async () => {
+  reset(); pdfLines = ABSA_NO_TXN;
+  const parse = EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN);
+  const fp = proofIdentityOf(parse, "absa").fingerprint;
+  const refusedKey = "c".repeat(40);
+  dbState.fingerprints[`eft_pool_fingerprints/${fp}`] = { poolKey: refusedKey, at: 1 };
+  dbState.pool[`eft_pool/${refusedKey}`] = { outcome: "refused-stale-date", reader: "absa", amountCents: 190000 };
+  const out = await upload(OWNER);
+  let seen = null;
+  fingerprintClaimStep("b".repeat(40), 99, (d) => { seen = d; })(dbState.fingerprints[`eft_pool_fingerprints/${fp}`]);
+  assert.deepEqual(seen, { holder: refusedKey, spentBy: out.key, manualApproved: true });
+  const { applyFingerprintHold } = await import("../../scripts/cardrecon/eftCore.mjs");
+  const held = applyFingerprintHold({ outcome: "recorded", status: "unmatched", reader: "absa", bankRef: null, syntheticRef: "ABSA|MRSSSOAP|4321|2026-10-27|190000|ZANELE" },
+    { fingerprint: fp, poolKey: "b".repeat(40), holder: seen.holder, manualApproved: seen.manualApproved, spentBy: seen.spentBy });
+  assert.equal(held.outcome, "held-duplicate");
+  assert.equal(held.approvedByHand, out.key);
+  assert.equal(held.duplicateOf, refusedKey);
+});
+
+test("no allowlist configured for Cloud Functions names the SECRET, not the mini's .env", async () => {
+  reset(); pdfLines = ABSA_NO_TXN; secretValue = "";
+  const e = await rejects(upload(OWNER), "failed-precondition", "wrong-destination");
+  assert.match(e.message, /secret/);
+  assert.doesNotMatch(e.message, /\.env on the mini/);
+});

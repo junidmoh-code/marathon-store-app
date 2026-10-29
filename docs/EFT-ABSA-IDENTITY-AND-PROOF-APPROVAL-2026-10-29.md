@@ -75,6 +75,28 @@ verified Google sign-in), `{ entryId, pdfBase64, filename?, note? }`:
 **It floats nothing.** `eftPoolManualEntry` is untouched: floating by hand
 stays instant and never needs a proof.
 
+After the Sonnet architect review (PR #810):
+- **An approval is never reversed** (`reverseDecision` refuses
+  `approval-not-reversible`): reversing it would have turned an ungated
+  ledger entry into spendable money.
+- **Twin rule at the settle** (`approvedTwinSettleCheck`, run by
+  `checkPaymentFingerprint`): the proof and the emailed notice can be
+  different documents with different fingerprints (one prints the
+  transaction number, the other leaves it blank), so a bank record with the
+  same amount and normalised reference as an approval, dated on or after the
+  approval's bank day, is refused `twin-used` — the till learns nothing of
+  the provenance.
+- **`claim-settling`**: a claim younger than five minutes with no pool
+  record behind it is the poller mid-write, not a stale refusal — refused
+  "try again", never stamped spent.
+- `approvedByHand` on the held copy names the approval (the claim's
+  `spentBy`), even when an earlier refusal holds the claim.
+- The synthetic identity clips payer (40) and reference (80) so a release's
+  `|RELEASED:<ms>` suffix always fits; a release that could not re-key
+  refuses `no-identity` rather than releasing an id-less record.
+- The approval log line carries the key, bank and amount only — never the
+  reference or the note.
+
 ## Shared modules (one copy, two homes)
 
 The readers moved verbatim to `functions/lib/eft-banks.cjs`

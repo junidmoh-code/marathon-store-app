@@ -143,7 +143,7 @@ const {
 const {
   MANUAL_APPROVED_LOG_PATH, MANUAL_APPROVED_LIST_LIMIT, MANUAL_APPROVED_BY,
   approvedKeyOf, approvedInputCheck, proofIdentityOf, manualApprovedRecord, isManualApproved,
-  approvedClaimDecision, approvedClaimStep, approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
+  approvedClaimDecision, approvedClaimStep, approvedTwinSettleCheck, approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
 } = require("../lib/eft-manual-approved.cjs");
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
 const { parseAllowedAccounts, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
@@ -310,6 +310,14 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
   if (!twin.ok) {
     console.warn(`eftPoolSettle: ${twin.side} on ${key} — refused before settle`);
     throw refusalToError(twin);
+  }
+  // …or whose PROOF Junid approved (29 Oct 2026): a different document can
+  // carry a different fingerprint for the same money; the twin rule catches
+  // what the identity cannot.
+  const approvedTwin = approvedTwinSettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
+  if (!approvedTwin.ok) {
+    console.warn(`eftPoolSettle: approved-twin-used on ${key} — refused before settle`);
+    throw refusalToError(approvedTwin);
   }
   if (!check.fingerprint) return null; // owner-released no-bank-id payment
   let claim = null;
@@ -1032,7 +1040,12 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     accountMask: parse.accountMask, destBankName: parse.destBankName,
     allowedAccounts: parseAllowedAccounts(configured), configured: !!configured,
   });
-  if (!account.ok) throw new HttpsError("failed-precondition", account.reason, { code: "wrong-destination", reader: reader.id });
+  if (!account.ok) {
+    // The shared verdict names the mini's .env; here the value is the Secret
+    // Manager secret of the same name.
+    const reason = configured ? account.reason : `No account allowlist is configured for Cloud Functions — set the ${EFT_ACCOUNTS_ENV_VAR} secret (firebase functions:secrets:set). Until then every proof refuses here, deliberately.`;
+    throw new HttpsError("failed-precondition", reason, { code: "wrong-destination", reader: reader.id });
+  }
   const destination = {
     accountMask: maskAccountValue(parse.accountMask),
     beneficiaryName: parse.beneficiaryName ?? null,
@@ -1054,7 +1067,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   const holderRecord = claim && typeof claim === "object" && typeof claim.poolKey === "string" && claim.poolKey !== key
     ? (await db.ref(`${EFT_POOL_PATH}/${claim.poolKey}`).once("value")).val()
     : null;
-  const decision = approvedClaimDecision({ approvedKey: key, claim, holderRecord });
+  const decision = approvedClaimDecision({ approvedKey: key, claim, holderRecord, now });
   if (decision.action === "refuse") {
     throw new HttpsError("failed-precondition", decision.message, { code: decision.code, key: decision.key ?? null });
   }
@@ -1080,7 +1093,9 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     if (winner?.manualApproved?.at !== now) await db.ref(`${MANUAL_APPROVED_LOG_PATH}/${approvedLogKeyOf(now, key)}`).remove();
     if (winner && isManualApproved(winner)) return approvedResponse({ ...winner, approvedKey: key }, { already: true });
   }
-  console.log(`EFT_MANUAL_APPROVED: ${key} ${reader.id} ${record.reference ?? "-"} ${record.amountCents}c ${identity.synthetic ? "synthetic identity" : `bank id ${identity.bankRef}`}${decision.action === "spend" ? ` (spent the id held by refused ${decision.holder})` : ""} by ${MANUAL_APPROVED_BY} (${actor.uid})${input.note ? ` — ${input.note}` : ""}`);
+  // The key, the bank and the amount only: the reference is the payer's
+  // (often a phone number) and the note is free text — neither belongs in a log.
+  console.log(`EFT_MANUAL_APPROVED: ${key} ${reader.id} ${record.amountCents}c ${identity.synthetic ? "synthetic identity" : "bank id"}${decision.action === "spend" ? ` (spent the id held by refused ${decision.holder})` : ""} by ${MANUAL_APPROVED_BY} (${actor.uid})`);
   return approvedResponse(record, { already: false });
 });
 

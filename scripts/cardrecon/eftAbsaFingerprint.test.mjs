@@ -363,3 +363,50 @@ describe("money Junid already approved by hand from its proof (eftPoolManualAppr
     expect(r).toMatchObject({ outcome: "refused-stale-date", fingerprint: fp, duplicateOf: KEY_APPROVED });
   });
 });
+
+describe("architect review (Sonnet, PR #810): the edges it found, pinned", () => {
+  it("a very long payer or reference is clipped into the identity, and a released copy still fingerprints", () => {
+    const long = REAL_ABSA_NO_TXN_LINES.map((l) => l
+      .replace("MRS S SOAP", "MRS " + "S".repeat(120))
+      .replace("Reference on beneficiary statement: zanele", "Reference on beneficiary statement: " + "z".repeat(120)));
+    const r = poolRecord(long);
+    expect(r.outcome).toBe("recorded");
+    expect(r.syntheticRef.length).toBeLessThan(200);
+    const fp = paymentFingerprint(r);
+    expect(fp).toMatch(/^[0-9a-f]{40}$/);
+    const c = claimer();
+    c.claim(fp, KEY_A);
+    const held = applyFingerprintHold(r, { fingerprint: fp, poolKey: KEY_B, ...c.claim(fp, KEY_B) });
+    expect(held.outcome).toBe("held-possible-duplicate");
+    const rel = releaseHoldDecision(held, { at: 1_793_000_000_000, by: "o", reason: "two on the statement" });
+    expect(rel.ok).toBe(true);
+    expect(rel.value.fingerprint).toMatch(/^[0-9a-f]{40}$/);
+    expect(rel.value.fingerprint).not.toBe(fp);
+    // A re-keyed identity that could not fingerprint would be refused, never released id-less.
+    const broken = { ...held, syntheticRef: "x".repeat(300) };
+    expect(releaseHoldDecision(broken, { at: 1, by: "o", reason: "try" }).code).toBe("no-identity");
+  });
+
+  it("after the owner releases the second copy, a THIRD notice of the base identity is still held against the first — nothing releases itself", () => {
+    const c = claimer();
+    const first = poolRecord(REAL_ABSA_NO_TXN_LINES, { messageId: "<a@absa>" });
+    const fp = paymentFingerprint(first);
+    applyFingerprintHold(first, { fingerprint: fp, poolKey: KEY_A, ...c.claim(fp, KEY_A) });
+    const second = applyFingerprintHold(poolRecord(REAL_ABSA_NO_TXN_LINES, { messageId: "<b@absa>" }), { fingerprint: fp, poolKey: KEY_B, ...c.claim(fp, KEY_B) });
+    const released = releaseHoldDecision(second, { at: 5000, by: "o", reason: "two on the statement" }).value;
+    c.claim(paymentFingerprint(released), KEY_B); // the settle claims its fresh fingerprint
+    const third = applyFingerprintHold(poolRecord(REAL_ABSA_NO_TXN_LINES, { messageId: "<c@absa>" }), { fingerprint: fp, poolKey: KEY_C, ...c.claim(fp, KEY_C) });
+    expect(third).toMatchObject({ outcome: "held-possible-duplicate", duplicateOf: KEY_A });
+    // The released copy's own identity is claimed by it; a replay of the RELEASED record's fingerprint cannot come from a notice (notices carry the base identity).
+    expect(c.node[paymentFingerprint(released)].poolKey).toBe(KEY_B);
+  });
+
+  it("the retry script's refusal for a possible duplicate says the owner releases it", () => {
+    const c = claimer();
+    const first = poolRecord(REAL_ABSA_NO_TXN_LINES, { messageId: "<a@absa>" });
+    const fp = paymentFingerprint(first);
+    c.claim(fp, KEY_A);
+    const held = applyFingerprintHold(poolRecord(REAL_ABSA_NO_TXN_LINES, { messageId: "<b@absa>" }), { fingerprint: fp, poolKey: KEY_B, ...c.claim(fp, KEY_B) });
+    expect(eftRetryPlan({ poolKey: KEY_B, record: held, seenRow: {}, at: 1 }).why).toMatch(/possible duplicate/);
+  });
+});

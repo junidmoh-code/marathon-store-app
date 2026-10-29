@@ -1501,12 +1501,12 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       // identifies itself by payer + account + day + amount + reference and
       // is claimed the same way; a second claim is held-possible-duplicate.
       const fingerprint = paymentFingerprint({ reader: candidate.reader, bankRef: candidate.bankRef, syntheticRef: candidate.syntheticRef });
-      let holder = null, manualApproved = false;
+      let holder = null, manualApproved = false, spentBy = null;
       if (fingerprint) {
         await db.ref(`${EFT_FINGERPRINT_PATH}/${fingerprint}`)
-          .transaction(fingerprintClaimStep(poolKey, serverNowMs(), (d) => { holder = d.holder; manualApproved = d.manualApproved === true; }));
+          .transaction(fingerprintClaimStep(poolKey, serverNowMs(), (d) => { holder = d.holder; manualApproved = d.manualApproved === true; spentBy = d.spentBy ?? null; }));
       }
-      record = applyFingerprintHold(candidate, { fingerprint, holder, poolKey, manualApproved });
+      record = applyFingerprintHold(candidate, { fingerprint, holder, poolKey, manualApproved, spentBy });
     } else {
       // A refusal claims its transaction id too (eftCore refusalFingerprint):
       // a copy resent once the reason no longer applies is held, not fresh.
