@@ -28,9 +28,32 @@
 //
 // PURE by the house rule: no IO, no clock. Shared by the poller (ESM, via
 // createRequire — the same way it borrows the money parser) and the callable.
+//
+// ─── ABSA WITHOUT A TRANSACTION NUMBER (Junid, 29 Oct 2026) ──────────────────
+// Absa's "Notice of Payment" prints "Transaction number:" BLANK on some
+// payments (real notices of 5, 27, 28 and 29 Oct 2026 — the R10, R1,900,
+// R1,000 and R610 payments; the 1 Sep, 24 Oct and 26 Oct notices did carry
+// one). There is no time of day and no running balance either, so nothing the
+// bank prints identifies the payment. Every such notice landed held-no-bankref
+// and waited for the owner. Instead, a SYNTHETIC IDENTITY is built from what
+// the notice does print — payer, destination account (last four), payment
+// day, amount and the payer's reference:
+//
+//   syntheticRef = "ABSA|<payer>|<account tail>|<YYYY-MM-DD>|<cents>|<reference>"
+//   fingerprint  = sha256("eftfp1|absa|synthetic|" + syntheticRef)
+//
+// and claimed exactly like a bank id. Two notices with the same synthetic
+// identity are either one payment resent or two genuinely identical payments
+// — indistinguishable from here — so the FIRST is confirmed and the SECOND
+// is held for the owner (held-possible-duplicate, eftCore.applyFingerprintHold)
+// rather than confirmed or discarded: a replay never floats twice, and a real
+// second payment is floated by hand (releaseHoldDecision re-keys it). A notice
+// that DOES print a transaction number keeps using it; the synthetic identity
+// is the fallback, never the preference.
 "use strict";
 
 const { createHash } = require("node:crypto");
+const { sastDate } = require("./eft-text.cjs");
 
 const EFT_FINGERPRINT_PATH = "eft_pool_fingerprints";
 // A transaction id shorter than this, once normalised, identifies nothing —
@@ -45,16 +68,67 @@ function normaliseBankRef(raw) {
   return s.length >= MIN_BANK_REF_CHARS ? s : null;
 }
 
+// A synthetic identity: letters, digits and the field separators, bounded.
+// Anything else is not one this module built and identifies nothing.
+const SYNTHETIC_REF = /^[A-Z0-9|:-]{12,300}$/;
+const normaliseText = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+// Bounded, so the identity plus a release suffix ("|RELEASED:<ms>") always
+// fits SYNTHETIC_REF: a payer or reference longer than any bank prints is
+// clipped, never a reason to lose the identity.
+const SYNTHETIC_PAYER_MAX = 40;
+const SYNTHETIC_REFERENCE_MAX = 80;
+
+/**
+ * The synthetic identity of an Absa notice that prints no transaction number
+ * — or null when the notice does not print enough to build one (no payer, no
+ * readable payment day, no amount, no destination account: each of those is
+ * on every real notice, so a notice missing one is a layout this has not
+ * seen and must fail closed to held-no-bankref). The reference may be empty:
+ * a payer who typed none still paid once.
+ */
+function absaSyntheticRef({ payer, accountMask, bankTs, amountCents, reference } = {}) {
+  const who = normaliseText(payer).slice(0, SYNTHETIC_PAYER_MAX);
+  const digits = String(accountMask ?? "").replace(/\D/g, "");
+  if (!who || digits.length < 4 || !Number.isInteger(bankTs) || !Number.isInteger(amountCents) || amountCents <= 0) return null;
+  return `ABSA|${who}|${digits.slice(-4)}|${sastDate(bankTs)}|${amountCents}|${normaliseText(reference).slice(0, SYNTHETIC_REFERENCE_MAX)}`;
+}
+
+/**
+ * The synthetic identity a parsed payment carries when its bank prints no
+ * transaction id — ABSA ONLY, today: the one bank seen to leave the field
+ * blank. Every other reader's documents carry an id, and one that stops
+ * carrying it must go on being held (held-no-bankref) until its own synthetic
+ * identity is designed from real samples — never generalised from Absa's.
+ * @returns {string|null}
+ */
+function syntheticIdentityOf(parsed, reader) {
+  if (reader !== "absa" || !parsed?.ok) return null;
+  if (paymentFingerprint({ reader, bankRef: parsed.bankRef })) return null; // the bank's own id wins
+  return absaSyntheticRef({
+    payer: parsed.payer, accountMask: parsed.accountMask, bankTs: parsed.bankTs,
+    amountCents: parsed.amountCents, reference: parsed.reference,
+  });
+}
+
+/** Does this record identify itself synthetically (no bank id, a syntheticRef)? */
+function isSyntheticIdentity({ bankRef, syntheticRef } = {}) {
+  return !normaliseBankRef(bankRef) && typeof syntheticRef === "string" && SYNTHETIC_REF.test(syntheticRef);
+}
+
 /**
  * The fingerprint of a payment — or null when it has none (no reader, or no
  * usable bank transaction id). Accepts a pool record or a reader's parse plus
- * its reader id ({reader, bankRef}).
+ * its reader id ({reader, bankRef, syntheticRef}). The bank's own id always
+ * wins; the synthetic identity is read only when there is none.
  */
-function paymentFingerprint({ reader, bankRef } = {}) {
+function paymentFingerprint({ reader, bankRef, syntheticRef } = {}) {
   if (typeof reader !== "string" || !READER_ID.test(reader)) return null;
   const ref = normaliseBankRef(bankRef);
-  if (!ref) return null;
-  return createHash("sha256").update(`eftfp1|${reader}|${ref}`).digest("hex").slice(0, 40);
+  if (ref) return createHash("sha256").update(`eftfp1|${reader}|${ref}`).digest("hex").slice(0, 40);
+  if (isSyntheticIdentity({ bankRef, syntheticRef })) {
+    return createHash("sha256").update(`eftfp1|${reader}|synthetic|${syntheticRef}`).digest("hex").slice(0, 40);
+  }
+  return null;
 }
 
 /**
@@ -70,7 +144,14 @@ function paymentFingerprint({ reader, bankRef } = {}) {
 function fingerprintClaimStep(poolKey, at, capture = () => {}) {
   return (existing) => {
     if (existing && typeof existing === "object" && typeof existing.poolKey === "string") {
-      capture({ holder: existing.poolKey, spentBy: typeof existing.spentBy === "string" ? existing.spentBy : null });
+      capture({
+        holder: existing.poolKey,
+        spentBy: typeof existing.spentBy === "string" ? existing.spentBy : null,
+        // A claim written by eftPoolManualApprove (Junid approved the payment
+        // from an uploaded proof): the poller files the bank's later copy as
+        // the bank's record of money already settled, never a fresh payment.
+        manualApproved: existing.manualApproved === true,
+      });
       return undefined;
     }
     if (existing !== null && existing !== undefined) {
@@ -164,6 +245,9 @@ module.exports = {
   MIN_BANK_REF_CHARS,
   normaliseBankRef,
   paymentFingerprint,
+  absaSyntheticRef,
+  isSyntheticIdentity,
+  syntheticIdentityOf,
   fingerprintClaimStep,
   consumeFingerprintCheck,
   claimHolderCheck,

@@ -98,12 +98,21 @@
 //
 // DEPLOY BY NAME (functions/ is shared with marathon-pos-app — a bare
 // --only functions would redeploy every function in the project):
-//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry
+//   eftPoolManualApprove  JUNID ALONE (29 Oct 2026): the phone uploads a proof
+//                   of payment PDF; it is read by the same per-bank reader the
+//                   poller uses, its identity (bank transaction id, or Absa's
+//                   synthetic identity) is registered as APPROVED BY HAND —
+//                   a used pool record plus a fingerprint claim naming it as
+//                   spender — so the bank's later notification is filed as
+//                   already settled, never floated again. Floats nothing;
+//                   manual entry (above) stays instant and proof-free.
+//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry,functions:eftPoolManualApprove
 
 "use strict";
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 
 const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, EFT_MIN_QUERY, normaliseText, searchEftPool } = require("../lib/eft-pool.cjs");
@@ -131,8 +140,23 @@ const {
   bankTwinOfEntry, manualTwinSettleCheck,
   manualLogKeyOf, manualLogRecord, manualLogEventPatch, manualLogView,
 } = require("../lib/eft-manual.cjs");
+const {
+  MANUAL_APPROVED_LOG_PATH, MANUAL_APPROVED_LIST_LIMIT, MANUAL_APPROVED_BY,
+  approvedKeyOf, approvedInputCheck, proofIdentityOf, manualApprovedRecord, isManualApproved,
+  approvedClaimDecision, approvedClaimStep, approvedTwinSettleCheck, approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
+} = require("../lib/eft-manual-approved.cjs");
+const { selectReaderByContent } = require("../lib/eft-banks.cjs");
+const { parseAllowedAccounts, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
+const { maskAccountValue } = require("../lib/eft-text.cjs");
+const { pdfToLines } = require("../cardRecon/pdfText.js");
 const { issuingStamp } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
+
+// The shop's own receiving account(s), for eftPoolManualApprove's destination
+// check — the SAME value the poller reads from EFT_ALLOWED_ACCOUNTS in the
+// mini's .env, held for Cloud Functions in the Secret Manager secret of the
+// same name (never in this public repo, never hard-coded).
+const eftAllowedAccounts = defineSecret(EFT_ACCOUNTS_ENV_VAR);
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -286,6 +310,14 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
   if (!twin.ok) {
     console.warn(`eftPoolSettle: ${twin.side} on ${key} — refused before settle`);
     throw refusalToError(twin);
+  }
+  // …or whose PROOF Junid approved (29 Oct 2026): a different document can
+  // carry a different fingerprint for the same money; the twin rule catches
+  // what the identity cannot.
+  const approvedTwin = approvedTwinSettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
+  if (!approvedTwin.ok) {
+    console.warn(`eftPoolSettle: approved-twin-used on ${key} — refused before settle`);
+    throw refusalToError(approvedTwin);
   }
   if (!check.fingerprint) return null; // owner-released no-bank-id payment
   let claim = null;
@@ -948,6 +980,123 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
   }
   console.log(`EFT_MANUAL_ENTRY: ${key} ${input.reference} ${input.amountCents}c by ${MANUAL_ENTRY_BY} (${actor.uid})${input.note ? ` — ${input.note}` : ""}${already ? " [already]" : ""}`);
   return { ok: true, already, key, reference: input.reference, amountCents: input.amountCents, at: now, by: MANUAL_ENTRY_BY, status: "unmatched" };
+});
+
+// ─── MANUAL APPROVAL FROM A PROOF OF PAYMENT — Junid alone ──────────────────
+// THE LOCK IS THE SAME AS THE MANUAL ENTRY'S: isOwner() — the admin email on
+// a verified Google sign-in — before anything is read or decoded. Nothing on
+// the POS access record grants this.
+//
+// WHAT IT DOES, AND DOES NOT DO (lib/eft-manual-approved.cjs has the why):
+//   · reads the uploaded PDF with cardRecon/pdfText.js (bucket grouping, as
+//     the poller reads EFT PDFs) and the per-bank reader its CONTENT selects
+//     — no sending domain, no DKIM: Junid is vouching for the document;
+//   · checks the destination the way the poller does (lib/eft-destination.cjs,
+//     the same code) against the EFT_ALLOWED_ACCOUNTS secret;
+//   · takes the payment's identity — the bank's transaction id, or Absa's
+//     synthetic identity for a notice that prints none — and writes ONE
+//     approval record per identity (status "used", outsidePos by Junid) plus
+//     the fingerprint claim naming it as holder and spender, manualApproved.
+//     A bank notification that arrives later is held as the bank's copy of
+//     settled money (eftCore applyFingerprintHold) and the settle refuses it
+//     (claimHolderCheck: duplicate-used);
+//   · FLOATS NOTHING. It never creates a spendable record. eftPoolManualEntry
+//     is untouched: floating stays instant and never needs a proof.
+// The immediacy and cutoff gates are deliberately NOT applied: they decide
+// whether the POOL may float money on the bank's word; here nothing floats,
+// and Junid is attesting receipt on the statement.
+const APPROVE_RUNTIME = { ...RUNTIME, memory: "512MiB", timeoutSeconds: 60, secrets: [eftAllowedAccounts] };
+exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
+  if (!isOwner(request)) {
+    throw new HttpsError("permission-denied", "Only Junid can approve an EFT payment from its proof.", { code: "owner-only" });
+  }
+  const data = request.data ?? {};
+  const db = admin.database();
+  const now = Date.now();
+  const actor = { uid: request.auth.uid, email: request.auth.token.email, name: MANUAL_APPROVED_BY };
+
+  if (data.action === "list") {
+    const snap = await db.ref(MANUAL_APPROVED_LOG_PATH).orderByKey().limitToLast(MANUAL_APPROVED_LIST_LIMIT).once("value");
+    return { ok: true, ...approvedListView(snap.val()) };
+  }
+
+  const input = approvedInputCheck(data);
+  if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
+
+  // THE DOCUMENT → LINES → READER → PARSE, exactly the poller's path.
+  const extracted = await pdfToLines(input.pdf, { grouping: "bucket" });
+  if (!extracted.ok) throw new HttpsError("invalid-argument", extracted.reason, { code: "unreadable-proof" });
+  const reader = selectReaderByContent(extracted.lines);
+  if (!reader) {
+    throw new HttpsError("invalid-argument", "That PDF is not a payment notification this pool has a reader for (Standard Bank, FNB, Capitec, Absa, Nedbank). Float the payment by hand instead.", { code: "no-reader" });
+  }
+  const parse = reader.parse(extracted.lines);
+  const identity = proofIdentityOf(parse, reader.id);
+  if (!identity.ok) throw new HttpsError("failed-precondition", identity.message, { code: identity.code, reader: reader.id });
+
+  // PAID INTO THE SHOP'S OWN ACCOUNT — the poller's own check, same code.
+  const configured = String(eftAllowedAccounts.value() ?? "").trim();
+  const account = destinationVerdict({
+    accountMask: parse.accountMask, destBankName: parse.destBankName,
+    allowedAccounts: parseAllowedAccounts(configured), configured: !!configured,
+  });
+  if (!account.ok) {
+    // The shared verdict names the mini's .env; here the value is the Secret
+    // Manager secret of the same name.
+    const reason = configured ? account.reason : `No account allowlist is configured for Cloud Functions — set the ${EFT_ACCOUNTS_ENV_VAR} secret (firebase functions:secrets:set). Until then every proof refuses here, deliberately.`;
+    throw new HttpsError("failed-precondition", reason, { code: "wrong-destination", reader: reader.id });
+  }
+  const destination = {
+    accountMask: maskAccountValue(parse.accountMask),
+    beneficiaryName: parse.beneficiaryName ?? null,
+    destBankName: parse.destBankName ?? null,
+    accountTail: account.tail,
+  };
+
+  const key = approvedKeyOf(identity.fingerprint);
+  // A RETRY (or the same proof uploaded twice) finds its own approval.
+  const existing = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+  if (existing) {
+    if (isManualApproved(existing)) return approvedResponse({ ...existing, approvedKey: key }, { already: true });
+    throw new HttpsError("already-exists", "That identity's key is taken by another record — ask for it to be looked at.", { code: "key-taken", key });
+  }
+
+  // THE CLAIM DECIDES. Who holds this identity today, and what is that record?
+  const claimPath = `${EFT_FINGERPRINT_PATH}/${identity.fingerprint}`;
+  const claim = (await db.ref(claimPath).once("value")).val();
+  const holderRecord = claim && typeof claim === "object" && typeof claim.poolKey === "string" && claim.poolKey !== key
+    ? (await db.ref(`${EFT_POOL_PATH}/${claim.poolKey}`).once("value")).val()
+    : null;
+  const decision = approvedClaimDecision({ approvedKey: key, claim, holderRecord, now });
+  if (decision.action === "refuse") {
+    throw new HttpsError("failed-precondition", decision.message, { code: decision.code, key: decision.key ?? null });
+  }
+  let claimed = null;
+  await db.ref(claimPath).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: decision.holder ?? null }, (d) => { claimed = d; }));
+  if (claimed?.spentBy !== key) {
+    throw new HttpsError("aborted", "The payment's identity changed hands while this was being registered — check the pool and try again.", { code: "claim-moved", holder: claimed?.holder ?? null });
+  }
+
+  const built = manualApprovedRecord({
+    key, readerId: reader.id, parse, lines: extracted.lines, identity, destination, actor, at: now,
+    note: input.note, filename: input.filename, entryId: input.entryId,
+  });
+  if (!built.ok) throw new HttpsError("internal", built.message, { code: built.code });
+  const record = built.value;
+  // THE LOG ROW FIRST, create-only, then the record create-if-absent — the
+  // manual entry's order, for the manual entry's reasons.
+  await db.ref(`${MANUAL_APPROVED_LOG_PATH}/${approvedLogKeyOf(now, key)}`).transaction((cur) => (cur === null ? approvedLogRecord(record, key) : undefined));
+  const res = await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => (cur === null ? record : undefined));
+  const already = res && res.committed === false;
+  if (already) {
+    const winner = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+    if (winner?.manualApproved?.at !== now) await db.ref(`${MANUAL_APPROVED_LOG_PATH}/${approvedLogKeyOf(now, key)}`).remove();
+    if (winner && isManualApproved(winner)) return approvedResponse({ ...winner, approvedKey: key }, { already: true });
+  }
+  // The key, the bank and the amount only: the reference is the payer's
+  // (often a phone number) and the note is free text — neither belongs in a log.
+  console.log(`EFT_MANUAL_APPROVED: ${key} ${reader.id} ${record.amountCents}c ${identity.synthetic ? "synthetic identity" : "bank id"}${decision.action === "spend" ? ` (spent the id held by refused ${decision.holder})` : ""} by ${MANUAL_APPROVED_BY} (${actor.uid})`);
+  return approvedResponse(record, { already: false });
 });
 
 // ─── REVERSE — the owner alone ───────────────────────────────────────────────

@@ -851,7 +851,7 @@ async function run() {
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
   if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftRefusedTiming || eftRefusedStale || eftHeld || unknownBankThisRun) {
-    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftRefusedTiming} NOT IMMEDIATE, ${eftRefusedStale} DATED BEFORE THE CUTOFF, ${eftHeld} HELD (resent copy or no bank transaction id), ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftRefusedTiming} NOT IMMEDIATE, ${eftRefusedStale} DATED BEFORE THE CUTOFF, ${eftHeld} HELD (resent copy, possible duplicate for review, or no bank transaction id), ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
   }
   return 0;
 }
@@ -1497,13 +1497,16 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     // its own claim, and lands on the same record.
     let record = candidate;
     if (candidate.outcome === "recorded") {
-      const fingerprint = paymentFingerprint({ reader: candidate.reader, bankRef: candidate.bankRef });
-      let holder = null;
+      // syntheticRef (29 Oct 2026): an Absa notice with no transaction number
+      // identifies itself by payer + account + day + amount + reference and
+      // is claimed the same way; a second claim is held-possible-duplicate.
+      const fingerprint = paymentFingerprint({ reader: candidate.reader, bankRef: candidate.bankRef, syntheticRef: candidate.syntheticRef });
+      let holder = null, manualApproved = false, spentBy = null;
       if (fingerprint) {
         await db.ref(`${EFT_FINGERPRINT_PATH}/${fingerprint}`)
-          .transaction(fingerprintClaimStep(poolKey, serverNowMs(), (d) => { holder = d.holder; }));
+          .transaction(fingerprintClaimStep(poolKey, serverNowMs(), (d) => { holder = d.holder; manualApproved = d.manualApproved === true; spentBy = d.spentBy ?? null; }));
       }
-      record = applyFingerprintHold(candidate, { fingerprint, holder, poolKey });
+      record = applyFingerprintHold(candidate, { fingerprint, holder, poolKey, manualApproved, spentBy });
     } else {
       // A refusal claims its transaction id too (eftCore refusalFingerprint):
       // a copy resent once the reason no longer applies is held, not fresh.
