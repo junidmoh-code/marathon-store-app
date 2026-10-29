@@ -39,10 +39,25 @@ export async function quoteParcel(client, { collectionAddress, deliveryAddress, 
     try { return { rates: normalizeRates(await client.getRates(body)) }; }
     catch (err) { return { error: String(err?.message || err).slice(0, 300), rates: [] }; }
   };
-  const [door, locker] = await Promise.all([
-    one(base),
+  const both = (b) => Promise.all([
+    one(b),
     // Pickup-point shipments carry one parcel (TCG doc), so a locker is only asked for one.
-    dropBox?.pickupPointId && list.length === 1 ? one({ ...base, ...lockerCollection(dropBox) }) : Promise.resolve({ rates: [] }),
+    dropBox?.pickupPointId && list.length === 1 ? one({ ...b, ...lockerCollection(dropBox) }) : Promise.resolve({ rates: [] }),
   ]);
-  return { door, locker };
+  let [door, locker] = await both(base);
+  // TCG answers 200 with rates: null when it can't place the suburb (order
+  // #1862: "Department of Transport" typed as the suburb of Mount Ayliff).
+  // Ask once more with the town as the suburb; the street keeps what the
+  // customer wrote. The address that priced is the one to book with.
+  let usedAddress = deliveryAddress;
+  const town = String(deliveryAddress?.city ?? "").trim();
+  const empty = (q) => !q.error && !q.rates.length;
+  if (empty(door) && empty(locker) && town && String(deliveryAddress?.local_area ?? "").trim() !== town) {
+    const retryAddress = { ...deliveryAddress, local_area: town };
+    const [door2, locker2] = await both({ ...base, delivery_address: retryAddress });
+    if (door2.rates.length || locker2.rates.length) {
+      [door, locker, usedAddress] = [door2, locker2, retryAddress];
+    }
+  }
+  return { door, locker, deliveryAddress: usedAddress };
 }

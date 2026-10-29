@@ -125,7 +125,8 @@ export async function planShipment(order, { db, client, products = null }) {
     collection_address: cfg.collectionAddress,
     ...(chosen.mode === "locker" ? lockerCollection(dropBox) : {}),
     collection_contact: { name: collectionContact.name ?? "", mobile_number: collectionContact.mobile_number ?? "", email: collectionContact.email ?? "" },
-    delivery_address: address,
+    // The address TCG priced (the town as suburb when the typed suburb gave no rates).
+    delivery_address: quoted.deliveryAddress ?? address,
     delivery_contact: contact,
     // ONE shipment, every parcel of the parcel rule (N shoeboxes + any flat box).
     parcels: tcgParcels(parcel.parcels),
