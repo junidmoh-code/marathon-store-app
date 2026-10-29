@@ -40,10 +40,12 @@ date-phased immediate rule (#805) and every working reader are untouched.
   record's. A third copy is held against the first again. A transaction-id
   bank's second copy is still `held-duplicate` (final).
 - The POS owner panel (`marathon-pos-app src/reports/eftpool/poolText.js`,
-  `EftPoolTab.jsx`) renders unknown outcomes as "Could not be read exactly"
-  and shows the release button only for `held-no-bankref`. **It needs a row
-  label and the release button for `held-possible-duplicate`** — a POS
-  change, not made here.
+  `EftPoolTab.jsx`) labels `held-possible-duplicate` and offers the owner
+  release button for it since POS PR #571 (the POS session, 29 Oct 2026).
+- Known residual: the SAME Absa payment surfacing once with a printed
+  transaction number and once without would carry two different identities
+  and both could confirm. No real sample shows Absa doing this; it is named
+  here rather than guessed at.
 
 ## Build 2 — the manual-approved ledger (`eftPoolManualApprove`)
 
@@ -118,6 +120,12 @@ The readers moved verbatim to `functions/lib/eft-banks.cjs`
   proof.
 
 ## Deploy
+
+The callable binds a Secret Manager secret that must exist BEFORE the first
+deploy (created 29 Oct 2026, version 1, same value as the mini's `.env`):
+
+    grep '^EFT_ALLOWED_ACCOUNTS=' ~/marathon-store-app/.env | cut -d= -f2- \
+      | firebase functions:secrets:set EFT_ALLOWED_ACCOUNTS --project marathon-club --data-file -
 
     firebase deploy --only functions:eftPoolManualApprove   # new; binds EFT_ALLOWED_ACCOUNTS
     firebase deploy --only functions:eftPoolSettle          # releaseHold accepts held-possible-duplicate
