@@ -55,6 +55,19 @@
 //   · the reference IS shown on a near match now (it was blanked): the cashier
 //     confirms "HAFG" against the proof of payment, which is the point.
 //
+// SAME REFERENCE, SEPARATE PAYMENTS (Junid, 29 Oct 2026). A customer who pays
+// one sale with two EFTs often types the SAME reference on both (two R300
+// payments, "SIPHO"), and the rule above answered NOTHING for that reference —
+// the second payment could never be found by it. Payments are told apart by
+// their OWN identity (the pool key, which the bank's transaction id — or
+// Absa's synthetic fingerprint — fixes; copies of one transaction still fold
+// into one, collapseCopies), never by the reference string. So when every
+// candidate carries the SAME reference, each one is returned as its own row
+// (oldest first, at most EFT_SEARCH_LIMIT) and the cashier picks against the
+// proof — amount and time are on every row. Candidates with DIFFERENT
+// references (a prefix or a typo away from two payments) are still nothing:
+// "keep typing".
+//
 // The record shape is eftCore.mjs's (scripts/cardrecon), stored by the mailbox
 // poller. This module redefines nothing about it and reads only what it needs.
 // PURE by the house rule: no IO, no clock; tested in test/eft-pool-search*.cjs.
@@ -71,9 +84,10 @@ const EFT_POOL_PATH = "eft_pool";
 // payment older than the window is the owner's panel's business, not the
 // till's: customers settle within days, not months.
 const EFT_SEARCH_WINDOW = 400;
-// What one search returns at most: ONE payment. More than one candidate is an
-// ambiguity the cashier resolves with the bank's transaction id, never a list.
-const EFT_SEARCH_LIMIT = 1;
+// What one search returns at most. Several rows only ever share ONE reference
+// (separate payments made with the same reference, 29 Oct 2026); candidates
+// with different references are an ambiguity, never a list.
+const EFT_SEARCH_LIMIT = 6;
 // Shorter than this (letters and digits only) is not a search.
 const EFT_MIN_QUERY = 3;
 // FORGIVING MATCHING, by the length of what the cashier has TYPED:
@@ -319,24 +333,31 @@ function searchEftPool(poolTail, query) {
   if (!candidates.length) return { results: [], searched };
   const unmatched = candidates.filter((h) => h.record.status === "unmatched");
   // A MANUAL ENTRY AND ITS BANK TWIN, both waiting (the notification landed
-  // after Junid typed it): one payment, not an ambiguity. The bank's record
-  // is the answer; the manual one stays unused (and is refused once the
-  // bank's is spent).
+  // after Junid typed it): one payment, not two. The bank's record is the
+  // answer; the manual one stays unused (and is refused once the bank's is
+  // spent).
   const bankOnly = unmatched.filter((h) => !isManualEntry(h.record));
-  const twinPair = unmatched.length > 1 && bankOnly.length === 1
-    && unmatched.every((h) => h === bankOnly[0] || isPaymentTwin(bankOnly[0].record, h.record));
-  const pick = unmatched.length === 1 ? unmatched[0]
-    : twinPair ? bankOnly[0]
-    : unmatched.length === 0 && candidates.length === 1 ? candidates[0]
-    : null;
-  if (!pick) return { results: [], searched, ambiguous: true, ...(best > 0 ? { partial: true } : {}) };
+  const waiting = unmatched.filter((h) => !isManualEntry(h.record) || !bankOnly.some((b) => isPaymentTwin(b.record, h.record)));
+  // Waiting payments answer; used ones only when nothing is waiting.
+  const rows = waiting.length ? waiting : candidates;
+  // One payment, or several that all carry the SAME reference (separate
+  // payments, told apart by their own identity — see the header). Anything
+  // else is an ambiguity between references.
+  const refs = new Set(rows.map((h) => normaliseText(h.record.reference)));
+  const sameReference = refs.size === 1 && !refs.has("");
+  if (rows.length > 1 && !sameReference) return { results: [], searched, ambiguous: true, ...(best > 0 ? { partial: true } : {}) };
+  const at = (h) => (Number.isInteger(h.record.at) ? h.record.at : Infinity);
+  const picks = [...rows].sort((a, b) => at(a) - at(b) || (a.key < b.key ? -1 : 1)).slice(0, EFT_SEARCH_LIMIT);
   // The reference is shown whatever matched it — on a prefix or a typo match
   // it is what the cashier checks against the proof of payment before using
   // the payment (Junid, 19 Oct 2026; it was blanked on a near match before).
-  const view = { ...publicEftView(pick.key, pick.record), matchedOn: pick.on };
-  const twin = manualTwinOf(pick.record, payments);
-  if (twin) view.sameUsed = twin;
-  return { results: [view], searched };
+  const results = picks.map((pick) => {
+    const view = { ...publicEftView(pick.key, pick.record), matchedOn: pick.on };
+    const twin = manualTwinOf(pick.record, payments);
+    if (twin) view.sameUsed = twin;
+    return view;
+  });
+  return { results, searched };
 }
 
 module.exports = {

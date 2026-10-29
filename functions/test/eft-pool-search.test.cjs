@@ -11,7 +11,9 @@
 //     two candidates at that rank surface NOTHING (`ambiguous`, with `partial`
 //     when more typing would settle it);
 //   · the payer's name is never a key and comes back as initials only;
-//   · at most ONE payment; several candidates → nothing, `ambiguous`;
+//   · ONE payment, or one row per payment when separate payments carry the
+//     SAME reference (29 Oct 2026); candidates with different references →
+//     nothing, `ambiguous`;
 //   · amount is never a key; under three letters/digits nothing is searched;
 //   · used payments answer as used (when, which slip) — never whose sale,
 //     which cashier, where a remainder went or a typed reason;
@@ -145,7 +147,7 @@ test("searchPlan reads no amount and no words — only the whole query", () => {
   assert.deepEqual(searchPlan(" Junid-1234 "), { whole: "JUNID1234", tooShort: false });
   assert.deepEqual(searchPlan("ju"), { whole: "JU", tooShort: true });
   assert.equal(EFT_MIN_QUERY, 3);
-  assert.equal(EFT_SEARCH_LIMIT, 1);
+  assert.equal(EFT_SEARCH_LIMIT, 6);
 });
 
 test("an empty or short query returns nothing — no recent list, no default set", () => {
@@ -245,12 +247,12 @@ test("exact beats prefix beats typo — a fully typed reference is never ambiguo
   assert.deepEqual(keys(pool, "junie"), ["typo"]);
   // "JUNIF" is one edit from JUNID and from JUNIE — both typo-rank → nothing.
   assert.equal(searchEftPool(pool, "junif").ambiguous, true);
-  // An exact-rank ambiguity (two payments with the SAME reference) is not
-  // "partial": more typing cannot settle it — the bank id can.
+  // Two separate payments with the SAME reference are two rows, not an
+  // ambiguity (29 Oct 2026).
   const same = { a: recorded({ reference: "NKOSI", bankRef: "A1", at: 1 }), b: recorded({ reference: "NKOSI", bankRef: "B2", at: 2 }) };
   const out = searchEftPool(same, "nkosi");
-  assert.equal(out.ambiguous, true);
-  assert.equal(out.partial, undefined);
+  assert.deepEqual(out.results.map((r) => r.key), ["a", "b"]);
+  assert.equal(out.ambiguous, undefined);
 });
 
 test("an exact match outranks near-misses — they are not even candidates", () => {
@@ -263,16 +265,70 @@ test("an exact match outranks near-misses — they are not even candidates", () 
   assert.equal(searchEftPool(pool, "junid1236").ambiguous, true);
 });
 
-test("one unmatched beside used copies of the same reference: the unmatched one answers alone", () => {
+test("one unmatched beside used payments of the same reference: the unmatched one answers alone", () => {
   const pool = {
     old: recorded({ status: "used", used: { at: 1, sale: { receiptNumber: "00001" } }, bankRef: "A1111", at: 1 }),
     now: recorded({ bankRef: "B2222", at: 2 }),
   };
   assert.deepEqual(keys(pool, "junid1234"), ["now"]);
-  // Two used, none unmatched: ambiguous — ask for the bank id.
+  // Two used, none unmatched: both answer, as used — one row each.
   const twoUsed = { ...pool, now: { ...pool.now, status: "used", used: { at: 2, sale: null } } };
-  assert.equal(searchEftPool(twoUsed, "junid1234").ambiguous, true);
+  const out = searchEftPool(twoUsed, "junid1234");
+  assert.deepEqual(out.results.map((r) => [r.key, r.status]), [["old", "used"], ["now", "used"]]);
   assert.deepEqual(keys(twoUsed, "b2222"), ["now"]);
+});
+
+// ─── SAME REFERENCE, SEPARATE PAYMENTS (Junid, 29 Oct 2026) ──────────────────
+test("two separate payments sharing a reference BOTH show, each by its own key, oldest first", () => {
+  const pool = {
+    second: recorded({ reference: "SIPHO", amountCents: 30000, bankRef: "TRACE0002", at: 20 }),
+    first: recorded({ reference: "SIPHO", amountCents: 30000, bankRef: "TRACE0001", at: 10 }),
+    other: recorded({ reference: "THANDI", bankRef: "TRACE0003", at: 15 }),
+  };
+  for (const q of ["sipho", "SIPHO", "sip"]) {
+    const out = searchEftPool(pool, q);
+    assert.deepEqual(out.results.map((r) => r.key), ["first", "second"], q);
+    assert.equal(out.ambiguous, undefined);
+    for (const r of out.results) assert.equal(r.status, "unmatched");
+  }
+  // Each one is still found alone by its bank id.
+  assert.deepEqual(keys(pool, "trace0002"), ["second"]);
+  // The first used: the second stays visible and selectable.
+  const after = { ...pool, first: { ...pool.first, status: "used", used: { at: 30, sale: { receiptNumber: "00042" } } } };
+  assert.deepEqual(searchEftPool(after, "sipho").results.map((r) => [r.key, r.status]), [["second", "unmatched"]]);
+});
+
+test("same reference by an Absa synthetic identity: distinct fingerprints are two rows; one fingerprint is one payment", () => {
+  const pool = {
+    a: recorded({ reader: "absa", reference: "SIPHO", amountCents: 30000, bankRef: "ABSA|S DUBE|6625|2026-10-29|30000|SIPHO", at: 1 }),
+    b: recorded({ reader: "absa", reference: "SIPHO", amountCents: 40000, bankRef: "ABSA|S DUBE|6625|2026-10-29|40000|SIPHO", at: 2 }),
+  };
+  assert.deepEqual(keys(pool, "sipho"), ["a", "b"]);
+  const copy = { ...pool, b: { ...pool.a, at: 2 } };
+  assert.deepEqual(keys(copy, "sipho"), ["a"], "a resent copy folds into the original");
+});
+
+test("different references a prefix away from each other are still nothing — keep typing", () => {
+  const pool = { a: recorded({ reference: "SIPHO1", bankRef: "TRACE0001" }), b: recorded({ reference: "SIPHO2", bankRef: "TRACE0002" }) };
+  const out = searchEftPool(pool, "sipho");
+  assert.deepEqual(out.results, []);
+  assert.equal(out.ambiguous, true);
+  assert.equal(out.partial, true);
+});
+
+test("a manual entry waiting beside its bank twin still answers as the bank's record alone", () => {
+  const pool = {
+    bank: recorded({ reference: "SIPHO", amountCents: 30000, bankRef: "TRACE0001", at: 20, bankTs: 20 }),
+    hand: recorded({ reference: "SIPHO", amountCents: 30000, reader: "manual", bankRef: "ME-1", at: 10, manualEntry: { at: 10, by: "junid" } }),
+  };
+  assert.deepEqual(keys(pool, "sipho"), ["bank"]);
+});
+
+test("at most EFT_SEARCH_LIMIT rows", () => {
+  const pool = {};
+  for (let i = 0; i < 9; i++) pool[`p${i}`] = recorded({ reference: "SAME", bankRef: `TRACE000${i}`, at: i });
+  assert.equal(searchEftPool(pool, "same").results.length, EFT_SEARCH_LIMIT);
+  assert.equal(searchEftPool(pool, "same").results[0].key, "p0");
 });
 
 test("matchOf names what matched", () => {
@@ -316,9 +372,9 @@ test("copies of ONE bank transaction (pre-fix resends) are one payment, not an a
   const out = searchEftPool(spent, "junid1234");
   assert.deepEqual(out.results.map((r) => r.key), ["b"], "a used copy stands for the group: the money is spent");
   assert.equal(out.results[0].status, "used");
-  // Different bank ids are still two payments → ambiguous.
+  // Different bank ids are two payments → two rows (same reference).
   const two = { ...pool, b: { ...pool.b, bankRef: "OTHER999" } };
-  assert.equal(searchEftPool(two, "junid1234").ambiguous, true);
+  assert.deepEqual(keys(two, "junid1234"), ["a", "b"]);
 });
 
 test("a near match SHOWS the stored reference (Junid, 19 Oct 2026) — the cashier checks it against the proof of payment", () => {

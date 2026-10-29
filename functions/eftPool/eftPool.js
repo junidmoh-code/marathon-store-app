@@ -9,9 +9,10 @@
 //
 //   eftPoolSearch   any active POS identity: find THE payment the customer
 //                   names by its REFERENCE or the bank's TRANSACTION ID, typed
-//                   in full (one typo tolerated on a long reference). At most
-//                   ONE result, payer as initials only; an ambiguous query
-//                   returns nothing. Never by amount (an amount field is
+//                   in full (one typo tolerated on a long reference). One
+//                   result — or one row per payment when separate payments
+//                   share the reference — payer as initials only; an
+//                   ambiguous query returns nothing. Never by amount (an amount field is
 //                   refused outright), never by name, no listing, no
 //                   suggestions. A used payment answers as used — when and
 //                   which slip — never whose sale or which cashier (fix 2,
@@ -609,9 +610,11 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
         wholePaymentMatched = record.used.wholePaymentMatched === true;
       } else {
         const found = searchEftPool(tail, matchQuery);
-        wholePaymentMatched = found.results.length === 1 && found.results[0].key === key && found.results[0].status === "unmatched";
+        // The query must still find THIS payment — one of several rows when
+        // separate payments share its reference (29 Oct 2026).
+        wholePaymentMatched = found.results.some((r) => r.key === key && r.status === "unmatched");
         if (!wholePaymentMatched) {
-          console.warn(`eftPoolSettle: customer-less settle on ${key} refused — query ${JSON.stringify(matchQuery)} resolved to ${found.results[0]?.key ?? (found.ambiguous ? "ambiguous" : "nothing")}`);
+          console.warn(`eftPoolSettle: customer-less settle on ${key} refused — query ${JSON.stringify(matchQuery)} resolved to ${found.results.map((r) => r.key).join(",") || (found.ambiguous ? "ambiguous" : "nothing")}`);
           throw new HttpsError("failed-precondition", "Find the payment by its reference again before using it — a payment is never used on its amount.", { code: "not-matched" });
         }
       }

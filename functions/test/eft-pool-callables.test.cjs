@@ -382,11 +382,27 @@ test("NEVER on the amount: a query that resolves to a DIFFERENT payment, or to t
   // The query names the OTHER payment (same amount) — this key is refused.
   let e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "other9999" })), "failed-precondition");
   assert.equal(e.details.code, "not-matched");
-  // Two payments with the same reference: ambiguous → refused for either.
-  dbState.tail = { [K1]: PAY, [K2]: { ...PAY, bankRef: "Z9Z9Z9Z9", at: 2 } };
-  e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "junid1234" })), "failed-precondition");
+  // Two payments with references a prefix apart: ambiguous → refused.
+  dbState.tail = { [K1]: PAY, [K2]: { ...PAY, reference: "JUNID12345", bankRef: "Z9Z9Z9Z9", at: 2 } };
+  e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null, matchQuery: "junid123" })), "failed-precondition");
   assert.equal(e.details.code, "not-matched");
   assert.deepEqual(dbState.txPaths, []);
+});
+
+test("two separate payments with the SAME reference: the query finds each, so either settles whole with no customer (29 Oct 2026)", async () => {
+  for (const key of [K1, K2]) {
+    resetPool();
+    const twin = { ...PAY, bankRef: "Z9Z9Z9Z9", at: 2 };
+    const rec = key === K1 ? PAY : twin;
+    dbState.pool[`eft_pool/${key}`] = rec;
+    dbState.tail = { [K1]: PAY, [K2]: twin };
+    dbState.txCurrent = rec;
+    const out = await eftPoolSettle(settleReq(key, { customerId: null, confirmedCustomerId: null, matchQuery: "junid1234" }));
+    assert.equal(out.ok, true, key);
+    assert.equal(dbState.txNext?.status, "used", key);
+    assert.equal(dbState.txNext?.used.wholePaymentMatched, true, key);
+  }
+  resetPool();
 });
 
 test("with a customer on the sale, the confirmed-customer rule is exactly as before", async () => {
