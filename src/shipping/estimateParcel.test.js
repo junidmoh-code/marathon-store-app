@@ -188,6 +188,16 @@ describe("THE PARCEL RULE — the details", () => {
     expect(r.parcels[0].kind).toBe("custom");
   });
 
+  it("caps lie 2×2 per layer: order #1859 (6 caps/visors + a bag) fits the LARGE box", () => {
+    const caps = { category: "Clothing", subcategory: "Caps & Hats" };
+    const r = estimateParcel([
+      { category: "Accessories", subcategory: "Bags", qty: 1 },
+      { ...caps, qty: 1 }, { ...caps, qty: 3 }, { ...caps, qty: 2 },
+    ]);
+    expect(r.fits).toBe(true);
+    expect(r.parcels[0]).toMatchObject({ kind: "box", boxCode: "LARGE" });
+  });
+
   it("door-to-door by default: the drop box is off", () => {
     expect(estimateParcel([T(1)])).toMatchObject({ dropBoxEligible: false, service: "ECO" });
   });
