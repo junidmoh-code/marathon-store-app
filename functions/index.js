@@ -5851,6 +5851,16 @@ exports.socialStillAutopilot = onSchedule(
       // ── WHICH FORMAT TODAY ─────────────────────────────────────────────
       // By weekday (LOOKBOOK_DAYS), so a reclaimed run reads the same answer
       // and a missed day never shifts the week. Recorded for the health scan.
+      // ── THE HOUSE MODEL'S 24-HOUR DEADLINE, EVERY DAY ──────────────────
+      // Applied here, not only when a hero is drawn: the deadline passed on
+      // Tue 27 Oct and Wednesday's lookbook was skipped before its hero, so
+      // the auto-pick never ran and the old reference stayed live (29 Oct).
+      try {
+        const houseModel = require("./lookbook/house-model.cjs");
+        const [hmSnap, modelSnap] = await Promise.all([db.ref(houseModel.HOUSE_PATH).once("value"), db.ref(houseModel.MODEL_PATH).once("value")]);
+        const ref = await houseModel.resolveRef(hmSnap.val(), modelSnap.val(), { nowMs, pick: (u) => db.ref().update(u) });
+        if (ref && ref.auto) console.log(`socialStillAutopilot ${saDate}: house model ${ref.house} auto-picked (no reply within 24 hours)`);
+      } catch (err) { console.warn(`socialStillAutopilot ${saDate}: the house-model deadline could not be applied: ${err && err.message}`); }
       const planned = socialLookbook.plannedStillFormat(saDate, STILL_FORMATS, LOOKBOOK_DAYS) || "current";
       await db.ref("social_lookbook/rotation").set({ lastDate: saDate, format: planned, by: "LOOKBOOK_DAYS" });
       await logRef.update({ planned, day: socialLookbook.weekdayOf(saDate) });

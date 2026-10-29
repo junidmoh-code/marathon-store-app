@@ -188,3 +188,18 @@ describe("buildFit — the cache is trusted only while it lives (CodeRabbit on #
     assert.ok(reqs[2].maxTokens <= fresh[2].maxTokens, "a stale cache never buys a bigger ceiling");
   });
 });
+
+describe("buildFit — a cold morning still gets its rebuild (lookbook, Wed 28 Oct)", () => {
+  test("round 1 at $0.077 with both caches written: round 2 is made, its critic reserve priced warm", async () => {
+    const reqs = [];
+    const answers = [FIT(), CRIT(8, 7, 8, 7), FIT(), CRIT(9, 9, 9, 9)];
+    const usage = [{ costUSD: 0.045, cachedTokens: 7800 }, { costUSD: 0.032, cachedTokens: 3037 }, { costUSD: 0.016, cachedTokens: 7800 }, { costUSD: 0.014, cachedTokens: 3037 }];
+    const call = async (req) => { reqs.push(req); return { json: answers.shift(), ...usage.shift() }; };
+    // A production-sized catalogue (44 pieces with real-length names and photo notes).
+    const big = { ...OFFER, pieces: [...OFFER.pieces, ...Array.from({ length: 40 }, (_, i) => ({ ...P(`p17929${String(i).padStart(7, "0")}`, ["tee", "bottoms", "sneakers"][i % 3], "G-STAR RAW", "Raw cargo jeans indigo with zip pockets"), displayName: "G star raw cargo jean indigo 5233#", seen: "mid-blue cargo jeans with zip pockets" }))] };
+    const r = await fa.buildFit(big, { call, photo: async () => ({ base64: "eA==", mediaType: "image/jpeg" }) });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.rounds.length, 2);
+    assert.ok(reqs[2].maxTokens >= fr.MIN_OUT_TOKENS);
+  });
+});

@@ -88,7 +88,11 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
   const inputWorst = (req, role) => worst({ ...req, maxTokens: 0 }, role);
   const OUT = fr.PRICE.outPerMtok / 1e6;
   const ceiling = (inUSD, max, keep = 0) => Math.min(max, Math.floor((budgetUSD - spent - inUSD - keep) / OUT));
-  let criticInput = 0;
+  // The last critic request, re-priced at each round start: its rulebook
+  // prefix was cached by that very call, so the next critic reads it. Pricing
+  // the reserve from round 1's cold figure refused every round 2 on a cold
+  // morning (lookbook, Wed 28 Oct: a ceiling of 851 tokens instead of 1,580).
+  let lastCritic = null;
   const summary = (fit) => fit && { formula: fit.formula, theme: fit.theme, pids: fit.pieces.map((p) => p.pid), hero: fit.hero ? fit.hero.pid : null };
   const skip = (reason) => ({ ok: false, reason, rounds, costUSD: spent });
 
@@ -99,7 +103,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
     // for MIN_OUT_TOKENS: a stylist answer the critic cannot afford to score
     // is money spent on nothing. The stylist's ceiling is what is left once
     // the critic's share is held back.
-    const criticKeep = (criticInput || fr.CRITIC_INPUT_RESERVE_USD) + fr.MIN_OUT_TOKENS * OUT;
+    const criticKeep = (lastCritic ? inputWorst(lastCritic, "critic") : fr.CRITIC_INPUT_RESERVE_USD) + fr.MIN_OUT_TOKENS * OUT;
     sreq.maxTokens = ceiling(inputWorst(sreq, "stylist"), fr.STYLIST_MAX_TOKENS, criticKeep);
     if (sreq.maxTokens < fr.MIN_OUT_TOKENS) return skip(`round ${round}: a stylist call and its critic do not fit in what is left of the $${budgetUSD} budget ($${spent.toFixed(3)} spent)`);
     let answer;
@@ -132,8 +136,8 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
       if (ph) shots.push({ pid: p.pid, ...ph });
     }
     const creq = fr.criticRequest(fit, shots);
-    criticInput = inputWorst(creq, "critic");
-    creq.maxTokens = ceiling(criticInput, fr.CRITIC_MAX_TOKENS);
+    creq.maxTokens = ceiling(inputWorst(creq, "critic"), fr.CRITIC_MAX_TOKENS);
+    lastCritic = creq;
     if (creq.maxTokens < fr.MIN_OUT_TOKENS) {
       rounds.push({ round, fit: summary(fit), costUSD: answer.costUSD, error: "no budget left for the critic" });
       return skip(`round ${round}: the critic call could cost up to $${worst(creq, "critic").toFixed(3)} and $${spent.toFixed(3)} of the $${budgetUSD} budget is spent`);
