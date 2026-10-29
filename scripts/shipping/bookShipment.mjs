@@ -125,7 +125,8 @@ export async function planShipment(order, { db, client, products = null }) {
     collection_address: cfg.collectionAddress,
     ...(chosen.mode === "locker" ? lockerCollection(dropBox) : {}),
     collection_contact: { name: collectionContact.name ?? "", mobile_number: collectionContact.mobile_number ?? "", email: collectionContact.email ?? "" },
-    delivery_address: address,
+    // The address TCG priced (the town as suburb when the typed suburb gave no rates).
+    delivery_address: quoted.deliveryAddress ?? address,
     delivery_contact: contact,
     // ONE shipment, every parcel of the parcel rule (N shoeboxes + any flat box).
     parcels: tcgParcels(parcel.parcels),
@@ -274,8 +275,9 @@ export async function cancelShipment(order, deps = {}) {
  * before Pack. No rates, no network. `sig` changes when the lines do.
  */
 // Bump when the RULE changes: every open order's estimate is then rewritten on
-// the poller's next tick (2 = one parcel, never split — 2026-10-23).
-export const ESTIMATE_RULE_VERSION = 2;
+// the poller's next tick (2 = one parcel, never split — 2026-10-23;
+// 3 = boxes also packed in flat layers, so a box of caps fits — 2026-10-29).
+export const ESTIMATE_RULE_VERSION = 3;
 
 /** The estimate's signature: the order's lines, the config they are packed with, AND the rule version. */
 export function estimateSig(order, rawConfig) {

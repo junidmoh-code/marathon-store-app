@@ -141,6 +141,42 @@ describe("THE LIVE-FLAG GUARD — no shipment call can be reached unless live ==
   }
 });
 
+describe("a suburb TCG can't place (order #1862)", () => {
+  // TCG answers 200 with rates: null for a suburb it can't match.
+  const suburbBlind = () => {
+    const client = fakeClient();
+    client.getRates = async (body) => {
+      client.calls.push(["getRates", body]);
+      return body.delivery_address.local_area === body.delivery_address.city ? doorCpt : { message: "Success", rates: null };
+    };
+    return client;
+  };
+  const ODD = () => ORDER({ shipping: { address: { street: "5 Esplanade Road", suburb: "Department of Transport", city: "Cape Town", province: "Western Cape", zip: "7441" } } });
+
+  it("asks again with the town as the suburb, and books with the address that priced", async () => {
+    const d = db(true, { online_orders: { 1001: ODD() } });
+    const client = suburbBlind();
+    await bookShipment(ODD(), deps(d, client));
+    expect(client.calls.filter((c) => c[0] === "getRates").map((c) => c[1].delivery_address.local_area)).toEqual(["Department of Transport", "Cape Town"]);
+    const created = client.shipmentCalls()[0][1];
+    expect(created.delivery_address).toMatchObject({ local_area: "Cape Town", city: "Cape Town", street_address: "5 Esplanade Road" });
+  });
+
+  it("no second ask when the suburb already IS the town; still refused when nothing prices", async () => {
+    const client = fakeClient();
+    client.getRates = async (body) => { client.calls.push(["getRates", body]); return { rates: null }; };
+    const res = await bookShipment(ODD(), deps(db(true, { online_orders: { 1001: ODD() } }), client));
+    expect(res).toMatchObject({ skipped: true, reason: expect.stringMatching(/no usable rate/) });
+    expect(client.calls.filter((c) => c[0] === "getRates")).toHaveLength(2);
+    expect(client.shipmentCalls()).toEqual([]);
+    const client2 = fakeClient();
+    client2.getRates = async (body) => { client2.calls.push(["getRates", body]); return { rates: null }; };
+    const SAME = ORDER({ shipping: { address: { street: "5 Esplanade Road", suburb: "Cape Town", city: "Cape Town", province: "Western Cape", zip: "7441" } } });
+    await bookShipment(SAME, deps(db(true, { online_orders: { 1001: SAME } }), client2));
+    expect(client2.calls.filter((c) => c[0] === "getRates")).toHaveLength(1);
+  });
+});
+
 describe("bookShipment — live", () => {
   it("creates once, writes {provider, shipmentId, waybill, service, parcel, cost, bookedAt} to the order", async () => {
     const d = db(true);

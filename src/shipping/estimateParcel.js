@@ -154,6 +154,39 @@ export function layoutBlock(items, k) {
   return [Math.max(...used.map((c) => c.l)), used.reduce((s, c) => s + c.w, 0), Math.max(...used.map((c) => c.h))];
 }
 
+/**
+ * Do `items` pack into `outer` in flat layers? Each item lies flat (its smallest
+ * side up); identical items share layers, as many per layer as the floor holds
+ * (either way round); the layers stack. Every side of the box is tried as "up".
+ * Catches what the side-by-side columns miss: 6 caps + a bag are 2×2 caps per
+ * layer in a 55×40×35 box, but 3+ columns of caps in a row are wider than any box.
+ */
+export function fitsInLayers(items, outer) {
+  const groups = new Map();
+  for (const it of items) {
+    const key = `${it.l}x${it.w}x${it.h}`;
+    const g = groups.get(key);
+    if (g) g.n++;
+    else groups.set(key, { l: it.l, w: it.w, h: it.h, n: 1 });
+  }
+  const [x, y, z] = outer.map(Number);
+  // A box or item with a missing, zero or negative side (a bad Shipping card
+  // row) never claims a fit.
+  const positive = (n) => Number.isFinite(n) && n > 0;
+  if (![x, y, z].every(positive)) return false;
+  if (![...groups.values()].every((g) => [g.l, g.w, g.h].every(positive))) return false;
+  for (const [a, b, up] of [[x, y, z], [x, z, y], [y, z, x]]) {
+    let height = 0;
+    for (const g of groups.values()) {
+      const perLayer = Math.max(Math.floor(a / g.l) * Math.floor(b / g.w), Math.floor(a / g.w) * Math.floor(b / g.l));
+      if (perLayer === 0) { height = Infinity; break; }
+      height += Math.ceil(g.n / perLayer) * g.h;
+    }
+    if (height <= up + 1e-9) return true;   // 3 × 8.4 is 25.200000000000003
+  }
+  return false;
+}
+
 export function chooseBox(items, boxes) {
   const sorted = [...boxes].sort((a, b) =>
     volume([a.lengthCm, a.widthCm, a.heightCm]) - volume([b.lengthCm, b.widthCm, b.heightCm]));
@@ -164,6 +197,13 @@ export function chooseBox(items, boxes) {
     if (!box) continue;
     const v = volume([box.lengthCm, box.widthCm, box.heightCm]);
     if (!best || v < best.v) best = { box, block, v };
+  }
+  // The smallest box the items fit in layers, when that is smaller than (or
+  // the only answer besides) the column layouts.
+  const layered = sorted.find((b) => fitsInLayers(items, [b.lengthCm, b.widthCm, b.heightCm]));
+  if (layered) {
+    const v = volume([layered.lengthCm, layered.widthCm, layered.heightCm]);
+    if (!best || v < best.v) best = { box: layered, block: [layered.lengthCm, layered.widthCm, layered.heightCm].map(Number), v };
   }
   return best;
 }
