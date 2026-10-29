@@ -35,14 +35,26 @@
 // REFUSED record holds (not immediate, stale, wrong account) is stamped spent
 // by the approval — the refusal stays refused, the id is now spent.
 //
+// A PHOTO OF THE PROOF (Junid, 29 Oct 2026). A phone screenshot has no text
+// to parse, and it is NOT read by OCR: Junid KEYS the identity from it —
+// bank, amount, payment date, reference, and the bank's transaction id when
+// the proof shows one (Absa's synthetic identity also needs the payer, as
+// the notice prints it). keyedIdentityCheck turns those fields into the very
+// parse a reader would have produced, so proofIdentityOf builds the SAME
+// fingerprint the poller will build from the bank's notification, and
+// everything after that — destination, claim, record, log — is the PDF's
+// path unchanged. The image itself is kept as the evidence (Cloud Storage,
+// eftProofs/{approval key}/…, written by the callable with the Admin SDK).
+//
 // PURE here: no IO, no clock, no PDF engine. The callable (eftPool/eftPool.js)
 // extracts the PDF's lines with cardRecon/pdfText.js — the same extraction,
 // the same "bucket" grouping the poller uses for EFT PDFs — and hands them in.
 "use strict";
 
 const { createHash } = require("node:crypto");
-const { clip, redactAccountDigits } = require("./eft-text.cjs");
+const { clip, redactAccountDigits, parseBankTimestamp, sastDate } = require("./eft-text.cjs");
 const { paymentFingerprint, syntheticIdentityOf } = require("./eft-fingerprint.cjs");
+const { EFT_READERS } = require("./eft-banks.cjs");
 const { markUsedOutsidePosDecision } = require("./eft-settle.cjs");
 
 const MANUAL_APPROVED_BY = "Junid";
@@ -52,6 +64,10 @@ const MANUAL_APPROVED_REASON = "Approved by hand from the uploaded proof of paym
 // A proof of payment is a one-page bank PDF — tens of kilobytes. Five
 // megabytes is far above any real one and far below the callable's own limit.
 const PROOF_MAX_BYTES = 5 * 1024 * 1024;
+// A phone photo is bigger than a bank PDF; 7 MB of image is ~9.4 MB of
+// base64, inside the callable's 10 MB request limit.
+const PROOF_IMAGE_MAX_BYTES = 7 * 1024 * 1024;
+const PROOF_STORAGE_PREFIX = "eftProofs";
 const PROOF_NOTE_MAX = 200;
 const PROOF_FILENAME_MAX = 120;
 // The client's idempotency token — minted once per upload (same shape as the
@@ -65,26 +81,150 @@ function approvedKeyOf(fingerprint) {
   return createHash("sha256").update(`eftapproved1|${fingerprint}`).digest("hex").slice(0, 40);
 }
 
+// The image formats a phone hands over, told apart by their magic bytes —
+// never by the client's say-so.
+const HEIF_BRANDS = new Set(["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1"]);
+function imageKindOf(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return { ext: "jpg", contentType: "image/jpeg" };
+  if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return { ext: "png", contentType: "image/png" };
+  if (buf.subarray(4, 8).toString("latin1") === "ftyp" && HEIF_BRANDS.has(buf.subarray(8, 12).toString("latin1"))) return { ext: "heic", contentType: "image/heic" };
+  return null;
+}
+
+function decodeBase64(raw, maxBytes) {
+  const b64 = typeof raw === "string" ? raw.replace(/^data:[^,]*,/, "").replace(/\s+/g, "") : "";
+  if (!b64) return { ok: false, empty: true };
+  // 4/3 expansion: the base64 text may not describe more than maxBytes.
+  if (b64.length > Math.ceil(maxBytes / 3) * 4) return { ok: false, tooBig: true };
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return { ok: false, bad: true };
+  return { ok: true, buf: Buffer.from(b64, "base64") };
+}
+
 /**
- * Validate what the phone sent. Returns the cleaned fields — the PDF as a
- * Buffer — or a refusal.
+ * Validate what the phone sent. Returns the cleaned fields — the PDF (or the
+ * image) as a Buffer — or a refusal. kind "pdf" | "image".
  */
 function approvedInputCheck(data) {
   const d = data && typeof data === "object" ? data : {};
   const entryId = typeof d.entryId === "string" ? d.entryId : "";
   if (!ENTRY_ID.test(entryId)) return { ok: false, code: "bad-entry-id", message: "The upload carries no id — reload and try again." };
-  const b64 = typeof d.pdfBase64 === "string" ? d.pdfBase64.replace(/^data:[^,]*,/, "").replace(/\s+/g, "") : "";
-  if (!b64) return { ok: false, code: "no-proof", message: "Attach the proof of payment PDF." };
-  // 4/3 expansion: the base64 text may not describe more than PROOF_MAX_BYTES.
-  if (b64.length > Math.ceil(PROOF_MAX_BYTES / 3) * 4) return { ok: false, code: "proof-too-big", message: "That PDF is bigger than 5 MB — a proof of payment is a one-page bank document." };
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return { ok: false, code: "bad-proof", message: "The proof did not upload cleanly — try again." };
-  const pdf = Buffer.from(b64, "base64");
-  if (pdf.length < 8 || pdf.subarray(0, 5).toString("latin1") !== "%PDF-") {
-    return { ok: false, code: "not-a-pdf", message: "That file is not a PDF. Upload the bank's proof of payment PDF (a screenshot cannot be read)." };
-  }
   const filename = clip(typeof d.filename === "string" ? d.filename.replace(/[\r\n\t]/g, " ") : "", PROOF_FILENAME_MAX);
   const note = d.note == null ? null : clip(String(d.note), PROOF_NOTE_MAX);
-  return { ok: true, entryId, pdf, filename, note };
+  const hasPdf = typeof d.pdfBase64 === "string" && d.pdfBase64.trim() !== "";
+  const hasImage = typeof d.imageBase64 === "string" && d.imageBase64.trim() !== "";
+  if (hasPdf && hasImage) return { ok: false, code: "two-proofs", message: "Send the PDF or the photo, not both." };
+  if (hasImage) {
+    const img = decodeBase64(d.imageBase64, PROOF_IMAGE_MAX_BYTES);
+    if (img.tooBig) return { ok: false, code: "proof-too-big", message: "That photo is bigger than 7 MB — send a screenshot, or a smaller photo." };
+    if (!img.ok) return { ok: false, code: "bad-proof", message: "The proof did not upload cleanly — try again." };
+    const type = imageKindOf(img.buf);
+    if (!type) return { ok: false, code: "not-an-image", message: "That file is not a JPEG, PNG or HEIC photo. Upload the screenshot or photo of the proof, or the bank's PDF." };
+    return { ok: true, kind: "image", entryId, image: img.buf, imageType: type, filename, note };
+  }
+  const dec = decodeBase64(d.pdfBase64, PROOF_MAX_BYTES);
+  if (dec.empty) return { ok: false, code: "no-proof", message: "Attach the proof of payment PDF." };
+  if (dec.tooBig) return { ok: false, code: "proof-too-big", message: "That PDF is bigger than 5 MB — a proof of payment is a one-page bank document." };
+  if (!dec.ok) return { ok: false, code: "bad-proof", message: "The proof did not upload cleanly — try again." };
+  const pdf = dec.buf;
+  if (pdf.length < 8 || pdf.subarray(0, 5).toString("latin1") !== "%PDF-") {
+    return { ok: false, code: "not-a-pdf", message: "That file is not a PDF. Upload the bank's proof of payment PDF — or send a screenshot as a photo, with its details typed in." };
+  }
+  return { ok: true, kind: "pdf", entryId, pdf, filename, note };
+}
+
+// ─── THE KEYED IDENTITY OF A PHOTO ───────────────────────────────────────────
+const KEYED_AMOUNT_MAX_CENTS = 100_000_000; // R1,000,000 — no shop EFT comes near it
+const KEYED_REFERENCE_MAX = 80;
+const KEYED_PAYER_MAX = 60;
+const KEYED_BANK_REF_MAX = 60;
+const KEYED_MAX_AGE_DAYS = 366;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const BANK_NAMES = { standardbank: "Standard Bank", fnb: "FNB", capitec: "Capitec", absa: "Absa", nedbank: "Nedbank" };
+const KEYED_READER_IDS = EFT_READERS.map((r) => r.id);
+
+/** The shop's account the photo's money went into: the one ending with the
+ *  typed digits, or — none typed — the first configured (Marathon's). */
+function keyedDestinationOf(accountTail, allowedAccounts) {
+  const accounts = Array.isArray(allowedAccounts) ? allowedAccounts : [];
+  if (accountTail == null || accountTail === "") {
+    return accounts.length ? { ok: true, accountMask: accounts[0] } : { ok: true, accountMask: null };
+  }
+  const digits = String(accountTail).replace(/[\s-]/g, "");
+  if (!/^\d{4,20}$/.test(digits)) return { ok: false, code: "bad-account", message: "The destination account must be digits (at least the last four) — or leave it empty for the shop's own account." };
+  const hit = accounts.find((a) => a.endsWith(digits));
+  if (!hit) return { ok: false, code: "wrong-destination", message: `This payment credits an account ending ${digits.slice(-4)}, which is not the shop's own account.` };
+  return { ok: true, accountMask: hit };
+}
+
+/**
+ * The fields Junid keyed from a photo, turned into the parse the bank's
+ * reader would have produced — so proofIdentityOf builds the same identity.
+ *   bank         one of the reader ids (standardbank, fnb, capitec, absa, nedbank)
+ *   amountCents  positive integer
+ *   paymentDate  "YYYY-MM-DD", the bank's payment day (SAST), not in the future
+ *   reference    the payer's reference, as the proof prints it
+ *   bankRef      the bank's transaction id — REQUIRED except on Absa
+ *   payer        as printed — REQUIRED on Absa without a transaction id
+ *   accountTail  optional: the destination account digits (default the shop's)
+ * @returns {{ok:true, readerId, parse, lines}|{ok:false, code, message}}
+ */
+function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  const bank = typeof d.bank === "string" ? d.bank.trim().toLowerCase() : "";
+  if (!KEYED_READER_IDS.includes(bank)) {
+    return { ok: false, code: "bad-bank", message: `Choose the bank that sent the payment (${KEYED_READER_IDS.join(", ")}).` };
+  }
+  const amountCents = d.amountCents;
+  if (!Number.isInteger(amountCents) || amountCents <= 0 || amountCents > KEYED_AMOUNT_MAX_CENTS) {
+    return { ok: false, code: "bad-amount", message: "Type the amount the proof shows, in cents (more than zero)." };
+  }
+  const date = typeof d.paymentDate === "string" ? d.paymentDate.trim() : "";
+  const bankTs = /^\d{4}-\d{2}-\d{2}$/.test(date) ? parseBankTimestamp(date) : null;
+  if (!Number.isInteger(bankTs)) return { ok: false, code: "bad-date", message: "Type the payment date the proof shows, as YYYY-MM-DD." };
+  if (Number.isInteger(now)) {
+    if (date > sastDate(now)) return { ok: false, code: "bad-date", message: "The payment date is in the future — check the date on the proof." };
+    if (now - bankTs > KEYED_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) return { ok: false, code: "bad-date", message: "The payment date is more than a year ago — check the date on the proof." };
+  }
+  const reference = typeof d.reference === "string" ? d.reference.trim() : "";
+  if (!reference || reference.length > KEYED_REFERENCE_MAX || CONTROL_CHARS.test(reference) || !/[A-Za-z0-9]/.test(reference)) {
+    return { ok: false, code: "bad-reference", message: `Type the reference the proof shows (up to ${KEYED_REFERENCE_MAX} characters).` };
+  }
+  const payerRaw = d.payer == null ? "" : typeof d.payer === "string" ? d.payer.trim() : null;
+  if (payerRaw === null || payerRaw.length > KEYED_PAYER_MAX || CONTROL_CHARS.test(payerRaw) || (payerRaw && !/[A-Za-z]/.test(payerRaw))) {
+    return { ok: false, code: "bad-payer", message: `The payer must be the name the proof shows (up to ${KEYED_PAYER_MAX} characters).` };
+  }
+  const refRaw = d.bankRef == null ? "" : typeof d.bankRef === "string" ? d.bankRef.trim() : null;
+  if (refRaw === null || refRaw.length > KEYED_BANK_REF_MAX || CONTROL_CHARS.test(refRaw) || (refRaw && refRaw.replace(/[^A-Za-z0-9]/g, "").length < 4)) {
+    return { ok: false, code: "bad-bank-ref", message: "The bank's transaction id must be the number the proof shows (at least four letters or digits)." };
+  }
+  if (!refRaw && bank !== "absa") {
+    return { ok: false, code: "bank-ref-required", message: `A ${BANK_NAMES[bank]} payment is identified by its transaction id — type the reference / trace number the proof shows. Without it, float it by hand as before.` };
+  }
+  if (!refRaw && !payerRaw) {
+    return { ok: false, code: "payer-required", message: "An Absa proof with no transaction number is identified by the payer, amount, date and reference — type the payer's name as the proof shows it." };
+  }
+  const dest = keyedDestinationOf(d.accountTail, allowedAccounts);
+  if (!dest.ok) return dest;
+  const parse = {
+    ok: true, amountCents, reference, payer: payerRaw || null, bankTs, bankRef: refRaw || null,
+    accountMask: dest.accountMask, destBankName: "FIRST NATIONAL BANK", beneficiaryName: null,
+  };
+  const lines = [
+    `Keyed by hand by ${MANUAL_APPROVED_BY} from a photo of the proof of payment (not read by machine).`,
+    `Bank: ${BANK_NAMES[bank]}`,
+    `Amount: R${(amountCents / 100).toFixed(2)}`,
+    `Payment date: ${date}`,
+    `Reference: ${reference}`,
+    ...(payerRaw ? [`Payer: ${payerRaw}`] : []),
+    ...(refRaw ? [`Transaction id: ${refRaw}`] : []),
+  ];
+  return { ok: true, readerId: bank, parse, lines };
+}
+
+/** Where the photo is kept: one folder per approval, one file per upload. */
+function proofStoragePathOf(approvedKey, entryId, ext) {
+  return `${PROOF_STORAGE_PREFIX}/${approvedKey}/${entryId}.${ext}`;
 }
 
 /**
@@ -111,18 +251,23 @@ function proofIdentityOf(parse, readerId) {
  * "manual-approved": nothing was authenticated, and the record says so.
  * @returns {{ok:true, value:object}|{ok:false, code, message}}
  */
-function manualApprovedRecord({ key, readerId, parse, lines, identity, destination, actor, at, note, filename, entryId }) {
+function manualApprovedRecord({ key, readerId, parse, lines, identity, destination, actor, at, note, filename, entryId, proof = null }) {
   const text = Array.isArray(lines) ? lines.join("\n") : "";
+  const photo = proof && proof.kind === "image";
   const unmatched = {
     at,
     receivedAt: at,
     bankTs: Number.isInteger(parse.bankTs) ? parse.bankTs : null,
     messageId: `manual-approved:${entryId}`,
     from: actor?.email ?? null,
-    subject: `Proof of payment (${readerId}) approved by hand by ${MANUAL_APPROVED_BY}`,
+    subject: photo
+      ? `Photo of a proof of payment (${readerId}) keyed and approved by hand by ${MANUAL_APPROVED_BY}`
+      : `Proof of payment (${readerId}) approved by hand by ${MANUAL_APPROVED_BY}`,
     auth: {
       verdict: "manual-approved", fromDomain: null, dkimDomain: null,
-      detail: `Proof of payment uploaded by ${MANUAL_APPROVED_BY} and approved by hand — no bank notification was read and nothing was authenticated.`,
+      detail: photo
+        ? `Photo of a proof of payment uploaded by ${MANUAL_APPROVED_BY}; its identity was typed by hand from the photo — no bank notification was read and nothing was authenticated.`
+        : `Proof of payment uploaded by ${MANUAL_APPROVED_BY} and approved by hand — no bank notification was read and nothing was authenticated.`,
     },
     rawText: clip(redactAccountDigits(text), 4000),
     reader: readerId,
@@ -144,6 +289,7 @@ function manualApprovedRecord({ key, readerId, parse, lines, identity, destinati
       note: note ?? null,
       filename: filename ?? null,
       entryId,
+      ...(photo ? { keyedByHand: true, proof: { kind: "image", path: proof.path, contentType: proof.contentType, bytes: proof.bytes, sha256: proof.sha256 } } : {}),
     },
   };
   const used = markUsedOutsidePosDecision(unmatched, { at, actorUid: actor?.uid, actorName: MANUAL_APPROVED_BY, reason: MANUAL_APPROVED_REASON });
@@ -281,6 +427,7 @@ function approvedLogRecord(record, key) {
     synthetic: !record.bankRef && !!record.syntheticRef,
     note: m.note ?? null,
     filename: m.filename ?? null,
+    ...(m.proof ? { keyedByHand: true, proofKind: m.proof.kind ?? null, proofPath: m.proof.path ?? null } : {}),
   };
 }
 
@@ -309,13 +456,14 @@ function approvedResponse(record, { already = false } = {}) {
     at: record.manualApproved?.at ?? record.at,
     by: MANUAL_APPROVED_BY,
     status: record.status,
+    ...(record.manualApproved?.proof ? { keyedByHand: true, proofPath: record.manualApproved.proof.path ?? null } : {}),
   };
 }
 
 module.exports = {
   MANUAL_APPROVED_BY, MANUAL_APPROVED_LOG_PATH, MANUAL_APPROVED_LIST_LIMIT, MANUAL_APPROVED_REASON,
-  PROOF_MAX_BYTES, PROOF_NOTE_MAX,
-  approvedKeyOf, approvedInputCheck, proofIdentityOf, manualApprovedRecord, isManualApproved,
+  PROOF_MAX_BYTES, PROOF_IMAGE_MAX_BYTES, PROOF_NOTE_MAX, PROOF_STORAGE_PREFIX,
+  approvedKeyOf, approvedInputCheck, imageKindOf, keyedIdentityCheck, keyedDestinationOf, proofStoragePathOf, proofIdentityOf, manualApprovedRecord, isManualApproved,
   approvedClaimDecision, approvedClaimStep, approvedTwinSettleCheck, CLAIM_SETTLING_MS,
   approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
 };

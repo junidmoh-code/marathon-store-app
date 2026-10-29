@@ -106,6 +106,9 @@
 //                   spender — so the bank's later notification is filed as
 //                   already settled, never floated again. Floats nothing;
 //                   manual entry (above) stays instant and proof-free.
+//                   A PHOTO (jpg/png/heic) is accepted too: Junid types the
+//                   identity from it (no OCR) and the image is kept in
+//                   Storage at eftProofs/{key}/{entryId}.{ext}.
 //   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan,functions:eftEnforcementStatus,functions:eftPoolManualEntry,functions:eftPoolManualApprove
 
 "use strict";
@@ -142,13 +145,15 @@ const {
 } = require("../lib/eft-manual.cjs");
 const {
   MANUAL_APPROVED_LOG_PATH, MANUAL_APPROVED_LIST_LIMIT, MANUAL_APPROVED_BY,
-  approvedKeyOf, approvedInputCheck, proofIdentityOf, manualApprovedRecord, isManualApproved,
+  approvedKeyOf, approvedInputCheck, keyedIdentityCheck, proofStoragePathOf, proofIdentityOf, manualApprovedRecord, isManualApproved,
   approvedClaimDecision, approvedClaimStep, approvedTwinSettleCheck, approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
 } = require("../lib/eft-manual-approved.cjs");
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
 const { parseAllowedAccounts, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
 const { maskAccountValue } = require("../lib/eft-text.cjs");
 const { pdfToLines } = require("../cardRecon/pdfText.js");
+const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
+const { createHash } = require("node:crypto");
 const { issuingStamp } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 
@@ -1023,19 +1028,35 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   const input = approvedInputCheck(data);
   if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
 
-  // THE DOCUMENT → LINES → READER → PARSE, exactly the poller's path.
-  const extracted = await pdfToLines(input.pdf, { grouping: "bucket" });
-  if (!extracted.ok) throw new HttpsError("invalid-argument", extracted.reason, { code: "unreadable-proof" });
-  const reader = selectReaderByContent(extracted.lines);
-  if (!reader) {
-    throw new HttpsError("invalid-argument", "That PDF is not a payment notification this pool has a reader for (Standard Bank, FNB, Capitec, Absa, Nedbank). Float the payment by hand instead.", { code: "no-reader" });
+  const configured = String(eftAllowedAccounts.value() ?? "").trim();
+  let reader, parse, lines;
+  if (input.kind === "image") {
+    // A PHOTO: nothing to parse, and no OCR. Junid typed the identity from
+    // it; keyedIdentityCheck shapes those fields as the bank's reader would
+    // have parsed them, so the identity below is the poller's own.
+    if (!configured) {
+      throw new HttpsError("failed-precondition", `No account allowlist is configured for Cloud Functions — set the ${EFT_ACCOUNTS_ENV_VAR} secret (firebase functions:secrets:set). Until then every proof refuses here, deliberately.`, { code: "wrong-destination" });
+    }
+    const keyed = keyedIdentityCheck(data, { allowedAccounts: parseAllowedAccounts(configured), now });
+    if (!keyed.ok) throw new HttpsError("invalid-argument", keyed.message, { code: keyed.code });
+    reader = { id: keyed.readerId };
+    parse = keyed.parse;
+    lines = keyed.lines;
+  } else {
+    // THE DOCUMENT → LINES → READER → PARSE, exactly the poller's path.
+    const extracted = await pdfToLines(input.pdf, { grouping: "bucket" });
+    if (!extracted.ok) throw new HttpsError("invalid-argument", extracted.reason, { code: "unreadable-proof" });
+    reader = selectReaderByContent(extracted.lines);
+    if (!reader) {
+      throw new HttpsError("invalid-argument", "That PDF is not a payment notification this pool has a reader for (Standard Bank, FNB, Capitec, Absa, Nedbank). Float the payment by hand instead.", { code: "no-reader" });
+    }
+    parse = reader.parse(extracted.lines);
+    lines = extracted.lines;
   }
-  const parse = reader.parse(extracted.lines);
   const identity = proofIdentityOf(parse, reader.id);
   if (!identity.ok) throw new HttpsError("failed-precondition", identity.message, { code: identity.code, reader: reader.id });
 
   // PAID INTO THE SHOP'S OWN ACCOUNT — the poller's own check, same code.
-  const configured = String(eftAllowedAccounts.value() ?? "").trim();
   const account = destinationVerdict({
     accountMask: parse.accountMask, destBankName: parse.destBankName,
     allowedAccounts: parseAllowedAccounts(configured), configured: !!configured,
@@ -1071,15 +1092,34 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   if (decision.action === "refuse") {
     throw new HttpsError("failed-precondition", decision.message, { code: decision.code, key: decision.key ?? null });
   }
+  // THE PHOTO IS THE EVIDENCE: stored before anything is claimed or
+  // recorded (the slip photos' order), with the Admin SDK — no client writes
+  // eftProofs/. A refused claim below takes the file back out.
+  let proof = null;
+  if (input.kind === "image") {
+    proof = {
+      kind: "image",
+      path: proofStoragePathOf(key, input.entryId, input.imageType.ext),
+      contentType: input.imageType.contentType,
+      bytes: input.image.length,
+      sha256: createHash("sha256").update(input.image).digest("hex"),
+    };
+    await admin.storage().bucket(STORAGE_BUCKET).file(proof.path).save(input.image, {
+      resumable: false,
+      contentType: proof.contentType,
+      metadata: { cacheControl: "private, max-age=31536000, immutable" },
+    });
+  }
   let claimed = null;
   await db.ref(claimPath).transaction(approvedClaimStep({ approvedKey: key, at: now, stampOver: decision.holder ?? null }, (d) => { claimed = d; }));
   if (claimed?.spentBy !== key) {
+    if (proof) { try { await admin.storage().bucket(STORAGE_BUCKET).file(proof.path).delete(); } catch { /* best effort */ } }
     throw new HttpsError("aborted", "The payment's identity changed hands while this was being registered — check the pool and try again.", { code: "claim-moved", holder: claimed?.holder ?? null });
   }
 
   const built = manualApprovedRecord({
-    key, readerId: reader.id, parse, lines: extracted.lines, identity, destination, actor, at: now,
-    note: input.note, filename: input.filename, entryId: input.entryId,
+    key, readerId: reader.id, parse, lines, identity, destination, actor, at: now,
+    note: input.note, filename: input.filename, entryId: input.entryId, proof,
   });
   if (!built.ok) throw new HttpsError("internal", built.message, { code: built.code });
   const record = built.value;
@@ -1095,7 +1135,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   }
   // The key, the bank and the amount only: the reference is the payer's
   // (often a phone number) and the note is free text — neither belongs in a log.
-  console.log(`EFT_MANUAL_APPROVED: ${key} ${reader.id} ${record.amountCents}c ${identity.synthetic ? "synthetic identity" : "bank id"}${decision.action === "spend" ? ` (spent the id held by refused ${decision.holder})` : ""} by ${MANUAL_APPROVED_BY} (${actor.uid})`);
+  console.log(`EFT_MANUAL_APPROVED: ${key} ${reader.id} ${record.amountCents}c ${identity.synthetic ? "synthetic identity" : "bank id"}${proof ? " keyed from a photo" : ""}${decision.action === "spend" ? ` (spent the id held by refused ${decision.holder})` : ""} by ${MANUAL_APPROVED_BY} (${actor.uid})`);
   return approvedResponse(record, { already: false });
 });
 
