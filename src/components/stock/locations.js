@@ -63,6 +63,19 @@ function asArray(registry) {
   return DEFAULT_LOCATIONS;
 }
 
+// A STORED registry that lacks a canonical location, filled in from the seed
+// (stored records always win). The Transfer screen only: 30 Oct 2026, Concrete's
+// opening day — a device whose copy of /locations predated the 27 Oct
+// concrete record offered no Concrete on the Transfer screen. The server holds
+// the record (the stock_movements rule checks it there), so offering it is
+// always safe; the wall below still decides what each source may send to.
+export function withSeedGaps(registry) {
+  if (!registry || typeof registry !== "object" || Object.keys(registry).length === 0) return registry;
+  const out = { ...registry };
+  for (const l of DEFAULT_LOCATIONS) if (!out[l.id]) out[l.id] = l;
+  return out;
+}
+
 export const activeLocations    = (registry) => asArray(registry).filter(l => l && l.active !== false);
 export const sellableLocations  = (registry) => activeLocations(registry).filter(l => l.kind === "store" && l.sellable);
 export const warehouseLocations = (registry) => activeLocations(registry).filter(l => l.kind === "warehouse");
