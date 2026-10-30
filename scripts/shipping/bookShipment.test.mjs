@@ -187,6 +187,8 @@ describe("bookShipment — live", () => {
     expect(res).toEqual({
       provider: "courier_guy", shipmentId: 0, waybill: "LD-TEST01", trackingReference: "TEST01",
       service: "L2DS - ECO", parcel: expect.objectContaining({ parcelCount: 1 }), cost: 100, bookedAt: 1_700_000_000_000,
+      // the quote's make-up, for the >R250 email (costAlert.mjs)
+      priced: expect.objectContaining({ quoted: 100, mode: "door", base: 100, chargedKg: 3, actualKg: 2, surcharges: expect.any(Array), adjustments: expect.any(Array) }),
     });
     expect(d.root.online_orders["1001"].shipping).toMatchObject({ provider: "courier_guy", waybill: "LD-TEST01", courierBooking: { state: "booked" } });
   });

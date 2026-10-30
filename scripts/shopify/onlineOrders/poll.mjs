@@ -41,6 +41,7 @@ import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/
 import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs";
 import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
+import { costAlertMail, costAlertThreshold } from "../../shipping/costAlert.mjs";
 import { applySwapRequests } from "./swapRequests.mjs";
 import { applyOrderNowRequests } from "./orderNowRequests.mjs";
 
@@ -776,6 +777,9 @@ async function shipOrder(ctx, id, order) {
       log(`  ! ${orderLabel(order)}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
     }
   }
+  // A real booking above R250 (or /config/shipping/costAlertRand): Junid is
+  // emailed once, with the box and why (costAlert.mjs). Never blocks the ship.
+  if (booking && !booking.skipped && booking.waybill) await mailCostAlert(ctx, id, order, booking);
   // ── LIVE: no waybill, no fulfilment ────────────────────────────────────────
   // With /config/shipping/live on, the customer's Shopify notification must
   // carry the waybill, so a booking that did not happen (failed, refused,
@@ -900,6 +904,33 @@ async function mailAttention(ctx) {
     });
     ctx.summary.mailed++;
     log(`  ✉ ${orderLabel(order)}: Junid emailed (${order.attention.kind})`);
+  }
+}
+
+// ── The expensive-waybill email (Junid, 30 Oct 2026) ─────────────────────────
+// One per booking: a claim at shipping/costAlert is taken before the send, so a
+// second tick never mails it twice; a failed send is recorded (and logged), not
+// retried — the waybill and its cost stay on the order either way.
+async function mailCostAlert(ctx, id, order, booking) {
+  const { db, send, log } = ctx;
+  try {
+    const threshold = costAlertThreshold(await ctx.get("config/shipping/costAlertRand"));
+    const mail = costAlertMail(order, { ...booking, address: order.shipping?.address }, threshold);
+    if (!mail) return;
+    if (!send) { log(`  ⚠ ${orderLabel(order)}: waybill ${booking.waybill} R${booking.cost} is over R${threshold} — no mail sender on this machine`); return; }
+    const ref = db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert`);
+    const claim = await ref.transaction((cur) => (cur ? undefined : { state: "sending", at: ctx.now, waybill: booking.waybill }));
+    if (!claim.committed) return;
+    try {
+      await send(mail);
+      await ref.update({ state: "mailed", mailedAt: ctx.now });
+      log(`  ✉ ${orderLabel(order)}: Junid emailed — waybill ${booking.waybill} R${booking.cost} is over R${threshold}`);
+    } catch (e) {
+      await ref.update({ state: "failed", error: String(e?.message || e).slice(0, 200) });
+      log(`  ✗ ${orderLabel(order)}: expensive-waybill email not sent (${String(e?.message || e)})`);
+    }
+  } catch (e) {
+    log(`  ! ${orderLabel(order)}: expensive-waybill check failed — ${String(e?.message || e).slice(0, 200)}`);
   }
 }
 
