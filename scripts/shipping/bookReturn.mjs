@@ -54,6 +54,7 @@ const km = (a, b) => {
 };
 
 export const MAX_LOCKER_KM = 30;
+export const MAX_TOWN_LOCKER_KM = 15;
 const tryLabels = (address) => [...new Set([
   [address.street_address, address.local_area, address.city, address.code],
   [address.local_area, address.city, address.code],
@@ -158,6 +159,8 @@ export async function planReturn(order, { db, client, products = null, email = n
   // "The nearest one" must be near (architect review 5): further than MAX_LOCKER_KM, a person picks it with the customer.
   if (locker.km != null && locker.km > MAX_LOCKER_KM) return { ok: false, reason: `the nearest locker (${locker.name}) is ${locker.km} km from the customer's address`, parcel };
   locker.placedBy = at.from === "address" || at.from === tryLabels(from)[0] ? "street" : "town";
+  // Placed only by the town (spec review 4): "nearest" is a guess, so only a close locker is booked.
+  if (locker.placedBy === "town" && locker.km != null && locker.km > MAX_TOWN_LOCKER_KM) return { ok: false, reason: `their street isn't on the map and the locker nearest their town (${locker.name}) is ${locker.km} km away`, parcel };
   const dropBox = { pickupPointId: locker.id, pickupPointProvider: locker.provider };
   const body = (collection) => ({ collection_address: collection, ...lockerCollection(dropBox), delivery_address: shop, parcels: tcgParcels(parcel.parcels) });
   let used = from;
