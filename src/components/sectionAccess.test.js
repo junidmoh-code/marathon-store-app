@@ -90,3 +90,18 @@ describe("reading a stored record", () => {
     expect(sectionName(null, 2)).toBe("Marathon");
   });
 });
+
+describe("the SDK's sparse sections array (30 Oct 2026 crash)", () => {
+  it("a record whose sections came back as [<hole>, true] reads as Section 1, without throwing", async () => {
+    const { sectionsFor, SEED_REGISTRY } = await import("../utils/networkRegistry");
+    const sparse = [];
+    sparse[1] = true;                       // what RTDB's val() hands back for { 1: true }
+    expect(0 in sparse).toBe(false);
+    expect(sectionsFor(SEED_REGISTRY, { sections: sparse, destShop: "concrete" })).toEqual([1]);
+    // { 2: true } stays a MAP in the SDK (2 < 2 × 1 keys fails); both sections set comes back sparse too.
+    expect(sectionsFor(SEED_REGISTRY, { sections: { 2: true } })).toEqual([2]);
+    const both = [];
+    both[1] = true; both[2] = true;
+    expect(sectionsFor(SEED_REGISTRY, { sections: both })).toEqual([1, 2]);
+  });
+});
