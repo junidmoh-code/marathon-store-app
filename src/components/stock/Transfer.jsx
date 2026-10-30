@@ -27,7 +27,7 @@ import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { transferMovementId, loadDraft, saveDraft, clearDraft } from "./transferDraft";
 import { useStockCells, useTransitConfig } from "./useStock";
-import { transferTargets, wallAllowedLocations, labelFor, IN_TRANSIT } from "./locations";
+import { transferTargets, wallAllowedLocations, labelFor, IN_TRANSIT, withSeedGaps } from "./locations";
 import { isTransitLane } from "./transitLanes";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { Toast, Empty } from "./widgets";
@@ -137,7 +137,9 @@ export default function Transfer({ products, registry, actorRole }) {
     const m = {}; (products || []).forEach((p) => { if (p && p.id) m[p.id] = p; }); return m;
   }, [products]);
 
-  const locations = useMemo(() => transferTargets(registry), [registry]);
+  // withSeedGaps: a stale stored /locations copy must not hide a canonical
+  // location (Concrete, 30 Oct 2026) — see locations.js.
+  const locations = useMemo(() => transferTargets(withSeedGaps(registry)), [registry]);
   // On-hand at the SOURCE — the cap for the manual grid and the over-scan flag.
   const avail = (pid, size) => { const c = srcCells?.[pid]?.[size]; return c && typeof c.qty === "number" ? c.qty : 0; };
   const srcTotal = (pid) => Object.values(srcCells?.[pid] || {}).reduce((s, c) => s + (typeof c?.qty === "number" ? c.qty : 0), 0);
