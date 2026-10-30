@@ -17,6 +17,7 @@
 //                  the pick (tallerOf: the face he chose). Writes
 //                  ~/Desktop/house-models/{slot}-tall.jpg and taller.jpg (his
 //                  picks above, the taller re-shoots below); --send sends it.
+//   --taller-sheet [--send]   that sheet alone, from what is stored.
 //   --send         the contact sheet to Junid's WhatsApp (Jimmy, --kind junid).
 //   --pick black=2 [white=1] [coloured=3] [--override]   Junid's choice.
 //   --auto         the 24-hour fallback: each unpicked model past its deadline
@@ -118,7 +119,7 @@ if (has("approve")) {
   process.exit(0);
 }
 
-if (has("send") && !has("taller")) {
+if (has("send") && !has("taller") && !has("taller-sheet")) {
   tellJunid([
     "The 9 house-model candidates (invented faces, made from the brief only). Pick one per model, e.g. \"black 2, white 1, coloured 3\".",
     ...hm.ORDER.map((slot) => `${hm.MODELS[slot].label}: ${hm.rankCandidates(models[slot]).sort((a, b) => a.n - b.n).map((c) => `${c.n} = ${c.score}/10`).join(", ")}`),
@@ -127,7 +128,7 @@ if (has("send") && !has("taller")) {
   process.exit(0);
 }
 
-if (!has("candidates") && !has("taller")) { console.error("usage: --candidates [--slot s] [--replace] | --taller [--slot s] [--send] | --send | --pick black=2 … | --auto | --approve | --status"); process.exit(1); }
+if (!has("candidates") && !has("taller") && !has("taller-sheet")) { console.error("usage: --candidates [--slot s] [--replace] | --taller [--slot s] [--send] | --send | --pick black=2 … | --auto | --approve | --status"); process.exit(1); }
 const slots = arg("slot") ? [arg("slot")] : hm.ORDER;
 for (const s of slots) {
   if (!hm.MODELS[s]) throw new Error(`no model "${s}"`);
@@ -180,6 +181,38 @@ async function store(slot, n, jpg, gen, s, at, extra = {}) {
   return { path, url, contentType: "image/jpeg", engine: gemini.NBPRO_MODEL, score, parts, reasons: String(reasons).slice(0, 600), costUSD, ...extra };
 }
 
+// The taller sheet, from what is stored: for each model whose pick is a
+// re-shoot, the face Junid chose on top and the taller pick below. --send
+// sends it to him. Also run alone (--taller-sheet [--send]) once every model
+// has been re-shot one --slot at a time.
+async function sendTallerSheet() {
+  const W = 480, H = 853, PAD = 16, LABEL = 56, tiles = [], lines = [];
+  const label = (t) => Buffer.from(`<svg width="${W}" height="${LABEL}"><rect width="100%" height="100%" fill="#111"/><text x="16" y="38" font-family="Helvetica, Arial" font-size="26" font-weight="700" fill="#fff">${t}</text></svg>`);
+  const rows = hm.ORDER.map((slot) => ({ slot, pick: hm.chosenFor(models[slot]) })).filter((r) => r.pick && r.pick.tallerOf);
+  if (!rows.length) throw new Error("no model has a taller re-shoot yet");
+  for (const [col, r] of rows.entries()) {
+    const before = hm.rankCandidates(models[r.slot]).find((c) => c.n === String(r.pick.tallerOf));
+    const x = PAD + col * (W + PAD);
+    for (const [row, [c, t]] of [[before, `${r.slot.toUpperCase()} ${r.pick.tallerOf} · YOUR PICK`], [r.pick, `${r.slot.toUpperCase()} ${r.pick.tallerOf} TALLER · height ${r.pick.parts.height}/10`]].entries()) {
+      const [buf] = await bucket.file(c.path).download();
+      const y = PAD + row * (H + LABEL + PAD);
+      tiles.push({ input: await sharp(buf).resize(W, H, { fit: "cover" }).jpeg().toBuffer(), left: x, top: y + LABEL }, { input: label(t), left: x, top: y });
+    }
+    lines.push(`• ${hm.MODELS[r.slot].label} ${r.pick.tallerOf}: ${r.pick.score}/10, height ${r.pick.parts.height}/10`);
+  }
+  const sheet = join(OUT, "taller.jpg");
+  await mkdir(OUT, { recursive: true });
+  await sharp({ create: { width: PAD + rows.length * (W + PAD), height: PAD + 2 * (H + LABEL + PAD), channels: 3, background: "#000" } }).composite(tiles).jpeg({ quality: 85 }).toFile(sheet);
+  console.log(`sheet: ${sheet}`);
+  if (has("send")) tellJunid([
+    "Your picks, re-shot taller (same faces: top row is your pick, bottom row the taller version).",
+    ...lines,
+    "The taller ones are now the faces. Reply \"approve models\" to let lookbooks with them post, or tell me what to change. Nothing with a model posts until you approve.",
+  ].join("\n"), sheet);
+}
+
+if (has("taller-sheet")) { await sendTallerSheet(); process.exit(0); }
+
 if (has("taller")) {
   // Up to two re-shoots per man; the first that scores 8+ overall and on height is kept, else the better one.
   const at = Date.now();
@@ -212,27 +245,13 @@ if (has("taller")) {
       [`${hm.MODELS_PATH}/${slot}/candidates/${n}`]: c,
       ...hm.pickUpdates(slot, { candidates: { ...models[slot].candidates, [n]: c } }, n, { by: models[slot].pickedBy || "junid", nowMs: Date.now() }),
     });
+    models[slot].candidates[n] = c;
+    models[slot].picked = n;
     await writeFile(join(OUT, `${slot}-tall.jpg`), best.jpg);
     rows.push({ slot, from: chosen.n, n, score: c.score, height: c.parts.height, before: face, after: best.jpg });
   }
-  // His picks on top, the taller re-shoots below.
-  const W = 480, H = 853, PAD = 16, LABEL = 56, tiles = [];
-  const label = (t) => Buffer.from(`<svg width="${W}" height="${LABEL}"><rect width="100%" height="100%" fill="#111"/><text x="16" y="38" font-family="Helvetica, Arial" font-size="26" font-weight="700" fill="#fff">${t}</text></svg>`);
-  for (const [col, r] of rows.entries()) {
-    const x = PAD + col * (W + PAD);
-    for (const [row, [buf, t]] of [[r.before, `${r.slot.toUpperCase()} ${r.from} · YOUR PICK`], [r.after, `${r.slot.toUpperCase()} ${r.from} TALLER · height ${r.height}/10`]].entries()) {
-      const y = PAD + row * (H + LABEL + PAD);
-      tiles.push({ input: await sharp(buf).resize(W, H, { fit: "cover" }).jpeg().toBuffer(), left: x, top: y + LABEL }, { input: label(t), left: x, top: y });
-    }
-  }
-  const TALL_SHEET = join(OUT, "taller.jpg");
-  await sharp({ create: { width: PAD + rows.length * (W + PAD), height: PAD + 2 * (H + LABEL + PAD), channels: 3, background: "#000" } }).composite(tiles).jpeg({ quality: 85 }).toFile(TALL_SHEET);
-  if (has("send")) tellJunid([
-    "Your picks, re-shot taller (same faces: top row is your pick, bottom row the taller version).",
-    ...rows.map((r) => `• ${hm.MODELS[r.slot].label} ${r.from}: ${r.score}/10, height ${r.height}/10`),
-    "The taller ones are now the faces. Reply \"approve models\" to let lookbooks with them post, or tell me what to change. Nothing with a model posts until you approve.",
-  ].join("\n"), TALL_SHEET);
-  console.log(JSON.stringify({ totalUSD: +totalUSD.toFixed(4), sheet: TALL_SHEET, rows: rows.map(({ before, after, ...r }) => r) }, null, 2));
+  if (has("send")) await sendTallerSheet();
+  console.log(JSON.stringify({ totalUSD: +totalUSD.toFixed(4), rows: rows.map(({ before, after, ...r }) => r) }, null, 2));
   process.exit(0);
 }
 
