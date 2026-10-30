@@ -118,7 +118,7 @@ if (has("approve")) {
   process.exit(0);
 }
 
-if (has("send")) {
+if (has("send") && !has("taller")) {
   tellJunid([
     "The 9 house-model candidates (invented faces, made from the brief only). Pick one per model, e.g. \"black 2, white 1, coloured 3\".",
     ...hm.ORDER.map((slot) => `${hm.MODELS[slot].label}: ${hm.rankCandidates(models[slot]).sort((a, b) => a.n - b.n).map((c) => `${c.n} = ${c.score}/10`).join(", ")}`),
@@ -202,7 +202,9 @@ if (has("taller")) {
       const s = await scoreFace(jpg, model);
       totalUSD += gen.costUSD + s.costUSD;
       console.log(`${slot} taller ${k}: ${s.score}/10, height ${s.height} — ${s.reasons}`);
-      if (!best || s.score + s.height > best.s.score + best.s.height) best = { jpg, gen, s };
+      // One that meets both targets beats one that does not; then the higher score plus height.
+      const meets = (x) => x.score >= 8 && x.height >= 8;
+      if (!best || (meets(s) && !meets(best.s)) || (meets(s) === meets(best.s) && s.score + s.height > best.s.score + best.s.height)) best = { jpg, gen, s };
     }
     const n = String(Math.max(...Object.keys(models[slot].candidates).map(Number)) + 1);
     const c = await store(slot, n, best.jpg, best.gen, best.s, at, { tallerOf: chosen.n });
