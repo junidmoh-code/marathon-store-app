@@ -3,7 +3,7 @@
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const fa = require("../lookbook/fit-agent.cjs");
-const hm = require("../lookbook/house-model.cjs");
+const hm = require("../lookbook/house-models.cjs");
 const fr = require("../lib/fit-rules.cjs");
 
 const T = (over = {}) => ({ dominant: "black", pattern: "solid", silhouette: "regular", family: "streetwear", formality: 3, ...over });
@@ -22,13 +22,13 @@ const FIT = (over = {}) => ({ formula: "clean-luxe", theme: "Clean Luxe", hero_p
 const CRIT = (c, f, t, cap, fix = "") => ({ colour: { score: c, reason: "colour ok" }, formality: { score: f, reason: "graphic band tee with studded designer shoes" }, theme: { score: t, reason: "t" }, caption: { score: cap, reason: "cap" }, seen: [], fix });
 
 /** A fake model: answers in order, each costing `usd`; records the requests. */
-function fake(answers, usd = 0.01) {
+function fake(answers, usd = 0.01, { cachedTokens } = {}) {
   const reqs = [];
   const call = async (req) => {
     reqs.push(req);
     const a = answers.shift();
     if (a instanceof Error) throw a;
-    return { json: a, costUSD: usd };
+    return { json: a, costUSD: usd, ...(cachedTokens ? { cachedTokens: cachedTokens(req) } : {}) };
   };
   return { call, reqs, photo: async () => ({ base64: "eA==", mediaType: "image/jpeg" }) };
 }
@@ -54,7 +54,9 @@ describe("buildFit", () => {
     assert.match(retry, /swap the band tee for a plain one/);
   });
   test("three rounds under 8: the fit is skipped", async () => {
-    const f = fake([FIT(), CRIT(7, 9, 9, 9), FIT(), CRIT(9, 7, 9, 9), FIT(), CRIT(9, 9, 7, 9)]);
+    // The API reports the cached prefix (the rulebook, and the catalogue for the
+    // stylist): ~2,900 and ~2,400 tokens since the South African sections (30 Oct).
+    const f = fake([FIT(), CRIT(7, 9, 9, 9), FIT(), CRIT(9, 7, 9, 9), FIT(), CRIT(9, 9, 7, 9)], 0.01, { cachedTokens: (req) => (req.schema === fr.STYLIST_SCHEMA ? 2900 : 2400) });
     const r = await fa.buildFit(OFFER, f);
     assert.equal(r.ok, false);
     assert.equal(r.rounds.length, 3);
@@ -89,47 +91,67 @@ describe("buildFit", () => {
   });
 });
 
-describe("the house model", () => {
-  const C = (score) => ({ path: `aiStudio/social/lookbook/model/house-${score}.jpg`, score, contentType: "image/jpeg" });
-  const HM = (over = {}) => ({ generatedAt: 0, decideBy: 1000, candidates: { 1: C(7), 2: C(9), 3: C(8), 4: C(9) }, ...over });
-  test("before a pick and before the deadline: the best-scoring candidate stands in, nothing written", async () => {
-    let wrote = null;
-    const r = await hm.resolveRef(HM(), null, { nowMs: 500, pick: async (u) => { wrote = u; } });
-    assert.equal(r.house, "2");
-    assert.equal(r.provisional, true);
-    assert.equal(wrote, null);
+describe("the three house models (Junid, 30 Oct 2026)", () => {
+  const C = (slot, n, score, parts = {}) => ({ path: `aiStudio/social/lookbook/models/${slot}-1-${n}.jpg`, score, parts, contentType: "image/jpeg" });
+  const node = (slot, over = {}) => ({ generatedAt: 0, decideBy: 1000, candidates: { 1: C(slot, 1, 7), 2: C(slot, 2, 9), 3: C(slot, 3, 8) }, picked: null, ...over });
+  const all = (over = {}) => Object.fromEntries(hm.ORDER.map((s) => [s, node(s, over[s] || {})]));
+
+  test("three models: Black, white and Coloured, each early-to-mid 20s, tall and slim, a skin fade or buzz cut", () => {
+    assert.deepEqual(hm.ORDER, ["black", "white", "coloured"]);
+    for (const s of hm.ORDER) {
+      assert.match(hm.MODELS[s].description, /early-to-mid 20s, tall and slim with a runway model's build, a sharp defined face and a strong jawline, a very short clean haircut \(a skin fade or a buzz cut/);
+      assert.ok(hm.MODELS[s].skin && hm.MODELS[s].suits);
+    }
+    assert.match(hm.MODELS.black.description, /Black South African/);
+    assert.match(hm.MODELS.white.description, /white South African/);
+    assert.match(hm.MODELS.coloured.description, /Coloured South African/);
   });
-  test("24 hours with no reply: the best-scoring one is picked, and written as the model", async () => {
-    let wrote = null;
-    const r = await hm.resolveRef(HM(), null, { nowMs: 1000, pick: async (u) => { wrote = u; } });
-    assert.equal(r.house, "2");
-    assert.equal(wrote["social_lookbook/houseModel/picked"], "2");
-    assert.equal(wrote["social_lookbook/houseModel/pickedBy"], "auto");
-    assert.equal(wrote["social_lookbook/model"].path, C(9).path);
+
+  test("nothing posts until Junid approves: an unpicked model, or picks without approval, are refused", () => {
+    assert.match(hm.gateFor(all(), null).reason, /no face picked yet for the black, white, coloured models/);
+    const picked = all({ black: { picked: "2" }, white: { picked: "1" }, coloured: { picked: "3" } });
+    assert.match(hm.gateFor(picked, null).reason, /not approved/);
+    assert.match(hm.gateFor(picked, { approved: "yes" }).reason, /not approved/);
+    assert.equal(hm.gateFor(picked, { approved: true }).ok, true);
+    assert.match(hm.gateFor({ ...picked, white: node("white") }, { approved: true }).reason, /white model/);
   });
-  test("Junid's pick wins, and after it the model node is the reference", async () => {
-    const u = hm.pickUpdates(HM(), 3, { by: "junid", nowMs: 5 });
-    assert.equal(u["social_lookbook/model"].house, "3");
-    const r = await hm.resolveRef(HM({ picked: "3" }), u["social_lookbook/model"], { nowMs: 99999 });
-    assert.equal(r.path, C(8).path);
-    assert.equal(r.provisional, false);
-    assert.throws(() => hm.pickUpdates(HM(), 7, { by: "junid", nowMs: 5 }), /no house-model candidate 7/);
+
+  test("24 hours with no pick: the highest score is picked by \"auto\" (and only past the deadline)", () => {
+    assert.deepEqual(hm.duePicks(all(), 999).picked, []);
+    const due = hm.duePicks(all({ white: { picked: "3", pickedBy: "junid" } }), 1000);
+    assert.deepEqual(due.picked.map((p) => `${p.slot}${p.n}`), ["black2", "coloured2"]);
+    assert.equal(due.updates["social_lookbook/models/black/picked"], "2");
+    assert.equal(due.updates["social_lookbook/models/black/pickedBy"], "auto");
+    assert.equal(due.updates["social_lookbook/models/white/picked"], undefined);
+    assert.deepEqual(hm.duePicks(all({ black: { decideBy: undefined } }), 9e12).picked.map((p) => p.slot), ["white", "coloured"]);
   });
-  test("a tie on the score goes to the higher sum of the part-scores", () => {
-    const r = hm.rankCandidates({ candidates: { 1: { ...C(8), parts: { age: 7, hair: 8 } }, 2: { ...C(8), parts: { age: 9, hair: 8 } } } });
-    assert.equal(r[0].n, "2");
+
+  test("Junid's pick, a tie broken on the part-scores, and only faces in the models folder", () => {
+    const u = hm.pickUpdates("coloured", node("coloured"), 3, { by: "junid", nowMs: 5 });
+    assert.deepEqual(u, { "social_lookbook/models/coloured/picked": "3", "social_lookbook/models/coloured/pickedBy": "junid", "social_lookbook/models/coloured/pickedAt": 5 });
+    assert.throws(() => hm.pickUpdates("black", node("black"), 7, { by: "junid", nowMs: 5 }), /no black candidate 7/);
+    assert.throws(() => hm.pickUpdates("asian", node("black"), 1, { by: "junid", nowMs: 5 }), /no house model "asian"/);
+    const tie = { candidates: { 1: C("black", 1, 8, { age: 7 }), 2: C("black", 2, 8, { age: 9 }) } };
+    assert.equal(hm.rankCandidates(tie)[0].n, "2");
+    const stray = { candidates: { 1: { path: "aiStudio/social/lookbook/rejected/2026-10-30/house-2.jpg", score: 10 } } };
+    assert.equal(hm.rankCandidates(stray).length, 0);
+    assert.equal(hm.chosenFor(stray, { allowProvisional: true }), null);
   });
-  test("candidates with no recorded deadline are never auto-picked", async () => {
-    let wrote = null;
-    const r = await hm.resolveRef(HM({ decideBy: undefined }), null, { nowMs: 9e12, pick: async (u) => { wrote = u; } });
-    assert.equal(r.provisional, true);
-    assert.equal(wrote, null);
+
+  test("the stand-in is only for the proof samples: chosenFor gives no face to an unpicked model unless asked", () => {
+    assert.equal(hm.chosenFor(node("black")), null);
+    assert.equal(hm.chosenFor(node("black"), { allowProvisional: true }).n, "2");
+    assert.equal(hm.chosenFor(node("black"), { allowProvisional: true }).provisional, true);
+    assert.equal(hm.chosenFor(node("black", { picked: "3" })).n, "3");
   });
-  test("a candidate outside the model folder is never used", () => {
-    assert.deepEqual(hm.rankCandidates({ candidates: { 1: { path: "elsewhere/x.jpg", score: 10 } } }), []);
+
+  test("the rotation: black, white, coloured, black …", () => {
+    assert.equal(hm.nextSlot(null), "black");
+    assert.equal(hm.nextSlot({ last: "black" }), "white");
+    assert.equal(hm.nextSlot({ last: "white" }), "coloured");
+    assert.equal(hm.nextSlot({ last: "coloured" }), "black");
   });
 });
-
 describe("buildFit — the budget and the photo notes", () => {
   test("a piece the critic says to replace is refused if the stylist brings it back", async () => {
     const f = fake([FIT({ pids: ["tee-g", "jean-b", "loub"], caption: "Brown suede Louboutins, a washed black graphic tee and slim black Diesel jeans. #MarathonClub" }), { ...CRIT(8, 3, 8, 9, "swap the tee"), replace: ["tee-g", "loub"] },
@@ -193,7 +215,16 @@ describe("buildFit — a cold morning still gets its rebuild (lookbook, Wed 28 O
   test("round 1 at $0.077 with both caches written: round 2 is made, its critic reserve priced warm", async () => {
     const reqs = [];
     const answers = [FIT(), CRIT(8, 7, 8, 7), FIT(), CRIT(9, 9, 9, 9)];
-    const usage = [{ costUSD: 0.045, cachedTokens: 7800 }, { costUSD: 0.032, cachedTokens: 3037 }, { costUSD: 0.016, cachedTokens: 7800 }, { costUSD: 0.014, cachedTokens: 3037 }];
+    // The day's real numbers, with the cached prefixes grown by the rulebook's
+    // South African sections (30 Oct: ~790 tokens for the stylist, ~540 for the critic).
+    // Each answer carries its usage, as every real answer does (makeOpusCall), so round 2 is
+    // priced from round 1's real token counts (#812).
+    const usage = [
+      { costUSD: 0.045, cachedTokens: 8590, usage: { input_tokens: 16, cache_creation_input_tokens: 8590, cache_read_input_tokens: 0, output_tokens: 600 } },
+      { costUSD: 0.032, cachedTokens: 3580, usage: { input_tokens: 1000, cache_creation_input_tokens: 3580, cache_read_input_tokens: 0, output_tokens: 450 } },
+      { costUSD: 0.016, cachedTokens: 8590, usage: { input_tokens: 400, cache_creation_input_tokens: 0, cache_read_input_tokens: 8590, output_tokens: 600 } },
+      { costUSD: 0.014, cachedTokens: 3580, usage: { input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 3580, output_tokens: 450 } },
+    ];
     const call = async (req) => { reqs.push(req); return { json: answers.shift(), ...usage.shift() }; };
     // A production-sized catalogue (44 pieces with real-length names and photo notes).
     const big = { ...OFFER, pieces: [...OFFER.pieces, ...Array.from({ length: 40 }, (_, i) => ({ ...P(`p17929${String(i).padStart(7, "0")}`, ["tee", "bottoms", "sneakers"][i % 3], "G-STAR RAW", "Raw cargo jeans indigo with zip pockets"), displayName: "G star raw cargo jean indigo 5233#", seen: "mid-blue cargo jeans with zip pockets" }))] };

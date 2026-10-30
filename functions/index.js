@@ -4740,7 +4740,7 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
     const f = res.fit, v = res.verdict;
     const look = {
       key: f.formula, name: f.theme, note: f.why, source: "opus", hero: f.hero ? f.hero.pid : null,
-      score: Math.round(fitRules.CRITERIA.reduce((t, k) => t + v.scores[k], 0) / fitRules.CRITERIA.length * 10), critic,
+      score: Math.round(Object.values(v.scores).reduce((t, x) => t + x, 0) / Object.keys(v.scores).length * 10), critic,
     };
     console.log(`social: stylist outfit — ${f.theme}, critic ${JSON.stringify(v.scores)}, ${res.rounds.length} round(s), $${res.costUSD.toFixed(4)}`);
     return { picks: f.pieces.map((p) => p.ref), reason: null, look, caption: f.caption, fitLogKey: logKey, costUSD };
@@ -5749,6 +5749,8 @@ async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platfor
       engine: made.engine, costUSD: made.costUSD, nowMs, link, storyCaption,
       masterSize: made.poster.master, scene: made.scene, look: made.look,
     });
+    // Which house model wears it (Junid, 30 Oct: three in rotation).
+    if (made.model) record.model = { slot: made.model.slot, candidate: made.model.candidate };
     // The feed shows a caption, so the twin gets a real one, written by the
     // same caption call every other feed post uses. A failure falls back to
     // the plain line and never loses the poster. The stylist's note ("why
@@ -5770,6 +5772,8 @@ async function writeLookbookPost(db, made, { scheduledAt, nowMs, saDate, platfor
       ...socialTwin.twinWriteUpdates(SOCIAL_POSTS_PATH, postId, record, twinId, twin),
       ...socialLibrary.libraryWriteUpdates(postId, record, { isTwin: false }),
       [`social_lookbook/history/${saDate}`]: socialLookbook.historyEntry(made.rows, nowMs, made.look),
+      // The rotation moves on only when a lookbook is actually written.
+      ...(made.model ? { "social_lookbook/modelRotation": { last: made.model.slot, at: nowMs, postId } } : {}),
       // The fit's score and reasons, per post (Junid, 26 Oct).
       ...(made.look && made.look.critic ? { [`social_fit_log/${saDate}/${postId}`]: fitLogEntry(made, nowMs, { postId }) } : {}),
     });
@@ -5851,16 +5855,10 @@ exports.socialStillAutopilot = onSchedule(
       // ── WHICH FORMAT TODAY ─────────────────────────────────────────────
       // By weekday (LOOKBOOK_DAYS), so a reclaimed run reads the same answer
       // and a missed day never shifts the week. Recorded for the health scan.
-      // ── THE HOUSE MODEL'S 24-HOUR DEADLINE, EVERY DAY ──────────────────
-      // Applied here, not only when a hero is drawn: the deadline passed on
-      // Tue 27 Oct and Wednesday's lookbook was skipped before its hero, so
-      // the auto-pick never ran and the old reference stayed live (29 Oct).
-      try {
-        const houseModel = require("./lookbook/house-model.cjs");
-        const [hmSnap, modelSnap] = await Promise.all([db.ref(houseModel.HOUSE_PATH).once("value"), db.ref(houseModel.MODEL_PATH).once("value")]);
-        const ref = await houseModel.resolveRef(hmSnap.val(), modelSnap.val(), { nowMs, pick: (u) => db.ref().update(u) });
-        if (ref && ref.auto) console.log(`socialStillAutopilot ${saDate}: house model ${ref.house} auto-picked (no reply within 24 hours)`);
-      } catch (err) { console.warn(`socialStillAutopilot ${saDate}: the house-model deadline could not be applied: ${err && err.message}`); }
+      // The house models (lookbook/house-models.cjs): makeLookbook refuses
+      // (gate "models") until Junid has approved them, and the day posts the
+      // current style instead. Their 24-hour auto-pick runs on the Mac mini
+      // (scripts/social/house-models.mjs --auto), which also tells him.
       const planned = socialLookbook.plannedStillFormat(saDate, STILL_FORMATS, LOOKBOOK_DAYS) || "current";
       await db.ref("social_lookbook/rotation").set({ lastDate: saDate, format: planned, by: "LOOKBOOK_DAYS" });
       await logRef.update({ planned, day: socialLookbook.weekdayOf(saDate) });

@@ -43,7 +43,7 @@ const { ensureStyleTags } = require("./style-tags-io.cjs");
 const { saDateStringFromMs } = require("../lib/sa-time.cjs");
 const fitRules = require("../lib/fit-rules.cjs");
 const { criticRecord } = require("./fit-agent.cjs");
-const CRITERIA_MEAN = (scores) => fitRules.CRITERIA.reduce((t, k) => t + scores[k], 0) / fitRules.CRITERIA.length;
+const CRITERIA_MEAN = (scores) => { const k = Object.keys(scores); return k.reduce((t, x) => t + scores[x], 0) / k.length; };
 
 // New products tagged by vision during one run (the pre-warm tags the rest);
 // past this the stylist reads their names. One tag is ~$0.0003.
@@ -67,7 +67,9 @@ const MAX_CHOICES = 2;
  *   log?(msg)
  * }
  *   thumbnail engines (thumbs.cjs, all optional): readThumbCache, writeThumbCache,
- *     claimThumbUnit, generateThumb; readModelRef?() → { buffer, contentType } | null
+ *     claimThumbUnit, generateThumb;
+ *   readHouseModel({ slot, allowUnapproved }) → { ok, slot, model, candidate, ref: { buffer, contentType } } | { ok: false, reason }
+ *     (house-models.cjs, REQUIRED: no lookbook is drawn without its model's reference)
  *   the stylist (optional): chooseOutfit(prompt) → { text, costUSD } — one short
  *     text-model call that picks among the shortlist and writes the note;
  *     geminiApiKey — tags products the pre-warm has not reached
@@ -75,6 +77,7 @@ const MAX_CHOICES = 2;
  * @param opts.rows  exactly this many rows; opts.requireSlots slots every outfit must have (the samples)
  * @param opts.allowRecent  ignore the 14-day no-repeat (a never-posted rebuild sample; scripts only)
  * @param opts.hero  a pid every fit must be built around (a rebuild of a posted fit; scripts only)
+ * @param opts.modelSlot  which house model (default: the next in the rotation); opts.allowUnapproved: the proof samples only
  * @param opts.headwear "rotate" (default: one lookbook in three, from the history) | "off" | "allow" 
  * @param opts  { nowMs, used: Set of pids already posted today, maxAttempts: heroes
  *               generated before the text gate gives up (production: 1); the model
@@ -111,7 +114,7 @@ async function makeLookbook(db, deps, opts = {}) {
   return r;
 }
 
-async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate", hero: fixedHero = null, allowRecent = false, avoidFormulas = null } = {}, holder = {}) {
+async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(), maxAttempts = 2, scene = lookbook.DEFAULT_LOOKBOOK_SCENES[0], minHeroPx = lookbook.HERO_MIN_LONG_SIDE, look = null, month = null, rows: exactRows = null, requireSlots = [], headwear = "rotate", hero: fixedHero = null, allowRecent = false, avoidFormulas = null, modelSlot = null, allowUnapproved = false } = {}, holder = {}) {
   const log = deps.log || (() => {});
   let costUSD = 0, thumbCostUSD = 0, stylistCostUSD = 0;
   const saDate = saDateStringFromMs(nowMs);
@@ -119,6 +122,16 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
   const sceneDef = typeof scene === "string" ? lookbook.LOOKBOOK_SCENE_DEFS[scene] : scene;
   if (!sceneDef) throw new Error(`makeLookbook: unknown scene ${JSON.stringify(scene)}`);
   const attempts = [];
+
+  // ── 0. THE HOUSE MODEL, before anything is spent ───────────────────────
+  // Junid, 30 Oct 2026: nothing with a model posts until he has approved the
+  // new models, and no hero is drawn without its model's reference.
+  let house = null;
+  try {
+    house = deps.readHouseModel ? await deps.readHouseModel({ slot: modelSlot, allowUnapproved }) : { ok: false, reason: "no house-model reader" };
+  } catch (e) { house = { ok: false, reason: `the model reference could not be read: ${String(e && e.message).slice(0, 120)}` }; }
+  if (!house || !house.ok) return { ok: false, gate: "models", reason: (house && house.reason) || "no house model", costUSD, attempts };
+  const model = house.model;
 
   // No unit for a hero that would leave the fallback one: stop BEFORE any
   // thumbnail is bought (architect review of #750).
@@ -198,7 +211,7 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
       const spent = runs.reduce((t, r) => t + r.costUSD, 0);
       // Variety: the stylist is told the last lookbooks' formulas.
       const avoid = avoidFormulas || lookbook.recentFormulas(history, 3);
-      const res = await deps.fitAgent.build({ ...o.offer, avoidFormulas: avoid }, { budgetUSD: deps.fitAgent.budgetUSD - spent, feedback });
+      const res = await deps.fitAgent.build({ ...o.offer, avoidFormulas: avoid, model: { label: model.label, skin: model.skin, suits: model.suits } }, { budgetUSD: deps.fitAgent.budgetUSD - spent, feedback });
       runs.push(res);
       stylistCostUSD += res.costUSD;
       fitResult = { ...res, rounds: runs.flatMap((r) => r.rounds), costUSD: spent + res.costUSD };
@@ -256,23 +269,16 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
   log(`stylist: ${lookInfo ? `${lookInfo.name || "no named look"} (${lookInfo.key || "-"}), ${lookInfo.score}/100, option ${lookInfo.choice} of ${lookInfo.of} by ${lookInfo.source}: ${lookInfo.note}` : "no look"}`);
 
   // ── 2. THE HERO, with the real garments attached ───────────────────────
-  // The character reference first, so every poster shows the same man. A
-  // missing or unreadable reference is not a gate: the prompt still pins him.
-  let modelRef = null;
-  if (deps.readModelRef) {
-    try { modelRef = await deps.readModelRef(); } catch (e) { log(`lookbook: character reference unreadable (${e && e.message}) — generating without it`); }
-  }
-  const prompt = lookbook.buildHeroPrompt(rows, { scene: sceneDef, modelRef: Boolean(modelRef) });
+  // The model's reference first, so every poster of him shows the same man.
+  const prompt = lookbook.buildHeroPrompt(rows, { scene: sceneDef, model });
   const parts = [{ text: prompt }];
-  if (modelRef) {
-    parts.push({ text: "MODEL REFERENCE — this is the man to photograph (his face, skin tone, hair and build only):" });
-    parts.push(deps.inlineImagePart(modelRef.buffer, modelRef.contentType || "image/jpeg"));
-  }
+  parts.push({ text: "MODEL REFERENCE — this is the man to photograph (his face, skin tone, hair and build only):" });
+  parts.push(deps.inlineImagePart(house.ref.buffer, house.ref.contentType || "image/jpeg"));
   rows.forEach((r, i) => {
     parts.push({ text: `REFERENCE ${i + 1} — ${r.slot.toUpperCase()}: ${r.displayName}. He wears exactly this item:` });
     parts.push(deps.inlineImagePart(r.thumb, r.contentType || "image/jpeg"));
   });
-  const checkPrompt = lookbook.buildHeroCheckPrompt();
+  const checkPrompt = lookbook.buildHeroCheckPrompt(model);
 
   let hero = null, check = null, modelCheck = null, engine = null, failed = null;
   // The text gate regenerates only within maxAttempts; the model gate always
@@ -384,7 +390,7 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
         tags: Object.fromEntries(picked.styled.pieces.map((x) => [x.pid, x.tags])),
       } : null,
       heroSize: `${heroMeta.width}x${heroMeta.height}`,
-      scene: sceneDef.key, modelRef: Boolean(modelRef),
+      scene: sceneDef.key, modelRef: true, model: { slot: house.slot, candidate: house.candidate, provisional: Boolean(house.provisional) },
       thumbs: Object.fromEntries(rows.map((r) => [r.pid, r.thumbSource || null])),
     };
   } catch (e) {

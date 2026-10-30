@@ -86,6 +86,14 @@ describe("the watchdog and the still", () => {
     assert.deepEqual(v.still, { planned: "lookbook", posted: "lookbook", fallback: false, gate: null, reason: null });
   });
 
+  test("a lookbook held for the house models' approval is deliberate: the current style posted, no alarm (Junid, 30 Oct)", () => {
+    const log = { ...okLog, posted: "current", fallback: true, gate: "models", reason: "Junid has not approved the new house models yet" };
+    const prior = "2026-10-18"; // the lookbook day before: held too, so no "two days running"
+    const v = base({ enabled: true, slot: STILL_SLOT, log, recent: { [prior]: { ...log }, [D]: log } }, "16:30", [landed("story"), landed("feed")]);
+    assert.equal(v.ok, true, v.reasons.join("; "));
+    assert.equal(v.still.gate, "models");
+  });
+
   test("a fallback posts and is still SEEN: degraded, with the gate and reason", () => {
     const log = { ...okLog, posted: "current", fallback: true, gate: "text", reason: "the hero contains text: VOGUE" };
     const v = base({ enabled: true, slot: STILL_SLOT, log, recent: { [D]: log } }, "16:30", [landed("story"), landed("feed")]);

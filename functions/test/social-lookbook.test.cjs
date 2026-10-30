@@ -266,11 +266,14 @@ describe("rotation", () => {
   });
 });
 
+const HM = require("../lookbook/house-models.cjs");
+const BLACK = HM.MODELS.black;
+
 describe("hero prompt and the no-text check", () => {
   const rows = pick(SIX(), { month: 5 }).rows;
 
   test("the prompt lists every garment against its reference and forbids text", () => {
-    const p = lb.buildHeroPrompt(rows);
+    const p = lb.buildHeroPrompt(rows, { model: BLACK });
     assert.match(p, /no text, no logos other than those on the garments, no captions, no watermark/i);
     rows.forEach((r, i) => assert.ok(p.includes(`REFERENCE ${i + 1}`)));
     assert.doesNotMatch(p, /R\d/);   // never a price in the prompt
@@ -284,7 +287,7 @@ describe("hero prompt and the no-text check", () => {
   });
 
   test("the text check never sees the grid; the locate prompt names every row", () => {
-    assert.doesNotMatch(lb.buildHeroCheckPrompt(), /grid/i);
+    assert.doesNotMatch(lb.buildHeroCheckPrompt(BLACK), /grid/i);
     const p = lb.buildLocatePrompt(rows);
     for (const r of rows) assert.ok(p.includes(`"${r.slot}"`));
   });
@@ -444,33 +447,50 @@ describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
     assert.equal(lb.sceneFor("2026-10-21", ["garden"], D).key, "garden");
   });
 
-  test("the hero prompt: the model requirement every time, the scene's floor in the composition", () => {
+  test("the hero prompt: his model's requirement every time, a professional shoot, his reference, the scene's floor", () => {
     const rows = [{ slot: "tee", displayName: "Nike Tee White" }];
-    const c = lb.buildHeroPrompt(rows, { scene: "concrete" });
-    assert.match(c, /The model MUST be a young South African Black man in his early 20s, slim athletic build, dark brown skin, a clean low fade haircut/);
+    const c = lb.buildHeroPrompt(rows, { scene: "concrete", model: BLACK });
+    assert.match(c, /The model MUST be a young Black South African man in his early-to-mid 20s, tall and slim with a runway model's build/);
+    assert.match(c, /professional fashion photographer on a full-frame camera with an 85mm prime lens/);
+    assert.match(c, /Not a phone snapshot/);
+    assert.match(c, /confident professional model pose/);
+    assert.match(c, /MODEL REFERENCE photo/);
     assert.match(c, /shoes rest on the concrete floor/);
-    assert.match(c, /poured concrete floor/);
     assert.match(c, /no plants/i);
-    assert.doesNotMatch(c, /MODEL REFERENCE/);
-    const g = lb.buildHeroPrompt(rows, { scene: lb.LOOKBOOK_SCENE_DEFS.garden, modelRef: true });
-    assert.match(g, /palm trees/);
-    assert.match(g, /shoes rest on the paving/);
-    assert.match(g, /MODEL REFERENCE photo/);
-    assert.match(lb.buildModelRefPrompt(), /MUST be a young South African Black man/);
-    assert.match(lb.buildModelRefPrompt(), /invented person: not a celebrity/);
-    assert.match(lb.buildModelRefPrompt(), /Not a studio/);
-    for (const k of ["court", "street", "wall"]) assert.match(lb.buildHeroPrompt(rows, { scene: k }), /Not a studio, no studio lighting/);
+    const w = lb.buildHeroPrompt(rows, { scene: "court", model: HM.MODELS.white });
+    assert.match(w, /MUST be a young white South African man/);
+    assert.match(lb.buildHeroPrompt(rows, { scene: lb.LOOKBOOK_SCENE_DEFS.garden, model: HM.MODELS.coloured }), /Coloured South African man \(Cape mixed heritage\)[\s\S]*palm trees/);
+    assert.throws(() => lb.buildHeroPrompt(rows, { scene: "concrete" }), /a house model is required/);
+    for (const k of ["court", "street", "wall"]) {
+      const p = lb.buildHeroPrompt(rows, { scene: k, model: BLACK });
+      assert.match(p, /Not a studio, no studio lighting/);
+      assert.match(p, /professional location fashion shoot/);
+      assert.doesNotMatch(p, /35mm street photograph/);
+    }
   });
 
-  test("readModelCheck: only an explicit true passes", () => {
-    assert.equal(lb.readModelCheck('{"text_found":false,"model_black":true,"model_seen":"Black man"}').ok, true);
-    const no = lb.readModelCheck('{"text_found":false,"model_black":false,"model_seen":"pale skin"}');
+  test("the candidate prompt: invented, full length, a professional shoot, one model's brief", () => {
+    for (const s of HM.ORDER) {
+      const p = lb.buildModelRefPrompt(HM.MODELS[s]);
+      assert.ok(p.includes(HM.MODELS[s].description));
+      assert.match(p, /invented person: not a celebrity, athlete, influencer, model or any real individual, and not a likeness of one/);
+      assert.match(p, /Full length, head to toe in frame/);
+      assert.match(p, /professional fashion photographer/);
+    }
+    assert.throws(() => lb.buildModelRefPrompt(), /a house model is required/);
+  });
+
+  test("readModelCheck: only an explicit model_match true passes; the check asks for his brief", () => {
+    assert.equal(lb.readModelCheck('{"text_found":false,"model_match":true,"model_seen":"young Black man"}').ok, true);
+    const no = lb.readModelCheck('{"text_found":false,"model_match":false,"model_seen":"long hair"}');
     assert.equal(no.ok, false);
-    assert.match(no.reason, /not visibly a Black man \(pale skin\)/);
-    assert.equal(lb.readModelCheck('{"text_found":false,"model_black":"yes"}').ok, false);
+    assert.match(no.reason, /not visibly the house model \(long hair\)/);
+    assert.equal(lb.readModelCheck('{"text_found":false,"model_match":"yes"}').ok, false);
+    assert.equal(lb.readModelCheck('{"text_found":false,"model_black":true}').ok, false);
     assert.equal(lb.readModelCheck('{"text_found":false}').ok, false);
     assert.equal(lb.readModelCheck("he looks fine").ok, false);
-    assert.match(lb.buildHeroCheckPrompt(), /"model_black": true\|false/);
+    assert.match(lb.buildHeroCheckPrompt(BLACK), /"model_match": true\|false/);
+    assert.match(lb.buildHeroCheckPrompt(HM.MODELS.coloured), /visibly a young Coloured South African man/);
   });
 
   test("the thumbnail prompt: the product alone on pure white, faithful to the reference", () => {
@@ -499,7 +519,7 @@ describe("lookbook v2 — architect review of #750", () => {
   });
   test("an unanswered model check is marked unreadable; an explicit false is not", () => {
     assert.equal(lb.readModelCheck('{"text_found":false}').unreadable, true);
-    assert.equal(lb.readModelCheck('{"text_found":false,"model_black":false}').unreadable, undefined);
+    assert.equal(lb.readModelCheck('{"text_found":false,"model_match":false}').unreadable, undefined);
   });
 });
 
