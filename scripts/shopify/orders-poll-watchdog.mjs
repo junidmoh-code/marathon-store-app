@@ -69,6 +69,7 @@ if (process.env.ORDERS_WATCHDOG === "0") process.exit(0);
 
 let state = {};
 try { state = JSON.parse(read(STATE_FILE) || "{}"); } catch { state = {}; }
+if (!state || typeof state !== "object" || Array.isArray(state)) state = {};
 const now = Date.now();
 const verdict = decide({ lines: readLines(), now, state });
 
@@ -79,20 +80,36 @@ if (DRY) {
   process.exit(0);
 }
 
+const hour = stamp().slice(0, 14);
+// Written via a temp file and a rename, so a crash never leaves half a state.
+function save(st) {
+  writeFileSync(`${STATE_FILE}.tmp`, JSON.stringify({ ...st, heartbeat: hour, checkedAt: now }, null, 2));
+  renameSync(`${STATE_FILE}.tmp`, STATE_FILE);
+}
+
+// The NEW state is saved BEFORE the mail goes, so a state that cannot be saved
+// never turns into the same mail every 10 minutes: no save, no mail (the error
+// is in the log and launchd's err log). A mail that then fails puts the old
+// state back, so the next run tries it again.
+try {
+  save(verdict.state);
+} catch (e) {
+  log(`✗ could not save the state (${String(e?.message || e).slice(0, 200)})${verdict.mail ? `: "${verdict.mail.subject}" NOT sent` : ""}`);
+  console.error(`orders-poll-watchdog: state not saved: ${e?.message || e}`);
+  process.exit(1);
+}
 if (verdict.mail) {
   try {
     await mailer()(verdict.mail);
     log(`${verdict.note}: sent "${verdict.mail.subject}" to ${NOTIFY_TO}`);
   } catch (e) {
-    // State NOT saved: the next run (10 minutes) tries the same mail again.
     log(`✗ ${verdict.note}: the mail did not go: ${String(e?.message || e).slice(0, 200)}`);
     console.error(`orders-poll-watchdog: mail failed: ${e?.message || e}`);
+    try { save({ outage: state.outage || null }); } catch { /* logged above; the next run sees the new state */ }
     process.exit(1);
   }
 } else if (verdict.note !== "ok" && !verdict.note.startsWith("outside")) {
   log(verdict.note);
 }
 // One heartbeat line an hour, so the log shows the watchdog itself is alive.
-const hour = stamp().slice(0, 14);
 if (state.heartbeat !== hour) log(`alive: ${verdict.note}`);
-writeFileSync(STATE_FILE, JSON.stringify({ ...verdict.state, heartbeat: hour, checkedAt: now }, null, 2));

@@ -16,12 +16,20 @@
 // only the end of trading hours. This module decides, from the log text and the
 // clock alone, whether the poller is down right now:
 //
-//   STALE      in trading hours and no new line for 15 minutes (measured from
-//              07:00 at the earliest, so the overnight gap is never an outage)
-//   FAILING    the last N runs (default 5, about 10 minutes) all failed
+//   STALE      in trading hours and no new RUN line for 15 minutes (measured
+//              from 07:00 at the earliest, so the overnight gap is never an
+//              outage). Run lines only: a poller that crashes at start-up
+//              every tick still writes stamped stack traces, which must not
+//              count as a sign of life (architect + spec review).
+//   FAILING    the last N runs (default 5) all failed. Failing runs come 1 to
+//              4 minutes apart (29 Oct: 09:53, 09:54, 09:57, 09:58, 10:01), so
+//              that is 5 to 20 minutes of failures.
 //
 // and, with the watchdog's state, whether to mail Junid: once when an outage
-// starts, once when it is over. Outside trading hours it never mails (an
+// starts, once when it is over. It is over only after RECOVER_RUNS good runs in
+// a row (29 Oct had ONE good run, 10:12, in the middle of its outage: one good
+// run would have meant two extra mails). A run whose summary counts per-order
+// errors ("orders: … N ERROR(S)") is a good run: the poller ran. Outside trading hours it never mails (an
 // outage still open at 19:00 stays open, and its recovery mail goes out in the
 // morning once the poller is healthy again).
 
@@ -29,6 +37,7 @@ export const OPEN_MINUTE = 7 * 60;      // 07:00 SAST, the first trading-hours r
 export const CLOSE_MINUTE = 19 * 60;    // 19:00 SAST, the last one
 export const STALE_MS = 15 * 60 * 1000;
 export const FAIL_RUNS = 5;
+export const RECOVER_RUNS = 3;
 
 const SAST_MS = 2 * 3600 * 1000;        // SAST is UTC+2 all year, no daylight saving
 
@@ -80,21 +89,22 @@ export function runsOf(lines) {
 /**
  * What the log says right now.
  *   { inHours, stale, failing, down, healthy, lastLineAt, quietMs, runs }
- * `down` = stale or failing. `healthy` = not stale and the newest run was good
- * (an outage only ends on a good run, not on a mix of failures).
+ * `down` = stale or failing. `healthy` = not stale and the newest RECOVER_RUNS
+ * runs were all good (an outage only ends on good runs in a row).
+ * `lastLineAt` is the newest RUN line (stack traces and details are not runs).
  */
-export function assess({ lines, now, staleMs = STALE_MS, failRuns = FAIL_RUNS }) {
+export function assess({ lines, now, staleMs = STALE_MS, failRuns = FAIL_RUNS, recoverRuns = RECOVER_RUNS }) {
   const inHours = inTradingHours(now);
-  const lastLineAt = lines.length ? lines[lines.length - 1].at : null;
+  const all = runsOf(lines);
+  const lastLineAt = all.length ? all[all.length - 1].at : null;
   const { openAt } = sastClock(now);
   const since = Math.max(lastLineAt ?? 0, openAt);
   const quietMs = now - since;
   const stale = inHours && quietMs >= staleMs;
-  const runs = runsOf(lines);
-  const lastN = runs.slice(-failRuns);
+  const lastN = all.slice(-failRuns);
   const failing = lastN.length === failRuns && lastN.every((r) => !r.ok);
-  const newest = runs[runs.length - 1] || null;
-  const healthy = !stale && !!newest && newest.ok;
+  const lastGood = all.slice(-recoverRuns);
+  const healthy = !stale && lastGood.length === recoverRuns && lastGood.every((r) => r.ok);
   return { inHours, stale, failing, down: stale || failing, healthy, lastLineAt, quietMs, runs: lastN };
 }
 
@@ -108,16 +118,16 @@ const mins = (ms) => Math.round(ms / 60000);
  * The caller saves `state` only once the mail (if any) went out, so a failed
  * send is tried again on the next run.
  */
-export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = FAIL_RUNS }) {
-  const a = assess({ lines, now, staleMs, failRuns });
-  const outage = state.outage || null;
+export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = FAIL_RUNS, recoverRuns = RECOVER_RUNS }) {
+  const a = assess({ lines, now, staleMs, failRuns, recoverRuns });
+  const outage = (state && typeof state === "object" && state.outage) || null;
   if (!a.inHours) return { mail: null, state: { outage }, note: `outside trading hours${outage ? " (an outage is still open)" : ""}`, assessment: a };
 
   const tail = a.runs.map((r) => `  ${fmt(r.at)}  ${r.text.slice(0, 160)}`).join("\n") || "  (no runs in the log)";
   if (a.down && !outage) {
     const reason = a.failing
       ? `the last ${failRuns} runs all failed`
-      : `no new line in logs/orders-poll.log for ${mins(a.quietMs)} minutes`;
+      : `no new poll run in logs/orders-poll.log for ${mins(a.quietMs)} minutes`;
     const lastErr = a.failing ? a.runs[a.runs.length - 1].text.slice(0, 200) : null;
     return {
       mail: {
@@ -126,7 +136,7 @@ export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = 
           `The website-orders poller (scripts/shopify/orders-poll.mjs, run by com.marathon.shopifyreconcile every 2 minutes) looks down since ${fmt(a.failing ? a.runs[0].at : a.lastLineAt ?? now)} SAST.`,
           "",
           `Why: ${reason}.`,
-          lastErr ? `Latest error: ${lastErr}` : `Last line in the log: ${a.lastLineAt ? `${fmt(a.lastLineAt)} SAST` : "none"}.`,
+          lastErr ? `Latest error: ${lastErr}` : `Last poll run in the log: ${a.lastLineAt ? `${fmt(a.lastLineAt)} SAST` : "none"}.`,
           "",
           "While it is down, new website orders do not reach the app (no holds, no picks, no packing list) and nothing is fulfilled on Shopify.",
           "",
@@ -148,7 +158,7 @@ export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = 
       mail: {
         subject: "Website orders poller is working again",
         text: [
-          `The website-orders poller is working again. Its latest run (${fmt(a.runs[a.runs.length - 1].at)} SAST) was good.`,
+          `The website-orders poller is working again. Its last ${recoverRuns} runs were good (the latest ${fmt(a.runs[a.runs.length - 1].at)} SAST).`,
           "",
           `It was down from about ${fmt(began)} SAST (${outage.reason}), roughly ${mins(now - began)} minutes until this check.`,
           "Orders that came in meanwhile are picked up by the normal runs; nothing to do unless something looks missing.",

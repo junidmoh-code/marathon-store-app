@@ -86,7 +86,7 @@ describe("FAILING: the last 5 runs all failed (29 Oct 10:01–10:26, Shopify 504
     ]);
     expect(mails[0].text).toContain("HTTP 504");
     expect(mails[0].t).toBe(at("10:10"));
-    expect(mails[1].t).toBe(at("10:30"));
+    expect(mails[1].t).toBe(at("10:40")); // three good runs in a row (10:30, 10:32, 10:34) first
     expect(state.outage).toBeNull();
   });
   test("a failure among good runs is not an outage", () => {
@@ -113,7 +113,7 @@ describe("outside trading hours it stays silent", () => {
     const n = decide({ lines: night, now: at("22:00"), state });
     expect(n.mail).toBeNull();
     expect(n.state.outage).toEqual(state.outage);
-    const morning = parseLog([every2(at("18:20"), at("19:00"), err504), quiet(at("06:30", "2026-10-30")), quiet(at("07:02", "2026-10-30"))].join("\n"));
+    const morning = parseLog([every2(at("18:20"), at("19:00"), err504), quiet(at("06:30", "2026-10-30")), quiet(at("07:02", "2026-10-30")), quiet(at("07:04", "2026-10-30"))].join("\n"));
     const m = decide({ lines: morning, now: at("07:05", "2026-10-30"), state: n.state });
     expect(m.mail.subject).toBe("Website orders poller is working again");
     expect(m.state.outage).toBeNull();
@@ -123,7 +123,7 @@ describe("outside trading hours it stays silent", () => {
 describe("the mails", () => {
   test("a stale outage says how long the log has been quiet", () => {
     const r = decide({ lines: parseLog(quiet(at("11:00"))), now: at("11:20"), state: {} });
-    expect(r.mail.subject).toBe("Website orders poller is DOWN: no new line in logs/orders-poll.log for 20 minutes");
+    expect(r.mail.subject).toBe("Website orders poller is DOWN: no new poll run in logs/orders-poll.log for 20 minutes");
     expect(r.state.outage).toMatchObject({ since: at("11:20"), startedAt: at("11:00") });
   });
   test("never twice for the same outage", () => {
@@ -131,5 +131,68 @@ describe("the mails", () => {
     const first = decide({ lines, now: at("11:20"), state: {} });
     expect(decide({ lines, now: at("11:30"), state: first.state }).mail).toBeNull();
     expect(decide({ lines, now: at("13:30"), state: first.state }).mail).toBeNull();
+  });
+});
+
+// The REAL 29 Oct 2026 run lines (logs/orders-poll.log), with the one good run at
+// 10:12:20 in the middle of the outage (spec review): every check timing gives
+// exactly one DOWN mail and one recovery mail.
+const REAL_29_OCT = `2026/10/29, 09:46:35  orders: quiet (26 open)
+2026/10/29, 09:48:42  orders: 1 new · 0 cancelled · 0 flagged · 25 open
+2026/10/29, 09:50:33  orders: quiet (25 open)
+2026/10/29, 09:53:12  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 09:53:12  <head><title>504 Gateway Time-out</title></head>
+2026/10/29, 09:54:12  ✗ orders poll failed: Token request failed: HTTP 503 <html>
+2026/10/29, 09:57:21  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 09:58:44  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:01:42  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:05:07  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:09:19  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:12:20  orders: quiet (25 open)
+2026/10/29, 10:13:58  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:16:56  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:17:58  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:20:57  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:22:58  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:24:59  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:26:18  ✗ orders poll failed: Token request failed: HTTP 504 <html>
+2026/10/29, 10:28:39  orders: quiet (25 open)
+2026/10/29, 10:30:40  orders: quiet (25 open)
+2026/10/29, 10:32:42  orders: quiet (25 open)
+2026/10/29, 10:35:06  orders: 1 new · 0 cancelled · 0 flagged · 26 open
+2026/10/29, 10:36:43  orders: quiet (26 open)
+2026/10/29, 10:38:55  orders: quiet (26 open)
+2026/10/29, 10:40:55  orders: quiet (26 open)
+2026/10/29, 10:42:51  orders: quiet (26 open)
+2026/10/29, 10:44:50  orders: quiet (26 open)`;
+
+describe("the real 29 Oct outage", () => {
+  test("one DOWN and one recovery mail, whatever minute the 10-minute check lands on", () => {
+    const all = parseLog(REAL_29_OCT);
+    for (let offset = 0; offset < 10; offset++) {
+      let state = {};
+      const subjects = [];
+      for (let t = at("09:47") + offset * 60e3; t <= at("10:50"); t += 10 * 60e3) {
+        const r = decide({ lines: all.filter((l) => l.at <= t), now: t, state });
+        if (r.mail) subjects.push(r.mail.subject);
+        state = r.state;
+      }
+      expect(subjects, `checks at :${offset}`).toEqual([
+        "Website orders poller is DOWN: the last 5 runs all failed",
+        "Website orders poller is working again",
+      ]);
+    }
+  });
+});
+
+describe("a poller that crashes at start-up every tick", () => {
+  test("stamped stack traces are not a sign of life: down after 15 minutes without a run", () => {
+    const crash = (ms) => [L(ms, "file:///Users/marathonclub/marathon-store-app/scripts/shopify/orders-poll.mjs:3"), L(ms, "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'firebase-admin'")].join("\n");
+    const lines = parseLog([quiet(at("11:00")), every2(at("11:02"), at("11:20"), crash)].join("\n"));
+    const r = decide({ lines, now: at("11:20"), state: {} });
+    expect(r.mail?.subject).toBe("Website orders poller is DOWN: no new poll run in logs/orders-poll.log for 20 minutes");
+  });
+  test("a broken state (null, an array) is read as none", () => {
+    expect(decide({ lines: parseLog(quiet(at("11:00"))), now: at("11:05"), state: null }).mail).toBeNull();
   });
 });
