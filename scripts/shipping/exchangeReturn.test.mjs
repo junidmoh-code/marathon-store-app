@@ -359,6 +359,12 @@ describe("round 2: where the original sale deducted, and how much", () => {
     expect(at(db, `stock/hub2/${SNK}`)).toBeNull();
     expect(at(db, `online_orders/${KEY}/incoming/arrival`)).toMatchObject({ state: "done", withheld: [{ pid: SNK }] });
   });
+  it("a line already refunded at the till (no shortfall): nothing credited again (CodeRabbit)", async () => {
+    const db = world({ rec: snkRec(), orig: [{ pid: SNK, size: "8", source: { locationId: "hub2" } }], extra: { pos: { sales: { "-NsOrig": { lineItems: { L1: { productId: SNK, size: "8", qty: 1, refundedQty: 1 } } } } }, stock_movements: { [`sold:-NsOrig:hub2:${SNK}:8`]: { type: "sold", productId: SNK, size: "8", qty: 1, from: "hub2", ts: "2026-10-20T10:00:00.000Z" } } } });
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true, withheld: [{ pid: SNK }] });
+    expect(at(db, `stock/hub2/${SNK}`)).toBeNull();
+  });
   it("our claim carries a plan no till can read (a stale takeover stops) and each unit's place; a re-run keeps the place", async () => {
     const db = world({ rec: snkRec(), orig: [{ pid: SNK, size: "8" }], extra: { stock: { hub2: { [SNK]: { 9: { qty: 5 } } } } } });
     let seen = null;

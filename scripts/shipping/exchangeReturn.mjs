@@ -321,7 +321,9 @@ async function resolveUnits(db, key, record, plan, { priorTo = {} } = {}) {
     if (!(cellKey in cells)) {
       const sold = sale ? await soldCellOf(db, sale.id, it.pid, it.sizeKey) : null;
       const refunded = sale ? sale.lines.filter((l) => String(l.productId) === it.pid && stockSizeKey(l.size ?? "_") === it.sizeKey).reduce((a, l) => a + (Number(l.refundedQty) || 0), 0) : 0;
-      cells[cellKey] = { sold, left: sold && sold.shortfall > 0 ? Math.max(0, sold.soldQty - sold.shortfall - refunded) : Infinity };
+      // Whenever the sale's row is found: what it deducted, less its shortfall and what refunds already credited back
+      // (CodeRabbit, #820: a fully refunded line must not be credited a second time).
+      cells[cellKey] = { sold, left: sold ? Math.max(0, sold.soldQty - sold.shortfall - refunded) : Infinity };
     }
     const c = cells[cellKey];
     const to = SECTION.includes(str(priorTo[it.movementId])) ? priorTo[it.movementId] : destinationFor({ product, size: it.size, origLine, hubQty: hubQty[it.pid], soldLoc: c.sold?.loc || null });
