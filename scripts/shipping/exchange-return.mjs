@@ -7,6 +7,7 @@
 //   node scripts/shipping/exchange-return.mjs --key exchange-1793-1793333411004 --order 1793 [--dry]
 //        [--returning '[{"pid":"p1…","size":"11","title":"…"}]']   (only when the record has no incoming.returning)
 //        [--not-good [--words "torn sole"]]   (Junid: NOT in good condition: nothing back, the courier held)
+//        [--force]   (Junid's "add it anyway": past the ledger's "already put back" check)
 //
 // Exit 0 with { ok: true, done | already | dryRun | held, items, replacement } or { ok: false, notReady | busy | alreadyBack,
 // reason } (read `ok`, not the exit code);
@@ -27,7 +28,7 @@ try {
   if (arg("returning")) returning = JSON.parse(arg("returning"));
   const opened = openDb();
   app = opened.admin;
-  const out = await confirmExchangeReturn(key, { db: opened.db, dry: process.argv.includes("--dry"), orderNumber: arg("order"), returning, condition: process.argv.includes("--not-good") ? "not_good" : "good", words: arg("words") });
+  const out = await confirmExchangeReturn(key, { db: opened.db, dry: process.argv.includes("--dry"), orderNumber: arg("order"), returning, condition: process.argv.includes("--not-good") ? "not_good" : "good", words: arg("words"), force: process.argv.includes("--force") });
   process.stdout.write(`${JSON.stringify(out)}\n`);
   await app.app().delete().catch(() => {});
   process.exit(0);

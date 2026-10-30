@@ -230,7 +230,7 @@ describe("confirmExchangeReturn", () => {
   it("by hand: the ledger already shows it put back since the arrival → refused, nothing added", async () => {
     const arrival = { state: "done", at: NOW - 3600e3, returnSaleId: null, byHand: ["Diesel · size 11"] };
     const db = world({ peQty: 1, rec: record({ incoming: { ...record().incoming, arrival } }), extra: { stock_movements: { m1: { type: "adjustment", productId: PID_OUT, size: "11", qty: 1, to: "marathon-pe", ts: new Date(NOW - 1800e3).toISOString(), reason: "put back" } } } });
-    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/already shows .* put back since then \(adjustment at Marathon PE, "put back"\)/) });
+    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/already shows .* put back since the exchange was paid \(adjustment at Marathon PE, "put back"\)/) });
     expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
     expect(priorArrivalRow({ x: { type: "sold", productId: PID_OUT, size: "11", to: null } }, { pid: PID_OUT, sizeKey: "11", key: KEY })).toBeNull();
   });
@@ -296,6 +296,85 @@ describe("confirmExchangeReturn", () => {
       return r;
     };
     await expect(run(db)).rejects.toThrow(/a till took over/);
+  });
+});
+
+describe("round 2: the hold and the ledger check", () => {
+  it("not good, then the till confirms, then good: the hold goes and the held order is released to book", async () => {
+    const db = world({ peQty: 0 });
+    await run(db, { condition: "not_good" });
+    await db.ref(`online_orders/${KEY}`).update({ status: "packed", fulfilState: "courier_failed", courierError: "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise", attentionOpen: true });
+    await db.ref(`online_orders/${KEY}/incoming/arrival`).set({ state: "done", at: NOW, returnSaleId: "-NsRet", by: { name: "Till" } });
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, already: true, by: "till", heldBefore: true, released: true });
+    expect(at(db, `online_orders/${KEY}/incoming/conditionHold`)).toBeNull();
+    expect(at(db, `online_orders/${KEY}/fulfilState`)).toBe("pending");
+    expect(at(db, `online_orders/${KEY}/attentionOpen`)).toBeNull();
+  });
+
+  it("a held order failing for another reason is not released (only the hold's own text)", async () => {
+    const db = world({ peQty: 0 });
+    await run(db, { condition: "not_good" });
+    await db.ref(`online_orders/${KEY}`).update({ fulfilState: "courier_failed", courierError: "HTTP 400 bad address" });
+    expect(await run(db)).toMatchObject({ ok: true, done: true, heldBefore: true, released: false });
+    expect(at(db, `online_orders/${KEY}/fulfilState`)).toBe("courier_failed");
+  });
+
+  it("by hand: a till return BEFORE the arrival (since payment) is found; a delivery (received) is not a match; force goes past", async () => {
+    const arrival = { state: "done", at: NOW - 1000, returnSaleId: null, byHand: ["x"] };
+    const early = { m1: { type: "return", productId: PID_OUT, size: "11", qty: 1, to: "hub2", ts: new Date(1793333411004 + 3600e3).toISOString(), reason: "till return" } };
+    const db = world({ peQty: 0, rec: record({ incoming: { ...record().incoming, arrival } }), extra: { stock_movements: early } });
+    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/since the exchange was paid \(return at Hub 2, "till return"\).*add it anyway/) });
+    const forced = await run(db, { force: true });
+    expect(forced).toMatchObject({ ok: true, done: true });
+    const db2 = world({ peQty: 0, rec: record({ incoming: { ...record().incoming, arrival } }), extra: { stock_movements: { r: { type: "received", productId: PID_OUT, size: "11", qty: 3, to: "marathon-pe", ts: new Date(NOW - 5000).toISOString() } } } });
+    expect(await run(db2)).toMatchObject({ ok: true, done: true });
+  });
+
+  it("the fallback list (no return on record) is checked against the ledger too", async () => {
+    const rec = record(); delete rec.incoming;
+    const db = world({ rec, orig: [{ pid: PID_OUT, size: "11" }], extra: { stock_movements: { a: { type: "adjustment", productId: PID_OUT, size: "11", qty: 1, to: "marathon-pe", ts: new Date(NOW - 5000).toISOString(), reason: "found in back" } } } });
+    expect(await run(db, { returning: [{ pid: PID_OUT, size: "11", title: "D" }] })).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/already shows/) });
+  });
+
+  it("not good while an earlier good of ours is unfinished: says the stock may be back, writes no hold", async () => {
+    const db = world({ rec: record({ incoming: { ...record().incoming, arrival: { state: "returning", via: "jimmy", attemptId: "x", at: NOW - 1000 } } }) });
+    expect(await run(db, { condition: "not_good" })).toMatchObject({ ok: false, alreadyBack: true, reason: expect.stringMatching(/may already be back/) });
+    expect(at(db, `online_orders/${KEY}/incoming/conditionHold`)).toBeNull();
+  });
+});
+
+describe("round 2: where the original sale deducted, and how much", () => {
+  const snkRec = () => record({ incoming: { ...record().incoming, returning: [{ pid: SNK, size: "8", sizeKey: "8", title: "Nike Shox TL", origOrderKey: "18966134358165", origLineIndex: 0 }] } });
+  it("the sale's own ledger row names the hub (over the line's plan location)", async () => {
+    const db = world({ rec: snkRec(), orig: [{ pid: SNK, size: "8", source: { locationId: "hub2" } }], extra: { pos: { sales: { "-NsOrig": { lineItems: { L1: { productId: SNK, size: "8", qty: 1 } } } } }, stock_movements: { [`sold:-NsOrig:hub1:${SNK}:8`]: { type: "sold", productId: SNK, size: "8", qty: 1, from: "hub1", ts: "2026-10-20T10:00:00.000Z" } } } });
+    const out = await run(db);
+    expect(out.items[0]).toMatchObject({ to: "hub1", before: 0, after: 1 });
+  });
+  it("a sale that never deducted the unit (shortfall): nothing credited, reported as withheld; the arrival still done", async () => {
+    const db = world({ rec: snkRec(), orig: [{ pid: SNK, size: "8", source: { locationId: "hub2" } }], extra: { pos: { sales: { "-NsOrig": { lineItems: { L1: { productId: SNK, size: "8", qty: 1 } } } } }, stock_movements: { [`sold:-NsOrig:hub2:${SNK}:8`]: { type: "sold", productId: SNK, size: "8", qty: 1, shortfall: 1, from: "hub2", ts: "2026-10-20T10:00:00.000Z" } } } });
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true, withheld: [{ pid: SNK, size: "8" }] });
+    expect(out.items).toEqual([]);
+    expect(at(db, `stock/hub2/${SNK}`)).toBeNull();
+    expect(at(db, `online_orders/${KEY}/incoming/arrival`)).toMatchObject({ state: "done", withheld: [{ pid: SNK }] });
+  });
+  it("our claim carries a plan no till can read (a stale takeover stops) and each unit's place; a re-run keeps the place", async () => {
+    const db = world({ rec: snkRec(), orig: [{ pid: SNK, size: "8" }], extra: { stock: { hub2: { [SNK]: { 9: { qty: 5 } } } } } });
+    let seen = null;
+    const orig = db.ref.bind(db);
+    db.ref = (p) => {
+      const r = orig(p);
+      if (String(p).startsWith(`stock/hub2/${SNK}/8`) && !seen) return { ...r, transaction: async () => { seen = at(db, `online_orders/${KEY}/incoming/arrival`); throw new Error("network"); } };
+      return r;
+    };
+    await expect(run(db, { attemptId: "a1" })).rejects.toThrow(/network/);
+    expect(seen.plan[0].saleId).toBe("jimmy-exchange-return");
+    expect(seen.items[0].to).toBe("hub2"); // hub2 held most
+    // The stock moves meanwhile (hub1 now holds more): the re-run still lands on hub2.
+    await orig(`stock/hub1/${SNK}/10`).set({ qty: 9 });
+    const out = await run(db, { attemptId: "a2" });
+    expect(out.items[0]).toMatchObject({ to: "hub2" });
   });
 });
 

@@ -36,6 +36,8 @@ import {
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey } from "./shipping.mjs";
+// The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
+export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
 import { mintHubCode } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
 import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs";
@@ -742,9 +744,10 @@ async function shipOrder(ctx, id, order) {
   // JUNID'S CONDITION HOLD (30 Oct 2026, scripts/shipping/exchangeReturn.mjs): he told Jimmy the exchange's returned
   // item is NOT in good condition ("nothing ships"). The replacement is not booked while the hold stands: the order
   // shows "Packed, courier not booked" with the reason, and the POS Retry re-checks it. His later "good" clears it.
-  const conditionHold = isExchangeKey(id) && order.incoming?.conditionHold && typeof order.incoming.conditionHold === "object";
-  if (conditionHold) {
-    const why = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
+  // Re-read at the exact path (not the pass's snapshot): a hold written a moment ago still stops a paid booking.
+  const conditionHold = isExchangeKey(id) && (await db.ref(`${ONLINE_ORDERS_PATH}/${id}/incoming/conditionHold`).get()).val();
+  if (conditionHold && typeof conditionHold === "object") {
+    const why = HOLD_COURIER_TEXT;
     await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
       fulfilState: "courier_failed",
       "fulfil/state": "courier_failed",

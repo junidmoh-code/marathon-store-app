@@ -944,9 +944,9 @@ Cell effects: `received +to`, `opening +to`, `sold −from`, `return +to`,
 online exchange's return is in good condition, `scripts/shipping/exchange-return.mjs`
 (`exchangeReturn.mjs`) writes one `return` movement per returned unit through
 `functions/lib/admin-movement.cjs` (which now admits `return`): `to` = Marathon PE's
-section (sneakers → the hub their original line came from, `hub1`/`hub2`, per the
+section (sneakers → the hub the original sale deducted, else the hub its line came from, `hub1`/`hub2`, per the
 2 Oct 2026 sections rule that shops hold no sneaker stock; everything else →
-`marathon-pe`), `reason: "exchange return #<order>"`, `link.orderId` = the exchange key
+`marathon-pe`; capped at what that sale deducted, its `shortfall` withheld), `reason: "exchange return #<order>"`, `link.orderId` = the exchange key
 (`link.saleId` = the original's pack sale, which is not changed),
 `actor: "system:jimmy-exchange-return"`, id `exret_<exchangeKey>_<pid>_<sizeKey>_<n>`
 (fixed per exchange and unit: a repeat never adds twice). It also completes
