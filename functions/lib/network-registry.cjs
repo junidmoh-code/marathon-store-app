@@ -192,7 +192,7 @@ function normLocation(id, raw, seed) {
 // them); only the name and the sort are the owner's. A blank or junk name falls
 // back to the seed's, so a section is never nameless.
 function normSections(raw) {
-  const r = isObj(raw) ? raw : (Array.isArray(raw) ? Object.fromEntries(raw.map((v, i) => [i, v])) : {});
+  const r = isObj(raw) ? raw : (Array.isArray(raw) ? Object.fromEntries(Array.from(raw, (v, i) => [i, v])) : {});
   const out = {};
   for (const n of [1, 2]) {
     const s = DEFAULT_NETWORK.sections[n];
@@ -514,8 +514,11 @@ function sectionsFor(registry, record, opts) {
   if (r.allSections === true) return [1, 2];
   // RTDB hands a map with small integer keys back as an ARRAY: { "1": true }
   // reads as [null, true], { "2": true } as [null, null, true] (or stays a map,
-  // depending on density). Both shapes are the same answer here.
-  const sec = Array.isArray(r.sections) ? Object.fromEntries(r.sections.map((v, i) => [i, v])) : r.sections;
+  // depending on density). Both shapes are the same answer here. The SDK's
+  // array is SPARSE (index 0 is a hole, not null): .map() keeps the hole and
+  // Object.fromEntries throws on it, so walk it with Array.from (30 Oct 2026:
+  // every Section 1 account crashed on open).
+  const sec = Array.isArray(r.sections) ? Object.fromEntries(Array.from(r.sections, (v, i) => [i, v])) : r.sections;
   if (isObj(sec)) return [1, 2].filter((n) => sec[n] === true || sec[String(n)] === true);
   const one = normSection(r.section !== undefined ? r.section : o.deviceSection);
   if (one !== null) return [one];
