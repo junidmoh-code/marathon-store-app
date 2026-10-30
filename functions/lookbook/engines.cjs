@@ -241,7 +241,8 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
     const models = m.val() || {};
     if (!allowUnapproved) {
       const g = houseModels.gateFor(models, a.val());
-      if (!g.ok) return { ok: false, reason: g.reason };
+      // pending: the deliberate hold (not picked or not approved), never a fault.
+      if (!g.ok) return { ok: false, pending: true, reason: g.reason };
     }
     const s = slot || houseModels.nextSlot(r.val());
     const c = houseModels.chosenFor(models[s], { allowProvisional: allowUnapproved });

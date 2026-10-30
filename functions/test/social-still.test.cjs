@@ -87,11 +87,18 @@ describe("the watchdog and the still", () => {
   });
 
   test("a lookbook held for the house models' approval is deliberate: the current style posted, no alarm (Junid, 30 Oct)", () => {
-    const log = { ...okLog, posted: "current", fallback: true, gate: "models", reason: "Junid has not approved the new house models yet" };
+    const log = { ...okLog, posted: "current", fallback: true, gate: "models-pending", reason: "Junid has not approved the new house models yet" };
     const prior = "2026-10-18"; // the lookbook day before: held too, so no "two days running"
     const v = base({ enabled: true, slot: STILL_SLOT, log, recent: { [prior]: { ...log }, [D]: log } }, "16:30", [landed("story"), landed("feed")]);
     assert.equal(v.ok, true, v.reasons.join("; "));
-    assert.equal(v.still.gate, "models");
+    assert.equal(v.still.gate, "models-pending");
+  });
+
+  test("a lookbook that fell back because the model's face could not be read is a fault: still seen (review of #822)", () => {
+    const log = { ...okLog, posted: "current", fallback: true, gate: "models", reason: "the model reference could not be read: 404" };
+    const v = base({ enabled: true, slot: STILL_SLOT, log, recent: { [D]: log } }, "16:30", [landed("story"), landed("feed")]);
+    assert.equal(v.severity, "degraded");
+    assert.match(v.reasons.join(";"), /fell back to the current style \(models: the model reference could not be read: 404\)/);
   });
 
   test("a fallback posts and is still SEEN: degraded, with the gate and reason", () => {

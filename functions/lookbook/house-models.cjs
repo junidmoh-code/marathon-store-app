@@ -15,7 +15,7 @@
 //     candidates: { "1".."3": { path, url, contentType, score, parts, reasons, costUSD } },
 //     picked: "n" | null, pickedBy: "junid" | "auto", pickedAt
 //   }
-//   social_lookbook/modelsApproval { approved: true, by: "junid", at }
+//   social_lookbook/modelsApproval { approved: true, by: "junid", at, faces: { slot: path } }
 //   social_lookbook/modelRotation  { last: slot, at, postId }
 //
 // Junid picks one per model (house-models.mjs --pick black=2). With no pick
@@ -23,8 +23,10 @@
 // (house-models.mjs --auto, run once by launchd at the deadline).
 //
 // NOTHING WITH A MODEL POSTS UNTIL JUNID HAS APPROVED THE MODELS (his hard
-// constraint): gateFor() refuses until modelsApproval.approved is true AND all
-// three are picked. An auto-pick is a pick, not an approval. A lookbook never
+// constraint): gateFor() refuses until modelsApproval.approved is true, all
+// three are picked, AND each picked face is the exact file he approved. A face
+// changed after the approval (new candidates, an override, a later auto-pick)
+// needs a new approval. An auto-pick is a pick, not an approval. A lookbook never
 // generates without its model's reference (the old code drew whoever the
 // prompt produced when the reference was missing).
 "use strict";
@@ -109,14 +111,23 @@ function chosenFor(node, { allowProvisional = false } = {}) {
   return allowProvisional && ranked.length ? { ...ranked[0], provisional: true } : null;
 }
 
+/** The faces an approval covers: { slot: path } of each picked face. Pure. */
+function approvalFaces(models) {
+  return Object.fromEntries(ORDER.map((s) => [s, (chosenFor(models && models[s]) || {}).path || null]));
+}
+
 /**
  * May a lookbook with a model post? { ok, reason }. Pure.
- * Approved by Junid AND all three picked; anything else is a refusal.
+ * Approved by Junid, all three picked, and every picked face the one he
+ * approved; anything else is a refusal.
  */
 function gateFor(models, approval) {
   const missing = ORDER.filter((s) => !chosenFor(models && models[s]));
   if (missing.length) return { ok: false, reason: `no face picked yet for the ${missing.join(", ")} model${missing.length > 1 ? "s" : ""}` };
   if (!(approval && approval.approved === true)) return { ok: false, reason: "Junid has not approved the new house models yet" };
+  const faces = approval.faces || {};
+  const changed = ORDER.filter((s) => faces[s] !== chosenFor(models[s]).path);
+  if (changed.length) return { ok: false, reason: `the ${changed.join(", ")} face changed after Junid's approval: approve again` };
   return { ok: true, reason: null };
 }
 
@@ -128,5 +139,5 @@ function nextSlot(rotation) {
 
 module.exports = {
   MODELS_PATH, APPROVAL_PATH, ROTATION_PATH, REF_PREFIX, DECIDE_MS, CANDIDATES, MODELS, ORDER,
-  rankCandidates, pickUpdates, duePicks, chosenFor, gateFor, nextSlot,
+  rankCandidates, pickUpdates, duePicks, chosenFor, approvalFaces, gateFor, nextSlot,
 };

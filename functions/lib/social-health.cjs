@@ -339,9 +339,10 @@ function assessStill(still, { nowMs, dayStart, saDate }) {
   } else if (!log.finishedAt && nowMs - Number(log.startedAt || 0) > 40 * 60 * 1000) {
     out.reasons.push("the 07:00 still started and never finished"); out.silent = true;
   }
-  // A lookbook held for the house models (gate "models": Junid has not
-  // approved them yet, 30 Oct 2026) is on purpose, not a fault: no alarm.
-  const held = (l) => Boolean(l && l.gate === "models");
+  // A lookbook held for the house models (gate "models-pending": Junid has not
+  // approved them yet, 30 Oct 2026) is on purpose, not a fault: no alarm. Gate
+  // "models" (an unreadable face, no reader) still alarms.
+  const held = (l) => Boolean(l && l.gate === "models-pending");
   if (log && log.fallback && !held(log)) {
     out.reasons.push(`today's lookbook fell back to the current style (${log.gate || "?"}: ${String(log.reason || "no reason recorded").slice(0, 160)})`);
   }

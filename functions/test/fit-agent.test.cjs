@@ -112,8 +112,16 @@ describe("the three house models (Junid, 30 Oct 2026)", () => {
     const picked = all({ black: { picked: "2" }, white: { picked: "1" }, coloured: { picked: "3" } });
     assert.match(hm.gateFor(picked, null).reason, /not approved/);
     assert.match(hm.gateFor(picked, { approved: "yes" }).reason, /not approved/);
-    assert.equal(hm.gateFor(picked, { approved: true }).ok, true);
-    assert.match(hm.gateFor({ ...picked, white: node("white") }, { approved: true }).reason, /white model/);
+    const faces = hm.approvalFaces(picked);
+    assert.equal(faces.black, C("black", 2, 9).path);
+    assert.equal(hm.gateFor(picked, { approved: true, faces }).ok, true);
+    // An approval with no faces, or a face changed after it, opens nothing (review of #822).
+    assert.match(hm.gateFor(picked, { approved: true }).reason, /changed after Junid's approval/);
+    const swapped = { ...picked, black: node("black", { picked: "3" }) };
+    assert.match(hm.gateFor(swapped, { approved: true, faces }).reason, /the black face changed after Junid's approval: approve again/);
+    const replaced = { ...picked, white: { ...node("white", { picked: "1" }), candidates: { 1: C("white", 9, 8) } } };
+    assert.match(hm.gateFor(replaced, { approved: true, faces }).reason, /white face changed/);
+    assert.match(hm.gateFor({ ...picked, white: node("white") }, { approved: true, faces }).reason, /white model/);
   });
 
   test("24 hours with no pick: the highest score is picked by \"auto\" (and only past the deadline)", () => {

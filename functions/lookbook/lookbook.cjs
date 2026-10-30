@@ -130,7 +130,8 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
   try {
     house = deps.readHouseModel ? await deps.readHouseModel({ slot: modelSlot, allowUnapproved }) : { ok: false, reason: "no house-model reader" };
   } catch (e) { house = { ok: false, reason: `the model reference could not be read: ${String(e && e.message).slice(0, 120)}` }; }
-  if (!house || !house.ok) return { ok: false, gate: "models", reason: (house && house.reason) || "no house model", costUSD, attempts };
+  // "models-pending": held on purpose until Junid approves; "models": a fault (no reader, an unreadable face).
+  if (!house || !house.ok) return { ok: false, gate: house && house.pending ? "models-pending" : "models", reason: (house && house.reason) || "no house model", costUSD, attempts };
   const model = house.model;
 
   // No unit for a hero that would leave the fallback one: stop BEFORE any

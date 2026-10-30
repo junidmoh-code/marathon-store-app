@@ -101,9 +101,11 @@ if (has("auto")) {
 }
 
 if (has("approve")) {
-  const g = hm.gateFor(models, { approved: true });
+  const faces = hm.approvalFaces(models);
+  const g = hm.gateFor(models, { approved: true, faces });
   if (!g.ok) throw new Error(`cannot approve: ${g.reason}`);
-  await db.ref(hm.APPROVAL_PATH).set({ approved: true, by: "junid", at: Date.now(), faces: Object.fromEntries(hm.ORDER.map((s) => [s, String(models[s].picked)])) });
+  // The approval names the exact face files: a face changed later needs a new one.
+  await db.ref(hm.APPROVAL_PATH).set({ approved: true, by: "junid", at: Date.now(), faces, picked: Object.fromEntries(hm.ORDER.map((s) => [s, String(models[s].picked)])) });
   console.log("approved: lookbooks with the three house models may post");
   process.exit(0);
 }

@@ -159,9 +159,11 @@ describe("engines: the thumbnail cache and its ceiling", () => {
     // Not approved: nothing, even with all three picked.
     const none = await make(new FakeRtdb({ social_lookbook: { models: picked } }), bucket).readHouseModel();
     assert.equal(none.ok, false);
+    assert.equal(none.pending, true);
     assert.match(none.reason, /not approved/);
+    const faces = { black: P("black", 2), white: P("white", 1), coloured: P("coloured", 1) };
     // Approved: the rotation after "black" is "white", his picked face.
-    const ok = await make(new FakeRtdb({ social_lookbook: { models: picked, modelsApproval: { approved: true }, modelRotation: { last: "black" } } }), bucket).readHouseModel();
+    const ok = await make(new FakeRtdb({ social_lookbook: { models: picked, modelsApproval: { approved: true, faces }, modelRotation: { last: "black" } } }), bucket).readHouseModel();
     assert.equal(ok.slot, "white");
     assert.equal(String(ok.ref.buffer), "white1");
     assert.match(ok.model.description, /white South African/);

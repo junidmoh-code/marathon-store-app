@@ -291,10 +291,10 @@ describe("makeLookbook — the model gate (owner review of sample 01)", () => {
   test("no approved house model: the models gate, before any unit, thumbnail or stylist call (Junid, 30 Oct)", async () => {
     const db = seed();
     let asked = null;
-    const d = deps(db, { readHouseModel: async (o) => { asked = o; return { ok: false, reason: "Junid has not approved the new house models yet" }; } });
+    const d = deps(db, { readHouseModel: async (o) => { asked = o; return { ok: false, pending: true, reason: "Junid has not approved the new house models yet" }; } });
     const before = (await db.ref("social_generation_budget/2026-10-18/count").once("value")).val();
     const r = await makeLookbook(db, d, { month: 5, minHeroPx: 0, nowMs: NOW });
-    assert.equal(r.gate, "models");
+    assert.equal(r.gate, "models-pending");
     assert.match(r.reason, /not approved/);
     assert.equal(r.costUSD, 0);
     assert.equal(d.calls.gen, 0);

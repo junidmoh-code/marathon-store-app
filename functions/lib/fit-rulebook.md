@@ -116,8 +116,8 @@ Johannesburg, not like a European catalogue.
 
 ## 9. The model wearing it
 
-Every fit is worn by one of the three house models, and the request says which
-one and his skin tone. Choose colours that suit him: contrast and warmth that
+A lookbook fit is worn by one of the three house models, and its request says
+which one and his skin tone (a flat-lay names no model: skip this section). Choose colours that suit him: contrast and warmth that
 flatter his skin, never a colour that matches his skin or washes him out near
 the face. The critic scores this as "model".
 

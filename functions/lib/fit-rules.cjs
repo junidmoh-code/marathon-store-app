@@ -55,8 +55,9 @@ const CRITIC_MAX_TOKENS = 1400;
 const MIN_OUT_TOKENS = 1000;
 // The critic's input at its worst, kept back before the stylist is called
 // until a critic request of this run has been priced: a first critic call
-// with its rulebook cache write and four photos.
-const CRITIC_INPUT_RESERVE_USD = 0.02;
+// with its rulebook cache write and five photos ($0.034 at worst since the
+// rulebook's South African sections, 30 Oct).
+const CRITIC_INPUT_RESERVE_USD = 0.035;
 // Tokens an attached product photo costs at CRITIC_PHOTO_PX on its long side
 // (width x height / 750, rounded up): the budget check's estimate.
 const CRITIC_PHOTO_PX = 384;
