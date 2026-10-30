@@ -22,7 +22,7 @@ import {
   MAX_OUTBOUND, NO_REPLY_MS, REFUND_WINDOW_MS, paidCents, rands, parseReplyCode, validateClassification,
   canSend, moneyAllowed, judgeSwap, acceptModelText, fallbackWords, composeMessage, subjectTag, whatsappText,
 } from "./core.mjs";
-import { CREDIT_SCOPE, REFUND_SCOPE, issueStoreCredit, refundLine } from "./money.mjs";
+import { CREDIT_SCOPE, REFUND_SCOPE, issueStoreCredit, refundLine, slotRefundKey } from "./money.mjs";
 import { swappedLine, swapFromRecord } from "../../lib/swap-line.mjs";
 
 export const AGENT_META = "online_orders_meta/customerAgent";
@@ -450,7 +450,8 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
     try {
       r = kind === "credit"
         ? await issueStoreCredit(ctx.graphql, { orderGid: order.shopifyGid, amountCents, currency: order.totals?.currency || "ZAR" })
-        : await refundLine(ctx.graphql, { orderGid: order.shopifyGid, lineItemId: line.shopifyLineItemId, quantity: Number(line.qty) || 1, amountCents });
+        : await refundLine(ctx.graphql, { orderGid: order.shopifyGid, lineItemId: line.shopifyLineItemId, quantity: Number(line.qty) || 1, amountCents,
+          idempotencyKey: slotRefundKey({ orderId, lineIndex: i, claimedAt: claimed.resolution.money.at }) });
     } catch (e) {
       r = { ok: false, error: String(e?.message || e), ambiguous: true };
     }
