@@ -323,14 +323,15 @@ async function resolveUnits(db, key, record, plan, { priorTo = {} } = {}) {
       const refunded = sale ? sale.lines.filter((l) => String(l.productId) === it.pid && stockSizeKey(l.size ?? "_") === it.sizeKey).reduce((a, l) => a + (Number(l.refundedQty) || 0), 0) : 0;
       // Whenever the sale's row is found: what it deducted, less its shortfall and what refunds already credited back
       // (CodeRabbit, #820: a fully refunded line must not be credited a second time).
-      cells[cellKey] = { sold, left: sold ? Math.max(0, sold.soldQty - sold.shortfall - refunded) : Infinity };
+      cells[cellKey] = { sold, refunded, left: sold ? Math.max(0, sold.soldQty - sold.shortfall - refunded) : Infinity };
     }
     const c = cells[cellKey];
     const to = SECTION.includes(str(priorTo[it.movementId])) ? priorTo[it.movementId] : destinationFor({ product, size: it.size, origLine, hubQty: hubQty[it.pid], soldLoc: c.sold?.loc || null });
     // Capped at what the sale deducted (no negative cells, 11 Sep 2026): the part it never covered is withheld.
     const withheld = c.left <= 0;
     if (!withheld) c.left -= 1;
-    units.push({ ...it, to, place: PLACE[to] || to, deactivated: product.deactivated != null, ...(withheld ? { withheld: true } : {}) });
+    const why = withheld ? (c.refunded > 0 ? "refunded" : "shortfall") : null;
+    units.push({ ...it, to, place: PLACE[to] || to, deactivated: product.deactivated != null, ...(withheld ? { withheld: true, why } : {}) });
   }
   return { ok: true, units };
 }
@@ -456,7 +457,7 @@ export async function confirmExchangeReturn(key, { db, dry = false, orderNumber 
   const nowIso = iso(now());
   const origSale = await origSaleOf(db, resolved.units);
   const out = [];
-  const withheld = resolved.units.filter((u) => u.withheld).map(({ pid, size, title, movementId }) => ({ pid, size, title, movementId }));
+  const withheld = resolved.units.filter((u) => u.withheld).map(({ pid, size, title, movementId, why }) => ({ pid, size, title, movementId, why }));
   for (const it of resolved.units.filter((u) => !u.withheld)) {
     const r = await applyMovementAdmin(db, {
       type: "return", productId: it.pid, size: it.size, sizeKey: it.sizeKey, qty: 1, from: null, to: it.to,
