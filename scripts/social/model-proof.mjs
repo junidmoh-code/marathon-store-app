@@ -13,7 +13,8 @@
 // Resumable: a card already in model-proof.json is not made again.
 //
 //   GOOGLE_APPLICATION_CREDENTIALS=~/.config/marathon/shopify-reconciler-sa.json \
-//     node scripts/social/model-proof.mjs [--only black-1]
+//     node scripts/social/model-proof.mjs [--only black-1] [--send]
+// --send: the finished cards as one sheet to Junid's WhatsApp (Jimmy, --kind junid).
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -60,6 +61,17 @@ await mkdir(OUT, { recursive: true });
 const logPath = join(OUT, "model-proof.json");
 const log = existsSync(logPath) ? JSON.parse(await readFile(logPath, "utf8")) : { cards: {}, skipped: [] };
 const save = () => writeFile(logPath, JSON.stringify(log, null, 2) + "\n");
+// A card made with a face that is no longer the model's pick (a stand-in, or
+// a face since re-shot by house-models.mjs --taller) is made again.
+const models = (await db.ref(hm.MODELS_PATH).once("value")).val() || {};
+for (const [key, c] of Object.entries(log.cards)) {
+  const now = hm.chosenFor(models[c.model], { allowProvisional: true });
+  if (!now || String(c.face) !== now.n || c.standIn !== now.provisional) {
+    (log.superseded = log.superseded || []).push(c);
+    delete log.cards[key];
+    console.log(`card ${key}: made with face ${c.face}${c.standIn ? " (stand-in)" : ""}, the pick is now ${now ? now.n : "none"}: made again`);
+  }
+}
 const scoreText = (s) => (s ? Object.entries(s).map(([k, v]) => `${k} ${v}`).join(", ") : "—");
 
 async function upload(key, buffer) {
@@ -131,4 +143,22 @@ log.summary = {
 };
 await save();
 console.log(JSON.stringify(log.summary, null, 2));
+if (process.argv.includes("--send") && done.length) {
+  const sharp = require("sharp");
+  const W = 540, H = 675, PAD = 16;
+  // One row per model, card 1 left and card 2 right; a missing card leaves its place empty.
+  const cards = CARDS.filter((c) => log.cards[c.key]);
+  const tiles = await Promise.all(cards.map(async (c) => ({
+    input: await sharp(join(OUT, `${c.key}-feed.jpg`)).resize(W, H, { fit: "cover" }).jpeg().toBuffer(),
+    left: PAD + (Number(c.key.split("-")[1]) - 1) * (W + PAD), top: PAD + hm.ORDER.indexOf(c.slot) * (H + PAD),
+  })));
+  const sheet = join(OUT, "model-proof-sheet.jpg");
+  await sharp({ create: { width: PAD + 2 * (W + PAD), height: PAD + hm.ORDER.length * (H + PAD), channels: 3, background: "#000" } }).composite(tiles).jpeg({ quality: 85 }).toFile(sheet);
+  const text = [
+    `Model proof: ${done.length} of ${CARDS.length} outfit posts (samples, none posted). One row per model (black, white, coloured): card 1 left, card 2 right.`,
+    ...cards.map((c) => { const e = log.cards[c.key]; return `• ${c.key}: ${e.theme} · ${e.total} · critic ${scoreText(e.scores)} · $${e.cost.totalUSD}`; }),
+    `Mean $${log.summary.perPostUSD.mean} per post. Nothing with a model posts until you reply "approve models".`,
+  ].join("\n");
+  console.log(execFileSync(process.execPath, ["bin/jimmy-send.mjs", "--to", "27813995333", "--kind", "junid", "--text", text, "--media", sheet], { cwd: join(homedir(), "marathon-dm-agent"), encoding: "utf8", timeout: 60000 }).split("\n")[0]);
+}
 process.exit(0);

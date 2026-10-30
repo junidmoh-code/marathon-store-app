@@ -908,6 +908,11 @@ function sceneFor(saDate, scenes, lookbookDays) {
 const modelRequirement = (model) => `The model MUST be ${model.description}. This is a hard requirement.`;
 
 // What makes it a professional shoot, not a phone snap (Junid, 30 Oct 19:16).
+// How a fashion photographer makes a tall model read as tall (Junid, 30 Oct:
+// the candidates were "still short in height"): a low camera, nothing beside
+// him for scale.
+const TALL_FRAMING = "Shoot him the way fashion photographers shoot a tall runway model: the camera low, at about his hip height, angled very slightly up, so his legs look long and he towers over the frame; nothing beside him (a door, a car, a person, a bench) that makes him look short.";
+
 const PRO_SHOOT = "A professional fashion editorial photograph from a paid model shoot: shot by a professional fashion photographer on a full-frame camera with an 85mm prime lens, tack-sharp focus on the model, gentle natural background blur, professional lighting, true colour and fine skin and fabric detail. Not a phone snapshot, not a selfie, not candid.";
 
 // ── THE HERO PROMPT ──────────────────────────────────────────────────────────
@@ -925,6 +930,7 @@ function buildHeroPrompt(rows, { scene = LOOKBOOK_SCENE_DEFS[DEFAULT_LOOKBOOK_SC
     `${PRO_SHOOT} Portrait orientation, highest detail.`,
     modelRequirement(model),
     "He is the man in the MODEL REFERENCE photo: the same face, skin tone, hair and build. Take only the man from it, never its clothing, headwear or background.",
+    TALL_FRAMING,
     "He is full length, head to toe in frame, in a confident professional model pose: standing tall, weight on one leg, shoulders relaxed, one hand loosely in a pocket or at his side, chin level, a calm confident gaze at the camera, body at a slight three-quarter angle. Nothing covers the garments.",
     `Composition: a tight full-length frame. He fills about ${Math.round(BODY_FILL * 100)}% of the frame height: the top of his head is about ${Math.round(BODY_TOP * 100)}% below the top edge and the soles of his shoes rest on ${sc.floor} about ${Math.round((1 - BODY_TOP - BODY_FILL) * 100)}% above the bottom edge. His body is centred at about 58% of the frame width (slightly right of centre). Nothing crops him: the whole head, any hat and both shoes are in frame.`,
     sc.location,
@@ -941,12 +947,16 @@ function buildHeroPrompt(rows, { scene = LOOKBOOK_SCENE_DEFS[DEFAULT_LOOKBOOK_SC
 // Three per model, made by scripts/social/house-models.mjs; Junid picks one.
 // Full length, a professional shoot, in plain clothes, so the face, skin,
 // hair and build are what the reference carries.
-function buildModelRefPrompt(model) {
+// `fromFace`: the casting shot is re-taken of a face Junid already picked (a
+// FACE REFERENCE image is attached first): the same man, taller.
+function buildModelRefPrompt(model, { fromFace = false } = {}) {
   if (!model || !model.description) throw new Error("buildModelRefPrompt: a house model is required");
   return [
     `Casting photograph for a fashion model agency. ${PRO_SHOOT} Portrait orientation.`,
     modelRequirement(model),
     "He is an invented person: not a celebrity, athlete, influencer, model or any real individual, and not a likeness of one.",
+    ...(fromFace ? ["He is the man in the FACE REFERENCE photo: exactly the same face, skin tone, hair and stubble. Only his height and proportions change: he is taller and longer-legged than in the reference, a 1.90 m runway model."] : []),
+    TALL_FRAMING,
     "Full length, head to toe in frame, standing tall in a confident model pose facing the camera, a calm confident expression; no headwear, no glasses, no jewellery.",
     "He wears a plain white crew-neck T-shirt with no logo, plain black slim trousers and plain white low-top sneakers with no logo.",
     "Location: outdoors in a South African city, in front of a raw board-formed concrete wall, a strip of concrete pavement at his feet. Natural daylight in open shade, shaped with a reflector: soft and even on his face, true skin texture and tone.",
@@ -1160,7 +1170,7 @@ module.exports = {
   parseStillFormats, stillCalendar,
   parseLookbookDays, isJsonList, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, readModelCheck, anchorsFor,
-  buildModelRefPrompt, buildThumbPrompt, PRO_SHOOT,
+  buildModelRefPrompt, buildThumbPrompt, PRO_SHOOT, TALL_FRAMING,
   LOOKBOOK_SCENE_DEFS, LOOKBOOK_SCENE_KEYS, DEFAULT_LOOKBOOK_SCENES, SCENE_EPOCH, parseLookbookScenes, sceneFor,
   POSTER_BRANDS, stripStyleCodes, posterName, THUMBS_PER_DAY,
   GRID, buildLocatePrompt, cellCentre, readLocate,

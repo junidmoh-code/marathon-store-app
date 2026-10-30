@@ -447,10 +447,19 @@ describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
     assert.equal(lb.sceneFor("2026-10-21", ["garden"], D).key, "garden");
   });
 
+  test("the casting re-shoot of a picked face: the same man from his FACE REFERENCE, taller, a low camera", () => {
+    const p = lb.buildModelRefPrompt(HM.MODELS.black, { fromFace: true });
+    assert.match(p, /FACE REFERENCE photo: exactly the same face/);
+    assert.match(p, /taller and longer-legged than in the reference/);
+    assert.match(p, /camera low/);
+    assert.doesNotMatch(lb.buildModelRefPrompt(HM.MODELS.black), /FACE REFERENCE/);
+  });
   test("the hero prompt: his model's requirement every time, a professional shoot, his reference, the scene's floor", () => {
     const rows = [{ slot: "tee", displayName: "Nike Tee White" }];
     const c = lb.buildHeroPrompt(rows, { scene: "concrete", model: BLACK });
-    assert.match(c, /The model MUST be a young Black South African man in his early-to-mid 20s, tall and slim with a runway model's build/);
+    assert.match(c, /The model MUST be a young Black South African man in his early-to-mid 20s, very tall \(about 1\.90 m/);
+    // Junid, 30 Oct: "still short in height": a low camera, nothing beside him for scale.
+    assert.match(c, /camera low, at about his hip height/);
     assert.match(c, /professional fashion photographer on a full-frame camera with an 85mm prime lens/);
     assert.match(c, /Not a phone snapshot/);
     assert.match(c, /confident professional model pose/);
