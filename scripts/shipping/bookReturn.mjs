@@ -53,15 +53,17 @@ const km = (a, b) => {
   return 2 * 6371 * Math.asin(Math.sqrt(h));
 };
 
-/** The customer's address → { lat, lng } (OpenStreetMap Nominatim; the full address, then the suburb/town). */
+export const MAX_LOCKER_KM = 30;
+const tryLabels = (address) => [...new Set([
+  [address.street_address, address.local_area, address.city, address.code],
+  [address.local_area, address.city, address.code],
+  [address.city, address.code],
+].map((parts) => [...new Set(parts.map(str).filter(Boolean))].join(", ")).filter(Boolean))];
+
+/** The customer's address → { lat, lng, from } (OpenStreetMap Nominatim; the full address, then the suburb/town). */
 export async function geocode(address, { fetchImpl = globalThis.fetch } = {}) {
   if (Number.isFinite(Number(address?.lat)) && Number.isFinite(Number(address?.lng))) return { lat: Number(address.lat), lng: Number(address.lng), from: "address" };
-  const tries = [
-    [address.street_address, address.local_area, address.city, address.code],
-    [address.local_area, address.city, address.code],
-    [address.city, address.code],
-  ].map((parts) => [...new Set(parts.map(str).filter(Boolean))].join(", ")).filter(Boolean);
-  for (const q of [...new Set(tries)]) {
+  for (const q of tryLabels(address)) {
     try {
       const res = await fetchImpl(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=za&limit=1&q=${encodeURIComponent(q)}`, {
         headers: { "User-Agent": "marathon-club-returns/1.0 (gunidmoh@gmail.com)", Accept: "application/json" },
@@ -148,11 +150,14 @@ export async function planReturn(order, { db, client, products = null, email = n
   if (!parcel.fits || !parcel.dropBoxEligible) return { ok: false, reason: "the parcel fits no Courier Guy locker", parcel };
 
   const at = await geocoder(from);
-  if (!at) return { ok: false, reason: "the customer's address could not be placed on a map (no nearest locker)", parcel };
+  if (!at) return { ok: false, transient: true, reason: "the customer's address could not be placed on a map (no nearest locker)", parcel };
   let locker;
   try { locker = await nearestLocker(client, at, parcel.lockerSize); }
-  catch (err) { return { ok: false, reason: `the locker list could not be read (${String(err?.message || err).slice(0, 200)})`, parcel }; }
+  catch (err) { return { ok: false, transient: true, reason: `the locker list could not be read (${String(err?.message || err).slice(0, 200)})`, parcel }; }
   if (!locker) return { ok: false, reason: `no Courier Guy locker near the customer fits a ${parcel.lockerSize} parcel`, parcel };
+  // "The nearest one" must be near (architect review 5): further than MAX_LOCKER_KM, a person picks it with the customer.
+  if (locker.km != null && locker.km > MAX_LOCKER_KM) return { ok: false, reason: `the nearest locker (${locker.name}) is ${locker.km} km from the customer's address`, parcel };
+  locker.placedBy = at.from === "address" || at.from === tryLabels(from)[0] ? "street" : "town";
   const dropBox = { pickupPointId: locker.id, pickupPointProvider: locker.provider };
   const body = (collection) => ({ collection_address: collection, ...lockerCollection(dropBox), delivery_address: shop, parcels: tcgParcels(parcel.parcels) });
   let used = from;
@@ -165,8 +170,9 @@ export async function planReturn(order, { db, client, products = null, email = n
     if (again.rates.length) [quoted, used] = [again, retry];
   }
   const exclude = new Set(cfg.excludeServiceCodes ?? []);
-  const lockers = quoted.rates.filter((r) => !exclude.has(r.code));
-  if (!lockers.length) return { ok: false, reason: `no locker rate (${quoted.error ?? "none quoted"})`, parcel };
+  // STRICTLY locker to door (architect review 4): only an L2D service, whatever else TCG quotes.
+  const lockers = quoted.rates.filter((r) => !exclude.has(r.code) && (/^L2D/i.test(r.code) || r.group === "L2D"));
+  if (!lockers.length) return { ok: false, ...(quoted.error ? { transient: true } : {}), reason: `no locker rate (${quoted.error ?? "none quoted"})`, parcel };
   const rate = lockers.reduce((best, r) => (!best || r.rate < best.rate ? r : best), null);
 
   const blockers = [];
@@ -223,7 +229,7 @@ export async function bookReturn(key, deps = {}) {
   const plan = await planReturn(order, { db, client, products, email, key, ...(geocoder ? { geocoder } : {}) });
   if (!plan.ok) {
     log(`bookReturn ${key} REFUSED ${plan.reason}`);
-    return { skipped: true, refused: true, reason: plan.reason };
+    return { skipped: true, refused: !plan.transient, transient: !!plan.transient, reason: plan.reason };
   }
   if (!(await readLive(db))) {
     log(`bookReturn ${key} DRY RUN (live is off) would POST /shipments ${JSON.stringify(plan.payload)}` + (plan.blockers.length ? ` — live would refuse: ${plan.blockers.join(", ")}` : ""));

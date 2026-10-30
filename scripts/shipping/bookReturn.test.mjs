@@ -87,6 +87,21 @@ describe("planReturn", () => {
   it("refuses an address it cannot place", async () => {
     const plan = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db(), client: fakeClient(), geocoder: async () => null, key: KEY, products: {} });
     expect(plan.reason).toMatch(/could not be placed/);
+    expect(plan.transient).toBe(true);
+  });
+});
+
+describe("strictly locker to door, and near", () => {
+  it("a door service in the quote is never chosen", async () => {
+    const rates = { rates: [{ rate: 50, service_level: { code: "ECO" } }, { rate: 130, service_level: { code: "L2DM - ECO" } }] };
+    const plan = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db(), client: fakeClient({ rates }), geocoder, key: KEY, products: {} });
+    expect(plan.payload.service_level_code).toBe("L2DM - ECO");
+    const only = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db(), client: fakeClient({ rates: { rates: [{ rate: 50, service_level: { code: "ECO" } }] } }), geocoder, key: KEY, products: {} });
+    expect(only.ok).toBe(false);
+  });
+  it("a nearest locker too far away is refused", async () => {
+    const plan = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db(), client: fakeClient(), geocoder: async () => ({ lat: -30, lng: 25, from: "x" }), key: KEY, products: {} });
+    expect(plan.reason).toMatch(/km from the customer's address/);
   });
 });
 
