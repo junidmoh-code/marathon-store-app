@@ -115,8 +115,11 @@ const mins = (ms) => Math.round(ms / 60000);
  * The watchdog's decision for this run.
  *   state: { outage: null | { since, reason } }
  *   → { mail: null | { subject, text }, state: next state, note: one log line }
- * The caller saves `state` only once the mail (if any) went out, so a failed
- * send is tried again on the next run.
+ * The caller saves the new `state` BEFORE it sends the mail and puts the old
+ * one back if the send fails, so a failed send is tried again on the next run.
+ * Recovery counts only runs AFTER the outage began: the good runs from before a
+ * poller died at 18:30 must not read as "working again" at 07:00 (architect
+ * review 2).
  */
 export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = FAIL_RUNS, recoverRuns = RECOVER_RUNS }) {
   const a = assess({ lines, now, staleMs, failRuns, recoverRuns });
@@ -152,8 +155,9 @@ export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = 
       assessment: a,
     };
   }
-  if (outage && a.healthy) {
-    const began = outage.startedAt || outage.since;
+  const began = outage ? Number(outage.startedAt ?? outage.since) || 0 : 0;
+  const recovered = !!outage && a.healthy && runsOf(lines).slice(-recoverRuns).every((r) => r.at > began);
+  if (recovered) {
     return {
       mail: {
         subject: "Website orders poller is working again",

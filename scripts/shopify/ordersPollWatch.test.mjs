@@ -196,3 +196,17 @@ describe("a poller that crashes at start-up every tick", () => {
     expect(decide({ lines: parseLog(quiet(at("11:00"))), now: at("11:05"), state: null }).mail).toBeNull();
   });
 });
+
+describe("recovery counts only runs after the outage began (architect review 2)", () => {
+  test("died at 18:30, mailed at 18:45, nothing overnight: no 'working again' at 07:05", () => {
+    const lines = parseLog(every2(at("18:00"), at("18:30"), quiet));
+    const down = decide({ lines, now: at("18:45"), state: {} });
+    expect(down.mail.subject).toMatch(/DOWN: no new poll run/);
+    const morning = decide({ lines, now: at("07:05", "2026-10-30"), state: down.state });
+    expect(morning.mail).toBeNull();
+    expect(morning.state.outage).toBeTruthy();
+    // …and once three new runs have come, it is over.
+    const back = parseLog([every2(at("18:00"), at("18:30"), quiet), every2(at("07:00", "2026-10-30"), at("07:04", "2026-10-30"), quiet)].join("\n"));
+    expect(decide({ lines: back, now: at("07:06", "2026-10-30"), state: down.state }).mail?.subject).toBe("Website orders poller is working again");
+  });
+});
