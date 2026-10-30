@@ -29,7 +29,7 @@ export function normalizeRates(res) {
 // every surcharge ("High risk", "Outlying area") and adjustment (fuel), and
 // the weights TCG charged on. Kept on the booking so the >R250 email
 // (scripts/shipping/costAlert.mjs) can say WHY a waybill is expensive.
-const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+const num = (v) => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
 const charges = (list) => (Array.isArray(list) ? list : [])
   .filter((c) => c && Number(c.charge) > 0)
   .map((c) => ({ name: String(c.name || "charge"), charge: Number(c.charge) }));

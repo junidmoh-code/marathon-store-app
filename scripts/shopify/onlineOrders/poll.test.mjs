@@ -559,19 +559,31 @@ describe("Shopify fulfilment after the pack", () => {
       await runOrdersPoll(d.deps);
       expect(order(f).fulfilState).toBe("done");
       expect(order(f).shipping.costAlert).toMatchObject({ state: "queued", waybill: "ABC123" });
-      expect(f.read("online_orders_meta/costAlertQueue/9001")).toMatchObject({ waybill: "ABC123", attempts: 1 });
+      expect(f.read("online_orders_meta/costAlertQueue/9001_ABC123")).toMatchObject({ waybill: "ABC123", attempts: 1 });
       down = false;
       await runOrdersPoll(d.deps);
       expect(sent.filter((m) => /^Waybill R400\.00/.test(m.subject))).toHaveLength(1);
-      expect(f.read("online_orders_meta/costAlertQueue/9001")).toBeFalsy();
+      expect(f.read("online_orders_meta/costAlertQueue/9001_ABC123")).toBeFalsy();
       expect(order(f).shipping.costAlert).toMatchObject({ state: "mailed" });
+    });
+
+    it("a crash after the booking but before the queue: the next tick queues it from the recorded booking", async () => {
+      const w = live();
+      w.online_orders[9001].shipping = { ...w.online_orders[9001].shipping, shipmentId: 7, waybill: "OLD777", cost: 410, service: "ECO",
+        parcel: { parcels: [{ boxCode: "LARGE", kind: "box", lengthCm: 55, widthCm: 40, heightCm: 35 }] } };
+      const f = fakeDb(w);
+      const d = deps(f, shopify({ fos }), { courier: booked(999) });
+      await runOrdersPoll(d.deps);
+      expect(d.mails.filter((m) => /^Waybill R410\.00/.test(m.subject))).toHaveLength(1);
+      await runOrdersPoll(d.deps);
+      expect(d.mails.filter((m) => /^Waybill /.test(m.subject))).toHaveLength(1);
     });
 
     it("no mail sender on the machine: kept in the queue, nothing lost", async () => {
       const f = fakeDb(live());
       const d = deps(f, shopify({ fos }), { courier: booked(400), send: null });
       await runOrdersPoll(d.deps);
-      expect(f.read("online_orders_meta/costAlertQueue/9001")).toMatchObject({ waybill: "ABC123" });
+      expect(f.read("online_orders_meta/costAlertQueue/9001_ABC123")).toMatchObject({ waybill: "ABC123" });
       expect(order(f).fulfilState).toBe("done");
     });
   });
