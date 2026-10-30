@@ -210,3 +210,13 @@ describe("recovery counts only runs after the outage began (architect review 2)"
     expect(decide({ lines: back, now: at("07:06", "2026-10-30"), state: down.state }).mail?.subject).toBe("Website orders poller is working again");
   });
 });
+
+describe("a summary that counts errors is a failed run (CodeRabbit, PR #818)", () => {
+  test("five 'N ERROR(S)' summaries in a row are an outage; the real 22 Oct line parses as failed", () => {
+    const errRun = (ms) => L(ms, "orders: 0 new · 0 cancelled · 0 flagged · 5 open · 0 feed entries · 0 hold change(s) · 0 fulfilled · 0 fulfil failed · 0 emailed · 1 ERROR(S) (11451 ms)");
+    expect(runsOf(parseLog(errRun(at("10:11")))).map((r) => r.ok)).toEqual([false]);
+    expect(runsOf(parseLog(quiet(at("10:11")))).map((r) => r.ok)).toEqual([true]);
+    const lines = parseLog(every2(at("12:00"), at("12:08"), errRun));
+    expect(decide({ lines, now: at("12:09"), state: {} }).mail?.subject).toBe("Website orders poller is DOWN: the last 5 runs all failed");
+  });
+});

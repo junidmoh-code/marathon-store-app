@@ -28,8 +28,9 @@
 // and, with the watchdog's state, whether to mail Junid: once when an outage
 // starts, once when it is over. It is over only after RECOVER_RUNS good runs in
 // a row (29 Oct had ONE good run, 10:12, in the middle of its outage: one good
-// run would have meant two extra mails). A run whose summary counts per-order
-// errors ("orders: … N ERROR(S)") is a good run: the poller ran. Outside trading hours it never mails (an
+// run would have meant two extra mails). A run whose summary counts errors
+// ("orders: … · N ERROR(S)") is a FAILED run: orders-poll.mjs exits 1 on it
+// (CodeRabbit, PR #818), so five of those in a row are an outage too. Outside trading hours it never mails (an
 // outage still open at 19:00 stays open, and its recovery mail goes out in the
 // morning once the poller is healthy again).
 
@@ -80,7 +81,7 @@ export function parseLog(text) {
 export function runsOf(lines) {
   const runs = [];
   for (const l of lines) {
-    if (/^orders: /.test(l.text)) runs.push({ at: l.at, ok: true, text: l.text });
+    if (/^orders: /.test(l.text)) runs.push({ at: l.at, ok: !/ · \d+ ERROR\(S\)/.test(l.text), text: l.text });
     else if (/^✗ /.test(l.text)) runs.push({ at: l.at, ok: false, text: l.text });
   }
   return runs;
