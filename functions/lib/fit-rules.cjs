@@ -210,12 +210,13 @@ const STYLIST_SCHEMA = {
  * so both are cached and a rebuild pays for them at the cache-read rate.
  * Pure.
  */
-function stylistRequest({ pieces, slots, core, optional, minPieces, maxPieces, season, kind = "lookbook", heroPid = null, avoidFormulas = [], feedback = [], book = rulebook() }) {
+function stylistRequest({ pieces, slots, core, optional, minPieces, maxPieces, season, kind = "lookbook", heroPid = null, avoidFormulas = [], feedback = [], model = null, book = rulebook() }) {
   const forced = heroPid ? pieces.find((p) => p.pid === heroPid) : null;
   const formulas = formulasFor(season, book).map((f) => f.key);
   const brief = [
     `Build ONE ${kind === "lookbook" ? "head-to-toe outfit for a model to wear on our lookbook poster" : "complete outfit for a flat-lay post"}.`,
     `It is ${season} in South Africa.`,
+    ...(model ? [`The model wearing it is ${model.label}, with ${model.skin}. ${model.suits} Choose the fit's colours for him (rulebook section 9).`] : []),
     `Pieces: ${minPieces} to ${maxPieces}, at most one per slot. It must have: ${core.map((alts) => alts.join(" or ")).join(", ")}.${optional.length ? ` It may add: ${optional.join(", ")} (only when the piece helps the fit).` : ""}`,
     `Formulas allowed this season: ${formulas.join(", ")}.`,
     ...(avoidFormulas.length ? [`The last posts were ${avoidFormulas.join(", ")}: choose a DIFFERENT formula unless the catalogue cannot dress any other well.`] : []),
@@ -327,12 +328,14 @@ function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, se
 }
 
 // ── THE CRITIC ────────────────────────────────────────────────────────────
-const CRITIC_SCHEMA = {
+// "model" is scored only for a fit a house model wears (the lookbook), never a flat-lay.
+const criteriaFor = (model) => (model ? [...CRITERIA, "model"] : CRITERIA);
+const criticSchema = (model) => ({
   type: "object",
   additionalProperties: false,
-  required: ["colour", "formality", "theme", "caption", "seen", "replace", "fix"],
+  required: [...criteriaFor(model), "seen", "replace", "fix"],
   properties: {
-    ...Object.fromEntries(CRITERIA.map((k) => [k, {
+    ...Object.fromEntries(criteriaFor(model).map((k) => [k, {
       type: "object", additionalProperties: false, required: ["score", "reason"],
       properties: { score: { type: "integer", description: "1 to 10" }, reason: { type: "string" } },
     }])),
@@ -340,7 +343,8 @@ const CRITIC_SCHEMA = {
     replace: { type: "array", items: { type: "string" }, description: "pids of the pieces that must leave the fit (empty when only the caption or theme is wrong)" },
     fix: { type: "string", description: "what the stylist must change, or empty when every score is 8 or more" },
   },
-};
+});
+const CRITIC_SCHEMA = criticSchema(null);
 
 const CRITIC_BRIEF = [
   "You are the critic. A stylist built the outfit below for a Marathon Club social post. You did not build it and you owe it nothing: score it honestly against the rulebook.",
@@ -350,6 +354,7 @@ const CRITIC_BRIEF = [
   "- formality: do the pieces belong to the same world as the hero (section 3)? One statement piece only (section 4)? Proportions (section 5)? Season (section 6)?",
   "- theme: does the theme name describe what the photos actually show? (Sage or mint green is not an earth tone.)",
   "- caption: is every item the caption names exactly what is in the photos (colour, fabric, brand)? Any piece called something it is not scores 4 or less. Also section 7.",
+  "- model (only when a model is named below): do the fit's colours suit the man wearing it (section 9)? A colour that matches his skin or washes him out near the face scores 6 or less. Is it how a stylish young South African would wear these pieces (section 8)?",
   `8 means a stylist would post it as is. Anything below ${PASS_SCORE} on any score is rebuilt, so be strict and specific in each reason.`,
   "In 'replace', list the pid of every piece that must leave the fit for it to pass (never the hero when it is the reason the fit exists); leave it empty when only the caption or theme name is wrong.",
   "Be brief: each reason under 25 words, each 'what' under 10 words, the fix under 50 words.",
@@ -360,10 +365,11 @@ const CRITIC_BRIEF = [
  * piece's photo with its label, then the fit and its caption. `photos` is
  * [{ pid, base64, mediaType }] in the fit's order. Pure.
  */
-function criticRequest(fit, photos, { book = rulebook() } = {}) {
+function criticRequest(fit, photos, { book = rulebook(), model = null } = {}) {
   // The critic needs the rules and the ONE formula the fit claims, not all ten
   // rows: ~1.5k tokens less on every critic call (measured 26 Oct).
-  const cut = book.text.indexOf("## 8.");
+  const marker = book.text.indexOf("<!-- config: formulas -->");
+  const cut = marker > 0 ? book.text.lastIndexOf("\n## ", marker) : -1;
   const rules = cut > 0 ? book.text.slice(0, cut).trim() : book.text;
   const f = book.formulas.find((x) => x.key === fit.formula);
   const content = [];
@@ -377,15 +383,16 @@ function criticRequest(fit, photos, { book = rulebook() } = {}) {
     `FORMULA: ${fit.formula}${f ? ` — ${f.name}. Hero: ${f.hero}. Tops: ${f.tops}. Bottoms: ${f.bottoms}. Colours: ${f.colours}.` : ""}`,
     `THEME NAME on the poster: ${fit.theme}`,
     `COLOURS the stylist claims: ${fit.colours.join(", ")}`,
+    ...(model ? [`THE MODEL wearing it: ${model.label}, with ${model.skin}. ${model.suits}`] : []),
     "CAPTION:",
     fit.caption,
     "",
     "Answer with the JSON object only.",
   ].join("\n") });
   return {
-    system: [{ type: "text", text: `${CRITIC_BRIEF}\n\n# The rulebook (sections 1–7; the fit's formula is given with the fit)\n\n${rules}`, cache_control: { type: "ephemeral" } }],
+    system: [{ type: "text", text: `${CRITIC_BRIEF}\n\n# The rulebook (every section but the formula table; the fit's formula is given with the fit)\n\n${rules}`, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content }],
-    schema: CRITIC_SCHEMA,
+    schema: criticSchema(model),
     maxTokens: CRITIC_MAX_TOKENS,
   };
 }
@@ -395,10 +402,10 @@ function criticRequest(fit, photos, { book = rulebook() } = {}) {
  * theme, caption }, min, reasons, seen, fix }. An answer missing a score is
  * not a pass (ok false). Pure.
  */
-function readCriticAnswer(json) {
+function readCriticAnswer(json, { model = null } = {}) {
   const a = json && typeof json === "object" ? json : {};
   const scores = {}, reasons = {};
-  for (const k of CRITERIA) {
+  for (const k of criteriaFor(model)) {
     const s = Number(a[k] && a[k].score);
     if (!Number.isInteger(s) || s < 1 || s > 10) return { ok: false, pass: false, reason: `the critic gave no ${k} score` };
     scores[k] = s;
@@ -417,7 +424,7 @@ function readCriticAnswer(json) {
 function feedbackLine(fit, { problems = null, verdict = null } = {}) {
   const what = fit && fit.pieces && fit.pieces.length ? `${fit.theme || "?"}: ${fit.pieces.map((p) => `${p.pid} (${p.brand} ${p.name})`).join(" + ")}` : "no usable fit";
   if (problems) return `${what} — refused by the checks: ${problems.join("; ")}`;
-  const low = CRITERIA.filter((k) => verdict.scores[k] < PASS_SCORE).map((k) => `${k} ${verdict.scores[k]}/10 (${verdict.reasons[k]})`);
+  const low = Object.keys(verdict.scores).filter((k) => verdict.scores[k] < PASS_SCORE).map((k) => `${k} ${verdict.scores[k]}/10 (${verdict.reasons[k]})`);
   const seen = verdict.seen.length ? ` The photos actually show: ${verdict.seen.map((s) => `${s.pid} ${s.colour} ${s.what}`).join("; ")}.` : "";
   const out = verdict.replace && verdict.replace.length ? ` These pieces must NOT be used again: ${verdict.replace.join(", ")}.` : "";
   return `${what} — the critic scored ${low.join("; ")}.${seen}${out} Fix: ${verdict.fix}`;
@@ -461,7 +468,7 @@ function headerOf(theme) {
 }
 
 module.exports = {
-  FIT_MODEL, PRICE, BUDGET_USD, PASS_SCORE, MIN_OUT_TOKENS, CRITIC_INPUT_RESERVE_USD, MAX_ROUNDS, CRITERIA, CRITIC_PHOTO_PX,
+  FIT_MODEL, PRICE, BUDGET_USD, PASS_SCORE, MIN_OUT_TOKENS, CRITIC_INPUT_RESERVE_USD, MAX_ROUNDS, CRITERIA, criteriaFor, CRITIC_PHOTO_PX,
   STYLIST_MAX_TOKENS, CRITIC_MAX_TOKENS, LUXURY_BRANDS, PHOTO_TOKENS,
   parseFormulas, rulebook, formulasFor, trimOptional, sizesInStock, sizeRefusal, luxuryBrand,
   catalogueText, stylistRequest, readStylistAnswer, themeAllowed, brandsNamed,

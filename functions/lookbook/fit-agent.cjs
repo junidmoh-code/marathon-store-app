@@ -155,7 +155,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
       const ph = photos.get(p.pid);
       if (ph) shots.push({ pid: p.pid, ...ph });
     }
-    const creq = fr.criticRequest(fit, shots);
+    const creq = fr.criticRequest(fit, shots, { model: offer.model || null });
     creq.maxTokens = ceiling(inputWorst(creq, "critic"), fr.CRITIC_MAX_TOKENS);
     lastCritic = creq; lastFitSize = fit.pieces.length;
     if (creq.maxTokens < fr.MIN_OUT_TOKENS) {
@@ -171,7 +171,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
     spent += crit.costUSD;
     cached.critic = crit.cachedTokens || 0; cachedAt.critic = now();
     last.critic = { req: creq, usage: crit.usage || null };
-    const verdict = fr.readCriticAnswer(crit.json);
+    const verdict = fr.readCriticAnswer(crit.json, { model: offer.model || null });
     if (verdict.ok && deps.remember) { try { await deps.remember(verdict.seen, fit.pieces); } catch (e) { log(`fit: the photo notes were not saved (${String(e && e.message).slice(0, 80)})`); } }
     const entry = { round, fit: summary(fit), costUSD: answer.costUSD + crit.costUSD };
     if (!verdict.ok) {
@@ -179,7 +179,7 @@ async function buildFit(offer, deps, { budgetUSD = fr.BUDGET_USD, feedback: earl
       return skip(`the critic's answer was unreadable: ${verdict.reason}`);
     }
     rounds.push({ ...entry, scores: verdict.scores, min: verdict.min, reasons: verdict.reasons, seen: verdict.seen, fix: verdict.fix });
-    log(`fit round ${round}: ${fit.theme} — colour ${verdict.scores.colour}, formality ${verdict.scores.formality}, theme ${verdict.scores.theme}, caption ${verdict.scores.caption}${verdict.pass ? " — PASS" : ` — rebuild: ${verdict.fix}`}`);
+    log(`fit round ${round}: ${fit.theme} — colour ${verdict.scores.colour}, formality ${verdict.scores.formality}, theme ${verdict.scores.theme}, caption ${verdict.scores.caption}${verdict.scores.model ? `, model ${verdict.scores.model}` : ""}${verdict.pass ? " — PASS" : ` — rebuild: ${verdict.fix}`}`);
     if (verdict.pass) return { ok: true, fit, verdict, rounds, costUSD: spent };
     for (const pid of verdict.replace) if (pid !== offer.heroPid && fit.pieces.some((p) => p.pid === pid)) banned.add(pid);
     feedback.push(fr.feedbackLine(fit, { verdict }));

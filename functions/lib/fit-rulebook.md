@@ -85,7 +85,43 @@ layers, knits and hoodies come back.
 - Two or three short lines. South African English. At most two emoji. At
   most eight hashtags, on their own final line. Do not write the link.
 
-## 8. The fit formulas
+## 8. South African style
+
+Dress him the way stylish young South African men actually dress in Durban and
+Johannesburg, not like a European catalogue.
+
+- **The sneaker is the centrepiece.** Clean, box-fresh, laces done; white and
+  cream sneakers are the default, worn with everything. A sneaker is never
+  hidden under a long hem: cropped, cuffed or tapered bottoms sit on top of it.
+- **Durban** (hot and humid in summer): light fabrics, shorts and short
+  sleeves, cream, white and bright colours, caps and bucket hats. Relaxed,
+  beach-to-city.
+- **Johannesburg** (warm days, afternoon storms on the Highveld): sharper and
+  darker, more layers; an open light jacket, an overshirt or a track top over a
+  tee is normal.
+- **Amapiano and smart-casual** looks: a boxy or oversized tee, a knit polo or
+  an open short-sleeve shirt, with wide, straight or pleated trousers or
+  relaxed cargos, and clean sneakers. Calm colours (cream, black, white, earth
+  tones) with one accent. It reads relaxed but deliberate, never sloppy.
+- **Tracksuits** are worn as a matching set (adidas, Nike, Puma), the top
+  half-zipped or open over a plain tee, with clean runners or court sneakers.
+  In summer the track pants go with a tee and no top.
+- **Cargos** go with a fitted or oversized plain or graphic tee and chunky
+  runners or Air Force 1s.
+- **Polos** (Lacoste, Polo Ralph Lauren, Tommy Hilfiger): buttoned, collar
+  flat, with chinos, slim denim or tailored shorts and clean leather or
+  designer sneakers. A crisp polo with clean white sneakers is a classic.
+- **Designer pieces**: ONE per fit, with clean basics around it. Never logos
+  head to toe.
+
+## 9. The model wearing it
+
+Every fit is worn by one of the three house models, and the request says which
+one and his skin tone. Choose colours that suit him: contrast and warmth that
+flatter his skin, never a colour that matches his skin or washes him out near
+the face. The critic scores this as "model".
+
+## 10. The fit formulas
 
 Every fit follows exactly one of these. The theme name on the poster is the
 formula's name. For "Colour Pop" the name is the accent colour plus "Pop"
@@ -105,3 +141,6 @@ pieces qualify; **colours** say which colours the fit may use.
 | runner-tech | Runner Tech | any | a technical runner (New Balance, Asics, On, Nike Air Max, Nike running) | performance or plain tee, light track top | track pants, nylon shorts, technical cargos | grey, black, navy, white, plus at most one colour from the runner |
 | prep-smart | Prep Smart | any | a clean leather or suede sneaker, or a designer sneaker | polo, knit polo, plain tee, overshirt (Lacoste, Polo Ralph Lauren, Tommy Hilfiger, Hugo Boss) | chinos, tailored shorts, slim dark denim | navy, white, cream, beige, stone, light blue, plus one muted colour (forest green, burgundy) |
 | colour-pop | Colour Pop | any | a sneaker in one clear accent colour | a quiet neutral tee, or one piece that repeats the shoe's accent colour | neutral bottoms (black, grey, stone, denim, white) | the one accent colour plus at most two neutrals |
+| amapiano-weekend | Amapiano Weekend | any | a clean white, cream or retro sneaker (adidas Samba or Gazelle, New Balance, Air Force 1, Air Max) | boxy or oversized plain tee, knit polo, open short-sleeve shirt | wide, straight or pleated trousers, relaxed cargos | cream, white, black, plus one earth tone or muted accent |
+| joburg-tracksuit | Joburg Tracksuit | any | a runner or court sneaker (adidas, Nike, Puma, New Balance) | a track top or tracksuit jacket over a plain tee, or a plain tee alone in summer | the matching or toning track pants | the tracksuit's colour plus white or black |
+| durban-smart-casual | Durban Smart Casual | summer | a clean white leather or designer sneaker | polo, knit polo or a light short-sleeve shirt | chinos, tailored shorts or slim light denim | white, cream, stone, beige, light blue, navy, plus one bright summer accent |
