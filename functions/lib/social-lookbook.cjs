@@ -831,21 +831,21 @@ const LOOKBOOK_SCENE_DEFS = {
     key: "court",
     floor: "the court's painted asphalt",
     location: "Location: an outdoor public basketball court in a South African township or city park (Soweto, Durban), photographed on location. Behind him: a chain-link fence, a weathered steel hoop on a pole, and low trees beyond. Real, lived-in: scuffed court paint, cracks in the asphalt.",
-    light: "Light: real late-afternoon South African sun, warm and low from one side, natural shadows on the court; open sky. Grade: natural, true-to-life colour, real skin tones, like a 35mm street photograph. Not a studio, no studio lighting, no backdrop.",
+    light: "Light: real late-afternoon South African sun, warm and low from one side, natural shadows on the court; open sky. Grade: natural, true-to-life colour, real skin tones, like a professional location fashion shoot, natural light shaped with a reflector. Not a studio, no studio lighting, no backdrop.",
     calm: "Keep the upper-left of the frame calm and uncluttered (sky, fence or trees only, no hoop or backboard there) and the court surface below his shoes plain.",
   },
   street: {
     key: "street",
     floor: "the pavement",
     location: "Location: a real inner-city street in Johannesburg or Durban (Maboneng, Braamfontein, Florida Road), photographed on location: a wide concrete pavement, a weathered painted wall or a shuttered shopfront behind him, a kerb and the edge of the road. No readable signs, posters, graffiti lettering, number plates or shop names anywhere in frame.",
-    light: "Light: natural daylight, soft open shade of a building with warm sunlight further down the street. Grade: natural, true-to-life colour, real skin tones, like a 35mm street photograph. Not a studio, no studio lighting, no backdrop.",
+    light: "Light: natural daylight, soft open shade of a building with warm sunlight further down the street. Grade: natural, true-to-life colour, real skin tones, like a professional location fashion shoot, natural light shaped with a reflector. Not a studio, no studio lighting, no backdrop.",
     calm: "Keep the upper-left of the frame calm and uncluttered (a plain stretch of wall) and the pavement below his shoes plain.",
   },
   wall: {
     key: "wall",
     floor: "the concrete pavement",
     location: "Location: outdoors in a South African city, in front of a long raw board-formed concrete wall (a parkade, a stadium or a freeway retaining wall), photographed on location. A strip of concrete pavement at his feet, a hint of sky at the very top.",
-    light: "Light: real midday-to-afternoon South African sun raking across the wall from one side, crisp natural shadow of his body on the concrete. Grade: natural, true-to-life colour, real skin tones, like a 35mm street photograph. Not a studio, no studio lighting, no backdrop.",
+    light: "Light: real midday-to-afternoon South African sun raking across the wall from one side, crisp natural shadow of his body on the concrete. Grade: natural, true-to-life colour, real skin tones, like a professional location fashion shoot, natural light shaped with a reflector. Not a studio, no studio lighting, no backdrop.",
     calm: "Keep the upper-left of the frame calm and uncluttered (plain concrete wall) and the pavement below his shoes plain.",
   },
 };
@@ -901,12 +901,14 @@ function sceneFor(saDate, scenes, lookbookDays) {
 }
 
 // ── THE MODEL ────────────────────────────────────────────────────────────────
-// Owner review of sample 01: the model is a Black man, dark skin, athletic,
-// in his 20s or 30s. A HARD requirement: it is in every hero prompt, and the
-// vision check below refuses a hero where he is not visibly Black.
-// The house model since 26 Oct (Junid): one invented man, the brand's face.
-const MODEL_DESCRIPTION = "a young South African Black man in his early 20s, slim athletic build, dark brown skin, a clean low fade haircut (short, neat, sharp hairline), clean-shaven or very light stubble, a calm confident expression";
-const MODEL_REQUIREMENT = `The model MUST be ${MODEL_DESCRIPTION}. This is a hard requirement.`;
+// Since 30 Oct 2026 (Junid): three invented house models in rotation
+// (lookbook/house-models.cjs). Each hero is told which man it is and gets his
+// picked face as a reference; the vision check below refuses a hero who is
+// not visibly that man. A HARD requirement, as the single model was.
+const modelRequirement = (model) => `The model MUST be ${model.description}. This is a hard requirement.`;
+
+// What makes it a professional shoot, not a phone snap (Junid, 30 Oct 19:16).
+const PRO_SHOOT = "A professional fashion editorial photograph from a paid model shoot: shot by a professional fashion photographer on a full-frame camera with an 85mm prime lens, tack-sharp focus on the model, gentle natural background blur, professional lighting, true colour and fine skin and fabric detail. Not a phone snapshot, not a selfie, not candid.";
 
 // ── THE HERO PROMPT ──────────────────────────────────────────────────────────
 // The picture is the ONLY thing the model makes. Type, prices, the wordmark,
@@ -914,15 +916,16 @@ const MODEL_REQUIREMENT = `The model MUST be ${MODEL_DESCRIPTION}. This is a har
 // composition is pinned so the category anchors land on the body.
 // `modelRef`: a character reference image is attached before the garments,
 // so every poster shows the same man.
-function buildHeroPrompt(rows, { scene = LOOKBOOK_SCENE_DEFS[DEFAULT_LOOKBOOK_SCENES[0]], modelRef = false } = {}) {
+function buildHeroPrompt(rows, { scene = LOOKBOOK_SCENE_DEFS[DEFAULT_LOOKBOOK_SCENES[0]], model } = {}) {
+  if (!model || !model.description) throw new Error("buildHeroPrompt: a house model is required");
   const sc = typeof scene === "string" ? LOOKBOOK_SCENE_DEFS[scene] : scene;
   const garments = (rows || []).map((r, i) =>
     `- ${SLOT_BY_KEY.get(r.slot).label.toUpperCase()}: ${r.displayName} — exactly as in REFERENCE ${i + 1}`).join("\n");
   return [
-    "Editorial fashion photograph, portrait orientation, highest detail.",
-    MODEL_REQUIREMENT,
-    ...(modelRef ? ["He is the man in the MODEL REFERENCE photo: the same face, skin tone, hair and build. Take only the man from it, never its clothing, headwear or background."] : []),
-    "He is full length, head to toe in frame, standing upright and relaxed, facing the camera at a slight three-quarter angle, arms loose at his sides.",
+    `${PRO_SHOOT} Portrait orientation, highest detail.`,
+    modelRequirement(model),
+    "He is the man in the MODEL REFERENCE photo: the same face, skin tone, hair and build. Take only the man from it, never its clothing, headwear or background.",
+    "He is full length, head to toe in frame, in a confident professional model pose: standing tall, weight on one leg, shoulders relaxed, one hand loosely in a pocket or at his side, chin level, a calm confident gaze at the camera, body at a slight three-quarter angle. Nothing covers the garments.",
     `Composition: a tight full-length frame. He fills about ${Math.round(BODY_FILL * 100)}% of the frame height: the top of his head is about ${Math.round(BODY_TOP * 100)}% below the top edge and the soles of his shoes rest on ${sc.floor} about ${Math.round((1 - BODY_TOP - BODY_FILL) * 100)}% above the bottom edge. His body is centred at about 58% of the frame width (slightly right of centre). Nothing crops him: the whole head, any hat and both shoes are in frame.`,
     sc.location,
     sc.light,
@@ -934,16 +937,19 @@ function buildHeroPrompt(rows, { scene = LOOKBOOK_SCENE_DEFS[DEFAULT_LOOKBOOK_SC
   ].join("\n");
 }
 
-// ── THE CHARACTER REFERENCE ──────────────────────────────────────────────────
-// Made once (scripts/social/lookbook-model-ref.mjs) and attached to every hero.
-function buildModelRefPrompt() {
+// ── THE MODEL CANDIDATES ─────────────────────────────────────────────────────
+// Three per model, made by scripts/social/house-models.mjs; Junid picks one.
+// Full length, a professional shoot, in plain clothes, so the face, skin,
+// hair and build are what the reference carries.
+function buildModelRefPrompt(model) {
+  if (!model || !model.description) throw new Error("buildModelRefPrompt: a house model is required");
   return [
-    "Photograph for a casting reference, portrait orientation, taken outdoors on location in South Africa.",
-    MODEL_REQUIREMENT,
-    "He is an invented person: not a celebrity, athlete, influencer or any real individual, and not a likeness of one.",
-    "Head and shoulders to mid-chest, facing the camera, calm confident expression, no headwear, no glasses, no jewellery.",
-    "He wears a plain white crew-neck T-shirt with no logo.",
-    "Behind him, softly out of focus: a raw concrete wall in a South African city. Natural daylight in open shade, soft and even on his face; true skin texture and tone. Not a studio, no studio lighting, no backdrop.",
+    `Casting photograph for a fashion model agency. ${PRO_SHOOT} Portrait orientation.`,
+    modelRequirement(model),
+    "He is an invented person: not a celebrity, athlete, influencer, model or any real individual, and not a likeness of one.",
+    "Full length, head to toe in frame, standing tall in a confident model pose facing the camera, a calm confident expression; no headwear, no glasses, no jewellery.",
+    "He wears a plain white crew-neck T-shirt with no logo, plain black slim trousers and plain white low-top sneakers with no logo.",
+    "Location: outdoors in a South African city, in front of a raw board-formed concrete wall, a strip of concrete pavement at his feet. Natural daylight in open shade, shaped with a reflector: soft and even on his face, true skin texture and tone.",
     "No text, no logos, no watermark.",
   ].join("\n");
 }
@@ -989,13 +995,14 @@ const WHERE = {
   bag: "the BODY of the bag (not its strap, not the hand)",
   sneakers: "the shoes, on the nearer shoe",
 };
-function buildHeroCheckPrompt() {
+function buildHeroCheckPrompt(model) {
+  if (!model || !model.description) throw new Error("buildHeroCheckPrompt: a house model is required");
   return [
     "You are checking an AI-generated fashion photograph before it is published.",
     "1. Does the image contain ANY text, letters, numbers, captions, watermarks, signatures, signage or graphic overlays that are NOT physically printed or embroidered on the model's clothing, shoes, hat or bag? Brand logos and wordmarks ON the garments do not count. Everything else counts, however small.",
-    "2. Is the model visibly a Black man with dark skin? Answer true only if he clearly is.",
+    `2. Is the model visibly ${model.description}? Judge his apparent heritage, skin tone, age, build and haircut. Answer true only if he clearly is.`,
     "Answer with ONLY a JSON object, no prose:",
-    '{"text_found": true|false, "text_seen": "what you saw, or empty", "model_black": true|false, "model_seen": "a few words describing the model"}',
+    '{"text_found": true|false, "text_seen": "what you saw, or empty", "model_match": true|false, "model_seen": "a few words describing the model"}',
   ].join("\n");
 }
 
@@ -1010,11 +1017,11 @@ function readModelCheck(text) {
   if (a !== -1 && b > a) { try { v = JSON.parse(s.slice(a, b + 1)); } catch { v = null; } }
   // `unreadable`: the check gave no answer, which is not evidence about the
   // picture. makeLookbook regenerates only on an explicit false.
-  if (!v || typeof v.model_black !== "boolean") return { ok: false, unreadable: true, seen: "", reason: "the model check did not say whether the model is Black" };
+  if (!v || typeof v.model_match !== "boolean") return { ok: false, unreadable: true, seen: "", reason: "the model check did not say whether the model is the house model" };
   const seen = typeof v.model_seen === "string" ? v.model_seen.slice(0, 120) : "";
-  return v.model_black
+  return v.model_match
     ? { ok: true, seen, reason: null }
-    : { ok: false, seen, reason: `the model is not visibly a Black man${seen ? ` (${seen})` : ""}` };
+    : { ok: false, seen, reason: `the model is not visibly the house model${seen ? ` (${seen})` : ""}` };
 }
 
 // ── WHERE EACH GARMENT IS: A LABELLED GRID, NOT RAW NUMBERS ─────────────────
@@ -1153,7 +1160,7 @@ module.exports = {
   parseStillFormats, stillCalendar,
   parseLookbookDays, isJsonList, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, readModelCheck, anchorsFor,
-  buildModelRefPrompt, buildThumbPrompt, MODEL_DESCRIPTION,
+  buildModelRefPrompt, buildThumbPrompt, PRO_SHOOT,
   LOOKBOOK_SCENE_DEFS, LOOKBOOK_SCENE_KEYS, DEFAULT_LOOKBOOK_SCENES, SCENE_EPOCH, parseLookbookScenes, sceneFor,
   POSTER_BRANDS, stripStyleCodes, posterName, THUMBS_PER_DAY,
   GRID, buildLocatePrompt, cellCentre, readLocate,

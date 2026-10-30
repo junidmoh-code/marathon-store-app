@@ -27,9 +27,10 @@ const GOOD = {
 };
 
 describe("the rulebook", () => {
-  test("it has ten formulas, each with hero, tops, bottoms and colours", () => {
+  test("it has thirteen formulas (three South African, 30 Oct), each with hero, tops, bottoms and colours", () => {
     const { formulas } = fr.rulebook();
-    assert.equal(formulas.length, 10);
+    assert.equal(formulas.length, 13);
+    for (const k of ["amapiano-weekend", "joburg-tracksuit", "durban-smart-casual"]) assert.ok(formulas.some((f) => f.key === k), k);
     for (const f of formulas) for (const k of ["hero", "tops", "bottoms", "colours"]) assert.ok(f[k].length > 10, `${f.key}.${k}`);
     for (const k of ["clean-luxe", "earth-tone-street", "monochrome-black", "summer-white"]) assert.ok(formulas.some((f) => f.key === k), k);
   });
@@ -148,6 +149,31 @@ describe("the critic's verdict", () => {
     const v = fr.readCriticAnswer({ colour: { score: 9 } });
     assert.equal(v.ok, false);
     assert.equal(v.pass, false);
+  });
+  const HM = require("../lookbook/house-models.cjs");
+  const M = { label: HM.MODELS.white.label, skin: HM.MODELS.white.skin, suits: HM.MODELS.white.suits };
+  test("a fit a house model wears is also scored on how its colours suit him; under 8 is a rebuild (Junid, 30 Oct)", () => {
+    assert.equal(fr.readCriticAnswer(S(9, 9, 9, 9), { model: M }).ok, false); // no model score: not a pass
+    const low = fr.readCriticAnswer({ ...S(9, 9, 9, 9), model: { score: 6, reason: "beige washes him out" } }, { model: M });
+    assert.equal(low.pass, false);
+    assert.match(fr.feedbackLine({ theme: "Summer White", pieces: OFFER.slice(0, 1) }, { verdict: low }), /model 6\/10 \(beige washes him out\)/);
+    assert.equal(fr.readCriticAnswer({ ...S(9, 9, 9, 9), model: { score: 8, reason: "navy suits him" } }, { model: M }).pass, true);
+    // A flat-lay (no model) is scored on the four, as before.
+    assert.equal(fr.readCriticAnswer(S(9, 9, 9, 9)).pass, true);
+  });
+  test("the critic is told who wears it, and the schema asks for the model score only then", () => {
+    const fit = fr.readStylistAnswer(GOOD, CTX).fit;
+    const withModel = fr.criticRequest(fit, [], { model: M });
+    assert.ok(withModel.schema.required.includes("model"));
+    assert.match(withModel.messages[0].content.slice(-1)[0].text, /THE MODEL wearing it: white South African, with fair-to-light skin/);
+    assert.ok(!fr.criticRequest(fit, []).schema.required.includes("model"));
+    assert.match(withModel.system[0].text, /## 8\. South African style/);
+    assert.match(withModel.system[0].text, /## 9\. The model wearing it/);
+  });
+  test("the stylist is told who wears it and what suits his skin", () => {
+    const req = fr.stylistRequest({ ...CTX, optional: [], model: M });
+    assert.match(req.messages[0].content[0].text, /The model wearing it is white South African, with fair-to-light skin with neutral undertones\. Colours that suit him: navy/);
+    assert.doesNotMatch(fr.stylistRequest({ ...CTX, optional: [] }).messages[0].content[0].text, /The model wearing it/);
   });
 });
 

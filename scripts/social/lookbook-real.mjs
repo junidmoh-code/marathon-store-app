@@ -77,7 +77,7 @@ if (process.argv.includes("--rerender")) {
     if (!c.png) { dropped.push({ ...old, why: `photo does not cut out cleanly (${(c.tried || []).join(", ")})` }); continue; }
     rows.push({ ...r.row, thumb: img.buffer, cutout: c });
   }
-  const check = lb.readHeroCheck(await deps.checkHero(heroBuf, "image/jpeg", lb.buildHeroCheckPrompt()));
+  const check = lb.readHeroCheck(await deps.checkHero(heroBuf, "image/jpeg", lb.buildHeroCheckPrompt(require("./lookbook/house-models.cjs").MODELS.black) /* only its text answer is read here */));
   const gridded = await gridOverlay(heroBuf, lb.GRID);
   await writeFile(join(ROOT, "docs/lookbook-real-grid.jpg"), gridded);
   const located = lb.readLocate(await deps.checkHero(gridded, "image/jpeg", lb.buildLocatePrompt(rows)), rows);

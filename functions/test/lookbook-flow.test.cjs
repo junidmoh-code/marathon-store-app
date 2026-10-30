@@ -36,8 +36,10 @@ function seed({ withHat = true } = {}) {
 
 let IMG;
 const img = async () => IMG || (IMG = await sharp({ create: { width: 360, height: 640, channels: 3, background: "#6b7" } }).jpeg().toBuffer());
-const CLEAN = JSON.stringify({ text_found: false, text_seen: "", model_black: true, model_seen: "Black man, dark skin" });
-const NOT_BLACK = JSON.stringify({ text_found: false, text_seen: "", model_black: false, model_seen: "white man, light skin" });
+const CLEAN = JSON.stringify({ text_found: false, text_seen: "", model_match: true, model_seen: "young Black man, skin fade" });
+const NOT_BLACK = JSON.stringify({ text_found: false, text_seen: "", model_match: false, model_seen: "older man, long hair" });
+const houseModels = require("../lookbook/house-models.cjs");
+const HOUSE = { ok: true, slot: "black", model: houseModels.MODELS.black, candidate: "2", provisional: false, ref: { buffer: Buffer.from("face"), contentType: "image/jpeg" } };
 const LOCATED = JSON.stringify({ head: "G3", items: { hat: "G2", sneakers: "G17" } });
 const DIRTY = JSON.stringify({ text_found: true, text_seen: "VOGUE", items: {} });
 
@@ -58,6 +60,7 @@ function deps(db, over = {}) {
     unitsLeft: async () => 4 - ((await counter().once("value")).val() || 0),
     isUnbilledError: (m) => /HTTP 5\d\d/.test(m),
     cutout: async (buf) => ({ png: await sharp(buf).png().toBuffer(), method: "fake" }),
+    readHouseModel: async () => HOUSE,
     ...over,
   };
   d.calls = calls;
@@ -77,15 +80,15 @@ describe("makeLookbook", () => {
     assert.equal(r.rows[0].nameLine, "CAP FITTED WITH CURVED BRIM");
     assert.equal(r.costUSD, 0.134);
     assert.equal(r.scene, "concrete");
-    assert.match(sentParts[0].text, /MUST be a young South African Black man in his early 20s/);
-    assert.match(sentParts[0].text, /low fade/);
+    assert.match(sentParts[0].text, /MUST be a young Black South African man in his early-to-mid 20s/);
+    assert.match(sentParts[0].text, /skin fade or a buzz cut/);
     assert.match(sentParts[0].text, /board-formed concrete wall/);
     assert.doesNotMatch(sentParts[0].text, /palm/);
     assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), 1);
-    // prompt, then (label, image) per row
-    assert.equal(sentParts.length, 1 + 2 * r.rows.length);
-    assert.match(sentParts[1].text, /^REFERENCE 1 — HAT:/);
-    assert.ok(sentParts[2].inline_data);
+    // prompt, the model reference (label, image), then (label, image) per row
+    assert.equal(sentParts.length, 3 + 2 * r.rows.length);
+    assert.match(sentParts[3].text, /^REFERENCE 1 — HAT:/);
+    assert.ok(sentParts[4].inline_data);
     assert.equal(r.anchors.hat.source, "vision");
     assert.deepEqual(r.located.head, { x: 6.5 / 12, y: 2.5 / 20 });
     assert.equal(r.anchors.jacket.source, "body");
@@ -218,7 +221,7 @@ describe("makeLookbook", () => {
 });
 
 describe("makeLookbook — the model gate (owner review of sample 01)", () => {
-  test("not visibly Black: regenerated once even in production (maxAttempts 1), and the second passes", async () => {
+  test("not visibly the house model: regenerated once even in production (maxAttempts 1), and the second passes", async () => {
     const db = seed();
     await db.ref("social_generation_budget/2026-10-18/count").set(1);   // the one reel
     let n = 0;
@@ -231,7 +234,7 @@ describe("makeLookbook — the model gate (owner review of sample 01)", () => {
     assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), 3);
   });
 
-  test("not visibly Black twice: the model gate, and no third hero", async () => {
+  test("not visibly the house model twice: the model gate, and no third hero", async () => {
     const db = seed();
     const d = deps(db, { checkHero: async (_b, _m, p) => (/grid/.test(p) ? LOCATED : NOT_BLACK) });
     const r = await makeLookbook(db, d, { month: 5, minHeroPx: 0, nowMs: NOW, maxAttempts: 1 });
@@ -240,7 +243,7 @@ describe("makeLookbook — the model gate (owner review of sample 01)", () => {
     assert.match(r.reason, /failed the model check twice/);
   });
 
-  test("an answer with no model_black is a model FAIL, never a pass", async () => {
+  test("an answer with no model_match is a model FAIL, never a pass", async () => {
     const db = seed();
     const d = deps(db, { checkHero: async (_b, _m, p) => (/grid/.test(p) ? LOCATED : JSON.stringify({ text_found: false, text_seen: "" })) });
     const r = await makeLookbook(db, d, { month: 5, minHeroPx: 0, nowMs: NOW, maxAttempts: 1 });
@@ -265,28 +268,55 @@ describe("makeLookbook — the model gate (owner review of sample 01)", () => {
     assert.equal(d.calls.gen, 1);
   });
 
-  test("the character reference goes in before the garments, and the prompt says to use him", async () => {
+  test("the house model's reference goes in before the garments, and the prompt and check are his", async () => {
     const db = seed();
-    let sent = null;
+    let sent = null, checked = null;
     const d = deps(db, {
-      readModelRef: async () => ({ buffer: Buffer.from("face"), contentType: "image/jpeg" }),
       generateHero: async (parts) => { sent = parts; return { buffer: await img(), mime: "image/jpeg", costUSD: 0.24, engine: "nbpro" }; },
+      checkHero: async (_b, _m, p) => { if (!/grid/.test(p)) checked = p; return /grid/.test(p) ? LOCATED : CLEAN; },
     });
     const r = await makeLookbook(db, d, { month: 5, minHeroPx: 0, nowMs: NOW });
     assert.equal(r.ok, true, r.reason);
     assert.equal(r.modelRef, true);
+    assert.deepEqual(r.model, { slot: "black", candidate: "2", provisional: false });
+    assert.match(sent[0].text, /MUST be a young Black South African man/);
+    assert.match(sent[0].text, /professional fashion photographer on a full-frame camera/);
     assert.match(sent[0].text, /MODEL REFERENCE photo/);
     assert.match(sent[1].text, /^MODEL REFERENCE/);
     assert.ok(sent[2].inline_data);
     assert.match(sent[3].text, /^REFERENCE 1 — HAT:/);
+    assert.match(checked, /visibly a young Black South African man/);
   });
 
-  test("an unreadable character reference is not a gate", async () => {
+  test("no approved house model: the models gate, before any unit, thumbnail or stylist call (Junid, 30 Oct)", async () => {
     const db = seed();
-    const d = deps(db, { readModelRef: async () => { throw new Error("404"); } });
+    let asked = null;
+    const d = deps(db, { readHouseModel: async (o) => { asked = o; return { ok: false, pending: true, reason: "Junid has not approved the new house models yet" }; } });
+    const before = (await db.ref("social_generation_budget/2026-10-18/count").once("value")).val();
     const r = await makeLookbook(db, d, { month: 5, minHeroPx: 0, nowMs: NOW });
-    assert.equal(r.ok, true);
-    assert.equal(r.modelRef, false);
+    assert.equal(r.gate, "models-pending");
+    assert.match(r.reason, /not approved/);
+    assert.equal(r.costUSD, 0);
+    assert.equal(d.calls.gen, 0);
+    assert.deepEqual(asked, { slot: null, allowUnapproved: false });
+    assert.equal((await db.ref("social_generation_budget/2026-10-18/count").once("value")).val(), before);
+  });
+
+  test("an unreadable model reference is the models gate, never a hero drawn without him", async () => {
+    const db = seed();
+    const d = deps(db, { readHouseModel: async () => { throw new Error("404"); } });
+    const r = await makeLookbook(db, d, { month: 5, minHeroPx: 0, nowMs: NOW });
+    assert.equal(r.gate, "models");
+    assert.match(r.reason, /could not be read: 404/);
+    assert.equal(d.calls.gen, 0);
+  });
+
+  test("deps with no house-model reader cannot draw a lookbook", async () => {
+    const db = seed();
+    const d = deps(db, { readHouseModel: undefined });
+    const r = await makeLookbook(db, d, { month: 5, minHeroPx: 0, nowMs: NOW });
+    assert.equal(r.gate, "models");
+    assert.equal(d.calls.gen, 0);
   });
 
   test("the garden scene is the garden prompt", async () => {

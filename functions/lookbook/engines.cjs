@@ -7,8 +7,8 @@
 //   · the panel's clean product shots (thumbs.cjs): Flash-Lite with Flash
 //     behind it, cached in social_lookbook/thumbs/{pid} + Storage, under
 //     their own daily ceiling (THUMBS_PER_DAY), never the hero cap;
-//   · the house model (house-model.cjs → social_lookbook/model), attached to
-//     every hero so the posters show one man;
+//   · the house models (house-models.cjs → social_lookbook/models): three
+//     invented men in rotation, each one's picked face attached to his heroes;
 //   · the fit agent (fit-agent.cjs): the opus-5-5 stylist and critic that
 //     build and score every lookbook fit;
 //   · a vision model the pipeline already pays for, for the no-text check and
@@ -31,7 +31,7 @@ const socialRecovery = require("../lib/social-recovery.cjs");
 const lookbook = require("../lib/social-lookbook.cjs");
 const { makeStylistChooser } = require("./stylist-call.cjs");
 const fitAgent = require("./fit-agent.cjs");
-const houseModel = require("./house-model.cjs");
+const houseModels = require("./house-models.cjs");
 const fitRules = require("../lib/fit-rules.cjs");
 
 // ── THE CRITIC'S PHOTO NOTES ─────────────────────────────────────────────
@@ -230,22 +230,31 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
     });
   }
 
-  // ── THE CHARACTER REFERENCE ────────────────────────────────────────────
-  // The house model (house-model.cjs): Junid's pick, the best-scoring
-  // candidate until he picks, and the auto-pick once 24 hours pass.
-  async function readModelRef() {
-    if (!bucket) return null;
-    const [hm, model] = await Promise.all([db.ref(houseModel.HOUSE_PATH).once("value"), db.ref(houseModel.MODEL_PATH).once("value")]);
-    const ref = await houseModel.resolveRef(hm.val(), model.val(), { pick: (u) => db.ref().update(u) });
-    if (!ref) return null;
-    if (log && ref.house) log(`lookbook: house model ${ref.house}${ref.provisional ? " (best-scoring, not picked yet)" : ref.auto ? " (auto-picked: no reply within 24 hours)" : ""}`);
-    const [buffer] = await bucket.file(ref.path).download();
-    return { buffer, contentType: ref.contentType };
+  // ── THE HOUSE MODEL (house-models.cjs) ─────────────────────────────────
+  // Three invented men in rotation. Refused (ok false) until Junid has
+  // approved the models and all three are picked; `allowUnapproved` is for the
+  // proof samples only (status "sample", never published), and lets an
+  // unpicked model stand in with his best-scoring face.
+  async function readHouseModel({ slot = null, allowUnapproved = false } = {}) {
+    if (!bucket) return { ok: false, reason: "no storage bucket to read the model reference from" };
+    const [m, a, r] = await Promise.all([houseModels.MODELS_PATH, houseModels.APPROVAL_PATH, houseModels.ROTATION_PATH].map((p) => db.ref(p).once("value")));
+    const models = m.val() || {};
+    if (!allowUnapproved) {
+      const g = houseModels.gateFor(models, a.val());
+      // pending: the deliberate hold (not picked or not approved), never a fault.
+      if (!g.ok) return { ok: false, pending: true, reason: g.reason };
+    }
+    const s = slot || houseModels.nextSlot(r.val());
+    const c = houseModels.chosenFor(models[s], { allowProvisional: allowUnapproved });
+    if (!c) return { ok: false, reason: `the ${s} model has no face yet` };
+    const [buffer] = await bucket.file(c.path).download();
+    if (log) log(`lookbook: house model ${s} candidate ${c.n}${c.provisional ? " (best-scoring stand-in, not picked yet)" : ""}`);
+    return { ok: true, slot: s, model: houseModels.MODELS[s], candidate: c.n, provisional: c.provisional, ref: { buffer, contentType: c.contentType || "image/jpeg" } };
   }
 
   return {
     fetchImage, generateHero, checkHero, claimUnit, releaseUnit, unitsLeft,
-    generateThumb, claimThumbUnit, readThumbCache, writeThumbCache, markThumbFailed, readModelRef,
+    generateThumb, claimThumbUnit, readThumbCache, writeThumbCache, markThumbFailed, readHouseModel,
     inlineImagePart: gemini.inlineImagePart,
     isUnbilledError: (m) => socialRecovery.isUnbilledProviderError(m),
     // No Anthropic key (the thumbnail pre-warm): no chooser, the top score stands.

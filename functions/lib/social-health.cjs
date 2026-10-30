@@ -339,7 +339,11 @@ function assessStill(still, { nowMs, dayStart, saDate }) {
   } else if (!log.finishedAt && nowMs - Number(log.startedAt || 0) > 40 * 60 * 1000) {
     out.reasons.push("the 07:00 still started and never finished"); out.silent = true;
   }
-  if (log && log.fallback) {
+  // A lookbook held for the house models (gate "models-pending": Junid has not
+  // approved them yet, 30 Oct 2026) is on purpose, not a fault: no alarm. Gate
+  // "models" (an unreadable face, no reader) still alarms.
+  const held = (l) => Boolean(l && l.gate === "models-pending");
+  if (log && log.fallback && !held(log)) {
     out.reasons.push(`today's lookbook fell back to the current style (${log.gate || "?"}: ${String(log.reason || "no reason recorded").slice(0, 160)})`);
   }
   // The previous lookbook day, from the last few days' records.
@@ -349,10 +353,10 @@ function assessStill(still, { nowMs, dayStart, saDate }) {
     .reverse()
     .map((d) => ({ d, l: still.recent[d] }))
     .find((x) => x.l && x.l.planned === "lookbook");
-  if (prior && prior.l.fallback) {
+  if (prior && prior.l.fallback && !held(prior.l)) {
     const ageDays = Math.round((Date.parse(`${saDate}T00:00:00Z`) - Date.parse(`${prior.d}T00:00:00Z`)) / DAY_MS);
     const todayIsLookbook = Boolean(log && log.planned === "lookbook");
-    if (todayIsLookbook && log.fallback) {
+    if (todayIsLookbook && log.fallback && !held(log)) {
       out.reasons.push(`the lookbook has fallen back on two lookbook days running (${prior.d} and ${saDate})`);
       out.silent = true;
     } else if (!todayIsLookbook && ageDays <= 2) {

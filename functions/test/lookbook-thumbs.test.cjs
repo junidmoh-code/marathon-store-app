@@ -150,14 +150,30 @@ describe("engines: the thumbnail cache and its ceiling", () => {
     assert.equal((await db.ref("social_generation_budget").once("value")).val(), null);
   });
 
-  test("the character reference is read only from its own folder", async () => {
+  test("the house model: refused until Junid approves; then the rotation's next man, only from the models folder", async () => {
     const bucket = fakeBucket();
-    bucket.files.set("aiStudio/social/lookbook/model/ref-1.jpg", Buffer.from("face"));
-    const ok = make(new FakeRtdb({ social_lookbook: { model: { path: "aiStudio/social/lookbook/model/ref-1.jpg" } } }), bucket);
-    assert.equal(String((await ok.readModelRef()).buffer), "face");
-    const bad = make(new FakeRtdb({ social_lookbook: { model: { path: "products/x.jpg" } } }), bucket);
-    assert.equal(await bad.readModelRef(), null);
-    assert.equal(await make(new FakeRtdb({}), bucket).readModelRef(), null);
+    const P = (slot, n) => `aiStudio/social/lookbook/models/${slot}-1-${n}.jpg`;
+    for (const slot of ["black", "white", "coloured"]) for (const n of [1, 2]) bucket.files.set(P(slot, n), Buffer.from(`${slot}${n}`));
+    const node = (slot, picked = null) => ({ decideBy: 1, picked, candidates: { 1: { path: P(slot, 1), score: 9 }, 2: { path: P(slot, 2), score: 8 } } });
+    const picked = { black: node("black", "2"), white: node("white", "1"), coloured: node("coloured", "1") };
+    // Not approved: nothing, even with all three picked.
+    const none = await make(new FakeRtdb({ social_lookbook: { models: picked } }), bucket).readHouseModel();
+    assert.equal(none.ok, false);
+    assert.equal(none.pending, true);
+    assert.match(none.reason, /not approved/);
+    const faces = { black: P("black", 2), white: P("white", 1), coloured: P("coloured", 1) };
+    // Approved: the rotation after "black" is "white", his picked face.
+    const ok = await make(new FakeRtdb({ social_lookbook: { models: picked, modelsApproval: { approved: true, faces }, modelRotation: { last: "black" } } }), bucket).readHouseModel();
+    assert.equal(ok.slot, "white");
+    assert.equal(String(ok.ref.buffer), "white1");
+    assert.match(ok.model.description, /white South African/);
+    // The proof samples: an unpicked model stands in with his best-scoring face, never approved.
+    const proof = await make(new FakeRtdb({ social_lookbook: { models: { coloured: node("coloured") } } }), bucket).readHouseModel({ slot: "coloured", allowUnapproved: true });
+    assert.equal(proof.provisional, true);
+    assert.equal(String(proof.ref.buffer), "coloured1");
+    // The rejected man's folder is nobody's reference.
+    const stray = { black: { decideBy: 1, picked: "1", candidates: { 1: { path: "aiStudio/social/lookbook/rejected/2026-10-30/house-2.jpg", score: 10 } } } };
+    assert.equal((await make(new FakeRtdb({ social_lookbook: { models: stray } }), bucket).readHouseModel({ slot: "black", allowUnapproved: true })).ok, false);
   });
 });
 
