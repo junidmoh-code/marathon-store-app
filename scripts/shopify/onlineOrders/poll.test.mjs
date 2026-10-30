@@ -704,6 +704,14 @@ describe("an online exchange ships through the normal pack/courier flow", () => 
     expect(order(f, EX).shipping.provider).toBeUndefined();
   });
 
+  it("live off, the plan itself fails (no address): courier_failed, never finished (CodeRabbit #815)", async () => {
+    const f = fakeDb(exchangeWorld({ live: false }, { shipping: {} }));
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh, { courier: fakeCourier() }).deps);
+    expect(shopifyWrites(sh)).toEqual([]);
+    expect(order(f, EX)).toMatchObject({ fulfilState: "courier_failed", attentionOpen: true });
+  });
+
   it("live, booking fails: held as courier_failed exactly like a website order (no Shopify either way)", async () => {
     const f = fakeDb(exchangeWorld({ live: true }));
     const courier = { ...fakeCourier(), createShipment: async () => { throw Object.assign(new Error("HTTP 400 bad address"), { status: 400 }); } };

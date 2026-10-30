@@ -791,7 +791,10 @@ async function shipOrder(ctx, id, order) {
     : (booking?.reason === "already booked" || /booking already booked/.test(String(booking?.reason)) ? booked : null);
   let live = false;
   try { live = await readLive(db); } catch (e) { live = true; log(`  ! ${orderLabel(order)}: could not read the live switch — holding (${String(e?.message || e).slice(0, 120)})`); }
-  if (live && !waybill) {
+  // An exchange (no Shopify order) is finished only on a booking or a recorded dry run (CodeRabbit, #815): a plan that
+  // failed with live off (no address, no usable rate) takes the courier-failure path instead of "done".
+  const exchangeUnplanned = !order.shopifyGid && isExchangeKey(id) && !waybill && !booking?.dryRun;
+  if ((live && !waybill) || exchangeUnplanned) {
     const why = String(booking?.error || booking?.reason || "no waybill came back").slice(0, 300);
     await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
       fulfilState: "courier_failed",
