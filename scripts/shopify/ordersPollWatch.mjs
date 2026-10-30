@@ -141,7 +141,9 @@ export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = 
         : `no new poll run in logs/orders-poll.log for ${mins(a.quietMs)} minutes`;
     // For an error summary the error itself is on a detail line of that run (indented "✗ …" / "! …").
     const lastRunAt = a.runs.length ? a.runs[a.runs.length - 1].at : null;
-    const detail = onlyErrors ? [...lines].reverse().find((l) => l.at <= lastRunAt && /^\s+[✗!]/.test(l.text))?.text.trim() : null;
+    const allRuns = runsOf(lines);
+    const prevRunAt = allRuns.length > 1 ? allRuns[allRuns.length - 2].at : -Infinity;
+    const detail = onlyErrors ? [...lines].reverse().find((l) => l.at <= lastRunAt && l.at >= prevRunAt && /^\s+[✗!]/.test(l.text))?.text.trim() : null;
     const lastErr = a.failing ? (detail || a.runs[a.runs.length - 1].text).slice(0, 200) : null;
     return {
       mail: {
@@ -179,7 +181,7 @@ export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = 
         text: [
           `The website-orders poller is working again. Its last ${recoverRuns} runs were good (the latest ${fmt(a.runs[a.runs.length - 1].at)} SAST).`,
           "",
-          `It was down from about ${fmt(began)} SAST (${outage.reason}), roughly ${mins(now - began)} minutes until this check.`,
+          `${/reported errors/.test(outage.reason) ? "It reported errors" : "It was down"} from about ${fmt(began)} SAST (${outage.reason}), roughly ${mins(now - began)} minutes until this check.`,
           "Orders that came in meanwhile are picked up by the normal runs; nothing to do unless something looks missing.",
           "",
           "Last runs in the log:",
