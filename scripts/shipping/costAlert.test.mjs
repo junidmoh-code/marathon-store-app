@@ -57,6 +57,28 @@ describe("expensiveWhy", () => {
   });
 });
 
+describe("the price line and the wording", () => {
+  it("charges that add up to the cost are shown as a sum (TCG lists them incl. VAT)", () => {
+    const m = costAlertMail(order, { ...caps, cost: 224.02, priced: { base: 119.6, surcharges: [{ name: "High risk", charge: 80.5 }], adjustments: [{ name: "Fuel surcharge", charge: 23.92 }] } }, 200);
+    expect(m.text).toMatch(/Price: base R119\.60 \+ High risk R80\.50 \+ Fuel surcharge R23\.92 = R224\.02 \(incl\. VAT\)\./);
+  });
+  it("charges that don't add up are listed, never claimed to equal the cost", () => {
+    const m = costAlertMail(order, { ...caps, cost: 400, priced: { base: 100, surcharges: [], adjustments: [] } });
+    expect(m.text).toMatch(/Price: R400\.00 \(incl\. VAT\); Courier Guy's quote listed base R100\.00\./);
+  });
+  it("shoeboxes are not told to use a smaller box", () => {
+    const why = expensiveWhy({ parcel: { parcels: [{ kind: "shoebox", pairs: 4, volumetricKg: 12 }] }, priced: { chargedKg: 12, actualKg: 5, volumetricKg: 12 } });
+    expect(why[0]).toMatch(/^Box size:/);
+    expect(why[0]).not.toMatch(/smaller box/);
+  });
+  it("a fuel-only make-up names the fuel in the distance/service reason", () => {
+    expect(expensiveWhy({ service: "ECO", priced: { base: 230, adjustments: [{ name: "Fuel surcharge", charge: 30 }], chargedKg: 2, actualKg: 2, volumetricKg: 2 } })[0]).toMatch(/\(plus Fuel surcharge R30\.00\)/);
+  });
+  it("a null parcel entry never throws", () => {
+    expect(() => expensiveWhy({ parcel: { parcels: [null, { kind: "box", volumetricKg: 4 }] } })).not.toThrow();
+  });
+});
+
 describe("costAlertThreshold", () => {
   it("defaults to R250; a positive number overrides", () => {
     expect(DEFAULT_COST_ALERT_RAND).toBe(250);

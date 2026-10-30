@@ -533,7 +533,7 @@ describe("Shopify fulfilment after the pack", () => {
       expect(mails[0].subject).toMatch(/^Waybill R355\.68 for /);
       expect(mails[0].text).toMatch(/Why it's expensive:/);
       expect(mails[0].text).toMatch(/Waybill: ABC123 .*to Cape Town, Western Cape/);
-      expect(mails[0].text).toMatch(/Price: base R/);
+      expect(mails[0].text).toMatch(/Price: R355\.68 \(incl\. VAT\); Courier Guy.s quote listed base R/);
       expect(order(f).shipping.costAlert).toMatchObject({ state: "mailed", waybill: "ABC123" });
       expect(order(f).shipping.priced).toMatchObject({ quoted: expect.any(Number) });
       expect(order(f).fulfilState).toBe("done");
@@ -550,11 +550,28 @@ describe("Shopify fulfilment after the pack", () => {
       expect(order(f).shipping.costAlert).toBeUndefined();
     });
 
-    it("a failed send is recorded, never blocks the fulfilment", async () => {
+    it("a failed send stays queued (never blocks the fulfilment) and goes out on a later tick", async () => {
       const f = fakeDb(live());
-      const d = deps(f, shopify({ fos }), { courier: booked(400), send: async () => { throw new Error("smtp down"); } });
+      let down = true;
+      const sent = [];
+      const send = async (m) => { if (down) throw new Error("smtp down"); sent.push(m); };
+      const d = deps(f, shopify({ fos }), { courier: booked(400), send });
       await runOrdersPoll(d.deps);
-      expect(order(f).shipping.costAlert).toMatchObject({ state: "failed", error: "smtp down" });
+      expect(order(f).fulfilState).toBe("done");
+      expect(order(f).shipping.costAlert).toMatchObject({ state: "queued", waybill: "ABC123" });
+      expect(f.read("online_orders_meta/costAlertQueue/9001")).toMatchObject({ waybill: "ABC123", attempts: 1 });
+      down = false;
+      await runOrdersPoll(d.deps);
+      expect(sent.filter((m) => /^Waybill R400\.00/.test(m.subject))).toHaveLength(1);
+      expect(f.read("online_orders_meta/costAlertQueue/9001")).toBeFalsy();
+      expect(order(f).shipping.costAlert).toMatchObject({ state: "mailed" });
+    });
+
+    it("no mail sender on the machine: kept in the queue, nothing lost", async () => {
+      const f = fakeDb(live());
+      const d = deps(f, shopify({ fos }), { courier: booked(400), send: null });
+      await runOrdersPoll(d.deps);
+      expect(f.read("online_orders_meta/costAlertQueue/9001")).toMatchObject({ waybill: "ABC123" });
       expect(order(f).fulfilState).toBe("done");
     });
   });

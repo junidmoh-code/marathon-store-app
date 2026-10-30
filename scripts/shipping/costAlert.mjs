@@ -40,14 +40,15 @@ export function expensiveWhy(shipping) {
   const s = shipping || {};
   const pr = s.priced || {};
   const parcel = s.parcel || s.booking?.parcel || {};
-  const parcels = Array.isArray(parcel.parcels) ? parcel.parcels : [];
+  const parcels = (Array.isArray(parcel.parcels) ? parcel.parcels : []).filter(Boolean);
   const actual = finite(pr.actualKg) ? Number(pr.actualKg) : finite(parcel.actualKg) ? Number(parcel.actualKg) : null;
   const vol = finite(pr.volumetricKg) ? Number(pr.volumetricKg) : parcels.reduce((t, p) => t + (Number(p.volumetricKg) || 0), 0) || null;
   const charged = finite(pr.chargedKg) ? Number(pr.chargedKg) : finite(parcel.chargeableKg) ? Number(parcel.chargeableKg) : null;
   const why = [];
 
   if (vol && actual && vol >= actual * 1.5 && (!charged || charged >= vol * 0.95)) {
-    why.push(`Box size: charged on ${kg(charged ?? vol)} because of the box's volume, while the goods weigh only ${kg(actual)}. A smaller box would cut this.`);
+    const shoeboxes = parcels.length > 0 && parcels.every((p) => p.kind === "shoebox");
+    why.push(`Box size: charged on ${kg(charged ?? vol)} because of the box's volume, while the goods weigh only ${kg(actual)}.${shoeboxes ? "" : " A smaller box would cut this."}`);
   } else if (actual && charged && actual >= charged * 0.95 && actual >= 5) {
     why.push(`Weight: the goods themselves weigh ${kg(actual)}.`);
   }
@@ -58,7 +59,8 @@ export function expensiveWhy(shipping) {
   if (unmeasured.length) why.push(`Estimated, not measured: ${unmeasured.join(", ")} — the real size or weight may differ.`);
   if (!why.length || (why.length === 1 && unmeasured.length)) {
     const base = finite(pr.base) ? `the base rate ${R(pr.base)}` : "the base rate";
-    why.unshift(`Distance/service: no box or surcharge problem — ${base} for ${s.service || "this service"} to this address is the cost.`);
+    const adj = (Array.isArray(pr.adjustments) ? pr.adjustments : []).map((c) => `${c.name} ${R(c.charge)}`).join(" + ");
+    why.unshift(`Distance/service: no box or surcharge problem — ${base} for ${s.service || "this service"} to this address${adj ? ` (plus ${adj})` : ""} is the cost.`);
   }
   return why;
 }
@@ -75,13 +77,18 @@ export function costAlertMail(order, shipping, threshold = DEFAULT_COST_ALERT_RA
   const a = s.address || order?.shipping?.address || {};
   const where = [a.city, a.province].filter(Boolean).join(", ");
   const parcel = s.parcel || s.booking?.parcel || {};
-  const parcels = Array.isArray(parcel.parcels) ? parcel.parcels : [];
+  const parcels = (Array.isArray(parcel.parcels) ? parcel.parcels : []).filter(Boolean);
   const pr = s.priced || {};
   const why = expensiveWhy(s);
   const extras = [...(pr.surcharges || []), ...(pr.adjustments || [])];
-  const priceLine = finite(pr.base)
-    ? `Price: base ${R(pr.base)}${extras.map((c) => ` + ${c.name} ${R(c.charge)}`).join("")} = ${R(cost)} (incl. VAT).`
-    : `Price: ${R(cost)} (incl. VAT).`;
+  // TCG's charges add up to the rate (29 Oct live quote: 119.60 + 80.50 + 23.92
+  // = 224.02). Only claim "=" when they do; otherwise list them beside the total.
+  const parts = finite(pr.base) ? [{ name: "base", charge: Number(pr.base) }, ...extras] : [];
+  const sum = parts.reduce((t, c) => t + Number(c.charge), 0);
+  const listed = parts.map((c, i) => `${i ? `${c.name} ` : "base "}${R(c.charge)}`).join(" + ");
+  const priceLine = !parts.length ? `Price: ${R(cost)} (incl. VAT).`
+    : Math.abs(sum - cost) <= 1 ? `Price: ${listed} = ${R(cost)} (incl. VAT).`
+    : `Price: ${R(cost)} (incl. VAT); Courier Guy's quote listed ${listed}.`;
   const weights = [finite(pr.actualKg) && `goods ${kg(pr.actualKg)}`, finite(pr.volumetricKg) && `box volume ${kg(pr.volumetricKg)}`, finite(pr.chargedKg) && `charged on ${kg(pr.chargedKg)}`].filter(Boolean).join(", ");
   const firstWhy = why[0].replace(/:.*/, "").toLowerCase();
   return {
