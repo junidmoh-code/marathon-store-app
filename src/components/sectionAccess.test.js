@@ -98,8 +98,10 @@ describe("the SDK's sparse sections array (30 Oct 2026 crash)", () => {
     sparse[1] = true;                       // what RTDB's val() hands back for { 1: true }
     expect(0 in sparse).toBe(false);
     expect(sectionsFor(SEED_REGISTRY, { sections: sparse, destShop: "concrete" })).toEqual([1]);
-    const sparse2 = [];
-    sparse2[2] = true;
-    expect(sectionsFor(SEED_REGISTRY, { sections: sparse2 })).toEqual([2]);
+    // { 2: true } stays a MAP in the SDK (2 < 2 × 1 keys fails); both sections set comes back sparse too.
+    expect(sectionsFor(SEED_REGISTRY, { sections: { 2: true } })).toEqual([2]);
+    const both = [];
+    both[1] = true; both[2] = true;
+    expect(sectionsFor(SEED_REGISTRY, { sections: both })).toEqual([1, 2]);
   });
 });
