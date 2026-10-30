@@ -35,7 +35,7 @@ import {
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById } from "./shopifyOrders.mjs";
-import { bookShipment, readLive, estimateForOrder, estimateSig } from "./shipping.mjs";
+import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey } from "./shipping.mjs";
 import { mintHubCode } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
 import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs";
@@ -806,20 +806,31 @@ async function shipOrder(ctx, id, order) {
     return;
   }
   const attempts = Math.min(MAX_FULFIL_ATTEMPTS_SHOWN, (Number(order.fulfil?.attempts) || 0) + 1);
+  // NO SHOPIFY ORDER. An exchange's replacement (exchange-<n>-<ms>, minted by
+  // Jimmy) has no shopifyGid: once the courier step above has passed, it is
+  // finished exactly as a fulfilled order is, without any Shopify call. Any
+  // other record without a shopifyGid is never sent to Shopify with a
+  // missing id — it fails as "Shopify not updated" for a person to look at.
+  const noShopify = !order.shopifyGid;
+  const exchange = noShopify && isExchangeKey(id);
   let out;
-  try {
-    // The Courier Guy waybill is the tracking number Shopify sends the
-    // customer, carrier "The Courier Guy" (the typed tracking field is gone;
-    // an older order's typed number still counts when there is no waybill).
-    const trackingNumber = waybill || order.fulfil?.trackingNumber || null;
-    // Only the lines in this parcel (partialFulfil.mjs) when a pack left lines
-    // resolving or this is a follow-up; the whole order otherwise, as before.
-    out = await fulfilParcel(ctx, id, order, {
-      trackingNumber,
-      trackingCompany: waybill ? COURIER_COMPANY : null,
-    });
-  } catch (e) {
-    out = { ok: false, error: String(e?.message || e) };
+  if (noShopify) {
+    out = exchange ? { ok: true, noShopify: true } : { ok: false, error: "the order carries no shopifyGid" };
+  } else {
+    try {
+      // The Courier Guy waybill is the tracking number Shopify sends the
+      // customer, carrier "The Courier Guy" (the typed tracking field is gone;
+      // an older order's typed number still counts when there is no waybill).
+      const trackingNumber = waybill || order.fulfil?.trackingNumber || null;
+      // Only the lines in this parcel (partialFulfil.mjs) when a pack left lines
+      // resolving or this is a follow-up; the whole order otherwise, as before.
+      out = await fulfilParcel(ctx, id, order, {
+        trackingNumber,
+        trackingCompany: waybill ? COURIER_COMPANY : null,
+      });
+    } catch (e) {
+      out = { ok: false, error: String(e?.message || e) };
+    }
   }
   if (out.ok) {
     await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
@@ -829,6 +840,7 @@ async function shipOrder(ctx, id, order) {
       "fulfil/at": now,
       "fulfil/error": null,
       ...(out.alreadyDone ? { "fulfil/alreadyDone": true } : {}),
+      ...(out.noShopify ? { "fulfil/note": "No Shopify order (online exchange) — finished without Shopify" } : {}),
       // A fulfilment that failed before and has now landed takes its
       // attention with it, or it would sit in Settings for ever.
       ...([ATTENTION_KIND.FULFIL_FAILED, ATTENTION_KIND.COURIER_FAILED].includes(order.attention?.kind) ? { attention: null, attentionOpen: null } : {}),
@@ -841,7 +853,9 @@ async function shipOrder(ctx, id, order) {
     // left sold out on the website (the reconciler sets on_hand from app stock).
     const swapped = linesOf(order).flatMap((l) => (l?.swappedFrom?.pid ? [l.originalPid, l.swappedFrom.pid, l.pid] : []));
     for (const pid of new Set(swapped.filter(Boolean))) await db.ref(`${DIRTY_PATH}/${pid}`).set(ctx.increment(1));
-    log(`  ✓ ${orderLabel(order)}: fulfilled on Shopify${out.alreadyDone ? " (it already was)" : ", customer notified"}`);
+    log(out.noShopify
+      ? `  ✓ ${orderLabel(order)}: exchange shipped${waybill ? ` (waybill ${waybill})` : ""} — no Shopify order, finished without Shopify`
+      : `  ✓ ${orderLabel(order)}: fulfilled on Shopify${out.alreadyDone ? " (it already was)" : ", customer notified"}`);
     return;
   }
   // The sale stands. The order says "Packed, Shopify not updated" with a Retry,

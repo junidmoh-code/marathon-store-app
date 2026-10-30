@@ -402,3 +402,77 @@ describe("an order pulled in after 2026-10-21 has no ref", () => {
     expect(client.shipmentCalls()[0][1].customer_reference).toBe("#1042");
   });
 });
+
+// An online exchange's replacement (Jimmy, marathon-dm-agent src/jimmy/reserve.js):
+// key exchange-<orderNumber>-<paidAtMs>, no shopifyGid. Same code path as a
+// website order; only the key, label and phone come from the exchange record.
+describe("an online exchange record (exchange-<n>-<ms>)", () => {
+  const EX = "exchange-1789-1761800000000";
+  const EXCHANGE = (over = {}) => ({
+    key: EX,
+    orderNumber: "1789-EX", shopifyName: "#1789-EX",
+    customer: { name: "Thandi M" },
+    shipping: { address: { street: "5 Esplanade Road", suburb: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441", phone: "0829999999" } },
+    lines: [{ category: "Footwear", subcategory: "Sneakers", name: "Runner", size: "9", qty: 1, unitPriceCents: 0 }],
+    exchange: { kind: "size", paidCents: 21800, paidAt: 1761800000000, contactPhone: "+27821234567", relatedOrders: ["1001"] },
+    ...over,
+  });
+  const exDb = (live, rec = EXCHANGE()) => fakeDb({
+    config: { shipping: { live, collectionContact: CONTACT } },
+    online_orders: { [EX]: (({ key, ...r }) => r)(rec) },
+  });
+
+  it("is accepted and booked live with the record's address, exchange.contactPhone and shopifyName", async () => {
+    const d = exDb(true);
+    const client = fakeClient();
+    const res = await bookShipment(EXCHANGE(), deps(d, client));
+    expect(res.skipped).toBeFalsy();
+    const sent = client.shipmentCalls();
+    expect(sent.map((c) => c[0])).toEqual(["createShipment"]);
+    expect(sent[0][1]).toMatchObject({
+      customer_reference: "#1789-EX",
+      customer_reference_name: "Order no.",
+      delivery_contact: { name: "Thandi M", mobile_number: "+27821234567", email: "" },
+      delivery_address: { street_address: "5 Esplanade Road", local_area: "Century City", city: "Cape Town", zone: "WC", code: "7441" },
+      service_level_code: "ECO",
+    });
+    // The same booking record as a website order, at the exchange's own key.
+    expect(d.root.online_orders[EX].shipping).toMatchObject({ provider: "courier_guy", waybill: "LD-TEST01", bookedAt: 1_700_000_000_000, courierBooking: { state: "booked" } });
+    expect(d.root.online_orders[EX].shopifyGid).toBeUndefined();
+  });
+
+  it("dry run (live off) shows the same payload and books nothing", async () => {
+    const client = fakeClient();
+    const res = await bookShipment(EXCHANGE(), deps(exDb(false), client));
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(res.dryRun).toMatchObject({ customer_reference: "#1789-EX", delivery_contact: { mobile_number: "+27821234567" } });
+  });
+
+  it("an email on the record goes too; with no contactPhone the record's own phone is used", async () => {
+    const client = fakeClient();
+    const res = await bookShipment(EXCHANGE({ email: "t@example.com", exchange: { paidAt: 1 } }), deps(exDb(false), client));
+    expect(res.dryRun.delivery_contact).toEqual({ name: "Thandi M", mobile_number: "0829999999", email: "t@example.com" });
+  });
+
+  it("an exchange key with no paid record behind it is refused live, nothing minted", async () => {
+    const d = fakeDb({ config: { shipping: { live: true, collectionContact: CONTACT } } });
+    const client = fakeClient();
+    expect((await bookShipment(EXCHANGE(), deps(d, client))).reason).toBe(`no order at /online_orders/${EX}`);
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(d.root.online_orders).toBeUndefined();
+  });
+
+  it.each(["exchange-1789", "exchange-abc-1", "exchange-1789-1761800000000-x", "xexchange-1-2", "refund-1789-1", "1789-EX", "#1789-EX"])(
+    "a random non-numeric key %j is still refused before any call", async (key) => {
+      const client = fakeClient();
+      await expect(bookShipment({ ...EXCHANGE(), key }, deps(exDb(true), client))).rejects.toThrow(/not an \/online_orders key/);
+      expect(client.calls).toEqual([]);
+    });
+
+  it("a numeric order is unchanged: its reference is still #<orderNumber> and its phone the customer's", async () => {
+    const client = fakeClient();
+    const res = await bookShipment(ORDER({ exchange: { contactPhone: "+27000000000" }, shopifyName: "#9999" }), deps(db(false), client));
+    expect(res.dryRun.customer_reference).toBe("#1801");
+    expect(res.dryRun.delivery_contact.mobile_number).toBe("0820000000");
+  });
+});
