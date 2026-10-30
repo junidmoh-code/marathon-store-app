@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import {
   confirmExchangeReturn, returnPlan, notReadyWhy, arrivalState, replacementCheck, movementIdFor, reasonFor, RETURN_TO, ACTOR, CLAIM_STALE_MS,
+  destinationFor, priorArrivalRow,
 } from "./exchangeReturn.mjs";
 
 const require = createRequire(import.meta.url);
@@ -24,8 +25,12 @@ const record = (extra = {}) => ({
   },
   ...extra,
 });
-const world = ({ rec = record(), peQty = null, extra = {} } = {}) => makeFakeDb({
-  online_orders: { [KEY]: rec },
+// The default returned item is CLOTHING (it goes to the Marathon PE shop); the sneaker cases below use SNK.
+const SNK = "pSNK";
+const PRODUCTS = { [PID_OUT]: { name: "Diesel Green Black White Orange", category: "Clothing" }, [SNK]: { name: "Nike Shox TL", category: "Footwear" } };
+const world = ({ rec = record(), peQty = null, extra = {}, products = PRODUCTS, orig = [{ pid: PID_OUT, size: "11", title: "Diesel", source: { locationId: "marathon-pe", status: "handed" } }] } = {}) => makeFakeDb({
+  products,
+  online_orders: { [KEY]: rec, 18966134358165: { orderNumber: "1793", lines: orig, pack: { saleId: "-NsOrig" } } },
   stock: { hub2: { [PID_OUT]: { 7: { qty: 5, v: 3, mv: "seed", lastType: "received" } } }, ...(peQty == null ? {} : { [RETURN_TO]: { [PID_OUT]: { 11: { qty: peQty, v: 1, mv: "seed", lastType: "received" } } } }) },
   online_reservations: { [PID_OUT]: { 7: { [KEY]: { qty: 1, ref: "#1793-EX", locs: { hub2: 1 } } } } },
   ...extra,
@@ -85,7 +90,8 @@ describe("confirmExchangeReturn", () => {
     expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
     const mv = at(db, `stock_movements/${MV}`);
     expect(mv).toMatchObject({ type: "return", productId: PID_OUT, size: "11", qty: 1, to: RETURN_TO, reason: "exchange return #1793", actor: ACTOR, before: { [RETURN_TO]: 0 }, after: { [RETURN_TO]: 1 } });
-    expect(mv.link.orderId).toBe(KEY);
+    expect(mv.link).toMatchObject({ orderId: KEY, saleId: "-NsOrig" }); // the original's pack sale named, never changed
+    expect(at(db, "pos")).toBeNull();
     const arr = at(db, `online_orders/${KEY}/incoming/arrival`);
     expect(arr).toMatchObject({ state: "done", via: "jimmy", at: NOW, stockReturned: [{ movementId: MV, before: 0, after: 1 }] });
     expect(arr.returnSaleId ?? null).toBeNull();
@@ -193,5 +199,114 @@ describe("confirmExchangeReturn", () => {
     const db = world({ peQty: 0, rec: record({ status: "packed", pack: { saleId: "-Ns1" } }), extra: { pos: { sales: { "-Ns1": { channel: "online" } } } } });
     const out = await run(db, { dry: true });
     expect(out.replacement).toMatchObject({ deducted: "once", saleId: "-Ns1" });
+  });
+
+  it("a sneaker goes back to the Marathon PE hub its original line came from, never the shop's cell", async () => {
+    const rec = record({ incoming: { ...record().incoming, returning: [{ pid: SNK, size: "8", sizeKey: "8", title: "Nike Shox TL", origOrderKey: "18966134358165", origLineIndex: 0 }] } });
+    const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Shox", source: { locationId: "hub2", status: "handed" } }] });
+    const out = await run(db);
+    expect(out.items[0]).toMatchObject({ to: "hub2", place: "Hub 2", before: 0, after: 1 });
+    expect(at(db, `stock/hub2/${SNK}/8/qty`)).toBe(1);
+    expect(at(db, `stock/${RETURN_TO}/${SNK}`)).toBeNull();
+  });
+
+  it("an unknown product, or a fallback item not on the original order: refused, nothing written", async () => {
+    const db = world({ products: { [SNK]: PRODUCTS[SNK] } });
+    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/not a product in the app/) });
+    const rec = record(); delete rec.incoming;
+    const db2 = world({ rec });
+    expect(await run(db2, { returning: [{ pid: SNK, size: "9", title: "Shox" }] })).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/not on the exchange's original order/) });
+    expect(at(db2, "stock_movements")).toBeNull();
+  });
+
+  it("a deactivated product that comes back is reactivated, as every arrival on the client does", async () => {
+    const db = world({ peQty: 0, products: { ...PRODUCTS, [PID_OUT]: { ...PRODUCTS[PID_OUT], deactivated: { at: 1 } } } });
+    const out = await run(db);
+    expect(out.reactivated).toEqual([PID_OUT]);
+    expect(at(db, `products/${PID_OUT}/deactivated`)).toBeNull();
+    expect(at(db, `products/${PID_OUT}/reactivated`)).toMatchObject({ by: ACTOR, reason: "stock_received" });
+  });
+
+  it("by hand: the ledger already shows it put back since the arrival → refused, nothing added", async () => {
+    const arrival = { state: "done", at: NOW - 3600e3, returnSaleId: null, byHand: ["Diesel · size 11"] };
+    const db = world({ peQty: 1, rec: record({ incoming: { ...record().incoming, arrival } }), extra: { stock_movements: { m1: { type: "adjustment", productId: PID_OUT, size: "11", qty: 1, to: "marathon-pe", ts: new Date(NOW - 1800e3).toISOString(), reason: "put back" } } } });
+    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/already shows .* put back since then \(adjustment at Marathon PE, "put back"\)/) });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+    expect(priorArrivalRow({ x: { type: "sold", productId: PID_OUT, size: "11", to: null } }, { pid: PID_OUT, sizeKey: "11", key: KEY })).toBeNull();
+  });
+
+  it("said again after a by-hand arrival: reported as Jimmy's own units", async () => {
+    const arrival = { state: "done", at: NOW - 1000, returnSaleId: null, byHand: ["x"] };
+    const db = world({ peQty: 0, rec: record({ incoming: { ...record().incoming, arrival } }) });
+    await run(db);
+    expect(await run(db)).toMatchObject({ ok: true, already: true, by: "jimmy", items: [{ before: 0, after: 1 }] });
+  });
+
+  it("the till confirmed it: its own ledger rows give the before/after", async () => {
+    const arrival = { state: "done", at: NOW - 1000, claimedAt: NOW - 2000, returnSaleId: "-NsRet", receiptNumber: "R-9", lines: [{ pid: PID_OUT, size: "11", title: "Diesel" }] };
+    const db = world({ rec: record({ incoming: { ...record().incoming, arrival } }), extra: { stock_movements: { r1: { type: "return", productId: PID_OUT, size: "11", qty: 1, to: "marathon-pe", before: { "marathon-pe": 2 }, after: { "marathon-pe": 3 }, ts: new Date(NOW - 1500).toISOString(), link: { saleId: "-NsRet" } } } } });
+    expect(await run(db)).toMatchObject({ ok: true, already: true, by: "till", items: [{ title: "Diesel", place: "Marathon PE", before: 2, after: 3 }] });
+  });
+
+  it("NOT good: the hold is written, nothing goes back; good later clears it; already back → refused", async () => {
+    const db = world({ peQty: 0 });
+    expect(await run(db, { condition: "not_good", words: "torn sole" })).toMatchObject({ ok: true, held: true });
+    expect(at(db, `online_orders/${KEY}/incoming/conditionHold`)).toMatchObject({ at: NOW, words: "torn sole" });
+    expect(at(db, "stock_movements")).toBeNull();
+    expect(at(db, `online_orders/${KEY}/incoming/arrival`)).toBeNull();
+    const good = await run(db);
+    expect(good).toMatchObject({ ok: true, done: true, heldBefore: true });
+    expect(at(db, `online_orders/${KEY}/incoming/conditionHold`)).toBeNull();
+    expect(await run(db, { condition: "not_good" })).toMatchObject({ ok: false, alreadyBack: true, by: "jimmy" });
+  });
+
+  it("the second of two units fails: the first stays once, the claim stays Jimmy's, the re-run finishes with no double", async () => {
+    const rec = record({ incoming: { ...record().incoming, returning: [{ pid: PID_OUT, size: "11", title: "D" }, { pid: SNK, size: "8", title: "S" }] } });
+    const db = world({ peQty: 0, rec, orig: [{ pid: PID_OUT, size: "11" }, { pid: SNK, size: "8", source: { locationId: "hub1" } }] });
+    // The sneaker's cell refuses once (a write error on the way).
+    let failed = false;
+    const orig = db.ref.bind(db);
+    db.ref = (p) => {
+      const r = orig(p);
+      if (String(p).startsWith(`stock/hub1/${SNK}/`) && !failed) return { ...r, transaction: async () => { failed = true; throw new Error("network"); } };
+      return r;
+    };
+    await expect(run(db, { attemptId: "a1" })).rejects.toThrow(/network/);
+    expect(at(db, `online_orders/${KEY}/incoming/arrival`)).toMatchObject({ state: "returning", via: "jimmy" });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+    const again = await run(db, { attemptId: "a2" });
+    expect(again).toMatchObject({ ok: true, done: true });
+    expect(again.items.map((u) => [u.to, u.before, u.after, u.already])).toEqual([["marathon-pe", 0, 1, true], ["hub1", 0, 1, false]]);
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+    expect(at(db, `stock/hub1/${SNK}/8/qty`)).toBe(1);
+  });
+
+  it("the till takes the arrival between our claim and our done: an error that says check the POS", async () => {
+    const db = world({ peQty: 0 });
+    const orig = db.ref.bind(db);
+    db.ref = (p) => {
+      const r = orig(p);
+      if (p === `online_orders/${KEY}/incoming/arrival`) {
+        return { ...r, transaction: async (fn) => {
+          const cur = at(db, p);
+          if (cur?.state === "returning" && cur.via === "jimmy") await orig(p).set({ state: "returning", at: NOW, by: { name: "Till" }, plan: [{ saleId: "s" }] });
+          return r.transaction(fn);
+        } };
+      }
+      return r;
+    };
+    await expect(run(db)).rejects.toThrow(/a till took over/);
+  });
+});
+
+describe("destinationFor", () => {
+  const shoe = { category: "Footwear" };
+  it("footwear: the original line's hub, else the hub holding most, else Hub 1; anything else the shop", () => {
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub2" } } })).toBe("hub2");
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "marathon-pe" } }, hubQty: { hub1: 1, hub2: 4 } })).toBe("hub2");
+    expect(destinationFor({ product: shoe, size: "8", hubQty: { hub1: 2, hub2: 2 } })).toBe("hub1");
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub3" } } })).toBe("hub1"); // never outside section 2
+    expect(destinationFor({ product: shoe, size: "M" })).toBe("marathon-pe"); // a slide in S/M/L is a shop item
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "hub2" } } })).toBe("marathon-pe");
   });
 });

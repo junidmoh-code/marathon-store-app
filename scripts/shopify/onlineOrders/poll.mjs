@@ -739,6 +739,23 @@ async function syncHolds(ctx, id, order) {
 async function shipOrder(ctx, id, order) {
   const { db, now, log } = ctx;
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
+  // JUNID'S CONDITION HOLD (30 Oct 2026, scripts/shipping/exchangeReturn.mjs): he told Jimmy the exchange's returned
+  // item is NOT in good condition ("nothing ships"). The replacement is not booked while the hold stands: the order
+  // shows "Packed, courier not booked" with the reason, and the POS Retry re-checks it. His later "good" clears it.
+  const conditionHold = isExchangeKey(id) && order.incoming?.conditionHold && typeof order.incoming.conditionHold === "object";
+  if (conditionHold) {
+    const why = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
+    await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
+      fulfilState: "courier_failed",
+      "fulfil/state": "courier_failed",
+      courierError: why,
+      attention: { kind: ATTENTION_KIND.COURIER_FAILED, reason: `Packed, but held: ${why}`, at: now },
+      attentionOpen: true,
+      updatedAt: now,
+    });
+    log(`  ✗ ${orderLabel(order)}: condition hold — courier not booked`);
+    return;
+  }
   await closeHubOrders(ctx, { ...order, key: id });
   // The order goes to bookShipment WITH its key (the record carries
   // shopifyGid too, which bookShipment can derive the key from — the explicit

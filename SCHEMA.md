@@ -943,13 +943,20 @@ Cell effects: `received +to`, `opening +to`, `sold −from`, `return +to`,
 **Exchange returns (server-written, 2026-10-30).** When Junid tells Jimmy an
 online exchange's return is in good condition, `scripts/shipping/exchange-return.mjs`
 (`exchangeReturn.mjs`) writes one `return` movement per returned unit through
-`functions/lib/admin-movement.cjs` (which now admits `return`): `to: "marathon-pe"`,
-`reason: "exchange return #<order>"`, `link.orderId` = the exchange key,
+`functions/lib/admin-movement.cjs` (which now admits `return`): `to` = Marathon PE's
+section (sneakers → the hub their original line came from, `hub1`/`hub2`, per the
+2 Oct 2026 sections rule that shops hold no sneaker stock; everything else →
+`marathon-pe`), `reason: "exchange return #<order>"`, `link.orderId` = the exchange key
+(`link.saleId` = the original's pack sale, which is not changed),
 `actor: "system:jimmy-exchange-return"`, id `exret_<exchangeKey>_<pid>_<sizeKey>_<n>`
 (fixed per exchange and unit: a repeat never adds twice). It also completes
 `/online_orders/<exchangeKey>/incoming/arrival` (`via: "jimmy"`, `stockReturned`),
 so the POS's Confirm arrival answers "Already confirmed" and Till 2 can pack the
-replacement — whose one deduction is the pack's sale, never this script.
+replacement — whose one deduction is the pack's sale, never this script. When Junid says
+the condition is NOT good, `/online_orders/<exchangeKey>/incoming/conditionHold`
+(`{ at, by, words }`) is written instead: nothing goes back, and the poller books no
+courier for that exchange while it stands (`poll.mjs` shipOrder); his later "good"
+clears it.
 
 ### Receiving via the product-add form (rework)
 Opening stock is entered in the **admin product-add form** — an optional,
