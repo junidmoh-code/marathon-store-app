@@ -203,3 +203,21 @@ describe("buildFit — a cold morning still gets its rebuild (lookbook, Wed 28 O
     assert.ok(reqs[2].maxTokens >= fr.MIN_OUT_TOKENS);
   });
 });
+
+describe("buildFit — round 2 priced from round 1's real token counts (Louboutin rebuild, 29 Oct)", () => {
+  test("round 1 at $0.084 on cold caches: round 2 is still made", async () => {
+    const big = { ...OFFER, pieces: [...OFFER.pieces, ...Array.from({ length: 40 }, (_, i) => ({ ...P(`p17929${String(i).padStart(7, "0")}`, ["tee", "bottoms", "sneakers"][i % 3], "G-STAR RAW", "Raw cargo jeans indigo with zip pockets"), displayName: "G star raw cargo jean indigo 5233#", seen: "mid-blue cargo jeans with zip pockets" }))] };
+    const answers = [FIT(), CRIT(9, 7, 9, 8), FIT(), CRIT(9, 9, 9, 9)];
+    const usage = [
+      { costUSD: 0.050, cachedTokens: 8300, usage: { input_tokens: 16, cache_creation_input_tokens: 4800, cache_read_input_tokens: 3500, output_tokens: 700 } },
+      { costUSD: 0.034, cachedTokens: 3100, usage: { input_tokens: 990, cache_creation_input_tokens: 3100, cache_read_input_tokens: 0, output_tokens: 600 } },
+      { costUSD: 0.018, cachedTokens: 8300, usage: { input_tokens: 500, cache_creation_input_tokens: 0, cache_read_input_tokens: 8300, output_tokens: 700 } },
+      { costUSD: 0.015, cachedTokens: 3100, usage: { input_tokens: 990, cache_creation_input_tokens: 0, cache_read_input_tokens: 3100, output_tokens: 500 } },
+    ];
+    const reqs = [];
+    const r = await fa.buildFit(big, { call: async (req) => { reqs.push(req); return { json: answers.shift(), ...usage.shift() }; }, photo: async () => ({ base64: "eA==", mediaType: "image/jpeg" }) });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.rounds.length, 2);
+    assert.ok(r.costUSD <= fr.BUDGET_USD);
+  });
+});
