@@ -923,10 +923,14 @@ async function queueCostAlert(ctx, id, order, booking) {
     const threshold = costAlertThreshold(await ctx.get("config/shipping/costAlertRand"));
     const mail = costAlertMail(order, { ...booking, address: order.shipping?.address }, threshold);
     if (!mail) return;
-    const claim = await db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert`)
-      .transaction((cur) => (cur && cur.waybill === booking.waybill ? undefined : { state: "queued", at: ctx.now, waybill: booking.waybill }));
-    if (!claim.committed) return;
+    // QUEUE FIRST, then mark the order: a failure between the two leaves the
+    // email queued (sent) rather than marked-but-never-queued (lost). Ticks
+    // never overlap (reconcile-runner's single-flight lock), so the read-then-
+    // write below cannot race another tick.
+    const markRef = db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert`);
+    if ((await ctx.get(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert/waybill`)) === booking.waybill) return;
     await db.ref(`${COST_ALERT_QUEUE}/${id}`).set({ waybill: booking.waybill, subject: mail.subject, text: mail.text, at: ctx.now, attempts: 0 });
+    await markRef.set({ state: "queued", at: ctx.now, waybill: booking.waybill });
   } catch (e) {
     log(`  ! ${orderLabel(order)}: expensive-waybill alert not queued — ${String(e?.message || e).slice(0, 200)}`);
   }
@@ -940,25 +944,33 @@ async function mailCostAlerts(ctx) {
   const entries = Object.entries(queue).filter(([, q]) => q && q.subject && q.text);
   if (!entries.length) return;
   if (!send) { log(`  ⚠ ${entries.length} expensive-waybill email(s) waiting — no mail sender on this machine; retried next tick`); return; }
+  // Each entry's bookkeeping is guarded on its own: a database hiccup is logged
+  // and the tick goes on (lastRunAt and the other entries are never skipped).
+  // Send-then-delete is not exactly-once: a delete that fails after a send
+  // means the same email again next tick — accepted over a lost one.
   for (const [id, q] of entries) {
     const shippingRef = db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert`);
     try {
-      await send({ subject: q.subject, text: q.text });
-    } catch (e) {
-      const why = String(e?.message || e).slice(0, 200);
-      if (ctx.now - (Number(q.at) || ctx.now) > COST_ALERT_GIVE_UP_MS) {
-        await db.ref(`${COST_ALERT_QUEUE}/${id}`).set(null);
-        await shippingRef.update({ state: "failed", error: why });
-        log(`  ✗ ${id}: expensive-waybill email for ${q.waybill} given up after a day (${why})`);
-      } else {
-        await db.ref(`${COST_ALERT_QUEUE}/${id}/attempts`).set((Number(q.attempts) || 0) + 1);
-        log(`  ✗ ${id}: expensive-waybill email for ${q.waybill} not sent (${why}) — retried next tick`);
+      try {
+        await send({ subject: q.subject, text: q.text });
+      } catch (e) {
+        const why = String(e?.message || e).slice(0, 200);
+        if (ctx.now - (Number(q.at) || ctx.now) > COST_ALERT_GIVE_UP_MS) {
+          await db.ref(`${COST_ALERT_QUEUE}/${id}`).set(null);
+          await shippingRef.update({ state: "failed", error: why });
+          log(`  ✗ ${id}: expensive-waybill email for ${q.waybill} given up after a day (${why})`);
+        } else {
+          await db.ref(`${COST_ALERT_QUEUE}/${id}/attempts`).set((Number(q.attempts) || 0) + 1);
+          log(`  ✗ ${id}: expensive-waybill email for ${q.waybill} not sent (${why}) — retried next tick`);
+        }
+        continue;
       }
-      continue;
+      await db.ref(`${COST_ALERT_QUEUE}/${id}`).set(null);
+      await shippingRef.update({ state: "mailed", mailedAt: ctx.now });
+      log(`  ✉ ${id}: Junid emailed — expensive waybill ${q.waybill}`);
+    } catch (e) {
+      log(`  ! ${id}: expensive-waybill bookkeeping failed — ${String(e?.message || e).slice(0, 200)}`);
     }
-    await db.ref(`${COST_ALERT_QUEUE}/${id}`).set(null);
-    await shippingRef.update({ state: "mailed", mailedAt: ctx.now }).catch(() => {});
-    log(`  ✉ ${id}: Junid emailed — expensive waybill ${q.waybill}`);
   }
 }
 
