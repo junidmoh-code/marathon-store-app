@@ -512,6 +512,82 @@ describe("Shopify fulfilment after the pack", () => {
     expect(order(f).shipping).toMatchObject({ provider: "courier_guy", waybill: "ABC123", booking: { waybill: "ABC123" } });
   });
 
+  describe("expensive waybill email (over R250, Junid 30 Oct 2026)", () => {
+    const live = () => {
+      const w = packed();
+      Object.assign(w.online_orders[9001], {
+        customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
+        shipping: { address: { address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
+      });
+      w.config.shipping = { live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" } };
+      return w;
+    };
+    const booked = (amount) => ({ ...fakeCourier(), createShipment: async () => ({ id: 7, short_tracking_reference: "ABC123", charged_amount: amount }) });
+
+    it("a booking over R250 emails Junid once, with the box and the price make-up; the order still ships", async () => {
+      const f = fakeDb(live());
+      const d = deps(f, shopify({ fos }), { courier: booked(355.68) });
+      await runOrdersPoll(d.deps);
+      const mails = d.mails.filter((m) => /^Waybill /.test(m.subject));
+      expect(mails).toHaveLength(1);
+      expect(mails[0].subject).toMatch(/^Waybill R355\.68 for /);
+      expect(mails[0].text).toMatch(/Why it's expensive:/);
+      expect(mails[0].text).toMatch(/Waybill: ABC123 .*to Cape Town, Western Cape/);
+      expect(mails[0].text).toMatch(/Price: R355\.68 \(incl\. VAT\); Courier Guy.s quote listed base R/);
+      expect(order(f).shipping.costAlert).toMatchObject({ state: "mailed", waybill: "ABC123" });
+      expect(order(f).shipping.priced).toMatchObject({ quoted: expect.any(Number) });
+      expect(order(f).fulfilState).toBe("done");
+      // a later tick never mails it again
+      await runOrdersPoll(d.deps);
+      expect(d.mails.filter((m) => /^Waybill /.test(m.subject))).toHaveLength(1);
+    });
+
+    it("at R250 or under: no email", async () => {
+      const f = fakeDb(live());
+      const d = deps(f, shopify({ fos }), { courier: booked(250) });
+      await runOrdersPoll(d.deps);
+      expect(d.mails.filter((m) => /^Waybill /.test(m.subject))).toHaveLength(0);
+      expect(order(f).shipping.costAlert).toBeUndefined();
+    });
+
+    it("a failed send stays queued (never blocks the fulfilment) and goes out on a later tick", async () => {
+      const f = fakeDb(live());
+      let down = true;
+      const sent = [];
+      const send = async (m) => { if (down) throw new Error("smtp down"); sent.push(m); };
+      const d = deps(f, shopify({ fos }), { courier: booked(400), send });
+      await runOrdersPoll(d.deps);
+      expect(order(f).fulfilState).toBe("done");
+      expect(order(f).shipping.costAlert).toMatchObject({ state: "queued", waybill: "ABC123" });
+      expect(f.read("online_orders_meta/costAlertQueue/9001_ABC123")).toMatchObject({ waybill: "ABC123", attempts: 1 });
+      down = false;
+      await runOrdersPoll(d.deps);
+      expect(sent.filter((m) => /^Waybill R400\.00/.test(m.subject))).toHaveLength(1);
+      expect(f.read("online_orders_meta/costAlertQueue/9001_ABC123")).toBeFalsy();
+      expect(order(f).shipping.costAlert).toMatchObject({ state: "mailed" });
+    });
+
+    it("a crash after the booking but before the queue: the next tick queues it from the recorded booking", async () => {
+      const w = live();
+      w.online_orders[9001].shipping = { ...w.online_orders[9001].shipping, shipmentId: 7, waybill: "OLD777", cost: 410, service: "ECO",
+        parcel: { parcels: [{ boxCode: "LARGE", kind: "box", lengthCm: 55, widthCm: 40, heightCm: 35 }] } };
+      const f = fakeDb(w);
+      const d = deps(f, shopify({ fos }), { courier: booked(999) });
+      await runOrdersPoll(d.deps);
+      expect(d.mails.filter((m) => /^Waybill R410\.00/.test(m.subject))).toHaveLength(1);
+      await runOrdersPoll(d.deps);
+      expect(d.mails.filter((m) => /^Waybill /.test(m.subject))).toHaveLength(1);
+    });
+
+    it("no mail sender on the machine: kept in the queue, nothing lost", async () => {
+      const f = fakeDb(live());
+      const d = deps(f, shopify({ fos }), { courier: booked(400), send: null });
+      await runOrdersPoll(d.deps);
+      expect(f.read("online_orders_meta/costAlertQueue/9001_ABC123")).toMatchObject({ waybill: "ABC123" });
+      expect(order(f).fulfilState).toBe("done");
+    });
+  });
+
   describe("LIVE: no waybill, no fulfilment (go-live from order 1768)", () => {
     const liveOrder = (cfg = {}) => {
       const w = packed();

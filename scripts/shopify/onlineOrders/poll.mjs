@@ -41,6 +41,7 @@ import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/
 import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs";
 import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
+import { costAlertMail, costAlertThreshold } from "../../shipping/costAlert.mjs";
 import { applySwapRequests } from "./swapRequests.mjs";
 import { applyOrderNowRequests } from "./orderNowRequests.mjs";
 
@@ -203,6 +204,7 @@ export async function runOrdersPoll(deps) {
 
   // ── 4. TELL ────────────────────────────────────────────────────────────────
   await mailAttention(ctx);
+  await mailCostAlerts(ctx);
 
   if (ctx.summary.missingIndex.size) {
     log(`  ⚠ /online_orders has no index on ${[...ctx.summary.missingIndex].join(", ")} — the rules block in docs/ONLINE-ORDERS.md is not pasted yet; open orders are not swept, fulfilled or emailed until it is (new orders are still pulled in and held)`);
@@ -776,6 +778,12 @@ async function shipOrder(ctx, id, order) {
       log(`  ! ${orderLabel(order)}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
     }
   }
+  // A real booking above R250 (or /config/shipping/costAlertRand): Junid is
+  // emailed once, with the box and why (costAlert.mjs). Never blocks the ship.
+  if (booking && !booking.skipped && booking.waybill) await queueCostAlert(ctx, id, order, booking);
+  // A crash between the booking and the queue: the next tick's booking says
+  // "already booked" with the recorded shipping — queue from that (deduped by waybill).
+  else if (booking?.reason === "already booked" && booking.shipping?.waybill) await queueCostAlert(ctx, id, order, booking.shipping);
   // ── LIVE: no waybill, no fulfilment ────────────────────────────────────────
   // With /config/shipping/live on, the customer's Shopify notification must
   // carry the waybill, so a booking that did not happen (failed, refused,
@@ -900,6 +908,90 @@ async function mailAttention(ctx) {
     });
     ctx.summary.mailed++;
     log(`  ✉ ${orderLabel(order)}: Junid emailed (${order.attention.kind})`);
+  }
+}
+
+// ── The expensive-waybill email (Junid, 30 Oct 2026) ─────────────────────────
+// QUEUED, then sent at the end of the tick (never in the ship sweep, so a slow
+// mail server never holds a fulfilment). The queue entry carries the finished
+// email, so it survives a missing mail sender, a failed send or a crash, and
+// is retried every tick until sent (dropped after a day, logged). One email
+// per WAYBILL: the order's shipping/costAlert names the waybill it is for, so
+// a re-booking (new waybill) is alerted again and the same one never twice.
+export const COST_ALERT_QUEUE = `${META_PATH}/costAlertQueue`;
+const COST_ALERT_GIVE_UP_MS = 24 * 60 * 60 * 1000;
+// Keyed by order AND waybill: a re-booking never overwrites an alert still waiting.
+export const costAlertKey = (id, waybill) => `${id}_${String(waybill).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+async function queueCostAlert(ctx, id, order, booking) {
+  const { db, log } = ctx;
+  try {
+    const threshold = costAlertThreshold(await ctx.get("config/shipping/costAlertRand"));
+    const mail = costAlertMail(order, { ...booking, address: order.shipping?.address }, threshold);
+    if (!mail) return;
+    // QUEUE FIRST, then mark the order: a failure between the two leaves the
+    // email queued (sent) rather than marked-but-never-queued (lost). Ticks
+    // never overlap (reconcile-runner's single-flight lock), so the read-then-
+    // write below cannot race another tick.
+    const markRef = db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert`);
+    if ((await ctx.get(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert/waybill`)) === booking.waybill) return;
+    await db.ref(`${COST_ALERT_QUEUE}/${costAlertKey(id, booking.waybill)}`).set({ orderId: id, waybill: booking.waybill, subject: mail.subject, text: mail.text, at: ctx.now, attempts: 0 });
+    await markRef.set({ state: "queued", at: ctx.now, waybill: booking.waybill });
+  } catch (e) {
+    log(`  ! ${orderLabel(order)}: expensive-waybill alert not queued — ${String(e?.message || e).slice(0, 200)}`);
+  }
+}
+
+async function mailCostAlerts(ctx) {
+  const { db, send, log } = ctx;
+  let queue;
+  try { queue = (await ctx.get(COST_ALERT_QUEUE)) || {}; }
+  catch (e) { log(`  ! expensive-waybill queue not read — ${String(e?.message || e).slice(0, 200)}`); return; }
+  const entries = Object.entries(queue).filter(([, q]) => q && q.subject && q.text);
+  if (!entries.length) return;
+  // Each entry's bookkeeping is guarded on its own: a database hiccup is logged
+  // and the tick goes on (lastRunAt and the other entries are never skipped).
+  // Send-then-delete is not exactly-once: a delete that fails after a send
+  // means the same email again next tick — accepted over a lost one.
+  for (const [key, q] of entries) {
+    const id = q.orderId || key;
+    const shippingRef = db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert`);
+    const stale = ctx.now - (Number(q.at) || ctx.now) > COST_ALERT_GIVE_UP_MS;
+    try {
+      if (!send) {
+        if (stale) {
+          await db.ref(`${COST_ALERT_QUEUE}/${key}`).set(null);
+          await shippingRef.update({ state: "failed", error: "no mail sender for a day" });
+          log(`  ✗ ${id}: expensive-waybill email for ${q.waybill} given up — no mail sender on this machine for a day`);
+        } else {
+          log(`  ⚠ ${id}: expensive-waybill email for ${q.waybill} waiting — no mail sender on this machine; retried next tick`);
+        }
+        continue;
+      }
+      try {
+        await send({ subject: q.subject, text: q.text });
+      } catch (e) {
+        const why = String(e?.message || e).slice(0, 200);
+        if (stale) {
+          await db.ref(`${COST_ALERT_QUEUE}/${key}`).set(null);
+          await shippingRef.update({ state: "failed", error: why });
+          log(`  ✗ ${id}: expensive-waybill email for ${q.waybill} given up after a day (${why})`);
+        } else {
+          await db.ref(`${COST_ALERT_QUEUE}/${key}/attempts`).set((Number(q.attempts) || 0) + 1);
+          log(`  ✗ ${id}: expensive-waybill email for ${q.waybill} not sent (${why}) — retried next tick`);
+        }
+        continue;
+      }
+      await db.ref(`${COST_ALERT_QUEUE}/${key}`).set(null);
+      // Mark mailed only if the order's alert is still for THIS waybill (a plain
+      // read is safe: ticks never overlap — a transaction's cold-cache null run
+      // would abort here).
+      if ((await ctx.get(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert/waybill`)) === q.waybill) {
+        await shippingRef.update({ state: "mailed", mailedAt: ctx.now });
+      }
+      log(`  ✉ ${id}: Junid emailed — expensive waybill ${q.waybill}`);
+    } catch (e) {
+      log(`  ! ${id}: expensive-waybill bookkeeping failed — ${String(e?.message || e).slice(0, 200)}`);
+    }
   }
 }
 
