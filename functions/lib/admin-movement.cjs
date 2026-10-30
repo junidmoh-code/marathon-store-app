@@ -33,9 +33,18 @@
 // A crash between legs is completed by the caller's next attempt with the SAME
 // movement id (the stranded-transit sweep re-plans hourly).
 //
-// Only the movement types the sweep, the repair and the refusal write-off need
-// are admitted (transfer_in, adjustment, refusal_writeoff) — widen
-// deliberately, with a test, not by default.
+// Only the movement types the sweep, the repair, the refusal write-off and the
+// exchange return need are admitted (transfer_in, adjustment, refusal_writeoff,
+// return) — widen deliberately, with a test, not by default.
+//
+// return (2026-10-30, scripts/shipping/exchangeReturn.mjs): Junid, 29 Oct 2026:
+// "when I confirm a return is in good condition, the returned items go back
+// into stock at Marathon PE", as a stock movement marked "exchange return #<order>",
+// "not a manual adjustment with no reason". The ledger already knows the type
+// (`return +to`, the till's own return path writes it); this is the same credit
+// of ONE cell (`to`), with the same negative-base clamp as the client writer, so
+// the two writers still land a return on the same number (the differential fuzz
+// in applyMovementMirror.fuzz.test.js runs returns through both).
 //
 // refusal_writeoff (2026-09-23, functions/lib/refusal-writeoff.cjs) is a debit
 // of ONE cell (`from`) and nothing else. It is written with `expectQty`: the
@@ -50,7 +59,7 @@
 const { trustStamp, arrivalTrust, arrivalMayTrust } = require("./stock-trust.cjs");
 const networkRegistry = require("./network-registry.cjs");
 
-const ADMITTED_TYPES = new Set(["transfer_in", "adjustment", "refusal_writeoff"]);
+const ADMITTED_TYPES = new Set(["transfer_in", "adjustment", "refusal_writeoff", "return"]);
 
 const emptyLink = (link) => ({ orderId: null, transferId: null, refillId: null, saleId: null, deviceId: null, ...(link || {}) });
 const read = async (db, path) => (await db.ref(path).once("value")).val();
@@ -87,6 +96,8 @@ function cellDeltas(m) {
     case "transfer_in": return m.from && m.to ? [{ loc: m.from, delta: -qty }, { loc: m.to, delta: +qty }] : null;
     case "adjustment": return m.to ? [{ loc: m.to, delta: +qty }] : (m.from ? [{ loc: m.from, delta: -qty }] : null);
     case "refusal_writeoff": return m.from && !m.to ? [{ loc: m.from, delta: -qty }] : null;
+    // A return credits the shelf it lands on and nothing else (the client's `return +to`).
+    case "return": return m.to && !m.from ? [{ loc: m.to, delta: +qty }] : null;
     default: return null;
   }
 }
@@ -105,6 +116,8 @@ async function applyMovementAdmin(db, movement, { nowIso, network: trustNetwork 
   if (!movement.movementId) return { ok: false, reason: "movement_id_required" };
   if (!movement.actor) return { ok: false, reason: "actor_required" };
   if (movement.type === "adjustment" && !(movement.reason && String(movement.reason).trim())) return { ok: false, reason: "adjustment_requires_reason" };
+  // A server-written return says why it came back (Junid: never "no reason").
+  if (movement.type === "return" && !(movement.reason && String(movement.reason).trim())) return { ok: false, reason: "return_requires_reason" };
   if (/[.#$/\[\]\s]/.test(String(movement.movementId))) return { ok: false, reason: "movement_id_unsafe" };
   const deltas = cellDeltas(movement);
   if (!deltas) return { ok: false, reason: "missing_location" };

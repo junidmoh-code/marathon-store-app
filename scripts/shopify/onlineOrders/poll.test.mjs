@@ -788,6 +788,23 @@ describe("an online exchange ships through the normal pack/courier flow", () => 
     expect(order(f, EX)).toMatchObject({ fulfilState: "courier_failed", attentionOpen: true });
   });
 
+  it("Junid's condition hold (the returned item not in good condition): nothing booked, held with the reason; cleared → booked", async () => {
+    const f = fakeDb(exchangeWorld({ live: true }, { incoming: { conditionHold: { at: 1, by: { uid: "system:jimmy-exchange-return" }, words: "torn sole" } } }));
+    const sent = [];
+    const courier = { ...fakeCourier(), createShipment: async (body) => { sent.push(body); return { id: 43, short_tracking_reference: "EXW124", charged_amount: 99 }; } };
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sent).toHaveLength(0);
+    expect(courier.calls).toEqual([]);
+    expect(order(f, EX)).toMatchObject({ fulfilState: "courier_failed", attentionOpen: true, attention: { kind: "courier_failed", reason: expect.stringMatching(/not in good condition/) } });
+    // He says good (the hold goes) and the POS Retry puts it back to pending: booked.
+    await f.db.ref(`online_orders/${EX}/incoming/conditionHold`).set(null);
+    await f.db.ref(`online_orders/${EX}`).update({ fulfilState: "pending", "fulfil/state": "pending" });
+    await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sent).toHaveLength(1);
+    expect(order(f, EX).fulfilState).toBe("done");
+  });
+
   it("live, booking fails: held as courier_failed exactly like a website order (no Shopify either way)", async () => {
     const f = fakeDb(exchangeWorld({ live: true }));
     const courier = { ...fakeCourier(), createShipment: async () => { throw Object.assign(new Error("HTTP 400 bad address"), { status: 400 }); } };
