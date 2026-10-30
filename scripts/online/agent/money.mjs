@@ -39,17 +39,10 @@ export async function issueStoreCredit(graphql, { orderGid, amountCents, currenc
   return { ok: true, id: d.storeCreditAccountCredit?.storeCreditAccountTransaction?.id ?? null };
 }
 
-/**
- * The idempotency key of one line refund. API 2026-04+ (this app is on 2026-07)
- * REQUIRES @idempotent on refundCreate (Shopify changelog "Making idempotency
- * mandatory for inventory adjustments and refund mutations"; without it the
- * call fails: "The @idempotent directive is required for this mutation but was
- * not provided."). Stable for the same order, line, quantity and amount, so a
- * repeat of the same refund is the same refund on Shopify, never a second one.
- */
-export const refundKey = ({ orderGid, lineItemId, quantity, cents }) =>
-  `refund-line-${String(orderGid).split("/").pop()}-${String(lineItemId).split("/").pop()}-q${quantity}-${cents}`;
-
+// API 2026-04+ (this app is on 2026-07) REQUIRES @idempotent on refundCreate
+// (Shopify changelog "Making idempotency mandatory for inventory adjustments
+// and refund mutations"; without it the call fails: "The @idempotent directive
+// is required for this mutation but was not provided.").
 /**
  * The key the customer agent passes (run.mjs money()): ONE refund per money
  * slot. The slot is the app line (one Shopify line item can be split over
@@ -65,7 +58,9 @@ export const slotRefundKey = ({ orderId, lineIndex, claimedAt }) => `refund-slot
  * amount is the smaller of what we owe and what Shopify suggests for that
  * line — never more than either. → { ok: true, id, amountCents } | { ok: false, error }
  */
-export async function refundLine(graphql, { orderGid, lineItemId, quantity, amountCents, idempotencyKey = null }) {
+export async function refundLine(graphql, { orderGid, lineItemId, quantity, amountCents, idempotencyKey }) {
+  // No content-only fallback: two refunds of one Shopify line (split app lines) would share it.
+  if (!idempotencyKey) return { ok: false, error: "no idempotency key (one per money slot: slotRefundKey)" };
   const s = await graphql(
     `query ($id: ID!, $items: [RefundLineItemInput!]) {
       order(id: $id) {
@@ -88,7 +83,7 @@ export async function refundLine(graphql, { orderGid, lineItemId, quantity, amou
     `mutation ($input: RefundInput!, $key: String!) {
       refundCreate(input: $input) @idempotent(key: $key) { refund { id } userErrors { field message } }
     }`,
-    { key: idempotencyKey || refundKey({ orderGid, lineItemId, quantity, cents: pay }), input: {
+    { key: idempotencyKey, input: {
       orderId: orderGid,
       notify: true,
       refundLineItems: [{ lineItemId, quantity, restockType: "NO_RESTOCK" }],
