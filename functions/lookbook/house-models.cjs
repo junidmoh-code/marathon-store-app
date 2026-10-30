@@ -39,7 +39,9 @@ const DECIDE_MS = 24 * 3600 * 1000;
 const CANDIDATES = 3;
 
 // The brief every model shares (Junid, 30 Oct 19:16).
-const SHARED = "in his early-to-mid 20s, tall and slim with a runway model's build, a sharp defined face and a strong jawline, a very short clean haircut (a skin fade or a buzz cut, hair barely visible), clean-shaven or very light stubble, a confident fashion-model look";
+// Height (Junid, 30 Oct 2026 on the nine candidates: "still short in height"):
+// a number and runway proportions, not just the word "tall".
+const SHARED = "in his early-to-mid 20s, very tall (about 1.90 m, 6 ft 3 in) and slim with a runway model's build: long legs (more than half his height), a long neck and a small head, about eight and a half heads tall, a sharp defined face and a strong jawline, a very short clean haircut (a skin fade or a buzz cut, hair barely visible), clean-shaven or very light stubble, a confident fashion-model look";
 
 // The rotation order and each man's own brief. `skin` and `suits` go to the
 // stylist and the critic: the outfit's colours must suit his skin tone.

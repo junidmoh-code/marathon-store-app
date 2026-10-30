@@ -96,10 +96,10 @@ describe("the three house models (Junid, 30 Oct 2026)", () => {
   const node = (slot, over = {}) => ({ generatedAt: 0, decideBy: 1000, candidates: { 1: C(slot, 1, 7), 2: C(slot, 2, 9), 3: C(slot, 3, 8) }, picked: null, ...over });
   const all = (over = {}) => Object.fromEntries(hm.ORDER.map((s) => [s, node(s, over[s] || {})]));
 
-  test("three models: Black, white and Coloured, each early-to-mid 20s, tall and slim, a skin fade or buzz cut", () => {
+  test("three models: Black, white and Coloured, each early-to-mid 20s, very tall (1.90 m) and slim, a skin fade or buzz cut", () => {
     assert.deepEqual(hm.ORDER, ["black", "white", "coloured"]);
     for (const s of hm.ORDER) {
-      assert.match(hm.MODELS[s].description, /early-to-mid 20s, tall and slim with a runway model's build, a sharp defined face and a strong jawline, a very short clean haircut \(a skin fade or a buzz cut/);
+      assert.match(hm.MODELS[s].description, /early-to-mid 20s, very tall \(about 1\.90 m, 6 ft 3 in\) and slim with a runway model's build: long legs \(more than half his height\), a long neck and a small head, about eight and a half heads tall, a sharp defined face and a strong jawline, a very short clean haircut \(a skin fade or a buzz cut/);
       assert.ok(hm.MODELS[s].skin && hm.MODELS[s].suits);
     }
     assert.match(hm.MODELS.black.description, /Black South African/);

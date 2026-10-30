@@ -9,6 +9,14 @@
 //                  social_lookbook/models/{slot} written with decideBy = now + 24 h.
 //                  Writes ~/Desktop/house-models/{slot}-{n}.jpg and a contact
 //                  sheet of all nine, all-models.jpg.
+//   --taller [--slot s] [--send]
+//                  Junid, 30 Oct: "still short in height". Each PICKED face is
+//                  shot again from itself (the same man, his face as the
+//                  reference), taller and longer-legged with a low camera,
+//                  scored (height included), stored as a new candidate and made
+//                  the pick (tallerOf: the face he chose). Writes
+//                  ~/Desktop/house-models/{slot}-tall.jpg and taller.jpg (his
+//                  picks above, the taller re-shoots below); --send sends it.
 //   --send         the contact sheet to Junid's WhatsApp (Jimmy, --kind junid).
 //   --pick black=2 [white=1] [coloured=3] [--override]   Junid's choice.
 //   --auto         the 24-hour fallback: each unpicked model past its deadline
@@ -119,11 +127,12 @@ if (has("send")) {
   process.exit(0);
 }
 
-if (!has("candidates")) { console.error("usage: --candidates [--slot s] [--replace] | --send | --pick black=2 … | --auto | --approve | --status"); process.exit(1); }
+if (!has("candidates") && !has("taller")) { console.error("usage: --candidates [--slot s] [--replace] | --taller [--slot s] [--send] | --send | --pick black=2 … | --auto | --approve | --status"); process.exit(1); }
 const slots = arg("slot") ? [arg("slot")] : hm.ORDER;
 for (const s of slots) {
   if (!hm.MODELS[s]) throw new Error(`no model "${s}"`);
-  if (models[s] && !has("replace")) throw new Error(`${s} already has candidates — pass --replace for new faces`);
+  if (has("candidates") && models[s] && !has("replace")) throw new Error(`${s} already has candidates — pass --replace for new faces`);
+  if (has("taller") && !hm.chosenFor(models[s])) throw new Error(`${s} has no picked face to make taller`);
 }
 
 const geminiApiKey = secret("GEMINI_API_KEY");
@@ -132,7 +141,7 @@ await mkdir(OUT, { recursive: true });
 const saDate = saDateStringFromMs(Date.now());
 
 // The critic model scores each candidate against his brief, from the photo alone.
-const PARTS = ["age", "build", "face", "hair", "stubble", "heritage", "look", "photo", "realism"];
+const PARTS = ["age", "build", "height", "face", "hair", "stubble", "heritage", "look", "photo", "realism"];
 const SCORE_SCHEMA = {
   type: "object", additionalProperties: false,
   required: ["score", ...PARTS, "reasons"],
@@ -152,13 +161,77 @@ async function scoreFace(jpg, model) {
       { type: "text", text: [
         "This is a candidate for one of a clothing brand's three house models. Score it strictly against his brief, 1 to 10 each:",
         `Brief: ${model.description}. A professional fashion shoot (good camera, good light, model posing), not a phone snap. Full length.`,
-        "age (early-to-mid 20s), build (tall and slim, runway), face (sharp, defined, strong jawline), hair (very short: skin fade or buzz cut, hair barely visible), stubble (clean-shaven or very light), heritage (clearly matches the brief's heritage and skin tone), look (a confident fashion model, posing), photo (looks like a professional fashion shoot, not a phone snap; full length, head to toe), realism (a real photograph: no AI artefacts in eyes, teeth, hands, ears, feet or skin), and score: the whole brief, and how well he would carry a brand as its recurring model.",
+        "age (early-to-mid 20s), build (slim, runway), height (reads as a very tall 1.90 m runway model: long legs more than half his height, a small head, about eight and a half heads tall; a short or stocky look scores low), face (sharp, defined, strong jawline), hair (very short: skin fade or buzz cut, hair barely visible), stubble (clean-shaven or very light), heritage (clearly matches the brief's heritage and skin tone), look (a confident fashion model, posing), photo (looks like a professional fashion shoot, not a phone snap; full length, head to toe), realism (a real photograph: no AI artefacts in eyes, teeth, hands, ears, feet or skin), and score: the whole brief, and how well he would carry a brand as its recurring model.",
         "Under 60 words of reasons.",
       ].join("\n") },
     ] }],
   });
   const text = (msg.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
   return { ...JSON.parse(text), costUSD: fitRules.costOf(msg.usage) };
+}
+
+async function store(slot, n, jpg, gen, s, at, extra = {}) {
+  const path = `${hm.REF_PREFIX}${slot}-${at}-${n}.jpg`;
+  const token = randomUUID();
+  await bucket.file(path).save(jpg, { resumable: false, contentType: "image/jpeg", metadata: { cacheControl: "public, max-age=31536000, immutable", metadata: { firebaseStorageDownloadTokens: token } } });
+  const url = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+  const costUSD = +(gen.costUSD + s.costUSD).toFixed(5);
+  const { reasons, score, costUSD: _c, ...parts } = s;
+  return { path, url, contentType: "image/jpeg", engine: gemini.NBPRO_MODEL, score, parts, reasons: String(reasons).slice(0, 600), costUSD, ...extra };
+}
+
+if (has("taller")) {
+  // Up to two re-shoots per man; the first that scores 8+ overall and on height is kept, else the better one.
+  const at = Date.now();
+  let totalUSD = 0;
+  const rows = [];
+  for (const slot of slots) {
+    const model = hm.MODELS[slot];
+    const chosen = hm.chosenFor(models[slot]);
+    const [face] = await bucket.file(chosen.path).download();
+    const prompt = lookbook.buildModelRefPrompt(model, { fromFace: true });
+    let best = null;
+    for (let k = 1; k <= 2 && !(best && best.s.score >= 8 && best.s.height >= 8); k++) {
+      await db.ref(`social_generation_budget/${saDate}/count`).transaction((cur) => (Number(cur) || 0) + 1);
+      const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.NBPRO_MODEL, [
+        { text: "FACE REFERENCE — the man to photograph again (his face, skin tone, hair and stubble only; not his height, pose or framing):" },
+        gemini.inlineImagePart(face, chosen.contentType || "image/jpeg"),
+        { text: prompt },
+      ], { outPerMtok: gemini.NBPRO_OUT_PER_MTOK, flatUsd: gemini.NBPRO_FLAT_IMAGE_USD, imageConfig: { aspectRatio: "9:16", imageSize: "2K" } });
+      const jpg = await sharp(gen.buffer).jpeg({ quality: 92 }).toBuffer();
+      const s = await scoreFace(jpg, model);
+      totalUSD += gen.costUSD + s.costUSD;
+      console.log(`${slot} taller ${k}: ${s.score}/10, height ${s.height} — ${s.reasons}`);
+      if (!best || s.score + s.height > best.s.score + best.s.height) best = { jpg, gen, s };
+    }
+    const n = String(Math.max(...Object.keys(models[slot].candidates).map(Number)) + 1);
+    const c = await store(slot, n, best.jpg, best.gen, best.s, at, { tallerOf: chosen.n });
+    await db.ref().update({
+      [`${hm.MODELS_PATH}/${slot}/candidates/${n}`]: c,
+      ...hm.pickUpdates(slot, { candidates: { ...models[slot].candidates, [n]: c } }, n, { by: models[slot].pickedBy || "junid", nowMs: Date.now() }),
+    });
+    await writeFile(join(OUT, `${slot}-tall.jpg`), best.jpg);
+    rows.push({ slot, from: chosen.n, n, score: c.score, height: c.parts.height, before: face, after: best.jpg });
+  }
+  // His picks on top, the taller re-shoots below.
+  const W = 480, H = 853, PAD = 16, LABEL = 56, tiles = [];
+  const label = (t) => Buffer.from(`<svg width="${W}" height="${LABEL}"><rect width="100%" height="100%" fill="#111"/><text x="16" y="38" font-family="Helvetica, Arial" font-size="26" font-weight="700" fill="#fff">${t}</text></svg>`);
+  for (const [col, r] of rows.entries()) {
+    const x = PAD + col * (W + PAD);
+    for (const [row, [buf, t]] of [[r.before, `${r.slot.toUpperCase()} ${r.from} · YOUR PICK`], [r.after, `${r.slot.toUpperCase()} ${r.from} TALLER · height ${r.height}/10`]].entries()) {
+      const y = PAD + row * (H + LABEL + PAD);
+      tiles.push({ input: await sharp(buf).resize(W, H, { fit: "cover" }).jpeg().toBuffer(), left: x, top: y + LABEL }, { input: label(t), left: x, top: y });
+    }
+  }
+  const TALL_SHEET = join(OUT, "taller.jpg");
+  await sharp({ create: { width: PAD + rows.length * (W + PAD), height: PAD + 2 * (H + LABEL + PAD), channels: 3, background: "#000" } }).composite(tiles).jpeg({ quality: 85 }).toFile(TALL_SHEET);
+  if (has("send")) tellJunid([
+    "Your picks, re-shot taller (same faces: top row is your pick, bottom row the taller version).",
+    ...rows.map((r) => `• ${hm.MODELS[r.slot].label} ${r.from}: ${r.score}/10, height ${r.height}/10`),
+    "The taller ones are now the faces. Reply \"approve models\" to let lookbooks with them post, or tell me what to change. Nothing with a model posts until you approve.",
+  ].join("\n"), TALL_SHEET);
+  console.log(JSON.stringify({ totalUSD: +totalUSD.toFixed(4), sheet: TALL_SHEET, rows: rows.map(({ before, after, ...r }) => r) }, null, 2));
+  process.exit(0);
 }
 
 const at = Date.now();
@@ -175,16 +248,10 @@ for (const slot of slots) {
     });
     const jpg = await sharp(gen.buffer).jpeg({ quality: 92 }).toBuffer();
     const s = await scoreFace(jpg, model);
-    const path = `${hm.REF_PREFIX}${slot}-${at}-${n}.jpg`;
-    const token = randomUUID();
-    await bucket.file(path).save(jpg, { resumable: false, contentType: "image/jpeg", metadata: { cacheControl: "public, max-age=31536000, immutable", metadata: { firebaseStorageDownloadTokens: token } } });
-    const url = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
-    const costUSD = +(gen.costUSD + s.costUSD).toFixed(5);
-    totalUSD += costUSD;
-    const { reasons, score, costUSD: _c, ...parts } = s;
-    candidates[n] = { path, url, contentType: "image/jpeg", engine: gemini.NBPRO_MODEL, score, parts, reasons: String(reasons).slice(0, 600), costUSD };
+    candidates[n] = await store(slot, n, jpg, gen, s, at);
+    totalUSD += candidates[n].costUSD;
     await writeFile(join(OUT, `${slot}-${n}.jpg`), jpg);
-    console.log(`${slot} ${n}: ${score}/10 — ${reasons} ($${costUSD})`);
+    console.log(`${slot} ${n}: ${s.score}/10 — ${s.reasons} ($${candidates[n].costUSD})`);
   }
   await db.ref(`${hm.MODELS_PATH}/${slot}`).set({ generatedAt: at, decideBy: at + hm.DECIDE_MS, candidates, picked: null, prompt, replaced: models[slot] ? models[slot].generatedAt : null });
   models[slot] = { candidates };

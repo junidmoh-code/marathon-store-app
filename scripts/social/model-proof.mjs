@@ -13,7 +13,8 @@
 // Resumable: a card already in model-proof.json is not made again.
 //
 //   GOOGLE_APPLICATION_CREDENTIALS=~/.config/marathon/shopify-reconciler-sa.json \
-//     node scripts/social/model-proof.mjs [--only black-1]
+//     node scripts/social/model-proof.mjs [--only black-1] [--send]
+// --send: the finished cards as one sheet to Junid's WhatsApp (Jimmy, --kind junid).
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -131,4 +132,21 @@ log.summary = {
 };
 await save();
 console.log(JSON.stringify(log.summary, null, 2));
+if (process.argv.includes("--send") && done.length) {
+  const sharp = require("sharp");
+  const W = 540, H = 675, PAD = 16;
+  const cards = CARDS.filter((c) => log.cards[c.key]);
+  const tiles = await Promise.all(cards.map(async (c, i) => ({
+    input: await sharp(join(OUT, `${c.key}-feed.jpg`)).resize(W, H, { fit: "cover" }).jpeg().toBuffer(),
+    left: PAD + (i % 2) * (W + PAD), top: PAD + Math.floor(i / 2) * (H + PAD),
+  })));
+  const sheet = join(OUT, "model-proof-sheet.jpg");
+  await sharp({ create: { width: PAD + 2 * (W + PAD), height: PAD + Math.ceil(cards.length / 2) * (H + PAD), channels: 3, background: "#000" } }).composite(tiles).jpeg({ quality: 85 }).toFile(sheet);
+  const text = [
+    `Model proof: ${done.length} of ${CARDS.length} outfit posts (samples, none posted). Left column: card 1, right: card 2 of each model.`,
+    ...cards.map((c) => { const e = log.cards[c.key]; return `• ${c.key}: ${e.theme} · ${e.total} · critic ${scoreText(e.scores)} · $${e.cost.totalUSD}`; }),
+    `Mean $${log.summary.perPostUSD.mean} per post. Nothing with a model posts until you reply "approve models".`,
+  ].join("\n");
+  console.log(execFileSync(process.execPath, ["bin/jimmy-send.mjs", "--to", "27813995333", "--kind", "junid", "--text", text, "--media", sheet], { cwd: join(homedir(), "marathon-dm-agent"), encoding: "utf8", timeout: 60000 }).split("\n")[0]);
+}
 process.exit(0);
