@@ -217,6 +217,20 @@ describe("a summary that counts errors is a failed run (CodeRabbit, PR #818)", (
     expect(runsOf(parseLog(errRun(at("10:11")))).map((r) => r.ok)).toEqual([false]);
     expect(runsOf(parseLog(quiet(at("10:11")))).map((r) => r.ok)).toEqual([true]);
     const lines = parseLog(every2(at("12:00"), at("12:08"), errRun));
-    expect(decide({ lines, now: at("12:09"), state: {} }).mail?.subject).toBe("Website orders poller is DOWN: the last 5 runs all failed");
+    const r = decide({ lines, now: at("12:09"), state: {} });
+    expect(r.mail?.subject).toBe("Website orders poller: the last 5 runs all reported errors");
+    expect(r.mail.text).toContain("is running");
+    expect(r.mail.text).not.toContain("do not reach the app");
   });
+});
+
+test("an error summary's mail names the error from its detail line", () => {
+  const run = (ms) => [L(ms, "  ✗ 18970: fulfil failed: Shopify said no"), L(ms, "orders: 0 new · 0 cancelled · 5 open · 1 ERROR(S) (100 ms)")].join("\n");
+  const r = decide({ lines: parseLog(every2(at("12:00"), at("12:08"), run)), now: at("12:09"), state: {} });
+  expect(r.mail.text).toContain("Latest error: ✗ 18970: fulfil failed: Shopify said no");
+});
+test("a mix of failed runs and error summaries is DOWN", () => {
+  const errRun = (ms) => L(ms, "orders: 0 new · 1 ERROR(S) (1 ms)");
+  const lines = parseLog([err504(at("12:00")), errRun(at("12:02")), err504(at("12:04")), errRun(at("12:06")), err504(at("12:08"))].join("\n"));
+  expect(decide({ lines, now: at("12:09"), state: {} }).mail?.subject).toBe("Website orders poller is DOWN: the last 5 runs all failed");
 });

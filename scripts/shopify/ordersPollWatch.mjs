@@ -81,8 +81,10 @@ export function parseLog(text) {
 export function runsOf(lines) {
   const runs = [];
   for (const l of lines) {
-    if (/^orders: /.test(l.text)) runs.push({ at: l.at, ok: !/ · \d+ ERROR\(S\)/.test(l.text), text: l.text });
-    else if (/^✗ /.test(l.text)) runs.push({ at: l.at, ok: false, text: l.text });
+    if (/^orders: /.test(l.text)) {
+      const errors = / · \d+ ERROR\(S\)/.test(l.text);
+      runs.push({ at: l.at, ok: !errors, kind: errors ? "errors" : "ok", text: l.text });
+    } else if (/^✗ /.test(l.text)) runs.push({ at: l.at, ok: false, kind: "fail", text: l.text });
   }
   return runs;
 }
@@ -129,20 +131,32 @@ export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = 
 
   const tail = a.runs.map((r) => `  ${fmt(r.at)}  ${r.text.slice(0, 160)}`).join("\n") || "  (no runs in the log)";
   if (a.down && !outage) {
-    const reason = a.failing
-      ? `the last ${failRuns} runs all failed`
-      : `no new poll run in logs/orders-poll.log for ${mins(a.quietMs)} minutes`;
-    const lastErr = a.failing ? a.runs[a.runs.length - 1].text.slice(0, 200) : null;
+    // Every one of the failures is a run that DID go through but counted errors (architect review 3): one stuck order
+    // retried every tick. Worth a mail, but the poller is running: other orders still come in.
+    const onlyErrors = !a.stale && a.failing && a.runs.every((r) => r.kind === "errors");
+    const reason = onlyErrors
+      ? `the last ${failRuns} runs all reported errors`
+      : a.failing
+        ? `the last ${failRuns} runs all failed`
+        : `no new poll run in logs/orders-poll.log for ${mins(a.quietMs)} minutes`;
+    // For an error summary the error itself is on a detail line of that run (indented "✗ …" / "! …").
+    const lastRunAt = a.runs.length ? a.runs[a.runs.length - 1].at : null;
+    const detail = onlyErrors ? [...lines].reverse().find((l) => l.at <= lastRunAt && /^\s+[✗!]/.test(l.text))?.text.trim() : null;
+    const lastErr = a.failing ? (detail || a.runs[a.runs.length - 1].text).slice(0, 200) : null;
     return {
       mail: {
-        subject: `Website orders poller is DOWN: ${reason}`,
+        subject: onlyErrors ? `Website orders poller: ${reason}` : `Website orders poller is DOWN: ${reason}`,
         text: [
-          `The website-orders poller (scripts/shopify/orders-poll.mjs, run by com.marathon.shopifyreconcile every 2 minutes) looks down since ${fmt(a.failing ? a.runs[0].at : a.lastLineAt ?? now)} SAST.`,
+          onlyErrors
+            ? `The website-orders poller (scripts/shopify/orders-poll.mjs) is running, but each of its last ${failRuns} runs since ${fmt(a.runs[0].at)} SAST reported errors.`
+            : `The website-orders poller (scripts/shopify/orders-poll.mjs, run by com.marathon.shopifyreconcile every 2 minutes) looks down since ${fmt(a.failing ? a.runs[0].at : a.lastLineAt ?? now)} SAST.`,
           "",
           `Why: ${reason}.`,
           lastErr ? `Latest error: ${lastErr}` : `Last poll run in the log: ${a.lastLineAt ? `${fmt(a.lastLineAt)} SAST` : "none"}.`,
           "",
-          "While it is down, new website orders do not reach the app (no holds, no picks, no packing list) and nothing is fulfilled on Shopify.",
+          onlyErrors
+            ? "Other orders are still processed; usually one order fails the same way every run until it is fixed. The error lines in logs/orders-poll.log name it."
+            : "While it is down, new website orders do not reach the app (no holds, no picks, no packing list) and nothing is fulfilled on Shopify.",
           "",
           "Last runs in the log:",
           tail,
@@ -152,7 +166,7 @@ export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = 
         ].join("\n"),
       },
       state: { outage: { since: now, reason, startedAt: a.failing ? a.runs[0].at : a.lastLineAt } },
-      note: `DOWN: ${reason} — mailing`,
+      note: `${onlyErrors ? "ERRORS" : "DOWN"}: ${reason} — mailing`,
       assessment: a,
     };
   }
