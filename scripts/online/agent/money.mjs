@@ -51,6 +51,16 @@ export const refundKey = ({ orderGid, lineItemId, quantity, cents }) =>
   `refund-line-${String(orderGid).split("/").pop()}-${String(lineItemId).split("/").pop()}-q${quantity}-${cents}`;
 
 /**
+ * The key the customer agent passes (run.mjs money()): ONE refund per money
+ * slot. The slot is the app line (one Shopify line item can be split over
+ * several app lines, poll.mjs routeLines, each owed its own refund) and the
+ * moment it was claimed, so it is the same on any retry of that slot and never
+ * the same for two different refunds — and it does not depend on the amount
+ * Shopify suggests, which changes once a refund has gone through.
+ */
+export const slotRefundKey = ({ orderId, lineIndex, claimedAt }) => `refund-slot-${orderId}-${lineIndex}-${claimedAt}`;
+
+/**
  * Refund ONE line through the order's own gateway (Payfast, via Shopify). The
  * amount is the smaller of what we owe and what Shopify suggests for that
  * line — never more than either. → { ok: true, id, amountCents } | { ok: false, error }

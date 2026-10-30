@@ -45,3 +45,32 @@ describe("refundLine @idempotent (API 2026-04+)", () => {
     expect(f.calls.find((c) => /refundCreate/.test(c.q)).v.key).toBe("slot-42");
   });
 });
+
+// Spec review of PR #807: one Shopify line item can be split over several app
+// lines (poll.mjs routeLines). A content-only key (order, line item, qty,
+// cents) is then the SAME for two different refunds, and Shopify would replay
+// the first instead of paying the second. money() keys each refund by its slot.
+describe("money() keys each refund by its own slot", () => {
+  it("two app lines on ONE Shopify line item get two different keys, so both are paid", async () => {
+    const { fakeDb, increment } = await import("../../shopify/onlineOrders/fakeDb.testutil.mjs");
+    const { money } = await import("./run.mjs");
+    const NOW = Date.parse("2026-10-22T10:00:00Z");
+    const piece = (lineId) => ({ lineId, shopifyLineItemId: "gid://shopify/LineItem/2", pid: "TEE", size: "M", sizeKey: "M", qty: 1, title: "Club Tee", unitPriceCents: 59900, source: { status: "unavailable" } });
+    const f = fakeDb({ online_orders: { 9001: { ref: "LEV", orderNumber: 1801, shopifyGid: ORDER, shopifyName: "#1801", customer: { name: "T", email: "t@example.com" }, totals: { currency: "ZAR" }, lines: [piece("l0"), piece("l1")] } } });
+    const g = fake();
+    const ctx = {
+      db: f.db, increment, get: async (p) => f.read(p), now: NOW, log: () => {}, summary: { credits: 0, refunds: 0, junid: 0 },
+      mailer: async () => {}, notifyJunid: async () => {}, scopes: async () => new Set(["write_orders"]), graphql: g.graphql,
+    };
+    const order = f.read("online_orders/9001");
+    const a = await money(ctx, "9001", order, 0, f.read("online_orders/9001/lines/0"), "refund", 59900, "test");
+    const b = await money(ctx, "9001", order, 1, f.read("online_orders/9001/lines/1"), "refund", 59900, "test");
+    expect(a.state).toBe("done");
+    expect(b.state).toBe("done");
+    const keys = g.calls.filter((c) => /refundCreate/.test(c.q)).map((c) => c.v.key);
+    expect(keys).toEqual([`refund-slot-9001-0-${NOW}`, `refund-slot-9001-1-${NOW}`]);
+    // A resume of the same slot never calls Shopify again (one refund per slot).
+    await money(ctx, "9001", order, 0, f.read("online_orders/9001/lines/0"), "refund", 59900, "test");
+    expect(g.calls.filter((c) => /refundCreate/.test(c.q))).toHaveLength(2);
+  });
+});
