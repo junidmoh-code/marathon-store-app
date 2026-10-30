@@ -60,14 +60,37 @@ async function defaultDeps(deps) {
   return out;
 }
 
-// The /online_orders key (the Shopify order id, digits), never the order's code.
+// An online EXCHANGE's replacement order, minted by Jimmy (marathon-dm-agent
+// src/jimmy/reserve.js) at /online_orders/exchange-<orderNumber>-<paidAtMs>.
+// It has no Shopify order (no shopifyGid): it is packed and shipped through
+// this same flow, and finished without Shopify (poll.mjs shipOrder).
+export const EXCHANGE_KEY = /^exchange-\d+-\d+$/;
+export const isExchangeKey = (key) => EXCHANGE_KEY.test(String(key ?? ""));
+
+// The /online_orders key (the Shopify order id, digits — or an exchange key),
+// never the order's code.
 function orderKey(order) {
   const key = keyOf(order);
   if (!key) throw new Error("bookShipment: the order carries no /online_orders key (key, id or shopifyGid)");
   // A ref (KQZ) passed as id/key would put the claim on a junk node the real
-  // order never sees — and the one-booking guard with it. Keys are digits.
-  if (!/^\d+$/.test(key)) throw new Error(`bookShipment: "${key}" is not an /online_orders key (the Shopify order id)`);
+  // order never sees — and the one-booking guard with it. Keys are digits,
+  // or exchange-<n>-<ms>; anything else is refused.
+  if (!/^\d+$/.test(key) && !isExchangeKey(key)) throw new Error(`bookShipment: "${key}" is not an /online_orders key (the Shopify order id)`);
   return assertSafeSegment(key, "order key");
+}
+
+// An exchange record's own recipient fields: its label is shopifyName
+// ("#1789-EX") and its phone is the one the customer is talking to Jimmy on
+// (exchange.contactPhone) — the copied address may carry the original order's
+// phone. Everything else is read exactly as for a website order.
+function exchangeOverrides(order, ref, contact) {
+  if (!isExchangeKey(keyOf(order))) return { ref, contact };
+  const phone = String(order?.exchange?.contactPhone ?? "").trim();
+  const name = String(order?.shopifyName ?? "").trim();
+  return {
+    ref: name || ref,
+    contact: phone ? { ...contact, mobile_number: phone } : contact,
+  };
 }
 
 // Each line's /products record, by exact path, for its subcategory — the
@@ -88,11 +111,12 @@ async function productsFor(db, order) {
 /** Everything up to (not including) the shipment call. Pure apart from rates. */
 export async function planShipment(order, { db, client, products = null }) {
   const cfg = mergeShippingConfig((await db.ref("config/shipping").get()).val());
-  const ref = orderRef(order);
   const lines = orderLines(order, products ?? (await productsFor(db, order)));
   const parcel = estimateParcel(lines, cfg);
   const { address, missing: addrMissing } = deliveryAddress(order);
-  const { contact, missing: contactMissing } = deliveryContact(order);
+  const { contact: baseContact, missing: baseContactMissing } = deliveryContact(order);
+  const { ref, contact } = exchangeOverrides(order, orderRef(order), baseContact);
+  const contactMissing = contact.mobile_number || contact.email ? [] : baseContactMissing;
   const collectionContact = cfg.collectionContact ?? {};
   // The customer's side must be complete before anything is even priced.
   const missing = [...addrMissing, ...contactMissing, ...(!ref ? ["order_ref"] : [])];
@@ -174,8 +198,10 @@ export async function bookShipment(order, deps = {}) {
   }
   // The order must exist at that key — never mint a node by booking.
   // shopifyGid is on every ingested order (ref is not, since 2026-10-21 —
-  // gating on ref refused every live booking of a new order).
-  if (!(await db.ref(`online_orders/${key}/shopifyGid`).get()).exists()) {
+  // gating on ref refused every live booking of a new order). An exchange
+  // record has no shopifyGid; Jimmy writes it only once paid (exchange.paidAt).
+  const existsField = isExchangeKey(key) ? "exchange/paidAt" : "shopifyGid";
+  if (!(await db.ref(`online_orders/${key}/${existsField}`).get()).exists()) {
     log(`bookShipment ${key} REFUSED no order at /online_orders/${key}`);
     return { skipped: true, reason: `no order at /online_orders/${key}` };
   }

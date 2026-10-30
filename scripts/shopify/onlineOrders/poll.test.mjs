@@ -642,6 +642,96 @@ describe("Shopify fulfilment after the pack", () => {
   });
 });
 
+// An online EXCHANGE's replacement (Jimmy, marathon-dm-agent src/jimmy/reserve.js):
+// /online_orders/exchange-<orderNumber>-<paidAtMs>, NO shopifyGid. Packed by the
+// POS like any website order; shipped through this same flow; finished with
+// no Shopify call at all (owner decision 2026-10-30).
+describe("an online exchange ships through the normal pack/courier flow", () => {
+  const EX = "exchange-1789-1761800000000";
+  const exchangeWorld = (cfg = {}, over = {}) => world({
+    config: { onlineOrders: { enabled: false }, shipping: { collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg } },
+    online_orders: {
+      [EX]: {
+        orderNumber: "1789-EX", shopifyName: "#1789-EX",
+        customer: { name: "Thandi M" },
+        shipping: { address: { name: "Thandi M", address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa", phone: "0829999999" } },
+        totals: { subtotalCents: 0, totalCents: 0 },
+        status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0 },
+        lines: [{ pid: "TEE", size: "M", sizeKey: "M", qty: 1, title: "Club Tee", isFootwear: false, unitPriceCents: 0, exchangeFor: "SNK", source: { locationId: "marathon-pe", status: "handed" } }],
+        exchange: { kind: "size", paidCents: 21800, paidVia: "payfast", paidAt: 1761800000000, ref: "EX1789", contactPhone: "+27821234567", relatedOrders: ["9001"] },
+        ...over,
+      },
+    },
+  });
+  const fos = [{ id: "gid://shopify/FulfillmentOrder/7", status: "OPEN", lineItems: { nodes: [{ remainingQuantity: 1 }] } }];
+  const shopifyWrites = (sh) => sh.calls.filter((c) => /fulfillmentCreate|fulfillmentOrders\(|order\(id:/.test(c.query));
+
+  it("live: books Courier Guy with the record's address, contactPhone and #1789-EX, then finishes WITHOUT Shopify", async () => {
+    const f = fakeDb(exchangeWorld({ live: true }));
+    const sent = [];
+    const courier = { ...fakeCourier(), createShipment: async (body) => { sent.push(body); return { id: 42, short_tracking_reference: "EXW123", charged_amount: 99 }; } };
+    const sh = shopify({ fos });
+    const out = await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      customer_reference: "#1789-EX",
+      delivery_contact: { name: "Thandi M", mobile_number: "+27821234567" },
+      delivery_address: { street_address: "5 Esplanade Road", city: "Cape Town", zone: "WC", code: "7441" },
+    });
+    expect(shopifyWrites(sh)).toEqual([]); // never a Shopify fulfilment call (no shopifyGid)
+    expect(out.fulfilled).toBe(1);
+    const o = order(f, EX);
+    expect(o).toMatchObject({
+      status: "packed", fulfilState: "done",
+      fulfil: { state: "done", attempts: 1, at: NOW, note: expect.stringMatching(/No Shopify order/) },
+      shipping: { provider: "courier_guy", shipmentId: 42, waybill: "EXW123", courierBooking: { state: "booked" }, booking: { waybill: "EXW123" } },
+    });
+    expect(o.shopifyGid).toBeUndefined();
+    expect(o.courierError).toBeUndefined();
+    expect(f.writes.some(([, p]) => p.startsWith("pos/"))).toBe(false);
+  });
+
+  it("live off: the dry run is recorded with the same payload; finished without Shopify, nothing booked", async () => {
+    const f = fakeDb(exchangeWorld({ live: false }));
+    const courier = fakeCourier();
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh, { courier }).deps);
+    const booking = order(f, EX).shipping.booking;
+    expect(booking).toMatchObject({ skipped: true, dryRun: { customer_reference: "#1789-EX", delivery_contact: { mobile_number: "+27821234567" } } });
+    expect(courier.calls.map(([op]) => op)).toEqual(["getRates"]);
+    expect(shopifyWrites(sh)).toEqual([]);
+    expect(order(f, EX)).toMatchObject({ fulfilState: "done", fulfil: { state: "done", note: expect.stringMatching(/No Shopify order/) } });
+    expect(order(f, EX).shipping.provider).toBeUndefined();
+  });
+
+  it("live, booking fails: held as courier_failed exactly like a website order (no Shopify either way)", async () => {
+    const f = fakeDb(exchangeWorld({ live: true }));
+    const courier = { ...fakeCourier(), createShipment: async () => { throw Object.assign(new Error("HTTP 400 bad address"), { status: 400 }); } };
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(shopifyWrites(sh)).toEqual([]);
+    expect(order(f, EX)).toMatchObject({ status: "packed", fulfilState: "courier_failed", attentionOpen: true, attention: { kind: "courier_failed" } });
+  });
+
+  it("a non-exchange record with no shopifyGid is never sent to Shopify with a missing id", async () => {
+    const w = world({ online_orders: { 9001: { ref: "KQZ", status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0 }, lines: [{ pid: "TEE", sizeKey: "M", qty: 1, source: { status: "handed" } }] } } });
+    const f = fakeDb(w);
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh).deps);
+    expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false);
+    expect(order(f)).toMatchObject({ fulfilState: "failed", fulfil: { error: expect.stringMatching(/no shopifyGid/) } });
+  });
+
+  it("numeric orders unchanged: a website order still fulfils on Shopify, with no exchange note", async () => {
+    const f = fakeDb(world({ online_orders: { 9001: { ref: "KQZ", shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0 }, lines: [{ pid: "TEE", sizeKey: "M", qty: 1, source: { status: "handed" } }] } } }));
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh).deps);
+    expect(sh.calls.filter((c) => c.query.includes("fulfillmentCreate"))).toHaveLength(1);
+    expect(order(f)).toMatchObject({ fulfilState: "done", fulfil: { state: "done", attempts: 1 } });
+    expect(order(f).fulfil.note).toBeUndefined();
+  });
+});
+
 describe("one bad order never stops the rest", () => {
   it("is parked and retried by id; the cursor moves on", async () => {
     const f = fakeDb(world(), { failWritesUnder: "online_orders/9001" });
