@@ -940,6 +940,17 @@ Cell effects: `received +to`, `opening +to`, `sold −from`, `return +to`,
 `transfer_* → warehouse|store|admin`; `sold|return → pos|store|admin`;
 `adjustment → admin`.
 
+**Exchange returns (server-written, 2026-10-30).** When Junid tells Jimmy an
+online exchange's return is in good condition, `scripts/shipping/exchange-return.mjs`
+(`exchangeReturn.mjs`) writes one `return` movement per returned unit through
+`functions/lib/admin-movement.cjs` (which now admits `return`): `to: "marathon-pe"`,
+`reason: "exchange return #<order>"`, `link.orderId` = the exchange key,
+`actor: "system:jimmy-exchange-return"`, id `exret_<exchangeKey>_<pid>_<sizeKey>_<n>`
+(fixed per exchange and unit: a repeat never adds twice). It also completes
+`/online_orders/<exchangeKey>/incoming/arrival` (`via: "jimmy"`, `stockReturned`),
+so the POS's Confirm arrival answers "Already confirmed" and Till 2 can pack the
+replacement — whose one deduction is the pack's sale, never this script.
+
 ### Receiving via the product-add form (rework)
 Opening stock is entered in the **admin product-add form** — an optional,
 collapsible per-size section, collapsed by default (collapsed = form unchanged).

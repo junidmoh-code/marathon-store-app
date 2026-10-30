@@ -63,7 +63,9 @@ const strip = (cell) => (cell ? { qty: cell.qty, v: cell.v, mv: cell.mv, lastTyp
 
 function randomMovement(r, i) {
   const kind = r();
-  if (kind < 0.5) return { type: "transfer_in", productId: PID, size: SIZE, qty: 1 + Math.floor(r() * 3), from: "in_transit", to: "hub1", movementId: `m${i}`, reason: "stock_hold_release", allowNegative: r() < 0.2 };
+  if (kind < 0.4) return { type: "transfer_in", productId: PID, size: SIZE, qty: 1 + Math.floor(r() * 3), from: "in_transit", to: "hub1", movementId: `m${i}`, reason: "stock_hold_release", allowNegative: r() < 0.2 };
+  // An exchange return (scripts/shipping/exchangeReturn.mjs, 30 Oct 2026): +to on a real shelf, the negative base cleared.
+  if (kind < 0.55) return { type: "return", productId: PID, size: SIZE, qty: 1 + Math.floor(r() * 2), from: null, to: "hub1", movementId: `m${i}`, reason: "exchange return #1785" };
   const positive = r() < 0.5;
   return { type: "adjustment", productId: PID, size: SIZE, qty: 1 + Math.floor(r() * 3), ...(positive ? { to: pick(r, LOCS), from: null } : { from: pick(r, LOCS), to: null }), movementId: `m${i}`, reason: "fuzz", allowNegative: r() < 0.3 };
 }
