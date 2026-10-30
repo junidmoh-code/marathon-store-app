@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the website-orders poller watchdog (orders-poll-watchdog.mjs).
+  Every 10 minutes it reads logs/orders-poll.log and emails Junid
+  (gunidmoh@gmail.com) once when the poller goes down in trading hours
+  (07:00–19:00 SAST: no new line for 15 minutes, or the last 5 runs all failed)
+  and once when it is back. Outside trading hours it is silent.
+
+  KeepAlive + ThrottleInterval, NOT StartInterval: the same choice as
+  com.marathon.shopifyreconcile (on 2026-08-31 launchd silently stopped firing
+  every StartInterval agent in the session). The script runs one check and
+  exits; launchd respawns it no sooner than every 600 seconds.
+
+  INSTALL:
+    cp scripts/shopify/com.marathon.orderspollwatchdog.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marathon.orderspollwatchdog.plist
+  Its log: logs/orders-poll-watchdog.log (one "alive" line an hour, plus every
+  outage and recovery). Nothing secret here: the mailbox password is in .env.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.orderspollwatchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/shopify/orders-poll-watchdog.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-orderswatchdog.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-orderswatchdog.err.log</string>
+</dict>
+</plist>
