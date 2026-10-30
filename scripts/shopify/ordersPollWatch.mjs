@@ -182,7 +182,9 @@ export function decide({ lines, now, state = {}, staleMs = STALE_MS, failRuns = 
           `The website-orders poller is working again. Its last ${recoverRuns} runs were good (the latest ${fmt(a.runs[a.runs.length - 1].at)} SAST).`,
           "",
           `${/reported errors/.test(outage.reason) ? "It reported errors" : "It was down"} from about ${fmt(began)} SAST (${outage.reason}), roughly ${mins(now - began)} minutes until this check.`,
-          "Orders that came in meanwhile are picked up by the normal runs; nothing to do unless something looks missing.",
+          /reported errors/.test(outage.reason)
+            ? "The errors stopped: its last runs reported none."
+            : "Orders that came in meanwhile are picked up by the normal runs; nothing to do unless something looks missing.",
           "",
           "Last runs in the log:",
           tail,
