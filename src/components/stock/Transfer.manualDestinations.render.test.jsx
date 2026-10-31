@@ -85,4 +85,15 @@ describe("the destination sheet offers every location", () => {
     expect(got).not.toContain(labelFor("concrete", REGISTRY));
   });
 
+  it("Confirm Hub 2 → Concrete writes a transfer_out flagged manual", async () => {
+    const tree = await openSheet("hub2");
+    // The LAST "Concrete" button is the sheet's chip (the source picker lists one too).
+    const chips = buttons(tree).filter((b) => text(b) === "Concrete");
+    await act(async () => { chips[chips.length - 1].props.onClick(); });
+    await act(async () => { button(tree, "Confirm → Concrete").props.onClick(); });
+    expect(applyMovement).toHaveBeenCalledTimes(1);
+    const mv = applyMovement.mock.calls[0][0];
+    expect(mv).toMatchObject({ type: "transfer_out", from: "hub2", productId: PID, size: "M", qty: 1, manual: true });
+    expect(mv.to === "concrete" || mv.transitTo === "concrete").toBe(true);
+  });
 });

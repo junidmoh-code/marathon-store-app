@@ -443,6 +443,8 @@ export default function Transfer({ products, registry, actorRole }) {
           // The REAL destination, for the section wall: a transit send books
           // into in_transit, which says nothing about where the stock is going.
           ...(transit ? { transitTo: to } : {}),
+          // A person's transfer: may cross sections (owner, 31 Oct 2026).
+          manual: true,
           movementId: transferMovementId(tId, ln.productId, ln.size), // idempotency key
           link: { transferId: tId, refillId: refillId || null },
         });

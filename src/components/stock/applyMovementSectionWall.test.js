@@ -164,3 +164,62 @@ describe("the wall follows the registry", () => {
     expect(movementWallCheck(SEED_REGISTRY, null).ok).toBe(true);
   });
 });
+
+// ─── A PERSON'S MANUAL TRANSFER (owner, 31 Oct 2026) ─────────────────────────
+// The Transfer screen's send and the In Transit receive flag `manual: true`;
+// those are judged by manualTransferAllowed. Nothing else is.
+describe("a manual transfer may cross sections", () => {
+  const manual = (from, to, over = {}) => move(from, to, { manual: true, ...over });
+
+  it("every Section 1 ↔ Section 2 pair, both directions, moves one unit", async () => {
+    for (const a of S1) for (const b of S2) for (const [from, to] of [[a, b], [b, a]]) {
+      const res = await manual(from, to);
+      expect(res, `${from}→${to}`).toMatchObject({ ok: true });
+    }
+    // 3 S1 × 4 S2 sends each way: every location sent and received the same count.
+    for (const loc of [...S1, ...S2]) expect(qtyAt(loc)).toBe(5);
+  });
+
+  it("Hub 2 → Concrete: the cells move and the ledger says it was manual", async () => {
+    const res = await manual("hub2", "concrete");
+    expect(res.ok).toBe(true);
+    expect(qtyAt("hub2")).toBe(4);
+    expect(qtyAt("concrete")).toBe(6);
+    expect(getPath(`stock_movements/${res.movementId}`)).toMatchObject({ type: "transfer_out", from: "hub2", to: "concrete", manual: true });
+  });
+
+  it("through transit: the send is judged on transitTo, the receive on transitFrom", async () => {
+    expect((await manual("hub2", "in_transit", { transitTo: "concrete" })).ok).toBe(true);
+    expect((await manual("in_transit", "concrete", { type: "transfer_in", transitFrom: "hub2" })).ok).toBe(true);
+    expect(qtyAt("hub2")).toBe(4);
+    expect(qtyAt("concrete")).toBe(6);
+    // a sectioned origin parking stock in transit must still say where it goes
+    expect(await manual("hub2", "in_transit")).toMatchObject({ ok: false, reason: "section_wall", wall: "transit_needs_real_endpoints" });
+  });
+
+  it("still refuses an unknown location and a move to the same place", async () => {
+    expect(await manual("hub2", "hubC")).toMatchObject({ ok: false, reason: "section_wall", wall: "manual_transfer_refused" });
+    expect(await manual("concrete-stockroom", "concrete")).toMatchObject({ ok: false, wall: "manual_transfer_refused" });
+    expect(await manual("in_transit", "concrete", { type: "transfer_in", transitFrom: "concrete" })).toMatchObject({ ok: false, wall: "manual_transfer_refused" });
+    expect(updates).toEqual([]);
+  });
+
+  it("the flag only counts on a relocation, and only as the literal true", async () => {
+    expect((await move("hub2", "concrete", { manual: "true" })).reason).toBe("section_wall");
+    expect((await move("hub2", "concrete", { manual: 1 })).reason).toBe("section_wall");
+    expect(movementWallCheck(SEED_REGISTRY, { type: "transfer_out", from: "hub2", to: "concrete", manual: true }).ok).toBe(true);
+    expect(movementWallCheck(SEED_REGISTRY, { type: "adjustment", from: "hub2", to: "concrete", manual: true }).reason).toBe("cross_section");
+  });
+
+  it("without the flag the wall is exactly as before (engine, Solve, seating, clean-up)", async () => {
+    expect(await move("hub2", "concrete")).toMatchObject({ ok: false, reason: "section_wall", wall: "cross_section" });
+    expect(await move("in_transit", "concrete", { type: "transfer_in", transitFrom: "hub2" })).toMatchObject({ ok: false, wall: "cross_section" });
+    expect(movementWallCheck(SEED_REGISTRY, { type: "transfer_out", from: "hub2", to: "concrete" }).reason).toBe("cross_section");
+  });
+
+  it("an unflagged move writes no manual field", async () => {
+    const res = await move("hub2", "trophy");
+    expect(res.ok).toBe(true);
+    expect(getPath(`stock_movements/${res.movementId}`)).not.toHaveProperty("manual");
+  });
+});

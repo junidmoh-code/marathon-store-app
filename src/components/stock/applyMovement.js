@@ -48,7 +48,7 @@ import { deviceStamp } from "../../device/deviceStamp";
 import { currentNetwork } from "../../utils/networkStore";
 import { trustStamp, arrivalTrust, arrivalMayTrust } from "./stockTrust";
 import { trustedCellsOnly } from "../../utils/networkRegistry";
-import { wallCheck, wallMessage, locationOf, TRANSIT_ID } from "../../utils/networkRegistry";
+import { wallCheck, wallMessage, locationOf, TRANSIT_ID, manualTransferAllowed } from "../../utils/networkRegistry";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
@@ -110,6 +110,17 @@ function clampsNegativeBase(movement, delta, loc) {
 //   • A receive OUT OF in_transit is judged against `transitFrom` when the
 //     receiver knows it; the dispatch was already judged, and the /transfers
 //     rule pins from and to for the life of the transfer.
+//   • A PERSON'S MANUAL TRANSFER (owner, 31 Oct 2026) — a relocation the
+//     caller flags `manual: true` — may cross sections: its real endpoints
+//     (found exactly as above) are judged by manualTransferAllowed, not the
+//     wall. Only the Transfer screen's send and the In Transit receive set the
+//     flag. Every other movement — the engine, Solve, seating, clean-up,
+//     display requests — carries no flag and meets the wall as before.
+export function isManualTransfer(movement) {
+  const m = movement || {};
+  return m.manual === true && (m.type === "transfer_out" || m.type === "transfer_in");
+}
+
 export function movementWallCheck(registry, movement) {
   const { from, to } = movement || {};
   if (!from || !to) return { ok: true, reason: "single_location" };
@@ -127,6 +138,12 @@ export function movementWallCheck(registry, movement) {
     a = movement.transitFrom;
   }
   if (a === TRANSIT_ID || b === TRANSIT_ID) return { ok: true, reason: "transit_internal" };
+  if (isManualTransfer(movement)) {
+    if (manualTransferAllowed(registry, a, b)) return { ok: true, reason: "manual_transfer" };
+    const known = locationOf(registry, a) && locationOf(registry, b);
+    return { ok: false, reason: "manual_transfer_refused",
+      message: known ? "The stock is already at that location." : "That location is not in the network registry." };
+  }
   const c = wallCheck(registry, a, b);
   return c.ok ? c : { ...c, message: wallMessage(registry, a, b) };
 }
@@ -406,6 +423,9 @@ export async function applyMovement(movement, opts = {}) {
       // object, and an absent key is the honest "nothing was cleared".
       ...(Object.keys(negativeCleared).length ? { negativeCleared } : {}),
       ...(shortfall > 0 ? { shortfall } : {}),
+      // A person's manual transfer, judged without the section wall (see
+      // movementWallCheck) — on the ledger so a cross-section move says why.
+      ...(isManualTransfer(movement) ? { manual: true } : {}),
     };
 
     // TRUST (stockTrust.js): the cell this movement lands IN is marked trusted
