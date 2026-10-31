@@ -41,7 +41,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT } from "./cardReconStyles";
-import { captureMode, isRetiredTerminal } from "./terminalRegistry";
+import { captureMode, isRetiredTerminal, terminalBank } from "./terminalRegistry";
 import { tillNow } from "./slipScope";
 import { useNetwork } from "../../utils/useNetwork";
 import { sectionOf, sectionName } from "../../utils/networkRegistry";
@@ -74,6 +74,8 @@ const adminFn = httpsCallable(functions, "cardTerminalAdmin", { timeout: 60000 }
 
 export const TID_PATTERN = /^[A-Z0-9]{4,16}$/;
 const CAPTURE_LABEL = { email: "Email", photo: "Photo", typed: "Typed", both: "Both" };
+// Absent on a row is FNB (every machine before Concrete's, 31 Oct 2026).
+const BANK_LABEL = { fnb: "FNB", "standard-bank": "Standard Bank" };
 
 // SAST is UTC+2 all year. The time typed is SAST whatever the phone is set to.
 const SAST_MS = 2 * 60 * 60 * 1000;
@@ -195,6 +197,7 @@ function TerminalForm({ mode, base, stores, groups, today, busy, onSubmit, onCan
   const [label, setLabel] = useState(base?.label || "");
   const [mid, setMid] = useState(mode === "replace" ? "" : (base?.mid || ""));
   const [capture, setCapture] = useState(base ? captureMode(base) : "both");
+  const [bank, setBank] = useState(base ? terminalBank(base) : "fnb");
   // "" = today (the server stamps the moment of the add, as it always has).
   const [fromDate, setFromDate] = useState("");
 
@@ -208,6 +211,9 @@ function TerminalForm({ mode, base, stores, groups, today, busy, onSubmit, onCan
     if (!ready || busy) return;
     onSubmit({
       tid, storeId, tillId, label: label.trim(), mid: mid.trim(), capture,
+      // An FNB machine's request is what it always was (absent = FNB); the
+      // bank rides only when Standard Bank is picked, or is being picked away.
+      ...(bank !== "fnb" || (base && terminalBank(base) !== "fnb") ? { bank } : {}),
       // Sent only when a day EARLIER than today was picked; today is the
       // server's own stamp, to the second.
       ...(mode === "add" && fromDate && fromDate !== today ? { activeFromDate: fromDate } : {}),
@@ -289,6 +295,16 @@ function TerminalForm({ mode, base, stores, groups, today, busy, onSubmit, onCan
       <label style={U.label} htmlFor="ts-mid">MID (optional)</label>
       <input id="ts-mid" style={U.input} value={mid} inputMode="numeric" autoComplete="off" maxLength={24}
              onChange={(e) => setMid(e.target.value.replace(/[^\d ]/g, ""))} />
+
+      <div style={U.label}>Bank</div>
+      <div style={U.seg} role="radiogroup" aria-label="Bank">
+        {["fnb", "standard-bank"].map((b) => (
+          <button type="button" key={b} role="radio" aria-checked={bank === b}
+                  style={{ ...U.segBtn, ...(bank === b ? U.segOn : null) }} onClick={() => setBank(b)}>
+            {BANK_LABEL[b]}
+          </button>
+        ))}
+      </div>
 
       <div style={U.label}>Capture</div>
       <div style={U.seg} role="radiogroup" aria-label="Capture">
@@ -384,7 +400,7 @@ export default function TerminalSettings({ terminals, onClose }) {
           onCancel={() => setForm(null)}
           onSubmit={(t) => {
             if (form.mode === "replace") {
-              call({ action: "replace", oldTid: form.tid, terminal: { tid: t.tid, label: t.label, mid: t.mid, capture: t.capture } },
+              call({ action: "replace", oldTid: form.tid, terminal: { tid: t.tid, label: t.label, mid: t.mid, capture: t.capture, ...(t.bank ? { bank: t.bank } : {}) } },
                 `${form.tid} is retired and ${t.tid} now takes its till.`);
             } else {
               call({ action: form.mode, terminal: t }, form.mode === "add" ? `${t.tid} added.` : `${t.tid} saved.`);
@@ -404,7 +420,7 @@ export default function TerminalSettings({ terminals, onClose }) {
           <div key={r.tid} style={{ ...U.row, ...(retired ? U.rowRetired : null) }}>
             <div style={U.name}>{r.label || r.tid}</div>
             <div style={U.meta} data-testid={`ts-meta-${r.tid}`}>
-              {r.tid} · on {storeName(stores, here.storeId)} · {tillName(stores, here.storeId, here.tillId)} · {CAPTURE_LABEL[captureMode(r)]}
+              {r.tid} · on {storeName(stores, here.storeId)} · {tillName(stores, here.storeId, here.tillId)} · {CAPTURE_LABEL[captureMode(r)]}{terminalBank(r) === "fnb" ? "" : ` · ${BANK_LABEL[terminalBank(r)]}`}
               {filedElsewhere ? ` · batches filed under ${storeName(stores, r.storeId)} · ${tillName(stores, r.storeId, r.tillId)}` : ""}
               {r.mid ? ` · MID ${r.mid}` : ""}
               {retired ? ` · retired${r.replacedBy ? `, replaced by ${r.replacedBy}` : ""}` : ""}

@@ -49,7 +49,7 @@
 "use strict";
 
 const { normaliseTid, normaliseMid } = require("./card-recon.cjs");
-const { isRetiredTerminal, retiredSlipWarning } = require("./card-terminals.cjs");
+const { isRetiredTerminal, retiredSlipWarning, resolveRegisteredTid } = require("./card-terminals.cjs");
 
 // The permission that opens the email channel, checked on the CALLER — a
 // second flag beside `card_recon` rather than a wider grant, so the identity
@@ -69,11 +69,17 @@ const EMAIL_INTAKE_FLAG = "card_recon_intake";
  *          |{ok:false, reason:string, tid:string|null, unmapped?:boolean}}
  */
 function routeEmailSlip({ extraction, terminals }) {
-  const tid = normaliseTid(extraction && extraction.tid);
-  if (!tid) {
+  const read = normaliseTid(extraction && extraction.tid);
+  if (!read) {
     return { ok: false, tid: null, reason: "No terminal ID could be read off that PDF, so there is no till to record it against." };
   }
   const registry = terminals || {};
+  // THE REGISTRY KEY, not the characters as printed. Exact for every file
+  // that is not a Standard Bank report — FNB routing is what it always was.
+  // A Standard Bank report's TID may print with other padding or an O for a 0
+  // (lib/card-terminals.cjs → resolveRegisteredTid). An unresolved read stays
+  // as read, so the refusal names what the file printed. (Sonnet, #828.)
+  const tid = extraction.bank === "standard-bank" ? (resolveRegisteredTid(read, registry) || read) : read;
   const terminal = registry[tid];
   if (!terminal || !terminal.storeId || !terminal.tillId) {
     return {

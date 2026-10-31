@@ -142,6 +142,36 @@ export function redactMoney(text) {
 const requireFromFunctions = createRequire(new URL("../../functions/package.json", import.meta.url));
 const { clip } = requireFromFunctions("./lib/eft-text.cjs");
 export { clip };
+const { looksLikeStandardBankCardReport, STANDARD_BANK_NOT_BUILT, STANDARD_BANK_REASON } = requireFromFunctions("./lib/card-recon-pdf.cjs");
+
+// ─── A STANDARD BANK REPORT THAT ARRIVES AS AN EMAIL BODY (31 Oct 2026) ─────
+// Concrete's Standard Bank machines have not sent a report yet, so whether it
+// comes as a PDF or as the email itself is unknown. A PDF goes through the
+// callable and is refused by name there (card-recon-pdf.cjs). A BODY never
+// reached the card path at all — no PDF, "ordinary mail" — so it would have
+// vanished. This is what keeps it: the body's lines are the evidence, and the
+// row says "Standard Bank report — reader not built yet". Only mail FROM a
+// Standard Bank domain is considered, so a forwarded newsletter is not.
+export const STANDARD_BANK_AWAITING_RE = new RegExp(`^${STANDARD_BANK_NOT_BUILT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+
+/** Is this reason the "reader not built yet" refusal? */
+export function awaitsStandardBankReader(reason) {
+  return STANDARD_BANK_AWAITING_RE.test(String(reason || ""));
+}
+
+/**
+ * A message with no PDF whose BODY is a Standard Bank card report:
+ * { lines, reason } to record, or null (ordinary mail, as before).
+ */
+export function standardBankBodyReport({ fromDomain, text, authenticated = true }) {
+  // A body is believed only on Gmail's word that it came from that domain.
+  if (authenticated !== true) return null;
+  const domain = String(fromDomain || "").toLowerCase();
+  if (!(domain === "standardbank.co.za" || domain.endsWith(".standardbank.co.za"))) return null;
+  const lines = String(text || "").split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (!lines.length || !looksLikeStandardBankCardReport(lines)) return null;
+  return { lines, reason: STANDARD_BANK_REASON };
+}
 
 /**
  * The dedupe key for a message.

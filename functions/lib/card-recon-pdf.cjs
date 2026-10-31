@@ -37,7 +37,15 @@
 //        batches; an empty batch may carry FAILED ATTEMPTS; an emailed batch
 //        nobody closed may run past 7 days; totals-only when the list fails.
 //   3  — 15 Oct 2026: a long batch's "ran N days" rounds up (7.29 → 8).
-const PARSER_VERSION = 3;
+//   4  — 31 Oct 2026: a STANDARD BANK card report (Concrete's PAX A8900s) is
+//        recognised and refused by name — "Standard Bank report — reader not
+//        built yet" — instead of as "neither a slip nor a report". Nothing an
+//        FNB file reads as moves. Like every bump, this one re-runs EVERY
+//        refusal still in the poller's retry window (FNB's included — they
+//        come back with the same answer; re-sends of a captured batch are
+//        not re-run). THE READER, WHEN IT SHIPS, BUMPS THIS AGAIN, which is
+//        what re-runs the Standard Bank refusals (intakeCore.mjs).
+const PARSER_VERSION = 4;
 
 const {
   parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents,
@@ -542,8 +550,50 @@ function detectReportFormat(rows) {
   if (has(EMAILED.title)) return "emailed";
   if (has(EMAILED.approved) && has(EMAILED.items)) return "emailed";
   if (field(rows, RE.tid) !== null && field(rows, RE.batchNo) !== null) return "printed";
+  // Asked only once both FNB shapes have said no, so an FNB file is never
+  // answered by it (the corpus pins every FNB fixture's result).
+  if (looksLikeStandardBankCardReport(rows)) return "standard-bank";
   return null;
 }
+
+// ─── A STANDARD BANK CARD REPORT (31 Oct 2026) ───────────────────────────────
+// Concrete's two tills run Standard Bank PAX A8900 machines. No Standard Bank
+// batch or settlement report has reached the mailbox yet, so there is nothing
+// to build a reader against — and a reader written from a guess would record
+// guessed figures. Until one exists the file is RECOGNISED and refused by
+// name, its PDF and lines kept as evidence by the poller, so the first real
+// one is what the reader gets built from.
+//
+// WHAT MAKES ONE: the bank's own name AND a TERMINAL (the label "Terminal"
+// or "TID" — a payment confirmation never names one) AND at least one more
+// card-report word: batch/settlement, merchant/MID, card scheme or purchases. NOT A PAYMENT: the same mailbox gets Standard Bank's EFT
+// "Payment confirmation" PDFs (customers paying from a Standard Bank
+// account), which name the bank too; anything worded as a payment to a
+// beneficiary is the EFT reader's, and is never claimed here. Tested against
+// every real Standard Bank payment confirmation in the mailbox.
+const STANDARD_BANK_MARK = /standard\s*bank|\bSBSA\b/i;
+const SB_CARD_MARKS = [
+  /\b(?:batch|settlement|settled|banking report)\b/i,
+  /\b(?:terminal(?:\s*(?:id|no\.?|number))?|TID)\b/i,
+  /\b(?:merchant(?:\s*(?:id|no\.?|number))?|MID)\b/i,
+  /\b(?:visa|master\s*card|maestro|amex|purchases?|card\s+(?:sales|totals?|transactions?))\b/i,
+];
+const SB_PAYMENT_MARK = /payment confirmation|notice of payment|proof of payment|payment notification|beneficiary|recipient|immediate payment|real[- ]time clearing|\bpaid to\b|\bpayment to\b/i;
+
+function looksLikeStandardBankCardReport(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const text = list.join("\n");
+  if (!STANDARD_BANK_MARK.test(text) || SB_PAYMENT_MARK.test(text)) return false;
+  // The terminal is the anchor; one more card word besides it. (Sonnet, #828:
+  // a payment confirmation in wording the denylist misses, with two incidental
+  // card words, must still stay the EFT reader's.)
+  if (!SB_CARD_MARKS[1].test(text)) return false;
+  return SB_CARD_MARKS.filter((re) => re.test(text)).length >= 2;
+}
+
+/** The refusal a Standard Bank report gets until its reader exists. Matched by the poller — keep the opening words. */
+const STANDARD_BANK_NOT_BUILT = "Standard Bank report — reader not built yet.";
+const STANDARD_BANK_REASON = `${STANDARD_BANK_NOT_BUILT} This is a Standard Bank card terminal report (Concrete's machines). It is kept as evidence and will be read automatically once the Standard Bank reader ships; until then the till's slip is sent by photo with its typed total.`;
 
 
 // ─── WHERE IS THE MASKED CARD NUMBER? ────────────────────────────────────────
@@ -1548,6 +1598,7 @@ function parseSlipPdf(lines) {
   const format = detectReportFormat(rows);
   if (format === "emailed") return parseEmailedReport(rows);
   if (format === "printed") return parsePrintedSlip(rows);
+  if (format === "standard-bank") return { ok: false, reason: STANDARD_BANK_REASON, awaitingReader: "standard-bank" };
   return {
     ok: false,
     reason: "That PDF is neither a terminal batch slip nor an emailed banking report — it carries no TERMINAL ID with a batch number, and no \"Banking Report for Batch … of Terminal …\" title. Check it is the right file, or photograph the slip instead.",
@@ -1571,7 +1622,8 @@ function readSlipPdfLines(lines) {
   if (!parsed.ok) {
     // The transaction list would not read; the totals may still settle it.
     if (parsed.listStructure) return totalsOnlyOr(rows, parsed.reason);
-    return { ok: false, reason: parsed.reason, unrelated: parsed.unrelated === true };
+    return { ok: false, reason: parsed.reason, unrelated: parsed.unrelated === true,
+      ...(parsed.awaitingReader ? { awaitingReader: parsed.awaitingReader } : {}) };
   }
   const extraction = parsed.extraction;
   // A terminal that prints a line twice must not be averaged away.
@@ -1611,6 +1663,7 @@ module.exports = {
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
   sectionStarts, approvedSection, declinedSection, sectionItemCount, isEmptyBatchShape, noMoneyAttemptCount, SETTLEMENT_FAILED,
   notABatchReport,
+  looksLikeStandardBankCardReport, STANDARD_BANK_NOT_BUILT, STANDARD_BANK_REASON,
   parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
   // The email-intake path's seams: `field`/`fieldAll` read a labelled header row
   // (and every row that matches, which is how a file naming two terminals is

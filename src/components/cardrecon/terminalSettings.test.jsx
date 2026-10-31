@@ -240,6 +240,19 @@ describe("registering terminals for Concrete and Pine", () => {
       action: "add", terminal: { tid: "0000CC2B", storeId: "concrete", tillId: "till-2", label: "Concrete Till 2", mid: "", capture: "both" } } });
   });
 
+  it("a Standard Bank machine: the bank rides on the add; an FNB add never carries one", async () => {
+    const tree = await openAdd();
+    await set(tree, "ts-tid", "00000f1y");
+    await set(tree, "ts-store", "concrete");
+    await set(tree, "ts-till", "till-2");
+    await set(tree, "ts-label", "Concrete Till 2");
+    const sb = tree.root.find((n) => n.props.role === "radio" && n.children.join("") === "Standard Bank");
+    await act(async () => { sb.props.onClick(); });
+    await submit(tree);
+    expect(fake.calls.at(-1).payload).toEqual({
+      action: "add", terminal: { tid: "00000F1Y", storeId: "concrete", tillId: "till-2", label: "Concrete Till 2", mid: "", capture: "both", bank: "standard-bank" } });
+  });
+
   it("'In use from' is a calendar pick, capped at today; an earlier day rides on the add", async () => {
     const tree = await openAdd();
     const from = tree.root.find((n) => n.props.id === "ts-from");

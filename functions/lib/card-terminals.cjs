@@ -169,4 +169,52 @@ function retiredCaptureRefusal(tid, row) {
   return `${label} (${tid}) is retired — it is no longer mapped to a till that can take a capture. If this machine is trading again, Junid reinstates it from Card machines → settings before its slips can be recorded.`;
 }
 
-module.exports = { isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
+// ─── WHICH BANK'S MACHINE (31 Oct 2026) ──────────────────────────────────────
+// Every terminal until Concrete was an FNB speedpoint, and every reader here
+// was built against FNB paper. Concrete's two tills run Standard Bank PAX
+// A8900s. `bank` on the row says which; ABSENT IS FNB — every row written
+// before the field existed is an FNB machine, so nothing about an FNB row, an
+// FNB slip or an FNB report changes by the field being added.
+const BANKS = Object.freeze(["fnb", "standard-bank"]);
+const STANDARD_BANK = "standard-bank";
+
+/** "fnb" or "standard-bank". Absent or mangled is "fnb" (see above). */
+function terminalBank(row) {
+  return row && row.bank === STANDARD_BANK ? STANDARD_BANK : "fnb";
+}
+
+/**
+ * A TID as characters a person or a camera cannot get wrong: O→0, I→1, and
+ * the leading zeros gone. Standard Bank TIDs are eight characters with a run
+ * of leading zeros ("0000…F1Y"), photographed off a screen where O and 0 look
+ * the same, and a report may print the TID with or without its padding. Two
+ * TIDs with the same canonical form are the same machine read two ways.
+ */
+function canonicalTid(raw) {
+  const s = typeof raw === "string" ? raw.trim().toUpperCase().replace(/[\s-]/g, "") : "";
+  if (!/^[A-Z0-9]{1,16}$/.test(s)) return null;
+  return s.replace(/O/g, "0").replace(/I/g, "1").replace(/^0+(?=.)/, "");
+}
+
+/**
+ * The registry key a TID read off a slip or a report belongs to.
+ *
+ * EXACT FIRST, ALWAYS: a TID that is a key is that key, which is the only
+ * answer an FNB machine ever gets — FNB TIDs are read exactly as they always
+ * were. Only when there is no exact key does a STANDARD BANK row get matched
+ * by canonical form (O/0, I/1, leading zeros), and only when exactly ONE row
+ * matches: two candidates is a refusal, never a guess.
+ *
+ * @returns {string|null} the registry key
+ */
+function resolveRegisteredTid(readTid, registry) {
+  if (typeof readTid !== "string" || !readTid) return null;
+  const rows = registry || {};
+  if (Object.prototype.hasOwnProperty.call(rows, readTid) && rows[readTid]) return readTid;
+  const want = canonicalTid(readTid);
+  if (!want) return null;
+  const hits = Object.keys(rows).filter((k) => terminalBank(rows[k]) === STANDARD_BANK && canonicalTid(k) === want);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+module.exports = { BANKS, STANDARD_BANK, terminalBank, canonicalTid, resolveRegisteredTid, isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
