@@ -42,6 +42,7 @@ vi.mock("firebase/database", () => ({
   ref: (_db, path = "") => ({ path }),
   get: async (r) => ({ val: () => getPath(r.path) }),
   update: async (r, patch) => {
+    if (failUpdates.on) throw new Error("offline");
     writes.push({ at: r.path, patch });
     for (const [k, v] of Object.entries(patch)) setPath(r.path ? `${r.path}/${k}` : k, v);
   },
@@ -61,6 +62,7 @@ vi.mock("firebase/database", () => ({
   },
 }));
 const txHooks = { race: null };
+const failUpdates = { on: false };
 
 const { markPullSent, rejectPull } = await import("./useLayby.js");
 const { laybyQueueRow, PULL_STATUS, LAYBY_STATUS } = await import("./contract.js");
@@ -148,6 +150,18 @@ describe("one outcome per pull", () => {
     expect(getPath("laybyPulls/P1/status")).toBe(PULL_STATUS.SENT);
     expect(getPath("laybys/L1/status")).toBe(LAYBY_STATUS.SENT);
     expect(getPath("laybyPulls/P1/rejectionReason")).toBe(null);
+  });
+
+  test("if the parcel write fails, the pull still carries its whole outcome (never half-written)", async () => {
+    const pull = seed({ pullId: "P1", laybyId: "L1", hub: "hub1", store: "trophy", invoiceNo: "L-1" });
+    failUpdates.on = true;
+    await expect(markPullSent(pull, "hub1")).rejects.toThrow(/offline/);
+    failUpdates.on = false;
+    expect(getPath("laybyPulls/P1/status")).toBe(PULL_STATUS.SENT);
+    expect(getPath("laybyPulls/P1/sentAt")).toBeTruthy();
+    expect(getPath("laybyPulls/P1/sentBy")).toBe("hub1");
+    // …which is the audit's healable class: parcel still pullRequested.
+    expect(getPath("laybys/L1/status")).toBe(LAYBY_STATUS.PULL_REQUESTED);
   });
 
   test("a second Sent does not re-stamp sentAt", async () => {
