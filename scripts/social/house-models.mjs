@@ -193,7 +193,8 @@ async function headOnly(jpg) {
   });
   const b = JSON.parse((msg.content || []).filter((x) => x.type === "text").map((x) => x.text).join(""));
   const h = (b.bottom - b.top) * H0, w = (b.right - b.left) * W0;
-  if (!(h > 20 && w > 20)) throw new Error(`no head found: ${JSON.stringify(b)}`);
+  // A full-length shot: the head is near the top, taller than wide, and small.
+  if (!(h > 20 && w > 20 && b.top < 0.4 && h / w > 0.8 && h / w < 2.2 && h < 0.3 * H0)) throw new Error(`no head found: ${JSON.stringify(b)}`);
   // A margin of a fifth of the head above and to the sides, and only a tenth below the chin (the neck, no shoulders).
   const top = Math.max(0, Math.round(b.top * H0 - 0.2 * h)), bottom = Math.min(H0, Math.round(b.bottom * H0 + 0.1 * h));
   const left = Math.max(0, Math.round(b.left * W0 - 0.2 * w)), right = Math.min(W0, Math.round(b.right * W0 + 0.2 * w));
