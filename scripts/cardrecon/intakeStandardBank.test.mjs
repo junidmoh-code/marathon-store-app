@@ -35,6 +35,8 @@ describe("Standard Bank report in an email body", () => {
     expect(standardBankBodyReport({ fromDomain: "notstandardbank.co.za", text: BODY })).toBeNull();
     expect(standardBankBodyReport({ fromDomain: "standardbank.co.za", text: PAYMENT })).toBeNull();
     expect(standardBankBodyReport({ fromDomain: "standardbank.co.za", text: "" })).toBeNull();
+    // Not authenticated as that domain (a forged From): ordinary mail.
+    expect(standardBankBodyReport({ fromDomain: "standardbank.co.za", text: BODY, authenticated: false })).toBeNull();
   });
 
   it("its evidence keeps the last four of a card number and nothing more", () => {

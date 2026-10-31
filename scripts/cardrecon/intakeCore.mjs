@@ -163,7 +163,9 @@ export function awaitsStandardBankReader(reason) {
  * A message with no PDF whose BODY is a Standard Bank card report:
  * { lines, reason } to record, or null (ordinary mail, as before).
  */
-export function standardBankBodyReport({ fromDomain, text }) {
+export function standardBankBodyReport({ fromDomain, text, authenticated = true }) {
+  // A body is believed only on Gmail's word that it came from that domain.
+  if (authenticated !== true) return null;
   const domain = String(fromDomain || "").toLowerCase();
   if (!(domain === "standardbank.co.za" || domain.endsWith(".standardbank.co.za"))) return null;
   const lines = String(text || "").split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);

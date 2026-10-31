@@ -53,12 +53,17 @@ test("resolveRegisteredTid: exact first; Standard Bank rows by canonical form; F
 });
 
 test("email routing: a Standard Bank report printing another spelling files under the registry key", () => {
-  const routed = routeEmailSlip({ extraction: { tid: "0000OF1Y", mid: "5377331" }, terminals: ESTATE });
+  const routed = routeEmailSlip({ extraction: { tid: "0000OF1Y", mid: "5377331", bank: "standard-bank" }, terminals: ESTATE });
   assert.equal(routed.ok, true);
   assert.equal(routed.tid, "00000F1Y");
   assert.equal(routed.terminal, SB);
   // The MID with or without its zero padding is the same merchant.
   assert.deepEqual(routed.warnings, []);
+  // A file that is not a Standard Bank report is routed exactly — never by
+  // canonical form, even onto a Standard Bank row.
+  const exact = routeEmailSlip({ extraction: { tid: "0000OF1Y", mid: "5377331" }, terminals: ESTATE });
+  assert.equal(exact.ok, false);
+  assert.equal(exact.unmapped, true);
 });
 
 test("email routing: FNB is unchanged — exact key, same refusal for a near miss", () => {

@@ -74,11 +74,12 @@ function routeEmailSlip({ extraction, terminals }) {
     return { ok: false, tid: null, reason: "No terminal ID could be read off that PDF, so there is no till to record it against." };
   }
   const registry = terminals || {};
-  // THE REGISTRY KEY, not the characters as printed: exact for every FNB
-  // machine; a Standard Bank TID may print with other padding or an O for a 0
+  // THE REGISTRY KEY, not the characters as printed. Exact for every file
+  // that is not a Standard Bank report — FNB routing is what it always was.
+  // A Standard Bank report's TID may print with other padding or an O for a 0
   // (lib/card-terminals.cjs → resolveRegisteredTid). An unresolved read stays
-  // as read, so the refusal names what the file printed.
-  const tid = resolveRegisteredTid(read, registry) || read;
+  // as read, so the refusal names what the file printed. (Sonnet, #828.)
+  const tid = extraction.bank === "standard-bank" ? (resolveRegisteredTid(read, registry) || read) : read;
   const terminal = registry[tid];
   if (!terminal || !terminal.storeId || !terminal.tillId) {
     return {

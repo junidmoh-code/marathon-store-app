@@ -64,6 +64,8 @@ test("the bank's name alone, or card words alone, are not enough", () => {
   assert.equal(detectReportFormat(["Standard Bank", "Statement of account"]), null);
   assert.equal(detectReportFormat(["Merchant ID: 1", "Terminal ID: 2", "Batch 3"]), null);
   assert.equal(detectReportFormat(["Standard Bank", "Batch 3"]), null);
+  // No terminal named: not a card report, however many card words it has.
+  assert.equal(detectReportFormat(["Standard Bank", "Daily settlement", "Merchant ID 1", "Visa purchases R10.00"]), null);
 });
 
 test("an FNB report naming Standard Bank anywhere is still FNB's — FNB is asked first", () => {

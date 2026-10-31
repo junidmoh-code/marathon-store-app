@@ -976,10 +976,7 @@ async function handleMessage({ client, uid, db, getToken, cfg, releasedFrom = {}
   const { take, refused: badAttachments, skipped } = planMessage(parsed.attachments);
   // A STANDARD BANK CARD REPORT IN THE BODY, with no PDF — kept and refused by
   // name until its reader exists (intakeCore.mjs → standardBankBodyReport).
-  const bodyReport = !take.length && !badAttachments.length ? standardBankBodyReport({
-    fromDomain: domainOfAddress(parsed.from?.value?.[0]?.address || /<([^<>\s]+@[^<>\s]+)>/.exec(message.from || "")?.[1] || null),
-    text: (parsed.text || "").trim() || htmlToText(parsed.html || ""),
-  }) : null;
+  const bodyReport = !take.length && !badAttachments.length ? bodyReportOf(parsed, message) : null;
   if (bodyReport) return recordBodyReport({ client, range, db, cfg, message, skipped, bodyReport, releasedFrom });
   if (!take.length && !badAttachments.length) {
     // Ordinary mail. A tiny DONE row in the ledger is what stops it being
@@ -1092,6 +1089,21 @@ async function handleMessage({ client, uid, db, getToken, cfg, releasedFrom = {}
     processed: true, done: true,
     recorded: record.recorded, refused: record.refused, unrelated: record.unrelated,
   };
+}
+
+/** The From address as the EFT reader resolves it (parsed, else the raw header). */
+function fromAddressOf(parsed, message) {
+  return parsed.from?.value?.[0]?.address || /<([^<>\s]+@[^<>\s]+)>/.exec(message.from || "")?.[1] || null;
+}
+
+/** A Standard Bank card report in this message's BODY — authenticated as that domain — or null. */
+function bodyReportOf(parsed, message) {
+  const fromAddress = fromAddressOf(parsed, message);
+  return standardBankBodyReport({
+    fromDomain: domainOfAddress(fromAddress),
+    text: (parsed.text || "").trim() || htmlToText(parsed.html || ""),
+    authenticated: authenticationVerdict({ headerLines: parsed.headerLines, fromAddress }).pass === true,
+  });
 }
 
 /**
@@ -1285,7 +1297,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // which never match (looksLikeStandardBankCardReport refuses payment
   // wording). Only a message with no PDF: a PDF is inspected below as before.
   const hasPdf = (parsed.attachments || []).some((a) => { try { return classifyAttachment(a).ok; } catch { return false; } });
-  if (!hasPdf && standardBankBodyReport({ fromDomain, text: (parsed.text || "").trim() || htmlToText(parsed.html || "") })) return null;
+  if (!hasPdf && bodyReportOf(parsed, message)) return null;
 
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0, eftRefusedTiming: 0, eftRefusedStale: 0, eftHeld: 0 };
   // FIX 8 — NO CUTOFF, NO DECISION. A bank notification is never judged, let

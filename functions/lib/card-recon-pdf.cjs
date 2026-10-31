@@ -40,9 +40,11 @@
 //   4  — 31 Oct 2026: a STANDARD BANK card report (Concrete's PAX A8900s) is
 //        recognised and refused by name — "Standard Bank report — reader not
 //        built yet" — instead of as "neither a slip nor a report". Nothing an
-//        FNB file reads as moves. THE READER, WHEN IT SHIPS, BUMPS THIS AGAIN:
-//        that bump is what re-runs every Standard Bank refusal still inside
-//        the poller's retry window (scripts/cardrecon/intakeCore.mjs).
+//        FNB file reads as moves. Like every bump, this one re-runs EVERY
+//        refusal still in the poller's retry window (FNB's included — they
+//        come back with the same answer; re-sends of a captured batch are
+//        not re-run). THE READER, WHEN IT SHIPS, BUMPS THIS AGAIN, which is
+//        what re-runs the Standard Bank refusals (intakeCore.mjs).
 const PARSER_VERSION = 4;
 
 const {
@@ -562,9 +564,9 @@ function detectReportFormat(rows) {
 // name, its PDF and lines kept as evidence by the poller, so the first real
 // one is what the reader gets built from.
 //
-// WHAT MAKES ONE: the bank's own name AND the vocabulary of a card report —
-// at least two of batch/settlement, terminal/TID, merchant/MID, card scheme
-// or purchases. NOT A PAYMENT: the same mailbox gets Standard Bank's EFT
+// WHAT MAKES ONE: the bank's own name AND a TERMINAL (the label "Terminal"
+// or "TID" — a payment confirmation never names one) AND at least one more
+// card-report word: batch/settlement, merchant/MID, card scheme or purchases. NOT A PAYMENT: the same mailbox gets Standard Bank's EFT
 // "Payment confirmation" PDFs (customers paying from a Standard Bank
 // account), which name the bank too; anything worded as a payment to a
 // beneficiary is the EFT reader's, and is never claimed here. Tested against
@@ -582,6 +584,10 @@ function looksLikeStandardBankCardReport(rows) {
   const list = Array.isArray(rows) ? rows : [];
   const text = list.join("\n");
   if (!STANDARD_BANK_MARK.test(text) || SB_PAYMENT_MARK.test(text)) return false;
+  // The terminal is the anchor; one more card word besides it. (Sonnet, #828:
+  // a payment confirmation in wording the denylist misses, with two incidental
+  // card words, must still stay the EFT reader's.)
+  if (!SB_CARD_MARKS[1].test(text)) return false;
   return SB_CARD_MARKS.filter((re) => re.test(text)).length >= 2;
 }
 
