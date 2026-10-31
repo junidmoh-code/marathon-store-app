@@ -451,6 +451,8 @@ describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
     const p = lb.buildModelRefPrompt(HM.MODELS.black, { fromFace: true });
     assert.match(p, /FACE REFERENCE photo: exactly the same face/);
     assert.match(p, /taller and longer-legged than in the reference/);
+    // Junid, 31 Oct: "give them a proper wide sholders as well".
+    assert.match(p, /proper wide, broad, square shoulders over a slim waist/);
     assert.match(p, /camera low/);
     assert.doesNotMatch(lb.buildModelRefPrompt(HM.MODELS.black), /FACE REFERENCE/);
   });
