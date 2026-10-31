@@ -289,6 +289,7 @@ describe("hero prompt and the no-text check", () => {
     assert.match(sign.reason, /OPEN/);
     assert.doesNotMatch(sign.reason, /BOSS/);
     assert.equal(lb.readHeroCheck('{"text_items": [{"text": "X"}]}').ok, false);
+    assert.equal(lb.readHeroCheck('{"text_items": {"text": "OPEN"}, "text_found": false}').ok, false);
     assert.equal(lb.readHeroCheck("I think it is fine").ok, false);
     assert.equal(lb.readHeroCheck('{"text_found": "no"}').ok, false);
     assert.equal(lb.readHeroCheck('```json\n{"text_found": false, "text_seen": ""}\n```').ok, true);

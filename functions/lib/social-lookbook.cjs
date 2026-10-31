@@ -1107,6 +1107,7 @@ function readHeroCheck(text) {
   // and JUST DO IT on the tees failed four white cards) although the prompt
   // excluded them. Only text that is not on what he wears fails; an item with
   // no clear "garment" fails.
+  if ("text_items" in v && !Array.isArray(v.text_items)) return { ok: false, hasText: true, seen: "", reason: "the text check's list was not a list" };
   if (Array.isArray(v.text_items)) {
     const bad = v.text_items.filter((t) => !(t && t.where === "garment"));
     const seen = v.text_items.map((t) => `${t && t.text}${t && t.where === "garment" ? " (garment)" : ""}`).join("; ").slice(0, 200);
