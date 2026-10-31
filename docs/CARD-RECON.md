@@ -502,6 +502,40 @@ ownership is structural and the per-user expired-draft sweep stays bounded);
 between the two shows what the OCR read — it offers **no way to edit a
 figure**.
 
+## Concrete's Standard Bank machines (31 Oct 2026)
+
+Concrete (two tills) runs two **Standard Bank PAX A8900** machines — the first
+non-FNB terminals in the estate. Registered by
+`scripts/cardrecon/apply-terminal-registry-concrete-20261031.mjs`:
+
+| Till | TID | MID | Serial |
+|---|---|---|---|
+| Concrete Till 1 | `00000F2Y` | `0005377331` | 3210628181 |
+| Concrete Till 2 | `00000F1Y` | `0005377331` | 3210628183 |
+
+* **`bank: "standard-bank"`** on the registry row. Absent is FNB, so no FNB
+  row, slip or report reads any differently.
+* **TIDs are matched forgivingly for Standard Bank rows only** (O/0, I/1,
+  leading zeros — `resolveRegisteredTid`), exact for FNB. The Till 2 photo
+  read "0000OF1Y"; it is registered with five zeros like its twin.
+* **Which machine is on which till** is as labelled, and the label may be
+  backwards. `node scripts/cardrecon/check-terminal-assignment.mjs` lays out
+  the evidence (the TID each slip photo printed; each slip total against both
+  tills' POS card legs) and gives a verdict. A swap is entered as a **Move**
+  in Card machines → settings, from when it took effect.
+* **No Standard Bank report reader exists yet** — none has arrived. A
+  Standard Bank report (PDF, or an email body from standardbank.co.za) is
+  recognised and refused as *"Standard Bank report — reader not built yet"*
+  with its PDF/lines kept in `card_batch_intake_evidence`; parser v4. The
+  reader, when built from the first real report, bumps `PARSER_VERSION`,
+  which re-runs those refusals still inside the poller's 14-day window (older
+  ones: `scripts/cardrecon/retry-intake-message.mjs`).
+* **Until then, capture is `typed`**: the Card Slip screen takes a photo AND
+  the typed card total. The typed total is the record and reconciles against
+  the till's POS card legs (R5 tolerance, R20 over 7 days, per till); the
+  photo is read in the background with a Standard Bank prompt only to flag a
+  different total or TID. Switch the rows to "Both" once the reader ships.
+
 ## Received, then read — the background reader (7 Oct 2026)
 
 **The manager submits, sees "Received", and leaves.** Junid, 7 Oct 2026, after
