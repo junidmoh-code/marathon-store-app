@@ -450,16 +450,21 @@ describe("lookbook v2 (owner review of sample 01, 2026-10-18)", () => {
   test("the casting re-shoot of a picked face: the same man from his FACE REFERENCE, taller, a low camera", () => {
     const p = lb.buildModelRefPrompt(HM.MODELS.black, { fromFace: true });
     assert.match(p, /FACE REFERENCE photo: exactly the same face/);
-    assert.match(p, /taller and longer-legged than in the reference/);
+    assert.match(p, /shows only his head: his body comes from the brief[^"]*taller and longer-legged/);
     // Junid, 31 Oct: "give them a proper wide sholders as well".
-    assert.match(p, /proper wide, broad, square shoulders over a slim waist/);
+    assert.match(p, /proper wide, broad, square shoulders, about two and a half times the width of his head/);
     assert.match(p, /camera low/);
     assert.doesNotMatch(lb.buildModelRefPrompt(HM.MODELS.black), /FACE REFERENCE/);
+  });
+  test("the face swap keeps photo 1's body (shoulders, height) and takes only the head from photo 2", () => {
+    const p = lb.buildFaceSwapPrompt();
+    assert.match(p, /replace only the man's face and head with the man in PHOTO 2/);
+    assert.match(p, /broad shoulders, chest, build, height, pose, clothes/);
   });
   test("the hero prompt: his model's requirement every time, a professional shoot, his reference, the scene's floor", () => {
     const rows = [{ slot: "tee", displayName: "Nike Tee White" }];
     const c = lb.buildHeroPrompt(rows, { scene: "concrete", model: BLACK });
-    assert.match(c, /The model MUST be a young Black South African man in his early-to-mid 20s, very tall \(about 1\.90 m/);
+    assert.match(c, /The model MUST be a young Black South African man in his early-to-mid 20s, very tall \(about 1\.90 m, 6 ft 3 in\) and lean with a swimmer's build/);
     // Junid, 30 Oct: "still short in height": a low camera, nothing beside him for scale.
     assert.match(c, /camera low, at about his hip height/);
     assert.match(c, /professional fashion photographer on a full-frame camera with an 85mm prime lens/);

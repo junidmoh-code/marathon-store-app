@@ -10,9 +10,10 @@
 //                  Writes ~/Desktop/house-models/{slot}-{n}.jpg and a contact
 //                  sheet of all nine, all-models.jpg.
 //   --taller [--slot s] [--send]
-//                  Junid, 30 Oct: "still short in height". Each PICKED face is
-//                  shot again from itself (the same man, his face as the
-//                  reference), taller and longer-legged with a low camera,
+//                  Junid, 30 Oct: "still short in height", 31 Oct: wide
+//                  shoulders. Each PICKED face is shot again: a casting shot
+//                  from the brief alone (height, shoulders, a low camera),
+//                  then his head (a crop of the face he chose) swapped in,
 //                  scored (height included), stored as a new candidate and made
 //                  the pick (tallerOf: the face he chose). Writes
 //                  ~/Desktop/house-models/{slot}-tall.jpg and taller.jpg (his
@@ -171,6 +172,35 @@ async function scoreFace(jpg, model) {
   return { ...JSON.parse(text), costUSD: fitRules.costOf(msg.usage) };
 }
 
+// The re-shoot's reference is his head only: with the full-length photo the
+// image model copied his build too, and both black re-shoots (31 Oct) kept the
+// pick's narrow, sloping shoulders (shoulders 5/10). The critic model finds the
+// head, crown to chin, and the crop keeps a little margin, no shoulders.
+const HEAD_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["left", "top", "right", "bottom"],
+  properties: Object.fromEntries(["left", "top", "right", "bottom"].map((k) => [k, { type: "number", description: "0 to 1 of the image width (left, right) or height (top, bottom)" }])),
+};
+async function headOnly(jpg) {
+  const { width: W0, height: H0 } = await sharp(jpg).metadata();
+  const small = await sharp(jpg).resize(1024, 1024, { fit: "inside" }).jpeg({ quality: 85 }).toBuffer();
+  const msg = await anthropic.messages.create({
+    model: fitRules.FIT_MODEL, max_tokens: 400,
+    output_config: { effort: "low", format: { type: "json_schema", schema: HEAD_SCHEMA } },
+    messages: [{ role: "user", content: [
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: small.toString("base64") } },
+      { type: "text", text: "Give the box around the man's head only, from the top of his hair to the bottom of his chin and ear to ear, as fractions of the image (0 = left/top edge, 1 = right/bottom edge)." },
+    ] }],
+  });
+  const b = JSON.parse((msg.content || []).filter((x) => x.type === "text").map((x) => x.text).join(""));
+  const h = (b.bottom - b.top) * H0, w = (b.right - b.left) * W0;
+  if (!(h > 20 && w > 20)) throw new Error(`no head found: ${JSON.stringify(b)}`);
+  // A margin of a fifth of the head above and to the sides, and only a tenth below the chin (the neck, no shoulders).
+  const top = Math.max(0, Math.round(b.top * H0 - 0.2 * h)), bottom = Math.min(H0, Math.round(b.bottom * H0 + 0.1 * h));
+  const left = Math.max(0, Math.round(b.left * W0 - 0.2 * w)), right = Math.min(W0, Math.round(b.right * W0 + 0.2 * w));
+  const buffer = await sharp(jpg).extract({ left, top, width: right - left, height: bottom - top }).jpeg({ quality: 92 }).toBuffer();
+  return { buffer, costUSD: fitRules.costOf(msg.usage) };
+}
+
 async function store(slot, n, jpg, gen, s, at, extra = {}) {
   const path = `${hm.REF_PREFIX}${slot}-${at}-${n}.jpg`;
   const token = randomUUID();
@@ -214,7 +244,7 @@ async function sendTallerSheet() {
 if (has("taller-sheet")) { await sendTallerSheet(); process.exit(0); }
 
 if (has("taller")) {
-  // Up to two re-shoots per man; the first that scores 8+ overall and on height is kept, else the better one.
+  // Up to two re-shoots per man; the first that scores 8+ overall, on height and on shoulders is kept, else the best.
   const at = Date.now();
   let totalUSD = 0;
   const rows = [];
@@ -224,20 +254,26 @@ if (has("taller")) {
     const pick = hm.chosenFor(models[slot]);
     const chosen = pick.tallerOf ? hm.rankCandidates(models[slot]).find((c) => c.n === String(pick.tallerOf)) : pick;
     const [face] = await bucket.file(chosen.path).download();
-    const prompt = lookbook.buildModelRefPrompt(model, { fromFace: true });
+    const head = await headOnly(face);
+    totalUSD += head.costUSD;
+    await writeFile(join(OUT, `${slot}-head.jpg`), head.buffer);
+    // Two steps: the body from the brief alone, then his head swapped in.
+    const nb = (parts) => gemini.geminiGenerateImage(geminiApiKey, gemini.NBPRO_MODEL, parts, { outPerMtok: gemini.NBPRO_OUT_PER_MTOK, flatUsd: gemini.NBPRO_FLAT_IMAGE_USD, imageConfig: { aspectRatio: "9:16", imageSize: "2K" } });
     let best = null;
     for (let k = 1; k <= 2 && !(best && best.s.score >= 8 && best.s.height >= 8 && best.s.shoulders >= 8); k++) {
-      await db.ref(`social_generation_budget/${saDate}/count`).transaction((cur) => (Number(cur) || 0) + 1);
-      const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.NBPRO_MODEL, [
-        { text: "FACE REFERENCE — the man to photograph again (his face, skin tone, hair and stubble only; not his height, pose or framing):" },
-        gemini.inlineImagePart(face, chosen.contentType || "image/jpeg"),
-        { text: prompt },
-      ], { outPerMtok: gemini.NBPRO_OUT_PER_MTOK, flatUsd: gemini.NBPRO_FLAT_IMAGE_USD, imageConfig: { aspectRatio: "9:16", imageSize: "2K" } });
+      await db.ref(`social_generation_budget/${saDate}/count`).transaction((cur) => (Number(cur) || 0) + 2);
+      const body = await nb([{ text: lookbook.buildModelRefPrompt(model) }]);
+      const swap = await nb([
+        { text: "PHOTO 1 — the shot to keep:" }, gemini.inlineImagePart(body.buffer, body.mime || "image/png"),
+        { text: "PHOTO 2 — the face to use:" }, gemini.inlineImagePart(head.buffer, "image/jpeg"),
+        { text: lookbook.buildFaceSwapPrompt() },
+      ]);
+      const gen = { buffer: swap.buffer, costUSD: body.costUSD + swap.costUSD };
       const jpg = await sharp(gen.buffer).jpeg({ quality: 92 }).toBuffer();
       const s = await scoreFace(jpg, model);
       totalUSD += gen.costUSD + s.costUSD;
       console.log(`${slot} taller ${k}: ${s.score}/10, height ${s.height}, shoulders ${s.shoulders} — ${s.reasons}`);
-      // One that meets both targets beats one that does not; then the higher score plus height.
+      // One that meets all three targets beats one that does not; then the higher score + height + shoulders.
       const meets = (x) => x.score >= 8 && x.height >= 8 && x.shoulders >= 8;
       if (!best || (meets(s) && !meets(best.s)) || (meets(s) === meets(best.s) && s.score + s.height + s.shoulders > best.s.score + best.s.height + best.s.shoulders)) best = { jpg, gen, s };
     }
