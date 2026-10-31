@@ -38,7 +38,7 @@ describe("only a person's transfer sets manual: true", () => {
       .filter(([, src]) => /\bapplyMovement\s*\(/.test(src))
       // Any value but a literal false ("manual": true, manual: !0, manual: x),
       // and the { manual } / , manual } shorthand.
-      .filter(([, src]) => /(?<![`\w])["']?manual["']?\s*:(?!\s*false\b)|(?<![=$])\{\s*manual\s*[,}]|,\s*manual\s*[,}]/.test(src))
+      .filter(([, src]) => /(?:^|[^`\w])["']?manual["']?\s*:(?!\s*false\b)|(?:^|[^=$])\{\s*manual\s*[,}]|,\s*manual\s*[,}]/m.test(src))
       .map(([p]) => relative(ROOT, p));
     expect(setters.filter((p) => !ALLOWED.has(p) && !NOT_A_MOVEMENT.has(p))).toEqual([]);
     for (const f of ALLOWED) expect(setters).toContain(f);
