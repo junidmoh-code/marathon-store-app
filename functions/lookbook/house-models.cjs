@@ -43,7 +43,7 @@ const CANDIDATES = 3;
 // a number and runway proportions, not just the word "tall". Shoulders
 // (Junid, 31 Oct: "give them a proper wide sholders as well"): broad and
 // square over a slim waist, lean not bulky.
-const SHARED = "in his early-to-mid 20s, very tall (about 1.90 m, 6 ft 3 in) and slim with a runway model's build: proper wide, broad, square shoulders over a slim waist (a clear V-shaped upper body, lean and athletic, not bulky or muscle-bound), long legs (more than half his height), a long neck and a small head, about eight and a half heads tall, a sharp defined face and a strong jawline, a very short clean haircut (a skin fade or a buzz cut, hair barely visible), clean-shaven or very light stubble, a confident fashion-model look";
+const SHARED = "in his early-to-mid 20s, very tall (about 1.90 m, 6 ft 3 in) and lean with a swimmer's build: proper wide, broad, square shoulders, about two and a half times the width of his head, tapering to a narrow waist (a clear V-shaped upper body: defined shoulder muscles and a broad chest that fill out his top, athletic, not bulky or muscle-bound), long legs (more than half his height), a long neck and a small head, about eight and a half heads tall, a sharp defined face and a strong jawline, a very short clean haircut (a skin fade or a buzz cut, hair barely visible), clean-shaven or very light stubble, a confident fashion-model look";
 
 // The rotation order and each man's own brief. `skin` and `suits` go to the
 // stylist and the critic: the outfit's colours must suit his skin tone.

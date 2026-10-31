@@ -955,12 +955,26 @@ function buildModelRefPrompt(model, { fromFace = false } = {}) {
     `Casting photograph for a fashion model agency. ${PRO_SHOOT} Portrait orientation.`,
     modelRequirement(model),
     "He is an invented person: not a celebrity, athlete, influencer, model or any real individual, and not a likeness of one.",
-    ...(fromFace ? ["He is the man in the FACE REFERENCE photo: exactly the same face, skin tone, hair and stubble. Only his build changes: he is taller and longer-legged than in the reference, a 1.90 m runway model, with proper wide, broad, square shoulders over a slim waist."] : []),
+    ...(fromFace ? ["He is the man in the FACE REFERENCE photo: exactly the same face, skin tone, hair and stubble. The reference shows only his head: his body comes from the brief, a 1.90 m runway model, taller and longer-legged, with a swimmer's build: proper wide, broad, square shoulders, about two and a half times the width of his head, tapering to a narrow waist. Do not make him skinny or narrow-shouldered."] : []),
     TALL_FRAMING,
     "Full length, head to toe in frame, standing tall in a relaxed, confident editorial model pose (weight on one leg, shoulders back and open, one hand in a pocket), not a stiff straight-on stance; a calm confident expression; no headwear, no glasses, no jewellery.",
-    "He wears a plain white crew-neck T-shirt with no logo, plain black slim trousers and plain white low-top sneakers with no logo.",
+    "He wears a plain white fitted crew-neck T-shirt with no logo (snug across his broad shoulders and chest, short sleeves close on his upper arms), plain black slim trousers and plain white low-top sneakers with no logo.",
     "Location: outdoors in a South African city, in front of a raw board-formed concrete wall, a strip of concrete pavement at his feet. Natural daylight in open shade, shaped with a reflector: soft and even on his face, true skin texture and tone.",
     "No text, no logos, no watermark.",
+  ].join("\n");
+}
+
+// The re-shoot of a picked face, step 2 (house-models.mjs --taller): PHOTO 1
+// is a casting shot made from the brief alone (his height and wide shoulders),
+// PHOTO 2 the head of the face Junid chose. Given his face as the only
+// reference, the image model kept the pick's narrow shoulders on every try
+// (31 Oct: 8 tries at 5/10); made from the brief, the body is right, and only
+// the head is swapped.
+function buildFaceSwapPrompt() {
+  return [
+    "Edit PHOTO 1: replace only the man's face and head with the man in PHOTO 2 (exactly his face, skin tone, hair and stubble).",
+    "Keep everything else in PHOTO 1 exactly as it is: his broad shoulders, chest, build, height, pose, clothes, light and background. The head stays in proportion to the body (small, on a long neck).",
+    `${PRO_SHOOT} No text, no logos, no watermark.`,
   ].join("\n");
 }
 
@@ -1170,7 +1184,7 @@ module.exports = {
   parseStillFormats, stillCalendar,
   parseLookbookDays, isJsonList, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, readModelCheck, anchorsFor,
-  buildModelRefPrompt, buildThumbPrompt, PRO_SHOOT, TALL_FRAMING,
+  buildModelRefPrompt, buildFaceSwapPrompt, buildThumbPrompt, PRO_SHOOT, TALL_FRAMING,
   LOOKBOOK_SCENE_DEFS, LOOKBOOK_SCENE_KEYS, DEFAULT_LOOKBOOK_SCENES, SCENE_EPOCH, parseLookbookScenes, sceneFor,
   POSTER_BRANDS, stripStyleCodes, posterName, THUMBS_PER_DAY,
   GRID, buildLocatePrompt, cellCentre, readLocate,
