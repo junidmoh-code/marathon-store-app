@@ -46,6 +46,39 @@ export const PULL_STATUS = {
                                         // label removed, units returned to stock).
 };
 
+// A pull's status, with an absent value read as PENDING (the POS always writes
+// one, but a hand-made or legacy record might not).
+export function pullStatusOf(pull) {
+  return pull?.status || PULL_STATUS.PENDING;
+}
+
+// RESOLVED = the warehouse has already acted on this pull (Sent, Rejected or
+// Returned to stock). A resolved pull is HISTORY: it is still listed (Ready /
+// All, Today's group) but it must never offer Sent / Reject / Return again.
+// Before 31 Oct 2026 the queue card ignored the status and kept both buttons on
+// a pull that was already sent — the "Sent does not clear it" report — and a
+// second tap could overwrite the outcome (L-00350, Hub 3, 5 Sep: sent 12:49,
+// then rejected 12:59 from the same stale card).
+export function isPullResolved(pull) {
+  return pullStatusOf(pull) !== PULL_STATUS.PENDING;
+}
+
+// The warehouse MAIN queue's row for one pull at `hub` (null = not on that
+// hub's queue). A pending pull is current-day Incoming work — bucketed at
+// `nowIso` so the queue's 3-day window can never hide it; a SENT pull is a
+// Ready row dated by its sentAt, so it lands in Today's group (history) and its
+// card shows the outcome, never the buttons. Rejected / returned-to-stock are
+// resolved and leave the queue. `status` values are App.jsx's STATUS strings.
+export const QUEUE_INCOMING = "incoming";
+export const QUEUE_READY = "ready";
+export function laybyQueueRow(p, hub, nowIso, network = currentNetwork()) {
+  if (!p || !p.invoiceNo || storageHubOf(p, network) !== hub) return null;
+  const st = pullStatusOf(p);
+  if (st === PULL_STATUS.PENDING) return { id: p.invoiceNo, status: QUEUE_INCOMING, isLayby: true, _pull: p, createdAt: nowIso };
+  if (st === PULL_STATUS.SENT)    return { id: p.invoiceNo, status: QUEUE_READY, isLayby: true, _pull: p, readyAt: p.sentAt, updatedAt: p.sentAt, createdAt: p.sentAt || p.requestedAt || "" };
+  return null;
+}
+
 // Pull disposition, on /laybyPulls/{pullId}.disposition (POS-written).
 //   collect          → customer is collecting (default path: Sent / Reject).
 //   return_to_stock  → layby cancelled; warehouse pulls, removes the label, and

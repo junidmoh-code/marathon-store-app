@@ -1,0 +1,14 @@
+{
+  "name": "layby_expiry_3d",
+  "language": "en",
+  "category": "UTILITY",
+  "components": [
+    {
+      "type": "BODY",
+      "text": "Hi, your layby {{1}} at Marathon Club {{3}} expires on {{2}}. Please pay the balance or visit the store before then to keep it.",
+      "example": {
+        "body_text": [["L-00628", "3 November 2026", "Trophy"]]
+      }
+    }
+  ]
+}

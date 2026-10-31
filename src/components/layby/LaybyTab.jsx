@@ -18,10 +18,11 @@
 
 import { useMemo, useState } from "react";
 import QrScanner from "./QrScanner";
+import LaybyItemPhotos from "./LaybyItemPhotos";
 import { receiveLayby, markPullSent, rejectPull, returnPullToStock } from "./useLayby";
 import { labelFor } from "../stock/locations";
 import {
-  LAYBY_STATUS, storageHubOf, DISPOSITION, dispositionOf,
+  LAYBY_STATUS, PULL_STATUS, storageHubOf, DISPOSITION, dispositionOf, pullStatusOf, isPullResolved,
   formatLaybyMoney, isLaybyException, isPullExpired, ageLabel, parseLaybyScan, normalizeInvoiceNo,
 } from "./contract";
 
@@ -96,36 +97,59 @@ function Field({ label, value, strong, danger }) {
 // alongside orders (one queue — no separate Layby Requests box). Unchanged card:
 // same L-xxxxx invoice + Sent/Reject/Return actions, so behaviour is identical
 // whether shown here or in the main queue.
-export function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn }) {
+// What a RESOLVED pull says instead of its buttons.
+const RESOLVED_LOOK = {
+  [PULL_STATUS.SENT]:              { label: "SENT TO STORE",    color: GREEN, bg: "rgba(0,150,70,.16)",  border: "rgba(0,180,80,.4)",   at: "sentAt",     by: "sentBy" },
+  [PULL_STATUS.REJECTED]:          { label: "REJECTED",         color: RED,   bg: "rgba(220,60,60,.16)", border: "rgba(220,60,60,.4)",  at: "rejectedAt", by: "rejectedBy" },
+  [PULL_STATUS.RETURNED_TO_STOCK]: { label: "RETURNED TO STOCK", color: AMBER, bg: "rgba(245,158,11,.16)", border: "rgba(245,158,11,.4)", at: "returnedAt", by: "returnedBy" },
+};
+export const resolvedLookOf = (status) =>
+  RESOLVED_LOOK[status] || { label: String(status || "").toUpperCase(), color: MUTED, bg: "rgba(255,255,255,.06)", border: "rgba(255,255,255,.14)", at: null, by: null };
+
+// productsById (optional): the caller's live products, so a photo it already
+// holds is never read again. onOpenPhoto(urls): show a photo full screen.
+export function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn, productsById, onOpenPhoto }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [refused, setRefused] = useState(null); // status another device already set
   const isReturn = dispositionOf(pull) === DISPOSITION.RETURN_TO_STOCK;
+  // RESOLVED pulls are history: outcome chip, no buttons (see isPullResolved).
+  const status = pullStatusOf(pull);
+  const resolved = isPullResolved(pull);
+  const look = resolved ? resolvedLookOf(status) : null;
   // "expired"/reject is a collect-only concept — a return_to_stock pull is the
-  // resolution of a cancellation, never rejectable.
-  const expired = !isReturn && isPullExpired(pull.dueDate, nowMs);
+  // resolution of a cancellation, never rejectable. A resolved pull is past it.
+  const expired = !resolved && !isReturn && isPullExpired(pull.dueDate, nowMs);
 
+  // The writers refuse a pull that is no longer pending; say so on the card
+  // rather than leaving the button spinning.
+  const fail = (what) => (e) => {
+    if (e?.code === "already-resolved") setRefused(e.status);
+    else console.warn(`${what} failed:`, e);
+    setBusy(false);
+  };
   const doReturn = async () => {
     setBusy(true);
     try { await returnPullToStock(pull, selectedHub); onReturn?.(pull); }
-    catch (e) { console.warn("returnPullToStock failed:", e); setBusy(false); }
+    catch (e) { fail("returnPullToStock")(e); }
   };
   const doSent = async () => {
     setBusy(true);
     try { await markPullSent(pull, selectedHub); onSent?.(pull); }
-    catch (e) { console.warn("markPullSent failed:", e); setBusy(false); }
+    catch (e) { fail("markPullSent")(e); }
   };
   const doReject = async () => {
     if (!reason.trim()) return;
     setBusy(true);
     try { await rejectPull(pull, reason, selectedHub); onReject?.(pull); }
-    catch (e) { console.warn("rejectPull failed:", e); setBusy(false); }
+    catch (e) { fail("rejectPull")(e); }
   };
 
   return (
     <div style={{ borderRadius:14, overflow:"hidden", position:"relative", background:CARD,
-                  border:"1px solid " + (isReturn ? "rgba(245,158,11,.4)" : expired ? "rgba(220,60,60,.4)" : "rgba(60,110,255,.2)") }}>
-      <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background: isReturn ? AMBER : expired ? RED : BLUE }}/>
+                  border:"1px solid " + (resolved ? look.border : isReturn ? "rgba(245,158,11,.4)" : expired ? "rgba(220,60,60,.4)" : "rgba(60,110,255,.2)") }}>
+      <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background: resolved ? look.color : isReturn ? AMBER : expired ? RED : BLUE }}/>
       <div style={{ padding:"14px 14px 12px 18px" }}>
         {/* INVOICE NUMBER — huge + unmistakable */}
         <div style={{ display:"flex", alignItems:"flex-start", gap:12 }}>
@@ -135,7 +159,9 @@ export function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn 
             <div style={{ fontSize:34, fontWeight:900, color:"#fff", lineHeight:1.05, letterSpacing:".02em", wordBreak:"break-all" }}>{invOf(pull)}</div>
           </div>
           <div style={{ textAlign:"right", flexShrink:0 }}>
-            {isReturn ? (
+            {resolved ? (
+              <span data-testid="pull-outcome" style={{ background:look.bg, color:look.color, border:`1px solid ${look.border}`, borderRadius:10, padding:"3px 9px", fontSize:10.5, fontWeight:800 }}>{look.label}</span>
+            ) : isReturn ? (
               <span style={{ background:"rgba(245,158,11,.16)", color:AMBER, border:"1px solid rgba(245,158,11,.4)", borderRadius:10, padding:"3px 9px", fontSize:10.5, fontWeight:800 }}>RETURN TO STOCK</span>
             ) : expired ? (
               <span style={{ background:"rgba(220,60,60,.18)", color:RED, border:"1px solid rgba(220,60,60,.4)", borderRadius:10, padding:"3px 9px", fontSize:10.5, fontWeight:800 }}>EXPIRED</span>
@@ -143,6 +169,9 @@ export function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn 
             <div style={{ fontSize:11, color:MUTED, marginTop:6 }}>{ageLabel(pull.requestedAt, nowMs)} ago</div>
           </div>
         </div>
+
+        {/* WHAT is in the parcel — big photo + big size, so it is found by eye */}
+        <LaybyItemPhotos saleId={pull.saleId || pull.laybyId} productsById={productsById} onOpenPhoto={onOpenPhoto}/>
 
         {/* Customer-centric detail */}
         <div style={{ marginTop:12, display:"flex", flexWrap:"wrap", gap:"8px 18px" }}>
@@ -155,7 +184,18 @@ export function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn 
         </div>
       </div>
 
-      {isReturn ? (
+      {resolved ? (
+        <div data-testid="pull-resolved" style={{ padding:"0 14px 12px 18px", fontSize:12, color:"rgba(255,255,255,.6)" }}>
+          {look.label.charAt(0) + look.label.slice(1).toLowerCase()}
+          {look.by && pull[look.by] ? ` by ${labelFor(pull[look.by])}` : ""}
+          {look.at && ageLabel(pull[look.at], nowMs) ? ` · ${ageLabel(pull[look.at], nowMs)} ago` : ""}
+          {status === PULL_STATUS.REJECTED && pull.rejectionReason ? ` — “${pull.rejectionReason}”` : ""}
+        </div>
+      ) : refused ? (
+        <div data-testid="pull-refused" style={{ padding:"0 14px 12px 18px", fontSize:12.5, fontWeight:700, color:AMBER }}>
+          Already {resolvedLookOf(refused).label.toLowerCase()} on another device — nothing changed.
+        </div>
+      ) : isReturn ? (
         <div style={{ padding:"0 14px 12px 18px" }}>
           <button onClick={doReturn} disabled={busy}
                   style={{ width:"100%", padding:"12px 8px", borderRadius:10, fontSize:13, fontWeight:800, cursor: busy ? "default" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(245,158,11,.16)", border:"1px solid rgba(245,158,11,.4)", color:AMBER, opacity: busy ? .6 : 1 }}>

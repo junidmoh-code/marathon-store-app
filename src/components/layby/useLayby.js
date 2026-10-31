@@ -9,10 +9,10 @@
 // empty lists so the warehouse UI never crashes or blanks the whole view.
 
 import { useEffect, useState } from "react";
-import { ref, onValue, update } from "firebase/database";
+import { ref, onValue, update, runTransaction } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
-import { LAYBY_STATUS, PULL_STATUS } from "./contract";
+import { LAYBY_STATUS, PULL_STATUS, pullStatusOf } from "./contract";
 import { serverNowIso } from "../../utils/serverTime";
 
 // Local mirror of App.jsx's useAuthReady — RTDB rejects reads before sign-in and
@@ -85,23 +85,62 @@ export function receiveLayby(layby, hubLabel) {
   });
 }
 
-// Fulfil a pull: mark the pull Sent AND flip the parcel to sentToStore, in one
-// atomic root multi-path update so the two can't diverge.
-export function markPullSent(pull, hubLabel) {
-  const pullId = pull?.pullId || pull?.key;
-  if (!pullId) return Promise.reject(new Error("markPullSent: missing pullId"));
-  const now = serverNowIso();
-  const patch = {
-    [`laybyPulls/${pullId}/status`]: PULL_STATUS.SENT,
-    [`laybyPulls/${pullId}/sentAt`]: now,
-    [`laybyPulls/${pullId}/sentBy`]: hubLabel,
-  };
-  const laybyId = pull?.laybyId;
-  if (laybyId) {
-    patch[`laybys/${laybyId}/status`]        = LAYBY_STATUS.SENT;
-    patch[`laybys/${laybyId}/sentToStoreAt`] = now;
+// ── ONE OUTCOME PER PULL ─────────────────────────────────────────────────────
+// A pull is resolved exactly once. Every warehouse action CLAIMS the pull in a
+// transaction on the pull node — pending → its outcome WITH its stamps (status,
+// time, actor, reason) in the same commit, abort on anything else — so a card
+// that is out of date, or two tablets tapping in the same instant, cannot turn
+// a Sent into a Rejected or stamp a second sentAt. A loser gets
+// `code: "already-resolved"` and the status it found.
+//
+// The PARCEL (/laybys) is then flipped in a second write. A transaction cannot
+// span two nodes, so if that second write fails the pull still carries its
+// full outcome and the parcel lags — exactly the "fix" class that
+// scripts/layby/pull-status-audit.mjs heals (sent pull with sentAt, parcel
+// still pullRequested). The pull, which every hub surface reads, is never left
+// half-written.
+//
+// Cold cache: the client runs the fn against null first. Null is proposed from
+// the card's own copy of the pull, and the server's CAS re-runs the fn on the
+// real record. (Pulls are never deleted, so the null-on-server case does not
+// arise in practice.)
+export class PullAlreadyResolvedError extends Error {
+  constructor(pullId, status) {
+    super(`Pull ${pullId} is already ${status}`);
+    this.code = "already-resolved";
+    this.status = status;
   }
-  return update(ref(database), patch);
+}
+
+function pullIdOf(pull) { return pull?.pullId || pull?.key; }
+
+async function claimPull(pull, stamps) {
+  const pullId = pullIdOf(pull);
+  const { key: _k, _pull: _p, ...copy } = pull || {};
+  const res = await runTransaction(ref(database, `laybyPulls/${pullId}`), (cur) => {
+    const base = cur == null ? copy : cur;
+    if (pullStatusOf(base) !== PULL_STATUS.PENDING) return undefined;
+    return { ...base, ...stamps };
+  });
+  const after = res.snapshot.val();
+  if (!res.committed || !after || after.status !== stamps.status) {
+    throw new PullAlreadyResolvedError(pullId, pullStatusOf(after));
+  }
+}
+
+// Fulfil a pull: the pull becomes Sent (claimed with its stamps), then the
+// parcel flips to sentToStore.
+export async function markPullSent(pull, hubLabel) {
+  const pullId = pullIdOf(pull);
+  if (!pullId) throw new Error("markPullSent: missing pullId");
+  const now = serverNowIso();
+  await claimPull(pull, { status: PULL_STATUS.SENT, sentAt: now, sentBy: hubLabel });
+  const laybyId = pull?.laybyId;
+  if (!laybyId) return;
+  return update(ref(database), {
+    [`laybys/${laybyId}/status`]:        LAYBY_STATUS.SENT,
+    [`laybys/${laybyId}/sentToStoreAt`]: now,
+  });
 }
 
 // Resolve a return-to-stock pull (the layby was cancelled at the POS). The
@@ -109,37 +148,28 @@ export function markPullSent(pull, hubLabel) {
 // writes ONLY the pull record — it deliberately does NOT touch /laybys, which the
 // POS already set to "returned" on cancellation (contrast markPullSent, which
 // flips /laybys → sentToStore for the collect path).
-export function returnPullToStock(pull, hubLabel) {
-  const pullId = pull?.pullId || pull?.key;
-  if (!pullId) return Promise.reject(new Error("returnPullToStock: missing pullId"));
+export async function returnPullToStock(pull, hubLabel) {
+  const pullId = pullIdOf(pull);
+  if (!pullId) throw new Error("returnPullToStock: missing pullId");
   const now = serverNowIso();
-  return update(ref(database, `laybyPulls/${pullId}`), {
-    status:     PULL_STATUS.RETURNED_TO_STOCK,
-    returnedAt: now,
-    returnedBy: hubLabel,
-  });
+  await claimPull(pull, { status: PULL_STATUS.RETURNED_TO_STOCK, returnedAt: now, returnedBy: hubLabel });
 }
 
 // Reject a pull (expired layby past dueDate). Reason is required and flows back
 // to the POS so the store sees why. Also flips the layby record to `rejected`
-// (single atomic update) so its lifecycle reflects the outcome.
-export function rejectPull(pull, reason, hubLabel) {
-  const pullId = pull?.pullId || pull?.key;
-  if (!pullId) return Promise.reject(new Error("rejectPull: missing pullId"));
+// so its lifecycle reflects the outcome.
+export async function rejectPull(pull, reason, hubLabel) {
+  const pullId = pullIdOf(pull);
+  if (!pullId) throw new Error("rejectPull: missing pullId");
   const trimmed = (reason || "").trim();
-  if (!trimmed) return Promise.reject(new Error("rejectPull: reason required"));
+  if (!trimmed) throw new Error("rejectPull: reason required");
   const now = serverNowIso();
-  const patch = {
-    [`laybyPulls/${pullId}/status`]:          PULL_STATUS.REJECTED,
-    [`laybyPulls/${pullId}/rejectedAt`]:      now,
-    [`laybyPulls/${pullId}/rejectedBy`]:      hubLabel,
-    [`laybyPulls/${pullId}/rejectionReason`]: trimmed,
-  };
+  await claimPull(pull, { status: PULL_STATUS.REJECTED, rejectedAt: now, rejectedBy: hubLabel, rejectionReason: trimmed });
   const laybyId = pull?.laybyId;
-  if (laybyId) {
-    patch[`laybys/${laybyId}/status`]          = LAYBY_STATUS.REJECTED;
-    patch[`laybys/${laybyId}/rejectedAt`]      = now;
-    patch[`laybys/${laybyId}/rejectionReason`] = trimmed;
-  }
-  return update(ref(database), patch);
+  if (!laybyId) return;
+  return update(ref(database), {
+    [`laybys/${laybyId}/status`]:          LAYBY_STATUS.REJECTED,
+    [`laybys/${laybyId}/rejectedAt`]:      now,
+    [`laybys/${laybyId}/rejectionReason`]: trimmed,
+  });
 }
