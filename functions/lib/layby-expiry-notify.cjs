@@ -125,7 +125,9 @@ async function runLaybyExpiryNotify({ db, enqueueWhatsApp, fetchTemplates, nowMs
 
   const approval = await templateApproval(fetchTemplates);
   if (!approval.approved) {
-    console.warn("laybyExpiryNotify: NOT sending —", approval.reason, JSON.stringify({ target }));
+    // console.error, not warn: a template that is not approved means the whole
+    // feature is off, and that must be visible in Cloud Logging's error view.
+    console.error("laybyExpiryNotify: NOT sending —", approval.reason, JSON.stringify({ target }));
     out.skipReason = approval.reason;
     return out;
   }

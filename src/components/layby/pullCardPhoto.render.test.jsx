@@ -21,6 +21,7 @@ vi.mock("firebase/database", () => ({
   get: async (r) => { reads.push(r.path); return { val: () => DATA[r.path] ?? null }; },
   update: async () => {},
   onValue: () => () => {},
+  runTransaction: async () => ({ committed: false, snapshot: { val: () => null } }),
 }));
 vi.mock("../../offline/useMirroredPhotoSrc", () => ({ useMirroredPhotoSrc: () => null }));
 

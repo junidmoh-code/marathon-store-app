@@ -9,7 +9,7 @@
 // empty lists so the warehouse UI never crashes or blanks the whole view.
 
 import { useEffect, useState } from "react";
-import { ref, onValue, update, get } from "firebase/database";
+import { ref, onValue, update, runTransaction } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
 import { LAYBY_STATUS, PULL_STATUS, pullStatusOf } from "./contract";
@@ -86,11 +86,14 @@ export function receiveLayby(layby, hubLabel) {
 }
 
 // ── ONE OUTCOME PER PULL ─────────────────────────────────────────────────────
-// A pull is resolved exactly once. Every warehouse action re-reads THIS pull's
-// status (one leaf, by key) and refuses unless it is still pending, so a card
-// that is out of date — another tablet already sent it, or the list has not
-// re-rendered yet — cannot turn a Sent into a Rejected or stamp a second
-// sentAt. The refusal carries `code: "already-resolved"` and the status found.
+// A pull is resolved exactly once. Every warehouse action first CLAIMS the
+// pull's status leaf in a transaction — pending → the new status, abort on
+// anything else — so a card that is out of date, or two tablets tapping in the
+// same instant, cannot turn a Sent into a Rejected or stamp a second sentAt.
+// Only the winner then writes the rest (timestamps, actor, the parcel) in its
+// one multi-path update. A loser gets `code: "already-resolved"` and the status
+// it found. (Cold cache: the client runs the fn against null first — null is
+// read as pending, so it proposes, and the server CAS re-runs it on the truth.)
 export class PullAlreadyResolvedError extends Error {
   constructor(pullId, status) {
     super(`Pull ${pullId} is already ${status}`);
@@ -99,10 +102,12 @@ export class PullAlreadyResolvedError extends Error {
   }
 }
 
-async function assertPullPending(pullId) {
-  const snap = await get(ref(database, `laybyPulls/${pullId}/status`));
-  const status = pullStatusOf({ status: snap.val() });
-  if (status !== PULL_STATUS.PENDING) throw new PullAlreadyResolvedError(pullId, status);
+async function claimPull(pullId, next) {
+  const res = await runTransaction(ref(database, `laybyPulls/${pullId}/status`), (cur) =>
+    pullStatusOf({ status: cur }) === PULL_STATUS.PENDING ? next : undefined);
+  if (!res.committed || res.snapshot.val() !== next) {
+    throw new PullAlreadyResolvedError(pullId, pullStatusOf({ status: res.snapshot.val() }));
+  }
 }
 
 // Fulfil a pull: mark the pull Sent AND flip the parcel to sentToStore, in one
@@ -110,7 +115,7 @@ async function assertPullPending(pullId) {
 export async function markPullSent(pull, hubLabel) {
   const pullId = pull?.pullId || pull?.key;
   if (!pullId) throw new Error("markPullSent: missing pullId");
-  await assertPullPending(pullId);
+  await claimPull(pullId, PULL_STATUS.SENT);
   const now = serverNowIso();
   const patch = {
     [`laybyPulls/${pullId}/status`]: PULL_STATUS.SENT,
@@ -133,7 +138,7 @@ export async function markPullSent(pull, hubLabel) {
 export async function returnPullToStock(pull, hubLabel) {
   const pullId = pull?.pullId || pull?.key;
   if (!pullId) throw new Error("returnPullToStock: missing pullId");
-  await assertPullPending(pullId);
+  await claimPull(pullId, PULL_STATUS.RETURNED_TO_STOCK);
   const now = serverNowIso();
   return update(ref(database, `laybyPulls/${pullId}`), {
     status:     PULL_STATUS.RETURNED_TO_STOCK,
@@ -150,7 +155,7 @@ export async function rejectPull(pull, reason, hubLabel) {
   if (!pullId) throw new Error("rejectPull: missing pullId");
   const trimmed = (reason || "").trim();
   if (!trimmed) throw new Error("rejectPull: reason required");
-  await assertPullPending(pullId);
+  await claimPull(pullId, PULL_STATUS.REJECTED);
   const now = serverNowIso();
   const patch = {
     [`laybyPulls/${pullId}/status`]:          PULL_STATUS.REJECTED,

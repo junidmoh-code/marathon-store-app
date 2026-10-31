@@ -46,7 +46,21 @@ vi.mock("firebase/database", () => ({
     for (const [k, v] of Object.entries(patch)) setPath(r.path ? `${r.path}/${k}` : k, v);
   },
   onValue: () => () => {},
+  // Client SDK semantics: the fn runs on the (cold) local cache first, then on
+  // the server value; undefined aborts. `race` lets a test resolve the pull
+  // between the two passes — another tablet winning in the same instant.
+  runTransaction: async (r, fn) => {
+    fn(null);
+    if (txHooks.race) { const h = txHooks.race; txHooks.race = null; await h(); }
+    const cur = getPath(r.path);
+    const next = fn(cur);
+    if (next === undefined) return { committed: false, snapshot: { val: () => cur } };
+    writes.push({ at: r.path, patch: next });
+    setPath(r.path, next);
+    return { committed: true, snapshot: { val: () => getPath(r.path) } };
+  },
 }));
+const txHooks = { race: null };
 
 const { markPullSent, rejectPull } = await import("./useLayby.js");
 const { laybyQueueRow, PULL_STATUS, LAYBY_STATUS } = await import("./contract.js");
@@ -73,7 +87,7 @@ const render = (pull, hub) => {
   return tree;
 };
 
-beforeEach(() => { store.root = {}; writes.length = 0; });
+beforeEach(() => { store.root = {}; writes.length = 0; txHooks.race = null; });
 
 // All three hubs, all four stores (Concrete's parcels are at Hub 3).
 const CASES = [
@@ -125,6 +139,15 @@ describe("one outcome per pull", () => {
     expect(writes.length).toBe(n);
     expect(getPath("laybyPulls/P1/status")).toBe(PULL_STATUS.SENT);
     expect(getPath("laybys/L1/status")).toBe(LAYBY_STATUS.SENT);
+  });
+
+  test("two tablets in the same instant: Reject loses to a Sent that landed mid-transaction", async () => {
+    const pull = seed({ pullId: "P1", laybyId: "L1", hub: "hub1", store: "trophy", invoiceNo: "L-1" });
+    txHooks.race = () => markPullSent(pull, "hub1"); // the other tablet wins between the passes
+    await expect(rejectPull(pull, "late", "hub1")).rejects.toMatchObject({ code: "already-resolved", status: PULL_STATUS.SENT });
+    expect(getPath("laybyPulls/P1/status")).toBe(PULL_STATUS.SENT);
+    expect(getPath("laybys/L1/status")).toBe(LAYBY_STATUS.SENT);
+    expect(getPath("laybyPulls/P1/rejectionReason")).toBe(null);
   });
 
   test("a second Sent does not re-stamp sentAt", async () => {
