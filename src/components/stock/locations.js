@@ -27,7 +27,7 @@
 // movement that references them. `active: false` is enough to remove them from
 // every picker, since all pickers funnel through activeLocations() below.
 import { currentNetwork } from "../../utils/networkStore";
-import { wallAllows } from "../../utils/networkRegistry";
+import { wallAllows, manualTransferAllowed } from "../../utils/networkRegistry";
 
 export const DEFAULT_LOCATIONS = [
   { id: "studio",        label: "Studio",         kind: "warehouse", sellable: false, active: false },
@@ -105,6 +105,18 @@ export function allLocationIds(registry) {
 export function wallAllowedLocations(list, otherLoc, network = currentNetwork()) {
   if (!otherLoc) return list;
   return (list || []).filter((l) => l && (l.id === "in_transit" || wallAllows(network, otherLoc, l.id)));
+}
+
+// THE TRANSFER SCREEN ONLY (owner, 31 Oct 2026): a person's manual transfer may
+// go from any location to any other, across sections. Same shape as
+// wallAllowedLocations, judged by manualTransferAllowed instead of the wall:
+// every listed location the registry knows, except `otherLoc` itself and
+// in_transit (never a manual target). Every other picker — Hub Clean-up,
+// display registration, Solve, the engine's screens — keeps
+// wallAllowedLocations and the wall.
+export function manualTransferLocations(list, otherLoc, network = currentNetwork()) {
+  if (!otherLoc) return list;
+  return (list || []).filter((l) => l && l.id !== "in_transit" && manualTransferAllowed(network, otherLoc, l.id));
 }
 
 export const IN_TRANSIT = "in_transit";
