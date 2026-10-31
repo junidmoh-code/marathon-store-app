@@ -18,6 +18,7 @@
 
 import { useMemo, useState } from "react";
 import QrScanner from "./QrScanner";
+import LaybyItemPhotos from "./LaybyItemPhotos";
 import { receiveLayby, markPullSent, rejectPull, returnPullToStock } from "./useLayby";
 import { labelFor } from "../stock/locations";
 import {
@@ -105,7 +106,9 @@ const RESOLVED_LOOK = {
 export const resolvedLookOf = (status) =>
   RESOLVED_LOOK[status] || { label: String(status || "").toUpperCase(), color: MUTED, bg: "rgba(255,255,255,.06)", border: "rgba(255,255,255,.14)", at: null, by: null };
 
-export function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn }) {
+// productsById (optional): the caller's live products, so a photo it already
+// holds is never read again. onOpenPhoto(urls): show a photo full screen.
+export function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn, productsById, onOpenPhoto }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -166,6 +169,9 @@ export function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn 
             <div style={{ fontSize:11, color:MUTED, marginTop:6 }}>{ageLabel(pull.requestedAt, nowMs)} ago</div>
           </div>
         </div>
+
+        {/* WHAT is in the parcel — big photo + big size, so it is found by eye */}
+        <LaybyItemPhotos saleId={pull.saleId || pull.laybyId} productsById={productsById} onOpenPhoto={onOpenPhoto}/>
 
         {/* Customer-centric detail */}
         <div style={{ marginTop:12, display:"flex", flexWrap:"wrap", gap:"8px 18px" }}>

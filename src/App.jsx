@@ -12577,6 +12577,8 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Which layby sub-queue to open on next mount. The exceptions banner flips this
   // to "exceptions" so a tap jumps straight there; keyed remount applies it.
   const [laybySub, setLaybySub] = useState("receiving");
+  // A layby request card's product photo, full screen (null = closed).
+  const [laybyPhoto, setLaybyPhoto] = useState(null);
   const DISPLAY_REFILL_DELAY_MS = 15 * 60 * 1000;
   const RESOLVED_VISIBLE_MS     = 24 * 60 * 60 * 1000;
   // A Stock Depleted task stays visible (and revivable, below) for a week:
@@ -13919,6 +13921,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             })}
           </div>
 
+          {laybyPhoto && <GalleryLightbox photos={laybyPhoto} onClose={() => setLaybyPhoto(null)}/>}
           {/* ORDER CARDS — grouped by day, last 3 days only (Phase 10) */}
           <div style={{ padding:"0 13px" }}>
             <DayCollapsible
@@ -13938,6 +13941,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             if (order.isLayby) {
               return (
                 <PullCard pull={order._pull} selectedHub={selectedHub} nowMs={nowTick}
+                  productsById={whProductsById} onOpenPhoto={setLaybyPhoto}
                   onSent={()   => { setPrintToast({ kind:"ok", text:`${order.id} marked sent to store.` }); setTimeout(() => setPrintToast(null), 4000); }}
                   onReject={() => { setPrintToast({ kind:"ok", text:`${order.id} rejected — store notified.` });  setTimeout(() => setPrintToast(null), 4000); }}
                   onReturn={() => { setPrintToast({ kind:"ok", text:`${order.id} returned to stock.` });          setTimeout(() => setPrintToast(null), 4000); }}/>
