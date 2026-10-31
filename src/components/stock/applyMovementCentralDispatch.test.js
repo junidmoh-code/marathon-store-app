@@ -235,3 +235,22 @@ describe("written once, and only for Central", () => {
     expect(centralDispatchOf(SEED_REGISTRY, null)).toBeNull();
   });
 });
+
+// A person's manual transfer across sections (owner, 31 Oct 2026) is not a
+// Central dispatch: no row, no crash, nothing counted twice.
+describe("a cross-section manual transfer", () => {
+  it("Hub 2 → Concrete moves the stock and writes no central_dispatch row", async () => {
+    const res = await move("hub2", "concrete", { manual: true, movementId: "x1" });
+    expect(res.ok).toBe(true);
+    expect(qtyAt("hub2")).toBe(47);
+    expect(qtyAt("concrete")).toBe(53);
+    expect(rowOf("x1")).toBeNull();
+    expect(centralDispatchOf(SEED_REGISTRY, { type: "transfer_out", from: "hub2", to: "concrete", manual: true })).toBeNull();
+  });
+  it("Central → Concrete flagged manual is recorded once, as before", async () => {
+    const res = await move("central", "concrete", { manual: true, movementId: "x2" });
+    expect(res.ok).toBe(true);
+    expect(rowOf("x2")).toMatchObject({ from: "central", to: "concrete", section: 1 });
+    expect(updates.filter((u) => Object.keys(u).some((k) => k.startsWith(`${CENTRAL_DISPATCH_ROOT}/`))).length).toBe(1);
+  });
+});

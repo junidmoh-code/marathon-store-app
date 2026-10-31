@@ -27,7 +27,7 @@ import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { transferMovementId, loadDraft, saveDraft, clearDraft } from "./transferDraft";
 import { useStockCells, useTransitConfig } from "./useStock";
-import { transferTargets, wallAllowedLocations, labelFor, IN_TRANSIT, withSeedGaps } from "./locations";
+import { transferTargets, manualTransferLocations, labelFor, IN_TRANSIT, withSeedGaps } from "./locations";
 import { isTransitLane } from "./transitLanes";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { Toast, Empty } from "./widgets";
@@ -443,6 +443,8 @@ export default function Transfer({ products, registry, actorRole }) {
           // The REAL destination, for the section wall: a transit send books
           // into in_transit, which says nothing about where the stock is going.
           ...(transit ? { transitTo: to } : {}),
+          // A person's transfer: may cross sections (owner, 31 Oct 2026).
+          manual: true,
           movementId: transferMovementId(tId, ln.productId, ln.size), // idempotency key
           link: { transferId: tId, refillId: refillId || null },
         });
@@ -731,7 +733,9 @@ export default function Transfer({ products, registry, actorRole }) {
             <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", marginBottom: 4 }}>Send {totalUnits} unit(s)</div>
             <div style={{ fontSize: 12.5, color: GRAY, marginBottom: 14 }}>from <span style={{ color: "#fff", fontWeight: 600 }}>{labelFor(from, registry)}</span> to…</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8, marginBottom: 16 }}>
-              {wallAllowedLocations(locations, from).filter((l) => l.id !== from).map((l) => (
+              {/* A person's transfer may go to ANY location (owner, 31 Oct 2026) —
+                  the section wall is for the engine and Solve, not this sheet. */}
+              {manualTransferLocations(locations, from).filter((l) => l.id !== from).map((l) => (
                 <button key={l.id} onClick={() => setTo(l.id)} style={chip(to === l.id)}>{labelFor(l.id, registry)}</button>
               ))}
             </div>

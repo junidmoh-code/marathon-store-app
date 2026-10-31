@@ -392,6 +392,19 @@ function wallMessage(registry, from, to) {
   return "A transfer in transit must name where it came from and where it is going.";
 }
 
+// A PERSON'S MANUAL TRANSFER (owner, 31 Oct 2026): any location may send to
+// any other. Sections are NOT consulted — the wall above stays in force for
+// the refill engine, Solve and every automated route (autoRouteAllowed,
+// solveRouteAllowed); only the Transfer screen's send and the In Transit
+// receive ask this instead. Both ends must be real, registered locations
+// (in_transit is a holding state, not a place) and must not be the same one.
+function manualTransferAllowed(registry, from, to) {
+  if (from === TRANSIT_ID || to === TRANSIT_ID) return false;
+  const a = locationOf(registry, from);
+  const b = locationOf(registry, to);
+  return !!a && !!b && a.id !== b.id;
+}
+
 // The hub holding THIS store's back stock for THIS product.
 //   product override → the category's hub → the store's default hub → null.
 // Every candidate was validated against the wall and `serves` at normalise
@@ -597,7 +610,7 @@ module.exports = {
   normalizeNetwork, resolveLocationId, locationOf, locationName, sectionOf, isLive,
   solveOn, autoRefillMode, autoRefillOn, trustedCellsOnly, receivesRoutedStock,
   listLocations, storesOf, hubsOf, tillsFor,
-  wallCheck, wallAllows, wallMessage,
+  wallCheck, wallAllows, wallMessage, manualTransferAllowed,
   backStockFor, backStockHubsOf, storesServedBy, autoRouteAllowed, solveRouteAllowed,
   creditScopeOf, creditSpendableAt, issuingStamp, seedPayload, posStoreIndex,
   policyKeyFor, numberPrefixFor, sectionsFor, canSeeLocation,

@@ -28,7 +28,7 @@ vi.mock("firebase/database", () => ({
 vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser: { uid: "u1" } } }));
 
 const { applyMovement } = await import("./applyMovement.js");
-const { DEFAULT_LOCATIONS, transferTargets, wallAllowedLocations, labelFor, withSeedGaps } = await import("./locations.js");
+const { DEFAULT_LOCATIONS, transferTargets, wallAllowedLocations, manualTransferLocations, labelFor, withSeedGaps } = await import("./locations.js");
 const { seedUpdate } = await import("../admin/networkSettingsCore.js");
 const { __resetNetworkForTests } = await import("../../utils/networkStore.js");
 const { isTransitLane } = await import("./transitLanes.js");
@@ -92,20 +92,26 @@ describe("the write", () => {
 // 27 Oct concrete record must still offer Concrete — and Hub 3 → Concrete /
 // Pine must be offered and written exactly like Hub 2 → Marathon PE / Trophy.
 describe("a stale /locations copy without Concrete", () => {
-  // Exactly what Transfer.jsx builds its source and destination lists from.
+  // Exactly what Transfer.jsx builds its source and destination lists from
+  // (since 31 Oct 2026 the sheet ignores sections — manualTransferLocations).
   const sheet = (registry) => transferTargets(withSeedGaps(registry));
-  const dests = (registry, from) => wallAllowedLocations(sheet(registry), from).filter((l) => l.id !== from).map((l) => l.id);
+  const dests = (registry, from) => manualTransferLocations(sheet(registry), from).filter((l) => l.id !== from).map((l) => l.id);
+  // The wall-filtered list every OTHER picker still uses.
+  const wallDests = (registry, from) => wallAllowedLocations(sheet(registry), from).filter((l) => l.id !== from).map((l) => l.id);
 
   it("still offers Concrete from Hub 3 and from Central, and as a source", () => {
     expect(dests(LIVE_BEFORE, "hub3")).toEqual(expect.arrayContaining(["concrete", "marathon-pine", "central"]));
     expect(dests(LIVE_BEFORE, "central")).toContain("concrete");
     expect(sheet(LIVE_BEFORE).map((l) => l.id)).toContain("concrete");
   });
-  it("Hub 3 never offers the Marathon division; Hub 2 never offers Concrete's", () => {
-    const fromHub3 = dests(LIVE_BEFORE, "hub3");
-    for (const id of ["marathon-pe", "trophy", "hub1", "hub2"]) expect(fromHub3).not.toContain(id);
-    expect(dests(LIVE_BEFORE, "hub2")).toEqual(expect.arrayContaining(["marathon-pe", "trophy"]));
-    for (const id of ["concrete", "marathon-pine", "hub3"]) expect(dests(LIVE_BEFORE, "hub2")).not.toContain(id);
+  it("the Transfer sheet offers both divisions from Hub 2 and Hub 3 (owner, 31 Oct 2026)", () => {
+    expect(dests(LIVE_BEFORE, "hub3")).toEqual(expect.arrayContaining(["marathon-pe", "trophy", "hub1", "hub2", "concrete", "marathon-pine", "central"]));
+    expect(dests(LIVE_BEFORE, "hub2")).toEqual(expect.arrayContaining(["marathon-pe", "trophy", "hub1", "concrete", "marathon-pine", "hub3", "central"]));
+  });
+  it("the wall-filtered picker (every other screen) is unchanged: no cross-division choice", () => {
+    for (const id of ["marathon-pe", "trophy", "hub1", "hub2"]) expect(wallDests(LIVE_BEFORE, "hub3")).not.toContain(id);
+    for (const id of ["concrete", "marathon-pine", "hub3"]) expect(wallDests(LIVE_BEFORE, "hub2")).not.toContain(id);
+    expect(wallDests(LIVE_BEFORE, "hub2")).toEqual(expect.arrayContaining(["marathon-pe", "trophy"]));
   });
   it("a stored record wins over the seed (a deactivated location stays out)", () => {
     const reg = { ...LIVE_BEFORE, concrete: { ...DEFAULT_LOCATIONS.find((l) => l.id === "concrete"), active: false } };
