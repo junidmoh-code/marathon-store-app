@@ -44,7 +44,7 @@
 
 "use strict";
 
-const { isRetiredTerminal } = require("./card-terminals.cjs");
+const { isRetiredTerminal, BANKS, STANDARD_BANK } = require("./card-terminals.cjs");
 const { placementKey, placementAt, terminalPlacements, tillAt, seedPlacement } = require("./card-terminal-placements.cjs");
 
 /** How a terminal's report reaches us. Absent on a row = "both". */
@@ -82,6 +82,16 @@ function readCapture(raw) {
 }
 
 /**
+ * Which bank's machine (31 Oct 2026 — Concrete's Standard Bank PAX A8900s).
+ * Not sent = FNB, which is what every form before the field sent. Anything
+ * else that is not one of BANKS is refused, never repaired.
+ */
+function readBank(raw) {
+  if (raw === undefined || raw === null || raw === "") return "fnb";
+  return BANKS.includes(raw) ? raw : null;
+}
+
+/**
  * Is (storeId, tillId) a real POS till? `stores` is the callable's own read of
  * the POS: [{ storeId, label, tills: [{ tillId, name }] }].
  */
@@ -102,9 +112,11 @@ function readCommon(input, stores) {
   if (!mid.ok) return mid;
   const capture = readCapture(input.capture);
   if (!capture) return { ok: false, reason: "Pick how this terminal's report arrives: Email, Photo, Typed or Both." };
+  const bank = readBank(input.bank);
+  if (!bank) return { ok: false, reason: "Pick the bank this terminal belongs to: FNB or Standard Bank." };
   const placed = checkPlacement(stores, input.storeId, input.tillId);
   if (!placed.ok) return placed;
-  return { ok: true, label: label.label, mid: mid.mid, capture, storeId: input.storeId, tillId: input.tillId };
+  return { ok: true, label: label.label, mid: mid.mid, capture, bank, storeId: input.storeId, tillId: input.tillId };
 }
 
 /**
@@ -131,6 +143,8 @@ function planAdd(input, current, { stores, now }) {
     row: {
       storeId: c.storeId, tillId: c.tillId, label: c.label, capture: c.capture,
       ...(c.mid ? { mid: c.mid } : {}),
+      // An FNB row carries no `bank` — absent IS FNB (card-terminals.cjs).
+      ...(c.bank === STANDARD_BANK ? { bank: STANDARD_BANK } : {}),
       activeFrom: now,
     },
   };
@@ -162,6 +176,10 @@ function planEdit(input, current, { stores, now, nowMs }) {
   }
   const row = { ...current, label: c.label, tillId: c.tillId, capture: c.capture };
   if (c.mid) row.mid = c.mid; else delete row.mid;
+  // A form that does not send `bank` (an older bundle) keeps the row's bank.
+  if (input.bank !== undefined) {
+    if (c.bank === STANDARD_BANK) row.bank = STANDARD_BANK; else delete row.bank;
+  }
   // THE ONE EDIT THAT CAN MAKE A FIGURE WRONG — see tillMoveWarning.
   if (current.tillId && current.tillId !== c.tillId) {
     row.tillChangedAt = now;
@@ -176,7 +194,7 @@ function planEdit(input, current, { stores, now, nowMs }) {
   // existed has none, which is "both" — so saving "both" over it is no change
   // and must not write. (Found live on 21 Sept 2026: a no-op save of Pine
   // Till 1 stamped `capture: "both"` onto it.)
-  const changed = ["label", "tillId", "mid"].some((k) => (current[k] ?? null) !== (row[k] ?? null))
+  const changed = ["label", "tillId", "mid", "bank"].some((k) => (current[k] ?? null) !== (row[k] ?? null))
     // ABSENT means "both"; anything else is compared as written, so a junk
     // value ("fax") can still be repaired by choosing Both.
     || (current.capture === undefined ? "both" : current.capture) !== c.capture;
@@ -234,6 +252,8 @@ function planReplace(input, oldCurrent, newCurrent, { stores, now }) {
     // whatever was typed, never silently carried over.
     mid: input.mid,
     capture: input.capture ?? oldCurrent.capture ?? "both",
+    // A swapped machine is the same bank's unless the form says otherwise.
+    bank: input.bank ?? oldCurrent.bank,
   }, null, { stores, now });
   if (!added.ok) return added;
   return {
@@ -314,7 +334,7 @@ function planMove(input, current, { stores, now, nowMs, by }) {
 }
 
 module.exports = {
-  CAPTURE_MODES, readTypedTid, readMid, readLabel, readCapture, checkPlacement,
+  CAPTURE_MODES, readTypedTid, readMid, readLabel, readCapture, readBank, checkPlacement,
   planAdd, planEdit, planRetire, planReinstate, planReplace, planMove,
   MOVE_BACKDATE_MS, MOVE_AHEAD_MS,
 };

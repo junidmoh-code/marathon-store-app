@@ -10,7 +10,7 @@
 // writes `retired: true` instead of a stamp.
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { captureCards, isRetiredTerminal, captureMode, takesPhoto, typesTotal } from "./terminalRegistry";
+import { captureCards, isRetiredTerminal, captureMode, takesPhoto, typesTotal, terminalBank, canonicalTid } from "./terminalRegistry";
 
 const require = createRequire(import.meta.url);
 const server = require("../../../functions/lib/card-terminals.cjs");
@@ -49,6 +49,21 @@ describe("the client and server halves of the registry agree", () => {
     expect(new Set(values.map((capture) => captureMode({ capture })))).toEqual(new Set(["email", "photo", "typed", "both"]));
     expect(takesPhoto({ capture: "email" })).toBe(false);
     expect(takesPhoto({})).toBe(true);
+  });
+
+  it("agree on the bank, and on the canonical TID, for every shape", () => {
+    for (const bank of [undefined, null, "", "fnb", "standard-bank", "Standard Bank", "STANDARD-BANK", "absa", 1, {}, []]) {
+      const row = { ...ROW, ...(bank === undefined ? {} : { bank }) };
+      expect(terminalBank(row), JSON.stringify(bank)).toBe(server.terminalBank(row));
+    }
+    // ABSENT IS FNB — every row before Concrete's.
+    expect(terminalBank(ROW)).toBe("fnb");
+    expect(terminalBank({ ...ROW, bank: "standard-bank" })).toBe("standard-bank");
+    for (const tid of ["0000OF1Y", "00000F1Y", "0F1Y", "F1Y", " 0000 0F2Y ", "0000HP1X", "67325636", "O", "0", "", null, "ABC!", "IIOO", 7]) {
+      expect(canonicalTid(tid), JSON.stringify(tid)).toBe(server.canonicalTid(tid));
+    }
+    expect(canonicalTid("0000OF1Y")).toBe("F1Y");
+    expect(canonicalTid("00000F1Y")).toBe("F1Y");
   });
 
   it("a typed-total machine takes no photograph, and only it types", () => {

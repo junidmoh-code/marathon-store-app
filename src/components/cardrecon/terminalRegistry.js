@@ -57,6 +57,22 @@ export function typesTotal(row) {
 }
 
 /**
+ * "fnb" | "standard-bank" — the server half is terminalBank in
+ * functions/lib/card-terminals.cjs. ABSENT IS FNB: every machine before
+ * Concrete's (31 Oct 2026) was an FNB speedpoint.
+ */
+export function terminalBank(row) {
+  return row?.bank === "standard-bank" ? "standard-bank" : "fnb";
+}
+
+/** O→0, I→1, leading zeros dropped — canonicalTid on the server. */
+export function canonicalTid(raw) {
+  const s = typeof raw === "string" ? raw.trim().toUpperCase().replace(/[\s-]/g, "") : "";
+  if (!/^[A-Z0-9]{1,16}$/.test(s)) return null;
+  return s.replace(/O/g, "0").replace(/I/g, "1").replace(/^0+(?=.)/, "");
+}
+
+/**
  * The registry map → the cards to draw, in the order they are drawn.
  *
  * Sorted by label so the list does not reshuffle when a row is edited, and

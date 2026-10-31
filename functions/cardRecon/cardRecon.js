@@ -70,7 +70,7 @@ const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
-const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal } = require("../lib/card-terminals.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, STANDARD_BANK } = require("../lib/card-terminals.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { tillsFor } = require("../lib/network-registry.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
@@ -1351,6 +1351,13 @@ async function handleExtract(db, request, opts = {}) {
   if (extraction.tid !== picked && slipTidMatchesPicked(extraction.tid, picked, Object.keys(terminals))) {
     extraction.tid = picked;
   }
+  // A STANDARD BANK machine's TID may also be read with other padding
+  // ("0F1Y" for "00000F1Y"). Only for that bank's rows, and only to the one
+  // registry key it resolves to — an FNB pick is checked exactly as above.
+  if (extraction.tid !== picked && terminalBank(terminals[picked]) === STANDARD_BANK
+      && resolveRegisteredTid(extraction.tid, terminals) === picked) {
+    extraction.tid = picked;
+  }
   if (extraction.tid !== picked) {
     const mapped = terminals[extraction.tid];
     const where = mapped && mapped.label ? ` (that slip belongs to ${mapped.label})` : mapped ? ` (that slip belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
@@ -1598,6 +1605,11 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   let terminal;
   const routingWarnings = [];
   if (picked) {
+    // Standard Bank padding / O-for-0 only, as on the photo path above.
+    if (extraction.tid !== picked && terminalBank(terminals[picked]) === STANDARD_BANK
+        && resolveRegisteredTid(extraction.tid, terminals) === picked) {
+      extraction.tid = picked;
+    }
     if (extraction.tid !== picked) {
       const mapped = terminals[extraction.tid];
       const where = mapped && mapped.label ? ` (that file belongs to ${mapped.label})` : mapped ? ` (that file belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
@@ -1608,6 +1620,9 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
     const routed = routeEmailSlip({ extraction, terminals });
     if (!routed.ok) return reject(routed.reason);
     terminal = routed.terminal;
+    // A Standard Bank TID resolved by its canonical form is filed under the
+    // REGISTRY's spelling (FNB routes only on an exact key, so never here).
+    if (routed.tid !== extraction.tid && terminalBank(routed.terminal) === STANDARD_BANK) extraction.tid = routed.tid;
     routingWarnings.push(...routed.warnings);
   }
 
