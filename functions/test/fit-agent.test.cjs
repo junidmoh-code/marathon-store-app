@@ -99,7 +99,7 @@ describe("the three house models (Junid, 30 Oct 2026)", () => {
   test("three models: Black, white and Coloured, each early-to-mid 20s, very tall (1.90 m) and slim, a skin fade or buzz cut", () => {
     assert.deepEqual(hm.ORDER, ["black", "white", "coloured"]);
     for (const s of hm.ORDER) {
-      assert.match(hm.MODELS[s].description, /early-to-mid 20s, very tall \(about 1\.90 m, 6 ft 3 in\) and slim with a runway model's build: long legs \(more than half his height\), a long neck and a small head, about eight and a half heads tall, a sharp defined face and a strong jawline, a very short clean haircut \(a skin fade or a buzz cut/);
+      assert.match(hm.MODELS[s].description, /early-to-mid 20s, very tall \(about 1\.90 m, 6 ft 3 in\) and slim with a runway model's build: proper wide, broad, square shoulders over a slim waist[^:]*?, long legs \(more than half his height\), a long neck and a small head, about eight and a half heads tall, a sharp defined face and a strong jawline, a very short clean haircut \(a skin fade or a buzz cut/);
       assert.ok(hm.MODELS[s].skin && hm.MODELS[s].suits);
     }
     assert.match(hm.MODELS.black.description, /Black South African/);

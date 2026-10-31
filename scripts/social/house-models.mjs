@@ -142,7 +142,7 @@ await mkdir(OUT, { recursive: true });
 const saDate = saDateStringFromMs(Date.now());
 
 // The critic model scores each candidate against his brief, from the photo alone.
-const PARTS = ["age", "build", "height", "face", "hair", "stubble", "heritage", "look", "photo", "realism"];
+const PARTS = ["age", "build", "height", "shoulders", "face", "hair", "stubble", "heritage", "look", "photo", "realism"];
 const SCORE_SCHEMA = {
   type: "object", additionalProperties: false,
   required: ["score", ...PARTS, "reasons"],
@@ -162,7 +162,7 @@ async function scoreFace(jpg, model) {
       { type: "text", text: [
         "This is a candidate for one of a clothing brand's three house models. Score it strictly against his brief, 1 to 10 each:",
         `Brief: ${model.description}. A professional fashion shoot (good camera, good light, model posing), not a phone snap. Full length.`,
-        "age (early-to-mid 20s), build (slim, runway), height (reads as a very tall 1.90 m runway model: long legs more than half his height, a small head, about eight and a half heads tall; a short or stocky look scores low), face (sharp, defined, strong jawline), hair (very short: skin fade or buzz cut, hair barely visible), stubble (clean-shaven or very light), heritage (clearly matches the brief's heritage and skin tone), look (a confident fashion model, posing), photo (looks like a professional fashion shoot, not a phone snap; full length, head to toe), realism (a real photograph: no AI artefacts in eyes, teeth, hands, ears, feet or skin), and score: the whole brief, and how well he would carry a brand as its recurring model.",
+        "age (early-to-mid 20s), build (slim, runway), height (reads as a very tall 1.90 m runway model: long legs more than half his height, a small head, about eight and a half heads tall; a short or stocky look scores low), shoulders (proper wide, broad, square shoulders over a slim waist, a clear V shape; narrow or sloping shoulders score low, so does a bulky bodybuilder), face (sharp, defined, strong jawline), hair (very short: skin fade or buzz cut, hair barely visible), stubble (clean-shaven or very light), heritage (clearly matches the brief's heritage and skin tone), look (a confident fashion model, posing), photo (looks like a professional fashion shoot, not a phone snap; full length, head to toe), realism (a real photograph: no AI artefacts in eyes, teeth, hands, ears, feet or skin), and score: the whole brief, and how well he would carry a brand as its recurring model.",
         "Under 60 words of reasons.",
       ].join("\n") },
     ] }],
@@ -193,21 +193,21 @@ async function sendTallerSheet() {
   for (const [col, r] of rows.entries()) {
     const before = hm.rankCandidates(models[r.slot]).find((c) => c.n === String(r.pick.tallerOf));
     const x = PAD + col * (W + PAD);
-    for (const [row, [c, t]] of [[before, `${r.slot.toUpperCase()} ${r.pick.tallerOf} · YOUR PICK`], [r.pick, `${r.slot.toUpperCase()} ${r.pick.tallerOf} TALLER · height ${r.pick.parts.height}/10`]].entries()) {
+    for (const [row, [c, t]] of [[before, `${r.slot.toUpperCase()} ${r.pick.tallerOf} · YOUR PICK`], [r.pick, `${r.slot.toUpperCase()} ${r.pick.tallerOf} TALLER · H ${r.pick.parts.height} · S ${r.pick.parts.shoulders || "–"}`]].entries()) {
       const [buf] = await bucket.file(c.path).download();
       const y = PAD + row * (H + LABEL + PAD);
       tiles.push({ input: await sharp(buf).resize(W, H, { fit: "cover" }).jpeg().toBuffer(), left: x, top: y + LABEL }, { input: label(t), left: x, top: y });
     }
-    lines.push(`• ${hm.MODELS[r.slot].label} ${r.pick.tallerOf}: ${r.pick.score}/10, height ${r.pick.parts.height}/10`);
+    lines.push(`• ${hm.MODELS[r.slot].label} ${r.pick.tallerOf}: ${r.pick.score}/10, height ${r.pick.parts.height}/10, shoulders ${r.pick.parts.shoulders || "–"}/10`);
   }
   const sheet = join(OUT, "taller.jpg");
   await mkdir(OUT, { recursive: true });
   await sharp({ create: { width: PAD + rows.length * (W + PAD), height: PAD + 2 * (H + LABEL + PAD), channels: 3, background: "#000" } }).composite(tiles).jpeg({ quality: 85 }).toFile(sheet);
   console.log(`sheet: ${sheet}`);
   if (has("send")) tellJunid([
-    "Your picks, re-shot taller (same faces: top row is your pick, bottom row the taller version).",
+    "Your picks, re-shot taller with wide shoulders (same faces: top row is your pick, bottom row the new version).",
     ...lines,
-    "The taller ones are now the faces. Reply \"approve models\" to let lookbooks with them post, or tell me what to change. Nothing with a model posts until you approve.",
+    "The new ones are now the faces. Reply \"approve models\" to let lookbooks with them post, or tell me what to change. Nothing with a model posts until you approve.",
   ].join("\n"), sheet);
 }
 
@@ -220,11 +220,13 @@ if (has("taller")) {
   const rows = [];
   for (const slot of slots) {
     const model = hm.MODELS[slot];
-    const chosen = hm.chosenFor(models[slot]);
+    // Always from the face Junid chose, never from an earlier re-shoot of it.
+    const pick = hm.chosenFor(models[slot]);
+    const chosen = pick.tallerOf ? hm.rankCandidates(models[slot]).find((c) => c.n === String(pick.tallerOf)) : pick;
     const [face] = await bucket.file(chosen.path).download();
     const prompt = lookbook.buildModelRefPrompt(model, { fromFace: true });
     let best = null;
-    for (let k = 1; k <= 2 && !(best && best.s.score >= 8 && best.s.height >= 8); k++) {
+    for (let k = 1; k <= 2 && !(best && best.s.score >= 8 && best.s.height >= 8 && best.s.shoulders >= 8); k++) {
       await db.ref(`social_generation_budget/${saDate}/count`).transaction((cur) => (Number(cur) || 0) + 1);
       const gen = await gemini.geminiGenerateImage(geminiApiKey, gemini.NBPRO_MODEL, [
         { text: "FACE REFERENCE — the man to photograph again (his face, skin tone, hair and stubble only; not his height, pose or framing):" },
@@ -234,10 +236,10 @@ if (has("taller")) {
       const jpg = await sharp(gen.buffer).jpeg({ quality: 92 }).toBuffer();
       const s = await scoreFace(jpg, model);
       totalUSD += gen.costUSD + s.costUSD;
-      console.log(`${slot} taller ${k}: ${s.score}/10, height ${s.height} — ${s.reasons}`);
+      console.log(`${slot} taller ${k}: ${s.score}/10, height ${s.height}, shoulders ${s.shoulders} — ${s.reasons}`);
       // One that meets both targets beats one that does not; then the higher score plus height.
-      const meets = (x) => x.score >= 8 && x.height >= 8;
-      if (!best || (meets(s) && !meets(best.s)) || (meets(s) === meets(best.s) && s.score + s.height > best.s.score + best.s.height)) best = { jpg, gen, s };
+      const meets = (x) => x.score >= 8 && x.height >= 8 && x.shoulders >= 8;
+      if (!best || (meets(s) && !meets(best.s)) || (meets(s) === meets(best.s) && s.score + s.height + s.shoulders > best.s.score + best.s.height + best.s.shoulders)) best = { jpg, gen, s };
     }
     const n = String(Math.max(...Object.keys(models[slot].candidates).map(Number)) + 1);
     const c = await store(slot, n, best.jpg, best.gen, best.s, at, { tallerOf: chosen.n });
