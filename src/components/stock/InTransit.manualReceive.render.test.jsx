@@ -16,7 +16,8 @@ vi.mock("firebase/database", () => ({
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 const applyMovement = vi.fn(() => Promise.resolve({ ok: true, movementId: "m1" }));
 vi.mock("./applyMovement", () => ({ applyMovement: (...a) => applyMovement(...a) }));
-const TRANSFER = { id: "t1", status: "dispatched", from: "hub2", to: "concrete", reason: "manual",
+let TRANSFER;
+const MANUAL = { id: "t1", status: "dispatched", from: "hub2", to: "concrete", reason: "manual",
   createdAt: "2026-10-31T08:00:00.000Z", lines: { p1: { M: 2 } } };
 vi.mock("./useStock", () => ({
   useTransfers: () => [TRANSFER],
@@ -31,8 +32,26 @@ const { default: InTransit } = await import("./InTransit.jsx");
 
 const text = (node) => node.children.map((c) => (typeof c === "string" ? c : text(c))).join("");
 
+async function receive(products = [{ id: "p1", name: "Tee" }]) {
+  applyMovement.mockClear();
+  let tree;
+  await act(async () => { tree = TestRenderer.create(<InTransit products={products} actorRole="store" />); });
+  const btn = tree.root.findAll((n) => n.type === "button").find((b) => /^Receive into /.test(text(b)));
+  await act(async () => { await btn.props.onClick(); });
+  return applyMovement.mock.calls.map((c) => c[0]);
+}
+
 describe("receiving Hub 2 → Concrete", () => {
+  it("a record without reason \"manual\" is received with no flag (the wall judges it as before)", async () => {
+    TRANSFER = { ...MANUAL, from: "central", reason: undefined };
+    const [mv] = await receive();
+    expect(mv).toMatchObject({ type: "transfer_in", to: "concrete", transitFrom: "central" });
+    expect(mv).not.toHaveProperty("manual");
+  });
+
   it("hands the writer a transfer_in flagged manual, judged on the real origin", async () => {
+    TRANSFER = MANUAL;
+    applyMovement.mockClear();
     let tree;
     await act(async () => { tree = TestRenderer.create(<InTransit products={[{ id: "p1", name: "Tee" }]} actorRole="store" />); });
     const btn = tree.root.findAll((n) => n.type === "button").find((b) => /^Receive into /.test(text(b)));

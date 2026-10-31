@@ -13,15 +13,11 @@ const ALLOWED = new Set(["src/components/stock/Transfer.jsx", "src/components/st
 
 // Files whose `manual: true` is NOT on a movement — checked by hand 31 Oct 2026:
 //   applyMovement.js     writes the flag it was handed back onto the ledger row
-//   onHoldRefill.js      a refill request's createdFrom metadata
 //   MissingFootwear.jsx  a refill request's createdFrom metadata (×2)
-//   refill-engine.cjs    a stuck-refill report row
 // A new entry here needs the same check: is the object ever handed to applyMovement?
 const NOT_A_MOVEMENT = new Set([
   "src/components/stock/applyMovement.js",
-  "src/components/stock/onHoldRefill.js",
   "src/components/stock/MissingFootwear.jsx",
-  "functions/lib/refill-engine.cjs",
 ]);
 
 function walk(dir, out = []) {
@@ -35,9 +31,15 @@ function walk(dir, out = []) {
 
 describe("only a person's transfer sets manual: true", () => {
   it("no source file outside Transfer.jsx and InTransit.jsx sets the flag", () => {
-    const setters = [...walk(join(ROOT, "src")), ...walk(join(ROOT, "functions", "lib"))]
-      .filter((p) => /\bmanual\s*:\s*true\b/.test(readFileSync(p, "utf8").replace(/^\s*\/\/.*$/gm, "")))
-      .map((p) => relative(ROOT, p));
+    // Only a movement handed to applyMovement can open the wall, so only files
+    // that call it are scanned (functions/ has no wall: admin-movement.cjs).
+    const setters = walk(join(ROOT, "src"))
+      .map((p) => [p, readFileSync(p, "utf8").replace(/^\s*\/\/.*$/gm, "")])
+      .filter(([, src]) => /\bapplyMovement\s*\(/.test(src))
+      // Any value but a literal false ("manual": true, manual: !0, manual: x),
+      // and the { manual } / , manual } shorthand.
+      .filter(([, src]) => /(?<![`\w])["']?manual["']?\s*:(?!\s*false\b)|(?<![=$])\{\s*manual\s*[,}]|,\s*manual\s*[,}]/.test(src))
+      .map(([p]) => relative(ROOT, p));
     expect(setters.filter((p) => !ALLOWED.has(p) && !NOT_A_MOVEMENT.has(p))).toEqual([]);
     for (const f of ALLOWED) expect(setters).toContain(f);
   });

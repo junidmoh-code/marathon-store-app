@@ -115,8 +115,8 @@ export function wallAllowedLocations(list, otherLoc, network = currentNetwork())
 // display registration, Solve, the engine's screens — keeps
 // wallAllowedLocations and the wall.
 export function manualTransferLocations(list, otherLoc, network = currentNetwork()) {
-  if (!otherLoc) return list;
-  return (list || []).filter((l) => l && l.id !== "in_transit" && manualTransferAllowed(network, otherLoc, l.id));
+  const real = (list || []).filter((l) => l && l.id !== "in_transit");
+  return otherLoc ? real.filter((l) => manualTransferAllowed(network, otherLoc, l.id)) : real;
 }
 
 export const IN_TRANSIT = "in_transit";

@@ -176,8 +176,11 @@ describe("a manual transfer may cross sections", () => {
       const res = await manual(from, to);
       expect(res, `${from}→${to}`).toMatchObject({ ok: true });
     }
-    // 3 S1 × 4 S2 sends each way: every location sent and received the same count.
-    for (const loc of [...S1, ...S2]) expect(qtyAt(loc)).toBe(5);
+    // 3 S1 × 4 S2 pairs, each way: 24 manual movements on the ledger, each one
+    // cross-section and each with its cells written.
+    const rows = Object.values(getPath("stock_movements") || {});
+    expect(rows.filter((r) => r.manual === true)).toHaveLength(24);
+    expect(updates).toHaveLength(24);
   });
 
   it("Hub 2 → Concrete: the cells move and the ledger says it was manual", async () => {

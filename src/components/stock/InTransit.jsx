@@ -124,7 +124,9 @@ export default function InTransit({ products = [], registry: registryProp, actor
           type: "transfer_in", productId: r.pid, size, qty: want,
           from: IN_TRANSIT, to: t.to, actorRole,
           transitFrom: t.from,                               // the real origin, for the section wall
-          manual: true,                                      // a person receiving: no section wall (31 Oct 2026)
+          // A person's transfer (the Transfer screen writes reason "manual"):
+          // no section wall on its receive (owner, 31 Oct 2026).
+          ...(t.reason === "manual" ? { manual: true } : {}),
           movementId: receiveMovementId(t.id, r.pid, size), // deterministic → re-confirm no-ops
           link: { transferId: t.id },
         }).catch(() => ({ ok: false }));
