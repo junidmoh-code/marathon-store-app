@@ -1023,10 +1023,10 @@ function buildHeroCheckPrompt(model) {
   if (!model || !model.description) throw new Error("buildHeroCheckPrompt: a house model is required");
   return [
     "You are checking an AI-generated fashion photograph before it is published.",
-    "1. Does the image contain ANY text, letters, numbers, captions, watermarks, signatures, signage or graphic overlays that are NOT physically printed or embroidered on the model's clothing, shoes, hat or bag? Brand logos and wordmarks ON the garments do not count. Everything else counts, however small.",
+    "1. List EVERY piece of text, letters, numbers, logos, captions, watermarks, signatures, signage or graphic overlays in the image, however small, and say where each one is: \"garment\" (printed or embroidered on his clothing, shoes, hat or bag) or \"elsewhere\" (the background, a sign, an overlay, a watermark, floating in the air, anything not on what he wears).",
     `2. Is the model visibly ${model.description}? Judge his apparent heritage, skin tone, age, build and haircut. Answer true only if he clearly is.`,
     "Answer with ONLY a JSON object, no prose:",
-    '{"text_found": true|false, "text_seen": "what you saw, or empty", "model_match": true|false, "model_seen": "a few words describing the model"}',
+    '{"text_items": [{"text": "what it says or shows", "where": "garment"|"elsewhere"}], "model_match": true|false, "model_seen": "a few words describing the model"}',
   ].join("\n");
 }
 
@@ -1102,6 +1102,18 @@ function readHeroCheck(text) {
   if (a === -1 || b <= a) return { ok: false, hasText: true, seen: "", reason: "the text check gave no JSON answer" };
   let v;
   try { v = JSON.parse(s.slice(a, b + 1)); } catch { return { ok: false, hasText: true, seen: "", reason: "the text check answer was not valid JSON" }; }
+  // The check lists each text and where it is; the code decides. Asked for a
+  // yes/no, the vision model said yes to the garments' own logos (31 Oct: BOSS
+  // and JUST DO IT on the tees failed four white cards) although the prompt
+  // excluded them. Only text that is not on what he wears fails; an item with
+  // no clear "garment" fails.
+  if (Array.isArray(v.text_items)) {
+    const bad = v.text_items.filter((t) => !(t && t.where === "garment"));
+    const seen = v.text_items.map((t) => `${t && t.text}${t && t.where === "garment" ? " (garment)" : ""}`).join("; ").slice(0, 200);
+    return bad.length
+      ? { ok: false, hasText: true, seen, reason: `the hero contains text: ${bad.map((t) => (t && t.text) || "?").join("; ").slice(0, 160)}` }
+      : { ok: true, hasText: false, seen, reason: null };
+  }
   if (typeof v.text_found !== "boolean") return { ok: false, hasText: true, seen: "", reason: "the text check did not say whether text was found" };
   const seen = typeof v.text_seen === "string" ? v.text_seen.slice(0, 200) : "";
   return v.text_found

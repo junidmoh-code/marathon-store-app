@@ -281,6 +281,14 @@ describe("hero prompt and the no-text check", () => {
 
   test("text found fails; unreadable fails; clean passes", () => {
     assert.equal(lb.readHeroCheck('{"text_found": true, "text_seen": "VOGUE"}').ok, false);
+    // 31 Oct: the garments' own logos are not text to fail on; the code decides from the list.
+    assert.equal(lb.readHeroCheck('{"text_items": [{"text": "BOSS", "where": "garment"}, {"text": "JUST DO IT", "where": "garment"}]}').ok, true);
+    assert.equal(lb.readHeroCheck('{"text_items": []}').ok, true);
+    const sign = lb.readHeroCheck('{"text_items": [{"text": "BOSS", "where": "garment"}, {"text": "OPEN", "where": "elsewhere"}]}');
+    assert.equal(sign.ok, false);
+    assert.match(sign.reason, /OPEN/);
+    assert.doesNotMatch(sign.reason, /BOSS/);
+    assert.equal(lb.readHeroCheck('{"text_items": [{"text": "X"}]}').ok, false);
     assert.equal(lb.readHeroCheck("I think it is fine").ok, false);
     assert.equal(lb.readHeroCheck('{"text_found": "no"}').ok, false);
     assert.equal(lb.readHeroCheck('```json\n{"text_found": false, "text_seen": ""}\n```').ok, true);
