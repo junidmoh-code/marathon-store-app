@@ -67,6 +67,7 @@ import {
   parseEnvText, classifyAttachment,
   EVIDENCE_PATH, refusedPdfPath, evidenceRecord,
   retryCandidates, sweepDue, judgedVersion, RETRY_WINDOW_MS, VERSION_CHECK_MS, PENDING_RETRY_MS,
+  standardBankBodyReport,
 } from "./intakeCore.mjs";
 // ── THE SECOND READER ────────────────────────────────────────────────────────
 // EFT payment notifications arrive in the SAME mailbox (customers enter it as
@@ -973,6 +974,13 @@ async function handleMessage({ client, uid, db, getToken, cfg, releasedFrom = {}
   if (eft) return eft;
 
   const { take, refused: badAttachments, skipped } = planMessage(parsed.attachments);
+  // A STANDARD BANK CARD REPORT IN THE BODY, with no PDF — kept and refused by
+  // name until its reader exists (intakeCore.mjs → standardBankBodyReport).
+  const bodyReport = !take.length && !badAttachments.length ? standardBankBodyReport({
+    fromDomain: domainOfAddress(parsed.from?.value?.[0]?.address || /<([^<>\s]+@[^<>\s]+)>/.exec(message.from || "")?.[1] || null),
+    text: (parsed.text || "").trim() || htmlToText(parsed.html || ""),
+  }) : null;
+  if (bodyReport) return recordBodyReport({ client, range, db, cfg, message, skipped, bodyReport, releasedFrom });
   if (!take.length && !badAttachments.length) {
     // Ordinary mail. A tiny DONE row in the ledger is what stops it being
     // re-downloaded every tick now that the read-flag is nobody's memory —
@@ -1084,6 +1092,42 @@ async function handleMessage({ client, uid, db, getToken, cfg, releasedFrom = {}
     processed: true, done: true,
     recorded: record.recorded, refused: record.refused, unrelated: record.unrelated,
   };
+}
+
+/**
+ * A Standard Bank report that arrived as the email itself: one intake row,
+ * refused by name, with the body's lines as its evidence — the same claim,
+ * the same one-update write and the same \Seen-last order as a PDF's.
+ */
+async function recordBodyReport({ client, range, db, cfg, message, skipped, bodyReport, releasedFrom }) {
+  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0 };
+  if (cfg.dryRun) {
+    console.log(`  · would record a Standard Bank report in the email body (reader not built yet): "${message.logSubject}"`);
+    return empty;
+  }
+  const claim = await claimMessage(db, message.key);
+  if (!claim.taken) {
+    if (claim.done) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+    return { ...empty, done: claim.done };
+  }
+  const intakeId = db.ref(INTAKE_PATH).push().key;
+  const filename = "(email body)";
+  const row = attachmentOutcome({ filename, error: bodyReport.reason });
+  const evidence = evidenceRecord({
+    items: [{ filename, reason: bodyReport.reason, lines: bodyReport.lines, pdfPath: null, note: "the report was the email body — no PDF" }],
+    at: serverNowMs(), parserVersion: PARSER_VERSION,
+  });
+  const record = intakeRecord({ message, results: [row], skipped, at: serverNowMs(), parserVersion: PARSER_VERSION });
+  if (releasedFrom[message.key]) record.rerunOf = releasedFrom[message.key];
+  await db.ref().update({
+    [`${INTAKE_PATH}/${intakeId}`]: record,
+    [`${SEEN_PATH}/${message.key}`]: { state: "done", at: serverNowMs(), intakeId },
+    [`${EVIDENCE_PATH}/${intakeId}`]: evidence,
+    ...(releasedFrom[message.key] ? { [`${INTAKE_PATH}/${releasedFrom[message.key]}/retriedIntakeId`]: intakeId } : {}),
+  });
+  await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+  console.log(`  · "${message.logSubject}": Standard Bank report in the body — refused (reader not built yet), evidence kept`);
+  return { processed: true, done: true, recorded: 0, refused: record.refused, unrelated: record.unrelated };
 }
 
 // ─── THE EFT READER ──────────────────────────────────────────────────────────
@@ -1235,6 +1279,13 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     await noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity, size, fromDomain });
     return null;
   }
+
+  // A STANDARD BANK CARD REPORT IN THE BODY is the card path's (Concrete's
+  // machines, 31 Oct 2026) — the same domain sends EFT payment confirmations,
+  // which never match (looksLikeStandardBankCardReport refuses payment
+  // wording). Only a message with no PDF: a PDF is inspected below as before.
+  const hasPdf = (parsed.attachments || []).some((a) => { try { return classifyAttachment(a).ok; } catch { return false; } });
+  if (!hasPdf && standardBankBodyReport({ fromDomain, text: (parsed.text || "").trim() || htmlToText(parsed.html || "") })) return null;
 
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0, eftRefusedTiming: 0, eftRefusedStale: 0, eftHeld: 0 };
   // FIX 8 — NO CUTOFF, NO DECISION. A bank notification is never judged, let
