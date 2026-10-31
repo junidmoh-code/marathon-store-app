@@ -69,7 +69,7 @@ for (const r of b.fix) {
   const res = await db.ref(`laybys/${r.laybyId}`).transaction((cur) => {
     if (cur == null) return cur;                 // cold cache: let the server answer
     if (cur.status !== "pullRequested") return;  // moved on — abort, write nothing
-    return { ...cur, ...patch, ...(cur.sentToStoreAt ? { sentToStoreAt: cur.sentToStoreAt } : {}) };
+    return { ...cur, ...patch };
   });
   if (res.committed && res.snapshot.val()?.status === "sentToStore") written += 1; else moved += 1;
 }

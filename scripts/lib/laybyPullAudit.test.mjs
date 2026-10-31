@@ -45,3 +45,12 @@ test("a second run over fixed data finds nothing (idempotent)", () => {
   Object.assign(laybys.L1, fixPatch(first.fix[0]));
   expect(auditPullStatus(pulls, laybys).fix).toHaveLength(0);
 });
+
+test("an older parcel sentToStoreAt is replaced by this send; a later one is ambiguous", () => {
+  const pulls = { p1: { laybyId: "L1", status: "sentToStore", sentAt: "2026-10-30T09:00:00Z", requestedAt: T0 } };
+  const older = auditPullStatus(pulls, { L1: { status: "pullRequested", sentToStoreAt: "2026-09-01T00:00:00Z" } });
+  expect(fixPatch(older.fix[0]).sentToStoreAt).toBe("2026-10-30T09:00:00Z");
+  const later = auditPullStatus(pulls, { L1: { status: "pullRequested", sentToStoreAt: "2026-10-30T10:00:00Z" } });
+  expect(later.fix).toHaveLength(0);
+  expect(later.ambiguous[0].reason).toMatch(/later send stamp/);
+});

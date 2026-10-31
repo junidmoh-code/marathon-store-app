@@ -13932,7 +13932,10 @@ function WarehouseView({ products = [], orders, onExit }) {
               // Cards here are STATEFUL now (TomorrowActionButton holds a
               // Central probe); the date-index fallback key would hand one
               // row's probe state to its neighbour when the list shifts.
-              keyOf={(o) => `${queueDateOf(o) || ""}:${o.id}`}
+              // A layby row keys on its PULL: a pending pull's date is "now" on
+              // every render, so a date key would remount its card each tick and
+              // drop a half-typed reject reason (CodeRabbit, #830).
+              keyOf={(o) => (o.isLayby ? `layby:${o._pull?.pullId || o._pull?.key || o.id}` : `${queueDateOf(o) || ""}:${o.id}`)}
               emptyMessage="No orders in the last 3 days."
               renderItem={(order) => {
             // Layby pull request — render the real PullCard inline (same L-xxxxx

@@ -58,10 +58,13 @@ export function auditPullStatus(pulls, laybys) {
       const sentAt = ms(pull.sentAt);
       const receivedAfter = Number.isFinite(sentAt) && ms(parcel.receivedAt) > sentAt;
       const collect = (pull.disposition || "collect") === "collect";
-      if (ls === "pullRequested" && collect && !receivedAfter && Number.isFinite(sentAt)) {
-        fix.push({ ...row, sentAt: pull.sentAt, hasSentToStoreAt: !!parcel.sentToStoreAt });
+      // A parcel sentToStoreAt LATER than this send means something happened
+      // after it that this data cannot explain — not ours to overwrite.
+      const laterSendStamp = Number.isFinite(sentAt) && ms(parcel.sentToStoreAt) > sentAt;
+      if (ls === "pullRequested" && collect && !receivedAfter && !laterSendStamp && Number.isFinite(sentAt)) {
+        fix.push({ ...row, sentAt: pull.sentAt });
       } else {
-        ambiguous.push({ ...row, reason: receivedAfter ? "scanned in after the send" : !collect ? "return-to-stock pull" : !Number.isFinite(sentAt) ? "no sentAt on the pull" : `parcel reads ${ls}` });
+        ambiguous.push({ ...row, reason: receivedAfter ? "scanned in after the send" : laterSendStamp ? "parcel carries a later send stamp" : !collect ? "return-to-stock pull" : !Number.isFinite(sentAt) ? "no sentAt on the pull" : `parcel reads ${ls}` });
       }
     } else if (ps === "pending" && ls === "sentToStore") {
       pendingVsSent.push(row);
@@ -72,11 +75,11 @@ export function auditPullStatus(pulls, laybys) {
   return { fix, ambiguous, pendingVsSent, agree };
 }
 
-// The exact patch for one `fix` row — the parcel's status and, when it has
-// none, its sentToStoreAt. Both are rules-legal on /laybys/{id}: status is in
-// the allowed set and sentToStoreAt is an unvalidated $other child.
+// The exact patch for one `fix` row: what markPullSent writes on the parcel —
+// status, and sentToStoreAt = THIS pull's sentAt (an older stamp from an
+// earlier send is replaced; a later one never reaches here, it is ambiguous).
+// Rules-legal on /laybys/{id}: status is in the allowed set and sentToStoreAt
+// is an unvalidated $other child.
 export function fixPatch(row) {
-  const p = { status: "sentToStore" };
-  if (!row.hasSentToStoreAt) p.sentToStoreAt = row.sentAt;
-  return p;
+  return { status: "sentToStore", sentToStoreAt: row.sentAt };
 }
