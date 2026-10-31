@@ -16,7 +16,7 @@ const APPROVED = async () => ({ data: [{ name: "layby_expiry_3d", language: "en"
 // fn runs first against null, then against the server value) and the one query
 // used: orderByChild(k).equalTo(v).get(). Like the real thing, writing null or
 // an emptied object removes the key.
-function fakeDb(initial, { failTransactionFor = null } = {}) {
+function fakeDb(initial, { failTransactionFor = null, afterQuery = null } = {}) {
   const state = structuredClone(initial);
   const at = (path) => path.split("/").filter(Boolean).reduce((n, k) => (n == null ? n : n[k]), state);
   const prune = (v) => (v && typeof v === "object" && Object.keys(v).length === 0 ? null : v);
@@ -54,6 +54,7 @@ function fakeDb(initial, { failTransactionFor = null } = {}) {
             return { async get() {
               reads.push(`${path}?orderBy=${k}&equalTo=${v}`);
               const kids = Object.entries(at(path) || {}).filter(([, c]) => c && c[k] === v);
+              if (afterQuery) afterQuery(state);
               return { forEach: (cb) => kids.forEach(([key]) => cb({ key })) };
             } };
           } };
@@ -100,6 +101,14 @@ test("a DATE, not a range: inside 3 days, past due, or further out on deploy day
   await run(db, enq);
   assert.equal(enq.calls.length, 0);
   assert.equal(db.state.layby_notify, undefined);
+});
+
+test("the decision is on the re-read: a due date moved earlier after the query is not sent", async () => {
+  const db = fakeDb({ laybys: { A: layby() } }, { afterQuery: (st) => { st.laybys.A.dueDate = "2026-11-01"; } });
+  const enq = producer();
+  const r = await run(db, enq);
+  assert.equal(enq.calls.length, 0);
+  assert.equal(r.skipped.not_due_in_3_days, 1);
 });
 
 test("the query is the indexed dueDate equality, and records are re-read by key only", async () => {
