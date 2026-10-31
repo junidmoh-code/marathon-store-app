@@ -2,6 +2,11 @@
 // Junid, 16 Oct 2026:
 //   Yasmin → Marathon PE Till 2 only.
 //   Amanda → Trophy Till 2 only.
+// Junid, 31 Oct 2026: Amanda → Concrete Till 1 and Concrete Till 2 ONLY —
+//   she sends Concrete's slips and is refused for Trophy Till 2 and every
+//   other till. `only: true` makes the list her WHOLE scope: a till she holds
+//   that is not in it is removed (and said, by name, before anything is
+//   written). Her POS access is not touched.
 //
 // Writes /users/{uid}/cardSlipTills/{storeId}/{tillId} = true — the per-till
 // scope the cardBatchCapture callable's "slip" action checks (functions/lib/
@@ -37,8 +42,8 @@ const { tillsFor } = local("../../functions/lib/network-registry.cjs");
 
 const EXECUTE = process.argv.includes("--execute");
 const GRANTS = [
-  { username: "yasmin", tillLabel: "Marathon Till 2" },
-  { username: "amanda", tillLabel: "Trophy Till 2" },
+  { username: "yasmin", tillLabels: ["Marathon Till 2"] },
+  { username: "amanda", tillLabels: ["Concrete Till 1", "Concrete Till 2"], only: true },
 ];
 
 admin.initializeApp({
@@ -63,16 +68,17 @@ function fail(msg) { console.error(`✗ ${msg}`); process.exit(1); }
 
 const plan = [];
 for (const g of GRANTS) {
+  for (const tillLabel of g.tillLabels) {
   // THE TILL: the live registry, by where each machine stands now.
   const hits = Object.entries(terminals)
     .filter(([, row]) => row && !row.retiredAt)
     .map(([tid, row]) => ({ tid, ...tillAt(row, nowMs) }))
-    .filter((t) => t.label === g.tillLabel);
-  if (hits.length !== 1) fail(`"${g.tillLabel}": ${hits.length} machines stand at a till by that name — expected exactly one.`);
+    .filter((t) => t.label === tillLabel);
+  if (hits.length !== 1) fail(`"${tillLabel}": ${hits.length} machines stand at a till by that name — expected exactly one.`);
   const { storeId, tillId } = hits[0];
   // ONE IDENTITY PER TILL (18 Oct 2026): the id granted is the POS's own till
   // id, the one Card Recon draws the card under — or nothing is written.
-  if (!posHasTill(storeId, tillId)) fail(`"${g.tillLabel}" stands at ${storeId}/${tillId}, which is not a till in the POS registry (/network) — refusing a grant that would never match a card.`);
+  if (!posHasTill(storeId, tillId)) fail(`"${tillLabel}" stands at ${storeId}/${tillId}, which is not a till in the POS registry (/network) — refusing a grant that would never match a card.`);
 
   // THE PERSON: their existing sign-in, one lookup.
   const email = `${g.username}@marathon.internal`;
@@ -82,7 +88,7 @@ for (const g of GRANTS) {
   const rec = (await db.ref(`users/${user.uid}`).once("value")).val() || {};
   const posStores = Array.isArray(rec.posAccess?.storeIds) ? rec.posAccess.storeIds : Object.values(rec.posAccess?.storeIds || {});
   if (rec.posAccess?.isActive === false) fail(`${email}: POS access is switched off.`);
-  if (!posStores.includes(storeId)) fail(`${email} has POS access to [${posStores.join(", ")}], not to "${storeId}" — will not grant ${g.tillLabel}.`);
+  if (!posStores.includes(storeId)) fail(`${email} has POS access to [${posStores.join(", ")}], not to "${storeId}" — will not grant ${tillLabel}.`);
 
   const before = readSlipScope(rec[SLIP_SCOPE_FIELD]);
   // A till already held that no machine stands at, or the POS does not know,
@@ -92,26 +98,37 @@ for (const g of GRANTS) {
     if (!standing.has(key) || !posHasTill(s, t)) console.error(`  ⚠ ${email} holds ${key}: ${!posHasTill(s, t) ? "not a POS till" : "no card machine stands there"} — fix the registry or remove it.`);
   }
   const want = `${storeId}/${tillId}`;
-  plan.push({ ...g, email, uid: user.uid, name: rec.displayName || rec.posAccess?.displayName || g.username, storeId, tillId, before, already: before.includes(want) });
+  plan.push({ ...g, tillLabel, email, uid: user.uid, name: rec.displayName || rec.posAccess?.displayName || g.username, storeId, tillId, before, already: before.includes(want) });
+  }
+}
+// An `only` grant's tills are the person's WHOLE scope: anything else held goes.
+const revoke = [];
+for (const g of GRANTS.filter((x) => x.only)) {
+  const mine = plan.filter((p) => p.username === g.username);
+  const keep = new Set(mine.map((p) => `${p.storeId}/${p.tillId}`));
+  for (const key of mine[0].before) if (!keep.has(key)) revoke.push({ uid: mine[0].uid, name: mine[0].name, email: mine[0].email, key });
 }
 
 console.log(`${EXECUTE ? "GRANTING" : "Would grant"} (live registry as at ${new Date(nowMs).toISOString()}):`);
 for (const p of plan) {
   console.log(`  ${p.name} <${p.email}> uid ${p.uid}`);
   console.log(`     → ${p.tillLabel} = ${p.storeId}/${p.tillId}${p.already ? "   (already granted — no change)" : ""}`);
-  if (p.before.length && !p.already) console.log(`     (already holds: ${p.before.join(", ")} — kept)`);
+  if (p.before.length && !p.already && !p.only) console.log(`     (already holds: ${p.before.join(", ")} — kept)`);
 }
+for (const r of revoke) console.log(`  ${r.name} <${r.email}>\n     ✗ ${EXECUTE ? "REMOVING" : "would remove"} ${r.key} — not in her/his list (only)`);
 if (!EXECUTE) { console.log("\nDry run — nothing written. Re-run with --execute."); process.exit(0); }
 
 for (const p of plan) {
   if (p.already) continue;
   await db.ref(`users/${p.uid}/${SLIP_SCOPE_FIELD}/${p.storeId}/${p.tillId}`).set(true);
 }
+for (const r of revoke) await db.ref(`users/${r.uid}/${SLIP_SCOPE_FIELD}/${r.key}`).remove();
 console.log("\nRead back:");
 for (const p of plan) {
   const now = readSlipScope((await db.ref(`users/${p.uid}/${SLIP_SCOPE_FIELD}`).once("value")).val());
-  const ok = now.includes(`${p.storeId}/${p.tillId}`);
-  console.log(`  ${ok ? "✓" : "✗"} ${p.name}: ${now.join(", ") || "(none)"}`);
+  const ok = now.includes(`${p.storeId}/${p.tillId}`) && !revoke.some((r) => r.uid === p.uid && now.includes(r.key))
+    && (!p.only || now.length === plan.filter((x) => x.uid === p.uid).length);
+  console.log(`  ${ok ? "✓" : "✗"} ${p.name} (${p.tillLabel}): ${now.join(", ") || "(none)"}`);
   if (!ok) process.exitCode = 1;
 }
 process.exit(process.exitCode || 0);

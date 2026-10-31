@@ -70,7 +70,7 @@ const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
-const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, STANDARD_BANK } = require("../lib/card-terminals.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK } = require("../lib/card-terminals.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { tillsFor } = require("../lib/network-registry.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
@@ -209,6 +209,51 @@ const EXTRACTION_PROMPT = [
   "Per-field confidence is 0..1: how certain you are the characters were read",
   "exactly as printed.",
 ].join("\n");
+
+// ── A STANDARD BANK SLIP (31 Oct 2026 — Concrete's PAX A8900 machines) ───────
+// The FNB prompt above tells the model the paper is an FNB Batch Report and
+// describes FNB's blocks, which a Standard Bank settlement slip does not have:
+// asked that way, a model can fairly answer "this is not that". So a Standard
+// Bank machine's photo is described as what it is, with the same output
+// schema and the same never-invent rule — and FNB's prompt is not touched.
+// On these tills the TYPED TOTAL is the record (capture "typed"); the read
+// only tells Junid when the paper says something else.
+const STANDARD_BANK_EXTRACTION_PROMPT = [
+  "These photographs show ONE printed card-terminal settlement or batch slip",
+  "from a Standard Bank (South Africa) payment terminal (a PAX machine). The",
+  "layout is NOT FNB's: headings and labels may differ, and some fields may not",
+  "be printed at all. Read ONLY what is literally printed. Never invent, infer",
+  "or complete a value — a field that is not printed, or cannot be read, is an",
+  "empty string with confidence 0.",
+  "",
+  "HEADER fields: MID (merchant ID / merchant number, long digits), TID",
+  "(terminal ID — eight characters, usually a run of leading ZEROS then letters",
+  "and digits, e.g. 0000AB1C; a round character among the leading zeros is a",
+  "zero; return only the ID itself, without the label), the batch number (it may",
+  "be labelled Batch, Batch No or Settlement — return the digits), the opening",
+  "and closing (or settlement) timestamps and the print time, exactly as printed,",
+  "the transaction count, and any reconciliation or settlement-status line.",
+  "",
+  "TOTALS: read the purchases / sales figure, any cash figure, the refunds figure",
+  "(its magnitude as printed — do not add a sign) and the TOTAL (net settled",
+  "amount). Return amounts exactly as printed, e.g. 'R1,250.00'. If a figure",
+  "prints in more than one place and they disagree, lower that field's",
+  "confidence below 0.5.",
+  "",
+  "TRANSACTIONS: if the slip lists transactions, list EVERY one printed across",
+  "ALL photos — date, time, RRN or reference, auth code, sequence / trace number",
+  "(as tsn), masked card number, amount (exactly as printed, keep any minus sign),",
+  "and whether it is a purchase or a refund. If it lists none, return an empty",
+  "list. Never fabricate a line.",
+  "",
+  "Per-field confidence is 0..1: how certain you are the characters were read",
+  "exactly as printed.",
+].join("\n");
+
+/** The prompt for a machine's bank: FNB's unless the row says Standard Bank. */
+function extractionPromptFor(bank) {
+  return bank === STANDARD_BANK ? STANDARD_BANK_EXTRACTION_PROMPT : EXTRACTION_PROMPT;
+}
 
 const EXTRACTION_SCHEMA = {
   type: "OBJECT",
@@ -409,7 +454,7 @@ async function runSlipOcr(photos, apiKey, deps = {}) {
     if (left < 30 * 1000) throw err;
     console.warn(`cardBatchCapture: Gemini HTTP ${err.httpStatus} (out of credit) — reading with ${CREDIT_WALL_MODEL}`);
     try {
-      const out = await runClaudeOcrOnce(photos, deps.claudeKey, deps.fetch || fetch, Math.min(CLAUDE_TIMEOUT_MS, left));
+      const out = await runClaudeOcrOnce(photos, deps.claudeKey, deps.fetch || fetch, Math.min(CLAUDE_TIMEOUT_MS, left), deps.prompt);
       return { ...out, model: CREDIT_WALL_MODEL, attempts: (err.attempts || 1) + 1 };
     } catch (second) {
       // Still Gemini's wall (the person is told the reader is out of credit),
@@ -421,8 +466,12 @@ async function runSlipOcr(photos, apiKey, deps = {}) {
   }
 }
 
-/** Both readers, with the keys the deployed functions hold. */
-const liveOcr = (photos) => runSlipOcr(photos, geminiApiKey.value(), { claudeKey: anthropicApiKey.value() });
+/**
+ * Both readers, with the keys the deployed functions hold — and the prompt
+ * for the machine's bank (extractionPromptFor). An FNB terminal (every row
+ * without `bank`) is read with EXTRACTION_PROMPT exactly as before.
+ */
+const liveOcr = (photos, { bank } = {}) => runSlipOcr(photos, geminiApiKey.value(), { claudeKey: anthropicApiKey.value(), prompt: extractionPromptFor(bank) });
 
 async function runGeminiOcr(photos, apiKey, deps = {}) {
   const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -438,7 +487,7 @@ async function runGeminiOcr(photos, apiKey, deps = {}) {
     if (i > 0 && clock() - started + GEMINI_TIMEOUT_MS > OCR_BUDGET_MS) break;
     made++;
     try {
-      const out = await runSlipOcrOnce(photos, apiKey, plan[i], deps.fetch || fetch);
+      const out = await runSlipOcrOnce(photos, apiKey, plan[i], deps.fetch || fetch, deps.prompt);
       return { ...out, model: plan[i], attempts: made };
     } catch (err) {
       last = err;
@@ -470,7 +519,7 @@ function isHungOrBroken(err) {
     || err.httpStatus === 500 || err.httpStatus === 502 || err.httpStatus === 504);
 }
 
-async function runSlipOcrOnce(photos, apiKey, model, fetchImpl) {
+async function runSlipOcrOnce(photos, apiKey, model, fetchImpl, prompt = EXTRACTION_PROMPT) {
   const res = await fetchImpl(geminiEndpoint(model), {
     method: "POST",
     // Key in a HEADER, never the query string — URLs land in logs and traces.
@@ -480,7 +529,7 @@ async function runSlipOcrOnce(photos, apiKey, model, fetchImpl) {
         role: "user",
         parts: [
           ...photos.map((p) => ({ inline_data: { mime_type: "image/jpeg", data: p.base64 } })),
-          { text: EXTRACTION_PROMPT },
+          { text: prompt || EXTRACTION_PROMPT },
         ],
       }],
       generationConfig: { responseMimeType: "application/json", responseSchema: EXTRACTION_SCHEMA },
@@ -533,7 +582,7 @@ function toJsonSchema(node) {
 }
 const CLAUDE_EXTRACTION_SCHEMA = toJsonSchema(EXTRACTION_SCHEMA);
 
-async function runClaudeOcrOnce(photos, apiKey, fetchImpl, timeoutMs = CLAUDE_TIMEOUT_MS) {
+async function runClaudeOcrOnce(photos, apiKey, fetchImpl, timeoutMs = CLAUDE_TIMEOUT_MS, prompt = EXTRACTION_PROMPT) {
   const res = await fetchImpl("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
@@ -545,7 +594,7 @@ async function runClaudeOcrOnce(photos, apiKey, fetchImpl, timeoutMs = CLAUDE_TI
         role: "user",
         content: [
           ...photos.map((p) => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: p.base64 } })),
-          { type: "text", text: EXTRACTION_PROMPT },
+          { type: "text", text: prompt || EXTRACTION_PROMPT },
         ],
       }],
     }),
@@ -1247,7 +1296,7 @@ async function handleExtract(db, request, opts = {}) {
   // ── OCR ──
   let ocr;
   try {
-    ocr = await liveOcr(decoded);
+    ocr = await liveOcr(decoded, { bank: terminalBank(terminal) });
   } catch (err) {
     // ── THE SENTENCE THE MANAGER GETS IS THE POINT OF ALL THIS ──────────────
     // "Could not read the photos right now — try again." was the answer to
@@ -2432,6 +2481,8 @@ async function queueSlipCheck(db, { terminal, picked, batchKey, nowMs, slip = nu
     storeId: terminal.storeId,
     tillId: terminal.tillId,
     label: terminal.label || null,
+    // Which prompt reads the photo (extractionPromptFor). FNB jobs carry none.
+    ...(terminalBank(terminal) === STANDARD_BANK ? { bank: STANDARD_BANK } : {}),
     batchKey,
     slipId: slip ? slip.slipId : null,
     typedCents: slip ? slip.cents : rec.slip ? rec.slip.totalCents : null,
@@ -2451,7 +2502,7 @@ async function queueSlipCheck(db, { terminal, picked, batchKey, nowMs, slip = nu
 
 /** One OCR read of a check job's photo: the total the slip prints, or null. Throws what the reader throws. */
 async function checkJobOnce(db, job, photos, deps = {}) {
-  const ocr = await (deps.ocr || liveOcr)(photos);
+  const ocr = await (deps.ocr || liveOcr)(photos, { bank: job.bank });
   const rate = OCR_RATES[ocr.model] || { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD };
   const costUSD = +(((ocr.tokensIn || 0) / 1e6) * rate.in + ((ocr.tokensOut || 0) / 1e6) * rate.out).toFixed(6);
   try {
@@ -2464,7 +2515,13 @@ async function checkJobOnce(db, job, photos, deps = {}) {
   const readCents = ex && Number.isInteger(ex.totalCents) ? ex.totalCents : null;
   // The TID it read, compared only — a slip from another machine is worth a word.
   const tid = ex && ex.tid ? ex.tid : null;
-  return { kind: "recorded", batchKey: job.batchKey, read: { readCents, tidMatches: tid ? tid === job.pickedTid : null, model: ocr.model || null } };
+  // A Standard Bank TID read with an O for a 0, or without its padding, is the
+  // same machine (canonicalTid); an FNB TID is compared exactly, as before.
+  const same = !tid ? null : job.bank === STANDARD_BANK ? canonicalTid(tid) === canonicalTid(job.pickedTid) : tid === job.pickedTid;
+  return { kind: "recorded", batchKey: job.batchKey, read: { readCents, tidMatches: same, model: ocr.model || null,
+    // What the photo printed, on a Standard Bank check only: the evidence the
+    // till-to-terminal check reads (scripts/cardrecon/check-terminal-assignment.mjs).
+    ...(job.bank === STANDARD_BANK && tid ? { readTid: String(tid).slice(0, 16) } : {}) } };
 }
 
 /** What the photo said, beside the typed figure, on the recorded batch — never a new record. */
@@ -2485,6 +2542,8 @@ async function writePhotoRead(db, job, read, nowMs) {
     model: (read && read.model) || null,
     reason: read && read.reason ? String(read.reason).slice(0, 300) : null,
     at: nowMs,
+    // Standard Bank checks only (checkJobOnce); an FNB photoRead is unchanged.
+    ...(read && typeof read.readTid === "string" ? { readTid: read.readTid } : {}),
   };
   // On the record as it stands, inside a transaction: a record deleted between
   // the check above and this write stays deleted (null in, null out — the
@@ -3066,6 +3125,10 @@ exports.resolveWriteFor = resolveWriteFor;
 exports.EXTRACTION_SCHEMA = EXTRACTION_SCHEMA;
 exports.OCR_MODEL = OCR_MODEL;
 exports.EXTRACTION_PROMPT = EXTRACTION_PROMPT;
+exports.STANDARD_BANK_EXTRACTION_PROMPT = STANDARD_BANK_EXTRACTION_PROMPT;
+exports.extractionPromptFor = extractionPromptFor;
+exports.checkJobOnce = checkJobOnce;
+exports.queueSlipCheck = queueSlipCheck;
 exports.OCR_FALLBACK_MODEL = OCR_FALLBACK_MODEL;
 exports.runSlipOcr = runSlipOcr;
 exports.CREDIT_WALL_MODEL = CREDIT_WALL_MODEL;
