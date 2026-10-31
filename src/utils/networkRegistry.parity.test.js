@@ -24,7 +24,7 @@ function body(file) {
 // The POS repo's src/shared/networkRegistry.parity.test.js holds the same
 // constant. Changing the body means running scripts/sync-network-registry.mjs
 // and updating BOTH.
-export const SHARED_BODY_SHA256 = "8a5bbc7d4b260a94f6fc793a18e09adce8ff8554fe3a1c67f77648d8e633cf3d";
+export const SHARED_BODY_SHA256 = "747b793b4dc426dd83804e2a557dc6521cf883bf9999414b4c30ef76784c1e44";
 
 describe("network registry parity", () => {
   it("functions copy carries the same body, byte for byte", () => {
@@ -44,6 +44,7 @@ describe("network registry parity", () => {
     const ids = ["central", "hub1", "hub2", "hub3", "concrete-stockroom", "marathon-pe", "trophy", "marathon-pine", "concrete", "in_transit", "nope", null];
     for (const a of ids) for (const b of ids) {
       expect(cjs.wallCheck(null, a, b)).toEqual(esm.wallCheck(null, a, b));
+      expect(cjs.manualTransferAllowed(null, a, b)).toBe(esm.manualTransferAllowed(null, a, b));
     }
   });
 });

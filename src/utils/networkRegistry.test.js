@@ -488,3 +488,37 @@ describe("the removed Concrete Stockroom cannot come back as an alias", () => {
     expect(wallCheck(R, "central", "concrete-stockroom")).toEqual({ ok: false, reason: "unknown_location" });
   });
 });
+
+// Owner, 31 Oct 2026: a PERSON'S manual transfer may go from any location to
+// any other. The wall stays for the engine and Solve.
+describe("manual transfers ignore the wall", () => {
+  const { manualTransferAllowed, wallAllows, wallCheck, autoRouteAllowed, solveRouteAllowed } = registryApi;
+
+  it("Hub 2 → Concrete and Concrete → Hub 2 are allowed by hand", () => {
+    expect(manualTransferAllowed(null, "hub2", "concrete")).toBe(true);
+    expect(manualTransferAllowed(null, "concrete", "hub2")).toBe(true);
+    expect(manualTransferAllowed(null, "Hub 2", "Marathon Concrete")).toBe(true);
+    expect(manualTransferAllowed(null, "marathon-pe", "marathon-pine")).toBe(true);
+    expect(manualTransferAllowed(null, "hub3", "trophy")).toBe(true);
+  });
+
+  it("refuses an unknown id, in_transit, and a move to itself", () => {
+    expect(manualTransferAllowed(null, "hub2", "nope")).toBe(false);
+    expect(manualTransferAllowed(null, "nope", "concrete")).toBe(false);
+    expect(manualTransferAllowed(null, "concrete-stockroom", "concrete")).toBe(false);
+    expect(manualTransferAllowed(null, "hub2", "in_transit")).toBe(false);
+    expect(manualTransferAllowed(null, "in_transit", "concrete")).toBe(false);
+    expect(manualTransferAllowed(null, null, "concrete")).toBe(false);
+    expect(manualTransferAllowed(null, "hub2", "")).toBe(false);
+    expect(manualTransferAllowed(null, "pe", "marathon-pe")).toBe(false);
+  });
+
+  it("the wall itself is unchanged: engine and Solve still may not cross", () => {
+    expect(wallAllows(null, "hub2", "concrete")).toBe(false);
+    expect(wallAllows(null, "concrete", "hub2")).toBe(false);
+    expect(wallCheck(null, "hub2", "concrete")).toEqual({ ok: false, reason: "cross_section" });
+    expect(autoRouteAllowed(null, "hub2", "concrete")).toBe(false);
+    expect(solveRouteAllowed(null, "hub2", "concrete")).toBe(false);
+    expect(wallAllows(null, "hub2", "marathon-pine")).toBe(false);
+  });
+});
