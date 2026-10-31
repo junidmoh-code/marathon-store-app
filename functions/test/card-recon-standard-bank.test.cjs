@@ -56,6 +56,8 @@ test("a Standard Bank EFT payment confirmation is never a card report", () => {
   assert.equal(detectReportFormat(SB_PAYMENT), null);
   // …even one that happens to say "merchant" and "card" somewhere.
   assert.equal(detectReportFormat([...SB_PAYMENT, "Merchant services: card payments"]), null);
+  // …and one that carries TWO card words — only the payment wording keeps it out.
+  assert.equal(detectReportFormat([...SB_PAYMENT, "Merchant ID 12345", "Paid by Visa card"]), null);
 });
 
 test("the bank's name alone, or card words alone, are not enough", () => {
