@@ -12,6 +12,7 @@ const reorderDemand = require("./lib/reorder-demand.cjs");
 const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
 const { notifyOrderTomorrow } = require("./lib/order-tomorrow-notify.cjs");
+const { runLaybyExpiryNotify, TEMPLATE: LAYBY_EXPIRY_TEMPLATE } = require("./lib/layby-expiry-notify.cjs");
 const { notifyOrderPlaced } = require("./lib/order-push.cjs");
 const { deliverOutboxDoc } = require("./lib/outbox-deliver.cjs");
 
@@ -103,6 +104,10 @@ const TEMPLATE_BODIES = {
   order_ready:       { params: 2, render: (p) => `Hi ${p[0]}, your order #${p[1]} is ready to collect at Marathon Club. See you soon!` },
   rder_out_of_stock: { params: 1, render: (p) => `Sorry, #${p[0]} is out of stock. Please speak to our assistant 😔` },
   order_tomorrow:    { params: 1, render: (p) => `Your Marathon order ${p[0]} is scheduled for tomorrow. We will notify you when it is ready for collection.` },
+  // {{1}} layby invoice number, {{2}} expiry date, {{3}} store name — the body
+  // registered with Meta is docs/meta-templates/layby_expiry_3d.json (a test
+  // holds the two byte-identical).
+  layby_expiry_3d:   { params: 3, render: (p) => `Hi, your layby ${p[0]} at Marathon Club ${p[2]} expires on ${p[1]}. Please pay the balance or visit the store before then to keep it.` },
 };
 
 // Mask a phone number for logging — keep only the last 4 digits, never the full
@@ -530,6 +535,44 @@ exports.orderTomorrowNotify = onValueWritten(
       orderId: event.params.orderId,
       before:  event.data.before.val(),
       after:   event.data.after.val(),
+    });
+  }
+);
+
+// ─── LAYBY EXPIRY NOTIFY — WhatsApp 3 days before a layby expires ───────────
+// Daily 09:00 SAST. Active laybys (PR #228) whose dueDate is EXACTLY today+3,
+// with a phone, get one layby_expiry_3d message each, behind a create-once
+// claim at /layby_notify/{laybyId}_expiry_3d. The template's approval is read
+// from the WhatsApp Business Account on every run; anything but APPROVED sends
+// nothing and says why. Everything lives in lib/layby-expiry-notify.cjs.
+// The outbox write is enqueueWhatsApp (same doc, same dedupe); delivery is
+// outboxInstantSend from the Meta-registered number.
+//   firebase deploy --only functions:laybyExpiryNotify
+const WA_BUSINESS_ACCOUNT_ID = "1625835505311366"; // the WABA that owns WA_PHONE_ID
+exports.laybyExpiryNotify = onSchedule(
+  {
+    schedule:       "0 9 * * *",
+    timeZone:       "Africa/Johannesburg",
+    region:         "europe-west1",
+    timeoutSeconds: 300,
+    memory:         "256MiB",
+    secrets:        [metaToken],
+    // A failed claim or a transient enqueue failure throws (after the rest of
+    // the run); claims make a re-run safe, so let the scheduler re-drive it.
+    retryCount:     3,
+  },
+  async () => {
+    await runLaybyExpiryNotify({
+      db: admin.database(),
+      enqueueWhatsApp,
+      fetchTemplates: async () => {
+        const token = metaToken.value();
+        if (!token) return { error: { message: "meta-whatsapp-token not available to this function" } };
+        const url = `https://graph.facebook.com/v20.0/${WA_BUSINESS_ACCOUNT_ID}/message_templates`
+          + `?name=${encodeURIComponent(LAYBY_EXPIRY_TEMPLATE)}&fields=name,status,language,category`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
+        return res.json();
+      },
     });
   }
 );
