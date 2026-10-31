@@ -187,7 +187,7 @@ import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { dispatchSkipsStock } from "./utils/dispatchStockPolicy";
-import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
+import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf, laybyQueueRow, QUEUE_INCOMING, QUEUE_READY } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, computeRestockCounts, soldPairEntries, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { onHoldRefillPlan, holdReleaseUpdate } from "./components/stock/onHoldRefill";
@@ -473,7 +473,7 @@ const ROLE_TO_PERMISSION = {
   // canAccessStock, NOT by an app permission, so the seed counters (stockRole
   // warehouse) keep access. ROLES.BARCODES is open to everyone (reprint is read-only).
 };
-const STATUS = { INCOMING: "incoming", READY: "ready", OUT_OF_STOCK: "out_of_stock", COLLECTED: "collected", COMING_TOMORROW: "coming_tomorrow" };
+const STATUS = { INCOMING: QUEUE_INCOMING, READY: QUEUE_READY, OUT_OF_STOCK: "out_of_stock", COLLECTED: "collected", COMING_TOMORROW: "coming_tomorrow" };
 
 // ─── SIZE RANGE + SUBSTITUTE HELPERS ──────────────────────────────────────────
 // Canonical numeric range used to decide whether a ±1 substitute is in bounds.
@@ -12886,17 +12886,13 @@ function WarehouseView({ products = [], orders, onExit }) {
   // queue renders the real PullCard (L-xxxxx invoice + Sent/Reject/Return) — layby
   // behaviour is unchanged, they're just seen with everything else. Matches the
   // TV board's existing orders+laybys merge.
+  // The row shape lives in the layby contract (laybyQueueRow) so the test that
+  // pins "Sent → Today's history row, no buttons" drives this exact mapping.
+  // PENDING = unactioned work, bucketed current-day so the 3-day window can
+  // NEVER hide it; the card still shows the true requested-age.
+  const laybyNowIso = serverNowIso();
   const hubLaybyOrders = (laybyPulls || [])
-    .filter(p => p && p.invoiceNo && storageHubOf(p, whNet) === selectedHub)
-    .map(p => {
-      const st = p.status || PULL_STATUS.PENDING;
-      // PENDING = unactioned work: bucket it as current-day so the queue's 3-day
-      // window can NEVER hide it (the whole point — never miss a layby). The card
-      // still shows the true requested-age via the pull's requestedAt.
-      if (st === PULL_STATUS.PENDING) return { id: p.invoiceNo, status: STATUS.INCOMING, isLayby: true, _pull: p, createdAt: serverNowIso() };
-      if (st === PULL_STATUS.SENT)    return { id: p.invoiceNo, status: STATUS.READY,    isLayby: true, _pull: p, readyAt: p.sentAt, updatedAt: p.sentAt, createdAt: p.sentAt || p.requestedAt || "" };
-      return null; // rejected / returnedToStock → resolved, not shown in the queue
-    })
+    .map(p => laybyQueueRow(p, selectedHub, laybyNowIso, whNet))
     .filter(Boolean);
   // CR / clothing-refill requests (customerName "Shop Refill") live in the SAME
   // /orders node but belong only in the CR Orders tab — exclude them from the main

@@ -9,10 +9,10 @@
 // empty lists so the warehouse UI never crashes or blanks the whole view.
 
 import { useEffect, useState } from "react";
-import { ref, onValue, update } from "firebase/database";
+import { ref, onValue, update, get } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
-import { LAYBY_STATUS, PULL_STATUS } from "./contract";
+import { LAYBY_STATUS, PULL_STATUS, pullStatusOf } from "./contract";
 import { serverNowIso } from "../../utils/serverTime";
 
 // Local mirror of App.jsx's useAuthReady — RTDB rejects reads before sign-in and
@@ -85,11 +85,32 @@ export function receiveLayby(layby, hubLabel) {
   });
 }
 
+// ── ONE OUTCOME PER PULL ─────────────────────────────────────────────────────
+// A pull is resolved exactly once. Every warehouse action re-reads THIS pull's
+// status (one leaf, by key) and refuses unless it is still pending, so a card
+// that is out of date — another tablet already sent it, or the list has not
+// re-rendered yet — cannot turn a Sent into a Rejected or stamp a second
+// sentAt. The refusal carries `code: "already-resolved"` and the status found.
+export class PullAlreadyResolvedError extends Error {
+  constructor(pullId, status) {
+    super(`Pull ${pullId} is already ${status}`);
+    this.code = "already-resolved";
+    this.status = status;
+  }
+}
+
+async function assertPullPending(pullId) {
+  const snap = await get(ref(database, `laybyPulls/${pullId}/status`));
+  const status = pullStatusOf({ status: snap.val() });
+  if (status !== PULL_STATUS.PENDING) throw new PullAlreadyResolvedError(pullId, status);
+}
+
 // Fulfil a pull: mark the pull Sent AND flip the parcel to sentToStore, in one
 // atomic root multi-path update so the two can't diverge.
-export function markPullSent(pull, hubLabel) {
+export async function markPullSent(pull, hubLabel) {
   const pullId = pull?.pullId || pull?.key;
-  if (!pullId) return Promise.reject(new Error("markPullSent: missing pullId"));
+  if (!pullId) throw new Error("markPullSent: missing pullId");
+  await assertPullPending(pullId);
   const now = serverNowIso();
   const patch = {
     [`laybyPulls/${pullId}/status`]: PULL_STATUS.SENT,
@@ -109,9 +130,10 @@ export function markPullSent(pull, hubLabel) {
 // writes ONLY the pull record — it deliberately does NOT touch /laybys, which the
 // POS already set to "returned" on cancellation (contrast markPullSent, which
 // flips /laybys → sentToStore for the collect path).
-export function returnPullToStock(pull, hubLabel) {
+export async function returnPullToStock(pull, hubLabel) {
   const pullId = pull?.pullId || pull?.key;
-  if (!pullId) return Promise.reject(new Error("returnPullToStock: missing pullId"));
+  if (!pullId) throw new Error("returnPullToStock: missing pullId");
+  await assertPullPending(pullId);
   const now = serverNowIso();
   return update(ref(database, `laybyPulls/${pullId}`), {
     status:     PULL_STATUS.RETURNED_TO_STOCK,
@@ -123,11 +145,12 @@ export function returnPullToStock(pull, hubLabel) {
 // Reject a pull (expired layby past dueDate). Reason is required and flows back
 // to the POS so the store sees why. Also flips the layby record to `rejected`
 // (single atomic update) so its lifecycle reflects the outcome.
-export function rejectPull(pull, reason, hubLabel) {
+export async function rejectPull(pull, reason, hubLabel) {
   const pullId = pull?.pullId || pull?.key;
-  if (!pullId) return Promise.reject(new Error("rejectPull: missing pullId"));
+  if (!pullId) throw new Error("rejectPull: missing pullId");
   const trimmed = (reason || "").trim();
-  if (!trimmed) return Promise.reject(new Error("rejectPull: reason required"));
+  if (!trimmed) throw new Error("rejectPull: reason required");
+  await assertPullPending(pullId);
   const now = serverNowIso();
   const patch = {
     [`laybyPulls/${pullId}/status`]:          PULL_STATUS.REJECTED,
