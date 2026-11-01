@@ -12,6 +12,12 @@
  *                  published by product-form.js only when /cart/add returned
  *                  a line item (an error publishes cartError instead). Other
  *                  cartUpdate sources (quantity changes on /cart) are ignored.
+ *                  DEPENDS ON settings.cart_type = "notification" (live value,
+ *                  config/settings_data.json, checked 2026-11-01): product-form
+ *                  only publishes cartUpdate when a cart-notification or
+ *                  cart-drawer element exists. With cart_type "page" it
+ *                  redirects to /cart instead, and product-page add_to_cart
+ *                  would stop (cart_viewed on /cart would still fire).
  *
  * product_viewed for this page is sent from snippets/posthog.liquid, where the
  * Liquid product object is available. Everything goes through
@@ -34,7 +40,6 @@
       handle: handle,
       variant: v.title || null,
       variant_id: v.id || null,
-      size: v.option1 || v.title || null,
       available: !!v.available,
       price: v.price != null ? v.price / 100 : null,
       source: "product_page",

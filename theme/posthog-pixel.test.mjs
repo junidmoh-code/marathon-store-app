@@ -11,7 +11,7 @@ import vm from "node:vm";
 const SRC = readFileSync(new URL("./posthog-pixel.js", import.meta.url), "utf8");
 const KEY = "phc_AF6N3oHUSnSVfKqKxKDVvYgZKkmd3cY244Ww6qo334hP";
 
-function load({ cookie, cookieThrows = false } = {}) {
+function load({ cookie, cookieThrows = false, store = new Map(), storageThrows = false } = {}) {
   const handlers = {};
   const calls = { init: [], capture: [], cookieNames: [] };
   const posthog = {
@@ -32,6 +32,10 @@ function load({ cookie, cookieThrows = false } = {}) {
           return cookie;
         },
       },
+      localStorage: {
+        async getItem(k) { if (storageThrows) throw new Error("no storage"); return store.has(k) ? store.get(k) : null; },
+        async setItem(k, v) { if (storageThrows) throw new Error("no storage"); store.set(k, String(v)); },
+      },
     },
   };
   ctx.posthog = posthog;
@@ -40,7 +44,7 @@ function load({ cookie, cookieThrows = false } = {}) {
   return { handlers, calls };
 }
 
-const flush = () => new Promise((r) => setTimeout(r, 0));
+const flush = () => new Promise((r) => setTimeout(r, 5));
 
 function storefrontCookie(did, sid) {
   return encodeURIComponent(JSON.stringify({ distinct_id: did, $device_id: did, $sesid: [1730000000000, sid, 1730000000000], $user_state: "anonymous" }));
@@ -48,7 +52,7 @@ function storefrontCookie(did, sid) {
 
 const CHECKOUT = {
   id: "evt-1",
-  context: { document: { location: { href: "https://marathonclub.co.za/checkouts/cn/abc/information", pathname: "/checkouts/cn/abc/information", host: "marathonclub.co.za" } } },
+  context: { document: { location: { href: "https://marathonclub.co.za/checkouts/cn/abc/information?key=secret#x", pathname: "/checkouts/cn/abc/information", host: "marathonclub.co.za" } } },
   data: {
     checkout: {
       token: "tok-1",
@@ -131,6 +135,30 @@ describe("posthog-pixel.js (Shopify custom pixel)", () => {
       expect(calls.init[0].cfg.bootstrap).toEqual({});
       expect(calls.capture).toHaveLength(1);
     }
+  });
+
+  it("checkout_completed is sent once per order, even across a reload (new sandbox, same storage)", async () => {
+    const store = new Map();
+    const first = load({ cookie: storefrontCookie("d", "s"), store });
+    first.handlers.checkout_completed(CHECKOUT);
+    first.handlers.checkout_completed(CHECKOUT);
+    await flush();
+    const reload = load({ cookie: storefrontCookie("d", "s"), store });
+    reload.handlers.checkout_completed(CHECKOUT);
+    await flush();
+    expect(first.calls.capture.filter((c) => c.name === "checkout_completed")).toHaveLength(1);
+    expect(reload.calls.capture).toHaveLength(0);
+    const other = { ...CHECKOUT, data: { checkout: { ...CHECKOUT.data.checkout, order: { id: "gid://shopify/Order/456" } } } };
+    reload.handlers.checkout_completed(other);
+    await flush();
+    expect(reload.calls.capture).toHaveLength(1);
+  });
+
+  it("checkout_completed is still sent when storage is unavailable", async () => {
+    const { handlers, calls } = load({ cookie: storefrontCookie("d", "s"), storageThrows: true });
+    handlers.checkout_completed(CHECKOUT);
+    await flush();
+    expect(calls.capture).toHaveLength(1);
   });
 
   it("an event with no checkout payload does not throw", async () => {

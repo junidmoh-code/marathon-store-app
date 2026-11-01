@@ -22,7 +22,13 @@
   MarathonShopperAgent / MarathonSiteAgents) are not real visitors: PostHog is
   never initialised for them, so they cannot inflate the funnel. Everything
   else that calls window.MarathonAnalytics then no-ops.
+
+  Not loaded at all in the theme editor (request.design_mode), so staff editing
+  the theme never enter the funnel. Session replay is not started on customer
+  account pages (template directory "customers": addresses, order history),
+  which are the only theme pages showing a shopper's own details as text.
 {%- endcomment -%}
+{%- unless request.design_mode -%}
 <script>
   (function () {
     if (/MarathonShopperAgent|MarathonSiteAgents/i.test(navigator.userAgent)) return;
@@ -34,7 +40,7 @@
       autocapture: true,
       capture_pageview: true,
       capture_pageleave: true,
-      disable_session_recording: false
+      disable_session_recording: {% if template.directory == 'customers' %}true{% else %}false{% endif %}
     });
 
     var currency = (window.Shopify && window.Shopify.currency && window.Shopify.currency.active) || {{ cart.currency.iso_code | json }};
@@ -87,3 +93,4 @@
   })();
 </script>
 <script src="{{ 'marathon-posthog.js' | asset_url }}" defer="defer"></script>
+{%- endunless -%}

@@ -12,8 +12,9 @@ source.
 
 | event | fired by | when |
 |---|---|---|
-| `$pageview`, `$pageleave`, `$autocapture`, `$rageclick`, `$web_vitals` | posthog-js (`snippets/posthog.liquid`) | every storefront page |
-| session replay (`/s/`) | posthog-js | every storefront page; inputs masked (PostHog defaults) |
+| `$pageview`, `$pageleave`, `$autocapture`, `$rageclick` | posthog-js (`snippets/posthog.liquid`) | every storefront page |
+| `$web_vitals` | posthog-js | every storefront page, because web vitals is switched on in the PostHog project settings (not in theme code) |
+| session replay (`/s/`) | posthog-js | every storefront page except customer account pages (`templates/customers/*`); inputs masked (PostHog defaults) |
 | `product_viewed` `source: product_page` | `snippets/posthog.liquid` | product page load |
 | `product_viewed` `source: grid_panel` | `assets/marathon-storefront.js` `open()` | shopper taps a photo and the quick-view panel opens (not when Back/Forward reopens it) |
 | `size_selected` `source: grid_panel` / `wishlist` | `marathon-storefront.js` | size tapped in the panel / in the Loved list |
@@ -33,12 +34,22 @@ size, sends nothing.
 sizes that can be bought right now).
 
 `checkout_completed`: `total`, `revenue`, `currency`, `subtotal`, `shipping`,
-`order_id`, `item_count`, `handles`. No email, name, phone or address is sent
-from checkout.
+`order_id`, `item_count`, `handles`. Sent **once per order**: a repeat on a
+thank-you reload is dropped. The pixel remembers the order id in Shopify's
+sandbox storage. The checkout URL is sent without its query string. No email,
+name, phone or address is put into any event.
+
+`size_selected` fires on a new choice only. Re-tapping the size that is already
+picked sends nothing.
 
 **Not counted:** the shop's own automated shoppers (marathon-site-agents, user
-agent `MarathonShopperAgent` / `MarathonSiteAgents`). PostHog is never started
-for them.
+agent `MarathonShopperAgent` / `MarathonSiteAgents`), and anyone working inside
+the Shopify theme editor. PostHog is never started for either.
+
+**Depends on** the theme setting *Cart type = Notification* (current value).
+Dawn's product form only announces a successful add when the cart pop-up
+exists. With *Cart type = Page* it jumps to `/cart` instead, and product-page
+`add_to_cart` stops; `cart_viewed` still fires.
 
 ## The paste: 4 steps, one time only (an admin must do this; there is no API or CLI for it)
 
@@ -67,9 +78,15 @@ is on the same domain, and the pixel reads that cookie through Shopify's
 `browser.cookie.get`. It then starts posthog-js with
 `bootstrap: { distinctID, sessionID }` and `persistence: "memory"`. Checkout
 events therefore land on the same person and the same session as their
-storefront browsing and replay, instead of a new anonymous visitor. Verified on
-2026-11-01 in real posthog-js on the live domain: the bootstrapped instance
-reports the storefront's exact distinct_id and session id.
+storefront browsing and replay, instead of a new anonymous visitor.
+
+How this was checked (2026-11-01, PR #835): on marathonclub.co.za, the
+storefront cookie was confirmed to hold `distinct_id` and `$sesid`. A second
+posthog-js instance was then started in the browser with exactly the pixel's
+config and bootstrap, and it reported the storefront's own distinct_id and
+session id. What a real checkout adds on top, Shopify's sandbox handing that
+cookie to `browser.cookie.get`, can only be seen once the pixel is pasted. That
+is what the check after step 4 is for.
 
 ## Troubleshooting
 
@@ -80,7 +97,7 @@ reports the storefront's exact distinct_id and session id.
 | Events arrive but no replays | PostHog → Settings → Replay → "Record user sessions" must be on. It was on 2026-11-01. Replays under the minimum duration are dropped by design. |
 | No checkout events | The pixel isn't connected. Settings → Customer events → PostHog must say **Connected**. If it does, open a checkout with DevTools: the pixel runs in an iframe named `web-pixel-sandbox-CUSTOM-…`, and its console shows any error. If step 3 was left at "Required"/"Analytics", the pixel only runs after a shopper gives consent; set **Not required**. |
 | Checkout events on a different person from the storefront | The pixel could not read the `ph_…_posthog` cookie (blocked third-party/first-party cookies, or a shopper who went straight to a checkout link). The events still count, just unjoined. Expected to be rare. |
-| `checkout_completed` counted twice | Shopify can resend it if the thank-you page is reloaded. Count distinct `order_id` for revenue and orders. |
+| `checkout_completed` counted twice | The pixel drops repeats of the same `order_id`. If the sandbox has no storage it sends rather than loses the order, so counting distinct `order_id` is the safe revenue/orders measure. |
 | Too many `$autocapture` events | Turn autocapture down in PostHog → Settings → Autocapture (no code change), or set `autocapture: false` in `snippets/posthog.liquid`. |
 
 ## Turning it off

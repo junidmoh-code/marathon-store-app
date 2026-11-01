@@ -19,8 +19,14 @@
 // funnel and session replay. No cookie (blocked, first visit straight into
 // checkout) → posthog-js makes its own anonymous id; the event still counts.
 //
-// NOTHING PERSONAL IS SENT: no email, name, phone or address — only amounts,
-// currency, item counts, product handles and the order id.
+// NO SHOPPER DETAILS IN THE PROPERTIES: no email, name, phone or address —
+// only amounts, currency, item counts, product handles and the order id. The
+// page URL is sent without its query string or hash (order-status links carry
+// a ?key=). PostHog itself still sees the request IP, as for any page view.
+//
+// checkout_completed IS SENT ONCE PER ORDER: Shopify can fire it again on a
+// thank-you reload. The order id is remembered in the sandbox's
+// browser.localStorage (Web Pixels API) and a repeat is dropped.
 
 const POSTHOG_KEY = "phc_AF6N3oHUSnSVfKqKxKDVvYgZKkmd3cY244Ww6qo334hP";
 const POSTHOG_HOST = "https://us.i.posthog.com";
@@ -93,9 +99,10 @@ function checkoutProps(event) {
     shopify_event_id: (event && event.id) || null,
     source: "checkout_pixel",
   };
-  // The sandbox's own URL is meaningless; report the checkout page the shopper is on.
+  // The sandbox's own URL is meaningless; report the checkout page the shopper
+  // is on — origin + path only.
   if (loc && loc.href) {
-    props.$current_url = loc.href;
+    props.$current_url = String(loc.href).split(/[?#]/)[0];
     props.$pathname = loc.pathname || null;
     props.$host = loc.host || null;
   }
@@ -112,14 +119,28 @@ const EVENTS = [
   "checkout_completed",
 ];
 
+async function firstTimeForOrder(orderId) {
+  if (!orderId) return true;
+  const key = "ph_checkout_completed_" + orderId;
+  try {
+    if (await browser.localStorage.getItem(key)) return false;
+    await browser.localStorage.setItem(key, "1");
+  } catch (e) { /* no storage: send rather than lose the order */ }
+  return true;
+}
+
 EVENTS.forEach(function (name) {
   analytics.subscribe(name, function (event) {
     const props = checkoutProps(event);
+    let gate = Promise.resolve(true);
     if (name === "checkout_completed") {
       const c = (event && event.data && event.data.checkout) || {};
       props.order_id = (c.order && c.order.id) || null;
       props.revenue = props.total;
+      gate = firstTimeForOrder(props.order_id);
     }
-    boot().then(function (ph) { ph.capture(name, props); }).catch(function () { /* never break checkout */ });
+    gate
+      .then(function (send) { return send ? boot().then(function (ph) { ph.capture(name, props); }) : null; })
+      .catch(function () { /* never break checkout */ });
   });
 });

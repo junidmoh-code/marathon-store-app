@@ -289,11 +289,13 @@
   // ── size selection ─────────────────────────────────────────────────────────
   function selectSize(btn) {
     var group = btn.parentNode;
+    var already = btn.getAttribute("aria-pressed") === "true";
     $$("[data-mc-size]", group).forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
     btn.setAttribute("aria-pressed", "true");
     var panel = btn.closest("[data-mc-panel]");
     var status = $("[data-mc-status]", panel);
     if (status) { status.textContent = ""; status.className = "mc-panel__status"; }
+    if (already) return;   // re-tapping the chosen size is not a new choice
     var card = btn.closest("[data-mc-card]");
     var price = parseFloat(btn.getAttribute("data-mc-price"));
     track("size_selected", {
