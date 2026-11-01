@@ -114,7 +114,7 @@ describe("the atomic write", () => {
     expect(updates["stock/hub2/tee1/M"]).toEqual(seedCell());
     expect(requestIds).toEqual(["k1", "k2"]);
     expect(updates["refill_requests/k1"]).toEqual({
-      productId: "tee1", size: "S", qty: 2, requestingLocation: "trophy", status: "open", createdAt: now,
+      productId: "tee1", size: "S", qty: 2, requestingLocation: "trophy", status: "open", createdAt: now, requestSource: "solve",
       createdFrom: { firstBatch: true, solveId: "fb_tee1_x", source: "central", store: "trophy", hub: FIRST_BATCH_HUB, via: "missing_products_solve", hub2Seeded: ["S", "M"], by: "u1" },
     });
     expect(updates["refill_requests/k2"].size).toBe("M");

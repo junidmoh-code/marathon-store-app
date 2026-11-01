@@ -29,6 +29,34 @@ import {
 export const ESCALATIONS_PATH = "online_escalations";
 const MAX_STEPS_PER_TICK = 6;
 
+// ── THE SCAN IS THE ONLY REQUESTER (Junid, 1 Nov 2026) ────────────────────────
+// Junid revoked the 25 Oct exception: a website line that cannot be found no
+// longer raises anything — no Central → hub refill row, no Hub 2 → shop "Shop
+// Refill card". It simply WAITS at the status it failed with (Not found / Out
+// of stock), on the order's needs-attention list, until stock is there and
+// "Order it now" (or Settings → Resolve) routes it; the hourly refill scan
+// raises whatever policy says. A chain already under way is STOPPED the next
+// tick and the line goes back to waiting. Its open request is NOT touched
+// here: the one-off scripts/refill/scan-only-cancel.mjs cancels the ones the
+// scan would not have raised and keeps the ones it would (cancelling those
+// would only make the next scan ask for the same units again). A chain whose
+// box is already on its way (wait / deliver) finishes: nothing new is raised.
+export const SCAN_ONLY_REQUESTS = true;
+
+/** The line, waiting again at the status its chain started from. PURE. */
+export function stoppedLine(line, esc, nowMs) {
+  const first = Array.isArray(esc?.attempts) ? esc.attempts[0] : null;
+  const st = first?.result === LINE_STATUS.NOT_FOUND ? LINE_STATUS.NOT_FOUND : LINE_STATUS.NO_STOCK;
+  const loc = first?.location || null;
+  return {
+    ...line,
+    escalation: null,
+    escalationGen: (Number(line?.escalationGen) || 0) + 1,
+    escalationStopped: { at: nowMs, phase: esc?.phase || null, why: "scan_only", request: esc?.request || esc?.pending || null },
+    source: loc ? { status: st, locationId: loc } : { status: st },
+  };
+}
+
 const FAILED_LINE = new Set([LINE_STATUS.NOT_FOUND, LINE_STATUS.NO_STOCK]);
 
 // Same day key as App.jsx getNextRefillNumber / refill-scan drawRefillNumber
@@ -174,7 +202,12 @@ async function escalateLine(ctx, orderId, order, i, line0, helpers) {
   // Out of Stock) is Junid's: escalating the whole qty would send units twice
   // (Sonnet review, PR #778). Its no_stock attention stands.
   const mixedHub = FAILED_LINE.has(st) && Number(line.qty) > 1 && Array.isArray(line.source?.orderKeys) && line.source.orderKeys.length > 1;
-  const startable = !line.escalation && line.pid && !mixedHub && (FAILED_LINE.has(st) || (override && !override.appliedAt));
+  // SCAN ONLY: a failed line no longer starts a chain. Junid's own Settings
+  // override ("mark unavailable" / "resolved by hand") still does — it ends
+  // the chain in this same tick, before anything could be raised.
+  const settles = override && !override.appliedAt && (override.kind === "unavailable" || override.kind === "resolved");
+  const startable = !line.escalation && line.pid && !mixedHub
+    && (SCAN_ONLY_REQUESTS ? settles : (FAILED_LINE.has(st) || (override && !override.appliedAt)));
   if (startable) {
     const reason = FAILED_LINE.has(st) ? st : "override";
     const esc = startEscalation(line, { nowMs: now, reason });
@@ -211,6 +244,20 @@ async function escalateLine(ctx, orderId, order, i, line0, helpers) {
     }
   }
 
+  // ── SCAN ONLY: a chain that would raise, or is waiting on what it raised, stops
+  if (SCAN_ONLY_REQUESTS && line.escalation && (line.escalation.phase === ESC_PHASE.RAISE || line.escalation.phase === ESC_PHASE.AWAIT)) {
+    const esc = line.escalation;
+    const req = esc.request || (esc.pending && esc.pending.key ? { kind: esc.pending.kind, key: esc.pending.key, from: esc.pending.from, to: esc.pending.to, at: esc.pending.at } : null);
+    const next = await lineTxn(ctx, orderId, i, (cur) => (sameSpot(cur.escalation, esc) ? stoppedLine(cur, cur.escalation, now) : undefined));
+    if (next) {
+      log(`  ⤴ ${orderLabel(order)} line ${i + 1}: escalation stopped (the scan is the only requester)${req ? ` — ${req.key} left to scan-only-cancel.mjs` : ""}; the line waits`);
+      line = next;
+      changed = true;
+      await mirror(ctx, orderId, order, i, line);
+    }
+    return changed;
+  }
+
   // ── RUN the machine until it waits ─────────────────────────────────────────
   for (let n = 0; n < MAX_STEPS_PER_TICK; n++) {
     const esc = line.escalation;
@@ -231,6 +278,9 @@ async function perform(ctx, orderId, order, i, line, esc, act) {
   switch (act.kind) {
     case STEP.STORE_ORDER:
     case STEP.REFILL: {
+      // Never reached while SCAN_ONLY_REQUESTS (escalateLine stops the chain
+      // first); refused here too so no path can raise.
+      if (SCAN_ONLY_REQUESTS) return null;
       const escKey = requestKey(orderId, i, esc);
       // 1. INTENT
       let pending = esc.pending && esc.pending.escKey === escKey ? esc.pending : null;

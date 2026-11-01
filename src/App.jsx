@@ -190,7 +190,7 @@ import { dispatchSkipsStock } from "./utils/dispatchStockPolicy";
 import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf, laybyQueueRow, QUEUE_INCOMING, QUEUE_READY } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, computeRestockCounts, soldPairEntries, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
-import { onHoldRefillPlan, holdReleaseUpdate } from "./components/stock/onHoldRefill";
+import { holdReleaseUpdate } from "./components/stock/onHoldRefill";
 import { crMovementId, crLineCreatedAt, mergeActiveCRBatches, pendingUnits } from "./components/stock/crQueueGrouping";
 import { sizeRank as hubSizeRankOf } from "./components/stock/hubSizeRank";
 import { clearSourceResponseCells } from "./components/stock/sourceResponseWrites";
@@ -12978,37 +12978,14 @@ function WarehouseView({ products = [], orders, onExit }) {
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
-    // ── ON HOLD RAISES A SIZE REFILL REQUEST (owner spec 2026-08-08) ─────────
-    // The source-facing half of a hold is an ORDINARY /refill_requests row
-    // against the order's own hub — indistinguishable in that hub's queue.
-    // FAIL CLOSED on every uncertainty (unroutable hub, no productId/size,
-    // write refused): no request; the order simply remains a warehouse On
-    // Hold order handled by a human — see onHoldRefill.js. Create-if-absent
-    // so a re-tap can neither duplicate the ask nor reopen one the source
-    // already rejected. The customer-facing hold status (warehouse tab, TV
-    // row, status page) is untouched, and NOTHING is messaged HERE — but the
-    // customer IS messaged, twice, by two server triggers hanging off the
-    // writes this handler makes:
-    //   orderTomorrowNotify     off /orders/{id}/status → coming_tomorrow
-    //   holdAvailabilityNotify  off the holdLink this record carries, at FULFIL
-    // See the note at the WhatsApp section below for which says what. No client
-    // fires either one.
-    if (status === STATUS.COMING_TOMORROW) {
-      const plan = onHoldRefillPlan(order, { nowIso: now, saDate: getSADateString() });
-      if (plan.ok) {
-        try {
-          const existing = (await get(ref(database, `refill_requests/${plan.requestId}`))).val();
-          if (!existing) await set(ref(database, `refill_requests/${plan.requestId}`), stampRecord(plan.record, "hold"));
-          // Stamp the order either way — the held-card list hides items that
-          // are represented in a refill queue, new or re-tapped.
-          patch.onHoldRefillRequestId = plan.requestId;
-        } catch (err) {
-          console.warn(`On-hold refill request not raised for #${order.id} (${err?.message || err}) — hold stays visible for a human.`);
-        }
-      } else {
-        console.warn(`On-hold refill request not raised for #${order.id}: ${plan.reason} — hold stays visible for a human.`);
-      }
-    }
+    // ── ON HOLD RAISES NOTHING (Junid, 1 Nov 2026) ───────────────────────────
+    // Until 1 Nov a hold ("Coming Tomorrow") also wrote a /refill_requests row
+    // against the order's hub (onHoldRefill.js, owner spec 2026-08-08). Junid
+    // has ruled that the refill scan is the ONLY requester: the hold is now the
+    // customer-facing status alone (warehouse tab, TV row, status page, the
+    // orderTomorrowNotify WhatsApp). The hub's stock comes when the hourly scan
+    // finds it below policy. The release block below still withdraws any hold
+    // request raised BEFORE this change.
     // ── RELEASING a hold withdraws its still-open refill ask ─────────────────
     // (Kimi review, PR #335.) Marking the order Ready/Collected/OOS means the
     // hold's need is gone; without this the queue keeps asking for stock nobody

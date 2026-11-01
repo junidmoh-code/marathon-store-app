@@ -636,6 +636,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     productId: pid, size, qty, requestingLocation: HUB, status: "open",
     createdAt: now,
     createdFrom: { firstBatch: true, solveId, source: SOURCE, store, shopRequestId: requestId, via: "first_batch_hub2_leg" },
+    requestSource: "solve",   // a Solve completing (refillRequestSourceGuard)
   };
   // The seed lands FIRST, by transaction (see seedIfAbsent): it is pure
   // carriage — exactly what the old Solve wrote — so a seed with nothing after
