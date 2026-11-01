@@ -4802,22 +4802,50 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
   if (first) costUSD += tagRun.costUSD;
   const tags = tagRun.tags;
   const month = Number(saDateForUsage(Date.now()).slice(5, 7));
-  // ── AN OUTFIT IS BUILT BY THE OPUS STYLIST AND SCORED BY THE CRITIC ─────
-  // (lookbook/fit-agent.cjs, Junid 26 Oct). A fit the critic will not pass
-  // after two rebuilds is skipped, never posted unscored.
+  // ── AN OUTFIT IS THE MAC MINI'S LOCAL PICK (Junid, 1 Nov 2026) ─────────
+  // Chosen by Gemma 4 + Fashion-CLIP on the mini (stylist/run.mjs) from the
+  // whole website-ready catalogue, against the variety ledger, and written to
+  // social_stylist/picks/{saDate}/outfit. Its pieces are read here by pid
+  // (the reel shortlist is the top sellers and may not hold them) and the
+  // pick is re-checked against today's offer. No pick = no outfit post; no
+  // paid model stands in.
   if (kind === "outfit") {
     if (OUTFIT_SKIPPED_BY_RUN.has(candidates)) return { picks: [], reason: `the fit was skipped earlier this run: ${OUTFIT_SKIPPED_BY_RUN.get(candidates)}`, costUSD };
-    const { fitAgentFor, readSeen } = require("./lookbook/engines.cjs");
-    const seen = await readSeen(db, candidates.map((c) => c.pid)).catch(() => new Map());
-    const o = socialStylist.fitOfferForOutfit(candidates, { used, tags, month, seen });
-    if (!o.offer) return { picks: [], reason: o.reason, costUSD };
+    const { localFitAgentFor } = require("./lookbook/engines.cjs");
+    const { loadCandidatesByPid } = require("./lookbook/load.cjs");
     const { criticRecord } = require("./lookbook/fit-agent.cjs");
-    const fitRules = require("./lib/fit-rules.cjs");
-    const agent = fitAgentFor({ Anthropic, apiKey: anthropicApiKey.value(), fetchImage: fetchImageBuffer, log: (m) => console.log(`social: ${m}`), db });
-    const res = await agent.build(o.offer, { budgetUSD: agent.budgetUSD });
-    costUSD += res.costUSD;
-    const critic = criticRecord(res);
     const saDate = saDateForUsage(Date.now());
+    const agent = localFitAgentFor({ db, saDate, kind: "outfit", log: (m) => console.log(`social: ${m}`) });
+    const mine = await agent.wants();
+    // The pick is offered back to its own post ONCE: if a post today already
+    // holds it, a second outfit request (a retry, a manual run) is skipped
+    // rather than repeating the same outfit (architect review).
+    // And none of its pieces may already be spoken for by another post (in the
+    // queue, or posted today): the exemption below is for the pick's own
+    // reservation only (CodeRabbit on #832).
+    if (mine.length) {
+      const todays = (await db.ref(SOCIAL_POSTS_PATH).orderByKey().startAt(socialHealth.pushKeyPrefixForMs(sastMidnightUtc(Date.now(), 0))).once("value")).val() || {};
+      if (Object.values(todays).some((p) => p && p.status !== "sample" && mine.every((pid) => (p.products || []).some((x) => x && x.pid === pid)))) {
+        return { picks: [], reason: "today's local stylist outfit is already in the queue", costUSD };
+      }
+      const queued = [];
+      for (const st of ["draft", "approved", "posting"]) queued.push(...Object.values((await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(st).limitToLast(100).once("value")).val() || {}));
+      const taken = new Set();
+      for (const p of [...Object.values(todays), ...queued]) if (p && p.status !== "sample") for (const x of p.products || []) if (x && x.pid) taken.add(x.pid);
+      const clash = mine.filter((pid) => taken.has(pid));
+      if (clash.length) return { picks: [], reason: `the local stylist outfit's ${clash.join(", ")} is already in another post`, costUSD };
+    }
+    const wanted = mine.filter((pid) => !candidates.some((c) => c.pid === pid));
+    const extra = wanted.length ? await loadCandidatesByPid(db, wanted, { nowMs: Date.now() }) : [];
+    const pool = [...candidates, ...extra];
+    if (extra.length) {
+      const more = await ensureStyleTags(db, extra.map((c) => ({ pid: c.pid, photoUrl: c.photoUrl, product: c.product, websiteName: c.name })), { log: (m) => console.log(m) }, { maxNew: 0 });
+      for (const [pid, t] of more.tags) if (!tags.has(pid)) tags.set(pid, t);
+    }
+    const o = socialStylist.fitOfferForOutfit(pool, { used: new Set([...used].filter((pid) => !mine.includes(pid))), tags, month, keep: mine });
+    if (!o.offer) return { picks: [], reason: o.reason, costUSD };
+    const res = await agent.build(o.offer);
+    const critic = criticRecord(res);
     const logKey = `social_fit_log/${saDate}/outfit-${Date.now()}`;
     if (!res.ok) {
       try { await db.ref(logKey).set({ at: Date.now(), kind, gate: "critic", reason: String(res.reason).slice(0, 300), critic }); } catch { /* the post's skip reason says it too */ }
@@ -4826,10 +4854,10 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
     }
     const f = res.fit, v = res.verdict;
     const look = {
-      key: f.formula, name: f.theme, note: f.why, source: "opus", hero: f.hero ? f.hero.pid : null,
+      key: f.formula, name: f.theme, note: f.why, source: "local", hero: f.hero ? f.hero.pid : null,
       score: Math.round(Object.values(v.scores).reduce((t, x) => t + x, 0) / Object.keys(v.scores).length * 10), critic,
     };
-    console.log(`social: stylist outfit — ${f.theme}, critic ${JSON.stringify(v.scores)}, ${res.rounds.length} round(s), $${res.costUSD.toFixed(4)}`);
+    console.log(`social: local stylist outfit — ${f.theme}, ${f.pieces.map((p) => p.pid).join(", ")}`);
     return { picks: f.pieces.map((p) => p.ref), reason: null, look, caption: f.caption, fitLogKey: logKey, costUSD };
   }
   let res = socialStylist.styledPicksForKind(kind, candidates, { used, tags, month });
@@ -5647,6 +5675,17 @@ exports.socialDailyAutopilot = onSchedule(
       // Shared across every request so the day's reel and its story never
       // pick the exact same product — see generateOnePost's header.
       const used = new Set();
+      // Today's local stylist picks stay out of the other reels: the lookbook
+      // (drawn at 07:00) would find its pieces "used", and a single-product
+      // post must not take the outfit post's sneaker. The outfit post itself
+      // is offered its own pieces back (pickStyledPost).
+      try {
+        const day = saDateForUsage(nowMs);
+        for (const k of ["lookbook", "outfit"]) {
+          const rec = (await db.ref(`social_stylist/picks/${day}/${k}`).once("value")).val();
+          for (const pid of require("./lib/local-stylist.cjs").pickPids(rec, day)) used.add(pid);
+        }
+      } catch (err) { console.warn(`socialDailyAutopilot: today's stylist picks unreadable — ${err && err.message}`); }
       const dayIndex = Math.floor(nowMs / 86400000);
       const kindFor = (offset) => AUTOPILOT_KINDS[(dayIndex + offset) % AUTOPILOT_KINDS.length];
 

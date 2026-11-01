@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The local stylist (Mac mini): picks the day's lookbook outfit (on a lookbook
+  day) and outfit-post outfit with Gemma 4 + Fashion-CLIP, before the 06:00
+  reels run (socialDailyAutopilot) and the 07:00 still (socialStillAutopilot)
+  read them from social_stylist/picks/{saDate}. Host-local times: the mini is
+  on SAST (see com.marathon.socialpublish.plist). 05:10 is the run; 05:40 is
+  the retry, which exits at once when 05:10 already picked. A missed fire
+  (the mini asleep) runs on wake. Installed by stylist/install-on-mac-mini.sh.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.stylist</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/marathonclub/marathon-social/stylist/run-daily.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>5</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Hour</key><integer>5</integer><key>Minute</key><integer>40</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>/Users/marathonclub/.marathon-stylist/logs/launchd.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/.marathon-stylist/logs/launchd.log</string>
+</dict>
+</plist>

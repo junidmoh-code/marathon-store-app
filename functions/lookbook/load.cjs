@@ -23,7 +23,15 @@ const lookbook = require("../lib/social-lookbook.cjs");
 const { cleanProductName } = require("../lib/product-name.cjs");
 const { nameGender, nameHeadwear } = require("../lib/style-tags.cjs");
 
+const { saDateStringFromMs } = require("../lib/sa-time.cjs");
+
 const READ_BATCH = 20;
+/** A stable 0..n-1 offset for a key (FNV-1a). Pure. */
+function rotationOffset(key, n) {
+  let h = 0x811c9dc5;
+  for (const ch of String(key)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+  return n > 0 ? h % n : 0;
+}
 // Up to twelve rounds of READS_PER_SLOT, but only a slot short of
 // WANT_PER_SLOT eligible products reads past the first: the stylist needs a
 // real choice of colours per slot, not the three the price band needed. On
@@ -64,6 +72,21 @@ async function loadLookbookCandidates(db, { nowMs = Date.now(), liveNodes = null
   // Newest first: the bias to new arrivals starts in what is read at all.
   // `include` (a fixed hero) is read first, whatever its age.
   for (const q of queues.values()) q.sort((a, b) => include.has(b.pid) - include.has(a.pid) || b.liveAt - a.liveAt || (a.pid < b.pid ? -1 : 1));
+  // ── THE READ WINDOW ROTATES (1 Nov 2026) ────────────────────────────────
+  // Newest first and stop at WANT_PER_SLOT meant every run read the SAME
+  // newest window: the stylist was offered 7 bottoms (five G-Star/Diesel
+  // cargo jeans) and 15 tees (Nike colourways) out of a catalogue with 45
+  // eligible tees, so every fit wore the same jeans and the same tee. The
+  // newest READS_PER_SLOT keep their place (the new-arrivals bias); the rest
+  // of each queue starts at a different point every SA day.
+  const dayKey = saDateStringFromMs(nowMs);
+  for (const [slot, q] of queues) {
+    const head = q.filter((r, i) => include.has(r.pid) || i < readsPerSlot);
+    const rest = q.filter((r, i) => !(include.has(r.pid) || i < readsPerSlot));
+    if (rest.length < 2) continue;
+    const off = rotationOffset(`${dayKey}|${slot}`, rest.length);
+    q.splice(0, q.length, ...head, ...rest.slice(off), ...rest.slice(0, off));
+  }
 
   const locSnap = await db.ref("locations").once("value");
   const locations = Object.keys(locSnap.val() || {}).filter((id) => !socialSelect.ONLINE_EXCLUDED_LOCATIONS.has(id));
@@ -140,4 +163,28 @@ async function loadRecentLookbookPids(db) {
   return lookbook.recentLookbookPids(await loadLookbookHistory(db));
 }
 
-module.exports = { loadLookbookCandidates, loadLookbookHistory, loadRecentLookbookPids };
+/**
+ * Candidates for exactly these pids (the local stylist's picks): the record,
+ * its stock and its live node, through the same buildCandidates gates. A pid
+ * that is no longer live or in stock simply is not returned. Point reads only.
+ */
+async function loadCandidatesByPid(db, pids, { nowMs = Date.now() } = {}) {
+  const want = [...new Set(pids || [])].filter((p) => /^[A-Za-z0-9_-]{1,80}$/.test(p));
+  const locSnap = await db.ref("locations").once("value");
+  const locations = Object.keys(locSnap.val() || {}).filter((id) => !socialSelect.ONLINE_EXCLUDED_LOCATIONS.has(id));
+  const products = {}, stockByPid = {}, liveSubset = {};
+  await Promise.all(want.map(async (pid) => {
+    const [node, rec, ...cells] = await Promise.all([
+      db.ref(`shopify_publish/${pid}`).once("value"), db.ref(`products/${pid}`).once("value"),
+      ...locations.map((loc) => db.ref(`stock/${loc}/${pid}`).once("value")),
+    ]);
+    const n = node.val(), v = rec.val();
+    if (!n || n.state !== "live" || n.liveState !== "on" || !v) return;
+    const tree = {};
+    locations.forEach((loc, j) => { const c = cells[j].val(); if (c) tree[loc] = c; });
+    products[pid] = v; stockByPid[pid] = tree; liveSubset[pid] = n;
+  }));
+  return socialSelect.buildCandidates({ liveNodes: liveSubset, products, stockByPid, salesByPid: {}, postedAtByPid: {}, nowMs });
+}
+
+module.exports = { rotationOffset, loadCandidatesByPid, loadLookbookCandidates, loadLookbookHistory, loadRecentLookbookPids };

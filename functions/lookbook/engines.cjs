@@ -68,6 +68,35 @@ function fitAgentFor({ Anthropic, apiKey, fetchImage, log, db = null }) {
   };
 }
 
+// ── THE LOCAL STYLIST'S PICK (Junid, 1 Nov 2026) ─────────────────────────
+// The outfit is chosen on the Mac mini by Gemma 4 + Fashion-CLIP (stylist/
+// run.mjs) and written to social_stylist/picks/{saDate}/{kind} before the
+// 06:00 and 07:00 runs. This agent has the fit agent's shape: wants() names
+// the pids so the loader reads them, build(offer) re-checks the pick against
+// today's offer (lib/local-stylist fitFromPick). No pick, or one that no
+// longer passes, is a skipped fit: the lookbook day posts the current style
+// and the outfit post is skipped. No paid model stands in.
+const localStylist = require("../lib/local-stylist.cjs");
+function localFitAgentFor({ db, saDate, kind, log = () => {} }) {
+  let rec;
+  const read = async () => {
+    if (rec === undefined) {
+      try { rec = (await db.ref(`${localStylist.PICKS_PATH}/${saDate}/${kind}`).once("value")).val(); } catch (e) { log(`stylist: the local pick could not be read (${String(e && e.message).slice(0, 80)})`); rec = null; }
+    }
+    return rec;
+  };
+  return {
+    budgetUSD: 0,
+    local: true,
+    wants: async () => localStylist.pickPids(await read(), saDate),
+    build: async (offer) => {
+      const r = localStylist.fitFromPick(await read(), offer, { saDate });
+      log(r.ok ? `stylist: local ${kind} pick for ${saDate} — ${r.fit.theme} (${r.model})` : `stylist: ${r.reason}`);
+      return r;
+    },
+  };
+}
+
 // 4K output: $0.24 on Pro, $0.151 on Flash (Gemini API pricing, Oct 2026),
 // the estimates used when a response carries no usage metadata.
 const NBPRO_4K_FLAT_USD = 0.24;
@@ -261,11 +290,12 @@ function engines({ db, bucket, saDate, geminiApiKey, anthropicApiKey, visionMode
     chooseOutfit: anthropicApiKey && Anthropic ? makeStylistChooser({ Anthropic, apiKey: anthropicApiKey }) : null,
     // The opus stylist and critic (fit-agent.cjs): the lookbook's fits since
     // 26 Oct. No Anthropic key (the thumbnail pre-warm) means no fits.
-    fitAgent: anthropicApiKey && Anthropic && fetchImage ? fitAgentFor({ Anthropic, apiKey: anthropicApiKey, fetchImage, log, db }) : null,
+    // The outfit is the Mac mini's local pick (localFitAgentFor), never a paid call.
+    fitAgent: localFitAgentFor({ db, saDate, kind: "lookbook", log }),
     readSeen: (pids) => readSeen(db, pids),
     geminiApiKey,
     log, deadlineMs,
   };
 }
 
-module.exports = { engines, fitAgentFor, readSeen, THUMB_DIR, THUMB_PATH, NBPRO_4K_FLAT_USD };
+module.exports = { engines, fitAgentFor, localFitAgentFor, readSeen, THUMB_DIR, THUMB_PATH, NBPRO_4K_FLAT_USD };

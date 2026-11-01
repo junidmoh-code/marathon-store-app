@@ -218,7 +218,7 @@ function criticRecord(result) {
   const r = result || {};
   const last = (r.rounds || []).filter((x) => x.scores).slice(-1)[0] || null;
   return {
-    model: fr.FIT_MODEL,
+    model: r.model || fr.FIT_MODEL,
     passed: Boolean(r.ok),
     rounds: (r.rounds || []).length,
     costUSD: +Number(r.costUSD || 0).toFixed(5),
