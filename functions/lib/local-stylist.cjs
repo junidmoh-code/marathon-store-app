@@ -305,7 +305,7 @@ function validateLocal(json, options, offer, { blocks = null } = {}) {
   const read = fr.readStylistAnswer(answer, offer);
   problems.push(...read.problems);
   problems.push(...outfitProblems(option.pieces, { blocks }));
-  if (read.fit && read.fit.formula) problems.push(...formulaProblems(read.fit.formula, option.pieces));
+  if (read.fit && read.fit.formula) problems.push(...formulaProblems(read.fit.formula, option.pieces, read.fit.theme));
   return { ok: problems.length === 0, problems, option, answer, fit: read.fit };
 }
 
@@ -314,14 +314,18 @@ function validateLocal(json, options, offer, { blocks = null } = {}) {
 // the first dry run (1 Nov). Each formula's colour or tier rule, checked on the
 // Fashion-CLIP colours and the brand tier. Pure.
 const EARTH = new Set(["olive", "khaki", "brown", "tan", "beige"]);
-function formulaProblems(formulaKey, pieces) {
+function formulaProblems(formulaKey, pieces, theme = "") {
+  // "<Colour> Pop" names an accent: never a neutral ("White Pop", 1 Nov review).
+  const pop = /^([A-Za-z]+)(?:[ -][A-Za-z]+)? Pop$/.exec(String(theme).trim());
+  if (formulaKey === "colour-pop" && pop && NEUTRAL_COLOURS.has(pop[1].toLowerCase())) return [`"${theme}" is not an accent colour: Colour Pop needs one clear colour (red, green, orange…)`];
   const cols = pieces.map((p) => p.emb && p.emb.colour).filter(Boolean);
   if (cols.length < pieces.length) return [];
   const only = (set) => cols.every((c) => set.has(c));
   const bySlot = (s) => pieces.filter((p) => p.slot === s).map((p) => p.emb.colour);
   switch (formulaKey) {
     case "clean-luxe": return pieces.some((p) => fr.luxuryBrand(p.brand, p.displayName)) ? [] : ["Clean Luxe needs a designer or luxury piece (rulebook section 3): name a different formula"];
-    case "monochrome-black": return only(new Set(["black", "grey", "white"])) && cols.filter((c) => c === "black").length >= 2 ? [] : ["Monochrome Black is black head to toe: these pieces are not"];
+    // White only on the shoe (rulebook formula table).
+    case "monochrome-black": return pieces.filter((p) => p.slot !== "sneakers").every((p) => ["black", "grey"].includes(p.emb.colour)) && cols.filter((c) => c === "black").length >= 2 ? [] : ["Monochrome Black is black head to toe, white only on the shoe: these pieces are not"];
     case "grey-scale": return only(new Set(["black", "grey", "white", "cream"])) ? [] : ["Grey Scale is grey, black and white only: these pieces are not"];
     case "summer-white": return [...bySlot("tee"), ...bySlot("bottoms")].every((c) => ["white", "cream", "beige", "grey", "light blue"].includes(c)) ? [] : ["Summer White needs a white or cream top and light bottoms"];
     case "blue-denim": return bySlot("bottoms").some((c) => ["blue denim", "light blue", "navy"].includes(c)) ? [] : ["Blue Denim needs blue denim bottoms"];

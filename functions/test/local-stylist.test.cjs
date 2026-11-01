@@ -154,3 +154,11 @@ test("validateLocal corrects a stray hero and a theme that names another formula
   const pop = ls.validateLocal({ ...goodJson, formula: "court-classic", theme: "Red Pop" }, options, offerOf(pieces3));
   assert.equal(pop.answer.formula, "colour-pop");
 });
+
+test("formulaProblems: white only on the shoe for Monochrome Black; a Pop is never a neutral", () => {
+  const whiteShorts = [P("t", "tee", 1, "black"), P("b", "bottoms", 1, "white"), P("s", "sneakers", 1, "black")];
+  assert.equal(ls.formulaProblems("monochrome-black", whiteShorts).length, 1);
+  assert.deepEqual(ls.formulaProblems("monochrome-black", [P("t", "tee", 1, "black"), P("b", "bottoms", 1, "black"), P("s", "sneakers", 1, "white")]), []);
+  assert.match(ls.formulaProblems("colour-pop", whiteShorts, "White Pop")[0], /not an accent/);
+  assert.deepEqual(ls.formulaProblems("colour-pop", whiteShorts, "Red Pop"), []);
+});
