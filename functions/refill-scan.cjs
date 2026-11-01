@@ -391,6 +391,9 @@ function intentRecords({ intent, startedAt, runId, rrKey, orderId = null, orderC
   const rr = {
     productId: pid, size, qty, requestingLocation: dest, status: "open",
     createdFrom: { engine: true, runId, source, ...(pt || {}) }, createdAt: startedAt,
+    // THE SOURCE TAG (Junid, 1 Nov 2026): the scan is the only requester;
+    // refillRequestSourceGuard rejects a request that is neither scan nor Solve.
+    requestSource: "scan",
     ...(pt ? { forDests: pt.forDests } : {}),
   };
   const lock = { qty, source, createdAt: startedAt, runId, refillId: rrKey, orderId, orderCreatedAt, ...(pt || {}) };
@@ -425,6 +428,7 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
                 requestingLocation: dest, status: "open", shadow: true,
                 // A pass-through preview says who it is for, like the live row.
                 ...(s.passThrough ? { forDests: s.forDests || [] } : {}),
+                requestSource: "scan",
                 createdFrom: { engine: true, shadow: true, runId, source: s.source, ...(s.passThrough ? { passThrough: s.passThrough, forDests: s.forDests || [] } : {}) },
                 createdAt: existing?.createdAt || startedAt,
               };

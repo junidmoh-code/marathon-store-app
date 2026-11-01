@@ -663,6 +663,7 @@ export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, s
       requestingLocation: store,
       status: "open",
       createdAt: nowIso,
+      requestSource: "solve",   // a Solve, not a request (refillRequestSourceGuard, 1 Nov 2026)
       createdFrom: {
         firstBatch: true, solveId, source: "central", store, hub,
         ...(direct ? { direct: true } : {}),

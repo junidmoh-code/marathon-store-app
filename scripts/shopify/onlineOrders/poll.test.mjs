@@ -284,16 +284,16 @@ describe("feed entries", () => {
       expect(d.mails).toHaveLength(1);
     });
 
-    it("escalation on: Out of Stock at the hub → Central is asked for that hub IN THE SAME TICK, and nobody is emailed", async () => {
+    it("Out of Stock at the hub asks NOBODY (Junid, 1 Nov 2026: the scan is the only requester) — the line waits on the attention list", async () => {
       const f = on(); await first(f);
       await f.db.ref(`orders/${C(0)}`).update({ status: "out_of_stock" });
+      const n = f.writes.length;
       const d = deps(f, shopify());
       await runOrdersPoll(d.deps);
-      expect(lineAt(f, 0).source).toEqual({ status: "resolving", locationId: "hub1" });
-      expect(lineAt(f, 0).escalation).toMatchObject({ chain: "footwear", home: "hub1", phase: "await", request: { kind: "refill", from: "central", to: "hub1" } });
-      expect(f.read(`refill_requests/${lineAt(f, 0).escalation.request.key}`)).toMatchObject({ requestingLocation: "hub1", createdFrom: { via: "online_escalation", ref: "#1801" }, onlineRef: "#1801" });
-      expect(order(f).attentionOpen).toBeUndefined();
-      expect(d.mails).toEqual([]);
+      expect(lineAt(f, 0).source).toMatchObject({ status: "no_stock" });
+      expect(lineAt(f, 0).escalation).toBeUndefined();
+      expect(f.writes.slice(n).filter(([, p]) => p.startsWith("refill_requests/"))).toEqual([]);
+      expect(order(f).attentionOpen).toBe(true);
     });
 
     it("sent in another size → needs attention (Shopify sold the ordered size), never silently handed", async () => {

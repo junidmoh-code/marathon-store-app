@@ -35,7 +35,10 @@ const tap = (i, line, over = {}) => ({ lineIndex: i, expectPid: line.pid, expect
 function world({ lines = [shox(), tee()], stock = {}, requests = null, refill = { status: "open" }, enabled = true, over = {} } = {}) {
   return {
     online_orders_meta: { goLiveAtMs: NOW - 5 * 86400e3, cursorMs: NOW },
-    config: { onlineOrders: { enabled } },
+    // escalationOff: these pin Order it now ON ITS OWN. Since 1 Nov the tick stops
+    // every escalation chain first (escalate.mjs SCAN_ONLY_REQUESTS) — that is
+    // pinned in escalate.test.mjs "the scan is the only requester".
+    config: { onlineOrders: { enabled, escalationOff: true } },
     products: { SHX: { name: "Nike Shox TL", categoryKey: "sneakers", category: "Footwear", sizes: ["7", "8"] }, TEE: { name: "Club Tee", categoryKey: "tees", category: "Clothing", sizes: ["M"], barcodes: { M: "6001" } } },
     shopify_sync: {
       _claims: { 111: "SHX", 222: "TEE" },

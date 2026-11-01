@@ -1,7 +1,7 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const { applyCategoryPolicy } = require("./lib/category-policy-write.cjs");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onValueWritten } = require("firebase-functions/v2/database");
+const { onValueWritten, onValueCreated } = require("firebase-functions/v2/database");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { markInventoryDirty } = require("./lib/shopify-inventory-dirty.cjs");
@@ -633,6 +633,48 @@ exports.holdAvailabilityNotify = onValueWritten(
 // those. Whole-node ref (not /status): a partial send writes sentQty and qty,
 // never status. The handler re-reads the row and exits early on its own
 // marker writes.
+// ─── THE SCAN IS THE ONLY REQUESTER — the guard (Junid, 1 Nov 2026) ──────────
+// Every NEW /refill_requests row must be the scan's or a Solve's
+// (lib/request-source.cjs: the requestSource tag, or the shape those writers
+// have always used). Anything else is cancelled while untouched
+// (cancelReason "not_scan_source") and logged for Junid at
+// /refill_engine/rejectedRequests/{id}. RE-READS the row in a transaction —
+// never trusts event.data.after (a trigger can be delivered late). A row a
+// person already started sending is left alone and only logged.
+//   firebase deploy --only functions:refillRequestSourceGuard
+exports.refillRequestSourceGuard = onValueCreated(
+  {
+    ref:            "/refill_requests/{requestId}",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          false,
+  },
+  async (event) => {
+    // onValueCreated: only a null → value write invokes this (never a fulfil,
+    // a pick claim or a shadow re-sync — Sonnet, #833).
+    const rs = require("./lib/request-source.cjs");
+    const id = event.params.requestId;
+    if (rs.classifyRequestSource(event.data.val()) !== null) return;   // scan / Solve — the common case, no read
+    const db = admin.database();
+    const nowIso = new Date().toISOString();
+    let seen = null;
+    const res = await db.ref(`refill_requests/${id}`).transaction((cur) => {
+      seen = cur;
+      return rs.rejectTxn(cur, { nowIso });
+    });
+    const after = res.snapshot.val();
+    // Judged from the row as it now stands, so a redelivered event (row already
+    // cancelled, transaction aborted) logs the same truth (Sonnet, #833).
+    const cancelled = !!(after && after.cancelReason === rs.REJECT_REASON);
+    const rr = after || seen || event.data.val();
+    if (rs.classifyRequestSource(rr) !== null) return;   // re-read says scan/Solve after all
+    await db.ref(`${rs.REJECTED_LOG}/${id}`).set(rs.rejectionRecord(id, rr, { nowIso, cancelled }));
+    console.warn(`refillRequestSourceGuard: ${cancelled ? "cancelled" : "logged (already touched)"} ${id} — via ${rr?.createdFrom?.via || "?"}, ${rr?.requestingLocation || "?"} ${rr?.productId || "?"} ${rr?.size ?? ""}`);
+  }
+);
+
 exports.firstBatchLeg = onValueWritten(
   {
     ref:            "/refill_requests/{requestId}",

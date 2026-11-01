@@ -49,6 +49,10 @@ import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./
 import { serverNowIso } from "../../utils/serverTime";
 import { footwearSolveReason, footwearRequestReason, footwearConfirmReason, footwearRequestSubmitReason } from "./actionReasons";
 import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf } from "./missingFootwearCore";
+
+// The scan is the only requester (Junid, 1 Nov 2026): the typed-quantity
+// Request button is off; Solve (policy quantity) stays.
+export const REQUEST_OFF = true;
 import { isDeactivated } from "../../utils/deactivation";
 import { useRefillRequests } from "./useStock";
 import { readPathOnce } from "../../offline/localReads";
@@ -158,7 +162,16 @@ export default function MissingFootwear({ products = [] }) {
   // REQUEST = the operator's own sizes and quantities raised into the hub's
   // refill lane. Same write shape and same queue as Solve; only the number
   // differs. Stock does NOT move here — Central picks it from the queue.
+  // REQUEST IS OFF (Junid, 1 Nov 2026): the refill scan is the only requester.
+  // A typed quantity is an ask no policy made, so this button no longer writes;
+  // Solve (the policy's own quantity) stays. Kept as a refusal, not deleted, so
+  // a stale screen that still shows the button writes nothing.
+  const REQUEST_OFF_MSG = "Requests with a typed quantity are off — the refill scan raises what policy says. Use Solve for a size that has no cell yet.";
   const request = async (card) => {
+    if (REQUEST_OFF) {
+      setDone((d) => ({ ...d, [card.pid]: { ok: false, dest: dests[card.pid] || null, msg: REQUEST_OFF_MSG } }));
+      return;
+    }
     const dest = (REQUEST_HUBS.includes(dests[card.pid]) ? dests[card.pid] : REQUEST_HUBS[0]);
     // A REQUEST is a person's own ask — their sizes, their quantities — so it
     // works for a hub that is not live yet, like every manual action. (SOLVE,
@@ -311,6 +324,7 @@ export default function MissingFootwear({ products = [] }) {
             status: "open",
             createdAt: now,
             createdFrom: { manual: true, source: CENTRAL, via: "missing_sneakers" },
+            requestSource: "solve",
           };
           updates[`refill_requests/${id}`] = stampRecord(updates[`refill_requests/${id}`], "raise");
         }
@@ -475,11 +489,15 @@ export default function MissingFootwear({ products = [] }) {
                   ))}
                 </div>
                 {submitBlocked && <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: 6 }}>{submitBlocked}</div>}
+                {REQUEST_OFF ? (
+                  <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4 }}>{REQUEST_OFF_MSG}</div>
+                ) : (
                 <button onClick={() => request(card)} disabled={!!submitBlocked}
                         title={submitBlocked || undefined}
                         style={{ background: "rgba(60,110,255,.15)", border: "1px solid rgba(60,110,255,.5)", color: BLUE_L, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: submitBlocked ? "default" : "pointer", opacity: submitBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {busyPid === card.pid ? "Raising…" : `Request ${total} for ${LOC_LABEL[dest]}`}
                 </button>
+                )}
               </div>
             )}
           </ProductCard>

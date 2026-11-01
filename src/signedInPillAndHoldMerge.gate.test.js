@@ -179,9 +179,11 @@ describe("3 · both customer messages fire server-side; the raise/withdraw links
     expect(LIB).toMatch(/if\s*\(before === "fulfilled"\)\s*return\s*\{\s*sent:\s*false,\s*skipped:\s*"no_transition"\s*\}/);
   });
 
-  it("a hold still RAISES an ordinary request, create-if-absent, fail-closed", () => {
-    expect(SRC).toContain("const plan = onHoldRefillPlan(order, { nowIso: now, saDate: getSADateString() });");
-    expect(SRC).toContain("patch.onHoldRefillRequestId = plan.requestId;");
+  it("a hold raises NOTHING (Junid, 1 Nov 2026: the refill scan is the only requester)", () => {
+    expect(SRC).not.toContain("onHoldRefillPlan(");
+    expect(SRC).not.toContain("patch.onHoldRefillRequestId = plan.requestId;");
+    expect(SRC).not.toContain('stampRecord(plan.record, "hold")');
+    expect(SRC).toContain("ON HOLD RAISES NOTHING (Junid, 1 Nov 2026)");
   });
 
   it("releasing a hold still withdraws its still-open ask (holdReleaseUpdate)", () => {
