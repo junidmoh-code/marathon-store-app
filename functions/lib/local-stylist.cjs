@@ -292,11 +292,16 @@ function validateLocal(json, options, offer, { blocks = null } = {}) {
   let hero = String(a.hero_pid || "").trim();
   if (!pidsOf.includes(hero)) hero = (pidsOf.find((p) => hero && hero.includes(p)) || (option.pieces.find((p) => p.slot === "sneakers") || option.pieces[0]).pid);
   let formula = String(a.formula || "").trim();
-  const theme = String(a.theme || "").trim();
+  let theme = String(a.theme || "").trim();
   const allowed = fr.formulasFor(offer.season);
   const named = allowed.find((f) => f.name.toLowerCase() === theme.toLowerCase());
   if (named) formula = named.key;
   else if (/^[A-Z][a-z]+(?:[ -][A-Z][a-z]+)? Pop$/.test(theme) && allowed.some((f) => f.key === "colour-pop")) formula = "colour-pop";
+  // A valid formula with a theme that names neither it nor another formula
+  // ("White and Black Pop" on Court Classic): the poster prints the formula's
+  // own name. formulaProblems still checks that formula against the photos.
+  const f = allowed.find((x) => x.key === formula);
+  if (f && f.key !== "colour-pop" && !fr.themeAllowed(f, theme)) theme = f.name;
   const answer = {
     formula, theme, hero_pid: hero,
     pids: option.pieces.map((p) => p.pid), colours: Array.isArray(a.colours) ? a.colours.map(String) : [],

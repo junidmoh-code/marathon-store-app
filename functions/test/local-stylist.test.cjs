@@ -91,7 +91,8 @@ test("validateLocal: a good answer passes; a wrong option, theme or a price in t
   assert.equal(v.ok, true, v.problems.join("; "));
   assert.deepEqual(v.answer.pids, ["t1", "b1", "s1"]);
   assert.match(ls.validateLocal({ ...goodJson, option: 3 }, options, offerOf(pieces3)).problems[0], /not one of/);
-  assert.ok(ls.validateLocal({ ...goodJson, theme: "Denim Vibes" }, options, offerOf(pieces3)).problems.some((p) => /theme/.test(p)));
+  assert.equal(ls.validateLocal({ ...goodJson, theme: "Denim Vibes" }, options, offerOf(pieces3)).answer.theme, "Blue Denim");
+  assert.ok(ls.validateLocal({ ...goodJson, formula: "no-such", theme: "Nice Fit" }, options, offerOf(pieces3)).problems.some((p) => /formula/.test(p)));
   assert.ok(ls.validateLocal({ ...goodJson, caption: "Only R1,800 for the lot!" }, options, offerOf(pieces3)).problems.some((p) => /price/.test(p)));
   const blocks = ls.ledgerBlocks({ entries: [{ date: "2026-11-01", kind: "outfit", status: "posted", pids: ["s1"], families: [], pair: null }] }, "2026-11-02");
   assert.ok(ls.validateLocal(goodJson, options, offerOf(pieces3), { blocks }).problems.some((p) => /worn in the last 14 days/.test(p)));
@@ -167,4 +168,10 @@ test("a Pop theme names a colour, not a shoe", () => {
   const x = [P("t", "tee", 1, "white"), P("b", "bottoms", 1, "blue denim"), P("s", "sneakers", 1, "red")];
   assert.equal(ls.formulaProblems("colour-pop", x, "Retro Equality Pop").length, 1);
   assert.deepEqual(ls.formulaProblems("colour-pop", x, "Light Blue Pop"), []);
+});
+
+test("a valid formula with a stray theme prints the formula's own name", () => {
+  const v = ls.validateLocal({ ...goodJson, formula: "blue-denim", theme: "White and Black Pop" }, [{ pieces: pieces3, total: 1800 }], offerOf(pieces3));
+  assert.equal(v.ok, true, v.problems.join("; "));
+  assert.equal(v.answer.theme, "Blue Denim");
 });
