@@ -175,3 +175,13 @@ test("a valid formula with a stray theme prints the formula's own name", () => {
   assert.equal(v.ok, true, v.problems.join("; "));
   assert.equal(v.answer.theme, "Blue Denim");
 });
+
+test("an outfit whose only fault is its formula's name is renamed to a formula the photos pass", () => {
+  const greys = [P("t1", "tee", 350, "black"), P("b1", "bottoms", 750, "grey"), P("s1", "sneakers", 700, "white")];
+  const v = ls.validateLocal({ ...goodJson, formula: "blue-denim", theme: "Blue Denim", hero_pid: "s1" }, [{ pieces: greys, total: 1800 }], offerOf(greys));
+  assert.equal(v.ok, true, v.problems.join("; "));
+  assert.equal(v.answer.formula, "grey-scale");
+  assert.equal(v.answer.theme, "Grey Scale");
+  const loud = [P("t1", "tee", 350, "orange"), P("b1", "bottoms", 750, "black"), P("s1", "sneakers", 700, "orange")];
+  assert.equal(ls.validateLocal({ ...goodJson, formula: "blue-denim", theme: "Blue Denim", hero_pid: "s1" }, [{ pieces: loud, total: 1800 }], offerOf(loud)).ok, false);
+});

@@ -307,10 +307,23 @@ function validateLocal(json, options, offer, { blocks = null } = {}) {
     pids: option.pieces.map((p) => p.pid), colours: Array.isArray(a.colours) ? a.colours.map(String) : [],
     caption: String(a.caption || "").trim(), why: String(a.why || "").trim(),
   };
-  const read = fr.readStylistAnswer(answer, offer);
+  let read = fr.readStylistAnswer(answer, offer);
+  let badName = read.fit && read.fit.formula ? formulaProblems(read.fit.formula, option.pieces, read.fit.theme) : [];
+  // The outfit is fine and only its NAME is wrong ("Blue Denim" on green
+  // cargos, twice in a row on 1 Nov): name it after the first formula whose
+  // rule the photos pass. Only formulas code can check are used, so the
+  // printed theme is always verified; if none fits, the answer is refused.
+  if (read.ok && badName.length) {
+    const alt = allowed.find((x) => CHECKED_FORMULAS.has(x.key) && !formulaProblems(x.key, option.pieces, x.name).length);
+    if (alt) {
+      answer.formula = alt.key; answer.theme = alt.name;
+      read = fr.readStylistAnswer(answer, offer);
+      badName = [];
+    }
+  }
   problems.push(...read.problems);
   problems.push(...outfitProblems(option.pieces, { blocks }));
-  if (read.fit && read.fit.formula) problems.push(...formulaProblems(read.fit.formula, option.pieces, read.fit.theme));
+  problems.push(...badName);
   return { ok: problems.length === 0, problems, option, answer, fit: read.fit };
 }
 
@@ -319,6 +332,7 @@ function validateLocal(json, options, offer, { blocks = null } = {}) {
 // the first dry run (1 Nov). Each formula's colour or tier rule, checked on the
 // Fashion-CLIP colours and the brand tier. Pure.
 const POP_COLOURS = new Set(["red", "green", "olive", "khaki", "brown", "tan", "orange", "yellow", "pink", "purple", "burgundy", "light blue", "blue", "royal blue", "teal", "mint", "lilac", "gold", "maroon", "lime", "coral", "sky blue", "forest green"]);
+const CHECKED_FORMULAS = new Set(["clean-luxe", "monochrome-black", "grey-scale", "summer-white", "blue-denim", "earth-tone-street"]);
 const EARTH = new Set(["olive", "khaki", "brown", "tan", "beige"]);
 function formulaProblems(formulaKey, pieces, theme = "") {
   // "<Colour> Pop" names an accent: never a neutral ("White Pop", 1 Nov review).
