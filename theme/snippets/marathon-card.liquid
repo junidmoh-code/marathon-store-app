@@ -164,6 +164,8 @@
   data-mc-card
   data-mc-url="{{ product.url }}"
   data-mc-title="{{ product.title | escape }}"
+  data-mc-handle="{{ product.handle }}"
+  data-mc-price="{{ product.price | divided_by: 100.0 }}"
   data-mc-sold-out="{{ sold_out }}"
 >
   <a class="mc-card__media" href="{{ product.url }}" data-mc-open>
@@ -306,6 +308,7 @@
               class="mc-size"
               data-mc-size
               data-variant-id="{{ variant.id }}"
+              data-mc-price="{{ variant.price | divided_by: 100.0 }}"
               aria-pressed="false"
               {% unless variant.available %}disabled aria-disabled="true"{% endunless %}
             >{{ variant.title }}{% unless variant.available %}<span class="visually-hidden"> — sold out</span>{% endunless %}</button>

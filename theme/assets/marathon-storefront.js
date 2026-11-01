@@ -48,6 +48,34 @@
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
 
+  // ── PostHog ────────────────────────────────────────────────────────────────
+  // window.MarathonAnalytics comes from snippets/posthog.liquid. It is absent
+  // when PostHog was skipped (the shop's own shopper agents) — then this is a
+  // no-op, and it can never throw into an open, a size tap or an add.
+  function track(event, props) {
+    try { if (window.MarathonAnalytics) window.MarathonAnalytics.track(event, props); } catch (e) { /* never */ }
+  }
+  function trackAdded(body, source) {
+    try {
+      var a = window.MarathonAnalytics;
+      var item = body && body.items && body.items[0];
+      if (a && item) a.track("add_to_cart", a.cartItem(item, source));
+    } catch (e) { /* never */ }
+  }
+  function cardProps(card) {
+    var price = parseFloat(card.getAttribute("data-mc-price"));
+    var single = $("[data-mc-single]", card);
+    var available = single
+      ? (card.getAttribute("data-mc-sold-out") === "true" ? 0 : 1)
+      : $$("[data-mc-size]:not([disabled])", card).length;
+    return {
+      handle: card.getAttribute("data-mc-handle") || null,
+      title: card.getAttribute("data-mc-title") || null,
+      price: isNaN(price) ? null : price,
+      available_sizes: available,
+    };
+  }
+
   // ── open / close ───────────────────────────────────────────────────────────
   // HISTORY DISCIPLINE. The stack must never end up holding a product URL with
   // nothing open, and must never grow one entry per tap. So there is at most
@@ -116,6 +144,11 @@
 
     var url = card.getAttribute("data-mc-url");
     if (url && !silent) setUrl(url, card.getAttribute("data-mc-title"), replacing);
+    if (!silent) {
+      var viewed = cardProps(card);
+      viewed.source = "grid_panel";
+      track("product_viewed", viewed);
+    }
     if (silent) {
       var t = card.getAttribute("data-mc-title");
       if (t) document.title = t;
@@ -261,6 +294,15 @@
     var panel = btn.closest("[data-mc-panel]");
     var status = $("[data-mc-status]", panel);
     if (status) { status.textContent = ""; status.className = "mc-panel__status"; }
+    var card = btn.closest("[data-mc-card]");
+    var price = parseFloat(btn.getAttribute("data-mc-price"));
+    track("size_selected", {
+      handle: card ? card.getAttribute("data-mc-handle") : null,
+      variant: btn.textContent.replace(/\s*—\s*sold out\s*$/i, "").trim(),
+      variant_id: btn.getAttribute("data-variant-id"),
+      price: isNaN(price) ? null : price,
+      source: "grid_panel",
+    });
   }
 
   function chosenVariantId(panel) {
@@ -316,6 +358,7 @@
           throw new Error((r.body && (r.body.description || r.body.message)) || "Could not add that.");
         }
         say("Added to cart.", false);
+        trackAdded(r.body, "grid_panel");
         refreshCartCount();
       })
       .catch(function (err) {
@@ -907,6 +950,7 @@
             throw new Error((r.body && (r.body.description || r.body.message)) || "Could not add that.");
           }
           btnEl.textContent = "Added";
+          trackAdded(r.body, "wishlist");
           refreshCartCount();
         })
         .catch(function () {
@@ -1101,6 +1145,11 @@
         });
         var rowAdd = $(".mc-wishlist__add", row);
         var variantId = sizeBtn.getAttribute("data-mc-wishlist-size");
+        track("size_selected", {
+          variant: sizeBtn.textContent.trim(),
+          variant_id: variantId,
+          source: "wishlist",
+        });
         if (rowAdd) {
           rowAdd.setAttribute("data-mc-wishlist-variant", variantId);
           performWishlistAdd(variantId, rowAdd);

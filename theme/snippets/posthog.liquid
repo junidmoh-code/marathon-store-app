@@ -1,0 +1,89 @@
+{%- comment -%}
+  ── POSTHOG — where website visitors drop off ────────────────────────────────
+  Rendered from layout/theme.liquid immediately before </head>, as PostHog's
+  Shopify guide says. The loader line is PostHog's official web snippet,
+  unmodified; everything after it is ours.
+
+  What this file sends (custom events — autocapture, $pageview, $pageleave and
+  session replay come from posthog-js itself):
+    product_viewed   product page load (source: product_page). The grid's
+                     quick-view panel sends its own from marathon-storefront.js.
+    cart_viewed      the /cart page (cart_type is "notification", so the cart
+                     page IS the cart view; there is no drawer on this theme).
+  marathon-storefront.js sends product_viewed / size_selected / add_to_cart
+  from the grid panel and the wishlist; marathon-posthog.js sends size_selected
+  / add_to_cart from the product page. Checkout events come from the Customer
+  Events custom pixel (theme/posthog-pixel.js in the repo — pasted in admin).
+
+  The key below is PostHog's PUBLIC project key. It is meant to ship in page
+  source; it can only send events, not read them.
+
+  The shop's own automated shoppers (marathon-site-agents, UA
+  MarathonShopperAgent / MarathonSiteAgents) are not real visitors: PostHog is
+  never initialised for them, so they cannot inflate the funnel. Everything
+  else that calls window.MarathonAnalytics then no-ops.
+{%- endcomment -%}
+<script>
+  (function () {
+    if (/MarathonShopperAgent|MarathonSiteAgents/i.test(navigator.userAgent)) return;
+    !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],Object.defineProperty(u,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e}}),Object.defineProperty(u.people,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(){return u.toString(1)+".people (stub)"}}),o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagResult isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+    posthog.init('phc_AF6N3oHUSnSVfKqKxKDVvYgZKkmd3cY244Ww6qo334hP', {
+      api_host: 'https://us.i.posthog.com',
+      defaults: '2026-08-30',
+      person_profiles: 'identified_only',
+      autocapture: true,
+      capture_pageview: true,
+      capture_pageleave: true,
+      disable_session_recording: false
+    });
+
+    var currency = (window.Shopify && window.Shopify.currency && window.Shopify.currency.active) || {{ cart.currency.iso_code | json }};
+
+    // One door for every custom event, so a page without PostHog (bot, rollback,
+    // blocked script) can never throw from a theme code path.
+    window.MarathonAnalytics = {
+      track: function (event, props) {
+        try { window.posthog.capture(event, props || {}); } catch (e) { /* analytics never breaks the page */ }
+      },
+      // A line item exactly as Shopify returned it from /cart/add(.js) — the
+      // truth about what went into the cart, not what the page thought it sent.
+      cartItem: function (item, source) {
+        item = item || {};
+        var cents = item.final_price != null ? item.final_price : item.price;
+        return {
+          handle: item.handle || null,
+          title: item.product_title || item.title || null,
+          variant: item.variant_title || null,
+          variant_id: item.variant_id || item.id || null,
+          price: cents != null ? cents / 100 : null,
+          qty: item.quantity != null ? item.quantity : null,
+          currency: currency,
+          source: source
+        };
+      }
+    };
+
+    {%- if template.name == 'product' and product -%}
+      {%- assign ph_available_sizes = product.variants | where: 'available', true | size -%}
+      window.MarathonAnalytics.track('product_viewed', {
+        handle: {{ product.handle | json }},
+        title: {{ product.title | json }},
+        price: {{ product.price | divided_by: 100.0 | json }},
+        available_sizes: {{ ph_available_sizes }},
+        currency: currency,
+        source: 'product_page'
+      });
+    {%- endif -%}
+
+    {%- if template.name == 'cart' -%}
+      window.MarathonAnalytics.track('cart_viewed', {
+        item_count: {{ cart.item_count }},
+        line_count: {{ cart.items.size }},
+        total: {{ cart.total_price | divided_by: 100.0 | json }},
+        currency: currency,
+        handles: {{ cart.items | map: 'handle' | json }}
+      });
+    {%- endif -%}
+  })();
+</script>
+<script src="{{ 'marathon-posthog.js' | asset_url }}" defer="defer"></script>
