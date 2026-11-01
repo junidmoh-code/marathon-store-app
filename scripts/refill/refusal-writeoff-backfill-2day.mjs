@@ -83,6 +83,11 @@ try {
     await db.ref(`refill_engine/refusalWriteoffBackfills/${runId}`).set({
       atMs: nowMs, threshold: wo.MIN_DISTINCT_DAYS, applied: res.applied.length, units: res.units,
       ids: res.applied.map((r) => r.id), skipped: res.skipped, by: "one-off script (Junid's 1 Nov 2026 rule change)",
+      // The list itself, for Junid: what, where, how many, when refused and by whom.
+      list: res.applied.map((r) => ({
+        id: r.id, loc: r.loc, product: r.productName || r.pid, size: r.size, units: r.qty, before: r.before, after: r.after, days: r.days,
+        refusedBy: (r.refusals || []).map((x) => ({ day: x.day, by: x.byName || (x.byRole ? `${x.byRole} account` : `${x.byLoc} staff`) })),
+      })),
     });
     console.log(`APPLIED ${res.applied.length} write-off(s), ${res.units} unit(s); skipped ${res.skipped.length}${res.skipped.length ? ` ${JSON.stringify(res.skipped)}` : ""}`);
     console.log(`log: /refill_engine/refusalWriteoffBackfills/${runId}`);
