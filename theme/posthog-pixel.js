@@ -25,8 +25,9 @@
 // a ?key=). PostHog itself still sees the request IP, as for any page view.
 //
 // checkout_completed IS SENT ONCE PER ORDER: Shopify can fire it again on a
-// thank-you reload. The order id is remembered in the sandbox's
-// browser.localStorage (Web Pixels API) and a repeat is dropped.
+// thank-you reload. The order id (or the checkout token when there is no order
+// id) is remembered in the sandbox's browser.localStorage (Web Pixels API),
+// written after the event is handed to posthog-js, and a repeat is dropped.
 
 const POSTHOG_KEY = "phc_AF6N3oHUSnSVfKqKxKDVvYgZKkmd3cY244Ww6qo334hP";
 const POSTHOG_HOST = "https://us.i.posthog.com";
@@ -123,30 +124,41 @@ const EVENTS = [
 // otherwise both read "not seen" before either write lands. Storage then
 // covers a reload, which is a fresh sandbox.
 const sentOrders = new Set();
-async function firstTimeForOrder(orderId) {
-  if (!orderId) return true;
-  if (sentOrders.has(orderId)) return false;
-  sentOrders.add(orderId);
-  const key = "ph_checkout_completed_" + orderId;
+function dedupeKey(props) {
+  const id = props.order_id || props.checkout_token;   // token when Shopify gives no order id
+  return id ? "ph_checkout_completed_" + id : null;
+}
+async function alreadySent(key) {
+  if (!key) return false;
+  if (sentOrders.has(key)) return true;
+  sentOrders.add(key);
   try {
-    if (await browser.localStorage.getItem(key)) return false;
-    await browser.localStorage.setItem(key, "1");
+    if (await browser.localStorage.getItem(key)) return true;
   } catch (e) { /* no storage: send rather than lose the order */ }
-  return true;
+  return false;
+}
+async function markSent(key) {
+  // Written only after capture() was handed the event, so a pixel that dies
+  // before getting that far leaves the order sendable on the next load.
+  if (!key) return;
+  try { await browser.localStorage.setItem(key, "1"); } catch (e) { /* best effort */ }
 }
 
 EVENTS.forEach(function (name) {
   analytics.subscribe(name, function (event) {
     const props = checkoutProps(event);
-    let gate = Promise.resolve(true);
+    let key = null;
     if (name === "checkout_completed") {
       const c = (event && event.data && event.data.checkout) || {};
       props.order_id = (c.order && c.order.id) || null;
       props.revenue = props.total;
-      gate = firstTimeForOrder(props.order_id);
+      key = dedupeKey(props);
     }
-    gate
-      .then(function (send) { return send ? boot().then(function (ph) { ph.capture(name, props); }) : null; })
+    alreadySent(key)
+      .then(function (dup) {
+        if (dup) return null;
+        return boot().then(function (ph) { ph.capture(name, props); return markSent(key); });
+      })
       .catch(function () { /* never break checkout */ });
   });
 });

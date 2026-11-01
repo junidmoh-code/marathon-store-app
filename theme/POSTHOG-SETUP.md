@@ -62,6 +62,11 @@ cannot see them. Shopify's **Customer events** run a pixel there instead.
    `theme/posthog-pixel.js` from this repo.
 3. In **Customer privacy** on the same page, set **Permission → Not required**
    and **Data sale → Data collected does not qualify as data sale**.
+   *Why "Not required":* the storefront snippet has no consent gate. If checkout
+   alone waited for consent, checkout steps would be undercounted against the
+   storefront, and the drop-off this exists to measure would be wrong. If the
+   shop ever adds a consent banner, gate both together: choose **Analytics**
+   here and add a consent check to `snippets/posthog.liquid`.
 4. Click **Save**, then **Connect** and confirm.
 
 Check that it worked: open the store, add something to the cart, press
@@ -103,8 +108,11 @@ is what the check after step 4 is for.
 ## Turning it off
 
 - **Whole thing:** remove `{% render 'posthog' %}` from `layout/theme.liquid` and
-  push. Every custom event goes through `window.MarathonAnalytics`, which then
-  never exists, so the grid, wishlist and product page keep working untouched.
+  push, **and** disconnect the checkout pixel (Settings → Customer events →
+  PostHog → **Disconnect**). The pixel lives in Shopify admin, not the theme,
+  so a theme change never turns it off. Every storefront custom event goes
+  through `window.MarathonAnalytics`, which then never exists, so the grid,
+  wishlist and product page keep working untouched.
 - **Or roll back the theme:** Online Store → Themes → **"Marathon — photo-first
   (pre-PostHog)"** → Publish. That is the exact live theme from before PostHog.
 - **Checkout only:** Settings → Customer events → PostHog → **Disconnect**.

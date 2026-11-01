@@ -11,13 +11,13 @@ import vm from "node:vm";
 const SRC = readFileSync(new URL("./posthog-pixel.js", import.meta.url), "utf8");
 const KEY = "phc_AF6N3oHUSnSVfKqKxKDVvYgZKkmd3cY244Ww6qo334hP";
 
-function load({ cookie, cookieThrows = false, store = new Map(), storageThrows = false } = {}) {
+function load({ cookie, cookieThrows = false, store = new Map(), storageThrows = false, captureThrows = false } = {}) {
   const handlers = {};
   const calls = { init: [], capture: [], cookieNames: [] };
   const posthog = {
     __SV: 1,
     init(key, cfg) { calls.init.push({ key, cfg }); },
-    capture(name, props) { calls.capture.push({ name, props }); },
+    capture(name, props) { if (captureThrows) throw new Error("posthog not loaded"); calls.capture.push({ name, props }); },
   };
   const window = { posthog };
   const ctx = {
@@ -152,6 +152,33 @@ describe("posthog-pixel.js (Shopify custom pixel)", () => {
     reload.handlers.checkout_completed(other);
     await flush();
     expect(reload.calls.capture).toHaveLength(1);
+  });
+
+  it("checkout_completed without an order id dedupes on the checkout token", async () => {
+    const store = new Map();
+    const noOrder = { ...CHECKOUT, data: { checkout: { ...CHECKOUT.data.checkout, order: null } } };
+    const a = load({ store });
+    a.handlers.checkout_completed(noOrder);
+    await flush();
+    const b = load({ store });
+    b.handlers.checkout_completed(noOrder);
+    await flush();
+    expect(a.calls.capture).toHaveLength(1);
+    expect(b.calls.capture).toHaveLength(0);
+    expect([...store.keys()]).toEqual(["ph_checkout_completed_tok-1"]);
+  });
+
+  it("the persistent marker is written only after capture() succeeds — a failed send stays sendable", async () => {
+    const store = new Map();
+    const broken = load({ store, captureThrows: true });
+    broken.handlers.checkout_completed(CHECKOUT);
+    await flush();
+    expect(store.size).toBe(0);
+    const retry = load({ store });
+    retry.handlers.checkout_completed(CHECKOUT);
+    await flush();
+    expect(retry.calls.capture).toHaveLength(1);
+    expect(store.get("ph_checkout_completed_gid://shopify/Order/123")).toBe("1");
   });
 
   it("checkout_completed is still sent when storage is unavailable", async () => {
