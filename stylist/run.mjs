@@ -127,6 +127,15 @@ async function loadWorld(nowMs, saDate) {
   return { candidates, tags, byPid, history, posts, month, season };
 }
 
+// The style guide's palette names → the stylist's colours (null: not mappable).
+const PALETTE_TO = { charcoal: "black", "off-white": "white", "light-grey": "grey", stone: "beige", camel: "tan", sand: "beige", "denim-light": "blue denim", "denim-mid": "blue denim", "denim-dark": "blue denim", "sky-blue": "light blue", "royal-blue": "light blue", "forest-green": "green", maroon: "burgundy", wine: "burgundy", lilac: "purple", mint: "green", sage: "green", gold: "yellow", silver: "grey", multi: null };
+function paletteColour(name) {
+  const k = String(name || "").toLowerCase().trim().replace(/\s+/g, "-");
+  if (!k) return null;
+  if (k in PALETTE_TO) return PALETTE_TO[k];
+  const plain = k.replace(/-/g, " ");
+  return ls.COLOURS.includes(plain) ? plain : null;
+}
 const familyOf = (c) => c && c.product ? lookbook.styleFamily(c.product.name, lookbook.posterBrand(c.product) || c.product.brand || "") : null;
 
 /** The ledger reconciled with what really went out (lookbook history + outfit/lookbook posts). */
@@ -196,10 +205,16 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
     const xs = pieces.filter((p) => p.slot === s && emb[p.pid]).sort((a, b) => emb[a.pid].statement - emb[b.pid].statement);
     xs.forEach((p, i) => loud.set(p.pid, xs.length > 1 ? i / (xs.length - 1) : 0));
   }
+  // The colour: the product's photo tag (a vision model asked for the colour
+  // covering most of it) when there is one, else Fashion-CLIP's. CLIP read
+  // white shorts with a black graffiti print as black (1 Nov review run).
   for (const p of pieces) {
     const e = emb[p.pid];
-    p.emb = e ? { ...e, statement: loud.has(p.pid) && loud.get(p.pid) >= 0.75 ? 0.9 : 0.1,
-      colour: p.slot === "bottoms" && ["light blue", "navy"].includes(e.colour) ? "blue denim" : e.colour } : null;
+    if (!e) { p.emb = null; continue; }
+    const tagged = p.tags && p.tags.source !== "name" ? paletteColour(p.tags.dominant) : null;
+    let colour = tagged || e.colour;
+    if (p.slot === "bottoms" && ["light blue", "navy"].includes(colour)) colour = "blue denim";
+    p.emb = { ...e, colour, colourFrom: tagged ? "tag" : "clip", statement: loud.has(p.pid) && loud.get(p.pid) >= 0.75 ? 0.9 : 0.1 };
   }
   const recentVecs = recentPids.filter((pid) => emb[pid]).map((pid) => ({ slot: lookbook.lookbookSlot(world.byPid.get(pid).product), vec: emb[pid].vec }));
   const { pool, relaxed, removed } = ls.poolOf(pieces.filter((p) => p.emb), blocks, { recentVecs, saDate });
