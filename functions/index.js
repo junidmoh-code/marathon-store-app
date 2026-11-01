@@ -1,7 +1,7 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const { applyCategoryPolicy } = require("./lib/category-policy-write.cjs");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onValueWritten } = require("firebase-functions/v2/database");
+const { onValueWritten, onValueCreated } = require("firebase-functions/v2/database");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { markInventoryDirty } = require("./lib/shopify-inventory-dirty.cjs");
@@ -642,7 +642,7 @@ exports.holdAvailabilityNotify = onValueWritten(
 // never trusts event.data.after (a trigger can be delivered late). A row a
 // person already started sending is left alone and only logged.
 //   firebase deploy --only functions:refillRequestSourceGuard
-exports.refillRequestSourceGuard = onValueWritten(
+exports.refillRequestSourceGuard = onValueCreated(
   {
     ref:            "/refill_requests/{requestId}",
     instance:       "marathon-club-default-rtdb",
@@ -652,10 +652,11 @@ exports.refillRequestSourceGuard = onValueWritten(
     retry:          false,
   },
   async (event) => {
-    if (event.data.before.exists() || !event.data.after.exists()) return;   // creations only
+    // onValueCreated: only a null → value write invokes this (never a fulfil,
+    // a pick claim or a shadow re-sync — Sonnet, #833).
     const rs = require("./lib/request-source.cjs");
     const id = event.params.requestId;
-    if (rs.classifyRequestSource(event.data.after.val()) !== null) return;   // scan / Solve — the common case, no read
+    if (rs.classifyRequestSource(event.data.val()) !== null) return;   // scan / Solve — the common case, no read
     const db = admin.database();
     const nowIso = new Date().toISOString();
     let seen = null;
@@ -664,8 +665,10 @@ exports.refillRequestSourceGuard = onValueWritten(
       return rs.rejectTxn(cur, { nowIso });
     });
     const after = res.snapshot.val();
-    const cancelled = !!(res.committed && after && after.cancelReason === rs.REJECT_REASON);
-    const rr = after || seen || event.data.after.val();
+    // Judged from the row as it now stands, so a redelivered event (row already
+    // cancelled, transaction aborted) logs the same truth (Sonnet, #833).
+    const cancelled = !!(after && after.cancelReason === rs.REJECT_REASON);
+    const rr = after || seen || event.data.val();
     if (rs.classifyRequestSource(rr) !== null) return;   // re-read says scan/Solve after all
     await db.ref(`${rs.REJECTED_LOG}/${id}`).set(rs.rejectionRecord(id, rr, { nowIso, cancelled }));
     console.warn(`refillRequestSourceGuard: ${cancelled ? "cancelled" : "logged (already touched)"} ${id} — via ${rr?.createdFrom?.via || "?"}, ${rr?.requestingLocation || "?"} ${rr?.productId || "?"} ${rr?.size ?? ""}`);

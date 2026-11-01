@@ -128,7 +128,8 @@ try {
     else if (total) {
       const dir = join(homedir(), "marathon-rollbacks");
       mkdirSync(dir, { recursive: true });
-      const file = join(dir, `scan-only-${new Date(nowMs + 2 * 3600e3).toISOString().slice(0, 10)}.json`);
+      // One file per run (a second run the same day never overwrites the first).
+      const file = join(dir, `scan-only-${new Date(nowMs + 2 * 3600e3).toISOString().slice(0, 10)}-${runId}.json`);
       const saved = { runId, at: new Date(nowMs).toISOString(), rows: Object.fromEntries(toCancel.map((r) => [r.id, refillRequests[r.id]])),
         cards: Object.fromEntries(cardsToRemove.map((c) => [c.key, orders[c.key]])) };
       writeFileSync(file, JSON.stringify(saved, null, 2));
