@@ -152,7 +152,8 @@ test("validateLocal corrects a stray hero and a theme that names another formula
   assert.equal(v.ok, true, v.problems.join("; "));
   assert.equal(v.answer.hero_pid, "s1");
   assert.equal(v.answer.formula, "blue-denim");
-  const pop = ls.validateLocal({ ...goodJson, formula: "court-classic", theme: "Red Pop" }, options, offerOf(pieces3));
+  const reds = [P("t1", "tee", 350, "white"), P("b1", "bottoms", 750, "blue denim"), P("s1", "sneakers", 700, "red")];
+  const pop = ls.validateLocal({ ...goodJson, formula: "court-classic", theme: "Red Pop", colours: ["red", "white", "blue denim"], caption: "Red sneakers, white tee, denim.\n#marathonclub" }, [{ pieces: reds, total: 1800 }], offerOf(reds));
   assert.equal(pop.answer.formula, "colour-pop");
 });
 
@@ -161,11 +162,11 @@ test("formulaProblems: white only on the shoe for Monochrome Black; a Pop is nev
   assert.equal(ls.formulaProblems("monochrome-black", whiteShorts).length, 1);
   assert.deepEqual(ls.formulaProblems("monochrome-black", [P("t", "tee", 1, "black"), P("b", "bottoms", 1, "black"), P("s", "sneakers", 1, "white")]), []);
   assert.match(ls.formulaProblems("colour-pop", whiteShorts, "White Pop")[0], /not an accent/);
-  assert.deepEqual(ls.formulaProblems("colour-pop", whiteShorts, "Red Pop"), []);
+  assert.deepEqual(ls.formulaProblems("colour-pop", [...whiteShorts.slice(0, 2), P("s", "sneakers", 1, "red")], "Red Pop"), []);
 });
 
 test("a Pop theme names a colour, not a shoe", () => {
-  const x = [P("t", "tee", 1, "white"), P("b", "bottoms", 1, "blue denim"), P("s", "sneakers", 1, "red")];
+  const x = [P("t", "tee", 1, "white"), P("b", "bottoms", 1, "blue denim"), P("s", "sneakers", 1, "light blue")];
   assert.equal(ls.formulaProblems("colour-pop", x, "Retro Equality Pop").length, 1);
   assert.deepEqual(ls.formulaProblems("colour-pop", x, "Light Blue Pop"), []);
 });
@@ -194,4 +195,10 @@ test("'Red Heart Pop' reads as Red Pop; a caption may name the product's real br
   const offer = { ...offerOf(gd), knownBrands: ["Gallery Dept", "Nike"] };
   const ok = ls.validateLocal({ ...goodJson, caption: "Gallery Dept tee, denim and white kicks.\n#gallerydept" }, [{ pieces: gd, total: 1800 }], offer);
   assert.equal(ok.problems.some((p) => /brand/.test(p)), false, ok.problems.join("; "));
+});
+
+test("a Pop names a colour the pieces carry and is the only loud one", () => {
+  const sage = [P("t1", "tee", 350, "white"), P("b1", "bottoms", 750, "green"), P("s1", "sneakers", 700, "white")];
+  assert.ok(ls.formulaProblems("colour-pop", sage, "Red Pop").length);
+  assert.deepEqual(ls.formulaProblems("colour-pop", sage, "Green Pop"), []);
 });

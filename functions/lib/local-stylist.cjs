@@ -346,6 +346,13 @@ function formulaProblems(formulaKey, pieces, theme = "") {
   if (formulaKey === "colour-pop" && String(theme).trim()) {
     const c = String(theme).trim().replace(/ Pop$/, "").toLowerCase();
     if (!POP_COLOURS.has(c)) return [`"${theme}" is not an accent colour: Colour Pop is one clear colour plus "Pop" (Red Pop, Green Pop, Orange Pop…)`];
+    // The accent is a colour the pieces carry, and the only loud one ("Red
+    // Pop" on sage cargos with a red heart on the shoe, 1 Nov).
+    const fam = (x) => familyOfColour(x === "light blue" ? "light blue" : x);
+    const carried = pieces.some((p) => p.emb && (fam(p.emb.colour) === fam(c) || Object.keys(p.emb.colours || {}).some((k) => fam(k) === fam(c)) || (p.tags && fam(String(p.tags.secondary || "")) === fam(c))));
+    if (!carried) return [`"${theme}": no piece is ${c}`];
+    const otherLoud = pieces.filter((p) => p.emb && !NEUTRAL_COLOURS.has(p.emb.colour) && fam(p.emb.colour) !== fam(c));
+    if (otherLoud.length) return [`"${theme}" but ${otherLoud.map((p) => `the ${p.slot} is ${p.emb.colour}`).join(", ")}: one accent colour only`];
   }
   const cols = pieces.map((p) => p.emb && p.emb.colour).filter(Boolean);
   if (cols.length < pieces.length) return [];
