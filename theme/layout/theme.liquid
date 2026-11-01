@@ -306,6 +306,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
+    {% render 'posthog' %}
   </head>
 
   <body class="gradient{% if settings.animations_hover_elements != 'none' %} animate--hover-{{ settings.animations_hover_elements }}{% endif %}">
@@ -430,5 +431,7 @@
       {%- endcomment -%}
       <script src="{{ 'marathon-storefront.js' | asset_url }}" defer="defer"></script>
       {%- render 'marathon-wishlist' -%}
+    <script>window.MSA = { collector: "https://europe-west1-marathon-club.cloudfunctions.net/webEvents", product: {% if template.name == 'product' %}{{ product.handle | json }}{% else %}null{% endif %} };</script>
+    <script src="{{ 'msa-site.js' | asset_url }}" defer="defer"></script>
   </body>
 </html>

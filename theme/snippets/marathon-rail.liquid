@@ -19,7 +19,8 @@
 {%- endcomment -%}
 
 {%- liquid
-  assign n = rail_products.size
+  assign available_products = rail_products | where: 'available', true
+  assign n = available_products.size
   assign floor = rail_min | default: 4
 -%}
 {%- if n >= floor -%}
@@ -34,7 +35,7 @@
       </a>
     </div>
     <div class="mc-rail__track">
-      {%- for product in rail_products limit: rail_limit -%}
+      {%- for product in available_products limit: rail_limit -%}
         {%- assign lazy = 'lazy' -%}
         {%- if forloop.index <= 2 -%}{%- assign lazy = 'eager' -%}{%- endif -%}
         {%- render 'marathon-card', product: product, lazy: lazy,

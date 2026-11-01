@@ -1,5 +1,27 @@
 # Marathon Club storefront — install, preview, publish, revert
 
+> **Update 2026-11-01 — PostHog (PR #835). LIVE theme is now
+> `Marathon — photo-first + PostHog` (#189947707541).** It was duplicated with
+> the CLI from the theme that was actually live, `MSA 2026-10-22
+> 2026-10-22-seasonal-rail-iwud` (#189523361941, published by the
+> marathon-site-agents pipeline). It changes exactly 5 files: modified
+> `layout/theme.liquid`, `assets/marathon-storefront.js` and
+> `snippets/marathon-card.liquid`; added `snippets/posthog.liquid` and
+> `assets/marathon-posthog.js`. The old live theme was **renamed
+> `Marathon — photo-first (pre-PostHog)`** and kept, byte-unchanged (378/378
+> files re-diffed after every push), as the **rollback**: Themes → it → Publish.
+> The *other* unpublished theme called `Marathon — photo-first`
+> (#160463192213) predates 18 Oct and is NOT the rollback. Publishing it would
+> drop the seasonal rail, size guide, policy section and recommendations block.
+> What fires where, the checkout pixel paste and troubleshooting:
+> `theme/POSTHOG-SETUP.md`.
+>
+> The CLI on this Mac: the global `@shopify/cli` was half-removed by an
+> interrupted npm update (4 Sep). The intact 4.7.0 copy is at
+> `~/.npm-global/lib/node_modules/@shopify/.cli-g1SJ0U49/bin/run.js`
+> (`node <that> theme …`). Its login expires; it re-auths by device code in the
+> browser.
+
 > **Update 2026-08-27 — the manual-paste workflow below is HISTORICAL. Theme
 > pushes now go through the Shopify CLI**, installed and authenticated on
 > this machine (`npm install -g @shopify/cli @shopify/theme`, then
