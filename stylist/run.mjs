@@ -293,7 +293,7 @@ async function review(world, start, ledger) {
   const seen = { tee: new Set(), bottoms: new Set(), sneakers: new Set() };
   for (let i = 0; i < REVIEW; i++) {
     const date = addDays(start, i);
-    const r = await pickOne(world, "lookbook", date, scratch, { avoidFormulas: rows.slice(-3).filter((x) => x.answer).map((x) => x.answer.formula) });
+    const r = await pickOne(world, "lookbook", date, scratch, { avoidFormulas: rows.filter((x) => x.answer).slice(-3).reverse().map((x) => x.answer.formula) }); // newest first, as recentFormulas
     if (!r.ok) { log(`review ${i + 1}: NO PICK — ${r.reason}`); rows.push({ date, error: r.reason }); continue; }
     scratch = ls.ledgerWith(scratch, ls.ledgerEntry(date, "lookbook", r.option.pieces, { status: "planned", theme: r.answer.theme }));
     const repeats = r.option.pieces.filter((p) => seen[p.slot] && seen[p.slot].has(p.pid));
