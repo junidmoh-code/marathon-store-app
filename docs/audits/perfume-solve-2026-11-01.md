@@ -2,7 +2,7 @@
 
 **Junid's report:** perfumes solved from Central in the last ~10 days appear at Hub 2 but not at Marathon PE.
 
-**Finding:** PE's leg for each of the nine perfumes **was created and is still open**. The leg was never missing, and no stock went to the wrong place. It has sat unpicked on Hub 2's list since 29 Oct 08:00, and Hub 2 holds 10 of each.
+**Finding:** PE's leg for each of the nine perfumes Solved for PE (plus D&G King 100ML, whose leg was re-raised, so ten in all) **was created and is still open**. The leg was never missing, and no stock went to the wrong place. It has sat unpicked on Hub 2's list since 29 Oct 08:00, and Hub 2 holds 10 of each.
 
 ## What happened (Black Opium; the other eight match)
 
@@ -23,6 +23,8 @@ Why it is stuck: nothing technical blocks it. The card is live, backed by an ope
 **Action:** nothing created and nothing moved; no target or quantity touched. Hub 2 needs to pick these cards: **R001-8 to R001-16** and **R004-12**. D&G King 100ML's leg was lost twice (`order_lost`, 29 and 30 Oct) and re-raised on 31 Oct as R004-12, at position 148.
 
 ## Before / after (live 1 Nov 18:44 SAST; unchanged by this PR)
+
+Snapshot: `~/snap-1101b` on the Mac mini (from `scripts/audit/hub2-audit-dump.mjs`). D&G King 100ML is not in the table because its PE cell existed before the window, so no Solve seed marks it. Its open leg is R004-12, raised 31 Oct.
 
 | Product | Shop | Solved (UTC) | Central | Hub 2 (leg: created/fulfilled/units in) | Shop leg (created/open/fulfilled/units in) | Open since | Hub 2 card(s) | Why |
 |---|---|---|---|---|---|---|---|---|
