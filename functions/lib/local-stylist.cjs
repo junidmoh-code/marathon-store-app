@@ -318,7 +318,7 @@ const EARTH = new Set(["olive", "khaki", "brown", "tan", "beige"]);
 function formulaProblems(formulaKey, pieces, theme = "") {
   // "<Colour> Pop" names an accent: never a neutral ("White Pop", 1 Nov review).
   // ("Retro Equality Pop" is a shoe's name, not a colour.)
-  if (formulaKey === "colour-pop") {
+  if (formulaKey === "colour-pop" && String(theme).trim()) {
     const c = String(theme).trim().replace(/ Pop$/, "").toLowerCase();
     if (!POP_COLOURS.has(c)) return [`"${theme}" is not an accent colour: Colour Pop is one clear colour plus "Pop" (Red Pop, Green Pop, Orange Pop…)`];
   }
