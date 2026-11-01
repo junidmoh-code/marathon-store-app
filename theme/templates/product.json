@@ -27,6 +27,10 @@
           "type": "price",
           "settings": {}
         },
+        "judge_me_reviews_preview_badge_AUP8B9": {
+          "type": "shopify://apps/judge-me-reviews/blocks/preview_badge/61ccd3b1-a9f2-4160-9fe9-4fec8413e5d8",
+          "settings": {}
+        },
         "variant_picker": {
           "type": "variant_picker",
           "settings": {
@@ -38,16 +42,16 @@
           "type": "quantity_selector",
           "settings": {}
         },
+        "description": {
+          "type": "description",
+          "settings": {}
+        },
         "buy_buttons": {
           "type": "buy_buttons",
           "settings": {
             "show_dynamic_checkout": false,
             "show_gift_card_recipient": true
           }
-        },
-        "description": {
-          "type": "description",
-          "settings": {}
         },
         "share": {
           "type": "share",
@@ -60,6 +64,7 @@
         "vendor",
         "title",
         "price",
+        "judge_me_reviews_preview_badge_AUP8B9",
         "variant_picker",
         "quantity_selector",
         "description",
@@ -82,6 +87,10 @@
         "padding_bottom": 12
       }
     },
+    "goes_well": {
+      "type": "msa-goes-well",
+      "settings": {}
+    },
     "related-products": {
       "type": "related-products",
       "settings": {
@@ -99,10 +108,32 @@
         "padding_top": 36,
         "padding_bottom": 28
       }
+    },
+    "179269989324a7dc61": {
+      "type": "apps",
+      "blocks": {
+        "judge_me_reviews_review_widget_LjUdnH": {
+          "type": "shopify://apps/judge-me-reviews/blocks/review_widget/61ccd3b1-a9f2-4160-9fe9-4fec8413e5d8",
+          "settings": {
+            "review_data": "sample_data",
+            "max_width": 1200,
+            "show_shop_reviews": false,
+            "empty_state": "empty_widget"
+          }
+        }
+      },
+      "block_order": [
+        "judge_me_reviews_review_widget_LjUdnH"
+      ],
+      "settings": {
+        "include_margins": true
+      }
     }
   },
   "order": [
     "main",
-    "related-products"
+    "goes_well",
+    "related-products",
+    "179269989324a7dc61"
   ]
 }

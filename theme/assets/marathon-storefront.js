@@ -80,7 +80,6 @@
     // ~130px shift that caused.
     var card = openCard;
     var panel = $("[data-mc-panel]", card);
-    if (panel) pauseGalleryVideos(panel, null);
     if (panel) panel.hidden = true;
     var sheet = panel && $("[data-mc-sheet]", panel);
     if (sheet) { sheet.style.transform = ""; sheet.classList.remove("is-dragging"); }
@@ -108,12 +107,6 @@
     panel.hidden = false;
     card.classList.add(OPEN_CLASS);
     openCard = card;
-    // Every gallery opens on its primary photo.
-    $$("[data-mc-gallery]", panel).forEach(function (g) {
-      var track = $("[data-mc-gallery-track]", g);
-      if (track) track.scrollLeft = 0;
-      syncGallery(g);
-    });
 
     // "Added to cart." from a previous visit to this card would otherwise still
     // be sitting there, telling the shopper they have done something they have
@@ -159,34 +152,17 @@
   // The gesture people already know from a photo library. Only a drag that
   // starts at the TOP of the sheet's own scroll counts, so dragging down while
   // reading a long size list scrolls the sheet instead of dismissing it.
-  // A SIDEWAYS drag is the photo gallery's swipe, never a dismiss: the first
-  // clear movement decides, and a horizontal one releases the sheet.
-  var dragY = null, dragX = null, dragSheet = null, dragDecided = false;
+  var dragY = null, dragSheet = null;
   document.addEventListener("touchstart", function (ev) {
     var sheet = ev.target.closest && ev.target.closest("[data-mc-sheet]");
     if (!sheet || sheet.scrollTop > 0) return;
     dragSheet = sheet;
     dragY = ev.touches[0].clientY;
-    dragX = ev.touches[0].clientX;
-    dragDecided = false;
   }, { passive: true });
 
   document.addEventListener("touchmove", function (ev) {
     if (!dragSheet || dragY === null) return;
     var dy = ev.touches[0].clientY - dragY;
-    var dx = ev.touches[0].clientX - dragX;
-    // The direction is decided ONCE, by the first clear movement: a sideways
-    // start is the gallery's swipe; a downward start stays a dismiss even if
-    // the finger later drifts sideways.
-    if (!dragDecided && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
-      dragDecided = true;
-      if (Math.abs(dx) > Math.abs(dy)) {
-        dragSheet.classList.remove("is-dragging");
-        dragSheet.style.transform = "";
-        dragSheet = null; dragY = null; dragX = null;
-        return;
-      }
-    }
     if (dy <= 0) return;
     dragSheet.classList.add("is-dragging");
     dragSheet.style.transform = "translateY(" + dy + "px)";
@@ -205,91 +181,6 @@
     }
     dragSheet = null; dragY = null;
   }, { passive: true });
-
-  // ── the photo + video gallery (snippets/marathon-card.liquid) ─────────────
-  // Native horizontal scroll-snap does the swiping; this only keeps the
-  // "2 / 5" counter honest, drives the desktop arrows, turns a tapped poster
-  // into its <video>, and pauses any video that is swiped away from or whose
-  // panel closes. A video is created ONLY by a tap (from an inert <template>),
-  // with preload="none" — so no video byte loads until someone asks to watch.
-  function gallerySlides(gallery) { return $$("[data-mc-slide]", gallery); }
-  function currentSlideIndex(gallery) {
-    var track = $("[data-mc-gallery-track]", gallery);
-    if (!track || !track.clientWidth) return 0;
-    return Math.round(track.scrollLeft / track.clientWidth);
-  }
-  function pauseGalleryVideos(scope, keepSlide) {
-    $$("video", scope).forEach(function (v) {
-      if (keepSlide && keepSlide.contains(v)) return;
-      try { v.pause(); } catch (e) { /* already stopped */ }
-    });
-    // An embedded (YouTube/Vimeo) player cannot be paused from here; reloading
-    // its address stops it.
-    $$("iframe", scope).forEach(function (f) {
-      if (keepSlide && keepSlide.contains(f)) return;
-      var src = f.getAttribute("src");
-      if (src) f.setAttribute("src", src);
-    });
-  }
-  function syncGallery(gallery) {
-    var slides = gallerySlides(gallery);
-    var i = Math.max(0, Math.min(slides.length - 1, currentSlideIndex(gallery)));
-    var count = $("[data-mc-gallery-count]", gallery);
-    if (count) count.textContent = (i + 1) + " / " + slides.length;
-    var prev = $("[data-mc-gallery-prev]", gallery);
-    var next = $("[data-mc-gallery-next]", gallery);
-    if (prev) prev.disabled = i === 0;
-    if (next) next.disabled = i === slides.length - 1;
-    pauseGalleryVideos(gallery, slides[i]);
-  }
-  function goToSlide(gallery, i) {
-    var track = $("[data-mc-gallery-track]", gallery);
-    if (!track) return;
-    track.scrollTo({ left: i * track.clientWidth, behavior: "smooth" });
-  }
-  // Scroll events do not bubble, but they can be captured at the document.
-  var galleryScrollTimer = null;
-  document.addEventListener("scroll", function (ev) {
-    var track = ev.target && ev.target.closest && ev.target.closest("[data-mc-gallery-track]");
-    if (!track) return;
-    clearTimeout(galleryScrollTimer);
-    var gallery = track.closest("[data-mc-gallery]");
-    galleryScrollTimer = setTimeout(function () { syncGallery(gallery); }, 80);
-  }, { passive: true, capture: true });
-  document.addEventListener("click", function (ev) {
-    var t = ev.target;
-    var play = t.closest && t.closest("[data-mc-play]");
-    if (play) {
-      ev.preventDefault();
-      var slide = play.closest("[data-mc-slide]");
-      var tpl = slide && $("template[data-mc-video]", slide);
-      if (!tpl) return;
-      slide.appendChild(tpl.content.cloneNode(true));
-      var video = $("video", slide);
-      play.remove();
-      var focusTarget = video || $("iframe", slide);
-      if (focusTarget) { focusTarget.setAttribute("tabindex", "-1"); focusTarget.focus({ preventScroll: true }); }
-      if (video) {
-        // A tap is the shopper's own gesture: sound on, controls on, inline.
-        video.setAttribute("playsinline", "");
-        video.playsInline = true;
-        video.controls = true;
-        video.muted = false;
-        var p = video.play && video.play();
-        if (p && p.catch) p.catch(function () { /* the controls stay for a second tap */ });
-      }
-      var gallery = slide.closest("[data-mc-gallery]");
-      if (gallery) pauseGalleryVideos(gallery, slide);
-      return;
-    }
-    var arrow = t.closest && t.closest("[data-mc-gallery-prev], [data-mc-gallery-next]");
-    if (arrow) {
-      ev.preventDefault();
-      var g = arrow.closest("[data-mc-gallery]");
-      var step = arrow.hasAttribute("data-mc-gallery-next") ? 1 : -1;
-      goToSlide(g, currentSlideIndex(g) + step);
-    }
-  });
 
   // ── clicks ─────────────────────────────────────────────────────────────────
   document.addEventListener("click", function (ev) {
@@ -672,66 +563,157 @@
   }
 
   // ── category dropdowns ─────────────────────────────────────────────────────
-  // POSITIONED IN JS, `position: fixed` (owner report 2026-08-28: "footwear
-  // and clothing aren't working" — real bug, found live, not a phantom).
-  // `.mc-nav__panel` used to be `position: absolute`, placed via CSS relative
-  // to `.mc-nav__group`. That group sits inside `.mc-nav__scroll`, which
-  // carries `overflow-x: auto` for the row's own horizontal scroll — and per
-  // the CSS spec, setting only ONE overflow axis to a non-`visible` value
-  // makes the OTHER axis compute to `auto` too, not stay `visible`. So the
-  // panel was being silently clipped to `.mc-nav__scroll`'s own height (the
-  // nav bar's height, nowhere near the panel's) on every browser, every
-  // time — clicking the toggle DID work (verified: the class toggled, the
-  // `hidden` attribute came off), the panel was just invisible, clipped to
-  // nothing. `position: fixed` escapes that clipping entirely (fixed
-  // positioning is relative to the viewport, not the nearest positioned
-  // ancestor, and nothing between here and the viewport creates a
-  // containing block for it), computed here from the toggle's own
-  // `getBoundingClientRect()` so it still visually anchors under the
-  // button it opened from.
-  function positionNavPanel(toggle, panel) {
-    var r = toggle.getBoundingClientRect();
-    panel.style.top = (r.bottom + 8) + "px";
-    panel.style.left = r.left + "px";
+  //
+  // THE PANELS ARE MOVED OUT OF THE NAV STRIP, ONTO <body>, AT LOAD. That one
+  // line is the whole fix for iPhones, and it is worth reading why, because
+  // this bug survived two earlier repairs that were both correct as far as
+  // they went.
+  //
+  // The story so far. `.mc-nav__panel` began as `position: absolute` inside
+  // `.mc-nav__group`, which lives in `.mc-nav__scroll` — the row's own
+  // horizontal scroller, `overflow-x: auto`. Per the CSS spec, setting one
+  // overflow axis to a non-`visible` value makes the OTHER compute to `auto`
+  // too, so the panel was clipped to the height of the nav bar and nothing was
+  // visible on any browser. Switching it to `position: fixed` cured that on
+  // every desktop browser, because fixed positioning is resolved against the
+  // viewport and ignores an ancestor's overflow. Clamping its `left` then
+  // cured a second, narrow-screen-only fault where it opened past the right
+  // edge of the display. Both real, both fixed, both verified.
+  //
+  // And on an actual iPhone it still did nothing. Owner screenshot, iOS
+  // Safari, 2026-08-28: Footwear and Clothing circled in red, "still not
+  // clickable on the phone version".
+  //
+  // The reason is that "fixed positioning is resolved against the viewport" is
+  // not true on iOS inside a `-webkit-overflow-scrolling: touch` scroller.
+  // Safari promotes such a scroller to its own compositing layer and a `fixed`
+  // DESCENDANT of it is positioned and clipped against that layer instead of
+  // the viewport — it behaves like `absolute` again. So on iPhones, and only
+  // on iPhones, the panel was still being clipped to the height of the nav bar
+  // by the original bug, straight through both repairs. A tap opened a panel
+  // nobody could see, which is indistinguishable from a dead button.
+  //
+  // Reparenting to <body> removes the argument entirely rather than arguing
+  // with it. With no scroller, no overflow and no compositing layer anywhere
+  // between the panel and the viewport, `position: fixed` means the same thing
+  // on every browser there is. `-webkit-overflow-scrolling: touch` has also
+  // been dropped from the stylesheet — iOS has had momentum scrolling by
+  // default since iOS 13 and the property is deprecated — so even a future
+  // panel that stayed inside the strip would not hit this.
+  //
+  // The cost of reparenting is that a panel is no longer inside its group in
+  // the DOM, so nothing can be found by walking up from it. Hence `navGroups`:
+  // the toggle/panel pairing is captured once, from the markup, before
+  // anything is moved, and every piece of logic below reads that list instead
+  // of the DOM tree. The `<script>` is deferred, so the markup is fully parsed
+  // by the time this runs.
+  var NAV_PANEL_MARGIN = 12;
+  var navGroups = [];
+  $$("[data-mc-navgroup]").forEach(function (group) {
+    var toggle = $("[data-mc-navtoggle]", group);
+    var panel = $("[data-mc-navpanel]", group);
+    if (!toggle || !panel) return;
+    panel.hidden = true;
+    document.body.appendChild(panel);
+    navGroups.push({ group: group, toggle: toggle, panel: panel });
+  });
+
+  // CLAMPED INTO THE VIEWPORT. `left` was once the toggle's own left edge,
+  // unclamped. Measured on the live shop: the nav strip's content is 858px
+  // wide, so on a ~390px phone Footwear and Clothing are only reachable by
+  // scrolling the strip most of the way right — which puts those buttons near
+  // the right edge, and a 242-265px panel hung off the button's left edge then
+  // ran from ~300px to ~568px, off the side of the screen. So it is pushed
+  // back inside the viewport, and given a height budget of whatever is left
+  // below the button (the stylesheet sets `overflow-y: auto`, so Clothing's
+  // ten rows scroll inside the panel on a short screen rather than running off
+  // the bottom). Both are measured at open time, not assumed: the strip's
+  // scroll position puts the same button somewhere different every time.
+  function positionNavPanel(entry) {
+    var r = entry.toggle.getBoundingClientRect();
+    var top = r.bottom + 8;
+    // Clear the previous clamp before measuring or the width reads back
+    // through the last open's max-height and drifts a little each time.
+    entry.panel.style.maxHeight = "";
+    var w = entry.panel.getBoundingClientRect().width;
+    var maxLeft = window.innerWidth - w - NAV_PANEL_MARGIN;
+    var left = Math.max(NAV_PANEL_MARGIN, Math.min(r.left, maxLeft));
+    entry.panel.style.top = top + "px";
+    entry.panel.style.left = left + "px";
+    entry.panel.style.maxHeight =
+      Math.max(120, window.innerHeight - top - NAV_PANEL_MARGIN) + "px";
+  }
+  function closeNavGroup(entry) {
+    entry.group.classList.remove("is-open");
+    entry.panel.hidden = true;
+    entry.toggle.setAttribute("aria-expanded", "false");
   }
   document.addEventListener("click", function (ev) {
     var toggle = ev.target.closest && ev.target.closest("[data-mc-navtoggle]");
-    var openGroups = $$("[data-mc-navgroup].is-open");
+    // A click inside a panel is a click on one of its links: close everything
+    // EXCEPT that panel and let the link navigate. Its own group would once
+    // have been spared by `group.contains(target)`; now that the panel lives
+    // on <body> the group no longer contains it, so the panel is asked
+    // directly.
+    var inPanel = ev.target.closest && ev.target.closest("[data-mc-navpanel]");
 
-    openGroups.forEach(function (g) {
-      if (toggle && g.contains(toggle)) return;
-      g.classList.remove("is-open");
-      var p = $("[data-mc-navpanel]", g);
-      if (p) p.hidden = true;
-      var t = $("[data-mc-navtoggle]", g);
-      if (t) t.setAttribute("aria-expanded", "false");
+    navGroups.forEach(function (entry) {
+      if (!entry.group.classList.contains("is-open")) return;
+      if (toggle && entry.toggle === toggle) return;
+      if (inPanel && entry.panel === inPanel) return;
+      closeNavGroup(entry);
     });
 
     if (!toggle) return;
     ev.preventDefault();
-    var group = toggle.closest("[data-mc-navgroup]");
-    var panel = $("[data-mc-navpanel]", group);
-    var nowOpen = !group.classList.contains("is-open");
-    group.classList.toggle("is-open", nowOpen);
-    if (panel) {
-      panel.hidden = !nowOpen;
-      if (nowOpen) positionNavPanel(toggle, panel);
+    var entry = null;
+    for (var i = 0; i < navGroups.length; i++) {
+      if (navGroups[i].toggle === toggle) { entry = navGroups[i]; break; }
     }
-    toggle.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+    if (!entry) return;
+    var nowOpen = !entry.group.classList.contains("is-open");
+    entry.group.classList.toggle("is-open", nowOpen);
+    entry.panel.hidden = !nowOpen;
+    if (nowOpen) positionNavPanel(entry);
+    entry.toggle.setAttribute("aria-expanded", nowOpen ? "true" : "false");
   });
-  // A fixed-position panel does not follow the page when it scrolls (unlike
-  // the old absolute one, which at least tried to, even though it was
-  // invisible) — closing it on scroll is simpler and more honest than
-  // letting it drift away from the button that opened it.
-  window.addEventListener("scroll", function () {
-    $$("[data-mc-navgroup].is-open").forEach(function (g) {
-      g.classList.remove("is-open");
-      var p = $("[data-mc-navpanel]", g);
-      if (p) p.hidden = true;
-      var t = $("[data-mc-navtoggle]", g);
-      if (t) t.setAttribute("aria-expanded", "false");
+
+  // A fixed panel does not follow the page when it scrolls, so it is re-placed
+  // rather than left to drift away from its button.
+  //
+  // This used to CLOSE on any scroll event instead, which is a liability on a
+  // phone twice over. The nav strip is horizontally scrollable and, on a
+  // narrow screen, scrolling it is HOW a shopper reaches Footwear and Clothing
+  // — a nudge of that strip would have shut the panel. And on iOS the address
+  // bar collapsing fires a window scroll of its own, unprompted, which could
+  // shut the panel a moment after it opened and read exactly like "clicking
+  // does nothing". Repositioning has no false triggers; the panel closes only
+  // once the button it belongs to has actually left the screen. The listener
+  // captures, so the strip's own sideways scroll is seen too — `scroll` does
+  // not bubble, but it does propagate down the capture path.
+  function reflowOpenNavPanels() {
+    navGroups.forEach(function (entry) {
+      if (!entry.group.classList.contains("is-open")) return;
+      var r = entry.toggle.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) {
+        closeNavGroup(entry);
+        return;
+      }
+      positionNavPanel(entry);
     });
-  }, { passive: true });
+  }
+  var navReflowQueued = false;
+  function queueNavReflow() {
+    if (navReflowQueued) return;
+    navReflowQueued = true;
+    window.requestAnimationFrame(function () {
+      navReflowQueued = false;
+      reflowOpenNavPanels();
+    });
+  }
+  window.addEventListener("scroll", queueNavReflow, { passive: true, capture: true });
+  window.addEventListener("resize", queueNavReflow, { passive: true });
+  window.addEventListener("orientationchange", queueNavReflow, { passive: true });
 
   // ─── BACK (snippets/marathon-back.liquid) ───────────────────────────────────
   // The control's `href` is always a real, working link — a collection page

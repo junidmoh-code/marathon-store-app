@@ -475,109 +475,6 @@
   }
 }
 
-/* THE PHOTO + VIDEO GALLERY (Junid, 6 Oct 2026). One full-width slide per
-   item, native scroll-snap for the swipe — no library, nothing to load. Each
-   slide keeps the photo's real proportions exactly as the single photo did
-   (.mc-panel__photo). No `-webkit-overflow-scrolling: touch`: on iOS it
-   promotes the scroller to its own layer, the trap the nav panels hit. */
-.mc-gallery {
-  position: relative;
-}
-.mc-gallery__track {
-  display: flex;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scroll-snap-type: x mandatory;
-  scrollbar-width: none;
-  border-radius: var(--mc-btn-radius);
-  outline: none;
-}
-.mc-gallery__track::-webkit-scrollbar { display: none; }
-.mc-gallery__slide {
-  position: relative;
-  flex: 0 0 100%;
-  scroll-snap-align: center;
-  scroll-snap-stop: always;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.mc-gallery__slide .mc-panel__photo {
-  width: 100%;
-  height: 46vh;
-}
-.mc-gallery__video {
-  width: 100%;
-  height: 46vh;
-  background: #000;
-  border-radius: var(--mc-btn-radius);
-}
-.mc-gallery__play {
-  position: relative;
-  width: 100%;
-  min-height: 46vh;
-  padding: 0;
-  border: 0;
-  background: none;
-  cursor: pointer;
-  display: block;
-}
-.mc-gallery__playicon {
-  position: absolute;
-  inset-block-start: 50%;
-  inset-inline-start: 50%;
-  width: 6.4rem;
-  height: 6.4rem;
-  margin: -3.2rem 0 0 -3.2rem;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85) inset;
-}
-.mc-gallery__playicon::after {
-  content: "";
-  position: absolute;
-  inset-block-start: 50%;
-  inset-inline-start: 54%;
-  transform: translate(-50%, -50%);
-  border-style: solid;
-  border-width: 1.2rem 0 1.2rem 2rem;
-  border-color: transparent transparent transparent #fff;
-}
-.mc-gallery__arrow {
-  position: absolute;
-  inset-block-start: 50%;
-  transform: translateY(-50%);
-  width: 3.6rem;
-  height: 3.6rem;
-  border-radius: 50%;
-  border: 0;
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
-  font-size: 2.6rem;
-  line-height: 1;
-  cursor: pointer;
-  display: none;
-}
-.mc-gallery__arrow--prev { inset-inline-start: 0.6rem; }
-.mc-gallery__arrow--next { inset-inline-end: 0.6rem; }
-.mc-gallery__arrow:disabled { opacity: 0; pointer-events: none; }
-.mc-gallery__count {
-  position: absolute;
-  inset-block-start: 0.6rem;
-  inset-inline-start: 0.6rem;
-  margin: 0;
-  padding: 0.2rem 0.8rem;
-  border-radius: 99px;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 1.2rem;
-  pointer-events: none;
-}
-/* Arrows only where there is a mouse; a phone swipes. */
-@media (hover: hover) and (pointer: fine) {
-  .mc-gallery__arrow { display: block; }
-}
-
 .mc-panel__close {
   position: absolute;
   inset-block-start: 0.6rem;
@@ -977,7 +874,15 @@
   overflow-x: auto;
   scrollbar-width: none;
   padding: 1.1rem 0;
-  -webkit-overflow-scrolling: touch;
+  /* NO `-webkit-overflow-scrolling: touch` (removed 2026-08-28). It is
+     deprecated — iOS has scrolled these with momentum by default since iOS 13,
+     so it bought nothing — and it was actively harmful here: Safari promotes a
+     scroller carrying it to its own compositing layer, and a `position: fixed`
+     DESCENDANT of that layer is then positioned and clipped against the layer
+     instead of the viewport. That is what kept the Footwear and Clothing
+     dropdowns invisible on iPhones through two fixes that worked everywhere
+     else. The panels are also moved out to <body> in marathon-storefront.js,
+     so neither this property nor this scroller can reach them again. */
 }
 .mc-nav__scroll::-webkit-scrollbar { display: none; }
 .mc-nav__link {
@@ -1011,10 +916,30 @@
    toggle button's own position every time it opens, which is what `fixed`
    positioning requires anyway (it has no relationship to `.mc-nav__group`
    any more) and is what makes it escape the clipping in the first place. */
+/* PHONE-SAFE WIDTH AND HEIGHT (second half of the fix, 2026-08-28 — the owner
+   reported Footwear/Clothing still not working AFTER the `fixed` change above,
+   and this is why). The panel is 24-27rem wide and used to open flush with the
+   LEFT edge of the button that opened it, with no clamp of any kind. Measured
+   on the live shop: the nav strip's content is 858px wide, so on a ~390px
+   phone a shopper has to scroll the strip most of the way right before
+   Footwear and Clothing are even reachable — at which point those buttons sit
+   near the right edge, and a panel hung off the button's left edge starts at
+   ~300px and runs to ~568px. On a 390px screen that is a sliver, or nothing.
+   Same class of failure as the clipping above: the click worked, the panel was
+   just not where anyone could see it.
+
+   So: never wider than the screen, and never taller than the space below the
+   button (a long category list on a short phone in landscape scrolls inside
+   the panel rather than running off the bottom). The horizontal clamp itself
+   is in marathon-storefront.js, which is the only place that knows where the
+   button actually is. */
 .mc-nav__panel {
   position: fixed;
   z-index: 20;
-  min-width: 22rem;
+  min-width: min(22rem, calc(100vw - 2.4rem));
+  max-width: calc(100vw - 2.4rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: grid;
   gap: 0.2rem;
   padding: 1rem;
@@ -1078,6 +1003,22 @@
 }
 /* The children sit in from their parent so the structure reads at a glance. */
 .mc-drawer-group > ul { padding-inline-start: 1.6rem; }
+/* THE DRAWER MUST NEVER BLANK ITSELF (owner report 2026-08-28: "click the
+   burger sign, clothing and sneakers don't open" — in fact the whole menu
+   went empty). Dawn's `MenuDrawer` script marks the list a submenu belongs to
+   with `submenu-open`, and Dawn's stylesheet answers that with
+   `.js .menu-drawer__navigation .submenu-open { visibility: hidden; }` —
+   correct for Dawn, which slides a separate `.menu-drawer__submenu` panel in
+   over the hidden list. These groups are native `<details>` that expand in
+   place instead, so there is no panel to slide in and hiding the list hides
+   everything. The real fix is in snippets/marathon-nav.liquid, which no longer
+   gives Dawn's script a `.has-submenu` ancestor to find; this rule is the belt
+   to that pair of braces, so the drawer cannot disappear again if the class
+   ever arrives by another route. Scoped to this navigation only — no Dawn
+   slide-in submenu exists anywhere in this theme to break. Carries `.js` and
+   one class more than Dawn's selector so it wins on specificity rather than on
+   which stylesheet happens to load second. */
+.js .menu-drawer__navigation .menu-drawer__menu.submenu-open { visibility: visible; }
 
 
 /* ─── "SEE ALL" ────────────────────────────────────────────────────────────── */
@@ -1598,3 +1539,38 @@ body, body * {
   font-weight: 500;
 }
 .mc-hero__cta:hover { border-color: var(--mc-fg); background: rgb(255 255 255 / 0.06); }
+
+/* MSA:fence:start ─ THE FENCE ON EVERY TEMPLATE (marathon-site-agents, recipe fence-background).
+   One set of tokens decides the page background everywhere: the image, how it
+   is laid out, and the overlay that keeps body text readable on it. The
+   pipeline's contrast check reads --mc-fence-overlay (via ::after) before any
+   publish. Dawn paints each section's colour scheme as an opaque `.gradient`
+   box, which is what hid the fence on product, cart, contact and the footer;
+   section-level scheme boxes are see-through now, cards and inputs keep theirs. */
+:root {
+  --mc-fence-image: url('fence-tile-color.webp');
+  --mc-fence-repeat: repeat;
+  --mc-fence-size: 224px 224px;
+  --mc-fence-size-lg: 320px 320px;
+  --mc-fence-overlay: rgb(8 7 6 / 0.10);
+}
+.mc-fence-bg {
+  background-image: var(--mc-fence-image) !important;
+  background-repeat: var(--mc-fence-repeat) !important;
+  background-size: var(--mc-fence-size) !important;
+  background-position: center top !important;
+}
+@media screen and (min-width: 750px) {
+  .mc-fence-bg { background-size: var(--mc-fence-size-lg) !important; }
+}
+.mc-fence-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--mc-fence-overlay);
+}
+main .shopify-section > .gradient,
+.shopify-section-group-footer-group > .gradient {
+  background: transparent !important;
+}
+/* MSA:fence:end */
