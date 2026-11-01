@@ -16,7 +16,7 @@
 //
 // SAFETY: the engine NEVER writes /stock — with ONE owner-mandated exception
 // (2026-09-23): the refusal write-off below, which erases a phantom count after
-// the location refused the size on four different days. It writes one cell per
+// the location refused the size on two different days (MIN_DISTINCT_DAYS). It writes one cell per
 // write-off, only through applyMovementAdmin (ledger row type refusal_writeoff,
 // guarded by the exact count it planned from), and never touches another size
 // or location (functions/lib/refusal-writeoff.cjs). Claim-before-act lock so overlapping
@@ -614,9 +614,9 @@ async function runScan() {
     const stock = Object.fromEntries(stockSnaps);
     const movements = Object.values(movementsSnap.val() || {});
 
-    // ── WRITE-OFF AFTER FOUR REFUSED DAYS (owner rule 2026-09-23) ─────────────
+    // ── WRITE-OFF AFTER TWO REFUSED DAYS (owner rule 2026-09-23; 2 since 1 Nov)
     // BEFORE the engine plans: a location (Hub 1, Hub 2, Central) that refused
-    // one size on four different days has its pre-refusal paper count for that
+    // one size on two different days has its pre-refusal paper count for that
     // one cell erased, through applyMovementAdmin. The snapshot is patched to
     // match, so THIS scan already plans from the empty cell — the item leaves
     // Recount Needed and the cell asks upstream as usual. Every input is one

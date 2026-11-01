@@ -1,7 +1,7 @@
-// ─── WRITE-OFF AFTER FOUR REFUSED DAYS ────────────────────────────────────────
+// ─── WRITE-OFF AFTER TWO REFUSED DAYS (four until Junid lowered it, 1 Nov 2026) ─
 // Run: cd functions && node --test test/refusal-writeoff.test.cjs
 //
-// Owner rule (2026-09-23): a location that refused one product/size on four
+// Owner rule (2026-09-23; threshold 4 → 2 on 2026-11-01): a location that refused one product/size on MIN_DISTINCT_DAYS
 // different calendar days (Africa/Johannesburg), with no fulfilment of that size
 // in between, does not have it — erase the pre-refusal paper count for that ONE
 // cell automatically and let the flow restart (functions/lib/refusal-writeoff.cjs).
@@ -16,7 +16,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
-const { planRefusalWriteoffs, applyRefusalWriteoffs, sastDay } = require("../lib/refusal-writeoff.cjs");
+const { planRefusalWriteoffs, applyRefusalWriteoffs, sastDay, MIN_DISTINCT_DAYS } = require("../lib/refusal-writeoff.cjs");
 const { computeRefillPlan, sanitizeUpdate } = require("../lib/refill-engine.cjs");
 
 const NOW = Date.parse("2026-09-23T12:45:00.000Z");
@@ -253,14 +253,36 @@ test("the pre-refusal bound: a sale in between never lets more than was on paper
   assert.equal((await read(db2, `stock/hub2/${PID}/M`)).qty, 0);
 });
 
-test("four refusals on only THREE different days is not enough (same SAST day counts once)", async () => {
-  const rr = RR();
-  // Move the 14 Sep refusal onto 12 Sep SAST (21:59 UTC on the 11th is 23:59 SAST on the 11th — use the 12th).
-  rr["-P1P_Uph_VRRq1rRY0um"].resolvedAt = "2026-09-12T20:00:00.000Z";   // 22:00 SAST, 12 Sep
-  const db = world({ rr });
+test("TWO refusals on the SAME SAST day are one day — not enough; a second day writes it off (Junid, 1 Nov 2026)", async () => {
+  assert.equal(MIN_DISTINCT_DAYS, 2);
+  const base = { "-P15Ik7-dD5dDa-9Bfsh": RR()["-P15Ik7-dD5dDa-9Bfsh"] };
+  // 12 Sep 13:30 SAST and 12 Sep 22:00 SAST (20:00 UTC): one Johannesburg day.
+  const sameDay = { ...base, a: refusal(REFUSED_AT[0]), b: refusal("2026-09-12T20:00:00.000Z") };
+  const db = world({ rr: sameDay });
   const { plan } = await scan(db);
   assert.equal(plan.writeoffs.length, 0);
   assert.equal((await read(db, `stock/hub2/${PID}/M`)).qty, 3);
+  // 22:00 UTC is already 13 Sep in Johannesburg → two different days → written off.
+  const twoDays = { ...base, a: refusal(REFUSED_AT[0]), b: refusal("2026-09-12T22:00:00.000Z") };
+  const db2 = world({ rr: twoDays });
+  const { res } = await scan(db2);
+  assert.equal(res.applied.length, 1);
+  assert.deepEqual(res.applied[0].days, ["2026-09-12", "2026-09-13"]);
+  assert.equal((await read(db2, `stock/hub2/${PID}/M`)).qty, 0);
+});
+
+test("a cell paused at two or three refused days under the old rule of four is written off now (the backfill)", async () => {
+  for (const n of [2, 3]) {
+    const rr = { "-P15Ik7-dD5dDa-9Bfsh": RR()["-P15Ik7-dD5dDa-9Bfsh"] };
+    REFUSED_AT.slice(0, n).forEach((at, i) => { rr[`r${i}`] = refusal(at); });
+    const db = world({ rr });
+    const { res } = await scan(db);
+    assert.equal(res.applied.length, 1, `${n} days`);
+    assert.equal(res.applied[0].days.length, n);
+    assert.equal((await read(db, `stock/hub2/${PID}/M`)).qty, 0);
+    // …and only once.
+    assert.equal((await scan(db)).plan.writeoffs.length, 0);
+  }
 });
 
 test("the calendar day is Johannesburg's: 23:30 UTC is already the next day", () => {
@@ -270,13 +292,14 @@ test("the calendar day is Johannesburg's: 23:30 UTC is already the next day", ()
 
 test("a fulfilment of the size in between restarts the count", async () => {
   const rr = RR();
-  rr.fulfilledMid = { ...refusal("2026-09-15T10:00:00.000Z"), status: "fulfilled" };
+  // After the fulfilment only ONE refused day is left (17 Sep) — below two.
+  rr.fulfilledMid = { ...refusal("2026-09-17T12:00:00.000Z"), status: "fulfilled" };
   const db = world({ rr });
   const { plan } = await scan(db);
   assert.equal(plan.writeoffs.length, 0);
   // A PARTIAL send (sentQty > 0) found some — it restarts the count too.
   const rr2 = RR();
-  rr2.partial = refusal("2026-09-15T10:00:00.000Z", { sentQty: 1 });
+  rr2.partial = refusal("2026-09-17T12:00:00.000Z", { sentQty: 1 });
   const { plan: p2 } = await scan(world({ rr: rr2 }));
   assert.equal(p2.writeoffs.length, 0);
 });
@@ -339,7 +362,7 @@ test("Marathon Pine is excluded; a shop is never a refusing location; the kill s
 
   // …but a FULFILMENT to Pine in the middle of the run still restarts the count.
   const rrPineFulfil = RR();
-  rrPineFulfil.toPine = { ...refusal("2026-09-15T10:00:00.000Z", { requestingLocation: "marathon-pine" }), status: "fulfilled" };
+  rrPineFulfil.toPine = { ...refusal("2026-09-17T12:00:00.000Z", { requestingLocation: "marathon-pine" }), status: "fulfilled" };
   assert.equal((await scan(world({ rr: rrPineFulfil }))).plan.writeoffs.length, 0);
 
   const off = await scan(world(), { config: { ...CONFIG, refusalWriteoff: { enabled: false } } });
@@ -451,19 +474,17 @@ test("a count that rose with NO arrival in the ledger is still capped at what wa
 });
 
 test("the day is when staff SAID no (refusedAt), not when the scan closed it the next morning", async () => {
-  // Refusals said on 12, 12 (19:30 SAST), 14 and 16 Sep: three days. The 19:30
-  // one was closed by the 07:00 scan on the 13th — dated by resolvedAt it would
-  // be a fourth day and erase the cell.
+  // Refusals said on 12 and 12 (19:30 SAST) Sep: one day. The 19:30 one was
+  // closed by the 07:00 scan on the 13th — dated by resolvedAt it would be a
+  // second day and erase the cell.
   const rr = {
     a: refusal("2026-09-12T08:00:00.000Z"),
     b: refusal("2026-09-13T05:00:00.000Z", { refusedAt: "2026-09-12T17:30:00.000Z", refusedByLoc: "hub2" }),
-    c: refusal("2026-09-14T08:00:00.000Z"),
-    d: refusal("2026-09-16T08:00:00.000Z"),
   };
   assert.equal((await scan(world({ rr }))).plan.writeoffs.length, 0);
-  rr.e = refusal("2026-09-17T08:00:00.000Z");
+  rr.e = refusal("2026-09-14T08:00:00.000Z");
   const { res } = await scan(world({ rr }));
-  assert.deepEqual(res.applied[0].days, ["2026-09-12", "2026-09-14", "2026-09-16", "2026-09-17"]);
+  assert.deepEqual(res.applied[0].days, ["2026-09-12", "2026-09-14"]);
   assert.equal(res.applied[0].refusals.find((x) => x.rrId === "b").at, "2026-09-12T17:30:00.000Z");
 });
 
@@ -525,12 +546,12 @@ test("a qualifying run on a deleted product is reported as deferred, never silen
 
 test("a request Central actually SENT is a fulfilment even if a stale Out of Stock tap marked it cancelled", async () => {
   const rr = RR();
-  rr.raced = refusal("2026-09-15T10:00:00.000Z", { rejectedBy: "admin", fulfilledBy: { movementId: "rrf_raced", qty: 1 } });
+  rr.raced = refusal("2026-09-17T12:00:00.000Z", { rejectedBy: "admin", fulfilledBy: { movementId: "rrf_raced", qty: 1 } });
   assert.equal((await scan(world({ rr }))).plan.writeoffs.length, 0);
 });
 
 test("a transfer OUT of the cell in the ledger restarts the count, with no request row at all", async () => {
-  const movements = { s: { type: "transfer_out", productId: PID, size: "M", qty: 1, from: "hub2", to: "marathon-pe", ts: "2026-09-15T10:00:00.000Z", before: { hub2: 4 }, after: { hub2: 3 } } };
+  const movements = { s: { type: "transfer_out", productId: PID, size: "M", qty: 1, from: "hub2", to: "marathon-pe", ts: "2026-09-17T12:00:00.000Z", before: { hub2: 4 }, after: { hub2: 3 } } };
   assert.equal((await scan(world({ movements }))).plan.writeoffs.length, 0);
   // …but a transfer INTO the cell is an arrival, not a fulfilment: protected, run still stands.
   const stock = STOCK(); stock.hub2[PID].M = cell(4, { updatedAt: "2026-09-15T10:00:00.000Z" });

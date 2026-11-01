@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the write-off digest mailer (writeoff-digest-mailer.mjs).
+  Every 10 minutes it sends any digest the 19:40 refusalWriteoffDigest function
+  filed in /refill_engine/refusalWriteoffDigestOutbox to Junid (gunidmoh@gmail.com)
+  over Gmail SMTP as the shop mailbox, and records Gmail's answer.
+
+  KeepAlive + ThrottleInterval, NOT StartInterval (same choice as
+  com.marathon.orderspollwatchdog: launchd once silently stopped firing every
+  StartInterval agent). The script runs once and exits; launchd respawns it no
+  sooner than every 600 seconds.
+
+  INSTALL:
+    cp scripts/refill/com.marathon.writeoffdigestmail.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marathon.writeoffdigestmail.plist
+  Nothing secret here: the mailbox password is in .env.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.writeoffdigestmail</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/refill/writeoff-digest-mailer.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/writeoff-digest-mail.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/writeoff-digest-mail.err.log</string>
+</dict>
+</plist>

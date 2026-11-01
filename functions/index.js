@@ -3594,7 +3594,9 @@ exports.refusalWriteoffDigest = onSchedule(
   async () => {
     const digest = require("./lib/writeoff-digest.cjs");
     await digest.runDigestAndConfirm({
-      db: admin.database(), nowMs: Date.now(), channels: [digest.emailViaAlertLog()], api: digest.monitoringApi(),
+      // Gmail SMTP via the mini FIRST (the route that reaches Junid, 1 Nov 2026),
+      // the Monitoring alert email second.
+      db: admin.database(), nowMs: Date.now(), channels: [digest.emailViaMiniOutbox(admin.database()), digest.emailViaAlertLog()], api: digest.monitoringApi(),
     });
   }
 );

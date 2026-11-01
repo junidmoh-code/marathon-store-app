@@ -1,12 +1,17 @@
 // ─── "WRITTEN OFF AFTER REFUSAL" — what the super-admin card shows ───────────
 // The records are written by the hourly scan (functions/lib/refusal-writeoff.cjs)
 // at /refill_engine/refusalWriteoffs/{id} whenever a location refused one size
-// on four different days and its pre-refusal count was erased. This file turns
+// on REFUSAL_WRITEOFF_DAYS different days and its pre-refusal count was erased. This file turns
 // them into card rows: product, size, location, units, who refused and when.
 // Pure — the screen only draws what this returns, and the test pins that it
 // reads exactly the fields the engine writes.
 
 import { nameOf } from "./sectionRouting";
+
+// The write-off threshold, as the card words it. The ONE source is
+// functions/lib/refusal-writeoff.cjs MIN_DISTINCT_DAYS (Junid lowered it from 4
+// to 2 on 1 Nov 2026); refusalWriteoffThreshold.test.js fails if they differ.
+export const REFUSAL_WRITEOFF_DAYS = 2;
 
 const LOC = { hub1: "Hub 1", hub2: "Hub 2", central: "Central", "marathon-pe": "Marathon PE", trophy: "Trophy" };
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -78,6 +83,24 @@ export function digestStatusLine(status, nowMs) {
     return { tone: "warn", text: "The daily email has not been checked yet — the check runs with the next digest at 19:40." };
   }
   const at = sastStamp(Number(status.atMs));
+  // GMAIL'S ANSWER FIRST (1 Nov 2026): the mini sends the digest over Gmail
+  // SMTP to the inbox Junid reads and records Gmail's reply. A receipt beats
+  // every Monitoring state, a stale "checking" included (CodeRabbit #831); an
+  // unsent mail carried over a quiet day is still shown (pendingCount).
+  const m = status.mail;
+  const mailRun = status.outcome === "sent" || status.outcome === "nothing_new" || status.outcome === "no_records";
+  if (m && typeof m === "object" && mailRun && nowMs - Number(status.atMs) <= DIGEST_STALE_MS) {
+    const n0 = Number(status.count) || Number(status.pendingCount) || 0;
+    const what0 = `${n0} write-off${n0 === 1 ? "" : "s"}`;
+    const mAt = sastStamp(Number(status.pendingAtMs) || Number(status.atMs));
+    if (m.state === "sent") return { tone: "ok", text: `Emailed ${what0} to ${m.to} at ${sastStamp(Number(m.atMs) || Number(status.atMs))} — Gmail accepted it${m.messageId ? ` (${m.messageId})` : ""}.` };
+    if (m.state === "failed") return { tone: "fail", text: `The ${mAt} email with ${what0} to ${m.to} has NOT gone out after ${m.attempts || "several"} tries: ${m.why || "unknown"} — the mini retries hourly. The full list is below.` };
+    if (m.state === "retrying") return { tone: "warn", text: `The ${mAt} email with ${what0} has not gone yet (try ${m.attempts}: ${m.why || "unknown"}) — the mini tries again every 10 minutes.` };
+    if (m.state === "queued" && nowMs - (Number(status.pendingAtMs) || Number(status.atMs)) > 30 * 60e3) {
+      return { tone: "fail", text: `The ${mAt} email with ${what0} is still waiting for the Mac mini to send it — check that the mini is on (com.marathon.writeoffdigestmail).` };
+    }
+    if (m.state === "queued") return { tone: "warn", text: `The ${mAt} email with ${what0} is queued — the Mac mini sends it within 10 minutes.` };
+  }
   // A check that never finished says so, however old — it is not "never ran".
   if (status.outcome === "sent" && status.delivery?.state === "checking" && nowMs - Number(status.atMs) > 15 * 60e3) {
     return { tone: "fail", text: `The ${at} email check never finished — the run was cut off, so whether the email left is unknown.` };

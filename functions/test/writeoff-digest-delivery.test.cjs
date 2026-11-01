@@ -194,3 +194,61 @@ test("entry point: nothing new → status says so, no Google call", async () => 
   assert.equal(asked, 0);
   assert.equal((await db.ref(STATUS).once("value")).val().outcome, "nothing_new");
 });
+
+// ─── THE EMAIL THAT ARRIVES (1 Nov 2026) ─────────────────────────────────────
+// Root cause of the silent digest: Monitoring email to junidmoh@ — every email
+// that reaches Junid goes over Gmail SMTP to gunidmoh@. The digest now files
+// the finished email for the mini, which sends it that way.
+const { emailViaMiniOutbox, OUTBOX, MAIL_TO } = require("../lib/writeoff-digest.cjs");
+const { MIN_DISTINCT_DAYS } = require("../lib/refusal-writeoff.cjs");
+
+test("the outbox channel files ONE email for gunidmoh@ with the whole list, keyed like the archive; status says queued", async () => {
+  const db = world();
+  const logged = [];
+  const res = await runDigestAndConfirm({ db, nowMs: SENT, channels: [emailViaMiniOutbox(db), emailViaAlertLog((l) => logged.push(l))], api: googleThatSees(logged), ...quiet });
+  assert.equal(MAIL_TO, "gunidmoh@gmail.com");
+  const box = (await db.ref(OUTBOX).once("value")).val();
+  assert.deepEqual(Object.keys(box), [res.archiveKey]);
+  const e = box[res.archiveKey];
+  assert.equal(e.to, "gunidmoh@gmail.com");
+  assert.equal(e.createdAtMs, SENT);
+  assert.match(e.subject, /^\[Write-off digest\] 1 size \/ \d+ units? written off after two refused days$/);
+  assert.match(e.text, /written off after two refused days/);
+  assert.equal(MIN_DISTINCT_DAYS, 2);
+  const st = (await db.ref(STATUS).once("value")).val();
+  assert.deepEqual(st.mail, { state: "queued", to: "gunidmoh@gmail.com" });
+  assert.equal(st.delivery.state, "alert_raised");
+});
+
+test("Gmail's answer written by the mini mid-check is never overwritten by the Monitoring verdict", async () => {
+  const db = world();
+  const logged = [];
+  const confirm = async (a) => {
+    // the mini sends while Google is being asked
+    await db.ref(`${STATUS}/mail`).set({ state: "sent", to: "gunidmoh@gmail.com", messageId: "<x@gmail>" });
+    return { state: "not_sent", why: "test" };
+  };
+  await runDigestAndConfirm({ db, nowMs: SENT, channels: [emailViaMiniOutbox(db), emailViaAlertLog((l) => logged.push(l))], api: googleThatSees(logged), confirm, ...quiet });
+  const st = (await db.ref(STATUS).once("value")).val();
+  assert.equal(st.mail.state, "sent");
+  assert.equal(st.delivery.state, "not_sent");
+});
+
+test("a quiet day keeps an earlier digest's UNSENT mail on the status (never 'nothing new' over it)", async () => {
+  const db = makeFakeDb({ refill_engine: { refusalWriteoffDigestStatus: { atMs: SENT, outcome: "sent", count: 11, archiveKey: "2026-09-23_1", mail: { state: "retrying", to: "gunidmoh@gmail.com", attempts: 2 } } } });
+  await runDigestAndConfirm({ db, nowMs: SENT + 864e5, channels: [emailViaMiniOutbox(db)], api: {}, ...quiet });
+  const st = (await db.ref(STATUS).once("value")).val();
+  assert.equal(st.outcome, "nothing_new");
+  assert.equal(st.mail.state, "retrying");
+  assert.equal(st.archiveKey, "2026-09-23_1");
+  assert.equal(st.pendingCount, 11);
+  // A SECOND quiet day keeps the real count and the original time.
+  await runDigestAndConfirm({ db, nowMs: SENT + 2 * 864e5, channels: [emailViaMiniOutbox(db)], api: {}, ...quiet });
+  const st2 = (await db.ref(STATUS).once("value")).val();
+  assert.equal(st2.pendingCount, 11);
+  assert.equal(st2.pendingAtMs, SENT);
+  // …and a SENT one is not carried.
+  const db2 = makeFakeDb({ refill_engine: { refusalWriteoffDigestStatus: { atMs: SENT, outcome: "sent", count: 11, mail: { state: "sent" } } } });
+  await runDigestAndConfirm({ db: db2, nowMs: SENT + 864e5, channels: [emailViaMiniOutbox(db2)], api: {}, ...quiet });
+  assert.equal((await db2.ref(STATUS).once("value")).val().mail, undefined);
+});

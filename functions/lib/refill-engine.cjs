@@ -1731,7 +1731,7 @@ function computeRefillPlan(snapshot) {
   const arrivedAfter = (loc, pid, sizeKey, ts) =>
     (arrivedAt.get(`${loc}|${pid}|${sizeKey}`) || 0) > ts;
   // ── A WRITE-OFF ANSWERS THE REFUSALS IT CONSUMED (2026-09-23) ──────────────
-  // After four refused days the scan erases the refusing location's phantom
+  // After two refused days (refusal-writeoff.cjs MIN_DISTINCT_DAYS) the scan erases the refusing location's phantom
   // count (functions/lib/refusal-writeoff.cjs, ledger type refusal_writeoff).
   // The "no" those refusals said is then SETTLED — the count now agrees with
   // the shelf — so it must not also keep the requester resting out a cooldown

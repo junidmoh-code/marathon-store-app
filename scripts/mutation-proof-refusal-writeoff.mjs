@@ -1,4 +1,4 @@
-// ─── MUTATION PROOF — write-off after four refused days ──────────────────────
+// ─── MUTATION PROOF — write-off after two refused days (four until 1 Nov 2026)
 // Each guard in functions/lib/refusal-writeoff.cjs (and the engine / writer
 // hooks it relies on) is broken on purpose, one at a time; the test that pins
 // it must go RED, and GREEN again once the bytes are restored. Refuses a dirty
@@ -22,7 +22,7 @@ const MUTATIONS = [
   { id: "M-FULFIL-RESETS", guard: "a fulfilment in between restarts the count", file: WO,
     from: "    for (const e of evs) { if (e.fulfilled) run = []; else run.push(e); }", to: "    for (const e of evs) { if (!e.fulfilled) run.push(e); }", nodeTests: T },
   { id: "M-PARTIAL-IS-FULFIL", guard: "a partial send (sentQty) counts as a fulfilment", file: WO,
-    from: 'const isFulfilment = (rr) => rr.status === "fulfilled" || num(Number(rr.sentQty)) > 0;', to: 'const isFulfilment = (rr) => rr.status === "fulfilled";', nodeTests: T },
+    from: 'const isFulfilment = (rr) => rr.status === "fulfilled" || num(Number(rr.sentQty)) > 0\n', to: 'const isFulfilment = (rr) => rr.status === "fulfilled"\n', nodeTests: T },
   { id: "M-ARRIVALS-PROTECTED", guard: "stock that arrived after the first refusal is never erased", file: WO,
     from: "        if (m.to === loc && ARRIVAL_TYPES.has(m.type) && num(Number(m.qty)) > 0) protectedQty += num(Number(m.qty));", to: "", nodeTests: T },
   { id: "M-PRE-REFUSAL-BOUND", guard: "never more than was on paper when the refusals began", file: WO,
@@ -40,9 +40,9 @@ const MUTATIONS = [
   { id: "M-WINDOW", guard: "a run older than the ledger window waits unless the cell is untouched", file: WO,
     from: "    if (run[0].ts < windowStartMs && !untouchedSince) {", to: "    if (false) {", nodeTests: T },
   { id: "M-PINE", guard: "Marathon Pine is excluded", file: WO,
-    from: "    if (!fulfilled && EXCLUDED_LOCATIONS.includes(rr.requestingLocation)) continue;", to: "", nodeTests: T },
+    from: "    if (!fulfilled && excluded.has(rr.requestingLocation)) continue;", to: "", nodeTests: T },
   { id: "M-PINE-FULFIL-COUNTS", guard: "a fulfilment to Pine still restarts the count", file: WO,
-    from: "    if (!fulfilled && EXCLUDED_LOCATIONS.includes(rr.requestingLocation)) continue;", to: "    if (EXCLUDED_LOCATIONS.includes(rr.requestingLocation)) continue;", nodeTests: T },
+    from: "    if (!fulfilled && excluded.has(rr.requestingLocation)) continue;", to: "    if (excluded.has(rr.requestingLocation)) continue;", nodeTests: T },
   { id: "M-KILL-SWITCH", guard: "the kill switch stops it", file: WO,
     from: "  if (config?.refusalWriteoff?.enabled === false) return out;   // live kill switch", to: "", nodeTests: T },
   { id: "M-REPAIR", guard: "a half-applied write-off is repaired, not lost", file: WO,
@@ -50,7 +50,7 @@ const MUTATIONS = [
   { id: "M-STREAK-CLEAR", guard: "the streaks the refusals built are cleared (Recount Needed)", file: WO,
     from: "      patch[`refill_engine/rejectStreak/${dest}/${w.pid}/${sk}`] = null;", to: "", nodeTests: T },
   { id: "M-SNAPSHOT-PATCH", guard: "the same scan plans from the empty cell", file: WO,
-    from: "      stockRow[w.cellKey] = { ...(c && typeof c === \"object\" ? c : {}), qty: after, mv: w.id, lastType: \"adjustment\" };", to: "", nodeTests: T },
+    from: "      stockRow[w.cellKey] = { ...(c && typeof c === \"object\" ? c : {}), qty: liveQty, ...(r.idempotent ? {} : { mv: w.id, lastType: \"adjustment\" }) };", to: "", nodeTests: T },
   { id: "M-EXPECT", guard: "a cell that moved since the plan is not erased", file: ADMIN,
     from: "      if (movement.expectQty != null && curQty !== Number(movement.expectQty)) return undefined;   // moved since the plan — reported below", to: "", nodeTests: T },
   { id: "M-LASTTYPE", guard: "the cell's lastType stays inside the live /stock rule enum", file: ADMIN,
@@ -61,6 +61,13 @@ const MUTATIONS = [
     from: "            && !writtenOffAfter(rt.source || denier, pid, sizeKey, Date.parse(rt.lastRejectedAt || 0) || 0)) {", to: ") {", nodeTests: T },
   { id: "M-ENGINE-DISPUTE", guard: "a write-off clears #641's count-disputed row", file: ENGINE,
     from: '(m.type === "adjustment" || m.type === "refusal_writeoff")', to: '(m.type === "adjustment")', nodeTests: T },
+  // 1 Nov 2026 (Junid: four → two).
+  { id: "M-THRESHOLD-TWO", guard: "the threshold is TWO different days", file: WO,
+    from: "const MIN_DISTINCT_DAYS = 2;", to: "const MIN_DISTINCT_DAYS = 3;", nodeTests: T, tests: ["src/components/stock/refusalWriteoffThreshold.test.js"] },
+  { id: "M-DIGEST-STATUS-UPDATE", guard: "Gmail's answer is never overwritten by the Monitoring verdict", file: "functions/lib/writeoff-digest.cjs",
+    from: "  await db.ref(STATUS).update({ delivery });", to: "  await recordStatus(db, { ...base, delivery });", nodeTests: ["test/writeoff-digest-delivery.test.cjs"] },
+  { id: "M-DIGEST-MAIL-TO", guard: "the mini mails gunidmoh@ whatever the row says", file: "scripts/refill/writeoffDigestMailCore.mjs",
+    from: "    to: DIGEST_MAIL_TO,\n", to: "    to: entry.to || DIGEST_MAIL_TO,\n", tests: ["scripts/refill/writeoffDigestMailCore.test.mjs"] },
 ];
 
 function runVitest(files) {

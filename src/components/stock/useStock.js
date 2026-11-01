@@ -399,7 +399,7 @@ export function useRetryState() {
 }
 
 // /refill_engine/refusalWriteoffs — what the scan erased after a location
-// refused a size on four different days (functions/lib/refusal-writeoff.cjs).
+// refused a size on two different days (functions/lib/refusal-writeoff.cjs).
 // Super-admin only: callers pass enabled=false for everyone else, so the read
 // is never even opened. Bounded: the newest 200 by key (keys are ordered by
 // the run's last refusal), never the whole node.
