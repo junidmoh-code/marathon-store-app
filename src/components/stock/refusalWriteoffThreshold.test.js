@@ -41,5 +41,7 @@ describe("refusal write-off threshold", () => {
     expect(l.tone).toBe("warn");
     expect(l.text).toContain("11 write-offs");
     expect(digestStatusLine({ atMs: AT + 864e5, outcome: "nothing_new" }, AT + 864e5 + 60e3).tone).toBe("ok");
+    // a run that failed to deliver is never hidden behind yesterday's mail
+    expect(digestStatusLine({ ...quiet, outcome: "no_channel_delivered" }, AT + 864e5 + 60e3).tone).toBe("fail");
   });
 });

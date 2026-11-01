@@ -242,6 +242,11 @@ test("a quiet day keeps an earlier digest's UNSENT mail on the status (never 'no
   assert.equal(st.mail.state, "retrying");
   assert.equal(st.archiveKey, "2026-09-23_1");
   assert.equal(st.pendingCount, 11);
+  // A SECOND quiet day keeps the real count and the original time.
+  await runDigestAndConfirm({ db, nowMs: SENT + 2 * 864e5, channels: [emailViaMiniOutbox(db)], api: {}, ...quiet });
+  const st2 = (await db.ref(STATUS).once("value")).val();
+  assert.equal(st2.pendingCount, 11);
+  assert.equal(st2.pendingAtMs, SENT);
   // …and a SENT one is not carried.
   const db2 = makeFakeDb({ refill_engine: { refusalWriteoffDigestStatus: { atMs: SENT, outcome: "sent", count: 11, mail: { state: "sent" } } } });
   await runDigestAndConfirm({ db: db2, nowMs: SENT + 864e5, channels: [emailViaMiniOutbox(db2)], api: {}, ...quiet });

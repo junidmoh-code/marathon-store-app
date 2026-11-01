@@ -88,7 +88,8 @@ export function digestStatusLine(status, nowMs) {
   // every Monitoring state, a stale "checking" included (CodeRabbit #831); an
   // unsent mail carried over a quiet day is still shown (pendingCount).
   const m = status.mail;
-  if (m && typeof m === "object" && nowMs - Number(status.atMs) <= DIGEST_STALE_MS) {
+  const mailRun = status.outcome === "sent" || status.outcome === "nothing_new" || status.outcome === "no_records";
+  if (m && typeof m === "object" && mailRun && nowMs - Number(status.atMs) <= DIGEST_STALE_MS) {
     const n0 = Number(status.count) || Number(status.pendingCount) || 0;
     const what0 = `${n0} write-off${n0 === 1 ? "" : "s"}`;
     const mAt = sastStamp(Number(status.pendingAtMs) || Number(status.atMs));

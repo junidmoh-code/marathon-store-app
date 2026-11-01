@@ -277,10 +277,12 @@ async function runDigestAndConfirm({ db, nowMs, channels, api, confirm = confirm
     // quiet day must never turn an unsent email green (CodeRabbit #831).
     let prior = null;
     try { prior = (await db.ref(STATUS).once("value")).val(); } catch { prior = null; }
-    const pending = prior?.mail && prior.mail.state !== "sent" ? prior : null;
+    // Only on a QUIET run: a run that failed to deliver says so itself.
+    const quietRun = res.reason === "nothing_new" || res.reason === "no_records";
+    const pending = quietRun && prior?.mail && prior.mail.state !== "sent" ? prior : null;
     await recordStatus(db, {
       atMs: nowMs, outcome: res.reason,
-      ...(pending ? { mail: pending.mail, archiveKey: pending.archiveKey || null, pendingCount: Number(pending.count) || 0, pendingAtMs: Number(pending.atMs) || null } : {}),
+      ...(pending ? { mail: pending.mail, archiveKey: pending.archiveKey || null, pendingCount: Number(pending.pendingCount ?? pending.count) || 0, pendingAtMs: Number(pending.pendingAtMs ?? pending.atMs) || null } : {}),
     });
     log(`refusalWriteoffDigest: ${res.reason}`);
     return { ...res };
