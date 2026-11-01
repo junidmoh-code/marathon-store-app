@@ -151,14 +151,24 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
   // so the loader's per-slot quota counts only products the stylist can use.
   // allowRecent: a never-posted sample rebuilding a posted fit may wear what recent lookbooks wore (scripts only).
   const blocked = allowRecent ? new Set() : lookbook.pidsWithinDays(history, saDate, 14);
+  // The local stylist's picks (deps.fitAgent.wants) were already checked on the
+  // mini against a ledger that holds every lookbook AND every outfit post, so
+  // they are read first and not blocked again here.
+  const wanted = (deps.fitAgent && typeof deps.fitAgent.wants === "function" && (await deps.fitAgent.wants())) || [];
+  for (const pid of wanted) blocked.delete(pid);
   // A fixed hero (a rebuild of a posted fit: scripts only) is offered whatever the no-repeat says.
   if (fixedHero) { blocked.delete(fixedHero); used = new Set([...used].filter((p) => p !== fixedHero)); }
   // Headwear in at most one lookbook in three (Junid, 19 Oct). Decided
   // before the load, so a resting day reads no hats at all.
   const noHeadwear = headwear === "off" || (headwear === "rotate" && lookbook.headwearRests(await historySlots(db, history, saDate), saDate));
   if (noHeadwear) log("lookbook: no headwear today (one lookbook in three)");
-  const { candidates } = await loadLookbookCandidates(db, { nowMs, include: new Set(fixedHero ? [fixedHero] : []), skip: new Set([...blocked, ...used]), skipSlots: noHeadwear ? new Set(["hat"]) : new Set(),
+  const loaded = await loadLookbookCandidates(db, { nowMs, include: new Set([...(fixedHero ? [fixedHero] : []), ...wanted]), skip: new Set([...blocked, ...used]), skipSlots: noHeadwear ? new Set(["hat"]) : new Set(),
     skipHeadwear: ["beanie", "bucket", "visor"].filter((k) => !stylist.seasonRulesFor(stylist.seasonOf(saMonth)).headwear.includes(k)) });
+  // The 14-day no-repeat covers colourways too (styleFamily, 1 Nov 2026): a
+  // white "Just do it" tee two days after the black one is the same tee.
+  const blockedFamilies = blocked.size ? await lookbook.familiesOf(db, [...blocked]) : new Set();
+  const candidates = loaded.candidates.filter((c) => c.pid === fixedHero || wanted.includes(c.pid) || !blockedFamilies.has(lookbook.styleFamily(c.product && c.product.name, lookbook.posterBrand(c.product) || (c.product && c.product.brand) || "")));
+  if (candidates.length < loaded.candidates.length) log(`lookbook: ${loaded.candidates.length - candidates.length} colourway(s) of a piece worn in the last 14 days left out`);
   // Every candidate's style tags: cached, tagged now (a few), or read from its name.
   const tagRun = await ensureStyleTags(db, candidates.map((c) => {
     const ph = lookbook.approvedPhoto(c.product, c.node);
@@ -206,7 +216,7 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
     let seen = new Map();
     if (deps.readSeen) { try { seen = await deps.readSeen(candidates.map((c) => c.pid)); } catch (e) { log(`stylist: photo notes unreadable (${String(e && e.message).slice(0, 80)})`); } }
     for (let run = 0; run < 2 && !picked; run++) {
-      const o = lookbook.fitOffer(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, noHeadwear, rows: exactRows, requireSlots, hero: fixedHero, seen });
+      const o = lookbook.fitOffer(candidates, { recent, blocked, used: exclude, tags: tagRun.tags, month: saMonth, noHeadwear, rows: exactRows, requireSlots, hero: fixedHero, seen, keep: wanted });
       if (run === 0 && Object.keys(o.excluded || {}).length) log(`stylist: not offered — ${Object.entries(o.excluded).map(([k, n]) => `${k} ×${n}`).join("; ")}`);
       if (!o.offer) { fitResult = { ok: false, reason: o.reason, rounds: runs.flatMap((r) => r.rounds), costUSD: runs.reduce((t, r) => t + r.costUSD, 0) }; break; }
       const spent = runs.reduce((t, r) => t + r.costUSD, 0);
@@ -225,7 +235,7 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
           caption: f.caption,
           look: {
             key: f.formula, name: f.theme, header: fitRules.headerOf(f.theme), note: f.why,
-            score: Math.round(CRITERIA_MEAN(v.scores) * 10), source: "opus", choice: 1, of: 1,
+            score: Math.round(CRITERIA_MEAN(v.scores) * 10), source: res.source || "opus", choice: 1, of: 1,
             hero: f.hero ? f.hero.pid : null, colours: f.colours,
             critic: criticRecord(fitResult),
           },

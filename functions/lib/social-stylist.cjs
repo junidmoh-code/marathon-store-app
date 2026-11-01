@@ -165,7 +165,7 @@ function chooseStyledPicks(kind, result, answerText, { month = 10 } = {}) {
 const FIT_SLOTS = ["hat", "jacket", "tee", "bottoms", "bag", "sneakers"];
 
 /** { offer, reason, excluded } for one outfit post. Pure. */
-function fitOfferForOutfit(candidates, { used = new Set(), tags = new Map(), month = 10, seen = new Map() } = {}) {
+function fitOfferForOutfit(candidates, { used = new Set(), tags = new Map(), month = 10, seen = new Map(), keep = [] } = {}) {
   const spec = socialSelect.POST_KINDS.find((k) => k.key === "outfit");
   const pieces = (candidates || []).filter((c) => c && !used.has(c.pid)).map((c) => pieceOf(c, tags))
     .filter((p) => p && FIT_SLOTS.includes(p.slot) && !p.fullBody);
@@ -181,7 +181,7 @@ function fitOfferForOutfit(candidates, { used = new Set(), tags = new Map(), mon
     });
   }
   const core = [["tee", "jacket"], ["bottoms"], ["sneakers"]];
-  offered.splice(0, offered.length, ...fitRules.trimOptional(offered, core));
+  offered.splice(0, offered.length, ...fitRules.trimOptional(offered, core, { keep: new Set(keep) }));
   const have = new Set(offered.map((p) => p.slot));
   const missing = core.filter((alts) => !alts.some((s) => have.has(s))).map((alts) => alts.join("/"));
   if (missing.length) return { offer: null, excluded, reason: `the stylist found no outfit in live stock: nothing in two sizes for ${missing.join(", ")}` };
