@@ -134,3 +134,13 @@ test("the local prompt lists every option's pieces with prices and asks for the 
   assert.match(text, /monochrome-black/);
   assert.match(text, /no neutral/);
 });
+
+test("formulaProblems: the theme must be what the photos show", () => {
+  const plain = [P("t1", "tee", 350, "black"), P("b1", "bottoms", 750, "grey"), P("s1", "sneakers", 750, "white")];
+  assert.match(ls.formulaProblems("clean-luxe", plain)[0], /luxury/);
+  assert.deepEqual(ls.formulaProblems("clean-luxe", [...plain.slice(0, 2), { ...P("s2", "sneakers", 1300, "white"), brand: "CHRISTIAN LOUBOUTIN" }]), []);
+  assert.deepEqual(ls.formulaProblems("grey-scale", plain), []);
+  assert.equal(ls.formulaProblems("earth-tone-street", plain).length, 1);
+  assert.deepEqual(ls.formulaProblems("blue-denim", [P("t", "tee", 1, "white"), P("b", "bottoms", 1, "blue denim"), P("s", "sneakers", 1, "white")]), []);
+  assert.deepEqual(ls.formulaProblems("colour-pop", plain), []);
+});

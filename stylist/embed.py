@@ -28,6 +28,18 @@ VERSION = "v1"
 GARMENT = {"tee": "t-shirt", "jacket": "jacket", "bottoms": "pants", "sneakers": "sneakers", "hat": "cap", "bag": "bag"}
 
 
+def features(x):
+    """A feature tensor from get_*_features: a tensor in older transformers,
+    an output object (projected embeddings in pooler_output) in newer ones."""
+    if isinstance(x, torch.Tensor):
+        return x
+    for k in ("pooler_output", "image_embeds", "text_embeds"):
+        v = getattr(x, k, None)
+        if isinstance(v, torch.Tensor):
+            return v
+    raise TypeError(f"unexpected CLIP output {type(x).__name__}")
+
+
 def fetch(url):
     req = urllib.request.Request(url, headers={"User-Agent": "marathon-stylist/1"})
     with urllib.request.urlopen(req, timeout=30) as r:
@@ -60,7 +72,7 @@ def main():
         def text_emb(texts):
             with torch.no_grad():
                 t = proc(text=texts, return_tensors="pt", padding=True).to(device)
-                e = model.get_text_features(**t)
+                e = features(model.get_text_features(**t))
             return e / e.norm(dim=-1, keepdim=True)
 
         cache = {}
@@ -89,7 +101,7 @@ def main():
                 continue
             with torch.no_grad():
                 px = proc(images=imgs, return_tensors="pt").to(device)
-                ie = model.get_image_features(**px)
+                ie = features(model.get_image_features(**px))
             ie = ie / ie.norm(dim=-1, keepdim=True)
             scale = model.logit_scale.exp()
             for it, v in zip(batch, ie):

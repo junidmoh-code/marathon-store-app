@@ -55,7 +55,7 @@ const MODEL = process.env.STYLIST_MODEL || arg("model") || ls.LOCAL_MODEL_DEFAUL
 const LEDGER = arg("ledger") || path.join(HOME, "ledger.json");
 const REVIEW = Number(arg("review", 0)) || 0;
 const DRY = flag("dry") || REVIEW > 0;
-const MAX_TRIES = 3;
+const MAX_TRIES = 4;
 // The scheduled run must finish before the 06:00 reels read the outfit pick:
 // past 05:55 SAST no new model call starts (a manual --date/--force run has no deadline).
 const DEADLINE_MS = (() => {
@@ -142,7 +142,9 @@ async function reconcile(ledger, world, today) {
     put(date, "lookbook", pids.filter((x) => typeof x === "string"), e && e.formula);
   }
   for (const p of Object.values(world.posts)) {
-    if (!p || !["outfit", "lookbook"].includes(p.kind) || !["approved", "posting", "posted"].includes(p.status)) continue;
+    // Samples count too: Junid sees them, and the Diesel Grey cargo jean he
+    // called "the same jeans" was worn in seven samples, never in a post.
+    if (!p || !["outfit", "lookbook"].includes(p.kind) || !["approved", "posting", "posted", "sample"].includes(p.status)) continue;
     const at = Number(p.createdAt || p.scheduledAt) || 0;
     if (!at) continue;
     put(saDateStringFromMs(at), p.kind, (p.products || []).map((x) => x && x.pid).filter(Boolean), p.look && p.look.key);
@@ -186,7 +188,19 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
   const emb = world.emb || (world.emb = {});
   const missing = want.filter((x) => !emb[x.pid]);
   if (missing.length) Object.assign(emb, await embed(missing));
-  for (const p of pieces) p.emb = emb[p.pid] || null;
+  // Fashion-CLIP's plain-vs-loud reading is bimodal (median 0.96 on 1 Nov):
+  // a statement is the loudest quarter of its own slot. Light-blue or navy
+  // bottoms are denim, a neutral.
+  const loud = new Map();
+  for (const s of ls.SLOT_ORDER) {
+    const xs = pieces.filter((p) => p.slot === s && emb[p.pid]).sort((a, b) => emb[a.pid].statement - emb[b.pid].statement);
+    xs.forEach((p, i) => loud.set(p.pid, xs.length > 1 ? i / (xs.length - 1) : 0));
+  }
+  for (const p of pieces) {
+    const e = emb[p.pid];
+    p.emb = e ? { ...e, statement: loud.has(p.pid) && loud.get(p.pid) >= 0.75 ? 0.9 : 0.1,
+      colour: p.slot === "bottoms" && ["light blue", "navy"].includes(e.colour) ? "blue denim" : e.colour } : null;
+  }
   const recentVecs = recentPids.filter((pid) => emb[pid]).map((pid) => ({ slot: lookbook.lookbookSlot(world.byPid.get(pid).product), vec: emb[pid].vec }));
   const { pool, relaxed, removed } = ls.poolOf(pieces.filter((p) => p.emb), blocks, { recentVecs, saDate });
   log(`${kind}: pool ${pool.length} of ${pieces.length} offered (${removed} kept out by the ledger)${relaxed.length ? `; RELAXED for ${relaxed.join(", ")}: nothing unworn in 14 days, the least recently worn are offered` : ""}`);
