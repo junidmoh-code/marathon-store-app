@@ -313,11 +313,15 @@ function validateLocal(json, options, offer, { blocks = null } = {}) {
 // Gemma named a graphic tee, cargo jeans and a Lacoste mid-top "Clean Luxe" on
 // the first dry run (1 Nov). Each formula's colour or tier rule, checked on the
 // Fashion-CLIP colours and the brand tier. Pure.
+const POP_COLOURS = new Set(["red", "green", "olive", "khaki", "brown", "tan", "orange", "yellow", "pink", "purple", "burgundy", "light blue", "blue", "royal blue", "teal", "mint", "lilac", "gold", "maroon", "lime", "coral", "sky blue", "forest green"]);
 const EARTH = new Set(["olive", "khaki", "brown", "tan", "beige"]);
 function formulaProblems(formulaKey, pieces, theme = "") {
   // "<Colour> Pop" names an accent: never a neutral ("White Pop", 1 Nov review).
-  const pop = /^([A-Za-z]+)(?:[ -][A-Za-z]+)? Pop$/.exec(String(theme).trim());
-  if (formulaKey === "colour-pop" && pop && NEUTRAL_COLOURS.has(pop[1].toLowerCase())) return [`"${theme}" is not an accent colour: Colour Pop needs one clear colour (red, green, orange…)`];
+  // ("Retro Equality Pop" is a shoe's name, not a colour.)
+  if (formulaKey === "colour-pop") {
+    const c = String(theme).trim().replace(/ Pop$/, "").toLowerCase();
+    if (!POP_COLOURS.has(c)) return [`"${theme}" is not an accent colour: Colour Pop is one clear colour plus "Pop" (Red Pop, Green Pop, Orange Pop…)`];
+  }
   const cols = pieces.map((p) => p.emb && p.emb.colour).filter(Boolean);
   if (cols.length < pieces.length) return [];
   const only = (set) => cols.every((c) => set.has(c));

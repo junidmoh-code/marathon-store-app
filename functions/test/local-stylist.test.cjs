@@ -162,3 +162,9 @@ test("formulaProblems: white only on the shoe for Monochrome Black; a Pop is nev
   assert.match(ls.formulaProblems("colour-pop", whiteShorts, "White Pop")[0], /not an accent/);
   assert.deepEqual(ls.formulaProblems("colour-pop", whiteShorts, "Red Pop"), []);
 });
+
+test("a Pop theme names a colour, not a shoe", () => {
+  const x = [P("t", "tee", 1, "white"), P("b", "bottoms", 1, "blue denim"), P("s", "sneakers", 1, "red")];
+  assert.equal(ls.formulaProblems("colour-pop", x, "Retro Equality Pop").length, 1);
+  assert.deepEqual(ls.formulaProblems("colour-pop", x, "Light Blue Pop"), []);
+});
