@@ -31,7 +31,7 @@ describe("write-off digest mail", () => {
       [KEY]: ENTRY,
       "2026-10-31_1": { ...ENTRY, createdAtMs: NOW - 864e5 },
       empty: { createdAtMs: NOW - 864e5, text: "  " },
-      dead: { ...ENTRY, createdAtMs: NOW - 864e5, attempts: MAX_ATTEMPTS },
+      dead: { ...ENTRY, createdAtMs: NOW - 864e5, attempts: MAX_ATTEMPTS, lastTriedAtMs: NOW - 60e3 },   // exhausted, tried a minute ago
     };
     expect(dueEntries(box, NOW).map(([k]) => k)).toEqual(["2026-10-31_1", KEY]);
     expect(dueEntries(null, NOW)).toEqual([]);
