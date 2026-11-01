@@ -12,12 +12,13 @@ const SRC = readFileSync(new URL("./posthog-pixel.js", import.meta.url), "utf8")
 const KEY = "phc_AF6N3oHUSnSVfKqKxKDVvYgZKkmd3cY244Ww6qo334hP";
 
 function load({ cookie, cookieThrows = false, store = new Map(), storageThrows = false, captureThrows = false } = {}) {
+  let throwsLeft = captureThrows === true ? Infinity : (captureThrows || 0);
   const handlers = {};
   const calls = { init: [], capture: [], cookieNames: [] };
   const posthog = {
     __SV: 1,
     init(key, cfg) { calls.init.push({ key, cfg }); },
-    capture(name, props) { if (captureThrows) throw new Error("posthog not loaded"); calls.capture.push({ name, props }); },
+    capture(name, props) { if (throwsLeft > 0) { throwsLeft--; throw new Error("posthog not loaded"); } calls.capture.push({ name, props }); },
   };
   const window = { posthog };
   const ctx = {
@@ -179,6 +180,25 @@ describe("posthog-pixel.js (Shopify custom pixel)", () => {
     await flush();
     expect(retry.calls.capture).toHaveLength(1);
     expect(store.get("ph_checkout_completed_gid://shopify/Order/123")).toBe("1");
+  });
+
+  it("a failed send in the same sandbox does not block the next delivery of that order", async () => {
+    const store = new Map();
+    const { handlers, calls } = load({ store, captureThrows: 1 });
+    handlers.checkout_completed(CHECKOUT);
+    await flush();
+    expect(calls.capture).toHaveLength(0);
+    handlers.checkout_completed(CHECKOUT);
+    await flush();
+    expect(calls.capture).toHaveLength(1);
+  });
+
+  it("a malformed line item never throws out of the subscribe callback", async () => {
+    const { handlers, calls } = load();
+    const bad = { ...CHECKOUT, data: { checkout: { ...CHECKOUT.data.checkout, lineItems: [null, { quantity: 2 }] } } };
+    expect(() => handlers.checkout_started(bad)).not.toThrow();
+    await flush();
+    expect(calls.capture[0].props.item_count).toBe(2);
   });
 
   it("checkout_completed is still sent when storage is unavailable", async () => {

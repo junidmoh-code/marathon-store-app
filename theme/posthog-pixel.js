@@ -92,7 +92,7 @@ function checkoutProps(event) {
     subtotal: money(c.subtotalPrice),
     shipping: c.shippingLine ? money(c.shippingLine.price) : null,
     currency: (c.totalPrice && c.totalPrice.currencyCode) || c.currencyCode || null,
-    item_count: lines.reduce(function (n, l) { return n + (l.quantity || 0); }, 0),
+    item_count: lines.reduce(function (n, l) { return n + ((l && l.quantity) || 0); }, 0),
     line_count: lines.length,
     handles: lines.map(function (l) {
       return l && l.variant && l.variant.product ? handleOf(l.variant.product.url) : null;
@@ -120,14 +120,15 @@ const EVENTS = [
   "checkout_completed",
 ];
 
-// In-memory first (synchronous): two deliveries in the same sandbox would
-// otherwise both read "not seen" before either write lands. Storage then
-// covers a reload, which is a fresh sandbox.
 const sentOrders = new Set();
 function dedupeKey(props) {
   const id = props.order_id || props.checkout_token;   // token when Shopify gives no order id
   return id ? "ph_checkout_completed_" + id : null;
 }
+// In-memory first (synchronous): two deliveries in the same sandbox would
+// otherwise both read "not seen" before either write lands. Storage then
+// covers a reload, which is a fresh sandbox. If the send fails, the key is
+// released again (see the subscribe callback) so a later delivery can retry.
 async function alreadySent(key) {
   if (!key) return false;
   if (sentOrders.has(key)) return true;
@@ -138,27 +139,35 @@ async function alreadySent(key) {
   return false;
 }
 async function markSent(key) {
-  // Written only after capture() was handed the event, so a pixel that dies
+  // Written only after capture() accepted the event, so a pixel that dies
   // before getting that far leaves the order sendable on the next load.
+  // "Accepted" means queued by posthog-js, not confirmed delivered: PostHog
+  // gives no delivery acknowledgement. Two checkouts racing in separate tabs
+  // can both pass (storage has no atomic check-and-set) — count distinct
+  // order_id for revenue, as POSTHOG-SETUP.md says.
   if (!key) return;
   try { await browser.localStorage.setItem(key, "1"); } catch (e) { /* best effort */ }
 }
 
 EVENTS.forEach(function (name) {
   analytics.subscribe(name, function (event) {
-    const props = checkoutProps(event);
-    let key = null;
-    if (name === "checkout_completed") {
-      const c = (event && event.data && event.data.checkout) || {};
-      props.order_id = (c.order && c.order.id) || null;
-      props.revenue = props.total;
-      key = dedupeKey(props);
-    }
-    alreadySent(key)
-      .then(function (dup) {
-        if (dup) return null;
-        return boot().then(function (ph) { ph.capture(name, props); return markSent(key); });
-      })
-      .catch(function () { /* never break checkout */ });
+    try {
+      const props = checkoutProps(event);
+      let key = null;
+      if (name === "checkout_completed") {
+        const c = (event && event.data && event.data.checkout) || {};
+        props.order_id = (c.order && c.order.id) || null;
+        props.revenue = props.total;
+        key = dedupeKey(props);
+      }
+      alreadySent(key)
+        .then(function (dup) {
+          if (dup) return null;
+          return boot()
+            .then(function (ph) { ph.capture(name, props); return markSent(key); })
+            .catch(function () { if (key) sentOrders.delete(key); });   // release: a later delivery may retry
+        })
+        .catch(function () { /* never break checkout */ });
+    } catch (e) { /* never break checkout */ }
   });
 });
