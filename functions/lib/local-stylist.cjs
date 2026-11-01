@@ -58,12 +58,13 @@ const daysBetween = (a, b) => Math.round((dayMs(b) - dayMs(a)) / 86400000);
 
 /** What the ledger forbids on `saDate`. Pure. */
 function ledgerBlocks(ledger, saDate, { repeatDays = NO_REPEAT_DAYS, pairDays = PAIR_DAYS } = {}) {
-  const pids = new Set(), families = new Set(), pairs = new Set(), lastUsed = new Map();
+  const pids = new Set(), families = new Set(), pairs = new Set(), lastUsed = new Map(), familyLast = new Map();
   for (const e of (ledger && ledger.entries) || []) {
     if (!e || !e.date) continue;
     const age = daysBetween(e.date, saDate);
     if (!Number.isFinite(age)) continue;
     for (const p of e.pids || []) if (!lastUsed.has(p) || lastUsed.get(p) < e.date) lastUsed.set(p, e.date);
+    for (const f of e.families || []) if (f && (!familyLast.has(f) || familyLast.get(f) < e.date)) familyLast.set(f, e.date);
     if (age < 0 && e.status !== "planned") continue;
     if (age < repeatDays) {
       for (const p of e.pids || []) pids.add(p);
@@ -71,7 +72,7 @@ function ledgerBlocks(ledger, saDate, { repeatDays = NO_REPEAT_DAYS, pairDays = 
     }
     if (age < pairDays && e.pair) pairs.add(e.pair);
   }
-  return { pids, families, pairs, lastUsed };
+  return { pids, families, pairs, lastUsed, familyLast };
 }
 
 /** The pairing key: top pid + bottoms pid. Pure. */
@@ -111,19 +112,22 @@ function ledgerLines(ledger, saDate, days = PAIR_DAYS) {
  * rule still applies), so a thin slot never cancels the day. Pure.
  * pieces: [{ pid, slot, family, emb: { vec } }]; recentVecs: [{ slot, vec }]
  */
-function poolOf(pieces, blocks, { recentVecs = [] } = {}) {
+function poolOf(pieces, blocks, { recentVecs = [], saDate = "" } = {}) {
   const banned = (p) => blocks.pids.has(p.pid) || (p.family && blocks.families.has(p.family))
     || (p.emb && p.emb.vec && recentVecs.some((r) => r.slot === p.slot && cosine(r.vec, p.emb.vec) >= NEAR_DUPLICATE));
   const kept = pieces.filter((p) => !banned(p));
   const relaxed = [];
   for (const [slot] of CORE) {
     if (kept.some((p) => p.slot === slot)) continue;
+    // When a garment (its colourway family included) was last worn: a black
+    // tee's white colourway is as recent as the black tee (architect review).
+    const worn = (p) => [blocks.lastUsed.get(p.pid), p.family && blocks.familyLast && blocks.familyLast.get(p.family)].filter(Boolean).sort().pop() || "";
     const old = pieces.filter((p) => p.slot === slot)
-      .sort((a, b) => String(blocks.lastUsed.get(a.pid) || "").localeCompare(String(blocks.lastUsed.get(b.pid) || "")));
+      .sort((a, b) => worn(a).localeCompare(worn(b)) || jitter(`${saDate}|${a.pid}`) - jitter(`${saDate}|${b.pid}`));
     kept.push(...old.slice(0, 3));
     if (old.length) relaxed.push(slot);
   }
-  return { pool: kept, relaxed, removed: pieces.length - kept.length + relaxed.length };
+  return { pool: kept, relaxed, removed: pieces.filter((p) => banned(p)).length };
 }
 
 // ── FASHION-CLIP SCORING ────────────────────────────────────────────────────

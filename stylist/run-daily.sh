@@ -10,6 +10,12 @@ mkdir -p "$LOGDIR"
 LOG="$LOGDIR/stylist-$(date +%Y-%m-%d).log"
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/marathon/shopify-reconciler-sa.json"
+# The live checkout follows origin/main by itself (fast-forward only, and only
+# when nobody has local edits there), so a merged change to stylist/ or the
+# shared functions/lib rules needs no hand step on the mini.
+if [ -z "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]; then
+  git -C "$REPO" fetch -q origin main && git -C "$REPO" merge -q --ff-only origin/main >> "$LOG" 2>&1 || echo "stylist: could not fast-forward $REPO (kept as is)" >> "$LOG"
+fi
 # The Ollama service may still be starting after a reboot: wait up to 2 minutes.
 for i in $(seq 1 24); do curl -sf http://127.0.0.1:11434/api/version >/dev/null && break; sleep 5; done
 {

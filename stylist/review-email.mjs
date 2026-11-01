@@ -12,7 +12,6 @@
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,11 +20,8 @@ const require = createRequire(path.join(HERE, "../functions/package.json"));
 const admin = require("firebase-admin");
 const sharp = require("sharp");
 const { STORAGE_BUCKET } = require("./lib/photo-scope.cjs");
-const mailRequire = createRequire(path.join(os.homedir(), "marathon-store-app", "scripts", "cardrecon", "package.json"));
-const nodemailer = mailRequire("nodemailer");
-const { ImapFlow } = mailRequire("imapflow");
+import { TO, send, inSentMail } from "./mail.mjs";
 
-const TO = "junidmoh@gmail.com";
 const arg = (n, d = null) => { const i = process.argv.indexOf(`--${n}`); return i > 0 ? process.argv[i + 1] : d; };
 const DIR = arg("dir");
 if (!DIR) throw new Error("--dir <review folder> is required");
@@ -49,16 +45,6 @@ fs.writeFileSync(path.join(DIR, "sheet.jpg"), sheet);
 const sheetUrl = await upload("sheet", sheet);
 for (const r of rows) r.url = await upload(r.file.replace(/\.jpg$/, ""), fs.readFileSync(path.join(DIR, r.file)));
 
-const env = {};
-for (const line of fs.readFileSync(path.join(os.homedir(), "marathon-store-app", ".env"), "utf8").split("\n")) {
-  const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
-  if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, "");
-}
-const user = env.CARD_RECON_IMAP_USER, pass = String(env.CARD_RECON_IMAP_PASSWORD || "").replace(/\s+/g, "");
-if (!user || !pass) throw new Error("the card-recon mailbox credentials are not in ~/marathon-store-app/.env");
-const port = Number(env.CARD_RECON_SMTP_PORT) || 465;
-const transport = nodemailer.createTransport({ host: env.CARD_RECON_SMTP_HOST || "smtp.gmail.com", port, secure: port === 465, auth: { user, pass }, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 60000 });
-
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const text = [
   "Junid,",
@@ -80,26 +66,12 @@ const html = `<p>Junid,</p><p>The new local stylist (<b>${esc(review.model)}</b>
 <p><a href="${sheetUrl}">Open the whole sheet</a></p><p><img src="cid:sheet" width="800" style="max-width:100%"></p>
 ${rows.map((r, i) => `<h3>${i + 1}. ${esc(r.answer.theme)} — R${r.total} · <a href="${r.url}">picture</a></h3><ul>${r.pieces.map((p) => `<li>${esc(p.slot)}: ${esc(p.brand)} ${esc(p.name)} — R${p.price}</li>`).join("")}</ul><p><i>${esc(r.answer.why)}</i></p><p style="white-space:pre-wrap">${esc(r.answer.caption)}</p>`).join("")}`;
 
-const info = await transport.sendMail({
-  from: `Marathon Social <${user}>`, to: TO,
+const info = await send({
   subject: `Stylist review: ${rows.length} outfits from the new local stylist (not posted)`,
   text, html, attachments: [{ filename: "stylist-review-sheet.jpg", content: sheet, cid: "sheet" }],
 });
-if (!(info.accepted || []).map(String).includes(TO)) throw new Error(`Gmail did not accept ${TO}: ${JSON.stringify(info.rejected)} ${info.response}`);
 console.log(`smtp: accepted for ${TO} — ${info.response} — ${info.messageId}`);
-
-// The copy Gmail files in the sender's Sent Mail, found by Message-ID.
-const imap = new ImapFlow({ host: env.CARD_RECON_IMAP_HOST || "imap.gmail.com", port: 993, secure: true, auth: { user, pass }, logger: false });
-await imap.connect();
-let found = 0;
-try {
-  for (let t = 0; t < 6 && !found; t++) {
-    const lock = await imap.getMailboxLock("[Gmail]/Sent Mail");
-    try { found = (await imap.search({ header: { "message-id": info.messageId } })).length; } finally { lock.release(); }
-    if (!found) await new Promise((r) => setTimeout(r, 5000));
-  }
-} finally { await imap.logout(); }
-if (!found) throw new Error(`the message ${info.messageId} is not in the sender's Sent Mail`);
-console.log(`imap: in Sent Mail (${found}) — delivered to Gmail for ${TO}`);
+if (!(await inSentMail(info.messageId))) throw new Error(`the message ${info.messageId} is not in the sender's Sent Mail`);
+console.log(`imap: in Sent Mail — delivered to Gmail for ${TO}`);
 fs.writeFileSync(path.join(DIR, "emailed.json"), JSON.stringify({ at: new Date().toISOString(), to: TO, messageId: info.messageId, response: info.response, sheetUrl, links: rows.map((r) => r.url) }, null, 1));
 process.exit(0);

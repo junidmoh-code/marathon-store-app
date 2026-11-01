@@ -39,7 +39,9 @@ test("poolOf: the ledger keeps pieces, colourways and near-duplicate photos out;
   const { pool, relaxed } = ls.poolOf(pieces, blocks, { recentVecs: [{ slot: "tee", vec: [0, 1, 0.01] }] });
   // Every tee is ledgered (t1 worn, t9 its colourway, t3 a near-duplicate photo),
   // so the slot is relaxed: the never-worn ones come back first, the worn one last.
-  assert.deepEqual(pool.filter((p) => p.slot === "tee").map((p) => p.pid), ["t9", "t3", "t1"]);
+  // t3 (never worn, its own family) first; t9 is t1's colourway, so it is as recent as t1.
+  assert.equal(pool.filter((p) => p.slot === "tee")[0].pid, "t3");
+  assert.deepEqual(pool.filter((p) => p.slot === "tee").map((p) => p.pid).sort(), ["t1", "t3", "t9"]);
   const strict = ls.poolOf(pieces.concat(P("t4", "tee", 350, "navy", { vec: [0, 0, 1] })), blocks, { recentVecs: [{ slot: "tee", vec: [0, 1, 0.01] }] });
   assert.deepEqual(strict.pool.filter((p) => p.slot === "tee").map((p) => p.pid), ["t4"], "with one clean tee nothing is relaxed");
   assert.deepEqual(relaxed.sort(), ["bottoms", "tee"]);

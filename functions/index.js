@@ -4773,6 +4773,15 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
     const saDate = saDateForUsage(Date.now());
     const agent = localFitAgentFor({ db, saDate, kind: "outfit", log: (m) => console.log(`social: ${m}`) });
     const mine = await agent.wants();
+    // The pick is offered back to its own post ONCE: if a post today already
+    // holds it, a second outfit request (a retry, a manual run) is skipped
+    // rather than repeating the same outfit (architect review).
+    if (mine.length) {
+      const todays = (await db.ref(SOCIAL_POSTS_PATH).orderByKey().startAt(socialHealth.pushKeyPrefixForMs(sastMidnightUtc(Date.now(), 0))).once("value")).val() || {};
+      if (Object.values(todays).some((p) => p && p.status !== "sample" && mine.every((pid) => (p.products || []).some((x) => x && x.pid === pid)))) {
+        return { picks: [], reason: "today's local stylist outfit is already in the queue", costUSD };
+      }
+    }
     const wanted = mine.filter((pid) => !candidates.some((c) => c.pid === pid));
     const extra = wanted.length ? await loadCandidatesByPid(db, wanted, { nowMs: Date.now() }) : [];
     const pool = [...candidates, ...extra];

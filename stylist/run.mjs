@@ -31,6 +31,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chatJSON, modelReady } from "./ollama.mjs";
+import { send as sendMail } from "./mail.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(path.join(HERE, "../functions/package.json"));
@@ -55,6 +56,13 @@ const LEDGER = arg("ledger") || path.join(HOME, "ledger.json");
 const REVIEW = Number(arg("review", 0)) || 0;
 const DRY = flag("dry") || REVIEW > 0;
 const MAX_TRIES = 3;
+// The scheduled run must finish before the 06:00 reels read the outfit pick:
+// past 05:55 SAST no new model call starts (a manual --date/--force run has no deadline).
+const DEADLINE_MS = (() => {
+  if (REVIEW || flag("force") || arg("date")) return Infinity;
+  const d = new Date(); const sast = new Date(d.getTime() + 2 * 3600000);
+  return Date.UTC(sast.getUTCFullYear(), sast.getUTCMonth(), sast.getUTCDate(), 3, 55);
+})();
 const log = (m) => console.log(`[stylist ${new Date().toISOString()}] ${m}`);
 
 if (!admin.apps.length) admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
@@ -180,7 +188,7 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
   if (missing.length) Object.assign(emb, await embed(missing));
   for (const p of pieces) p.emb = emb[p.pid] || null;
   const recentVecs = recentPids.filter((pid) => emb[pid]).map((pid) => ({ slot: lookbook.lookbookSlot(world.byPid.get(pid).product), vec: emb[pid].vec }));
-  const { pool, relaxed, removed } = ls.poolOf(pieces.filter((p) => p.emb), blocks, { recentVecs });
+  const { pool, relaxed, removed } = ls.poolOf(pieces.filter((p) => p.emb), blocks, { recentVecs, saDate });
   log(`${kind}: pool ${pool.length} of ${pieces.length} offered (${removed} kept out by the ledger)${relaxed.length ? `; RELAXED for ${relaxed.join(", ")}: nothing unworn in 14 days, the least recently worn are offered` : ""}`);
   const relaxedPids = new Set(pool.filter((p) => relaxed.includes(p.slot)).map((p) => p.pid));
   const checkBlocks = { ...blocks, pids: new Set([...blocks.pids].filter((p) => !relaxedPids.has(p))), families: new Set([...blocks.families].filter((f) => !pool.some((p) => relaxedPids.has(p.pid) && p.family === f))) };
@@ -194,6 +202,7 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
   const formulas = fr.formulasFor(season).map((f) => f.key);
   const feedback = [];
   for (let t = 1; t <= MAX_TRIES; t++) {
+    if (Date.now() > DEADLINE_MS) { feedback.push("past the 05:55 deadline"); break; }
     let ans;
     try {
       ans = await chatJSON({ model: MODEL, system, prompt: ls.localPrompt({ options, kind, season, formulas, avoidFormulas, feedback }), images, schema: ls.LOCAL_SCHEMA, temperature: 0.4 + 0.15 * (t - 1) });
@@ -208,7 +217,11 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
 
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
-  if (!(await modelReady(MODEL).catch(() => false))) throw new Error(`${MODEL} is not available on ${process.env.OLLAMA_URL || "127.0.0.1:11434"}`);
+  if (!(await modelReady(MODEL).catch(() => false))) {
+    const why = `${MODEL} is not available on ${process.env.OLLAMA_URL || "127.0.0.1:11434"}`;
+    if (!DRY) await alert("Stylist: the local model is not running", `${why}.\n\nNo outfit was picked; the lookbook day posts the current style and the outfit post is skipped. launchd (com.marathon.ollama) restarts the server by itself; the 05:40 retry tries again.`);
+    throw new Error(why);
+  }
   const nowMs = Date.now();
   const today = arg("date") || saDateStringFromMs(nowMs);
   const world = await loadWorld(nowMs, today);
@@ -219,13 +232,24 @@ async function main() {
 
   const days = lookbook.parseLookbookDays(process.env.LOOKBOOK_DAYS);
   const kinds = arg("kinds") ? arg("kinds").split(",") : [...(days.includes(lookbook.weekdayOf(today)) ? ["lookbook"] : []), "outfit"];
+  // Pieces already spoken for: anything waiting in the queue (draft, approved,
+  // posting: one product, one queue item) and anything posted today. The 07:00
+  // lookbook refuses them, so the pick never uses them (architect review).
   const used = new Set();
+  const dayStart = Date.parse(`${today}T00:00:00+02:00`);
+  for (const p of Object.values(world.posts)) {
+    if (!p || p.status === "sample") continue;
+    const at = Number(p.createdAt || p.scheduledAt) || 0;
+    if (["draft", "approved", "posting"].includes(p.status) || at >= dayStart) for (const x of p.products || []) if (x && x.pid) used.add(x.pid);
+  }
+  log(`${used.size} piece(s) already in the queue or posted today are not offered`);
+  const missed = [];
   for (const kind of kinds) {
     const ref = db.ref(`${ls.PICKS_PATH}/${today}/${kind}`);
     const have = (await ref.once("value")).val();
     if (have && !flag("force")) { log(`${kind}: ${today} already picked (${have.answer && have.answer.theme}) — use --force to pick again`); for (const p of ls.pickPids(have, today)) used.add(p); continue; }
     const r = await pickOne(world, kind, today, ledger, { used, avoidFormulas: lookbook.recentFormulas(world.history, 3) });
-    if (!r.ok) { log(`${kind}: NO PICK — ${r.reason}. The cloud falls back (lookbook → current style; outfit → skipped).`); continue; }
+    if (!r.ok) { log(`${kind}: NO PICK — ${r.reason}. The cloud falls back (lookbook → current style; outfit → skipped).`); missed.push(`${kind}: ${r.reason}`); continue; }
     const rec = ls.pickRecord({ saDate: today, kind, model: MODEL, answer: r.answer, option: r.option, json: r.json, attempts: r.attempts, ledgerSize: ledger.entries.length, relaxed: r.relaxed, atMs: Date.now() });
     if (!DRY) await ref.set(rec);
     for (const p of r.option.pieces) used.add(p.pid);
@@ -236,6 +260,12 @@ async function main() {
   }
   log(`variety ledger (${LEDGER}), last ${ls.PAIR_DAYS} days:`);
   for (const l of ls.ledgerLines(ledger, today)) console.log(`   ${l}`);
+  if (missed.length && !DRY) await alert(`Stylist: no outfit picked for ${today}`, [`The local stylist on the Mac mini made no pick for ${today}:`, "", ...missed, "", "The lookbook (if today is a lookbook day) posts the current style instead, and the outfit post is skipped. No paid model stood in.", `Log: ~/.marathon-stylist/logs/stylist-${today}.log on the Mac mini.`].join("\n"));
+}
+
+/** Tell Junid by email; never fails the run. */
+async function alert(subject, text) {
+  try { const i = await sendMail({ subject, text }); log(`alert emailed (${i.messageId})`); } catch (e) { log(`alert NOT emailed: ${e.message}`); }
 }
 
 /** N outfits on N consecutive days, offline, each one added to a scratch ledger. */
@@ -250,11 +280,14 @@ async function review(world, start, ledger) {
     const r = await pickOne(world, "lookbook", date, scratch, { avoidFormulas: rows.slice(-3).map((x) => x.answer.formula) });
     if (!r.ok) { log(`review ${i + 1}: NO PICK — ${r.reason}`); rows.push({ date, error: r.reason }); continue; }
     scratch = ls.ledgerWith(scratch, ls.ledgerEntry(date, "lookbook", r.option.pieces, { status: "planned", theme: r.answer.theme }));
-    for (const p of r.option.pieces) if (seen[p.slot]) { if (seen[p.slot].has(p.pid)) throw new Error(`review: ${p.slot} ${p.pid} repeated`); seen[p.slot].add(p.pid); }
+    const repeats = r.option.pieces.filter((p) => seen[p.slot] && seen[p.slot].has(p.pid));
+    if (repeats.length) log(`review ${i + 1}: REPEAT ${repeats.map((p) => `${p.slot} ${p.pid}`).join(", ")} (a relaxed slot)`);
+    for (const p of r.option.pieces) if (seen[p.slot]) seen[p.slot].add(p.pid);
     const file = `${String(i + 1).padStart(2, "0")}-${date}.jpg`;
     fs.writeFileSync(path.join(out, file), await collage(r.option, i + 1, 480));
     rows.push({ date, file, answer: r.answer, total: r.option.total, scores: r.json.scores, captionTheme: r.json.caption_theme, attempts: r.attempts,
       pieces: r.option.pieces.map((p) => ({ slot: p.slot, pid: p.pid, brand: p.brand, name: p.name, price: p.price, colour: p.emb && p.emb.colour, photoUrl: p.photoUrl })) });
+    fs.writeFileSync(path.join(out, "review.json"), JSON.stringify({ model: MODEL, start, rows, partial: true }, null, 1));
     log(`review ${i + 1}/${REVIEW} ${date}: ${r.answer.theme} R${r.option.total} — ${r.option.pieces.map((p) => `${p.brand} ${p.name}`).join(" | ")}`);
   }
   fs.writeFileSync(path.join(out, "review.json"), JSON.stringify({ model: MODEL, start, rows }, null, 1));
