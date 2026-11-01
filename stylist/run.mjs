@@ -132,7 +132,7 @@ const PALETTE_TO = { charcoal: "black", "off-white": "white", "light-grey": "gre
 function paletteColour(name) {
   const k = String(name || "").toLowerCase().trim().replace(/\s+/g, "-");
   if (!k) return null;
-  if (k in PALETTE_TO) return PALETTE_TO[k];
+  if (Object.hasOwn(PALETTE_TO, k)) return PALETTE_TO[k];
   const plain = k.replace(/-/g, " ");
   return ls.COLOURS.includes(plain) ? plain : null;
 }
@@ -256,7 +256,7 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
       }
     }
   }
-  return { ok: false, reason: `no valid answer from ${MODEL} after ${MAX_TRIES} tries: ${feedback.slice(-1)[0]}` };
+  return { ok: false, reason: `no valid answer from ${MODEL} after ${MAX_TRIES + 1} tries: ${feedback.slice(-1)[0]}` };
 }
 
 // ── main ────────────────────────────────────────────────────────────────────

@@ -296,7 +296,9 @@ function validateLocal(json, options, offer, { blocks = null } = {}) {
   // "Red Heart Pop" → "Red Pop": a Pop theme that holds one colour word is that colour.
   if (/ Pop$/.test(theme)) {
     const words = theme.replace(/ Pop$/, "").toLowerCase();
-    const c = [...POP_COLOURS].sort((x, y) => y.length - x.length).find((k) => new RegExp(`\\b${k}\\b`).test(words));
+    // Only when exactly one colour is named ("Orange Red Pop" stays as it is and is refused).
+    const hits = [...POP_COLOURS].filter((k) => new RegExp(`\\b${k}\\b`).test(words)).filter((k, _, all) => !all.some((o) => o !== k && o.includes(k)));
+    const c = hits.length === 1 ? hits[0] : null;
     if (c && words !== c) theme = `${c.replace(/\b[a-z]/g, (m) => m.toUpperCase())} Pop`;
   }
   const allowed = fr.formulasFor(offer.season);
@@ -349,7 +351,9 @@ function formulaProblems(formulaKey, pieces, theme = "") {
     // The accent is a colour the pieces carry, and the only loud one ("Red
     // Pop" on sage cargos with a red heart on the shoe, 1 Nov).
     const fam = (x) => familyOfColour(x === "light blue" ? "light blue" : x);
-    const carried = pieces.some((p) => p.emb && (fam(p.emb.colour) === fam(c) || Object.keys(p.emb.colours || {}).some((k) => fam(k) === fam(c)) || (p.tags && fam(String(p.tags.secondary || "")) === fam(c))));
+    // A piece's main colour, or its photo tag's second colour (a red heart on a
+    // white shoe) — never Fashion-CLIP's third guess (Sonnet review).
+    const carried = pieces.some((p) => p.emb && (fam(p.emb.colour) === fam(c) || (p.tags && p.tags.source !== "name" && fam(String(p.tags.secondary || "").replace(/-/g, " ")) === fam(c))));
     if (!carried) return [`"${theme}": no piece is ${c}`];
     const otherLoud = pieces.filter((p) => p.emb && !NEUTRAL_COLOURS.has(p.emb.colour) && fam(p.emb.colour) !== fam(c));
     if (otherLoud.length) return [`"${theme}" but ${otherLoud.map((p) => `the ${p.slot} is ${p.emb.colour}`).join(", ")}: one accent colour only`];
@@ -361,7 +365,8 @@ function formulaProblems(formulaKey, pieces, theme = "") {
   switch (formulaKey) {
     case "clean-luxe": return pieces.some((p) => fr.luxuryBrand(p.brand, p.displayName)) ? [] : ["Clean Luxe needs a designer or luxury piece (rulebook section 3): name a different formula"];
     // White only on the shoe (rulebook formula table).
-    case "monochrome-black": return pieces.filter((p) => p.slot !== "sneakers").every((p) => ["black", "grey"].includes(p.emb.colour)) && cols.filter((c) => c === "black").length >= 2 ? [] : ["Monochrome Black is black head to toe, white only on the shoe: these pieces are not"];
+    case "monochrome-black": return pieces.filter((p) => p.slot !== "sneakers").every((p) => ["black", "grey"].includes(p.emb.colour))
+      && pieces.filter((p) => p.slot === "sneakers").every((p) => ["black", "grey", "white"].includes(p.emb.colour)) && cols.filter((c) => c === "black").length >= 2 ? [] : ["Monochrome Black is black head to toe, white only on the shoe: these pieces are not"];
     case "grey-scale": return only(new Set(["black", "grey", "white", "cream"])) ? [] : ["Grey Scale is grey, black and white only: these pieces are not"];
     case "summer-white": return [...bySlot("tee"), ...bySlot("bottoms")].every((c) => ["white", "cream", "beige", "grey", "light blue"].includes(c)) ? [] : ["Summer White needs a white or cream top and light bottoms"];
     case "blue-denim": return bySlot("bottoms").some((c) => ["blue denim", "light blue", "navy"].includes(c)) ? [] : ["Blue Denim needs blue denim bottoms"];

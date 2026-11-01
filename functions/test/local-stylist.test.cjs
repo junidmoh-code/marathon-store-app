@@ -202,3 +202,10 @@ test("a Pop names a colour the pieces carry and is the only loud one", () => {
   assert.ok(ls.formulaProblems("colour-pop", sage, "Red Pop").length);
   assert.deepEqual(ls.formulaProblems("colour-pop", sage, "Green Pop"), []);
 });
+
+test("Monochrome Black refuses a coloured shoe; a two-colour Pop is not guessed", () => {
+  assert.equal(ls.formulaProblems("monochrome-black", [P("t", "tee", 1, "black"), P("b", "bottoms", 1, "black"), P("s", "sneakers", 1, "red")]).length, 1);
+  const red = [P("t1", "tee", 350, "white"), P("b1", "bottoms", 750, "black"), P("s1", "sneakers", 700, "red")];
+  const v = ls.validateLocal({ ...goodJson, formula: "colour-pop", theme: "Orange Red Pop", hero_pid: "s1" }, [{ pieces: red, total: 1800 }], offerOf(red));
+  assert.notEqual(v.answer.theme, "Orange Pop");
+});
