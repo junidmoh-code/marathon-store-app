@@ -9,7 +9,9 @@ export async function chatJSON({ model, system, prompt, images = [], schema, tim
   const body = {
     model, stream: false, keep_alive: "3m", think: false,
     format: schema,
-    options: { temperature, num_ctx: 16384 },
+    // A real request is ~4,800 tokens (rulebooks + five collages, measured 1 Nov):
+    // 8k leaves room for the answer at half the KV-cache memory of 16k.
+    options: { temperature, num_ctx: 8192 },
     messages: [
       { role: "system", content: system },
       { role: "user", content: prompt, images },
