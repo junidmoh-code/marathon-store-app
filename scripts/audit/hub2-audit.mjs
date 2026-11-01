@@ -98,6 +98,8 @@ for (const [id, rr] of Object.entries(refillRequests)) {
   const salesAnySize = soldProductAnySize("hub2", pid, from, at) + soldProductAnySize("marathon-pe", pid, from, at) + soldProductAnySize("trophy", pid, from, at);
   const sizeSales = sales.hub2 + sales.pe + sales.trophy;
   const target = pol ? pol.target : null;
+  // ON HAND BELOW TARGET — a policy basis, NOT a replay of the scan's decision
+  // (the scan also nets inbound stock and honours reorderPoint; CodeRabbit #831).
   const policyJustified = !!pol && target > 0 && onHand < target;
   hub2Reqs.push({
     id, at: new Date(at).toISOString(), pid, product: name(pid), size: rr.size, qty: Number(rr.qty) || 0, status: rr.status,
@@ -117,8 +119,12 @@ const crosses = (a, b) => {
   const c = net.wallCheck(network, a, b);
   return !c.ok && c.reason === "cross_section";
 };
-const wallMovements = movements.filter((m) => m.from && m.to && m.to !== "in_transit" && m.from !== "in_transit" && crosses(m.from, m.to))
-  .map((m) => ({ ts: m.ts, type: m.type, from: m.from, to: m.to, product: name(m.productId), size: m.size, qty: m.qty, manual: m.manual === true, by: m.by?.personName || m.actor || null }));
+// A held leg goes source → in_transit carrying its real destination
+// (transitTo / link.holdDest); the receive leg in_transit → dest carries no
+// origin and is judged on its outbound twin (CodeRabbit #831).
+const realTo = (m) => (m.to === "in_transit" ? (m.transitTo || m.link?.holdDest || null) : m.to);
+const wallMovements = movements.filter((m) => m.from && m.from !== "in_transit" && realTo(m) && crosses(m.from, realTo(m)))
+  .map((m) => ({ ts: m.ts, type: m.type, from: m.from, to: realTo(m), viaTransit: m.to === "in_transit", product: name(m.productId), size: m.size, qty: m.qty, manual: m.manual === true, by: m.by?.personName || m.actor || null }));
 const wallRequests = Object.entries(refillRequests).filter(([, r]) => r && r.requestingLocation && crosses(r.createdFrom?.source || r.source || config.routes?.[r.requestingLocation], r.requestingLocation))
   .map(([id, r]) => ({ id, at: r.createdAt, from: r.createdFrom?.source || r.source, to: r.requestingLocation, product: name(r.productId), size: r.size, qty: r.qty, status: r.status, engine: r.createdFrom?.engine === true, manual: r.createdFrom?.manual === true || r.manual === true }));
 const orderEnds = (o) => {
@@ -155,25 +161,32 @@ for (const [id, rr] of Object.entries(refillRequests)) {
   const arrivals = (byCell.get(`${dest}|${rr.productId}|${ck}`) || [])
     .filter((m) => m.to === dest && msOf(m.ts) > at && ["transfer_out", "transfer_in", "received"].includes(m.type));
   const arrived = arrivals.reduce((t, m) => t + (Number(m.qty) || 0), 0);
-  const fromSource = arrivals.filter((m) => m.from === src).reduce((t, m) => t + (Number(m.qty) || 0), 0);
+  const linkedTo = (m) => m.link?.refillId === id || String(m.id || "").startsWith(`rrf_${id}`);
+  // A receive from in_transit linked to this request came from its source.
+  const fromSource = arrivals.filter((m) => m.from === src || (m.from === "in_transit" && linkedTo(m))).reduce((t, m) => t + (Number(m.qty) || 0), 0);
   const sentQty = Number(rr.sentQty) || 0;
-  if (arrived <= 0 && sentQty <= 0) continue;
-  const linked = arrivals.some((m) => m.link?.refillId === id || String(m.id || "").startsWith(`rrf_${id}`));
+  if (arrived <= 0) continue;   // dispatched but not landed is not "arrived" (CodeRabbit #831)
+  const linked = arrivals.some(linkedTo);
+  let pol = null;
+  try { pol = engine.resolveTarget(policyCtx, dest, rr.productId, rr.size); } catch { pol = null; }
+  const onHandNow = Number(stock[dest]?.[rr.productId]?.[ck]?.qty) || 0;
   stuck.push({
     id, dest, src, at: rr.createdAt, ageDays: Math.round((nowMs - at) / 864e5 * 10) / 10, product: name(rr.productId), size: rr.size,
     qty: Number(rr.qty) || 0, sentQty, arrived, fromSource, linkedMovement: linked, engine: rr.createdFrom?.engine === true,
-    onHandNow: Number(stock[dest]?.[rr.productId]?.[ck]?.qty) || 0,
-    covered: fromSource >= (Number(rr.qty) || 0) || sentQty >= (Number(rr.qty) || 0),
+    onHandNow, target: pol ? pol.target : null,
+    // THE stuck test: the destination already holds its policy target and the
+    // request is still open. qty is the REMAINDER after a partial send.
+    needMet: !!pol && pol.target > 0 && onHandNow >= pol.target,
   });
 }
-stuck.sort((a, b) => (b.covered - a.covered) || a.at.localeCompare(b.at));
+stuck.sort((a, b) => (b.needMet - a.needMet) || a.at.localeCompare(b.at));
 
 const summary = {
   snapshotAt: new Date(nowMs).toISOString(), since: new Date(SINCE_MS).toISOString(),
   hub2Requests: {
     total: hub2Reqs.length, units: hub2Reqs.reduce((t, r) => t + r.qty, 0),
     engine: hub2Reqs.filter((r) => r.engine).length, nonEngine: hub2Reqs.filter((r) => !r.engine).length,
-    policyJustified: hub2Reqs.filter((r) => r.policyJustified).length,
+    belowTargetAtCreate: hub2Reqs.filter((r) => r.policyJustified).length,
     noPolicy: hub2Reqs.filter((r) => !r.target).length,
     noSalesBasis: hub2Reqs.filter((r) => r.noSalesBasis).length,
     noSalesBasisUnits: hub2Reqs.filter((r) => r.noSalesBasis).reduce((t, r) => t + r.qty, 0),
@@ -182,7 +195,7 @@ const summary = {
     footwear: hub2Reqs.filter((r) => r.footwear).length,
   },
   wall: { movements: wallMovements.length, movementsNotManual: wallMovements.filter((m) => !m.manual).length, requests: wallRequests.length, orders: wallOrders.length, misplacedStock: misplacedStock.length },
-  stuckOpen: { total: stuck.length, covered: stuck.filter((s) => s.covered).length },
+  stuckOpen: { openWithArrivals: stuck.length, needAlreadyMet: stuck.filter((s) => s.needMet).length },
 };
 console.log(JSON.stringify(summary, null, 2));
 if (opt("--json")) writeFileSync(opt("--json"), JSON.stringify({ summary, hub2Reqs, wallMovements, wallRequests, wallOrders, misplacedStock, stuck }, null, 2));
@@ -192,9 +205,9 @@ if (opt("--md")) {
   md.push("### Central → Hub 2 requests flagged: no sale of that size at Hub 2 / PE / Trophy in the 30 days before", "",
     "| Created (UTC) | Product | Size | Qty | Status | Hub 2 had | Policy target | Policy from | Sold any size (30d) |", "|---|---|---|---|---|---|---|---|---|");
   for (const r of hub2Reqs.filter((x) => x.noSalesBasis)) md.push(`| ${r.at.slice(0, 16)} | ${esc(r.product)} | ${r.size} | ${r.qty} | ${r.status} | ${r.onHandAtCreate} | ${r.target ?? "none"} | ${r.policySource || "—"} | ${r.salesAnySize} |`);
-  md.push("", "### Section-wall crossings in the 45-day ledger", "", "| When | Type | From | To | Product | Size | Qty | Manual | By |", "|---|---|---|---|---|---|---|---|---|");
-  for (const m of wallMovements) md.push(`| ${String(m.ts).slice(0, 16)} | ${m.type} | ${L(m.from)} | ${L(m.to)} | ${esc(m.product)} | ${m.size} | ${m.qty} | ${m.manual ? "yes" : "NO"} | ${esc(m.by)} |`);
-  md.push("", "### Open requests where stock already arrived", "", "| Request | For | From | Created | Product | Size | Asked | Sent | Arrived (all) | Arrived from source | Covered |", "|---|---|---|---|---|---|---|---|---|---|---|");
-  for (const s of stuck) md.push(`| ${s.id} | ${L(s.dest)} | ${L(s.src)} | ${String(s.at).slice(0, 16)} | ${esc(s.product)} | ${s.size} | ${s.qty} | ${s.sentQty} | ${s.arrived} | ${s.fromSource} | ${s.covered ? "YES" : "partly"} |`);
+  md.push("", "### Section-wall crossings in the ledger window", "", "| When | Type | From | To | Product | Size | Qty | Manual | By |", "|---|---|---|---|---|---|---|---|---|");
+  for (const m of wallMovements) md.push(`| ${String(m.ts).slice(0, 16)} | ${m.type}${m.viaTransit ? " (held)" : ""} | ${L(m.from)} | ${L(m.to)} | ${esc(m.product)} | ${m.size} | ${m.qty} | ${m.manual ? "yes" : "NO"} | ${esc(m.by)} |`);
+  md.push("", "### Open requests with stock that arrived after they were raised", "", "| Request | For | From | Created | Product | Size | Still asked | Sent | Arrived | From source | On hand now | Target | Need already met |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+  for (const s of stuck) md.push(`| ${s.id} | ${L(s.dest)} | ${L(s.src)} | ${String(s.at).slice(0, 16)} | ${esc(s.product)} | ${s.size} | ${s.qty} | ${s.sentQty} | ${s.arrived} | ${s.fromSource} | ${s.onHandNow} | ${s.target ?? "none"} | ${s.needMet ? "YES — stuck" : "no"} |`);
   writeFileSync(opt("--md"), md.join("\n") + "\n");
 }

@@ -31,4 +31,15 @@ describe("refusal write-off threshold", () => {
   it("no mail field (older runs): the Monitoring verdict as before", () => {
     expect(digestStatusLine(base, AT + 60e3).tone).toBe("fail");
   });
+  it("a Gmail receipt beats a Monitoring check that never finished (CodeRabbit #831)", () => {
+    const st = { ...base, delivery: { state: "checking" }, mail: { state: "sent", to: "gunidmoh@gmail.com", atMs: AT + 9 * 60e3 } };
+    expect(digestStatusLine(st, AT + 3600e3).tone).toBe("ok");
+  });
+  it("a quiet day never turns an unsent email green", () => {
+    const quiet = { atMs: AT + 864e5, outcome: "nothing_new", mail: { state: "retrying", to: "gunidmoh@gmail.com", attempts: 3, why: "timeout" }, pendingCount: 11, pendingAtMs: AT };
+    const l = digestStatusLine(quiet, AT + 864e5 + 60e3);
+    expect(l.tone).toBe("warn");
+    expect(l.text).toContain("11 write-offs");
+    expect(digestStatusLine({ atMs: AT + 864e5, outcome: "nothing_new" }, AT + 864e5 + 60e3).tone).toBe("ok");
+  });
 });

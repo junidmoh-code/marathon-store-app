@@ -7,7 +7,7 @@
 // layout scripts/audit/refusal-writeoff-backfill.mjs and
 // scripts/audit/hub2-audit.mjs replay offline.
 //
-//   node scripts/audit/hub2-audit-dump.mjs OUT_DIR
+//   node scripts/audit/hub2-audit-dump.mjs OUT_DIR [--since ISO]
 //
 // Cost: the same reads as ONE hourly scan, plus /stock for the locations the
 // scan does not route (Hub 3, Concrete, Pine). Run it on a machine whose node
@@ -29,7 +29,13 @@ const val = async (p) => { const v = (await db.ref(p).once("value")).val(); save
 
 const WINDOW_DAYS = 45;   // functions/refill-scan.cjs MOVEMENTS_WINDOW_DAYS
 const nowMs = Date.now();
-const windowStart = new Date(nowMs - WINDOW_DAYS * 864e5).toISOString();
+// The audit looks 30 days back from every request since --since (default the
+// #787 merge), so the ledger must reach that far even when the scan's 45 days
+// do not (CodeRabbit #831).
+const sinceIdx = process.argv.indexOf("--since");
+const sinceMs = Date.parse(sinceIdx > 0 ? process.argv[sinceIdx + 1] : "2026-10-24T12:00:23Z");
+const windowStartMs = Math.min(nowMs - WINDOW_DAYS * 864e5, (Number.isFinite(sinceMs) ? sinceMs : nowMs) - 31 * 864e5);
+const windowStart = new Date(windowStartMs).toISOString();
 
 const paths = [
   "config/refillEngine", "stock_targets", "stock_targets_decisions", "products",

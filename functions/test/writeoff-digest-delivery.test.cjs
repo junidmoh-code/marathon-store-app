@@ -233,3 +233,17 @@ test("Gmail's answer written by the mini mid-check is never overwritten by the M
   assert.equal(st.mail.state, "sent");
   assert.equal(st.delivery.state, "not_sent");
 });
+
+test("a quiet day keeps an earlier digest's UNSENT mail on the status (never 'nothing new' over it)", async () => {
+  const db = makeFakeDb({ refill_engine: { refusalWriteoffDigestStatus: { atMs: SENT, outcome: "sent", count: 11, archiveKey: "2026-09-23_1", mail: { state: "retrying", to: "gunidmoh@gmail.com", attempts: 2 } } } });
+  await runDigestAndConfirm({ db, nowMs: SENT + 864e5, channels: [emailViaMiniOutbox(db)], api: {}, ...quiet });
+  const st = (await db.ref(STATUS).once("value")).val();
+  assert.equal(st.outcome, "nothing_new");
+  assert.equal(st.mail.state, "retrying");
+  assert.equal(st.archiveKey, "2026-09-23_1");
+  assert.equal(st.pendingCount, 11);
+  // …and a SENT one is not carried.
+  const db2 = makeFakeDb({ refill_engine: { refusalWriteoffDigestStatus: { atMs: SENT, outcome: "sent", count: 11, mail: { state: "sent" } } } });
+  await runDigestAndConfirm({ db: db2, nowMs: SENT + 864e5, channels: [emailViaMiniOutbox(db2)], api: {}, ...quiet });
+  assert.equal((await db2.ref(STATUS).once("value")).val().mail, undefined);
+});

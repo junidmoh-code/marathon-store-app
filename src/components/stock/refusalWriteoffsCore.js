@@ -83,6 +83,23 @@ export function digestStatusLine(status, nowMs) {
     return { tone: "warn", text: "The daily email has not been checked yet — the check runs with the next digest at 19:40." };
   }
   const at = sastStamp(Number(status.atMs));
+  // GMAIL'S ANSWER FIRST (1 Nov 2026): the mini sends the digest over Gmail
+  // SMTP to the inbox Junid reads and records Gmail's reply. A receipt beats
+  // every Monitoring state, a stale "checking" included (CodeRabbit #831); an
+  // unsent mail carried over a quiet day is still shown (pendingCount).
+  const m = status.mail;
+  if (m && typeof m === "object" && nowMs - Number(status.atMs) <= DIGEST_STALE_MS) {
+    const n0 = Number(status.count) || Number(status.pendingCount) || 0;
+    const what0 = `${n0} write-off${n0 === 1 ? "" : "s"}`;
+    const mAt = sastStamp(Number(status.pendingAtMs) || Number(status.atMs));
+    if (m.state === "sent") return { tone: "ok", text: `Emailed ${what0} to ${m.to} at ${sastStamp(Number(m.atMs) || Number(status.atMs))} — Gmail accepted it${m.messageId ? ` (${m.messageId})` : ""}.` };
+    if (m.state === "failed") return { tone: "fail", text: `The ${mAt} email with ${what0} to ${m.to} has NOT gone out after ${m.attempts || "several"} tries: ${m.why || "unknown"} — the mini retries hourly. The full list is below.` };
+    if (m.state === "retrying") return { tone: "warn", text: `The ${mAt} email with ${what0} has not gone yet (try ${m.attempts}: ${m.why || "unknown"}) — the mini tries again every 10 minutes.` };
+    if (m.state === "queued" && nowMs - (Number(status.pendingAtMs) || Number(status.atMs)) > 30 * 60e3) {
+      return { tone: "fail", text: `The ${mAt} email with ${what0} is still waiting for the Mac mini to send it — check that the mini is on (com.marathon.writeoffdigestmail).` };
+    }
+    if (m.state === "queued") return { tone: "warn", text: `The ${mAt} email with ${what0} is queued — the Mac mini sends it within 10 minutes.` };
+  }
   // A check that never finished says so, however old — it is not "never ran".
   if (status.outcome === "sent" && status.delivery?.state === "checking" && nowMs - Number(status.atMs) > 15 * 60e3) {
     return { tone: "fail", text: `The ${at} email check never finished — the run was cut off, so whether the email left is unknown.` };
@@ -98,19 +115,6 @@ export function digestStatusLine(status, nowMs) {
   const d = status.delivery || {};
   const n = Number(status.count) || 0;
   const what = `${n} write-off${n === 1 ? "" : "s"}`;
-  // GMAIL'S ANSWER FIRST (1 Nov 2026): the mini sends the digest over Gmail
-  // SMTP to the inbox Junid reads and records Gmail's reply. That is a real
-  // receipt; the Monitoring alert below is only the second copy.
-  const m = status.mail;
-  if (m && typeof m === "object") {
-    if (m.state === "sent") return { tone: "ok", text: `Emailed ${what} to ${m.to} at ${sastStamp(Number(m.atMs) || Number(status.atMs))} — Gmail accepted it${m.messageId ? ` (${m.messageId})` : ""}.` };
-    if (m.state === "failed") return { tone: "fail", text: `The ${at} email with ${what} to ${m.to} did NOT go out after ${m.attempts || "several"} tries: ${m.why || "unknown"}. The full list is below.` };
-    if (m.state === "retrying") return { tone: "warn", text: `The ${at} email with ${what} has not gone yet (try ${m.attempts}: ${m.why || "unknown"}) — the mini tries again every 10 minutes.` };
-    if (m.state === "queued" && nowMs - Number(status.atMs) > 30 * 60e3) {
-      return { tone: "fail", text: `The ${at} email with ${what} is still waiting for the Mac mini to send it — check that the mini is on (com.marathon.writeoffdigestmail).` };
-    }
-    if (m.state === "queued") return { tone: "warn", text: `The ${at} email with ${what} is queued — the Mac mini sends it within 10 minutes.` };
-  }
   if (d.state === "alert_raised") {
     const sentAt = Date.parse(d.alertRaisedAt || "") || Number(status.atMs);
     return { tone: "ok", text: `Google raised the email with ${what} to ${d.to} at ${sastStamp(sentAt)}. Google does not confirm it reached the inbox — if it is not there, look in spam for “Written off after refusal”.` };

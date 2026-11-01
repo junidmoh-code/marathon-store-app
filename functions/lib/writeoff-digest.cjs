@@ -273,7 +273,15 @@ async function runDigestAndConfirm({ db, nowMs, channels, api, confirm = confirm
     throw e;
   }
   if (!res.sent) {
-    await recordStatus(db, { atMs: nowMs, outcome: res.reason });
+    // An earlier digest's mail the mini has NOT sent yet stays on the card — a
+    // quiet day must never turn an unsent email green (CodeRabbit #831).
+    let prior = null;
+    try { prior = (await db.ref(STATUS).once("value")).val(); } catch { prior = null; }
+    const pending = prior?.mail && prior.mail.state !== "sent" ? prior : null;
+    await recordStatus(db, {
+      atMs: nowMs, outcome: res.reason,
+      ...(pending ? { mail: pending.mail, archiveKey: pending.archiveKey || null, pendingCount: Number(pending.count) || 0, pendingAtMs: Number(pending.atMs) || null } : {}),
+    });
     log(`refusalWriteoffDigest: ${res.reason}`);
     return { ...res };
   }
