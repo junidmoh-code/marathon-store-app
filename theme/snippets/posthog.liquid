@@ -81,7 +81,7 @@
         line_count: {{ cart.items.size }},
         total: {{ cart.total_price | divided_by: 100.0 | json }},
         currency: currency,
-        handles: {{ cart.items | map: 'handle' | json }}
+        handles: {{ cart.items | map: 'product' | map: 'handle' | json }}
       });
     {%- endif -%}
   })();
