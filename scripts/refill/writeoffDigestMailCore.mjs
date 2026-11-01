@@ -17,7 +17,11 @@ export const STATUS = "refill_engine/refusalWriteoffDigestStatus";
 // writes STATUS ("checking", mail queued). An entry this young is left for the
 // next tick, so Gmail's answer is never overwritten by that first write.
 export const MIN_AGE_MS = 2 * 60e3;
-export const MAX_ATTEMPTS = 12;   // ~2 hours of 10-minute ticks, then it says so and stops
+export const MAX_ATTEMPTS = 12;   // ~2 hours of 10-minute ticks, then "failed" (red) and hourly retries
+export const SLOW_RETRY_MS = 3600e3;
+// A tick marks the entry BEFORE sending; a tick that died mid-send is retried
+// only after this, so one crash never becomes an email every 10 minutes.
+export const SENDING_STALE_MS = 30 * 60e3;
 
 /** Only ever sent AS the shop mailbox (same guard as the EFT verdict mail). */
 export function senderOk(user) {
@@ -30,7 +34,12 @@ export function dueEntries(outbox, nowMs) {
     .filter(([, e]) => e && typeof e === "object" && typeof e.text === "string" && e.text.trim())
     .filter(([key, e]) => {
       const at = Number(e.createdAtMs) || Number(String(key).split("_")[1]) || 0;
-      return at > 0 && nowMs - at >= MIN_AGE_MS && (Number(e.attempts) || 0) < MAX_ATTEMPTS;
+      if (!(at > 0) || nowMs - at < MIN_AGE_MS) return false;
+      if (Number(e.sendingAtMs) && nowMs - Number(e.sendingAtMs) < SENDING_STALE_MS) return false;
+      // Past the last fast attempt it keeps trying hourly — fixing the password
+      // or switching the mini back on sends it without anyone editing a row.
+      if ((Number(e.attempts) || 0) >= MAX_ATTEMPTS) return nowMs - (Number(e.lastTriedAtMs) || 0) >= SLOW_RETRY_MS;
+      return true;
     })
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
@@ -69,6 +78,7 @@ export function patchAfter({ key, entry, ok, info, error, nowMs, statusArchiveKe
   patch[`${OUTBOX}/${key}/attempts`] = attempts;
   patch[`${OUTBOX}/${key}/lastError`] = why;
   patch[`${OUTBOX}/${key}/lastTriedAtMs`] = nowMs;
+  patch[`${OUTBOX}/${key}/sendingAtMs`] = null;
   const mail = { state: attempts >= MAX_ATTEMPTS ? "failed" : "retrying", to: DIGEST_MAIL_TO, atMs: nowMs, attempts, why };
   patch[`${ARCHIVE}/${key}/mail`] = mail;
   if (statusArchiveKey === key) patch[`${STATUS}/mail`] = mail;

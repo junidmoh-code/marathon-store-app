@@ -42,6 +42,9 @@ const val = async (p) => (await db.ref(p).once("value")).val() || {};
 const nowMs = Date.now();
 const runId = `backfill-2day-${new Date(nowMs).toISOString().replace(/[:.]/g, "-")}`;
 try {
+  // The scan stands down while Central is receiving a shipment — so does this.
+  const session = await val("receiving_session");
+  if (session.active) throw new Error(`receiving session open since ${session.openedAt || "?"} — run it after it closes`);
   const config = await val("config/refillEngine");
   const network = await loadNetwork(db, { nowMs });
   const routing = engine.networkRouting(config, network);

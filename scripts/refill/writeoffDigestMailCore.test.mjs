@@ -1,7 +1,7 @@
 // ─── THE MINI'S WRITE-OFF DIGEST MAIL — decisions (2026-11-01) ───────────────
 import { describe, it, expect } from "vitest";
 import {
-  DIGEST_MAIL_TO, OUTBOX, ARCHIVE, STATUS, MIN_AGE_MS, MAX_ATTEMPTS, dueEntries, mailFor, patchAfter, senderOk,
+  DIGEST_MAIL_TO, OUTBOX, ARCHIVE, STATUS, MIN_AGE_MS, MAX_ATTEMPTS, SLOW_RETRY_MS, SENDING_STALE_MS, dueEntries, mailFor, patchAfter, senderOk,
 } from "./writeoffDigestMailCore.mjs";
 
 const NOW = Date.parse("2026-11-01T17:50:00.000Z");
@@ -38,6 +38,18 @@ describe("write-off digest mail", () => {
     expect(MIN_AGE_MS).toBe(120e3);
   });
 
+  it("a send in flight (or a tick that died mid-send) is not re-sent for 30 minutes", () => {
+    const box = { [KEY]: { ...ENTRY, sendingAtMs: NOW - 5 * 60e3 } };
+    expect(dueEntries(box, NOW)).toEqual([]);
+    expect(dueEntries(box, NOW + SENDING_STALE_MS).map(([k]) => k)).toEqual([KEY]);
+  });
+
+  it("past the last fast attempt it retries hourly, never gives up for good", () => {
+    const box = { [KEY]: { ...ENTRY, attempts: MAX_ATTEMPTS, lastTriedAtMs: NOW - 10 * 60e3 } };
+    expect(dueEntries(box, NOW)).toEqual([]);
+    expect(dueEntries(box, NOW - 10 * 60e3 + SLOW_RETRY_MS).map(([k]) => k)).toEqual([KEY]);
+  });
+
   it("sent: dequeues, records Gmail's message id on the archive, and on STATUS only when it is this digest's", () => {
     const info = { messageId: "<abc@gmail.com>", response: "250 2.0.0 OK", accepted: ["gunidmoh@gmail.com"] };
     const p = patchAfter({ key: KEY, entry: ENTRY, ok: true, info, nowMs: NOW, statusArchiveKey: KEY });
@@ -52,6 +64,7 @@ describe("write-off digest mail", () => {
     const p = patchAfter({ key: KEY, entry: ENTRY, ok: false, error: new Error("535 auth"), nowMs: NOW, statusArchiveKey: KEY });
     expect(p[`${OUTBOX}/${KEY}`]).toBeUndefined();
     expect(p[`${OUTBOX}/${KEY}/attempts`]).toBe(1);
+    expect(p[`${OUTBOX}/${KEY}/sendingAtMs`]).toBeNull();
     expect(p[`${STATUS}/mail`]).toMatchObject({ state: "retrying", why: "535 auth" });
     const last = patchAfter({ key: KEY, entry: { ...ENTRY, attempts: MAX_ATTEMPTS - 1 }, ok: false, error: "x", nowMs: NOW, statusArchiveKey: KEY });
     expect(last[`${STATUS}/mail`].state).toBe("failed");

@@ -47,6 +47,9 @@ try {
       const mail = mailFor(key, entry, user);
       if (DRY) { console.log(`WOULD MAIL ${DIGEST_MAIL_TO}\nSubject: ${mail.subject}\n\n${mail.text}`); continue; }
       const statusKey = (await db.ref(`${STATUS}/archiveKey`).once("value")).val();
+      // Marked BEFORE the send: a tick that dies between Gmail and the record
+      // below is not re-sent for 30 minutes (writeoffDigestMailCore SENDING_STALE_MS).
+      await db.ref(`${OUTBOX}/${key}/sendingAtMs`).set(Date.now());
       let info = null, error = null;
       try { info = await transport.sendMail(mail); } catch (e) { error = e; code = 1; }
       await db.ref().update(patchAfter({ key, entry, ok: !error, info, error, nowMs: Date.now(), statusArchiveKey: statusKey }));
