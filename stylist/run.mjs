@@ -215,18 +215,31 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
   const system = `You are the menswear stylist for Marathon Club, an online sneaker and streetwear store in Durban, South Africa.\n\n${fr.rulebook().text}\n\n${fs.readFileSync(path.join(HERE, "rulebook.md"), "utf8")}`;
   const formulas = fr.formulasFor(season).map((f) => f.key);
   const feedback = [];
-  for (let t = 1; t <= MAX_TRIES; t++) {
+  // An outfit Gemma chose that failed twice leaves the table: the next try
+  // must choose another (a small model can loop on one option's caption).
+  const fails = new Map();
+  let live = options.map((o, i) => ({ o, img: images[i] }));
+  for (let t = 1; t <= MAX_TRIES + 1; t++) {
     if (Date.now() > DEADLINE_MS) { feedback.push("past the 05:55 deadline"); break; }
     let ans;
     try {
-      ans = await chatJSON({ model: MODEL, system, prompt: ls.localPrompt({ options, kind, season, formulas, avoidFormulas, feedback }), images, schema: ls.LOCAL_SCHEMA, temperature: 0.4 + 0.15 * (t - 1) });
+      ans = await chatJSON({ model: MODEL, system, prompt: ls.localPrompt({ options: live.map((x) => x.o), kind, season, formulas, avoidFormulas, feedback }), images: live.map((x) => x.img), schema: ls.LOCAL_SCHEMA, temperature: Math.min(0.9, 0.4 + 0.12 * (t - 1)) });
     } catch (e) { feedback.push(String(e.message).slice(0, 200)); log(`${kind}: try ${t} failed — ${e.message}`); continue; }
-    const v = ls.validateLocal(ans.json, options, offer, { blocks: checkBlocks });
+    const v = ls.validateLocal(ans.json, live.map((x) => x.o), offer, { blocks: checkBlocks });
     // Variety across days: the previous post's formula again is sent back while tries remain.
     if (v.ok && avoidFormulas[0] && v.answer.formula === avoidFormulas[0] && t < MAX_TRIES) { v.ok = false; v.problems.push(`the last post was ${avoidFormulas[0]}: choose a different outfit or formula`); }
-    log(`${kind}: try ${t} (${Math.round(ans.ms / 1000)} s) chose outfit ${ans.json.option} — ${ans.json.theme} — ${v.ok ? "VALID" : `rejected: ${v.problems.join("; ")}`}`);
+    log(`${kind}: try ${t} (${Math.round(ans.ms / 1000)} s) chose outfit ${ans.json.option} — ${(v.answer && v.answer.theme) || ans.json.theme} — ${v.ok ? "VALID" : `rejected: ${v.problems.join("; ")}`}`);
     if (v.ok) return { ok: true, option: v.option, answer: v.answer, json: ans.json, attempts: t, options, relaxed, offer };
     feedback.push(v.problems.join("; "));
+    if (v.option) {
+      fails.set(v.option, (fails.get(v.option) || 0) + 1);
+      if (fails.get(v.option) >= 2 && live.length > 1) {
+        live = live.filter((x) => x.o !== v.option);
+        feedback.length = 0;
+        feedback.push("That outfit kept failing and has been removed; the outfits are renumbered.");
+        log(`${kind}: outfit dropped after two failed answers; ${live.length} left`);
+      }
+    }
   }
   return { ok: false, reason: `no valid answer from ${MODEL} after ${MAX_TRIES} tries: ${feedback.slice(-1)[0]}` };
 }

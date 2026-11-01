@@ -319,7 +319,9 @@ function readStylistAnswer(json, { pieces, slots, core, minPieces, maxPieces, se
   if (PRICE_CAPITAL.test(caption) || PRICE_WORDS.test(caption.replace(/\bR ?\d[\d,]*/gi, ""))) problems.push("the caption mentions a price or a sale");
   if (/https?:\/\//i.test(caption)) problems.push("the caption writes a link (it is added automatically)");
   if ((caption.match(/#[\p{L}\p{N}_]+/gu) || []).length > 8) problems.push("more than eight hashtags");
-  const inFit = chosen.map((p) => `${p.brand} ${p.displayName}`).join(" ");
+  // The product's own (till) name too: its poster brand can be shorter than
+  // its real brand ("GALLERY" on a Gallery Dept. tee, 1 Nov).
+  const inFit = chosen.map((p) => `${p.brand} ${p.displayName} ${p.tillName || ""}`).join(" ");
   const strangers = brandsNamed(caption, knownBrands).filter((b) => !brandsNamed(inFit, [b]).length && !(luxuryBrand(inFit) === b));
   if (strangers.length) problems.push(`the caption names a brand that is not in the fit: ${strangers.join(", ")}`);
   const ordered = slots.flatMap((s) => chosen.filter((p) => p.slot === s));

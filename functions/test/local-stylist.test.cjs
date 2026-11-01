@@ -185,3 +185,13 @@ test("an outfit whose only fault is its formula's name is renamed to a formula t
   const loud = [P("t1", "tee", 350, "orange"), P("b1", "bottoms", 750, "black"), P("s1", "sneakers", 700, "orange")];
   assert.equal(ls.validateLocal({ ...goodJson, formula: "blue-denim", theme: "Blue Denim", hero_pid: "s1" }, [{ pieces: loud, total: 1800 }], offerOf(loud)).ok, false);
 });
+
+test("'Red Heart Pop' reads as Red Pop; a caption may name the product's real brand", () => {
+  const red = [P("t1", "tee", 350, "white"), P("b1", "bottoms", 750, "black"), P("s1", "sneakers", 700, "red")];
+  const v = ls.validateLocal({ ...goodJson, formula: "colour-pop", theme: "Red Heart Pop", hero_pid: "s1", colours: ["red", "white", "black"], caption: "Red heart high-tops with a white tee.\n#marathonclub" }, [{ pieces: red, total: 1800 }], offerOf(red));
+  assert.equal(v.answer.theme, "Red Pop");
+  const gd = [{ ...P("t1", "tee", 350, "white"), brand: "GALLERY", displayName: "Distressed cotton crewneck tee", tillName: "Gallery Dept. White Distressed T-Shirt" }, P("b1", "bottoms", 750, "blue denim"), P("s1", "sneakers", 700, "white")];
+  const offer = { ...offerOf(gd), knownBrands: ["Gallery Dept", "Nike"] };
+  const ok = ls.validateLocal({ ...goodJson, caption: "Gallery Dept tee, denim and white kicks.\n#gallerydept" }, [{ pieces: gd, total: 1800 }], offer);
+  assert.equal(ok.problems.some((p) => /brand/.test(p)), false, ok.problems.join("; "));
+});

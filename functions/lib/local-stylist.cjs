@@ -293,6 +293,12 @@ function validateLocal(json, options, offer, { blocks = null } = {}) {
   if (!pidsOf.includes(hero)) hero = (pidsOf.find((p) => hero && hero.includes(p)) || (option.pieces.find((p) => p.slot === "sneakers") || option.pieces[0]).pid);
   let formula = String(a.formula || "").trim();
   let theme = String(a.theme || "").trim();
+  // "Red Heart Pop" → "Red Pop": a Pop theme that holds one colour word is that colour.
+  if (/ Pop$/.test(theme)) {
+    const words = theme.replace(/ Pop$/, "").toLowerCase();
+    const c = [...POP_COLOURS].sort((x, y) => y.length - x.length).find((k) => new RegExp(`\\b${k}\\b`).test(words));
+    if (c && words !== c) theme = `${c.replace(/\b[a-z]/g, (m) => m.toUpperCase())} Pop`;
+  }
   const allowed = fr.formulasFor(offer.season);
   const named = allowed.find((f) => f.name.toLowerCase() === theme.toLowerCase());
   if (named) formula = named.key;

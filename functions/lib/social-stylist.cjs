@@ -178,6 +178,7 @@ function fitOfferForOutfit(candidates, { used = new Set(), tags = new Map(), mon
     offered.push({
       pid: p.pid, slot: p.slot, brand, name: p.websiteName || p.displayName, displayName: p.displayName,
       price: p.price, tags: p.tags, sizes: p.ref.sizesInStock, fresh: p.fresh, photoUrl: p.ref.photoUrl, ref: p.ref, seen: seen.get(p.pid) || null,
+      tillName: (p.ref.product && p.ref.product.name) || null,
     });
   }
   const core = [["tee", "jacket"], ["bottoms"], ["sneakers"]];

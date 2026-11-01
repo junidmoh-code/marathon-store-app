@@ -540,6 +540,7 @@ function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = 
       pid: p.pid, slot: p.slot, brand: p.row.brandLine, name: p.websiteName || p.row.name || p.row.nameLine.toLowerCase(),
       displayName: p.displayName || p.row.displayName, price: p.price, tags: p.tags, sizes: p.ref.sizesInStock,
       fresh: p.fresh, photoUrl: p.row.photoUrl, row: p.row, seen: seen.get(p.pid) || null,
+      tillName: (p.ref && p.ref.product && p.ref.product.name) || null,
     });
   }
   const season = stylist.seasonOf(month);
