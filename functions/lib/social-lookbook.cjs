@@ -47,7 +47,9 @@ const LOOKBOOK_SLOTS = [
     // and the lookbook saw four tees.
     guess: /(?<!-)\b(t-shirts?|tees?|t|polo|henley|shirt|top)\b/i, anchor: { x: 0.60, y: 0.30 } },
   { slot: "bottoms",  label: "bottoms",  keys: ["shorts", "pants", "jeans"],
-    guess: /\b(shorts?|pants|jeans?|cargo|trousers?|joggers?|chinos?)\b/i, anchor: { x: 0.55, y: 0.53 } },
+    // "Sweatshorts", "jorts" and "denim" titles were never read at all
+    // (1 Nov 2026: 5 live bottoms whose titles guessed no slot).
+    guess: /\b(shorts?|sweatshorts?|jorts|pants|jeans?|denim|cargos?|trousers?|joggers?|chinos?)\b/i, anchor: { x: 0.55, y: 0.53 } },
   { slot: "bag",      label: "bag",      keys: ["bags"],
     guess: /\b(bag|backpack|crossbody|sling|pouch|tote|duffel|messenger)\b/i, anchor: { x: 0.72, y: 0.58 } },
   { slot: "sneakers", label: "sneakers", keys: ["sneakers"],
@@ -527,7 +529,7 @@ const CAPTION_BRANDS = [...new Set([
  * @returns { offer: { pieces, slots, core, optional, minPieces, maxPieces, season, kind, knownBrands } | null,
  *            reason, skipped, excluded }
  */
-function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), tags = new Map(), month = 10, noHeadwear = false, rows: exactRows = null, requireSlots = [], hero = null, seen = new Map() } = {}) {
+function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = new Set(), tags = new Map(), month = 10, noHeadwear = false, rows: exactRows = null, requireSlots = [], hero = null, seen = new Map(), keep = [] } = {}) {
   const { pieces, skipped } = lookbookPieces(candidates, { recent, blocked, used, tags });
   const { eligible, excluded } = stylist.eligiblePieces(pieces, { month, noHeadwear });
   const offered = [];
@@ -551,7 +553,7 @@ function fitOffer(candidates, { recent = new Set(), blocked = new Set(), used = 
   }
   const optional = SLOT_KEYS.filter((s) => !core.some((alts) => alts.includes(s)) && have.has(s) && !(s === "hat" && noHeadwear));
   const required = [...core, ...requireSlots.filter((s) => !core.some((alts) => alts.includes(s))).map((s) => [s])];
-  const trimmed = fitRules.trimOptional(offered, required, { keep: hero });
+  const trimmed = fitRules.trimOptional(offered, required, { keep: new Set([hero, ...keep].filter(Boolean)) });
   offered.splice(0, offered.length, ...trimmed);
   if (hero && !offered.some((p) => p.pid === hero)) {
     return { offer: null, skipped, excluded, reason: `the hero ${hero} is not offered (not live, not menswear, or not in stock in two sizes)` };
@@ -699,6 +701,47 @@ function pidsWithinDays(history, saDate, days = 14) {
     const list = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.values(raw) : [];
     for (const pid of list) if (typeof pid === "string" && pid) out.add(pid);
   }
+  return out;
+}
+
+// ── THE STYLE FAMILY: COLOURWAYS OF ONE GARMENT ARE ONE GARMENT ──────────────
+// 1 Nov 2026 (Junid: "the same jeans and the same t-shirt over and over"): the
+// 14-day no-repeat was keyed by pid, and every colourway is its own pid. "Nike
+// Just do it t shirt black w553" (28 Oct outfit), "… white w553" (30 Oct
+// lookbook) and "… cream white w55" (31 Oct samples) all passed it. The family
+// is the brand plus the name with colour words dropped and a style code kept
+// without its colour suffix ("Y8156-2" → "y8156"), so colourways collide and
+// two different designs (w683, w671) do not.
+const FAMILY_COLOURS = new Set(("black white cream off offwhite grey gray charcoal navy blue light dark mid medium " +
+  "red green olive khaki brown tan beige stone sand camel orange yellow gold silver pink purple lilac burgundy " +
+  "maroon wine teal mint sage indigo wash washed acid bleached multi multicolour multicolor colorway colourway " +
+  "full crem with and on in end").split(/\s+/));
+function styleFamily(name, brand = "") {
+  const b = String(brand || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  let t = String(name || "").toLowerCase().replace(/[#:,()/|]+/g, " ");
+  // A style code: letters then digits ("w553", "fd1299", "y8156-2", "gs 5233", "bs-8022").
+  t = t.replace(/\b([a-z]{1,3})[\s-]?(\d{2,6})(?:-\d{1,2})?\b/g, " $1$2 ").replace(/\b(\d{3,6})(?:-\d{1,2})?\b/g, " $1 ");
+  const brandWords = new Set(b.split(" ").filter(Boolean));
+  const rest = t.split(/[^a-z0-9]+/).filter(Boolean)
+    .filter((w) => !FAMILY_COLOURS.has(w) && !brandWords.has(w))
+    .map((w) => (w.length > 3 ? w.replace(/s$/, "") : w));
+  return `${b}|${rest.join(" ")}`.trim();
+}
+
+/**
+ * The families of the products behind `pids` (point reads of name + brand,
+ * only for pids the caller does not already hold). Async; `db` an RTDB handle.
+ */
+async function familiesOf(db, pids, known = new Map()) {
+  const out = new Set();
+  await Promise.all([...new Set(pids)].filter((p) => /^[A-Za-z0-9_-]{1,80}$/.test(p)).map(async (pid) => {
+    let v = known.get(pid);
+    if (!v) {
+      const [n, b] = await Promise.all([db.ref(`products/${pid}/name`).once("value"), db.ref(`products/${pid}/brand`).once("value")]);
+      v = { name: n.val(), brand: b.val() };
+    }
+    if (v && v.name) out.add(styleFamily(v.name, posterBrand(v) || v.brand || ""));
+  }));
   return out;
 }
 
@@ -1193,7 +1236,7 @@ module.exports = {
   LOOKBOOK_SLOTS, SLOT_KEYS, MIN_ROWS, HISTORY_DEPTH, READS_PER_SLOT,
   STILL_FORMAT_KEYS, DEFAULT_STILL_FORMATS,
   lookbookSlot, guessSlot, priceOf, formatRand, approvedPhoto, resolveRow,
-  recentLookbookPids, pidsWithinDays, lookbookPieces, fitOffer, recentFormulas, CAPTION_BRANDS, pickLookbookOutfit, chooseLookbookOutfit, lookbookChoicePrompt, historyEntry,
+  recentLookbookPids, pidsWithinDays, styleFamily, familiesOf, lookbookPieces, fitOffer, recentFormulas, CAPTION_BRANDS, pickLookbookOutfit, chooseLookbookOutfit, lookbookChoicePrompt, historyEntry,
   parseStillFormats, stillCalendar,
   parseLookbookDays, isJsonList, weekdayOf, plannedStillFormat, DEFAULT_LOOKBOOK_DAYS,
   buildHeroPrompt, buildHeroCheckPrompt, readHeroCheck, readModelCheck, anchorsFor,

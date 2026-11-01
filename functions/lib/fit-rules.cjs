@@ -152,7 +152,9 @@ function trimOptional(pieces, core, { perOptional = 6, keep = null } = {}) {
   for (const [slot, list] of bySlot) {
     if (coreSlots.has(slot)) { out.push(...list); continue; }
     const sorted = list.slice().sort((a, b) => (b.fresh || 0) - (a.fresh || 0) || (a.pid < b.pid ? -1 : 1));
-    out.push(...sorted.filter((p, i) => i < perOptional || p.pid === keep));
+    // keep: a fixed hero's pid, or a Set of pids (the local stylist's pick) that always stay.
+    const kept = (p) => (keep instanceof Set ? keep.has(p.pid) : p.pid === keep);
+    out.push(...sorted.filter((p, i) => i < perOptional || kept(p)));
   }
   return pieces.filter((p) => out.includes(p));
 }
