@@ -264,7 +264,7 @@ function localPrompt({ options, kind, season, formulas, avoidFormulas = [], mode
     lines.push(`## Outfit ${i + 1} — R${o.total}`);
     for (const p of o.pieces) lines.push(`- ${p.pid} | ${p.slot} | ${p.brand} — ${p.name} | R${p.price} | photo reads: ${p.emb ? `${p.emb.colour}, ${topStyle(p)}${p.emb.statement >= 0.6 ? ", statement" : ""}` : "?"}`);
   });
-  lines.push("", "Answer with JSON: option (1-based), formula (a key above), theme (that formula's name; colour-pop is '<Colour> Pop'), hero_pid (one pid of that outfit), colours (at most 3, with a neutral, as the photos show them), caption (2-3 short lines in South African English naming each piece only by brand, garment and a colour you can see, at most two emoji, then one line of at most 8 hashtags; no price, no shop, no link), why (one sentence: why these pieces work together), caption_theme (3-6 words), scores (your honest 1-10 for colour, formality, theme, caption).");
+  lines.push("", "Answer with JSON: option (1-based), formula (a key above), theme (that formula's name exactly; colour-pop is '<Colour> Pop'), hero_pid (copy one pid exactly from the chosen outfit's list, usually its sneakers), colours (at most 3, with a neutral, as the photos show them), caption (2-3 short lines in South African English naming each piece only by brand, garment and a colour you can see, at most two emoji, then one line of at most 8 hashtags; no price, no shop, no link), why (one sentence: why these pieces work together), caption_theme (3-6 words), scores (your honest 1-10 for colour, formality, theme, caption).");
   if (feedback.length) lines.push("", "Your earlier answers were rejected:", ...feedback.map((f, i) => `${i + 1}. ${f}`), "Fix every point.");
   return lines.join("\n");
 }
@@ -283,8 +283,22 @@ function validateLocal(json, options, offer, { blocks = null } = {}) {
   const idx = Number(a.option) - 1;
   const option = Number.isInteger(idx) && options[idx] ? options[idx] : null;
   if (!option) return { ok: false, problems: [`option ${a.option} is not one of 1–${options.length}`], option: null, answer: null, fit: null };
+  // A small model's slips that have one right reading are corrected, never
+  // guessed (1 Nov dry runs): a hero that is not one of the outfit's pids is
+  // the outfit's sneaker (rulebook: the sneaker anchors the look); a theme
+  // that is exactly another allowed formula's name, or "<Colour> Pop", names
+  // that formula. The corrected answer is validated like any other.
+  const pidsOf = option.pieces.map((p) => p.pid);
+  let hero = String(a.hero_pid || "").trim();
+  if (!pidsOf.includes(hero)) hero = (pidsOf.find((p) => hero && hero.includes(p)) || (option.pieces.find((p) => p.slot === "sneakers") || option.pieces[0]).pid);
+  let formula = String(a.formula || "").trim();
+  const theme = String(a.theme || "").trim();
+  const allowed = fr.formulasFor(offer.season);
+  const named = allowed.find((f) => f.name.toLowerCase() === theme.toLowerCase());
+  if (named) formula = named.key;
+  else if (/^[A-Z][a-z]+(?:[ -][A-Z][a-z]+)? Pop$/.test(theme) && allowed.some((f) => f.key === "colour-pop")) formula = "colour-pop";
   const answer = {
-    formula: String(a.formula || ""), theme: String(a.theme || ""), hero_pid: String(a.hero_pid || ""),
+    formula, theme, hero_pid: hero,
     pids: option.pieces.map((p) => p.pid), colours: Array.isArray(a.colours) ? a.colours.map(String) : [],
     caption: String(a.caption || "").trim(), why: String(a.why || "").trim(),
   };

@@ -222,6 +222,8 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
       ans = await chatJSON({ model: MODEL, system, prompt: ls.localPrompt({ options, kind, season, formulas, avoidFormulas, feedback }), images, schema: ls.LOCAL_SCHEMA, temperature: 0.4 + 0.15 * (t - 1) });
     } catch (e) { feedback.push(String(e.message).slice(0, 200)); log(`${kind}: try ${t} failed — ${e.message}`); continue; }
     const v = ls.validateLocal(ans.json, options, offer, { blocks: checkBlocks });
+    // Variety across days: the previous post's formula again is sent back while tries remain.
+    if (v.ok && avoidFormulas[0] && v.answer.formula === avoidFormulas[0] && t < MAX_TRIES) { v.ok = false; v.problems.push(`the last post was ${avoidFormulas[0]}: choose a different outfit or formula`); }
     log(`${kind}: try ${t} (${Math.round(ans.ms / 1000)} s) chose outfit ${ans.json.option} — ${ans.json.theme} — ${v.ok ? "VALID" : `rejected: ${v.problems.join("; ")}`}`);
     if (v.ok) return { ok: true, option: v.option, answer: v.answer, json: ans.json, attempts: t, options, relaxed, offer };
     feedback.push(v.problems.join("; "));
@@ -291,7 +293,7 @@ async function review(world, start, ledger) {
   const seen = { tee: new Set(), bottoms: new Set(), sneakers: new Set() };
   for (let i = 0; i < REVIEW; i++) {
     const date = addDays(start, i);
-    const r = await pickOne(world, "lookbook", date, scratch, { avoidFormulas: rows.slice(-3).map((x) => x.answer.formula) });
+    const r = await pickOne(world, "lookbook", date, scratch, { avoidFormulas: rows.slice(-3).filter((x) => x.answer).map((x) => x.answer.formula) });
     if (!r.ok) { log(`review ${i + 1}: NO PICK — ${r.reason}`); rows.push({ date, error: r.reason }); continue; }
     scratch = ls.ledgerWith(scratch, ls.ledgerEntry(date, "lookbook", r.option.pieces, { status: "planned", theme: r.answer.theme }));
     const repeats = r.option.pieces.filter((p) => seen[p.slot] && seen[p.slot].has(p.pid));

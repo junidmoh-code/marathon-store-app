@@ -144,3 +144,13 @@ test("formulaProblems: the theme must be what the photos show", () => {
   assert.deepEqual(ls.formulaProblems("blue-denim", [P("t", "tee", 1, "white"), P("b", "bottoms", 1, "blue denim"), P("s", "sneakers", 1, "white")]), []);
   assert.deepEqual(ls.formulaProblems("colour-pop", plain), []);
 });
+
+test("validateLocal corrects a stray hero and a theme that names another formula, then validates", () => {
+  const options = [{ pieces: pieces3, total: 1800 }];
+  const v = ls.validateLocal({ ...goodJson, hero_pid: "Nike sneaker", formula: "court-classic", theme: "Blue Denim" }, options, offerOf(pieces3));
+  assert.equal(v.ok, true, v.problems.join("; "));
+  assert.equal(v.answer.hero_pid, "s1");
+  assert.equal(v.answer.formula, "blue-denim");
+  const pop = ls.validateLocal({ ...goodJson, formula: "court-classic", theme: "Red Pop" }, options, offerOf(pieces3));
+  assert.equal(pop.answer.formula, "colour-pop");
+});
