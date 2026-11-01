@@ -26,7 +26,7 @@ import {
   useStockTargets, useTransfers, useRetryState,
   useHiddenMissingProducts, useRefusalWriteoffs, useRefusalWriteoffDigestStatus,
 } from "./useStock";
-import { writeoffRows, recentCount, digestStatusLine } from "./refusalWriteoffsCore";
+import { writeoffRows, recentCount, digestStatusLine, REFUSAL_WRITEOFF_DAYS } from "./refusalWriteoffsCore";
 import InTransit from "./InTransit";
 import { STALE_TRANSIT_HOURS } from "./transitLanes";
 import IntroduceExisting from "./IntroduceExisting";
@@ -710,7 +710,7 @@ export default function HealthView({ products = [], onExit }) {
       // the snapshot it already holds; this screen only draws it.
       // ── WRITTEN OFF AFTER REFUSAL (2026-09-23, super admin only) ─────────────
       // Every size the scan erased because the location said "out of stock" on
-      // four different days with no fulfilment in between
+      // REFUSAL_WRITEOFF_DAYS (2) different days with no fulfilment in between
       // (functions/lib/refusal-writeoff.cjs). Read-only: what, where, how many,
       // and who said no on which day. The same list is emailed daily.
       case "refusalWriteoffs": {
@@ -720,7 +720,7 @@ export default function HealthView({ products = [], onExit }) {
         const units = writeoffList.reduce((t, r) => t + r.units, 0);
         return (
           <DetailShell title="Written off after refusal"
-            sub={`Sizes a location said were not there on four different days, with no fulfilment in between — their count was erased so the size flows again. ${writeoffList.length} write-off${writeoffList.length === 1 ? "" : "s"}, ${units} unit${units === 1 ? "" : "s"} (newest first).`}
+            sub={`Sizes a location said were not there on ${REFUSAL_WRITEOFF_DAYS} different days, with no fulfilment in between — their count was erased so the size flows again. ${writeoffList.length} write-off${writeoffList.length === 1 ? "" : "s"}, ${units} unit${units === 1 ? "" : "s"} (newest first).`}
             count={writeoffList.length} onBack={back}>
             {digestLine && (
               <div data-digest-status={digestLine.tone} style={{ ...GLASS, padding: 14, fontSize: 13, lineHeight: 1.5,
@@ -1018,7 +1018,7 @@ export default function HealthView({ products = [], onExit }) {
                           value={!writeoffState.settled ? "…" : writeoffState.error ? "!" : recentCount(writeoffList, serverNowMs())}
                           tone={writeoffState.error || digestLine?.tone === "fail" ? RED : AMBER}
                           sub={digestLine?.tone === "fail" ? "Daily email problem — tap for why"
-                            : digestLine?.tone === "warn" ? "Daily email unconfirmed — tap for why" : "Refused on 4 different days · last 30 days"}
+                            : digestLine?.tone === "warn" ? "Daily email unconfirmed — tap for why" : `Refused on ${REFUSAL_WRITEOFF_DAYS} different days · last 30 days`}
                           onClick={() => setScreen("refusalWriteoffs")} />
               )}
               <StatCard label="Waiting for Hub 2" value={storeWaiting} tone={storeWaiting ? BLUE_L : GREEN}

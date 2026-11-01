@@ -1,7 +1,8 @@
-// ─── WRITE-OFF AFTER FOUR REFUSED DAYS (owner rule, 2026-09-23) ──────────────
+// ─── WRITE-OFF AFTER TWO REFUSED DAYS (owner rule 2026-09-23; 4 → 2 on 2026-11-01)
 //
 // THE RULE, in Junid's words: a location that has said "out of stock" to one
-// product/size on four DIFFERENT calendar days (Africa/Johannesburg), with no
+// product/size on MIN_DISTINCT_DAYS DIFFERENT calendar days (Africa/Johannesburg)
+// — two since 1 Nov 2026 (Junid lowered it from four) — with no
 // fulfilment of that size in between, does not have it. Erase it automatically
 // and let the flow restart. Being over later is acceptable; a frozen size is
 // not. It applies to Hub 1, Hub 2 and Central — the locations requests are
@@ -28,7 +29,7 @@
 //     the first movement to touch the cell after that refusal), so a sale that
 //     happened in between can never make us erase more than was there.
 //   • No reason codes, no proof-of-existence checks, no found-stock handling
-//     (ruled out by the owner). Four days is the evidence.
+//     (ruled out by the owner). Two different days is the evidence.
 //
 // WHAT COUNTS AS A REFUSAL / A FULFILMENT. Read from /refill_requests — the one
 // durable record of every request (the /orders lines behind shop legs recycle
@@ -78,7 +79,12 @@ function excludedRequesters(network) {
 }
 const WRITEOFF_LOCATIONS = Object.freeze(writeoffLocations(SEED_REGISTRY));
 const EXCLUDED_LOCATIONS = Object.freeze(excludedRequesters(SEED_REGISTRY));
-const MIN_DISTINCT_DAYS = 4;
+// THE THRESHOLD — the ONE place it is set. Junid, 1 Nov 2026: "must drop from
+// four to two", keeping "on different days". Two refusals on the SAME day are
+// one day and never enough. Everything else reads this constant (the planner,
+// the digest wording, the backfill script); the Health card's copy is pinned
+// to it by src/components/stock/refusalWriteoffThreshold.test.js.
+const MIN_DISTINCT_DAYS = 2;
 const MOVEMENT_TYPE = "refusal_writeoff";
 const ACTOR = "system:refusal-writeoff";
 

@@ -23,6 +23,10 @@
 
 "use strict";
 
+const { MIN_DISTINCT_DAYS } = require("./refusal-writeoff.cjs");
+const DAY_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven"];
+const RULE_DAYS = DAY_WORDS[MIN_DISTINCT_DAYS] || String(MIN_DISTINCT_DAYS);
+
 const MARKER = "REFUSAL_WRITEOFF_DIGEST";
 const QUEUE = "refill_engine/refusalWriteoffDigestQueue";
 const RECORDS = "refill_engine/refusalWriteoffs";
@@ -62,7 +66,7 @@ function buildDigest(records, { nowMs }) {
     const p = (perLocation[L(r.loc)] ||= { sizes: 0, units: 0 });
     p.sizes++; p.units += Number(r.qty) || 0; units += Number(r.qty) || 0;
   }
-  const head = `${list.length} size${list.length === 1 ? "" : "s"} / ${units} unit${units === 1 ? "" : "s"} written off after four refused days — `
+  const head = `${list.length} size${list.length === 1 ? "" : "s"} / ${units} unit${units === 1 ? "" : "s"} written off after ${RULE_DAYS} refused days — `
     + Object.entries(perLocation).map(([l, p]) => `${l}: ${p.sizes} (${p.units}u)`).join(", ");
   const lines = list.map(lineFor);
   // The emailed line: the headline, then as many items as fit, then a pointer.
@@ -76,7 +80,8 @@ function buildDigest(records, { nowMs }) {
   }
   if (shown < lines.length) summary += ` | +${lines.length - shown} more on Health → Written off after refusal`;
   return {
-    date: sastDate(nowMs), count: list.length, units, perLocation,
+    date: sastDate(nowMs), key: `${sastDate(nowMs)}_${nowMs}`, count: list.length, units, perLocation,
+    subject: `${MAIL_SUBJECT_PREFIX} ${list.length} size${list.length === 1 ? "" : "s"} / ${units} unit${units === 1 ? "" : "s"} written off after ${RULE_DAYS} refused days`,
     ids: list.map((r) => r.id), lines, summary: summary.replace(/[\r\n]+/g, " "),
     text: [head, "", ...lines].join("\n"),
   };
@@ -90,6 +95,36 @@ function emailViaAlertLog(log = console.error) {
     deliver: async (digest) => {
       log(`${MARKER} ${digest.summary}`);
       return { ok: true, detail: "logged" };
+    },
+  };
+}
+
+// ─── THE EMAIL THAT ARRIVES: Gmail SMTP from the Mac mini (2026-11-01) ────────
+// ROOT CAUSE of "the digest never arrived" (23 Sep → 1 Nov): the only route was
+// Cloud Monitoring's alert email to junidmoh@gmail.com. Every email that DOES
+// reach Junid — the EFT confirmer verdicts, the orders-poller watchdog, the
+// recycler reports — goes over Gmail SMTP from the shop mailbox
+// (marathon6631@gmail.com) to gunidmoh@gmail.com, "the inbox he reads"
+// (scripts/cardrecon/verdictMailCore.mjs, scripts/shopify/orders-poll-watchdog.mjs).
+// So the digest now goes that way too: this channel files the finished email
+// in a small outbox node, and the mini's launchd agent
+// (scripts/refill/writeoff-digest-mailer.mjs, every 10 minutes) sends it and
+// records Gmail's answer (the SMTP message id) on the archive and on STATUS —
+// a real receipt from the receiving provider, not "an alert was raised". The
+// Monitoring route stays as a second copy; nothing else changed.
+const OUTBOX = "refill_engine/refusalWriteoffDigestOutbox";
+const MAIL_TO = "gunidmoh@gmail.com";   // Junid reads this one (with a G)
+const MAIL_SUBJECT_PREFIX = "[Write-off digest]";
+
+function emailViaMiniOutbox(db) {
+  return {
+    name: "mail",
+    deliver: async (digest) => {
+      await db.ref(`${OUTBOX}/${digest.key}`).set({
+        to: MAIL_TO, subject: digest.subject, text: digest.text,
+        count: digest.count, units: digest.units, createdAtMs: Number(digest.key.split("_")[1]) || null,
+      });
+      return { ok: true, detail: "queued for the mini (Gmail SMTP)" };
     },
   };
 }
@@ -217,12 +252,12 @@ async function runDigest({ db, nowMs, channels }) {
   const patch = { ...clearMissing };
   for (const id of digest.ids) patch[`${QUEUE}/${id}`] = null;
   // Keyed by date + time so a second digest on one day (a manual re-run) never overwrites the first.
-  patch[`${ARCHIVE}/${digest.date}_${nowMs}`] = {
+  patch[`${ARCHIVE}/${digest.key}`] = {
     sentAtMs: nowMs, date: digest.date, count: digest.count, units: digest.units, ids: digest.ids, text: digest.text,
     channels: Object.fromEntries(Object.entries(results).map(([k, v]) => [k, { ok: !!v?.ok, detail: v?.detail || null }])),
   };
   await db.ref().update(patch);
-  return { sent: true, digest, results, archiveKey: `${digest.date}_${nowMs}` };
+  return { sent: true, digest, results, archiveKey: digest.key };
 }
 
 // The whole scheduled run: digest → ask Google → record the verdict. The
@@ -244,17 +279,24 @@ async function runDigestAndConfirm({ db, nowMs, channels, api, confirm = confirm
   }
   // "checking" first: if the run is cut off mid-check, the card shows a check
   // that never finished — never yesterday's verdict (second review, #644).
-  const base = { atMs: nowMs, outcome: "sent", count: res.digest.count, units: res.digest.units, archiveKey: res.archiveKey };
+  const base = {
+    atMs: nowMs, outcome: "sent", count: res.digest.count, units: res.digest.units, archiveKey: res.archiveKey,
+    // The mini replaces this with Gmail's answer (sent + message id, or failed + why).
+    ...(res.results?.mail?.ok ? { mail: { state: "queued", to: MAIL_TO } } : {}),
+  };
   await recordStatus(db, { ...base, delivery: { state: "checking" } });
   const delivery = await confirm({ api, digest: res.digest, sentAtMs: nowMs });
   await db.ref().update({ [`${ARCHIVE}/${res.archiveKey}/delivery`]: delivery });
-  await recordStatus(db, { ...base, delivery });
+  // update, not set: the mini may already have written STATUS/mail (sent) while
+  // Google was being asked — never put "queued" back over Gmail's answer.
+  await db.ref(STATUS).update({ delivery });
   const line = `refusalWriteoffDigest: ${res.digest.count} write-off(s) — email ${delivery.state}${delivery.why ? ` (${delivery.why})` : ""}`;
   (delivery.state === "alert_raised" ? log : warn)(line);
   return { ...res, delivery };
 }
 
 module.exports = {
-  buildDigest, runDigest, runDigestAndConfirm, emailViaAlertLog, lineFor, judgeDelivery, monitoringApi, confirmDelivery, recordStatus,
+  buildDigest, runDigest, runDigestAndConfirm, emailViaAlertLog, emailViaMiniOutbox, lineFor, judgeDelivery, monitoringApi, confirmDelivery, recordStatus,
   MARKER, QUEUE, RECORDS, ARCHIVE, STATUS, POLICY_NAME, RECIPIENT, EMAIL_MAX_CHARS,
+  OUTBOX, MAIL_TO, MAIL_SUBJECT_PREFIX, RULE_DAYS,
 };

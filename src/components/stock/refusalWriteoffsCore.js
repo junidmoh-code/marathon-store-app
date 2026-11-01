@@ -1,12 +1,17 @@
 // ─── "WRITTEN OFF AFTER REFUSAL" — what the super-admin card shows ───────────
 // The records are written by the hourly scan (functions/lib/refusal-writeoff.cjs)
 // at /refill_engine/refusalWriteoffs/{id} whenever a location refused one size
-// on four different days and its pre-refusal count was erased. This file turns
+// on REFUSAL_WRITEOFF_DAYS different days and its pre-refusal count was erased. This file turns
 // them into card rows: product, size, location, units, who refused and when.
 // Pure — the screen only draws what this returns, and the test pins that it
 // reads exactly the fields the engine writes.
 
 import { nameOf } from "./sectionRouting";
+
+// The write-off threshold, as the card words it. The ONE source is
+// functions/lib/refusal-writeoff.cjs MIN_DISTINCT_DAYS (Junid lowered it from 4
+// to 2 on 1 Nov 2026); refusalWriteoffThreshold.test.js fails if they differ.
+export const REFUSAL_WRITEOFF_DAYS = 2;
 
 const LOC = { hub1: "Hub 1", hub2: "Hub 2", central: "Central", "marathon-pe": "Marathon PE", trophy: "Trophy" };
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -93,6 +98,19 @@ export function digestStatusLine(status, nowMs) {
   const d = status.delivery || {};
   const n = Number(status.count) || 0;
   const what = `${n} write-off${n === 1 ? "" : "s"}`;
+  // GMAIL'S ANSWER FIRST (1 Nov 2026): the mini sends the digest over Gmail
+  // SMTP to the inbox Junid reads and records Gmail's reply. That is a real
+  // receipt; the Monitoring alert below is only the second copy.
+  const m = status.mail;
+  if (m && typeof m === "object") {
+    if (m.state === "sent") return { tone: "ok", text: `Emailed ${what} to ${m.to} at ${sastStamp(Number(m.atMs) || Number(status.atMs))} — Gmail accepted it${m.messageId ? ` (${m.messageId})` : ""}.` };
+    if (m.state === "failed") return { tone: "fail", text: `The ${at} email with ${what} to ${m.to} did NOT go out after ${m.attempts || "several"} tries: ${m.why || "unknown"}. The full list is below.` };
+    if (m.state === "retrying") return { tone: "warn", text: `The ${at} email with ${what} has not gone yet (try ${m.attempts}: ${m.why || "unknown"}) — the mini tries again every 10 minutes.` };
+    if (m.state === "queued" && nowMs - Number(status.atMs) > 30 * 60e3) {
+      return { tone: "fail", text: `The ${at} email with ${what} is still waiting for the Mac mini to send it — check that the mini is on (com.marathon.writeoffdigestmail).` };
+    }
+    if (m.state === "queued") return { tone: "warn", text: `The ${at} email with ${what} is queued — the Mac mini sends it within 10 minutes.` };
+  }
   if (d.state === "alert_raised") {
     const sentAt = Date.parse(d.alertRaisedAt || "") || Number(status.atMs);
     return { tone: "ok", text: `Google raised the email with ${what} to ${d.to} at ${sastStamp(sentAt)}. Google does not confirm it reached the inbox — if it is not there, look in spam for “Written off after refusal”.` };

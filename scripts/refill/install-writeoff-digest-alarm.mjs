@@ -3,7 +3,7 @@
 // refusalWriteoffDigest (functions/index.js → functions/lib/writeoff-digest.cjs)
 // prints ONE line a day when the scan wrote something off:
 //
-//     REFUSAL_WRITEOFF_DIGEST 3 sizes / 5 units written off after four refused days — Hub 2: 1 (3u), … | Nike Tech …
+//     REFUSAL_WRITEOFF_DIGEST 3 sizes / 5 units written off after two refused days — Hub 2: 1 (3u), … | Nike Tech …
 //
 // This script creates the Cloud Monitoring policy that turns that line into an
 // email to Junid WITH the text in it — the existing report path (the card-recon
@@ -78,7 +78,7 @@ function policyBody(channelName) {
       mimeType: "text/markdown",
       content:
         "**Written off after refusal.** ${log.extracted_label.digest}\n\n" +
-        "Each size was refused on four different days by the location named, with no fulfilment in between, so its " +
+        "Each size was refused on two different days by the location named, with no fulfilment in between, so its " +
         "pre-refusal count was erased and the size flows again. Full list, with every refusal date and who refused: " +
         "Inventory Health → Written off after refusal (super admin only).",
     },

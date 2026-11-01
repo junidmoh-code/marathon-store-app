@@ -194,3 +194,42 @@ test("entry point: nothing new → status says so, no Google call", async () => 
   assert.equal(asked, 0);
   assert.equal((await db.ref(STATUS).once("value")).val().outcome, "nothing_new");
 });
+
+// ─── THE EMAIL THAT ARRIVES (1 Nov 2026) ─────────────────────────────────────
+// Root cause of the silent digest: Monitoring email to junidmoh@ — every email
+// that reaches Junid goes over Gmail SMTP to gunidmoh@. The digest now files
+// the finished email for the mini, which sends it that way.
+const { emailViaMiniOutbox, OUTBOX, MAIL_TO } = require("../lib/writeoff-digest.cjs");
+const { MIN_DISTINCT_DAYS } = require("../lib/refusal-writeoff.cjs");
+
+test("the outbox channel files ONE email for gunidmoh@ with the whole list, keyed like the archive; status says queued", async () => {
+  const db = world();
+  const logged = [];
+  const res = await runDigestAndConfirm({ db, nowMs: SENT, channels: [emailViaMiniOutbox(db), emailViaAlertLog((l) => logged.push(l))], api: googleThatSees(logged), ...quiet });
+  assert.equal(MAIL_TO, "gunidmoh@gmail.com");
+  const box = (await db.ref(OUTBOX).once("value")).val();
+  assert.deepEqual(Object.keys(box), [res.archiveKey]);
+  const e = box[res.archiveKey];
+  assert.equal(e.to, "gunidmoh@gmail.com");
+  assert.equal(e.createdAtMs, SENT);
+  assert.match(e.subject, /^\[Write-off digest\] 1 size \/ \d+ units? written off after two refused days$/);
+  assert.match(e.text, /written off after two refused days/);
+  assert.equal(MIN_DISTINCT_DAYS, 2);
+  const st = (await db.ref(STATUS).once("value")).val();
+  assert.deepEqual(st.mail, { state: "queued", to: "gunidmoh@gmail.com" });
+  assert.equal(st.delivery.state, "alert_raised");
+});
+
+test("Gmail's answer written by the mini mid-check is never overwritten by the Monitoring verdict", async () => {
+  const db = world();
+  const logged = [];
+  const confirm = async (a) => {
+    // the mini sends while Google is being asked
+    await db.ref(`${STATUS}/mail`).set({ state: "sent", to: "gunidmoh@gmail.com", messageId: "<x@gmail>" });
+    return { state: "not_sent", why: "test" };
+  };
+  await runDigestAndConfirm({ db, nowMs: SENT, channels: [emailViaMiniOutbox(db), emailViaAlertLog((l) => logged.push(l))], api: googleThatSees(logged), confirm, ...quiet });
+  const st = (await db.ref(STATUS).once("value")).val();
+  assert.equal(st.mail.state, "sent");
+  assert.equal(st.delivery.state, "not_sent");
+});

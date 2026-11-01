@@ -12,7 +12,7 @@
 //   I2  a written-off cell keeps at least what arrived after the first counted
 //       refusal (as far as today's count still holds it): after ≥ min(today, arrivals)
 //   I3  never more than was on paper when the first counted refusal came
-//   I4  every write-off stands on ≥ 4 different SAST days of refusals by that
+//   I4  every write-off stands on ≥ MIN_DISTINCT_DAYS (2 since 1 Nov 2026) different SAST days of refusals by that
 //       location, none of them followed by a fulfilment of the size
 //   I5  only hub1 / hub2 / central; never a Pine request; never negative
 //   I6  the second scan debits nothing (one run, one write-off)
@@ -21,7 +21,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
-const { planRefusalWriteoffs, applyRefusalWriteoffs, sastDay } = require("../lib/refusal-writeoff.cjs");
+const { planRefusalWriteoffs, applyRefusalWriteoffs, sastDay, MIN_DISTINCT_DAYS } = require("../lib/refusal-writeoff.cjs");
 const { sanitizeUpdate } = require("../lib/refill-engine.cjs");
 
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 2 ** 32; }; }
@@ -134,9 +134,9 @@ test("1,000 generated worlds: the write-off keeps every hard constraint", async 
       assert.ok(a.refusals.every((x) => x.dest !== "marathon-pine"), `${ctx} I5 Pine`);
       const now = after[a.loc][a.pid][a.cellKey].qty;
       assert.ok(now >= 0, `${ctx} I5 negative`);
-      // I4: ≥ 4 different days among the COUNTED refusals, no fulfilment after the first refusal of the run.
+      // I4: ≥ MIN_DISTINCT_DAYS different days among the COUNTED refusals, no fulfilment after the first refusal of the run.
       const counted = a.refusals.filter((x) => x.counted !== false);
-      assert.ok(new Set(counted.map((x) => x.day)).size >= 4, `${ctx} I4 days`);
+      assert.ok(new Set(counted.map((x) => x.day)).size >= MIN_DISTINCT_DAYS, `${ctx} I4 days`);
       const firstMs = Math.min(...a.refusals.map((x) => Date.parse(x.at)));
       const lastMs = Math.max(...a.refusals.map((x) => Date.parse(x.at)));
       const fulfilledBetween = tr.events.some((e) => (e.kind === "fulfil" || e.kind === "partial") && e.t > firstMs && e.t < lastMs);

@@ -5,7 +5,7 @@
 // /refill_requests on every scan, so the first refillHealthScan after deploy
 // applies it — once, through applyMovementAdmin, with the per-cell cursor
 // guaranteeing no run is ever written off twice — to everything that meets the
-// four-distinct-days rule today: the sizes on Recount Needed, the sizes Central
+// MIN_DISTINCT_DAYS-distinct-days rule today (two since 1 Nov 2026; was four): the sizes on Recount Needed, the sizes Central
 // refused, and any older Hub 2 run whose Recount Needed row had already gone
 // stale. No new read is needed for it (every input is one the scan already
 // makes), so there is no whole-node read to add.
@@ -108,7 +108,7 @@ const rows = plan.writeoffs.map((w) => ({
 const perLoc = {};
 for (const r of rows) { const p = (perLoc[r.location] ||= { sizes: 0, units: 0 }); p.sizes++; p.units += r.units; }
 const why = (items) => items.reduce((a, r) => {
-  const k = r.countDisputed ? "count disputed (routed round)" : r.rejections == null ? "refused at both levels, still counted" : `refused ${r.rejections}× — fewer than 4 different days, or deferred`;
+  const k = r.countDisputed ? "count disputed (routed round)" : r.rejections == null ? "refused at both levels, still counted" : `refused ${r.rejections}× — fewer than ${wo.MIN_DISTINCT_DAYS} different days, or deferred`;
   a[k] = (a[k] || 0) + 1; return a;
 }, {});
 const summary = {
@@ -130,7 +130,7 @@ const remaining = after.exceptions.recountNeeded.items.map((r) => {
     && Number.isFinite(Date.parse(q.refusedAt || q.resolvedAt))).map((q) => wo.sastDay(Date.parse(q.refusedAt || q.resolvedAt))));
   const reason = d ? (d.reason === "request_open" ? "a request to that location is open right now — it is written off the scan after it is refused again (or kept if it is fulfilled)" : "its refusals are older than the 45-day ledger and the cell has been written since — cannot prove what arrived")
     : r.countDisputed ? "Central already sent stock round the disputed count; clears on a count, an adjust, or a write-off"
-    : refusedDays.size < 4 ? `refused on only ${refusedDays.size} different day${refusedDays.size === 1 ? "" : "s"} (needs 4)`
+    : refusedDays.size < wo.MIN_DISTINCT_DAYS ? `refused on only ${refusedDays.size} different day${refusedDays.size === 1 ? "" : "s"} (needs ${wo.MIN_DISTINCT_DAYS})`
     : "a fulfilment of the size came after some of the refusals, restarting the count";
   return { product: name(r.pid), size: r.size, for: L(r.loc), at: L(src), showing: r.showing, reason };
 });
