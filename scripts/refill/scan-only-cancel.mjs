@@ -83,8 +83,11 @@ try {
     // not only the destination — resolveTarget's dead-size rule counts a
     // size's units across the whole network, and carriedOnly reads carriage.
     const routing = engine.networkRouting(config, network);
-    const scanLocs = [...new Set([...Object.keys(routing.routes), ...Object.values(routing.routes), ...routing.locs])];
-    const stockAll = Object.fromEntries(await Promise.all(scanLocs.map(async (l) => [l, await val(`stock/${l}`)])));
+    const scanLocs = [...new Set([...Object.keys(routing.routes), ...Object.values(routing.routes), ...routing.locs])].filter(Boolean);
+    const rawStock = Object.fromEntries(await Promise.all(scanLocs.map(async (l) => [l, await val(`stock/${l}`)])));
+    // …and masked exactly as the scan masks it: a trusted-cells-only location
+    // arms only its trusted cells (substitute review, #833).
+    const stockAll = engine.maskUntrustedStock(rawStock, network);
     const stockAt = async (loc) => { if (!(loc in stockAll)) stockAll[loc] = await val(`stock/${loc}`); return stockAll[loc]; };
     const name = (pid) => products[pid]?.name || pid;
     const rows = [];
