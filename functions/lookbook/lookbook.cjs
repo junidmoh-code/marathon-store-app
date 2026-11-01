@@ -154,7 +154,7 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
   // The local stylist's picks (deps.fitAgent.wants) were already checked on the
   // mini against a ledger that holds every lookbook AND every outfit post, so
   // they are read first and not blocked again here.
-  const wanted = (deps.fitAgent && typeof deps.fitAgent.wants === "function" && (await deps.fitAgent.wants())) || [];
+  const wanted = (deps.fitAgent && typeof deps.fitAgent.wants === "function" && !(deps.fitAgent.local && (fixedHero || look)) && (await deps.fitAgent.wants())) || [];
   for (const pid of wanted) blocked.delete(pid);
   // A fixed hero (a rebuild of a posted fit: scripts only) is offered whatever the no-repeat says.
   if (fixedHero) { blocked.delete(fixedHero); used = new Set([...used].filter((p) => p !== fixedHero)); }
@@ -204,7 +204,10 @@ async function makeLookbookInner(db, deps, { nowMs = Date.now(), used = new Set(
     return rowsToPrep.every((r) => ready.has(r.pid));
   };
   let picked = null, choices = 0, fitResult = null;
-  if (deps.fitAgent) {
+  // A script that forces a hero or a look (proof rebuilds, samples) is not
+  // asking for the day's local pick: it takes the deterministic scorer (CodeRabbit on #832).
+  const useAgent = deps.fitAgent && !(deps.fitAgent.local && (fixedHero || look));
+  if (useAgent) {
     // ── THE OPUS STYLIST AND CRITIC (lookbook/fit-agent.cjs) ─────────────
     // Built from the rulebook, scored by the critic on the real photos,
     // rebuilt at most twice, else SKIPPED: the day posts the current style

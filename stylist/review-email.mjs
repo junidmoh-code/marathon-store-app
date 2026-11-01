@@ -45,12 +45,20 @@ fs.writeFileSync(path.join(DIR, "sheet.jpg"), sheet);
 const sheetUrl = await upload("sheet", sheet);
 for (const r of rows) r.url = await upload(r.file.replace(/\.jpg$/, ""), fs.readFileSync(path.join(DIR, r.file)));
 
+// Repeats are counted, never assumed (a relaxed slot can repeat; CodeRabbit on #832).
+const repeated = ["tee", "bottoms", "sneakers"].flatMap((slot) => {
+  const seen = new Set();
+  return rows.flatMap((r) => r.pieces.filter((p) => p.slot === slot)).filter((p) => seen.has(p.pid) || !seen.add(p.pid)).map((p) => `${p.slot} ${p.brand} ${p.name}`);
+});
+const repeatNote = repeated.length ? `Repeated across the set (a thin slot was relaxed): ${repeated.join("; ")}.` : "No top, bottoms or sneaker repeats across the set.";
+const totals = rows.map((r) => r.total);
+const priceNote = `Totals R${Math.min(...totals)}–R${Math.max(...totals)}${Math.max(...totals) < 2000 ? ", every one under R2,000" : ""}.`;
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const text = [
   "Junid,",
   "",
   `The new local stylist (${review.model} + Fashion-CLIP, running free on the Mac mini) styled ${rows.length} outfits in a row, offline. Nothing was posted.`,
-  "No top, bottoms or sneaker repeats across the set; every total is under R2,000.",
+  `${repeatNote} ${priceNote}`,
   "",
   `The whole sheet: ${sheetUrl}`,
   "",
@@ -62,7 +70,7 @@ const text = [
     "",
   ]),
 ].join("\n");
-const html = `<p>Junid,</p><p>The new local stylist (<b>${esc(review.model)}</b> + Fashion-CLIP, running free on the Mac mini) styled ${rows.length} outfits in a row, offline. Nothing was posted. No top, bottoms or sneaker repeats; every total is under R2,000.</p>
+const html = `<p>Junid,</p><p>The new local stylist (<b>${esc(review.model)}</b> + Fashion-CLIP, running free on the Mac mini) styled ${rows.length} outfits in a row, offline. Nothing was posted. ${esc(repeatNote)} ${esc(priceNote)}</p>
 <p><a href="${sheetUrl}">Open the whole sheet</a></p><p><img src="cid:sheet" width="800" style="max-width:100%"></p>
 ${rows.map((r, i) => `<h3>${i + 1}. ${esc(r.answer.theme)} — R${r.total} · <a href="${r.url}">picture</a></h3><ul>${r.pieces.map((p) => `<li>${esc(p.slot)}: ${esc(p.brand)} ${esc(p.name)} — R${p.price}</li>`).join("")}</ul><p><i>${esc(r.answer.why)}</i></p><p style="white-space:pre-wrap">${esc(r.answer.caption)}</p>`).join("")}`;
 
