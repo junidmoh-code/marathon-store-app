@@ -17,11 +17,11 @@ export async function chatJSON({ model, system, prompt, images = [], schema, tim
   };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  let res;
+  let res, raw;
   try {
     res = await fetch(`${OLLAMA_URL}/api/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal });
+    raw = await res.text();   // the timeout covers the body too
   } finally { clearTimeout(timer); }
-  const raw = await res.text();
   if (!res.ok) throw new Error(`ollama ${res.status}: ${raw.slice(0, 200)}`);
   const text = (JSON.parse(raw).message || {}).content || "";
   let json;

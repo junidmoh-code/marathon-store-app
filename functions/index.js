@@ -4776,11 +4776,20 @@ async function pickStyledPost(db, kind, candidates, used, geminiApiKey) {
     // The pick is offered back to its own post ONCE: if a post today already
     // holds it, a second outfit request (a retry, a manual run) is skipped
     // rather than repeating the same outfit (architect review).
+    // And none of its pieces may already be spoken for by another post (in the
+    // queue, or posted today): the exemption below is for the pick's own
+    // reservation only (CodeRabbit on #832).
     if (mine.length) {
       const todays = (await db.ref(SOCIAL_POSTS_PATH).orderByKey().startAt(socialHealth.pushKeyPrefixForMs(sastMidnightUtc(Date.now(), 0))).once("value")).val() || {};
       if (Object.values(todays).some((p) => p && p.status !== "sample" && mine.every((pid) => (p.products || []).some((x) => x && x.pid === pid)))) {
         return { picks: [], reason: "today's local stylist outfit is already in the queue", costUSD };
       }
+      const queued = [];
+      for (const st of ["draft", "approved", "posting"]) queued.push(...Object.values((await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(st).limitToLast(100).once("value")).val() || {}));
+      const taken = new Set();
+      for (const p of [...Object.values(todays), ...queued]) if (p && p.status !== "sample") for (const x of p.products || []) if (x && x.pid) taken.add(x.pid);
+      const clash = mine.filter((pid) => taken.has(pid));
+      if (clash.length) return { picks: [], reason: `the local stylist outfit's ${clash.join(", ")} is already in another post`, costUSD };
     }
     const wanted = mine.filter((pid) => !candidates.some((c) => c.pid === pid));
     const extra = wanted.length ? await loadCandidatesByPid(db, wanted, { nowMs: Date.now() }) : [];

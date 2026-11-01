@@ -56,13 +56,15 @@ const LEDGER = arg("ledger") || path.join(HOME, "ledger.json");
 const REVIEW = Number(arg("review", 0)) || 0;
 const DRY = flag("dry") || REVIEW > 0;
 const MAX_TRIES = 4;
-// The scheduled run must finish before the 06:00 reels read the outfit pick:
-// past 05:55 SAST no new model call starts (a manual --date/--force run has no deadline).
-const DEADLINE_MS = (() => {
+// A scheduled run must finish before the cloud reads the pick: the outfit by
+// 05:55 (the reels run at 06:00), the lookbook by 06:55 (the still at 07:00),
+// so a fire missed while the mini slept can still serve the lookbook. A manual
+// --date/--force run has no deadline.
+const deadlineFor = (kind) => {
   if (REVIEW || flag("force") || arg("date")) return Infinity;
-  const d = new Date(); const sast = new Date(d.getTime() + 2 * 3600000);
-  return Date.UTC(sast.getUTCFullYear(), sast.getUTCMonth(), sast.getUTCDate(), 3, 55);
-})();
+  const sast = new Date(Date.now() + 2 * 3600000);
+  return Date.UTC(sast.getUTCFullYear(), sast.getUTCMonth(), sast.getUTCDate(), kind === "lookbook" ? 4 : 3, 55);
+};
 const log = (m) => console.log(`[stylist ${new Date().toISOString()}] ${m}`);
 
 if (!admin.apps.length) admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
@@ -128,7 +130,7 @@ async function loadWorld(nowMs, saDate) {
 }
 
 // The style guide's palette names → the stylist's colours (null: not mappable).
-const PALETTE_TO = { charcoal: "black", "off-white": "white", "light-grey": "grey", stone: "beige", camel: "tan", sand: "beige", "denim-light": "blue denim", "denim-mid": "blue denim", "denim-dark": "blue denim", "sky-blue": "light blue", "royal-blue": "light blue", "forest-green": "green", maroon: "burgundy", wine: "burgundy", lilac: "purple", mint: "green", sage: "green", gold: "yellow", silver: "grey", multi: null };
+const PALETTE_TO = { charcoal: "black", "off-white": "white", "light-grey": "grey", stone: "beige", camel: "tan", sand: "beige", "denim-light": "blue denim", "denim-mid": "blue denim", "denim-dark": "blue denim", "sky-blue": "light blue", "royal-blue": "light blue", blue: "light blue", teal: "green", "forest-green": "green", maroon: "burgundy", wine: "burgundy", lilac: "purple", mint: "green", sage: "green", gold: "yellow", silver: "grey", multi: null };
 function paletteColour(name) {
   const k = String(name || "").toLowerCase().trim().replace(/\s+/g, "-");
   if (!k) return null;
@@ -235,10 +237,10 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
   const fails = new Map();
   let live = options.map((o, i) => ({ o, img: images[i] }));
   for (let t = 1; t <= MAX_TRIES + 1; t++) {
-    if (Date.now() > DEADLINE_MS) { feedback.push("past the 05:55 deadline"); break; }
+    if (Date.now() > deadlineFor(kind)) { feedback.push(`past the ${kind === "lookbook" ? "06:55" : "05:55"} deadline`); break; }
     let ans;
     try {
-      ans = await chatJSON({ model: MODEL, system, prompt: ls.localPrompt({ options: live.map((x) => x.o), kind, season, formulas, avoidFormulas, feedback }), images: live.map((x) => x.img), schema: ls.LOCAL_SCHEMA, temperature: Math.min(0.9, 0.4 + 0.12 * (t - 1)) });
+      ans = await chatJSON({ model: MODEL, system, prompt: ls.localPrompt({ options: live.map((x) => x.o), kind, season, formulas, avoidFormulas, feedback }), images: live.map((x) => x.img), schema: ls.LOCAL_SCHEMA, timeoutMs: Math.max(30000, Math.min(600000, deadlineFor(kind) - Date.now())), temperature: Math.min(0.9, 0.4 + 0.12 * (t - 1)) });
     } catch (e) { feedback.push(String(e.message).slice(0, 200)); log(`${kind}: try ${t} failed — ${e.message}`); continue; }
     const v = ls.validateLocal(ans.json, live.map((x) => x.o), offer, { blocks: checkBlocks });
     // Variety across days: the previous post's formula again is sent back while tries remain.
@@ -263,8 +265,8 @@ async function pickOne(world, kind, saDate, ledger, { used = new Set(), avoidFor
 async function main() {
   if (!(await modelReady(MODEL).catch(() => false))) {
     const why = `${MODEL} is not available on ${process.env.OLLAMA_URL || "127.0.0.1:11434"}`;
-    if (!DRY) await alert("Stylist: the local model is not running", `${why}.\n\nNo outfit was picked; the lookbook day posts the current style and the outfit post is skipped. launchd (com.marathon.ollama) restarts the server by itself; the 05:40 retry tries again.`);
-    throw new Error(why);
+    if (!DRY) { await alert("Stylist: the local model is not running", `${why}.\n\nNo outfit was picked; the lookbook day posts the current style and the outfit post is skipped. launchd (com.marathon.ollama) restarts the server by itself; the 05:40 retry tries again.`); }
+    const e = new Error(why); e.alerted = true; throw e;
   }
   const nowMs = Date.now();
   const today = arg("date") || saDateStringFromMs(nowMs);
@@ -338,4 +340,9 @@ async function review(world, start, ledger) {
   log(`review written to ${out}`);
 }
 
-main().then(() => process.exit(0), (e) => { log(`FAILED: ${e && e.stack || e}`); process.exit(1); });
+main().then(() => process.exit(0), async (e) => {
+  log(`FAILED: ${e && e.stack || e}`);
+  // A failure before the pick loop (catalogue, Fashion-CLIP) is a day with no pick too (CodeRabbit on #832).
+  if (!DRY && !(e && e.alerted)) await alert("Stylist: the scheduled run failed", `${String(e && e.stack || e).slice(0, 1500)}\n\nNo pick was written; the lookbook day posts the current style and the outfit post is skipped. Log: ~/.marathon-stylist/logs/ on the Mac mini.`);
+  process.exit(1);
+});
