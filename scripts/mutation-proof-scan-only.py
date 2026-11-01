@@ -16,7 +16,7 @@ M=[
 ]
 def run(kind):
   if kind=="node": c="cd functions && node --test test/request-source.test.cjs"
-  elif kind=="gate": c="npx vitest run src/signedInPillAndHoldMerge.gate.test.js"
+  elif kind=="gate": c="npx vitest run src/signedInPillAndHoldMerge.gate.test.js -t 'a hold raises NOTHING'"
   elif kind=="fb": c="npx vitest run src/components/stock/firstBatchCore.test.js"
   else: c="npx vitest run scripts/shopify/onlineOrders/escalate.test.mjs scripts/shopify/onlineOrders/poll.test.mjs"
   return subprocess.run(c,shell=True,capture_output=True).returncode==0

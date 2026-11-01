@@ -22,8 +22,13 @@ const dir = opt("--from-dir");
 if (!dir) { console.error("usage: --from-dir DIR [--days 10] [--json OUT] [--md OUT]"); process.exit(2); }
 const read = (n, fb = {}) => { const f = join(dir, `${n}.json`); return existsSync(f) ? (JSON.parse(readFileSync(f, "utf8")) ?? fb) : fb; };
 const meta = read("_meta", {});
+// A snapshot missing a node would read as "never created" (CodeRabbit #833).
+for (const need of ["products", "refill_requests", "orders", "stock_movements", "stock_central", "stock_hub2", "stock_marathon-pe", "stock_trophy"]) {
+  if (!existsSync(join(dir, `${need}.json`))) { console.error(`snapshot incomplete: ${need}.json missing`); process.exit(2); }
+}
 const nowMs = meta.nowMs || Date.now();
 const sinceIso = new Date(nowMs - Number(opt("--days", 10)) * 864e5).toISOString();
+if (meta.windowStart && meta.windowStart > sinceIso) { console.error(`the snapshot's ledger starts ${meta.windowStart}, after ${sinceIso}`); process.exit(2); }
 const products = read("products"), rr = read("refill_requests"), orders = read("orders");
 const movements = Object.values(read("stock_movements")).filter((m) => m && m.productId);
 const SHOPS = ["marathon-pe", "trophy"];
@@ -57,12 +62,16 @@ for (const [pid, s] of solved) {
   const hubReqs = Object.entries(rr).filter(([, r]) => r && r.productId === pid && r.requestingLocation === "hub2" && (r.createdAt || "") >= sinceIso);
   const hubIn = movements.filter((m) => m.productId === pid && m.to === "hub2" && m.ts >= sinceIso).reduce((t, m) => t + (Number(m.qty) || 0), 0);
   for (const shop of s.shops) {
-    const legs = Object.entries(rr).filter(([, r]) => r && r.productId === pid && r.requestingLocation === shop && (r.createdAt || "") >= sinceIso);
+    // In-window legs, plus any still OPEN from before (CodeRabbit #833).
+    const legs = Object.entries(rr).filter(([, r]) => r && r.productId === pid && r.requestingLocation === shop && ((r.createdAt || "") >= sinceIso || r.status === "open"));
     const open = legs.filter(([, r]) => r.status === "open");
     const fulfilled = legs.filter(([, r]) => r.status === "fulfilled");
     const arrived = movements.filter((m) => m.productId === pid && m.to === shop && m.ts >= sinceIso).reduce((t, m) => t + (Number(m.qty) || 0), 0);
     const cards = Object.values(orders).filter((o) => o && o.productId === pid && o.destShop === shop && o.customerName === "Shop Refill" && o.status === "incoming" && o.clothingRefillStatus == null);
-    const why = arrived > 0 ? "arrived"
+    // Partial = less landed than the FIRST leg asked (later top-ups are their own story).
+    const first = legs.map(([, r]) => r).sort((x, y) => (x.createdAt || "").localeCompare(y.createdAt || ""))[0];
+    const asked = first ? (Number(first.qty) || 0) + (Number(first.sentQty) || 0) : 0;
+    const why = arrived > 0 ? (asked && arrived < asked ? "partly_arrived" : "arrived")
       : open.length ? "created_not_fulfilled"
       : fulfilled.length ? "fulfilled_elsewhere"
       : legs.length ? "created_then_cancelled"

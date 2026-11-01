@@ -46,7 +46,10 @@ export const SCAN_ONLY_REQUESTS = true;
 /** The line, waiting again at the status its chain started from. PURE. */
 export function stoppedLine(line, esc, nowMs) {
   const first = Array.isArray(esc?.attempts) ? esc.attempts[0] : null;
-  const st = first?.result === LINE_STATUS.NOT_FOUND ? LINE_STATUS.NOT_FOUND : LINE_STATUS.NO_STOCK;
+  // The status it failed with; a chain an override started has no failed
+  // status to go back to — it needs a person (CodeRabbit #833).
+  const st = first?.result === LINE_STATUS.NOT_FOUND ? LINE_STATUS.NOT_FOUND
+    : first?.result === LINE_STATUS.NO_STOCK ? LINE_STATUS.NO_STOCK : LINE_STATUS.NEEDS_ATTENTION;
   const loc = first?.location || null;
   return {
     ...line,

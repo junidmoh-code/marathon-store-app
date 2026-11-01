@@ -79,15 +79,21 @@ try {
       val("config/refillEngine"), val("products"), val("stock_targets"), val("refill_requests"), val("orders"),
     ]);
     const network = await loadNetwork(db, { nowMs });
-    const stockOf = new Map();
-    const stockAt = async (loc) => { if (!stockOf.has(loc)) stockOf.set(loc, await val(`stock/${loc}`)); return stockOf.get(loc); };
+    // THE SCAN'S STOCK VIEW (CodeRabbit #833): every location the scan reads,
+    // not only the destination — resolveTarget's dead-size rule counts a
+    // size's units across the whole network, and carriedOnly reads carriage.
+    const routing = engine.networkRouting(config, network);
+    const scanLocs = [...new Set([...Object.keys(routing.routes), ...Object.values(routing.routes), ...routing.locs])];
+    const stockAll = Object.fromEntries(await Promise.all(scanLocs.map(async (l) => [l, await val(`stock/${l}`)])));
+    const stockAt = async (loc) => { if (!(loc in stockAll)) stockAll[loc] = await val(`stock/${loc}`); return stockAll[loc]; };
     const name = (pid) => products[pid]?.name || pid;
     const rows = [];
     for (const [id, r] of Object.entries(refillRequests)) {
       const via = r?.createdFrom?.via;
       if (!r || r.status !== "open" || !VIAS.has(via)) continue;
       const dest = r.requestingLocation, ck = stockCellKey(r.size);
-      const stock = { [dest]: await stockAt(dest) };
+      await stockAt(dest);
+      const stock = stockAll;
       let t = null;
       try { t = engine.resolveTarget({ targets, config, products, stock, network }, dest, r.productId, r.size); } catch { t = null; }
       const onHand = Math.max(0, Number(stock[dest]?.[r.productId]?.[ck]?.qty) || 0);
@@ -105,7 +111,8 @@ try {
     for (const [k, o] of Object.entries(orders)) {
       if (!o || !o.onlineEscalationKey) continue;
       const dest = o.destShop, ck = stockCellKey(o.size);
-      const stock = { [dest]: await stockAt(dest) };
+      await stockAt(dest);
+      const stock = stockAll;
       let t = null;
       try { t = engine.resolveTarget({ targets, config, products, stock, network }, dest, o.productId, o.size); } catch { t = null; }
       const onHand = Math.max(0, Number(stock[dest]?.[o.productId]?.[ck]?.qty) || 0);
