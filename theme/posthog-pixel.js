@@ -119,8 +119,14 @@ const EVENTS = [
   "checkout_completed",
 ];
 
+// In-memory first (synchronous): two deliveries in the same sandbox would
+// otherwise both read "not seen" before either write lands. Storage then
+// covers a reload, which is a fresh sandbox.
+const sentOrders = new Set();
 async function firstTimeForOrder(orderId) {
   if (!orderId) return true;
+  if (sentOrders.has(orderId)) return false;
+  sentOrders.add(orderId);
   const key = "ph_checkout_completed_" + orderId;
   try {
     if (await browser.localStorage.getItem(key)) return false;
