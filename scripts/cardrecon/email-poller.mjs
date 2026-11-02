@@ -80,7 +80,7 @@ import {
   eftMessageKey, createOnlyStep, eftPoolRecord,
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   refusalFingerprint, applyRefusalFingerprint,
-  redactAccountDigits, domainOfAddress, parseAllowedAccountTails, parseAccountPolicies, accountPolicyProblems,
+  redactAccountDigits, domainOfAddress, parseAccountPolicies, accountPolicyProblems,
   destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
   IMMEDIATE_NOT_REQUIRED_FROM,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
@@ -243,7 +243,6 @@ function config() {
     // in .env (comma-separated; full numbers or last-four both work). NEVER a
     // value in a log — at most the count. An empty list refuses every payment
     // as refused-account, deliberately: fail-closed until the owner fills it.
-    eftAccountTails: parseAllowedAccountTails(env.EFT_ALLOWED_ACCOUNTS),
     // FIX 7a: the FULL numbers, so every digit a document prints is checked.
     // Each account with its bank and immediate-only flag (parseAccountPolicies:
     // "10100008534:standardbank:immediate"); an untagged entry is FNB.

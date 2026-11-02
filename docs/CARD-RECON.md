@@ -1438,6 +1438,15 @@ A real, authenticated payment into any other account is recorded as
 enters the pool as money. No allowlist configured refuses everything,
 deliberately.
 
+Since 2 Nov 2026 an entry may carry `:`-tags after the number:
+`<digits>[:fnb|standardbank][:immediate]`. The bank tag binds the account to
+the bank the notification must name as the destination. Untagged means FNB.
+Matching is on every printed digit, among that bank's accounts only.
+`immediate` means the account takes IMMEDIATE payments only, whatever the
+bank date; the date-phased rule does not relax it. An entry whose tags do not
+read is left out, and the poller warns about it with the last four digits only. See
+`docs/EFT-STANDARD-BANK-IMMEDIATE-ONLY-AND-CONCRETE-2026-11-02.md`.
+
 ## Only payments the bank dates on or after the cutoff — 2026-10-20 (built 19 Oct 2026)
 
 The fingerprint dedupe stops the **same** payment being confirmed twice. It

@@ -66,7 +66,7 @@ const IMMEDIATE_TAG = "immediate";
 // Standard Bank by its own printed name, exact forms only (as FNB above):
 // "STANDARD BANK", "The Standard Bank of South Africa Limited", "SBSA".
 const STANDARD_BANK_NAMES = new Set([
-  "STANDARDBANK", "STANDARDBANKSA", "STANDARDBANKOFSA", "STANDARDBANKOFSOUTHAFRICA",
+  "STANDARDBANK", "STANDARDBANKSA", "STANDARDBANKOFSA", "STANDARDBANKSOUTHAFRICA", "STANDARDBANKOFSOUTHAFRICA",
   "STANDARDBANKOFSOUTHAFRICALIMITED", "THESTANDARDBANKOFSOUTHAFRICALIMITED", "SBSA",
 ]);
 const BANK_LABEL = { fnb: "First National Bank", standardbank: "Standard Bank" };
