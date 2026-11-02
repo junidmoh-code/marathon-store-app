@@ -1,0 +1,6 @@
+# Pinned for /usr/bin/python3 on macOS (3.9.x, arm64). rembg 2.0.61 and
+# onnxruntime 1.19.2 are the last releases that still ship for Python 3.9.
+rembg[cpu]==2.0.61
+onnxruntime==1.19.2
+pillow==11.3.0
+firebase-admin==6.9.0

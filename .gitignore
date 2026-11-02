@@ -49,3 +49,7 @@ functions/test/fixtures/Till3-Batch81-Empty-FNB-Txn-Notification.lines.json
 # Storage download tokens and this repo is public — local only.
 dev/*.local.json
 dev/cutouts/
+
+# tools/cutouts test runs
+tools/**/__pycache__/
+tools/**/.pytest_cache/
