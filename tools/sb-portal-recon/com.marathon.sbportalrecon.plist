@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent: SimplyBLU portal → Card Recon (tools/sb-portal-recon/run.mjs).
+  18:00 and 18:20 SAST (the mini's clock is Africa/Johannesburg). Both fires
+  run with catch-up semantics: 18:00 pulls; 18:20 pulls again ONLY if 18:00
+  did not finish (state in ~/.marathon/sb-portal/state.json). A missed fire
+  (the mini asleep or off) runs when it wakes. RunAtLoad false: installing
+  must not pull.
+  Nothing secret here: the SimplyBLU sign-in lives in the browser profile
+  (~/.marathon/sb-portal/profile, 0700) and the saved password, if any, in the
+  login Keychain; the mailbox app password in the repo's gitignored .env.
+  INSTALL: tools/sb-portal-recon/install.sh (rewrites the paths below).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.sbportalrecon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/tools/sb-portal-recon/run.mjs</string>
+    <string>--catchup</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>20</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/sb-portal-recon.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/sb-portal-recon.log</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>

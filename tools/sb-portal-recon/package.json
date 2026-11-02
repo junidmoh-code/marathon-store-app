@@ -1,0 +1,13 @@
+{
+  "name": "sb-portal-recon",
+  "private": true,
+  "type": "module",
+  "description": "SimplyBLU (Standard Bank) portal → Card Recon. Runs on the Mac mini (launchd com.marathon.sbportalrecon).",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.16",
+    "playwright": "1.56.1"
+  }
+}

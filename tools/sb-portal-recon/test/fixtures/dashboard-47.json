@@ -1,0 +1,5 @@
+{"name":"Monthly Card POS - Terminal Batch Report",
+ "parameters":[{"id":"f70b2107","slug":"date_filter","type":"date/range","default":"2026-11-01~2026-11-30"},{"id":"719fa873","slug":"terminal_id","type":"string/="}],
+ "tabs":[{"id":47,"name":"Terminal Batch Analysis"},{"id":48,"name":"Transactions"}],
+ "dashcards":[{"id":342,"card_id":344,"dashboard_tab_id":47,"card":{"name":"Settlement Value Pivot","display":"pivot"}},
+              {"id":343,"card_id":362,"dashboard_tab_id":48,"card":{"name":"Card POS Transactions","display":"table"}}]}
