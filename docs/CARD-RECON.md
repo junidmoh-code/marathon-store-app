@@ -608,11 +608,16 @@ constant and nothing earlier is recorded from it.
 * **The two THE MARATHON rows carry `bank: "standard-bank"`** from 2 Nov 2026
   (`scripts/cardrecon/apply-terminal-bank-sb-20261102.mjs`): they were
   registered before `bank` existed, and absent is FNB.
-* **Saved password (optional, for silent re-login):** on the mini, once:
-  `security add-generic-password -s marathon-simplyblu -a <login email> -w`
-  (it prompts for the password). Without it, a sign-out stops the pull and
-  emails Junid; a PIN demanded once is never re-triggered by later runs until
-  someone signs in with `--login`.
+* **The portal ends every session after about an hour** (seen 2 Nov 2026: the
+  tool's profile AND Junid's own Chrome were signed out ~1 h after sign-in), so
+  each pull signs in again with the **saved email + password** — the portal's
+  login has no PIN step (its OTP is only in "Link Store"). Saved once by Junid:
+  `ssh -t marathonclub@100.64.186.78 'bash ~/marathon-store-app/tools/sb-portal-recon/save-login.sh'`
+  (login Keychain `marathon-simplyblu` when unlocked, else
+  `~/.marathon/sb-portal/credentials`, chmod 600, outside the repo). Without it,
+  a pull stops and emails Junid once; a refused password or a PIN demanded is
+  never retried by later runs until the login is saved again or `--login` is
+  run.
 * **The Terminal ID list is not date-bound**: it lists every TID the store has
   ever had (2 Nov 2026: `0000HP1X`/`0000Z4M6` listed with their last
   transaction in March), so a till with no payment all month is still "in the
