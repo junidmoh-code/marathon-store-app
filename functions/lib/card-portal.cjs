@@ -156,7 +156,13 @@ function parsePortalRows({ cols, rows }) {
     }
     const at = Date.parse(String(r[ix.at] || ""));
     const cents = randsToCents(r[ix.amount]);
-    if (!Number.isFinite(at) || !Number.isInteger(cents) || Math.abs(cents) > MAX_CENTS || cents === 0) { skipped.unreadable++; return; }
+    // A SUCCESSFUL payment whose time or amount cannot be read is money this
+    // cannot place: the source is refused, never short by that amount
+    // (CodeRabbit, #837). A zero amount is not money and is only counted.
+    if (cents === 0) { skipped.unreadable++; return; }
+    if (!Number.isFinite(at) || !Number.isInteger(cents) || Math.abs(cents) > MAX_CENTS) {
+      unknown.push(`a successful ${kind} with an unreadable ${Number.isFinite(at) ? "amount" : "time"}`); return;
+    }
     const id = ix.id >= 0 && r[ix.id] != null ? String(r[ix.id]).slice(0, 64) : null;
     // The same transaction twice (a page overlap) is one transaction.
     const dedupe = id || `${at}|${r[ix.tid]}|${cents}|${ix.ref >= 0 ? r[ix.ref] : i}`;
@@ -179,7 +185,7 @@ function parsePortalRows({ cols, rows }) {
     });
   });
   if (unknown.length) {
-    return { ok: false, reason: `The portal listed a transaction this does not recognise (${[...new Set(unknown)].slice(0, 3).join(", ")}) — nothing was recorded rather than guess what it is.` };
+    return { ok: false, reason: `The portal listed a transaction this cannot read (${[...new Set(unknown)].slice(0, 3).join(", ")}) — nothing was recorded rather than guess what it is.` };
   }
   txns.sort((a, b) => a.at - b.at || String(a.id).localeCompare(String(b.id)));
   return { ok: true, txns, skipped };

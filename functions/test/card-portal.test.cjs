@@ -267,7 +267,7 @@ test("Junid's manual entry is refused for a day the portal already recorded (cor
 test("a status or type the parser does not know refuses the source — never a silent R0.00", () => {
   const p = P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status: "Completed" })] });
   assert.equal(p.ok, false);
-  assert.match(p.reason, /does not recognise/);
+  assert.match(p.reason, /cannot read/);
   assert.equal(P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { type: "Cashback" })] }).ok, false);
   assert.equal(P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status: "Declined" })] }).ok, true);
 });
@@ -310,4 +310,9 @@ test("a TID printed with a hyphen or space keeps its transactions (CodeRabbit, #
   const out = await pull(db, [row("2026-11-03T10:01:00", "0000-HP1X", 930)], { tids: ["0000-HP1X", "0000 Z4M6"] });
   assert.equal(out.results[HP1X].outcome, "recorded");
   assert.equal((await node(db, `card_batches/pe/${HP1X}/561`)).slip.totalCents, 93000);
+});
+
+test("a successful payment with an unreadable amount refuses the source (CodeRabbit, #837)", () => {
+  const r = row("2026-11-03T10:00:00", HP1X, "abc");
+  assert.equal(P.parsePortalRows({ cols: COLS, rows: [r] }).ok, false);
 });
