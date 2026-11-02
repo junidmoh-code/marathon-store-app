@@ -59,8 +59,10 @@ export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, absaSyn
 // them from eftCore.
 const { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue } = require("./lib/eft-text.cjs");
 export { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue };
-const { parseAllowedAccounts, destinationVerdict, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR } = require("./lib/eft-destination.cjs");
-export { parseAllowedAccounts, destinationVerdict, EFT_ACCOUNTS_ENV_VAR };
+const {
+  parseAllowedAccounts, parseAccountPolicies, accountPolicyProblems, destinationVerdict, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR,
+} = require("./lib/eft-destination.cjs");
+export { parseAllowedAccounts, parseAccountPolicies, accountPolicyProblems, destinationVerdict, EFT_ACCOUNTS_ENV_VAR };
 
 export const EFT_POOL_PATH = "eft_pool";
 
@@ -532,11 +534,21 @@ export function immediacyRequiredFor(bankTs) {
   return sastDate(bankTs) < IMMEDIATE_NOT_REQUIRED_FROM;
 }
 
+// ─── IMMEDIATE-ONLY ACCOUNTS — THE DATE NEVER RELAXES THEM ──────────────────
+// Junid, 2 Nov 2026: an account whose EFT_ALLOWED_ACCOUNTS entry is tagged
+// "immediate" (the Standard Bank ATUGAR account) takes IMMEDIATE payments
+// only. For a payment into it the date-phased relaxation above does not
+// apply: immediacy is required whatever the bank date, read by the same
+// per-bank signal (Standard Bank: the heading "Immediate Payment
+// Confirmation", never the footer). Every other account keeps the date-phased
+// rule. `immediateOnly` is destinationVerdict's answer for the matched account
+// — the caller passes it; nothing here knows any account number.
+
 /**
- * @param {{parsed:object, reader?:string, receivedAt:number|null}} p
+ * @param {{parsed:object, reader?:string, receivedAt:number|null, immediateOnly?:boolean}} p
  * @returns {{ok:true} | {ok:false, reason:string, needsSample?:true}}
  */
-export function immediacyVerdict({ parsed, reader, receivedAt }) {
+export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = false }) {
   const id = reader ?? parsed?.reader ?? null;
   // Future-dated by the clock (15-minute tolerance) OR by the SAST calendar
   // day: a date-only bank (Nedbank, Absa) prints tomorrow as tomorrow's
@@ -547,11 +559,16 @@ export function immediacyVerdict({ parsed, reader, receivedAt }) {
     && (parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS || sastDate(parsed.bankTs) > sastDate(receivedAt))) {
     return { ok: false, reason: "The payment is dated after its notification arrived — a scheduled / future-dated payment, not an immediate one." };
   }
-  if (!immediacyRequiredFor(parsed?.bankTs)) return { ok: true };
+  const onlyImmediate = immediateOnly === true;
+  if (!onlyImmediate && !immediacyRequiredFor(parsed?.bankTs)) return { ok: true };
+  // Why immediacy is required here — said in every refusal below.
+  const because = onlyImmediate
+    ? "the account it was paid into takes IMMEDIATE payments only"
+    : `a payment the bank dates before ${IMMEDIATE_NOT_REQUIRED_FROM} must be immediate`;
   if (!IMMEDIATE_SIGNAL_READERS.includes(id)) {
     return {
       ok: false, needsSample: true,
-      reason: `The ${id || "unknown"} notification format this pool reads carries no field saying whether the payment was IMMEDIATE, and a payment the bank dates before ${IMMEDIATE_NOT_REQUIRED_FROM} must be immediate — refused rather than guessed.`,
+      reason: `The ${id || "unknown"} notification format this pool reads carries no field saying whether the payment was IMMEDIATE, and ${because} — refused rather than guessed.`,
     };
   }
   if (id === "fnb") {
@@ -566,8 +583,8 @@ export function immediacyVerdict({ parsed, reader, receivedAt }) {
   return {
     ok: false,
     reason: parsed?.immediate === false
-      ? `Not an immediate payment (the bank prints "${clip(parsed.paymentType, 60) || "not immediate"}"), and a payment the bank dates before ${IMMEDIATE_NOT_REQUIRED_FROM} must be immediate to settle a sale.`
-      : "The bank's immediate-payment field could not be read from this notification — refused rather than assumed.",
+      ? `Not an immediate payment (the bank prints "${clip(parsed.paymentType, 60) || "not immediate"}"), and ${because} to settle a sale.`
+      : `The bank's immediate-payment field could not be read from this notification, and ${because} — refused rather than assumed.`,
   };
 }
 

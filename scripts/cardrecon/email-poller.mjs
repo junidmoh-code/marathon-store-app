@@ -80,7 +80,7 @@ import {
   eftMessageKey, createOnlyStep, eftPoolRecord,
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   refusalFingerprint, applyRefusalFingerprint,
-  redactAccountDigits, domainOfAddress, parseAllowedAccountTails, parseAllowedAccounts,
+  redactAccountDigits, domainOfAddress, parseAllowedAccountTails, parseAccountPolicies, accountPolicyProblems,
   destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
   IMMEDIATE_NOT_REQUIRED_FROM,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
@@ -245,7 +245,10 @@ function config() {
     // as refused-account, deliberately: fail-closed until the owner fills it.
     eftAccountTails: parseAllowedAccountTails(env.EFT_ALLOWED_ACCOUNTS),
     // FIX 7a: the FULL numbers, so every digit a document prints is checked.
-    eftAccounts: parseAllowedAccounts(env.EFT_ALLOWED_ACCOUNTS),
+    // Each account with its bank and immediate-only flag (parseAccountPolicies:
+    // "10100008534:standardbank:immediate"); an untagged entry is FNB.
+    eftAccounts: parseAccountPolicies(env.EFT_ALLOWED_ACCOUNTS),
+    eftAccountProblems: accountPolicyProblems(env.EFT_ALLOWED_ACCOUNTS),
     eftAccountsConfigured: !!String(env.EFT_ALLOWED_ACCOUNTS ?? "").trim(),
     // Junid's verdict emails: "all" (default) or "rejected" — verdictMailCore.
     verdictMode: parseVerdictMode(env.EFT_VERDICT_EMAILS),
@@ -617,6 +620,13 @@ async function run() {
   }
   // Which immediacy rule decides, said every tick (date-phased, Junid 27 Oct 2026).
   console.log(`· EFT: a payment the bank dates before ${IMMEDIATE_NOT_REQUIRED_FROM} must be immediate; from ${IMMEDIATE_NOT_REQUIRED_FROM} immediate or regular`);
+  // Immediate-only accounts (2 Nov 2026) — by bank and last four, never the
+  // full number; and any EFT_ALLOWED_ACCOUNTS entry that did not read.
+  const immediateOnly = cfg.eftAccounts.filter((p) => p.immediateOnly);
+  if (immediateOnly.length) {
+    console.log(`· EFT: immediate payments ONLY into ${immediateOnly.map((p) => `${p.bank} …${p.account.slice(-4)}`).join(", ")}, whatever the date`);
+  }
+  for (const problem of cfg.eftAccountProblems) console.warn(`⚠ EFT_ALLOWED_ACCOUNTS: ${problem} — left out, so payments into it refuse`);
   // FIX 8 — said on every tick, so the log always shows which cutoff decided:
   // a date, never a secret. A bad value is said every tick too, until fixed.
   if (cfg.eftPaymentDateCutoff.ok) {
@@ -835,7 +845,9 @@ async function run() {
       // How many account tails the allowlist held this tick — a COUNT, never
       // a value. Zero is the loudest number on this line: it means every
       // payment refuses until EFT_ALLOWED_ACCOUNTS is set in .env.
-      eftAccountTails: cfg.eftAccountTails.length,
+      eftAccountTails: cfg.eftAccounts.length,
+      // How many of them take immediate payments only (a count, never a value).
+      eftImmediateOnlyAccounts: cfg.eftAccounts.filter((p) => p.immediateOnly).length,
       // FIX 8: the cutoff this tick refused stale payments against — a date,
       // so the owner can see from the heartbeat which cutoff is live.
       eftPaymentDateCutoff: cfg.eftPaymentDateCutoff.ok ? cfg.eftPaymentDateCutoff.date : "INVALID",
@@ -1500,7 +1512,12 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
           })
           : null;
         const timing = group.parse.ok
-          ? immediacyVerdict({ parsed: group.parse, reader: group.readerId, receivedAt: message.receivedAt })
+          ? immediacyVerdict({
+            parsed: group.parse, reader: group.readerId, receivedAt: message.receivedAt,
+            // An immediate-only account (its EFT_ALLOWED_ACCOUNTS tag) needs
+            // an immediate payment whatever the bank date.
+            immediateOnly: account?.ok === true && account.immediateOnly === true,
+          })
           : null;
         // FIX 8 — dated on or after the cutoff BY THE BANK (group.parse.bankTs,
         // the bank's own printed payment date). message.receivedAt is
