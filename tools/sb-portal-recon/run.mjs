@@ -306,15 +306,18 @@ async function main() {
 
     if (kind === "login") {
       const st = readState();
-      // A PIN was demanded and nobody has signed in since: trying the password
-      // again would only send Junid another PIN, every evening. Stop here.
-      if (Number.isFinite(st.otpAt) && !(st.loginAt > st.otpAt) && !(st.lastOkAt > st.otpAt)) return await signedOut("otp");
+      // A sign-in already failed (a PIN demanded, or the password refused) and
+      // nobody has signed in since: trying again would only send Junid another
+      // PIN — or lock the account on a wrong password — every evening. Stop.
+      if (Number.isFinite(st.loginBlockedAt) && !(st.loginAt > st.loginBlockedAt) && !(st.lastOkAt > st.loginBlockedAt)) {
+        return await signedOut(st.loginBlockedKind || "login");
+      }
       const creds = keychainLogin();
       if (!creds) return await signedOut("login");
       log("signed out — signing in with the saved password");
       try { ({ kind } = await signInSilently(page, creds)); }
       catch (err) { log(`the saved-password sign-in failed: ${err.message.split("\n")[0]}`); return await signedOut("login"); }
-      if (kind === "otp") { writeState({ otpAt: Date.now() }); return await signedOut("otp"); }
+      if (kind === "otp") return await signedOut("otp");
       if (kind !== "report") return await signedOut("login");
       log("✓ signed in again without a PIN");
     }
@@ -388,7 +391,9 @@ async function main() {
 }
 
 async function signedOut(kind) {
-  const state = readState();
+  // Remembered whether or not an email goes: the next scheduled run does not
+  // try the password again until someone signs in (--login) (CodeRabbit, #837).
+  const state = writeState({ loginBlockedAt: Date.now(), loginBlockedKind: kind });
   log(kind === "otp" ? "✗ the portal wants a one-time PIN — stopping (no retry)" : "✗ signed out and no usable saved password — stopping");
   if (shouldAlert(state)) {
     try { if (await emailJunid(loginAlert({ kind }))) writeState({ loginAlertAt: Date.now(), loginAlertKind: kind }); }
