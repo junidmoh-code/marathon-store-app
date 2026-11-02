@@ -158,11 +158,14 @@ describe("`ready` is the registration, not the intention", () => {
 describe("the app actually mounts the entrance", () => {
   const APP = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
 
-  it("renders the settings row on BOTH home branches — desktop and mobile", () => {
-    // Two branches, two mounts. #573 deleted them as a pair and a fix that
-    // restored only one would leave half the staff with no way in.
+  it("renders the settings row on the home screen — one branch for every width since the sky home", () => {
+    // The desktop/mobile home split is gone (sky redesign 2026-11-02): ONE
+    // home renders at every width, and the row lives in its account sheet
+    // (the user button). #573 deleted the mounts; this keeps the one there is.
     const mounts = APP.match(/<NotificationSettingsRow\b/g) || [];
-    expect(mounts.length).toBe(2);
+    expect(mounts.length).toBe(1);
+    const home = APP.slice(APP.indexOf("function RoleSelector"), APP.indexOf("function HomeSignOutRow"));
+    expect(home).toContain("<NotificationSettingsRow push={push} mute={mute} />");
   });
 
   it("imports it, so the mounts are not dead text in a comment", () => {
