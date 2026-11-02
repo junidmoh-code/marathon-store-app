@@ -131,7 +131,9 @@ describe("the poller runs both checks on every parsed payment (source scan)", ()
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("./email-poller.mjs", import.meta.url), "utf8");
     expect(src).toMatch(/destinationVerdict\(\{\s*accountMask: group\.parse\.accountMask, destBankName: group\.parse\.destBankName,\s*allowedAccounts: cfg\.eftAccounts/);
-    expect(src).toMatch(/immediacyVerdict\(\{ parsed: group\.parse, reader: group\.readerId, receivedAt: message\.receivedAt \}\)/);
+    expect(src).toMatch(/immediacyVerdict\(\{\s*parsed: group\.parse, reader: group\.readerId, receivedAt: message\.receivedAt,[\s\S]{0,200}?immediateOnly: account\?\.ok === true && account\.immediateOnly === true,\s*\}\)/);
+    // The allowlist is read WITH each account's bank and immediate-only tag.
+    expect(src).toMatch(/eftAccounts: parseAccountPolicies\(env\.EFT_ALLOWED_ACCOUNTS\)/);
     expect(src).toMatch(/message, verdict, parsed: group\.parse, account, timing, dated,/);
     // Fix 8 rides beside them, on the bank's date — never the arrival time.
     expect(src).toMatch(/paymentDateVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff \}\)/);

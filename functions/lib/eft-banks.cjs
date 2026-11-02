@@ -153,7 +153,10 @@ const standardBank = {
     // THE DESTINATION ACCOUNT — required: the allowlist check depends on it,
     // and a notification that stops printing it must refuse loudly rather
     // than sail past the one check that keeps other people's payments out.
-    const account = take(/^Beneficiary account number\s+(\S+)\s*$/i, "Beneficiary account number");
+    // One token ("XXXXXXXXXXXX6625", "10100008534") — or an all-digit number
+    // printed in groups, the way Standard Bank prints its own account numbers
+    // ("10 10 000 853 4"); the spaces never reach a check (digits only).
+    const account = take(/^Beneficiary account number\s+(\S+|\d+(?: \d+)+)\s*$/i, "Beneficiary account number");
     if (!account.ok) return { ok: false, reason: `Standard Bank notification: ${account.why}.` };
     if (account.value === null) return { ok: false, reason: "No Beneficiary account number could be read from this Standard Bank notification (the line may be absent, or merged with another column) — the destination account cannot be checked." };
 

@@ -3,7 +3,9 @@
 // complete an EFT sale by looking at the customer's phone. An EFT sale at an
 // ENFORCED store must consume a confirmed pool payment (eftPoolSettle —
 // reference/bank id matched, customer attached and confirmed, consume-once).
-// Pine and Concrete keep the looser path for now.
+// Concrete joined them on 2 Nov 2026 (Junid) — by the CONFIG node below
+// (scripts/cardrecon/apply-eft-enforcement-concrete-20261102.mjs), not the
+// default; Pine keeps the looser path for now.
 //
 // THE SET IS CONFIG, NOT CODE. /eft_enforcement is a top-level node (no client
 // rule → Admin SDK only; the owner edits it through eftEnforcementStatus

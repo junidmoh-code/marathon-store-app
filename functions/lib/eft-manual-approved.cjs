@@ -148,18 +148,27 @@ const KEYED_READER_IDS = EFT_READERS.map((r) => r.id);
  *  typed digits, or — none typed — the shop's own when exactly one is
  *  configured. Absa's synthetic identity carries the account's last four, so
  *  a guess between two accounts would key the wrong identity: refused. */
+// The printed bank name a reader would have produced for the shop's account
+// at that bank (lib/eft-destination.cjs reads it back to the same bank).
+const DEST_BANK_PRINTED = { fnb: "FIRST NATIONAL BANK", standardbank: "STANDARD BANK" };
+
+/** `allowedAccounts`: parseAccountPolicies output, or bare digit strings
+ *  (FNB accounts — the shape before 2 Nov 2026). */
 function keyedDestinationOf(accountTail, allowedAccounts) {
-  const accounts = Array.isArray(allowedAccounts) ? allowedAccounts : [];
+  const accounts = (Array.isArray(allowedAccounts) ? allowedAccounts : [])
+    .map((a) => (typeof a === "string" ? { account: a, bank: "fnb" } : a))
+    .filter((a) => a && typeof a.account === "string" && DEST_BANK_PRINTED[a.bank]);
+  const found = (a) => ({ ok: true, accountMask: a?.account ?? null, destBankName: DEST_BANK_PRINTED[a?.bank ?? "fnb"] });
   if (accountTail == null || accountTail === "") {
     if (accounts.length > 1) return { ok: false, code: "account-required", message: "The shop has more than one account — type the last digits of the account the proof says the money went into." };
-    return { ok: true, accountMask: accounts[0] ?? null };
+    return found(accounts[0]);
   }
   const digits = String(accountTail).replace(/[\s-]/g, "");
   if (!/^\d{4,20}$/.test(digits)) return { ok: false, code: "bad-account", message: "The destination account must be digits (at least the last four) — or leave it empty for the shop's own account." };
-  const hits = accounts.filter((a) => a.endsWith(digits));
+  const hits = accounts.filter((a) => a.account.endsWith(digits));
   if (!hits.length) return { ok: false, code: "wrong-destination", message: `This payment credits an account ending ${digits.slice(-4)}, which is not the shop's own account.` };
   if (hits.length > 1) return { ok: false, code: "account-required", message: "More than one of the shop's accounts ends with those digits — type more of the account number." };
-  return { ok: true, accountMask: hits[0] };
+  return found(hits[0]);
 }
 
 /**
@@ -226,7 +235,7 @@ function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
   const payer = payerRaw ? clip(redactAccountDigits(payerRaw), 120) : null;
   const parse = {
     ok: true, amountCents, reference: reference || null, payer, bankTs, bankRef: refRaw || null,
-    accountMask: dest.accountMask, destBankName: "FIRST NATIONAL BANK", beneficiaryName: null,
+    accountMask: dest.accountMask, destBankName: dest.destBankName, beneficiaryName: null,
   };
   const alsoSyntheticRef = bank === "absa" && refRaw && payer ? syntheticIdentityOf({ ...parse, bankRef: null }, "absa") : null;
   const lines = [

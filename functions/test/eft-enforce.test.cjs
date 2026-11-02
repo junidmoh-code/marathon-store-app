@@ -208,3 +208,55 @@ test("the scan flags a plain-EFT sale at Trophy, leaves Pine's alone, reads one 
   await eftRemainderScan();
   assert.equal(db.txWrites, 0, "a re-read breach is not rewritten");
 });
+
+// ─── CONCRETE JOINS TROPHY AND MARATHON PE (Junid, 2 Nov 2026) ───────────────
+// The live node after scripts/cardrecon/apply-eft-enforcement-concrete-20261102.mjs.
+const LIVE_AFTER_CONCRETE = { stores: { concrete: true, pe: true, trophy: true }, updatedAt: 1793000000000, updatedBy: "gunidmoh@gmail.com" };
+
+test("CONCRETE: with the live node, Trophy, Marathon PE and Concrete all enforce; Pine does not", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_CONCRETE;
+  assert.deepEqual(enforcedStoresOf(LIVE_AFTER_CONCRETE), ["concrete", "pe", "trophy"]);
+  for (const storeId of ["trophy", "pe", "concrete"]) {
+    // What the till at that store is told: enforced — the "EFT without
+    // matching" button goes and a plain EFT leg is refused (marathon-pos-app
+    // Payment.jsx / EftMatchModal.jsx follow this answer).
+    const out = await eftEnforcementStatus({ ...CASHIER, data: { storeId } });
+    assert.deepEqual(out, { ok: true, enforcedStores: ["concrete", "pe", "trophy"], enforced: true, source: "config", updatedAt: 1793000000000 }, storeId);
+  }
+  assert.equal((await eftEnforcementStatus({ ...CASHIER, data: { storeId: "pine" } })).enforced, false);
+  // A plain (unmatched) EFT sale at Concrete is now a breach; a matched one is not.
+  const enforced = enforcedStoresOf(LIVE_AFTER_CONCRETE);
+  assert.ok(enforcementBreachOf("S-c", sale({ storeId: "concrete" }), enforced));
+  assert.equal(enforcementBreachOf("S-c2", sale({ storeId: "concrete", payments: { p: { method: "eft", amount: 50000, eftPoolKey: K } } }), enforced), null);
+  // The code default is unchanged: the node, not the default, enforces Concrete.
+  assert.deepEqual([...DEFAULT_ENFORCED_STORES].sort(), ["pe", "trophy"]);
+});
+
+test("CONCRETE: staff cannot take it off the list — only the owner changes the set", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_CONCRETE;
+  db.sets = {};
+  for (const who of [CASHIER, MANAGER]) {
+    await rejects(eftEnforcementStatus({ ...who, data: { action: "set", stores: { concrete: false } } }), "permission-denied");
+  }
+  assert.equal(db.sets["eft_enforcement"], undefined, "nothing written");
+  assert.equal((await eftEnforcementStatus({ ...CASHIER, data: { storeId: "concrete" } })).enforced, true);
+});
+
+test("CONCRETE: the scan flags a plain-EFT sale at Concrete beside Trophy and PE", async () => {
+  db.sets = {}; db.queries = []; db.tx = {};
+  db.reads["eft_enforcement"] = LIVE_AFTER_CONCRETE;
+  db.reads["eft_enforcement_scan"] = null;
+  for (const k of Object.keys(db.reads)) if (k.startsWith("eft_enforcement_breaches/")) delete db.reads[k];
+  db.reads["pos/sales"] = {
+    "S-concrete": sale({ storeId: "concrete", createdAt: 9000 }),
+    "S-pe": sale({ storeId: "pe", createdAt: 9100 }),
+    "S-pine": sale({ storeId: "pine", createdAt: 9200 }),
+    "S-concrete-matched": sale({ storeId: "concrete", createdAt: 9300, payments: { p: { method: "eft", amount: 50000, eftPoolKey: K } } }),
+  };
+  await eftRemainderScan();
+  assert.ok(db.tx["eft_enforcement_breaches/S-concrete"], "a plain EFT at Concrete is a breach");
+  assert.equal(db.tx["eft_enforcement_breaches/S-concrete"].storeId, "concrete");
+  assert.ok(db.tx["eft_enforcement_breaches/S-pe"]);
+  assert.equal(db.tx["eft_enforcement_breaches/S-pine"], undefined);
+  assert.equal(db.tx["eft_enforcement_breaches/S-concrete-matched"], undefined);
+});

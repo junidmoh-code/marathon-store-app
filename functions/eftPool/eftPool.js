@@ -149,7 +149,7 @@ const {
   approvedClaimDecision, approvedClaimStep, approvedTwinSettleCheck, approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
 } = require("../lib/eft-manual-approved.cjs");
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
-const { parseAllowedAccounts, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
+const { parseAccountPolicies, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
 const { maskAccountValue } = require("../lib/eft-text.cjs");
 const { pdfToLines } = require("../cardRecon/pdfText.js");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
@@ -1037,7 +1037,9 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     // The destination of a photo is checked by keyedDestinationOf against the
     // allowlist (nothing printed to read); with no usable allowlist, refuse
     // as the PDF path does rather than key against nothing.
-    const allowedAccounts = parseAllowedAccounts(configured);
+    // Each account with its bank (parseAccountPolicies), so a photo keyed
+    // into the Standard Bank account is checked as Standard Bank.
+    const allowedAccounts = parseAccountPolicies(configured);
     if (!allowedAccounts.length) {
       const reason = configured
         ? `${EFT_ACCOUNTS_ENV_VAR} is set but holds no usable account number. Every proof refuses here until it is fixed.`
@@ -1067,7 +1069,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   // PAID INTO THE SHOP'S OWN ACCOUNT — the poller's own check, same code.
   const account = destinationVerdict({
     accountMask: parse.accountMask, destBankName: parse.destBankName,
-    allowedAccounts: parseAllowedAccounts(configured), configured: !!configured,
+    allowedAccounts: parseAccountPolicies(configured), configured: !!configured,
   });
   if (!account.ok) {
     // The shared verdict names the mini's .env; here the value is the Secret

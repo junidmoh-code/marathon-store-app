@@ -792,3 +792,31 @@ test("PHOTO: a claim transaction that throws takes the stored photo back out", a
   assert.equal(storageState.deleted.length, 1);
   assert.deepEqual(dbState.pool, {});
 });
+
+// ─── THE STANDARD BANK ATUGAR ACCOUNT (2 Nov 2026) ───────────────────────────
+// The secret carries the account with its bank ("…:standardbank:immediate";
+// the number here is a stand-in). Junid's proof approval checks the
+// destination by account number AND that account's bank; immediacy is still
+// not applied here (he attests receipt — nothing floats), so the escape hatch
+// is unchanged.
+test("PHOTO into the Standard Bank account: checked as Standard Bank, by account number — the name is never read", async () => {
+  resetImg(); secretValue = "62900004321, 10100008534:standardbank:immediate";
+  const out = await photo(OWNER, { bank: "capitec", amountCents: 45000, paymentDate: "2026-10-28", reference: "ATUGAR 1", bankRef: "CPT00001", accountTail: "8534" }, { entryId: "PA-SBATG001" });
+  const rec = dbState.pool[`eft_pool/${out.key}`];
+  assert.equal(rec.destination.destBankName, "STANDARD BANK");
+  assert.equal(rec.destination.accountTail, "8534");
+  // The FNB account keyed the same way is still FNB.
+  const fnb = await photo(OWNER, { bank: "capitec", amountCents: 45000, paymentDate: "2026-10-28", reference: "MARATHON 1", bankRef: "CPT00002", accountTail: "4321" }, { entryId: "PA-SBATG002" });
+  assert.equal(dbState.pool[`eft_pool/${fnb.key}`].destination.destBankName, "FIRST NATIONAL BANK");
+  // An account not in the secret is refused.
+  await rejects(photo(OWNER, { bank: "capitec", amountCents: 45000, paymentDate: "2026-10-28", reference: "X 1", bankRef: "CPT00003", accountTail: "9999" }, { entryId: "PA-SBATG003" }), "invalid-argument", "wrong-destination");
+});
+
+test("keyedIdentityCheck reads policies or bare strings: the matched account's bank is the printed bank", () => {
+  const keyed = { bank: "fnb", amountCents: 100, paymentDate: "2026-10-28", reference: "R1", bankRef: "FNB00001" };
+  const now = Date.parse("2026-11-02T10:00:00Z");
+  const sbPolicy = [{ account: "62900004321", bank: "fnb", immediateOnly: false }, { account: "10100008534", bank: "standardbank", immediateOnly: true }];
+  assert.equal(keyedIdentityCheck({ ...keyed, accountTail: "8534" }, { allowedAccounts: sbPolicy, now }).parse.destBankName, "STANDARD BANK");
+  assert.equal(keyedIdentityCheck({ ...keyed, accountTail: "4321" }, { allowedAccounts: sbPolicy, now }).parse.destBankName, "FIRST NATIONAL BANK");
+  assert.equal(keyedIdentityCheck(keyed, { allowedAccounts: ["62900004321"], now }).parse.destBankName, "FIRST NATIONAL BANK");
+});
