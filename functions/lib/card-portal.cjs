@@ -37,8 +37,21 @@ const { sastDayYmd, sastDayStartMs, isDayYmd, DAY_MS, OVERRIDES_PATH } = require
 const PORTAL_SOURCE = "simplyblu-portal";
 const PORTAL_WINDOW = "portal-day";
 const PORTAL_FORMAT = "portal";
-// The first SAST day the portal is the record (Junid's decision, 2 Nov 2026).
-const PORTAL_FROM_YMD = "2026-11-03";
+// WHEN THE PORTAL BECOMES A TILL'S RECORD IS PER TERMINAL (Junid, 2 Nov
+// 2026): `portalFrom: "YYYY-MM-DD"` on the registry row. Concrete's two
+// machines traded through the SimplyBLU app from their first day (30 Oct
+// 2026); Marathon PE Till 2 and Trophy Till 2 only from 3 Nov 2026, before
+// which their portal held app-initiated payments only (29 ever). A Standard
+// Bank row WITHOUT `portalFrom` takes the default; nothing is ever taken from
+// the portal before the floor.
+const PORTAL_FROM_YMD = "2026-11-03";       // the default
+const PORTAL_EARLIEST_YMD = "2026-10-30";   // the floor, for every terminal
+
+/** The first SAST day the portal is this machine's record. */
+function portalFromOf(row) {
+  const v = row && typeof row.portalFrom === "string" && isDayYmd(row.portalFrom) ? row.portalFrom : PORTAL_FROM_YMD;
+  return v < PORTAL_EARLIEST_YMD ? PORTAL_EARLIEST_YMD : v;
+}
 const PORTAL_PATH = `${OVERRIDES_PATH}/portal`;
 const PORTAL_HELD_PATH = `${PORTAL_PATH}/held`;
 const PORTAL_UNASSIGNED_PATH = `${PORTAL_PATH}/unassigned`;
@@ -53,7 +66,7 @@ const SAFE_KEY = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Is the portal the record for this machine on this SAST day? */
 function isPortalDay(row, dayYmd) {
-  return !!row && terminalBank(row) === STANDARD_BANK && isDayYmd(dayYmd) && dayYmd >= PORTAL_FROM_YMD;
+  return !!row && terminalBank(row) === STANDARD_BANK && isDayYmd(dayYmd) && dayYmd >= portalFromOf(row);
 }
 
 /** The SAST calendar-day window a portal record covers. */
@@ -362,13 +375,13 @@ function daysToPull(todayYmd, back = 2) {
   const out = [];
   for (let i = back; i >= 0; i--) {
     const d = sastDayYmd(start - i * DAY_MS + 12 * 60 * 60 * 1000);
-    if (d >= PORTAL_FROM_YMD) out.push(d);
+    if (d >= PORTAL_EARLIEST_YMD) out.push(d);
   }
   return out;
 }
 
 module.exports = {
-  PORTAL_SOURCE, PORTAL_WINDOW, PORTAL_FORMAT, PORTAL_FROM_YMD,
+  PORTAL_SOURCE, PORTAL_WINDOW, PORTAL_FORMAT, PORTAL_FROM_YMD, PORTAL_EARLIEST_YMD, portalFromOf,
   PORTAL_PATH, PORTAL_HELD_PATH, PORTAL_UNASSIGNED_PATH, PORTAL_DAYS_PATH, PORTAL_STATUS_PATH,
   METABASE_ROW_CAP, SAFE_KEY,
   isPortalDay, portalDayWindow, columnIndex, parsePortalRows, randsToCents, isTidLike,

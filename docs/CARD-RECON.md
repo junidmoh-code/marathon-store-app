@@ -552,9 +552,14 @@ payment through the SimplyBLU app on the machine, so the **SimplyBLU portal**
 Concrete is as labelled (2 Nov 2026: 47 of the 49 POS card legs at Concrete
 30 Oct–2 Nov match `0000OF2Y` transactions, all rung on Till 1).
 
-**Before 3 Nov the portal held only app-initiated payments** (29 ever on
-0004977890 — Sep 2025 to 25 Mar 2026), which is why `PORTAL_FROM_YMD` is a
-constant and nothing earlier is recorded from it.
+**From when is per terminal** (Junid, 2 Nov 2026): `portalFrom: "YYYY-MM-DD"`
+on the registry row (`lib/card-portal.cjs portalFromOf`). Concrete Till 1 and
+Till 2 are `2026-10-30` (they traded through the SimplyBLU app from their first
+day). Marathon PE Till 2 and Trophy Till 2 are `2026-11-03`: before that,
+0004977890's portal held only app-initiated payments (29 ever, Sep 2025 to 25
+Mar 2026). A Standard Bank row without `portalFrom` defaults to 2026-11-03, and
+nothing is ever taken from the portal before the 2026-10-30 floor.
+(`scripts/cardrecon/apply-portal-from-20261102.mjs`.)
 
 * **What is read.** The portal's Analytics → *Monthly Card POS - Terminal Batch
   Report* is an embedded Metabase dashboard (47). The portal hands the page a
