@@ -108,11 +108,12 @@ describe("EFT_ALLOWED_ACCOUNTS carries each account's bank and immediate-only ta
   });
 
   it("an entry whose tags do not read is LEFT OUT (fail closed), and said without the full number", () => {
-    for (const bad of [`${SB}:standard`, `${SB}:standardbank:fnb`, `${SB}:immediate:immediate`, `${SB}:imediate`]) {
+    for (const bad of [`${SB}:standard`, `${SB}:standardbank:fnb`, `${SB}:immediate:immediate`, `${SB}:imediate`, `${SB} standardbank immediate`, `${SB}:${FNB}`]) {
       expect(parseAccountPolicies(bad), bad).toEqual([]);
       const [problem] = accountPolicyProblems(bad);
       expect(problem, bad).toMatch(/ending 8534/);
       expect(problem).not.toContain(SB);
+      expect(problem).not.toContain(FNB); // a mis-pasted second number is never echoed
     }
   });
 });

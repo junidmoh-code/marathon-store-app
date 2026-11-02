@@ -78,10 +78,18 @@ function accountPolicyOf(entry) {
   const tags = rawTags.map((t) => t.trim().toLowerCase());
   if (account.length < 4) return { policy: null, problem: number.trim() || rawTags.length ? "an entry with fewer than four digits" : null };
   const tail = account.slice(-4);
+  // The number part is digits, spaces and dashes only: "1234 standardbank"
+  // (a tag typed without its colon) must not become an untagged FNB account.
+  if (/[^\d\s-]/.test(number)) {
+    return { policy: null, problem: `the entry for the account ending ${tail} has something other than digits before its first ":" — tags go after a colon (…:standardbank:immediate)` };
+  }
   const banks = tags.filter((t) => ACCOUNT_BANKS.includes(t));
   const unknown = tags.filter((t) => !ACCOUNT_BANKS.includes(t) && t !== IMMEDIATE_TAG);
   if (unknown.length || banks.length > 1 || new Set(tags).size !== tags.length) {
-    return { policy: null, problem: `the entry for the account ending ${tail} carries tags that do not read (${tags.join(":") || "empty"}) — use fnb or standardbank, and immediate` };
+    // The tag text is NOT echoed: a mis-pasted entry can carry a second
+    // account number there, and this line goes to the poller's log.
+    const why = unknown.length ? `${unknown.length} tag(s) that do not read` : banks.length > 1 ? "two banks" : "a repeated tag";
+    return { policy: null, problem: `the entry for the account ending ${tail} has ${why} — use fnb or standardbank, and immediate` };
   }
   return { policy: { account, bank: banks[0] ?? "fnb", immediateOnly: tags.includes(IMMEDIATE_TAG) }, problem: null };
 }
