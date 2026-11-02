@@ -31,6 +31,7 @@ const {
 } = require("../lib/card-terminal-admin.cjs");
 const { posStores, posStoresOf } = require("../lib/pos-tills.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
+const { PORTAL_UNASSIGNED_PATH } = require("../lib/card-portal.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -135,7 +136,14 @@ async function handle(db, request, { nowMs = Date.now() } = {}) {
   const now = admin.database.ServerValue.TIMESTAMP;
   const action = data.action;
 
-  if (action === "options") return { ok: true, stores: await readStores(db) };
+  // With the tills: the TIDs the SimplyBLU portal shows that no registry row
+  // takes (functions/cardRecon/cardPortal.js) — the sheet offers each one as a
+  // prefilled "Add". Read here, not by the screen: the store app reads no
+  // card-recon node itself (captureOnly.test.js).
+  if (action === "options") {
+    const unassigned = (await db.ref(PORTAL_UNASSIGNED_PATH).once("value")).val() || {};
+    return { ok: true, stores: await readStores(db), unassigned };
+  }
 
   // Retire and reinstate never look at a till; only the others read the POS.
   const stores = action === "retire" || action === "reinstate" ? [] : await readStores(db);

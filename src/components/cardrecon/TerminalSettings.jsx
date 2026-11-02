@@ -46,6 +46,7 @@ import { tillNow } from "./slipScope";
 import { useNetwork } from "../../utils/useNetwork";
 import { sectionOf, sectionName } from "../../utils/networkRegistry";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
+import { unassignedRows, isAssigned } from "./portalAssign";
 
 /**
  * The store picker's groups: [{ section, name, stores }], Section 2 first so
@@ -190,14 +191,15 @@ function sentenceOf(err) {
  *   edit    — till, label, MID, capture (TID and store fixed)
  *   replace — the NEW TID, label, MID, capture (store and till carried over)
  */
-function TerminalForm({ mode, base, stores, groups, today, busy, onSubmit, onCancel }) {
-  const [tid, setTid] = useState(mode === "edit" ? base.tid : "");
+function TerminalForm({ mode, base, prefill = null, stores, groups, today, busy, onSubmit, onCancel }) {
+  // `prefill`: an unassigned SimplyBLU terminal being assigned (portalAssign.js).
+  const [tid, setTid] = useState(mode === "edit" ? base.tid : (prefill?.tid || ""));
   const [storeId, setStoreId] = useState(base?.storeId || "");
   const [tillId, setTillId] = useState(base?.tillId || "");
   const [label, setLabel] = useState(base?.label || "");
-  const [mid, setMid] = useState(mode === "replace" ? "" : (base?.mid || ""));
-  const [capture, setCapture] = useState(base ? captureMode(base) : "both");
-  const [bank, setBank] = useState(base ? terminalBank(base) : "fnb");
+  const [mid, setMid] = useState(mode === "replace" ? "" : (base?.mid || prefill?.mid || ""));
+  const [capture, setCapture] = useState(base ? captureMode(base) : (prefill ? "typed" : "both"));
+  const [bank, setBank] = useState(base ? terminalBank(base) : (prefill?.bank || "fnb"));
   // "" = today (the server stamps the moment of the add, as it always has).
   const [fromDate, setFromDate] = useState("");
 
@@ -330,13 +332,15 @@ function TerminalForm({ mode, base, stores, groups, today, busy, onSubmit, onCan
   );
 }
 
-export default function TerminalSettings({ terminals, onClose }) {
+export default function TerminalSettings({ terminals, onClose, assignTid = null }) {
   const [stores, setStores] = useState(null);     // null = loading
   const [loadErr, setLoadErr] = useState(null);
   const [form, setForm] = useState(null);         // { mode, tid? }
   const [confirmRetire, setConfirmRetire] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);           // { ok, text }
+  // TIDs the SimplyBLU portal shows that no row takes (cardTerminalAdmin "options").
+  const [unassigned, setUnassigned] = useState([]);
   // Section names and each store's section, for the store picker's groups.
   const { registry } = useNetwork();
   const groups = useMemo(() => storeGroups(stores, registry), [stores, registry]);
@@ -347,7 +351,7 @@ export default function TerminalSettings({ terminals, onClose }) {
   useEffect(() => {
     let live = true;
     adminFn({ action: "options" })
-      .then(({ data }) => { if (live) setStores(data.stores || []); })
+      .then(({ data }) => { if (live) { setStores(data.stores || []); setUnassigned(unassignedRows(data.unassigned)); } })
       .catch((err) => { if (live) setLoadErr(sentenceOf(err)); });
     return () => { live = false; };
   }, []);
@@ -374,6 +378,18 @@ export default function TerminalSettings({ terminals, onClose }) {
 
   const base = form && form.tid ? rows.find((r) => r.tid === form.tid) : null;
 
+  // ── TERMINALS THE SIMPLYBLU PORTAL SHOWS THAT NOBODY HAS ASSIGNED ─────────
+  const open = useMemo(() => unassigned.filter((u) => !isAssigned(u, terminals)), [unassigned, terminals]);
+  const assign = (u) => { setMsg(null); setForm({ mode: "add", prefill: { tid: u.tid, bank: "standard-bank", mid: u.merchantNo || "" } }); };
+  // Opened from the POS's "Assign" (#card-assign=<TID>): once the tills are in.
+  const [assignDone, setAssignDone] = useState(false);
+  useEffect(() => {
+    if (!assignTid || assignDone || !stores) return;
+    setAssignDone(true);
+    const u = open.find((x) => x.tid === assignTid);
+    setForm({ mode: "add", prefill: { tid: assignTid, bank: "standard-bank", mid: u?.merchantNo || "" } });
+  }, [assignTid, assignDone, stores, open]);
+
   return (
     <div style={U.wrap}>
       <div style={U.head}>
@@ -396,7 +412,7 @@ export default function TerminalSettings({ terminals, onClose }) {
       {stores && form && form.mode !== "move" && (
         <TerminalForm
           key={`${form.mode}:${form.tid || ""}`}
-          mode={form.mode} base={base} stores={stores} groups={groups} today={today} busy={busy}
+          mode={form.mode} base={base} prefill={form.prefill || null} stores={stores} groups={groups} today={today} busy={busy}
           onCancel={() => setForm(null)}
           onSubmit={(t) => {
             if (form.mode === "replace") {
@@ -406,6 +422,18 @@ export default function TerminalSettings({ terminals, onClose }) {
               call({ action: form.mode, terminal: t }, form.mode === "add" ? `${t.tid} added.` : `${t.tid} saved.`);
             }
           }} />
+      )}
+
+      {stores && !form && open.length > 0 && (
+        <div style={U.row} data-testid="ts-unassigned">
+          <div style={U.name}>In the SimplyBLU portal, not assigned to a till</div>
+          {open.map((u) => (
+            <div key={u.key} style={U.meta} data-testid={`ts-unassigned-${u.tid}`}>
+              {u.tid}{u.merchantNo ? ` · merchant ${u.merchantNo}` : ""}{u.lastDay ? ` · ${u.lastDay}: ${u.lastDayTxns ?? 0} card payment${u.lastDayTxns === 1 ? "" : "s"}${Number.isInteger(u.lastDayCents) ? `, R${(u.lastDayCents / 100).toFixed(2)}` : ""}` : ""}
+              {" "}<button style={U.chip} disabled={busy} onClick={() => assign(u)}>Assign</button>
+            </div>
+          ))}
+        </div>
       )}
 
       {stores && rows.map((r) => {
