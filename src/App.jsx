@@ -133,7 +133,7 @@ import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SkyHome from "./components/sky/SkyHome.jsx";
 import AssistantPhone from "./components/sky/AssistantPhone.jsx";
-import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySegmented, SkySearch, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
+import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySegmented, SkySearch, SkyPopover, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconSearch as SkyIconSearch, IconMore, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
@@ -5981,7 +5981,7 @@ function AiStudioView({ products, onExit }) {
   );
 }
 
-function AdminView({ products, orders, onExit }) {
+export function AdminView({ products, orders, onExit }) {
   // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation,
   // pickup-board voice) moved to the super-admin-only AI Studio view — this
   // view is pure product management now (products + category sorting).
@@ -6910,7 +6910,7 @@ function AdminView({ products, orders, onExit }) {
   const adminTopBar = (
     <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
       <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
-      <div style={{ textAlign:"center" }}>
+      <div className="sky-glass sky-glass--strong" style={{ textAlign:"center", borderRadius:14, padding:"4px 14px" }}>
         <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
         <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
       </div>
@@ -8672,6 +8672,9 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // (Sneakers/Clothing + sort), the account popover, or the rest of the brands.
   const [panel, setPanel] = useState(null);
   const togglePanel = (k) => setPanel((p) => (p === k ? null : k));
+  const closePanel = useCallback(() => setPanel(null), []);
+  // Popover anchors (the popovers render in a portal at <body>: SkyPopover).
+  const storesRef = useRef(null), meRef = useRef(null), filterRef = useRef(null), brandsRef = useRef(null);
   // A stock-guard refusal always lands on an OPEN panel. The destination-
   // confirm path closes it before the guard runs (placeOrders returns
   // undefined to the button, then the modal re-invokes it), so the refusal
@@ -8797,95 +8800,95 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           <button type="button" className="ad-navi" aria-current={panel === "orders"} onClick={() => togglePanel("orders")} data-testid="nav-orders">
             <IconBag /> Orders{cartCount > 0 && <span className="ad-navn" data-testid="nav-orders-count">{cartCount}</span>}
           </button>
-          <button type="button" className="ad-navi" aria-current={panel === "stores"} aria-expanded={panel === "stores"} onClick={() => togglePanel("stores")} data-testid="nav-stores">
+          <button type="button" ref={storesRef} className="ad-navi" aria-current={panel === "stores"} aria-expanded={panel === "stores"} onClick={() => togglePanel("stores")} data-testid="nav-stores">
             <IconLayers /> Stores
           </button>
         </nav>
-        {panel === "stores" && (
-          <div className="ad-pop ad-pop--stores sky-glass" role="menu" aria-label="Order for">
-            <div className="ad-poplab">Order for</div>
-            {(availableShops || []).map(s => (
-              <button key={s.id} type="button" role="menuitemradio" className="ad-popi" aria-checked={effectiveShop === s.id}
-                      onClick={() => { setPanel(null); if (s.id !== effectiveShop) setPendingShop(s.id); }}>
-                {labelFor(s.id, shopRegistry)}
-              </button>
-            ))}
-          </div>
-        )}
+        <SkyPopover anchorRef={storesRef} open={panel === "stores"} onClose={closePanel} label="Order for" width={240}>
+          <div className="sky-pop__lab">Order for</div>
+          {(availableShops || []).map(s => (
+            <button key={s.id} type="button" role="menuitemradio" className="sky-pop__i" aria-checked={effectiveShop === s.id}
+                    onClick={() => { setPanel(null); if (s.id !== effectiveShop) setPendingShop(s.id); }}>
+              {labelFor(s.id, shopRegistry)}
+            </button>
+          ))}
+        </SkyPopover>
         <div className="ad-hc">
           <button type="button" className="ad-logo" onClick={onSwitchView} aria-label="Marathon Club — switch view" title="Switch view">
             <SkyLogo />
           </button>
-          {/* The store every order goes to. Not on the reference image —
-              kept because a wrong store ships stock to the wrong branch, and
-              the old sidebar always showed it. */}
-          <span className="sky-tag sky-glass sky-glass--soft ad-storetag" data-testid="store-tag">{storeName}</span>
+
         </div>
         <div className="ad-hr">
           <SkyRound label="Search" className="ad-round" onClick={() => searchRef.current?.focus()}><SkyIconSearch /></SkyRound>
-          <SkyRound label="Account" className="ad-round ad-me" onClick={() => togglePanel("me")}>{who[0].toUpperCase()}</SkyRound>
-          {panel === "me" && (
-            <div className="ad-pop ad-pop--me sky-glass" role="menu">
-              <div className="ad-mewho">{who}</div>
-              <div className="ad-mesub">Store assistant · {storeName}</div>
-              {/* Identity only — the ONE logout lives at the bottom of the home
-                  page's account sheet; Switch view goes there. */}
-              <button type="button" className="ad-popi" onClick={onSwitchView}>Switch view</button>
-            </div>
-          )}
+          <SkyRound label="Account" className="ad-round ad-me" buttonRef={meRef} onClick={() => togglePanel("me")}>{who[0].toUpperCase()}</SkyRound>
+          <SkyPopover anchorRef={meRef} open={panel === "me"} onClose={closePanel} align="end" width={240} label="Account">
+            <div className="sky-pop__who">{who}</div>
+            <div className="sky-pop__sub">Store assistant · {storeName}</div>
+            {/* Identity only — the ONE logout lives in the home page's account
+                sheet; Switch view goes there. */}
+            <button type="button" className="sky-pop__i" onClick={onSwitchView}>Switch view</button>
+          </SkyPopover>
         </div>
       </header>
 
       <main className="ad-main">
+        {/* THE STORE SELECTOR — one glass segmented control holding every
+            store this account orders for, the selected one brighter glass in
+            bold navy (assistant-phone.png; Junid wants the same on desktop).
+            A different store still goes through the red switch-confirm. */}
+        {(availableShops || []).length > 1 && (
+          <div className="ad-stores" data-testid="store-tag">
+            <SkySegmented ariaLabel="Order for" value={effectiveShop}
+                          options={(availableShops || []).map((s) => [s.id, labelFor(s.id, shopRegistry)])}
+                          onChange={(id) => { if (id !== effectiveShop) setPendingShop(id); }} />
+          </div>
+        )}
         <div className="ad-searchwrap">
+          {/* Filter and the label scan sit INSIDE the pill, behind one divider
+              (assistant-desktop.png). */}
           <SkySearch large value={search} onChange={setSearch} inputRef={searchRef}
                      placeholder={clothingOrder ? "Search clothing..." : "Search products..."}
-                     action="filter" actionLabel="Filter and sort" onAction={() => togglePanel("filter")} />
-          {onLabelFind && (
-            <button type="button" className="ad-label" onClick={onLabelFind} title="Find by the tongue label" aria-label="Find by the tongue label">
-              <SkyIconCamera />
-            </button>
-          )}
-          {panel === "filter" && (
-            <div className="ad-pop ad-pop--filter sky-glass" role="dialog" aria-label="Filter and sort">
-              <div className="ad-poplab">Show</div>
-              <SkySegmented ariaLabel="Product type" value={mode === "clothing" ? "clothing" : "sneaker"}
-                            options={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]}
-                            onChange={(v) => setMode(v)} />
-              <div className="ad-poplab" style={{ marginTop: 14 }}>Sort</div>
-              {[["feat", "Featured"], ["ph", "Price · high"], ["pl", "Price · low"], ["az", "Name · A–Z"]].map(([v, l]) => (
-                <button key={v} type="button" className="ad-popi" aria-checked={sort === v} role="menuitemradio" onClick={() => setSort(v)}>{l}</button>
-              ))}
-            </div>
-          )}
+                     actions={[
+                       ...(onLabelFind ? [{ icon: "camera", label: "Find by the tongue label", onClick: onLabelFind }] : []),
+                       { icon: "filter", label: "Filter and sort", onClick: () => togglePanel("filter"), ref: filterRef, expanded: panel === "filter" },
+                     ]} />
+          <SkyPopover anchorRef={filterRef} open={panel === "filter"} onClose={closePanel} align="end" width={270} role="dialog" label="Filter and sort">
+            <div className="sky-pop__lab">Show</div>
+            <SkySegmented ariaLabel="Product type" value={mode === "clothing" ? "clothing" : "sneaker"}
+                          options={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]}
+                          onChange={(v) => setMode(v)} />
+            <div className="sky-pop__lab" style={{ marginTop: 14 }}>Sort</div>
+            {[["feat", "Featured"], ["ph", "Price · high"], ["pl", "Price · low"], ["az", "Name · A–Z"]].map(([v, l]) => (
+              <button key={v} type="button" className="sky-pop__i" aria-checked={sort === v} role="menuitemradio" onClick={() => setSort(v)}>{l}</button>
+            ))}
+          </SkyPopover>
         </div>
 
         {/* BRAND CHIPS — logos, "All" first, the rest behind "…". */}
         <div className="sky-chips ad-chips" role="group" aria-label="Brand">
-          <button type="button" className="sky-chip sky-glass sky-glass--soft" aria-pressed={brand === "All"} onClick={() => setBrand("All")}>All</button>
+          <button type="button" className="sky-chip sky-glass" aria-pressed={brand === "All"} onClick={() => setBrand("All")}>All</button>
           {chipBrands.map(([b, n]) => (
-            <button key={b} type="button" className="sky-chip sky-glass sky-glass--soft" aria-pressed={brand === b}
+            <button key={b} type="button" className="sky-chip sky-glass" aria-pressed={brand === b}
                     title={`${b} (${n})`} aria-label={`${b} (${n})`} onClick={() => setBrand(brand === b ? "All" : b)}>
               <BrandMark brand={b} />
             </button>
           ))}
           {moreBrands.length > 0 && (
-            <span style={{ position: "relative" }}>
-              <button type="button" className="sky-chip sky-glass sky-glass--soft ad-more-chip" aria-pressed={brandInMore}
-                      aria-label="More brands" title="More brands" onClick={() => togglePanel("brands")}>
+            <>
+              <button type="button" ref={brandsRef} className="sky-chip sky-glass ad-more-chip" aria-pressed={brandInMore}
+                      aria-expanded={panel === "brands"} aria-label="More brands" title="More brands" onClick={() => togglePanel("brands")}>
                 {brandInMore ? <BrandMark brand={brand} /> : <IconMore width={22} height={22} />}
               </button>
-              {panel === "brands" && (
-                <div className="ad-pop ad-pop--brands sky-glass" role="menu" aria-label="More brands">
-                  {moreBrands.map(([b, n]) => (
-                    <button key={b} type="button" className="ad-popi" role="menuitemradio" aria-checked={brand === b}
-                            onClick={() => { setBrand(b); setPanel(null); }}>
-                      <span>{b}</span><span className="ad-popn">{n}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </span>
+              <SkyPopover anchorRef={brandsRef} open={panel === "brands"} onClose={closePanel} align="center" width={280} label="More brands" testId="brands-popover">
+                {moreBrands.map(([b, n]) => (
+                  <button key={b} type="button" className="sky-pop__i" role="menuitemradio" aria-checked={brand === b}
+                          onClick={() => { setBrand(b); setPanel(null); }}>
+                    <span>{b}</span><span className="sky-pop__n">{n}</span>
+                  </button>
+                ))}
+              </SkyPopover>
+            </>
           )}
         </div>
 
@@ -9054,8 +9057,6 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
         </div>
       )}
 
-      {/* Clicking outside a popover closes it (the drawer has its own ✕). */}
-      {panel && panel !== "orders" && <div className="ad-scrim" onClick={() => setPanel(null)} aria-hidden="true" />}
 
       {/* QUICK-VIEW — the product popup */}
       {qv && (
@@ -9350,7 +9351,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               <span className="ad-warnpulse" style={{ width: 64, height: 64, borderRadius: "50%", flexShrink: 0, background: "rgba(255,255,255,.9)", border: "2px solid rgba(225,40,40,.85)", display: "grid", placeItems: "center" }}>
                 <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#E02828" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
               </span>
-              <div style={{ fontSize: 11.5, letterSpacing: ".18em", textTransform: "uppercase", color: "#fff", fontWeight: 900, background: "rgba(225,40,40,.9)", borderRadius: 999, padding: "4px 12px" }}>Warning · this re-routes orders</div>
+              <div style={{ fontSize: 11.5, letterSpacing: ".18em", textTransform: "uppercase", color: "#ffffff", fontWeight: 900, background: "rgba(200,20,20,.95)", borderRadius: 999, padding: "4px 12px" }}>Warning · this re-routes orders</div>
               <div className="ad-svname" style={{ fontSize: 22 }}>Change shop to {labelFor(pendingShop, shopRegistry)}?</div>
               <div style={{ fontSize: 14, lineHeight: 1.55 }}>
                 You're ordering for <b>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ textDecoration: "underline" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
@@ -9388,32 +9389,34 @@ function useChipCount() {
 // Measured off the 1672px reference and expressed in vw with px clamps, so a
 // 1280–1680 Mac and an iPad in landscape keep the reference's proportions.
 const AD_SKY_CSS = `
-.ad-root{position:fixed;inset:0;z-index:50;overflow:auto;color:#fff;font-family:var(--sky-font);--ad-w:min(81.5vw,1362px);--ad-stage:clamp(150px,10.4vw,176px)}
+.ad-root{position:fixed;inset:0;z-index:50;overflow:auto;color:var(--sky-ink);font-family:var(--sky-font);--ad-w:min(81.5vw,1362px);--ad-stage:clamp(150px,10.4vw,176px)}
 .ad-root *{box-sizing:border-box}
 .ad-hd{position:relative;display:grid;grid-template-columns:1fr auto 1fr;align-items:start;padding:clamp(28px,2.8vw,47px) clamp(28px,5.1vw,85px) 0}
 .ad-navpill{justify-self:start;display:flex;align-items:center;gap:2px;padding:3px;border-radius:999px;height:clamp(46px,3.2vw,54px)}
-.ad-navi{display:inline-flex;align-items:center;gap:10px;height:100%;padding:0 clamp(14px,1.25vw,22px);border:0;border-radius:999px;background:transparent;color:#fff;
+.ad-navi{display:inline-flex;align-items:center;gap:10px;height:100%;padding:0 clamp(14px,1.25vw,22px);border:0;border-radius:999px;background:transparent;color:var(--sky-ink);
   font:600 clamp(14px,1.02vw,17px)/1 var(--sky-font);cursor:pointer;position:relative;white-space:nowrap}
 .ad-navi svg{width:22px;height:22px}
-.ad-navi[aria-current="true"]{background:rgba(255,255,255,.26);box-shadow:inset 0 1px 0 rgba(255,255,255,.75),inset 0 0 0 1px rgba(255,255,255,.4)}
+.ad-navi[aria-current="true"]{background:var(--sky-glass-solid);color:var(--sky-navy);font-weight:800;box-shadow:inset 0 1px 0 #fff,0 4px 12px -6px rgba(10,60,140,.35)}
 .ad-navi:focus-visible{outline:2px solid #fff;outline-offset:2px}
-.ad-navn{min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:#fff;color:var(--sky-navy);font-size:11.5px;font-weight:800;display:inline-grid;place-items:center;font-variant-numeric:tabular-nums}
+.ad-navn{min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:var(--sky-navy);color:#fff;font-size:11.5px;font-weight:800;display:inline-grid;place-items:center;font-variant-numeric:tabular-nums}
 .ad-hc{display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:clamp(-18px,-1vw,-6px)}
 .ad-logo{border:0;background:transparent;padding:0;cursor:pointer;color:#fff}
 .ad-logo .sky-logo__m{font-size:clamp(40px,3.2vw,54px)}
 .ad-logo .sky-logo__c{font-size:clamp(13px,1.05vw,18px);margin-top:clamp(8px,.7vw,12px)}
 .ad-hc{position:relative}
-.ad-storetag{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);white-space:nowrap}
+.ad-stores{width:min(560px,60vw);margin:0 auto clamp(14px,1.4vw,22px)}
+.ad-stores .sky-seg{height:42px}
+.ad-stores .sky-seg button{font-size:13.5px;white-space:nowrap}
 .ad-hr{justify-self:end;display:flex;align-items:center;gap:clamp(16px,1.5vw,25px);position:relative}
 .ad-round{width:clamp(50px,3.8vw,64px)!important;height:clamp(50px,3.8vw,64px)!important}
 .ad-round svg{width:clamp(22px,1.6vw,27px);height:clamp(22px,1.6vw,27px)}
-.ad-me{font-size:clamp(19px,1.4vw,24px);font-weight:800;background:rgba(40,130,240,.55)!important}
+.ad-me{font-size:clamp(19px,1.4vw,24px);font-weight:800;color:var(--sky-ink)!important;background:var(--sky-glass-strong)!important}
 .ad-main{width:var(--ad-w);margin:0 auto;padding:clamp(22px,2.7vw,46px) 0 120px}
 .ad-searchwrap{position:relative;width:min(48.4vw,809px);margin:0 auto;display:flex;align-items:center;gap:12px}
 .ad-searchwrap .sky-search{flex:1;height:clamp(56px,4.37vw,73px);padding-left:clamp(26px,2.4vw,40px)}
 .ad-searchwrap .sky-search input{font-size:clamp(18px,1.44vw,24px)}
-.ad-label{position:absolute;right:calc(-1 * clamp(58px,4.2vw,70px));width:clamp(46px,3.3vw,56px);height:clamp(46px,3.3vw,56px);border-radius:50%;
-  display:grid;place-items:center;color:#fff;cursor:pointer;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.4)}
+.ad-label-unused{position:absolute;right:calc(-1 * clamp(58px,4.2vw,70px));width:clamp(46px,3.3vw,56px);height:clamp(46px,3.3vw,56px);border-radius:50%;
+  display:grid;place-items:center;color:var(--sky-ink);cursor:pointer;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.4)}
 .ad-label svg{width:22px;height:22px}
 .ad-chips{margin:clamp(22px,2.2vw,36px) auto 0;gap:clamp(12px,1.2vw,20px);flex-wrap:nowrap}
 .ad-chips .sky-chip{height:clamp(34px,2.4vw,40px);min-width:clamp(78px,5.6vw,95px);padding:0 16px}
@@ -9424,21 +9427,21 @@ const AD_SKY_CSS = `
 .ad-card .sky-stage{padding-top:12px}
 .ad-card .sky-podium{bottom:12px}
 .ad-card .sky-cutout{max-width:80%}
-.ad-card .sky-frame{inset:14px 14px 4px}
+.ad-card .sky-frame{inset:12px 12px 2px}
 .ad-body{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:clamp(10px,.8vw,14px) clamp(18px,1.7vw,28px) clamp(14px,1.2vw,20px)}
-.ad-name{font-size:clamp(13.5px,1.02vw,17px);font-weight:500;line-height:1.12;min-height:2.24em}
-.ad-price{font-size:clamp(17px,1.35vw,22.5px);font-weight:700;color:#fff}
-.ad-price.no{font-size:12px;font-weight:600;color:rgba(255,255,255,.85)}
-.ad-deact{margin-left:6px;font-size:10px;font-weight:800;letter-spacing:.06em;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.3);border:1px solid rgba(255,255,255,.6);vertical-align:middle}
-.ad-zoom{position:absolute;top:10px;right:10px;width:30px;height:30px;border-radius:50%;border:1px solid rgba(255,255,255,.6);background:rgba(255,255,255,.3);color:#fff;
-  display:grid;place-items:center;cursor:pointer;opacity:0;transition:opacity .18s;z-index:2}
-.ad-card:hover .ad-zoom,.ad-card:focus-within .ad-zoom{opacity:1}
+.ad-name{font-size:clamp(13.5px,1.02vw,17px);font-weight:700;color:var(--sky-ink);line-height:1.12;min-height:2.24em}
+.ad-price{font-size:clamp(17px,1.35vw,22.5px);font-weight:800;color:var(--sky-navy)}
+.ad-price.no{font-size:12px;font-weight:700;color:var(--sky-ink-2)}
+.ad-deact{margin-left:6px;font-size:10px;font-weight:800;letter-spacing:.06em;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.75);border:1px solid #fff;color:var(--sky-ink);vertical-align:middle}
+.ad-zoom{position:absolute;top:10px;right:10px;width:28px;height:28px;border-radius:50%;border:1px solid var(--sky-rim);background:var(--sky-glass);color:var(--sky-ink);
+  -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);box-shadow:var(--sky-highlight);display:grid;place-items:center;cursor:pointer;z-index:2}
+.ad-zoom:hover{background:var(--sky-glass-solid)}
 /* Hover quick-add: a glass strip that slides over the name row. */
 .ad-quick{position:absolute;left:8px;right:8px;bottom:8px;z-index:3;border-radius:16px;padding:9px 10px 10px;
-  background:rgba(255,255,255,.9);color:var(--sky-ink);box-shadow:0 10px 26px -12px rgba(0,50,140,.55);
+  background:rgba(255,255,255,.96);color:var(--sky-ink);box-shadow:0 10px 26px -12px rgba(0,50,140,.55);
   opacity:0;transform:translateY(6px);pointer-events:none;transition:opacity .16s,transform .16s}
 .ad-card:hover .ad-quick,.ad-card:focus-within .ad-quick{opacity:1;transform:none;pointer-events:auto}
-.ad-qlab{font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:inherit;opacity:.75;margin:0 0 7px}
+.ad-qlab{font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--sky-ink);margin:0 0 7px}
 .ad-quick .ad-qlab{color:var(--sky-ink)}
 .ad-szrow{display:flex;flex-wrap:wrap;gap:5px}
 .ad-sz{position:relative;font:700 12px/1 var(--sky-font);font-variant-numeric:tabular-nums;padding:7px 8px;min-width:34px;text-align:center;border-radius:10px;cursor:pointer;
@@ -9447,20 +9450,20 @@ const AD_SKY_CSS = `
 .ad-sz[data-out]{color:rgba(0,20,49,.42)!important;background:rgba(0,20,49,.04)!important;border-color:rgba(0,20,49,.25)!important}
 .ad-sz.flash{background:var(--sky-navy);color:#fff;border-color:var(--sky-navy)}
 .ad-hint2{padding:0 20px 14px;font-size:12px;font-weight:700}
-.ad-none{text-align:center;padding:42px 20px;border-radius:22px;margin-top:40px;font-weight:600}
-.ad-more{display:flex;align-items:center;justify-content:center;gap:10px;width:min(420px,100%);margin:22px auto 0;height:48px;border-radius:999px;color:#fff;cursor:pointer;font:700 14px/1 var(--sky-font)}
-.ad-more-n{font-size:12px;font-weight:600;opacity:.85}
-.ad-trackbar{display:flex;align-items:center;gap:10px;width:100%;margin-top:22px;padding:13px 18px;border-radius:999px;color:#fff;cursor:pointer;font:700 14px/1 var(--sky-font)}
-.ad-trackn{background:#fff;color:var(--sky-navy);border-radius:999px;padding:3px 10px;font-size:11.5px;font-weight:800}
+.ad-none{color:var(--sky-ink);text-align:center;padding:42px 20px;border-radius:22px;margin-top:40px;font-weight:600}
+.ad-more{color:var(--sky-ink);display:flex;align-items:center;justify-content:center;gap:10px;width:min(420px,100%);margin:22px auto 0;height:48px;border-radius:999px;color:var(--sky-ink);cursor:pointer;font:700 14px/1 var(--sky-font)}
+.ad-more-n{font-size:12px;font-weight:600;color:var(--sky-ink-2)}
+.ad-trackbar{color:var(--sky-ink);display:flex;align-items:center;gap:10px;width:100%;margin-top:22px;padding:13px 18px;border-radius:999px;color:var(--sky-ink);cursor:pointer;font:700 14px/1 var(--sky-font)}
+.ad-trackn{background:var(--sky-navy);color:#fff!important;color:var(--sky-navy);border-radius:999px;padding:3px 10px;font-size:11.5px;font-weight:800}
 /* Popovers */
 .ad-scrim{position:fixed;inset:0;z-index:55}
-.ad-pop{position:absolute;z-index:56;border-radius:20px;padding:12px;min-width:220px;color:#fff;background:rgba(255,255,255,.34)!important}
+.ad-pop{position:absolute;z-index:56;border-radius:20px;padding:12px;min-width:220px;color:var(--sky-ink);background:rgba(255,255,255,.34)!important}
 .ad-pop--stores{left:clamp(28px,5.1vw,85px);top:calc(clamp(28px,2.8vw,47px) + clamp(46px,3.2vw,54px) + 10px)}
 .ad-pop--me{right:0;top:calc(100% + 10px)}
 .ad-pop--filter{right:0;top:calc(100% + 10px);width:260px}
 .ad-pop--brands{left:50%;transform:translateX(-50%);top:calc(100% + 10px);max-height:340px;overflow:auto;width:260px}
 .ad-poplab{font-size:10.5px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;margin:2px 6px 8px}
-.ad-popi{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;padding:10px 12px;border-radius:12px;border:0;background:transparent;color:#fff;
+.ad-popi{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;padding:10px 12px;border-radius:12px;border:0;background:transparent;color:var(--sky-ink);
   font:600 14px/1.2 var(--sky-font);cursor:pointer}
 .ad-popi:hover{background:rgba(255,255,255,.22)}
 .ad-popi[aria-checked="true"]{background:#fff;color:var(--sky-navy);font-weight:800}
@@ -9469,12 +9472,12 @@ const AD_SKY_CSS = `
 .ad-mewho{font-size:16px;font-weight:800;padding:2px 6px 0}
 .ad-mesub{font-size:12px;opacity:.9;padding:2px 6px 10px}
 /* Order drawer */
-.ad-drawer{position:fixed;z-index:58;top:clamp(16px,1.5vw,24px);right:clamp(16px,1.5vw,24px);bottom:clamp(16px,1.5vw,24px);width:min(360px,calc(100vw - 32px));
-  border-radius:26px;display:flex;flex-direction:column;overflow:hidden;color:#fff;background:rgba(255,255,255,.3)!important}
-.ad-dhead{padding:18px 16px 12px 20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,.45)}
+.ad-drawer{position:fixed;z-index:58;color:var(--sky-ink);top:clamp(16px,1.5vw,24px);right:clamp(16px,1.5vw,24px);bottom:clamp(16px,1.5vw,24px);width:min(360px,calc(100vw - 32px));
+  border-radius:26px;display:flex;flex-direction:column;overflow:hidden;color:var(--sky-ink);background:var(--sky-glass-strong)!important}
+.ad-dhead{padding:18px 16px 12px 20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(11,42,82,.12)}
 .ad-dhead h2{margin:0;font-size:18px;font-weight:800}
-.ad-dn{font-size:12px;font-weight:800;background:#fff;color:var(--sky-navy);border-radius:999px;padding:2px 9px;font-variant-numeric:tabular-nums}
-.ad-dx{margin-left:auto;width:32px;height:32px;border-radius:50%;border:1px solid rgba(255,255,255,.6);background:rgba(255,255,255,.2);color:#fff;display:grid;place-items:center;cursor:pointer}
+.ad-dn{font-size:12px;font-weight:800;background:var(--sky-navy);color:#fff;border-radius:999px;padding:2px 9px;font-variant-numeric:tabular-nums}
+.ad-dx{margin-left:auto;width:32px;height:32px;border-radius:50%;border:1px solid #fff;background:rgba(255,255,255,.7);color:var(--sky-ink);display:grid;place-items:center;cursor:pointer}
 .ad-dbody{display:flex;flex-direction:column;flex:1;overflow:hidden}
 .ad-dlist{flex:1;overflow:auto;padding:12px 13px;display:flex;flex-direction:column;gap:9px}
 .ad-empty{margin:auto;text-align:center;padding:36px 16px;font-size:13px}
@@ -9484,19 +9487,19 @@ const AD_SKY_CSS = `
 .ad-lm{font-size:11px;opacity:.75;margin-top:1px}
 .ad-lm span{color:var(--sky-navy)!important}
 .ad-step{display:inline-flex;align-items:center;border:1px solid rgba(0,51,245,.25);border-radius:999px;overflow:hidden;margin-top:5px;background:#fff}
-.ad-step button{width:24px;height:24px;border:0;background:transparent;color:var(--sky-navy);cursor:pointer;font-size:14px;font-weight:800}
+.ad-step button{width:24px;height:24px;border:0;background:transparent;color:var(--sky-ink);cursor:pointer;font-size:14px;font-weight:800}
 .ad-step span{min-width:24px;text-align:center;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--sky-ink)}
 .ad-step--qv{height:50px;margin-top:0}
 .ad-step--qv button{width:38px;height:48px;font-size:19px}
 .ad-step--qv span{min-width:30px;font-size:15px}
 .ad-lp{font-size:12.5px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--sky-navy);text-align:right}
-.ad-dfoot{border-top:1px solid rgba(255,255,255,.45);padding:15px 16px 16px;display:flex;flex-direction:column;gap:11px}
+.ad-dfoot{border-top:1px solid rgba(11,42,82,.12);padding:15px 16px 16px;display:flex;flex-direction:column;gap:11px}
 .ad-trow{display:flex;justify-content:space-between;font-size:13px}
 .ad-trow.tot{font-size:15px;font-weight:800}
 .ad-place,.ad-svadd{width:100%;padding:14px;border:0;border-radius:999px;font:800 14.5px/1 var(--sky-font);color:#fff;background:var(--sky-navy);cursor:pointer;
   box-shadow:0 10px 24px -10px rgba(0,40,170,.8),inset 0 1px 0 rgba(255,255,255,.3)}
 .ad-place:hover,.ad-svadd:hover{background:var(--sky-navy-deep)}
-.ad-place:disabled,.ad-svadd:disabled{background:rgba(0,51,245,.28);color:#fff;box-shadow:none;cursor:not-allowed}
+.ad-place:disabled,.ad-svadd:disabled{background:rgba(0,51,245,.38);color:#fff;box-shadow:none;cursor:not-allowed}
 .ad-svadd{flex:1;padding:17px}
 .ad-cartbar .sky-bottombar{left:50%;right:auto;transform:translateX(-50%);width:min(560px,calc(100vw - 32px));bottom:24px}
 /* The popup */
@@ -9524,7 +9527,7 @@ const AD_SKY_CSS = `
 .ad-szv{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums}
 .ad-szn{font-size:11px;font-weight:700;opacity:.9;font-variant-numeric:tabular-nums}
 .ad-svsz button[aria-pressed="true"]{background:var(--sky-navy)!important;border-color:var(--sky-navy)!important;color:#fff!important;box-shadow:0 10px 22px -10px rgba(0,40,170,.9)}
-.ad-svsz button[aria-disabled="true"]{color:rgba(0,20,49,.45)!important;background:rgba(255,255,255,.25)!important;border-color:rgba(0,20,49,.28)!important;box-shadow:none}
+.ad-svsz button[aria-disabled="true"]{color:#5b7192!important;background:rgba(255,255,255,.25)!important;border-color:rgba(0,20,49,.28)!important;box-shadow:none}
 .ad-note{background:rgba(255,255,255,.88);color:var(--sky-ink);border-radius:14px;padding:10px 13px;font-size:12.5px;font-weight:600;margin-bottom:9px}
 .ad-dp{display:inline-flex;align-items:center;gap:9px;padding:11px 16px;border-radius:999px;font:700 13px/1 var(--sky-font);cursor:pointer;
   color:var(--sky-navy);background:rgba(255,255,255,.6);border:1px solid rgba(0,51,245,.25)}
@@ -9536,7 +9539,7 @@ const AD_SKY_CSS = `
 .ad-in{background:rgba(255,255,255,.9);border:1px solid #fff;border-radius:14px;color:var(--sky-ink);font:600 15px/1 var(--sky-font);padding:13px 14px;outline:none}
 .ad-in:focus{box-shadow:0 0 0 3px rgba(255,255,255,.55)}
 .ad-in::placeholder{color:rgba(0,20,49,.45)}
-.ad-hintline{color:#c00000;font-weight:700}
+.ad-hintline{color:#b00020;font-weight:700}
 .ad-check{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13.5px;font-weight:600}
 .ad-check input{width:18px;height:18px;accent-color:#0033f5}
 .ad-btn2{padding:13px;border-radius:999px;border:1px solid rgba(0,51,245,.25);background:rgba(255,255,255,.7);color:var(--sky-navy);font-weight:800;cursor:pointer;font-family:inherit}
@@ -11419,9 +11422,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // The phone's sheets on the sky DNA: white glass inside its own box, a
   // bright rim, the blur inside the sheet — nothing over the photo outside it.
   const sheetStyle = {
-    background:"rgba(255,255,255,.42)", border:"1px solid rgba(255,255,255,.8)",
-    WebkitBackdropFilter:"blur(30px) saturate(140%)", backdropFilter:"blur(30px) saturate(140%)",
-    borderTopLeftRadius:28, borderTopRightRadius:28, color:"#fff", fontFamily:"var(--sky-font)",
+    background:"var(--sky-glass-strong)", border:"1px solid var(--sky-rim)",
+    WebkitBackdropFilter:"blur(28px) saturate(1.6) brightness(1.05)", backdropFilter:"blur(28px) saturate(1.6) brightness(1.05)",
+    borderTopLeftRadius:28, borderTopRightRadius:28, color:"var(--sky-ink)", fontFamily:"var(--sky-font)",
     padding:"1.6rem 1.4rem calc(1.4rem + env(safe-area-inset-bottom, 0px))", width:"100%", maxWidth:"520px", maxHeight:"85vh", overflowY:"auto",
     boxShadow: "inset 0 1px 0 rgba(255,255,255,.9), 0 -20px 50px -20px rgba(0,52,150,.45)",
   };
@@ -11736,7 +11739,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                   {!selected.styleCode && selected.category ? <span>{selected.category}</span> : null}
                 </div>
                 {typeof selected.retailPrice === "number" && selected.retailPrice > 0
-                  ? <div style={{ fontSize:26, fontWeight:800, marginTop:8, fontVariantNumeric:"tabular-nums" }}>{fmtR(selected.retailPrice)}</div>
+                  ? <div style={{ fontSize:26, color:"var(--sky-navy)", fontWeight:800, marginTop:8, fontVariantNumeric:"tabular-nums" }}>{fmtR(selected.retailPrice)}</div>
                   : <div style={{ fontSize:13, fontWeight:700, marginTop:8 }}>No price set</div>}
               </div>
               <button onClick={resetSheet} aria-label="Close" className="sky-sheet__x">✕</button>
@@ -14180,7 +14183,7 @@ function WarehouseView({ products = [], orders, onExit }) {
              style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>
           ← Switch View
         </div>
-        <div style={{ textAlign:"center" }}>
+        <div className="sky-glass sky-glass--strong" style={{ textAlign:"center", borderRadius:14, padding:"4px 14px" }}>
           <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
           <div style={{ fontSize:15, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>WAREHOUSE</div>
         </div>

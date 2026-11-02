@@ -64,7 +64,7 @@ export default function AssistantPhone({
       {children}
 
       {showGrid && (products.length === 0 ? (
-        <div className="ap-empty sky-glass sky-glass--soft">{emptyText}</div>
+        <div className="ap-empty sky-glass">{emptyText}</div>
       ) : (
         <div className="ap-grid">
           {products.map((p) => {
@@ -72,7 +72,7 @@ export default function AssistantPhone({
             const dead = isDead ? isDead(p) : false;
             const n = photoCount ? photoCount(p) : 0;
             return (
-              <article key={p.id} className="sky-card sky-glass sky-glass--bright ap-card" tabIndex={0}
+              <article key={p.id} className="sky-card sky-glass ap-card" tabIndex={0}
                        aria-current={selectedId === p.id ? "true" : undefined}
                        onClick={() => onOpen(p)} onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) onOpen(p); }}>
                 <ProductStage p={p} height="var(--ap-stage)" emoji={p.photo || "👟"} />
@@ -100,7 +100,8 @@ export default function AssistantPhone({
         </div>
       ))}
 
-      <div style={{ height: 96 }} />
+      {/* Bottom room for the cart bar + safe area, so the last row is never under it. */}
+      <div style={{ height: "var(--sky-bar-space)" }} />
       {showBar ? <SkyBottomBar count={cartCount} onOpen={onCart} label={cartLabel} disabled={cartDisabled} /> : null}
     </div>
   );
@@ -108,29 +109,30 @@ export default function AssistantPhone({
 
 // Measured off assistant-phone.png (852px wide = a 426px phone at 2x).
 const AP_CSS = `
-.ap-root{max-width:880px;margin:0 auto;color:#fff;font-family:var(--sky-font);--ap-stage:clamp(112px,32vw,128px);position:relative}
+.ap-root{max-width:880px;margin:0 auto;color:var(--sky-ink);font-family:var(--sky-font);--ap-stage:clamp(112px,32vw,128px);position:relative}
 .ap-root .sky-header{padding-top:calc(env(safe-area-inset-top,0px) + 16px)}
 .ap-root .sky-header__c{gap:8px;margin-top:-2px}
-.ap-root .sky-header .sky-round{width:37px;height:37px;margin-top:16px}
+.ap-root .sky-header .sky-round{width:37px;height:37px}
+.ap-root .sky-header{--sky-logo-mid:22px}
 .ap-root .sky-header .sky-round svg{width:19px;height:19px}
-.ap-me{position:absolute;right:16px;top:calc(env(safe-area-inset-top,0px) + 72px);z-index:70;width:230px;border-radius:20px;padding:14px;background:rgba(255,255,255,.34)!important}
+.ap-me{position:absolute;right:16px;top:calc(env(safe-area-inset-top,0px) + 72px);z-index:70;width:230px;border-radius:20px;padding:14px;background:var(--sky-glass-strong)!important;color:var(--sky-ink)}
 .ap-mewho{font-size:16px;font-weight:800}
-.ap-mesub{font-size:12px;opacity:.9;margin:2px 0 10px}
-.ap-mebtn{width:100%;height:40px;border-radius:999px;border:0;background:#fff;color:var(--sky-navy);font:800 14px/1 var(--sky-font);cursor:pointer}
+.ap-mesub{font-size:12px;color:var(--sky-ink-2);margin:2px 0 10px}
+.ap-mebtn{width:100%;height:40px;border-radius:999px;border:1px solid #fff;background:var(--sky-glass-solid);color:var(--sky-navy);font:800 14px/1 var(--sky-font);cursor:pointer}
 .ap-controls{padding:20px 18px 0;display:flex;flex-direction:column;gap:12px;max-width:560px;margin:0 auto}
 .ap-mode{height:42px;padding:3px}
 .ap-mode button{font-size:14px}
 .ap-shops{height:39px;padding:3px}
 .ap-shops button{font-size:12px;padding:0 6px;white-space:nowrap}
 .ap-title{padding:22px 16px 0}
-.ap-h1{font-size:35px;font-weight:800}
-.ap-sub{font-size:14px;color:rgba(255,255,255,.92);margin-top:6px}
+.ap-h1{font-size:35px;font-weight:800;color:var(--sky-ink-deep)}
+.ap-sub{font-size:14px;color:var(--sky-ink-deep);margin-top:6px}
 .ap-search{padding:22px 18px 0;max-width:560px;margin:0 auto}
 .ap-search .sky-search{height:46px}
 .ap-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 12px 0}
 @media (min-width:600px){.ap-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (min-width:820px){.ap-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
-.ap-card{border-radius:20px;color:var(--sky-ink);background:linear-gradient(180deg,rgba(255,255,255,.28) 0%,rgba(255,255,255,.62) 50%,rgba(255,255,255,.84) 100%)!important}
+.ap-card{border-radius:20px;color:var(--sky-ink)}
 .ap-card[aria-current="true"]{box-shadow:0 0 0 2px #fff,var(--sky-shadow-lg)}
 .ap-card .sky-stage{padding-top:8px}
 .ap-card .sky-podium{width:86%;bottom:6px}
@@ -140,10 +142,10 @@ const AP_CSS = `
 .ap-name{font-size:12.5px;font-weight:700;line-height:1.24;color:var(--sky-ink);-webkit-line-clamp:3}
 .ap-row{display:flex;align-items:center;justify-content:space-between;margin-top:auto}
 .ap-price{font-size:17.5px;color:var(--sky-navy)}
-.ap-dead{font-size:11px;font-weight:700;color:rgba(0,20,49,.62)}
-.ap-noprice{font-size:11.5px;font-weight:700;color:rgba(0,20,49,.6)}
+.ap-dead{font-size:11px;font-weight:700;color:var(--sky-ink-2)}
+.ap-noprice{font-size:11.5px;font-weight:700;color:var(--sky-ink-2)}
 .ap-zoom{position:absolute;top:8px;right:8px;z-index:2;height:28px;min-width:28px;padding:0 7px;border-radius:999px;display:inline-flex;align-items:center;gap:4px;
-  border:1px solid rgba(255,255,255,.85);background:rgba(255,255,255,.55);color:var(--sky-navy);font:800 11px/1 var(--sky-font);cursor:pointer}
+  border:1px solid var(--sky-rim);background:var(--sky-glass);-webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);color:var(--sky-ink);font:800 11px/1 var(--sky-font);cursor:pointer}
 .ap-empty{margin:24px 16px 0;border-radius:20px;padding:30px 16px;text-align:center;font-weight:600}
 .ap-root .sky-bottombar{max-width:820px;margin:0 auto}
 @media (min-width:880px){.ap-root .sky-bottombar{left:50%;right:auto;transform:translateX(-50%);width:820px}}

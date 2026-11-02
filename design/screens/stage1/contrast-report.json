@@ -1,0 +1,262 @@
+{
+ "min": 4.5,
+ "results": [
+  {
+   "engine": "chromium",
+   "route": "sign-in",
+   "size": "1440x900",
+   "checked": 6,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "home",
+   "size": "1440x900",
+   "checked": 1,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "home-admin-hub",
+   "size": "1440x900",
+   "checked": 16,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "admin-products",
+   "size": "1440x900",
+   "checked": 62,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "assistant",
+   "size": "1440x900",
+   "checked": 26,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "assistant-brands",
+   "size": "1440x900",
+   "checked": 10,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "assistant-popup",
+   "size": "1440x900",
+   "checked": 19,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "assistant-phone",
+   "size": "1440x900",
+   "checked": 22,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "sign-in",
+   "size": "390x844",
+   "checked": 6,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "home",
+   "size": "390x844",
+   "checked": 1,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "home-admin-hub",
+   "size": "390x844",
+   "checked": 16,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "admin-products",
+   "size": "390x844",
+   "checked": 31,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "assistant",
+   "size": "390x844",
+   "checked": 18,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "assistant-brands",
+   "size": "390x844",
+   "checked": 14,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "assistant-popup",
+   "size": "390x844",
+   "checked": 16,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "chromium",
+   "route": "assistant-phone",
+   "size": "390x844",
+   "checked": 17,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "sign-in",
+   "size": "1440x900",
+   "checked": 6,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "home",
+   "size": "1440x900",
+   "checked": 1,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "home-admin-hub",
+   "size": "1440x900",
+   "checked": 16,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "admin-products",
+   "size": "1440x900",
+   "checked": 62,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "assistant",
+   "size": "1440x900",
+   "checked": 26,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "assistant-brands",
+   "size": "1440x900",
+   "checked": 10,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "assistant-popup",
+   "size": "1440x900",
+   "checked": 19,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "assistant-phone",
+   "size": "1440x900",
+   "checked": 22,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "sign-in",
+   "size": "390x844",
+   "checked": 6,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "home",
+   "size": "390x844",
+   "checked": 1,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "home-admin-hub",
+   "size": "390x844",
+   "checked": 16,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "admin-products",
+   "size": "390x844",
+   "checked": 31,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "assistant",
+   "size": "390x844",
+   "checked": 18,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "assistant-brands",
+   "size": "390x844",
+   "checked": 14,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "assistant-popup",
+   "size": "390x844",
+   "checked": 16,
+   "failures": [],
+   "deadGlass": 0
+  },
+  {
+   "engine": "webkit",
+   "route": "assistant-phone",
+   "size": "390x844",
+   "checked": 15,
+   "failures": [],
+   "deadGlass": 0
+  }
+ ],
+ "failures": 0
+}

@@ -8,6 +8,7 @@
 //   /dev/sky-harness.html?screen=home | desktop | phone   [&popup=1] [&cart=N]
 
 import "../styles/sky.css";
+import "../styles/sky-theme.css";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import SkyHome from "../components/sky/SkyHome.jsx";
@@ -24,7 +25,11 @@ async function loadFixture() {
     try { cut = await (await fetch("/dev/cutouts/index.local.json")).json(); } catch { /* none yet */ }
     return list.map((p) => (cut[p.id] && q.get("cutouts") !== "0"
       ? { ...p, photoCutoutUrl: `/dev/cutouts/${p.id}.png`, photoCutoutFor: p.photoUrl } : p));
-  } catch { return []; }
+  } catch {
+    // CI / no local fixture: synthetic products (no photos, no Storage URLs).
+    const brands = ["Nike", "Adidas", "Jordan", "New Balance", "Puma", "Nike", "Nike", "Adidas"];
+    return ORDER.map((id, i) => ({ id, name: `Sample sneaker ${i + 1} Low Retro`, brand: brands[i % brands.length], retailPrice: 750, sizes: ["6", "7", "8", "9", "10"], photo: "👟" }));
+  }
 }
 
 const ORDER = ["p1789137553443", "p1777978132487", "p1790164209800", "p1778844810609", "p1781649460930", "p1781649251868", "p1793626901972", "p1793630287984",
@@ -75,6 +80,7 @@ function Desktop({ products, AssistantDesktop }) {
   const list = products.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()));
   useEffect(() => {
     if (q.get("popup")) setTimeout(() => document.querySelector(".ad-card")?.click(), 400);
+    if (q.get("brands")) setTimeout(() => document.querySelector(".ad-more-chip")?.click(), 400);
   }, []);
   // Brands for the chip row as the reference draws them.
   const fill = ["Puma", "Lacoste", "Boss", "Armani", "Diesel", "Gucci", "Prada"];
@@ -108,6 +114,9 @@ function Desktop({ products, AssistantDesktop }) {
   if (screen === "desktop") {
     const { AssistantDesktop } = await import("../App.jsx");
     el = <Desktop products={products} AssistantDesktop={AssistantDesktop} />;
+  } else if (screen === "admin") {
+    const { AdminView } = await import("../App.jsx");
+    el = <AdminView products={products} orders={[]} onExit={() => {}} />;
   } else if (screen === "phone") {
     el = <Phone products={products.slice(0, Number(q.get("n") || 16))} />;
   } else {

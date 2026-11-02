@@ -5,7 +5,8 @@
 // stage (cut-out on a podium, or the full photo in a white frame) and the
 // glass bottom bar. Presentation only — every handler is the caller's.
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { HiResPhoto } from "../assistant/HiResPhoto.jsx";
 import { IconGrid, IconUser, IconSearch, IconCamera, IconFilter, IconPlus, IconCart } from "./SkyIcons.jsx";
 import { brandIcon, brandTextLabel, noteUnmappedBrand } from "./brandLogos.js";
@@ -36,9 +37,9 @@ export function SkyLogo({ large = false }) {
 }
 
 /** A round glass button (grid, user, search). */
-export function SkyRound({ label, onClick, children, className = "", ...rest }) {
+export function SkyRound({ label, onClick, children, className = "", buttonRef, ...rest }) {
   return (
-    <button type="button" className={cx("sky-round sky-glass sky-glass--soft", className)} aria-label={label} title={label} onClick={onClick} {...rest}>
+    <button type="button" ref={buttonRef} className={cx("sky-round sky-glass", className)} aria-label={label} title={label} onClick={onClick} {...rest}>
       {children}
     </button>
   );
@@ -57,7 +58,7 @@ export function SkyHeader({ tag, onGrid, onUser, userInitial = null, large = fal
       </div>
       <div className="sky-header__c">
         <SkyLogo large={large} />
-        {tag ? <span className={cx("sky-tag sky-glass sky-glass--soft", large && "sky-tag--lg")}>{tag}</span> : null}
+        {tag ? <span className={cx("sky-tag sky-glass", large && "sky-tag--lg")}>{tag}</span> : null}
       </div>
       <div className="sky-header__r">
         {right}
@@ -74,7 +75,7 @@ export function SkyHeader({ tag, onGrid, onUser, userInitial = null, large = fal
 /** Glass pill segmented toggle (Sneakers / Clothing, the store chips). */
 export function SkySegmented({ options, value, onChange, className = "", size = "md", ariaLabel }) {
   return (
-    <div className={cx("sky-seg sky-glass sky-glass--soft", size === "lg" && "sky-seg--lg", className)} role="group" aria-label={ariaLabel}>
+    <div className={cx("sky-seg sky-glass", size === "lg" && "sky-seg--lg", className)} role="group" aria-label={ariaLabel}>
       {options.map(([val, label]) => (
         <button key={val} type="button" aria-pressed={value === val} onClick={() => onChange(val)}>{label}</button>
       ))}
@@ -94,21 +95,75 @@ export function BrandMark({ brand, title }) {
   );
 }
 
-/** The big glass search pill — icon left, a camera/scan or filter button right. */
-export function SkySearch({ value, onChange, placeholder = "Search products...", inputRef, onAction, action = "camera", actionLabel, large = false, className = "", inputProps = {} }) {
-  const ActionIcon = action === "filter" ? IconFilter : IconCamera;
+/**
+ * The big glass search pill — icon left, then one subtle divider and the
+ * pill's own buttons on the right (camera/scan, and on desktop the filter
+ * beside it, inside the pill as assistant-desktop.png draws it).
+ * `actions`: [{ icon: "camera"|"filter", label, onClick, ref }]
+ */
+export function SkySearch({ value, onChange, placeholder = "Search products...", inputRef, onAction, action = "camera", actionLabel, actions = null, large = false, className = "", inputProps = {} }) {
+  const list = actions || (onAction ? [{ icon: action, label: actionLabel, onClick: onAction }] : []);
   return (
-    <div className={cx("sky-search sky-glass sky-glass--soft", large && "sky-search--lg", className)}>
+    <div className={cx("sky-search sky-glass", large && "sky-search--lg", className)}>
       <IconSearch />
       <input ref={inputRef} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
              autoComplete="off" aria-label="Search products" {...inputProps} />
-      {onAction ? (
-        <button type="button" className="sky-search__btn" onClick={onAction} aria-label={actionLabel} title={actionLabel}>
-          <ActionIcon />
-        </button>
-      ) : null}
+      {list.length ? <span className="sky-search__div" aria-hidden="true" /> : null}
+      {list.map((a, i) => {
+        const Icon = a.icon === "filter" ? IconFilter : IconCamera;
+        return (
+          <button key={i} type="button" ref={a.ref} className="sky-search__btn" onClick={a.onClick}
+                  aria-label={a.label} title={a.label} aria-expanded={a.expanded}>
+            <Icon />
+          </button>
+        );
+      })}
     </div>
   );
+}
+
+/**
+ * A glass popover rendered in a PORTAL at <body>. Inside the page it sat in
+ * a row of glass chips and under the fixed workspace; a backdrop-filter does
+ * not run under an ancestor that has its own backdrop-filter, or a transform
+ * plus overflow clipping, and the brand list came out blurred and unreadable
+ * (Junid, 2026-11-02). At body level it is one strong-glass surface with crisp
+ * text over the page. Positioned under its anchor; Escape or a click outside
+ * closes it. Falls back to rendering in place where there is no DOM (tests).
+ */
+export function SkyPopover({ anchorRef, open, onClose, align = "start", width = 260, label, role = "menu", className = "", children, testId }) {
+  const [pos, setPos] = useState(null);
+  const canPortal = typeof document !== "undefined" && !!document.body && typeof document.body.appendChild === "function";
+  useLayoutEffect(() => {
+    if (!open || !canPortal) return undefined;
+    const place = () => {
+      const r = anchorRef?.current?.getBoundingClientRect?.();
+      if (!r) return;
+      const vw = window.innerWidth;
+      let left = align === "end" ? r.right - width : align === "center" ? r.left + r.width / 2 - width / 2 : r.left;
+      left = Math.max(12, Math.min(left, vw - width - 12));
+      setPos({ top: r.bottom + 10, left });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); };
+  }, [open, canPortal, align, width, anchorRef]);
+  useEffect(() => {
+    if (!open || typeof window === "undefined" || !window.addEventListener) return undefined;
+    const k = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [open, onClose]);
+  if (!open) return null;
+  const body = (
+    <div className={cx("sky-pop", className)} role={role} aria-label={label} data-testid={testId}
+         style={canPortal ? { top: pos?.top ?? -9999, left: pos?.left ?? -9999, width } : { width }}>
+      {children}
+    </div>
+  );
+  if (!canPortal) return body;
+  return createPortal(<><div className="sky-pop-scrim" onClick={onClose} aria-hidden="true" />{body}</>, document.body);
 }
 
 // ── THE PRODUCT STAGE ─────────────────────────────────────────────────────────

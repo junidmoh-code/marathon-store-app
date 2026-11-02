@@ -16,26 +16,38 @@ word here and an image disagree, the image wins. Code: `src/styles/sky.css`
 - A screen with its own world (the customer TV board) calls `useSkyOff()`, which
   sets `html[data-sky="off"]` and hides the room and the theme layer.
 
-## 2. Glass
-- Translucent white, blur **inside the object's own box**, a 1px brighter rim, a
-  lit hairline on the top edge (`.sky-sheen`, from home.png), a soft blue shadow.
-- Between objects the photo is raw. Never a full-width glass sheet behind a page.
-- Strengths, measured off the references: soft pills/search ≈ 16% white, desktop
-  cards ≈ 30%, phone cards a bright gradient to ≈ 85% at the bottom, solid
-  pills/active segments ≈ 96%.
-- Performance: blur is for the big objects (cards, bars, popups). Small rows get
-  plain translucent white without `backdrop-filter` — the till's GPU is weak.
+## 2. Glass (one recipe, `src/styles/sky.css`)
+- **Standard**: `rgba(255,255,255,.40)`, `backdrop-filter: blur(28px) saturate(1.6) brightness(1.05)`
+  (with the `-webkit-` prefix), 1px rim at 75% white, inset top highlight
+  `0 1px 0 rgba(255,255,255,.9)`, outer shadow `0 12px 32px rgba(10,60,140,.22)`.
+  A light strip in the photo behind it drops to a soft glow, never a hard line.
+- **Strong** `.58`: popovers, modals, sheets, sidebars, anything dense with text.
+- **Active** = brighter glass (`.86`) with bold navy, not a solid fill. Solid navy
+  is only for primary buttons and the chosen size.
+- **Write the backdrop filter literally, never through `var()`**: WebKit (Safari,
+  iPad) computes `-webkit-backdrop-filter: var(--x)` as `none`.
+- **Popovers render in a portal at `<body>`** (`SkyPopover`): a backdrop filter
+  does not run under an ancestor with its own backdrop filter or transform +
+  overflow clipping. No `filter: blur()` on content, ever.
+- Glass only inside an object's own box. Between objects the photo is raw.
 
 ## 3. Colour
 | Token | Use |
 |---|---|
-| white `#fff` | text on glass, icons, the wordmark |
-| `--sky-ink #001431` | product names on bright (phone) cards, text in white fields |
-| `--sky-navy #0033f5` | price on bright cards, the active segment/chip label, plus icons, the chosen size, primary buttons |
-| `--sky-navy-deep #0a2a8f` | pressed primary |
+| `--sky-ink #0b2a52` | ALL text on glass — names, labels, icons |
+| `--sky-ink-2 #1f3d66` | secondary text (the spec's `#3b5f8f` measured 3.7:1 on glass) |
+| `--sky-ink-deep #04122b` | text sitting on the bare sky (the "Place order" heading) |
+| `--sky-navy #0026c2` | prices, key numbers, plus icons, active labels, primary fills (`#0033f5` measured 4.1:1) |
+| white | ONLY the wordmark and the four home tiles, with `--sky-text-shadow` |
 
 No orange, no accent colour. Red survives only where it means something (the
-shop-switch alarm, a refusal); green only for a success state. Nothing decorative.
+shop-switch alarm, a refusal), as deep red text on light glass; green likewise.
+
+**The contrast gate** (`npm run contrast`, `scripts/sky-contrast.mjs`, CI on this
+branch): every route at 1440×900 and 390×844 in Chromium and WebKit; every text
+element is measured against the pixels actually behind it; anything under 4.5:1
+fails. Text over the deep-blue top of the room cannot reach 4.5:1 in ANY dark
+ink — such text must sit on glass.
 
 ## 4. Type
 Inter (Google Fonts, loaded in `index.html` the way the TV board loads Archivo).
@@ -76,7 +88,9 @@ prices 700–800 tabular, "R" and no decimals.
 Screens without a reference keep their markup; the theme layer re-maps the old
 dark palette as the browser serialises it into `style=""`: page blacks →
 transparent, dark panels → glass, faint surfaces → visible glass, dim greys and
-dim whites → white, the old `#4A7FFF` → white text / navy solid buttons,
-orange/amber → white, form fields → white with navy ink. To extend: add the
+dim whites → navy, the old `#4A7FFF` → navy text / navy solid buttons (white
+text kept only on solid fills), orange/amber → navy, header bands drawn as
+gradients over the photo → glass, the old `/hero/*` photos hidden, sidebars →
+strong glass, form fields → white with navy ink. To extend: add the
 serialised value (`rgb(r, g, b)` with spaces) to the matching block. Never add a
 rule that paints over the room.
