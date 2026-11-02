@@ -304,3 +304,10 @@ test("a slip held after the record was read is swept onto it by the next (unchan
   assert.equal((await node(db, `card_batches/trophy/${Z4M6}/${key}/supportingSlips/s1`)).cents, 50000);
   assert.equal(await node(db, `card_batch_overrides/portal/held/trophy/${Z4M6}/${DAY}/s1/takenInto`), key);
 });
+
+test("a TID printed with a hyphen or space keeps its transactions (CodeRabbit, #837)", async () => {
+  const db = world({ events: { a: card("pe", "till-2", "2026-11-03T10:01:30", 93000) } });
+  const out = await pull(db, [row("2026-11-03T10:01:00", "0000-HP1X", 930)], { tids: ["0000-HP1X", "0000 Z4M6"] });
+  assert.equal(out.results[HP1X].outcome, "recorded");
+  assert.equal((await node(db, `card_batches/pe/${HP1X}/561`)).slip.totalCents, 93000);
+});

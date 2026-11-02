@@ -13,9 +13,14 @@
 //   node scripts/cardrecon/apply-terminal-bank-sb-20261102.mjs            # dry run
 //   node scripts/cardrecon/apply-terminal-bank-sb-20261102.mjs --execute  # write + read back
 
+import { createRequire } from "node:module";
 import { adminRequire } from "../adminRequire.mjs";
 
-const admin = adminRequire(import.meta.url)("firebase-admin");
+// This worktree's functions install first, then the shared helper's fallbacks
+// (CodeRabbit, #837: the helper resolves from scripts/, not scripts/cardrecon/).
+let admin;
+try { admin = createRequire(new URL("../../functions/package.json", import.meta.url))("firebase-admin"); }
+catch { admin = adminRequire(new URL("../x.mjs", import.meta.url).href)("firebase-admin"); }
 const EXECUTE = process.argv.includes("--execute");
 const ROWS = [
   { tid: "0000HP1X", storeId: "pe", tillId: "till-2", mid: "000000004977890" },
@@ -40,7 +45,7 @@ for (const r of ROWS) {
   console.log(`${r.tid} (${cur.label}): ${EXECUTE ? "SET" : "would set"} bank = "standard-bank" (was ${cur.bank ?? "absent = FNB"})`);
   if (!EXECUTE) continue;
   const res = await ref.transaction((row) => {
-    if (row === null || row.storeId !== r.storeId || row.tillId !== r.tillId) return undefined;
+    if (row === null || row.storeId !== r.storeId || row.tillId !== r.tillId || row.mid !== r.mid) return undefined;
     return { ...row, bank: "standard-bank" };
   });
   if (!res.committed) { console.error(`✗ ${r.tid}: the row changed while this ran — not written`); bad++; continue; }

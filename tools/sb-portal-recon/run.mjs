@@ -89,12 +89,20 @@ function takeLock() {
       let ageMs = 0;
       try { ageMs = Date.now() - statSync(LOCK_FILE).mtimeMs; } catch { /* gone */ }
       if (alive && ageMs > RUN_LIMIT_MS + 60000) {
-        log(`the run holding the lock (pid ${pid}) is ${Math.round(ageMs / 60000)} min old — stopping it`);
-        try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+        // Only a process that IS this tool is stopped: a pid reused by the OS
+        // after a crash belongs to something else, and the lock is just stale
+        // (CodeRabbit, #837).
+        let cmd = "";
+        try { cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" }); } catch { /* gone */ }
+        if (/sb-portal-recon\/run\.mjs/.test(cmd)) {
+          log(`the run holding the lock (pid ${pid}) is ${Math.round(ageMs / 60000)} min old — stopping it`);
+          try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+        }
         alive = false;
       }
       if (alive) return false;
-      try { unlinkSync(LOCK_FILE); } catch { /* raced */ }
+      // Remove the lock only if it is still the one judged stale.
+      try { if (Number(readFileSync(LOCK_FILE, "utf8")) === pid) unlinkSync(LOCK_FILE); } catch { /* raced */ }
     }
   }
   return false;

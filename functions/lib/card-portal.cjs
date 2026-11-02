@@ -93,6 +93,8 @@ function columnIndex(cols) {
 
 const REQUIRED_COLUMNS = ["at", "type", "status", "tid", "amount"];
 
+const tidChars = (raw) => (typeof raw === "string" ? raw.trim().replace(/[\s-]/g, "") : "");
+
 /** "Purchase" → "purchase", "Refund" → "refund"; anything else is not money we record. */
 function txnKind(raw) {
   const t = String(raw || "").trim().toLowerCase();
@@ -160,7 +162,10 @@ function parsePortalRows({ cols, rows }) {
     const dedupe = id || `${at}|${r[ix.tid]}|${cents}|${ix.ref >= 0 ? r[ix.ref] : i}`;
     if (seen.has(dedupe)) return;
     seen.add(dedupe);
-    const tidRaw = String(r[ix.tid] ?? "").trim();
+    // Normalised the same way the TID list is (mapPortalTids), so a TID the
+    // portal prints with a space or hyphen finds its own transactions
+    // (CodeRabbit, #837 — a mismatch here was a false R0.00 day).
+    const tidRaw = tidChars(String(r[ix.tid] ?? "")) || String(r[ix.tid] ?? "").trim();
     txns.push({
       id,
       at,
@@ -184,7 +189,6 @@ function parsePortalRows({ cols, rows }) {
 // A TID as printed may carry a space or a hyphen; those are not part of it
 // (canonicalTid strips them too). Anything else odd is "unattributed" money,
 // counted in the run status — never silently dropped.
-const tidChars = (raw) => (typeof raw === "string" ? raw.trim().replace(/[\s-]/g, "") : "");
 const isTidLike = (raw) => /^[A-Za-z0-9]{2,16}$/.test(tidChars(raw)) && !/^unknown$/i.test(tidChars(raw));
 
 /**

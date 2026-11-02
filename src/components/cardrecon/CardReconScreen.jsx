@@ -228,7 +228,8 @@ export default function CardReconScreen({ onExit }) {
   // convenience; the callable refuses everyone else regardless.
   const isOwner = auth.currentUser?.email === ADMIN_EMAIL;
   // The POS's "Assign" on an unassigned SimplyBLU terminal opens the sheet on it.
-  const [assignTid] = useState(() => (isOwner ? takeAssignRequest() : null));
+  // Taken on EVERY device (it restores the device's own role); acted on only for Junid.
+  const [assignTid] = useState(() => { const t = takeAssignRequest(); return isOwner ? t : null; });
   const [settingsOpen, setSettingsOpen] = useState(() => !!assignTid);
 
   // ── the registry: which machines exist, and what each till is called ──
