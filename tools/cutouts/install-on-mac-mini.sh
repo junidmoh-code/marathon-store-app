@@ -12,7 +12,12 @@ REPO="${CUTOUTS_REPO:-$HOME/marathon-store-app}"
 HOME_DIR="$HOME/.marathon-cutouts"
 VENV="$HOME_DIR/venv"
 JOB=com.marathon.cutouts
-PY=/usr/bin/python3
+# Homebrew's Python 3.13 when the machine has it (the stylist venv already
+# uses it — nothing is installed through Homebrew here), else the system 3.9.
+PY="${CUTOUTS_PY:-}"
+if [ -z "$PY" ]; then
+  if [ -x /opt/homebrew/bin/python3.13 ]; then PY=/opt/homebrew/bin/python3.13; else PY=/usr/bin/python3; fi
+fi
 MODEL="${CUTOUTS_MODEL:-isnet-general-use}"
 CREDS="$HOME/.config/marathon/shopify-reconciler-sa.json"
 
@@ -27,10 +32,15 @@ grep -q "<string>$REPO/tools/cutouts/cutout.py</string>" "$REPO/tools/cutouts/$J
 [ "$(date +%Z)" = "SAST" ] || echo "WARNING: host clock is $(date +%Z), not SAST; 02:00 is host time"
 mkdir -p "$HOME_DIR" "$REPO/logs" "$HOME/Library/LaunchAgents"
 
+# A venv built on a different Python is rebuilt (the v1 venv was 3.9).
+WANT=$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+HAVE=$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo none)
+if [ "$HAVE" != "$WANT" ]; then echo "venv python $HAVE -> $WANT: rebuilding"; rm -rf "$VENV"; fi
 if [ ! -x "$VENV/bin/python" ]; then "$PY" -m venv "$VENV"; fi
 "$VENV/bin/python" -m pip install -q --upgrade pip
 "$VENV/bin/python" -m pip install -q -r "$REPO/tools/cutouts/requirements.txt"
 "$VENV/bin/python" -c "from rembg import new_session; new_session('$MODEL'); print('rembg model ready: $MODEL')"
+"$VENV/bin/python" -c "from transformers import CLIPSegForImageSegmentation, CLIPSegProcessor; m='CIDAS/clipseg-rd64-refined'; CLIPSegProcessor.from_pretrained(m); CLIPSegForImageSegmentation.from_pretrained(m); print('clipseg ready: '+m)"
 
 cp "$REPO/tools/cutouts/$JOB.plist" "$HOME/Library/LaunchAgents/"
 launchctl bootout "gui/$(id -u)/$JOB" 2>/dev/null || true

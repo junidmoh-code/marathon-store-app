@@ -146,15 +146,19 @@ class Naming(unittest.TestCase):
         self.assertIn('databaseURL: "%s"' % cutout.DATABASE_URL, src)
         self.assertIn('storageBucket: "%s"' % cutout.BUCKET, src)
 
-    def test_update_payload_has_exactly_two_keys(self):
-        p = cutout.build_update("-Nabc", "https://cut", self.URL)
+    def test_update_payload_has_exactly_three_keys(self):
+        p = cutout.build_update("-Nabc", "https://cut", self.URL, "shoe")
         self.assertEqual(p, {"products/-Nabc/photoCutoutUrl": "https://cut",
-                             "products/-Nabc/photoCutoutFor": self.URL})
-        self.assertEqual(len(p), 2)
+                             "products/-Nabc/photoCutoutFor": self.URL,
+                             "products/-Nabc/photoCutoutQuality": "shoe"})
+        self.assertEqual(len(p), 3)
+        with self.assertRaises(ValueError):
+            cutout.build_update("-Nabc", "https://cut", self.URL, "great")
 
 
-def row(pid, url="u", ts=None, cfor=None, curl=None):
-    return {"id": pid, "photoUrl": url, "photoUpdatedAt": ts, "photoCutoutFor": cfor, "photoCutoutUrl": curl}
+def row(pid, url="u", ts=None, cfor=None, curl=None, q="shoe"):
+    return {"id": pid, "photoUrl": url, "photoUpdatedAt": ts, "photoCutoutFor": cfor, "photoCutoutUrl": curl,
+            "photoCutoutQuality": q if curl else None}
 
 
 class Selection(unittest.TestCase):
@@ -167,6 +171,17 @@ class Selection(unittest.TestCase):
         todo, counts = cutout.select_candidates(rows, lambda i, u: 0)
         self.assertEqual(sorted(r["id"] for r in todo), ["b", "c"])
         self.assertEqual(counts, {"no_photo": 2, "valid": 1, "gave_up": 0, "todo": 2})
+
+    def test_v1_cutouts_without_quality_are_redone(self):
+        v1 = row("a", "u1", cfor="u1", curl="c"); v1["photoCutoutQuality"] = None
+        todo, counts = cutout.select_candidates([v1], lambda i, u: 0)
+        self.assertEqual([r["id"] for r in todo], ["a"])
+
+    def test_fallbacks_kept_unless_retry_requested(self):
+        rows = [row("s", "u1", cfor="u1", curl="c", q="shoe"), row("f", "u2", cfor="u2", curl="c", q="fallback")]
+        self.assertEqual(cutout.select_candidates(rows, lambda i, u: 0)[0], [])
+        todo, _ = cutout.select_candidates(rows, lambda i, u: 0, retry_fallbacks=True)
+        self.assertEqual([r["id"] for r in todo], ["f"])
 
     def test_newest_first(self):
         rows = [row("-Na"), row("-Nc"), row("x", ts=100), row("y", ts=300), row("-Nb"), row("z", ts="200")]
@@ -264,7 +279,7 @@ class Pass(unittest.TestCase):
         self.state = cutout.State(Path(self.tmp.name) / "s.sqlite")
         self.backend = FakeBackend({
             "-Na": {"photoUrl": "U1", "photoUpdatedAt": 10, "name": "A"},
-            "-Nb": {"photoUrl": "U2", "photoCutoutFor": "U2", "photoCutoutUrl": "C2"},  # valid
+            "-Nb": {"photoUrl": "U2", "photoCutoutFor": "U2", "photoCutoutUrl": "C2", "photoCutoutQuality": "shoe"},  # valid
             "-Nc": {"photoUrl": "BAD", "photoUpdatedAt": 20},                          # undecodable
             "-Nd": {"name": "no photo"},
         }, {"U1": jpeg_with_box(), "BAD": b"not an image"})
@@ -276,12 +291,14 @@ class Pass(unittest.TestCase):
     def run_pass(self, **kw):
         return cutout.run_pass(self.backend, fake_remover, self.state, sleep=lambda s: None, **kw)
 
-    def test_pass_writes_two_fields_and_skips_valid(self):
+    def test_pass_writes_three_fields_and_skips_valid(self):
         tally = self.run_pass()
-        self.assertEqual(tally, {"done": 1, "failed": 1})
+        # no segmenter in this pass: the whole-object cut-out, marked fallback
+        self.assertEqual(tally, {"done-fallback": 1, "failed": 1})
         self.assertEqual(len(self.backend.updates), 1)
         upd = self.backend.updates[0]
-        self.assertEqual(set(upd), {"products/-Na/photoCutoutUrl", "products/-Na/photoCutoutFor"})
+        self.assertEqual(set(upd), {"products/-Na/photoCutoutUrl", "products/-Na/photoCutoutFor", "products/-Na/photoCutoutQuality"})
+        self.assertEqual(upd["products/-Na/photoCutoutQuality"], "fallback")
         self.assertEqual(upd["products/-Na/photoCutoutFor"], "U1")
         path, data = self.backend.uploads[0]
         self.assertEqual(path, cutout.cutout_storage_path("-Na", "U1"))
@@ -319,12 +336,13 @@ class Pass(unittest.TestCase):
         written = self.backend.updates[0]  # what RTDB would now hold for -Na
         self.backend.products["-Na"].update({
             "photoCutoutUrl": written["products/-Na/photoCutoutUrl"],
-            "photoCutoutFor": written["products/-Na/photoCutoutFor"]})
+            "photoCutoutFor": written["products/-Na/photoCutoutFor"],
+            "photoCutoutQuality": written["products/-Na/photoCutoutQuality"]})
         self.assertEqual(self.run_pass(), {"failed": 1})
         self.assertEqual(self.run_pass(), {"gave-up": 1})
         self.assertEqual(self.run_pass(), {})  # 3 attempts on BAD: left alone until the photo changes
         self.backend.products["-Nc"]["photoUrl"] = "U1"
-        self.assertEqual(self.run_pass(), {"done": 1})
+        self.assertEqual(self.run_pass(), {"done-fallback": 1})
 
     def test_dry_run_writes_nothing(self):
         tally = self.run_pass(dry_run=True)
@@ -335,7 +353,7 @@ class Pass(unittest.TestCase):
 
     def test_limit_and_ids(self):
         self.assertEqual(self.run_pass(limit=1), {"failed": 1})  # -Nc is newest (photoUpdatedAt 20)
-        self.assertEqual(self.run_pass(ids=["-Na"]), {"done": 1})
+        self.assertEqual(self.run_pass(ids=["-Na"]), {"done-fallback": 1})
 
 
 try:
@@ -366,7 +384,9 @@ class RembgIntegration(unittest.TestCase):
         x0, y0, x1, y1 = core
         core_alpha = list(a.crop(core).getdata())
         self.assertGreater(sum(core_alpha) / len(core_alpha), 230, "object not opaque")
-        out = Image.open(io.BytesIO(cutout.make_cutout(path.read_bytes(), self.remover)))
+        png, quality, _, _ = cutout.make_cutout(path.read_bytes(), self.remover)
+        self.assertEqual(quality, "fallback")
+        out = Image.open(io.BytesIO(png))
         self.assertEqual(out.mode, "RGBA")
         oa = out.getchannel("A")
         self.assertEqual(oa.getpixel((0, 0)), 0)
@@ -385,6 +405,68 @@ class RembgIntegration(unittest.TestCase):
         # the object sits right of centre: everything left of x=250 is background
         left = list(raw.getchannel("A").crop((0, 0, 250, raw.height)).getdata())
         self.assertLess(sum(left) / len(left), 10)
+
+
+class ShoeStage(unittest.TestCase):
+    """shoe.py without the model: the gate, regions, the largest-piece rule and
+    the two-stage cut with a synthetic probability map."""
+
+    def setUp(self):
+        import numpy as np
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import shoe
+        self.np, self.shoe = np, shoe
+
+    def prob(self, boxes, size=(400, 300), p=0.9):
+        np = self.np
+        m = np.zeros((size[1], size[0]), np.float32)
+        for (x0, y0, x1, y1) in boxes:
+            m[y0:y1, x0:x1] = p
+        return m
+
+    def test_gate_accepts_one_confident_shoe(self):
+        regs = self.shoe.regions(self.prob([(50, 100, 300, 250)]))
+        ok, reason, stats = self.shoe.gate(regs, (400, 300))
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "shoe")
+
+    def test_gate_refuses_small_low_confidence_two_shoes_and_nothing(self):
+        g = lambda boxes, p=0.9: self.shoe.gate(self.shoe.regions(self.prob(boxes, p=p)), (400, 300))[1]
+        self.assertEqual(g([(10, 10, 60, 40)]), "small")                     # 2.5% of the frame
+        self.assertEqual(g([(50, 100, 300, 250)], p=0.55), "low-confidence")  # peak < 0.60
+        self.assertEqual(g([(10, 50, 190, 250), (210, 50, 390, 250)]), "two-shoes")
+        self.assertEqual(g([]), "no-shoe")
+
+    def test_largest_piece_drops_detached_fragments(self):
+        np = self.np
+        a = np.zeros((100, 100), np.float32)
+        a[10:60, 10:90] = 255     # the shoe
+        a[80:95, 40:60] = 255     # a riser label under it, detached
+        out = self.shoe.largest_piece(a)
+        self.assertEqual(out[30, 50], 255)
+        self.assertEqual(out[88, 50], 0)
+
+    def test_isolate_shoe_keeps_only_the_shoe(self):
+        np = self.np
+        img = Image.new("RGB", (400, 300), (200, 200, 200))
+        ImageDraw.Draw(img).rectangle((60, 120, 300, 230), fill=(20, 20, 20))   # the shoe
+        ImageDraw.Draw(img).rectangle((150, 10, 260, 60), fill=(220, 30, 30))   # the box above it
+        prob = self.prob([(55, 115, 305, 235)])
+        rgba, reason, _ = self.shoe.isolate_shoe(img, prob, fake_remover)
+        self.assertEqual(reason, "shoe")
+        a = np.asarray(rgba.getchannel("A"))
+        box = self.shoe.crop_box((55, 115, 305, 235), img.size)
+        # the crop never reaches the box on the wall
+        self.assertGreater(box[1], 60)
+        self.assertGreater(a.mean(), 100)
+
+    def test_make_cutout_falls_back_when_the_gate_refuses(self):
+        tiny = lambda img: self.prob([(10, 10, 40, 30)], size=img.size)
+        png, quality, reason, _ = cutout.make_cutout(jpeg_with_box(), fake_remover, segmenter=tiny)
+        self.assertEqual((quality, reason), ("fallback", "small"))
+        good = lambda img: self.prob([(45, 15, 105, 75)], size=img.size)
+        png, quality, reason, _ = cutout.make_cutout(jpeg_with_box(), fake_remover, segmenter=good)
+        self.assertEqual((quality, reason), ("shoe", "shoe"))
 
 
 if __name__ == "__main__":

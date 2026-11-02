@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""Product cut-outs: a background-removed PNG per product for the glass podium.
+"""Product cut-outs: the SNEAKER ALONE, as a PNG for the glass podium.
 
 For every product with a photoUrl and no valid cut-out, download the full-res
-photo, remove the background with rembg (local, CPU), trim to the alpha
-bounding box plus 6% transparent padding, upload it to Storage at
-products/{id}/cutout-<hash>.png and write ADDITIVELY two fields:
+photo and cut it in two stages (shoe.py):
 
-    /products/{id}/photoCutoutUrl  the public download URL of the PNG
-    /products/{id}/photoCutoutFor  the photoUrl it was cut from
+  1. CLIPSeg, prompted "a sneaker" / "a shoe", finds the shoe and masks out
+     everything around it — the box on the wall, the riser, the shelf, a hand.
+  2. rembg cleans the edge on that isolated crop.
 
-A cut-out is valid only while photoCutoutFor == the current photoUrl, so the
+A quality gate (shoe.gate) decides whether stage 1 can be trusted; if not, the
+whole-object rembg cut-out is written instead, marked "fallback", and the
+fallback is logged with its pid so a later pass (--retry-fallbacks) can redo it.
+Then trim to the alpha bounding box plus 6% transparent padding, upload to
+Storage at products/{id}/cutout-<hash>.png and write ADDITIVELY three fields:
+
+    /products/{id}/photoCutoutUrl      the public download URL of the PNG
+    /products/{id}/photoCutoutFor      the photoUrl it was cut from
+    /products/{id}/photoCutoutQuality  "shoe" | "fallback"
+
+A cut-out is valid only while photoCutoutFor == the current photoUrl AND it
+carries a quality (v1 whole-object cut-outs had none and are redone), so the
 app ignores a stale one the moment the photo changes, and the next run redoes it.
 
 Never reads /products whole (shallow key list + per-field leaf reads), never
@@ -50,7 +60,8 @@ MAX_ATTEMPTS = 3             # per (id, photoUrl); then give up until the photo 
 DEFAULT_INTERVAL_S = 1.5
 DEFAULT_MODEL = "isnet-general-use"
 DEFAULT_MAX_SIDE = 1600      # longest side of the uploaded PNG; 0 = keep full size
-FIELDS = ("photoUrl", "photoUpdatedAt", "photoCutoutFor", "photoCutoutUrl")
+FIELDS = ("photoUrl", "photoUpdatedAt", "photoCutoutFor", "photoCutoutUrl", "photoCutoutQuality")
+QUALITIES = ("shoe", "fallback")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HOME_DIR = Path(os.environ.get("CUTOUTS_HOME", str(Path.home() / ".marathon-cutouts")))
@@ -79,11 +90,14 @@ def download_url(bucket, storage_path, token):
         bucket, quote(storage_path, safe=""), token)
 
 
-def build_update(product_id, cutout_url, photo_url):
-    """Root-relative multi-path update: EXACTLY these two child paths."""
+def build_update(product_id, cutout_url, photo_url, quality):
+    """Root-relative multi-path update: EXACTLY these three child paths."""
+    if quality not in QUALITIES:
+        raise ValueError("quality must be one of %r" % (QUALITIES,))
     return {
         "products/%s/photoCutoutUrl" % product_id: cutout_url,
         "products/%s/photoCutoutFor" % product_id: photo_url,
+        "products/%s/photoCutoutQuality" % product_id: quality,
     }
 
 
@@ -144,16 +158,33 @@ class Remover:
         return out.convert("RGBA")
 
 
-def make_cutout(photo_bytes, remover, max_side=DEFAULT_MAX_SIDE):
+def make_cutout(photo_bytes, remover, max_side=DEFAULT_MAX_SIDE, segmenter=None):
+    """Returns (png_bytes, quality, reason, stats). With a segmenter the shoe
+    is isolated first (shoe.py); without one, or when its gate refuses, the
+    whole-object rembg cut-out is the "fallback"."""
     img = load_photo(photo_bytes)
-    cut = trim_and_pad(remover(img))
-    return png_bytes(limit_size(cut, max_side))
+    quality, reason, stats, cut = "fallback", "no-segmenter", {}, None
+    if segmenter is not None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import shoe
+        rgba, reason, stats = shoe.isolate_shoe(img, segmenter(img), remover)
+        if rgba is not None:
+            try:
+                cut, quality = trim_and_pad(rgba), "shoe"
+            except EmptyCutout:
+                reason = "empty-shoe"
+    if cut is None:
+        cut = trim_and_pad(remover(img))
+    return png_bytes(limit_size(cut, max_side)), quality, reason, stats
 
 
 # ---------------------------------------------------------- pure: selection
 
-def is_valid_cutout(fields):
+def is_valid_cutout(fields, retry_fallbacks=False):
     url = fields.get("photoUrl")
+    q = fields.get("photoCutoutQuality")
+    if q not in QUALITIES or (retry_fallbacks and q == "fallback"):
+        return False
     return bool(url and fields.get("photoCutoutUrl") and fields.get("photoCutoutFor") == url)
 
 
@@ -173,7 +204,7 @@ def order_newest_first(rows):
     return stamped + rest
 
 
-def select_candidates(rows, attempts_for, max_attempts=MAX_ATTEMPTS):
+def select_candidates(rows, attempts_for, max_attempts=MAX_ATTEMPTS, retry_fallbacks=False):
     """rows: dicts with id + FIELDS. attempts_for(id, photoUrl) -> int.
     Returns (todo, counts) — todo is newest first."""
     counts = {"no_photo": 0, "valid": 0, "gave_up": 0, "todo": 0}
@@ -182,7 +213,7 @@ def select_candidates(rows, attempts_for, max_attempts=MAX_ATTEMPTS):
         url = r.get("photoUrl")
         if not isinstance(url, str) or not url:
             counts["no_photo"] += 1
-        elif is_valid_cutout(r):
+        elif is_valid_cutout(r, retry_fallbacks):
             counts["valid"] += 1
         elif attempts_for(r["id"], url) >= max_attempts:
             counts["gave_up"] += 1
@@ -342,6 +373,7 @@ def read_rows(backend, ids, workers=8):
         row["photoCutoutFor"] = backend.read_field(pid, "photoCutoutFor")
         if row["photoCutoutFor"] == row["photoUrl"]:
             row["photoCutoutUrl"] = backend.read_field(pid, "photoCutoutUrl")
+            row["photoCutoutQuality"] = backend.read_field(pid, "photoCutoutQuality")
         return row
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(one, ids))
@@ -349,14 +381,14 @@ def read_rows(backend, ids, workers=8):
 
 # ---------------------------------------------------------- the pass
 
-def process_one(backend, remover, state, row, max_side=DEFAULT_MAX_SIDE, dry_run=False):
+def process_one(backend, remover, state, row, max_side=DEFAULT_MAX_SIDE, dry_run=False, segmenter=None):
     """Returns (outcome, detail). Never raises."""
     pid, photo_url = row["id"], row["photoUrl"]
     path = cutout_storage_path(pid, photo_url)
     if dry_run:
         return "would-cut", path
     try:
-        cut = make_cutout(backend.download(photo_url), remover, max_side)
+        cut, quality, reason, stats = make_cutout(backend.download(photo_url), remover, max_side, segmenter)
         url = backend.upload_png(path, cut)
         # Re-read the photo just before writing: the product may have been
         # deleted (a root-level update would recreate it as a two-field stub)
@@ -364,9 +396,13 @@ def process_one(backend, remover, state, row, max_side=DEFAULT_MAX_SIDE, dry_run
         if backend.read_field(pid, "photoUrl") != photo_url:
             state.mark_failed(pid, photo_url, "photo changed or product removed before write")
             return "skipped", "photoUrl changed or product removed mid-pass"
-        backend.update(build_update(pid, url, photo_url))
+        backend.update(build_update(pid, url, photo_url, quality))
         state.mark_done(pid, photo_url, url)
-        return "done", "%s %dKB" % (path, len(cut) // 1024)
+        if quality == "fallback":
+            # One greppable line per fallback, so a later pass can find and
+            # retry them (--retry-fallbacks redoes every "fallback" product).
+            log.info("FALLBACK %s reason=%s %s", pid, reason, json.dumps(stats, sort_keys=True))
+        return "done-" + quality, "%s %dKB" % (path, len(cut) // 1024)
     except Exception as e:  # noqa: BLE001 — one bad photo must not stop the pass
         n = state.mark_failed(pid, photo_url, "%s: %s" % (type(e).__name__, e))
         return ("gave-up" if n >= MAX_ATTEMPTS else "failed"), "attempt %d: %s: %s" % (
@@ -374,14 +410,15 @@ def process_one(backend, remover, state, row, max_side=DEFAULT_MAX_SIDE, dry_run
 
 
 def run_pass(backend, remover, state, ids=None, limit=None, dry_run=False,
-             interval=DEFAULT_INTERVAL_S, max_side=DEFAULT_MAX_SIDE, sleep=time.sleep):
+             interval=DEFAULT_INTERVAL_S, max_side=DEFAULT_MAX_SIDE, sleep=time.sleep,
+             segmenter=None, retry_fallbacks=False):
     t0 = time.time()
     if ids is None:
         ids = backend.list_product_ids()
     rows = read_rows(backend, ids)
     if not dry_run:
         state.record_seen(rows)
-    todo, counts = select_candidates(rows, state.attempts)
+    todo, counts = select_candidates(rows, state.attempts, retry_fallbacks=retry_fallbacks)
     log.info("- scan products=%d valid=%d no_photo=%d gave_up=%d todo=%d %dms",
              len(rows), counts["valid"], counts["no_photo"], counts["gave_up"],
              counts["todo"], (time.time() - t0) * 1000)
@@ -392,7 +429,7 @@ def run_pass(backend, remover, state, ids=None, limit=None, dry_run=False,
         if i and not dry_run:
             sleep(interval)
         t = time.time()
-        outcome, detail = process_one(backend, remover, state, row, max_side, dry_run)
+        outcome, detail = process_one(backend, remover, state, row, max_side, dry_run, segmenter)
         tally[outcome] = tally.get(outcome, 0) + 1
         log.info("%s %s %dms %s", row["id"], outcome, (time.time() - t) * 1000, detail)
     log.info("- pass %s %dms", json.dumps(tally, sort_keys=True), (time.time() - t0) * 1000)
@@ -429,6 +466,8 @@ def main(argv=None):
                    help="seconds between products (on top of processing time)")
     p.add_argument("--model", default=os.environ.get("CUTOUTS_MODEL", DEFAULT_MODEL))
     p.add_argument("--max-side", type=int, default=DEFAULT_MAX_SIDE)
+    p.add_argument("--no-shoe", action="store_true", help="skip stage 1 (whole-object rembg only, all 'fallback')")
+    p.add_argument("--retry-fallbacks", action="store_true", help="redo products whose cut-out is 'fallback'")
     p.add_argument("--state", default=str(HOME_DIR / "state.sqlite"))
     p.add_argument("--log-file", default=str(REPO_ROOT / "logs" / "cutouts.log"))
     a = p.parse_args(argv)
@@ -448,8 +487,14 @@ def main(argv=None):
         return 0
     try:
         ids = [s.strip() for s in a.ids.split(",") if s.strip()] if a.ids else None
+        segmenter = None
+        if not a.no_shoe and not a.dry_run:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import shoe
+            segmenter = shoe.ClipSeg()
         run_pass(FirebaseBackend(), Remover(a.model), state, ids=ids, limit=a.limit,
-                 dry_run=a.dry_run, interval=a.interval, max_side=a.max_side)
+                 dry_run=a.dry_run, interval=a.interval, max_side=a.max_side,
+                 segmenter=segmenter, retry_fallbacks=a.retry_fallbacks)
     finally:
         lock.release()
     return 0
