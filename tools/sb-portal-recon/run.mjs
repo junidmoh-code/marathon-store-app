@@ -27,7 +27,7 @@
 //   node tools/sb-portal-recon/run.mjs --dry-run  # read the portal, record nothing
 //   node tools/sb-portal-recon/run.mjs --days 2026-11-03,2026-11-04
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync, chmodSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync, chmodSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,7 @@ import {
   REPORT_URL, PORTAL_ORIGIN, METABASE_HOST, KEYCHAIN_SERVICE, EXIT,
   daysToPull, dateFilter, embedTokenFromSrc, embedClaims, readDashboard, tidsFromValues, cardRows,
   parseStoreItems, classifyPage, shouldAlert, loginAlert, summaryLine, sastYmd,
+  projectColumns, shouldAlertFailure, failureAlert,
 } from "./core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -55,6 +56,9 @@ const FIREBASE_WEB_API_KEY = "AIzaSyAA3r3arlTQvouidDWY0OE-Y2t5ZUF8kCo";
 const CALLABLE_URL = "https://europe-west1-marathon-club.cloudfunctions.net/cardBatchCapture";
 const DATABASE_URL = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
 const PAGE_TIMEOUT_MS = 60000;
+// A run that hangs (a browser that never answers) must not hold the lock for
+// ever: the whole run is bounded, and a lock older than this is stale.
+const RUN_LIMIT_MS = 15 * 60000;
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -81,6 +85,13 @@ function takeLock() {
       const pid = Number(readFileSync(LOCK_FILE, "utf8"));
       let alive = false;
       try { if (pid) { process.kill(pid, 0); alive = true; } } catch { alive = false; }
+      let ageMs = 0;
+      try { ageMs = Date.now() - statSync(LOCK_FILE).mtimeMs; } catch { /* gone */ }
+      if (alive && ageMs > RUN_LIMIT_MS + 60000) {
+        log(`the run holding the lock (pid ${pid}) is ${Math.round(ageMs / 60000)} min old — stopping it`);
+        try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+        alive = false;
+      }
       if (alive) return false;
       try { unlinkSync(LOCK_FILE); } catch { /* raced */ }
     }
@@ -307,13 +318,25 @@ async function main() {
     const sources = {}; // day → [source]
     const raw = { at: new Date(nowMs).toISOString(), days, stores: [] };
     if (!stores.length) stores = [{ name: null, merchantNo: null, current: true }];
+    // ONE STORE'S FAILURE NEVER STOPS THE OTHERS: what was read is recorded,
+    // and the failure is said (Sonnet architect review, #837). A store that
+    // could not be read sends nothing — its tills stay "awaiting", never zero.
+    const storeErrors = [];
     for (const store of stores) {
-      const token = store.current
-        ? embedTokenFromSrc((await pageFacts(page)).embedSrc)
-        : await embedFor(page, store, stores.map((x) => x.name).filter(Boolean));
-      if (!token) throw new Error("no Metabase link on the report");
+      let token, got;
+      try {
+        token = store.current
+          ? embedTokenFromSrc((await pageFacts(page)).embedSrc)
+          : await embedFor(page, store, stores.map((x) => x.name).filter(Boolean));
+        if (!token) throw new Error("no Metabase link on the report");
+        got = await readStore(token, days);
+      } catch (err) {
+        storeErrors.push(`${store.name || "selected store"}: ${err.message.split("\n")[0]}`);
+        log(`✗ ${store.name || "selected store"} could not be read: ${err.message.split("\n")[0]}`);
+        continue;
+      }
       const claims = embedClaims(token);
-      const got = await readStore(token, days);
+      for (const d of days) got.byDay[d] = projectColumns(got.byDay[d]);
       log(`${store.name || "(selected store)"} ${store.merchantNo || ""}: terminals ${got.tids.join(", ") || "none"}; ${days.map((d) => `${d} ${got.byDay[d].rows.length} rows`).join(", ")}`);
       raw.stores.push({ ...store, businessId: claims?.businessId ?? null, tids: got.tids, byDay: got.byDay });
       for (const d of days) {
@@ -324,18 +347,22 @@ async function main() {
     const rawFile = join(RUNS_DIR, `${new Date(nowMs).toISOString().replace(/[:.]/g, "-")}.json`);
     writeFileSync(rawFile, JSON.stringify(raw), { mode: 0o600 });
     log(`raw answer kept: ${rawFile}`);
-    if (DRY) { log("dry run — nothing recorded"); return EXIT.OK; }
+    if (DRY) { log("dry run — nothing recorded"); return storeErrors.length ? EXIT.FAILED : EXIT.OK; }
+    if (!raw.stores.length) throw new Error(`no store could be read (${storeErrors.join("; ")})`);
 
     const tok = await idToken();
     const results = [];
     for (const d of days) {
+      if (!sources[d]) continue;
       const out = await portalDay(tok, { dayYmd: d, sources: sources[d] });
       results.push({ dayYmd: d, ...out });
     }
     log(`recorded: ${summaryLine(results)}`);
     writeFileSync(rawFile.replace(/\.json$/, ".result.json"), JSON.stringify(results, null, 2), { mode: 0o600 });
     const bad = results.filter((r) => !r.ok || Object.values(r.results || {}).some((v) => v.outcome === "error" || v.outcome === "refused"));
-    if (bad.length) { log(`✗ ${bad.length} day(s) not fully recorded — the catch-up / next run tries again`); return EXIT.FAILED; }
+    if (bad.length || storeErrors.length) {
+      throw new Error(`${bad.length} day(s) not fully recorded${storeErrors.length ? `; ${storeErrors.join("; ")}` : ""} — the catch-up / next run tries again`);
+    }
     writeState({ lastOkDay: today, lastOkAt: Date.now() });
     return EXIT.OK;
   } catch (err) {
@@ -363,7 +390,19 @@ async function signedOut(kind) {
   return kind === "otp" ? EXIT.OTP_REQUIRED : EXIT.NEEDS_LOGIN;
 }
 
-main().then((code) => process.exit(code ?? 0)).catch((err) => {
+// The whole run is bounded: a hung browser cannot hold the lock for ever.
+const watchdog = setTimeout(() => { log(`✗ the run passed ${RUN_LIMIT_MS / 60000} minutes — stopping`); process.exit(EXIT.FAILED); }, RUN_LIMIT_MS);
+watchdog.unref();
+
+main().then((code) => process.exit(code ?? 0)).catch(async (err) => {
   log(`✗ ${err && err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : err}`);
+  // The 18:20 catch-up is the last try of the evening: if it fails too, Junid
+  // is told once (not again until a pull works).
+  // Both fires run with --catchup; only the 18:20 one (or later) is the last try.
+  const sastMin = (() => { const d = new Date(Date.now() + 2 * 3600000); return d.getUTCHours() * 60 + d.getUTCMinutes(); })();
+  if (MODE === "catchup" && !DRY && sastMin >= 18 * 60 + 15 && shouldAlertFailure(readState())) {
+    try { if (await emailJunid(failureAlert(err && err.message))) writeState({ failAlertAt: Date.now() }); }
+    catch (e) { log(`⚠ the failure email failed: ${e.message}`); }
+  }
   process.exit(EXIT.FAILED);
 });

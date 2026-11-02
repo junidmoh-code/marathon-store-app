@@ -3120,6 +3120,7 @@ exports.handleReceive = handleReceive;
 exports.matchBatch = matchBatch;
 exports.reconTerminalFor = reconTerminalFor;
 exports.logStaffSlip = logStaffSlip;
+exports.propagateSlips = propagateSlips;
 exports.handleSlip = handleSlip;
 exports.handleSlipTills = handleSlipTills;
 exports.carriedSlipsFor = carriedSlipsFor;

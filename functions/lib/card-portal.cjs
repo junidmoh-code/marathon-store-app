@@ -102,6 +102,13 @@ function txnKind(raw) {
 }
 
 const isSuccess = (raw) => /^(success|successful|approved)$/i.test(String(raw || "").trim());
+// The statuses that are NOT money and are known to be so. Anything else — a
+// status renamed tomorrow ("Completed") — refuses the whole source: silently
+// skipping it would record every portal till as R0.00 and call it SHORT
+// (Sonnet architect review, #837).
+const isKnownNotMoney = (raw) => /^(failed|failure|declined|cancelled|canceled|reversed|voided|void|aborted|timeout|timed ?out|error|pending|in ?progress|incomplete|open)$/i.test(String(raw || "").trim());
+// Types that are known and are not a purchase or a refund.
+const isKnownOtherType = (raw) => /^(void|reversal|balance ?enquiry|pre-?auth(orisation|orization)?)$/i.test(String(raw || "").trim());
 
 /** A decimal rand amount (930, "930,00", "R 1 000,00", 12.5) → integer cents, or null. */
 function randsToCents(raw) {
@@ -133,11 +140,18 @@ function parsePortalRows({ cols, rows }) {
   const txns = [];
   const skipped = { status: 0, type: 0, unreadable: 0 };
   const seen = new Set();
+  const unknown = [];
   rows.forEach((r, i) => {
     if (!Array.isArray(r)) { skipped.unreadable++; return; }
-    if (!isSuccess(r[ix.status])) { skipped.status++; return; }
+    if (!isSuccess(r[ix.status])) {
+      if (!isKnownNotMoney(r[ix.status])) { unknown.push(`status "${String(r[ix.status]).slice(0, 30)}"`); return; }
+      skipped.status++; return;
+    }
     const kind = txnKind(r[ix.type]);
-    if (!kind) { skipped.type++; return; }
+    if (!kind) {
+      if (!isKnownOtherType(r[ix.type])) { unknown.push(`type "${String(r[ix.type]).slice(0, 30)}"`); return; }
+      skipped.type++; return;
+    }
     const at = Date.parse(String(r[ix.at] || ""));
     const cents = randsToCents(r[ix.amount]);
     if (!Number.isFinite(at) || !Number.isInteger(cents) || Math.abs(cents) > MAX_CENTS || cents === 0) { skipped.unreadable++; return; }
@@ -159,6 +173,9 @@ function parsePortalRows({ cols, rows }) {
       authCode: ix.authCode >= 0 && r[ix.authCode] != null ? String(r[ix.authCode]).slice(0, 16) : null,
     });
   });
+  if (unknown.length) {
+    return { ok: false, reason: `The portal listed a transaction this does not recognise (${[...new Set(unknown)].slice(0, 3).join(", ")}) — nothing was recorded rather than guess what it is.` };
+  }
   txns.sort((a, b) => a.at - b.at || String(a.id).localeCompare(String(b.id)));
   return { ok: true, txns, skipped };
 }
@@ -274,13 +291,21 @@ function samePortalFigures(rec, extraction) {
  */
 function planPortalWrite({ dayRecords, lastBatchNo, extraction }) {
   const recs = (dayRecords || []).filter((r) => r && r.record && Number.isFinite(Number(r.record.batchNo)));
-  // The record IN FORCE: the highest batch that day, its highest revision.
-  const inForce = recs.sort((a, b) => Number(a.record.batchNo) - Number(b.record.batchNo)
+  const latestOf = (list) => list.slice().sort((a, b) => Number(a.record.batchNo) - Number(b.record.batchNo)
     || (Number(a.record.revision) || 1) - (Number(b.record.revision) || 1)).at(-1) || null;
-  if (inForce && isPortalRecord(inForce.record)) {
-    if (samePortalFigures(inForce.record, extraction)) return { action: "noop", key: inForce.key };
-    return { action: "revise", batchNo: Number(inForce.record.batchNo), supersedes: inForce.key, replacing: "portal" };
+  // A PORTAL RECORD ALREADY ON FILE FOR THE DAY decides, whatever other batch
+  // numbers the day holds (Sonnet architect review, #837): its chain is the day.
+  const portalBatch = recs.find((r) => isPortalRecord(r.record));
+  if (portalBatch) {
+    const chain = latestOf(recs.filter((r) => Number(r.record.batchNo) === Number(portalBatch.record.batchNo)));
+    // Junid corrected the portal's figure ("Correct these figures"): his
+    // correction stands — a later pull never writes over it.
+    if (!isPortalRecord(chain.record)) return { action: "noop", key: chain.key, correctionStands: true };
+    if (samePortalFigures(chain.record, extraction)) return { action: "noop", key: chain.key };
+    return { action: "revise", batchNo: Number(chain.record.batchNo), supersedes: chain.key, replacing: "portal" };
   }
+  // No portal record yet: another record in force that day is replaced.
+  const inForce = latestOf(recs);
   if (inForce) return { action: "revise", batchNo: Number(inForce.record.batchNo), supersedes: inForce.key, replacing: "other" };
   const next = Number.isInteger(lastBatchNo) && lastBatchNo >= 0 ? lastBatchNo + 1 : 1;
   return { action: "new", batchNo: next };

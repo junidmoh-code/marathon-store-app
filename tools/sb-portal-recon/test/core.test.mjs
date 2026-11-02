@@ -68,3 +68,19 @@ test("days: the SAST calendar day, today and two before, never before 3 Nov 2026
   assert.deepEqual(daysToPull(SAST("2026-11-06T18:00:00")), ["2026-11-04", "2026-11-05", "2026-11-06"]);
   assert.equal(dateFilter("2026-11-03"), "2026-11-03~2026-11-03");
 });
+
+test("only the columns the record reads leave the machine — a card-number column never does", async () => {
+  const { projectColumns } = await import("../core.mjs");
+  const cols = ["DateCreated: Minute", "ID", "Masked PAN", "TransactionType", "TransactionStatus", "TerminalId", "Transaction Amount", "User"];
+  const out = projectColumns({ cols, rows: [["2026-11-03T10:00:00+02:00", "x", "4111********1111", "Purchase", "Success", "0000HP1X", 930, "Guest User"]] });
+  assert.deepEqual(out.cols, ["DateCreated: Minute", "ID", "TransactionType", "TransactionStatus", "TerminalId", "Transaction Amount"]);
+  assert.equal(JSON.stringify(out.rows).includes("4111"), false);
+});
+
+test("the failure email goes once per outage", async () => {
+  const { shouldAlertFailure, failureAlert } = await import("../core.mjs");
+  assert.equal(shouldAlertFailure({}), true);
+  assert.equal(shouldAlertFailure({ failAlertAt: 5 }), false);
+  assert.equal(shouldAlertFailure({ failAlertAt: 5, lastOkAt: 9 }), true);
+  assert.equal(failureAlert("x").to, "gunidmoh@gmail.com");
+});

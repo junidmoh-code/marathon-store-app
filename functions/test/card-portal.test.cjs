@@ -261,3 +261,46 @@ test("Junid's manual entry is refused for a day the portal already recorded (cor
   assert.equal(out.ok, false);
   assert.match(out.reason, /SimplyBLU portal is already the record/);
 });
+
+// ── review fixes (Sonnet architect, #837) ────────────────────────────────────
+
+test("a status or type the parser does not know refuses the source — never a silent R0.00", () => {
+  const p = P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status: "Completed" })] });
+  assert.equal(p.ok, false);
+  assert.match(p.reason, /does not recognise/);
+  assert.equal(P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { type: "Cashback" })] }).ok, false);
+  assert.equal(P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status: "Declined" })] }).ok, true);
+});
+
+test("Junid's correction of a portal day stands — a later pull does not write over it", async () => {
+  const db = world();
+  await pull(db, [row("2026-11-03T10:01:00", HP1X, 930)]);
+  const fix = await handleManualEntry(db, { auth: JUNID, data: { tid: HP1X, dayYmd: DAY, total: "1000.00", replaces: "561", reason: "wrong" } }, { now: () => NOW + 3600000 });
+  assert.equal(fix.ok, true, fix.reason);
+  const again = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930), row("2026-11-03T11:00:00", HP1X, 70)], { now: NOW + 86400000 });
+  assert.equal(again.results[HP1X].outcome, "unchanged");
+  assert.equal(again.results[HP1X].note, "Junid's correction stands");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/561-r3`), null);
+});
+
+test("TODAY with no transaction on the merchant at all: awaiting, not a zero day; the day after, it is recorded", async () => {
+  const db = world();
+  const today = await pull(db, [], { now: NOW });
+  assert.equal(today.results[HP1X].outcome, "awaiting");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/561`), null);
+  const next = await pull(db, [], { now: NOW + 86400000 });
+  assert.equal(next.results[HP1X].outcome, "recorded");
+});
+
+test("a slip held after the record was read is swept onto it by the next (unchanged) pull", async () => {
+  const db = world({ extra: { network: { trophy: { tills: { "till-2": { label: "Till 2" } } } } } });
+  const rows = [row("2026-11-03T15:00:00", Z4M6, 500)];
+  const first = await pull(db, rows);
+  const key = first.results[Z4M6].key;
+  // A slip that landed in "held" in the gap (simulated by writing it there).
+  await db.ref(`card_batch_overrides/portal/held/trophy/${Z4M6}/${DAY}/s1`).set({ slipId: "s1", cents: 50000, photos: ["p"], at: NOW, held: true });
+  const again = await pull(db, rows, { now: NOW + 60000 });
+  assert.equal(again.results[Z4M6].outcome, "unchanged");
+  assert.equal((await node(db, `card_batches/trophy/${Z4M6}/${key}/supportingSlips/s1`)).cents, 50000);
+  assert.equal(await node(db, `card_batch_overrides/portal/held/trophy/${Z4M6}/${DAY}/s1/takenInto`), key);
+});

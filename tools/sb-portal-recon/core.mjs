@@ -94,6 +94,40 @@ export function tidsFromValues(v) {
   return vals.map((x) => (Array.isArray(x) ? x[0] : x)).filter((t) => typeof t === "string" && t.trim()).map((t) => t.trim());
 }
 
+/**
+ * ONLY THE COLUMNS THE RECORD READS leave this machine — kept on disk or sent
+ * to the callable. The portal's list has no card number today; if it ever
+ * grows one, it is dropped here, not stored (Sonnet architect review, #837).
+ */
+export function projectColumns({ cols, rows }) {
+  const ix = portalLib.columnIndex(cols);
+  const keep = Object.values(ix).filter((i) => i >= 0);
+  const uniq = [...new Set(keep)].sort((a, b) => a - b);
+  return { cols: uniq.map((i) => cols[i]), rows: rows.map((r) => uniq.map((i) => (Array.isArray(r) ? r[i] : null))) };
+}
+
+/** Should the "pull failed" email go now? Once per outage, like the login one. */
+export function shouldAlertFailure(state) {
+  if (!state || !Number.isFinite(state.failAlertAt)) return true;
+  return Number.isFinite(state.lastOkAt) && state.lastOkAt > state.failAlertAt;
+}
+
+export function failureAlert(reason) {
+  return {
+    to: OWNER_EMAIL,
+    subject: "SimplyBLU portal pull failed on the Mac mini",
+    text: [
+      "Tonight's SimplyBLU pull (18:00 and the 18:20 catch-up) did not finish:",
+      `  ${String(reason || "unknown").slice(0, 500)}`,
+      "",
+      "The Standard Bank tills show \"Awaiting portal data\" in Card Recon until a pull works — nothing is marked clean or short meanwhile. Tomorrow's 18:00 pull re-reads the last three days by itself.",
+      "Log: ~/marathon-store-app/logs/sb-portal-recon.log on the Mac mini.",
+      "",
+      "Sent once; not repeated until a pull has worked again.",
+    ].join("\n"),
+  };
+}
+
 /** The card's answer → { cols, rows } in the shape the callable takes, or an error sentence. */
 export function cardRows(json) {
   if (!json || typeof json !== "object") return { error: "The portal's report answered with nothing readable." };

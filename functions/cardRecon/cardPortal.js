@@ -23,10 +23,10 @@ const admin = require("firebase-admin");
 const { CARD_TERMINALS_PATH, CARD_BATCHES_PATH, PHOTO_STORAGE_PREFIX, resolveBatchWrite, buildBatchRecord } = require("../lib/card-recon.cjs");
 const { computeExpectedCard } = require("../lib/card-expected.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
-const { sastDayStartMs, isDayYmd } = require("../lib/card-unread.cjs");
+const { sastDayStartMs, sastDayYmd, isDayYmd } = require("../lib/card-unread.cjs");
 const { slipTradingDay } = require("../lib/card-staff-slip-log.cjs");
 const {
-  SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, shouldAttach, buildSupportingSlip, carriedSlips,
+  SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, buildSupportingSlip, carriedSlips,
 } = require("../lib/card-supporting-slips.cjs");
 const P = require("../lib/card-portal.cjs");
 
@@ -53,8 +53,10 @@ const heldDayPath = (storeId, tid, dayYmd) => {
 async function keepPortalSlip(db, request, { terminal, picked, photos, cents = null, nowMs, bucket: bucketDep = null }) {
   const dayYmd = slipTradingDay(nowMs);
   const tidPath = `${CARD_BATCHES_PATH}/${terminal.storeId}/${picked}`;
-  const last = await core().readLastBatchFor(db, terminal.storeId, picked);
-  const onRecord = shouldAttach(last, nowMs) && P.isPortalRecord(last.record);
+  // THE DAY'S PORTAL RECORD, found by its own day — not "the highest batch",
+  // which a day recorded late would make the wrong one (Sonnet review, #837).
+  const last = await portalRecordOn(db, tidPath, dayYmd);
+  const onRecord = !!last;
   const holdPath = heldDayPath(terminal.storeId, picked, dayYmd);
   const slipId = db.ref(holdPath).push().key;
   const bucket = bucketDep || admin.storage().bucket(STORAGE_BUCKET);
@@ -97,12 +99,57 @@ async function keepPortalSlip(db, request, { terminal, picked, photos, cents = n
     await cleanup();
     throw err;
   }
+  if (onRecord) await core().propagateSlips(db, tidPath, last.key);
+  else {
+    // The portal record may have been written while this slip was being held:
+    // if it is there now, move the held slips onto it.
+    const now = await portalRecordOn(db, tidPath, dayYmd);
+    if (now) await sweepHeld(db, { storeId: terminal.storeId, tid: picked, dayYmd, key: now.key });
+  }
   console.log(`cardBatchCapture: portal till slip ${onRecord ? `attached to ${last.key}` : "held for the portal record"} picked=${picked} slip=${slipId} by=${request.auth.uid}`);
   const receipt = await core().logStaffSlip(db, request, {
     kind: onRecord ? "supporting" : "held", terminal, picked, nowMs, photos: paths,
     batchKey: onRecord ? last.key : null, slipId,
   });
   return { ok: true, received: true, receipt };
+}
+
+/** The day's portal record in force (latest revision of its batch), or null. */
+async function portalRecordOn(db, tidPath, dayYmd) {
+  const win = P.portalDayWindow(dayYmd);
+  if (!win) return null;
+  const v = (await db.ref(tidPath).orderByChild("slip/closedAt").startAt(win.openedAt).endAt(win.closedAt).once("value")).val() || {};
+  const recs = Object.entries(v).filter(([, r]) => r && typeof r === "object").map(([key, record]) => ({ key, record }));
+  const p = recs.find((r) => P.isPortalRecord(r.record));
+  if (!p) return null;
+  const chain = recs.filter((r) => Number(r.record.batchNo) === Number(p.record.batchNo))
+    .sort((a, b) => (Number(a.record.revision) || 1) - (Number(b.record.revision) || 1));
+  return chain.at(-1);
+}
+
+/** Held slips for the day not yet on a record → onto `key` (one transaction), marked takenInto. */
+async function sweepHeld(db, { storeId, tid, dayYmd, key }) {
+  const hp = heldDayPath(storeId, tid, dayYmd);
+  const held = (await db.ref(hp).once("value")).val() || {};
+  const todo = Object.entries(held).filter(([, s]) => s && typeof s === "object" && !s.takenInto);
+  if (!todo.length) return 0;
+  const tidPath = `${CARD_BATCHES_PATH}/${storeId}/${tid}`;
+  await db.ref(`${tidPath}/${key}`).transaction((cur) => {
+    if (cur === null) return null;
+    const have = { ...(cur[SUPPORTING_FIELD] || {}) };
+    let changed = false;
+    for (const [id, s] of todo) {
+      if (have[id]) continue;
+      const { held: _h, takenInto: _t, ...rest } = s;
+      have[id] = rest; changed = true;
+    }
+    return changed ? clean({ ...cur, [SUPPORTING_FIELD]: have }) : undefined;
+  });
+  const marks = {};
+  for (const [id] of todo) marks[`${hp}/${id}/takenInto`] = key;
+  await db.ref().update(marks);
+  await core().propagateSlips(db, tidPath, key);
+  return todo.length;
 }
 
 // ─── ONE TERMINAL, ONE DAY ───────────────────────────────────────────────────
@@ -116,7 +163,10 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     .map(([key, record]) => ({ key, record: { ...record, batchKey: record.batchKey || key } }));
   const last = await core().readLastBatchFor(db, storeId, tid);
   const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction });
-  if (plan.action === "noop") return { outcome: "unchanged", key: plan.key };
+  if (plan.action === "noop") {
+    const swept = await sweepHeld(db, { storeId, tid, dayYmd, key: plan.key });
+    return { outcome: "unchanged", key: plan.key, ...(plan.correctionStands ? { note: "Junid's correction stands" } : {}), ...(swept ? { sweptSlips: swept } : {}) };
+  }
 
   const existingKeys = await core().readBatchKeysFor(db, storeId, tid, plan.batchNo);
   const write = resolveBatchWrite({ existingKeys, batchNo: plan.batchNo, correction: plan.action === "revise" });
@@ -198,6 +248,8 @@ async function handlePortalDay(db, request, deps = {}) {
   const unassigned = [];
   const sourceSummaries = [];
   let unattributed = { txns: 0, cents: 0 };
+  const merchantOf = new Map();
+  const merchantActive = new Map();
 
   for (const src of sources) {
     const business = src && src.business && typeof src.business === "object"
@@ -211,7 +263,8 @@ async function handlePortalDay(db, request, deps = {}) {
     const listed = Array.isArray(src.tids) ? src.tids.map(String) : [];
     const seen = [...listed, ...parsed.txns.map((t) => t.tid)];
     const { mapped, unassigned: un } = P.mapPortalTids(seen, registry);
-    for (const k of Object.values(mapped)) linked.add(k);
+    for (const k of Object.values(mapped)) { linked.add(k); merchantOf.set(k, business.merchantNo || business.name || "?"); }
+    merchantActive.set(business.merchantNo || business.name || "?", (merchantActive.get(business.merchantNo || business.name || "?") || 0) + parsed.txns.length);
     for (const raw of un) unassigned.push({ raw, business, txns: parsed.txns.filter((t) => t.tid === raw) });
     for (const t of parsed.txns) {
       const k = mapped[t.tid];
@@ -227,9 +280,17 @@ async function handlePortalDay(db, request, deps = {}) {
   // A source that failed to parse must not turn its terminals into "zero
   // transactions" — those terminals are simply not linked this run.
   const results = {};
+  // A ZERO DAY IS ONLY WRITTEN WHEN IT CAN BE TRUE: the day is over, or the
+  // machine's merchant shows activity today. A portal that is merely behind
+  // must not put a false SHORT on today (Sonnet architect review, #837).
+  const isToday = dayYmd >= sastDayYmd(nowMs);
   for (const [tid, row] of Object.entries(portalRows)) {
     if (!linked.has(tid)) { results[tid] = { outcome: "awaiting", reason: "not in the portal's terminal list (merchant not linked yet, or no transaction ever)" }; continue; }
     const got = byKey.get(tid) || { txns: [], merchantNo: null, name: null };
+    if (!got.txns.length && isToday && !(merchantActive.get(merchantOf.get(tid)) > 0)) {
+      results[tid] = { outcome: "awaiting", reason: "no transactions on the portal today for this merchant yet — a zero day is recorded once the day is over" };
+      continue;
+    }
     const extraction = P.portalExtraction({ tid, mid: row.mid || null, dayYmd, txns: got.txns });
     try {
       results[tid] = await writePortalDay(db, request, {

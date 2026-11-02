@@ -598,6 +598,16 @@ constant and nothing earlier is recorded from it.
   day — never dropped, never guessed. The POS Card Recon shows it with
   **Assign to a till**, which opens the store app's Card machines → settings on
   the Add form prefilled (TID, Standard Bank, merchant) via `#card-assign=<TID>`.
+* **Guards (review, #837):** a status or type the parser does not recognise
+  refuses that store's day (never a silent R0.00); a zero day for TODAY is
+  written only if the merchant shows any activity today (else awaiting — the
+  portal may be behind); Junid's correction of a portal day stands against
+  later pulls; one store that cannot be read never stops the others; only the
+  columns the record reads leave the mini; the run is bounded (15 min) and a
+  failed 18:20 catch-up emails Junid once.
+* **Backfill** (e.g. a TID assigned more than two days after it first
+  appeared): `node tools/sb-portal-recon/run.mjs --days 2026-11-03,2026-11-04`
+  on the mini.
 * Run status: `card_batch_overrides/portal/status` and `…/portal/days/{day}`.
 
 ## Received, then read — the background reader (7 Oct 2026)
