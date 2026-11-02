@@ -180,7 +180,7 @@ export function shouldAlert(state) {
 export function loginAlert({ kind, host = "the Mac mini" }) {
   const what = kind === "otp"
     ? "The SimplyBLU portal asked for a one-time PIN, which the Mac mini cannot type."
-    : "The SimplyBLU portal signed the Mac mini out and there is no saved password it can use.";
+    : "The SimplyBLU portal signed the Mac mini out (it ends every session after about an hour) and there is no saved password it can use, or the saved one was refused.";
   return {
     to: OWNER_EMAIL,
     subject: "SimplyBLU needs a fresh login on the Mac mini",
@@ -189,9 +189,13 @@ export function loginAlert({ kind, host = "the Mac mini" }) {
       "",
       "Until someone signs in again, the Standard Bank tills (Marathon PE Till 2, Trophy Till 2, Concrete Till 1 and 2) show \"Awaiting portal data\" in Card Recon — nothing is marked clean or short in the meantime.",
       "",
-      `To fix: on ${host} (Screen Sharing), run`,
-      "  node ~/marathon-store-app/tools/sb-portal-recon/run.mjs --login",
-      "sign in (email, password, PIN) in the window that opens, and close it. The next 18:00 pull carries on by itself.",
+      ...(kind === "otp"
+        ? [`To fix: on ${host} (Screen Sharing), run`,
+          "  node ~/marathon-store-app/tools/sb-portal-recon/run.mjs --login",
+          "and sign in (email, password, PIN) in the window that opens. The next 18:00 pull carries on by itself."]
+        : ["To fix (once, from any Mac's Terminal): save the SimplyBLU email and password on the Mac mini —",
+          "  ssh -t marathonclub@100.64.186.78 'bash ~/marathon-store-app/tools/sb-portal-recon/save-login.sh'",
+          "The next 18:00 pull signs in with it by itself."]),
       "",
       "This email is sent once; it is not repeated until a pull has worked again.",
     ].join("\n"),

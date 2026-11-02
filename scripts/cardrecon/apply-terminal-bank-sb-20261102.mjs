@@ -45,7 +45,10 @@ for (const r of ROWS) {
   console.log(`${r.tid} (${cur.label}): ${EXECUTE ? "SET" : "would set"} bank = "standard-bank" (was ${cur.bank ?? "absent = FNB"})`);
   if (!EXECUTE) continue;
   const res = await ref.transaction((row) => {
-    if (row === null || row.storeId !== r.storeId || row.tillId !== r.tillId || row.mid !== r.mid) return undefined;
+    // COLD NULL: the Admin SDK runs this first against an empty local cache;
+    // returning null lets the server answer with the real row (never invents one).
+    if (row === null) return null;
+    if (row.storeId !== r.storeId || row.tillId !== r.tillId || row.mid !== r.mid) return undefined;
     return { ...row, bank: "standard-bank" };
   });
   if (!res.committed) { console.error(`✗ ${r.tid}: the row changed while this ran — not written`); bad++; continue; }

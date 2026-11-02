@@ -577,3 +577,26 @@ court / street / concrete wall outdoors in natural light (LOOKBOOK_SCENES overri
 rule, mostly cargos and washed or panelled denim). So designer-shoe fits (Clean Luxe) are
 often skipped, and the same few bottoms recur. On 26 Oct the Louboutin rebuild was skipped
 three times for exactly this reason.
+
+---
+
+## 2026-11-02 — The SimplyBLU portal is the card record for Standard Bank tills from 3 Nov (PR #837 live at `342b4eed`, POS #588 live, #838)
+
+**What's true.** From 3 Nov 2026, terminals whose `/config/cardTerminals` row says
+`bank: "standard-bank"` are recorded from the SimplyBLU portal: one `/card_batches`
+record per terminal per SAST calendar day, `capturedVia: "simplyblu-portal"`.
+Staff slips for them are evidence only (held, then carried onto the record).
+
+| Till | MID (SimplyBLU store) | Registry TID | Portal prints |
+|---|---|---|---|
+| Marathon PE Till 2 | 0004977890 (THE MARATHON) | `0000HP1X` | `0000HP1X` |
+| Trophy Till 2 | 0004977890 (THE MARATHON) | `0000Z4M6` | `0000Z4M6` |
+| Concrete Till 1 | 0005377331 (CONCRETE) | `00000F2Y` | `0000OF2Y` |
+| Concrete Till 2 | 0005377331 (CONCRETE) | `00000F1Y` | `0000OF1Y` |
+
+- Both MIDs are linked on Junid's SimplyBLU login. Concrete is NOT swapped: 47/49 POS card legs 30 Oct–2 Nov match `0000OF2Y` on Till 1.
+- `0000HP1X` / `0000Z4M6` had no `bank` (registered before the field existed; absent = FNB). They were set 2 Nov by `scripts/cardrecon/apply-terminal-bank-sb-20261102.mjs` and audited.
+- **The portal ends every session after ~1 hour.** The 18:00 pull signs in each time with the saved email + password (`tools/sb-portal-recon/save-login.sh`; the portal's login has no PIN). With no saved login, the pull stops, emails Junid once, and every Standard Bank till shows AWAITING PORTAL DATA, never clean or short.
+- Mini: launchd `com.marathon.sbportalrecon` (18:00 + 18:20 SAST), log `~/marathon-store-app/logs/sb-portal-recon.log`, profile + state `~/.marathon/sb-portal/`.
+- Deployed: `functions:cardBatchCapture,functions:cardBatchManualEntry,functions:cardTerminalAdmin`, hosting `marathon-club` and `marathon-pos`. No rules change. `card_batch_overrides` is owner-read by the live rules. There is no `.indexOn: lastSeenAt` on `card_batch_overrides/portal/unassigned`; the node is tiny, so the client filters it locally.
+- **Before 3 Nov the portal is NOT a speedpoint feed** (29 app-initiated transactions ever on 0004977890). Never backfill earlier days from it.
