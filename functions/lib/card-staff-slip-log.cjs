@@ -38,7 +38,8 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_STARTS_AT_HOUR = 6;
 // FNB settles its card batches at about 18:50 SAST every day.
 const FNB_CUTOFF_MINUTES = 18 * 60 + 50;
-const KINDS = new Set(["record", "supporting", "received"]);
+// "held": a Standard Bank portal till's slip, kept for the portal record (lib/card-portal.cjs).
+const KINDS = new Set(["record", "supporting", "received", "held"]);
 const SAFE_KEY = /^[A-Za-z0-9_-]{1,64}$/;
 
 const sastHourOf = (ms) => new Date(ms + SAST_OFFSET_MS).getUTCHours();
