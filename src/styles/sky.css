@@ -312,7 +312,10 @@ html[data-sky="off"] .sky-bg { display: none; }
   padding: 10px 10px 10px 18px;
   color: #fff;
   font-family: var(--sky-font);
+  background: rgba(255, 255, 255, 0.3);
+  text-shadow: 0 1px 8px rgba(0, 50, 150, 0.45);
 }
+.sky-bottombar__cta { text-shadow: none; }
 .sky-bottombar__div { width: 1px; align-self: stretch; margin: 6px 0; background: rgba(255, 255, 255, 0.6); }
 .sky-bottombar__cta {
   margin-left: auto;
