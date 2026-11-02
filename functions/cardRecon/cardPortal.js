@@ -235,7 +235,10 @@ async function handlePortalDay(db, request, deps = {}) {
   const data = request.data || {};
   const dayYmd = data.dayYmd;
   if (!isDayYmd(dayYmd) || sastDayStartMs(dayYmd) === null) return reject("dayYmd must be YYYY-MM-DD.");
-  if (dayYmd < P.PORTAL_FROM_YMD) return reject(`The portal is the record from ${P.PORTAL_FROM_YMD}; ${dayYmd} is before that.`);
+  // The floor for every terminal; each machine's own start (`portalFrom`) is
+  // applied per terminal in portalTerminalsOn — one before its start is not
+  // a portal till that day and is left alone.
+  if (dayYmd < P.PORTAL_EARLIEST_YMD) return reject(`Nothing is taken from the portal before ${P.PORTAL_EARLIEST_YMD}; ${dayYmd} is before that.`);
   if (sastDayStartMs(dayYmd) > nowMs) return reject("That day has not started yet.");
   const sources = Array.isArray(data.sources) ? data.sources : null;
   if (!sources || !sources.length) return reject("No portal data was sent.");

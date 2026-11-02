@@ -62,9 +62,9 @@ test("the login alert goes ONCE per outage", () => {
   assert.equal(m.subject, "SimplyBLU needs a fresh login on the Mac mini");
 });
 
-test("days: the SAST calendar day, today and two before, never before 3 Nov 2026", () => {
+test("days: the SAST calendar day, today and two before, never before the 30 Oct 2026 floor", () => {
   assert.equal(sastYmd(SAST("2026-11-03T23:30:00")), "2026-11-03");
-  assert.deepEqual(daysToPull(SAST("2026-11-03T18:00:00")), ["2026-11-03"]);
+  assert.deepEqual(daysToPull(SAST("2026-10-30T18:00:00")), ["2026-10-30"]);
   assert.deepEqual(daysToPull(SAST("2026-11-06T18:00:00")), ["2026-11-04", "2026-11-05", "2026-11-06"]);
   assert.equal(dateFilter("2026-11-03"), "2026-11-03~2026-11-03");
 });

@@ -100,7 +100,8 @@ test("the portal is the record only for Standard Bank machines, only from 3 Nov"
   assert.equal(P.isPortalDay(TERMINALS[HP1X], "2026-11-03"), true);
   assert.equal(P.isPortalDay(TERMINALS[HP1X], "2026-11-02"), false);
   assert.equal(P.isPortalDay(TERMINALS["67325636"], "2026-11-03"), false);
-  assert.deepEqual(P.daysToPull("2026-11-03"), ["2026-11-03"]);
+  assert.deepEqual(P.daysToPull("2026-10-31"), ["2026-10-30", "2026-10-31"]);
+  assert.deepEqual(P.daysToPull("2026-11-03"), ["2026-11-01", "2026-11-02", "2026-11-03"]);
   assert.deepEqual(P.daysToPull("2026-11-10"), ["2026-11-08", "2026-11-09", "2026-11-10"]);
 });
 
@@ -201,9 +202,23 @@ test("a portal layout the parser cannot read: its machines are awaiting, never r
   assert.equal(out.sources[0].ok, false);
 });
 
-test("before 3 Nov, nothing is recorded from the portal", async () => {
-  const out = await pull(world(), [], { day: "2026-11-02" });
-  assert.equal(out.ok, false);
+test("nothing before the floor (30 Oct 2026); each machine from its OWN start (Junid, 2 Nov 2026)", async () => {
+  assert.equal((await pull(world(), [], { day: "2026-10-29" })).ok, false);
+  // Concrete from 30 Oct (portalFrom), Marathon PE Till 2 from the default 3 Nov.
+  const db = world();
+  await db.ref(`config/cardTerminals/${F2Y}/portalFrom`).set("2026-10-30");
+  await db.ref(`config/cardTerminals/${F1Y}/portalFrom`).set("2026-10-30");
+  const out = await handlePortalDay(db, { auth: POLLER, data: { dayYmd: "2026-10-31", sources: [
+    { business: { name: "THE MARATHON", merchantNo: "0004977890" }, tids: [HP1X, Z4M6], cols: COLS, rows: [row("2026-10-31T10:00:00", HP1X, 100)] },
+    { business: { name: "CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF2Y", "0000OF1Y"], cols: COLS, rows: [row("2026-10-31T11:00:00", "0000OF2Y", 7380), row("2026-10-31T12:00:00", "0000OF1Y", 750)] },
+  ] } }, { now: () => SAST("2026-11-02T20:00:00") });
+  assert.equal(out.ok, true, out.reason);
+  assert.equal(out.results[F2Y].outcome, "recorded");
+  assert.equal(out.results[F1Y].outcome, "recorded");
+  assert.equal(out.results[HP1X].outcome, "ignored", "PE Till 2 is not a portal till before 3 Nov");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/561`), null);
+  assert.equal((await node(db, `card_batches/concrete/${F2Y}/1`)).slip.totalCents, 738000);
+  assert.equal(P.portalFromOf({ portalFrom: "2026-01-01" }), "2026-10-30", "never before the floor");
 });
 
 // ── the staff slip beside the portal ─────────────────────────────────────────
