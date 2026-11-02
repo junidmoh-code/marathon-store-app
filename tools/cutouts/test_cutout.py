@@ -291,6 +291,29 @@ class Pass(unittest.TestCase):
         # never read a field outside the four, and never the whole product
         self.assertTrue(all(f in cutout.FIELDS for _, f in self.backend.reads))
 
+    def test_product_removed_mid_pass_is_never_recreated(self):
+        # The upload happens, then the product vanishes before the write:
+        # a root-level update would recreate it as a two-field stub.
+        real_upload = self.backend.upload_png
+        def upload_then_delete(path, data):
+            url = real_upload(path, data)
+            self.backend.products.pop("-Na", None)
+            return url
+        self.backend.upload_png = upload_then_delete
+        tally = self.run_pass(ids=["-Na"])
+        self.assertEqual(tally, {"skipped": 1})
+        self.assertEqual(self.backend.updates, [])
+
+    def test_photo_replaced_mid_pass_is_not_stamped(self):
+        real_upload = self.backend.upload_png
+        def upload_then_reshoot(path, data):
+            url = real_upload(path, data)
+            self.backend.products["-Na"]["photoUrl"] = "U1-new"
+            return url
+        self.backend.upload_png = upload_then_reshoot
+        self.assertEqual(self.run_pass(ids=["-Na"]), {"skipped": 1})
+        self.assertEqual(self.backend.updates, [])
+
     def test_rerun_is_idempotent_and_failure_cap_holds(self):
         self.run_pass()
         written = self.backend.updates[0]  # what RTDB would now hold for -Na

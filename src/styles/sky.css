@@ -219,6 +219,7 @@ html[data-sky="off"] .sky-bg { display: none; }
   color: #fff;
 }
 .sky-search input::placeholder { color: var(--sky-white-2); }
+.sky-search:focus-within { outline: 2px solid #fff; outline-offset: 3px; }
 .sky-search__btn {
   display: grid; place-items: center;
   height: 100%; padding: 0 14px 0 16px;

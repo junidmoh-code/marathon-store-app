@@ -208,7 +208,7 @@ html[data-sky="on"] #root select {
   caret-color: var(--sky-navy);
 }
 html[data-sky="on"] #root input::placeholder, html[data-sky="on"] #root textarea::placeholder { color: rgba(0, 20, 49, 0.45) !important; }
-html[data-sky="on"] #root .sky-search input { background: transparent !important; color: #fff !important; border: 0 !important; }
+html[data-sky="on"] #root div.sky-search input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) { background: transparent !important; color: #fff !important; border: 0 !important; }
 html[data-sky="on"] #root .sky-search input::placeholder { color: var(--sky-white-2) !important; }
 html[data-sky="on"] #root input[type="checkbox"], html[data-sky="on"] #root input[type="radio"] { accent-color: var(--sky-navy); }
 

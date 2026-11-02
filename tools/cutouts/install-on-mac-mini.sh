@@ -19,6 +19,7 @@ CREDS="$HOME/.config/marathon/shopify-reconciler-sa.json"
 RUN_NOW=0
 if [ "${1:-}" = "--run-now" ]; then RUN_NOW=1; shift; fi
 
+grep -q "<string>$REPO/tools/cutouts/cutout.py</string>" "$REPO/tools/cutouts/$JOB.plist" || { echo "REFUSED: the plist names a different checkout than $REPO — edit its paths first"; exit 1; }
 [ -f "$REPO/tools/cutouts/cutout.py" ] || { echo "REFUSED: $REPO/tools/cutouts/cutout.py not found (git pull first?)"; exit 1; }
 [ -x "$PY" ] || { echo "REFUSED: $PY missing"; exit 1; }
 "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' || { echo "REFUSED: $PY is older than 3.9"; exit 1; }

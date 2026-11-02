@@ -74,7 +74,7 @@ export default function AssistantPhone({
             return (
               <article key={p.id} className="sky-card sky-glass sky-glass--bright ap-card" tabIndex={0}
                        aria-current={selectedId === p.id ? "true" : undefined}
-                       onClick={() => onOpen(p)} onKeyDown={(e) => { if (e.key === "Enter") onOpen(p); }}>
+                       onClick={() => onOpen(p)} onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) onOpen(p); }}>
                 <ProductStage p={p} height="var(--ap-stage)" emoji={p.photo || "👟"} />
                 {p.photoUrl && onViewPhotos && (
                   <button type="button" className="ap-zoom" aria-label={n > 1 ? `View ${n} photos` : "View full photo"}

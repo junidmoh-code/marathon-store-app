@@ -3671,7 +3671,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
     <SkyHome
       tiles={homeTiles}
       groups={hubGroups}
-      liveCards={[hubCountCard, stockHoldCard, displayRegCard]}
+      liveCards={[["hubCount", hubCountCard], ["stockHold", stockHoldCard], ["displayReg", displayRegCard]]}
       tag={homeTag}
       emptyMessage="No tools assigned to your account yet. Ask an admin to update your permissions."
       account={{
@@ -8906,7 +8906,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               const szs = sizesOf(p);
               return (
                 <article key={p.id} className="sky-card sky-glass ad-card" tabIndex={0}
-                         onClick={() => openQv(p)} onKeyDown={e => { if (e.key === "Enter") openQv(p); }}>
+                         onClick={() => openQv(p)} onKeyDown={e => { if (e.key === "Enter" && e.target === e.currentTarget) openQv(p); }}>
                   {/* Cut-out on the podium when tools/cutouts has made one;
                       otherwise the FULL-RESOLUTION photo (HiResPhoto — the
                       file the lightbox opens, thumbnail only as its offline

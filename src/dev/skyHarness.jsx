@@ -37,6 +37,7 @@ function Home() {
     <SkyHome
       tag="2POS"
       initialPanel={q.get("panel")}
+      liveCards={[]}
       tiles={[
         { key: "assistant", name: "Store Assistant", badge: 415, onClick: noop },
         { key: "warehouse", name: "Warehouse", badge: 2625, onClick: noop },

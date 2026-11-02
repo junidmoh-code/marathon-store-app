@@ -65,7 +65,8 @@ export default function SkyHome({ tiles, groups, liveCards = [], tag, account, e
     return () => window.removeEventListener("keydown", onKey);
   }, [panel]);
 
-  const live = liveCards.filter(Boolean);
+  // [key, node] pairs: a card that comes and goes must not shift the others' keys.
+  const live = liveCards.filter((e) => e && e[1]);
   const hubGroups = groups.filter((g) => g.cards.length > 0);
   const hasHub = hubGroups.length > 0 || live.length > 0;
   const shown = tiles.map((t) => (t.key === "admin" ? { ...t, onClick: () => setPanel("admin") } : t))
@@ -85,7 +86,7 @@ export default function SkyHome({ tiles, groups, liveCards = [], tag, account, e
 
       {panel === "admin" ? (
         <div className="sky-hub">
-          {live.length > 0 && <div className="sky-hub__live">{live.map((n, i) => <div key={i} className="sky-hub__livecard">{n}</div>)}</div>}
+          {live.length > 0 && <div className="sky-hub__live">{live.map(([k, n]) => <div key={k} className="sky-hub__livecard">{n}</div>)}</div>}
           {hubGroups.map((g) => (
             <section key={g.label} className="sky-hub__grp">
               <h2 className="sky-hub__lab">{g.label}</h2>

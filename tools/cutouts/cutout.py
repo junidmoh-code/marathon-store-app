@@ -358,6 +358,12 @@ def process_one(backend, remover, state, row, max_side=DEFAULT_MAX_SIDE, dry_run
     try:
         cut = make_cutout(backend.download(photo_url), remover, max_side)
         url = backend.upload_png(path, cut)
+        # Re-read the photo just before writing: the product may have been
+        # deleted (a root-level update would recreate it as a two-field stub)
+        # or re-shot during the download/rembg/upload window.
+        if backend.read_field(pid, "photoUrl") != photo_url:
+            state.mark_failed(pid, photo_url, "photo changed or product removed before write")
+            return "skipped", "photoUrl changed or product removed mid-pass"
         backend.update(build_update(pid, url, photo_url))
         state.mark_done(pid, photo_url, url)
         return "done", "%s %dKB" % (path, len(cut) // 1024)
