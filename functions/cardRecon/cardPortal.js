@@ -237,8 +237,9 @@ async function handlePortalDay(db, request, deps = {}) {
   if (!isDayYmd(dayYmd) || sastDayStartMs(dayYmd) === null) return reject("dayYmd must be YYYY-MM-DD.");
   if (dayYmd < P.PORTAL_FROM_YMD) return reject(`The portal is the record from ${P.PORTAL_FROM_YMD}; ${dayYmd} is before that.`);
   if (sastDayStartMs(dayYmd) > nowMs) return reject("That day has not started yet.");
-  const sources = Array.isArray(data.sources) ? data.sources.slice(0, MAX_SOURCES) : null;
+  const sources = Array.isArray(data.sources) ? data.sources : null;
   if (!sources || !sources.length) return reject("No portal data was sent.");
+  if (sources.length > MAX_SOURCES) return reject(`${sources.length} portal stores were sent; at most ${MAX_SOURCES} are taken in one call — nothing was recorded.`);
 
   // The registry is eight rows; mapping a TID by its forgiving form needs all of them.
   const registry = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};

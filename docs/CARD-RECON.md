@@ -605,6 +605,22 @@ constant and nothing earlier is recorded from it.
   later pulls; one store that cannot be read never stops the others; only the
   columns the record reads leave the mini; the run is bounded (15 min) and a
   failed 18:20 catch-up emails Junid once.
+* **The two THE MARATHON rows carry `bank: "standard-bank"`** from 2 Nov 2026
+  (`scripts/cardrecon/apply-terminal-bank-sb-20261102.mjs`): they were
+  registered before `bank` existed, and absent is FNB.
+* **Saved password (optional, for silent re-login):** on the mini, once:
+  `security add-generic-password -s marathon-simplyblu -a <login email> -w`
+  (it prompts for the password). Without it, a sign-out stops the pull and
+  emails Junid; a PIN demanded once is never re-triggered by later runs until
+  someone signs in with `--login`.
+* **The Terminal ID list is not date-bound**: it lists every TID the store has
+  ever had (2 Nov 2026: `0000HP1X`/`0000Z4M6` listed with their last
+  transaction in March), so a till with no payment all month is still "in the
+  portal" and its zero day is recorded (short against POS legs).
+* **One record per terminal per day; WHERE the money was rung** is the POS
+  report's job as for every capture (`placeSegments` places each transaction by
+  the machine's placement at its own time) — the capture-time expected figure
+  uses the till the machine stood on for the day and says so if it moved.
 * **Backfill** (e.g. a TID assigned more than two days after it first
   appeared): `node tools/sb-portal-recon/run.mjs --days 2026-11-03,2026-11-04`
   on the mini.

@@ -160,8 +160,10 @@ export function parseStoreItems(texts) {
  */
 export function classifyPage(facts) {
   if (facts.hasEmbed) return "report";
+  // A page with a password field is the sign-in form, whatever else it says.
+  if (facts.hasPassword) return "login";
   if (facts.otpText && facts.hasCodeInput) return "otp";
-  if (facts.hasPassword || facts.hasEmail) return "login";
+  if (facts.hasEmail) return "login";
   return "unknown";
 }
 
@@ -187,7 +189,7 @@ export function loginAlert({ kind, host = "the Mac mini" }) {
       "",
       "Until someone signs in again, the Standard Bank tills (Marathon PE Till 2, Trophy Till 2, Concrete Till 1 and 2) show \"Awaiting portal data\" in Card Recon — nothing is marked clean or short in the meantime.",
       "",
-      `To fix: on ${host}, run`,
+      `To fix: on ${host} (Screen Sharing), run`,
       "  node ~/marathon-store-app/tools/sb-portal-recon/run.mjs --login",
       "sign in (email, password, PIN) in the window that opens, and close it. The next 18:00 pull carries on by itself.",
       "",

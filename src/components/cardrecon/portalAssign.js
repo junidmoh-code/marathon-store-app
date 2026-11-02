@@ -28,7 +28,11 @@ export function consumeAssignHash({ location = globalThis.location, history = gl
   const tid = assignTidFromHash(location && location.hash);
   if (!tid) return null;
   try {
-    storage.setItem(ASSIGN_STORE_KEY, JSON.stringify({ tid, at: nowMs }));
+    // The device's own role is put back once the request is taken
+    // (takeAssignRequest): the link opens Card machines once, it never
+    // re-roles the browser that followed it.
+    const prevRole = storage.getItem("marathon_role");
+    storage.setItem(ASSIGN_STORE_KEY, JSON.stringify({ tid, at: nowMs, prevRole: prevRole ?? null }));
     storage.setItem("marathon_role", CARD_RECON_ROLE);
   } catch { /* storage blocked: the link simply does nothing */ }
   try { history.replaceState(null, "", location.pathname + location.search); } catch { /* best effort */ }
@@ -39,6 +43,9 @@ export function consumeAssignHash({ location = globalThis.location, history = gl
 export function takeAssignRequest({ storage = globalThis.localStorage, nowMs = Date.now() } = {}) {
   let v = null;
   try { v = JSON.parse(storage.getItem(ASSIGN_STORE_KEY) || "null"); storage.removeItem(ASSIGN_STORE_KEY); } catch { return null; }
+  if (v && "prevRole" in v) {
+    try { if (v.prevRole) storage.setItem("marathon_role", v.prevRole); else storage.removeItem("marathon_role"); } catch { /* best effort */ }
+  }
   if (!v || !TID_RE.test(String(v.tid || "")) || !Number.isFinite(v.at) || nowMs - v.at > ASSIGN_TTL_MS || v.at > nowMs + 60000) return null;
   return v.tid;
 }

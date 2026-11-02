@@ -181,7 +181,11 @@ function parsePortalRows({ cols, rows }) {
 }
 
 /** A TID the portal lists that is a real machine id, not "Unknown" or blank. */
-const isTidLike = (raw) => typeof raw === "string" && /^[A-Za-z0-9]{4,16}$/.test(raw.trim()) && !/^unknown$/i.test(raw.trim());
+// A TID as printed may carry a space or a hyphen; those are not part of it
+// (canonicalTid strips them too). Anything else odd is "unattributed" money,
+// counted in the run status — never silently dropped.
+const tidChars = (raw) => (typeof raw === "string" ? raw.trim().replace(/[\s-]/g, "") : "");
+const isTidLike = (raw) => /^[A-Za-z0-9]{2,16}$/.test(tidChars(raw)) && !/^unknown$/i.test(tidChars(raw));
 
 /**
  * The portal's TIDs against the registry. Exact key first, then the
@@ -194,7 +198,7 @@ const isTidLike = (raw) => typeof raw === "string" && /^[A-Za-z0-9]{4,16}$/.test
 function mapPortalTids(portalTids, registry) {
   const mapped = {};
   const unassigned = [];
-  for (const raw of new Set((portalTids || []).map((t) => String(t || "").trim()).filter(isTidLike))) {
+  for (const raw of new Set((portalTids || []).map((t) => String(t || "").trim()).filter(isTidLike).map(tidChars))) {
     const key = resolveRegisteredTid(raw.toUpperCase(), registry) || resolveRegisteredTid(raw, registry);
     if (key) mapped[raw] = key; else unassigned.push(raw);
   }

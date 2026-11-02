@@ -198,7 +198,7 @@ function TerminalForm({ mode, base, prefill = null, stores, groups, today, busy,
   const [tillId, setTillId] = useState(base?.tillId || "");
   const [label, setLabel] = useState(base?.label || "");
   const [mid, setMid] = useState(mode === "replace" ? "" : (base?.mid || prefill?.mid || ""));
-  const [capture, setCapture] = useState(base ? captureMode(base) : (prefill ? "typed" : "both"));
+  const [capture, setCapture] = useState(base ? captureMode(base) : "both");
   const [bank, setBank] = useState(base ? terminalBank(base) : (prefill?.bank || "fnb"));
   // "" = today (the server stamps the moment of the add, as it always has).
   const [fromDate, setFromDate] = useState("");

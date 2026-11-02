@@ -17,6 +17,7 @@ describe("the POS's Assign link", () => {
     expect(storage.getItem("marathon_role")).toBe("card_recon");
     expect(replaced.length).toBe(1);
     expect(takeAssignRequest({ storage, nowMs: 2000 })).toBe("0000NEW1");
+    expect(storage.getItem("marathon_role")).toBe(null); // the device's own (none) is put back
     expect(takeAssignRequest({ storage, nowMs: 2000 })).toBe(null);
     storage.setItem(ASSIGN_STORE_KEY, JSON.stringify({ tid: "0000NEW1", at: 0 }));
     expect(takeAssignRequest({ storage, nowMs: 11 * 60 * 1000 })).toBe(null);

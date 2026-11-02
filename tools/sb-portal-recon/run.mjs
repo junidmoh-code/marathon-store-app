@@ -61,6 +61,7 @@ const PAGE_TIMEOUT_MS = 60000;
 const RUN_LIMIT_MS = 15 * 60000;
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+const sastMinutes = (ms) => { const d = new Date(ms + 2 * 3600000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
 
 // ── state (one small file, outside the repo) ─────────────────────────────────
 function readState() { try { return JSON.parse(readFileSync(STATE_FILE, "utf8")); } catch { return {}; } }
@@ -155,7 +156,7 @@ async function pageFacts(page) {
       hasPassword: inputs.some((i) => i.type === "password"),
       hasEmail: inputs.some((i) => i.type === "email"),
       hasCodeInput: inputs.some((i) => i.type !== "password" && i.type !== "email" && i.type !== "hidden" && i.type !== "checkbox"),
-      otpText: /\b(otp|one[- ]time|verification code|enter the code|pin)\b/i.test(text),
+      otpText: /\b(otp|one[- ]time (pin|password|code)|verification code|enter the (code|pin)|pin (was )?sent|we (have )?sent)\b/i.test(text),
     };
   }).catch(() => ({}));
   return { ...f, url: page.url(), hasEmbed: !!embedSrc, embedSrc };
@@ -275,7 +276,10 @@ async function portalDay(token, data) {
 async function main() {
   const nowMs = Date.now();
   const today = sastYmd(nowMs);
-  if (MODE === "catchup" && readState().lastOkDay === today) { log(`catch-up: today's pull already finished — nothing to do`); return EXIT.OK; }
+  // launchd fires --catchup at 18:00 AND 18:20. Before 18:15 SAST it is the
+  // 18:00 pull and always runs; from 18:15 it runs only if today's scheduled
+  // pull has not finished. A manual or --days run never counts as "today's".
+  if (MODE === "catchup" && sastMinutes(nowMs) >= 18 * 60 + 15 && readState().lastOkDay === today) { log(`catch-up: today's pull already finished — nothing to do`); return EXIT.OK; }
   if (!takeLock()) { log("another pull is running — this one stops"); return EXIT.OK; }
 
   const ctx = await openBrowser({ headless: MODE !== "login" });
@@ -301,11 +305,16 @@ async function main() {
     }
 
     if (kind === "login") {
+      const st = readState();
+      // A PIN was demanded and nobody has signed in since: trying the password
+      // again would only send Junid another PIN, every evening. Stop here.
+      if (Number.isFinite(st.otpAt) && !(st.loginAt > st.otpAt) && !(st.lastOkAt > st.otpAt)) return await signedOut("otp");
       const creds = keychainLogin();
       if (!creds) return await signedOut("login");
       log("signed out — signing in with the saved password");
-      ({ kind } = await signInSilently(page, creds));
-      if (kind === "otp") return await signedOut("otp");
+      try { ({ kind } = await signInSilently(page, creds)); }
+      catch (err) { log(`the saved-password sign-in failed: ${err.message.split("\n")[0]}`); return await signedOut("login"); }
+      if (kind === "otp") { writeState({ otpAt: Date.now() }); return await signedOut("otp"); }
       if (kind !== "report") return await signedOut("login");
       log("✓ signed in again without a PIN");
     }
@@ -363,7 +372,7 @@ async function main() {
     if (bad.length || storeErrors.length) {
       throw new Error(`${bad.length} day(s) not fully recorded${storeErrors.length ? `; ${storeErrors.join("; ")}` : ""} — the catch-up / next run tries again`);
     }
-    writeState({ lastOkDay: today, lastOkAt: Date.now() });
+    writeState({ lastOkAt: Date.now(), ...(MODE === "catchup" && !opt("--days") ? { lastOkDay: today } : {}) });
     return EXIT.OK;
   } catch (err) {
     try {
