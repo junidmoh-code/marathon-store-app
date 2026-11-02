@@ -351,3 +351,26 @@ test("the review list is Junid's alone and reads one bounded page by key order",
   const q = db.queries.find((x) => x.path === "eft_manual_entries");
   assert.deepEqual(q.cs.map((c) => c[0]), ["orderByKey", "limitToLast"], "no index needed, never the node");
 });
+
+// ─── CONCRETE ENFORCED (2 Nov 2026): THE OWNER'S ESCAPE HATCH IS UNCHANGED ───
+// At an enforced store the till offers no "EFT without matching"; the
+// cashier matches, parks, or asks Junid to enter the payment by hand. That
+// hand entry is still Junid's alone, and a cashier AT CONCRETE consumes it
+// through the ordinary consume-once settle like any matched payment.
+test("CONCRETE: Junid's hand entry is the escape hatch — owner-only, and spent once by a Concrete till", async () => {
+  db.reads["eft_enforcement"] = { stores: { concrete: true, pe: true, trophy: true }, updatedAt: 1, updatedBy: "gunidmoh@gmail.com" };
+  const entry = { entryId: "ME-concrt01", reference: "Concrete 0831", amountCents: 32000, note: "Concrete, no email yet" };
+  for (const who of [CASHIER, REVIEWER, SHARED]) {
+    await rejects(eftPoolManualEntry({ ...who, data: entry }), "permission-denied");
+  }
+  db.tail = {};
+  const out = await eftPoolManualEntry({ ...OWNER, data: entry });
+  assert.equal(out.ok, true);
+  const key = out.key;
+  db.tail = { [key]: db.reads[`eft_pool/${key}`] };
+  const settle = (attemptId) => eftPoolSettle({ ...CASHIER, data: { action: "settle", poolKey: key, attemptId, appliedCents: 32000, storeId: "concrete", tillId: "till-1", customerId: "0821234567", confirmedCustomerId: "0821234567" } });
+  assert.equal((await settle("C-1")).ok, true);
+  assert.equal(db.reads[`eft_pool/${key}`].status, "used");
+  assert.equal(db.reads[`eft_pool/${key}`].used.storeId, "concrete");
+  assert.equal((await rejects(settle("C-2"), "failed-precondition")).details.code, "already-used");
+});
