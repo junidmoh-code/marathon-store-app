@@ -172,27 +172,38 @@ async function signInSilently(page, creds) {
   return settle(page);
 }
 
+/** The header switcher: the button whose text is a store name (any of `names`), else the first all-caps one. */
+function switcher(page, names = []) {
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = names.length ? new RegExp(`^\\s*(${names.map(esc).join("|")})\\s*$`, "i") : /^\s*[A-Z0-9 &'.-]{2,40}\s*$/;
+  return page.getByRole("button", { name: re }).first();
+}
+
 /** The stores on this login, from the header switcher. */
 async function listStores(page) {
-  const button = page.locator("header button, button").filter({ hasText: /^[A-Z0-9 &'.-]{2,40}$/ }).first();
-  await button.click({ timeout: 10000 });
+  await switcher(page).click({ timeout: 15000 });
   await page.waitForSelector('[role="menuitem"]', { timeout: 10000 });
   const texts = await page.locator('[role="menuitem"]').allInnerTexts();
   await page.keyboard.press("Escape");
   return parseStoreItems(texts);
 }
 
-async function selectStore(page, store) {
-  const button = page.locator("header button, button").filter({ hasText: /^[A-Z0-9 &'.-]{2,40}$/ }).first();
-  const current = (await button.innerText().catch(() => "")).trim();
-  if (current.toUpperCase() === store.name.toUpperCase()) return;
-  await button.click({ timeout: 10000 });
-  await page.locator('[role="menuitem"]').filter({ hasText: store.merchantNo }).first().click({ timeout: 10000 });
-  await page.waitForTimeout(3000);
+/** Make `store` the selected one: from a freshly loaded report page, never mid-menu. */
+async function selectStore(page, store, names) {
+  await page.goto(REPORT_URL, { waitUntil: "domcontentloaded" });
+  const { kind } = await settle(page);
+  if (kind !== "report") throw new Error(`the report did not open (${kind})`);
+  const button = switcher(page, names);
+  const current = (await button.innerText({ timeout: 15000 }).catch(() => "")).trim();
+  if (current.toUpperCase() === String(store.name).toUpperCase()) return;
+  await button.click({ timeout: 15000 });
+  await page.locator('[role="menuitem"]').filter({ hasText: store.merchantNo }).first().click({ timeout: 15000 });
+  // The header names the store once the switch has happened.
+  await switcher(page, [store.name]).waitFor({ timeout: 30000 });
 }
 
-async function embedFor(page, store) {
-  await selectStore(page, store);
+async function embedFor(page, store, names) {
+  await selectStore(page, store, names);
   await page.goto(REPORT_URL, { waitUntil: "domcontentloaded" });
   const { kind, facts } = await settle(page);
   if (kind !== "report") throw new Error(`the report did not open for ${store.name} (${kind})`);
@@ -299,7 +310,7 @@ async function main() {
     for (const store of stores) {
       const token = store.current
         ? embedTokenFromSrc((await pageFacts(page)).embedSrc)
-        : await embedFor(page, store);
+        : await embedFor(page, store, stores.map((x) => x.name).filter(Boolean));
       if (!token) throw new Error("no Metabase link on the report");
       const claims = embedClaims(token);
       const got = await readStore(token, days);
@@ -327,6 +338,14 @@ async function main() {
     if (bad.length) { log(`✗ ${bad.length} day(s) not fully recorded — the catch-up / next run tries again`); return EXIT.FAILED; }
     writeState({ lastOkDay: today, lastOkAt: Date.now() });
     return EXIT.OK;
+  } catch (err) {
+    try {
+      mkdirSync(RUNS_DIR, { recursive: true });
+      const shot = join(RUNS_DIR, `failure-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
+      await ctx.pages()[0]?.screenshot({ path: shot });
+      log(`screenshot of the failure: ${shot}`);
+    } catch { /* best effort */ }
+    throw err;
   } finally {
     await ctx.close().catch(() => {});
   }
