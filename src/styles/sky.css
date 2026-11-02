@@ -1,0 +1,355 @@
+/* ─── SKY — the Marathon Club design DNA ──────────────────────────────────────
+ *
+ * The whole app stands in ONE room: public/assets/sky-room.jpg. Everything in
+ * this file follows from the three reference images in design/ (home.png,
+ * assistant-phone.png, assistant-desktop.png). design/DNA.md explains the
+ * rules in words; this file is the rules in code.
+ *
+ *   1. The photo is never touched. No overlay, gradient, tint, blur or
+ *      darkening sits over it anywhere. It is a position:fixed div at z-index 0
+ *      (never background-attachment:fixed, which iPad Safari ignores).
+ *   2. Glass only inside an object's own box. Between objects the photo is raw.
+ *   3. Text is white on glass, dark navy on the bright (phone) cards, and the
+ *      royal "navy" of the references for prices and the active label.
+ *   4. No other colour. Status colours survive only where they carry meaning
+ *      (a refusal, a warning) — see DNA.md "What is not decoration".
+ */
+
+:root {
+  /* Typography — Inter, matched by overlay against assistant-phone.png. */
+  --sky-font: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+
+  /* Ink */
+  --sky-white: #ffffff;
+  --sky-white-2: rgba(255, 255, 255, 0.86);   /* subtitles, placeholders */
+  --sky-white-3: rgba(255, 255, 255, 0.72);   /* quiet labels */
+  --sky-ink: #001431;                          /* product names on bright cards (sampled 0,20,49) */
+  --sky-navy: #0033f5;                         /* price, active label, plus (sampled 0,51,249) */
+  --sky-navy-deep: #0a2a8f;                    /* pressed state of a navy fill */
+
+  /* Glass — white over the photo. Alphas measured from the references:
+     desktop card ≈ 0.33, phone card ≈ 0.75 (bright), search pill ≈ 0.16. */
+  --sky-glass-a: 0.30;
+  --sky-glass: rgba(255, 255, 255, var(--sky-glass-a));
+  --sky-glass-soft: rgba(255, 255, 255, 0.16);
+  --sky-glass-bright: rgba(255, 255, 255, 0.74);
+  --sky-glass-solid: rgba(255, 255, 255, 0.96);
+  --sky-rim: rgba(255, 255, 255, 0.55);        /* 1px brighter rim */
+  --sky-rim-soft: rgba(255, 255, 255, 0.34);
+  --sky-blur: 18px;
+  --sky-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.85);   /* bright top edge */
+  --sky-shadow: 0 14px 34px -14px rgba(0, 62, 170, 0.42);     /* soft blue shadow */
+  --sky-shadow-lg: 0 26px 60px -22px rgba(0, 52, 150, 0.5);
+
+  /* Shape */
+  --sky-r-tile: 30px;     /* home tiles (≈50px on the 2x reference) */
+  --sky-r-card: 22px;     /* product cards */
+  --sky-r-panel: 24px;
+  --sky-r-pill: 999px;
+
+  /* Rhythm */
+  --sky-gutter: 16px;
+  --sky-gap: 14px;
+}
+
+/* ── THE ROOM ─────────────────────────────────────────────────────────────── */
+html[data-sky="on"], html[data-sky="on"] body {
+  background: #1d9bfb;   /* the photo's own mid-blue, seen only before it loads */
+}
+html[data-sky="on"] body { font-family: var(--sky-font); }
+.sky-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image: url("/assets/sky-room.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+html[data-sky="off"] .sky-bg { display: none; }
+#root { position: relative; z-index: 1; }
+
+/* ── GLASS ────────────────────────────────────────────────────────────────── */
+.sky-glass {
+  position: relative;
+  background: var(--sky-glass);
+  border: 1px solid var(--sky-rim);
+  box-shadow: var(--sky-highlight), var(--sky-shadow);
+  -webkit-backdrop-filter: blur(var(--sky-blur)) saturate(135%);
+  backdrop-filter: blur(var(--sky-blur)) saturate(135%);
+}
+.sky-glass--soft { background: var(--sky-glass-soft); border-color: var(--sky-rim-soft); }
+.sky-glass--bright {
+  background: linear-gradient(180deg, rgba(255,255,255,.52) 0%, rgba(255,255,255,.78) 58%, rgba(255,255,255,.86) 100%);
+  border-color: rgba(255, 255, 255, 0.85);
+}
+/* The bright highlight on the top edge (home.png): a lit hairline that fades
+   out towards both corners, drawn inside the object's own box. */
+.sky-sheen::before {
+  content: "";
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  top: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,1) 50%, rgba(255,255,255,0));
+  box-shadow: 0 0 10px 1px rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+}
+.sky-solid {
+  background: var(--sky-glass-solid);
+  color: var(--sky-navy);
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow: inset 0 -6px 14px rgba(170, 205, 255, 0.35), 0 8px 22px -10px rgba(0, 60, 170, 0.45);
+}
+
+/* ── HEADER ───────────────────────────────────────────────────────────────── */
+.sky-header {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: start;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) var(--sky-gutter) 0;
+  color: var(--sky-white);
+  font-family: var(--sky-font);
+}
+.sky-header__l { justify-self: start; display: flex; gap: 10px; align-items: center; }
+.sky-header__r { justify-self: end; display: flex; gap: 14px; align-items: center; }
+.sky-header__c { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.sky-round {
+  width: 45px; height: 45px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+  font-family: var(--sky-font);
+}
+.sky-round svg { width: 22px; height: 22px; }
+.sky-round--user { font-size: 20px; font-weight: 800; }
+.sky-round:focus-visible, .sky-pill:focus-visible, .sky-chip:focus-visible, .sky-seg button:focus-visible,
+.sky-card:focus-visible, .sky-plus:focus-visible, .sky-tile:focus-visible {
+  outline: 2px solid #fff; outline-offset: 3px;
+}
+.sky-logo { display: flex; flex-direction: column; align-items: center; line-height: 1; color: #fff; user-select: none; }
+.sky-logo__m {
+  font-family: var(--sky-font);
+  font-style: italic;
+  font-weight: 900;
+  font-size: 28px;
+  letter-spacing: -0.035em;
+  transform: skewX(-4deg);
+}
+.sky-logo__c {
+  font-family: var(--sky-font);
+  font-style: italic;
+  font-weight: 800;
+  font-size: 9.5px;
+  letter-spacing: 1.05em;
+  margin: 5px 0 0 1.05em;
+}
+.sky-logo--lg .sky-logo__m { font-size: 33px; }
+.sky-logo--lg .sky-logo__c { font-size: 10.5px; margin-top: 7px; }
+.sky-tag {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 76px; height: 20px; padding: 0 12px;
+  border-radius: var(--sky-r-pill);
+  font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  color: #fff;
+}
+.sky-tag--lg { height: 30px; min-width: 70px; font-size: 14px; letter-spacing: -0.01em; padding: 0 16px; }
+
+/* ── PILLS, SEGMENTS, CHIPS ───────────────────────────────────────────────── */
+.sky-pill {
+  display: inline-flex; align-items: center; gap: 9px;
+  height: 40px; padding: 0 16px;
+  border-radius: var(--sky-r-pill);
+  font: 600 15px/1 var(--sky-font);
+  color: #fff; cursor: pointer;
+}
+.sky-seg {
+  display: flex; gap: 0;
+  padding: 3px;
+  border-radius: var(--sky-r-pill);
+}
+.sky-seg button {
+  flex: 1;
+  border: 0; background: transparent; cursor: pointer;
+  border-radius: var(--sky-r-pill);
+  font: 700 14px/1 var(--sky-font);
+  color: #fff;
+  min-height: 36px;
+  padding: 0 12px;
+  transition: background .18s ease, color .18s ease, box-shadow .18s ease;
+}
+.sky-seg button[aria-pressed="true"] {
+  background: var(--sky-glass-solid);
+  color: var(--sky-navy);
+  box-shadow: inset 0 -5px 12px rgba(170, 205, 255, 0.45), 0 6px 16px -8px rgba(0, 60, 170, 0.5);
+}
+.sky-seg--lg button { min-height: 37px; font-size: 13.5px; }
+.sky-chips { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+.sky-chip {
+  height: 40px; min-width: 92px; padding: 0 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--sky-r-pill);
+  font: 800 16px/1 var(--sky-font);
+  letter-spacing: 0.02em;
+  color: #fff; cursor: pointer;
+}
+.sky-chip[aria-pressed="true"] { background: var(--sky-glass-solid); color: var(--sky-navy); border-color: #fff; }
+.sky-chip svg { height: 22px; width: auto; max-width: 54px; }
+.sky-chip__txt { font-weight: 900; font-size: 15px; letter-spacing: .03em; text-transform: uppercase; white-space: nowrap; }
+
+/* ── SEARCH ───────────────────────────────────────────────────────────────── */
+.sky-search {
+  display: flex; align-items: center;
+  height: 46px;
+  border-radius: var(--sky-r-pill);
+  padding: 0 6px 0 18px;
+  gap: 12px;
+}
+.sky-search > svg { width: 20px; height: 20px; color: #fff; flex: 0 0 auto; }
+.sky-search input {
+  flex: 1; min-width: 0;
+  background: transparent; border: 0; outline: none;
+  font: 500 15px/1 var(--sky-font);
+  color: #fff;
+}
+.sky-search input::placeholder { color: var(--sky-white-2); }
+.sky-search__btn {
+  display: grid; place-items: center;
+  height: 100%; padding: 0 14px 0 16px;
+  border: 0; border-left: 1px solid rgba(255, 255, 255, 0.55);
+  background: transparent; color: #fff; cursor: pointer;
+  height: 60%;
+}
+.sky-search__btn svg { width: 22px; height: 22px; }
+.sky-search--lg { height: 73px; padding-left: 40px; gap: 18px; }
+.sky-search--lg > svg { width: 30px; height: 30px; }
+.sky-search--lg input { font-size: 24px; font-weight: 400; }
+.sky-search--lg .sky-search__btn { padding: 0 32px 0 26px; }
+.sky-search--lg .sky-search__btn svg { width: 30px; height: 30px; }
+
+/* ── PRODUCT CARD + PODIUM ────────────────────────────────────────────────── */
+.sky-card {
+  position: relative;
+  border-radius: var(--sky-r-card);
+  overflow: hidden;
+  cursor: pointer;
+  display: flex; flex-direction: column;
+  font-family: var(--sky-font);
+  transition: transform .22s cubic-bezier(.2,.7,.2,1), box-shadow .22s;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+.sky-card:hover { transform: translateY(-4px); box-shadow: var(--sky-highlight), var(--sky-shadow-lg); }
+.sky-stage {
+  position: relative;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+/* The podium: a glass disc seen from slightly above — a lit top ellipse over a
+   shallow translucent drum, with the product's drop shadow on it. */
+.sky-podium {
+  position: absolute;
+  left: 50%; transform: translateX(-50%);
+  bottom: 10px;
+  width: 79%;
+  height: 32px;
+  pointer-events: none;
+}
+.sky-podium::before {   /* the drum */
+  content: ""; position: absolute; left: 0; right: 0; top: 9px; bottom: 0;
+  border-radius: 0 0 50% 50% / 0 0 60% 60%;
+  background: linear-gradient(180deg, rgba(255,255,255,.55), rgba(205,232,255,.35) 60%, rgba(255,255,255,.12));
+  border: 1px solid rgba(255,255,255,.6); border-top: 0;
+}
+.sky-podium::after {    /* the top face */
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 19px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at 50% 45%, rgba(255,255,255,.98), rgba(225,242,255,.82) 55%, rgba(190,225,255,.7));
+  border: 1px solid rgba(255,255,255,.95);
+  box-shadow: 0 0 12px rgba(255,255,255,.55);
+}
+.sky-cutout {
+  position: relative; z-index: 1;
+  max-width: 82%;
+  object-fit: contain;
+  filter: drop-shadow(0 9px 7px rgba(0, 30, 90, 0.38));
+}
+/* No cut-out yet: the full-resolution photo in a white rounded frame filling
+   the stage, no podium. */
+.sky-frame {
+  position: absolute; inset: 10px 10px 0;
+  border-radius: 16px;
+  background: #fff;
+  overflow: hidden;
+  display: grid; place-items: center;
+  box-shadow: 0 6px 16px -8px rgba(0, 50, 140, .35);
+}
+.sky-frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.sky-name { font-weight: 700; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sky-price { font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; white-space: nowrap; }
+.sky-plus {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center;
+  color: var(--sky-navy); cursor: pointer; padding: 0;
+}
+.sky-plus svg { width: 18px; height: 18px; }
+
+/* ── BOTTOM BAR ───────────────────────────────────────────────────────────── */
+.sky-bottombar {
+  position: fixed;
+  left: max(12px, env(safe-area-inset-left, 0px));
+  right: max(12px, env(safe-area-inset-right, 0px));
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  z-index: 60;
+  min-height: 62px;
+  border-radius: 26px;
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 10px 10px 18px;
+  color: #fff;
+  font-family: var(--sky-font);
+}
+.sky-bottombar__div { width: 1px; align-self: stretch; margin: 6px 0; background: rgba(255, 255, 255, 0.6); }
+.sky-bottombar__cta {
+  margin-left: auto;
+  min-width: 160px; height: 40px;
+  border-radius: var(--sky-r-pill);
+  font: 800 14.5px/1 var(--sky-font);
+  cursor: pointer;
+}
+
+/* ── PANELS (every other screen) ──────────────────────────────────────────── */
+.sky-panel { border-radius: var(--sky-r-panel); padding: 18px; color: #fff; }
+.sky-h1 { font: 800 30px/1.1 var(--sky-font); letter-spacing: -0.02em; color: #fff; margin: 0; text-align: center; }
+.sky-sub { font: 400 14px/1.4 var(--sky-font); color: var(--sky-white-2); text-align: center; margin-top: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sky-card, .sky-seg button, .sky-tile { transition: none !important; }
+  .sky-card:hover, .sky-tile:hover { transform: none !important; }
+}
+
+/* ── THE PHONE'S PRODUCT POPUP (the size sheet) ───────────────────────────── */
+.sky-sheet__img { position: relative; width: 132px; height: 132px; flex: 0 0 auto; border-radius: 20px; overflow: hidden;
+  background: rgba(255,255,255,.28); border: 1px solid rgba(255,255,255,.75); }
+.sky-sheet__img .sky-podium { width: 84%; bottom: 8px; }
+.sky-sheet__img .sky-cutout { margin-bottom: 20px !important; }
+.sky-sheet__img .sky-frame { inset: 6px; border-radius: 15px; }
+.sky-sheet__n { position: absolute; right: 6px; bottom: 6px; z-index: 2; background: #fff; color: var(--sky-navy); font: 800 11px/1 var(--sky-font); padding: 4px 7px; border-radius: 999px; }
+.sky-sheet__meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sky-sheet__meta span { font: 800 10.5px/1 var(--sky-font); letter-spacing: .05em; padding: 5px 9px; border-radius: 999px; background: rgba(255,255,255,.25); border: 1px solid rgba(255,255,255,.6); }
+.sky-sheet__x { position: absolute; top: -4px; right: -4px; width: 34px; height: 34px; border-radius: 50%; border: 1px solid rgba(255,255,255,.75); background: rgba(255,255,255,.25); color: #fff; cursor: pointer; font-size: 14px; }
+.sky-sheet__lab { font: 800 11px/1 var(--sky-font); letter-spacing: .14em; text-transform: uppercase; margin-bottom: .6rem; color: #fff; }
+.sky-sheet .sky-szgrid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); }
+.sky-szq { aspect-ratio: 1 / 1; padding: 0 !important; border-radius: 16px !important; display: flex !important; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  font-family: var(--sky-font) !important; font-size: 16px !important; font-weight: 800 !important;
+  color: #fff !important; background: rgba(255,255,255,.2) !important; border: 1px solid rgba(255,255,255,.65) !important; box-shadow: inset 0 1px 0 rgba(255,255,255,.7); }
+.sky-szq__n { font-size: 11px; font-weight: 700; opacity: .9; }
+.sky-szq[aria-pressed="true"] { background: var(--sky-navy) !important; border-color: var(--sky-navy) !important; color: #fff !important; box-shadow: 0 10px 22px -10px rgba(0,40,170,.9); }
+.sky-szq[aria-disabled="true"]:not([aria-pressed="true"]) { color: rgba(255,255,255,.62) !important; background: rgba(255,255,255,.05) !important; border-style: dashed !important; border-color: rgba(255,255,255,.45) !important; box-shadow: none; opacity: .75; }
+.sky-primary { background: var(--sky-navy) !important; color: #fff !important; border: 0 !important; border-radius: 999px !important; font-family: var(--sky-font) !important; font-weight: 800 !important;
+  box-shadow: 0 10px 24px -10px rgba(0,40,170,.8), inset 0 1px 0 rgba(255,255,255,.3) !important; }
+.sky-secondary { background: rgba(255,255,255,.22) !important; color: #fff !important; border: 1px solid rgba(255,255,255,.75) !important; border-radius: 999px !important; font-family: var(--sky-font) !important; font-weight: 800 !important; }

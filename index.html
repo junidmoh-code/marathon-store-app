@@ -1,10 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-sky="on">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E👟%3C/text%3E%3C/svg%3E" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#000000" />
+    <meta name="theme-color" content="#1d9bfb" />
+    <!-- Sky DNA typography (src/styles/sky.css). Same loading path as the TV board's Archivo. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400..900;1,14..32,700..900&display=swap" rel="stylesheet" />
+    <!-- The room is preloaded so the first paint is the photo, never black. -->
+    <link rel="preload" as="image" href="/assets/sky-room.jpg" />
 
     <!-- PWA -->
     <link rel="manifest" href="/manifest.json" />
@@ -18,7 +24,10 @@
 
     <title>Marathon Store — Order Management</title>
   </head>
-  <body style="margin:0;background:#0A0A0A;">
+  <body style="margin:0;background:#1d9bfb;">
+    <!-- THE ROOM (design/DNA.md): the photo, untouched, fixed behind everything at
+         z-index 0. Never background-attachment:fixed (iPad Safari ignores it). -->
+    <div class="sky-bg" aria-hidden="true"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
