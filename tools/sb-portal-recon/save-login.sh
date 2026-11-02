@@ -12,18 +12,23 @@
 set -euo pipefail
 DIR="$HOME/.marathon/sb-portal"; mkdir -p "$DIR"; chmod 700 "$DIR"
 read -r -p "SimplyBLU email: " EMAIL
-read -r -s -p "SimplyBLU password (not shown): " PASS; echo
-[ -n "$EMAIL" ] && [ -n "$PASS" ] || { echo "✗ both are needed"; exit 1; }
-if security add-generic-password -U -s marathon-simplyblu -a "$EMAIL" -T /usr/bin/security -w "$PASS" 2>/dev/null; then
+[ -n "$EMAIL" ] || { echo "✗ the email is needed"; exit 1; }
+# The Keychain prompts for the password itself (-w last): it never appears in
+# a command line or a shell variable (CodeRabbit, #838).
+echo "The Keychain asks for the SimplyBLU password twice (not shown):"
+if security add-generic-password -U -s marathon-simplyblu -a "$EMAIL" -T /usr/bin/security -w 2>/dev/null; then
   rm -f "$DIR/credentials"
   echo "✓ saved in the login Keychain"
 else
+  # Locked over SSH: a chmod-600 file outside the repo. It takes precedence
+  # over any older Keychain item (run.mjs reads the file first).
   umask 077
-  printf 'SIMPLYBLU_EMAIL=%s\nSIMPLYBLU_PASSWORD=%s\n' "$EMAIL" "$PASS" > "$DIR/credentials"
+  { printf 'SIMPLYBLU_EMAIL=%s\nSIMPLYBLU_PASSWORD=' "$EMAIL"; IFS= read -r -s -p "The Keychain is locked over SSH — type the password once more for the file (not shown): " && printf '%s\n' "$REPLY"; } > "$DIR/credentials"
+  echo
   chmod 600 "$DIR/credentials"
-  echo "✓ saved in $DIR/credentials (the Keychain is locked over SSH)"
+  grep -q '^SIMPLYBLU_PASSWORD=.\+' "$DIR/credentials" || { rm -f "$DIR/credentials"; echo "✗ no password typed"; exit 1; }
+  echo "✓ saved in $DIR/credentials"
 fi
-unset PASS
 # A sign-in that failed before no longer blocks the next pull.
 /opt/homebrew/bin/node -e 'const f=process.argv[1];const fs=require("fs");let s={};try{s=JSON.parse(fs.readFileSync(f,"utf8"))}catch{};s.loginAt=Date.now();fs.writeFileSync(f,JSON.stringify(s,null,2),{mode:0o600})' "$DIR/state.json"
 echo "The next pull (18:00) signs in with it. To test now: node ~/marathon-store-app/tools/sb-portal-recon/run.mjs --dry-run"

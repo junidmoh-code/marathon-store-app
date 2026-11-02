@@ -133,20 +133,23 @@ async function emailJunid(msg) {
 
 // ── the saved password (macOS Keychain; never in a file, never logged) ───────
 function keychainLogin() {
+  // The FILE first: save-login.sh writes it only when the Keychain was locked,
+  // so it is the newer password whenever both exist (CodeRabbit, #838).
+  try {
+    const f = join(STATE_DIR, "credentials");
+    if ((statSync(f).mode & 0o077) !== 0) { log("⚠ the credentials file is readable by others — not used; run save-login.sh again"); }
+    else {
+      const kv = Object.fromEntries(readFileSync(f, "utf8").split("\n").map((l) => /^([A-Z_]+)=(.*)$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2]]));
+      if (kv.SIMPLYBLU_EMAIL && kv.SIMPLYBLU_PASSWORD) return { email: kv.SIMPLYBLU_EMAIL, password: kv.SIMPLYBLU_PASSWORD };
+    }
+  } catch { /* no file */ }
   try {
     const attrs = execFileSync("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
     const acct = /"acct"<blob>="([^"]+)"/.exec(attrs)?.[1];
     const password = execFileSync("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).replace(/\n$/, "");
     if (acct && password) return { email: acct, password };
-  } catch { /* not in the Keychain (or it is locked) — try the file */ }
-  // ~/.marathon/sb-portal/credentials (chmod 600, outside the repo), written
-  // by save-login.sh when the Keychain could not be used over SSH.
-  try {
-    const f = join(STATE_DIR, "credentials");
-    if ((statSync(f).mode & 0o077) !== 0) { log("⚠ the credentials file is readable by others — not used; run save-login.sh again"); return null; }
-    const kv = Object.fromEntries(readFileSync(f, "utf8").split("\n").map((l) => /^([A-Z_]+)=(.*)$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2]]));
-    return kv.SIMPLYBLU_EMAIL && kv.SIMPLYBLU_PASSWORD ? { email: kv.SIMPLYBLU_EMAIL, password: kv.SIMPLYBLU_PASSWORD } : null;
-  } catch { return null; }
+  } catch { /* not in the Keychain, or it is locked */ }
+  return null;
 }
 
 // ── the browser ──────────────────────────────────────────────────────────────
