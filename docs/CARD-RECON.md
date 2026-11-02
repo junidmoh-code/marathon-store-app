@@ -536,6 +536,96 @@ non-FNB terminals in the estate. Registered by
   photo is read in the background with a Standard Bank prompt only to flag a
   different total or TID. Switch the rows to "Both" once the reader ships.
 
+## The SimplyBLU portal is the record for Standard Bank tills (from 3 Nov 2026)
+
+Junid, 2 Nov 2026: from **3 Nov 2026** the Standard Bank tills take every card
+payment through the SimplyBLU app on the machine, so the **SimplyBLU portal**
+(www.simplyblu.co.za) is their record. FNB tills are untouched.
+
+| Till | MID | TID (registry) | TID as the portal prints it |
+|---|---|---|---|
+| Marathon PE Till 2 | 0004977890 (THE MARATHON) | `0000HP1X` | `0000HP1X` |
+| Trophy Till 2 | 0004977890 (THE MARATHON) | `0000Z4M6` | `0000Z4M6` |
+| Concrete Till 1 | 0005377331 (CONCRETE) | `00000F2Y` | `0000OF2Y` |
+| Concrete Till 2 | 0005377331 (CONCRETE) | `00000F1Y` | `0000OF1Y` |
+
+Concrete is as labelled (2 Nov 2026: 47 of the 49 POS card legs at Concrete
+30 Oct–2 Nov match `0000OF2Y` transactions, all rung on Till 1).
+
+**Before 3 Nov the portal held only app-initiated payments** (29 ever on
+0004977890 — Sep 2025 to 25 Mar 2026), which is why `PORTAL_FROM_YMD` is a
+constant and nothing earlier is recorded from it.
+
+* **What is read.** The portal's Analytics → *Monthly Card POS - Terminal Batch
+  Report* is an embedded Metabase dashboard (47). The portal hands the page a
+  signed embed link (~1 h, locked to the selected store); Metabase's embed API
+  answers it as JSON: the Terminal ID list, and per day the *Card POS
+  Transactions* rows (time to the minute, TID, type, status, amount, trace id,
+  auth code — no card number). Successful purchases and refunds only.
+* **Who reads it.** `tools/sb-portal-recon/run.mjs` on the Mac mini (launchd
+  `com.marathon.sbportalrecon`, 18:00 and 18:20 SAST — 18:20 only if 18:00 did
+  not finish; log `~/marathon-store-app/logs/sb-portal-recon.log`). A persistent
+  browser profile (`~/.marathon/sb-portal/profile`) keeps the sign-in; it walks
+  every store in the header switcher (a newly linked merchant appears by
+  itself). Signed out: it signs in with the password saved in the Keychain
+  (service `marathon-simplyblu`) if there is one; a PIN prompt or no saved
+  password **stops** the run and emails Junid once ("SimplyBLU needs a fresh
+  login on the Mac mini") — fix: `node tools/sb-portal-recon/run.mjs --login`
+  on the mini. Raw answers: `logs/sb-portal-recon/` (gitignored).
+* **What is recorded** — `cardBatchCapture` action `portalDay`
+  (`functions/cardRecon/cardPortal.js`, `lib/card-portal.cjs`), as the mailbox
+  poller's identity: one ordinary `/card_batches` record per terminal per
+  **SAST calendar day**, window 00:00 → 23:59:59.999 (`windowSource:
+  "portal-day"`), `capturedVia: "simplyblu-portal"`, the portal's transactions
+  as lines (refunds negative). The terminal's next filing number; a re-pull
+  with the same figures writes nothing; changed figures (a late transaction) are
+  a revision `-rN`. A record already on file for that day (a staff slip, Junid's
+  entry) is replaced as a revision of its batch and kept.
+* **A day is recorded only once the machine is in the portal at all** (its TID
+  in the report's Terminal ID list). Then a day with **no transactions** is
+  recorded R0.00, so POS card legs that day are **SHORT**, never clean. Until
+  then there is no record, and the POS shows the till's money as **AWAITING
+  PORTAL DATA** (red after 2 days: *NO PORTAL DATA FOR 2+ DAYS*). A portal
+  layout the parser cannot read records nothing — never zero.
+* **Staff slips are evidence only** for these tills from 3 Nov: a slip (or a
+  manager's photo) before the day's portal record is HELD at
+  `card_batch_overrides/portal/held/{store}/{tid}/{day}` and moved onto the
+  record as a supporting slip when it is written; one after it is attached as
+  usual. Junid's manual entry is refused for a day the portal already recorded
+  (a correction of that record is still his to make).
+* **A TID the portal shows that no registry row takes** is kept at
+  `card_batch_overrides/portal/unassigned/{canonical TID}` with its money per
+  day — never dropped, never guessed. The POS Card Recon shows it with
+  **Assign to a till**, which opens the store app's Card machines → settings on
+  the Add form prefilled (TID, Standard Bank, merchant) via `#card-assign=<TID>`.
+* **Guards (review, #837):** a status or type the parser does not recognise
+  refuses that store's day (never a silent R0.00); a zero day for TODAY is
+  written only if the merchant shows any activity today (else awaiting — the
+  portal may be behind); Junid's correction of a portal day stands against
+  later pulls; one store that cannot be read never stops the others; only the
+  columns the record reads leave the mini; the run is bounded (15 min) and a
+  failed 18:20 catch-up emails Junid once.
+* **The two THE MARATHON rows carry `bank: "standard-bank"`** from 2 Nov 2026
+  (`scripts/cardrecon/apply-terminal-bank-sb-20261102.mjs`): they were
+  registered before `bank` existed, and absent is FNB.
+* **Saved password (optional, for silent re-login):** on the mini, once:
+  `security add-generic-password -s marathon-simplyblu -a <login email> -w`
+  (it prompts for the password). Without it, a sign-out stops the pull and
+  emails Junid; a PIN demanded once is never re-triggered by later runs until
+  someone signs in with `--login`.
+* **The Terminal ID list is not date-bound**: it lists every TID the store has
+  ever had (2 Nov 2026: `0000HP1X`/`0000Z4M6` listed with their last
+  transaction in March), so a till with no payment all month is still "in the
+  portal" and its zero day is recorded (short against POS legs).
+* **One record per terminal per day; WHERE the money was rung** is the POS
+  report's job as for every capture (`placeSegments` places each transaction by
+  the machine's placement at its own time) — the capture-time expected figure
+  uses the till the machine stood on for the day and says so if it moved.
+* **Backfill** (e.g. a TID assigned more than two days after it first
+  appeared): `node tools/sb-portal-recon/run.mjs --days 2026-11-03,2026-11-04`
+  on the mini.
+* Run status: `card_batch_overrides/portal/status` and `…/portal/days/{day}`.
+
 ## Received, then read — the background reader (7 Oct 2026)
 
 **The manager submits, sees "Received", and leaves.** Junid, 7 Oct 2026, after

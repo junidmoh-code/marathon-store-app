@@ -85,6 +85,7 @@ const {
   addUnreadFailure, resolveUnreadMarker, noticeRecord,
 } = require("../lib/card-unread.cjs");
 const { slipTradingDay, batchCloseOf, staffSlipDayPath, staffSlipEntry, latestStaffSlip } = require("../lib/card-staff-slip-log.cjs");
+const { isPortalDay } = require("../lib/card-portal.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -2266,6 +2267,23 @@ async function handleSlip(db, request, deps = {}) {
     console.error(`CARD_SLIP_ORPHAN_TILL uid=${uid} tid=${picked} till=${placeStore}/${placeTill}: not a POS till — slip refused`);
     return reject(`${here.label || terminal.label || picked} is not set up as a till in the POS, so its slip would not reach Card Recon — nothing was recorded. Tell Junid.`);
   }
+  // A PORTAL TILL (Standard Bank, from 3 Nov 2026 — lib/card-portal.cjs): the
+  // SimplyBLU portal is the record, so the slip is KEPT as evidence beside it
+  // (or held for it) and never becomes the day's figure. Photo, and the typed
+  // total when there is one.
+  if (isPortalDay(terminal, slipTradingDay(nowMs))) {
+    let cents = null;
+    if (hasDeclaredTotal(data.declaredTotal)) {
+      const declared = readDeclaredTotal(data.declaredTotal);
+      if (declared.err) return reject(declared.err);
+      cents = declared.cents;
+    }
+    const decodedPhotos = data.photos.map(decodePhoto);
+    if (!decodedPhotos.every((d) => d.buffer.length > 3 && d.buffer[0] === 0xff && d.buffer[1] === 0xd8 && d.buffer[2] === 0xff)) {
+      throw new HttpsError("invalid-argument", "That is not a photo. Take a photo of the slip.");
+    }
+    return require("./cardPortal.js").keepPortalSlip(db, request, { terminal, picked, photos: decodedPhotos, cents, nowMs, bucket: deps.bucket || null });
+  }
   // WHAT A SLIP CARRIES (Junid, 17 Oct 2026): a typed-total till (Trophy Till
   // 2 — its paper has no total) sends the photo AND the typed figure; every
   // other till (Marathon PE Till 2) sends the PHOTO ONLY, and its total is read
@@ -2608,6 +2626,11 @@ async function handleReceive(db, request, deps = {}) {
   }
 
   const nowMs = (deps.now || Date.now)();
+  // A PORTAL TILL: the photo is evidence beside the portal record, never read
+  // into a figure (lib/card-portal.cjs).
+  if (isPortalDay(terminal, slipTradingDay(nowMs))) {
+    return require("./cardPortal.js").keepPortalSlip(db, request, { terminal, picked, photos: decoded, cents: null, nowMs, bucket: deps.bucket || null });
+  }
   // THE TRADING DAY. A slip photographed after midnight is the evening's batch
   // (no shop opens before 06:00 SAST), so it is filed on the day before.
   const dayYmd = slipTradingDay(nowMs);
@@ -2999,6 +3022,12 @@ exports.cardBatchCapture = onCall(
     // older one judged (scripts/cardrecon/intakeCore.mjs → retryCandidates).
     // A number and nothing else.
     if (action === "version") return { ok: true, parserVersion: PARSER_VERSION };
+    // ── THE SIMPLYBLU PORTAL'S DAY (tools/sb-portal-recon on the Mac mini) ──
+    // The record for Standard Bank tills from 3 Nov 2026 — cardPortal.js.
+    if (action === "portalDay") {
+      await assertEmailIntake(request);
+      return require("./cardPortal.js").handlePortalDay(db, request);
+    }
     if (action === "extract") {
       const out = await handleExtract(db, request);
       // Every refusal leaves its reason in the log, not only on the phone —
@@ -3050,7 +3079,7 @@ exports.cardBatchCapture = onCall(
       const out = await handleSubmit(db, request);
       return out && typeof out === "object" ? { ...out, parserVersion: PARSER_VERSION } : out;
     }
-    throw new HttpsError("invalid-argument", "action must be 'receive', 'slip', 'extract', 'typed', 'submit' or 'version'.");
+    throw new HttpsError("invalid-argument", "action must be 'receive', 'slip', 'extract', 'typed', 'submit', 'portalDay' or 'version'.");
   },
 );
 
@@ -3088,6 +3117,10 @@ exports.cardBatchReadRetry = onSchedule(
 
 // Exported for tests (pure-ish seams).
 exports.handleReceive = handleReceive;
+exports.matchBatch = matchBatch;
+exports.reconTerminalFor = reconTerminalFor;
+exports.logStaffSlip = logStaffSlip;
+exports.propagateSlips = propagateSlips;
 exports.handleSlip = handleSlip;
 exports.handleSlipTills = handleSlipTills;
 exports.carriedSlipsFor = carriedSlipsFor;

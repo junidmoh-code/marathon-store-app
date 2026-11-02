@@ -40,6 +40,7 @@ const {
   MANUAL_AUDIT_PATH, unreadPath, resolveUnreadMarker, isDayYmd, sastDayStartMs,
 } = require("../lib/card-unread.cjs");
 const { JOBS_PATH, DUE_PATH, dueKey } = require("../lib/card-read-jobs.cjs");
+const { isPortalDay, PORTAL_SOURCE } = require("../lib/card-portal.cjs");
 // The capture path's own duplicate guard — the same function its submit calls.
 const { resolveWriteFor, syncCarried, readLastBatchFor } = require("./cardRecon.js");
 
@@ -80,6 +81,17 @@ async function handleManualEntry(db, request, deps = {}) {
   if (!row || !row.storeId || !row.tillId) return reject(`Terminal ${tid} is not registered — nothing was recorded.`);
   const storeId = row.storeId; // the FILING key
   const nowMs = now();
+  // THE PORTAL IS THE RECORD for a Standard Bank till's day once it is in
+  // (lib/card-portal.cjs): a new batch beside it would count the day twice.
+  // Correcting a record (input.replaces) is still his to do.
+  if (!input.replaces && isPortalDay(row, input.dayYmd) && sastDayStartMs(input.dayYmd) !== null) {
+    const ds = sastDayStartMs(input.dayYmd);
+    const day = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}`).orderByChild("slip/closedAt")
+      .startAt(ds).endAt(ds + 24 * 60 * 60 * 1000 - 1).once("value")).val() || {};
+    if (Object.values(day).some((r) => r && r.capturedVia === PORTAL_SOURCE)) {
+      return reject(`The SimplyBLU portal is already the record for ${row.label || tid} on ${input.dayYmd}. To change it, open that day's card and use "Correct these figures".`);
+    }
+  }
 
   // A STAFF SLIP IS ALREADY THE DAY'S RECORD: Junid's figure outranks it and
   // replaces it, keeping it beside his (lib/card-supporting-slips.cjs) — a

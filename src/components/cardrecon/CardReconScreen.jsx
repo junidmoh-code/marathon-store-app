@@ -84,6 +84,7 @@ import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture, ti
 import { captureCards, cardsBySection, takesPhoto, typesTotal } from "./terminalRegistry";
 import { useMySections } from "../../utils/useMySections";
 import TerminalSettings from "./TerminalSettings";
+import { takeAssignRequest } from "./portalAssign";
 import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
@@ -226,7 +227,10 @@ export default function CardReconScreen({ onExit }) {
   // The same account the card-recon reports are gated to. Hiding the icon is
   // convenience; the callable refuses everyone else regardless.
   const isOwner = auth.currentUser?.email === ADMIN_EMAIL;
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // The POS's "Assign" on an unassigned SimplyBLU terminal opens the sheet on it.
+  // Taken on EVERY device (it restores the device's own role); acted on only for Junid.
+  const [assignTid] = useState(() => { const t = takeAssignRequest(); return isOwner ? t : null; });
+  const [settingsOpen, setSettingsOpen] = useState(() => !!assignTid);
 
   // ── the registry: which machines exist, and what each till is called ──
   const [terminals, setTerminals] = useState(null);   // null = loading
@@ -533,7 +537,7 @@ export default function CardReconScreen({ onExit }) {
       )}
 
       {isOwner && settingsOpen && (
-        <TerminalSettings terminals={terminals} onClose={() => setSettingsOpen(false)} />
+        <TerminalSettings terminals={terminals} assignTid={assignTid} onClose={() => setSettingsOpen(false)} />
       )}
 
       {!settingsOpen && <div style={T.list}>

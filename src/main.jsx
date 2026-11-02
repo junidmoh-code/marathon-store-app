@@ -7,6 +7,7 @@ import { consumePairingHash } from "./btHandoff/handoff.js";
 import { MirrorGate } from "./offline/MirrorGate.jsx";
 import DeviceQuarantine from "./device/DeviceQuarantine.jsx";
 import { auth, storage } from "./firebase.js";
+import { consumeAssignHash } from "./components/cardrecon/portalAssign.js";
 
 // Last-resort crash surface: show ANY uncaught error / promise rejection as a
 // fixed banner on screen, so a failure can never be a silent black screen with
@@ -53,6 +54,10 @@ applyPushDeepLink();
       : "That pairing code is not valid. Scan the QR on the till again."), 0);
   }
 }
+
+// The POS Card Recon's "Assign" on an unassigned SimplyBLU terminal opens
+// Card machines here with #card-assign=<TID> (src/components/cardrecon/portalAssign.js).
+consumeAssignHash();
 
 // Long-lived warehouse/TV tabs: poll /version.json and pick up new deploys on
 // their own (banner + idle auto-reload; never mid-count — see updateChecker.js).

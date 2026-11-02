@@ -1,0 +1,10 @@
+{"row_count":3,"status":"completed","data":{"cols":[
+ {"display_name":"DateCreated: Minute"},{"display_name":"ID"},{"display_name":"TransactionNumber"},{"display_name":"TransactionType"},
+ {"display_name":"TransactionStatus"},{"display_name":"ProviderName"},{"display_name":"Payment Method"},{"display_name":"TerminalId"},
+ {"display_name":"BatchNo"},{"display_name":"PaymentRefNo"},{"display_name":"AuthCode"},{"display_name":"Transaction Amount"},
+ {"display_name":"Amount Paid"},{"display_name":"PurchaseValue"},{"display_name":"TipAmount"},{"display_name":"Refund"},
+ {"display_name":"CashbackWithdrawalValue"},{"display_name":"SettlementValue"},{"display_name":"User"}],
+ "rows":[
+ ["2026-11-03T11:15:00+02:00","00000000-0000-4000-8000-000000000001",31,"Purchase","Success","Card","Card - POS","0000OF2Y",12,"000000000001","000001",930,930,930,0,0,0,930,"Guest User"],
+ ["2026-11-03T11:20:00+02:00","00000000-0000-4000-8000-000000000002",32,"Purchase","Failed","Card","Card - POS","0000OF2Y",12,"000000000002","",350,0,0,0,0,0,0,"Guest User"],
+ ["2026-11-03T12:05:00+02:00","00000000-0000-4000-8000-000000000003",33,"Purchase","Success","Card","Card - POS","0000OF1Y",4,"000000000003","000003",750,750,750,0,0,0,750,"Guest User"]]}}
