@@ -72,9 +72,14 @@ DEFAULT_MAX_SIDE = 1600      # longest side of the uploaded PNG; 0 = keep full s
 FIELDS = ("photoUrl", "category", "photoUpdatedAt", "photoCutoutFor", "photoCutoutUrl", "photoCutoutQuality")
 QUALITIES = ("shoe", "rejected")
 FOOTWEAR = "Footwear"          # the product's category field (refill-engine isFootwear)
-GATE_VERSION = 3               # bump to re-audit every cut-out under a new gate
+GATE_VERSION = 4               # bump to re-audit every cut-out under a new gate
 RETRY_THRESHOLD = 0.65         # the retry: a tighter CLIPSeg threshold...
 RETRY_ERODE_PX = 10            # ...and the keep-mask eroded 10 px
+# The retry may trim FRAGMENTS, not the shoe. A normal retry keeps 85-95% of
+# the first cut (the 10 px erosion); one under 80% has cut into the shoe
+# itself — AJ1 Cream Brown Red lost its sole, AF1 SF its gum sole — and its
+# smoother outline then passes solidity. Rejected as "retry-shrunk".
+RETRY_MIN_KEEP = 0.80
 GATE_DEFAULT_PARAMS = {}       # shoe.GATE as it stands (see the calibration note in README)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -209,6 +214,10 @@ def make_cutout(photo_bytes, remover, segmenter, judge=None, max_side=DEFAULT_MA
     for n, (th, er) in enumerate([(shoe.MASK_THRESHOLD, 0), (RETRY_THRESHOLD, RETRY_ERODE_PX)], 1):
         iso = shoe.isolate_shoe(img, prob, remover, threshold=th, erode_px=er)
         ok, rule, m = shoe.quality_gate(iso, judge, gate_params)
+        first = res.attempts[0][1] if res.attempts else {}
+        if ok and n == 2 and first.get("area_fraction") and \
+                m.get("area_fraction", 0) < RETRY_MIN_KEEP * first["area_fraction"]:
+            ok, rule = False, "retry-shrunk"
         res.attempts.append((rule, m, iso.rgba))
         if ok:
             try:

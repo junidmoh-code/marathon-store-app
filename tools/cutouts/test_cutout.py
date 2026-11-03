@@ -634,18 +634,35 @@ class ShoeStage(unittest.TestCase):
         res = cutout.make_cutout(jpeg_with_box(), fake_remover, dark_segmenter)
         self.assertEqual((res.quality, res.passed_attempt), ("shoe", 1))
 
-    def test_make_cutout_second_attempt_can_pass(self):
-        """A faint fragment (prob 0.55) under the shoe: in at 0.50, out at 0.65."""
+    def scene(self, parts, size=(1000, 400)):
+        """parts: [(box, prob)] — every part is drawn dark (fake_remover and
+        dark_segmenter call dark 'object'); prob is what CLIPSeg says there."""
         np = self.np
+        jpg = jpeg_of(lambda d: [d.rectangle(b, fill=(0, 0, 0)) for b, _ in parts], size)
         def seg(img):
-            p = dark_segmenter(img)
-            p[80:100, 0:200] = 0.55               # a fragment band joined to the shoe, CLIPSeg unsure
-            return p
-        def draw(d):
-            d.rectangle((40, 20, 159, 79), fill=(0, 0, 0))
-            d.rectangle((0, 80, 199, 99), fill=(10, 10, 10))       # a dark box edge the full width
-        res = cutout.make_cutout(jpeg_of(draw), fake_remover, seg)
-        self.assertNotEqual(res.attempts[0][0], "")
+            m = np.zeros((img.size[1], img.size[0]), np.float32)
+            for (x0, y0, x1, y1), pr in parts:
+                m[y0:y1 + 1, x0:x1 + 1] = pr
+            return m
+        return jpg, seg
+
+    def test_a_retry_that_cuts_into_the_shoe_is_rejected(self):
+        """The upper is sure, the dark sole is not: attempt 1 fails (box
+        remnant), the tighter retry drops the sole and passes every rule —
+        but kept under 80% of the first cut: retry-shrunk, original photo."""
+        jpg, seg = self.scene([((300, 50, 699, 249), 0.95), ((300, 250, 699, 329), 0.55)])
+        res = cutout.make_cutout(jpg, fake_remover, seg)
+        self.assertEqual(res.attempts[0][0], "box-remnant")
+        self.assertEqual(res.attempts[1][0], "retry-shrunk")
+        self.assertEqual(res.quality, "rejected")
+        self.assertIsNone(res.png)
+
+    def test_make_cutout_second_attempt_can_pass(self):
+        """A thin fragment (prob 0.55) runs off the side of the shoe: in at
+        0.50 (solidity fails), out at 0.65 — and the shoe itself is kept."""
+        jpg, seg = self.scene([((100, 100, 499, 299), 0.95), ((500, 196, 979, 203), 0.55)])
+        res = cutout.make_cutout(jpg, fake_remover, seg)
+        self.assertEqual(res.attempts[0][0], "solidity")   # the long thin tail (aspect fails too)
         self.assertEqual((res.quality, res.passed_attempt), ("shoe", 2))
 
 

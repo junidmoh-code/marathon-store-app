@@ -35,7 +35,10 @@ Before the gate, `no-shoe` (CLIPSeg found nothing) and `low-confidence`
 (peak under 0.60) are rejections too.
 
 A rejected cut is retried once with a tighter CLIPSeg threshold (0.65) and the
-mask eroded 10 px. If that fails too, the product is written `rejected` with
+mask eroded 10 px. The retry may trim fragments, not the shoe: one that keeps
+under 80% of the first attempt's shoe is `retry-shrunk` (a normal retry keeps
+85-95%; the AJ1 Cream Brown Red retry kept 73%, minus its sole). If the retry
+fails, the product is written `rejected` with
 no URL and the card shows the original photo. There is no whole-object
 fallback. Every rejection is logged in `logs/cutouts.log` as
 `REJECT <pid> attempt=<n> rule=<rule> {metrics}` and `REJECTED <pid> rule=<rule>`.
