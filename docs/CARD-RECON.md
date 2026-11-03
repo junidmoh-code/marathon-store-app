@@ -886,9 +886,14 @@ R3,500.
 
 `lib/card-match.cjs` pairs each transaction with a card leg instead:
 
-1. **Pass one, the mapped till.** A leg rung where it should have been is never
-   taken by a cross-till candidate of the same amount.
-2. **Pass two, everywhere else.** This is where a moved machine shows up.
+1. **Pass one, the till the machine stood at.** Each transaction is matched on
+   the till the machine stood at when it took it (its placement then, `tillAt`)
+   — so a machine moved to another shop, even mid-batch, matches here. A leg
+   rung where it should have been is never taken by a cross-till candidate of
+   the same amount.
+2. **Pass two, another till in the same store, close in time.** From 5 minutes
+   before to 15 minutes after the transaction. This is where a machine handed
+   across the shop shows up. It never reaches into another shop.
 
 ### The summary settles it first
 
@@ -919,10 +924,13 @@ ledger the whole time. A person was accused over it.
 > **If the terminal says R351.00 and the till says R351.00, there is no issue** —
 > whatever the two clocks say about when.
 
-So **amount equality is the only thing that makes a leg eligible.** Time is used
-solely to choose between legs *of the same amount*, so the pairing a person is
-shown is the sensible one; it can never turn a leg into a non-candidate and so
-can never manufacture a discrepancy. That also makes the assignment trivially
+So **on the till the machine stood at, amount equality is the only thing that
+makes a leg eligible.** Time is used there solely to choose between legs *of the
+same amount*, so the pairing a person is shown is the sensible one; it can never
+turn a leg into a non-candidate and so can never manufacture a discrepancy.
+(Pass two, on *another* till, is time-bounded — see below. A claim on a
+different till is weaker, and an unbounded one hid a R700 card sale rung as
+cash on 2 Nov 2026.) That also makes the assignment trivially
 optimal — within one amount every unclaimed leg is as good as any other, so a
 greedy pass matches `min(transactions, legs)`, which is the most there can be.
 
@@ -958,8 +966,21 @@ netted against each other**:
 | `match.unmatchedLegCents` | a card sale on this till the machine has no record of — a different question |
 
 `match.offTill` records *where* the work was rung when it was not on the
-terminal's own till, so "the machine was at Trophy that morning" reads off the
-record. `varianceOnTillCents` keeps the old subtraction so batches reconciled
+terminal's own till — another till **of the same store**, within 5 minutes
+before to 15 minutes after the transaction (`OFF_TILL_BACK_MS` /
+`OFF_TILL_FORWARD_MS` in `lib/card-match.cjs`). A machine moved to another
+*shop* is a placement: each transaction is matched against the till the
+machine stood at when it took it (`tillAt`), so a batch whose window spans the
+move still matches on-till in the first pass. The second pass never reaches
+into another shop.
+
+Until 3 Nov 2026 the second pass took any same-amount card leg in any shop at
+any time in the fetched window. On 2 Nov Concrete Till 1's machine charged
+R700 at 11:34 for S-C00554, which the cashier rang as cash; the matcher paired
+the swipe with a PE Till 2 card sale nearly an hour away (a sale PE's own
+machine had taken), and the batch read "accounted for". 31 Oct paired a Concrete R300
+swipe with a Trophy sale the same way. An unmatched transaction is now the
+variance it always was. `varianceOnTillCents` keeps the old subtraction so batches reconciled
 before and after stay comparable.
 
 ### What the pairing is worth
@@ -979,9 +1000,10 @@ minimum lag  118 s        median  135 s        maximum  249 s
 legs ahead of their terminal stamp:  none
 ```
 
-Hence the asymmetric tolerance — 15 minutes forwards, 2 minutes back. The
-backward allowance is for clock drift between two devices, not because a leg is
-ever expected first.
+Hence the asymmetric bound on the off-till pass — 15 minutes forwards, 5
+minutes back (`OFF_TILL_FORWARD_MS` / `OFF_TILL_BACK_MS`). The backward
+allowance is for clock drift between two devices, not because a leg is ever
+expected first. On the machine's own till there is no time bound at all.
 
 ### Why the PDF is read as text and never OCR'd
 
