@@ -27,7 +27,7 @@ Run on every mask before anything is uploaded. Rejected if any of:
 | `solidity` | largest piece's area / its convex hull area under 0.80 |
 | `area` | largest piece under 6% of the photo (spec said 10%; see below) |
 | `aspect` | mask bounding box w/h outside 0.9 to 3.2 |
-| `box-remnant` | over 15% of the mask's bottom 20% rows are dark pixels CLIPSeg was not sure were shoe (under 92% of the shoe's peak score) |
+| `box-remnant` | over 15% of the mask's bottom 20% rows are dark pixels CLIPSeg was not sure were shoe (under 92% of the shoe's peak score, 2.5% margin), AND those rows span under 45% of the mask's width — a stem hanging under the shoe (riser label, box), not a sole |
 | `hole` | an enclosed hole above 4% of the mask area |
 | `clip` | CLIP zero-shot: P("a clean product photo of a single shoe on a plain background") minus P("a damaged image with fragments and cut-off pieces") under 0.15 (the CLIP inside CLIPSeg; no second model) |
 
@@ -48,6 +48,12 @@ in front of the wall; a perfectly cut sneaker covers 6-10% of the photo
 (median 9.8% on a 160-product calibration). At 10% the rule rejected ~58% of
 good footwear; the cuts under 6% were the broken ones. `--area 0.10` restores
 the spec number.
+
+**Box-remnant needs the width test.** Black shoes on the black mesh wall have
+dark soles CLIPSeg is unsure of, so the dark-pixel test alone rejected clean
+black shoes (19 of the first 126 judged). Real remnants hang under the sole:
+the SB Dunk's riser label spans 22% of the mask's width, a black block 37%;
+clean black shoes' soles 64-100%.
 
 `--loose` sets solidity and aspect one step looser (0.75; 0.8 to 3.6). Only
 use it if more than 25% of footwear is rejected.

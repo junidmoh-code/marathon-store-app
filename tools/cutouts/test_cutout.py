@@ -591,17 +591,34 @@ class ShoeStage(unittest.TestCase):
         self.assertEqual(self.shoe.judge_metrics(self.metrics(flat))[1], "aspect")
         self.assertTrue(self.shoe.judge_metrics(self.metrics(self.shoe_mask()))[0])
 
-    def test_box_remnant_dark_rows_clipseg_did_not_call_shoe(self):
+    def test_box_remnant_dark_stem_under_the_shoe(self):
+        """The SB Dunk case: a riser's black label hangs under the sole —
+        dark, not sure-shoe, and narrow."""
+        np = self.np
+        mask = np.zeros((200, 300), bool)
+        mask[20:130, 20:280] = True           # the shoe
+        mask[130:190, 110:190] = True         # a stem under it: riser front + label
+        rgb = np.full((200, 300, 3), 200, np.uint8)
+        rgb[150:190, 110:190] = 15            # the black label
+        clip = mask.copy(); clip[130:] = False
+        m = self.metrics(mask, rgb, clip)
+        self.assertGreater(m["remnant"], 0.15)
+        self.assertLess(m["span"], 0.45)
+        self.assertEqual(self.shoe.judge_metrics(m)[1], "box-remnant")
+
+    def test_a_black_sole_is_not_a_box_remnant(self):
+        """A black shoe on the black wall: its sole is dark and CLIPSeg is
+        unsure of it, but it runs the shoe's length."""
         np = self.np
         mask = self.shoe_mask()
         rgb = np.full((150, 300, 3), 200, np.uint8)
-        rgb[108:130, 20:280] = 15             # the bottom 22 rows are a black box edge...
-        clip = mask.copy(); clip[108:130] = False   # ...that CLIPSeg did not call shoe
+        rgb[100:130, 20:280] = 15             # the black sole
+        clip = mask.copy(); clip[100:130] = False
         m = self.metrics(mask, rgb, clip)
         self.assertGreater(m["remnant"], 0.15)
-        self.assertEqual(self.shoe.judge_metrics(m)[1], "box-remnant")
-        # a black SOLE CLIPSeg did call shoe is fine
-        self.assertEqual(self.metrics(mask, rgb, mask)["remnant"], 0.0)
+        self.assertGreater(m["span"], 0.9)
+        self.assertTrue(self.shoe.judge_metrics(m)[0])
+        self.assertEqual(self.metrics(mask, rgb, mask)["remnant"], 0.0)   # sure-shoe: not counted at all
 
     def test_hole(self):
         mask = self.shoe_mask()
@@ -647,12 +664,14 @@ class ShoeStage(unittest.TestCase):
         return jpg, seg
 
     def test_a_retry_that_cuts_into_the_shoe_is_rejected(self):
-        """The upper is sure, the dark sole is not: attempt 1 fails (box
-        remnant), the tighter retry drops the sole and passes every rule —
-        but kept under 80% of the first cut: retry-shrunk, original photo."""
-        jpg, seg = self.scene([((300, 50, 699, 249), 0.95), ((300, 250, 699, 329), 0.55)])
+        """The upper is sure, the sole is not, and a thin tail runs off the
+        side: attempt 1 fails (the tail), the tighter retry drops the tail AND
+        the sole and passes every rule — but kept under 80% of the first cut:
+        retry-shrunk, original photo."""
+        jpg, seg = self.scene([((300, 50, 699, 249), 0.95), ((300, 250, 699, 329), 0.55),
+                               ((700, 196, 979, 203), 0.55)])
         res = cutout.make_cutout(jpg, fake_remover, seg)
-        self.assertEqual(res.attempts[0][0], "box-remnant")
+        self.assertNotEqual(res.attempts[0][0], "")
         self.assertEqual(res.attempts[1][0], "retry-shrunk")
         self.assertEqual(res.quality, "rejected")
         self.assertIsNone(res.png)

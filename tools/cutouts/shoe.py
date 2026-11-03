@@ -249,7 +249,8 @@ GATE = {
     "aspect_min": 0.9,            # bbox w/h of a side-profile shoe
     "aspect_max": 3.2,
     "remnant_rows": 0.20,         # bottom 20% of the mask's rows...
-    "remnant_max": 0.15,          # ...<= 15% dark pixels CLIPSeg did not call shoe
+    "remnant_max": 0.15,          # ...<= 15% dark pixels CLIPSeg did not call shoe,
+    "remnant_span": 0.45,         # ...when those rows span < 45% of the mask's width (a stem under the shoe, not a sole)
     "dark_luma": 60,              # "dark" = luma below this (0-255)
     "max_hole_share": 0.04,       # no enclosed hole above 4% of the mask
     "clip_margin": 0.15,          # P(clean) - P(damaged) at least this
@@ -307,13 +308,19 @@ def mask_metrics(alpha, crop_rgb, clip_mask, image_size, params=None):
     band[:y_cut] = False
     luma = crop_rgb[..., 0] * 0.299 + crop_rgb[..., 1] * 0.587 + crop_rgb[..., 2] * 0.114
     remnant = float((band & (luma < P["dark_luma"]) & ~clip_mask).sum()) / max(1.0, float(band.sum()))
+    # How wide are those bottom rows? A sole runs the shoe's length; a riser
+    # label or box hanging under the shoe is a narrow stem. Black shoes on the
+    # black mesh wall have dark soles CLIPSeg is unsure of — span tells them apart.
+    bx = np.nonzero(band.any(axis=0))[0]
+    span = (bx.max() - bx.min() + 1) / float(bw) if len(bx) else 1.0
     holes = ndimage.binary_fill_holes(mask) & ~mask
     hl, hn = ndimage.label(holes)
     hole = float(ndimage.sum(holes, hl, index=np.arange(1, hn + 1)).max()) / area if hn else 0.0
     img_area = float(image_size[0] * image_size[1]) * (s * s)
     return {"components": big, "solidity": round(solidity, 3),
             "area_fraction": round(largest_area / img_area, 4),
-            "aspect": round(bw / float(bh), 3), "remnant": round(remnant, 3), "hole": round(hole, 4)}
+            "aspect": round(bw / float(bh), 3), "remnant": round(remnant, 3), "span": round(span, 3),
+            "hole": round(hole, 4)}
 
 
 def judge_metrics(m, params=None):
@@ -329,7 +336,7 @@ def judge_metrics(m, params=None):
         return False, "area"
     if not (P["aspect_min"] <= m["aspect"] <= P["aspect_max"]):
         return False, "aspect"
-    if m["remnant"] > P["remnant_max"]:
+    if m["remnant"] > P["remnant_max"] and m.get("span", 0.0) < P["remnant_span"]:
         return False, "box-remnant"
     if m["hole"] > P["max_hole_share"]:
         return False, "hole"

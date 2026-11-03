@@ -72,7 +72,7 @@ DEFAULT_MAX_SIDE = 1600      # longest side of the uploaded PNG; 0 = keep full s
 FIELDS = ("photoUrl", "category", "photoUpdatedAt", "photoCutoutFor", "photoCutoutUrl", "photoCutoutQuality")
 QUALITIES = ("shoe", "rejected")
 FOOTWEAR = "Footwear"          # the product's category field (refill-engine isFootwear)
-GATE_VERSION = 4               # bump to re-audit every cut-out under a new gate
+GATE_VERSION = 5               # bump to re-audit every cut-out under a new gate
 RETRY_THRESHOLD = 0.65         # the retry: a tighter CLIPSeg threshold...
 RETRY_ERODE_PX = 10            # ...and the keep-mask eroded 10 px
 # The retry may trim FRAGMENTS, not the shoe. A normal retry keeps 85-95% of
