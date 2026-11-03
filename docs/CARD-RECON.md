@@ -961,14 +961,16 @@ netted against each other**:
 terminal's own till — another till **of the same store**, within 5 minutes
 before to 15 minutes after the transaction (`OFF_TILL_BACK_MS` /
 `OFF_TILL_FORWARD_MS` in `lib/card-match.cjs`). A machine moved to another
-*shop* is a placement and is matched on that till in the first pass; the
-second pass never reaches into another shop.
+*shop* is a placement: each transaction is matched against the till the
+machine stood at when it took it (`tillAt`), so a batch whose window spans the
+move still matches on-till in the first pass. The second pass never reaches
+into another shop.
 
 Until 3 Nov 2026 the second pass took any same-amount card leg in any shop at
 any time in the fetched window. On 2 Nov Concrete Till 1's machine charged
 R700 at 11:34 for S-C00554, which the cashier rang as cash; the matcher paired
-the swipe with a PE Till 2 card sale nearly an hour away (one PE's own machine
-had taken), and the batch read "accounted for". 31 Oct paired a Concrete R300
+the swipe with a PE Till 2 card sale nearly an hour away (a sale PE's own
+machine had taken), and the batch read "accounted for". 31 Oct paired a Concrete R300
 swipe with a Trophy sale the same way. An unmatched transaction is now the
 variance it always was. `varianceOnTillCents` keeps the old subtraction so batches reconciled
 before and after stay comparable.

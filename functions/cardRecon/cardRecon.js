@@ -983,7 +983,12 @@ async function matchBatch(db, { extraction, terminal, summaryOnly = false }) {
     // wrong. An hour either side covers a drifting clock and a slow till write.
     edgeMs: Math.max(edgeMsFor(extraction), MATCH_WINDOW_MARGIN_MS),
   });
-  return matchLegs(extraction.lines, legs, terminal);
+  // Each transaction is matched against the till the machine stood at WHEN it
+  // took it (its placement then). A window that spans a move to another shop
+  // keeps the filing till as `terminal`, and without this the swipes taken
+  // after the move would find no leg in their own shop — the off-till pass
+  // never leaves a shop — and read as missing money.
+  return matchLegs(extraction.lines, legs, terminal, { tillForTxn: (atMs) => tillAt(terminal, atMs) });
 }
 
 // [typed-capture:start] — see card-batch-numbers.test.cjs for why this region

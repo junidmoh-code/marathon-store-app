@@ -117,14 +117,74 @@ test("a same-shop leg on another till far off in time does not answer", () => {
   assert.equal(r.unmatchedTxnCents, 70000);
 });
 
-test("the off-till time bound is inclusive at both ends and refuses one second past", () => {
-  const back = OFF_TILL_BACK_MS / 60000;
-  const fwd = OFF_TILL_FORWARD_MS / 60000;
-  const at = (mins) => matchLegs([txn(1, 0, 40000)], [leg(mins, 40000, PE_TILL3)], TERMINAL).matches.length;
-  assert.equal(at(-back), 1, "the earliest allowed");
-  assert.equal(at(fwd), 1, "the latest allowed");
-  assert.equal(at(-back - 1 / 60), 0, "a second too early");
-  assert.equal(at(fwd + 1 / 60), 0, "a second too late");
+test("the off-till time bound is inclusive at both ends and refuses one millisecond past", () => {
+  const at = (lagMs) => matchLegs(
+    [{ tsn: 1, at: T0, amountCents: 40000 }],
+    [{ ...leg(0, 40000, PE_TILL3), at: T0 + lagMs }],
+    TERMINAL,
+  ).matches.length;
+  assert.equal(at(-OFF_TILL_BACK_MS), 1, "the earliest allowed");
+  assert.equal(at(OFF_TILL_FORWARD_MS), 1, "the latest allowed");
+  assert.equal(at(-OFF_TILL_BACK_MS - 1), 0, "a millisecond too early");
+  assert.equal(at(OFF_TILL_FORWARD_MS + 1), 0, "a millisecond too late");
+});
+
+// ═══ A MOVE TO ANOTHER SHOP INSIDE THE BATCH (review, PR #841) ════════════════
+// A window that spans a placement change keeps the FILING till as `terminal`.
+// Each transaction is matched against the till the machine stood at when it
+// took it, so the swipes after the move are on-till at the new shop — not
+// "missing" because the off-till pass never leaves a shop.
+test("a batch spanning a move to another shop matches each swipe where the machine stood", () => {
+  const FILED = { storeId: "trophy", tillId: "till-1" };
+  const movedAt = T0 + 60 * 60000;
+  const tillForTxn = (ms) => (ms >= movedAt ? { storeId: "pe", tillId: "till-1" } : FILED);
+  const txns = [txn(1, 10, 50000), txn(2, 90, 70000), txn(3, 120, 30000)];
+  const legs = [
+    leg(12, 50000, { storeId: "trophy", tillId: "till-1" }),
+    leg(92, 70000, { storeId: "pe", tillId: "till-1" }),
+    leg(122, 30000, { storeId: "pe", tillId: "till-1" }),
+  ];
+  const r = matchLegs(txns, legs, FILED, { tillForTxn });
+  assert.equal(r.matches.length, 3);
+  assert.equal(r.unmatchedTxnCents, 0, "nothing reads as missing");
+  assert.equal(r.offTillCents, 0, "each swipe is on the till the machine stood at");
+  // …and without the placement it would have read missing — the regression.
+  const without = matchLegs(txns, legs, FILED);
+  assert.equal(without.unmatchedTxnCents, 100000);
+});
+
+test("after a move, the off-till pass stays inside the NEW shop", () => {
+  const FILED = { storeId: "trophy", tillId: "till-1" };
+  const tillForTxn = () => ({ storeId: "pe", tillId: "till-1" });
+  // A same-minute sale back at the filing shop is another shop now.
+  const r = matchLegs([txn(1, 0, 70000)], [leg(0.5, 70000, { storeId: "trophy", tillId: "till-2" })], FILED, { tillForTxn });
+  assert.equal(r.matches.length, 0);
+  // …while a hand-over inside the new shop still counts.
+  const r2 = matchLegs([txn(1, 0, 70000)], [leg(0.5, 70000, PE_TILL3)], FILED, { tillForTxn });
+  assert.equal(r2.matches.length, 1);
+  assert.equal(r2.offTillCents, 70000);
+});
+
+test("a placement read that answers nothing usable falls back to the terminal", () => {
+  const r = matchLegs([txn(1, 0, 90000)], [leg(2, 90000)], TERMINAL, { tillForTxn: () => ({ storeId: null }) });
+  assert.equal(r.matches.length, 1);
+  assert.equal(r.offTillCents, 0);
+});
+
+test("wired to the real placements reader (tillAt), a mid-window move matches", () => {
+  const { tillAt } = require("../lib/card-terminal-placements.cjs");
+  const movedAt = T0 + 60 * 60000;
+  const row = {
+    storeId: "trophy", tillId: "till-1",
+    placements: { [`at-${movedAt}`]: { effectiveFrom: movedAt, storeId: "pe", tillId: "till-1" } },
+  };
+  const r = matchLegs(
+    [txn(1, 10, 50000), txn(2, 90, 70000)],
+    [leg(12, 50000, { storeId: "trophy", tillId: "till-1" }), leg(92, 70000, { storeId: "pe", tillId: "till-1" })],
+    row, { tillForTxn: (ms) => tillAt(row, ms) },
+  );
+  assert.equal(r.unmatchedTxnCents, 0);
+  assert.equal(r.offTillCents, 0);
 });
 
 test("the terminal's OWN till is still amount-only, however far off the clock", () => {

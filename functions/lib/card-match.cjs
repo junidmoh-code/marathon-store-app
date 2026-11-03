@@ -99,11 +99,18 @@ const OFF_TILL_FORWARD_MS = 15 * 60 * 1000;
  * @param {object[]} txns   the report's transactions ({tsn, at, amountCents})
  * @param {object[]} legs   card legs in the window ({at, amount, storeId, tillId, …})
  * @param {{storeId:string, tillId:string}} terminal  where the terminal is mapped
+ * @param {{tillForTxn?: (atMs:number) => ({storeId?:string, tillId?:string}|null)}} [opts]
+ *   tillForTxn — where the machine STOOD when it took a transaction (its
+ *   placement at that moment, lib/card-terminal-placements.cjs tillAt). A
+ *   batch whose window spans a move to another shop has no single till, so
+ *   each transaction is matched — and kept within its shop — against the till
+ *   the machine was at when it was taken. Absent, or answering nothing usable,
+ *   the terminal's own till stands.
  * @returns {{matches, unmatchedTxns, unmatchedLegsOnTill, matchedCents,
  *            onTillCents, offTillCents, unmatchedTxnCents, unmatchedLegCents,
  *            offTill}}
  */
-function matchLegs(txns, legs, terminal) {
+function matchLegs(txns, legs, terminal, { tillForTxn = null } = {}) {
   // Both sides in time order — the assignment below depends on it.
   const transactions = (txns || [])
     .filter((t) => t && Number.isInteger(t.amountCents) && Number.isFinite(t.at))
@@ -120,6 +127,12 @@ function matchLegs(txns, legs, terminal) {
   const matches = [];
 
   const onMappedTill = (l) => l.storeId === terminal.storeId && l.tillId === terminal.tillId;
+  // The till a TRANSACTION belongs to: where the machine stood when it took it.
+  const homeOf = (txn) => {
+    const t = typeof tillForTxn === "function" ? tillForTxn(txn.at) : null;
+    return t && t.storeId && t.tillId ? { storeId: t.storeId, tillId: t.tillId } : terminal;
+  };
+  const onTill = (home) => (l) => l.storeId === home.storeId && l.tillId === home.tillId;
 
   // AMOUNT DECIDES ELIGIBILITY; TIME ONLY BREAKS THE TIE. A leg of the right
   // amount is always a candidate, however far off the two clocks are — that is
@@ -146,7 +159,7 @@ function matchLegs(txns, legs, terminal) {
   // record for someone to read months later.
   const take = (txn, hit) => {
     taken.add(hit.i);
-    matches.push({ txn, leg: hit.leg, lagMs: hit.lag, offTill: !onMappedTill(hit.leg) });
+    matches.push({ txn, leg: hit.leg, lagMs: hit.lag, offTill: !onTill(homeOf(txn))(hit.leg) });
   };
 
   const unmatchedTxns = [];
@@ -154,7 +167,7 @@ function matchLegs(txns, legs, terminal) {
   // PASS ONE — the till the terminal is mapped to, so a leg rung where it
   // should have been is never taken by a cross-till candidate of equal amount.
   for (const txn of transactions) {
-    const hit = findFor(txn, onMappedTill);
+    const hit = findFor(txn, onTill(homeOf(txn)));
     if (hit) take(txn, hit);
     else pending.push(txn);
   }
@@ -162,9 +175,10 @@ function matchLegs(txns, legs, terminal) {
   // across the shop. Never another shop (that is a placement, pass one), and
   // never a same-amount sale hours away (that is a coincidence, and it is how
   // a R700 card sale rung as cash read as accounted for on 2 Nov 2026).
-  const sameStoreOtherTill = (l) => !onMappedTill(l) && l.storeId === terminal.storeId;
   const closeInTime = (lag) => lag >= -OFF_TILL_BACK_MS && lag <= OFF_TILL_FORWARD_MS;
   for (const txn of pending) {
+    const home = homeOf(txn);
+    const sameStoreOtherTill = (l) => !onTill(home)(l) && l.storeId === home.storeId;
     const hit = findFor(txn, sameStoreOtherTill, closeInTime);
     if (hit) take(txn, hit);
     else unmatchedTxns.push(txn);
