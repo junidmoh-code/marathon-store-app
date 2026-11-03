@@ -65,7 +65,8 @@ prices 700–800 tabular, "R" and no decimals.
   (`brandLogos.js`), or the name in bold caps when simple-icons has no mark.
 - **SkySearch** — big glass pill, search icon left, divider + camera (scan) or
   filter button right.
-- **ProductStage** — the shoe's cut-out on a glass podium, only for footwear
+- **ProductStage** — CUT-OUTS ARE OFF (Junid, 3 Nov: `SHOW_CUTOUTS = false` in
+  Sky.jsx): every product shows its original photo. When on: the shoe's cut-out on a glass podium, only for footwear
   whose cut-out passed the gate (`category === "Footwear"`,
   `photoCutoutQuality === "shoe"`, `photoCutoutFor === photoUrl`; see
   tools/cutouts/README.md); otherwise the ORIGINAL full-resolution photo

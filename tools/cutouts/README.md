@@ -1,5 +1,10 @@
 # Product cut-outs
 
+**PAUSED 3 Nov (Junid: use the original photo).** The app does not show
+cut-outs (`SHOW_CUTOUTS = false` in src/components/sky/Sky.jsx) and the nightly
+job is unloaded on the mini. To resume: set it true, and run
+`install-on-mac-mini.sh` to load the job again.
+
 Gives each FOOTWEAR product (category `Footwear`: sneakers, boots, slides,
 soccer boots) a PNG of the shoe alone, so the app can stand it on a glass
 podium. Runs on the Mac mini, nightly at 02:00, on the CPU. Free, local

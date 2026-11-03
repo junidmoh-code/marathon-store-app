@@ -175,7 +175,13 @@ export function SkyPopover({ anchorRef, open, onClose, align = "start", width = 
 //     "rejected" one has no URL; an old whole-object "fallback" is never shown);
 //   - it was cut from the photo the product shows now (photoCutoutFor), so a
 //     re-shot product shows its new full photo until tonight's pass judges it.
+// Junid, 3 Nov: "let's use the original photo rather". Cut-outs are OFF —
+// every card, the popup and the size sheet show the original photo. The
+// fields stay in RTDB and the code stays here; true brings them back.
+export const SHOW_CUTOUTS = false;
+
 export function cutoutSrc(p) {
+  if (!SHOW_CUTOUTS) return null;
   const c = p?.photoCutoutUrl;
   if (typeof c !== "string" || !c) return null;
   if (p.category !== "Footwear" || p.photoCutoutQuality !== "shoe") return null;
