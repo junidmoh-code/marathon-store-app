@@ -896,8 +896,8 @@ function matchNotes(match) {
     const where = match.offTill
       .map((o) => `${o.storeId}/${o.tillId} (${formatCents(o.cents)})`).join(", ");
     notes.push(
-      `${offTillMatches.length} of this batch's transactions were rung up on another till — ${where}. ` +
-      "That is what a card machine being moved between shops looks like, and the money is accounted for. " +
+      `${offTillMatches.length} of this batch's transactions were rung up on another till in this shop — ${where}. ` +
+      "That is what a card machine handed across the shop looks like, and the money is accounted for. " +
       "The pairing is by amount and time only: the till's payment ledger records no auth code or card number.",
     );
   }

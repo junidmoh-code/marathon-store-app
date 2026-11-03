@@ -40,7 +40,31 @@
 // the leg can only be later. Measured across all forty transactions of a real
 // report against the live ledger: minimum 118 seconds, median 135, maximum 249.
 // Given several legs of the same amount, the nearest in time is the sensible
-// one to show. Nothing more rests on it.
+// one to show. Nothing more rests on it — ON THE TERMINAL'S OWN TILL.
+//
+// ── ANOTHER TILL IS A WEAKER CLAIM, AND IT IS BOUNDED (3 Nov 2026) ─────────
+// The second pass — a transaction answered by a leg rung on a DIFFERENT till —
+// used to take ANY leg of the right amount, in ANY shop, at ANY time in the
+// fetched window. That is not a proposal; it is a coincidence. On 2 Nov 2026
+// Concrete Till 1's machine charged R700 at 11:34 for S-C00554, which the
+// cashier rang as CASH. The matcher paired the swipe with a R700 card sale at
+// Marathon PE Till 2 rung nearly an hour away — a sale PE's own machine had
+// already taken — and the batch read "every rand accounted for". The drawer
+// was R700 short and the record said the card side was clean. 31 Oct did the
+// same with a R300 Trophy sale. R700, R300, R350 are the shop's commonest
+// prices: an unbounded same-amount search across four shops always finds one.
+//
+// A machine that moves to another SHOP is recorded as a placement
+// (lib/card-terminal-placements.cjs) and the batch is reconciled on the till it
+// stood at — pass one. What pass two is still for is the unrecorded hand-over
+// inside one shop (Concrete Till 1's sale tapped on Till 2's machine). So an
+// off-till leg must be:
+//   • in the SAME STORE as the till the machine stood at, and
+//   • close in time: from OFF_TILL_BACK_MS before the transaction to
+//     OFF_TILL_FORWARD_MS after it.
+// A transaction neither pass answers is the variance. That can only ever make
+// the record say "look at this", never hide money — the one direction an
+// unbounded match got wrong.
 "use strict";
 
 // How far either side of the batch window to FETCH legs. Not an eligibility
@@ -50,6 +74,14 @@
 // risk of reaching a neighbouring batch outweighs the reach.
 const MATCH_WINDOW_MARGIN_MS = 60 * 60 * 1000;
 
+// THE OFF-TILL TIME BOUND (see the header). The measured lag on the terminal's
+// own till is 118–249 s, always leg-after-transaction; the portal stamps to the
+// minute, which only makes a leg look later. Five minutes back covers clock
+// drift between two devices; fifteen forward covers walking the machine across
+// the shop and finishing the sale on the other till.
+const OFF_TILL_BACK_MS = 5 * 60 * 1000;
+const OFF_TILL_FORWARD_MS = 15 * 60 * 1000;
+
 /**
  * Pair each transaction with at most one card leg, and each leg with at most
  * one transaction.
@@ -57,7 +89,9 @@ const MATCH_WINDOW_MARGIN_MS = 60 * 60 * 1000;
  * TWO PASSES, AND THE ORDER MATTERS. The first pass considers only legs on the
  * till the terminal is mapped to, so a leg rung where it should have been is
  * never stolen by a cross-till candidate of the same amount. Only the
- * transactions still unmatched go looking further afield.
+ * transactions still unmatched go looking further afield — and only to the
+ * other tills of the SAME STORE, within OFF_TILL_BACK_MS / OFF_TILL_FORWARD_MS
+ * of the transaction (see the header for why).
  *
  * Within a pass the nearest leg in time wins, which for a one-directional lag
  * means the earliest leg at or after the transaction.
@@ -92,7 +126,7 @@ function matchLegs(txns, legs, terminal) {
   // what stops a delayed or out-of-order terminal stamp inventing a shortfall.
   // Among several of the same amount the nearest in time is chosen, purely so
   // the pairing a person is shown is the sensible one.
-  const findFor = (txn, pool) => {
+  const findFor = (txn, pool, withinLag = () => true) => {
     let best = null;
     for (let i = 0; i < candidates.length; i++) {
       if (taken.has(i)) continue;
@@ -100,6 +134,7 @@ function matchLegs(txns, legs, terminal) {
       if (!pool(leg)) continue;
       if (leg.amount !== txn.amountCents) continue;
       const lag = leg.at - txn.at;
+      if (!withinLag(lag)) continue;
       if (best === null || Math.abs(lag) < Math.abs(best.lag)) best = { i, lag, leg };
     }
     return best;
@@ -123,9 +158,14 @@ function matchLegs(txns, legs, terminal) {
     if (hit) take(txn, hit);
     else pending.push(txn);
   }
-  // PASS TWO — everything else. This is where a machine that moved shows up.
+  // PASS TWO — another till of the SAME STORE, close in time: a machine handed
+  // across the shop. Never another shop (that is a placement, pass one), and
+  // never a same-amount sale hours away (that is a coincidence, and it is how
+  // a R700 card sale rung as cash read as accounted for on 2 Nov 2026).
+  const sameStoreOtherTill = (l) => !onMappedTill(l) && l.storeId === terminal.storeId;
+  const closeInTime = (lag) => lag >= -OFF_TILL_BACK_MS && lag <= OFF_TILL_FORWARD_MS;
   for (const txn of pending) {
-    const hit = findFor(txn, (l) => !onMappedTill(l));
+    const hit = findFor(txn, sameStoreOtherTill, closeInTime);
     if (hit) take(txn, hit);
     else unmatchedTxns.push(txn);
   }
@@ -187,4 +227,4 @@ function matchLegs(txns, legs, terminal) {
   };
 }
 
-module.exports = { matchLegs, MATCH_WINDOW_MARGIN_MS };
+module.exports = { matchLegs, MATCH_WINDOW_MARGIN_MS, OFF_TILL_BACK_MS, OFF_TILL_FORWARD_MS };

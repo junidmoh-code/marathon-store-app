@@ -9,7 +9,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { matchLegs } = require("../lib/card-match.cjs");
+const { matchLegs, OFF_TILL_BACK_MS, OFF_TILL_FORWARD_MS } = require("../lib/card-match.cjs");
 
 const T0 = Date.UTC(2026, 7, 29, 7, 0, 0);
 const TERMINAL = { storeId: "pe", tillId: "till-2" };
@@ -21,6 +21,8 @@ const leg = (mins, cents, over = {}) => ({
   storeId: "pe", tillId: "till-2", cashierName: "zinhle@marathon.internal", ...over,
 });
 const TROPHY = { storeId: "trophy", tillId: "till-1", cashierName: "yasmin@marathon.internal" };
+// Another till IN THE SAME SHOP as the terminal — the only place pass two looks.
+const PE_TILL3 = { storeId: "pe", tillId: "till-3", cashierName: "yasmin@marathon.internal" };
 
 test("an ordinary batch matches on its own till", () => {
   const r = matchLegs(
@@ -37,13 +39,14 @@ test("an ordinary batch matches on its own till", () => {
   assert.equal(r.offTill.pe, undefined);
 });
 
-test("THE MOVED MACHINE: legs rung on another till still count", () => {
-  // The real case. Four transactions rung at Trophy because the speedpoint was
-  // there that morning; the rest on its own till. Nothing is missing.
+test("THE HANDED-OVER MACHINE: legs rung on another till of the same shop still count", () => {
+  // The machine is passed across the shop and four sales are rung on the other
+  // till; the rest on its own. Nothing is missing. (A move to another SHOP is
+  // a placement, reconciled on that till in pass one — not this.)
   const txns = [txn(1, 0, 90000), txn(2, 5, 70000), txn(3, 10, 150000), txn(4, 20, 40000), txn(5, 30, 35000)];
   const legs = [
-    leg(2.25, 90000, TROPHY), leg(7.25, 70000, TROPHY),
-    leg(12.3, 150000, TROPHY), leg(22.3, 40000, TROPHY),
+    leg(2.25, 90000, PE_TILL3), leg(7.25, 70000, PE_TILL3),
+    leg(12.3, 150000, PE_TILL3), leg(22.3, 40000, PE_TILL3),
     leg(32.2, 35000),
   ];
   const r = matchLegs(txns, legs, TERMINAL);
@@ -52,22 +55,90 @@ test("THE MOVED MACHINE: legs rung on another till still count", () => {
   assert.equal(r.onTillCents, 35000);
   assert.equal(r.offTillCents, 350000, "R3,500 rung elsewhere");
   // A LIST, and the till is FIELDS rather than a key: it was
-  // offTill["trophy/till-1"], and an RTDB key may not contain "/", so writing
+  // offTill["pe/till-3"], and an RTDB key may not contain "/", so writing
   // this record threw and the whole capture failed with INTERNAL — on every
   // capture path, for exactly the case this field exists to record.
-  assert.deepEqual(r.offTill, [{ storeId: "trophy", tillId: "till-1", legs: 4, cents: 350000 }],
-    "…and the record says where, so a moved machine reads as information");
+  assert.deepEqual(r.offTill, [{ storeId: "pe", tillId: "till-3", legs: 4, cents: 350000 }],
+    "…and the record says where, so a handed-over machine reads as information");
 });
 
 test("a leg on the RIGHT till is never stolen by a cross-till candidate", () => {
   // Two transactions of the same amount, one leg on each till. The two-pass
   // order guarantees the on-till transaction keeps the on-till leg.
   const txns = [txn(1, 0, 50000), txn(2, 1, 50000)];
-  const legs = [leg(3, 50000, TROPHY), leg(3.1, 50000)];
+  const legs = [leg(3, 50000, PE_TILL3), leg(3.1, 50000)];
   const r = matchLegs(txns, legs, TERMINAL);
   assert.equal(r.matches.length, 2);
   assert.equal(r.onTillCents, 50000);
   assert.equal(r.offTillCents, 50000);
+  assert.equal(r.unmatchedTxnCents, 0);
+});
+
+// ═══ ANOTHER SHOP'S SALE NEVER ANSWERS THIS MACHINE (3 Nov 2026) ═════════════
+// 2 Nov 2026: Concrete Till 1's machine charged R700 at 11:34 for S-C00554,
+// rung as CASH. The old pass two paired the swipe with a R700 card sale at PE
+// Till 2 nearly an hour off — PE's own machine's sale — and the batch read
+// "accounted for" while the drawer was R700 short.
+const CONCRETE_T1 = { storeId: "concrete", tillId: "till-1" };
+const concrete = (over = {}) => ({ storeId: "concrete", tillId: "till-1", cashierName: "amanda", ...over });
+
+test("2 Nov 2026 replay: a card swipe rung as cash is the variance, not another shop's sale", () => {
+  const txns = [txn(1, 0, 85000), txn(2, 45, 70000), txn(3, 79, 216000)];
+  const legs = [
+    leg(0.6, 85000, concrete()),
+    leg(80.3, 216000, concrete()),
+    // PE Till 2's own R700 card sales that day, at 10:43 and 13:29 against
+    // the swipe at 11:34 — and one in the very same minute, to prove it is
+    // the STORE that refuses it, not only the clock.
+    leg(-6, 70000, { storeId: "pe", tillId: "till-2" }),
+    leg(45.5, 70000, { storeId: "pe", tillId: "till-2" }),
+    leg(160, 70000, { storeId: "pe", tillId: "till-2" }),
+  ];
+  const r = matchLegs(txns, legs, CONCRETE_T1);
+  assert.equal(r.offTillCents, 0, "no other shop's sale is claimed");
+  assert.deepEqual(r.offTill, []);
+  assert.equal(r.unmatchedTxns.length, 1);
+  assert.equal(r.unmatchedTxns[0].tsn, 2);
+  assert.equal(r.unmatchedTxnCents, 70000, "the R700 swipe is the finding");
+  assert.equal(r.reconciled, false);
+});
+
+test("another shop's same-amount sale in the same minute is still not this machine's", () => {
+  const r = matchLegs([txn(1, 0, 30000)], [leg(0.5, 30000, TROPHY)], TERMINAL);
+  assert.equal(r.matches.length, 0);
+  assert.equal(r.unmatchedTxnCents, 30000);
+});
+
+test("a same-shop leg on another till far off in time does not answer", () => {
+  // The other till's own machine took this one; a same-amount sale an hour
+  // away is a coincidence, not a hand-over.
+  const r = matchLegs([txn(1, 0, 70000)], [leg(51, 70000, PE_TILL3), leg(-60, 70000, PE_TILL3)], TERMINAL);
+  assert.equal(r.matches.length, 0);
+  assert.equal(r.unmatchedTxnCents, 70000);
+});
+
+test("the off-till time bound is inclusive at both ends and refuses one second past", () => {
+  const back = OFF_TILL_BACK_MS / 60000;
+  const fwd = OFF_TILL_FORWARD_MS / 60000;
+  const at = (mins) => matchLegs([txn(1, 0, 40000)], [leg(mins, 40000, PE_TILL3)], TERMINAL).matches.length;
+  assert.equal(at(-back), 1, "the earliest allowed");
+  assert.equal(at(fwd), 1, "the latest allowed");
+  assert.equal(at(-back - 1 / 60), 0, "a second too early");
+  assert.equal(at(fwd + 1 / 60), 0, "a second too late");
+});
+
+test("the terminal's OWN till is still amount-only, however far off the clock", () => {
+  // The R351 lesson stands: on its own till the money decides.
+  const r = matchLegs([txn(1, 0, 35100)], [leg(180, 35100)], TERMINAL);
+  assert.equal(r.matches.length, 1);
+  assert.equal(r.unmatchedTxnCents, 0);
+});
+
+test("31 Oct 2026: Concrete Till 1's sale tapped on Till 2's machine is still accounted for", () => {
+  // S-C00252, R750, rung on Till 1 at 15:01:58; Till 2's machine stamped 15:01.
+  const r = matchLegs([txn(1, 0, 75000)], [leg(0.97, 75000, concrete())], { storeId: "concrete", tillId: "till-2" });
+  assert.equal(r.matches.length, 1);
+  assert.deepEqual(r.offTill, [{ storeId: "concrete", tillId: "till-1", legs: 1, cents: 75000 }]);
   assert.equal(r.unmatchedTxnCents, 0);
 });
 
@@ -279,12 +350,12 @@ test("off-till is a fact about the leg, not about which pass found it", () => {
   // the pass would make a label that goes on the record depend on control flow.
   const r = matchLegs(
     [txn(1, 0, 90000), txn(2, 5, 70000)],
-    [leg(2.25, 90000), leg(7.25, 70000, TROPHY)],
+    [leg(2.25, 90000), leg(7.25, 70000, PE_TILL3)],
     TERMINAL,
   );
   const byTsn = Object.fromEntries(r.matches.map((m) => [m.txn.tsn, m]));
   assert.equal(byTsn[1].offTill, false, "rung on its own till");
-  assert.equal(byTsn[2].offTill, true, "rung at Trophy");
+  assert.equal(byTsn[2].offTill, true, "rung on PE Till 3");
   for (const m of r.matches) {
     const rungOnTill = m.leg.storeId === TERMINAL.storeId && m.leg.tillId === TERMINAL.tillId;
     assert.equal(m.offTill, !rungOnTill, `TSN ${m.txn.tsn}: the label must follow the leg`);
