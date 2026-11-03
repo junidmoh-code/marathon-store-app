@@ -65,10 +65,12 @@ prices 700–800 tabular, "R" and no decimals.
   (`brandLogos.js`), or the name in bold caps when simple-icons has no mark.
 - **SkySearch** — big glass pill, search icon left, divider + camera (scan) or
   filter button right.
-- **ProductStage** — the product's cut-out (`photoCutoutUrl`, only while
-  `photoCutoutFor === photoUrl`) standing on a glass podium with a drop shadow;
-  otherwise the full-resolution photo (HiResPhoto, same source and cache) in a
-  white rounded frame filling the stage, no podium.
+- **ProductStage** — the shoe's cut-out on a glass podium, only for footwear
+  whose cut-out passed the gate (`category === "Footwear"`,
+  `photoCutoutQuality === "shoe"`, `photoCutoutFor === photoUrl`; see
+  tools/cutouts/README.md); otherwise the ORIGINAL full-resolution photo
+  (HiResPhoto, same source and cache), rounded, contained, never cropped, on a
+  faint translucent surface. Never a whole-object cut-out.
 - **SkyPlus** — round solid-white button, navy plus.
 - **SkyBottomBar** — glass bar: cart icon, divider, item count, solid white pill CTA.
 

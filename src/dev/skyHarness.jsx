@@ -5,7 +5,7 @@
 // vite's build input is index.html alone. Fixtures come from
 // dev/fixture.local.json (gitignored — real Storage URLs, public repo).
 //
-//   /dev/sky-harness.html?screen=home | desktop | phone   [&popup=1] [&cart=N]
+//   /dev/sky-harness.html?screen=home | desktop | phone   [&popup=1] [&cart=N] [&fixture=named]
 
 import "../styles/sky.css";
 import "../styles/sky-theme.css";
@@ -18,13 +18,18 @@ const q = new URLSearchParams(location.search);
 const screen = q.get("screen") || "home";
 
 async function loadFixture() {
+  // ?fixture=named: products exactly as RTDB holds them now (their own
+  // cut-out fields, real Storage URLs) — dev/fixture-named.local.json.
+  if (q.get("fixture")) {
+    try { return await (await fetch(`/dev/fixture-${q.get("fixture")}.local.json`)).json(); } catch { /* fall through */ }
+  }
   try {
     const r = await fetch("/dev/fixture.local.json");
     const list = await r.json();
     let cut = {};
     try { cut = await (await fetch("/dev/cutouts/index.local.json")).json(); } catch { /* none yet */ }
     return list.map((p) => (cut[p.id] && q.get("cutouts") !== "0"
-      ? { ...p, photoCutoutUrl: `/dev/cutouts/${p.id}.png`, photoCutoutFor: p.photoUrl } : p));
+      ? { ...p, photoCutoutUrl: `/dev/cutouts/${p.id}.png`, photoCutoutFor: p.photoUrl, photoCutoutQuality: cut[p.id] } : p));
   } catch {
     // CI / no local fixture: synthetic products (no photos, no Storage URLs).
     const brands = ["Nike", "Adidas", "Jordan", "New Balance", "Puma", "Nike", "Nike", "Adidas"];
@@ -109,7 +114,8 @@ function Desktop({ products, AssistantDesktop }) {
 (async () => {
   const all = await loadFixture();
   const byId = Object.fromEntries(all.map((p) => [p.id, p]));
-  const products = ORDER.map((id) => byId[id]).filter(Boolean).map((p) => ({ ...p, retailPrice: p.retailPrice || 750 }));
+  const order = q.get("fixture") ? all.map((p) => p.id) : ORDER;
+  const products = order.map((id) => byId[id]).filter(Boolean).map((p) => ({ ...p, retailPrice: p.retailPrice || 750 }));
   let el;
   if (screen === "desktop") {
     const { AssistantDesktop } = await import("../App.jsx");

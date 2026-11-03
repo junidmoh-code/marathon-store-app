@@ -159,12 +159,29 @@ describe("KEEP #1 — cards draw the high-resolution photo", () => {
   });
   it("a cut-out for THIS photo stands on the podium; a stale one is ignored", () => {
     const CUT = "https://x/cutout.png";
-    const fresh = mount({ searchResults: [{ ...KOBE, photoCutoutUrl: CUT, photoCutoutFor: FULL }] });
+    const fresh = mount({ searchResults: [{ ...KOBE, category: "Footwear", photoCutoutQuality: "shoe", photoCutoutUrl: CUT, photoCutoutFor: FULL }] });
     expect(all(fresh, "sky-podium")).toHaveLength(1);
     expect(all(fresh, "sky-cutout")[0].props.src).toBe(CUT);
-    const stale = mount({ searchResults: [{ ...KOBE, photoCutoutUrl: CUT, photoCutoutFor: "https://x/old.jpg" }] });
+    const stale = mount({ searchResults: [{ ...KOBE, category: "Footwear", photoCutoutQuality: "shoe", photoCutoutUrl: CUT, photoCutoutFor: "https://x/old.jpg" }] });
     expect(all(stale, "sky-podium")).toHaveLength(0);
     expect(all(stale, "sky-frame")).toHaveLength(1);
+  });
+  it("only a gate-passed FOOTWEAR cut-out stands on the podium; anything else shows the original photo", () => {
+    const CUT = "https://x/cutout.png";
+    const shoe = { ...KOBE, category: "Footwear", photoCutoutUrl: CUT, photoCutoutFor: FULL, photoCutoutQuality: "shoe" };
+    const cases = [
+      [shoe, "podium"],
+      [{ ...shoe, category: "Perfume" }, "frame"],                 // Armani perfume: never a cut-out
+      [{ ...shoe, category: undefined }, "frame"],
+      [{ ...shoe, photoCutoutQuality: "fallback" }, "frame"],      // the old whole-object cut-out
+      [{ ...shoe, photoCutoutQuality: undefined }, "frame"],       // v1: no quality
+      [{ ...shoe, photoCutoutQuality: "rejected", photoCutoutUrl: undefined }, "frame"],
+    ];
+    for (const [p, want] of cases) {
+      const r = mount({ searchResults: [p] });
+      expect(all(r, "sky-podium")).toHaveLength(want === "podium" ? 1 : 0);
+      expect(all(r, "sky-frame")).toHaveLength(want === "frame" ? 1 : 0);
+    }
   });
 });
 

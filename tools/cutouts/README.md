@@ -1,37 +1,87 @@
 # Product cut-outs
 
-Gives each product a background-removed PNG so the app can stand it on a glass
-podium. Runs on the Mac mini, nightly at 02:00, with rembg on the CPU (model
-`isnet-general-use`).
+Gives each FOOTWEAR product (category `Footwear`: sneakers, boots, slides,
+soccer boots) a PNG of the shoe alone, so the app can stand it on a glass
+podium. Runs on the Mac mini, nightly at 02:00, on the CPU. Free, local
+models only; never an AI-generated shoe.
 
-For every product with a `photoUrl` and no valid cut-out it downloads the
-full-res photo from `photoUrl`, removes the background, trims to the object
-plus 6% transparent padding (of the longer side), caps the longest side at
-1600 px, and uploads
-`products/{id}/cutout-<sha1(photoUrl)[:10]>.png` (image/png,
-`public, max-age=31536000, immutable`, with a download token).
+Every other product (clothing, perfume, accessories, bags) has its cut-out
+fields cleared and shows its original photo.
+
+## How a shoe is cut (shoe.py)
+
+1. **CLIPSeg** (`CIDAS/clipseg-rd64-refined`), prompted "a sneaker" / "a shoe"
+   against "a white display stand" / "a shoe box" / "a shelf" / "a hand",
+   finds the shoe (or a pair: a second region at least 45% the size of the
+   first) and masks out everything else.
+2. **rembg** (`isnet-general-use`) cleans the edge on that crop; its alpha is
+   hard-clipped to the CLIPSeg mask and detached fragments are dropped.
+
+## The quality gate (Junid, 3 Nov)
+
+Run on every mask before anything is uploaded. Rejected if any of:
+
+| rule | rejects when |
+|---|---|
+| `components` | more than 2 pieces above 3% of the mask area (2 = a pair) |
+| `solidity` | largest piece's area / its convex hull area under 0.80 |
+| `area` | largest piece under 6% of the photo (spec said 10%; see below) |
+| `aspect` | mask bounding box w/h outside 0.9 to 3.2 |
+| `box-remnant` | over 15% of the mask's bottom 20% rows are dark pixels CLIPSeg was not sure were shoe (under 92% of the shoe's peak score) |
+| `hole` | an enclosed hole above 4% of the mask area |
+| `clip` | CLIP zero-shot: P("a clean product photo of a single shoe on a plain background") minus P("a damaged image with fragments and cut-off pieces") under 0.15 (the CLIP inside CLIPSeg; no second model) |
+
+Before the gate, `no-shoe` (CLIPSeg found nothing) and `low-confidence`
+(peak under 0.60) are rejections too.
+
+A rejected cut is retried once with a tighter CLIPSeg threshold (0.65) and the
+mask eroded 10 px. If that fails too, the product is written `rejected` with
+no URL and the card shows the original photo. There is no whole-object
+fallback. Every rejection is logged in `logs/cutouts.log` as
+`REJECT <pid> attempt=<n> rule=<rule> {metrics}` and `REJECTED <pid> rule=<rule>`.
+
+**Area: 6%, not the spec's 10%.** These are shop photos of a shoe on a riser
+in front of the wall; a perfectly cut sneaker covers 6-10% of the photo
+(median 9.8% on a 160-product calibration). At 10% the rule rejected ~58% of
+good footwear; the cuts under 6% were the broken ones. `--area 0.10` restores
+the spec number.
+
+`--loose` sets solidity and aspect one step looser (0.75; 0.8 to 3.6). Only
+use it if more than 25% of footwear is rejected.
 
 ## What it writes
 
-Two fields per product, as one multi-path update, nothing else:
+Three fields per product, as one multi-path update, nothing else:
 
 | path | value |
 |---|---|
-| `/products/{id}/photoCutoutUrl` | public download URL of the PNG |
-| `/products/{id}/photoCutoutFor` | the `photoUrl` it was cut from |
+| `/products/{id}/photoCutoutUrl` | public download URL of the PNG (absent when rejected) |
+| `/products/{id}/photoCutoutFor` | the `photoUrl` it was judged on |
+| `/products/{id}/photoCutoutQuality` | `shoe` or `rejected` |
 
-A cut-out is valid only while `photoCutoutFor == photoUrl`. When the photo
-changes the app should ignore the old cut-out, and the next run makes a new one
-(new hash, new object). It never sets a product and never touches `photoUrl`.
+The PNG is trimmed to the shoe plus 6% transparent padding, capped at 1600 px,
+at `products/{id}/cutout-<sha1(photoUrl)[:10]>.png` (`public, max-age=31536000,
+immutable`, download token). Non-footwear products get all three fields
+deleted. It never sets a product and never touches `photoUrl`.
+
+The app (`cutoutSrc` in `src/components/sky/Sky.jsx`) shows a cut-out only
+when the category is `Footwear`, the quality is `shoe` and `photoCutoutFor`
+equals the current `photoUrl`.
+
+A judgement is current only while `photoCutoutFor == photoUrl` and the local
+state records the current `GATE_VERSION` for that photo. Bumping
+`GATE_VERSION` re-audits every cut-out: a cut that still passes on its first
+attempt keeps its existing URL; a failing one is retried, then cleared.
 
 It never reads `/products` whole: a `shallow=true` key list, then per-product
-leaf reads of `photoUrl`, `photoUpdatedAt`, `photoCutoutFor` and, only when that
-matches, `photoCutoutUrl`.
+leaf reads (`category`, then `photoUrl`, `photoUpdatedAt`, `photoCutoutFor`,
+and the URL/quality only when that matches).
 
-Local state lives in `~/.marathon-cutouts/state.sqlite`: done ids, and failures
-per (id, photoUrl). After 3 failures on a photo it gives up until the photo
-changes. `~/.marathon-cutouts/cutouts.lock` stops two runs overlapping. The log
-is `logs/cutouts.log` (rotating), one line per product: time, id, outcome, ms.
+Local state lives in `~/.marathon-cutouts/state.sqlite`: judgements per
+(id, photoUrl, gate version) and failures. After 3 errors on a photo it gives
+up until the photo changes. `~/.marathon-cutouts/cutouts.lock` stops two runs
+overlapping. Every judged product also leaves previews and one JSON line in
+`~/.marathon-cutouts/audit/` (input for `make_audit_sheet.py`).
 
 ## Running it
 
@@ -62,8 +112,9 @@ cd tools/cutouts && python -m pytest -q
 
 1. Stop the job:
    `launchctl bootout gui/$(id -u)/com.marathon.cutouts; rm ~/Library/LaunchAgents/com.marathon.cutouts.plist`
-2. Delete the two fields from every product: `photoCutoutUrl` and
-   `photoCutoutFor` only, never the product and never `photoUrl`.
+2. Delete the three fields from every product: `photoCutoutUrl`,
+   `photoCutoutFor` and `photoCutoutQuality` only, never the product and
+   never `photoUrl`.
 3. Delete the Storage objects `products/*/cutout-*.png`. Never delete
    `products/*/photo.jpg` or any other photo.
 4. `rm -rf ~/.marathon-cutouts` (state, lock, venv). Leave it in place if a

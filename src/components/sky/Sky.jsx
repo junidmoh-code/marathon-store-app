@@ -168,12 +168,17 @@ export function SkyPopover({ anchorRef, open, onClose, align = "start", width = 
 
 // ── THE PRODUCT STAGE ─────────────────────────────────────────────────────────
 // photoCutoutUrl is ADDITIVE (tools/cutouts writes it beside photoUrl, never
-// over it). A cut-out stands on the podium only while it was cut from the photo
-// the product shows now: photoCutoutFor names that photo, so a re-shot product
-// falls back to its new full photo until tonight's pass cuts it again.
+// over it). A cut-out stands on the podium only when ALL of these hold:
+//   - the product is footwear (category "Footwear") — perfume, bags, clothing
+//     always show their original photo (Junid, 3 Nov);
+//   - the cut-out passed the quality gate: photoCutoutQuality "shoe" (a
+//     "rejected" one has no URL; an old whole-object "fallback" is never shown);
+//   - it was cut from the photo the product shows now (photoCutoutFor), so a
+//     re-shot product shows its new full photo until tonight's pass judges it.
 export function cutoutSrc(p) {
   const c = p?.photoCutoutUrl;
   if (typeof c !== "string" || !c) return null;
+  if (p.category !== "Footwear" || p.photoCutoutQuality !== "shoe") return null;
   if (p.photoCutoutFor && p.photoCutoutFor !== p.photoUrl) return null;
   return c;
 }
