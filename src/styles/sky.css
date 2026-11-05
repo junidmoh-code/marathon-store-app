@@ -84,6 +84,17 @@ html[data-sky="on"] body { font-family: var(--sky-font); }
   .sky-bg { background-image: url("/assets/sky-clear-phone.jpg"); }
 }
 html[data-sky="off"] .sky-bg { display: none; }
+
+/* ── NO ZOOM (Junid 5 Nov; src/device/zoomLock.js) ─────────────────────────
+   manipulation: no double-tap zoom, no 300ms delay; scrollers pan only.
+   On touch screens every field is at least 16px so iOS never zooms on focus
+   (desktop keeps its own sizes). The photo viewer opts out with its own
+   transform zoom ([data-zoom-surface], touch-action none). */
+html, body { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+.sky-brandstrip, .bcsp__list, .bcsp__side, .bcsp__right, .bcsp__items, [data-scroll] { touch-action: pan-x pan-y; }
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]), select, textarea { font-size: max(16px, 1em) !important; }
+}
 #root { position: relative; z-index: 1; }
 
 /* ── GLASS ────────────────────────────────────────────────────────────────── */

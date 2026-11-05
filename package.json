@@ -13,7 +13,9 @@
     "proof:push": "node scripts/mutation-proof-push-notify.mjs",
     "contrast": "node scripts/sky-contrast.mjs --webkit",
     "e2e:availability": "node scripts/sky-availability.e2e.mjs",
-    "e2e:barcode-scroll": "node scripts/sky-barcode-scroll.e2e.mjs"
+    "e2e:barcode-scroll": "node scripts/sky-barcode-scroll.e2e.mjs",
+    "e2e:zoom-lock": "node scripts/sky-zoom-lock.e2e.mjs",
+    "e2e:phone-visual": "node scripts/sky-phone-visual.e2e.mjs"
   },
   "dependencies": {
     "firebase": "^10.13.2",

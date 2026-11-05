@@ -105,7 +105,7 @@ export const BCS_PAGE_CSS = `
    the header (its top is measured: --bcsp-top), three columns, one row.
    Not position:fixed — WebKit will not wheel-scroll a list inside one. */
 html,body{overflow:hidden!important;overscroll-behavior:none}
-.bcsp{position:relative;height:calc(100vh - var(--bcsp-top,140px));height:calc(100dvh - var(--bcsp-top,140px));display:grid;grid-template-columns:268px minmax(0,1fr) 366px;grid-template-rows:minmax(0,1fr);gap:0 40px;padding:8px 30px 0;color:#fff;font-family:var(--sky-font);box-sizing:border-box;overflow:hidden}
+.bcsp{position:relative;height:calc(100vh - var(--bcsp-top,140px));height:calc(100dvh - var(--bcsp-top,140px));display:grid;grid-template-columns:212px minmax(0,1fr) 296px;grid-template-rows:minmax(0,1fr);gap:0 26px;padding:8px 30px 0;color:#fff;font-family:var(--sky-font);box-sizing:border-box;overflow:hidden}
 .bcsp *{box-sizing:border-box}
 .bcsp__glass{border-radius:26px;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.7);box-shadow:inset 0 1px 0 rgba(255,255,255,.8),0 14px 34px rgba(10,60,140,.18);
   -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
@@ -131,9 +131,9 @@ html[data-sky="on"] #root .bcsp .bcsp__x{background:none!important;border:0!impo
 .bcsp__queued span{display:block;margin-top:4px;font-size:12px;font-weight:600}
 .bcsp__main{min-width:0;min-height:0;height:100%;display:flex;flex-direction:column;padding-top:8px}
 .bcsp__head{flex:0 0 auto}
-.bcsp__h1{margin:0;font-size:42px;font-weight:800;letter-spacing:-.025em;line-height:1.1;color:#fff;text-shadow:var(--sky-text-shadow)}
+.bcsp__h1{margin:0;font-size:34px;font-weight:800;letter-spacing:-.025em;line-height:1.1;color:#fff;text-shadow:var(--sky-text-shadow)}
 .bcsp__sub{margin-top:8px;font-size:18px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow)}
-.bcsp__srch{position:relative;margin-top:26px}
+.bcsp__srch{position:relative;margin:14px 0 18px}
 .bcsp__srch svg{position:absolute;z-index:1;left:18px;top:50%;transform:translateY(-50%);color:#fff;pointer-events:none}
 html[data-sky="on"] #root .bcsp input.bcsp__in:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]){width:100%;height:42px;padding:0 18px 0 50px;border-radius:999px;background:rgba(255,255,255,.26)!important;border:1px solid rgba(255,255,255,.75)!important;color:#fff!important;caret-color:#fff;font:500 17px/1 var(--sky-font);outline:none;text-shadow:0 1px 6px rgba(0,40,110,.35);
   -webkit-backdrop-filter:blur(20px) saturate(1.5);backdrop-filter:blur(20px) saturate(1.5)}
@@ -166,7 +166,7 @@ html[data-sky="on"] #root .bcsp .bcsp__print:disabled{cursor:not-allowed;opacity
 .bcsp__lpe{display:flex;flex-direction:column;align-items:center;gap:16px;padding:22px 6px 6px;font-size:16px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow);text-align:center}
 .bcsp__lpi{width:62px;height:62px;border-radius:16px;display:grid;place-items:center;background:rgba(255,255,255,.6);border:1px solid #fff;color:var(--sky-ink-deep);box-shadow:0 8px 20px rgba(10,60,140,.16)}
 .bcsp__label{margin-top:10px;background:#f7f7f2;color:#0a0a0a;border-radius:10px;padding:12px 14px 10px;box-shadow:0 12px 30px -12px rgba(0,30,90,.5);font-family:'SF Mono',ui-monospace,monospace}
-@media (max-width:1279px){.bcsp{grid-template-columns:232px minmax(0,1fr) 320px;gap:0 24px;padding:8px 20px 0}.bcsp__grid{grid-template-columns:minmax(0,1fr)}.bcsp__h1{font-size:34px}}
+@media (max-width:1279px){.bcsp{grid-template-columns:196px minmax(0,1fr) 264px;gap:0 18px;padding:8px 18px 0}.bcsp__grid{grid-template-columns:minmax(0,1fr)}.bcsp__h1{font-size:34px}}
 @media (prefers-reduced-motion:reduce){.bcsp *{transition:none!important}}
 `;
 
@@ -227,19 +227,11 @@ export function BarcodeStudioDesktop(v) {
           </div>
         </>}
 
-        <div className="bcsp__lab" data-contrast-exempt="">Printer</div>
-        {TRANSPORTS.map((t) => {
-          const supported = t.supported(); const on = transport === t.id;
-          const cleanLabel = t.label.replace(/\s*\((?:bluetooth|usb|ble)\)\s*$/i, "");
-          return (
-            <button key={t.id} type="button" className="bcsp__pr" data-on={on ? "1" : undefined}
-                    onClick={() => supported && setTransport(t.id)} disabled={!supported}>
-              <span style={{ flex: 1 }}>{cleanLabel}</span>
-              {on && <span className="bcsp__dot" title="Selected printer" />}
-            </button>
-          );
-        })}
-        {transport === "xprinter" && <PrinterStatus style={{ padding: "6px 8px 0" }} />}
+        {/* No printer section (Junid 5 Nov: "make it clean, Xprinter is auto
+            connected"): on a laptop the USB label printer is always used — it
+            reconnects to the printer this computer already allowed, asks once
+            at the first print otherwise, and falls back to the system printer
+            by itself. Errors still show below. */}
         {diagText && (
           <div className="bcsp__diag">
             <span style={{ flex: 1 }}>{diagText}</span>
@@ -258,12 +250,13 @@ export function BarcodeStudioDesktop(v) {
       <main className="bcsp__main" onWheel={forwardWheel}>
         <div className="bcsp__head" data-testid="bcsp-head">
         <h1 className="bcsp__h1" data-contrast-exempt="">Barcode Studio</h1>
-        <div className="bcsp__sub" data-contrast-exempt="">{canMint ? "Pick sizes, set copies, and print — the label preview updates live." : "Re-print existing labels — new codes are created by warehouse/admin."}</div>
+        {/* Junid 5 Nov: no subtitle, no product count — the list gets the room.
+            The reprint-only note stays for accounts that cannot create codes. */}
+        {!canMint && <div className="bcsp__sub" data-contrast-exempt="">Re-print existing labels — new codes are created by warehouse/admin.</div>}
         <div className="bcsp__srch">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7.5" /><path d="M20.5 20.5l-4.2-4.2" /></svg>
           <input className="bcsp__in" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products..." aria-label="Search products" />
         </div>
-        <div className="bcsp__n" data-contrast-exempt="">{filtered.length.toLocaleString("en-US")} product{filtered.length !== 1 ? "s" : ""}</div>
         </div>
         <div className="bcsp__list" ref={listRef} data-testid="bcsp-list">
         {filtered.length === 0 ? <Empty>No products match.</Empty> : (
@@ -401,6 +394,10 @@ export default function BarcodeCatalog({ products, canMint, onExit, myShop = nul
   const [sel, setSel] = useState({});   // { "pid|size": { productId, productName, size, count } }
   const [transport, setTransportState] = useState(defaultTransportId);
   const setTransport = (id) => { rememberTransport(id); setTransportState(id); };
+  // Laptop Barcode Studio: always the USB label printer (Junid 5 Nov), when
+  // this browser can drive it; the phone keeps its picker (Phomemo there).
+  const xprinterOk = TRANSPORTS.some((t) => t.id === "xprinter" && t.supported());
+  useEffect(() => { if (wide && xprinterOk && transport !== "xprinter") setTransportState("xprinter"); }, [wide, xprinterOk, transport]);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [diagText, setDiagText] = useState(null);   // persistent printer diagnostic (manual dismiss)

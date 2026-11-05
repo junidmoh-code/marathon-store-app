@@ -8,7 +8,7 @@
 // (dev/sky-harness.html?screen=barcodes&many=1 — 60 cards), in Chromium and
 // WebKit, at 1440x900 and 1280x800, and asserts:
 //   1. after a 5000px wheel over the list, the header, the left panel, the
-//      title, subtitle, search, count line, Print tray and Label preview have
+//      title, search, Print tray and Label preview have
 //      not moved by a single pixel, and the window never scrolled;
 //   2. the list reached its last product, fully visible above the viewport
 //      bottom and inside the list;
@@ -32,9 +32,7 @@ const FIXED = {
   header: "#root .sky-header",
   "left panel": ".bcsp__side",
   title: ".bcsp__h1",
-  subtitle: ".bcsp__sub",
   search: ".bcsp__srch",
-  "count line": ".bcsp__n",
   "print tray": ".bcsp__tray",
   "label preview": ".bcsp__lp",
 };
@@ -58,6 +56,7 @@ try {
       const page = await (await browser.newContext({ viewport: { width: w, height: h } })).newPage();
       await page.goto(URL, { waitUntil: "load" });
       await page.waitForSelector(".bcsp__list .bcs2", { timeout: 30000 });
+      await page.evaluate(() => document.fonts.ready);   // a late web font would resize the cards mid-test
       await page.waitForTimeout(600);
 
       const boxes = () => page.evaluate((sel) => Object.fromEntries(Object.entries(sel).map(([k, s]) => {

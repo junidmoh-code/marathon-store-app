@@ -134,6 +134,7 @@ import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SkyHome from "./components/sky/SkyHome.jsx";
 import AssistantPhone from "./components/sky/AssistantPhone.jsx";
 import { brandOptions, filterByBrand, reconcileBrand } from "./components/assistant/brandFilter.js";
+import ZoomImage from "./components/sky/ZoomImage.jsx";
 import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconSearch as SkyIconSearch, IconMore, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
@@ -412,10 +413,14 @@ function productPhotos(p) {
 // Full-screen photo viewer: shows a product's photos (primary + extra angles) with
 // prev/next arrows, swipe, dots + a thumbnail strip. Accepts an array of URLs (or a
 // single URL string for back-compat). Reused by assistant view, admin, etc.
-function GalleryLightbox({ photos, onClose }) {
+export function GalleryLightbox({ photos, onClose }) {
   const list = Array.isArray(photos) ? photos.filter(Boolean) : (photos ? [photos] : []);
   const [i, setI] = useState(0);
   const touch = useRef(null);
+  // The ONE place the app zooms (Junid 5 Nov): pinch / double-tap inside the
+  // viewer (ZoomImage, its own transform). While zoomed, a swipe pans the photo
+  // instead of changing it; a new photo or closing starts again at 1.
+  const [zoomed, setZoomed] = useState(false);
   if (!list.length) return null;
   const idx = Math.min(i, list.length - 1);
   const go = (d) => setI((cur) => (((cur + d) % list.length) + list.length) % list.length);
@@ -423,10 +428,11 @@ function GalleryLightbox({ photos, onClose }) {
   const nav = (side) => ({ position:"absolute", top:"50%", [side]:10, transform:"translateY(-50%)", width:44, height:44, borderRadius:"50%", border:"none", cursor:"pointer", background:"rgba(255,255,255,.12)", color:"#fff", fontSize:26, lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center" });
   return (
     <div onClick={onClose}
-         onTouchStart={(e) => { touch.current = e.touches[0]?.clientX ?? null; }}
-         onTouchEnd={(e) => { const s = touch.current, en = e.changedTouches[0]?.clientX; if (multi && s != null && en != null && Math.abs(en - s) > 45) go(en < s ? 1 : -1); touch.current = null; }}
+         data-photo-viewer=""
+         onTouchStart={(e) => { touch.current = e.touches.length === 1 && !zoomed ? (e.touches[0]?.clientX ?? null) : null; }}
+         onTouchEnd={(e) => { const s = touch.current, en = e.changedTouches[0]?.clientX; if (multi && !zoomed && s != null && en != null && Math.abs(en - s) > 45) go(en < s ? 1 : -1); touch.current = null; }}
          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.93)", zIndex:2000, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24 }}>
-      <img src={list[idx]} alt="" onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10 }} />
+      <ZoomImage src={list[idx]} alt="" onZoomChange={setZoomed} onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10, position:"relative", zIndex:1 }} />
       {multi && (
         <>
           <button onClick={e => { e.stopPropagation(); go(-1); }} aria-label="Previous" style={nav("left")}>‹</button>
@@ -2999,6 +3005,12 @@ export const RoleIcons = {
       <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>
     </svg>
   ),
+  // Display Registration tile (Junid 5 Nov): a screen with a registered tick.
+  display_registration: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><polyline points="8.5 10.5 11 13 15.5 8.5"/>
+    </svg>
+  ),
   display_checks: (
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 3h6a1 1 0 011 1v1a1 1 0 01-1 1H9a1 1 0 01-1-1V4a1 1 0 011-1z"/><path d="M8 4H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-2"/><polyline points="9 14 11 16 15 12"/>
@@ -3537,7 +3549,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && { key:"customer", icon:RoleIcons.customer, name:"Track Order", desc:"Live order status & timeline", onClick:()=>onSelect(ROLES.CUSTOMER) },
       // Junid 5 Nov: Display Registration as a tile (its live card is off the
       // hub) — same gate and same screen as the card.
-      (canAccessStock || isSuperAdmin) && { key:"display_reg", icon:RoleIcons.display_checks, name:"Display Registration", desc:"Register display units", onClick:()=>onSelect(ROLES.DISPLAY_REGISTRATION) },
+      (canAccessStock || isSuperAdmin) && { key:"display_registration", icon:RoleIcons.display_registration, name:"Display Registration", desc:"Register display units", onClick:()=>onSelect(ROLES.DISPLAY_REGISTRATION) },
     ].filter(Boolean) },
     { label: "Administration", cards: [
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && { key:"customers", icon:RoleIcons.customers_db, name:"Customers", desc:"Customer database", onClick:()=>onSelect(ROLES.CUSTOMERS_DB) },

@@ -74,7 +74,8 @@ export default function SkyHome({ tiles, groups, liveCards = [], tag, account, e
     .filter((t) => t.key !== "admin" || hasHub);
 
   return (
-    <div className="sky-home" data-testid="sky-home" data-panel={panel || undefined}>
+    <div className="sky-home" data-testid="sky-home" data-panel={panel || undefined}
+         style={panel === "admin" ? { "--rows": Math.max(1, Math.ceil(hubGroups.reduce((n, g) => n + g.cards.length, 0) / 4)) } : undefined}>
       <style>{HOME_CSS}</style>
       {/* Admin view = Junid's mock-up (5 Nov): the grid button (tap again =
           home), the large wordmark, no pill, no account button. */}
@@ -147,10 +148,10 @@ const HOME_CSS = `
 @media (min-width:900px){
   /* Laptop home (Junid 5 Nov, plain sky): smaller tiles, centred on the screen. */
   .sky-home__band{margin-top:0;position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);padding:0 32px}
-  .sky-home__grid{grid-template-columns:repeat(4,minmax(0,1fr));column-gap:18px;max-width:820px}
+  .sky-home__grid{grid-template-columns:repeat(4,minmax(0,1fr));column-gap:18px;max-width:min(820px,54vw,96vh)}
   .sky-home__grid.n3{grid-template-columns:repeat(3,minmax(0,1fr));max-width:615px}
   .sky-home__grid.n2{grid-template-columns:repeat(2,minmax(0,1fr));max-width:410px}
-  .sky-home{position:relative}
+  .sky-home{position:relative;height:100vh;height:100dvh;min-height:0;padding-bottom:0;overflow:hidden}   /* one screen, never scrolls (Junid 5 Nov) */
   .sky-home .sky-logo--lg .sky-logo__m{font-size:50px}
   .sky-home .sky-logo--lg .sky-logo__c{font-size:15px;margin-top:10px}
   .sky-home .sky-header{padding:34px 48px 0}
@@ -199,28 +200,32 @@ html[data-sky="on"] #root .sky-hub__livecard button[style]:hover{background:rgba
    (or in the corner, 11/12 in, when the name is long). Header: grid button
    62 at 41/13, wordmark 48px. */
 @media (min-width:900px){
-  .sky-home[data-panel="admin"] .sky-header{padding:.82vw 2.59vw 0}
-  .sky-home[data-panel="admin"] .sky-header .sky-round{width:3.91vw !important;height:3.91vw !important;min-width:46px;min-height:46px}
-  .sky-home[data-panel="admin"] .sky-round svg{width:1.7vw;height:1.7vw;min-width:20px;min-height:20px}
-  .sky-home[data-panel="admin"] .sky-logo--lg .sky-logo__m{font-size:3.03vw}
-  .sky-home[data-panel="admin"] .sky-logo--lg .sky-logo__c{font-size:.95vw;margin-top:.63vw;font-style:normal;font-weight:600}
-  .sky-hub{position:absolute;left:0;right:0;top:12.74vw;max-width:77.18vw;margin:0 auto;padding:0 0 40px}
+  /* ONE SCREEN, NEVER SCROLLS (Junid 5 Nov): --u is the mock-up's 1vw, but no
+     bigger than lets every row fit the window's height (16.5u of header and
+     margins + 8.6u per row of tiles; --rows is set from the tile count). */
+  .sky-home[data-panel="admin"]{--u:min(1vw, calc(100vh / (16.5 + var(--rows, 4) * 8.6)));height:100vh;height:100dvh;min-height:0;overflow:hidden}
+  .sky-home[data-panel="admin"] .sky-header{padding:calc(.82 * var(--u)) calc(2.59 * var(--u)) 0}
+  .sky-home[data-panel="admin"] .sky-header .sky-round{width:calc(3.91 * var(--u)) !important;height:calc(3.91 * var(--u)) !important;min-width:46px;min-height:46px}
+  .sky-home[data-panel="admin"] .sky-round svg{width:calc(1.7 * var(--u));height:calc(1.7 * var(--u));min-width:20px;min-height:20px}
+  .sky-home[data-panel="admin"] .sky-logo--lg .sky-logo__m{font-size:calc(3.03 * var(--u))}
+  .sky-home[data-panel="admin"] .sky-logo--lg .sky-logo__c{font-size:calc(.95 * var(--u));margin-top:calc(.63 * var(--u));font-style:normal;font-weight:600}
+  .sky-hub{position:absolute;left:0;right:0;top:calc(12.74 * var(--u));max-width:calc(77.18 * var(--u));margin:0 auto;padding:0 0 40px}
   /* flex, not grid: an unfinished last row sits centred, so the hub stays balanced */
-  .sky-hub__grid{display:flex;flex-wrap:wrap;justify-content:center;gap:1.45vw 1.58vw}
-  .sky-hub__grid>.sky-mini{flex:0 0 calc((100% - 3 * 1.58vw) / 4);width:calc((100% - 3 * 1.58vw) / 4)}
-  .sky-mini{height:7.12vw;min-height:0;padding:0 1.2vw 0 2.27vw;gap:1.7vw;border-radius:1.39vw;
+  .sky-hub__grid{display:flex;flex-wrap:wrap;justify-content:center;gap:calc(1.45 * var(--u)) calc(1.58 * var(--u))}
+  .sky-hub__grid>.sky-mini{flex:0 0 calc((100% - 3 * 1.58 * var(--u)) / 4);width:calc((100% - 3 * 1.58 * var(--u)) / 4)}
+  .sky-mini{height:calc(7.12 * var(--u));min-height:0;padding:0 calc(1.2 * var(--u)) 0 calc(2.27 * var(--u));gap:calc(1.7 * var(--u));border-radius:calc(1.39 * var(--u));
     background:linear-gradient(180deg,rgba(190,228,255,.13),rgba(120,180,240,.07));border:1.5px solid rgba(200,235,255,.42);
     box-shadow:inset 0 1px 0 rgba(220,240,255,.35),0 10px 26px rgba(0,30,90,.14);
     -webkit-backdrop-filter:blur(16px) saturate(125%) brightness(.94);backdrop-filter:blur(16px) saturate(125%) brightness(.94);text-shadow:0 1px 6px rgba(0,40,110,.3)}
   .sky-mini:hover{background:linear-gradient(180deg,rgba(200,235,255,.2),rgba(140,195,245,.12))}
-  .sky-mini__ic{width:2.65vw;height:2.65vw}
-  .sky-mini__ic svg{width:2.65vw !important;height:2.65vw !important;stroke-width:1.9;filter:drop-shadow(0 1px 6px rgba(0,40,110,.3)) !important}
-  .sky-mini__nm{font-size:1.2vw;font-weight:700;letter-spacing:-.015em;line-height:1.15;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-  .sky-mini__bd{position:absolute;right:1.51vw;top:50%;transform:translateY(-50%);min-width:0;height:1.89vw;padding:0 .76vw;border-radius:999px;
-    font-size:1.01vw;font-weight:800;color:#0b2a52;background:#fff;border:0;box-shadow:0 2px 8px rgba(10,60,140,.16)}
+  .sky-mini__ic{width:calc(2.65 * var(--u));height:calc(2.65 * var(--u))}
+  .sky-mini__ic svg{width:calc(2.65 * var(--u)) !important;height:calc(2.65 * var(--u)) !important;stroke-width:1.9;filter:drop-shadow(0 1px 6px rgba(0,40,110,.3)) !important}
+  .sky-mini__nm{font-size:calc(1.2 * var(--u));font-weight:700;letter-spacing:-.015em;line-height:1.15;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .sky-mini__bd{position:absolute;right:calc(1.51 * var(--u));top:50%;transform:translateY(-50%);min-width:0;height:calc(1.89 * var(--u));padding:0 calc(.76 * var(--u));border-radius:999px;
+    font-size:calc(1.01 * var(--u));font-weight:800;color:#0b2a52;background:#fff;border:0;box-shadow:0 2px 8px rgba(10,60,140,.16)}
   .sky-mini[data-corner="1"] .sky-mini__nm{overflow:visible}
-  .sky-mini:has(.sky-mini__bd):not([data-corner="1"]) .sky-mini__nm{padding-right:4.2vw}
-  .sky-mini[data-corner="1"] .sky-mini__bd{top:.69vw;right:.76vw;transform:none}
+  .sky-mini:has(.sky-mini__bd):not([data-corner="1"]) .sky-mini__nm{padding-right:calc(4.2 * var(--u))}
+  .sky-mini[data-corner="1"] .sky-mini__bd{top:calc(.69 * var(--u));right:calc(.76 * var(--u));transform:none}
 }
 
 .sky-acct-wrap{position:fixed;inset:0;z-index:80;display:flex;justify-content:flex-end;align-items:flex-start;padding:calc(env(safe-area-inset-top,0px) + 74px) 14px 14px}

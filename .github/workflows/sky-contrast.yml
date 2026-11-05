@@ -25,6 +25,10 @@ jobs:
       # Junid 5 Nov: an unavailable size is marked and its tap opens the alternatives.
       - run: node scripts/sky-availability.e2e.mjs --port 5197
       - run: node scripts/sky-barcode-scroll.e2e.mjs --port 5199
+      # Junid 5 Nov: the app never zooms (the photo viewer does).
+      - run: node scripts/sky-zoom-lock.e2e.mjs --port 5201
+      # Junid 5 Nov: the phone Store Assistant layout is frozen (1% pixel drift fails).
+      - run: node scripts/sky-phone-visual.e2e.mjs --port 5203
       - if: always()
         uses: actions/upload-artifact@v4
         with:

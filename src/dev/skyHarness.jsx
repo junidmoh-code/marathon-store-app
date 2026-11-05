@@ -9,18 +9,28 @@
 
 import "../styles/sky.css";
 import "../styles/sky-theme.css";
+import { installZoomLock } from "../device/zoomLock.js";
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import SkyHome from "../components/sky/SkyHome.jsx";
 import AssistantPhone from "../components/sky/AssistantPhone.jsx";
 import { brandOptions, filterByBrand, reconcileBrand } from "../components/assistant/brandFilter.js";
 
+installZoomLock();
 const q = new URLSearchParams(location.search);
 const screen = q.get("screen") || "home";
+
+function synthetic() {
+  const brands = ["Nike", "Adidas", "Jordan", "New Balance", "Puma", "Nike", "Nike", "Adidas"];
+  return ORDER.map((id, i) => ({ id, name: `Sample sneaker ${i + 1} Low Retro`, brand: brands[i % brands.length], retailPrice: 750, sizes: ["6", "7", "8", "9", "10"], photo: "👟" }));
+}
 
 async function loadFixture() {
   // ?fixture=named: products exactly as RTDB holds them now (their own
   // cut-out fields, real Storage URLs) — dev/fixture-named.local.json.
+  // ?fixture=synthetic: the fixed sample products CI also gets — the phone
+  // visual-regression baseline uses it so it never depends on local data.
+  if (q.get("fixture") === "synthetic") return synthetic();
   if (q.get("fixture")) {
     try { return await (await fetch(`/dev/fixture-${q.get("fixture")}.local.json`)).json(); } catch { /* fall through */ }
   }
@@ -33,8 +43,7 @@ async function loadFixture() {
       ? { ...p, photoCutoutUrl: `/dev/cutouts/${p.id}.png`, photoCutoutFor: p.photoUrl, photoCutoutQuality: cut[p.id] } : p));
   } catch {
     // CI / no local fixture: synthetic products (no photos, no Storage URLs).
-    const brands = ["Nike", "Adidas", "Jordan", "New Balance", "Puma", "Nike", "Nike", "Adidas"];
-    return ORDER.map((id, i) => ({ id, name: `Sample sneaker ${i + 1} Low Retro`, brand: brands[i % brands.length], retailPrice: 750, sizes: ["6", "7", "8", "9", "10"], photo: "👟" }));
+    return synthetic();
   }
 }
 
@@ -56,7 +65,7 @@ function SampleLive({ title, body }) {
 // ?mock=1: the admin view with the 16 tools of Junid's 5 Nov mock-up, real icons.
 const MOCK_TOOLS = [["source", "Source", 600], ["barcodes", "Barcodes"], ["label_print", "Print Labels"], ["stock_audit", "Stock Audit"],
   ["insights", "Internal Insights"], ["display", "TV Display"], ["customer", "Track Order"], ["customers_db", "Customers"],
-  ["display_checks", "Display Registration"],
+  ["display_registration", "Display Registration"],
   ["admin", "Admin"], ["stock", "Stock"], ["health", "Inventory Health"], ["marketing", "Marketing"],
   ["new_arrivals", "New Arrivals"], ["shopify_publish", "Shopify Publish", 1022], ["social", "Social"], ["ai_studio", "AI Studio"]];
 function Home({ icons = null }) {
@@ -89,6 +98,7 @@ function Phone({ products }) {
   const [shop, setShop] = useState("trophy");
   const [mode, setMode] = useState("sneaker");
   const [search, setSearch] = useState("");
+  const [picked, setPicked] = useState(null);   // a card tap selects it, as in AssistantView
   const cart = Number(q.get("cart") || 0);
   // The brand strip, wired as AssistantView wires it (?brand=Nike preselects;
   // ?chips=ref adds the reference's fashion brands so the strip scrolls).
@@ -103,7 +113,7 @@ function Phone({ products }) {
       shops={[{ id: "concrete" }, { id: "marathon-pe" }, { id: "pine" }, { id: "trophy" }]} effectiveShop={shop}
       shopLabel={(id) => ({ concrete: "Concrete", "marathon-pe": "Marathon PE", pine: "Pine", trophy: "Trophy" }[id])} onShop={setShop}
       search={search} onSearch={setSearch} onScan={() => {}}
-      products={list} onOpen={() => {}} onViewPhotos={() => {}} photoCount={() => 1}
+      products={list} selectedId={picked} onOpen={(p) => setPicked(p.id)} onViewPhotos={() => {}} photoCount={() => 1}
       cartCount={cart} onCart={() => {}} cartDisabled={!cart} onExit={() => {}} who="2pos" />
   );
 }
@@ -209,6 +219,12 @@ function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
     const { BcsCard, BCS_CSS, BarcodeStudioDesktop } = await import("../components/stock/BarcodeCatalog.jsx");
     const { SkyHeader } = await import("../components/sky/Sky.jsx");
     el = <div id="root-inner"><Barcodes products={products} BcsCard={BcsCard} css={BCS_CSS} Studio={BarcodeStudioDesktop} SkyHeader={SkyHeader} /></div>;
+  } else if (screen === "viewer") {
+    // The product photo viewer on its own (zoom test): an inline photo, so CI
+    // needs no Storage URL.
+    const { GalleryLightbox } = await import("../App.jsx");
+    const svg = "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><rect width="600" height="600" fill="#e8eef7"/><circle cx="300" cy="300" r="180" fill="#0026c2"/></svg>');
+    el = <GalleryLightbox photos={[svg]} onClose={() => {}} />;
   } else if (screen === "phone") {
     el = <Phone products={products.slice(0, Number(q.get("n") || 16))} />;
   } else {

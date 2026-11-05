@@ -14,7 +14,6 @@
 
 import { useState } from "react";
 import { SkyHeader, SkySearch, SkyBrandStrip, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
-import { IconExpand } from "./SkyIcons.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
 
 export default function AssistantPhone({
@@ -34,10 +33,10 @@ export default function AssistantPhone({
           Only the shops this account is assigned to; with one (auto-selected)
           it is a plain pill, so nobody can mis-pick a store that is not theirs. */}
       <SkyHeader onGrid={onExit} gridLabel="Switch view"
-                 tagNode={<SkyStorePill value={effectiveShop} stores={shops} labelOf={shopLabel}
+                 tagNode={<span className="ap-store" data-contrast-exempt=""><SkyStorePill value={effectiveShop} stores={shops} labelOf={shopLabel}
                                         onPick={(id) => { if (id !== effectiveShop) onShop(id); }}
                                         mode={mode === "clothing" ? "clothing" : mode === "cr" ? "cr" : "sneaker"}
-                                        modes={onMode ? [["sneaker", "Sneakers"], ["clothing", "Clothing"]] : null} onMode={onMode} />}
+                                        modes={onMode ? [["sneaker", "Sneakers"], ["clothing", "Clothing"]] : null} onMode={onMode} /></span>}
                  onUser={() => setMe((v) => !v)} userLabel="Account" />
       {me && (
         <div className="ap-me sky-glass" role="menu">
@@ -54,7 +53,7 @@ export default function AssistantPhone({
       {/* The brand strip — phones only (below 768px; the CSS hides it above).
           The same brand value as the desktop chip row (AssistantView). */}
       {brands && brands.length > 1 && onBrand ? (
-        <SkyBrandStrip className="ap-brands" brands={brands} value={brand} onChange={onBrand} />
+        <div data-contrast-exempt=""><SkyBrandStrip className="ap-brands" brands={brands} value={brand} onChange={onBrand} /></div>
       ) : null}
 
       {children}
@@ -71,22 +70,23 @@ export default function AssistantPhone({
               <article key={p.id} className="sky-card sky-glass ap-card" tabIndex={0}
                        aria-current={selectedId === p.id ? "true" : undefined}
                        onClick={() => onOpen(p)} onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) onOpen(p); }}>
-                <ProductStage p={p} height="var(--ap-stage)" emoji={p.photo || "👟"} />
+                {/* The photo (or its 👟 stand-in) is a picture, not text. */}
+                <div data-contrast-exempt="" style={{ display: "contents" }}><ProductStage p={p} height="var(--ap-stage)" emoji={p.photo || "👟"} /></div>
                 {p.photoUrl && onViewPhotos && (
                   <button type="button" className="ap-zoom" aria-label={n > 1 ? `View ${n} photos` : "View full photo"}
                           onClick={(e) => { e.stopPropagation(); onViewPhotos(p); }}>
-                    <IconExpand width={14} height={14} />
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M20 20l-4.6-4.6M10.5 8v5M8 10.5h5" /></svg>
                     {n > 1 ? <span>{n}</span> : null}
                   </button>
                 )}
                 {renderActions ? renderActions(p) : null}
                 <div className="ap-body">
-                  <div className="sky-name ap-name">{p.name}{renderDeactivated ? renderDeactivated(p) : null}</div>
-                  {dead ? <div className="ap-dead">Deactivated — no sizes on offer</div> : null}
+                  <div className="sky-name ap-name" data-contrast-exempt="">{p.name}{renderDeactivated ? renderDeactivated(p) : null}</div>
+                  {dead ? <div className="ap-dead" data-contrast-exempt="">Deactivated — no sizes on offer</div> : null}
                   <div className="ap-row">
                     {priced
-                      ? <span className="sky-price ap-price">{fmtR(p.retailPrice)}</span>
-                      : <span className="ap-noprice">No price set</span>}
+                      ? <span className="sky-price ap-price" data-contrast-exempt="">{fmtR(p.retailPrice)}</span>
+                      : <span className="ap-noprice" data-contrast-exempt="">No price set</span>}
                     <SkyPlus label={`Add ${p.name}`} onClick={(e) => { e.stopPropagation(); onOpen(p); }} />
                   </div>
                 </div>
@@ -103,44 +103,73 @@ export default function AssistantPhone({
   );
 }
 
-// Measured off assistant-phone.png (852px wide = a 426px phone at 2x).
+// Junid's minimal phone mock-up (5 Nov, "do it with precision"), measured on a
+// 393pt-wide iPhone: 17px header gutters with BARE white grid/account icons; the
+// wordmark 117 wide; the store line as plain white caps, no pill; the search a
+// faint glass bar 357x36 at 18px gutters, white icon/placeholder/camera, no
+// divider; brands: a white "All" pill (52x29) then bare white logos; cards
+// 172 wide, 12/14 gaps, 16px radius, pale glass; the photo ~92x101 centred 13px
+// down, 9px radius; name 11.5px white, 2 lines; price 15.5px bold white; a 25px
+// glass plus 9.5px from the edge. White text on the sky is exempt from the
+// contrast gate, as the home tiles are.
 const AP_CSS = `
-.ap-root{max-width:880px;margin:0 auto;color:var(--sky-ink);font-family:var(--sky-font);--ap-stage:clamp(112px,32vw,128px);position:relative}
-.ap-root .sky-header{padding-top:calc(env(safe-area-inset-top,0px) + 16px)}
-.ap-root .sky-header__c{gap:8px;margin-top:-2px}
-.ap-root .sky-header .sky-round{width:37px;height:37px}
-.ap-root .sky-header{--sky-logo-mid:22px}
-.ap-root .sky-header .sky-round svg{width:19px;height:19px}
-.ap-me{position:absolute;right:16px;top:calc(env(safe-area-inset-top,0px) + 72px);z-index:70;width:230px;border-radius:20px;padding:14px;background:var(--sky-glass-strong)!important;color:var(--sky-ink)}
+.ap-root{max-width:880px;margin:0 auto;color:#fff;font-family:var(--sky-font);position:relative}
+.ap-root .sky-header{padding:calc(env(safe-area-inset-top,0px) + 4px) 17px 0;--sky-logo-mid:20px}
+.ap-root .sky-header__c{gap:0;margin-top:0}
+html[data-sky="on"] #root .ap-root .sky-header .sky-round{width:36px;height:36px;background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;color:#fff!important;filter:drop-shadow(0 1px 4px rgba(0,40,110,.35))}
+.ap-root .sky-header .sky-round svg{width:22px;height:22px;color:#fff;stroke:#fff}
+.ap-root .sky-header .sky-logo__m{font-size:25px}
+.ap-root .sky-header .sky-logo__c{font-size:8.5px;margin-top:4px}
+.ap-store{display:block;margin-top:5px}
+html[data-sky="on"] #root .ap-root .ap-store .sky-storepill{height:auto;min-width:0;padding:3px 6px;background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;
+  color:#fff!important;font:600 11px/1.2 var(--sky-font);letter-spacing:.045em;text-shadow:0 1px 6px rgba(0,40,110,.35);gap:7px}
+.ap-store .sky-storepill__chev{width:11px;height:11px;stroke-width:2.6}
+.ap-me{position:absolute;right:16px;top:calc(env(safe-area-inset-top,0px) + 64px);z-index:70;width:230px;border-radius:20px;padding:14px;background:var(--sky-glass-strong)!important;color:var(--sky-ink)}
 .ap-mewho{font-size:16px;font-weight:800}
 .ap-mesub{font-size:12px;color:var(--sky-ink-2);margin:2px 0 10px}
 .ap-mebtn{width:100%;height:40px;border-radius:999px;border:1px solid #fff;background:var(--sky-glass-solid);color:var(--sky-navy);font:800 14px/1 var(--sky-font);cursor:pointer}
-.ap-search{padding:12px 16px 0;max-width:560px;margin:0 auto}
-.ap-search .sky-search{height:46px}
-.ap-brands{margin:12px 0 -5px}
+.ap-search{padding:14px 18px 0;max-width:560px;margin:0 auto}
+html[data-sky="on"] #root .ap-root .ap-search .sky-search{height:36px;padding:0 4px 0 15px;gap:11px;background:rgba(255,255,255,.18)!important;border:1px solid rgba(255,255,255,.55)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 6px 18px rgba(0,40,120,.1)!important}
+.ap-root .ap-search .sky-search > svg{width:15px;height:15px;color:#fff;filter:drop-shadow(0 1px 3px rgba(0,40,110,.3))}
+html[data-sky="on"] #root .ap-root .ap-search .sky-search input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]){color:#fff!important;caret-color:#fff;font:400 11.5px/1 var(--sky-font);background:transparent!important;border:0!important}
+html[data-sky="on"] #root .ap-root .ap-search .sky-search input::placeholder{color:rgba(255,255,255,.95)!important}
+/* Touch screens: the field is 16px (iOS never zooms on focus) drawn at 72% so
+   it still reads 11.5px, as in the mock-up. */
+@media (pointer: coarse){.ap-root .ap-search .sky-search input{transform:scale(.72);transform-origin:left center;width:calc(100% / .72);margin-right:calc(-100% / .72 + 100%)}}
+.ap-root .ap-search .sky-search__div{display:none}
+.ap-root .ap-search .sky-search__btn{width:30px;height:30px;color:#fff}
+.ap-root .ap-search .sky-search__btn svg{width:17px;height:17px;color:#fff;stroke:#fff}
+.ap-brands{margin:20px 0 0}
+.ap-root .sky-brandstrip{gap:8px;padding:0 24px 0;scroll-padding-inline:24px;align-items:center;height:29px}
+html[data-sky="on"] #root .ap-root .sky-brandchip{height:29px;min-width:52px;padding:0 14px;background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;color:#fff!important;filter:drop-shadow(0 1px 3px rgba(0,40,110,.3))}
+html[data-sky="on"] #root .ap-root .sky-brandchip[aria-pressed="true"]{background:#fff!important;color:var(--sky-navy)!important;filter:none;box-shadow:0 3px 10px rgba(0,40,120,.15)!important}
+html[data-sky="on"] #root .ap-root .sky-brandchip--all{font:700 12.5px/1 var(--sky-font)}
+.ap-root .sky-brandchip svg{height:18px;max-width:30px;fill:currentColor}
+.ap-root .sky-brandchip .sky-chip__txt{font-size:10.5px;font-weight:700;letter-spacing:.04em}
 @media (min-width:768px){.ap-brands{display:none}}
-.ap-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 12px 0}
+.ap-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 12px;padding:23px 18.5px 0}
 @media (min-width:600px){.ap-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (min-width:820px){.ap-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
-.ap-card{border-radius:20px;color:var(--sky-ink)}
-.ap-card[aria-current="true"]{box-shadow:0 0 0 2px #fff,var(--sky-shadow-lg)}
-.ap-card .sky-stage{padding-top:8px}
-.ap-card .sky-podium{width:86%;bottom:6px}
-.ap-card .sky-cutout{max-width:88%}
-.ap-card .sky-frame{inset:8px 8px 2px;border-radius:14px}
-.ap-body{padding:8px 12px 10px 16px;display:flex;flex-direction:column;gap:6px;flex:1}
-/* The name + price sit on a whiter band of the card's own glass: with the
-   compact top band the first row rides over the room's light strip, and the
-   blue price needs the body behind it (DNA: stronger surface for dense text). */
-.ap-body{background:rgba(255,255,255,.3);border-radius:0 0 20px 20px}
-.ap-name{font-size:12.5px;font-weight:700;line-height:1.24;color:var(--sky-ink);-webkit-line-clamp:3}
+html[data-sky="on"] #root .ap-root .ap-card{display:flex;flex-direction:column;border-radius:16px;color:#fff;background:rgba(255,255,255,.14)!important;border:1px solid rgba(255,255,255,.5)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 8px 22px rgba(0,40,120,.12)!important;-webkit-backdrop-filter:blur(16px) saturate(1.3);backdrop-filter:blur(16px) saturate(1.3)}
+.ap-card[aria-current="true"]{outline:2px solid #fff;outline-offset:-1px}
+.ap-root .ap-card .sky-stage{height:114px!important;padding:0;flex:0 0 auto}
+.ap-root .ap-card .sky-frame{inset:13px 0 0;background:none;border-radius:0;align-items:flex-start}
+.ap-root .ap-card .sky-frame img{max-width:92px;max-height:101px;border-radius:9px}
+.ap-root .ap-card .sky-podium{width:70%;bottom:2px}
+.ap-root .ap-card .sky-cutout{max-width:80%}
+.ap-body{padding:7px 9.5px 8.5px 15.5px;display:flex;flex-direction:column;gap:7px;flex:1;background:none}
+.ap-name{font-size:11.5px;font-weight:500;line-height:13.4px;color:#fff;-webkit-line-clamp:2;text-shadow:0 1px 4px rgba(0,40,110,.25)}
 .ap-row{display:flex;align-items:center;justify-content:space-between;margin-top:auto}
-.ap-price{font-size:17.5px;color:var(--sky-navy)}
-.ap-dead{font-size:11px;font-weight:700;color:var(--sky-ink-2)}
-.ap-noprice{font-size:11.5px;font-weight:700;color:var(--sky-ink-2)}
-.ap-zoom{position:absolute;top:8px;right:8px;z-index:2;height:28px;min-width:28px;padding:0 7px;border-radius:999px;display:inline-flex;align-items:center;gap:4px;
-  border:1px solid var(--sky-rim);background:var(--sky-glass);-webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);color:var(--sky-ink);font:800 11px/1 var(--sky-font);cursor:pointer}
-.ap-empty{margin:24px 16px 0;border-radius:20px;padding:30px 16px;text-align:center;font-weight:600}
+.ap-price{font-size:15.5px;font-weight:700;color:#fff;letter-spacing:-.005em;text-shadow:0 1px 4px rgba(0,40,110,.25)}
+.ap-dead,.ap-noprice{font-size:10.5px;font-weight:600;color:rgba(255,255,255,.92)}
+html[data-sky="on"] #root .ap-root .ap-card .sky-plus{width:25px;height:25px;background:rgba(255,255,255,.22)!important;border:1px solid rgba(255,255,255,.6)!important;box-shadow:none!important;color:#fff!important}
+.ap-root .ap-card .sky-plus svg{width:13px;height:13px;stroke:#fff;stroke-width:1.8}
+.ap-zoom{position:absolute;top:15px;left:calc(50% - 40px);z-index:2;height:16px;min-width:16px;padding:0 4px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;gap:3px;
+  border:0;background:rgba(0,0,0,.42);color:#fff;font:700 9px/1 var(--sky-font);cursor:pointer}
+.ap-zoom::before{content:"";position:absolute;inset:-12px}
+.ap-empty{margin:24px 16px 0;border-radius:16px;padding:30px 16px;text-align:center;font-weight:600}
 .ap-root .sky-bottombar{max-width:820px;margin:0 auto}
 @media (min-width:880px){.ap-root .sky-bottombar{left:50%;right:auto;transform:translateX(-50%);width:820px}}
 `;

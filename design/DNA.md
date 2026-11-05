@@ -122,6 +122,23 @@ prices 700–800 tabular, "R" and no decimals.
   Hub Count & Displays, Shipment Release, Display Registration removed; the
   code stays, `SHOW_HUB_LIVE_CARDS = false` in App.jsx brings them back).
 
+- **Phone Store Assistant — FROZEN** (Junid 5 Nov). The approved layout is
+  `design/assistant-phone-approved-390.png` / `-430.png` (his minimal mock-up:
+  bare white header icons, the store line as plain white caps, a faint glass
+  search with camera, a white "All" pill then bare white brand logos, pale
+  glass cards 172 wide with a centred photo, white name, white price and a
+  glass plus). `scripts/sky-phone-visual.e2e.mjs` fails CI on more than 1%
+  pixel drift (photos and prices masked). ANY change to the phone assistant
+  layout needs Junid's say-so; only then re-run it with `--update`.
+- **No zoom** (Junid 5 Nov): the viewport meta forbids scaling, html/body are
+  `touch-action: manipulation`, `src/device/zoomLock.js` cancels WebKit pinch
+  gestures, every field is ≥16px on touch screens (the phone search is drawn
+  at 72% so it still looks 11.5px). The only thing that zooms is the photo
+  viewer (`ZoomImage`: pinch 1–4×, pan, double-tap 1 ↔ 2.5, own transform).
+  `scripts/sky-zoom-lock.e2e.mjs` proves both.
+- **One screen on a laptop**: the home and the admin view never scroll; the
+  admin unit `--u` shrinks with the window height and the number of rows.
+
 ## 6. Layout
 - Phone (reference 426px wide): 16–18px gutters; home = 2×2 tiles of ≈183×180
   starting about a third of the way down so the floor reflection shows below;
