@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runOrdersPoll } from "./poll.mjs";
 import { candidateCode } from "./orderRefs.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
-import { swapOnlineOrderLine, swappedLine, swapFromRecord } from "../../lib/swap-line.mjs";
+import { swapOnlineOrderLine, swappedLine, swapFromRecord, lineLedger } from "../../lib/swap-line.mjs";
 import { runCustomerAgent } from "../../online/agent/run.mjs";
 import { planProduct } from "../inventorySync.mjs";
 import { holdRowsFor } from "./orderModel.mjs";
@@ -384,15 +384,25 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(line(f, 0).source.orderKeys).toEqual([C(0, 1)]);
   });
 
-  it("a second swap on a line that already owes the customer money is refused (the money would be wrong)", async () => {
+  it("COMMIT 6: a second swap is applied; the money is ONE ledger against what was paid (superseded, never stacked)", async () => {
     const { f, h } = await ingested();
     await ask(f, 1, "POLO", "M");
     await h.tick();
+    const first = line(f, 1).ledger;
+    expect(first).toMatchObject({ swaps: 1 });
     await ask(f, 1, "JKT", "M", { rid: "r2", priceDecision: "we_absorb" });
     await h.tick();
-    expect(request(f, "r2")).toMatchObject({ state: "refused" });
-    expect(request(f, "r2").why).toMatch(/already swapped with a price difference/);
-    expect(line(f, 1).pid).toBe("POLO");
+    expect(request(f, "r2")).toMatchObject({ state: "applied" });
+    const l = line(f, 1);
+    expect(l.pid).toBe("JKT");
+    expect(l.ledger.swaps).toBe(2);
+    expect(l.ledger.paidCents).toBe(first.paidCents);
+    // one figure, from scratch: paid minus the current price, either way
+    expect(l.ledger.creditCents - l.ledger.extraCents).toBe(l.ledger.paidCents - l.ledger.settledCents - l.ledger.nowCents);
+    // the first swap's emailed credit request (manual) is superseded and flagged, not counted as given
+    expect(l.resolution.money).toBeUndefined();
+    expect(l.resolution.supersededMoney).toMatchObject({ state: "manual", doNotIssue: true });
+    expect(l.resolution.outcome.creditCents).toBe(l.ledger.creditCents);
   });
 
   it("two same-price swaps: the line still names the product Shopify lists (originalPid), pushed after the fulfilment", async () => {
@@ -419,5 +429,27 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     await h.tick();
     expect(line(f, 1).pid).toBe("TEE");
     expect(request(f).state).toBe("cancelled");
+  });
+});
+
+describe("COMMIT 6: the line ledger (pure)", () => {
+  const L = (over = {}) => ({ qty: 1, unitPriceCents: 40000, originalUnitPriceCents: 45000, ...over });
+  it("two consecutive swaps give one correct credit (#1866: R450 paid, R400 shorts → R50, then R450 shorts → R0)", () => {
+    expect(lineLedger(L({ unitPriceCents: 45000 }), { priceCents: 40000 })).toMatchObject({ paidCents: 45000, creditCents: 5000, extraCents: 0 });
+    expect(lineLedger(L(), { priceCents: 45000 })).toMatchObject({ creditCents: 0, extraCents: 0 });
+    expect(lineLedger(L(), { priceCents: 35000 })).toMatchObject({ creditCents: 10000, extraCents: 0 });
+  });
+  it("money already given back for the line stays given: the next swap counts it; an emailed manual request is not given", () => {
+    expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "manual" } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 0, creditCents: 10000, supersedes: { state: "manual", amountCents: 5000 } });
+    expect(lineLedger(L({ resolution: { money: { state: "failed", ambiguous: true, amountCents: 5000 } } }), { priceCents: 35000 }).unclear).toBe(true);
+    expect(lineLedger(L({ resolution: { moneySettled: { a: { state: "done", amountCents: 5000 } } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 5000, creditCents: 5000 });
+    const l = L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "done" } } });
+    expect(lineLedger(l, { priceCents: 35000 })).toMatchObject({ settledCents: 5000, creditCents: 5000 });
+    expect(lineLedger(l, { priceCents: 45000 })).toMatchObject({ creditCents: 0, extraCents: 5000 });
+    expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "failed" } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 0, creditCents: 10000 });
+  });
+  it("a dearer second swap needs its difference: refused without a price decision", () => {
+    expect(lineLedger(L(), { priceCents: 50000 })).toMatchObject({ extraCents: 5000, creditCents: 0 });
+    expect(lineLedger(L({ resolution: { money: { state: "claimed", amountCents: 5000 } } }), { priceCents: 40000 }).busy).toBe(true);
   });
 });

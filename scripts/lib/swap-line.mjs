@@ -36,14 +36,25 @@
 // Refused: a packed / cancelled / closed order (the agent's follow-up path owns
 // a packed one), a line moved / resolved / cancelled, a size the product does
 // not have, no free unit anywhere on the route, a dearer item without a price
-// decision, a line that changed since the person looked at it (`expect`).
+// decision, a line that changed since the person looked at it (`expect`), money
+// for the line being issued at this very moment.
+//
+// MONEY: A LEDGER PER LINE (Junid, 5 Nov 2026, COMMIT 6: "a line may be replaced
+// any number of times"). Every swap recomputes from scratch against what the
+// customer paid for the line (paidCents: originalUnitPriceCents × qty), minus any
+// money already given back for it (resolution.money done / manual): what is left
+// minus the new item's price is store credit owed (positive) or a difference to
+// collect (negative, a price decision needed: the caller's payment-confirmed path
+// or Junid's command). The previous swap's credit or extra is SUPERSEDED, never
+// stacked; the ledger is on the line: { paidCents, settledCents, nowCents,
+// creditCents, extraCents, swaps, at }.
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { routeLine, availableAt, ROUTED_LOCATIONS } from "../shopify/onlineOrders/routing.mjs";
 import { placeName, linesOf, holdRowsFor, displayKey } from "../shopify/onlineOrders/orderModel.mjs";
 import { withdrawRequest, ESCALATIONS_PATH } from "../shopify/onlineOrders/escalate.mjs";
-import { judgeSwap, paidCents, rands } from "../online/agent/core.mjs";
+import { paidCents, rands } from "../online/agent/core.mjs";
 import { ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, PACKING_STORE, LINE_STATUS, ONLINE_RETURN_KIND } from "../../src/utils/onlineOrders.js";
 import { stockSizeKey } from "../../src/utils/sizeKey.js";
 import { productIsFootwear } from "../../src/utils/footwearLine.js";
@@ -58,6 +69,32 @@ export function openDb({ keyFile = path.join(process.env.HOME || "", ".config", 
   const admin = require("firebase-admin");
   if (!admin.apps.length) admin.initializeApp({ credential: admin.credential.cert(require(keyFile)), databaseURL });
   return { db: admin.database(), admin };
+}
+
+/**
+ * PURE: the line's money after a swap to an item priced `priceCents` (per unit). Money already given back for the line
+ * (resolution.money done or manual) is settled and stays settled; a pending or failed money slot is superseded.
+ * → { paidCents, settledCents, nowCents, creditCents, extraCents, busy }  (busy: money is being issued right now)
+ */
+export function lineLedger(line, { priceCents }) {
+  const qty = Number(line?.qty) || 1;
+  const paid = paidCents(line);
+  const m = line?.resolution?.money;
+  const amt = (x) => Math.max(0, Math.round(Number(x?.amountCents) || 0));
+  // Given back = money actions that completed (state done): the current slot and every earlier one moved to moneySettled.
+  // An emailed "manual" request has not given anything back yet (CodeRabbit on #843): it is superseded, not counted.
+  const earlier = Object.values(line?.resolution?.moneySettled || {}).filter((x) => x && typeof x === "object" && x.state === "done");
+  const settled = earlier.reduce((t, x) => t + amt(x), 0) + (m && typeof m === "object" && m.state === "done" && m.kind !== "swap" ? amt(m) : 0);
+  const now = Math.max(0, Math.round(Number(priceCents) || 0)) * qty;
+  const net = paid - settled - now;
+  const isObj = m && typeof m === "object";
+  return {
+    paidCents: paid, settledCents: settled, nowCents: now, creditCents: Math.max(0, net), extraCents: Math.max(0, -net),
+    busy: !!(isObj && m.state === "claimed"),
+    // A failed call that may have gone through (money() marks it ambiguous): checked in Shopify before anything new.
+    unclear: !!(isObj && m.state === "failed" && m.ambiguous === true),
+    supersedes: isObj && (m.state === "manual" || m.state === "pending" || m.state === "failed") ? { state: m.state, amountCents: amt(m), kind: m.kind || null } : null,
+  };
 }
 
 /** "Customer agreed to pay the difference" / "we absorb it" — the only ways a dearer item is allowed. */
@@ -94,8 +131,11 @@ export function swapFromRecord(line, { at, by = null, via, hubOrders = [], reque
  * stays (originalUnitPriceCents), and `resolution` is the caller's (the agent
  * closes its conversation in it).
  */
-export function swappedLine(cur, item, { swappedFrom, outcome, resolution }) {
+export function swappedLine(cur, item, { swappedFrom, outcome, resolution, at = null }) {
   const { escalation: _e, escalationOverride: _o, ...rest } = cur;
+  // The line's money, from scratch, the same for every caller (COMMIT 6): what was paid, given back, now, owed.
+  const lg = lineLedger(cur, { priceCents: item.priceCents });
+  const ledger = { paidCents: lg.paidCents, settledCents: lg.settledCents, nowCents: lg.nowCents, creditCents: lg.creditCents, extraCents: lg.extraCents, swaps: (Number(cur.ledger?.swaps) || (cur.swappedFrom ? 1 : 0)) + 1, at: at ?? outcome?.at ?? null };
   return clean({
     ...rest,
     pid: item.pid, size: item.size, sizeKey: item.sizeKey || stockSizeKey(item.size), title: item.title,
@@ -111,6 +151,7 @@ export function swappedLine(cur, item, { swappedFrom, outcome, resolution }) {
     escalationGen: (Number(cur.escalationGen) || 0) + 1,
     source: { locationId: item.locationId, status: item.status },
     resolution: resolution ?? { ...(cur.resolution || {}), outcome },
+    ledger,
   });
 }
 
@@ -166,16 +207,13 @@ export async function swapOnlineOrderLine({
   if (line.pid === newPid && String(line.sizeKey ?? "_") === sizeKey) return refuse("the line already is that product and size");
   if (priceDecision != null && !PRICE_DECISIONS.includes(priceDecision)) return refuse(`unknown price decision ${priceDecision}`);
 
-  // A SECOND swap on a line whose first one left money owed or to collect
-  // would be judged against the original price again and its difference
-  // could never be recorded (one money slot per line): refused, Junid's.
-  const prior = line.swappedFrom ? line.resolution?.outcome : null;
-  if (line.swappedFrom && (line.resolution?.money || Number(prior?.creditCents) > 0 || Number(prior?.extraCents) > 0)) {
-    return refuse(`this line was already swapped with a price difference recorded (${Number(prior?.creditCents) > 0 ? `${rands(prior.creditCents)} owed to the customer` : `${rands(prior?.extraCents || 0)} extra`}) — a second swap would get the money wrong; Junid changes it by hand`);
-  }
+  // ANY number of swaps (the ledger above): the money is recomputed from what was paid, never stacked.
   const priceCents = Math.round(Number(product.retailPrice ?? product.price) * 100) || 0;
-  const judged = judgeSwap(line, { priceCents });
-  const paid = paidCents(line);
+  const ledger = lineLedger(line, { priceCents });
+  if (ledger.busy) return refuse("money for this line is being issued right now; try again in a minute");
+  if (ledger.unclear) return refuse("an earlier credit or refund for this line may have gone through (its answer was lost): check it in Shopify first, then swap");
+  const judged = ledger.extraCents > 0 ? { ok: false, extraCents: ledger.extraCents } : { ok: true, creditCents: ledger.creditCents };
+  const paid = ledger.paidCents - ledger.settledCents;
   if (!judged.ok && !priceDecision && !allowHigher) {
     return refuse(`${product.name} costs ${rands(judged.extraCents)} more than the ${rands(paid)} paid — the customer must agree to pay it, or we absorb it`, { extraCents: judged.extraCents });
   }
@@ -197,11 +235,12 @@ export async function swapOnlineOrderLine({
     oldSource: line.source || null, oldEscalation: esc ? { phase: esc.phase, request: esc.request || null } : null,
     stock: Object.fromEntries(ROUTED_LOCATIONS.map((l) => [l, { onHand: stockQty[l], free: free[l] ?? 0 }])),
     route: { locationId: piece.locationId, status: piece.status, place: placeName(piece.locationId) },
-    price: { paidCents: paid, newCents: priceCents * qty, creditCents: judged.ok ? judged.creditCents : 0, extraCents: judged.ok ? 0 : judged.extraCents, decision: judged.ok ? null : (priceDecision || "allow_higher") },
+    price: { paidCents: ledger.paidCents, settledCents: ledger.settledCents, newCents: priceCents * qty, creditCents: judged.ok ? judged.creditCents : 0, extraCents: judged.ok ? 0 : judged.extraCents, decision: judged.ok ? null : (priceDecision || "allow_higher") },
     willRemoveHubOrders: oldKeys, willTombstoneEntry: oldEntry,
     willWithdrawRequest: esc?.phase === "await" && esc.request ? esc.request : null,
   };
-  const summary = `#${ref} updated: ${plan.from} → ${plan.to}, ${piece.status === "display" ? "display pick" : "pick"} raised at ${placeName(piece.locationId)}`;
+  const superseded = ledger.supersedes && ledger.supersedes.amountCents > 0 ? ` The earlier ${rands(ledger.supersedes.amountCents)} ${ledger.supersedes.kind || "money"} request (${ledger.supersedes.state}) is superseded: do not issue it.` : "";
+  const summary = `#${ref} updated: ${plan.from} → ${plan.to}, ${piece.status === "display" ? "display pick" : "pick"} raised at ${placeName(piece.locationId)}${superseded}`;
   if (dry) return { ok: true, dry: true, summary: `DRY RUN — ${summary}`, plan, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents };
   // ── 1. The line — ONE transaction on the order, so it is atomic with what a
   // pack does: a pack claimed (or landed) since the read refuses the swap, and
@@ -225,9 +264,25 @@ export async function swapOnlineOrderLine({
     if (!cur || `${cur.pid}|${cur.sizeKey ?? ""}|${cur.source?.status ?? ""}|${Number(cur.routeGen) || 0}` !== expectKey) { why = "the line changed meanwhile"; return undefined; }
     // An open customer-agent conversation is closed: the line is settled by this swap.
     const conv = cur.resolution?.conversation;
-    const resolution = { ...(cur.resolution || {}), outcome, ...(conv && conv.state !== "closed" ? { conversation: { ...conv, state: "closed", closedAt: now, closedBy: via } } : {}) };
+    // A money slot that never moved money (pending / failed) is superseded by this swap's ledger; a settled one stays.
+    const m = cur.resolution?.money;
+    if (m && typeof m === "object" && m.state === "claimed") { why = "money for this line is being issued right now"; return undefined; }
+    // The ledger was computed from the line as read: money that moved since makes it stale (never a wrong credit).
+    if (JSON.stringify(m ?? null) !== JSON.stringify(line.resolution?.money ?? null)) { why = "the line's money changed meanwhile"; return undefined; }
+    // A completed money action moves to moneySettled (kept, counted in every later ledger), so the next credit is its own
+    // money action (never resumed as the old one); an unfinished one (manual request, pending, failed) is superseded and
+    // flagged so nobody also loads the old amount by hand.
+    const done = m && typeof m === "object" && m.state === "done";
+    const { money: _old, ...restRes } = cur.resolution || {};
+    const resolution = {
+      ...restRes,
+      ...(done ? { moneySettled: { ...(cur.resolution?.moneySettled || {}), [`m${now}`]: m } } : {}),
+      ...(m && !done ? { supersededMoney: { ...m, supersededAt: now, doNotIssue: true } } : {}),
+      outcome,
+      ...(conv && conv.state !== "closed" ? { conversation: { ...conv, state: "closed", closedAt: now, closedBy: via } } : {}),
+    };
     const next = { ...ord, lines: Array.isArray(ord.lines) ? [...ord.lines] : { ...ord.lines } };
-    next.lines[i] = swappedLine(cur, item, { swappedFrom, outcome, resolution });
+    next.lines[i] = swappedLine(cur, item, { swappedFrom, outcome, resolution, at: now });
     const drop = (node, key) => { if (node && typeof node === "object" && key in node) { const c = Array.isArray(node) ? [...node] : { ...node }; if (Array.isArray(c)) c[key] = null; else delete c[key]; return c; } return node; };
     next.basket = drop(ord.basket, i);
     next.basketBy = drop(ord.basketBy, i);
