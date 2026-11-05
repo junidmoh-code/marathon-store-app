@@ -9360,7 +9360,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                             onOpen={(i, genOk) => {
                               const orig = productPhotos(qv);
                               const ph = genOk ? wallPhotoList(qv, orig, wallManifest) : orig;   // a tile that failed to load stays out
-                              if (ph.length) onViewPhoto(genOk && i === 1 ? [...ph.slice(1), ph[0]] : ph);
+                              // from the original slide: original, then studio, then any gallery photos (the pair stays adjacent)
+                              if (ph.length) onViewPhoto(genOk && i === 1 && ph.length > 1 ? [ph[1], ph[0], ...ph.slice(2)] : ph);
                             }}
                             fallback={<span style={{ fontSize: 110 }}>{qv.photo || "👟"}</span>} />
                 : <Photo p={qv} big />}
