@@ -461,5 +461,26 @@ describe("review of #846: held picks, the ledger on settle", () => {
     await h.run({ inbox: { replies: async () => [reply("credit")] } });
     expect(line(f).resolution.money).toMatchObject({ kind: "credit", amountCents: 15000, state: "done" });
   });
+
+  it("CodeRabbit on #847: a packed order's pick ships as a follow-up and the parent's credit is in the follow-up's money history", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    await f.db.ref("online_orders/9001").update({ status: "packed" });
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).source).toEqual({ status: "moved", movedTo: "9001f0" });
+    // R250 paid, R240 pick: R10 credit paid on the parent line, and the follow-up line knows it.
+    expect(line(f).resolution.money).toMatchObject({ kind: "credit", amountCents: 1000, state: "done" });
+    expect(Object.values(f.read("online_orders/9001f0/lines/0/resolution/moneySettled") || {})).toEqual([expect.objectContaining({ state: "done", amountCents: 1000, onParent: "9001/0" })]);
+  });
+
+  it("CodeRabbit on #847: 'nothing left to give back' goes to Junid once", async () => {
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { moneySettled: { a: { state: "done", amountCents: 25000 } } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation").set({ state: "offering", email: "thandi@example.com", tag: "T", startedAt: NOW - H, offers: { 0: OFFERS[0], 1: OFFERS[1] }, sends: { 1: { kind: "offer", sentAt: NOW - H } } });
+    await h.run({ inbox: { replies: async () => [reply("credit")] } });
+    await h.run({ nowMs: async () => NOW + 72 * H, inbox: { replies: async () => [reply("credit"), reply("credit please", 2)] } });
+    expect(h.junid.filter((m) => /nothing is left to give back/.test(m.subject))).toHaveLength(1);
+  });
 });
 

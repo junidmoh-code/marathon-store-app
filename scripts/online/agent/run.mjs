@@ -310,6 +310,9 @@ async function nextReply(ctx, orderId, i, conv) {
 }
 
 // ── pick N ───────────────────────────────────────────────────────────────────
+// A held pick is dropped only once it has an outcome: a committed swap, or a final answer (dearer, gone): CodeRabbit #847.
+const clearHeld = (ctx, orderId, i) => lineTxn(ctx, orderId, i, (cur) => { const c = cur.resolution?.conversation; if (!c?.heldPick) return undefined; const { heldPick: _h, ...rest } = c; return { ...cur, resolution: { ...cur.resolution, conversation: rest } }; });
+
 async function pick(ctx, key, orderId, order, i, line, offer, { held = false } = {}) {
   const judged = judgeSwap(line, offer, { now: ctx.now });
   if (!judged.ok && judged.why === "money_unclear") {
@@ -323,15 +326,15 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
     await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, NOT swapped yet`, [`Line: ${line.title}${line.size ? ` size ${line.size}` : ""}.`, `${judged.note}. Settle that first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go"); the pick is kept and goes on by itself once it is settled.`]);
     return;
   }
-  // A held pick that now resolves any other way (dearer, gone, swapped) is held no more: it is never retried twice.
-  if (held) await lineTxn(ctx, orderId, i, (cur) => { const c = cur.resolution?.conversation; if (!c?.heldPick) return undefined; const { heldPick: _h, ...rest } = c; return { ...cur, resolution: { ...cur.resolution, conversation: rest } }; });
   if (!judged.ok) {
+    if (held) await clearHeld(ctx, orderId, i); // a final answer: never retried twice
     await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title} costs ${rands(judged.extraCents)} more — never charge more` });
     await send(ctx, orderId, order, i, line, "costs_more", { amountCents: judged.extraCents });
     return;
   }
   // The offer may be days old: the unit is checked again NOW.
   if (ctx.offerStillAvailable && !(await ctx.offerStillAvailable({ offer, line, orderId }))) {
+    if (held) await clearHeld(ctx, orderId, i);
     await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title} is no longer in stock` });
     await send(ctx, orderId, order, i, line, "gone");
     return;
@@ -358,12 +361,23 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
     await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
     // The parent line settles its money the same way (review of #846, 3): its done slot to moneySettled, so the follow-up's
     // credit below is its own action; the money is re-checked as on the unpacked path.
-    await lineTxn(ctx, orderId, i, (cur) => (JSON.stringify(cur.resolution?.money ?? null) !== JSON.stringify(line.resolution?.money ?? null) ? undefined : ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: swapResolution(cur.resolution, { now: ctx.now, outcome: { ...outcome, movedTo: fid }, closeConversation: "agent" }) })));
+    const parentOk = await lineTxn(ctx, orderId, i, (cur) => (JSON.stringify(cur.resolution?.money ?? null) !== JSON.stringify(line.resolution?.money ?? null) ? undefined : ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: swapResolution(cur.resolution, { now: ctx.now, outcome: { ...outcome, movedTo: fid }, closeConversation: "agent" }) })));
+    if (!parentOk) {
+      // The parent's money changed meanwhile (CodeRabbit on #847): the follow-up just made is undone, nothing reported.
+      if (res.committed) {
+        await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).set(null);
+        await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(null);
+      }
+      await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: the line's money changed meanwhile; not swapped` });
+      return;
+    }
+    if (held) await clearHeld(ctx, orderId, i);
   } else {
     // The ledger was judged on the line as read: money that moved since makes it stale (never a wrong credit; COMMIT 6).
     const sameMoney = (cur) => JSON.stringify(cur.resolution?.money ?? null) === JSON.stringify(line.resolution?.money ?? null);
     const done = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation?.state === "offering" && sameMoney(cur) ? newLine(cur) : undefined));
-    if (!done) return;
+    if (!done) return; // not committed: a held pick stays held, tried again next run
+    if (held) await clearHeld(ctx, orderId, i); // committed: the held pick has its outcome
     // RACE: a pack may have landed between the read and the swap. A packed
     // order never ships a pick: the swapped line moves to a follow-up.
     const after = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}`);
@@ -385,6 +399,11 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
   await record(ctx, orderId, i, order.ref, "swapped", { note: `${line.title} → ${offer.title} at ${offer.locationId}${packed ? " (ships as a follow-up)" : ""}` });
   const swapped = { ...line, ...newLine(line) };
   const diff = judged.creditCents > 0 ? await money(ctx, orderId, order, i, swapped, "credit", judged.creditCents, "swap difference") : null;
+  // A packed order's item ships as a follow-up: a credit paid on the parent line is in the follow-up line's money history
+  // too, so its next swap counts it (one ledger across parent and follow-up; CodeRabbit on #847).
+  if (packed && diff && diff.via === "api") {
+    await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${followUpId(orderId, i)}/lines/0/resolution/moneySettled/m${ctx.now}`).set(clean({ kind: "credit", amountCents: judged.creditCents, state: "done", via: "api", ref: diff.ref ?? null, ...(Number.isInteger(diff.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` }));
+  }
   await send(ctx, orderId, order, i, swapped, "swapped", { amountCents: judged.creditCents, pending: !!diff && diff.via !== "api" });
   await setAgentRow(ctx, key, null);
 }
@@ -394,6 +413,9 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
   // What is left of what was paid for the line (the ledger; review of #846, 5): never the full price again after a credit.
   let amount = lineLedger(line, { priceCents: 0, now: ctx.now }).refundableCents;
   if (!(amount > 0)) {
+    // Told once (CodeRabbit on #847): a marker on the conversation, so the next run (or the 48-hour credit) is silent.
+    if (line.resolution?.conversation?.nothingLeftAt) return;
+    await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, nothingLeftAt: ctx.now } } } : undefined));
     await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents: 0, note: "nothing is left of what was paid for this line" });
     await tellJunid(ctx, `Website order ${order.ref}: ${kind} asked, but nothing is left to give back on ${line.title}`, [`Everything paid for the line was given back already; nothing was sent to the customer.`]);
     await setAgentRow(ctx, key, { state: "offering", needsJunid: true });
