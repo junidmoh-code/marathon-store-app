@@ -7,7 +7,9 @@ word here and an image disagree, the image wins. Code: `src/styles/sky.css`
 `src/components/sky/` (React pieces).
 
 ## 1. The room
-- One background, everywhere: `sky-room.jpg`, `cover`, centred, **untouched** — no
+- One background, everywhere: `sky-clear.jpg` (Junid 5 Nov: the plain sky of
+  his mock-ups replaces the room photo, which stays in the repo unused),
+  `cover`, centred, **untouched** — no
   overlay, gradient, tint, blur or darkening over it, ever.
 - It is a `position:fixed` div at `z-index:0` in `index.html` (never
   `background-attachment:fixed`, which iPad Safari ignores). `#root` is

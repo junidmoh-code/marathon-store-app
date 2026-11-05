@@ -1,6 +1,7 @@
 /* ─── SKY — the Marathon Club design DNA ──────────────────────────────────────
  *
- * The whole app stands in ONE room: public/assets/sky-room.jpg. Everything in
+ * The whole app stands in ONE sky: public/assets/sky-clear.jpg (Junid 5 Nov;
+ * the room photo sky-room.jpg is kept, unused). Everything in
  * this file follows from the three reference images in design/ (home.png,
  * assistant-phone.png, assistant-desktop.png). design/DNA.md explains the
  * rules in words; this file is the rules in code.
@@ -72,7 +73,7 @@ html[data-sky="on"] body { font-family: var(--sky-font); }
   position: fixed;
   inset: 0;
   z-index: 0;
-  background-image: url("/assets/sky-room.jpg");
+  background-image: url("/assets/sky-clear.jpg");
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
