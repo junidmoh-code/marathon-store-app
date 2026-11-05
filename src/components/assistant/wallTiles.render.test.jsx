@@ -55,6 +55,29 @@ describe("loadWallManifest", () => {
     expect(W.WALL_MANIFEST_URL).toContain("products%2F_studio%2Fwall-manifest.json");
     expect(m).toEqual({ tiles: { pKobe: { v: "1" } } });
   });
+  it("an inherited key like __proto__ is never a tile", () => {
+    expect(W.generatedTileSrc({ id: "__proto__" }, { tiles: {} })).toBeNull();
+    expect(W.generatedTileSrc({ id: "constructor" }, { tiles: {} })).toBeNull();
+  });
+  it("after a failed load, retries wait a minute (no fetch storm while offline)", async () => {
+    const f = vi.fn(() => Promise.reject(new Error("offline")));
+    await W.loadWallManifest(f, 1000);
+    await W.loadWallManifest(f, 2000); await W.loadWallManifest(f, 30000);
+    expect(f).toHaveBeenCalledTimes(1);
+    await W.loadWallManifest(f, 1000 + 61000);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+  it("sixty tiles share ONE refresh timer, gone when the wall unmounts; off the wall there is none", () => {
+    const Many = ({ on = true }) => <>{Array.from({ length: 60 }, (_, i) => <Probe key={i} on={on} />)}</>;
+    function Probe({ on }) { W.useWallManifest(on); return null; }
+    let tr; act(() => { tr = TestRenderer.create(<Many />); });
+    expect(W.__wallTimerForTest()).toEqual({ timer: true, subs: 60 });  // sixty listeners, one timer, one fetch
+    act(() => { tr.unmount(); });
+    expect(W.__wallTimerForTest().timer).toBe(false);
+    act(() => { tr = TestRenderer.create(<Many on={false} />); });
+    expect(W.__wallTimerForTest().timer).toBe(false);
+    act(() => { tr.unmount(); });
+  });
   it("offline or a broken manifest: nothing, so every tile keeps its original", async () => {
     expect(await W.loadWallManifest(() => Promise.reject(new Error("offline")), 1)).toBeNull();
     expect(await W.loadWallManifest(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ nope: 1 }) }), 2)).toBeNull();
@@ -94,8 +117,31 @@ describe("WallPair (the popup's photo)", () => {
   it("a swipe left moves to the original", () => {
     let tr; act(() => { tr = TestRenderer.create(<WallPair p={KOBE} gen={GEN} />); });
     const root = tr.root.find(n => n.props["data-testid"] === "wall-pair");
-    act(() => { root.props.onTouchStart({ touches: [{ clientX: 300 }] }); root.props.onTouchEnd({ changedTouches: [{ clientX: 100 }] }); });
+    act(() => { root.props.onTouchStart({ touches: [{ clientX: 300, clientY: 100 }] }); root.props.onTouchEnd({ changedTouches: [{ clientX: 100, clientY: 120 }] }); });
     expect(tr.root.find(n => n.props.className === "wp-track").props.style.transform).toBe("translateX(-50%)");
+  });
+  it("a mostly vertical drag is a scroll, not a swipe", () => {
+    let tr; act(() => { tr = TestRenderer.create(<WallPair p={KOBE} gen={GEN} />); });
+    const root = tr.root.find(n => n.props["data-testid"] === "wall-pair");
+    act(() => { root.props.onTouchStart({ touches: [{ clientX: 300, clientY: 100 }] }); root.props.onTouchEnd({ changedTouches: [{ clientX: 240, clientY: 400 }] }); });
+    expect(tr.root.find(n => n.props.className === "wp-track").props.style.transform).toBe("translateX(0%)");
+  });
+  it("a tap opens the lightbox on the slide on screen; a swipe never opens it", () => {
+    const onOpen = vi.fn(); const ev = { stopPropagation() {} };
+    let tr; act(() => { tr = TestRenderer.create(<WallPair p={KOBE} gen={GEN} onOpen={onOpen} />); });
+    const root = () => tr.root.find(n => n.props["data-testid"] === "wall-pair");
+    act(() => { root().props.onClick(ev); });
+    expect(onOpen).toHaveBeenLastCalledWith(0);
+    act(() => { root().props.onTouchStart({ touches: [{ clientX: 300, clientY: 100 }] }); root().props.onTouchEnd({ changedTouches: [{ clientX: 100, clientY: 110 }] }); });
+    act(() => { root().props.onClick(ev); });            // the click that follows the swipe
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    act(() => { root().props.onClick(ev); });
+    expect(onOpen).toHaveBeenLastCalledWith(1);
+  });
+  it("the slide off screen is hidden from screen readers", () => {
+    let tr; act(() => { tr = TestRenderer.create(<WallPair p={KOBE} gen={GEN} />); });
+    const slides = tr.root.findAll(n => typeof n.props.className === "string" && n.props.className.startsWith("wp-slide"));
+    expect(slides.map(x => x.props["aria-hidden"])).toEqual([false, true]);
   });
   it("no generated tile, or one that fails: just the original, as before", () => {
     let tr; act(() => { tr = TestRenderer.create(<WallPair p={KOBE} gen={null} />); });

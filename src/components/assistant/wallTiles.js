@@ -16,7 +16,7 @@
 // at a product's own studio-wall.png in our bucket. `v` busts the hour-long
 // Storage cache when a tile is regenerated.
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 
 const BUCKET = "marathon-club.firebasestorage.app";
 const BASE = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/`;
@@ -26,15 +26,19 @@ const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 let manifest = null;       // { tiles: {...} } once loaded; stays null if it never loads (originals everywhere)
 let loadedAt = 0;
+let failedAt = 0;          // last failed load: retries are rate-limited (no fetch storm while offline)
+let lastJson = "";
 let inflight = null;
+let timer = null;          // ONE refresh timer for the whole app, started by the first subscriber
 const subs = new Set();
 const emit = () => subs.forEach((f) => f());
+const RETRY_MS = 60 * 1000;
 
 // The generated tile for a product, or null. Pure, for the tests.
 export function generatedTileSrc(p, m = manifest) {
   const id = p?.id;
   if (typeof id !== "string" || !SAFE_ID.test(id)) return null;
-  const t = m?.tiles?.[id];
+  const t = m?.tiles && Object.prototype.hasOwnProperty.call(m.tiles, id) ? m.tiles[id] : null;
   if (!t || typeof t !== "object") return null;
   const v = typeof t.v === "string" || typeof t.v === "number" ? String(t.v) : "";
   return `${BASE}products%2F${id}%2Fstudio-wall.png?alt=media${v ? `&v=${encodeURIComponent(v)}` : ""}`;
@@ -52,28 +56,36 @@ export function loadWallManifest(fetchImpl = typeof fetch === "function" ? fetch
   if (!fetchImpl) return Promise.resolve(manifest);
   if (inflight) return inflight;
   if (manifest && now - loadedAt < TTL_MS) return Promise.resolve(manifest);
+  if (failedAt && now - failedAt < RETRY_MS) return Promise.resolve(manifest);
   inflight = Promise.resolve()
     .then(() => fetchImpl(WALL_MANIFEST_URL, { cache: "no-cache" }))
     .then((r) => (r && r.ok ? r.json() : null))
     .then((j) => {
-      if (j && typeof j === "object" && j.tiles && typeof j.tiles === "object") { manifest = { tiles: j.tiles }; loadedAt = now; emit(); }
+      if (j && typeof j === "object" && j.tiles && typeof j.tiles === "object") {
+        loadedAt = now; failedAt = 0;
+        const s = JSON.stringify(j.tiles);
+        if (s !== lastJson) { lastJson = s; manifest = { tiles: j.tiles }; emit(); }   // unchanged: no re-render
+      } else failedAt = now;
       return manifest;
     })
-    .catch(() => manifest)                // offline / missing manifest: keep what we had, originals otherwise
+    .catch(() => { failedAt = now; return manifest; })   // offline / missing: keep what we had, originals otherwise
     .finally(() => { inflight = null; });
   return inflight;
 }
 
-// The manifest for a component; loads it on first use and refreshes it when stale.
-export function useWallManifest() {
-  const m = useSyncExternalStore((f) => { subs.add(f); return () => subs.delete(f); }, () => manifest, () => null);
-  useEffect(() => {
-    loadWallManifest();
-    const t = setInterval(() => loadWallManifest(), TTL_MS);
-    return () => clearInterval(t);
-  }, []);
-  return m;
+function subscribe(f) {
+  subs.add(f);
+  if (!timer) { loadWallManifest(); timer = setInterval(() => loadWallManifest(), TTL_MS); }
+  return () => { subs.delete(f); if (!subs.size && timer) { clearInterval(timer); timer = null; } };
+}
+const noSubscribe = () => () => {};
+
+// The manifest for a component. `enabled` false (not on the wall): no fetch, no timer, always null.
+// All subscribers share one load and one refresh timer.
+export function useWallManifest(enabled = true) {
+  return useSyncExternalStore(enabled ? subscribe : noSubscribe, () => (enabled ? manifest : null), () => null);
 }
 
 // Tests only.
-export function __setWallManifestForTest(m) { manifest = m; loadedAt = m ? Date.now() : 0; inflight = null; emit(); }
+export function __setWallManifestForTest(m) { manifest = m; lastJson = m ? JSON.stringify(m.tiles) : ""; loadedAt = m ? Date.now() : 0; failedAt = 0; inflight = null; emit(); }
+export function __wallTimerForTest() { return { timer: !!timer, subs: subs.size }; }

@@ -8802,7 +8802,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const [qv, setQv]       = useState(null);   // quick-view product
   // Generated studio tiles (staff wall): the popup's photo is a swipeable pair,
   // generated first, original second; the lightbox opens in the same order.
-  const wallManifest = useWallManifest();
+  const wallManifest = useWallManifest(wallMode);   // off the wall: no fetch, no timer
   const [qvSize, setQvSize] = useState(null);
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
@@ -9351,6 +9351,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                   through the inline Photo, so a re-render never remounts it. */}
               {wall
                 ? <WallPair key={qv.id} p={qv} gen={generatedTileSrc(qv, wallManifest)}
+                            // the lightbox opens on the slide on screen: studio first, or the original first
+                            onOpen={(i) => { const ph = wallPhotoList(qv, productPhotos(qv), wallManifest); if (ph.length) onViewPhoto(i === 1 ? [...ph.slice(1), ph[0]] : ph); }}
                             fallback={<span style={{ fontSize: 110 }}>{qv.photo || "👟"}</span>} />
                 : <Photo p={qv} big />}
             </div>
