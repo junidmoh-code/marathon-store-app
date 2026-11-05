@@ -432,11 +432,13 @@ async function resolveList(db, record, items) {
       const names = {};
       for (const [, l] of lineEntries(lines)) {
         if (names[l.pid]) continue;
-        let p = null, sp = null;
+        let p = null, sp = null, pid = null;
         try {
-          const pid = assertSafeSegment(String(l.pid), "productId");
-          [p, sp] = await Promise.all([read(db, `products/${pid}/name`).catch(() => null), read(db, `shopify_publish/${pid}`).catch(() => null)]);
+          pid = assertSafeSegment(String(l.pid), "productId");
         } catch { /* an unsafe id names nothing: the line's own title still counts */ }
+        // A name read that fails stops the run too (CodeRabbit on #844): a line missing its names could turn the right
+        // match into a unique match on another line.
+        if (pid) [p, sp] = await Promise.all([read(db, `products/${pid}/name`), read(db, `shopify_publish/${pid}`)]);
         names[l.pid] = { name: typeof p === "string" ? p : null, cleanName: sp?.cleanName || null, proposalName: sp?.proposalName || sp?.title || null, previousName: sp?.previousName || null };
       }
       const r = matchReturningLine(it, lines, names);
