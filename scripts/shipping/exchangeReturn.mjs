@@ -157,6 +157,11 @@ export function namesOf(line, names = {}) {
   return [line?.title, n.name, n.cleanName, n.proposalName, n.previousName].map(normTitle).filter(Boolean);
 }
 export function resolveReturningLine(item, origLines, names = {}) {
+  const r = matchReturningLine(item, origLines, names);
+  return r?.ambiguous ? null : r;
+}
+/** resolveReturningLine's answer with ambiguity told apart: { pid, origLineIndex } | { ambiguous: true } | null. Pure. */
+export function matchReturningLine(item, origLines, names = {}) {
   const lines = lineEntries(origLines);
   const sameSize = (a, b) => stockSizeKey(a == null || a === "" ? "_" : String(a)) === stockSizeKey(b == null || b === "" ? "_" : String(b));
   const want = normTitle(item?.title);
@@ -175,12 +180,14 @@ export function resolveReturningLine(item, origLines, names = {}) {
     const exact = sized.filter(([, l]) => namesOf(l, names).includes(want));
     const loose = exact.length ? exact : sized.filter(([, l]) => namesOf(l, names).some((t) => t.length >= 4 && want.length >= 4 && (t.includes(want) || want.includes(t))));
     const pids = [...new Set(loose.map(([, l]) => l.pid))];
-    if (pids.length !== 1) return null;
+    if (pids.length > 1) return { ambiguous: true };
+    if (!pids.length) return null;
     // Two lines of that product and size picked from different places: which cell it goes back to is not known, so no
     // guess (CodeRabbit, #842); lines that agree on the place are one answer.
     const places = new Set(loose.map(([, l]) => pickedPlace(l)));
-    return places.size === 1 ? { pid: pids[0], origLineIndex: loose[0][0] } : null;
+    return places.size === 1 ? { pid: pids[0], origLineIndex: loose[0][0] } : { ambiguous: true };
   }
+  if (sized.length > 1) return { ambiguous: true };
   return sized.length === 1 ? { pid: sized[0][1].pid, origLineIndex: sized[0][0] } : null;
 }
 /** Where an original line was picked (its deductFrom, else its source), "" when unknown. Pure. */
@@ -417,7 +424,7 @@ async function resolveList(db, record, items) {
   const keys = relatedKeys(record);
   for (const it of list(items)) {
     if (str(it.pid)) { out.push(it); continue; }
-    let hit = null, hitKey = null;
+    let hit = null, hitKey = null, ambiguous = false;
     for (const k of str(it.origOrderKey) ? [str(it.origOrderKey)] : keys) {
       let lines = [];
       try {
@@ -433,11 +440,12 @@ async function resolveList(db, record, items) {
         } catch { /* an unsafe id names nothing: the line's own title still counts */ }
         names[l.pid] = { name: typeof p === "string" ? p : null, cleanName: sp?.cleanName || null, proposalName: sp?.proposalName || sp?.title || null, previousName: sp?.previousName || null };
       }
-      const r = resolveReturningLine(it, lines, names);
-      // A second related order that also names it: never a guess between two orders (CodeRabbit, #842).
-      if (r?.pid) { if (hit) { hit = null; break; } hit = r; hitKey = k; }
+      const r = matchReturningLine(it, lines, names);
+      // Ambiguous in any related order, or named by two orders: never a guess (CodeRabbit, #842); no match: keep looking.
+      if (r?.ambiguous) { hit = null; ambiguous = true; break; }
+      if (r?.pid) { if (hit) { hit = null; ambiguous = true; break; } hit = r; hitKey = k; }
     }
-    out.push(hit ? { ...it, pid: hit.pid, origOrderKey: str(it.origOrderKey) || hitKey, ...(hit.origLineIndex != null ? { origLineIndex: hit.origLineIndex } : {}) } : it);
+    out.push(hit && !ambiguous ? { ...it, pid: hit.pid, origOrderKey: str(it.origOrderKey) || hitKey, ...(hit.origLineIndex != null ? { origLineIndex: hit.origLineIndex } : {}) } : it);
   }
   return out;
 }

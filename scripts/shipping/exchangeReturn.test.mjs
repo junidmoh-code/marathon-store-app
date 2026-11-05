@@ -433,6 +433,11 @@ describe("a pid-less returning item and the movement's order reference", () => {
     expect(at(db, `stock_movements/${id}/link`)).toMatchObject({ orderId: KEY, ref: "1793-EX" });
     expect(at(db, `stock/hub1/${SNK}/8/qty`)).toBe(1);
   });
+  it("ambiguous in one related order: a unique match in another is not taken (CodeRabbit, #842)", async () => {
+    const rec = record({ exchange: { ...record().exchange, relatedOrders: ["18966134358165", "O2"] }, incoming: { ...record().incoming, returning: [{ title: "Nike Shox TL", size: "8" }] } });
+    const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL" }, { pid: "pX", size: "8", title: "Nike Shox TL" }], extra: { online_orders: { [KEY]: rec, 18966134358165: { orderNumber: "1793", lines: [{ pid: SNK, size: "8", title: "Nike Shox TL" }, { pid: "pX", size: "8", title: "Nike Shox TL" }] }, O2: { orderNumber: "1790", lines: [{ pid: SNK, size: "8", title: "Nike Shox TL" }] } } } });
+    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/not recorded/) });
+  });
   it("a name that matches nothing still refuses (nothing written)", async () => {
     const rec = record({ incoming: { ...record().incoming, returning: [{ title: "Nobody knows", size: "8", origOrderKey: "18966134358165" }] } });
     const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL" }, { pid: "pX", size: "8", title: "Other" }] });
