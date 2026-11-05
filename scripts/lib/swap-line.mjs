@@ -255,6 +255,8 @@ export async function swapOnlineOrderLine({
     // A money slot that never moved money (pending / failed) is superseded by this swap's ledger; a settled one stays.
     const m = cur.resolution?.money;
     if (m && typeof m === "object" && m.state === "claimed") { why = "money for this line is being issued right now"; return undefined; }
+    // The ledger was computed from the line as read: money that moved since makes it stale (never a wrong credit).
+    if (JSON.stringify(m ?? null) !== JSON.stringify(line.resolution?.money ?? null)) { why = "the line's money changed meanwhile"; return undefined; }
     const keepMoney = m && typeof m === "object" && (m.state === "done" || m.state === "manual");
     const { money: _old, ...restRes } = cur.resolution || {};
     const resolution = { ...restRes, ...(keepMoney ? { money: m } : {}), ...(m && !keepMoney ? { supersededMoney: { ...m, supersededAt: now } } : {}), outcome, ...(conv && conv.state !== "closed" ? { conversation: { ...conv, state: "closed", closedAt: now, closedBy: via } } : {}) };
