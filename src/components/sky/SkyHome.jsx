@@ -203,10 +203,10 @@ html[data-sky="on"] #root .sky-hub__livecard button[style]:hover{background:rgba
   .sky-hub{position:absolute;left:0;right:0;top:12.74vw;max-width:77.18vw;margin:0 auto;padding:0 0 40px}
   .sky-hub__grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:1.45vw 1.58vw}
   .sky-mini{height:7.12vw;min-height:0;padding:0 1.2vw 0 2.27vw;gap:1.7vw;border-radius:1.39vw;
-    background:rgba(255,255,255,.26);border:1.5px solid rgba(255,255,255,.62);
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 0 18px rgba(255,255,255,.16),0 10px 26px rgba(10,60,140,.14);
-    -webkit-backdrop-filter:blur(18px) saturate(115%) brightness(1.06);backdrop-filter:blur(18px) saturate(115%) brightness(1.06);text-shadow:0 1px 6px rgba(0,40,110,.3)}
-  .sky-mini:hover{background:rgba(255,255,255,.34)}
+    background:rgba(255,255,255,.1);border:1.5px solid rgba(255,255,255,.55);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 0 14px rgba(255,255,255,.08),0 10px 26px rgba(10,60,140,.12);
+    -webkit-backdrop-filter:blur(16px) saturate(120%);backdrop-filter:blur(16px) saturate(120%);text-shadow:0 1px 6px rgba(0,40,110,.3)}
+  .sky-mini:hover{background:rgba(255,255,255,.18)}
   .sky-mini__ic{width:2.65vw;height:2.65vw}
   .sky-mini__ic svg{width:2.65vw !important;height:2.65vw !important;stroke-width:1.9;filter:drop-shadow(0 1px 6px rgba(0,40,110,.3)) !important}
   .sky-mini__nm{font-size:1.2vw;font-weight:700;letter-spacing:-.015em;white-space:nowrap}
