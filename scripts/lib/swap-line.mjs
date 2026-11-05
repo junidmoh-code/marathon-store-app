@@ -163,6 +163,9 @@ export async function swapOnlineOrderLine({
   orderKey, lineIndex, newPid, size, dry = false, allowHigher = false, priceDecision = null, paidInCents = null, paidInRef = null,
   by = null, via = "cli", requestId = null, expect = null, db = null, admin = null, increment = null, now = Date.now(), log = () => {}, displayFeedOn = null,
 }) {
+  // A payment amount, when given, is a positive whole number of cents (CodeRabbit on #848); null/0 means none.
+  if (paidInCents != null && paidInCents !== 0 && !(Number.isInteger(paidInCents) && paidInCents > 0)) throw new Error(`paidInCents must be a positive whole number of cents (got ${paidInCents})`);
+  const paidIn = paidInCents > 0 ? paidInCents : 0;
   if (!db) ({ db, admin } = openDb());
   const get = async (p) => (await db.ref(p).get()).val();
   const inc = increment || (admin?.database?.ServerValue?.increment ? (n) => admin.database.ServerValue.increment(n) : null);
@@ -256,11 +259,12 @@ export async function swapOnlineOrderLine({
     // A completed money action moves to moneySettled; one that never moved money is kept as supersededMoney (doNotIssue).
     void conv;
     const resolution0 = swapResolution(cur.resolution, { now, outcome, closeConversation: via });
-    // A difference the customer pays for this dearer item counts as paid for the line (review of #847, spec): the payment
-    // the caller confirmed (paidInCents, e.g. the PayFast difference), or Junid's "customer pays" decision; a later swap
-    // down credits it back.
-    const inCents = Math.round(Number(paidInCents) || 0) > 0 ? Math.round(Number(paidInCents)) : plan.price.decision === "customer_pays" ? plan.price.extraCents : 0;
-    const resolution = inCents > 0 ? { ...resolution0, moneyIn: { ...(cur.resolution?.moneyIn || {}), [`m${now}`]: clean({ amountCents: inCents, state: "done", via: paidInCents ? "payment" : "customer_pays", ref: paidInRef || null, at: now }) } } : resolution0;
+    // A difference the customer PAID for this dearer item counts as paid for the line (review of #847, spec; CodeRabbit on
+    // #848): only a confirmed payment the caller passes (paidInCents, e.g. the PayFast difference) is "done". Junid's
+    // "customer pays" decision is owed, not paid: recorded as to_collect (never counted) until a payment confirms it.
+    const owedIn = !paidIn && plan.price.decision === "customer_pays" && plan.price.extraCents > 0 ? plan.price.extraCents : 0;
+    const inEntry = paidIn ? clean({ amountCents: paidIn, state: "done", via: "payment", ref: paidInRef || null, at: now }) : owedIn ? clean({ amountCents: owedIn, state: "to_collect", via: "customer_pays", at: now }) : null;
+    const resolution = inEntry ? { ...resolution0, moneyIn: { ...(cur.resolution?.moneyIn || {}), [`m${now}`]: inEntry } } : resolution0;
     const next = { ...ord, lines: Array.isArray(ord.lines) ? [...ord.lines] : { ...ord.lines } };
     next.lines[i] = swappedLine(cur, item, { swappedFrom, outcome, resolution, at: now });
     const drop = (node, key) => { if (node && typeof node === "object" && key in node) { const c = Array.isArray(node) ? [...node] : { ...node }; if (Array.isArray(c)) c[key] = null; else delete c[key]; return c; } return node; };

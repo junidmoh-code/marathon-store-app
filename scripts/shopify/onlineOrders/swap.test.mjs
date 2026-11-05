@@ -431,13 +431,23 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(Object.values(line(f, 1).resolution.moneyIn || {})).toEqual([expect.objectContaining({ state: "done", via: "payment", amountCents: 5000, ref: "PF9" })]);
   });
 
+  it("CodeRabbit on #848: a bad paidInCents is refused, nothing swapped", async () => {
+    const { f } = await ingested();
+    for (const bad of [-5, 12.5, Number.NaN]) {
+      await expect(swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: bad, by: YASMIN, via: "cli", now: NOW, increment })).rejects.toThrow(/positive whole number/);
+    }
+    expect(line(f, 1).pid).not.toBe("JKT");
+  });
+
   it("customer pays: Junid is asked to collect ONCE per request", async () => {
     const { f, h } = await ingested();
     await ask(f, 1, "JKT", "M", { priceDecision: "customer_pays" });
     await h.tick();
     expect(f.read("online_orders/9001/swapRequests/r1/collectMailedAt")).toBe(NOW);
     // the difference the customer pays counts as paid on the line's ledger (review of #847, spec)
-    expect(Object.values(line(f, 1).resolution.moneyIn || {})).toEqual([expect.objectContaining({ state: "done", via: "customer_pays" })]);
+    // owed, not paid, until a payment confirms it (CodeRabbit on #848): never counted on the ledger
+    expect(Object.values(line(f, 1).resolution.moneyIn || {})).toEqual([expect.objectContaining({ state: "to_collect", via: "customer_pays" })]);
+    expect(lineLedger(line(f, 1), { priceCents: 0 }).paidCents).toBe(lineLedger({ ...line(f, 1), resolution: {} }, { priceCents: 0 }).paidCents);
     expect(h.mails.filter((m) => /collect it/.test(m.subject))).toHaveLength(1);
   });
 

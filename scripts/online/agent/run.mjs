@@ -539,7 +539,8 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
   // The claim THIS swap wrote with the line (preclaimed, its own time): paid now, once (review of #847, 5).
   const preclaimed = !!existing && claimedAt != null && existing.preclaimed === true && existing.state === "claimed" && Number(existing.at) === Number(claimedAt) && existing.kind === kind && Number(existing.amountCents) === amountCents;
   if (!preclaimed && existing && existing.kind === kind && Number(existing.amountCents) === amountCents) {
-    if (existing.state === "claimed" && ctx.now - Number(existing.at) >= STUCK_CLAIM_MS && !existing.stuckMailedAt) {
+    // A swap's own pre-claim met again (the run that wrote it stopped before paying; CodeRabbit on #848): Junid at once.
+    if (existing.state === "claimed" && (existing.preclaimed === true || ctx.now - Number(existing.at) >= STUCK_CLAIM_MS) && !existing.stuckMailedAt) {
       await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, resolution: { ...cur.resolution, money: { ...cur.resolution.money, stuckMailedAt: ctx.now } } }));
       await tellJunid(ctx, `Website order ${order.ref}: CHECK SHOPIFY — a ${kind} of ${rands(amountCents)} may or may not have gone through`, [
         `The agent claimed this ${kind} at ${new Date(Number(existing.at)).toISOString()} and stopped before recording the result.`,
