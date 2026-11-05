@@ -2968,7 +2968,7 @@ function CustomerDrillModal({ drill, detail, onClose, fmt }) {
 
 // ─── ROLE SELECTOR ────────────────────────────────────────────────────────────
 // ── Role icon SVGs (match HTML design exactly) ─────────────────────────────
-const RoleIcons = {
+export const RoleIcons = {
   stock_audit: (
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/><path d="M9 11l3 3 7-7"/>
@@ -3382,6 +3382,12 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
   );
 }
 
+// Junid 5 Nov: the admin hub shows NO live cards (Hub Count & Displays,
+// Shipment Release, Display Registration) — "remove them from this screen
+// entirely, don't delete the code". Their builders stay below; true brings
+// all three back (the phone still leaves out the first two).
+const SHOW_HUB_LIVE_CARDS = false;
+
 function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push, mute }) {
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut, deviceIdentity: homeDevice } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
@@ -3677,7 +3683,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
     <SkyHome
       tiles={homeTiles}
       groups={hubGroups}
-      liveCards={[["hubCount", isPhoneHome ? null : hubCountCard], ["stockHold", isPhoneHome ? null : stockHoldCard], ["displayReg", displayRegCard]]}
+      liveCards={SHOW_HUB_LIVE_CARDS ? [["hubCount", isPhoneHome ? null : hubCountCard], ["stockHold", isPhoneHome ? null : stockHoldCard], ["displayReg", displayRegCard]] : []}
       tag={homeTag}
       emptyMessage="No tools assigned to your account yet. Ask an admin to update your permissions."
       account={{

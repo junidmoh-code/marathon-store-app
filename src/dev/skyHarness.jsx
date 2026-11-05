@@ -53,7 +53,12 @@ function SampleLive({ title, body }) {
   );
 }
 
-function Home() {
+// ?mock=1: the admin view with the 16 tools of Junid's 5 Nov mock-up, real icons.
+const MOCK_TOOLS = [["source", "Source", 600], ["barcodes", "Barcodes"], ["label_print", "Print Labels"], ["stock_audit", "Stock Audit"],
+  ["insights", "Internal Insights"], ["display", "TV Display"], ["customer", "Track Order"], ["customers_db", "Customers"],
+  ["admin", "Admin"], ["stock", "Stock"], ["health", "Inventory Health"], ["marketing", "Marketing"],
+  ["new_arrivals", "New Arrivals"], ["shopify_publish", "Shopify Publish", 1022], ["social", "Social"], ["ai_studio", "AI Studio"]];
+function Home({ icons = null }) {
   const noop = () => {};
   const icon = <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#4A7FFF" strokeWidth="2"><circle cx="12" cy="12" r="8" /></svg>;
   return (
@@ -69,7 +74,7 @@ function Home() {
         { key: "display_checks", name: "Display Check", onClick: noop },
         { key: "admin", name: "Admin" },
       ]}
-      groups={[
+      groups={icons && q.get("mock") ? [{ label: "All", cards: MOCK_TOOLS.map(([key, name, badge]) => ({ key, icon: icons[key], name, desc: name, badge, onClick: noop })) }] : [
         { label: "Operations", cards: [{ key: "source", icon, name: "Source", desc: "Restock requests", badge: 12, onClick: noop }, { key: "barcodes", icon, name: "Barcodes", desc: "Print product barcodes", onClick: noop }, { key: "stock_audit", icon, name: "Stock Audit", desc: "Out of stock checks & audit", onClick: noop }] },
         { label: "Administration", cards: [{ key: "admin", icon, name: "Admin", desc: "Manage products", onClick: noop }, { key: "stock", icon, name: "Stock", desc: "Inventory & transfers", onClick: noop }, { key: "health", icon, name: "Inventory Health", desc: "Refill engine & exceptions", onClick: noop }] },
       ]}
@@ -204,7 +209,8 @@ function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
   } else if (screen === "phone") {
     el = <Phone products={products.slice(0, Number(q.get("n") || 16))} />;
   } else {
-    el = <Home />;
+    const { RoleIcons } = q.get("mock") ? await import("../App.jsx") : {};
+    el = <Home icons={RoleIcons || null} />;
   }
   createRoot(document.getElementById("root")).render(el);
 })();

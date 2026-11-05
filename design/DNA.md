@@ -109,9 +109,10 @@ prices 700–800 tabular, "R" and no decimals.
   (the home-tile recipe): white line icon, white bold name, the badge a white
   pill with navy number; no group headings, no descriptions (they are the
   tooltip), no ADMIN pill. 4-up from 900px, 2-up on the phone with the badge
-  in the tile's corner. Live cards (Hub Count & Displays, Shipment Release,
-  Display Registration) sit above, each its own glass; on the PHONE Hub
-  Count & Displays and Shipment Release are not mounted (code kept).
+  in the tile's corner. Desktop tiles are 84px tall and the wordmark is the
+  ordinary (not large) one here. NO live cards on this screen (Junid 5 Nov:
+  Hub Count & Displays, Shipment Release, Display Registration removed; the
+  code stays, `SHOW_HUB_LIVE_CARDS = false` in App.jsx brings them back).
 
 ## 6. Layout
 - Phone (reference 426px wide): 16–18px gutters; home = 2×2 tiles of ≈183×180

@@ -41,6 +41,7 @@ function Tile({ tile }) {
 function MiniCard({ card }) {
   return (
     <button type="button" className="sky-mini" onClick={card.onClick} data-testid={`home-card-${card.key}`}
+            data-corner={card.badge > 0 && String(card.name).length > 12 ? "1" : undefined}
             title={card.desc || undefined} aria-label={card.desc ? `${card.name} — ${card.desc}` : undefined}>
       <span className="sky-mini__ic">{card.icon}</span>
       <span className="sky-mini__nm" data-contrast-exempt="">{card.name}</span>
@@ -73,16 +74,18 @@ export default function SkyHome({ tiles, groups, liveCards = [], tag, account, e
     .filter((t) => t.key !== "admin" || hasHub);
 
   return (
-    <div className="sky-home" data-testid="sky-home">
+    <div className="sky-home" data-testid="sky-home" data-panel={panel || undefined}>
       <style>{HOME_CSS}</style>
+      {/* Admin view = Junid's mock-up (5 Nov): the grid button (tap again =
+          home), the large wordmark, no pill, no account button. */}
       <SkyHeader large tag={panel === "admin" ? null : tag}
-                 left={panel ? (
+                 left={panel === "account" ? (
                    <button type="button" className="sky-round sky-glass sky-glass--soft" aria-label="Back to home" title="Back" onClick={() => setPanel(null)}>
                      <IconChevronLeft />
                    </button>
                  ) : null}
-                 onGrid={() => setPanel(hasHub ? "admin" : null)} gridLabel="All tools"
-                 onUser={() => setPanel(panel === "account" ? null : "account")} userLabel="Account" />
+                 onGrid={() => setPanel(panel === "admin" ? null : (hasHub ? "admin" : null))} gridLabel={panel === "admin" ? "Back to home" : "All tools"}
+                 onUser={panel === "admin" ? undefined : () => setPanel(panel === "account" ? null : "account")} userLabel="Account" />
 
       {panel === "admin" ? (
         <div className="sky-hub">
@@ -168,7 +171,6 @@ const HOME_CSS = `
 html[data-sky="on"] #root .sky-hub__livecard button[style]{background:rgba(255,255,255,.2) !important;border-color:rgba(255,255,255,.8) !important}
 html[data-sky="on"] #root .sky-hub__livecard button[style]:hover{background:rgba(255,255,255,.4) !important}
 .sky-hub__grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-@media (min-width:900px){.sky-hub{max-width:1260px;margin-top:max(40px,calc(17vh - 60px))}.sky-hub__grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:22px 26px}}
 .sky-mini{position:relative;display:flex;align-items:center;gap:14px;width:100%;min-height:78px;text-align:left;cursor:pointer;color:#fff;text-shadow:var(--sky-text-shadow);font-family:var(--sky-font);
   padding:12px 14px;border-radius:22px;
   background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.12) 70%,rgba(255,255,255,.2));
@@ -186,13 +188,35 @@ html[data-sky="on"] #root .sky-hub__livecard button[style]:hover{background:rgba
   background:rgba(255,255,255,.95);border:1px solid #fff;font-variant-numeric:tabular-nums;box-shadow:0 4px 12px rgba(10,60,140,.18)}
 /* Phone: the badge rides the tile's top-right corner so the name keeps its room. */
 @media (max-width:899px){.sky-mini__bd{position:absolute;top:8px;right:8px;min-width:34px;height:24px;padding:0 8px;font-size:12.5px}}
+/* DESKTOP ADMIN VIEW — a carbon copy of Junid's mock-up (5 Nov), measured at
+   1586x942 and written in vw (base 1586) so a smaller window scales it down
+   instead of looking zoomed in. Grid 1224 wide from y=202; tiles ~290x113,
+   gaps 25/23; icon 40 at 36, name 21px bold at 108; badge 30 high, 24 in
+   (or in the corner, 11/12 in, when the name is long). Header: grid button
+   62 at 41/13, wordmark 48px. */
 @media (min-width:900px){
-  .sky-mini{min-height:114px;padding:16px 26px 16px 34px;gap:22px;border-radius:26px}
-  .sky-mini__ic{width:42px;height:42px}
-  .sky-mini__ic svg{width:40px !important;height:40px !important}
-  .sky-mini__nm{font-size:20px;white-space:nowrap}
-  .sky-mini__bd{min-width:54px;height:34px;font-size:16px}
+  .sky-home[data-panel="admin"] .sky-header{padding:.82vw 2.59vw 0}
+  .sky-home[data-panel="admin"] .sky-header .sky-round{width:3.91vw !important;height:3.91vw !important;min-width:46px;min-height:46px}
+  .sky-home[data-panel="admin"] .sky-round svg{width:1.7vw;height:1.7vw;min-width:20px;min-height:20px}
+  .sky-home[data-panel="admin"] .sky-logo--lg .sky-logo__m{font-size:3.03vw}
+  .sky-home[data-panel="admin"] .sky-logo--lg .sky-logo__c{font-size:.95vw;margin-top:.63vw;font-style:normal;font-weight:600}
+  .sky-hub{position:absolute;left:0;right:0;top:12.74vw;max-width:77.18vw;margin:0 auto;padding:0 0 40px}
+  .sky-hub__grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:1.45vw 1.58vw}
+  .sky-mini{height:7.12vw;min-height:0;padding:0 1.2vw 0 2.27vw;gap:1.7vw;border-radius:1.39vw;
+    background:rgba(255,255,255,.26);border:1.5px solid rgba(255,255,255,.62);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 0 18px rgba(255,255,255,.16),0 10px 26px rgba(10,60,140,.14);
+    -webkit-backdrop-filter:blur(18px) saturate(115%) brightness(1.06);backdrop-filter:blur(18px) saturate(115%) brightness(1.06);text-shadow:0 1px 6px rgba(0,40,110,.3)}
+  .sky-mini:hover{background:rgba(255,255,255,.34)}
+  .sky-mini__ic{width:2.65vw;height:2.65vw}
+  .sky-mini__ic svg{width:2.65vw !important;height:2.65vw !important;stroke-width:1.9;filter:drop-shadow(0 1px 6px rgba(0,40,110,.3)) !important}
+  .sky-mini__nm{font-size:1.2vw;font-weight:700;letter-spacing:-.015em;white-space:nowrap}
+  .sky-mini__bd{position:absolute;right:1.51vw;top:50%;transform:translateY(-50%);min-width:0;height:1.89vw;padding:0 .76vw;border-radius:999px;
+    font-size:1.01vw;font-weight:800;color:#0b2a52;background:#fff;border:0;box-shadow:0 2px 8px rgba(10,60,140,.16)}
+  .sky-mini[data-corner="1"] .sky-mini__nm{overflow:visible}
+  .sky-mini:has(.sky-mini__bd):not([data-corner="1"]) .sky-mini__nm{padding-right:4.2vw}
+  .sky-mini[data-corner="1"] .sky-mini__bd{top:.69vw;right:.76vw;transform:none}
 }
+
 .sky-acct-wrap{position:fixed;inset:0;z-index:80;display:flex;justify-content:flex-end;align-items:flex-start;padding:calc(env(safe-area-inset-top,0px) + 74px) 14px 14px}
 .sky-acct{width:min(380px,100%);border-radius:24px;padding:18px 16px 16px;color:var(--sky-ink);background:var(--sky-glass-strong)}
 .sky-acct__x{position:absolute;top:12px;right:12px;width:32px;height:32px;border-radius:50%;border:1px solid #fff;background:rgba(255,255,255,.7);color:var(--sky-ink);display:grid;place-items:center;cursor:pointer}
