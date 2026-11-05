@@ -219,6 +219,32 @@ html[data-sky="off"] .sky-bg { display: none; }
 .sky-chip svg { height: 22px; width: auto; max-width: 54px; }
 .sky-chip__txt { font-weight: 900; font-size: 15px; letter-spacing: .03em; text-transform: uppercase; white-space: nowrap; }
 
+/* The phone's brand strip (SkyBrandStrip): one full-bleed row of round glass
+   logo pills that scrolls sideways and snaps, 16px gutters, no scrollbar. The
+   vertical padding is room for the glass shadow, which overflow would clip;
+   the chips carry a tighter shadow that ends inside it (no hard edge). */
+.sky-brandstrip {
+  display: flex; gap: 10px;
+  overflow-x: auto; overflow-y: hidden;
+  padding: 4px 16px 16px;
+  scroll-padding-inline: 16px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.sky-brandstrip::-webkit-scrollbar { display: none; }
+.sky-brandstrip::after { content: ""; flex: 0 0 6px; }   /* the right gutter (16 = 10 gap + 6) */
+.sky-brandchip {
+  flex: 0 0 auto;
+  height: 44px; min-width: 64px; padding: 0 18px;
+  scroll-snap-align: start;
+  box-shadow: var(--sky-highlight), 0 5px 10px -2px rgba(10, 60, 140, 0.22);
+}
+.sky-brandchip svg { height: 22px; max-width: 48px; }
+.sky-brandchip .sky-chip__txt { font-size: 13px; }
+.sky-brandchip--all { font-size: 15px; }
+
 /* ── SEARCH ───────────────────────────────────────────────────────────────── */
 .sky-search {
   display: flex; align-items: center;

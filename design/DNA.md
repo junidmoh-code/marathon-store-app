@@ -63,6 +63,11 @@ prices 700–800 tabular, "R" and no decimals.
 - **SkySegmented** — glass pill toggle; the active segment is solid white with navy text.
 - **Chip row** — glass pills; brand chips show a simple-icons mark in navy
   (`brandLogos.js`), or the name in bold caps when simple-icons has no mark.
+- **Phone brand strip** (`SkyBrandStrip`, below 768px only) — under the search: one
+  full-bleed row of 44px round glass logo pills, scroll-snap, no scrollbar, "All"
+  first, then every brand by count (`components/assistant/brandFilter.js`, the same
+  options and the same `brand` value as the desktop chip row, held by
+  AssistantView). Tap the active chip again = All. iPad portrait has no picker.
 - **SkySearch** — big glass pill, search icon left, divider + camera (scan) or
   filter button right.
 - **ProductStage** — CUT-OUTS ARE OFF (Junid, 3 Nov: `SHOW_CUTOUTS = false` in

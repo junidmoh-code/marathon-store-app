@@ -48,6 +48,7 @@ export const ROUTES = [
   ["assistant-brands", `${H}?screen=desktop&chips=ref&brands=1`],
   ["assistant-popup", `${H}?screen=desktop&popup=1`],
   ["assistant-phone", `${H}?screen=phone&cart=2`],
+  ["assistant-phone-brands", `${H}?screen=phone&chips=ref&brand=Reebok`],
 ];
 export const SIZES = [[1440, 900], [390, 844]];
 const EXEMPT = ".sky-logo, .sky-tile, [data-contrast-exempt]";

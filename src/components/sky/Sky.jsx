@@ -5,7 +5,7 @@
 // stage (cut-out on a podium, or the full photo in a white frame) and the
 // glass bottom bar. Presentation only — every handler is the caller's.
 
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HiResPhoto } from "../assistant/HiResPhoto.jsx";
 import { IconGrid, IconUser, IconSearch, IconCamera, IconFilter, IconPlus, IconCart } from "./SkyIcons.jsx";
@@ -92,6 +92,51 @@ export function BrandMark({ brand, title }) {
   }
   return (
     <svg viewBox="0 0 24 24" role="img" aria-label={title || brand} fill="currentColor"><path d={icon.path} /></svg>
+  );
+}
+
+/**
+ * The phone's brand strip: one horizontally scrolling row of round glass
+ * logo pills under the search, "All" first, then every brand in `brands`
+ * (brandOptions order: most products first). Same filter value as the
+ * desktop chip row. Tapping the active chip again goes back to All. The
+ * active chip is scrolled into view on load and whenever it changes.
+ * `brands`: [[name, count], ...] with ["All", total] first.
+ */
+export function SkyBrandStrip({ brands, value, onChange, className = "" }) {
+  const rowRef = useRef(null);
+  const first = useRef(true);
+  const list = (brands || []).filter(([b]) => b !== "All");
+  const sig = list.map(([b]) => b).join("|");
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const chip = row.querySelector('[aria-pressed="true"]');
+    if (!chip) return;
+    // Scroll the ROW only (never the page): bring the chip in from whichever
+    // side it is hidden on, landing on the 16px gutter like a snap stop.
+    const pad = 16, l = chip.offsetLeft, r = l + chip.offsetWidth;
+    let to = null;
+    if (l - pad < row.scrollLeft) to = l - pad;
+    else if (r + pad > row.scrollLeft + row.clientWidth) to = l - pad;
+    if (to != null) {
+      const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const behavior = first.current || reduce ? "auto" : "smooth";
+      if (row.scrollTo) row.scrollTo({ left: Math.max(0, to), behavior }); else row.scrollLeft = Math.max(0, to);
+    }
+    first.current = false;
+  }, [value, sig]);
+  return (
+    <div ref={rowRef} className={cx("sky-brandstrip", className)} role="group" aria-label="Brand" data-testid="brand-strip">
+      <button type="button" className="sky-chip sky-glass sky-brandchip sky-brandchip--all" aria-pressed={value === "All"}
+              onClick={() => onChange("All")}>All</button>
+      {list.map(([b, n]) => (
+        <button key={b} type="button" className="sky-chip sky-glass sky-brandchip" aria-pressed={value === b}
+                title={`${b} (${n})`} aria-label={`${b} (${n})`} onClick={() => onChange(value === b ? "All" : b)}>
+          <BrandMark brand={b} title={b} />
+        </button>
+      ))}
+    </div>
   );
 }
 

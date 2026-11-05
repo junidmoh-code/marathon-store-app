@@ -11,7 +11,7 @@
 // the bar opens the existing checkout. Nothing here reads or writes data.
 
 import { useState } from "react";
-import { SkyHeader, SkySegmented, SkySearch, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
+import { SkyHeader, SkySegmented, SkySearch, SkyBrandStrip, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
 import { IconExpand } from "./SkyIcons.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
 
@@ -21,6 +21,7 @@ export default function AssistantPhone({
   search, onSearch, onScan,
   products, selectedId, onOpen, onViewPhotos, photoCount, renderActions, renderDeactivated, isDead,
   cartCount, cartLabel = "View order", onCart, cartDisabled = false,
+  brands = null, brand = "All", onBrand = null,
   onExit, who = "", children = null, emptyText = "No products match your search.", showGrid = true, showBar = true,
 }) {
   const [me, setMe] = useState(false);
@@ -60,6 +61,12 @@ export default function AssistantPhone({
       <div className="ap-search">
         <SkySearch value={search} onChange={onSearch} onAction={onScan} action="camera" actionLabel="Find by the tongue label" />
       </div>
+
+      {/* The brand strip — phones only (below 768px; the CSS hides it above).
+          The same brand value as the desktop chip row (AssistantView). */}
+      {brands && brands.length > 1 && onBrand ? (
+        <SkyBrandStrip className="ap-brands" brands={brands} value={brand} onChange={onBrand} />
+      ) : null}
 
       {children}
 
@@ -129,6 +136,8 @@ const AP_CSS = `
 .ap-sub{font-size:14px;color:var(--sky-ink-deep);margin-top:6px}
 .ap-search{padding:22px 18px 0;max-width:560px;margin:0 auto}
 .ap-search .sky-search{height:46px}
+.ap-brands{margin:10px 0 -10px}
+@media (min-width:768px){.ap-brands{display:none}}
 .ap-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 12px 0}
 @media (min-width:600px){.ap-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (min-width:820px){.ap-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}

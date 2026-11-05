@@ -9,10 +9,11 @@
 
 import "../styles/sky.css";
 import "../styles/sky-theme.css";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import SkyHome from "../components/sky/SkyHome.jsx";
 import AssistantPhone from "../components/sky/AssistantPhone.jsx";
+import { brandOptions, filterByBrand, reconcileBrand } from "../components/assistant/brandFilter.js";
 
 const q = new URLSearchParams(location.search);
 const screen = q.get("screen") || "home";
@@ -62,14 +63,23 @@ function Home() {
   );
 }
 
+const REF_FILL = ["Puma", "Lacoste", "Boss", "Armani", "Diesel", "Gucci", "Prada", "Reebok", "Fila", "Under Armour"];
+
 function Phone({ products }) {
   const [shop, setShop] = useState("trophy");
   const [mode, setMode] = useState("sneaker");
   const [search, setSearch] = useState("");
   const cart = Number(q.get("cart") || 0);
-  const list = products.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()));
+  // The brand strip, wired as AssistantView wires it (?brand=Nike preselects;
+  // ?chips=ref adds the reference's fashion brands so the strip scrolls).
+  const extra = q.get("chips") === "ref" ? REF_FILL.map((b, i) => ({ id: `x${i}`, name: `${b} sample`, brand: b, retailPrice: 900, sizes: ["8"] })) : [];
+  const pool = [...products, ...extra];
+  const [brand, setBrand] = useState(q.get("brand") || "All");
+  const opts = useMemo(() => brandOptions(pool), [pool.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { const n = reconcileBrand(brand, opts); if (n !== brand) setBrand(n); }, [opts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const list = filterByBrand(pool.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase())), brand);
   return (
-    <AssistantPhone mode={mode} onMode={setMode}
+    <AssistantPhone mode={mode} onMode={setMode} brands={opts} brand={brand} onBrand={setBrand}
       shops={[{ id: "concrete" }, { id: "marathon-pe" }, { id: "pine" }, { id: "trophy" }]} effectiveShop={shop}
       shopLabel={(id) => ({ concrete: "Concrete", "marathon-pe": "Marathon PE", pine: "Pine", trophy: "Trophy" }[id])} onShop={setShop}
       search={search} onSearch={setSearch} onScan={() => {}}

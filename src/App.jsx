@@ -133,6 +133,7 @@ import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SkyHome from "./components/sky/SkyHome.jsx";
 import AssistantPhone from "./components/sky/AssistantPhone.jsx";
+import { brandOptions, filterByBrand, reconcileBrand } from "./components/assistant/brandFilter.js";
 import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySegmented, SkySearch, SkyPopover, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconSearch as SkyIconSearch, IconMore, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
@@ -5775,6 +5776,22 @@ const AI_TOOLS = [
 // panel reports 1092px at 125% scale, 910px at 150%). Touch and panel size
 // describe how a device is used, not what it is — but a 500px-wide browser
 // window on a laptop IS genuinely better stacked, which is what the floor is for.
+// A plain viewport-width query, re-measured on resize (the phone brand strip's
+// 767px line, which must match the CSS media query that draws it).
+function useMaxWidth(px) {
+  const q = `(max-width: ${px}px)`;
+  const [hit, setHit] = useState(() => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(q).matches);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return undefined;
+    const mq = window.matchMedia(q);
+    const on = () => setHit(mq.matches);
+    on();
+    if (mq.addEventListener) mq.addEventListener("change", on); else mq.addListener(on);
+    return () => { if (mq.removeEventListener) mq.removeEventListener("change", on); else mq.removeListener(on); };
+  }, [q]);
+  return hit;
+}
+
 function useIsNarrow(px = 980) {
   // Hardware fact, fixed for the life of the tab — read once, never re-measured.
   const [platform] = useState(() => detectPlatform());
@@ -8640,7 +8657,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
                             hubQty, servingHubLabel, clothingHubLabelOf = null, sneakerOut, sneakerOutWhy, sneakerDisplayInfo,
                             alternativesFor, onAlternativesShown, onAlternativePicked,
-                            deadForOrder = isDeactivated, sizeOnHand = null, hubLabelForSize = null }) {
+                            deadForOrder = isDeactivated, sizeOnHand = null, hubLabelForSize = null,
+                            brand: brandProp, setBrand: setBrandProp }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // The hub a clothing note names: the product's own back-stock hub when the
   // caller can say (a shop with a category flipped to a second hub), else the
@@ -8659,7 +8677,11 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // the quick-view can explain adds blocked by cart-vs-hub availability.
   const clothingInCart = (pid, size) =>
     (cart || []).filter(l => l.productType === "clothing" && l.product?.id === pid && l.size === size).length;
-  const [brand, setBrand] = useState("All");
+  // The brand filter is AssistantView's (shared with the phone strip); a
+  // standalone mount (tests, the dev harness) keeps its own.
+  const [ownBrand, setOwnBrand] = useState("All");
+  const brand = brandProp ?? ownBrand;
+  const setBrand = setBrandProp ?? setOwnBrand;
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
   const [qvSize, setQvSize] = useState(null);
@@ -8696,20 +8718,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // brand was NOT recognised (brandFlag) get their own "Needs brand" entry —
   // the list someone works through to set the missing brands. The first few
   // are logo chips; the rest live behind the "…" chip.
-  const brandOpts = useMemo(() => {
-    const m = new Map();
-    let needs = 0;
-    catalog.forEach(p => {
-      if (!p.brand && p.brandFlag === "unrecognised") { needs++; return; }
-      const k = p.brand || "Other"; m.set(k, (m.get(k) || 0) + 1);
-    });
-    const other = m.get("Other") || 0; m.delete("Other");
-    const ranked = [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    const out = [["All", catalog.length], ...ranked];
-    if (needs) out.push(["Needs brand", needs]);
-    if (other) out.push(["Other", other]);
-    return out;
-  }, [catalog]);
+  const brandOpts = useMemo(() => brandOptions(catalog), [catalog]);
   const chipCount = useChipCount();
   const chipBrands = brandOpts.slice(1, 1 + chipCount);
   const moreBrands = brandOpts.slice(1 + chipCount);
@@ -8723,18 +8732,19 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // Everything below is just the workspace's own brand filter + sort on top.
   const shown = useMemo(() => {
     const results = searchResults || catalog;   // defensive: never render undefined
-    let list = brand === "All"
-      ? results
-      : results.filter(p => (brand === "Needs brand" ? !p.brand && p.brandFlag === "unrecognised"
-        : brand === "Other" ? !p.brand && p.brandFlag !== "unrecognised" : p.brand === brand));
+    let list = filterByBrand(results, brand);
     if (sort === "ph") list = [...list].sort((a, b) => (b.retailPrice || 0) - (a.retailPrice || 0));
     else if (sort === "pl") list = [...list].sort((a, b) => (a.retailPrice || 0) - (b.retailPrice || 0));
     else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
   }, [searchResults, catalog, brand, sort]);
 
-  // Reset the brand filter when switching modes (brands differ per catalog).
-  useEffect(() => { setBrand("All"); }, [mode]);
+  // Switching store or Sneakers / Clothing recomputes the options: the brand
+  // stays chosen while it is still one of them, else back to All.
+  useEffect(() => {
+    const next = reconcileBrand(brand, brandOpts);
+    if (next !== brand) setBrand(next);
+  }, [brandOpts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cart grouping, the running total and the render cap
   // (components/assistant/assistantOrderModel.js).
@@ -10188,6 +10198,21 @@ function AssistantView({ products, onExit, orders = [] }) {
     return merge(fuse.search(q).map(r => r.item));
   }, [deferredSearch, base, browse, fuse, brandIndex]);
 
+  // THE BRAND FILTER — one value for both layouts: the desktop chip row and
+  // the phone brand strip (below 768px) read and set the same `brand`, over
+  // the same options (components/assistant/brandFilter.js). Switching store
+  // or Sneakers / Clothing recomputes the options; the brand stays chosen
+  // while it is still one of them, else back to All. iPad portrait has no
+  // picker, so the phone grid only narrows where the strip is drawn.
+  const [brand, setBrand] = useState("All");
+  const brandOpts = useMemo(() => brandOptions(browse), [browse]);
+  useEffect(() => {
+    const next = reconcileBrand(brand, brandOpts);
+    if (next !== brand) setBrand(next);
+  }, [brandOpts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const phoneStrip = useMaxWidth(767);
+  const phoneShown = useMemo(() => (phoneStrip ? filterByBrand(filtered, brand) : filtered), [phoneStrip, filtered, brand]);
+
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
   const computeHubForItem = (item) => {
@@ -11466,6 +11491,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       {isDesktop && !noStoreAccess && (
         <AssistantDesktop
           products={browse} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
+          brand={brand} setBrand={setBrand}
           deadForOrder={deadForOrder}
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
@@ -11525,7 +11551,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           shops={singleShop ? [] : availableShops} effectiveShop={effectiveShop}
           shopLabel={(id) => labelFor(id, shopRegistry)} onShop={requestShopSwitch}
           search={search} onSearch={setSearch} onScan={() => setLabelFinderOpen(true)}
-          products={isRefillMode ? [] : filtered} showGrid={!isRefillMode}
+          products={isRefillMode ? [] : phoneShown} showGrid={!isRefillMode}
+          brands={isRefillMode ? null : brandOpts} brand={brand} onBrand={setBrand}
           emptyText={wantsClothing ? "No clothing products yet. Add one from Admin." : "No products match your search."}
           selectedId={selected?.id || null}
           onOpen={(p) => { resetSheet(); setSelected(p); }}
