@@ -399,6 +399,9 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(l.ledger.paidCents).toBe(first.paidCents);
     // one figure, from scratch: paid minus the current price, either way
     expect(l.ledger.creditCents - l.ledger.extraCents).toBe(l.ledger.paidCents - l.ledger.settledCents - l.ledger.nowCents);
+    // the first swap's emailed credit request (manual) is superseded and flagged, not counted as given
+    expect(l.resolution.money).toBeUndefined();
+    expect(l.resolution.supersededMoney).toMatchObject({ state: "manual", doNotIssue: true });
     expect(l.resolution.outcome.creditCents).toBe(l.ledger.creditCents);
   });
 
@@ -436,7 +439,10 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     expect(lineLedger(L(), { priceCents: 45000 })).toMatchObject({ creditCents: 0, extraCents: 0 });
     expect(lineLedger(L(), { priceCents: 35000 })).toMatchObject({ creditCents: 10000, extraCents: 0 });
   });
-  it("money already given back for the line stays given: the next swap counts it", () => {
+  it("money already given back for the line stays given: the next swap counts it; an emailed manual request is not given", () => {
+    expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "manual" } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 0, creditCents: 10000, supersedes: { state: "manual", amountCents: 5000 } });
+    expect(lineLedger(L({ resolution: { money: { state: "failed", ambiguous: true, amountCents: 5000 } } }), { priceCents: 35000 }).unclear).toBe(true);
+    expect(lineLedger(L({ resolution: { moneySettled: { a: { state: "done", amountCents: 5000 } } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 5000, creditCents: 5000 });
     const l = L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "done" } } });
     expect(lineLedger(l, { priceCents: 35000 })).toMatchObject({ settledCents: 5000, creditCents: 5000 });
     expect(lineLedger(l, { priceCents: 45000 })).toMatchObject({ creditCents: 0, extraCents: 5000 });

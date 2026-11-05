@@ -80,11 +80,21 @@ export function lineLedger(line, { priceCents }) {
   const qty = Number(line?.qty) || 1;
   const paid = paidCents(line);
   const m = line?.resolution?.money;
-  const settledStates = new Set(["done", "manual"]);
-  const settled = m && typeof m === "object" && settledStates.has(m.state) && m.kind !== "swap" ? Math.max(0, Math.round(Number(m.amountCents) || 0)) : 0;
+  const amt = (x) => Math.max(0, Math.round(Number(x?.amountCents) || 0));
+  // Given back = money actions that completed (state done): the current slot and every earlier one moved to moneySettled.
+  // An emailed "manual" request has not given anything back yet (CodeRabbit on #843): it is superseded, not counted.
+  const earlier = Object.values(line?.resolution?.moneySettled || {}).filter((x) => x && typeof x === "object" && x.state === "done");
+  const settled = earlier.reduce((t, x) => t + amt(x), 0) + (m && typeof m === "object" && m.state === "done" && m.kind !== "swap" ? amt(m) : 0);
   const now = Math.max(0, Math.round(Number(priceCents) || 0)) * qty;
   const net = paid - settled - now;
-  return { paidCents: paid, settledCents: settled, nowCents: now, creditCents: Math.max(0, net), extraCents: Math.max(0, -net), busy: !!(m && typeof m === "object" && m.state === "claimed") };
+  const isObj = m && typeof m === "object";
+  return {
+    paidCents: paid, settledCents: settled, nowCents: now, creditCents: Math.max(0, net), extraCents: Math.max(0, -net),
+    busy: !!(isObj && m.state === "claimed"),
+    // A failed call that may have gone through (money() marks it ambiguous): checked in Shopify before anything new.
+    unclear: !!(isObj && m.state === "failed" && m.ambiguous === true),
+    supersedes: isObj && (m.state === "manual" || m.state === "pending" || m.state === "failed") ? { state: m.state, amountCents: amt(m), kind: m.kind || null } : null,
+  };
 }
 
 /** "Customer agreed to pay the difference" / "we absorb it" — the only ways a dearer item is allowed. */
@@ -201,6 +211,7 @@ export async function swapOnlineOrderLine({
   const priceCents = Math.round(Number(product.retailPrice ?? product.price) * 100) || 0;
   const ledger = lineLedger(line, { priceCents });
   if (ledger.busy) return refuse("money for this line is being issued right now; try again in a minute");
+  if (ledger.unclear) return refuse("an earlier credit or refund for this line may have gone through (its answer was lost): check it in Shopify first, then swap");
   const judged = ledger.extraCents > 0 ? { ok: false, extraCents: ledger.extraCents } : { ok: true, creditCents: ledger.creditCents };
   const paid = ledger.paidCents - ledger.settledCents;
   if (!judged.ok && !priceDecision && !allowHigher) {
@@ -228,7 +239,8 @@ export async function swapOnlineOrderLine({
     willRemoveHubOrders: oldKeys, willTombstoneEntry: oldEntry,
     willWithdrawRequest: esc?.phase === "await" && esc.request ? esc.request : null,
   };
-  const summary = `#${ref} updated: ${plan.from} → ${plan.to}, ${piece.status === "display" ? "display pick" : "pick"} raised at ${placeName(piece.locationId)}`;
+  const superseded = ledger.supersedes && ledger.supersedes.amountCents > 0 ? ` The earlier ${rands(ledger.supersedes.amountCents)} ${ledger.supersedes.kind || "money"} request (${ledger.supersedes.state}) is superseded: do not issue it.` : "";
+  const summary = `#${ref} updated: ${plan.from} → ${plan.to}, ${piece.status === "display" ? "display pick" : "pick"} raised at ${placeName(piece.locationId)}${superseded}`;
   if (dry) return { ok: true, dry: true, summary: `DRY RUN — ${summary}`, plan, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents };
   // ── 1. The line — ONE transaction on the order, so it is atomic with what a
   // pack does: a pack claimed (or landed) since the read refuses the swap, and
@@ -257,9 +269,18 @@ export async function swapOnlineOrderLine({
     if (m && typeof m === "object" && m.state === "claimed") { why = "money for this line is being issued right now"; return undefined; }
     // The ledger was computed from the line as read: money that moved since makes it stale (never a wrong credit).
     if (JSON.stringify(m ?? null) !== JSON.stringify(line.resolution?.money ?? null)) { why = "the line's money changed meanwhile"; return undefined; }
-    const keepMoney = m && typeof m === "object" && (m.state === "done" || m.state === "manual");
+    // A completed money action moves to moneySettled (kept, counted in every later ledger), so the next credit is its own
+    // money action (never resumed as the old one); an unfinished one (manual request, pending, failed) is superseded and
+    // flagged so nobody also loads the old amount by hand.
+    const done = m && typeof m === "object" && m.state === "done";
     const { money: _old, ...restRes } = cur.resolution || {};
-    const resolution = { ...restRes, ...(keepMoney ? { money: m } : {}), ...(m && !keepMoney ? { supersededMoney: { ...m, supersededAt: now } } : {}), outcome, ...(conv && conv.state !== "closed" ? { conversation: { ...conv, state: "closed", closedAt: now, closedBy: via } } : {}) };
+    const resolution = {
+      ...restRes,
+      ...(done ? { moneySettled: { ...(cur.resolution?.moneySettled || {}), [`m${now}`]: m } } : {}),
+      ...(m && !done ? { supersededMoney: { ...m, supersededAt: now, doNotIssue: true } } : {}),
+      outcome,
+      ...(conv && conv.state !== "closed" ? { conversation: { ...conv, state: "closed", closedAt: now, closedBy: via } } : {}),
+    };
     const next = { ...ord, lines: Array.isArray(ord.lines) ? [...ord.lines] : { ...ord.lines } };
     next.lines[i] = swappedLine(cur, item, { swappedFrom, outcome, resolution, at: now });
     const drop = (node, key) => { if (node && typeof node === "object" && key in node) { const c = Array.isArray(node) ? [...node] : { ...node }; if (Array.isArray(c)) c[key] = null; else delete c[key]; return c; } return node; };
