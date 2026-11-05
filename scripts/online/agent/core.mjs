@@ -37,14 +37,17 @@ export const rands = (cents) => `R${(Number(cents) / 100).toFixed(2).replace(/\.
 //   failed   unclear unless ambiguous === false (a definite refusal: nothing moved)
 //   claimed  being paid now (busy); older than CLAIM_STALE_MS: unclear (the payer died mid-flight)
 export const CLAIM_STALE_MS = 15 * 60e3;
+const KNOWN_MONEY_STATES = new Set(["done", "manual", "failed", "claimed", "pending"]);
 export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   const qty = Number(line?.qty) || 1;
   const paid = paidCents(line);
   const m = line?.resolution?.money;
   const isObj = !!m && typeof m === "object";
   const amt = (x) => Math.max(0, Math.round(Number(x?.amountCents) || 0));
+  // What a completed action really moved: Shopify's paidCents when it said, else the amount asked (review of #846, 7).
+  const moved = (x) => Math.max(0, Math.round(Number(x?.paidCents ?? x?.amountCents) || 0));
   const earlier = Object.values(line?.resolution?.moneySettled || {}).filter((x) => x && typeof x === "object" && x.state === "done");
-  const settled = earlier.reduce((t, x) => t + amt(x), 0) + (isObj && m.state === "done" ? amt(m) : 0);
+  const settled = earlier.reduce((t, x) => t + moved(x), 0) + (isObj && m.state === "done" ? moved(m) : 0);
   const nowCents = Math.max(0, Math.round(Number(priceCents) || 0)) * qty;
   const net = paid - settled - nowCents;
   const claimedAt = Number(m?.at) || 0;
@@ -52,6 +55,8 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   let unclearWhy = null;
   if (isObj && m.state === "manual") unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line was approved for Junid to do by hand and is not marked done yet (once done in Shopify, Junid tells Jamie on his line "done #<order>")`;
   else if (isObj && m.state === "failed" && m.ambiguous !== false) unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line may have gone through (its answer was lost): check it in Shopify first`;
+  // A state this code does not know: fails closed (review of #846, 6).
+  else if (isObj && !KNOWN_MONEY_STATES.has(String(m.state))) unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line is in an unknown state (${m.state || "none"}): check it in Shopify first`;
   else if (stale) unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line started at ${new Date(claimedAt + 2 * 3600e3).toISOString().slice(0, 16).replace("T", " ")} SAST and never finished: check it in Shopify first`;
   return {
     paidCents: paid, settledCents: settled, nowCents, creditCents: Math.max(0, net), extraCents: Math.max(0, -net),

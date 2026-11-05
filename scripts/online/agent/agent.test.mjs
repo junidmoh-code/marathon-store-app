@@ -428,3 +428,38 @@ describe("Fable final review", () => {
     expect(h.junid).toHaveLength(1);
   });
 });
+
+describe("review of #846: held picks, the ledger on settle", () => {
+  it("a pick on a line whose money is unclear is held, Junid told once; once the slot is settled it goes on by itself", async () => {
+    // An earlier R10 credit the agent asked Junid to do by hand (manual), never marked done: unclear.
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { money: { kind: "credit", amountCents: 1000, state: "manual" } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation").set({ state: "offering", email: "thandi@example.com", tag: "T", startedAt: NOW - H, offers: { 0: OFFERS[0], 1: OFFERS[1] }, sends: { 1: { kind: "offer", sentAt: NOW - H } } });
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).pid).toBe("TEE");
+    expect(conv(f).heldPick).toMatchObject({ n: 1, pid: "ALT1" });
+    expect(h.junid.filter((m) => /NOT swapped yet/.test(m.subject))).toHaveLength(1);
+    // Still unclear on the next run: nothing new to Junid, nothing to the customer, no 48-hour credit.
+    const mails = h.mails.length;
+    await h.run({ nowMs: async () => NOW + 72 * H, inbox: { replies: async () => [reply("1")] } });
+    expect(h.junid.filter((m) => /NOT swapped yet/.test(m.subject))).toHaveLength(1);
+    expect(h.mails.length).toBe(mails);
+    expect(line(f).resolution.money.state).toBe("manual");
+    // Junid marks it done: the next run swaps the held pick (paid R250 − R10 back − R240 → nothing more owed).
+    await f.db.ref("online_orders/9001/lines/0/resolution/money/state").set("done");
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).pid).toBe("ALT1");
+    expect(Object.values(line(f).resolution.moneySettled)).toEqual([expect.objectContaining({ state: "done", amountCents: 1000 })]);
+    expect(line(f).ledger).toMatchObject({ paidCents: 25000, settledCents: 1000, creditCents: 0, extraCents: 0 });
+    expect(conv(f).heldPick).toBeUndefined();
+  });
+
+  it("settle asks only what is left of what was paid (R250 paid, R100 given back → R150 credit)", async () => {
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { moneySettled: { a: { state: "done", amountCents: 10000 } } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation").set({ state: "offering", email: "thandi@example.com", tag: "T", startedAt: NOW - H, offers: { 0: OFFERS[0], 1: OFFERS[1] }, sends: { 1: { kind: "offer", sentAt: NOW - H } } });
+    await h.run({ inbox: { replies: async () => [reply("credit")] } });
+    expect(line(f).resolution.money).toMatchObject({ kind: "credit", amountCents: 15000, state: "done" });
+  });
+});
+
