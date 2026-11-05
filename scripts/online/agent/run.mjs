@@ -351,6 +351,7 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
     swappedFrom, outcome,
     resolution: swapResolution(cur.resolution, { now: ctx.now, outcome, closeConversation: "agent" }),
   });
+  let followed = packed; // a follow-up carries the new item (packed at the read, or the pack race below)
   if (packed) {
     // The parcel has gone: the new item ships on its own.
     const fid = followUpId(orderId, i);
@@ -389,6 +390,7 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
       if (res.committed || res.snapshot.val()) {
         await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
         await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid } }));
+        followed = true; // the pack race made one too: it gets the parent-credit history as well (CodeRabbit on #847)
       }
     }
   }
@@ -404,9 +406,9 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
   // Its own key (never the moved parent slot's m<now>; CodeRabbit on #847). A credit not done yet (by hand, an unclear
   // answer) is mirrored as the follow-up line's money slot, so a swap there waits until it is settled (Junid's
   // settle_line_money settles the mirror too).
-  if (packed && diff) {
+  if (followed && diff) {
     const base = `${ONLINE_ORDERS_PATH}/${followUpId(orderId, i)}/lines/0/resolution`;
-    const entry = clean({ kind: "credit", amountCents: judged.creditCents, via: diff.via ?? null, ref: diff.ref ?? null, ...(Number.isInteger(diff.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
+    const entry = clean({ kind: "credit", amountCents: judged.creditCents, via: diff.via ?? null, ref: diff.ref ?? null, at: diff.at ?? ctx.now, ...(Number.isInteger(diff.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
     if (diff.state === "done") await ctx.db.ref(`${base}/moneySettled/p${ctx.now}`).set({ ...entry, state: "done" });
     else await ctx.db.ref(`${base}/money`).transaction((cur) => (cur ? undefined : clean({ ...entry, state: diff.state || "manual", ...(diff.ambiguous != null ? { ambiguous: diff.ambiguous } : {}), mirroredFrom: `${orderId}/${i}` })));
   }

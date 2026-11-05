@@ -415,6 +415,8 @@ describe("Sonnet final review", () => {
     expect(line(f).source).toEqual({ status: "moved", movedTo: "9001f0" });
     expect(f.read("online_orders/9001f0/lines/0")).toMatchObject({ pid: "ALT1" });
     expect(f.read("online_orders/9001/followUps")).toEqual({ "9001f0": true });
+    // The pack race's follow-up gets the parent's credit history too (CodeRabbit on #847): R250 paid, R240 pick → R10.
+    expect(Object.values(f.read("online_orders/9001f0/lines/0/resolution/moneySettled") || {}).concat(f.read("online_orders/9001f0/lines/0/resolution/money") || [])).toContainEqual(expect.objectContaining({ amountCents: 1000, onParent: "9001/0" }));
   });
 });
 
