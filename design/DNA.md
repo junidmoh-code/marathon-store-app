@@ -9,6 +9,7 @@ word here and an image disagree, the image wins. Code: `src/styles/sky.css`
 ## 1. The room
 - One background, everywhere: `sky-clear.jpg` (Junid 5 Nov: the plain sky of
   his mock-ups replaces the room photo, which stays in the repo unused),
+  and on phones / portrait tablets the tall `sky-clear-phone.jpg`,
   `cover`, centred, **untouched** — no
   overlay, gradient, tint, blur or darkening over it, ever.
 - It is a `position:fixed` div at `z-index:0` in `index.html` (never

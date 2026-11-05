@@ -145,19 +145,23 @@ const HOME_CSS = `
 .sky-tile[data-testid="home-tile-display_checks"],.sky-tile[data-testid="home-tile-admin"]{padding-top:32px}
 .sky-tile[data-testid="home-tile-display_checks"] .sky-tile__nm,.sky-tile[data-testid="home-tile-admin"] .sky-tile__nm{margin-top:24px}
 @media (min-width:900px){
-  .sky-home__band{margin-top:0;position:absolute;left:0;right:0;top:58%;transform:translateY(-100%);padding:0 32px}
-  .sky-home__grid{grid-template-columns:repeat(4,minmax(0,1fr));column-gap:22px;max-width:1040px}
-  .sky-home__grid.n3{grid-template-columns:repeat(3,minmax(0,1fr));max-width:780px}
-  .sky-home__grid.n2{grid-template-columns:repeat(2,minmax(0,1fr));max-width:520px}
+  /* Laptop home (Junid 5 Nov, plain sky): smaller tiles, centred on the screen. */
+  .sky-home__band{margin-top:0;position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);padding:0 32px}
+  .sky-home__grid{grid-template-columns:repeat(4,minmax(0,1fr));column-gap:18px;max-width:820px}
+  .sky-home__grid.n3{grid-template-columns:repeat(3,minmax(0,1fr));max-width:615px}
+  .sky-home__grid.n2{grid-template-columns:repeat(2,minmax(0,1fr));max-width:410px}
   .sky-home{position:relative}
   .sky-home .sky-logo--lg .sky-logo__m{font-size:50px}
   .sky-home .sky-logo--lg .sky-logo__c{font-size:15px;margin-top:10px}
   .sky-home .sky-header{padding:34px 48px 0}
   .sky-home .sky-round{width:58px;height:58px}
   .sky-home .sky-round svg{width:26px;height:26px}
-  .sky-tile__nm{font-size:19px}
+  .sky-tile__nm{font-size:17px}
+  .sky-tile{padding-top:22px}
+  .sky-tile__ic{width:50px;height:50px}
+  .sky-tile__ct{min-width:62px;height:31px;font-size:15px;margin-top:11px}
 }
-@media (min-width:900px) and (max-height:620px){.sky-home__band{position:static;transform:none;margin-top:36px}}
+@media (min-width:900px) and (max-height:560px){.sky-home__band{position:static;transform:none;margin-top:36px}}
 .sky-hub{max-width:1080px;margin:26px auto 0;padding:0 var(--sky-gutter) 40px}
 .sky-hub__live{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:22px}
 .sky-hub__grp{margin-bottom:22px}

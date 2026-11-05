@@ -32,7 +32,7 @@
 /* ── Type: navy ink is the default for everything in the app. Legacy screens
  * get the deeper navy: a title there may sit on the bare sky rather than on
  * glass, and #0b2a52 measured 4.36:1 on the sky's mid-blue. */
-html[data-sky="on"] #root { color: var(--sky-ink); --sky-legacy-ink: #071d3d; }
+html[data-sky="on"] #root { color: var(--sky-ink); --sky-legacy-ink: #04122b; }   /* deep ink: the brighter phone sky (5 Nov) put #071d3d at 4.43:1 */
 html[data-sky="on"] #root [style*="font-family: -apple-system"],
 html[data-sky="on"] #root [style*="font-family: system-ui"],
 html[data-sky="on"] #root [style*="SF Pro Display"] {

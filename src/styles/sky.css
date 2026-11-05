@@ -79,6 +79,10 @@ html[data-sky="on"] body { font-family: var(--sky-font); }
   background-repeat: no-repeat;
   pointer-events: none;
 }
+/* Phones and portrait tablets: Junid's tall sky (5 Nov), same rules — cover, untouched. */
+@media (max-width: 767px), (orientation: portrait) and (max-width: 1023px) {
+  .sky-bg { background-image: url("/assets/sky-clear-phone.jpg"); }
+}
 html[data-sky="off"] .sky-bg { display: none; }
 #root { position: relative; z-index: 1; }
 
