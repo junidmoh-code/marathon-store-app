@@ -419,8 +419,12 @@ async function resolveList(db, record, items) {
       const names = {};
       for (const [, l] of lineEntries(lines)) {
         if (names[l.pid]) continue;
-        const [p, sp] = await Promise.all([read(db, `products/${assertSafeSegment(String(l.pid), "productId")}/name`).catch(() => null), read(db, `shopify_publish/${assertSafeSegment(String(l.pid), "productId")}`).catch(() => null)]);
-        names[l.pid] = { name: p || null, cleanName: sp?.cleanName || null, proposalName: sp?.proposalName || sp?.title || null, previousName: sp?.previousName || null };
+        let p = null, sp = null;
+        try {
+          const pid = assertSafeSegment(String(l.pid), "productId");
+          [p, sp] = await Promise.all([read(db, `products/${pid}/name`).catch(() => null), read(db, `shopify_publish/${pid}`).catch(() => null)]);
+        } catch { /* an unsafe id names nothing: the line's own title still counts */ }
+        names[l.pid] = { name: typeof p === "string" ? p : null, cleanName: sp?.cleanName || null, proposalName: sp?.proposalName || sp?.title || null, previousName: sp?.previousName || null };
       }
       const r = resolveReturningLine(it, lines, names);
       if (r?.pid) { if (hit && hit.pid !== r.pid) { hit = null; break; } hit = r; hitKey = k; }
