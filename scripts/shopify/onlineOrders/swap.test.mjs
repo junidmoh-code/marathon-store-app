@@ -474,6 +474,8 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     expect(judgeSwap(given, { priceCents: 25000 })).toMatchObject({ ok: false, why: "costs_more", extraCents: 5000 });
     expect(judgeSwap(given, { priceCents: 15000 })).toEqual({ ok: true, creditCents: 5000 });
     expect(judgeSwap(L({ resolution: { money: { state: "manual", amountCents: 5000 } } }), { priceCents: 1000 })).toMatchObject({ ok: false, why: "money_unclear" });
+    // refunded in full: never "costs more" to the customer; Junid's (money_unclear)
+    expect(judgeSwap(L({ resolution: { moneySettled: { a: { state: "done", amountCents: 45000 } } } }), { priceCents: 1000 })).toMatchObject({ ok: false, why: "money_unclear", note: expect.stringMatching(/refunded in full/) });
   });
   it("a dearer second swap needs its difference: refused without a price decision", () => {
     expect(lineLedger(L(), { priceCents: 50000 })).toMatchObject({ extraCents: 5000, creditCents: 0 });

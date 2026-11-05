@@ -50,7 +50,7 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   const claimedAt = Number(m?.at) || 0;
   const stale = isObj && m.state === "claimed" && claimedAt > 0 && now - claimedAt > CLAIM_STALE_MS;
   let unclearWhy = null;
-  if (isObj && m.state === "manual") unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line was approved for Junid to do by hand and is not marked done yet`;
+  if (isObj && m.state === "manual") unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line was approved for Junid to do by hand and is not marked done yet (once done in Shopify, Junid tells Jamie on his line "done #<order>")`;
   else if (isObj && m.state === "failed" && m.ambiguous !== false) unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line may have gone through (its answer was lost): check it in Shopify first`;
   else if (stale) unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line started at ${new Date(claimedAt + 2 * 3600e3).toISOString().slice(0, 16).replace("T", " ")} SAST and never finished: check it in Shopify first`;
   return {
@@ -161,6 +161,8 @@ export function judgeSwap(line, offer, { now = Date.now() } = {}) {
   // The ledger (COMMIT 6): against what is left of what was paid, never the full price paid.
   const lg = lineLedger(line, { priceCents: Number(offer?.priceCents) || 0, now });
   if (lg.busy || lg.unclear) return { ok: false, why: "money_unclear", note: lg.unclearWhy || "money for this line is being issued right now" };
+  // Everything paid for the line was given back already: nothing is left to swap against (never "costs more" to the customer).
+  if (lg.paidCents > 0 && lg.refundableCents === 0) return { ok: false, why: "money_unclear", note: `the line was refunded in full (${rands(lg.settledCents)}): nothing is left to swap against` };
   if (lg.extraCents > 0) return { ok: false, why: "costs_more", extraCents: lg.extraCents };
   return { ok: true, creditCents: lg.creditCents };
 }
