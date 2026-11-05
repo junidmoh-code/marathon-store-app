@@ -139,6 +139,28 @@ function Desktop({ products, AssistantDesktop }) {
   );
 }
 
+function Barcodes({ products, BcsCard, css }) {
+  const list = products.slice(0, 10).map((p, i) => ({ ...p, category: i % 3 === 2 ? "Clothing" : p.category || "Sneakers",
+    sizes: (p.sizes && p.sizes.length ? p.sizes : ["7", "8", "9"]).slice(0, 7) }));
+  const [openId, setOpenId] = useState(q.get("open") ? list[0]?.id : null);
+  const [sel, setSel] = useState(q.get("open") ? { [`${list[0]?.id}|${list[0]?.sizes[1]}`]: { count: "2" } } : {});
+  const onHand = (pid, s) => (String(s).length % 2 ? 0 : 3) + (s === list[0]?.sizes[2] ? -3 : 0) + 1;
+  const toggle = (p, s) => setSel((x) => { const k = `${p.id}|${s}`; const n = { ...x }; if (n[k]) delete n[k]; else n[k] = { count: "1" }; return n; });
+  const wide = innerWidth >= 1024;
+  return (
+    <div style={{ padding: wide ? "24px 26px" : "14px", maxWidth: 1180, margin: "0 auto" }}>
+      <style>{css}</style>
+      <div style={{ display: wide ? "grid" : "flex", flexDirection: "column", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 14, alignItems: "start" }}>
+        {list.map((p) => (
+          <BcsCard key={p.id} p={p} expanded={openId === p.id} sel={sel} onHand={onHand}
+                   onToggleOpen={() => setOpenId(openId === p.id ? null : p.id)}
+                   onPick={(s) => toggle(p, s)} onCount={(k, v) => setSel((x) => ({ ...x, [k]: { count: v } }))} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 (async () => {
   const all = await loadFixture();
   const byId = Object.fromEntries(all.map((p) => [p.id, p]));
@@ -151,6 +173,11 @@ function Desktop({ products, AssistantDesktop }) {
   } else if (screen === "admin") {
     const { AdminView } = await import("../App.jsx");
     el = <AdminView products={products} orders={[]} onExit={() => {}} />;
+  } else if (screen === "barcodes") {
+    // The Barcode Studio product card on its own (the screen itself streams
+    // stock cells, which the harness never reads). ?open=1 opens the first.
+    const { BcsCard, BCS_CSS } = await import("../components/stock/BarcodeCatalog.jsx");
+    el = <Barcodes products={products} BcsCard={BcsCard} css={BCS_CSS} />;
   } else if (screen === "phone") {
     el = <Phone products={products.slice(0, Number(q.get("n") || 16))} />;
   } else {

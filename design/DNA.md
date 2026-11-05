@@ -91,6 +91,11 @@ prices 700–800 tabular, "R" and no decimals.
   count as a full-strength navy "0". Still tappable: the tap raises the live
   why-note and "Available now instead". `scripts/sky-availability.e2e.mjs`
   proves it in Chromium and WebKit; the contrast gate checks the "0".
+- **Barcode Studio card** (`BcsCard`, Junid 5 Nov) — one glass card per
+  product: 72px white-framed photo, the name on two lines, "N sizes · R price"
+  and a white category chip, a navy "N picked" pill and a round chevron. Open,
+  the sizes are glass tiles (size, "on hand N" in dark red/amber/green); a
+  picked tile goes solid navy with a white copies stepper. Same handlers.
 - **SkyPlus** — round solid-white button, navy plus.
 - **SkyBottomBar** — slim (48px) glass bar: cart icon, divider, item count,
   solid white pill CTA. It appears only once the cart holds something.

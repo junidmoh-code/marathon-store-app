@@ -50,6 +50,7 @@ export const ROUTES = [
   // The unavailable size tapped: the why-note and "Available now instead".
   ["assistant-popup-out", `${H}?screen=desktop&popup=1&out=1`],
   ["assistant-phone", `${H}?screen=phone&cart=2`],
+  ["barcode-cards", `${H}?screen=barcodes&open=1`],
   ["assistant-phone-brands", `${H}?screen=phone&chips=ref&brand=Reebok`],
 ];
 export const SIZES = [[1440, 900], [390, 844]];

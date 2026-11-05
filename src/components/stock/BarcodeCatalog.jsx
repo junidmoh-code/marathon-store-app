@@ -54,6 +54,102 @@ function Thumb({ product, size = 40, onOpen }) {
   return <div style={{ width: size, height: size, borderRadius: 9, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>👟</div>;
 }
 
+// ─── THE PRODUCT CARD (sky redesign, Junid 5 Nov: "complete redesign, make it
+// proper") ───────────────────────────────────────────────────────────────────
+// One glass card for both layouts. Presentation only: the same handlers as the
+// old row — tap the head to open/close (setOpenId), tap a size to pick it
+// (toggle + setLastKey, exactly what the checkbox did), the stepper and the
+// copies field write the same count, the photo opens the same lightbox.
+export const BCS_CSS = `
+.bcs2{border-radius:20px;color:var(--sky-ink);font-family:var(--sky-font);overflow:hidden;
+  background:rgba(255,255,255,.58);border:1px solid rgba(255,255,255,.85);box-shadow:inset 0 1px 0 #fff,0 12px 32px rgba(10,60,140,.18);
+  -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);transition:box-shadow .18s,background .18s}
+.bcs2:hover{background:rgba(255,255,255,.66)}
+.bcs2[data-open="1"]{background:rgba(255,255,255,.66);box-shadow:inset 0 1px 0 #fff,0 18px 40px rgba(10,60,140,.24)}
+.bcs2[data-picked="1"]{box-shadow:inset 0 0 0 2px var(--sky-navy),0 12px 32px rgba(10,60,140,.18)}
+.bcs2__head{display:flex;align-items:center;gap:14px;width:100%;padding:12px 14px 12px 12px;background:none;border:0;cursor:pointer;text-align:left;color:inherit;font:inherit}
+.bcs2__ph{flex:0 0 auto;width:72px;height:72px;border-radius:14px;overflow:hidden;background:#fff;border:1px solid #fff;box-shadow:0 4px 12px rgba(10,60,140,.14);display:grid;place-items:center;font-size:30px}
+.bcs2__ph img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in}
+.bcs2__tx{flex:1;min-width:0}
+.bcs2__nm{font-size:15px;font-weight:700;line-height:1.25;letter-spacing:-.01em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bcs2__meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;margin-top:6px;font-size:12.5px;font-weight:600;color:var(--sky-ink-2)}
+.bcs2__price{color:var(--sky-navy);font-weight:800;font-variant-numeric:tabular-nums}
+.bcs2__cat{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:999px;color:var(--sky-ink);background:rgba(255,255,255,.75);border:1px solid #fff}
+.bcs2__sel{flex:0 0 auto;font-size:12px;font-weight:800;color:#fff;background:var(--sky-navy);border-radius:999px;padding:4px 10px;font-variant-numeric:tabular-nums}
+.bcs2__chev{flex:0 0 auto;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.75);border:1px solid #fff;color:var(--sky-ink);transition:transform .18s}
+.bcs2[data-open="1"] .bcs2__chev{transform:rotate(180deg);background:var(--sky-navy);border-color:var(--sky-navy);color:#fff}
+.bcs2__sizes{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;padding:2px 12px 14px;border-top:1px solid rgba(11,42,82,.08);padding-top:12px}
+.bcs2__sz{display:flex;flex-direction:column;align-items:stretch;gap:6px;border-radius:14px;padding:9px 8px 8px;background:rgba(255,255,255,.62);border:1px solid #fff;color:var(--sky-ink)}
+.bcs2__szb{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;padding:0;cursor:pointer;color:inherit;font:inherit}
+.bcs2__szv{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+.bcs2__oh{font-size:11px;font-weight:700;color:var(--sky-ink-2)}
+.bcs2__oh b{font-weight:900}
+.bcs2__sz[data-picked="1"]{background:var(--sky-navy);border-color:var(--sky-navy);color:#fff;box-shadow:0 10px 22px -10px rgba(0,40,170,.9)}
+.bcs2__sz[data-picked="1"] .bcs2__oh,.bcs2__sz[data-picked="1"] .bcs2__oh b{color:rgba(255,255,255,.92)}
+.bcs2__stp{display:flex;align-items:center;height:30px;border-radius:999px;background:#fff;overflow:hidden}
+.bcs2__stp button{flex:0 0 28px;height:30px;border:0;background:none;color:var(--sky-navy);font:800 16px/1 var(--sky-font);cursor:pointer}
+.bcs2__stp input{flex:1;min-width:0;width:100%;height:30px;border:0;background:none;text-align:center;color:var(--sky-ink);font:800 13px/1 var(--sky-font);outline:none;-moz-appearance:textfield}
+.bcs2__stp input::-webkit-outer-spin-button,.bcs2__stp input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.bcs2 :focus-visible{outline:2px solid var(--sky-navy);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){.bcs2,.bcs2__chev{transition:none}}
+`;
+// On-hand ink that reads on glass (the old red/amber/green were for black).
+const ohInk = (n) => (n === 0 ? "#a4161a" : n <= 2 ? "#7a4b00" : "#0a6a35");
+
+export function BcsCard({ p, expanded, sel, onToggleOpen, onPick, onCount, onHand, onPhoto }) {
+  const selCount = p.sizes.filter((s) => sel[keyOf(p.id, s)]).length;
+  const url = primaryPhotoUrl(p);
+  const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
+  return (
+    <div className="bcs2" data-open={expanded ? "1" : undefined} data-picked={selCount ? "1" : undefined} data-testid="bcs-card">
+      <button type="button" className="bcs2__head" aria-expanded={expanded} onClick={onToggleOpen}>
+        <span className="bcs2__ph">
+          {url
+            ? <PrimaryPhoto product={p} alt="" onClick={onPhoto ? (e) => { e.stopPropagation(); onPhoto(); } : undefined}
+                            onError={(e) => { e.currentTarget.style.display = "none"; }} />
+            : "👟"}
+        </span>
+        <span className="bcs2__tx">
+          <span className="bcs2__nm">{p.name}</span>
+          <span className="bcs2__meta">
+            <span>{p.sizes.length} size{p.sizes.length === 1 ? "" : "s"}</span>
+            {priced && <span className="bcs2__price">R{p.retailPrice.toLocaleString("en-ZA")}</span>}
+            {p.category && <span className="bcs2__cat">{p.category}</span>}
+          </span>
+        </span>
+        {selCount > 0 && <span className="bcs2__sel">{selCount} picked</span>}
+        <span className="bcs2__chev" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+        </span>
+      </button>
+      {expanded && (
+        <div className="bcs2__sizes">
+          {p.sizes.map((s) => {
+            const k = keyOf(p.id, s); const picked = !!sel[k]; const oh = onHand(p.id, s);
+            const cur = picked ? (parseInt(sel[k].count, 10) || 0) : 0;
+            return (
+              <div key={s} className="bcs2__sz" data-picked={picked ? "1" : undefined}>
+                <button type="button" className="bcs2__szb" role="checkbox" aria-checked={picked}
+                        aria-label={`Size ${formatSize(s)}, ${oh} on hand`} onClick={() => onPick(s, k)}>
+                  <span className="bcs2__szv"><SizeTag size={s} /></span>
+                  <span className="bcs2__oh">on hand <b style={picked ? undefined : { color: ohInk(oh) }}>{oh}</b></span>
+                </button>
+                {picked && (
+                  <div className="bcs2__stp">
+                    <button type="button" aria-label="One fewer copy" onClick={() => onCount(k, String(Math.max(0, cur - 1)))}>−</button>
+                    <input type="number" inputMode="numeric" min="0" aria-label="Copies" value={sel[k].count} onChange={(e) => onCount(k, e.target.value)} />
+                    <button type="button" aria-label="One more copy" onClick={() => onCount(k, String(cur + 1))}>+</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // myShop: the viewer's destShop. A one-shop account sees its own shop and its
 // back-stock hubs only — in the location chips and in every on-hand figure.
 export default function BarcodeCatalog({ products, canMint, onExit, myShop = null }) {
@@ -236,6 +332,7 @@ export default function BarcodeCatalog({ products, canMint, onExit, myShop = nul
           .bcs-scroll::-webkit-scrollbar-thumb,.bcs-side::-webkit-scrollbar-thumb,.bcs-tray::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:8px;border:2px solid transparent;background-clip:content-box}
           .bcs-stp button:hover{background:rgba(74,127,255,.2)}
         `}</style>
+        <style>{BCS_CSS}</style>
 
         {/* SIDEBAR */}
         <aside className="bcs-side" style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 14px 16px", display: "flex", flexDirection: "column", gap: 5, overflow: "auto" }}>
@@ -300,55 +397,14 @@ export default function BarcodeCatalog({ products, canMint, onExit, myShop = nul
           <div className="bcs-scroll" style={{ flex: 1, overflow: "auto", padding: "16px 26px 40px" }}>
             <div style={{ fontSize: 11, color: "rgba(233,238,255,.3)", margin: "0 2px 12px" }}>{filtered.length} product{filtered.length !== 1 ? "s" : ""}</div>
             {filtered.length === 0 ? <Empty>No products match.</Empty> : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(288px, 1fr))", gap: 12, alignItems: "start" }}>
-                {filtered.map(p => {
-                  const expanded = openId === p.id;
-                  const selCount = p.sizes.filter(s => sel[keyOf(p.id, s)]).length;
-                  const cc = catCol(p.category);
-                  return (
-                    <div key={p.id} className="bcs-card" style={{ background: "rgba(255,255,255,.022)", border: `1px solid ${selCount ? "rgba(74,222,128,.4)" : "rgba(255,255,255,.08)"}`, borderRadius: 15, overflow: "hidden", boxShadow: expanded ? `inset 3px 0 0 ${cc.bd}` : "none" }}>
-                      <div onClick={() => setOpenId(expanded ? null : p.id)} style={{ display: "flex", alignItems: "center", gap: 11, padding: 11, cursor: "pointer" }}>
-                        <div style={{ position: "relative", flexShrink: 0 }}>
-                          <Thumb product={p} onOpen={p.photoUrl ? () => setLightbox(p.photoUrl) : undefined} />
-                        </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13.5, fontWeight: 650, color: "#fff", display: "flex", alignItems: "center", gap: 7 }}>
-                            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</span>
-                            {p.category && <span style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 999, color: cc.fg, background: cc.bg }}>{p.category}</span>}
-                          </div>
-                          <div style={{ fontSize: 11, color: "rgba(233,238,255,.3)", marginTop: 2 }}>{p.sizes.length} size{p.sizes.length === 1 ? "" : "s"}{typeof p.retailPrice === "number" && p.retailPrice > 0 ? ` · R${p.retailPrice.toLocaleString("en-ZA")}` : ""}</div>
-                        </div>
-                        {selCount > 0 && <span style={{ background: "rgba(74,222,128,.16)", color: "#5FD08A", border: "1px solid rgba(74,222,128,.4)", borderRadius: 999, padding: "2px 9px", fontSize: 11.5, fontWeight: 800 }}>{selCount}</span>}
-                        <span style={{ color: BLUE_L, transform: expanded ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</span>
-                      </div>
-                      {expanded && (
-                        <div style={{ padding: "0 11px 12px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(108px, 1fr))", gap: 8 }}>
-                          {p.sizes.map(s => {
-                            const k = keyOf(p.id, s); const picked = !!sel[k]; const oh = onHand(p.id, s);
-                            const cur = picked ? (parseInt(sel[k].count, 10) || 0) : 0;
-                            return (
-                              <div key={s} style={{ background: picked ? "rgba(74,222,128,.06)" : "rgba(255,255,255,.02)", border: picked ? "1px solid rgba(74,222,128,.5)" : "1px solid rgba(255,255,255,.08)", borderRadius: 10, padding: 8 }}>
-                                <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer" }}>
-                                  <input type="checkbox" checked={picked} onChange={() => { toggle(p, s); setLastKey(k); }} style={{ accentColor: "#4A7FFF", width: 15, height: 15 }} />
-                                  <span style={{ fontSize: 12.5, color: BLUE_L, fontWeight: 700 }}><SizeTag size={s} /></span>
-                                </label>
-                                <div style={{ fontSize: 9, textAlign: "center", margin: "5px 0" }}>on hand <span style={{ color: ohColor(oh), fontWeight: 700 }}>{oh}</span></div>
-                                {picked && (
-                                  <div className="bcs-stp" style={{ display: "flex", alignItems: "center", border: "1px solid rgba(255,255,255,.14)", borderRadius: 8, overflow: "hidden" }}>
-                                    <button onClick={() => { setCount(k, String(Math.max(0, cur - 1))); setLastKey(k); }} style={{ flex: "0 0 24px", height: 28, border: 0, background: "rgba(255,255,255,.04)", color: "#fff", cursor: "pointer", fontSize: 14 }}>−</button>
-                                    <input type="number" inputMode="numeric" min="0" value={sel[k].count} onChange={e => { setCount(k, e.target.value); setLastKey(k); }}
-                                      style={{ flex: 1, minWidth: 0, width: "100%", height: 28, textAlign: "center", border: 0, background: "rgba(0,0,0,.3)", color: "#fff", fontSize: 12.5, fontWeight: 700, outline: "none", fontFamily: FONT }} />
-                                    <button onClick={() => { setCount(k, String(cur + 1)); setLastKey(k); }} style={{ flex: "0 0 24px", height: 28, border: 0, background: "rgba(255,255,255,.04)", color: "#fff", cursor: "pointer", fontSize: 14 }}>+</button>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 14, alignItems: "start" }}>
+                {filtered.map(p => (
+                  <BcsCard key={p.id} p={p} expanded={openId === p.id} sel={sel} onHand={onHand}
+                           onToggleOpen={() => setOpenId(openId === p.id ? null : p.id)}
+                           onPick={(sz, k) => { toggle(p, sz); setLastKey(k); }}
+                           onCount={(k, v) => { setCount(k, v); setLastKey(k); }}
+                           onPhoto={p.photoUrl ? () => setLightbox(p.photoUrl) : undefined} />
+                ))}
               </div>
             )}
           </div>
@@ -432,6 +488,7 @@ export default function BarcodeCatalog({ products, canMint, onExit, myShop = nul
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
+      <style>{BCS_CSS}</style>
       <div style={{ padding: "14px 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <button onClick={onExit} style={{ background: "none", border: "none", padding: 0, color: BLUE_L, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: FONT }}>← Home</button>
         <div style={{ fontSize: 15, fontWeight: 700 }}>Barcodes</div>
@@ -480,45 +537,14 @@ export default function BarcodeCatalog({ products, canMint, onExit, myShop = nul
       )}
 
       {filtered.length === 0 ? <Empty>No products match.</Empty> : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: selList.length ? 84 : 8 }}>
-          {filtered.map(p => {
-            const expanded = openId === p.id;
-            const selCount = p.sizes.filter(s => sel[keyOf(p.id, s)]).length;
-            return (
-              <div key={p.id} style={{ ...GLASS, padding: 0, overflow: "hidden" }}>
-                <div onClick={() => setOpenId(expanded ? null : p.id)} style={{ display: "flex", alignItems: "center", gap: 11, padding: 11, cursor: "pointer" }}>
-                  <Thumb product={p} onOpen={p.photoUrl ? () => setLightbox(p.photoUrl) : undefined} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
-                    <div style={{ fontSize: 11, color: GRAY }}>{p.sizes.length} size{p.sizes.length === 1 ? "" : "s"}</div>
-                  </div>
-                  {selCount > 0 && <span style={{ background: "rgba(74,222,128,.16)", color: GREEN, border: "1px solid rgba(74,222,128,.4)", borderRadius: 20, padding: "2px 9px", fontSize: 12, fontWeight: 700 }}>{selCount}</span>}
-                  <span style={{ color: BLUE_L, transform: expanded ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</span>
-                </div>
-                {expanded && (
-                  <div style={{ padding: "0 11px 12px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))", gap: 8 }}>
-                    {p.sizes.map(s => {
-                      const k = keyOf(p.id, s); const picked = !!sel[k]; const oh = onHand(p.id, s);
-                      return (
-                        <div key={s} style={{ background: CARD, border: picked ? "1px solid rgba(74,222,128,.5)" : BORDER, borderRadius: 10, padding: "7px 8px" }}>
-                          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                            <input type="checkbox" checked={picked} onChange={() => toggle(p, s)} />
-                            <span style={{ fontSize: 12, color: BLUE_L, fontWeight: 700 }}><SizeTag size={s} /></span>
-                          </label>
-                          <div style={{ fontSize: 9, color: GRAY, margin: "3px 0", textAlign: "center" }}>on hand {oh}</div>
-                          {picked && (
-                            <input type="number" inputMode="numeric" min="0" value={sel[k].count}
-                              onChange={e => setCount(k, e.target.value)} placeholder="copies"
-                              style={{ ...input, width: "100%", boxSizing: "border-box", textAlign: "center", padding: "5px 3px", fontSize: "0.8rem" }} />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingBottom: selList.length ? 84 : 8 }}>
+          {filtered.map(p => (
+            <BcsCard key={p.id} p={p} expanded={openId === p.id} sel={sel} onHand={onHand}
+                     onToggleOpen={() => setOpenId(openId === p.id ? null : p.id)}
+                     onPick={(sz) => toggle(p, sz)}
+                     onCount={(k, v) => setCount(k, v)}
+                     onPhoto={p.photoUrl ? () => setLightbox(p.photoUrl) : undefined} />
+          ))}
         </div>
       )}
 
