@@ -133,6 +133,8 @@ import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SneakerWall from "./components/assistant/SneakerWall.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
+import { WallPair } from "./components/assistant/WallPair.jsx";
+import { generatedTileSrc, useWallManifest, wallPhotoList } from "./components/assistant/wallTiles.js";
 import { isWallPreviewOn, isWallPreviewFromUrl, canTogglePreview, setWallPreview } from "./components/assistant/orderViewPreview";
 import WallAlternatives, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/WallAlternatives.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
@@ -407,6 +409,10 @@ function productPhotos(p) {
   return out;
 }
 
+// Generated sneaker-wall tiles (marathon-photo-studio) are transparent PNGs at products/<id>/studio-wall.png.
+const isStudioTile = (u) => typeof u === "string" && /products%2F[A-Za-z0-9_-]+%2Fstudio-wall\.png/.test(u);
+const STUDIO_GROUND = { background: "radial-gradient(120% 100% at 50% 40%,#fff 0%,#eef0f3 70%,#e3e6eb 100%)" };
+
 // Full-screen photo viewer: shows a product's photos (primary + extra angles) with
 // prev/next arrows, swipe, dots + a thumbnail strip. Accepts an array of URLs (or a
 // single URL string for back-compat). Reused by assistant view, admin, etc.
@@ -424,7 +430,8 @@ function GalleryLightbox({ photos, onClose }) {
          onTouchStart={(e) => { touch.current = e.touches[0]?.clientX ?? null; }}
          onTouchEnd={(e) => { const s = touch.current, en = e.changedTouches[0]?.clientX; if (multi && s != null && en != null && Math.abs(en - s) > 45) go(en < s ? 1 : -1); touch.current = null; }}
          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.93)", zIndex:2000, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24 }}>
-      <img src={list[idx]} alt="" onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10 }} />
+      {/* A generated wall tile is a transparent PNG: give it the wall's light studio ground so its soft shadow reads on the dark backdrop. */}
+      <img src={list[idx]} alt="" onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10, ...(isStudioTile(list[idx]) ? STUDIO_GROUND : null) }} />
       {multi && (
         <>
           <button onClick={e => { e.stopPropagation(); go(-1); }} aria-label="Previous" style={nav("left")}>‹</button>
@@ -8798,6 +8805,9 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const [brand, setBrand] = useState("All");
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
+  // Generated studio tiles (staff wall): the popup's photo is a swipeable pair,
+  // generated first, original second; the lightbox opens in the same order.
+  const wallManifest = useWallManifest(wallMode);   // off the wall: no fetch, no timer
   const [qvSize, setQvSize] = useState(null);
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
@@ -9338,15 +9348,21 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                 wall's tiles since round 3, into the popup header. Renders
                 nothing for a non-admin. */}
             {wall && <div className="ad-svacts"><ProductActionsButton product={qv} products={products} /></div>}
-            <div className="ad-svimg" onClick={() => qv.photoUrl && onViewPhoto(productPhotos(qv))} style={{ cursor: qv.photoUrl ? "zoom-in" : "default" }}>
+            <div className="ad-svimg" onClick={() => { const ph = wall ? wallPhotoList(qv, productPhotos(qv), wallManifest) : productPhotos(qv); if (ph.length) onViewPhoto(ph); }} style={{ cursor: qv.photoUrl || (wall && generatedTileSrc(qv, wallManifest)) ? "zoom-in" : "default" }}>
               <span className="ad-cat" style={{ top: 14, left: 14 }}>{qv.brand || (mode !== "sneaker" ? "Clothing" : "Sneakers")}</span>
               {/* The wall's popup draws the full-resolution original — the
                   file the lightbox opens — with the cached thumbnail as its
                   offline fallback (round 3, item 2). Called directly, not
                   through the inline Photo, so a re-render never remounts it. */}
               {wall
-                ? <HiResPhoto key={`${qv.id}|${qv.photoUrl || ""}`} p={qv} alt={qv.name} style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                              fallback={<span style={{ fontSize: 110 }}>{qv.photo || "👟"}</span>} />
+                ? <WallPair key={qv.id} p={qv} gen={generatedTileSrc(qv, wallManifest)}
+                            // the lightbox opens on the slide on screen: studio first, or the original first
+                            onOpen={(i, genOk) => {
+                              const orig = productPhotos(qv);
+                              const ph = genOk ? wallPhotoList(qv, orig, wallManifest) : orig;   // a tile that failed to load stays out
+                              if (ph.length) onViewPhoto(genOk && i === 1 ? [...ph.slice(1), ph[0]] : ph);
+                            }}
+                            fallback={<span style={{ fontSize: 110 }}>{qv.photo || "👟"}</span>} />
                 : <Photo p={qv} big />}
             </div>
             <div className="ad-svbody">

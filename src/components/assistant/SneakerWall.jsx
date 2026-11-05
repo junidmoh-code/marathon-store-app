@@ -27,6 +27,7 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import { HiResPhoto, tilePhotoSrc } from "./HiResPhoto.jsx";
+import { generatedTileSrc, useWallManifest } from "./wallTiles.js";
 import { labelFor } from "../stock/locations";
 import OrderLinesPanel from "./OrderLinesPanel.jsx";
 import { fmtR } from "./assistantOrderModel";
@@ -74,6 +75,9 @@ const WALL_CSS = `
   .sw-tile:hover::after,.sw-tile:focus-visible::after{box-shadow:inset 0 0 0 2px #5b63ff}
   .sw-tile img,.sw-photo img{width:100%;height:100%;object-fit:cover;object-position:center;display:block;opacity:0;transition:opacity .2s}
   .sw-tile img.ok,.sw-photo img.ok{opacity:1}
+  /* Generated studio tiles: a light ground so the soft shadow reads; the 1:1
+     tile is cropped to 5:4 by cover, so the shoe spans 80% of every tile. */
+  .sw-gen{position:absolute;inset:0;display:block;background:radial-gradient(120% 100% at 50% 40%,#fff 0%,#eef0f3 70%,#e3e6eb 100%)}
   .sw-noimg{position:absolute;inset:0;display:grid;place-items:center;padding:14px;text-align:center;color:#8b8b95;font-size:13px;font-weight:600;line-height:1.3}
   .sw-foot{display:flex;flex-direction:column;align-items:center;gap:10px;padding:18px 0 6px;color:#8b8b95;font-size:12px}
   .sw-loadmore{padding:11px 24px;border-radius:22px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:#e6e6ea;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
@@ -121,9 +125,27 @@ const WALL_CSS = `
 
 // The tile's photo, faded in once it has loaded so the #0a0a0a ground is the
 // placeholder. With no photo at all the ground shows the name instead.
+//
+// GENERATED TILES (staff wall, 2026-11-05): when the product has a generated
+// studio tile (wallTiles.js), the tile draws that on a light studio ground —
+// the same framing on every such tile — and falls back to the original if it
+// cannot load. Without one, the original exactly as before.
 export function TilePhoto({ p }) {
-  const [ok, setOk] = useState(false);
-  return <HiResPhoto p={p} className={ok ? "ok" : undefined} onLoad={() => setOk(true)}
+  const m = useWallManifest();
+  const gen = generatedTileSrc(p, m);
+  const [st, setSt] = useState({ key: "", ok: false, genFailed: false });
+  const key = `${gen || ""}|${p.photoUrl || ""}`;
+  const cur = st.key === key ? st : { key, ok: false, genFailed: false };
+  const set = (patch) => setSt({ ...cur, ...patch });
+  if (gen && !cur.genFailed) {
+    return (
+      <span className="sw-gen" data-testid="sw-gen">
+        <img src={gen} alt="" draggable={false} loading="lazy" decoding="async" className={cur.ok ? "ok" : undefined}
+             onLoad={() => set({ ok: true })} onError={() => set({ genFailed: true, ok: false })} />
+      </span>
+    );
+  }
+  return <HiResPhoto p={p} className={cur.ok ? "ok" : undefined} onLoad={() => set({ ok: true })}
                      fallback={<span className="sw-noimg">{p.name}</span>} />;
 }
 
