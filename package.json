@@ -12,7 +12,8 @@
     "proof:social": "node scripts/mutation-proof-social-health.mjs && node scripts/mutation-proof-social-twin.mjs",
     "proof:push": "node scripts/mutation-proof-push-notify.mjs",
     "contrast": "node scripts/sky-contrast.mjs --webkit",
-    "e2e:availability": "node scripts/sky-availability.e2e.mjs"
+    "e2e:availability": "node scripts/sky-availability.e2e.mjs",
+    "e2e:barcode-scroll": "node scripts/sky-barcode-scroll.e2e.mjs"
   },
   "dependencies": {
     "firebase": "^10.13.2",

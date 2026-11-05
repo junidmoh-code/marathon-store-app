@@ -100,7 +100,12 @@ prices 700–800 tabular, "R" and no decimals.
   Card (`BcsCard`, also on phone): 54px white-framed photo, the name on one
   line, "N sizes", a chevron that turns down when open; open, the sizes are
   glass tiles (size, "on hand N" in dark red/amber/green) and a picked tile
-  goes solid navy with a white copies stepper. White text there carries the
+  goes solid navy with a white copies stepper. FIXED FRAME (Junid 5 Nov,
+  >=1024px): the page never scrolls — header, sidebar, title/search/count
+  and the right cards hold still; only the product list scrolls (hidden
+  scrollbar), a wheel over the title scrolls it too; the tray scrolls inside
+  itself. `scripts/sky-barcode-scroll.e2e.mjs` proves it (CI). Below 1024px
+  the stacked layout stays with a sticky header. White text there carries the
   sky text shadow and `data-contrast-exempt`, as the home tiles do.
 - **SkyPlus** — round solid-white button, navy plus.
 - **SkyBottomBar** — slim (48px) glass bar: cart icon, divider, item count,

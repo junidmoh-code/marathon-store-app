@@ -10,7 +10,7 @@
 // Admin-only. Read-only against /stock (display of on-hand); the only write is the
 // barcode reservation at print, via the shared barcodeStore.
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react";
 import { ref, set } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells, useLocations } from "./useStock";
@@ -100,12 +100,18 @@ export const BCS_CSS = `
 // tray, Label preview). White text sits on the sky / thin glass with the sky
 // text shadow, as in the mock-up.
 export const BCS_PAGE_CSS = `
-.bcsp{display:grid;grid-template-columns:268px minmax(0,1fr) 366px;gap:0 40px;align-items:start;padding:8px 30px 40px;color:#fff;font-family:var(--sky-font);box-sizing:border-box}
+/* FIXED FRAME (Junid 5 Nov): only the product list scrolls. While this page
+   is mounted the document never scrolls; the frame fills the viewport under
+   the header (its top is measured: --bcsp-top), three columns, one row.
+   Not position:fixed — WebKit will not wheel-scroll a list inside one. */
+html,body{overflow:hidden!important;overscroll-behavior:none}
+.bcsp{position:relative;height:calc(100vh - var(--bcsp-top,140px));height:calc(100dvh - var(--bcsp-top,140px));display:grid;grid-template-columns:268px minmax(0,1fr) 366px;grid-template-rows:minmax(0,1fr);gap:0 40px;padding:8px 30px 0;color:#fff;font-family:var(--sky-font);box-sizing:border-box;overflow:hidden}
 .bcsp *{box-sizing:border-box}
 .bcsp__glass{border-radius:26px;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.7);box-shadow:inset 0 1px 0 rgba(255,255,255,.8),0 14px 34px rgba(10,60,140,.18);
   -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
 .bcsp__w{text-shadow:var(--sky-text-shadow)}
-.bcsp__side{position:sticky;top:16px;min-height:calc(100vh - 210px);max-height:calc(100vh - 32px);overflow:auto;padding:24px 16px 18px;display:flex;flex-direction:column}
+.bcsp__side{align-self:stretch;margin-bottom:24px;overflow-y:auto;scrollbar-width:none;padding:24px 16px 18px;display:flex;flex-direction:column}
+.bcsp__side::-webkit-scrollbar{display:none}
 .bcsp__mark{display:flex;align-items:baseline;gap:9px;padding:0 8px 22px;color:#fff;text-shadow:var(--sky-text-shadow)}
 .bcsp__mark b{font-size:25px;font-weight:900;font-style:italic;letter-spacing:-.04em}
 .bcsp__mark span{font-size:11px;font-weight:800;font-style:italic;letter-spacing:.5em}
@@ -123,7 +129,8 @@ html[data-sky="on"] #root .bcsp .bcsp__x{background:none!important;border:0!impo
 .bcsp__queued{margin-top:16px;padding:14px;border-radius:16px;background:rgba(255,255,255,.72);border:1px solid #fff;color:var(--sky-ink-deep)}
 .bcsp__queued b{display:block;font-size:26px;font-weight:900;line-height:1;color:var(--sky-navy);font-variant-numeric:tabular-nums}
 .bcsp__queued span{display:block;margin-top:4px;font-size:12px;font-weight:600}
-.bcsp__main{min-width:0;padding-top:8px}
+.bcsp__main{min-width:0;min-height:0;height:100%;display:flex;flex-direction:column;padding-top:8px}
+.bcsp__head{flex:0 0 auto}
 .bcsp__h1{margin:0;font-size:42px;font-weight:800;letter-spacing:-.025em;line-height:1.1;color:#fff;text-shadow:var(--sky-text-shadow)}
 .bcsp__sub{margin-top:8px;font-size:18px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow)}
 .bcsp__srch{position:relative;margin-top:26px}
@@ -132,16 +139,21 @@ html[data-sky="on"] #root .bcsp input.bcsp__in:not([type="checkbox"]):not([type=
   -webkit-backdrop-filter:blur(20px) saturate(1.5);backdrop-filter:blur(20px) saturate(1.5)}
 html[data-sky="on"] #root .bcsp input.bcsp__in:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])::placeholder{color:rgba(255,255,255,.92)!important}
 .bcsp__n{margin:34px 4px 16px;font-size:17px;font-weight:800;color:#fff;text-shadow:var(--sky-text-shadow);font-variant-numeric:tabular-nums}
+.bcsp__list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:6px 4px 48px;margin:0 -4px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 12px);mask-image:linear-gradient(to bottom,transparent 0,#000 12px)}
+.bcsp__list::-webkit-scrollbar{display:none}
 .bcsp__grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 20px;align-items:start}
-.bcsp__right{position:sticky;top:16px;max-height:calc(100vh - 32px);overflow:auto;display:flex;flex-direction:column;gap:26px}
-.bcsp__tray{display:flex;flex-direction:column;min-height:240px}
+.bcsp__right{min-height:0;height:100%;overflow-y:auto;scrollbar-width:none;display:flex;flex-direction:column;gap:26px;padding-bottom:24px}
+.bcsp__right::-webkit-scrollbar{display:none}
+.bcsp__tray{display:flex;flex-direction:column;min-height:240px;max-height:62%;flex:0 1 auto}
+.bcsp__lp{flex:0 0 auto}
 .bcsp__th{display:flex;align-items:center;gap:12px;padding:18px 18px 16px;border-bottom:1px solid rgba(255,255,255,.6)}
 .bcsp__th h2{margin:0;font-size:22px;font-weight:800;letter-spacing:-.015em;color:#fff;text-shadow:var(--sky-text-shadow)}
 .bcsp__badge{min-width:44px;height:30px;padding:0 12px;border-radius:999px;display:grid;place-items:center;background:rgba(255,255,255,.85);border:1px solid #fff;color:var(--sky-ink-deep);font-size:16px;font-weight:900;font-variant-numeric:tabular-nums}
 html[data-sky="on"] #root .bcsp .bcsp__clear{margin-left:auto;background:rgba(255,255,255,.72)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important;border-radius:999px;padding:6px 12px;font:700 13px/1 var(--sky-font);cursor:pointer}
 .bcsp__empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:34px 16px;font-size:16px;font-weight:600;color:#fff;text-shadow:var(--sky-text-shadow);text-align:center}
 .bcsp__empty svg{color:#fff;filter:drop-shadow(0 2px 8px rgba(0,40,110,.4))}
-.bcsp__items{padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.bcsp__items{padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-height:0;overflow-y:auto;scrollbar-width:none}
+.bcsp__items::-webkit-scrollbar{display:none}
 .bcsp__it{display:flex;align-items:center;gap:10px;padding:9px 10px 9px 12px;border-radius:14px;background:rgba(255,255,255,.72);border:1px solid #fff;color:var(--sky-ink-deep);cursor:pointer}
 .bcsp__it[data-last="1"]{background:rgba(255,255,255,.92);box-shadow:inset 0 0 0 2px var(--sky-navy)}
 .bcsp__itn{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -154,7 +166,7 @@ html[data-sky="on"] #root .bcsp .bcsp__print:disabled{cursor:not-allowed;opacity
 .bcsp__lpe{display:flex;flex-direction:column;align-items:center;gap:16px;padding:22px 6px 6px;font-size:16px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow);text-align:center}
 .bcsp__lpi{width:62px;height:62px;border-radius:16px;display:grid;place-items:center;background:rgba(255,255,255,.6);border:1px solid #fff;color:var(--sky-ink-deep);box-shadow:0 8px 20px rgba(10,60,140,.16)}
 .bcsp__label{margin-top:10px;background:#f7f7f2;color:#0a0a0a;border-radius:10px;padding:12px 14px 10px;box-shadow:0 12px 30px -12px rgba(0,30,90,.5);font-family:'SF Mono',ui-monospace,monospace}
-@media (max-width:1279px){.bcsp{grid-template-columns:232px minmax(0,1fr) 320px;gap:0 24px;padding:8px 20px 40px}.bcsp__grid{grid-template-columns:minmax(0,1fr)}.bcsp__h1{font-size:34px}}
+@media (max-width:1279px){.bcsp{grid-template-columns:232px minmax(0,1fr) 320px;gap:0 24px;padding:8px 20px 0}.bcsp__grid{grid-template-columns:minmax(0,1fr)}.bcsp__h1{font-size:34px}}
 @media (prefers-reduced-motion:reduce){.bcsp *{transition:none!important}}
 `;
 
@@ -167,8 +179,29 @@ export function BarcodeStudioDesktop(v) {
   const { onExit, loc, setLoc, locOptions, categories, cat, setCat, transport, setTransport, diagText, setDiagText,
           totalCopies, canMint, search, setSearch, filtered, openId, setOpenId, sel, onHand, toggle, setCount,
           lastKey, setLastKey, lastItem, lastP, previewCode, selList, clearSel, busy, doPrint, onPhoto } = v;
+  // The frame starts where the header ends; measured, not guessed, and
+  // re-measured on resize. Wheel over the title/search/count scrolls the list.
+  const frameRef = useRef(null);
+  const listRef = useRef(null);
+  useLayoutEffect(() => {
+    const el = frameRef.current;
+    if (!el) return undefined;
+    // The page cannot scroll while this frame is up, so the frame's own top
+    // is exactly the height of everything above it (the header).
+    const measure = () => {
+      const top = Math.round(el.getBoundingClientRect().top);
+      el.style.setProperty("--bcsp-top", `${Math.max(0, top)}px`);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+  const forwardWheel = (e) => {
+    const list = listRef.current;
+    if (list && !list.contains(e.target)) list.scrollTop += e.deltaY;
+  };
   return (
-    <div className="bcsp" data-testid="barcode-studio">
+    <div className="bcsp" data-testid="barcode-studio" ref={frameRef}>
       <style>{BCS_CSS}</style>
       <style>{BCS_PAGE_CSS}</style>
 
@@ -222,7 +255,8 @@ export function BarcodeStudioDesktop(v) {
         )}
       </aside>
 
-      <main className="bcsp__main">
+      <main className="bcsp__main" onWheel={forwardWheel}>
+        <div className="bcsp__head" data-testid="bcsp-head">
         <h1 className="bcsp__h1" data-contrast-exempt="">Barcode Studio</h1>
         <div className="bcsp__sub" data-contrast-exempt="">{canMint ? "Pick sizes, set copies, and print — the label preview updates live." : "Re-print existing labels — new codes are created by warehouse/admin."}</div>
         <div className="bcsp__srch">
@@ -230,6 +264,8 @@ export function BarcodeStudioDesktop(v) {
           <input className="bcsp__in" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products..." aria-label="Search products" />
         </div>
         <div className="bcsp__n" data-contrast-exempt="">{filtered.length.toLocaleString("en-US")} product{filtered.length !== 1 ? "s" : ""}</div>
+        </div>
+        <div className="bcsp__list" ref={listRef} data-testid="bcsp-list">
         {filtered.length === 0 ? <Empty>No products match.</Empty> : (
           <div className="bcsp__grid">
             {filtered.map((p) => (
@@ -241,6 +277,7 @@ export function BarcodeStudioDesktop(v) {
             ))}
           </div>
         )}
+        </div>
       </main>
 
       <aside className="bcsp__right">
@@ -544,6 +581,9 @@ export default function BarcodeCatalog({ products, canMint, onExit, myShop = nul
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
       <style>{BCS_CSS}</style>
+      {/* Below 1024px the stacked layout stays; only the header holds still
+          (Junid 5 Nov), on a soft blur strip so cards pass under it cleanly. */}
+      <style>{`html[data-sky="on"] #root .sky-header{position:sticky;top:0;z-index:30;padding-bottom:8px;-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);background:rgba(255,255,255,.1)}`}</style>
       <div style={{ padding: "14px 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <button onClick={onExit} style={{ background: "none", border: "none", padding: 0, color: BLUE_L, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: FONT }}>← Home</button>
         <div style={{ fontSize: 15, fontWeight: 700 }}>Barcodes</div>

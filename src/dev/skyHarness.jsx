@@ -146,7 +146,9 @@ function Desktop({ products, AssistantDesktop }) {
 
 function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
   const cats = ["Sneakers", "Sneakers", "Clothing"];
-  const list = products.slice(0, 12).map((p, i) => ({ ...p, category: cats[i % 3],
+  // ?many=1: the catalogue repeated to 60 cards, so the list really scrolls.
+  const base = q.get("many") ? Array.from({ length: 60 }, (_, i) => ({ ...products[i % products.length], id: `${products[i % products.length].id}-${i}` })) : products.slice(0, 12);
+  const list = base.map((p, i) => ({ ...p, category: cats[i % 3],
     sizes: (p.sizes && p.sizes.length ? p.sizes : ["7", "8", "9"]).slice(0, 7) }));
   const [openId, setOpenId] = useState(q.get("open") ? list[0]?.id : null);
   const [sel, setSel] = useState(q.get("open") ? { [`${list[0]?.id}|${list[0]?.sizes[1]}`]: { productId: list[0]?.id, productName: list[0]?.name, size: list[0]?.sizes[1], count: "2" } } : {});

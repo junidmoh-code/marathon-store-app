@@ -24,6 +24,7 @@ jobs:
       - run: node scripts/sky-contrast.mjs --webkit --out contrast-report
       # Junid 5 Nov: an unavailable size is marked and its tap opens the alternatives.
       - run: node scripts/sky-availability.e2e.mjs --port 5197
+      - run: node scripts/sky-barcode-scroll.e2e.mjs --port 5199
       - if: always()
         uses: actions/upload-artifact@v4
         with:
