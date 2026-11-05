@@ -132,7 +132,8 @@ export function swapFromRecord(line, { at, by = null, via, hubOrders = [], reque
  * closes its conversation in it).
  */
 export function swappedLine(cur, item, { swappedFrom, outcome, resolution, at = null }) {
-  const { escalation: _e, escalationOverride: _o, ...rest } = cur;
+  // The old item's customer-wait mark goes with it: the new line is settled by this swap (5 Nov 2026, #1866).
+  const { escalation: _e, escalationOverride: _o, awaitingCustomer: _w, ...rest } = cur;
   // The line's money, from scratch, the same for every caller (COMMIT 6): what was paid, given back, now, owed.
   const lg = lineLedger(cur, { priceCents: item.priceCents });
   const ledger = { paidCents: lg.paidCents, settledCents: lg.settledCents, nowCents: lg.nowCents, creditCents: lg.creditCents, extraCents: lg.extraCents, swaps: (Number(cur.ledger?.swaps) || (cur.swappedFrom ? 1 : 0)) + 1, at: at ?? outcome?.at ?? null };
