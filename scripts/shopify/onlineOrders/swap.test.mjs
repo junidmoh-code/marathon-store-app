@@ -424,6 +424,13 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(line(f, 0)).toMatchObject({ pid: "BLK", originalPid: "SNK", swappedFrom: { pid: "KAP" } });
   });
 
+  it("review of #847 (spec): a dearer swap on a confirmed payment records that difference as paid on the line (paidInCents)", async () => {
+    const { f } = await ingested();
+    const out = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: 5000, paidInRef: "PF9", by: YASMIN, via: "cli", now: NOW, increment });
+    expect(out.ok).toBe(true);
+    expect(Object.values(line(f, 1).resolution.moneyIn || {})).toEqual([expect.objectContaining({ state: "done", via: "payment", amountCents: 5000, ref: "PF9" })]);
+  });
+
   it("customer pays: Junid is asked to collect ONCE per request", async () => {
     const { f, h } = await ingested();
     await ask(f, 1, "JKT", "M", { priceDecision: "customer_pays" });
