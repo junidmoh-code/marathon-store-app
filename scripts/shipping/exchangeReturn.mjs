@@ -426,10 +426,9 @@ async function resolveList(db, record, items) {
     if (str(it.pid)) { out.push(it); continue; }
     let hit = null, hitKey = null, ambiguous = false;
     for (const k of str(it.origOrderKey) ? [str(it.origOrderKey)] : keys) {
-      let lines = [];
-      try {
-        lines = (await read(db, `online_orders/${assertSafeSegment(k, "order key")}/lines`)) || [];
-      } catch { lines = []; }
+      // A related order that cannot be read is NOT "no match" (CodeRabbit on #842): the error stops the run before any
+      // stock write, so a match from another order is never accepted on incomplete data; a rerun is safe (fixed ids).
+      const lines = (await read(db, `online_orders/${assertSafeSegment(k, "order key")}/lines`)) || [];
       const names = {};
       for (const [, l] of lineEntries(lines)) {
         if (names[l.pid]) continue;
