@@ -415,6 +415,8 @@ describe("Sonnet final review", () => {
     expect(line(f).source).toEqual({ status: "moved", movedTo: "9001f0" });
     expect(f.read("online_orders/9001f0/lines/0")).toMatchObject({ pid: "ALT1" });
     expect(f.read("online_orders/9001/followUps")).toEqual({ "9001f0": true });
+    // The pack race's follow-up gets the parent's credit history too (CodeRabbit on #847): R250 paid, R240 pick → R10.
+    expect(Object.values(f.read("online_orders/9001f0/lines/0/resolution/moneySettled") || {}).concat(f.read("online_orders/9001f0/lines/0/resolution/money") || [])).toContainEqual(expect.objectContaining({ amountCents: 1000, onParent: "9001/0" }));
   });
 });
 
@@ -428,3 +430,70 @@ describe("Fable final review", () => {
     expect(h.junid).toHaveLength(1);
   });
 });
+
+describe("review of #846: held picks, the ledger on settle", () => {
+  it("a pick on a line whose money is unclear is held, Junid told once; once the slot is settled it goes on by itself", async () => {
+    // An earlier R10 credit the agent asked Junid to do by hand (manual), never marked done: unclear.
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { money: { kind: "credit", amountCents: 1000, state: "manual" } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation").set({ state: "offering", email: "thandi@example.com", tag: "T", startedAt: NOW - H, offers: { 0: OFFERS[0], 1: OFFERS[1] }, sends: { 1: { kind: "offer", sentAt: NOW - H } } });
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).pid).toBe("TEE");
+    expect(conv(f).heldPick).toMatchObject({ n: 1, pid: "ALT1" });
+    expect(h.junid.filter((m) => /NOT swapped yet/.test(m.subject))).toHaveLength(1);
+    // Still unclear on the next run: nothing new to Junid, nothing to the customer, no 48-hour credit.
+    const mails = h.mails.length;
+    await h.run({ nowMs: async () => NOW + 72 * H, inbox: { replies: async () => [reply("1")] } });
+    expect(h.junid.filter((m) => /NOT swapped yet/.test(m.subject))).toHaveLength(1);
+    expect(h.mails.length).toBe(mails);
+    expect(line(f).resolution.money.state).toBe("manual");
+    // Junid marks it done: the next run swaps the held pick (paid R250 − R10 back − R240 → nothing more owed).
+    await f.db.ref("online_orders/9001/lines/0/resolution/money/state").set("done");
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).pid).toBe("ALT1");
+    expect(Object.values(line(f).resolution.moneySettled)).toEqual([expect.objectContaining({ state: "done", amountCents: 1000 })]);
+    expect(line(f).ledger).toMatchObject({ paidCents: 25000, settledCents: 1000, creditCents: 0, extraCents: 0 });
+    expect(conv(f).heldPick).toBeUndefined();
+  });
+
+  it("settle asks only what is left of what was paid (R250 paid, R100 given back → R150 credit)", async () => {
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { moneySettled: { a: { state: "done", amountCents: 10000 } } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation").set({ state: "offering", email: "thandi@example.com", tag: "T", startedAt: NOW - H, offers: { 0: OFFERS[0], 1: OFFERS[1] }, sends: { 1: { kind: "offer", sentAt: NOW - H } } });
+    await h.run({ inbox: { replies: async () => [reply("credit")] } });
+    expect(line(f).resolution.money).toMatchObject({ kind: "credit", amountCents: 15000, state: "done" });
+  });
+
+  it("CodeRabbit on #847: a packed order's pick ships as a follow-up and the parent's credit is in the follow-up's money history", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    await f.db.ref("online_orders/9001").update({ status: "packed" });
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).source).toEqual({ status: "moved", movedTo: "9001f0" });
+    // R250 paid, R240 pick: R10 credit paid on the parent line, and the follow-up line knows it.
+    expect(line(f).resolution.money).toMatchObject({ kind: "credit", amountCents: 1000, state: "done" });
+    const settled = f.read("online_orders/9001f0/lines/0/resolution/moneySettled") || {};
+    expect(Object.values(settled)).toContainEqual(expect.objectContaining({ state: "done", amountCents: 1000, onParent: "9001/0" }));
+    expect(Object.keys(settled).every((k) => /^[mp]\d+$/.test(k))).toBe(true);
+  });
+
+  it("CodeRabbit on #847: a parent credit not done yet (by hand) is mirrored on the follow-up line, so a swap there waits", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: [] }); // no credit scope: the credit is Junid's by hand (manual)
+    await h.run();
+    await f.db.ref("online_orders/9001").update({ status: "packed" });
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(f.read("online_orders/9001f0/lines/0/resolution/money")).toMatchObject({ state: "manual", amountCents: 1000, mirroredFrom: "9001/0" });
+  });
+
+  it("CodeRabbit on #847: 'nothing left to give back' goes to Junid once", async () => {
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { moneySettled: { a: { state: "done", amountCents: 25000 } } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation").set({ state: "offering", email: "thandi@example.com", tag: "T", startedAt: NOW - H, offers: { 0: OFFERS[0], 1: OFFERS[1] }, sends: { 1: { kind: "offer", sentAt: NOW - H } } });
+    await h.run({ inbox: { replies: async () => [reply("credit")] } });
+    await h.run({ nowMs: async () => NOW + 72 * H, inbox: { replies: async () => [reply("credit"), reply("credit please", 2)] } });
+    expect(h.junid.filter((m) => /nothing is left to give back/.test(m.subject))).toHaveLength(1);
+  });
+});
+

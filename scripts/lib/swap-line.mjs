@@ -113,7 +113,10 @@ export function swappedLine(cur, item, { swappedFrom, outcome, resolution, at = 
   const { escalation: _e, escalationOverride: _o, awaitingCustomer: _w, ...rest } = cur;
   // The line's money, from scratch, the same for every caller (COMMIT 6): what was paid, given back, now, owed.
   const lg = lineLedger(cur, { priceCents: item.priceCents });
-  const ledger = { paidCents: lg.paidCents, settledCents: lg.settledCents, nowCents: lg.nowCents, creditCents: lg.creditCents, extraCents: lg.extraCents, swaps: (Number(cur.ledger?.swaps) || (cur.swappedFrom ? 1 : 0)) + 1, at: at ?? outcome?.at ?? null };
+  const ledger = { paidCents: lg.paidCents, settledCents: lg.settledCents, nowCents: lg.nowCents, creditCents: lg.creditCents, extraCents: lg.extraCents, swaps: (Number(cur.ledger?.swaps) || (cur.swappedFrom ? 1 : 0)) + 1, at: at ?? outcome?.at ?? null,
+    // A dearer item: who settles the difference is on the ledger too (review of #846): the customer pays it (to collect),
+    // or we absorb it.
+    ...(lg.extraCents > 0 && outcome?.priceDecision ? { priceDecision: outcome.priceDecision, toCollectCents: outcome.priceDecision === "customer_pays" ? lg.extraCents : 0 } : {}) };
   return clean({
     ...rest,
     pid: item.pid, size: item.size, sizeKey: item.sizeKey || stockSizeKey(item.size), title: item.title,

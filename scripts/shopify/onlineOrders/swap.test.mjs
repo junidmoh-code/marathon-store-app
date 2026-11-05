@@ -460,6 +460,10 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "failed" } } }), { priceCents: 35000 }).unclear).toBe(true);
     expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "failed", ambiguous: false } } }), { priceCents: 35000 })).toMatchObject({ unclear: false, settledCents: 0, creditCents: 10000, supersedes: { state: "failed", amountCents: 5000 } });
   });
+  it("review of #846: an unknown money state fails closed; a done action counts what Shopify paid (paidCents)", () => {
+    expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "weird" } } }), { priceCents: 35000 })).toMatchObject({ unclear: true });
+    expect(lineLedger(L({ resolution: { moneySettled: { a: { state: "done", amountCents: 5000, paidCents: 4000 } } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 4000, creditCents: 6000 });
+  });
   it("a claim: busy while fresh; past 15 minutes it is unclear (the payer died), never refused for ever", () => {
     const at = 1_000_000;
     const c = L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "claimed", at } } });

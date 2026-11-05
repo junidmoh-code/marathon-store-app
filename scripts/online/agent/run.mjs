@@ -20,7 +20,7 @@ import { ESCALATIONS_PATH, followUpId, followUpRecord } from "../../shopify/onli
 import { linesOf } from "../../shopify/onlineOrders/orderModel.mjs";
 import {
   MAX_OUTBOUND, NO_REPLY_MS, REFUND_WINDOW_MS, paidCents, rands, parseReplyCode, validateClassification,
-  canSend, moneyAllowed, judgeSwap, swapResolution, acceptModelText, fallbackWords, composeMessage, subjectTag, whatsappText,
+  canSend, moneyAllowed, judgeSwap, swapResolution, lineLedger, acceptModelText, fallbackWords, composeMessage, subjectTag, whatsappText,
 } from "./core.mjs";
 import { CREDIT_SCOPE, REFUND_SCOPE, issueStoreCredit, refundLine, slotRefundKey } from "./money.mjs";
 import { swappedLine, swapFromRecord } from "../../lib/swap-line.mjs";
@@ -252,6 +252,13 @@ async function offering(ctx, key, orderId, order, i, line) {
   const conv = line.resolution.conversation;
   const offers = Object.values(conv.offers || {});
   const reply = await nextReply(ctx, orderId, i, conv);
+  // A pick held because the line's money was unclear (review of #846, 4): tried again every run until it clears; a
+  // newer reply replaces it, and it never lets the 48-hour credit run over it.
+  if (!reply && conv.heldPick && Number.isInteger(Number(conv.heldPick.n))) {
+    const offer = offers[Number(conv.heldPick.n) - 1];
+    if (offer) return pick(ctx, key, orderId, order, i, line, offer, { held: true });
+  }
+  if (reply && conv.heldPick) await lineTxn(ctx, orderId, i, (cur) => { const c = cur.resolution?.conversation; if (!c?.heldPick) return undefined; const { heldPick: _h, ...rest } = c; return { ...cur, resolution: { ...cur.resolution, conversation: rest } }; });
   if (reply) {
     ctx.summary.replies++;
     let decision = parseReplyCode(reply.text, offers.length);
@@ -303,21 +310,31 @@ async function nextReply(ctx, orderId, i, conv) {
 }
 
 // ── pick N ───────────────────────────────────────────────────────────────────
-async function pick(ctx, key, orderId, order, i, line, offer) {
+// A held pick is dropped only once it has an outcome: a committed swap, or a final answer (dearer, gone): CodeRabbit #847.
+const clearHeld = (ctx, orderId, i) => lineTxn(ctx, orderId, i, (cur) => { const c = cur.resolution?.conversation; if (!c?.heldPick) return undefined; const { heldPick: _h, ...rest } = c; return { ...cur, resolution: { ...cur.resolution, conversation: rest } }; });
+
+async function pick(ctx, key, orderId, order, i, line, offer, { held = false } = {}) {
   const judged = judgeSwap(line, offer, { now: ctx.now });
   if (!judged.ok && judged.why === "money_unclear") {
-    // An earlier credit or refund on this line has no known result (COMMIT 6 ledger): nothing is swapped on a guess.
-    await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: not swapped, ${judged.note}` });
-    await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, NOT swapped yet`, [`Line: ${line.title}${line.size ? ` size ${line.size}` : ""}.`, `${judged.note}. Settle that first; the pick is kept and the swap can then be done.`]);
+    // An earlier credit or refund on this line has no known result (COMMIT 6 ledger): nothing is swapped on a guess. The
+    // pick is HELD on the conversation and tried again each run (review of #846, 4); Junid is told once.
+    if (held) return; // still unclear: held, nothing new said
+    const offers = Object.values(line.resolution?.conversation?.offers || {});
+    const n = offers.findIndex((o) => o && o.pid === offer.pid && String(o.size ?? "") === String(offer.size ?? "")) + 1;
+    await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, heldPick: { n: n || null, pid: offer.pid, at: ctx.now } } } } : undefined));
+    await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: not swapped yet, ${judged.note}` });
+    await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, NOT swapped yet`, [`Line: ${line.title}${line.size ? ` size ${line.size}` : ""}.`, `${judged.note}. Settle that first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go"); the pick is kept and goes on by itself once it is settled.`]);
     return;
   }
   if (!judged.ok) {
+    if (held) await clearHeld(ctx, orderId, i); // a final answer: never retried twice
     await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title} costs ${rands(judged.extraCents)} more — never charge more` });
     await send(ctx, orderId, order, i, line, "costs_more", { amountCents: judged.extraCents });
     return;
   }
   // The offer may be days old: the unit is checked again NOW.
   if (ctx.offerStillAvailable && !(await ctx.offerStillAvailable({ offer, line, orderId }))) {
+    if (held) await clearHeld(ctx, orderId, i);
     await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title} is no longer in stock` });
     await send(ctx, orderId, order, i, line, "gone");
     return;
@@ -334,6 +351,7 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
     swappedFrom, outcome,
     resolution: swapResolution(cur.resolution, { now: ctx.now, outcome, closeConversation: "agent" }),
   });
+  let followed = packed; // a follow-up carries the new item (packed at the read, or the pack race below)
   if (packed) {
     // The parcel has gone: the new item ships on its own.
     const fid = followUpId(orderId, i);
@@ -342,12 +360,25 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
     const res = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).transaction((cur) => (cur == null ? clean(follow) : undefined));
     if (!res.committed && !res.snapshot.val()) return;
     await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
-    await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, state: "closed", closedAt: ctx.now }, outcome: { ...outcome, movedTo: fid } } }));
+    // The parent line settles its money the same way (review of #846, 3): its done slot to moneySettled, so the follow-up's
+    // credit below is its own action; the money is re-checked as on the unpacked path.
+    const parentOk = await lineTxn(ctx, orderId, i, (cur) => (JSON.stringify(cur.resolution?.money ?? null) !== JSON.stringify(line.resolution?.money ?? null) ? undefined : ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: swapResolution(cur.resolution, { now: ctx.now, outcome: { ...outcome, movedTo: fid }, closeConversation: "agent" }) })));
+    if (!parentOk) {
+      // The parent's money changed meanwhile (CodeRabbit on #847): the follow-up just made is undone, nothing reported.
+      if (res.committed) {
+        await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).set(null);
+        await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(null);
+      }
+      await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: the line's money changed meanwhile; not swapped` });
+      return;
+    }
+    if (held) await clearHeld(ctx, orderId, i);
   } else {
     // The ledger was judged on the line as read: money that moved since makes it stale (never a wrong credit; COMMIT 6).
     const sameMoney = (cur) => JSON.stringify(cur.resolution?.money ?? null) === JSON.stringify(line.resolution?.money ?? null);
     const done = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation?.state === "offering" && sameMoney(cur) ? newLine(cur) : undefined));
-    if (!done) return;
+    if (!done) return; // not committed: a held pick stays held, tried again next run
+    if (held) await clearHeld(ctx, orderId, i); // committed: the held pick has its outcome
     // RACE: a pack may have landed between the read and the swap. A packed
     // order never ships a pick: the swapped line moves to a follow-up.
     const after = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}`);
@@ -359,6 +390,7 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
       if (res.committed || res.snapshot.val()) {
         await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
         await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid } }));
+        followed = true; // the pack race made one too: it gets the parent-credit history as well (CodeRabbit on #847)
       }
     }
   }
@@ -369,13 +401,34 @@ async function pick(ctx, key, orderId, order, i, line, offer) {
   await record(ctx, orderId, i, order.ref, "swapped", { note: `${line.title} → ${offer.title} at ${offer.locationId}${packed ? " (ships as a follow-up)" : ""}` });
   const swapped = { ...line, ...newLine(line) };
   const diff = judged.creditCents > 0 ? await money(ctx, orderId, order, i, swapped, "credit", judged.creditCents, "swap difference") : null;
+  // A packed order's item ships as a follow-up: a credit paid on the parent line is in the follow-up line's money history
+  // too, so its next swap counts it (one ledger across parent and follow-up; CodeRabbit on #847).
+  // Its own key (never the moved parent slot's m<now>; CodeRabbit on #847). A credit not done yet (by hand, an unclear
+  // answer) is mirrored as the follow-up line's money slot, so a swap there waits until it is settled (Junid's
+  // settle_line_money settles the mirror too).
+  if (followed && diff) {
+    const base = `${ONLINE_ORDERS_PATH}/${followUpId(orderId, i)}/lines/0/resolution`;
+    const entry = clean({ kind: "credit", amountCents: judged.creditCents, via: diff.via ?? null, ref: diff.ref ?? null, at: diff.at ?? ctx.now, ...(Number.isInteger(diff.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
+    if (diff.state === "done") await ctx.db.ref(`${base}/moneySettled/p${ctx.now}`).set({ ...entry, state: "done" });
+    else await ctx.db.ref(`${base}/money`).transaction((cur) => (cur ? undefined : clean({ ...entry, state: diff.state || "manual", ...(diff.ambiguous != null ? { ambiguous: diff.ambiguous } : {}), mirroredFrom: `${orderId}/${i}` })));
+  }
   await send(ctx, orderId, order, i, swapped, "swapped", { amountCents: judged.creditCents, pending: !!diff && diff.via !== "api" });
   await setAgentRow(ctx, key, null);
 }
 
 // ── credit / refund ─────────────────────────────────────────────────────────
 async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
-  let amount = paidCents(line);
+  // What is left of what was paid for the line (the ledger; review of #846, 5): never the full price again after a credit.
+  let amount = lineLedger(line, { priceCents: 0, now: ctx.now }).refundableCents;
+  if (!(amount > 0)) {
+    // Told once (CodeRabbit on #847): a marker on the conversation, so the next run (or the 48-hour credit) is silent.
+    if (line.resolution?.conversation?.nothingLeftAt) return;
+    await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, nothingLeftAt: ctx.now } } } : undefined));
+    await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents: 0, note: "nothing is left of what was paid for this line" });
+    await tellJunid(ctx, `Website order ${order.ref}: ${kind} asked, but nothing is left to give back on ${line.title}`, [`Everything paid for the line was given back already; nothing was sent to the customer.`]);
+    await setAgentRow(ctx, key, { state: "offering", needsJunid: true });
+    return;
+  }
   const res = await money(ctx, orderId, order, i, line, kind, amount, messageKind === "auto_credit" ? "no reply in 48 hours" : `the customer chose ${kind}`);
   if (!res) return;
   // What Shopify actually refunded (it may suggest less than the line).
