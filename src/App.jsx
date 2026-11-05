@@ -16575,6 +16575,64 @@ const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],.
 const SOURCE_SHOP_BY_TAB = Object.fromEntries(SOURCE_SHOP_TABS.map(([k, , loc]) => [k, loc]));
 const SOURCE_SHOP_LOCS = new Set(SOURCE_SHOP_TABS.map(([, , loc]) => loc));
 
+// ─── SOURCE, SKY (Junid 5 Nov mock-up) ───────────────────────────────────────
+// Scoped to .srcsky (the desktop Source shell). The rows are RefillQueue's own
+// markup, unchanged: a product card is the div holding [data-row] size lines;
+// its first child is the photo/name/age header. One-size cards put the size
+// line beside the header, as in the mock-up; more sizes stack under it on the
+// right; an open Fulfil panel takes the full card width.
+const SRC_ROW = 'html[data-sky="on"] #root .srcsky__list div:has(> [data-row])';
+const SOURCE_SKY_CSS = `
+.srcsky{display:grid;grid-template-columns:264px minmax(0,1fr);gap:0 54px;align-items:start;padding:22px 48px 48px;font-family:var(--sky-font);color:var(--sky-ink-deep);box-sizing:border-box}
+.srcsky *{box-sizing:border-box}
+.srcsky__glass{border-radius:26px;background:rgba(255,255,255,.34);border:1px solid rgba(255,255,255,.8);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 14px 34px rgba(10,60,140,.16);
+  -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
+.srcsky__side{position:sticky;top:16px;display:flex;flex-direction:column;gap:40px}
+.srcsky__rail{padding:18px 16px 22px;display:flex;flex-direction:column;gap:4px}
+html[data-sky="on"] #root .srcsky button.srcsky__exit{display:flex;align-items:center;gap:12px;width:100%;height:46px;padding:0 18px;margin-bottom:14px;border:0!important;border-bottom:1px solid rgba(11,42,82,.18)!important;border-radius:0;background:none!important;color:var(--sky-ink-deep)!important;font:500 17px/1 var(--sky-font);cursor:pointer}
+.srcsky__lab{padding:14px 18px 10px;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sky-ink-deep)}
+html[data-sky="on"] #root .srcsky button.srcsky__nav{display:flex;align-items:center;gap:14px;width:100%;min-height:46px;padding:6px 8px 6px 16px;border-radius:14px;border:1px solid transparent!important;background:none!important;color:var(--sky-ink-deep)!important;font:500 16px/1.2 var(--sky-font);text-align:left;cursor:pointer;transition:background .14s}
+html[data-sky="on"] #root .srcsky button.srcsky__nav:hover{background:rgba(255,255,255,.3)!important}
+html[data-sky="on"] #root .srcsky button.srcsky__nav[data-on="1"]{background:rgba(255,255,255,.55)!important;border-color:rgba(255,255,255,.9)!important;font-weight:600}
+.srcsky__navl{flex:1;min-width:0}
+.srcsky__bd{flex:0 0 auto;min-width:40px;height:32px;padding:0 9px;border-radius:999px;display:grid;place-items:center;background:rgba(255,255,255,.7);border:1px solid #fff;color:var(--sky-ink-deep);font-size:14.5px;font-weight:600;font-variant-numeric:tabular-nums}
+.srcsky__tot{display:flex;align-items:center;gap:20px;padding:20px 32px;color:var(--sky-ink-deep)}
+.srcsky__tot b{display:block;font-size:28px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.srcsky__tot span{display:block;margin-top:5px;font-size:13px;font-weight:500;letter-spacing:.03em;text-transform:uppercase}
+.srcsky__main{min-width:0;padding-top:6px}
+.srcsky__h1{margin:0;font-size:44px;font-weight:800;letter-spacing:-.02em;line-height:1.1;color:#fff;text-shadow:var(--sky-text-shadow)}
+.srcsky__sub{margin-top:6px;font-size:19px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow)}
+.srcsky__list{margin-top:30px;display:flex;flex-direction:column;gap:16px}
+html[data-sky="on"] #root .srcsky__list > div > button:not([aria-pressed]),
+html[data-sky="on"] #root .srcsky__list > div > div > button:first-child:not([aria-pressed]){color:#fff!important;text-shadow:var(--sky-text-shadow);font-size:14px!important;font-weight:600!important}
+html[data-sky="on"] #root .srcsky__list button[aria-pressed]{background:rgba(255,255,255,.3)!important;border:1px solid rgba(255,255,255,.8)!important;color:var(--sky-ink-deep)!important;border-radius:16px!important}
+html[data-sky="on"] #root .srcsky__list button[aria-pressed="true"]{background:rgba(255,255,255,.86)!important;font-weight:800!important}
+${SRC_ROW}{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:22px;row-gap:8px;
+  padding:13px 26px 13px 28px!important;border-radius:24px!important;background:rgba(255,255,255,.34)!important;border:1px solid rgba(255,255,255,.8)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 12px 30px rgba(10,60,140,.14)!important;
+  -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
+${SRC_ROW} > div:first-child{grid-column:1;gap:32px!important;min-width:0}
+${SRC_ROW} > div:first-child > img,
+${SRC_ROW} > div:first-child > span:first-child{width:70px!important;height:70px!important;border-radius:12px!important;background:#fff!important;box-shadow:0 4px 12px rgba(10,60,140,.16)}
+${SRC_ROW} > div:first-child > div > div:first-child{color:var(--sky-ink-deep)!important;font-size:17.5px!important;font-weight:700!important}
+${SRC_ROW} > div:first-child > div > div + div{color:var(--sky-ink)!important;font-size:15px!important;margin-top:4px!important}
+${SRC_ROW} > div:first-child > div + span{font-size:14px!important;font-weight:600!important;padding:6px 14px!important;gap:9px!important;background:rgba(255,255,255,.75)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important}
+${SRC_ROW} > div:first-child > div + span[style*="248, 113, 113"]{background:rgba(255,226,230,.92)!important;color:#b3121b!important}
+${SRC_ROW} > div:first-child > div + span[style*="251, 191, 36"]{background:rgba(255,240,205,.92)!important;color:#7a4b00!important}
+html[data-sky="on"] #root .srcsky__list [data-row]{grid-column:2;border-top:0!important;margin-top:0!important;padding-top:0!important}
+html[data-sky="on"] #root .srcsky__list [data-row]:has(> :nth-child(2)){grid-column:1 / -1;border-top:1px solid rgba(11,42,82,.1)!important;padding-top:12px!important}
+html[data-sky="on"] #root .srcsky__list [data-line-actions]{gap:18px!important;justify-content:flex-end}
+html[data-sky="on"] #root .srcsky__list [data-line-actions] > span:first-child{flex:0 1 auto!important}
+html[data-sky="on"] #root .srcsky__list [data-line-actions] > span:first-child,
+html[data-sky="on"] #root .srcsky__list [data-line-actions] > span:first-child *{color:var(--sky-ink-deep)!important}
+html[data-sky="on"] #root .srcsky__list [data-line-actions] > button{min-height:52px!important;padding:0 26px!important;border-radius:16px!important;background:rgba(255,255,255,.45)!important;border:1px solid rgba(255,255,255,.9)!important;color:var(--sky-ink-deep)!important;font:500 16px/1 var(--sky-font)!important;box-shadow:inset 0 1px 0 #fff,0 6px 16px rgba(10,60,140,.1)}
+html[data-sky="on"] #root .srcsky__list [data-line-actions] > button:hover{background:rgba(255,255,255,.7)!important}
+@media (max-width:1279px){.srcsky{grid-template-columns:236px minmax(0,1fr);gap:0 28px;padding:18px 24px 40px}.srcsky__h1{font-size:36px}
+  ${SRC_ROW}{grid-template-columns:minmax(0,1fr)}
+  html[data-sky="on"] #root .srcsky__list [data-row]{grid-column:1}}
+@media (prefers-reduced-motion:reduce){.srcsky *{transition:none!important}}
+`;
+
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [rawTab, setTab] = usePersistedTab("source", "hub1refill");
   // A device may carry a persisted tab key that no longer exists (today /
@@ -17076,49 +17134,41 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       // Per-hub pending work (sold cells + stragglers + open requests) on its hub tab.
       const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : sectionTabLoc[key] ? (hubBadges[sectionTabLoc[key]] || 0) : 0;
       return (
-        <button key={key} onClick={() => setTab(key)}
-          style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
-                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
-                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>{SOURCE_TAB_ICON[key]}</svg>
-          <span style={{ flex:1 }}>{label}</span>
-          {badge > 0 && (
-            <span style={{ background:"#F59E0B", color:"#000", fontSize:10.5, fontWeight:800, minWidth:19, height:19, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
-          )}
+        <button key={key} type="button" className="srcsky__nav" data-on={on ? "1" : undefined} aria-current={on ? "page" : undefined} onClick={() => setTab(key)}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{SOURCE_TAB_ICON[key]}</svg>
+          <span className="srcsky__navl">{label}</span>
+          {badge > 0 && <span className="srcsky__bd">{badge}</span>}
         </button>
       );
     };
+    // Sky shell (Junid 5 Nov mock-up, "this is the exact one I want for
+    // Source"): a glass rail (Exit, RESTOCK, the tabs with white count pills)
+    // and a glass "TO RESTOCK" total under it; the white heading on the sky
+    // and the SAME content (RefillQueue / RefillHistory, untouched) as glass
+    // rows. Presentation only: SOURCE_SKY_CSS restyles the rows by the data
+    // attributes RefillQueue already renders.
     return (
-      <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
-        {/* RAIL */}
-        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
-            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
-            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
-          </div>
-          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:8 }}>&larr; Exit</button>
-          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"6px 9px", fontWeight:700 }}>Restock</div>
-          {viewTabs.map(navItem)}
-          <div style={{ flex:1 }} />
-          <div style={{ display:"flex", gap:8 }}>
-            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
-              <div style={{ fontSize:18, fontWeight:800, color: totalPending ? "#9DBCFF" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{totalPending}</div>
-              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>To restock</div>
-            </div>
+      <div className="srcsky">
+        <style>{SOURCE_SKY_CSS}</style>
+        <aside className="srcsky__side">
+          <nav className="srcsky__rail srcsky__glass" aria-label="Restock">
+            <button type="button" className="srcsky__exit" onClick={onExit}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>
+              Exit
+            </button>
+            <div className="srcsky__lab">Restock</div>
+            {viewTabs.map(navItem)}
+          </nav>
+          <div className="srcsky__tot srcsky__glass">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>
+            <div><b>{totalPending}</b><span>To restock</span></div>
           </div>
         </aside>
-        {/* MAIN */}
-        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-          <div style={{ padding:"20px 30px 14px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
-            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{activeLabel}</div>
-            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>What sold &mdash; and what to restock.</div>
-          </div>
-          <div style={{ flex:1, overflow:"auto", padding:"14px 30px 48px" }}>
-            <div style={{ maxWidth:1160, margin:"0 auto", display:"flex", flexDirection:"column", gap:16 }}>
-              {content}
-            </div>
-          </div>
-        </div>
+        <main className="srcsky__main">
+          <h1 className="srcsky__h1" data-contrast-exempt="">{activeLabel}</h1>
+          <div className="srcsky__sub" data-contrast-exempt="">What sold &mdash; and what to restock.</div>
+          <div className="srcsky__list">{content}</div>
+        </main>
       </div>
     );
   }
