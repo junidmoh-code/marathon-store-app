@@ -390,18 +390,28 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     await h.tick();
     const first = line(f, 1).ledger;
     expect(first).toMatchObject({ swaps: 1 });
+    // The first swap's R50 credit was approved for Junid to do by hand (manual): it may be loaded already, so the second
+    // swap waits until it is marked done (COMMIT 6 review: a manual slot never counted as nothing, never credited twice).
+    expect(line(f, 1).resolution.money).toMatchObject({ state: "manual" });
     await ask(f, 1, "JKT", "M", { rid: "r2", priceDecision: "we_absorb" });
     await h.tick();
-    expect(request(f, "r2")).toMatchObject({ state: "applied" });
+    expect(request(f, "r2").state).not.toBe("applied");
+    expect(line(f, 1).pid).toBe("POLO");
+    // Junid loads it by hand and says so: the slot is done, and counts as given back.
+    await f.db.ref("online_orders/9001/lines/1/resolution/money/state").set("done");
+    await ask(f, 1, "JKT", "M", { rid: "r3", priceDecision: "we_absorb" });
+    await h.tick();
+    expect(request(f, "r3")).toMatchObject({ state: "applied" });
     const l = line(f, 1);
     expect(l.pid).toBe("JKT");
     expect(l.ledger.swaps).toBe(2);
     expect(l.ledger.paidCents).toBe(first.paidCents);
     // one figure, from scratch: paid minus the current price, either way
     expect(l.ledger.creditCents - l.ledger.extraCents).toBe(l.ledger.paidCents - l.ledger.settledCents - l.ledger.nowCents);
-    // the first swap's emailed credit request (manual) is superseded and flagged, not counted as given
+    // the first swap's credit, done by hand, is settled: counted once, moved to moneySettled, never issued again
     expect(l.resolution.money).toBeUndefined();
-    expect(l.resolution.supersededMoney).toMatchObject({ state: "manual", doNotIssue: true });
+    expect(Object.values(l.resolution.moneySettled)).toEqual([expect.objectContaining({ state: "done", amountCents: 5000 })]);
+    expect(l.ledger.settledCents).toBe(5000);
     expect(l.resolution.outcome.creditCents).toBe(l.ledger.creditCents);
   });
 
@@ -439,14 +449,31 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     expect(lineLedger(L(), { priceCents: 45000 })).toMatchObject({ creditCents: 0, extraCents: 0 });
     expect(lineLedger(L(), { priceCents: 35000 })).toMatchObject({ creditCents: 10000, extraCents: 0 });
   });
-  it("money already given back for the line stays given: the next swap counts it; an emailed manual request is not given", () => {
-    expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "manual" } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 0, creditCents: 10000, supersedes: { state: "manual", amountCents: 5000 } });
+  it("money already given back for the line stays given: the next swap counts it; a manual request is UNCLEAR until marked done", () => {
+    expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "manual" } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 0, unclear: true, supersedes: null });
     expect(lineLedger(L({ resolution: { money: { state: "failed", ambiguous: true, amountCents: 5000 } } }), { priceCents: 35000 }).unclear).toBe(true);
     expect(lineLedger(L({ resolution: { moneySettled: { a: { state: "done", amountCents: 5000 } } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 5000, creditCents: 5000 });
     const l = L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "done" } } });
     expect(lineLedger(l, { priceCents: 35000 })).toMatchObject({ settledCents: 5000, creditCents: 5000 });
     expect(lineLedger(l, { priceCents: 45000 })).toMatchObject({ creditCents: 0, extraCents: 5000 });
-    expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "failed" } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 0, creditCents: 10000 });
+    // failed with no ambiguous flag: unclear (it may have gone); a definite refusal (ambiguous: false) is superseded
+    expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "failed" } } }), { priceCents: 35000 }).unclear).toBe(true);
+    expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "failed", ambiguous: false } } }), { priceCents: 35000 })).toMatchObject({ unclear: false, settledCents: 0, creditCents: 10000, supersedes: { state: "failed", amountCents: 5000 } });
+  });
+  it("a claim: busy while fresh; past 15 minutes it is unclear (the payer died), never refused for ever", () => {
+    const at = 1_000_000;
+    const c = L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "claimed", at } } });
+    expect(lineLedger(c, { priceCents: 35000, now: at + 60e3 })).toMatchObject({ busy: true, unclear: false });
+    expect(lineLedger(c, { priceCents: 35000, now: at + 16 * 60e3 })).toMatchObject({ busy: false, unclear: true });
+    expect(lineLedger(c, { priceCents: 35000, now: at + 16 * 60e3 }).unclearWhy).toMatch(/never finished/);
+  });
+  it("judgeSwap (the customer agent) uses the same ledger: what is left of what was paid, never the full price", async () => {
+    const { judgeSwap } = await import("../../online/agent/core.mjs");
+    const given = L({ unitPriceCents: 30000, originalUnitPriceCents: 30000, resolution: { moneySettled: { a: { state: "done", amountCents: 10000 } } } });
+    // paid R300, R100 credited after an R200 swap; now an R250 pick: R50 to collect, never R50 more credit
+    expect(judgeSwap(given, { priceCents: 25000 })).toMatchObject({ ok: false, why: "costs_more", extraCents: 5000 });
+    expect(judgeSwap(given, { priceCents: 15000 })).toEqual({ ok: true, creditCents: 5000 });
+    expect(judgeSwap(L({ resolution: { money: { state: "manual", amountCents: 5000 } } }), { priceCents: 1000 })).toMatchObject({ ok: false, why: "money_unclear" });
   });
   it("a dearer second swap needs its difference: refused without a price decision", () => {
     expect(lineLedger(L(), { priceCents: 50000 })).toMatchObject({ extraCents: 5000, creditCents: 0 });

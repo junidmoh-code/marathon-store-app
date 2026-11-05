@@ -27,6 +27,61 @@ export function paidCents(line) {
 
 export const rands = (cents) => `R${(Number(cents) / 100).toFixed(2).replace(/\.00$/, "")}`;
 
+// ── THE LINE'S MONEY LEDGER (Junid, 5 Nov 2026, COMMIT 6) — ONE formula for every swap path ───────────────────────────
+// swap-line.mjs (Jamie's and the POS's swaps) and this agent's pick both use it. MIRROR: marathon-dm-agent
+// src/jimmy/lineLedger.js (approvals.issue re-checks a credit against it before paying) — KEEP THE TWO IN SYNC.
+// Given back = completed money (state done) in resolution.money and every earlier one in resolution.moneySettled.
+// Owed = paid for the line − given back − the current item's price: positive → store credit owed; negative → a difference
+// to collect. A money action whose result is not known is UNCLEAR and stops every swap until it is settled:
+//   manual   approved for Junid to do by hand: unclear until he says it is done (the slot then becomes done)
+//   failed   unclear unless ambiguous === false (a definite refusal: nothing moved)
+//   claimed  being paid now (busy); older than CLAIM_STALE_MS: unclear (the payer died mid-flight)
+export const CLAIM_STALE_MS = 15 * 60e3;
+export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
+  const qty = Number(line?.qty) || 1;
+  const paid = paidCents(line);
+  const m = line?.resolution?.money;
+  const isObj = !!m && typeof m === "object";
+  const amt = (x) => Math.max(0, Math.round(Number(x?.amountCents) || 0));
+  const earlier = Object.values(line?.resolution?.moneySettled || {}).filter((x) => x && typeof x === "object" && x.state === "done");
+  const settled = earlier.reduce((t, x) => t + amt(x), 0) + (isObj && m.state === "done" ? amt(m) : 0);
+  const nowCents = Math.max(0, Math.round(Number(priceCents) || 0)) * qty;
+  const net = paid - settled - nowCents;
+  const claimedAt = Number(m?.at) || 0;
+  const stale = isObj && m.state === "claimed" && claimedAt > 0 && now - claimedAt > CLAIM_STALE_MS;
+  let unclearWhy = null;
+  if (isObj && m.state === "manual") unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line was approved for Junid to do by hand and is not marked done yet`;
+  else if (isObj && m.state === "failed" && m.ambiguous !== false) unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line may have gone through (its answer was lost): check it in Shopify first`;
+  else if (stale) unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line started at ${new Date(claimedAt + 2 * 3600e3).toISOString().slice(0, 16).replace("T", " ")} SAST and never finished: check it in Shopify first`;
+  return {
+    paidCents: paid, settledCents: settled, nowCents, creditCents: Math.max(0, net), extraCents: Math.max(0, -net),
+    refundableCents: Math.max(0, paid - settled),
+    busy: isObj && m.state === "claimed" && !stale,
+    unclear: !!unclearWhy, unclearWhy,
+    // Never moved money: superseded by the next swap (a definite refusal, or a pending request).
+    supersedes: isObj && (m.state === "pending" || (m.state === "failed" && m.ambiguous === false)) ? { state: m.state, amountCents: amt(m), kind: m.kind || null } : null,
+  };
+}
+/**
+ * The line's resolution after a swap: a completed money action moves to moneySettled (counted in every later ledger, so
+ * the next credit is its own action), one that never moved money is kept as supersededMoney (doNotIssue). Pure.
+ * Call only when lineLedger said neither busy nor unclear.
+ */
+export function swapResolution(resolution, { now, outcome, closeConversation = null }) {
+  const cur = resolution || {};
+  const m = cur.money;
+  const done = !!m && typeof m === "object" && m.state === "done";
+  const { money: _old, ...rest } = cur;
+  const conv = cur.conversation;
+  return {
+    ...rest,
+    ...(done ? { moneySettled: { ...(cur.moneySettled || {}), [`m${now}`]: m } } : {}),
+    ...(m && !done ? { supersededMoney: { ...m, supersededAt: now, doNotIssue: true } } : {}),
+    outcome,
+    ...(closeConversation && conv && conv.state !== "closed" ? { conversation: { ...conv, state: "closed", closedAt: now, closedBy: closeConversation } } : {}),
+  };
+}
+
 // ── Replies ──────────────────────────────────────────────────────────────────
 /**
  * The customer's reply, read by CODE. Only the newest text (quoted history
@@ -90,9 +145,10 @@ export function canSend(conversation) {
 export function moneyAllowed(money, { kind, amountCents, line }) {
   if (kind !== "credit" && kind !== "refund") return { ok: false, why: "unknown money action" };
   if (money) return { ok: false, why: `this line already has a ${money.kind} (${rands(money.amountCents)}) — never both, never twice` };
-  const paid = paidCents(line);
+  // What is left of what was paid, after money already given back for this line (the ledger, COMMIT 6).
+  const left = lineLedger(line, { priceCents: 0 }).refundableCents;
   if (!Number.isInteger(amountCents) || amountCents <= 0) return { ok: false, why: "nothing to pay" };
-  if (amountCents > paid) return { ok: false, why: `${rands(amountCents)} is more than the ${rands(paid)} paid for this line` };
+  if (amountCents > left) return { ok: false, why: `${rands(amountCents)} is more than the ${rands(left)} left of what was paid for this line` };
   return { ok: true };
 }
 
@@ -101,12 +157,12 @@ export function moneyAllowed(money, { kind, amountCents, line }) {
  * → { ok: true, creditCents } (creditCents ≥ 0: what the customer gets back)
  *   | { ok: false, why: "costs_more", extraCents }
  */
-export function judgeSwap(line, offer) {
-  const qty = Number(line?.qty) || 1;
-  const paid = paidCents(line);
-  const cost = (Number(offer?.priceCents) || 0) * qty;
-  if (cost > paid) return { ok: false, why: "costs_more", extraCents: cost - paid };
-  return { ok: true, creditCents: paid - cost };
+export function judgeSwap(line, offer, { now = Date.now() } = {}) {
+  // The ledger (COMMIT 6): against what is left of what was paid, never the full price paid.
+  const lg = lineLedger(line, { priceCents: Number(offer?.priceCents) || 0, now });
+  if (lg.busy || lg.unclear) return { ok: false, why: "money_unclear", note: lg.unclearWhy || "money for this line is being issued right now" };
+  if (lg.extraCents > 0) return { ok: false, why: "costs_more", extraCents: lg.extraCents };
+  return { ok: true, creditCents: lg.creditCents };
 }
 
 // ── Messages — the code owns every fact; the model only greets and closes ──
