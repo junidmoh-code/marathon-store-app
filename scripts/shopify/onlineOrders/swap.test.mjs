@@ -453,3 +453,12 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     expect(lineLedger(L({ resolution: { money: { state: "claimed", amountCents: 5000 } } }), { priceCents: 40000 }).busy).toBe(true);
   });
 });
+
+describe("a swap settles the line's customer wait (5 Nov 2026, #1866)", () => {
+  it("swappedLine drops the old item's awaitingCustomer mark", () => {
+    const cur = { pid: "OLD", size: "M", qty: 1, unitPriceCents: 45000, awaitingCustomer: { since: 1, by: "jamie", what: "choose an alternative" }, source: { status: "unavailable" } };
+    const l = swappedLine(cur, { pid: "NEW", size: "M", sizeKey: "M", title: "New", priceCents: 45000, locationId: "marathon-pe", status: "display" }, { swappedFrom: {}, outcome: { kind: "swap" }, resolution: { outcome: { kind: "swap" } } });
+    expect(l.awaitingCustomer).toBeUndefined();
+    expect(l.ledger).toMatchObject({ paidCents: 45000, creditCents: 0 });
+  });
+});
