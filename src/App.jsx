@@ -16581,6 +16581,13 @@ const SOURCE_SHOP_LOCS = new Set(SOURCE_SHOP_TABS.map(([, , loc]) => loc));
 // its first child is the photo/name/age header. One-size cards put the size
 // line beside the header, as in the mock-up; more sizes stack under it on the
 // right; an open Fulfil panel takes the full card width.
+// Registry tabs (Hub 3, Pine, Concrete) have no SOURCE_TAB_ICON entry; the
+// sky rail draws one so every row has an icon, as in the mock-up.
+const SOURCE_SKY_FALLBACK_ICON = (label) => /pine/i.test(label)
+  ? <path d="M12 4l9 16H3z M8.5 20l3.5-6 3.5 6"/>
+  : /concrete/i.test(label)
+    ? <><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></>
+    : <><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9h18v2a3 3 0 01-6 0 3 3 0 01-6 0 3 3 0 01-6 0z"/><path d="M5 13v7h14v-7"/><path d="M10 20v-4h4v4"/></>;
 const SRC_ROW = 'html[data-sky="on"] #root .srcsky__list div:has(> [data-row])';
 const SOURCE_SKY_CSS = `
 .srcsky{display:grid;grid-template-columns:264px minmax(0,1fr);gap:0 54px;align-items:start;padding:22px 48px 48px;font-family:var(--sky-font);color:var(--sky-ink-deep);box-sizing:border-box}
@@ -16611,7 +16618,7 @@ ${SRC_ROW}{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:cen
   padding:13px 26px 13px 28px!important;border-radius:24px!important;background:rgba(255,255,255,.34)!important;border:1px solid rgba(255,255,255,.8)!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 12px 30px rgba(10,60,140,.14)!important;
   -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
-${SRC_ROW} > div:first-child{grid-column:1;gap:32px!important;min-width:0}
+${SRC_ROW} > div:first-child{grid-column:1;gap:24px!important;min-width:0}
 ${SRC_ROW} > div:first-child > img,
 ${SRC_ROW} > div:first-child > span:first-child{width:70px!important;height:70px!important;border-radius:12px!important;background:#fff!important;box-shadow:0 4px 12px rgba(10,60,140,.16)}
 ${SRC_ROW} > div:first-child > div > div:first-child{color:var(--sky-ink-deep)!important;font-size:17.5px!important;font-weight:700!important}
@@ -16625,8 +16632,8 @@ html[data-sky="on"] #root .srcsky__list [data-line-actions]{gap:18px!important;j
 html[data-sky="on"] #root .srcsky__list [data-line-actions] > span:first-child{flex:0 1 auto!important}
 html[data-sky="on"] #root .srcsky__list [data-line-actions] > span:first-child,
 html[data-sky="on"] #root .srcsky__list [data-line-actions] > span:first-child *{color:var(--sky-ink-deep)!important}
-html[data-sky="on"] #root .srcsky__list [data-line-actions] > button{min-height:52px!important;padding:0 26px!important;border-radius:16px!important;background:rgba(255,255,255,.45)!important;border:1px solid rgba(255,255,255,.9)!important;color:var(--sky-ink-deep)!important;font:500 16px/1 var(--sky-font)!important;box-shadow:inset 0 1px 0 #fff,0 6px 16px rgba(10,60,140,.1)}
-html[data-sky="on"] #root .srcsky__list [data-line-actions] > button:hover{background:rgba(255,255,255,.7)!important}
+html[data-sky="on"] #root .srcsky__list.srcsky__list.srcsky__list [data-line-actions] > button[style]{min-height:52px!important;padding:0 26px!important;border-radius:16px!important;background:rgba(255,255,255,.45)!important;border:1px solid rgba(255,255,255,.9)!important;color:var(--sky-ink-deep)!important;font:500 16px/1 var(--sky-font)!important;box-shadow:inset 0 1px 0 #fff,0 6px 16px rgba(10,60,140,.1)}
+html[data-sky="on"] #root .srcsky__list.srcsky__list.srcsky__list [data-line-actions] > button[style]:hover{background:rgba(255,255,255,.7)!important}
 @media (max-width:1279px){.srcsky{grid-template-columns:236px minmax(0,1fr);gap:0 28px;padding:18px 24px 40px}.srcsky__h1{font-size:36px}
   ${SRC_ROW}{grid-template-columns:minmax(0,1fr)}
   html[data-sky="on"] #root .srcsky__list [data-row]{grid-column:1}}
@@ -17135,7 +17142,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : sectionTabLoc[key] ? (hubBadges[sectionTabLoc[key]] || 0) : 0;
       return (
         <button key={key} type="button" className="srcsky__nav" data-on={on ? "1" : undefined} aria-current={on ? "page" : undefined} onClick={() => setTab(key)}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{SOURCE_TAB_ICON[key]}</svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{SOURCE_TAB_ICON[key] || SOURCE_SKY_FALLBACK_ICON(label)}</svg>
           <span className="srcsky__navl">{label}</span>
           {badge > 0 && <span className="srcsky__bd">{badge}</span>}
         </button>
