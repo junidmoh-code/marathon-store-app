@@ -109,6 +109,8 @@ function Desktop({ products, AssistantDesktop }) {
   const list = products.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()));
   useEffect(() => {
     if (q.get("popup")) setTimeout(() => document.querySelector(".ad-card")?.click(), 400);
+    // &out=1: then tap the quick view's first unavailable size (why-note + alternatives).
+    if (q.get("popup") && q.get("out")) setTimeout(() => document.querySelector('.ad-svsz button[aria-disabled="true"]')?.click(), 900);
     if (q.get("brands")) setTimeout(() => document.querySelector(".ad-more-chip")?.click(), 400);
   }, []);
   // Brands for the chip row as the reference draws them.
@@ -128,10 +130,12 @@ function Desktop({ products, AssistantDesktop }) {
       marketingOptIn setMarketingOptIn={() => {}} submitting={false} onPlaceOrder={() => {}}
       customerIndex={[]} onPickCustomer={() => {}} onAddClothing={() => {}} onPlaceRefill={() => {}}
       onOpenTracking={() => {}} trackingPending={0}
-      hubQty={() => 3} servingHubLabel="Hub 2" sneakerOut={(p, s) => s === "4" || s === "10"} sneakerOutWhy={() => ({})} sneakerDisplayInfo={() => null}
+      hubQty={() => 3} servingHubLabel="Hub 2" sneakerOut={(p, s) => s === "4" || s === "10"} sneakerOutWhy={() => ({ booked: 0, available: 0, checkedBoth: true })} sneakerDisplayInfo={() => null}
       sizeOnHand={(p, s) => (s === "4" || s === "10" ? 0 : (Number(String(s).replace(/\D/g, "")) % 4) + 1)}
       hubLabelForSize={() => "Hub 1"}
-      alternativesFor={() => null} />
+      alternativesFor={(p, size) => ({ rows: products.filter((x) => x.id !== p.id).slice(0, 4).map((x) => ({
+        product: x, hasRequestedSize: true, matchedSize: size, sizes: (x.sizes || []).slice(0, 5),
+        why: "Same model — Air Force 1", hubLabel: "Hub 1" })) })} />
   );
 }
 

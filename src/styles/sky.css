@@ -412,7 +412,26 @@ html[data-sky="on"] #root .sky-szq.sky-szq { aspect-ratio: 1 / 1; padding: 0 !im
   color: var(--sky-navy) !important; background: rgba(255,255,255,.62) !important; border: 1px solid rgba(255,255,255,.9) !important; box-shadow: inset 0 1px 0 #fff; }
 html[data-sky="on"] #root .sky-szq__n { font-size: 11px; font-weight: 700; opacity: .9; }
 html[data-sky="on"] #root .sky-szq.sky-szq[aria-pressed="true"] { background: var(--sky-navy) !important; border-color: var(--sky-navy) !important; color: #fff !important; box-shadow: 0 10px 22px -10px rgba(0,40,170,.9); }
-html[data-sky="on"] #root .sky-szq.sky-szq[aria-disabled="true"]:not([aria-pressed="true"]) { color: #5b7192 !important; background: rgba(255,255,255,.3) !important; border-style: dashed !important; border-color: rgba(11,42,82,.3) !important; box-shadow: none; text-decoration: line-through; }
+/* ── UNAVAILABLE SIZE (Junid 5 Nov: "must be unmistakable at a glance") ──
+   One look on all three size surfaces — the phone sheet (.sky-szq), the
+   desktop quick view (.ad-svsz) and the hover quick-add (.ad-sz[data-out]):
+   the square at 35% (surface + size number), a diagonal strike corner to
+   corner, and the on-hand count as a full-strength navy "0". The chip stays
+   tappable: the tap raises the why-note and the alternatives, as live. */
+html[data-sky="on"] #root .sky-szq.sky-szq[aria-disabled="true"]:not([aria-pressed="true"]),
+html[data-sky="on"] #root .ad-svsz button[aria-disabled="true"]:not([aria-pressed="true"]),
+html[data-sky="on"] #root .ad-sz.ad-sz[data-out] {
+  position: relative; overflow: hidden; box-shadow: none !important; text-decoration: none !important;
+  color: rgba(11,42,82,.35) !important; background: rgba(255,255,255,.22) !important;
+  border-style: solid !important; border-color: rgba(255,255,255,.32) !important; }
+html[data-sky="on"] #root .sky-szq.sky-szq[aria-disabled="true"]:not([aria-pressed="true"])::after,
+html[data-sky="on"] #root .ad-svsz button[aria-disabled="true"]:not([aria-pressed="true"])::after,
+html[data-sky="on"] #root .ad-sz.ad-sz[data-out]::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to top right, transparent calc(50% - 1px), rgba(11,42,82,.55) calc(50% - 1px), rgba(11,42,82,.55) calc(50% + 1px), transparent calc(50% + 1px)); }
+html[data-sky="on"] #root .sky-szq[aria-disabled="true"]:not([aria-pressed="true"]) .sky-szq__n,
+html[data-sky="on"] #root .ad-svsz button[aria-disabled="true"]:not([aria-pressed="true"]) .ad-szn {
+  color: var(--sky-navy) !important; opacity: 1 !important; font-weight: 900 !important; }
 html[data-sky="on"] #root .sky-primary.sky-primary { background: var(--sky-navy) !important; color: #fff !important; border: 0 !important; border-radius: 999px !important; font-family: var(--sky-font) !important; font-weight: 800 !important;
   box-shadow: 0 10px 24px -10px rgba(0,40,170,.8), inset 0 1px 0 rgba(255,255,255,.3) !important; }
 html[data-sky="on"] #root .sky-secondary.sky-secondary { background: rgba(255,255,255,.62) !important; color: var(--sky-navy) !important; border: 1px solid rgba(255,255,255,.95) !important; border-radius: 999px !important; font-family: var(--sky-font) !important; font-weight: 800 !important; }

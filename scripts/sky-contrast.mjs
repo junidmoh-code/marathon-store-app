@@ -47,6 +47,8 @@ export const ROUTES = [
   ["assistant", `${H}?screen=desktop&chips=ref`],
   ["assistant-brands", `${H}?screen=desktop&chips=ref&brands=1`],
   ["assistant-popup", `${H}?screen=desktop&popup=1`],
+  // The unavailable size tapped: the why-note and "Available now instead".
+  ["assistant-popup-out", `${H}?screen=desktop&popup=1&out=1`],
   ["assistant-phone", `${H}?screen=phone&cart=2`],
   ["assistant-phone-brands", `${H}?screen=phone&chips=ref&brand=Reebok`],
 ];
@@ -75,7 +77,8 @@ async function textElements(page) {
       if (["SCRIPT", "STYLE", "NOSCRIPT", "INPUT", "TEXTAREA", "SELECT", "OPTION", "svg"].includes(el.tagName)) continue;
       if (el.closest(EXEMPT) || el.closest("[aria-hidden='true']")) continue;
       // WCAG 1.4.3 exempts inactive controls; screen-reader-only text is not seen.
-      if (el.closest("button:disabled, [aria-disabled='true'], [disabled]")) continue;
+      // The navy "0" on an unavailable size IS the signal, so it is checked anyway.
+      if (el.closest("button:disabled, [aria-disabled='true'], [disabled]") && !el.closest("[data-contrast-check]")) continue;
       const box = el.getBoundingClientRect();
       if (box.width <= 2 || box.height <= 2) continue;
       const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 0);

@@ -172,6 +172,7 @@ html[data-sky="on"] #root [style^="color: rgb(204, 204, 204)"], html[data-sky="o
 html[data-sky="on"] #root [style^="color: rgb(207, 214, 228)"], html[data-sky="on"] #root [style*="; color: rgb(207, 214, 228)"],
 html[data-sky="on"] #root [style^="color: rgba(255, 255, 255, 0."], html[data-sky="on"] #root [style*="; color: rgba(255, 255, 255, 0."],
 html[data-sky="on"] #root [style^="color: rgba(233, 238, 255"], html[data-sky="on"] #root [style*="; color: rgba(233, 238, 255"],
+html[data-sky="on"] #root [style^="color: rgba(157, 188, 255"], html[data-sky="on"] #root [style*="; color: rgba(157, 188, 255"],
 html[data-sky="on"] #root [style^="color: rgba(255, 255, 255, 0.3"], html[data-sky="on"] #root [style*="; color: rgba(255, 255, 255, 0.3"] {
   color: var(--sky-legacy-ink) !important;
 }

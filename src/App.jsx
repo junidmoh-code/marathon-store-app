@@ -9188,7 +9188,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                               setQvNa(null); setQvSize(sz);
                             }}>
                             <span className="ad-szv">{sz === "Free Size" ? "One size" : formatSize(sz)}</span>
-                            {Number.isFinite(onHand) ? <span className="ad-szn" data-testid="size-onhand">{Math.max(0, onHand)}</span> : null}
+                            {Number.isFinite(onHand) ? <span className="ad-szn" data-testid="size-onhand" data-contrast-check="">{Math.max(0, onHand)}</span> : null}
                             {snkOut ? <span style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                             {dInfo ? (
                               <span aria-label="this size is on a display" style={{ position:"absolute", top:3, right:4, lineHeight:1 }}>
@@ -9438,7 +9438,7 @@ const AD_SKY_CSS = `
 .ad-card .sky-podium{bottom:12px}
 .ad-card .sky-cutout{max-width:80%}
 .ad-card .sky-frame{inset:12px 12px 2px}
-.ad-body{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:clamp(10px,.8vw,14px) clamp(18px,1.7vw,28px) clamp(14px,1.2vw,20px)}
+.ad-body{background:rgba(255,255,255,.2);border-radius:0 0 clamp(18px,1.35vw,23px) clamp(18px,1.35vw,23px);display:flex;align-items:center;justify-content:space-between;gap:12px;padding:clamp(10px,.8vw,14px) clamp(18px,1.7vw,28px) clamp(14px,1.2vw,20px)}
 .ad-name{font-size:clamp(13.5px,1.02vw,17px);font-weight:700;color:var(--sky-ink);line-height:1.12;min-height:2.24em}
 .ad-price{font-size:clamp(17px,1.35vw,22.5px);font-weight:800;color:var(--sky-navy)}
 .ad-price.no{font-size:12px;font-weight:700;color:var(--sky-ink-2)}
@@ -9457,7 +9457,6 @@ const AD_SKY_CSS = `
 .ad-sz{position:relative;font:700 12px/1 var(--sky-font);font-variant-numeric:tabular-nums;padding:7px 8px;min-width:34px;text-align:center;border-radius:10px;cursor:pointer;
   color:var(--sky-navy);background:#fff;border:1px solid rgba(0,51,245,.22);transition:background .12s,color .12s}
 .ad-sz:hover{background:var(--sky-navy);color:#fff}
-.ad-sz[data-out]{color:rgba(0,20,49,.42)!important;background:rgba(0,20,49,.04)!important;border-color:rgba(0,20,49,.25)!important}
 .ad-sz.flash{background:var(--sky-navy);color:#fff;border-color:var(--sky-navy)}
 .ad-hint2{padding:0 20px 14px;font-size:12px;font-weight:700}
 .ad-none{color:var(--sky-ink);text-align:center;padding:42px 20px;border-radius:22px;margin-top:40px;font-weight:600}
@@ -9537,7 +9536,6 @@ const AD_SKY_CSS = `
 .ad-szv{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums}
 .ad-szn{font-size:11px;font-weight:700;opacity:.9;font-variant-numeric:tabular-nums}
 .ad-svsz button[aria-pressed="true"]{background:var(--sky-navy)!important;border-color:var(--sky-navy)!important;color:#fff!important;box-shadow:0 10px 22px -10px rgba(0,40,170,.9)}
-.ad-svsz button[aria-disabled="true"]{color:#5b7192!important;background:rgba(255,255,255,.25)!important;border-color:rgba(0,20,49,.28)!important;box-shadow:none}
 .ad-note{background:rgba(255,255,255,.88);color:var(--sky-ink);border-radius:14px;padding:10px 13px;font-size:12.5px;font-weight:600;margin-bottom:9px}
 .ad-dp{display:inline-flex;align-items:center;gap:9px;padding:11px 16px;border-radius:999px;font:700 13px/1 var(--sky-font);cursor:pointer;
   color:var(--sky-navy);background:rgba(255,255,255,.6);border:1px solid rgba(0,51,245,.25)}
@@ -11895,7 +11893,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                       // On-hand at the serving hub, read off the cells this
                       // screen already streams. Display only; gates nothing.
                       const n = sizeOnHand(selected, s, clothing);
-                      return Number.isFinite(n) ? <span className="sky-szq__n">{Math.max(0, n)}</span> : null;
+                      return Number.isFinite(n) ? <span className="sky-szq__n" data-contrast-check="">{Math.max(0, n)}</span> : null;
                     })()}{snkOut ? <span className="sr-only" style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                     {dispInfo ? (
                       <span aria-label="this size is on a display" style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>

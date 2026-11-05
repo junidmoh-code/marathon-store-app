@@ -85,6 +85,12 @@ prices 700–800 tabular, "R" and no decimals.
   tools/cutouts/README.md); otherwise the ORIGINAL full-resolution photo
   (HiResPhoto, same source and cache), rounded, contained, never cropped, on a
   faint translucent surface. Never a whole-object cut-out.
+- **Unavailable size** (Junid 5 Nov, a defect fix) — on the phone sheet, the
+  desktop quick view and the hover quick-add alike: the square at 35% (surface
+  and size number), a navy diagonal strike corner to corner, and the on-hand
+  count as a full-strength navy "0". Still tappable: the tap raises the live
+  why-note and "Available now instead". `scripts/sky-availability.e2e.mjs`
+  proves it in Chromium and WebKit; the contrast gate checks the "0".
 - **SkyPlus** — round solid-white button, navy plus.
 - **SkyBottomBar** — slim (48px) glass bar: cart icon, divider, item count,
   solid white pill CTA. It appears only once the cart holds something.

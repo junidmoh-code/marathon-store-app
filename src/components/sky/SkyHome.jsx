@@ -172,7 +172,7 @@ html[data-sky="on"] #root .sky-hub__livecard button[style]{background:rgba(255,2
 html[data-sky="on"] #root .sky-hub__livecard button[style]:hover{background:rgba(255,255,255,.4) !important}
 .sky-hub__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
 .sky-mini{position:relative;display:flex;align-items:center;gap:13px;width:100%;text-align:left;cursor:pointer;color:var(--sky-ink);font-family:var(--sky-font);
-  padding:13px 14px;border-radius:20px;background:rgba(255,255,255,.46);border:1px solid var(--sky-rim);
+  padding:13px 14px;border-radius:20px;background:rgba(255,255,255,.5);border:1px solid var(--sky-rim);
   box-shadow:var(--sky-highlight),var(--sky-shadow);-webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);transition:transform .18s,background .18s}
 .sky-mini:hover{transform:translateY(-2px);background:var(--sky-glass-strong)}
 .sky-mini:focus-visible{outline:2px solid var(--sky-ink);outline-offset:3px}

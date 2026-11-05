@@ -132,7 +132,7 @@ const AP_CSS = `
 /* The name + price sit on a whiter band of the card's own glass: with the
    compact top band the first row rides over the room's light strip, and the
    blue price needs the body behind it (DNA: stronger surface for dense text). */
-.ap-body{background:rgba(255,255,255,.22);border-radius:0 0 20px 20px}
+.ap-body{background:rgba(255,255,255,.3);border-radius:0 0 20px 20px}
 .ap-name{font-size:12.5px;font-weight:700;line-height:1.24;color:var(--sky-ink);-webkit-line-clamp:3}
 .ap-row{display:flex;align-items:center;justify-content:space-between;margin-top:auto}
 .ap-price{font-size:17.5px;color:var(--sky-navy)}
