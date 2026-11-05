@@ -401,8 +401,14 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
   const diff = judged.creditCents > 0 ? await money(ctx, orderId, order, i, swapped, "credit", judged.creditCents, "swap difference") : null;
   // A packed order's item ships as a follow-up: a credit paid on the parent line is in the follow-up line's money history
   // too, so its next swap counts it (one ledger across parent and follow-up; CodeRabbit on #847).
-  if (packed && diff && diff.via === "api") {
-    await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${followUpId(orderId, i)}/lines/0/resolution/moneySettled/m${ctx.now}`).set(clean({ kind: "credit", amountCents: judged.creditCents, state: "done", via: "api", ref: diff.ref ?? null, ...(Number.isInteger(diff.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` }));
+  // Its own key (never the moved parent slot's m<now>; CodeRabbit on #847). A credit not done yet (by hand, an unclear
+  // answer) is mirrored as the follow-up line's money slot, so a swap there waits until it is settled (Junid's
+  // settle_line_money settles the mirror too).
+  if (packed && diff) {
+    const base = `${ONLINE_ORDERS_PATH}/${followUpId(orderId, i)}/lines/0/resolution`;
+    const entry = clean({ kind: "credit", amountCents: judged.creditCents, via: diff.via ?? null, ref: diff.ref ?? null, ...(Number.isInteger(diff.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
+    if (diff.state === "done") await ctx.db.ref(`${base}/moneySettled/p${ctx.now}`).set({ ...entry, state: "done" });
+    else await ctx.db.ref(`${base}/money`).transaction((cur) => (cur ? undefined : clean({ ...entry, state: diff.state || "manual", ...(diff.ambiguous != null ? { ambiguous: diff.ambiguous } : {}), mirroredFrom: `${orderId}/${i}` })));
   }
   await send(ctx, orderId, order, i, swapped, "swapped", { amountCents: judged.creditCents, pending: !!diff && diff.via !== "api" });
   await setAgentRow(ctx, key, null);

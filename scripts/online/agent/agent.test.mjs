@@ -471,7 +471,18 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(line(f).source).toEqual({ status: "moved", movedTo: "9001f0" });
     // R250 paid, R240 pick: R10 credit paid on the parent line, and the follow-up line knows it.
     expect(line(f).resolution.money).toMatchObject({ kind: "credit", amountCents: 1000, state: "done" });
-    expect(Object.values(f.read("online_orders/9001f0/lines/0/resolution/moneySettled") || {})).toEqual([expect.objectContaining({ state: "done", amountCents: 1000, onParent: "9001/0" })]);
+    const settled = f.read("online_orders/9001f0/lines/0/resolution/moneySettled") || {};
+    expect(Object.values(settled)).toContainEqual(expect.objectContaining({ state: "done", amountCents: 1000, onParent: "9001/0" }));
+    expect(Object.keys(settled).every((k) => /^[mp]\d+$/.test(k))).toBe(true);
+  });
+
+  it("CodeRabbit on #847: a parent credit not done yet (by hand) is mirrored on the follow-up line, so a swap there waits", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: [] }); // no credit scope: the credit is Junid's by hand (manual)
+    await h.run();
+    await f.db.ref("online_orders/9001").update({ status: "packed" });
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(f.read("online_orders/9001f0/lines/0/resolution/money")).toMatchObject({ state: "manual", amountCents: 1000, mirroredFrom: "9001/0" });
   });
 
   it("CodeRabbit on #847: 'nothing left to give back' goes to Junid once", async () => {
