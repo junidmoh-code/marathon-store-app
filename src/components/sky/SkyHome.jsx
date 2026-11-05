@@ -201,15 +201,17 @@ html[data-sky="on"] #root .sky-hub__livecard button[style]:hover{background:rgba
   .sky-home[data-panel="admin"] .sky-logo--lg .sky-logo__m{font-size:3.03vw}
   .sky-home[data-panel="admin"] .sky-logo--lg .sky-logo__c{font-size:.95vw;margin-top:.63vw;font-style:normal;font-weight:600}
   .sky-hub{position:absolute;left:0;right:0;top:12.74vw;max-width:77.18vw;margin:0 auto;padding:0 0 40px}
-  .sky-hub__grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:1.45vw 1.58vw}
+  /* flex, not grid: an unfinished last row sits centred, so the hub stays balanced */
+  .sky-hub__grid{display:flex;flex-wrap:wrap;justify-content:center;gap:1.45vw 1.58vw}
+  .sky-hub__grid>.sky-mini{flex:0 0 calc((100% - 3 * 1.58vw) / 4);width:calc((100% - 3 * 1.58vw) / 4)}
   .sky-mini{height:7.12vw;min-height:0;padding:0 1.2vw 0 2.27vw;gap:1.7vw;border-radius:1.39vw;
-    background:rgba(255,255,255,.1);border:1.5px solid rgba(255,255,255,.55);
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 0 14px rgba(255,255,255,.08),0 10px 26px rgba(10,60,140,.12);
-    -webkit-backdrop-filter:blur(16px) saturate(120%);backdrop-filter:blur(16px) saturate(120%);text-shadow:0 1px 6px rgba(0,40,110,.3)}
-  .sky-mini:hover{background:rgba(255,255,255,.18)}
+    background:linear-gradient(180deg,rgba(190,228,255,.13),rgba(120,180,240,.07));border:1.5px solid rgba(200,235,255,.42);
+    box-shadow:inset 0 1px 0 rgba(220,240,255,.35),0 10px 26px rgba(0,30,90,.14);
+    -webkit-backdrop-filter:blur(16px) saturate(125%) brightness(.94);backdrop-filter:blur(16px) saturate(125%) brightness(.94);text-shadow:0 1px 6px rgba(0,40,110,.3)}
+  .sky-mini:hover{background:linear-gradient(180deg,rgba(200,235,255,.2),rgba(140,195,245,.12))}
   .sky-mini__ic{width:2.65vw;height:2.65vw}
   .sky-mini__ic svg{width:2.65vw !important;height:2.65vw !important;stroke-width:1.9;filter:drop-shadow(0 1px 6px rgba(0,40,110,.3)) !important}
-  .sky-mini__nm{font-size:1.2vw;font-weight:700;letter-spacing:-.015em;white-space:nowrap}
+  .sky-mini__nm{font-size:1.2vw;font-weight:700;letter-spacing:-.015em;line-height:1.15;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .sky-mini__bd{position:absolute;right:1.51vw;top:50%;transform:translateY(-50%);min-width:0;height:1.89vw;padding:0 .76vw;border-radius:999px;
     font-size:1.01vw;font-weight:800;color:#0b2a52;background:#fff;border:0;box-shadow:0 2px 8px rgba(10,60,140,.16)}
   .sky-mini[data-corner="1"] .sky-mini__nm{overflow:visible}

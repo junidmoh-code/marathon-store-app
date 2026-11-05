@@ -3535,6 +3535,9 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && { key:"insights", icon:RoleIcons.insights, name:"Internal Insights", desc:"Business analytics", onClick:()=>onSelect(ROLES.INSIGHTS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.DISPLAY])  && { key:"display", icon:RoleIcons.display, name:"TV Display", desc:"Customer queue screen", onClick:()=>onSelect(ROLES.DISPLAY) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && { key:"customer", icon:RoleIcons.customer, name:"Track Order", desc:"Live order status & timeline", onClick:()=>onSelect(ROLES.CUSTOMER) },
+      // Junid 5 Nov: Display Registration as a tile (its live card is off the
+      // hub) — same gate and same screen as the card.
+      (canAccessStock || isSuperAdmin) && { key:"display_reg", icon:RoleIcons.display_checks, name:"Display Registration", desc:"Register display units", onClick:()=>onSelect(ROLES.DISPLAY_REGISTRATION) },
     ].filter(Boolean) },
     { label: "Administration", cards: [
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && { key:"customers", icon:RoleIcons.customers_db, name:"Customers", desc:"Customer database", onClick:()=>onSelect(ROLES.CUSTOMERS_DB) },

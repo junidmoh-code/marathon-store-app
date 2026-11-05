@@ -56,6 +56,7 @@ function SampleLive({ title, body }) {
 // ?mock=1: the admin view with the 16 tools of Junid's 5 Nov mock-up, real icons.
 const MOCK_TOOLS = [["source", "Source", 600], ["barcodes", "Barcodes"], ["label_print", "Print Labels"], ["stock_audit", "Stock Audit"],
   ["insights", "Internal Insights"], ["display", "TV Display"], ["customer", "Track Order"], ["customers_db", "Customers"],
+  ["display_checks", "Display Registration"],
   ["admin", "Admin"], ["stock", "Stock"], ["health", "Inventory Health"], ["marketing", "Marketing"],
   ["new_arrivals", "New Arrivals"], ["shopify_publish", "Shopify Publish", 1022], ["social", "Social"], ["ai_studio", "AI Studio"]];
 function Home({ icons = null }) {
