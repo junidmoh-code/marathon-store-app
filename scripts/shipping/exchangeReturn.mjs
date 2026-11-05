@@ -99,6 +99,7 @@ const { applyMovementAdmin, cellPath } = require("../../functions/lib/admin-move
 export const RETURN_TO = "marathon-pe"; // Junid: "back into stock at Marathon PE" (the shop, for everything but sneakers)
 export const SECTION_HUBS = Object.freeze(["hub1", "hub2"]); // Marathon PE's hubs (section 2), the footwear route
 export const SECTION = Object.freeze(["marathon-pe", "trophy", "hub1", "hub2"]);
+export const SECTION_SHOPS = Object.freeze(["marathon-pe", "trophy"]); // clothing goes back to a shop, never a hub (CodeRabbit, #842)
 export const PLACE = Object.freeze({ "marathon-pe": "Marathon PE", trophy: "Trophy", hub1: "Hub 1", hub2: "Hub 2" });
 export const ACTOR = "system:jimmy-exchange-return";
 export const VIA = "jimmy";
@@ -133,14 +134,14 @@ export const movementIdFor = (key, pid, sizeKey, n) => `exret_${key}_${pid}_${si
  * picked from; Hub 2 if unknown), never to Marathon PE or Trophy. Clothing goes back to the shop it was picked from."
  *   footwear  the picked cell if it is Hub 1 / Hub 2 (the sale's ledger row, else the line's deductFrom, else its
  *             source), else Hub 2. Never a shop, never "whichever hub holds more".
- *   clothing  the picked cell (same order) when it is in section 2, else Marathon PE.
+ *   clothing  the picked cell (same order) when it is a shop (Marathon PE, Trophy), else Marathon PE; never a hub.
  * `hubQty` is accepted and ignored (old callers).
  */
 export const FOOTWEAR_UNKNOWN_HUB = "hub2";
 export function destinationFor({ product, size, origLine = null, soldLoc = null }) {
   const picked = [str(soldLoc), str(origLine?.deductFrom), str(origLine?.source?.locationId)].filter(Boolean);
   if (isFootwearLine(product, size)) return picked.find((l) => SECTION_HUBS.includes(l)) || FOOTWEAR_UNKNOWN_HUB;
-  return picked.find((l) => SECTION.includes(l)) || RETURN_TO;
+  return picked.find((l) => SECTION_SHOPS.includes(l)) || RETURN_TO;
 }
 
 // ── A returning item with no app product id (the website's title only), resolved against the original order's lines the
@@ -174,10 +175,16 @@ export function resolveReturningLine(item, origLines, names = {}) {
     const exact = sized.filter(([, l]) => namesOf(l, names).includes(want));
     const loose = exact.length ? exact : sized.filter(([, l]) => namesOf(l, names).some((t) => t.length >= 4 && want.length >= 4 && (t.includes(want) || want.includes(t))));
     const pids = [...new Set(loose.map(([, l]) => l.pid))];
-    return pids.length === 1 ? { pid: pids[0], origLineIndex: loose[0][0] } : null;
+    if (pids.length !== 1) return null;
+    // Two lines of that product and size picked from different places: which cell it goes back to is not known, so no
+    // guess (CodeRabbit, #842); lines that agree on the place are one answer.
+    const places = new Set(loose.map(([, l]) => pickedPlace(l)));
+    return places.size === 1 ? { pid: pids[0], origLineIndex: loose[0][0] } : null;
   }
   return sized.length === 1 ? { pid: sized[0][1].pid, origLineIndex: sized[0][0] } : null;
 }
+/** Where an original line was picked (its deductFrom, else its source), "" when unknown. Pure. */
+export const pickedPlace = (l) => str(l?.deductFrom) || str(l?.source?.locationId);
 
 /** The order reference stamped on every movement (link.ref), as the POS's Confirm arrival does ("1789-EX"). Pure. */
 export const stockRefFor = (orderNumber) => `${digits(orderNumber)}-EX`;
@@ -427,7 +434,8 @@ async function resolveList(db, record, items) {
         names[l.pid] = { name: typeof p === "string" ? p : null, cleanName: sp?.cleanName || null, proposalName: sp?.proposalName || sp?.title || null, previousName: sp?.previousName || null };
       }
       const r = resolveReturningLine(it, lines, names);
-      if (r?.pid) { if (hit && hit.pid !== r.pid) { hit = null; break; } hit = r; hitKey = k; }
+      // A second related order that also names it: never a guess between two orders (CodeRabbit, #842).
+      if (r?.pid) { if (hit) { hit = null; break; } hit = r; hitKey = k; }
     }
     out.push(hit ? { ...it, pid: hit.pid, origOrderKey: str(it.origOrderKey) || hitKey, ...(hit.origLineIndex != null ? { origLineIndex: hit.origLineIndex } : {}) } : it);
   }
@@ -571,7 +579,9 @@ export async function confirmExchangeReturn(key, { db, dry = false, orderNumber 
   // 3. done (ours, or a claim nobody finished; never over a "done" or a till's claim). For a by-hand arrival the record
   // stays the till's: only stockReturned (and when, and by whom) is added, once. The condition hold goes (he said good).
   const stockReturned = out.map(({ movementId, pid, size, title, to, before, after }) => ({ movementId, pid, size, title, to, before, after }));
-  const note = `The condition was confirmed; the item(s) went back into stock at ${[...new Set(out.map((u) => PLACE[u.to] || u.to))].join(" and ")} (${reasonFor(n)}).`;
+  const note = out.length
+    ? `The condition was confirmed; the item(s) went back into stock at ${[...new Set(out.map((u) => PLACE[u.to] || u.to))].join(" and ")} (${reasonFor(n)}).`
+    : `The condition was confirmed; nothing went back into stock: the original sale had already credited or never deducted these units (${reasonFor(n)}).`;
   const rec = byHandOpen ? null : { state: "done", via: VIA, at: now(), by, attemptId: id, claimedAt: claimAt, stockReturned, ...(withheld.length ? { withheld } : {}), note, replacementCheck: replacement.text };
   let lost = null;
   const fin = await db.ref(arrivalPath).transaction((raw) => {

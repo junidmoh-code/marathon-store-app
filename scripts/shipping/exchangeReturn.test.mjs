@@ -357,7 +357,7 @@ describe("round 2: where the original sale deducted, and how much", () => {
     expect(out).toMatchObject({ ok: true, done: true, withheld: [{ pid: SNK, size: "8" }] });
     expect(out.items).toEqual([]);
     expect(at(db, `stock/hub2/${SNK}`)).toBeNull();
-    expect(at(db, `online_orders/${KEY}/incoming/arrival`)).toMatchObject({ state: "done", withheld: [{ pid: SNK }] });
+    expect(at(db, `online_orders/${KEY}/incoming/arrival`)).toMatchObject({ state: "done", withheld: [{ pid: SNK }], note: expect.stringMatching(/nothing went back into stock/) });
   });
   it("a line already refunded at the till (no shortfall): nothing credited again (CodeRabbit)", async () => {
     const db = world({ rec: snkRec(), orig: [{ pid: SNK, size: "8", source: { locationId: "hub2" } }], extra: { pos: { sales: { "-NsOrig": { lineItems: { L1: { productId: SNK, size: "8", qty: 1, refundedQty: 1 } } } } }, stock_movements: { [`sold:-NsOrig:hub2:${SNK}:8`]: { type: "sold", productId: SNK, size: "8", qty: 1, from: "hub2", ts: "2026-10-20T10:00:00.000Z" } } } });
@@ -401,6 +401,8 @@ describe("destinationFor (the owner rule, Junid 5 Nov 2026)", () => {
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", soldLoc: "marathon-pe", origLine: { source: { locationId: "trophy" } } })).toBe("marathon-pe");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M" })).toBe("marathon-pe");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "elsewhere" } } })).toBe("marathon-pe");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "hub2" } } })).toBe("marathon-pe"); // never a hub
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", soldLoc: "hub1", origLine: { source: { locationId: "trophy" } } })).toBe("trophy");
     expect(destinationFor({ product: shoe, size: "M" })).toBe("marathon-pe"); // a slide in S/M/L is a shop item
   });
 });
@@ -415,6 +417,9 @@ describe("resolveReturningLine (the POS's, #594)", () => {
     expect(resolveReturningLine({ title: "leather low-top", size: "7" }, lines)).toBeNull();
     expect(resolveReturningLine({ title: "Unknown shoe", size: "9" }, lines)).toBeNull();
     expect(resolveReturningLine({ size: "9" }, lines)).toEqual({ pid: "pC", origLineIndex: 2 });
+    const twice = [{ pid: "pA", size: "7", title: "Same shoe", source: { locationId: "hub1" } }, { pid: "pA", size: "7", title: "Same shoe", source: { locationId: "hub2" } }];
+    expect(resolveReturningLine({ title: "Same shoe", size: "7" }, twice)).toBeNull(); // two places: no guess
+    expect(resolveReturningLine({ title: "Same shoe", size: "7" }, twice.map((l) => ({ ...l, source: { locationId: "hub2" } })))).toEqual({ pid: "pA", origLineIndex: 0 });
   });
 });
 
