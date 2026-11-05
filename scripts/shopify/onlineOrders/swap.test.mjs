@@ -429,6 +429,8 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     await ask(f, 1, "JKT", "M", { priceDecision: "customer_pays" });
     await h.tick();
     expect(f.read("online_orders/9001/swapRequests/r1/collectMailedAt")).toBe(NOW);
+    // the difference the customer pays counts as paid on the line's ledger (review of #847, spec)
+    expect(Object.values(line(f, 1).resolution.moneyIn || {})).toEqual([expect.objectContaining({ state: "done", via: "customer_pays" })]);
     expect(h.mails.filter((m) => /collect it/.test(m.subject))).toHaveLength(1);
   });
 
@@ -464,6 +466,12 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     expect(lineLedger(L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "weird" } } }), { priceCents: 35000 })).toMatchObject({ unclear: true });
     expect(lineLedger(L({ resolution: { moneySettled: { a: { state: "done", amountCents: 5000, paidCents: 4000 } } } }), { priceCents: 35000 })).toMatchObject({ settledCents: 4000, creditCents: 6000 });
   });
+  it("review of #847 (spec): a collected difference counts as paid, so a later swap down credits it back", () => {
+    // Paid R450; a dearer R500 swap with the R50 difference collected (moneyIn); then a swap down to R400: R100 back.
+    const l = L({ unitPriceCents: 50000, originalUnitPriceCents: 45000, resolution: { moneyIn: { a: { state: "done", amountCents: 5000 } } } });
+    expect(lineLedger(l, { priceCents: 40000 })).toMatchObject({ paidCents: 50000, creditCents: 10000 });
+    expect(lineLedger(l, { priceCents: 50000 })).toMatchObject({ creditCents: 0, extraCents: 0 });
+  });
   it("a claim: busy while fresh; past 15 minutes it is unclear (the payer died), never refused for ever", () => {
     const at = 1_000_000;
     const c = L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "claimed", at } } });
@@ -479,7 +487,7 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     expect(judgeSwap(given, { priceCents: 15000 })).toEqual({ ok: true, creditCents: 5000 });
     expect(judgeSwap(L({ resolution: { money: { state: "manual", amountCents: 5000 } } }), { priceCents: 1000 })).toMatchObject({ ok: false, why: "money_unclear" });
     // refunded in full: never "costs more" to the customer; Junid's (money_unclear)
-    expect(judgeSwap(L({ resolution: { moneySettled: { a: { state: "done", amountCents: 45000 } } } }), { priceCents: 1000 })).toMatchObject({ ok: false, why: "money_unclear", note: expect.stringMatching(/refunded in full/) });
+    expect(judgeSwap(L({ resolution: { moneySettled: { a: { state: "done", amountCents: 45000 } } } }), { priceCents: 1000 })).toMatchObject({ ok: false, why: "refunded_full", note: expect.stringMatching(/refunded in full/) });
   });
   it("a dearer second swap needs its difference: refused without a price decision", () => {
     expect(lineLedger(L(), { priceCents: 50000 })).toMatchObject({ extraCents: 5000, creditCents: 0 });

@@ -40,7 +40,9 @@ export const CLAIM_STALE_MS = 15 * 60e3;
 const KNOWN_MONEY_STATES = new Set(["done", "manual", "failed", "claimed", "pending"]);
 export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   const qty = Number(line?.qty) || 1;
-  const paid = paidCents(line);
+  // Paid for the line = what the order paid for it + any difference collected for a dearer swap (resolution.moneyIn).
+  const paidIn = Object.values(line?.resolution?.moneyIn || {}).filter((x) => x && typeof x === "object" && x.state === "done").reduce((t, x) => t + Math.max(0, Math.round(Number(x.amountCents) || 0)), 0);
+  const paid = paidCents(line) + paidIn;
   const m = line?.resolution?.money;
   const isObj = !!m && typeof m === "object";
   const amt = (x) => Math.max(0, Math.round(Number(x?.amountCents) || 0));
@@ -166,8 +168,9 @@ export function judgeSwap(line, offer, { now = Date.now() } = {}) {
   // The ledger (COMMIT 6): against what is left of what was paid, never the full price paid.
   const lg = lineLedger(line, { priceCents: Number(offer?.priceCents) || 0, now });
   if (lg.busy || lg.unclear) return { ok: false, why: "money_unclear", note: lg.unclearWhy || "money for this line is being issued right now" };
-  // Everything paid for the line was given back already: nothing is left to swap against (never "costs more" to the customer).
-  if (lg.paidCents > 0 && lg.refundableCents === 0) return { ok: false, why: "money_unclear", note: `the line was refunded in full (${rands(lg.settledCents)}): nothing is left to swap against` };
+  // Everything paid for the line was given back already: nothing is left to swap against. A final answer, never "unclear"
+  // (never held for ever) and never "costs more" (review of #847).
+  if (lg.paidCents > 0 && lg.refundableCents === 0) return { ok: false, why: "refunded_full", note: `the line was refunded in full (${rands(lg.settledCents)}): nothing is left to swap against` };
   if (lg.extraCents > 0) return { ok: false, why: "costs_more", extraCents: lg.extraCents };
   return { ok: true, creditCents: lg.creditCents };
 }
@@ -190,6 +193,7 @@ const FALLBACK = {
   offer: { opening: "We're so sorry — the item below from your order turned out not to be available after all. We looked everywhere for it before writing to you.", closing: "Thank you for your patience, and sorry again." },
   costs_more: { opening: "Thank you for choosing so quickly.", closing: "Sorry about that." },
   gone: { opening: "Thank you for choosing so quickly.", closing: "Sorry about that." },
+  refunded_full: { opening: "Thank you for your reply.", closing: "Thank you." },
   swapped: { opening: "Done — we've swapped the item on your order.", closing: "Thank you for sticking with us." },
   credit: { opening: "Thank you for letting us know — store credit it is.", closing: "Thank you, and sorry again for the trouble." },
   refund: { opening: "We've started your refund for this item.", closing: "Sorry again for the trouble." },
@@ -215,6 +219,8 @@ export function composeMessage(kind, { ref, firstName, line, offers = [], amount
   const hi = firstName ? `Hi ${firstName},` : "Hi,";
   const parts = [hi, "", words.opening, ""];
   const tag = subjectTag(ref, line);
+  // What is still to give back for the line (the ledger), never the full price when part of it went back already.
+  const left = lineLedger(line, { priceCents: 0 }).refundableCents;
   if (kind === "offer" || kind === "costs_more" || kind === "unclear" || kind === "gone") {
     if (kind === "gone") parts.push("That one has just sold out, so we can't swap to it.", "");
     if (kind === "costs_more") parts.push(`That one costs ${rands(amountCents)} more than what you paid, and we'll never ask you to pay more — so we can't swap to it.`, "");
@@ -223,11 +229,13 @@ export function composeMessage(kind, { ref, firstName, line, offers = [], amount
       parts.push(kind === "offer" ? "These are in stock in your size and close in price:" : "Your choices again:");
       offers.forEach((o, i) => parts.push(`  ${i + 1}. ${o.title} — ${rands(o.priceCents)} — ${o.url}`));
       parts.push("");
-      parts.push(`Reply with the number you want (1${offers.length > 1 ? `–${offers.length}` : ""}), or the word "credit" for store credit of ${rands(paidCents(line))}, or "refund" for a refund of ${rands(paidCents(line))}.`);
+      parts.push(`Reply with the number you want (1${offers.length > 1 ? `–${offers.length}` : ""}), or the word "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(left)}.`);
     } else {
-      parts.push(`Reply "credit" for store credit of ${rands(paidCents(line))}, or "refund" for a refund of ${rands(paidCents(line))}.`);
+      parts.push(`Reply "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(left)}.`);
     }
-    parts.push(`If we don't hear from you in 48 hours we'll put ${rands(paidCents(line))} on your account as store credit, and you can still ask for a refund instead for 14 days after that.`);
+    parts.push(`If we don't hear from you in 48 hours we'll put ${rands(left)} on your account as store credit, and you can still ask for a refund instead for 14 days after that.`);
+  } else if (kind === "refunded_full") {
+    parts.push(`${itemWords(line)} was already refunded to you in full, so there is nothing left to swap it for. Nothing more is needed from you.`);
   } else if (kind === "swapped") {
     parts.push(`Your new item: ${itemWords(line)}. It ships to you as soon as it is packed.`);
     if (amountCents > 0) parts.push(`It costs less than what you paid, so ${rands(amountCents)} goes back to you as store credit. ${creditState}`);

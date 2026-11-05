@@ -311,6 +311,20 @@ async function nextReply(ctx, orderId, i, conv) {
 
 // ── pick N ───────────────────────────────────────────────────────────────────
 // A held pick is dropped only once it has an outcome: a committed swap, or a final answer (dearer, gone): CodeRabbit #847.
+/** A pick that did not commit is HELD and tried again (review of #847, 1); after 3 tries Junid is told once, in the app. */
+async function holdPick(ctx, orderId, order, i, line, offer, why) {
+  const offers = Object.values(line.resolution?.conversation?.offers || {});
+  const n = offers.findIndex((o) => o && o.pid === offer.pid && String(o.size ?? "") === String(offer.size ?? "")) + 1;
+  let tries = 0;
+  await lineTxn(ctx, orderId, i, (cur) => {
+    const c = cur.resolution?.conversation;
+    if (!c) return undefined;
+    tries = (Number(c.heldPick?.tries) || 0) + 1;
+    return { ...cur, resolution: { ...cur.resolution, conversation: { ...c, heldPick: { n: n || c.heldPick?.n || null, pid: offer.pid, at: c.heldPick?.at || ctx.now, tries, why: String(why).slice(0, 200) } } } };
+  });
+  await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: not swapped yet (${why}); held, tried again` });
+  if (tries === 3) await tellJunid(ctx, `Website order ${order.ref}: the customer's pick ${offer.title} would not go on (3 tries)`, [`Line: ${line.title}${line.size ? ` size ${line.size}` : ""}. Last reason: ${why}. It is still held and tried again each run; nothing was said to the customer.`]);
+}
 const clearHeld = (ctx, orderId, i) => lineTxn(ctx, orderId, i, (cur) => { const c = cur.resolution?.conversation; if (!c?.heldPick) return undefined; const { heldPick: _h, ...rest } = c; return { ...cur, resolution: { ...cur.resolution, conversation: rest } }; });
 
 async function pick(ctx, key, orderId, order, i, line, offer, { held = false } = {}) {
@@ -324,6 +338,14 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
     await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, heldPick: { n: n || null, pid: offer.pid, at: ctx.now } } } } : undefined));
     await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: not swapped yet, ${judged.note}` });
     await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, NOT swapped yet`, [`Line: ${line.title}${line.size ? ` size ${line.size}` : ""}.`, `${judged.note}. Settle that first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go"); the pick is kept and goes on by itself once it is settled.`]);
+    return;
+  }
+  if (!judged.ok && judged.why === "refunded_full") {
+    // Refunded in full: a final answer, said plainly to the customer and to Junid, never held (review of #847, 2).
+    if (held) await clearHeld(ctx, orderId, i);
+    await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: ${judged.note}` });
+    await send(ctx, orderId, order, i, line, "refunded_full");
+    await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, but the line was refunded in full`, [`Line: ${line.title}. ${judged.note}. The customer was told nothing is left to swap; nothing was changed.`]);
     return;
   }
   if (!judged.ok) {
@@ -346,38 +368,47 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
   // leaves the same record as Jimmy's or the POS "Replace".
   const swappedFrom = swapFromRecord(line, { at: ctx.now, by: "customer agent", via: "agent" });
   const outcome = { kind: "swap", pid: offer.pid, size: offer.size, creditCents: judged.creditCents, at: ctx.now, by: "customer agent", via: "agent" };
+  // The credit a cheaper pick owes is CLAIMED in the swap's own write (review of #847, 5): a crash after the swap and before
+  // the payment leaves a claim (paid once, or Junid's), never an unrecorded debt or a second payment.
+  const creditClaim = judged.creditCents > 0 ? { kind: "credit", amountCents: judged.creditCents, state: "claimed", at: ctx.now, why: "swap difference", preclaimed: true } : null;
   // The line's money moves the same way as on every swap (COMMIT 6): a done credit to moneySettled, never left in place.
-  const newLine = (cur) => swappedLine(cur, { ...offer, sizeKey: offer.sizeKey || stockSizeKey(offer.size) }, {
-    swappedFrom, outcome,
-    resolution: swapResolution(cur.resolution, { now: ctx.now, outcome, closeConversation: "agent" }),
-  });
+  const newLine = (cur, claim = creditClaim) => {
+    const nl = swappedLine(cur, { ...offer, sizeKey: offer.sizeKey || stockSizeKey(offer.size) }, {
+      swappedFrom, outcome,
+      resolution: swapResolution(cur.resolution, { now: ctx.now, outcome, closeConversation: "agent" }),
+    });
+    return claim ? { ...nl, resolution: { ...nl.resolution, money: claim } } : nl;
+  };
+  // A follow-up's copy of the parent's claim: a mirror (never paid itself; settled with its parent).
+  const mirrorOf = (claim) => (claim ? { ...claim, mirroredFrom: `${orderId}/${i}` } : null);
   let followed = packed; // a follow-up carries the new item (packed at the read, or the pack race below)
   if (packed) {
     // The parcel has gone: the new item ships on its own.
     const fid = followUpId(orderId, i);
     const parentLine = linesOf(fresh)[i];
-    const follow = followUpRecord({ order: fresh, orderId, i, line: newLine(parentLine), parentLine, nowMs: ctx.now });
+    // The follow-up's copy of the credit claim is written WITH the follow-up, before Shopify is called (review of #847, 4).
+    const follow = followUpRecord({ order: fresh, orderId, i, line: newLine(parentLine, mirrorOf(creditClaim)), parentLine, nowMs: ctx.now });
     const res = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).transaction((cur) => (cur == null ? clean(follow) : undefined));
-    if (!res.committed && !res.snapshot.val()) return;
+    if (!res.committed && !res.snapshot.val()) return holdPick(ctx, orderId, order, i, line, offer, "the follow-up could not be made");
     await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
     // The parent line settles its money the same way (review of #846, 3): its done slot to moneySettled, so the follow-up's
     // credit below is its own action; the money is re-checked as on the unpacked path.
-    const parentOk = await lineTxn(ctx, orderId, i, (cur) => (JSON.stringify(cur.resolution?.money ?? null) !== JSON.stringify(line.resolution?.money ?? null) ? undefined : ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: swapResolution(cur.resolution, { now: ctx.now, outcome: { ...outcome, movedTo: fid }, closeConversation: "agent" }) })));
+    // The parent claims the credit in the same write, and only while the customer is still choosing (review of #847, 7).
+    const parentOk = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation?.state !== "offering" || JSON.stringify(cur.resolution?.money ?? null) !== JSON.stringify(line.resolution?.money ?? null) ? undefined : ({ ...cur, source: { status: LINE_STATUS.MOVED, movedTo: fid }, resolution: { ...swapResolution(cur.resolution, { now: ctx.now, outcome: { ...outcome, movedTo: fid }, closeConversation: "agent" }), ...(creditClaim ? { money: creditClaim } : {}) } })));
     if (!parentOk) {
       // The parent's money changed meanwhile (CodeRabbit on #847): the follow-up just made is undone, nothing reported.
       if (res.committed) {
         await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).set(null);
         await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(null);
       }
-      await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: the line's money changed meanwhile; not swapped` });
-      return;
+      return holdPick(ctx, orderId, order, i, line, offer, "the line's money changed meanwhile");
     }
     if (held) await clearHeld(ctx, orderId, i);
   } else {
     // The ledger was judged on the line as read: money that moved since makes it stale (never a wrong credit; COMMIT 6).
     const sameMoney = (cur) => JSON.stringify(cur.resolution?.money ?? null) === JSON.stringify(line.resolution?.money ?? null);
     const done = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation?.state === "offering" && sameMoney(cur) ? newLine(cur) : undefined));
-    if (!done) return; // not committed: a held pick stays held, tried again next run
+    if (!done) return holdPick(ctx, orderId, order, i, line, offer, "the line changed meanwhile"); // never dropped silently
     if (held) await clearHeld(ctx, orderId, i); // committed: the held pick has its outcome
     // RACE: a pack may have landed between the read and the swap. A packed
     // order never ships a pick: the swapped line moves to a follow-up.
@@ -385,7 +416,10 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
     if (after?.status === ORDER_STATUS.PACKED && !after.packedLines?.[i]) {
       const fid = followUpId(orderId, i);
       const moving = linesOf(after)[i];
-      const follow = followUpRecord({ order: after, orderId, i, line: moving, parentLine: moving, nowMs: ctx.now });
+      // The swapped line carries the credit claim: the follow-up's copy is a mirror (paid once, on the parent).
+      const mm = moving?.resolution?.money;
+      const movingLine = mm && mm.state === "claimed" ? { ...moving, resolution: { ...moving.resolution, money: mirrorOf(mm) } } : moving;
+      const follow = followUpRecord({ order: after, orderId, i, line: movingLine, parentLine: moving, nowMs: ctx.now });
       const res = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${fid}`).transaction((cur) => (cur == null ? clean(follow) : undefined));
       if (res.committed || res.snapshot.val()) {
         await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${orderId}/followUps/${fid}`).set(true);
@@ -400,19 +434,32 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
   ctx.summary.swaps++;
   await record(ctx, orderId, i, order.ref, "swapped", { note: `${line.title} → ${offer.title} at ${offer.locationId}${packed ? " (ships as a follow-up)" : ""}` });
   const swapped = { ...line, ...newLine(line) };
-  const diff = judged.creditCents > 0 ? await money(ctx, orderId, order, i, swapped, "credit", judged.creditCents, "swap difference") : null;
+  const diff = creditClaim ? await money(ctx, orderId, order, i, swapped, "credit", judged.creditCents, "swap difference", { claimedAt: creditClaim.at }) : null;
   // A packed order's item ships as a follow-up: a credit paid on the parent line is in the follow-up line's money history
   // too, so its next swap counts it (one ledger across parent and follow-up; CodeRabbit on #847).
   // Its own key (never the moved parent slot's m<now>; CodeRabbit on #847). A credit not done yet (by hand, an unclear
   // answer) is mirrored as the follow-up line's money slot, so a swap there waits until it is settled (Junid's
   // settle_line_money settles the mirror too).
-  if (followed && diff) {
-    const base = `${ONLINE_ORDERS_PATH}/${followUpId(orderId, i)}/lines/0/resolution`;
-    const entry = clean({ kind: "credit", amountCents: judged.creditCents, via: diff.via ?? null, ref: diff.ref ?? null, at: diff.at ?? ctx.now, ...(Number.isInteger(diff.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
-    if (diff.state === "done") await ctx.db.ref(`${base}/moneySettled/p${ctx.now}`).set({ ...entry, state: "done" });
-    else await ctx.db.ref(`${base}/money`).transaction((cur) => (cur ? undefined : clean({ ...entry, state: diff.state || "manual", ...(diff.ambiguous != null ? { ambiguous: diff.ambiguous } : {}), mirroredFrom: `${orderId}/${i}` })));
+  // The follow-up's mirror follows the parent's result: done → its moneySettled (own key), else the same state.
+  if (followed && creditClaim) {
+    const entry = clean({ kind: "credit", amountCents: judged.creditCents, via: diff?.via ?? null, ref: diff?.ref ?? null, at: creditClaim.at, ...(Number.isInteger(diff?.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
+    await lineTxn(ctx, followUpId(orderId, i), 0, (line0) => {
+      const cur = line0.resolution || {};
+      const m = cur.money;
+      const mine = m && typeof m === "object" && m.mirroredFrom === `${orderId}/${i}` && Number(m.at) === Number(creditClaim.at);
+      const { money: _m, ...rest } = cur;
+      let next;
+      if (diff?.state === "done") next = { ...(mine ? rest : cur), moneySettled: { ...(cur.moneySettled || {}), [`p${ctx.now}`]: { ...entry, state: "done" } } };
+      // Not filed at all (refused): the mirror goes; filed but not done: the mirror shows it (unclear until settled).
+      else if (!diff) next = mine ? rest : undefined;
+      else next = mine || !m ? { ...cur, money: clean({ ...entry, state: diff.state || "manual", ...(diff.ambiguous != null ? { ambiguous: diff.ambiguous } : {}), mirroredFrom: `${orderId}/${i}` }) } : undefined;
+      return next === undefined ? undefined : { ...line0, resolution: next };
+    });
   }
-  await send(ctx, orderId, order, i, swapped, "swapped", { amountCents: judged.creditCents, pending: !!diff && diff.via !== "api" });
+  // The customer hears of a credit only as far as money() really filed it (review of #847, 6): none filed → no amount
+  // (Junid hears); filed but not done → "being added"; done → "on your account".
+  if (creditClaim && !diff) await tellJunid(ctx, `Website order ${order.ref}: ${rands(judged.creditCents)} store credit owed after the swap was NOT filed`, [`Line: ${line.title} → ${offer.title}. The customer was told of the swap, not of the credit. Please credit it by hand or tell Jamie.`]);
+  await send(ctx, orderId, order, i, swapped, "swapped", { amountCents: diff ? judged.creditCents : 0, pending: !!diff && diff.state !== "done" });
   await setAgentRow(ctx, key, null);
 }
 
@@ -430,7 +477,14 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
     return;
   }
   const res = await money(ctx, orderId, order, i, line, kind, amount, messageKind === "auto_credit" ? "no reply in 48 hours" : `the customer chose ${kind}`);
-  if (!res) return;
+  if (!res) {
+    // Refused (a money slot already on the line): Junid hears once, in the app; the customer is told nothing false.
+    if (!line.resolution?.conversation?.settleRefusedAt) {
+      await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, settleRefusedAt: ctx.now } } } : undefined));
+      await tellJunid(ctx, `Website order ${order.ref}: the customer asked for ${kind}, but the line already has money on it`, [`Line: ${line.title}. Nothing was sent to the customer; settle the line's money first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go").`]);
+    }
+    return;
+  }
   // What Shopify actually refunded (it may suggest less than the line).
   if (Number.isInteger(res.paidCents) && res.paidCents > 0) amount = res.paidCents;
   const windowUntil = messageKind === "auto_credit" ? ctx.now + REFUND_WINDOW_MS : null;
@@ -478,11 +532,13 @@ async function creditedWindow(ctx, key, orderId, order, i, line) {
  * Shopify call: credit OR refund, never both, never twice, never more than
  * was paid. Junid is emailed on every one. → the slot, or null when refused.
  */
-export async function money(ctx, orderId, order, i, line, kind, amountCents, why) {
+export async function money(ctx, orderId, order, i, line, kind, amountCents, why, { claimedAt = null } = {}) {
   // RESUME: the same action already claimed (a crash after the claim): never
   // a second Shopify call. A claim with no outcome for 10 minutes is Junid's.
   const existing = (await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/resolution/money`)) || null;
-  if (existing && existing.kind === kind && Number(existing.amountCents) === amountCents) {
+  // The claim THIS swap wrote with the line (preclaimed, its own time): paid now, once (review of #847, 5).
+  const preclaimed = !!existing && claimedAt != null && existing.preclaimed === true && existing.state === "claimed" && Number(existing.at) === Number(claimedAt) && existing.kind === kind && Number(existing.amountCents) === amountCents;
+  if (!preclaimed && existing && existing.kind === kind && Number(existing.amountCents) === amountCents) {
     if (existing.state === "claimed" && ctx.now - Number(existing.at) >= STUCK_CLAIM_MS && !existing.stuckMailedAt) {
       await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, resolution: { ...cur.resolution, money: { ...cur.resolution.money, stuckMailedAt: ctx.now } } }));
       await tellJunid(ctx, `Website order ${order.ref}: CHECK SHOPIFY — a ${kind} of ${rands(amountCents)} may or may not have gone through`, [
@@ -493,7 +549,7 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
     return { ...existing, resumed: true, via: existing.via || "junid_email" };
   }
   let refused = null;
-  const claimed = await lineTxn(ctx, orderId, i, (cur) => {
+  const claimed = preclaimed ? { resolution: { money: existing } } : await lineTxn(ctx, orderId, i, (cur) => {
     const verdict = moneyAllowed(cur.resolution?.money, { kind, amountCents, line: cur });
     if (!verdict.ok) { refused = verdict.why; return undefined; }
     return { ...cur, resolution: { ...(cur.resolution || {}), money: { kind, amountCents, state: "claimed", at: ctx.now, why } } };

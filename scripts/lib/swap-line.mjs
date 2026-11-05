@@ -160,7 +160,7 @@ async function defaultAvailable({ get, orderKey, order, i, pid, sizeKey, display
  * `summary` is the one line Jimmy relays ("#1776 updated: …" / "#1776 NOT changed: …").
  */
 export async function swapOnlineOrderLine({
-  orderKey, lineIndex, newPid, size, dry = false, allowHigher = false, priceDecision = null,
+  orderKey, lineIndex, newPid, size, dry = false, allowHigher = false, priceDecision = null, paidInCents = null, paidInRef = null,
   by = null, via = "cli", requestId = null, expect = null, db = null, admin = null, increment = null, now = Date.now(), log = () => {}, displayFeedOn = null,
 }) {
   if (!db) ({ db, admin } = openDb());
@@ -255,7 +255,12 @@ export async function swapOnlineOrderLine({
     if (JSON.stringify(m ?? null) !== JSON.stringify(line.resolution?.money ?? null)) { why = "the line's money changed meanwhile"; return undefined; }
     // A completed money action moves to moneySettled; one that never moved money is kept as supersededMoney (doNotIssue).
     void conv;
-    const resolution = swapResolution(cur.resolution, { now, outcome, closeConversation: via });
+    const resolution0 = swapResolution(cur.resolution, { now, outcome, closeConversation: via });
+    // A difference the customer pays for this dearer item counts as paid for the line (review of #847, spec): the payment
+    // the caller confirmed (paidInCents, e.g. the PayFast difference), or Junid's "customer pays" decision; a later swap
+    // down credits it back.
+    const inCents = Math.round(Number(paidInCents) || 0) > 0 ? Math.round(Number(paidInCents)) : plan.price.decision === "customer_pays" ? plan.price.extraCents : 0;
+    const resolution = inCents > 0 ? { ...resolution0, moneyIn: { ...(cur.resolution?.moneyIn || {}), [`m${now}`]: clean({ amountCents: inCents, state: "done", via: paidInCents ? "payment" : "customer_pays", ref: paidInRef || null, at: now }) } } : resolution0;
     const next = { ...ord, lines: Array.isArray(ord.lines) ? [...ord.lines] : { ...ord.lines } };
     next.lines[i] = swappedLine(cur, item, { swappedFrom, outcome, resolution, at: now });
     const drop = (node, key) => { if (node && typeof node === "object" && key in node) { const c = Array.isArray(node) ? [...node] : { ...node }; if (Array.isArray(c)) c[key] = null; else delete c[key]; return c; } return node; };
