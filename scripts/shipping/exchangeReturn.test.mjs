@@ -438,6 +438,23 @@ describe("a pid-less returning item and the movement's order reference", () => {
     const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL" }, { pid: "pX", size: "8", title: "Nike Shox TL" }], extra: { online_orders: { [KEY]: rec, 18966134358165: { orderNumber: "1793", lines: [{ pid: SNK, size: "8", title: "Nike Shox TL" }, { pid: "pX", size: "8", title: "Nike Shox TL" }] }, O2: { orderNumber: "1790", lines: [{ pid: SNK, size: "8", title: "Nike Shox TL" }] } } } });
     expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/not recorded/) });
   });
+  it("a related order that cannot be read stops the run: no match is taken from another order, nothing written (CodeRabbit, #842)", async () => {
+    const rec = record({ exchange: { ...record().exchange, relatedOrders: ["O1", "18966134358165"] }, incoming: { ...record().incoming, returning: [{ title: "Nike Shox TL low", size: "8" }] } });
+    const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL low", source: { locationId: "hub1" } }] });
+    const ref = db.ref.bind(db);
+    db.ref = (p) => (p === "online_orders/O1/lines" ? { once: async () => { throw new Error("permission denied"); } } : ref(p));
+    await expect(run(db)).rejects.toThrow(/permission denied/);
+    expect(at(db, `stock/hub1/${SNK}/8/qty`) ?? null).toBeNull();
+  });
+  it("a product-name read that fails stops the run too: never a match on incomplete names, nothing written (CodeRabbit, #844)", async () => {
+    const rec = record({ incoming: { ...record().incoming, returning: [{ title: "Nike Shox TL low", size: "8", origOrderKey: "18966134358165" }] } });
+    const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL low", source: { locationId: "hub1" } }] });
+    const ref = db.ref.bind(db);
+    db.ref = (p) => (p === `shopify_publish/${SNK}` ? { once: async () => { throw new Error("unavailable"); } } : ref(p));
+    await expect(run(db)).rejects.toThrow(/unavailable/);
+    expect(at(db, `stock/hub1/${SNK}/8/qty`) ?? null).toBeNull();
+    expect(at(db, `online_orders/${KEY}/incoming/arrival`) ?? null).toBeNull();
+  });
   it("a name that matches nothing still refuses (nothing written)", async () => {
     const rec = record({ incoming: { ...record().incoming, returning: [{ title: "Nobody knows", size: "8", origOrderKey: "18966134358165" }] } });
     const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL" }, { pid: "pX", size: "8", title: "Other" }] });

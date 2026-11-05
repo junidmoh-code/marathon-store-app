@@ -426,18 +426,19 @@ async function resolveList(db, record, items) {
     if (str(it.pid)) { out.push(it); continue; }
     let hit = null, hitKey = null, ambiguous = false;
     for (const k of str(it.origOrderKey) ? [str(it.origOrderKey)] : keys) {
-      let lines = [];
-      try {
-        lines = (await read(db, `online_orders/${assertSafeSegment(k, "order key")}/lines`)) || [];
-      } catch { lines = []; }
+      // A related order that cannot be read is NOT "no match" (CodeRabbit on #842): the error stops the run before any
+      // stock write, so a match from another order is never accepted on incomplete data; a rerun is safe (fixed ids).
+      const lines = (await read(db, `online_orders/${assertSafeSegment(k, "order key")}/lines`)) || [];
       const names = {};
       for (const [, l] of lineEntries(lines)) {
         if (names[l.pid]) continue;
-        let p = null, sp = null;
+        let p = null, sp = null, pid = null;
         try {
-          const pid = assertSafeSegment(String(l.pid), "productId");
-          [p, sp] = await Promise.all([read(db, `products/${pid}/name`).catch(() => null), read(db, `shopify_publish/${pid}`).catch(() => null)]);
+          pid = assertSafeSegment(String(l.pid), "productId");
         } catch { /* an unsafe id names nothing: the line's own title still counts */ }
+        // A name read that fails stops the run too (CodeRabbit on #844): a line missing its names could turn the right
+        // match into a unique match on another line.
+        if (pid) [p, sp] = await Promise.all([read(db, `products/${pid}/name`), read(db, `shopify_publish/${pid}`)]);
         names[l.pid] = { name: typeof p === "string" ? p : null, cleanName: sp?.cleanName || null, proposalName: sp?.proposalName || sp?.title || null, previousName: sp?.previousName || null };
       }
       const r = matchReturningLine(it, lines, names);
