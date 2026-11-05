@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import {
   confirmExchangeReturn, returnPlan, notReadyWhy, arrivalState, replacementCheck, movementIdFor, reasonFor, RETURN_TO, ACTOR, CLAIM_STALE_MS,
-  destinationFor, priorArrivalRow,
+  destinationFor, priorArrivalRow, resolveReturningLine,
 } from "./exchangeReturn.mjs";
 
 const require = createRequire(import.meta.url);
@@ -261,7 +261,7 @@ describe("confirmExchangeReturn", () => {
   });
 
   it("the second of two units fails: the first stays once, the claim stays Jimmy's, the re-run finishes with no double", async () => {
-    const rec = record({ incoming: { ...record().incoming, returning: [{ pid: PID_OUT, size: "11", title: "D" }, { pid: SNK, size: "8", title: "S" }] } });
+    const rec = record({ incoming: { ...record().incoming, returning: [{ pid: PID_OUT, size: "11", title: "D" }, { pid: SNK, size: "8", title: "S", origOrderKey: "18966134358165", origLineIndex: 1 }] } });
     const db = world({ peQty: 0, rec, orig: [{ pid: PID_OUT, size: "11" }, { pid: SNK, size: "8", source: { locationId: "hub1" } }] });
     // The sneaker's cell refuses once (a write error on the way).
     let failed = false;
@@ -384,14 +384,53 @@ describe("round 2: where the original sale deducted, and how much", () => {
   });
 });
 
-describe("destinationFor", () => {
+describe("destinationFor (the owner rule, Junid 5 Nov 2026)", () => {
   const shoe = { category: "Footwear" };
-  it("footwear: the original line's hub, else the hub holding most, else Hub 1; anything else the shop", () => {
+  it("footwear goes back to the hub it was picked from, Hub 2 if unknown, never a shop", () => {
+    expect(destinationFor({ product: shoe, size: "8", soldLoc: "hub1" })).toBe("hub1");
+    expect(destinationFor({ product: shoe, size: "8", origLine: { deductFrom: "hub1", source: { locationId: "hub2" } } })).toBe("hub1");
     expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub2" } } })).toBe("hub2");
-    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "marathon-pe" } }, hubQty: { hub1: 1, hub2: 4 } })).toBe("hub2");
-    expect(destinationFor({ product: shoe, size: "8", hubQty: { hub1: 2, hub2: 2 } })).toBe("hub1");
-    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub3" } } })).toBe("hub1"); // never outside section 2
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub1" } }, hubQty: { hub1: 0, hub2: 9 } })).toBe("hub1");
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "marathon-pe" } } })).toBe("hub2");
+    expect(destinationFor({ product: shoe, size: "8", soldLoc: "trophy" })).toBe("hub2");
+    expect(destinationFor({ product: shoe, size: "8", hubQty: { hub1: 5, hub2: 0 } })).toBe("hub2"); // never "whichever holds more"
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub3" } } })).toBe("hub2");
+  });
+  it("clothing goes back to the shop it was picked from, Marathon PE if unknown", () => {
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "trophy" } } })).toBe("trophy");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", soldLoc: "marathon-pe", origLine: { source: { locationId: "trophy" } } })).toBe("marathon-pe");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M" })).toBe("marathon-pe");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "elsewhere" } } })).toBe("marathon-pe");
     expect(destinationFor({ product: shoe, size: "M" })).toBe("marathon-pe"); // a slide in S/M/L is a shop item
-    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "hub2" } } })).toBe("marathon-pe");
+  });
+});
+
+describe("resolveReturningLine (the POS's, #594)", () => {
+  const lines = [{ pid: "pA", size: "7", title: "Layered leather low-top trainer with pastel panels" }, { pid: "pB", size: "7", title: "Perforated leather low-top in white on a platform sole" }, { pid: "pC", size: "9", title: "Something" }];
+  it("a website title names one line of that size", () => {
+    expect(resolveReturningLine({ title: "Layered leather low-top trainer with pastel panels", size: "7" }, lines)).toEqual({ pid: "pA", origLineIndex: 0 });
+    expect(resolveReturningLine({ title: "Nike Thing", size: "9" }, lines, { pC: { name: "Nike Thing" } })).toEqual({ pid: "pC", origLineIndex: 2 });
+  });
+  it("never a guess: two products or a name that names nothing → null", () => {
+    expect(resolveReturningLine({ title: "leather low-top", size: "7" }, lines)).toBeNull();
+    expect(resolveReturningLine({ title: "Unknown shoe", size: "9" }, lines)).toBeNull();
+    expect(resolveReturningLine({ size: "9" }, lines)).toEqual({ pid: "pC", origLineIndex: 2 });
+  });
+});
+
+describe("a pid-less returning item and the movement's order reference", () => {
+  it("is resolved by name against the original order, put back at its hub, the movement carries link.ref <n>-EX", async () => {
+    const rec = record({ incoming: { ...record().incoming, returning: [{ title: "Nike Shox TL low", size: "8", origOrderKey: "18966134358165" }] } });
+    const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL low", source: { locationId: "hub1" } }] });
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true, items: [{ pid: SNK, to: "hub1" }] });
+    const id = movementIdFor(KEY, SNK, "8", 0);
+    expect(at(db, `stock_movements/${id}/link`)).toMatchObject({ orderId: KEY, ref: "1793-EX" });
+    expect(at(db, `stock/hub1/${SNK}/8/qty`)).toBe(1);
+  });
+  it("a name that matches nothing still refuses (nothing written)", async () => {
+    const rec = record({ incoming: { ...record().incoming, returning: [{ title: "Nobody knows", size: "8", origOrderKey: "18966134358165" }] } });
+    const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL" }, { pid: "pX", size: "8", title: "Other" }] });
+    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/not recorded/) });
   });
 });
