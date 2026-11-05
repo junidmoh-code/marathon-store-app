@@ -139,22 +139,43 @@ function Desktop({ products, AssistantDesktop }) {
   );
 }
 
-function Barcodes({ products, BcsCard, css }) {
-  const list = products.slice(0, 10).map((p, i) => ({ ...p, category: i % 3 === 2 ? "Clothing" : p.category || "Sneakers",
+function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
+  const cats = ["Sneakers", "Sneakers", "Clothing"];
+  const list = products.slice(0, 12).map((p, i) => ({ ...p, category: cats[i % 3],
     sizes: (p.sizes && p.sizes.length ? p.sizes : ["7", "8", "9"]).slice(0, 7) }));
   const [openId, setOpenId] = useState(q.get("open") ? list[0]?.id : null);
-  const [sel, setSel] = useState(q.get("open") ? { [`${list[0]?.id}|${list[0]?.sizes[1]}`]: { count: "2" } } : {});
+  const [sel, setSel] = useState(q.get("open") ? { [`${list[0]?.id}|${list[0]?.sizes[1]}`]: { productId: list[0]?.id, productName: list[0]?.name, size: list[0]?.sizes[1], count: "2" } } : {});
+  const [lastKey, setLastKey] = useState(q.get("open") ? `${list[0]?.id}|${list[0]?.sizes[1]}` : null);
+  const [search, setSearch] = useState("");
+  const [loc, setLoc] = useState("all"); const [cat, setCat] = useState("all"); const [transport, setTransport] = useState("phomemo");
   const onHand = (pid, s) => (String(s).length % 2 ? 0 : 3) + (s === list[0]?.sizes[2] ? -3 : 0) + 1;
-  const toggle = (p, s) => setSel((x) => { const k = `${p.id}|${s}`; const n = { ...x }; if (n[k]) delete n[k]; else n[k] = { count: "1" }; return n; });
+  const toggle = (p, s) => setSel((x) => { const k = `${p.id}|${s}`; const n = { ...x }; if (n[k]) delete n[k]; else n[k] = { productId: p.id, productName: list.find((y) => y.id === p.id)?.name, size: s, count: "1" }; return n; });
   const wide = innerWidth >= 1024;
+  if (wide) {
+    const selList = Object.entries(sel);
+    const lastItem = lastKey ? sel[lastKey] : null;
+    const shown = list.filter((p) => (cat === "all" || p.category === cat) && p.name.toLowerCase().includes(search.toLowerCase()));
+    return (
+      <>
+        <SkyHeader tag="BARCODES" gridLabel="Home" onGrid={() => {}} />
+        <Studio onExit={() => {}} loc={loc} setLoc={setLoc} locOptions={[{ id: "all", label: "All locations" }, { id: "hub1", label: "Hub 1" }]}
+          categories={["Clothing", "Sneakers"]} cat={cat} setCat={setCat} transport={transport} setTransport={setTransport}
+          diagText={null} setDiagText={() => {}} totalCopies={selList.reduce((n, [, it]) => n + (parseInt(it.count, 10) || 0), 0)} canMint
+          search={search} setSearch={setSearch} filtered={shown} openId={openId} setOpenId={setOpenId} sel={sel} onHand={onHand}
+          toggle={toggle} setCount={(k, v) => setSel((x) => ({ ...x, [k]: { ...x[k], count: v } }))} lastKey={lastKey} setLastKey={setLastKey}
+          lastItem={lastItem} lastP={lastItem ? list.find((p) => p.id === lastItem.productId) : null} previewCode={null}
+          selList={selList} clearSel={() => { setSel({}); setLastKey(null); }} busy={false} doPrint={() => {}} onPhoto={() => {}} />
+      </>
+    );
+  }
   return (
-    <div style={{ padding: wide ? "24px 26px" : "14px", maxWidth: 1180, margin: "0 auto" }}>
+    <div style={{ padding: "14px" }}>
       <style>{css}</style>
-      <div style={{ display: wide ? "grid" : "flex", flexDirection: "column", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 14, alignItems: "start" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {list.map((p) => (
           <BcsCard key={p.id} p={p} expanded={openId === p.id} sel={sel} onHand={onHand}
                    onToggleOpen={() => setOpenId(openId === p.id ? null : p.id)}
-                   onPick={(s) => toggle(p, s)} onCount={(k, v) => setSel((x) => ({ ...x, [k]: { count: v } }))} />
+                   onPick={(s) => toggle(p, s)} onCount={(k, v) => setSel((x) => ({ ...x, [k]: { ...x[k], count: v } }))} />
         ))}
       </div>
     </div>
@@ -174,10 +195,12 @@ function Barcodes({ products, BcsCard, css }) {
     const { AdminView } = await import("../App.jsx");
     el = <AdminView products={products} orders={[]} onExit={() => {}} />;
   } else if (screen === "barcodes") {
-    // The Barcode Studio product card on its own (the screen itself streams
-    // stock cells, which the harness never reads). ?open=1 opens the first.
-    const { BcsCard, BCS_CSS } = await import("../components/stock/BarcodeCatalog.jsx");
-    el = <Barcodes products={products} BcsCard={BcsCard} css={BCS_CSS} />;
+    // The Barcode Studio page (desktop: the real BarcodeStudioDesktop with
+    // fixture state; phone: the cards). The screen itself streams stock
+    // cells, which the harness never reads. ?open=1 opens + picks the first.
+    const { BcsCard, BCS_CSS, BarcodeStudioDesktop } = await import("../components/stock/BarcodeCatalog.jsx");
+    const { SkyHeader } = await import("../components/sky/Sky.jsx");
+    el = <div id="root-inner"><Barcodes products={products} BcsCard={BcsCard} css={BCS_CSS} Studio={BarcodeStudioDesktop} SkyHeader={SkyHeader} /></div>;
   } else if (screen === "phone") {
     el = <Phone products={products.slice(0, Number(q.get("n") || 16))} />;
   } else {

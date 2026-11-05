@@ -3437,6 +3437,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
     isSuperAdmin ? null : (homePerm?.destShop || null)
   );
 
+  // Junid 5 Nov: on the PHONE the admin hub shows neither the Hub Count &
+  // Displays card nor the Shipment Release card ("remove the card from
+  // there, don't delete the code"). Both are still built below and still
+  // shown on iPad/desktop; the phone simply doesn't mount them.
+  const isPhoneHome = useIsNarrow(767);
   // TEMPORARY — Hub Sneaker Count card. Its own card rather than a role tile
   // because it carries live state (hub picker + N-of-M progress) that a tile
   // cannot show. Admin-only, matching the rule that gates its writes; goes dark
@@ -3672,7 +3677,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
     <SkyHome
       tiles={homeTiles}
       groups={hubGroups}
-      liveCards={[["hubCount", hubCountCard], ["stockHold", stockHoldCard], ["displayReg", displayRegCard]]}
+      liveCards={[["hubCount", isPhoneHome ? null : hubCountCard], ["stockHold", isPhoneHome ? null : stockHoldCard], ["displayReg", displayRegCard]]}
       tag={homeTag}
       emptyMessage="No tools assigned to your account yet. Ask an admin to update your permissions."
       account={{

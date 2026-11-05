@@ -61,25 +61,23 @@ function Thumb({ product, size = 40, onOpen }) {
 // (toggle + setLastKey, exactly what the checkbox did), the stepper and the
 // copies field write the same count, the photo opens the same lightbox.
 export const BCS_CSS = `
-.bcs2{border-radius:20px;color:var(--sky-ink);font-family:var(--sky-font);overflow:hidden;
-  background:rgba(255,255,255,.58);border:1px solid rgba(255,255,255,.85);box-shadow:inset 0 1px 0 #fff,0 12px 32px rgba(10,60,140,.18);
+.bcs2{border-radius:22px;color:var(--sky-ink);font-family:var(--sky-font);overflow:hidden;
+  background:rgba(255,255,255,.42);border:1px solid rgba(255,255,255,.8);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 10px 26px rgba(10,60,140,.16);
   -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);transition:box-shadow .18s,background .18s}
-.bcs2:hover{background:rgba(255,255,255,.66)}
-.bcs2[data-open="1"]{background:rgba(255,255,255,.66);box-shadow:inset 0 1px 0 #fff,0 18px 40px rgba(10,60,140,.24)}
-.bcs2[data-picked="1"]{box-shadow:inset 0 0 0 2px var(--sky-navy),0 12px 32px rgba(10,60,140,.18)}
-.bcs2__head{display:flex;align-items:center;gap:14px;width:100%;padding:12px 14px 12px 12px;background:none;border:0;cursor:pointer;text-align:left;color:inherit;font:inherit}
-.bcs2__ph{flex:0 0 auto;width:72px;height:72px;border-radius:14px;overflow:hidden;background:#fff;border:1px solid #fff;box-shadow:0 4px 12px rgba(10,60,140,.14);display:grid;place-items:center;font-size:30px}
+.bcs2:hover{background:rgba(255,255,255,.52)}
+.bcs2[data-open="1"]{background:rgba(255,255,255,.6);box-shadow:inset 0 1px 0 #fff,0 16px 36px rgba(10,60,140,.22)}
+.bcs2[data-picked="1"]{box-shadow:inset 0 0 0 2px var(--sky-navy),0 10px 26px rgba(10,60,140,.16)}
+.bcs2__head{display:flex;align-items:center;gap:14px;width:100%;min-height:72px;padding:9px 16px 9px 10px;background:none;border:0;cursor:pointer;text-align:left;color:inherit;font:inherit}
+.bcs2__ph{flex:0 0 auto;width:54px;height:54px;border-radius:13px;overflow:hidden;background:#fff;box-shadow:0 3px 10px rgba(10,60,140,.16);display:grid;place-items:center;font-size:24px}
 .bcs2__ph img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in}
-.bcs2__tx{flex:1;min-width:0}
-.bcs2__nm{font-size:15px;font-weight:700;line-height:1.25;letter-spacing:-.01em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.bcs2__meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;margin-top:6px;font-size:12.5px;font-weight:600;color:var(--sky-ink-2)}
-.bcs2__price{color:var(--sky-navy);font-weight:800;font-variant-numeric:tabular-nums}
-.bcs2__cat{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:999px;color:var(--sky-ink);background:rgba(255,255,255,.75);border:1px solid #fff}
+.bcs2__tx{flex:1;min-width:0;display:flex;flex-direction:column}
+.bcs2__nm{font-size:16px;font-weight:800;line-height:1.25;letter-spacing:-.01em;color:var(--sky-ink-deep);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bcs2__meta{margin-top:3px;font-size:14px;font-weight:600;color:var(--sky-ink)}
 .bcs2__sel{flex:0 0 auto;font-size:12px;font-weight:800;color:#fff;background:var(--sky-navy);border-radius:999px;padding:4px 10px;font-variant-numeric:tabular-nums}
-.bcs2__chev{flex:0 0 auto;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.75);border:1px solid #fff;color:var(--sky-ink);transition:transform .18s}
-.bcs2[data-open="1"] .bcs2__chev{transform:rotate(180deg);background:var(--sky-navy);border-color:var(--sky-navy);color:#fff}
-.bcs2__sizes{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;padding:2px 12px 14px;border-top:1px solid rgba(11,42,82,.08);padding-top:12px}
-.bcs2__sz{display:flex;flex-direction:column;align-items:stretch;gap:6px;border-radius:14px;padding:9px 8px 8px;background:rgba(255,255,255,.62);border:1px solid #fff;color:var(--sky-ink)}
+.bcs2__chev{flex:0 0 auto;width:22px;height:22px;display:grid;place-items:center;color:var(--sky-ink-deep);transition:transform .18s}
+.bcs2[data-open="1"] .bcs2__chev{transform:rotate(90deg)}
+.bcs2__sizes{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px;padding:12px 12px 14px;border-top:1px solid rgba(11,42,82,.08)}
+.bcs2__sz{display:flex;flex-direction:column;align-items:stretch;gap:6px;border-radius:14px;padding:9px 8px 8px;background:rgba(255,255,255,.66);border:1px solid #fff;color:var(--sky-ink)}
 .bcs2__szb{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;padding:0;cursor:pointer;color:inherit;font:inherit}
 .bcs2__szv{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
 .bcs2__oh{font-size:11px;font-weight:700;color:var(--sky-ink-2)}
@@ -93,13 +91,224 @@ export const BCS_CSS = `
 .bcs2 :focus-visible{outline:2px solid var(--sky-navy);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){.bcs2,.bcs2__chev{transition:none}}
 `;
+
+// ─── THE DESKTOP PAGE (Junid 5 Nov: "this is exactly what I want" — his
+// Blue Sky Barcode Studio mock-up) ────────────────────────────────────────────
+// Three columns on the bare room: a glass sidebar (wordmark, Home, Location,
+// Category, Printer), the white "Barcode Studio" heading + search + count +
+// a two-up grid of compact cards, and two glass cards on the right (Print
+// tray, Label preview). White text sits on the sky / thin glass with the sky
+// text shadow, as in the mock-up.
+export const BCS_PAGE_CSS = `
+.bcsp{display:grid;grid-template-columns:268px minmax(0,1fr) 366px;gap:0 40px;align-items:start;padding:8px 30px 40px;color:#fff;font-family:var(--sky-font);box-sizing:border-box}
+.bcsp *{box-sizing:border-box}
+.bcsp__glass{border-radius:26px;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.7);box-shadow:inset 0 1px 0 rgba(255,255,255,.8),0 14px 34px rgba(10,60,140,.18);
+  -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
+.bcsp__w{text-shadow:var(--sky-text-shadow)}
+.bcsp__side{position:sticky;top:16px;min-height:calc(100vh - 210px);max-height:calc(100vh - 32px);overflow:auto;padding:24px 16px 18px;display:flex;flex-direction:column}
+.bcsp__mark{display:flex;align-items:baseline;gap:9px;padding:0 8px 22px;color:#fff;text-shadow:var(--sky-text-shadow)}
+.bcsp__mark b{font-size:25px;font-weight:900;font-style:italic;letter-spacing:-.04em}
+.bcsp__mark span{font-size:11px;font-weight:800;font-style:italic;letter-spacing:.5em}
+html[data-sky="on"] #root .bcsp .bcsp__home{display:flex;align-items:center;gap:8px;width:100%;height:46px;padding:0 16px;border-radius:15px;background:rgba(255,255,255,.72)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important;font:700 16px/1 var(--sky-font);cursor:pointer;box-shadow:0 6px 16px rgba(10,60,140,.12)}
+.bcsp__lab{font-size:12px;font-weight:800;letter-spacing:.22em;text-transform:uppercase;color:#fff;text-shadow:var(--sky-text-shadow);padding:26px 8px 10px}
+.bcsp__selw{position:relative}
+.bcsp__selw svg{position:absolute;right:15px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--sky-ink-deep)}
+html[data-sky="on"] #root .bcsp select.bcsp__sel{-webkit-appearance:none;appearance:none;width:100%;height:48px;padding:0 40px 0 16px;border-radius:15px;background:rgba(255,255,255,.62)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important;font:600 16px/1 var(--sky-font);cursor:pointer}
+html[data-sky="on"] #root .bcsp .bcsp__pr{display:flex;align-items:center;gap:9px;width:100%;margin-bottom:6px;height:42px;padding:0 14px;border-radius:13px;text-align:left;font:600 14px/1 var(--sky-font);cursor:pointer;background:rgba(255,255,255,.4)!important;border:1px solid rgba(255,255,255,.75)!important;color:var(--sky-ink)!important}
+html[data-sky="on"] #root .bcsp .bcsp__pr[data-on="1"]{background:rgba(255,255,255,.86)!important;border-color:#fff!important;color:var(--sky-ink-deep)!important;font-weight:800}
+html[data-sky="on"] #root .bcsp .bcsp__pr:disabled{cursor:not-allowed;opacity:.55}
+.bcsp__dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:#0a6a35;box-shadow:0 0 0 3px rgba(10,106,53,.18)}
+.bcsp__diag{margin-top:8px;padding:10px 11px;border-radius:12px;background:rgba(255,255,255,.8);border:1px solid #fff;color:var(--sky-ink-deep);font:600 11px/1.4 ui-monospace,monospace;word-break:break-word;display:flex;gap:6px}
+html[data-sky="on"] #root .bcsp .bcsp__x{background:none!important;border:0!important;padding:0;color:var(--sky-ink)!important;cursor:pointer;font-size:13px}
+.bcsp__queued{margin-top:16px;padding:14px;border-radius:16px;background:rgba(255,255,255,.72);border:1px solid #fff;color:var(--sky-ink-deep)}
+.bcsp__queued b{display:block;font-size:26px;font-weight:900;line-height:1;color:var(--sky-navy);font-variant-numeric:tabular-nums}
+.bcsp__queued span{display:block;margin-top:4px;font-size:12px;font-weight:600}
+.bcsp__main{min-width:0;padding-top:8px}
+.bcsp__h1{margin:0;font-size:42px;font-weight:800;letter-spacing:-.025em;line-height:1.1;color:#fff;text-shadow:var(--sky-text-shadow)}
+.bcsp__sub{margin-top:8px;font-size:18px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow)}
+.bcsp__srch{position:relative;margin-top:26px}
+.bcsp__srch svg{position:absolute;z-index:1;left:18px;top:50%;transform:translateY(-50%);color:#fff;pointer-events:none}
+html[data-sky="on"] #root .bcsp input.bcsp__in:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]){width:100%;height:42px;padding:0 18px 0 50px;border-radius:999px;background:rgba(255,255,255,.26)!important;border:1px solid rgba(255,255,255,.75)!important;color:#fff!important;caret-color:#fff;font:500 17px/1 var(--sky-font);outline:none;text-shadow:0 1px 6px rgba(0,40,110,.35);
+  -webkit-backdrop-filter:blur(20px) saturate(1.5);backdrop-filter:blur(20px) saturate(1.5)}
+html[data-sky="on"] #root .bcsp input.bcsp__in:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])::placeholder{color:rgba(255,255,255,.92)!important}
+.bcsp__n{margin:34px 4px 16px;font-size:17px;font-weight:800;color:#fff;text-shadow:var(--sky-text-shadow);font-variant-numeric:tabular-nums}
+.bcsp__grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 20px;align-items:start}
+.bcsp__right{position:sticky;top:16px;max-height:calc(100vh - 32px);overflow:auto;display:flex;flex-direction:column;gap:26px}
+.bcsp__tray{display:flex;flex-direction:column;min-height:240px}
+.bcsp__th{display:flex;align-items:center;gap:12px;padding:18px 18px 16px;border-bottom:1px solid rgba(255,255,255,.6)}
+.bcsp__th h2{margin:0;font-size:22px;font-weight:800;letter-spacing:-.015em;color:#fff;text-shadow:var(--sky-text-shadow)}
+.bcsp__badge{min-width:44px;height:30px;padding:0 12px;border-radius:999px;display:grid;place-items:center;background:rgba(255,255,255,.85);border:1px solid #fff;color:var(--sky-ink-deep);font-size:16px;font-weight:900;font-variant-numeric:tabular-nums}
+html[data-sky="on"] #root .bcsp .bcsp__clear{margin-left:auto;background:rgba(255,255,255,.72)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important;border-radius:999px;padding:6px 12px;font:700 13px/1 var(--sky-font);cursor:pointer}
+.bcsp__empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:34px 16px;font-size:16px;font-weight:600;color:#fff;text-shadow:var(--sky-text-shadow);text-align:center}
+.bcsp__empty svg{color:#fff;filter:drop-shadow(0 2px 8px rgba(0,40,110,.4))}
+.bcsp__items{padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.bcsp__it{display:flex;align-items:center;gap:10px;padding:9px 10px 9px 12px;border-radius:14px;background:rgba(255,255,255,.72);border:1px solid #fff;color:var(--sky-ink-deep);cursor:pointer}
+.bcsp__it[data-last="1"]{background:rgba(255,255,255,.92);box-shadow:inset 0 0 0 2px var(--sky-navy)}
+.bcsp__itn{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bcsp__its{font-size:12px;font-weight:600;color:var(--sky-ink-2)}
+.bcsp__foot{padding:4px 14px 16px}
+html[data-sky="on"] #root .bcsp .bcsp__print{width:100%;height:50px;border-radius:999px;display:flex;align-items:center;justify-content:center;gap:9px;background:var(--sky-navy)!important;border:0!important;color:#fff!important;font:800 15px/1 var(--sky-font);cursor:pointer;box-shadow:0 12px 26px -10px rgba(0,38,194,.85)}
+html[data-sky="on"] #root .bcsp .bcsp__print:disabled{cursor:not-allowed;opacity:.55;box-shadow:none}
+.bcsp__lp{padding:18px 18px 20px}
+.bcsp__lp h2{margin:0 0 6px;font-size:22px;font-weight:800;letter-spacing:-.015em;color:#fff;text-shadow:var(--sky-text-shadow)}
+.bcsp__lpe{display:flex;flex-direction:column;align-items:center;gap:16px;padding:22px 6px 6px;font-size:16px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow);text-align:center}
+.bcsp__lpi{width:62px;height:62px;border-radius:16px;display:grid;place-items:center;background:rgba(255,255,255,.6);border:1px solid #fff;color:var(--sky-ink-deep);box-shadow:0 8px 20px rgba(10,60,140,.16)}
+.bcsp__label{margin-top:10px;background:#f7f7f2;color:#0a0a0a;border-radius:10px;padding:12px 14px 10px;box-shadow:0 12px 30px -12px rgba(0,30,90,.5);font-family:'SF Mono',ui-monospace,monospace}
+@media (max-width:1279px){.bcsp{grid-template-columns:232px minmax(0,1fr) 320px;gap:0 24px;padding:8px 20px 40px}.bcsp__grid{grid-template-columns:minmax(0,1fr)}.bcsp__h1{font-size:34px}}
+@media (prefers-reduced-motion:reduce){.bcsp *{transition:none!important}}
+`;
+
+const IcoChevDown = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>;
+const IcoPrinter = ({ s = 16 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V3h12v6" /><rect x="3" y="9" width="18" height="8" rx="2.5" /><rect x="7" y="14" width="10" height="7" rx="1" /></svg>;
+
+// Presentation of the desktop Barcode Studio. Every value and handler comes
+// from BarcodeCatalog unchanged (the dev harness mounts it with fixtures).
+export function BarcodeStudioDesktop(v) {
+  const { onExit, loc, setLoc, locOptions, categories, cat, setCat, transport, setTransport, diagText, setDiagText,
+          totalCopies, canMint, search, setSearch, filtered, openId, setOpenId, sel, onHand, toggle, setCount,
+          lastKey, setLastKey, lastItem, lastP, previewCode, selList, clearSel, busy, doPrint, onPhoto } = v;
+  return (
+    <div className="bcsp" data-testid="barcode-studio">
+      <style>{BCS_CSS}</style>
+      <style>{BCS_PAGE_CSS}</style>
+
+      <aside className="bcsp__side bcsp__glass">
+        <div className="bcsp__mark" data-contrast-exempt=""><b>marathon</b><span>CLUB</span></div>
+        <button type="button" className="bcsp__home" onClick={onExit}>← Home</button>
+
+        <div className="bcsp__lab" data-contrast-exempt="">Location</div>
+        <div className="bcsp__selw">
+          <select className="bcsp__sel" value={loc} onChange={(e) => setLoc(e.target.value)} aria-label="Location">
+            {locOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+          </select>
+          <IcoChevDown />
+        </div>
+        {categories.length > 1 && <>
+          <div className="bcsp__lab" data-contrast-exempt="">Category</div>
+          <div className="bcsp__selw">
+            <select className="bcsp__sel" value={cat} onChange={(e) => setCat(e.target.value)} aria-label="Category">
+              <option value="all">All</option>
+              {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <IcoChevDown />
+          </div>
+        </>}
+
+        <div className="bcsp__lab" data-contrast-exempt="">Printer</div>
+        {TRANSPORTS.map((t) => {
+          const supported = t.supported(); const on = transport === t.id;
+          const cleanLabel = t.label.replace(/\s*\((?:bluetooth|usb|ble)\)\s*$/i, "");
+          return (
+            <button key={t.id} type="button" className="bcsp__pr" data-on={on ? "1" : undefined}
+                    onClick={() => supported && setTransport(t.id)} disabled={!supported}>
+              <span style={{ flex: 1 }}>{cleanLabel}</span>
+              {on && <span className="bcsp__dot" title="Selected printer" />}
+            </button>
+          );
+        })}
+        {transport === "xprinter" && <PrinterStatus style={{ padding: "6px 8px 0" }} />}
+        {diagText && (
+          <div className="bcsp__diag">
+            <span style={{ flex: 1 }}>{diagText}</span>
+            <button type="button" className="bcsp__x" aria-label="Dismiss" onClick={() => setDiagText(null)}>✕</button>
+          </div>
+        )}
+        <div style={{ flex: 1 }} />
+        {totalCopies > 0 && (
+          <div className="bcsp__queued">
+            <b>{totalCopies}</b>
+            <span>label{totalCopies !== 1 ? "s" : ""} queued · {selList.length} size{selList.length !== 1 ? "s" : ""}</span>
+          </div>
+        )}
+      </aside>
+
+      <main className="bcsp__main">
+        <h1 className="bcsp__h1" data-contrast-exempt="">Barcode Studio</h1>
+        <div className="bcsp__sub" data-contrast-exempt="">{canMint ? "Pick sizes, set copies, and print — the label preview updates live." : "Re-print existing labels — new codes are created by warehouse/admin."}</div>
+        <div className="bcsp__srch">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7.5" /><path d="M20.5 20.5l-4.2-4.2" /></svg>
+          <input className="bcsp__in" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products..." aria-label="Search products" />
+        </div>
+        <div className="bcsp__n" data-contrast-exempt="">{filtered.length.toLocaleString("en-US")} product{filtered.length !== 1 ? "s" : ""}</div>
+        {filtered.length === 0 ? <Empty>No products match.</Empty> : (
+          <div className="bcsp__grid">
+            {filtered.map((p) => (
+              <BcsCard key={p.id} p={p} expanded={openId === p.id} sel={sel} onHand={onHand}
+                       onToggleOpen={() => setOpenId(openId === p.id ? null : p.id)}
+                       onPick={(sz, k) => { toggle(p, sz); setLastKey(k); }}
+                       onCount={(k, val) => { setCount(k, val); setLastKey(k); }}
+                       onPhoto={p.photoUrl ? () => onPhoto(p.photoUrl) : undefined} />
+            ))}
+          </div>
+        )}
+      </main>
+
+      <aside className="bcsp__right">
+        <section className="bcsp__tray bcsp__glass" aria-label="Print tray">
+          <div className="bcsp__th">
+            <h2 data-contrast-exempt="">Print tray</h2>
+            <span className="bcsp__badge">{selList.length}</span>
+            {selList.length > 0 && <button type="button" className="bcsp__clear" onClick={clearSel}>Clear</button>}
+          </div>
+          {selList.length === 0 ? (
+            <div className="bcsp__empty" data-contrast-exempt=""><IcoPrinter s={44} />Tray is empty.</div>
+          ) : <>
+            <div className="bcsp__items">
+              {selList.map(([k, it]) => (
+                <div key={k} className="bcsp__it" data-last={lastKey === k ? "1" : undefined} onClick={() => setLastKey(k)}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="bcsp__itn">{it.productName}</div>
+                    <div className="bcsp__its">Size {formatSize(it.size)} · ×{it.count}</div>
+                  </div>
+                  <button type="button" className="bcsp__x" aria-label="Remove" onClick={(e) => { e.stopPropagation(); toggle({ id: it.productId }, it.size); if (lastKey === k) setLastKey(null); }}>✕</button>
+                </div>
+              ))}
+            </div>
+            <div className="bcsp__foot">
+              <button type="button" className="bcsp__print" onClick={doPrint} disabled={busy || !totalCopies}>
+                <IcoPrinter />
+                {busy ? "Printing…" : `Print ${totalCopies} label${totalCopies !== 1 ? "s" : ""}`}
+              </button>
+            </div>
+          </>}
+        </section>
+
+        <section className="bcsp__lp bcsp__glass" aria-label="Label preview">
+          <h2 data-contrast-exempt="">Label preview</h2>
+          {lastP && lastItem ? (
+            <div className="bcsp__label">
+              <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: -.2 }}>{lastP.name}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 2 }}>
+                <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: -.5 }}>{formatSize(lastItem.size)}</span>
+                {typeof lastP.retailPrice === "number" && lastP.retailPrice > 0 && <span style={{ fontSize: 14, fontWeight: 800 }}>R{lastP.retailPrice.toLocaleString("en-ZA")}</span>}
+              </div>
+              {previewCode ? <>
+                <div style={{ display: "flex", alignItems: "stretch", height: 44, marginTop: 9 }}>
+                  {code128Modules(previewCode).map((m, i) => <span key={i} style={{ width: m.width * 1.5, background: m.bar ? "#0a0a0a" : "transparent" }} />)}
+                </div>
+                <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, marginTop: 3, fontWeight: 700 }}>{previewCode}</div>
+              </> : (
+                <div style={{ fontSize: 10.5, color: "#555", textAlign: "center", padding: "16px 0 8px" }}>{canMint ? "Barcode assigned when you print." : "No code yet — a warehouse/admin must create it."}</div>
+              )}
+            </div>
+          ) : (
+            <div className="bcsp__lpe" data-contrast-exempt="">
+              <span className="bcsp__lpi"><svg width="30" height="26" viewBox="0 0 30 26" fill="currentColor"><rect x="2" y="2" width="3" height="22" rx="1.5" /><rect x="8" y="2" width="3" height="22" rx="1.5" /><rect x="14" y="2" width="3" height="22" rx="1.5" /><rect x="20" y="2" width="3" height="22" rx="1.5" /><rect x="26" y="2" width="3" height="22" rx="1.5" /></svg></span>
+              Select a size to preview its label.
+            </div>
+          )}
+        </section>
+      </aside>
+    </div>
+  );
+}
+
 // On-hand ink that reads on glass (the old red/amber/green were for black).
 const ohInk = (n) => (n === 0 ? "#a4161a" : n <= 2 ? "#7a4b00" : "#0a6a35");
 
 export function BcsCard({ p, expanded, sel, onToggleOpen, onPick, onCount, onHand, onPhoto }) {
   const selCount = p.sizes.filter((s) => sel[keyOf(p.id, s)]).length;
   const url = primaryPhotoUrl(p);
-  const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
   return (
     <div className="bcs2" data-open={expanded ? "1" : undefined} data-picked={selCount ? "1" : undefined} data-testid="bcs-card">
       <button type="button" className="bcs2__head" aria-expanded={expanded} onClick={onToggleOpen}>
@@ -110,16 +319,12 @@ export function BcsCard({ p, expanded, sel, onToggleOpen, onPick, onCount, onHan
             : "👟"}
         </span>
         <span className="bcs2__tx">
-          <span className="bcs2__nm">{p.name}</span>
-          <span className="bcs2__meta">
-            <span>{p.sizes.length} size{p.sizes.length === 1 ? "" : "s"}</span>
-            {priced && <span className="bcs2__price">R{p.retailPrice.toLocaleString("en-ZA")}</span>}
-            {p.category && <span className="bcs2__cat">{p.category}</span>}
-          </span>
+          <span className="bcs2__nm" title={p.name}>{p.name}</span>
+          <span className="bcs2__meta">{p.sizes.length} size{p.sizes.length === 1 ? "" : "s"}</span>
         </span>
         {selCount > 0 && <span className="bcs2__sel">{selCount} picked</span>}
         <span className="bcs2__chev" aria-hidden="true">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg>
         </span>
       </button>
       {expanded && (
@@ -318,171 +523,21 @@ export default function BarcodeCatalog({ products, canMint, onExit, myShop = nul
     const totalCopies = selList.reduce((s, [, it]) => s + (parseInt(it.count, 10) || 0), 0);
     const lastItem = lastKey ? sel[lastKey] : null;
     const lastP = lastItem ? products.find(p => p.id === lastItem.productId) : null;
-    const catCol = (c) => /cloth|apparel|tee|hood|shirt|pant|jacket/i.test(c || "")
-      ? { fg: "#C59BFF", bg: "rgba(138,109,255,.16)", tint: "rgba(138,109,255,.10)", bd: "rgba(138,109,255,.3)" }
-      : { fg: "#7FA6FF", bg: "rgba(74,127,255,.16)", tint: "rgba(74,127,255,.10)", bd: "rgba(74,127,255,.3)" };
-    const ohColor = (n) => n === 0 ? "#FF7A7A" : n <= 2 ? "#F5A623" : "#5FD08A";
-    const selStyle = { width: "100%", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.14)", borderRadius: 10, color: "rgba(233,238,255,.75)", fontSize: 12.5, fontWeight: 600, padding: "10px 11px", cursor: "pointer", fontFamily: FONT, marginBottom: 6 };
+    const locOptions = [{ id: "all", label: "All locations" }, ...locations.map(l => ({ id: l.id, label: labelFor(l.id, registry) }))];
     return (
-      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "224px minmax(0,1fr) 340px", overflow: "hidden" }}>
-        <style>{`
-          .bcs-card{transition:border-color .18s,box-shadow .18s}
-          .bcs-card:hover{border-color:rgba(74,127,255,.4)}
-          .bcs-scroll::-webkit-scrollbar,.bcs-side::-webkit-scrollbar,.bcs-tray::-webkit-scrollbar{width:9px}
-          .bcs-scroll::-webkit-scrollbar-thumb,.bcs-side::-webkit-scrollbar-thumb,.bcs-tray::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:8px;border:2px solid transparent;background-clip:content-box}
-          .bcs-stp button:hover{background:rgba(74,127,255,.2)}
-        `}</style>
-        <style>{BCS_CSS}</style>
-
-        {/* SIDEBAR */}
-        <aside className="bcs-side" style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 14px 16px", display: "flex", flexDirection: "column", gap: 5, overflow: "auto" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 8px 8px" }}>
-            <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: -.6 }}>marathon</span>
-            <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
-          </div>
-          <button onClick={onExit} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", color: "rgba(233,238,255,.6)", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, marginBottom: 8 }}>← Home</button>
-
-          <div style={{ fontSize: 9.5, letterSpacing: ".2em", textTransform: "uppercase", color: "rgba(233,238,255,.3)", padding: "10px 8px 7px", fontWeight: 700 }}>Location</div>
-          <select value={loc} onChange={e => setLoc(e.target.value)} style={selStyle}>
-            <option value="all">All locations</option>
-            {locations.map(l => <option key={l.id} value={l.id}>{labelFor(l.id, registry)}</option>)}
-          </select>
-          {categories.length > 1 && <>
-            <div style={{ fontSize: 9.5, letterSpacing: ".2em", textTransform: "uppercase", color: "rgba(233,238,255,.3)", padding: "10px 8px 7px", fontWeight: 700 }}>Category</div>
-            <select value={cat} onChange={e => setCat(e.target.value)} style={selStyle}>
-              <option value="all">All</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </>}
-
-          <div style={{ fontSize: 9.5, letterSpacing: ".2em", textTransform: "uppercase", color: "rgba(233,238,255,.3)", padding: "12px 8px 7px", fontWeight: 700 }}>Printer</div>
-          {TRANSPORTS.map(t => {
-            const supported = t.supported(); const on = transport === t.id;
-            const cleanLabel = t.label.replace(/\s*\((?:bluetooth|usb|ble)\)\s*$/i, "");
-            return (
-              <button key={t.id} onClick={() => supported && setTransport(t.id)} disabled={!supported}
-                style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", cursor: supported ? "pointer" : "not-allowed", fontFamily: FONT, fontSize: 12.5, fontWeight: 600, borderRadius: 10, padding: "9px 11px",
-                         background: on ? "rgba(74,127,255,.12)" : "transparent", border: on ? "1px solid rgba(74,127,255,.4)" : "1px solid transparent",
-                         color: supported ? (on ? "#9DBCFF" : "rgba(233,238,255,.55)") : "rgba(255,255,255,.25)", opacity: supported ? 1 : .6 }}>
-                <span style={{ flex: 1 }}>{cleanLabel}</span>
-                {on && <span title="Selected printer" style={{ flexShrink: 0, width: 7, height: 7, borderRadius: "50%", background: "#4ADE80", boxShadow: "0 0 8px #4ADE80" }} />}
-              </button>
-            );
-          })}
-          {transport === "xprinter" && <PrinterStatus style={{ padding: "6px 8px 0" }} />}
-          {diagText && (
-            <div style={{ marginTop: 8, padding: "9px 10px", borderRadius: 9, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", fontSize: 10.5, color: "#fff", wordBreak: "break-word", fontFamily: "monospace", display: "flex", gap: 6 }}>
-              <span style={{ flex: 1 }}>{diagText}</span>
-              <button onClick={() => setDiagText(null)} style={{ background: "none", border: "none", color: GRAY, cursor: "pointer", padding: 0 }}>✕</button>
-            </div>
-          )}
-          <div style={{ flex: 1 }} />
-          <div style={{ marginTop: 8, padding: 13, borderRadius: 13, background: "linear-gradient(160deg,rgba(74,127,255,.12),rgba(10,12,22,.3))", border: "1px solid rgba(74,127,255,.3)" }}>
-            <div style={{ fontSize: 26, fontWeight: 800, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{totalCopies}</div>
-            <div style={{ fontSize: 11, color: "rgba(233,238,255,.55)", marginTop: 3 }}>label{totalCopies !== 1 ? "s" : ""} queued · {selList.length} size{selList.length !== 1 ? "s" : ""}</div>
-          </div>
-        </aside>
-
-        {/* MAIN */}
-        <div style={{ minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div style={{ padding: "20px 26px 14px", borderBottom: "1px solid rgba(255,255,255,.08)", background: "radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
-            <div style={{ fontSize: 23, fontWeight: 800, letterSpacing: -.4 }}>Barcode Studio</div>
-            <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.55)", marginTop: 3 }}>{canMint ? "Pick sizes, set copies, and print — the label preview updates live." : "Re-print existing labels — new codes are created by warehouse/admin."}</div>
-            <div style={{ marginTop: 15, position: "relative" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ position: "absolute", left: 13, top: "50%", transform: "translateY(-50%)", opacity: .4 }}><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"
-                style={{ width: "100%", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.14)", borderRadius: 12, color: "#fff", fontSize: 13.5, padding: "11px 14px 11px 38px", outline: "none", fontFamily: FONT }} />
-            </div>
-          </div>
-          <div className="bcs-scroll" style={{ flex: 1, overflow: "auto", padding: "16px 26px 40px" }}>
-            <div style={{ fontSize: 11, color: "rgba(233,238,255,.3)", margin: "0 2px 12px" }}>{filtered.length} product{filtered.length !== 1 ? "s" : ""}</div>
-            {filtered.length === 0 ? <Empty>No products match.</Empty> : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 14, alignItems: "start" }}>
-                {filtered.map(p => (
-                  <BcsCard key={p.id} p={p} expanded={openId === p.id} sel={sel} onHand={onHand}
-                           onToggleOpen={() => setOpenId(openId === p.id ? null : p.id)}
-                           onPick={(sz, k) => { toggle(p, sz); setLastKey(k); }}
-                           onCount={(k, v) => { setCount(k, v); setLastKey(k); }}
-                           onPhoto={p.photoUrl ? () => setLightbox(p.photoUrl) : undefined} />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* PRINT TRAY */}
-        <aside className="bcs-tray" style={{ background: "rgba(255,255,255,.015)", borderLeft: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div style={{ padding: "18px 16px 13px", borderBottom: "1px solid rgba(255,255,255,.08)", display: "flex", alignItems: "center", gap: 9 }}>
-            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>Print tray</h2>
-            <span style={{ fontSize: 11, fontWeight: 800, background: "rgba(74,127,255,.2)", color: "#9DBCFF", borderRadius: 999, padding: "2px 9px", fontVariantNumeric: "tabular-nums" }}>{selList.length}</span>
-            {selList.length > 0 && <button onClick={() => { setSel({}); setLastKey(null); }} style={{ marginLeft: "auto", background: "transparent", border: 0, color: "rgba(233,238,255,.3)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>Clear</button>}
-          </div>
-          {/* Live label preview */}
-          <div style={{ padding: "16px 16px 6px" }}>
-            <div style={{ fontSize: 9.5, letterSpacing: ".16em", textTransform: "uppercase", color: "rgba(233,238,255,.3)", marginBottom: 9, fontWeight: 700 }}>Label preview</div>
-            {lastP && lastItem ? (
-              <div style={{ background: "#f7f7f2", color: "#0a0a0a", borderRadius: 8, padding: "12px 14px 10px", boxShadow: "0 12px 30px -12px rgba(0,0,0,.6)", fontFamily: "'SF Mono', ui-monospace, monospace" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: -.2 }}>{lastP.name}</div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 2 }}>
-                  <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: -.5 }}>{formatSize(lastItem.size)}</span>
-                  {typeof lastP.retailPrice === "number" && lastP.retailPrice > 0 && <span style={{ fontSize: 14, fontWeight: 800 }}>R{lastP.retailPrice.toLocaleString("en-ZA")}</span>}
-                </div>
-                {previewCode ? <>
-                  <div style={{ display: "flex", alignItems: "stretch", height: 44, marginTop: 9 }}>
-                    {code128Modules(previewCode).map((m, i) => <span key={i} style={{ width: m.width * 1.5, background: m.bar ? "#0a0a0a" : "transparent" }} />)}
-                  </div>
-                  <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, marginTop: 3, fontWeight: 700 }}>{previewCode}</div>
-                </> : (
-                  <div style={{ fontSize: 10.5, color: "#666", textAlign: "center", padding: "16px 0 8px" }}>{canMint ? "Barcode assigned when you print." : "No code yet — a warehouse/admin must create it."}</div>
-                )}
-              </div>
-            ) : (
-              <div style={{ color: "rgba(233,238,255,.3)", fontSize: 12, textAlign: "center", padding: "28px 10px" }}>Select a size to preview its label.</div>
-            )}
-          </div>
-          <div className="bcs-tray" style={{ flex: 1, overflow: "auto", padding: "8px 14px" }}>
-            {selList.length === 0 ? (
-              <div style={{ color: "rgba(233,238,255,.3)", fontSize: 12, textAlign: "center", padding: 20 }}>Tray is empty.</div>
-            ) : selList.map(([k, it]) => {
-              const p = products.find(x => x.id === it.productId); const cc = catCol(p?.category);
-              return (
-                <div key={k} onClick={() => setLastKey(k)} style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 0", borderTop: "1px solid rgba(255,255,255,.06)", cursor: "pointer" }}>
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: cc.fg }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, fontWeight: 650, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.productName}</div>
-                    <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.4)" }}>Size {formatSize(it.size)} · ×{it.count}</div>
-                  </div>
-                  <button onClick={e => { e.stopPropagation(); toggle({ id: it.productId }, it.size); if (lastKey === k) setLastKey(null); }} style={{ background: "transparent", border: 0, color: "rgba(233,238,255,.3)", cursor: "pointer", fontSize: 13 }}>✕</button>
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ borderTop: "1px solid rgba(255,255,255,.08)", padding: "15px 16px" }}>
-            {(() => {
-              const off = busy || !totalCopies;
-              return (
-                <button onClick={doPrint} disabled={off}
-                  style={{ width: "100%", padding: 14, borderRadius: 12, fontSize: 14, fontWeight: 800, cursor: off ? "not-allowed" : "pointer",
-                           display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                           border: off ? "1px solid rgba(74,127,255,.3)" : "0",
-                           background: off ? "rgba(74,127,255,.1)" : "linear-gradient(90deg,#6e7bff,#7f5af0)",
-                           color: off ? "rgba(157,188,255,.85)" : "#04120a",
-                           boxShadow: off ? "none" : "0 10px 26px -8px rgba(127,90,240,.7)" }}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                  {busy ? "Printing…" : `Print ${totalCopies} label${totalCopies !== 1 ? "s" : ""}`}
-                </button>
-              );
-            })()}
-          </div>
-        </aside>
-
+      <>
+        <BarcodeStudioDesktop onExit={onExit} loc={loc} setLoc={setLoc} locOptions={locOptions} categories={categories} cat={cat} setCat={setCat}
+          transport={transport} setTransport={setTransport} diagText={diagText} setDiagText={setDiagText} totalCopies={totalCopies} canMint={canMint}
+          search={search} setSearch={setSearch} filtered={filtered} openId={openId} setOpenId={setOpenId} sel={sel} onHand={onHand}
+          toggle={toggle} setCount={setCount} lastKey={lastKey} setLastKey={setLastKey} lastItem={lastItem} lastP={lastP} previewCode={previewCode}
+          selList={selList} clearSel={() => { setSel({}); setLastKey(null); }} busy={busy} doPrint={doPrint} onPhoto={setLightbox} />
         {lightbox && (
           <div onClick={() => setLightbox(null)} style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,.85)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, cursor: "zoom-out" }}>
             <img src={lightbox} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 10 }} />
           </div>
         )}
         <Toast msg={toast} />
-      </div>
+      </>
     );
   }
 

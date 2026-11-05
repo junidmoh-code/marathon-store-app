@@ -91,18 +91,27 @@ prices 700–800 tabular, "R" and no decimals.
   count as a full-strength navy "0". Still tappable: the tap raises the live
   why-note and "Available now instead". `scripts/sky-availability.e2e.mjs`
   proves it in Chromium and WebKit; the contrast gate checks the "0".
-- **Barcode Studio card** (`BcsCard`, Junid 5 Nov) — one glass card per
-  product: 72px white-framed photo, the name on two lines, "N sizes · R price"
-  and a white category chip, a navy "N picked" pill and a round chevron. Open,
-  the sizes are glass tiles (size, "on hand N" in dark red/amber/green); a
-  picked tile goes solid navy with a white copies stepper. Same handlers.
+- **Barcode Studio** (Junid 5 Nov mock-up, "exactly what I want") — desktop:
+  three columns on the bare room — a glass sidebar (white wordmark, Home,
+  LOCATION / CATEGORY selects, PRINTER), the white "Barcode Studio" heading,
+  subtitle, clear search pill, white product count and a two-up grid of
+  compact cards; on the right a "Print tray" glass card (white title, white
+  count pill, Clear, items, navy Print button) and a "Label preview" card.
+  Card (`BcsCard`, also on phone): 54px white-framed photo, the name on one
+  line, "N sizes", a chevron that turns down when open; open, the sizes are
+  glass tiles (size, "on hand N" in dark red/amber/green) and a picked tile
+  goes solid navy with a white copies stepper. White text there carries the
+  sky text shadow and `data-contrast-exempt`, as the home tiles do.
 - **SkyPlus** — round solid-white button, navy plus.
 - **SkyBottomBar** — slim (48px) glass bar: cart icon, divider, item count,
   solid white pill CTA. It appears only once the cart holds something.
-- **Admin hub** — ONE layer of glass per card: the live cards (Hub Count,
-  Shipment Release, Display Registration) draw their own glass, with no glass
-  frame around them; their buttons and the tool cards' icon tiles are light
-  rims, not white slabs.
+- **Admin hub** (Junid 5 Nov mock-up) — one flat grid of clear glass tiles
+  (the home-tile recipe): white line icon, white bold name, the badge a white
+  pill with navy number; no group headings, no descriptions (they are the
+  tooltip), no ADMIN pill. 4-up from 900px, 2-up on the phone with the badge
+  in the tile's corner. Live cards (Hub Count & Displays, Shipment Release,
+  Display Registration) sit above, each its own glass; on the PHONE Hub
+  Count & Displays and Shipment Release are not mounted (code kept).
 
 ## 6. Layout
 - Phone (reference 426px wide): 16–18px gutters; home = 2×2 tiles of ≈183×180
