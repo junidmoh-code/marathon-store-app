@@ -133,6 +133,8 @@ import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SneakerWall from "./components/assistant/SneakerWall.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
+import { WallPair } from "./components/assistant/WallPair.jsx";
+import { generatedTileSrc, useWallManifest, wallPhotoList } from "./components/assistant/wallTiles.js";
 import { isWallPreviewOn, isWallPreviewFromUrl, canTogglePreview, setWallPreview } from "./components/assistant/orderViewPreview";
 import WallAlternatives, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/WallAlternatives.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
@@ -8798,6 +8800,9 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const [brand, setBrand] = useState("All");
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
+  // Generated studio tiles (staff wall): the popup's photo is a swipeable pair,
+  // generated first, original second; the lightbox opens in the same order.
+  const wallManifest = useWallManifest();
   const [qvSize, setQvSize] = useState(null);
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
@@ -9338,15 +9343,15 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                 wall's tiles since round 3, into the popup header. Renders
                 nothing for a non-admin. */}
             {wall && <div className="ad-svacts"><ProductActionsButton product={qv} products={products} /></div>}
-            <div className="ad-svimg" onClick={() => qv.photoUrl && onViewPhoto(productPhotos(qv))} style={{ cursor: qv.photoUrl ? "zoom-in" : "default" }}>
+            <div className="ad-svimg" onClick={() => { const ph = wall ? wallPhotoList(qv, productPhotos(qv), wallManifest) : productPhotos(qv); if (ph.length) onViewPhoto(ph); }} style={{ cursor: qv.photoUrl || (wall && generatedTileSrc(qv, wallManifest)) ? "zoom-in" : "default" }}>
               <span className="ad-cat" style={{ top: 14, left: 14 }}>{qv.brand || (mode !== "sneaker" ? "Clothing" : "Sneakers")}</span>
               {/* The wall's popup draws the full-resolution original — the
                   file the lightbox opens — with the cached thumbnail as its
                   offline fallback (round 3, item 2). Called directly, not
                   through the inline Photo, so a re-render never remounts it. */}
               {wall
-                ? <HiResPhoto key={`${qv.id}|${qv.photoUrl || ""}`} p={qv} alt={qv.name} style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                              fallback={<span style={{ fontSize: 110 }}>{qv.photo || "👟"}</span>} />
+                ? <WallPair key={qv.id} p={qv} gen={generatedTileSrc(qv, wallManifest)}
+                            fallback={<span style={{ fontSize: 110 }}>{qv.photo || "👟"}</span>} />
                 : <Photo p={qv} big />}
             </div>
             <div className="ad-svbody">

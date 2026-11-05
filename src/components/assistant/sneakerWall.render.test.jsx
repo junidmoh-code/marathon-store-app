@@ -27,6 +27,7 @@ const { default: SneakerWall, tilePhotoSrc, TilePhoto } = await import("./Sneake
 const { groupOrderLines, orderLinesTotal } = await import("./assistantOrderModel");
 const WALL = readFileSync(new URL("./SneakerWall.jsx", import.meta.url), "utf8");
 const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
+const PAIR = readFileSync(new URL("./WallPair.jsx", import.meta.url), "utf8");
 
 const KOBE = { id: "pKobe", name: "Air Force 1 Low QS Kobe Yellow", brand: "Nike", retailPrice: 750, sizes: ["6", "7", "8", "10"], photoUrl: "https://firebasestorage.googleapis.com/v0/b/b/o/products%2FpKobe%2Fphoto.jpg?alt=media&token=t" };
 const PANDA = { id: "pPanda", name: "Nike Dunk Low Panda", brand: "Nike", retailPrice: 1500, sizes: ["7", "9"], photoUrl: "https://x/panda.jpg" };
@@ -114,7 +115,8 @@ describe("the popup's own behaviour", () => {
     expect(WALL).toContain('if (e.key !== "Escape" || modalOpen) return;');
   });
   it("its large photo opens the full-screen lightbox", () => {
-    expect(APP).toContain('<div className="ad-svimg" onClick={() => qv.photoUrl && onViewPhoto(productPhotos(qv))}');
+    // Since the generated tiles (2026-11-05) the list is generated-first when the product has one (wallTiles.render.test).
+    expect(APP).toContain('<div className="ad-svimg" onClick={() => { const ph = wall ? wallPhotoList(qv, productPhotos(qv), wallManifest) : productPhotos(qv); if (ph.length) onViewPhoto(ph); }}');
   });
   it("the deactivate / merge ⋯ sits in its header, on the wall", () => {
     expect(APP).toContain('{wall && <div className="ad-svacts"><ProductActionsButton product={qv} products={products} /></div>}');
@@ -157,7 +159,9 @@ describe("full-resolution tile photos (item 2)", () => {
     expect(img.props["data-mirrored"]).toBeUndefined();
   });
   it("the popup's photo is full-resolution too", () => {
-    expect(APP).toContain("? <HiResPhoto key={`${qv.id}|${qv.photoUrl || \"\"}`} p={qv} alt={qv.name}");
+    // WallPair draws the original through the same HiResPhoto (and the generated tile first when there is one).
+    expect(APP).toContain("? <WallPair key={qv.id} p={qv} gen={generatedTileSrc(qv, wallManifest)}");
+    expect(PAIR).toContain("<HiResPhoto key={`${p.id}|${p.photoUrl || \"\"}`} p={p} alt={p.name}");
   });
 });
 
