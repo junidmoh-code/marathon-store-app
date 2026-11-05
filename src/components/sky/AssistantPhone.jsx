@@ -1,17 +1,19 @@
 // ─── STORE ASSISTANT ORDER VIEW, PHONE (design/assistant-phone.png) ─────────
 //
-// The phone/iPad-portrait breakpoint of the order screen, on the sky DNA:
-// header with the ASSISTANT pill, the Sneakers / Clothing toggle, the store
-// chips, "Place order", the search pill with the camera (the tongue-label
-// scan), two-up podium cards with a plus, and the glass cart bar.
+// The phone/iPad-portrait breakpoint of the order screen, on the sky DNA.
+// Compact top band (Junid, 5 Nov): header with the STORE pill under the
+// wordmark (tap → store popover), a compact Sneakers / Clothing toggle, the
+// search pill with the camera (the tongue-label scan), the brand strip, two-up
+// cards with a plus, and the glass cart bar. No store row, no "Place order"
+// heading — the first card row sits above the fold on a phone.
 //
 // Presentation only. Every handler is AssistantView's own, passed straight
 // through: a card or its plus opens the existing size sheet, the camera opens
-// the existing label finder, a store chip asks the existing red switch-confirm,
+// the existing label finder, a store pick asks the existing red switch-confirm,
 // the bar opens the existing checkout. Nothing here reads or writes data.
 
 import { useState } from "react";
-import { SkyHeader, SkySegmented, SkySearch, SkyBrandStrip, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
+import { SkyHeader, SkySegmented, SkySearch, SkyBrandStrip, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
 import { IconExpand } from "./SkyIcons.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
 
@@ -28,7 +30,12 @@ export default function AssistantPhone({
   return (
     <div className="ap-root" data-testid="assistant-phone">
       <style>{AP_CSS}</style>
-      <SkyHeader tag="ASSISTANT" onGrid={onExit} gridLabel="Switch view"
+      {/* The store pill replaces the old ASSISTANT tag and the store row.
+          Only the shops this account is assigned to; with one (auto-selected)
+          it is a plain pill, so nobody can mis-pick a store that is not theirs. */}
+      <SkyHeader onGrid={onExit} gridLabel="Switch view"
+                 tagNode={<SkyStorePill value={effectiveShop} stores={shops} labelOf={shopLabel}
+                                        onPick={(id) => { if (id !== effectiveShop) onShop(id); }} />}
                  onUser={() => setMe((v) => !v)} userLabel="Account" />
       {me && (
         <div className="ap-me sky-glass" role="menu">
@@ -39,23 +46,9 @@ export default function AssistantPhone({
       )}
 
       <div className="ap-controls">
-        <SkySegmented size="lg" ariaLabel="Product type" className="ap-mode"
+        <SkySegmented ariaLabel="Product type" className="ap-mode"
                       value={mode === "clothing" ? "clothing" : mode === "cr" ? "cr" : "sneaker"}
                       options={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]} onChange={onMode} />
-        {/* The store chips. Only the shops this account is assigned to; hidden
-            when there is exactly one (it is auto-selected), so nobody can
-            mis-pick a store that is not theirs. */}
-        {shops && shops.length > 1 && (
-          <SkySegmented ariaLabel="Order for" className="ap-shops"
-                        value={effectiveShop}
-                        options={shops.map((s) => [s.id, shopLabel(s.id)])}
-                        onChange={(id) => { if (id !== effectiveShop) onShop(id); }} />
-        )}
-      </div>
-
-      <div className="ap-title">
-        <h1 className="sky-h1 ap-h1">Place order</h1>
-        <div className="sky-sub ap-sub">Choose products to add to your cart</div>
       </div>
 
       <div className="ap-search">
@@ -126,17 +119,12 @@ const AP_CSS = `
 .ap-mewho{font-size:16px;font-weight:800}
 .ap-mesub{font-size:12px;color:var(--sky-ink-2);margin:2px 0 10px}
 .ap-mebtn{width:100%;height:40px;border-radius:999px;border:1px solid #fff;background:var(--sky-glass-solid);color:var(--sky-navy);font:800 14px/1 var(--sky-font);cursor:pointer}
-.ap-controls{padding:20px 18px 0;display:flex;flex-direction:column;gap:12px;max-width:560px;margin:0 auto}
-.ap-mode{height:42px;padding:3px}
-.ap-mode button{font-size:14px}
-.ap-shops{height:39px;padding:3px}
-.ap-shops button{font-size:12px;padding:0 6px;white-space:nowrap}
-.ap-title{padding:22px 16px 0}
-.ap-h1{font-size:35px;font-weight:800;color:var(--sky-ink-deep)}
-.ap-sub{font-size:14px;color:var(--sky-ink-deep);margin-top:6px}
-.ap-search{padding:22px 18px 0;max-width:560px;margin:0 auto}
+.ap-controls{padding:10px 16px 0;display:flex;justify-content:center}
+.ap-mode{box-sizing:border-box;height:40px;padding:3px;width:100%;max-width:320px}
+.ap-mode button{font-size:14px;min-height:0}
+.ap-search{padding:12px 16px 0;max-width:560px;margin:0 auto}
 .ap-search .sky-search{height:46px}
-.ap-brands{margin:10px 0 -10px}
+.ap-brands{margin:12px 0 -5px}
 @media (min-width:768px){.ap-brands{display:none}}
 .ap-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 12px 0}
 @media (min-width:600px){.ap-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
@@ -148,6 +136,10 @@ const AP_CSS = `
 .ap-card .sky-cutout{max-width:88%}
 .ap-card .sky-frame{inset:8px 8px 2px;border-radius:14px}
 .ap-body{padding:8px 12px 10px 16px;display:flex;flex-direction:column;gap:6px;flex:1}
+/* The name + price sit on a whiter band of the card's own glass: with the
+   compact top band the first row rides over the room's light strip, and the
+   blue price needs the body behind it (DNA: stronger surface for dense text). */
+.ap-body{background:rgba(255,255,255,.22);border-radius:0 0 20px 20px}
 .ap-name{font-size:12.5px;font-weight:700;line-height:1.24;color:var(--sky-ink);-webkit-line-clamp:3}
 .ap-row{display:flex;align-items:center;justify-content:space-between;margin-top:auto}
 .ap-price{font-size:17.5px;color:var(--sky-navy)}

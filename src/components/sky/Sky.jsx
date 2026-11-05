@@ -50,7 +50,7 @@ export function SkyRound({ label, onClick, children, className = "", buttonRef, 
  * round glass user button right, and a small glass pill under the logo naming
  * the screen (ASSISTANT) or the device/store (2POS).
  */
-export function SkyHeader({ tag, onGrid, onUser, userInitial = null, large = false, gridLabel = "Home", userLabel = "Account", left = null, right = null, className = "" }) {
+export function SkyHeader({ tag, tagNode = null, onGrid, onUser, userInitial = null, large = false, gridLabel = "Home", userLabel = "Account", left = null, right = null, className = "" }) {
   return (
     <header className={cx("sky-header", className)}>
       <div className="sky-header__l">
@@ -58,7 +58,7 @@ export function SkyHeader({ tag, onGrid, onUser, userInitial = null, large = fal
       </div>
       <div className="sky-header__c">
         <SkyLogo large={large} />
-        {tag ? <span className={cx("sky-tag sky-glass", large && "sky-tag--lg")}>{tag}</span> : null}
+        {tagNode ?? (tag ? <span className={cx("sky-tag sky-glass", large && "sky-tag--lg")}>{tag}</span> : null)}
       </div>
       <div className="sky-header__r">
         {right}
@@ -69,6 +69,56 @@ export function SkyHeader({ tag, onGrid, onUser, userInitial = null, large = fal
         ) : null}
       </div>
     </header>
+  );
+}
+
+// ── THE STORE PILL (Junid, 5 Nov: compact top band) ──────────────────────────
+// The pill under the wordmark names the store every order goes to, in bold
+// caps with a chevron. Tapping it opens a body-level glass popover listing the
+// stores (current one brighter); a pick closes it and hands the id to onPick —
+// the SAME switch handler as the old store row (the red confirm), so the store
+// state is untouched here. One store only: a plain pill, nothing to pick.
+//
+// It pulses once (600ms) on load when the store differs from the one this
+// device last used (localStorage "storeAssistantShop", READ only), e.g. an
+// account pinned to a different shop. Reduced motion: no pulse (CSS).
+export function lastUsedStoreDiffers(current) {
+  try {
+    const last = typeof localStorage !== "undefined" ? localStorage.getItem("storeAssistantShop") : null;
+    return !!(last && current && last !== current);
+  } catch { return false; }
+}
+
+export function SkyStorePill({ value, stores, labelOf, onPick, open: openProp, onOpenChange, buttonRef: refProp, className = "", testId = "store-pill" }) {
+  const own = useRef(null);
+  const ref = refProp || own;
+  const [openOwn, setOpenOwn] = useState(false);
+  const open = openProp ?? openOwn;
+  const setOpen = onOpenChange || setOpenOwn;
+  const [pulse] = useState(() => lastUsedStoreDiffers(value));
+  const name = value ? labelOf(value) : "Store";
+  const many = Array.isArray(stores) && stores.length > 1;
+  if (!many) {
+    return <span className={cx("sky-tag sky-glass sky-storepill", pulse && "sky-storepill--pulse", className)} data-testid={testId}>{name}</span>;
+  }
+  return (
+    <>
+      <button type="button" ref={ref} className={cx("sky-tag sky-glass sky-storepill", pulse && "sky-storepill--pulse", className)}
+              aria-haspopup="menu" aria-expanded={open} aria-label={`Ordering for ${name}. Change store`}
+              data-testid={testId} onClick={() => setOpen(!open)}>
+        <span>{name}</span>
+        <svg className="sky-storepill__chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+      </button>
+      <SkyPopover anchorRef={ref} open={open} onClose={() => setOpen(false)} align="center" width={240} label="Order for" testId="store-popover">
+        <div className="sky-pop__lab">Order for</div>
+        {stores.map((s) => (
+          <button key={s.id} type="button" role="menuitemradio" className="sky-pop__i" aria-checked={value === s.id}
+                  onClick={() => { setOpen(false); if (s.id !== value) onPick(s.id); }}>
+            {labelOf(s.id)}
+          </button>
+        ))}
+      </SkyPopover>
+    </>
   );
 }
 

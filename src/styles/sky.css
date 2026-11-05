@@ -174,6 +174,20 @@ html[data-sky="off"] .sky-bg { display: none; }
   font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
   color: var(--sky-ink);
 }
+/* The store pill (SkyStorePill): the tag, as a button, with a chevron. */
+.sky-storepill { gap: 5px; height: 24px; padding: 0 11px 0 13px; font-size: 11px; letter-spacing: 0.05em;
+  border: 1px solid var(--sky-rim); cursor: pointer; font-family: var(--sky-font); white-space: nowrap; }
+span.sky-storepill { cursor: default; padding: 0 13px; }
+.sky-storepill:focus-visible { outline: 2px solid var(--sky-navy); outline-offset: 2px; }
+.sky-storepill[aria-expanded="true"] { background: var(--sky-glass-solid); }
+.sky-storepill__chev { flex: none; margin-top: 1px; }
+.sky-storepill--pulse { animation: skyStorePulse 600ms ease-out 1; }
+@keyframes skyStorePulse {
+  0% { transform: scale(1); box-shadow: var(--sky-highlight), 0 0 0 0 rgba(255, 255, 255, 0.9); }
+  45% { transform: scale(1.08); box-shadow: var(--sky-highlight), 0 0 0 7px rgba(255, 255, 255, 0.55); }
+  100% { transform: scale(1); box-shadow: var(--sky-highlight), 0 0 0 12px rgba(255, 255, 255, 0); }
+}
+@media (prefers-reduced-motion: reduce) { .sky-storepill--pulse { animation: none; } }
 .sky-tag--lg { height: 30px; min-width: 70px; font-size: 14px; letter-spacing: -0.01em; padding: 0 16px; }
 
 /* ── PILLS, SEGMENTS, CHIPS ───────────────────────────────────────────────── */

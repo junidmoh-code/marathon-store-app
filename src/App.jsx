@@ -134,7 +134,7 @@ import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SkyHome from "./components/sky/SkyHome.jsx";
 import AssistantPhone from "./components/sky/AssistantPhone.jsx";
 import { brandOptions, filterByBrand, reconcileBrand } from "./components/assistant/brandFilter.js";
-import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySegmented, SkySearch, SkyPopover, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
+import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySegmented, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconSearch as SkyIconSearch, IconMore, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
@@ -8827,6 +8827,15 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           <button type="button" className="ad-logo" onClick={onSwitchView} aria-label="Marathon Club — switch view" title="Switch view">
             <SkyLogo />
           </button>
+          {/* THE STORE PILL (compact top band, Junid 5 Nov) — the store every
+              order goes to, under the wordmark. A different store still goes
+              through the red switch-confirm (setPendingShop), exactly as the
+              Stores tab's list does; the two share one panel slot, so only
+              one store list is ever open. */}
+          <SkyStorePill value={effectiveShop} stores={availableShops || []} labelOf={(id) => labelFor(id, shopRegistry)}
+                        onPick={(id) => { if (id !== effectiveShop) setPendingShop(id); }}
+                        open={panel === "storepill"} onOpenChange={(v) => setPanel(v ? "storepill" : null)}
+                        className="ad-storepill" testId="store-tag" />
 
         </div>
         <div className="ad-hr">
@@ -8843,17 +8852,14 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
       </header>
 
       <main className="ad-main">
-        {/* THE STORE SELECTOR — one glass segmented control holding every
-            store this account orders for, the selected one brighter glass in
-            bold navy (assistant-phone.png; Junid wants the same on desktop).
-            A different store still goes through the red switch-confirm. */}
-        {(availableShops || []).length > 1 && (
-          <div className="ad-stores" data-testid="store-tag">
-            <SkySegmented ariaLabel="Order for" value={effectiveShop}
-                          options={(availableShops || []).map((s) => [s.id, labelFor(s.id, shopRegistry)])}
-                          onChange={(id) => { if (id !== effectiveShop) setPendingShop(id); }} />
-          </div>
-        )}
+        {/* SNEAKERS / CLOTHING — a compact glass toggle under the header
+            (compact top band). The store row that sat here moved into the
+            store pill under the wordmark. Same mode state as before. */}
+        <div className="ad-mode">
+          <SkySegmented ariaLabel="Product type" value={mode === "clothing" ? "clothing" : "sneaker"}
+                        options={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]}
+                        onChange={(v) => setMode(v)} />
+        </div>
         <div className="ad-searchwrap">
           {/* Filter and the label scan sit INSIDE the pill, behind one divider
               (assistant-desktop.png). */}
@@ -8864,11 +8870,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                        { icon: "filter", label: "Filter and sort", onClick: () => togglePanel("filter"), ref: filterRef, expanded: panel === "filter" },
                      ]} />
           <SkyPopover anchorRef={filterRef} open={panel === "filter"} onClose={closePanel} align="end" width={270} role="dialog" label="Filter and sort">
-            <div className="sky-pop__lab">Show</div>
-            <SkySegmented ariaLabel="Product type" value={mode === "clothing" ? "clothing" : "sneaker"}
-                          options={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]}
-                          onChange={(v) => setMode(v)} />
-            <div className="sky-pop__lab" style={{ marginTop: 14 }}>Sort</div>
+            <div className="sky-pop__lab">Sort</div>
             {[["feat", "Featured"], ["ph", "Price · high"], ["pl", "Price · low"], ["az", "Name · A–Z"]].map(([v, l]) => (
               <button key={v} type="button" className="sky-pop__i" aria-checked={sort === v} role="menuitemradio" onClick={() => setSort(v)}>{l}</button>
             ))}
@@ -9399,9 +9401,13 @@ function useChipCount() {
 // Measured off the 1672px reference and expressed in vw with px clamps, so a
 // 1280–1680 Mac and an iPad in landscape keep the reference's proportions.
 const AD_SKY_CSS = `
-.ad-root{position:fixed;inset:0;z-index:50;overflow:auto;color:var(--sky-ink);font-family:var(--sky-font);--ad-w:min(81.5vw,1362px);--ad-stage:clamp(150px,10.4vw,176px)}
+.ad-root{position:fixed;inset:0;z-index:50;overflow:auto;color:var(--sky-ink);font-family:var(--sky-font);--ad-w:min(81.5vw,1362px);
+  /* Compact top band (Junid, 5 Nov): three full card rows under the brand
+     chips at 1440x900 — the stage gives way to the viewport height (the band
+     above the grid + three card bodies + two gaps + 12px air = 530px). */
+  --ad-stage:clamp(104px,min(10.4vw,calc((100vh - 530px) / 3)),176px)}
 .ad-root *{box-sizing:border-box}
-.ad-hd{position:relative;display:grid;grid-template-columns:1fr auto 1fr;align-items:start;padding:clamp(28px,2.8vw,47px) clamp(28px,5.1vw,85px) 0}
+.ad-hd{position:relative;display:grid;grid-template-columns:1fr auto 1fr;align-items:start;padding:clamp(16px,1.5vw,26px) clamp(28px,5.1vw,85px) 0}
 .ad-navpill{justify-self:start;display:flex;align-items:center;gap:2px;padding:3px;border-radius:999px;height:clamp(46px,3.2vw,54px)}
 .ad-navi{display:inline-flex;align-items:center;gap:10px;height:100%;padding:0 clamp(14px,1.25vw,22px);border:0;border-radius:999px;background:transparent;color:var(--sky-ink);
   font:600 clamp(14px,1.02vw,17px)/1 var(--sky-font);cursor:pointer;position:relative;white-space:nowrap}
@@ -9409,30 +9415,31 @@ const AD_SKY_CSS = `
 .ad-navi[aria-current="true"]{background:var(--sky-glass-solid);color:var(--sky-navy);font-weight:800;box-shadow:inset 0 1px 0 #fff,0 4px 12px -6px rgba(10,60,140,.35)}
 .ad-navi:focus-visible{outline:2px solid #fff;outline-offset:2px}
 .ad-navn{min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:var(--sky-navy);color:#fff;font-size:11.5px;font-weight:800;display:inline-grid;place-items:center;font-variant-numeric:tabular-nums}
-.ad-hc{display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:clamp(-18px,-1vw,-6px)}
+.ad-hc{display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:clamp(-10px,-.6vw,-4px)}
 .ad-logo{border:0;background:transparent;padding:0;cursor:pointer;color:#fff}
 .ad-logo .sky-logo__m{font-size:clamp(40px,3.2vw,54px)}
 .ad-logo .sky-logo__c{font-size:clamp(13px,1.05vw,18px);margin-top:clamp(8px,.7vw,12px)}
 .ad-hc{position:relative}
-.ad-stores{width:min(560px,60vw);margin:0 auto clamp(14px,1.4vw,22px)}
-.ad-stores .sky-seg{height:42px}
-.ad-stores .sky-seg button{font-size:13.5px;white-space:nowrap}
+.ad-storepill{height:28px;font-size:12px;padding:0 13px 0 15px}
+.ad-mode{width:100%;max-width:360px;margin:0 auto}
+.ad-mode .sky-seg{height:40px;padding:3px}
+.ad-mode .sky-seg button{font-size:14px;min-height:0}
 .ad-hr{justify-self:end;display:flex;align-items:center;gap:clamp(16px,1.5vw,25px);position:relative}
 .ad-round{width:clamp(50px,3.8vw,64px)!important;height:clamp(50px,3.8vw,64px)!important}
 .ad-round svg{width:clamp(22px,1.6vw,27px);height:clamp(22px,1.6vw,27px)}
 .ad-me{font-size:clamp(19px,1.4vw,24px);font-weight:800;color:var(--sky-ink)!important;background:var(--sky-glass-strong)!important}
-.ad-main{width:var(--ad-w);margin:0 auto;padding:clamp(22px,2.7vw,46px) 0 120px}
-.ad-searchwrap{position:relative;width:min(48.4vw,809px);margin:0 auto;display:flex;align-items:center;gap:12px}
-.ad-searchwrap .sky-search{flex:1;height:clamp(56px,4.37vw,73px);padding-left:clamp(26px,2.4vw,40px)}
+.ad-main{width:var(--ad-w);margin:0 auto;padding:10px 0 120px}
+.ad-searchwrap{position:relative;width:min(48.4vw,809px);margin:12px auto 0;display:flex;align-items:center;gap:12px}
+.ad-searchwrap .sky-search{flex:1;height:clamp(50px,3.6vw,60px);padding-left:clamp(26px,2.4vw,40px)}
 .ad-searchwrap .sky-search input{font-size:clamp(18px,1.44vw,24px)}
 .ad-label-unused{position:absolute;right:calc(-1 * clamp(58px,4.2vw,70px));width:clamp(46px,3.3vw,56px);height:clamp(46px,3.3vw,56px);border-radius:50%;
   display:grid;place-items:center;color:var(--sky-ink);cursor:pointer;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.4)}
 .ad-label svg{width:22px;height:22px}
-.ad-chips{margin:clamp(22px,2.2vw,36px) auto 0;gap:clamp(12px,1.2vw,20px);flex-wrap:nowrap}
+.ad-chips{margin:12px auto 0;gap:clamp(12px,1.2vw,20px);flex-wrap:nowrap}
 .ad-chips .sky-chip{height:clamp(34px,2.4vw,40px);min-width:clamp(78px,5.6vw,95px);padding:0 16px}
 .ad-chips .sky-chip svg{height:clamp(20px,1.5vw,25px)}
 .ad-more-chip{min-width:clamp(50px,3.1vw,52px)!important;padding:0 12px!important}
-.ad-grid{margin-top:clamp(30px,3.4vw,57px);display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:clamp(12px,.9vw,16px)}
+.ad-grid{margin-top:clamp(14px,1.2vw,20px);display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:clamp(12px,.9vw,16px)}
 .ad-card{border-radius:clamp(18px,1.35vw,23px);min-height:0}
 .ad-card .sky-stage{padding-top:12px}
 .ad-card .sky-podium{bottom:12px}

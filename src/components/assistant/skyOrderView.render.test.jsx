@@ -131,13 +131,13 @@ describe("the sky layout", () => {
     click(r.root.findAll(n => n.type === "button" && n.children.includes("Yes, switch"))[0]);
     expect(picked).toBe("trophy");
   });
-  it("the filter popover switches Sneakers / Clothing and sorts", () => {
+  it("the filter popover sorts (Sneakers / Clothing moved onto the page: compact top band)", () => {
     let m = null;
     const r = mount({ setMode: (v) => { m = v; } });
     click(r.root.findAll(n => n.type === "button" && n.props["aria-label"] === "Filter and sort")[0]);
+    expect(text(r)).toContain("Price · high");
     click(r.root.findAll(n => n.type === "button" && n.children.includes("Clothing"))[0]);
     expect(m).toBe("clothing");
-    expect(text(r)).toContain("Price · high");
   });
 });
 

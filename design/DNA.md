@@ -60,6 +60,12 @@ prices 700–800 tabular, "R" and no decimals.
   glass user button right, a small glass pill under the logo naming the screen
   (ASSISTANT) or the device/store (2POS). Every screen gets it: home and the
   order view draw their own; `AppInner` puts it above every other screen.
+- **SkyStorePill** — on the Store Assistant order view the pill under the logo
+  is the STORE (bold caps + chevron); tap → body-level glass popover of the
+  account's stores, current one brighter, a pick goes through the red
+  switch-confirm. One store = a plain pill. Pulses once (600ms) when the store
+  differs from this device's last-used store; none under reduced motion.
+  Desktop: the Stores nav tab opens the same list; one open at a time.
 - **SkySegmented** — glass pill toggle; the active segment is solid white with navy text.
 - **Chip row** — glass pills; brand chips show a simple-icons mark in navy
   (`brandLogos.js`), or the name in bold caps when simple-icons has no mark.
@@ -83,8 +89,12 @@ prices 700–800 tabular, "R" and no decimals.
 ## 6. Layout
 - Phone (reference 426px wide): 16–18px gutters; home = 2×2 tiles of ≈183×180
   starting about a third of the way down so the floor reflection shows below;
-  order view = header, toggle, store chips, "Place order", search, 2-up cards
-  (3-up ≥600px, 4-up ≥820px), bottom bar.
+  order view (compact top band, Junid 5 Nov) = header with the store pill,
+  compact Sneakers/Clothing toggle (40px, ≤320px, 10px under the header),
+  search, brand strip — 12px apart — then 2-up cards (3-up ≥600px, 4-up
+  ≥820px), bottom bar. No store row, no "Place order" heading: at 390x844 the
+  first full card row is above the fold. Desktop: toggle ≤360px; the card stage
+  shrinks with the viewport height so three full rows fit at 1440x900.
 - Desktop/iPad landscape (reference 1672px): sizes in `vw` with px clamps so
   1280–1680 keep the reference proportions. Home = one row of four tiles whose
   bottoms sit on the room's horizon (58% down). Order view = nav pill
