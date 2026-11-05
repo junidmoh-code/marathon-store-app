@@ -9,7 +9,7 @@
 // with Firebase stubbed so nothing can reach a database. Proves:
 //   1. the sky layout renders; no wall, no preview toggle, no ?view=wall code
 //   2. Orders opens the Order panel; Stores lists the shops and asks first
-//   3. the filter popover carries Sneakers / Clothing and the sort
+//   3. the filter popover carries the sort; Sneakers / Clothing is in the store pill
 //   4. KEEP #1  cards draw the full-resolution photoUrl (thumbnail = fallback),
 //               or a cut-out on a podium when one exists for THIS photo
 //   5. KEEP #2  "Customer wants Marathon Club deals" defaults to ticked
@@ -131,12 +131,14 @@ describe("the sky layout", () => {
     click(r.root.findAll(n => n.type === "button" && n.children.includes("Yes, switch"))[0]);
     expect(picked).toBe("trophy");
   });
-  it("the filter popover sorts (Sneakers / Clothing moved onto the page: compact top band)", () => {
+  it("the filter popover sorts; Sneakers / Clothing is in the store pill, not on the page", () => {
     let m = null;
     const r = mount({ setMode: (v) => { m = v; } });
     click(r.root.findAll(n => n.type === "button" && n.props["aria-label"] === "Filter and sort")[0]);
     expect(text(r)).toContain("Price · high");
-    click(r.root.findAll(n => n.type === "button" && n.children.includes("Clothing"))[0]);
+    expect(r.root.findAll(n => n.type === "button" && n.children.includes("Clothing"))).toHaveLength(0);
+    click(r.root.findAll(n => n.props?.["data-testid"] === "store-tag" && n.type === "button")[0]);
+    click(r.root.findAll(n => n.type === "button" && n.props["data-group"] === "mode" && n.children.includes("Clothing"))[0]);
     expect(m).toBe("clothing");
   });
 });

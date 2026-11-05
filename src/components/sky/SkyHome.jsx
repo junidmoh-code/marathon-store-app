@@ -163,14 +163,20 @@ const HOME_CSS = `
 .sky-hub__grp{margin-bottom:22px}
 .sky-hub__lab{display:inline-block;margin:0 4px 10px;padding:7px 12px;border-radius:999px;font:800 11.5px/1 var(--sky-font);letter-spacing:.18em;text-transform:uppercase;color:var(--sky-ink);
   background:var(--sky-glass);border:1px solid var(--sky-rim);box-shadow:var(--sky-highlight);-webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
-.sky-hub__livecard{border-radius:22px;padding:8px;background:var(--sky-glass-strong);border:1px solid var(--sky-rim);box-shadow:var(--sky-highlight),var(--sky-shadow);-webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
+/* ONE layer of glass (Junid 5 Nov, "too much white"): the live card draws its
+   own glass box; the cell around it is bare, not a second glass frame. */
+.sky-hub__livecard{display:flex}
+.sky-hub__livecard>*{flex:1;margin-bottom:0 !important;border-radius:20px !important;padding:16px 18px !important;box-shadow:var(--sky-highlight),var(--sky-shadow);-webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
+/* Its buttons are a light rim on the card's glass, not a second white slab. */
+html[data-sky="on"] #root .sky-hub__livecard button[style]{background:rgba(255,255,255,.2) !important;border-color:rgba(255,255,255,.8) !important}
+html[data-sky="on"] #root .sky-hub__livecard button[style]:hover{background:rgba(255,255,255,.4) !important}
 .sky-hub__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
 .sky-mini{position:relative;display:flex;align-items:center;gap:13px;width:100%;text-align:left;cursor:pointer;color:var(--sky-ink);font-family:var(--sky-font);
-  padding:13px 14px;border-radius:20px;background:var(--sky-glass-strong);border:1px solid var(--sky-rim);
+  padding:13px 14px;border-radius:20px;background:rgba(255,255,255,.46);border:1px solid var(--sky-rim);
   box-shadow:var(--sky-highlight),var(--sky-shadow);-webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);transition:transform .18s,background .18s}
-.sky-mini:hover{transform:translateY(-2px);background:rgba(255,255,255,.72)}
+.sky-mini:hover{transform:translateY(-2px);background:var(--sky-glass-strong)}
 .sky-mini:focus-visible{outline:2px solid var(--sky-ink);outline-offset:3px}
-.sky-mini__ic{width:42px;height:42px;flex:0 0 auto;border-radius:14px;display:grid;place-items:center;background:rgba(255,255,255,.6);border:1px solid #fff}
+.sky-mini__ic{width:42px;height:42px;flex:0 0 auto;border-radius:14px;display:grid;place-items:center;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.75)}
 .sky-mini__ic svg{width:21px !important;height:21px !important;filter:none !important}
 .sky-mini__ic svg,.sky-mini__ic svg [stroke]:not([stroke="none"]){stroke:#0b2a52 !important}
 .sky-mini__ic svg [fill]:not([fill="none"]){fill:#0b2a52 !important}

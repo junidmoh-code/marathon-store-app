@@ -41,6 +41,18 @@ async function loadFixture() {
 const ORDER = ["p1789137553443", "p1777978132487", "p1790164209800", "p1778844810609", "p1781649460930", "p1781649251868", "p1793626901972", "p1793630287984",
   "p1778142478269", "p1784974252709", "p1777975301073", "p1777975466134", "p1778143509555", "p1778143617466", "p1778144146893", "p1777984362269"];
 
+// The admin hub's live cards, drawn with the same inline colours the real
+// cards use (components/stock/ui.js), so the theme layer maps them the same way.
+function SampleLive({ title, body }) {
+  return (
+    <div style={{ background: "rgba(255,255,255,.024)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 14, padding: "12px 13px", marginBottom: 12 }}>
+      <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", marginBottom: 8 }}>{title}</div>
+      {body && <div style={{ fontSize: 12, color: "#888", marginBottom: 10, lineHeight: 1.5 }}>{body}</div>}
+      <button style={{ background: "rgba(74,127,255,.16)", border: "1px solid rgba(74,127,255,.45)", color: "#4A7FFF", borderRadius: 11, padding: "10px 12px", fontWeight: 700, width: "100%" }}>Open →</button>
+    </div>
+  );
+}
+
 function Home() {
   const noop = () => {};
   const icon = <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#4A7FFF" strokeWidth="2"><circle cx="12" cy="12" r="8" /></svg>;
@@ -48,7 +60,9 @@ function Home() {
     <SkyHome
       tag="2POS"
       initialPanel={q.get("panel")}
-      liveCards={[]}
+      liveCards={q.get("live") ? [["a", <SampleLive key="a" title="Hub Count & Displays" body="574 display units registered · 1750 of 2618 cells counted" />],
+                                  ["b", <SampleLive key="b" title="Shipment Release" body="Nothing pending — every fulfilled box has been released." />],
+                                  ["c", <SampleLive key="c" title="Display Registration" />]] : []}
       tiles={[
         { key: "assistant", name: "Store Assistant", badge: 415, onClick: noop },
         { key: "warehouse", name: "Warehouse", badge: 2625, onClick: noop },

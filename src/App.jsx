@@ -134,7 +134,7 @@ import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
 import SkyHome from "./components/sky/SkyHome.jsx";
 import AssistantPhone from "./components/sky/AssistantPhone.jsx";
 import { brandOptions, filterByBrand, reconcileBrand } from "./components/assistant/brandFilter.js";
-import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySegmented, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
+import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconSearch as SkyIconSearch, IconMore, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
@@ -8835,6 +8835,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           <SkyStorePill value={effectiveShop} stores={availableShops || []} labelOf={(id) => labelFor(id, shopRegistry)}
                         onPick={(id) => { if (id !== effectiveShop) setPendingShop(id); }}
                         open={panel === "storepill"} onOpenChange={(v) => setPanel(v ? "storepill" : null)}
+                        mode={mode === "clothing" ? "clothing" : "sneaker"}
+                        modes={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]} onMode={(v) => setMode(v)}
                         className="ad-storepill" testId="store-tag" />
 
         </div>
@@ -8852,14 +8854,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
       </header>
 
       <main className="ad-main">
-        {/* SNEAKERS / CLOTHING — a compact glass toggle under the header
-            (compact top band). The store row that sat here moved into the
-            store pill under the wordmark. Same mode state as before. */}
-        <div className="ad-mode">
-          <SkySegmented ariaLabel="Product type" value={mode === "clothing" ? "clothing" : "sneaker"}
-                        options={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]}
-                        onChange={(v) => setMode(v)} />
-        </div>
+        {/* No Sneakers / Clothing toggle on the page (Junid 5 Nov): the
+            product type is chosen in the store pill under the wordmark. */}
         <div className="ad-searchwrap">
           {/* Filter and the label scan sit INSIDE the pill, behind one divider
               (assistant-desktop.png). */}
@@ -9421,9 +9417,6 @@ const AD_SKY_CSS = `
 .ad-logo .sky-logo__c{font-size:clamp(13px,1.05vw,18px);margin-top:clamp(8px,.7vw,12px)}
 .ad-hc{position:relative}
 .ad-storepill{height:28px;font-size:12px;padding:0 13px 0 15px}
-.ad-mode{width:100%;max-width:360px;margin:0 auto}
-.ad-mode .sky-seg{height:40px;padding:3px}
-.ad-mode .sky-seg button{font-size:14px;min-height:0}
 .ad-hr{justify-self:end;display:flex;align-items:center;gap:clamp(16px,1.5vw,25px);position:relative}
 .ad-round{width:clamp(50px,3.8vw,64px)!important;height:clamp(50px,3.8vw,64px)!important}
 .ad-round svg{width:clamp(22px,1.6vw,27px);height:clamp(22px,1.6vw,27px)}
@@ -12106,14 +12099,14 @@ function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Phase 12B: Floating cart trigger ── (desktop has its own drawer) */}
       {/* THE GLASS CART BAR (design/assistant-phone.png): cart icon, item count
-          and the order button — always there on the phone, so "0 items" says
-          the cart is empty. Same button, same handler as the old floating bar:
-          checkout, or (a refill-only cart) place the refill request. */}
-      {!checkoutOpen && !selected && !isDesktop && (
+          and the order button — a slim bar that appears only once something
+          is in the cart (Junid 5 Nov). Same button, same handler as the old
+          floating bar: checkout, or (a refill-only cart) place the refill request. */}
+      {!checkoutOpen && !selected && !isDesktop && cart.length > 0 && (
         <div className="sky-bottombar sky-glass sky-sheen" data-testid="sky-cartbar">
-          <IconCart width={30} height={30} />
+          <IconCart width={22} height={22} />
           <span className="sky-bottombar__div" aria-hidden="true" />
-          <span style={{ fontSize:16, fontWeight:800 }}>{hasCustomerInCart ? customerCount : cart.length} item{(hasCustomerInCart ? customerCount : cart.length) === 1 ? "" : "s"}</span>
+          <span style={{ fontSize:14, fontWeight:800 }}>{hasCustomerInCart ? customerCount : cart.length} item{(hasCustomerInCart ? customerCount : cart.length) === 1 ? "" : "s"}</span>
             <button
               onClick={hasCustomerInCart ? openCheckout : () => placeRefillRequests()}
               disabled={submitting || cart.length === 0}

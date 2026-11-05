@@ -366,22 +366,22 @@ span.sky-storepill { cursor: default; padding: 0 13px; }
   right: max(12px, env(safe-area-inset-right, 0px));
   bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
   z-index: 60;
-  min-height: 62px;
-  border-radius: 26px;
-  display: flex; align-items: center; gap: 14px;
-  padding: 10px 10px 10px 18px;
+  min-height: 48px;
+  border-radius: 24px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 5px 5px 5px 16px;
   color: var(--sky-ink);
   font-family: var(--sky-font);
   background: var(--sky-glass-strong);
 }
 .sky-bottombar__div { width: 1px; align-self: stretch; margin: 6px 0; background: rgba(11, 42, 82, 0.18); }
 /* The height the grid reserves so the last row is never under the bar. */
-:root { --sky-bar-space: calc(62px + 24px + env(safe-area-inset-bottom, 0px)); }
+:root { --sky-bar-space: calc(48px + 24px + env(safe-area-inset-bottom, 0px)); }
 .sky-bottombar__cta {
   margin-left: auto;
-  min-width: 160px; height: 40px;
+  min-width: 140px; height: 38px;
   border-radius: var(--sky-r-pill);
-  font: 800 14.5px/1 var(--sky-font);
+  font: 800 14px/1 var(--sky-font);
   cursor: pointer;
 }
 
@@ -431,6 +431,7 @@ html[data-sky="on"] #root .sky-secondary.sky-secondary { background: rgba(255,25
   backdrop-filter: blur(28px) saturate(1.6) brightness(1.05);
 }
 .sky-pop__lab { font: 800 10.5px/1 var(--sky-font); letter-spacing: .16em; text-transform: uppercase; color: var(--sky-ink-2); margin: 4px 8px 8px; }
+.sky-pop__lab--gap { margin-top: 14px; }
 .sky-pop__i { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; text-align: left;
   padding: 10px 12px; border-radius: 12px; border: 0; background: transparent; color: var(--sky-ink);
   font: 600 14px/1.2 var(--sky-font); cursor: pointer; }

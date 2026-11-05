@@ -89,7 +89,7 @@ export function lastUsedStoreDiffers(current) {
   } catch { return false; }
 }
 
-export function SkyStorePill({ value, stores, labelOf, onPick, open: openProp, onOpenChange, buttonRef: refProp, className = "", testId = "store-pill" }) {
+export function SkyStorePill({ value, stores, labelOf, onPick, mode = null, modes = null, onMode = null, open: openProp, onOpenChange, buttonRef: refProp, className = "", testId = "store-pill" }) {
   const own = useRef(null);
   const ref = refProp || own;
   const [openOwn, setOpenOwn] = useState(false);
@@ -98,23 +98,38 @@ export function SkyStorePill({ value, stores, labelOf, onPick, open: openProp, o
   const [pulse] = useState(() => lastUsedStoreDiffers(value));
   const name = value ? labelOf(value) : "Store";
   const many = Array.isArray(stores) && stores.length > 1;
-  if (!many) {
-    return <span className={cx("sky-tag sky-glass sky-storepill", pulse && "sky-storepill--pulse", className)} data-testid={testId}>{name}</span>;
+  // PRODUCT TYPE lives in the pill too (Junid 5 Nov: no Sneakers/Clothing
+  // toggle on the page). The pill reads "STORE · SNEAKERS"; the popover holds
+  // the stores (if more than one) and the product types.
+  const hasModes = Array.isArray(modes) && modes.length > 1 && typeof onMode === "function";
+  const modeLabel = hasModes ? (modes.find(([v]) => v === mode) || [])[1] : null;
+  const cls = cx("sky-tag sky-glass sky-storepill", pulse && "sky-storepill--pulse", className);
+  if (!many && !hasModes) {
+    return <span className={cls} data-testid={testId}>{name}</span>;
   }
+  const label = modeLabel ? `${name} · ${modeLabel}` : name;
   return (
     <>
-      <button type="button" ref={ref} className={cx("sky-tag sky-glass sky-storepill", pulse && "sky-storepill--pulse", className)}
-              aria-haspopup="menu" aria-expanded={open} aria-label={`Ordering for ${name}. Change store`}
+      <button type="button" ref={ref} className={cls}
+              aria-haspopup="menu" aria-expanded={open}
+              aria-label={`Ordering ${modeLabel ? modeLabel.toLowerCase() + " " : ""}for ${name}. Change${many ? " store or" : ""} products`}
               data-testid={testId} onClick={() => setOpen(!open)}>
-        <span>{name}</span>
+        <span>{label}</span>
         <svg className="sky-storepill__chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
       </button>
-      <SkyPopover anchorRef={ref} open={open} onClose={() => setOpen(false)} align="center" width={240} label="Order for" testId="store-popover">
-        <div className="sky-pop__lab">Order for</div>
-        {stores.map((s) => (
-          <button key={s.id} type="button" role="menuitemradio" className="sky-pop__i" aria-checked={value === s.id}
+      <SkyPopover anchorRef={ref} open={open} onClose={() => setOpen(false)} align="center" width={240} label={many ? "Order for" : "Products"} testId="store-popover">
+        {many && <div className="sky-pop__lab">Order for</div>}
+        {many && stores.map((s) => (
+          <button key={s.id} type="button" role="menuitemradio" className="sky-pop__i" aria-checked={value === s.id} data-group="store"
                   onClick={() => { setOpen(false); if (s.id !== value) onPick(s.id); }}>
             {labelOf(s.id)}
+          </button>
+        ))}
+        {hasModes && <div className={cx("sky-pop__lab", many && "sky-pop__lab--gap")}>Products</div>}
+        {hasModes && modes.map(([v, l]) => (
+          <button key={v} type="button" role="menuitemradio" className="sky-pop__i" aria-checked={mode === v} data-group="mode"
+                  onClick={() => { setOpen(false); if (v !== mode) onMode(v); }}>
+            {l}
           </button>
         ))}
       </SkyPopover>
@@ -324,9 +339,9 @@ export function SkyPlus({ onClick, label = "Add" }) {
 export function SkyBottomBar({ count, onOpen, label = "View order", disabled = false }) {
   return (
     <div className="sky-bottombar sky-glass sky-sheen" data-testid="sky-cartbar">
-      <IconCart width={30} height={30} />
+      <IconCart width={22} height={22} />
       <span className="sky-bottombar__div" aria-hidden="true" />
-      <span style={{ fontSize: 16, fontWeight: 800 }}>{count} item{count === 1 ? "" : "s"}</span>
+      <span style={{ fontSize: 14, fontWeight: 800 }}>{count} item{count === 1 ? "" : "s"}</span>
       <button type="button" className="sky-bottombar__cta sky-solid" onClick={onOpen} disabled={disabled}>{label}</button>
     </div>
   );

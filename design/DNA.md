@@ -61,9 +61,11 @@ prices 700–800 tabular, "R" and no decimals.
   (ASSISTANT) or the device/store (2POS). Every screen gets it: home and the
   order view draw their own; `AppInner` puts it above every other screen.
 - **SkyStorePill** — on the Store Assistant order view the pill under the logo
-  is the STORE (bold caps + chevron); tap → body-level glass popover of the
-  account's stores, current one brighter, a pick goes through the red
-  switch-confirm. One store = a plain pill. Pulses once (600ms) when the store
+  is the STORE and the PRODUCT TYPE ("TROPHY · SNEAKERS", bold caps + chevron);
+  tap → body-level glass popover: "Order for" (the account's stores, current
+  one brighter; a pick goes through the red switch-confirm) then "Products"
+  (Sneakers / Clothing — the same mode setter). One store = Products only.
+  There is no Sneakers/Clothing toggle on the page. Pulses once (600ms) when the store
   differs from this device's last-used store; none under reduced motion.
   Desktop: the Stores nav tab opens the same list; one open at a time.
 - **SkySegmented** — glass pill toggle; the active segment is solid white with navy text.
@@ -84,17 +86,21 @@ prices 700–800 tabular, "R" and no decimals.
   (HiResPhoto, same source and cache), rounded, contained, never cropped, on a
   faint translucent surface. Never a whole-object cut-out.
 - **SkyPlus** — round solid-white button, navy plus.
-- **SkyBottomBar** — glass bar: cart icon, divider, item count, solid white pill CTA.
+- **SkyBottomBar** — slim (48px) glass bar: cart icon, divider, item count,
+  solid white pill CTA. It appears only once the cart holds something.
+- **Admin hub** — ONE layer of glass per card: the live cards (Hub Count,
+  Shipment Release, Display Registration) draw their own glass, with no glass
+  frame around them; their buttons and the tool cards' icon tiles are light
+  rims, not white slabs.
 
 ## 6. Layout
 - Phone (reference 426px wide): 16–18px gutters; home = 2×2 tiles of ≈183×180
   starting about a third of the way down so the floor reflection shows below;
-  order view (compact top band, Junid 5 Nov) = header with the store pill,
-  compact Sneakers/Clothing toggle (40px, ≤320px, 10px under the header),
-  search, brand strip — 12px apart — then 2-up cards (3-up ≥600px, 4-up
-  ≥820px), bottom bar. No store row, no "Place order" heading: at 390x844 the
-  first full card row is above the fold. Desktop: toggle ≤360px; the card stage
-  shrinks with the viewport height so three full rows fit at 1440x900.
+  order view (compact top band, Junid 5 Nov) = header with the store pill
+  (store + product type), search, brand strip — 12px apart — then 2-up cards
+  (3-up ≥600px, 4-up ≥820px), the bar only with a cart. No store row, no
+  toggle, no "Place order" heading: at 390x844 two full card rows show. Desktop:
+  the card stage shrinks with the viewport height so three full rows fit at 1440x900.
 - Desktop/iPad landscape (reference 1672px): sizes in `vw` with px clamps so
   1280–1680 keep the reference proportions. Home = one row of four tiles whose
   bottoms sit on the room's horizon (58% down). Order view = nav pill

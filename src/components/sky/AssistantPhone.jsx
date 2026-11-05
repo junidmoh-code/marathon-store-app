@@ -13,7 +13,7 @@
 // the bar opens the existing checkout. Nothing here reads or writes data.
 
 import { useState } from "react";
-import { SkyHeader, SkySegmented, SkySearch, SkyBrandStrip, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
+import { SkyHeader, SkySearch, SkyBrandStrip, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
 import { IconExpand } from "./SkyIcons.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
 
@@ -35,7 +35,9 @@ export default function AssistantPhone({
           it is a plain pill, so nobody can mis-pick a store that is not theirs. */}
       <SkyHeader onGrid={onExit} gridLabel="Switch view"
                  tagNode={<SkyStorePill value={effectiveShop} stores={shops} labelOf={shopLabel}
-                                        onPick={(id) => { if (id !== effectiveShop) onShop(id); }} />}
+                                        onPick={(id) => { if (id !== effectiveShop) onShop(id); }}
+                                        mode={mode === "clothing" ? "clothing" : mode === "cr" ? "cr" : "sneaker"}
+                                        modes={onMode ? [["sneaker", "Sneakers"], ["clothing", "Clothing"]] : null} onMode={onMode} />}
                  onUser={() => setMe((v) => !v)} userLabel="Account" />
       {me && (
         <div className="ap-me sky-glass" role="menu">
@@ -44,12 +46,6 @@ export default function AssistantPhone({
           <button type="button" className="ap-mebtn" onClick={() => { setMe(false); onExit(); }}>Switch view</button>
         </div>
       )}
-
-      <div className="ap-controls">
-        <SkySegmented ariaLabel="Product type" className="ap-mode"
-                      value={mode === "clothing" ? "clothing" : mode === "cr" ? "cr" : "sneaker"}
-                      options={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]} onChange={onMode} />
-      </div>
 
       <div className="ap-search">
         <SkySearch value={search} onChange={onSearch} onAction={onScan} action="camera" actionLabel="Find by the tongue label" />
@@ -102,7 +98,7 @@ export default function AssistantPhone({
 
       {/* Bottom room for the cart bar + safe area, so the last row is never under it. */}
       <div style={{ height: "var(--sky-bar-space)" }} />
-      {showBar ? <SkyBottomBar count={cartCount} onOpen={onCart} label={cartLabel} disabled={cartDisabled} /> : null}
+      {showBar && cartCount > 0 ? <SkyBottomBar count={cartCount} onOpen={onCart} label={cartLabel} disabled={cartDisabled} /> : null}
     </div>
   );
 }
@@ -119,9 +115,6 @@ const AP_CSS = `
 .ap-mewho{font-size:16px;font-weight:800}
 .ap-mesub{font-size:12px;color:var(--sky-ink-2);margin:2px 0 10px}
 .ap-mebtn{width:100%;height:40px;border-radius:999px;border:1px solid #fff;background:var(--sky-glass-solid);color:var(--sky-navy);font:800 14px/1 var(--sky-font);cursor:pointer}
-.ap-controls{padding:10px 16px 0;display:flex;justify-content:center}
-.ap-mode{box-sizing:border-box;height:40px;padding:3px;width:100%;max-width:320px}
-.ap-mode button{font-size:14px;min-height:0}
 .ap-search{padding:12px 16px 0;max-width:560px;margin:0 auto}
 .ap-search .sky-search{height:46px}
 .ap-brands{margin:12px 0 -5px}
