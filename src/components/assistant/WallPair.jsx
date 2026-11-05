@@ -22,7 +22,10 @@ export function WallPair({ p, gen, fallback = null, imgStyle, onOpen }) {
   const style = { width: "100%", height: "100%", objectFit: "contain", ...imgStyle };
 
   const original = <HiResPhoto key={`${p.id}|${p.photoUrl || ""}`} p={p} alt={p.name} style={style} fallback={fallback} />;
-  if (!gen || cur.failed) return original;
+  if (!gen) return original;
+  // The generated tile failed to load: the original alone, and a tap opens the lightbox WITHOUT the broken tile
+  // (onOpen's second argument: is the generated tile usable).
+  if (cur.failed) return onOpen ? <div style={{ width: "100%", height: "100%" }} onClick={(e) => { e.stopPropagation(); onOpen(1, false); }}>{original}</div> : original;
 
   const go = (i) => set({ i: Math.max(0, Math.min(1, i)) });
   return (
@@ -38,7 +41,7 @@ export function WallPair({ p, gen, fallback = null, imgStyle, onOpen }) {
          }}
          onClick={(e) => {
            if (swiped.current) { e.stopPropagation(); swiped.current = false; return; }
-           if (onOpen) { e.stopPropagation(); onOpen(cur.i); }
+           if (onOpen) { e.stopPropagation(); onOpen(cur.i, true); }
          }}>
       <style>{`
         .wp-root{position:relative;width:100%;height:100%;overflow:hidden}

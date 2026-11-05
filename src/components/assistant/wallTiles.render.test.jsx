@@ -131,12 +131,19 @@ describe("WallPair (the popup's photo)", () => {
     let tr; act(() => { tr = TestRenderer.create(<WallPair p={KOBE} gen={GEN} onOpen={onOpen} />); });
     const root = () => tr.root.find(n => n.props["data-testid"] === "wall-pair");
     act(() => { root().props.onClick(ev); });
-    expect(onOpen).toHaveBeenLastCalledWith(0);
+    expect(onOpen).toHaveBeenLastCalledWith(0, true);
     act(() => { root().props.onTouchStart({ touches: [{ clientX: 300, clientY: 100 }] }); root().props.onTouchEnd({ changedTouches: [{ clientX: 100, clientY: 110 }] }); });
     act(() => { root().props.onClick(ev); });            // the click that follows the swipe
     expect(onOpen).toHaveBeenCalledTimes(1);
     act(() => { root().props.onClick(ev); });
-    expect(onOpen).toHaveBeenLastCalledWith(1);
+    expect(onOpen).toHaveBeenLastCalledWith(1, true);
+  });
+  it("a generated tile that failed to load is kept out of the lightbox (CodeRabbit, #849)", () => {
+    const onOpen = vi.fn();
+    let tr; act(() => { tr = TestRenderer.create(<WallPair p={KOBE} gen={GEN} onOpen={onOpen} />); });
+    act(() => { imgs(tr)[0].props.onError(); });
+    act(() => { tr.root.find(n => n.type === "div" && typeof n.props.onClick === "function").props.onClick({ stopPropagation() {} }); });
+    expect(onOpen).toHaveBeenLastCalledWith(1, false);
   });
   it("the slide off screen is hidden from screen readers", () => {
     let tr; act(() => { tr = TestRenderer.create(<WallPair p={KOBE} gen={GEN} />); });

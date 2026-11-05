@@ -409,6 +409,10 @@ function productPhotos(p) {
   return out;
 }
 
+// Generated sneaker-wall tiles (marathon-photo-studio) are transparent PNGs at products/<id>/studio-wall.png.
+const isStudioTile = (u) => typeof u === "string" && /products%2F[A-Za-z0-9_-]+%2Fstudio-wall\.png/.test(u);
+const STUDIO_GROUND = { background: "radial-gradient(120% 100% at 50% 40%,#fff 0%,#eef0f3 70%,#e3e6eb 100%)" };
+
 // Full-screen photo viewer: shows a product's photos (primary + extra angles) with
 // prev/next arrows, swipe, dots + a thumbnail strip. Accepts an array of URLs (or a
 // single URL string for back-compat). Reused by assistant view, admin, etc.
@@ -426,7 +430,8 @@ function GalleryLightbox({ photos, onClose }) {
          onTouchStart={(e) => { touch.current = e.touches[0]?.clientX ?? null; }}
          onTouchEnd={(e) => { const s = touch.current, en = e.changedTouches[0]?.clientX; if (multi && s != null && en != null && Math.abs(en - s) > 45) go(en < s ? 1 : -1); touch.current = null; }}
          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.93)", zIndex:2000, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24 }}>
-      <img src={list[idx]} alt="" onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10 }} />
+      {/* A generated wall tile is a transparent PNG: give it the wall's light studio ground so its soft shadow reads on the dark backdrop. */}
+      <img src={list[idx]} alt="" onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10, ...(isStudioTile(list[idx]) ? STUDIO_GROUND : null) }} />
       {multi && (
         <>
           <button onClick={e => { e.stopPropagation(); go(-1); }} aria-label="Previous" style={nav("left")}>‹</button>
@@ -9352,7 +9357,11 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               {wall
                 ? <WallPair key={qv.id} p={qv} gen={generatedTileSrc(qv, wallManifest)}
                             // the lightbox opens on the slide on screen: studio first, or the original first
-                            onOpen={(i) => { const ph = wallPhotoList(qv, productPhotos(qv), wallManifest); if (ph.length) onViewPhoto(i === 1 ? [...ph.slice(1), ph[0]] : ph); }}
+                            onOpen={(i, genOk) => {
+                              const orig = productPhotos(qv);
+                              const ph = genOk ? wallPhotoList(qv, orig, wallManifest) : orig;   // a tile that failed to load stays out
+                              if (ph.length) onViewPhoto(genOk && i === 1 ? [...ph.slice(1), ph[0]] : ph);
+                            }}
                             fallback={<span style={{ fontSize: 110 }}>{qv.photo || "👟"}</span>} />
                 : <Photo p={qv} big />}
             </div>
