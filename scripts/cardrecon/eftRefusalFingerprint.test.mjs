@@ -231,8 +231,9 @@ describe("settledFingerprintPlan / settledClaimStep — never the wrong money, n
     const src = readFileSync(resolve(HERE, "claim-settled-bank-fingerprint.mjs"), "utf8");
     const writes = [...src.matchAll(/\)\.(set|update|remove|transaction|push)\(/g)];   // calls on a ref(…), not on arrays
     expect(writes).toHaveLength(2);
-    expect(src).toMatch(/db\.ref\(`\$\{EFT_POOL_PATH\}\/\$\{refusedKey\}`\)\.transaction\(settledByHandStep/);
-    expect(src).not.toMatch(/\$\{spenderKey\}`\)\.(set|update|remove|transaction|push)\(/);
+    // Exactly two write targets: the fingerprint node and the REFUSED record.
+    const targets = [...src.matchAll(/db\.ref\(([^)]*)\)\.(set|update|remove|transaction|push)\(/g)].map((m) => m[1]);
+    expect(targets).toEqual(["path", "`${EFT_POOL_PATH}/${refusedKey}`"]);
     expect(src).toMatch(/db\.ref\(path\)\.transaction\(settledClaimStep/);
     expect(src).toMatch(/const path = `\$\{EFT_FINGERPRINT_PATH\}\//);
   });

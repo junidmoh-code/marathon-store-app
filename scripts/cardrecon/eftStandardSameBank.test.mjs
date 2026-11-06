@@ -10,7 +10,7 @@
 // from any other bank still needs that bank's immediate signal.
 //
 // …and that R400 was floated BY HAND by Junid before this rule went live, so
-// her notice must never float a second R400 (the second half of this file).
+// its notice must never float a second R400 (the second half of this file).
 //
 // Each case runs the poller's own chain (email-poller.mjs). The fixture is a
 // sanitised copy of the real 6 Nov notice (payer, reference and every number
@@ -116,6 +116,22 @@ describe("a same-bank Standard-to-Standard payment into the immediate-only accou
     expect(r.reason).toMatch(/future-dated/);
   });
 
+  it("a Standard Bank heading out of shape (two, split, below the sentence) still refuses", () => {
+    const sentence = "We confirm that the following payment has been made into your account from A CUSTOMER:";
+    const both = SAME_BANK({ heading: "Immediate Payment Confirmation" }).flatMap((l) => (l === "Immediate Payment Confirmation" ? [l, "Payment Confirmation"] : [l]));
+    const split = SAME_BANK({ heading: "Immediate Payment Confirmation" }).flatMap((l) => (l === "Immediate Payment Confirmation" ? ["Immediate", "Payment Confirmation"] : [l]));
+    const below = SAME_BANK().flatMap((l) => (l === sentence ? [l, "Payment Confirmation"] : [l]));
+    for (const [name, lines] of [["two", both], ["split", split], ["below", below]]) {
+      const r = decide("standardbank.co.za", "noreply@standardbank.co.za", lines).record;
+      expect(r.outcome, name).toBe("refused-not-immediate");
+    }
+  });
+
+  it("the same-bank pass also covers a Standard Bank account under the date-phased rule, 20–26 Oct (inert: none exists)", () => {
+    const parsed = { bankTs: Date.parse("2026-10-24T08:00:00Z"), destBankName: "STANDARD BANK", immediate: null, paymentType: null };
+    expect(immediacyVerdict({ parsed, reader: "standardbank", receivedAt: Date.parse("2026-10-24T09:00:00Z") })).toEqual({ ok: true });
+  });
+
   it("a forged Standard Bank notice (DKIM fails) is still refused — the rule rests on the bank's signature", () => {
     expect(sb({}, { dkim: "fail" }).record.outcome).toBe("refused-auth");
   });
@@ -171,8 +187,8 @@ describe("every other account keeps the date-phased rule (unchanged)", () => {
   });
 });
 
-// ─── BEVERLY'S R400: FLOATED BY HAND — HER NOTICE NEVER FLOATS ───────────────
-// Live state on 6 Nov 2026: two copies of her notice, both refused
+// ─── THE R400 FLOATED BY HAND — ITS NOTICE NEVER FLOATS ──────────────────────
+// Live state on 6 Nov 2026: two copies of the notice, both refused
 // not-immediate; the first holds the bank id's claim, the second is its
 // duplicate; Junid's manual entry (status unmatched) floats the R400.
 // claim-settled-bank-fingerprint.mjs then marks the claim spentBy his entry
@@ -198,13 +214,13 @@ describe("a notice settled by hand never auto-floats, even now that the rule wou
       : applyRefusalFingerprint(record, { fingerprint: fp, holder, poolKey });
   };
 
-  const first = ingest("<346228332-12@myupdates1.standardbank.co.za>", 1);
-  const second = ingest("<346228654-8@myupdates1.standardbank.co.za>", 2);
+  const first = ingest("<copy-1@myupdates1.standardbank.co.za>", 1);
+  const second = ingest("<copy-2@myupdates1.standardbank.co.za>", 2);
   const fp = paymentFingerprint({ reader: "standardbank", bankRef: first.record.bankRef });
   // As refused before this change (the live records' outcome).
   const { status: _s, ...asRecorded } = first.record;
   const refusedFirst = { ...asRecorded, outcome: "refused-not-immediate" };
-  const MANUAL_KEY = "8b57216f6705";
+  const MANUAL_KEY = "m".repeat(40);
   const manual = { outcome: "recorded", status: "unmatched", reader: "manual", manualEntry: { at: 1 }, amountCents: 40000, reference: "custref" };
 
   // The live claim, as the refusal wrote it, then marked by the script.
@@ -216,7 +232,7 @@ describe("a notice settled by hand never auto-floats, even now that the rule wou
     expect(claims.get(fp)).toMatchObject({ poolKey: first.poolKey, spentBy: MANUAL_KEY, settledByHandFor: first.poolKey });
   });
 
-  it("under the new rule her notice WOULD pass on its own…", () => {
+  it("under the new rule the notice WOULD pass on its own…", () => {
     expect(first.record).toMatchObject({ outcome: "recorded", status: "unmatched" });
   });
 
@@ -227,7 +243,7 @@ describe("a notice settled by hand never auto-floats, even now that the rule wou
     expect(written.approvedByHand).toBe(MANUAL_KEY);
   });
 
-  it("…a re-run of the second copy, or any resent copy, lands HELD", () => {
+  it("…a re-run of the second copy, or any resent copy, lands HELD (not the holder — the pre-existing branch)", () => {
     expect(claimAndDecide(claims, second).outcome).toBe("held-duplicate");
     const resent = ingest("<resent@myupdates2.standardbank.co.za>", 3);
     const w = claimAndDecide(claims, resent);
@@ -251,6 +267,13 @@ describe("a notice settled by hand never auto-floats, even now that the rule wou
     expect(step({ ...first.record })).toBeUndefined();                    // recorded: never
     expect(step({ ...refusedFirst, outcome: "held-duplicate" })).toBeUndefined();
     expect(step("garbage")).toBeUndefined();
+  });
+
+  it("an owner proof-approval stamped over a refusal's claim also holds that refusal's re-run", () => {
+    // eftPoolManualApprove stampOver: holder is the refusal, spentBy the approval.
+    const w = applyFingerprintHold(first.record, { fingerprint: fp, holder: first.poolKey, poolKey: first.poolKey, manualApproved: true, spentBy: "a".repeat(40) });
+    expect(w.outcome).toBe("held-duplicate");
+    expect(w.status).toBeUndefined();
   });
 
   it("a claim this record spent itself is untouched (a normal used payment re-read)", () => {

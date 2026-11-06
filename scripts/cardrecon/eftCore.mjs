@@ -510,6 +510,9 @@ export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
 // destination, so a recorded FNB payment is FNB -> FNB: an intra-bank transfer,
 // which clears in real time. Immediate by its nature, not a guess (Junid's
 // rule, 5 Oct 2026). Gated below on the destination bank being FNB.
+// standardBankHeading's paymentType when the heading is out of shape — never
+// a payment type, so never same-bank evidence either.
+const SB_HEADING_ANOMALIES = ["contradictory headings", "heading split across lines", "heading below the confirmation"];
 export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank", "nedbank"];
 
 // ─── DATE-PHASED: IMMEDIATE REQUIRED ONLY BEFORE 27 OCT 2026 ────────────────
@@ -582,19 +585,32 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
       ? `This FNB notification pays "${clip(parsed.destBankName, 60)}", not an FNB account, so it is not an FNB-to-FNB immediate payment.`
       : "This FNB notification does not name an FNB destination account, so it cannot be confirmed as an FNB-to-FNB immediate payment." };
   }
-  if (id === "standardbank" && destinationBankOf(parsed?.destBankName) === "standardbank") {
+  if (id === "standardbank" && destinationBankOf(parsed?.destBankName) === "standardbank"
+    && !SB_HEADING_ANOMALIES.includes(parsed?.paymentType)) {
     // SAME-BANK, STANDARD BANK TO STANDARD BANK (Junid, 6 Nov 2026) — the
     // FNB rule above, for Standard Bank. The notification is sent by the
     // PAYER's bank (selected for a standardbank.co.za sender, and refused
     // as refused-auth unless DKIM passes for that domain — eftPoolRecord
     // checks the signature before this verdict counts), so a Standard Bank notice paying a Standard
-    // Bank account is an intra-bank transfer, which settles at once. Standard
+    // Bank account is an intra-bank transfer. Junid's rule: same-bank settles
+    // at once and is accepted as immediate. (The notice's own footer says
+    // "Payments to Standard Bank accounts may take up to one business day to
+    // reflect" — accepted by policy, as FNB-to-FNB is; not read here.) Standard
     // Bank prints the "Immediate Payment Confirmation" heading only for its
     // paid inter-bank real-time service, so a same-bank payment carries no
-    // heading at all — the real R400 "BEVERLY" notice of 6 Nov 2026 into the
+    // heading at all — the real R400 notice of 6 Nov 2026 into the
     // ATUGAR account: no heading, "Bank name STANDARD BANK", footer
     // "Payments to Standard Bank accounts …". The destination bank is the
     // printed name 7a already checked against the matched account's bank.
+    // A plain "Payment Confirmation" heading (immediate: false) passes too:
+    // it is what a NORMAL payment prints, and a same-bank normal payment is
+    // exactly what Junid accepts. A scheduled one is still refused above
+    // when the bank dates it after its notice arrived. A heading the reader
+    // found ANOMALOUS (two headings, one split, one below the confirmation)
+    // still refuses: that is a document out of shape, not a payment type.
+    // This applies wherever immediacy is required — also a Standard Bank
+    // account under the date-phased rule dated 20–26 Oct — which is inert:
+    // the only Standard Bank account was added on 2 Nov, immediate-only.
     // A payment into the account FROM ANY OTHER BANK (Capitec, Absa, FNB,
     // Nedbank notices) still needs that bank's immediate signal.
     return { ok: true };
@@ -1038,7 +1054,7 @@ export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spende
   if (!fingerprint) return { ok: false, why: `${refusedKey} is not a DKIM-verified bank refusal carrying a bank transaction id (outcome ${refused.outcome}).` };
   // A manual entry SETTLES the payment the moment Junid floats it, used at a
   // till yet or not: the bank's id must be spent from then, or the bank copy
-  // could float beside it (Beverly's R400, 6 Nov 2026 — marked while his entry
+  // could float beside it (the R400 of 6 Nov 2026 — marked while his entry
   // was still unmatched). Anything else — a reversed or held entry — is not.
   if (spender.outcome !== "recorded" || !["used", "unmatched"].includes(spender.status)) return { ok: false, why: `${spenderKey} is not a floated or used payment (outcome ${spender.outcome}, status ${spender.status ?? "none"}).` };
   // Only Junid's hand entry settles a refusal: a bank record with this id
