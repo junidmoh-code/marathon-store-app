@@ -503,6 +503,14 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
   if (!(amount > 0)) {
     // Told once (CodeRabbit on #847): a marker on the conversation, so the next run (or the 48-hour credit) is silent.
     if (line.resolution?.conversation?.nothingLeftAt) return;
+    if (heldBack > 0) {
+      // Nothing can go back to the order's own payment, but a difference paid separately is still owed (CodeRabbit on #851).
+      await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, nothingLeftAt: ctx.now } } } : undefined));
+      await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents: 0, note: `${rands(heldBack)} was paid on its own PayFast payment; Junid's to refund there` });
+      await tellJunid(ctx, `Website order ${order.ref}: refund asked; ${rands(heldBack)} left, paid on its own PayFast payment`, [`Line: ${line.title}. Nothing is left to refund to the order's payment; the customer's ${rands(heldBack)} difference was paid on a separate PayFast payment. Refund it there by hand, or tell Jamie to credit it. Nothing was sent to the customer.`]);
+      await setAgentRow(ctx, key, { state: "offering", needsJunid: true });
+      return;
+    }
     await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, nothingLeftAt: ctx.now } } } : undefined));
     await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents: 0, note: "nothing is left of what was paid for this line" });
     await tellJunid(ctx, `Website order ${order.ref}: ${kind} asked, but nothing is left to give back on ${line.title}`, [`Everything paid for the line was given back already; nothing was sent to the customer.`]);

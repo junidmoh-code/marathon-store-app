@@ -459,6 +459,11 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(Object.values(line(f, 1).resolution?.moneyIn || {})).toHaveLength(1);
   });
 
+  it("CodeRabbit on dm #130: a given-back entry with no kind counts as a refund for the original-payment cap (fails closed)", () => {
+    const l = { qty: 1, originalUnitPriceCents: 50000, unitPriceCents: 80000, resolution: { moneyIn: { a: { state: "done", amountCents: 30000 } }, moneySettled: { x: { state: "done", amountCents: 20000 } } } };
+    expect(lineLedger(l, { priceCents: 0 }).refundToOriginalCents).toBe(30000);
+  });
+
   it("refund cap (coordinator's case): a R500 line with R100 store credit already given refunds at most R400, never R500", () => {
     const l = { qty: 1, unitPriceCents: 50000, originalUnitPriceCents: 50000, resolution: { moneySettled: { c: { kind: "credit", state: "done", amountCents: 10000 } } } };
     const lg = lineLedger(l, { priceCents: 0 });

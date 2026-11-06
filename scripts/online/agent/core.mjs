@@ -51,7 +51,8 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   const earlier = Object.values(line?.resolution?.moneySettled || {}).filter((x) => x && typeof x === "object" && x.state === "done");
   const settled = earlier.reduce((t, x) => t + moved(x), 0) + (isObj && m.state === "done" ? moved(m) : 0);
   // Of that, what went back to the order's own payment as a refund (a credit never touched it).
-  const refundedOrig = earlier.filter((x) => x.kind === "refund").reduce((t, x) => t + moved(x), 0) + (isObj && m.state === "done" && m.kind === "refund" ? moved(m) : 0);
+  // An entry with no kind is ambiguous: counted as a refund (it only lowers the cap; fails closed, CodeRabbit on dm #130).
+  const refundedOrig = earlier.filter((x) => x.kind !== "credit").reduce((t, x) => t + moved(x), 0) + (isObj && m.state === "done" && m.kind !== "credit" ? moved(m) : 0);
   const nowCents = Math.max(0, Math.round(Number(priceCents) || 0)) * qty;
   const net = paid - settled - nowCents;
   const claimedAt = Number(m?.at) || 0;
