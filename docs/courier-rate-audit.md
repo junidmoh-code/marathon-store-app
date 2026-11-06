@@ -87,7 +87,7 @@ carton or flyer than the goods. #1778, two pairs, went in a 59×43×27 carton
 about 1.4× its own volume (it travels wrapped), but that rarely changes the
 band: 94 of 97 single-pair quotes were already within 5%.
 
-## The fix (store-app #, 6 Nov 2026)
+## The fix (store-app #853, 6 Nov 2026)
 
 Dimensions and weight come from the parcel table with **no padding**:
 
@@ -102,7 +102,8 @@ Dimensions and weight come from the parcel table with **no padding**:
   18 cm. A box is used only past 18 cm;
 - soft goods that do not fit inside the shoeboxes lie on top at their own
   thickness. The +3 cm bundle is gone;
-- divisor ÷4000 (TCG's, above). No other multiplier exists.
+- divisor ÷4000 (TCG's, above). No safety margin. The only factor left is the
+  reconciliation loop's learned calibration, and it only ever shrinks a class.
 
 **With the fix:** every measured booking was re-quoted at today's prices with
 the new declaration (178 parcels; the `with fix` column):
