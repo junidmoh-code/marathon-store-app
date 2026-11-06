@@ -226,6 +226,7 @@ describe("THE PARCEL RULE — the details", () => {
   it("without a bag, side by side still wins when layers can't: a tee + a perfume lie next to each other in FLAT", () => {
     const r = estimateParcel([T(1), { category: "Perfume", qty: 1 }], NO_BAG);
     expect(r.parcels[0]).toMatchObject({ kind: "box", boxCode: "FLAT" });
+    expect(r.parcels[0].actualKg).toBe(0.9); // 0.4 + 0.35 + the FLAT mailer's 0.15
   });
 
   it("layers: a bad box row never fits, and decimal heights fit exactly", () => {

@@ -61,7 +61,7 @@ const MUTATIONS = [
   { id: "L11", file: BOOK, guard: "the spend ceiling blocks a live booking quoted above it",
     from: "chosen.rate.rate > ceiling)", to: "chosen.rate.rate > ceiling * 1000)" },
   { id: "L12", file: BOOK, guard: "booking never mints an order node — the order must exist at its key",
-    from: "if (!(await db.ref(`online_orders/${key}/ref`).get()).exists()) {", to: "if (false) {" },
+    from: "if (!(await db.ref(`online_orders/${key}/${existsField}`).get()).exists()) {", to: "if (false) {" },
   { id: "L13", file: BOOK, guard: "a create response naming no shipment is UNKNOWN, never 'booked'",
     from: "(res.id == null && !res.short_tracking_reference && !res.custom_tracking_reference)", to: "(false)" },
   { id: "C1", file: CLIENT, guard: "a create is NEVER retried on 5xx (a retry could book twice)",
