@@ -185,6 +185,7 @@ export function quoteList(quoted) {
   ];
   return rows
     .map((r) => ({ mode: r.mode, code: r.code, name: r.name ?? "", rate: finiteOrNull(r.rate), chargedKg: finiteOrNull(r.chargedKg) }))
+    .filter((r) => r.rate !== null)
     .sort((a, b) => a.rate - b.rate);
 }
 

@@ -147,7 +147,7 @@ export function lastWeekStart(nowMs) {
   return thisMonday - 7 * DAY;
 }
 
-/** Is it Monday 08:00 SAST or later? (The line goes once per week, the first tick after.) Pure. */
+/** True any time except Monday before 08:00 SAST; with the per-week key the line goes on the first pass after Monday 08:00. Pure. */
 export function weeklyDue(nowMs) {
   const d = new Date(nowMs + SAST_MS);
   // Any time in the week except Monday before 08:00; the per-week key sends it once.
@@ -193,14 +193,28 @@ export function weeklyLine(shipments, weekStartMs, { createdBy = "marathon-pos" 
 export async function runReconcile({ db, client, sendJunid, now = Date.now(), log = () => {} }) {
   const out = { reconciled: 0, diffs: 0, learned: [], lines: 0, weekly: null };
 
-  // 1. Delivered waybills not yet reconciled.
-  const orders = (await db.ref("online_orders").orderByChild("shipping/provider").equalTo("courier_guy").get()).val() ?? {};
-  for (const [id, order] of Object.entries(orders)) {
-    const s = order?.shipping ?? {};
+  // 1. Delivered waybills not yet reconciled. THE OPEN SET: the poller adds
+  // every live booking to /shipping_recon/open/{orderId} (poll.mjs); the very
+  // first pass seeds it from /online_orders once. After that a pass reads only
+  // the open orders' shipping nodes, never all of /online_orders (bandwidth).
+  const openRef = db.ref(`${RECON_PATH}/open`);
+  if (!(await db.ref(`${RECON_PATH}/seededAt`).get()).exists()) {
+    const all = (await db.ref("online_orders").orderByChild("shipping/provider").equalTo("courier_guy").get()).val() ?? {};
+    const seed = {};
+    for (const [id, o] of Object.entries(all)) if (o?.shipping?.waybill && !o.shipping.invoiced && !o.shipping.cancelledAt) seed[id] = Number(o.shipping.bookedAt) || now;
+    await openRef.set(seed);
+    await db.ref(`${RECON_PATH}/seededAt`).set(now);
+  }
+  const open = (await openRef.get()).val() ?? {};
+  for (const id of Object.keys(open)) {
+    const s = (await db.ref(`online_orders/${id}/shipping`).get()).val() ?? {};
+    const order = { shipping: s };
     const ref = s.trackingReference || s.waybill;
-    if (!ref || s.invoiced || s.cancelledAt) continue;
+    const close = () => db.ref(`${RECON_PATH}/open/${id}`).remove();
+    if (!ref || s.invoiced || s.cancelledAt) { await close(); continue; }
     if (Number(s.bookedAt) > 0 && now - Number(s.bookedAt) > GIVE_UP_AFTER_MS) {
       await db.ref(`online_orders/${id}/shipping/invoiced`).set({ unreconciled: "not delivered and invoiced within 45 days", at: now });
+      await close();
       continue;
     }
     try {
@@ -214,6 +228,7 @@ export async function runReconcile({ db, client, sendJunid, now = Date.now(), lo
       const key = String(s.waybill || ref).replace(/[^A-Za-z0-9_-]/g, "-");
       if (r.diff) { writes[`${RECON_PATH}/diffs/${key}`] = r.diff; out.diffs++; log(`recon ${id} ${key} quoted R${r.diff.quoted} invoiced R${r.diff.invoiced} (${Math.round(r.diff.share * 100)}%)`); }
       if (r.sample) writes[`${RECON_PATH}/samples/${r.sample.class.replace(/[^A-Za-z0-9_-]/g, "_")}/${key}`] = r.sample;
+      writes[`${RECON_PATH}/open/${id}`] = null;
       await db.ref().update(JSON.parse(JSON.stringify(writes)));
       out.reconciled++;
     } catch (e) {

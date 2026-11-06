@@ -154,6 +154,9 @@ describe("runReconcile — one pass", () => {
     expect(sent.map((x) => x[0])).toEqual(["courier-ceiling-9_352", "courier-week-2026-11-02"]);
     expect(out.weekly).toMatch(/^Courier 2 Nov–8 Nov: 1 booking, our quotes R355\.68 vs invoiced R249\.60; overpaid R106\.08 on 1/);
 
+    // The open set was seeded once (order 2 already invoiced: never in it) and emptied by the reconcile.
+    expect(d.root[RECON_PATH].seededAt).toBe(NOW);
+    expect(d.root[RECON_PATH].open ?? {}).toEqual({});
     // A second pass sends nothing again and re-reconciles nothing.
     sent.length = 0;
     const again = await runReconcile({ db: withQueries(d), client: client(), sendJunid, now: NOW + 3600e3 });

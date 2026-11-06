@@ -15,6 +15,7 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { createCourierClient, fileLogger } from "./courier-client.mjs";
 import { adminDb } from "./adminDb.mjs";
 import { runReconcile } from "./reconcile.mjs";
@@ -34,7 +35,7 @@ export function jimmySender({ dir = process.env.COURIER_JIMMY_DIR || join(homedi
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dry = process.argv.includes("--dry");
   const log = (line) => { console.log(line); fileLogger()(line); };
   const real = adminDb();

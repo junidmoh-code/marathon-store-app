@@ -799,7 +799,7 @@ async function shipOrder(ctx, id, order) {
     }
   }
   // OVER THE R300 CEILING (Junid, 6 Nov 2026): not booked; Junid gets ONE
-  // WhatsApp line with the cheaper option. Queued once per order and quote;
+  // WhatsApp line with the cheaper option. Queued once per order (the first wins);
   // the courier-recon runner sends it through Jamie (scripts/shipping/courier-recon.mjs).
   if (booking?.junidLine) {
     try {
@@ -812,7 +812,11 @@ async function shipOrder(ctx, id, order) {
   }
   // A real booking above R250 (or /config/shipping/costAlertRand): Junid is
   // emailed once, with the box and why (costAlert.mjs). Never blocks the ship.
-  if (booking && !booking.skipped && booking.waybill) await queueCostAlert(ctx, id, order, booking);
+  if (booking && !booking.skipped && booking.waybill) {
+    // The reconciliation loop's open set (scripts/shipping/reconcile.mjs): read back after delivery.
+    try { await db.ref(`shipping_recon/open/${id}`).set(now); } catch (e) { log(`  ! ${orderLabel(order)}: recon open-set not written — ${String(e?.message || e).slice(0, 120)}`); }
+    await queueCostAlert(ctx, id, order, booking);
+  }
   // A crash between the booking and the queue: the next tick's booking says
   // "already booked" with the recorded shipping — queue from that (deduped by waybill).
   else if (booking?.reason === "already booked" && booking.shipping?.waybill) await queueCostAlert(ctx, id, order, booking.shipping);
