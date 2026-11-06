@@ -57,7 +57,7 @@ const products = [];
 for (const pid of matchedPids) {
   const node = (await db.ref(`shopify_publish/${pid}`).get()).val() || {};
   const num = String(node.adminUrl || "").split("/").pop();
-  if (!num) { console.log(`   ${pid}: no adminUrl on its publish node`); continue; }
+  if (!/^\d+$/.test(num)) { console.log(`   ${pid}: no usable adminUrl on its publish node`); continue; }
   const r = await graphql(`query ($id: ID!) { product(id: $id) { ${SHOPIFY_PRODUCT} } }`, { id: `gid://shopify/Product/${num}` });
   if (r.product) products.push(r.product); else console.log(`   ${pid}: gid ${num} not found on Shopify`);
 }
