@@ -123,7 +123,9 @@ async function handleLine(ctx, key, row) {
   const out = line.resolution?.outcome;
   if (out?.kind === "swap" && conv.state === "closed" && !Object.values(conv.sends || {}).some((x) => x?.kind === "swapped")) {
     const diff = out.creditCents > 0 ? await money(ctx, orderId, order, i, line, "credit", out.creditCents, "swap difference") : null;
-    await send(ctx, orderId, order, i, line, "swapped", { amountCents: out.creditCents || 0, pending: !!diff && diff.via !== "api" });
+    // A pre-claim met again is NOT proof the credit was filed (CodeRabbit on #848): the customer hears the amount only when
+    // money() filed it (done, or with Junid by hand); an unresolved claim is Junid's (told at once) and they hear the swap.
+    await send(ctx, orderId, order, i, line, "swapped", creditWords(diff, out.creditCents));
     await setAgentRow(ctx, key, null);
     return;
   }
@@ -311,6 +313,15 @@ async function nextReply(ctx, orderId, i, conv) {
 
 // ── pick N ───────────────────────────────────────────────────────────────────
 // A held pick is dropped only once it has an outcome: a committed swap, or a final answer (dearer, gone): CodeRabbit #847.
+/**
+ * What the customer may be told of a swap's credit, from what money() returned: filed (done → "on your account"; with
+ * Junid by hand → "being added") → the amount; nothing filed, refused, or a claim with no result → no amount.
+ */
+function creditWords(diff, amountCents) {
+  const filed = !!diff && ["done", "manual", "failed"].includes(diff.state); // failed: Junid was told to do it by hand
+  return { amountCents: filed ? amountCents || 0 : 0, pending: filed && diff.state !== "done" };
+}
+
 /** A pick that did not commit is HELD and tried again (review of #847, 1); after 3 tries Junid is told once, in the app. */
 async function holdPick(ctx, orderId, order, i, line, offer, why) {
   const offers = Object.values(line.resolution?.conversation?.offers || {});
@@ -459,7 +470,7 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
   // The customer hears of a credit only as far as money() really filed it (review of #847, 6): none filed → no amount
   // (Junid hears); filed but not done → "being added"; done → "on your account".
   if (creditClaim && !diff) await tellJunid(ctx, `Website order ${order.ref}: ${rands(judged.creditCents)} store credit owed after the swap was NOT filed`, [`Line: ${line.title} → ${offer.title}. The customer was told of the swap, not of the credit. Please credit it by hand or tell Jamie.`]);
-  await send(ctx, orderId, order, i, swapped, "swapped", { amountCents: diff ? judged.creditCents : 0, pending: !!diff && diff.state !== "done" });
+  await send(ctx, orderId, order, i, swapped, "swapped", creditWords(diff, judged.creditCents));
   await setAgentRow(ctx, key, null);
 }
 

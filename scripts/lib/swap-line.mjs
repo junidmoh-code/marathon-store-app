@@ -264,7 +264,9 @@ export async function swapOnlineOrderLine({
     // "customer pays" decision is owed, not paid: recorded as to_collect (never counted) until a payment confirms it.
     const owedIn = !paidIn && plan.price.decision === "customer_pays" && plan.price.extraCents > 0 ? plan.price.extraCents : 0;
     const inEntry = paidIn ? clean({ amountCents: paidIn, state: "done", via: "payment", ref: paidInRef || null, at: now }) : owedIn ? clean({ amountCents: owedIn, state: "to_collect", via: "customer_pays", at: now }) : null;
-    const resolution = inEntry ? { ...resolution0, moneyIn: { ...(cur.resolution?.moneyIn || {}), [`m${now}`]: inEntry } } : resolution0;
+    // Its own key, never the timestamp alone (CodeRabbit on #848): two swaps in one millisecond keep both entries.
+    const inKey = (have) => { let k = `m${now}${requestId ? `-${String(requestId).replace(/[^\w-]/g, "")}` : ""}`; for (let n = 1; have && have[k]; n++) k = `m${now}-${n}`; return k; };
+    const resolution = inEntry ? { ...resolution0, moneyIn: { ...(cur.resolution?.moneyIn || {}), [inKey(cur.resolution?.moneyIn)]: inEntry } } : resolution0;
     const next = { ...ord, lines: Array.isArray(ord.lines) ? [...ord.lines] : { ...ord.lines } };
     next.lines[i] = swappedLine(cur, item, { swappedFrom, outcome, resolution, at: now });
     const drop = (node, key) => { if (node && typeof node === "object" && key in node) { const c = Array.isArray(node) ? [...node] : { ...node }; if (Array.isArray(c)) c[key] = null; else delete c[key]; return c; } return node; };

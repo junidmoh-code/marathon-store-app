@@ -555,5 +555,24 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(h.mails.at(-1).text).toMatch(/being added to your account/);
     expect(h.mails.at(-1).text).not.toMatch(/on your account now/);
   });
-});
 
+  it("CodeRabbit on #848: recovering a swap whose pre-claim has no result tells Junid at once and the customer no credit amount", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    const rows = structuredClone(f.read("online_escalations"));
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    await f.db.ref("online_escalations").set(rows); // the crashed run never cleared its row
+    // As if the run that swapped stopped before paying: the line swapped, the pre-claim unresolved, no "swapped" message.
+    const conv0 = conv(f);
+    const sends = Object.fromEntries(Object.entries(conv0.sends || {}).filter(([, x]) => x?.kind !== "swapped"));
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation/sends").set(sends);
+    await f.db.ref("online_orders/9001/lines/0/resolution/money").set({ kind: "credit", amountCents: 1000, state: "claimed", at: NOW + 1, why: "swap difference", preclaimed: true });
+    const before = h.mails.length;
+    await h.run();
+    const sent = h.mails.slice(before);
+    expect(sent.length).toBe(1);
+    expect(sent[0].text).not.toMatch(/store credit/);
+    expect(h.junid.some((m) => /CHECK SHOPIFY/.test(m.subject))).toBe(true);
+  });
+});
