@@ -627,4 +627,20 @@ describe("review of #846: held picks, the ledger on settle", () => {
     await h.run({ db, inbox: { replies: async () => [reply("credit")] } });
     expect(h.junid.slice(before).filter((m) => /was refused/.test(m.subject))).toHaveLength(0);
   });
+
+  it("CodeRabbit on #851: a refund with only a separately paid difference left is Junid's; no 48-hour credit pays it after", async () => {
+    // Paid R250 on the order; R250 refunded to it already; R30 paid on its own PayFast payment remains.
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } }, moneySettled: { r: { kind: "refund", state: "done", amountCents: 25000 } } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions", "write_orders"] });
+    await h.run();
+    expect(conv(f)).toBeTruthy();
+    await h.run({ inbox: { replies: async () => [reply("refund")] } });
+    expect(h.junid.some((m) => /paid on its own PayFast payment/.test(m.subject))).toBe(true);
+    expect(conv(f).state).toBe("with_junid");
+    const credits = () => h.gql.filter((g) => /storeCreditAccountCredit/.test(g.q)).length;
+    const before = credits();
+    await h.run({ now: NOW + 72 * H });
+    expect(credits()).toBe(before);
+  });
 });
+
