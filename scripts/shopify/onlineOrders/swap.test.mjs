@@ -459,6 +459,15 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(Object.values(line(f, 1).resolution?.moneyIn || {})).toHaveLength(1);
   });
 
+  it("refund cap (coordinator's case): a R500 line with R100 store credit already given refunds at most R400, never R500", () => {
+    const l = { qty: 1, unitPriceCents: 50000, originalUnitPriceCents: 50000, resolution: { moneySettled: { c: { kind: "credit", state: "done", amountCents: 10000 } } } };
+    const lg = lineLedger(l, { priceCents: 0 });
+    expect(lg.refundableCents).toBe(40000);
+    expect(lg.refundToOriginalCents).toBe(40000);
+    expect(moneyAllowed(null, { kind: "refund", amountCents: 50000, line: l }).ok).toBe(false);
+    expect(moneyAllowed(null, { kind: "refund", amountCents: 40000, line: l }).ok).toBe(true);
+  });
+
   it("Sonnet review of #848, 1: a refund never includes the difference paid on its own PayFast payment", () => {
     const l = { qty: 1, unitPriceCents: 80000, originalUnitPriceCents: 50000, resolution: { moneyIn: { a: { state: "done", amountCents: 30000 } } } };
     const lg = lineLedger(l, { priceCents: 0 });
