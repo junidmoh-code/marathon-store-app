@@ -687,6 +687,40 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(h.mails.length).toBe(mailsBefore + 1);
   });
 
+  it("CodeRabbit on #856: a refund resumed after its close failed tells Junid of the separately paid part once, sent before or on resume", async () => {
+    for (const crashBeforeNotice of [false, true]) {
+      const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } } } }) }));
+      const h = harness(f, { scopes: ["write_store_credit_account_transactions", "write_orders"] });
+      await h.run();
+      const realRef = f.db.ref;
+      let failClose = true;
+      const db = { ref: (p) => {
+        const r = realRef(p);
+        if (p !== "online_orders/9001/lines/0") return r;
+        return { ...r, transaction: async (fn) => {
+          const cur = structuredClone(f.read(p));
+          const out = fn(structuredClone(cur));
+          if (failClose && out?.resolution?.outcome && !cur?.resolution?.outcome) { failClose = false; return { committed: false, snapshot: { val: () => cur } }; }
+          return r.transaction(fn);
+        } };
+      } };
+      let base = 0;
+      const told = () => h.junid.filter((m) => /paid separately/.test(m.subject)).length - base;
+      await h.run({ db, inbox: { replies: async () => [reply("refund")] } });
+      expect(f.read("online_orders/9001/lines/0/resolution/outcome")).toBeFalsy();
+      expect(f.read("online_orders/9001/lines/0/resolution/money")?.state).toBeTruthy(); // filed, not closed
+      if (crashBeforeNotice) {
+        // as if the process died after the refund was filed and before the notice: neither the mail nor its mark exist
+        base = told();
+        await f.db.ref("online_orders/9001/lines/0/resolution/conversation/heldBackToldAt").set(null);
+      }
+      await h.run();
+      await h.run();
+      expect(told()).toBe(1);
+      expect((f.read("online_orders/9001/lines/0/resolution/outcome") || {}).kind).toBe("refund");
+    }
+  });
+
   it("CodeRabbit on #851: a refund with only a separately paid difference left is Junid's; no 48-hour credit pays it after", async () => {
     // Paid R250 on the order; R250 refunded to it already; R30 paid on its own PayFast payment remains.
     const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } }, moneySettled: { r: { kind: "refund", state: "done", amountCents: 25000 } } } }) }));

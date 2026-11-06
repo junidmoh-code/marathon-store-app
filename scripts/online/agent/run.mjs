@@ -519,6 +519,12 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
   const m0 = line.resolution?.money;
   if (m0 && m0.kind === kind && m0.state && m0.state !== "claimed" && !line.resolution?.outcome) {
     const amt0 = Number.isInteger(m0.paidCents) && m0.paidCents > 0 ? m0.paidCents : Number(m0.amountCents) || 0;
+    // A refund's separately paid part (the ledger now: the original payment settled, what is left was paid on its own).
+    if (kind === "refund") {
+      const lgR = lineLedger(line, { priceCents: 0, now: ctx.now });
+      const heldR = lgR.refundableCents - lgR.refundToOriginalCents;
+      if (heldR > 0) await tellHeldBack(ctx, orderId, order, i, line, amt0, heldR);
+    }
     return closeSettle(ctx, key, orderId, order, i, line, messageKind, amt0, m0);
   }
   // What is left of what was paid for the line (the ledger; review of #846, 5): never the full price again after a credit.
@@ -562,10 +568,18 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
     }
     return;
   }
-  if (heldBack > 0) await tellJunid(ctx, `Website order ${order.ref}: refund of ${rands(amount)} filed; ${rands(heldBack)} more was paid separately`, [`Line: ${line.title}. The customer also paid a ${rands(heldBack)} difference on its own PayFast payment for the swap; a refund never goes above what the order's payment took, so that part is NOT in this refund. Refund it on that PayFast payment by hand, or tell Jamie to credit it.`]);
+  if (heldBack > 0) await tellHeldBack(ctx, orderId, order, i, line, amount, heldBack);
   // What Shopify actually refunded (it may suggest less than the line).
   if (Number.isInteger(res.paidCents) && res.paidCents > 0) amount = res.paidCents;
   return closeSettle(ctx, key, orderId, order, i, line, messageKind, amount, res);
+}
+
+// The "paid separately" notice to Junid, once per line (CodeRabbit on #856): marked on the conversation when sent, so the
+// resume of a filed-but-not-closed refund sends it if a crash came before it, and never twice.
+async function tellHeldBack(ctx, orderId, order, i, line, amount, heldBack) {
+  if (line.resolution?.conversation?.heldBackToldAt) return;
+  await tellJunid(ctx, `Website order ${order.ref}: refund of ${rands(amount)} filed; ${rands(heldBack)} more was paid separately`, [`Line: ${line.title}. The customer also paid a ${rands(heldBack)} difference on its own PayFast payment for the swap; a refund never goes above what the order's payment took, so that part is NOT in this refund. Refund it on that PayFast payment by hand, or tell Jamie to credit it.`]);
+  await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, heldBackToldAt: ctx.now } } } : undefined));
 }
 
 // The settle's closing write, then the customer's one message: only once the write landed (Sonnet review of #856), so a
