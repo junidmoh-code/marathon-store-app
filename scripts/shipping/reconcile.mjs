@@ -199,9 +199,12 @@ export async function runReconcile({ db, client, sendJunid, now = Date.now(), lo
   // the open orders' shipping nodes, never all of /online_orders (bandwidth).
   const openRef = db.ref(`${RECON_PATH}/open`);
   if (!(await db.ref(`${RECON_PATH}/seededAt`).get()).exists()) {
-    const all = (await db.ref("online_orders").orderByChild("shipping/provider").equalTo("courier_guy").get()).val() ?? {};
+    // ONE full read, filtered here: /online_orders has no .indexOn for
+    // shipping/provider, and the live database REFUSES that query outright
+    // ("Index not defined" — the first --dry run on the mini, 6 Nov 2026).
+    const all = (await db.ref("online_orders").get()).val() ?? {};
     const seed = {};
-    for (const [id, o] of Object.entries(all)) if (o?.shipping?.waybill && !o.shipping.invoiced && !o.shipping.cancelledAt) seed[id] = Number(o.shipping.bookedAt) || now;
+    for (const [id, o] of Object.entries(all)) if (o?.shipping?.provider === "courier_guy" && o?.shipping?.waybill && !o.shipping.invoiced && !o.shipping.cancelledAt) seed[id] = Number(o.shipping.bookedAt) || now;
     await openRef.set(seed);
     await db.ref(`${RECON_PATH}/seededAt`).set(now);
   }

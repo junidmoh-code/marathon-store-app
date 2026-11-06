@@ -133,8 +133,8 @@ describe("the weekly line", () => {
 });
 
 describe("runReconcile — one pass", () => {
-  // fakeDb has no queries: orderByChild/equalTo read the whole node, as an unindexed RTDB query does.
-  const withQueries = (d) => ({ ...d, ref: (p) => { const r = d.ref(p ?? ""); return { ...r, orderByChild: () => ({ equalTo: () => r }) }; } });
+  // The live database refuses an unindexed orderByChild ("Index not defined"): a query here throws, as it does there.
+  const withQueries = (d) => ({ ...d, ref: (p) => ({ ...d.ref(p ?? ""), orderByChild: () => { throw new Error("Index not defined"); } }) });
   const client = (weekly = []) => ({
     getShipments: async (q) => (q.tracking_reference ? { shipments: [fx.shipment] } : { shipments: q.offset ? [] : weekly }),
   });
