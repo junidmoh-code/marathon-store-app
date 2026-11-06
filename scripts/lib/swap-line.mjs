@@ -112,7 +112,9 @@ export function swappedLine(cur, item, { swappedFrom, outcome, resolution, at = 
   // The old item's customer-wait mark goes with it: the new line is settled by this swap (5 Nov 2026, #1866).
   const { escalation: _e, escalationOverride: _o, awaitingCustomer: _w, ...rest } = cur;
   // The line's money, from scratch, the same for every caller (COMMIT 6): what was paid, given back, now, owed.
-  const lg = lineLedger(cur, { priceCents: item.priceCents });
+  // A payment this swap records (resolution.moneyIn) is in the saved ledger too (CodeRabbit on #848): the line's balance and
+  // its payment record agree.
+  const lg = lineLedger(resolution?.moneyIn ? { ...cur, resolution: { ...(cur.resolution || {}), moneyIn: resolution.moneyIn } } : cur, { priceCents: item.priceCents });
   const ledger = { paidCents: lg.paidCents, settledCents: lg.settledCents, nowCents: lg.nowCents, creditCents: lg.creditCents, extraCents: lg.extraCents, swaps: (Number(cur.ledger?.swaps) || (cur.swappedFrom ? 1 : 0)) + 1, at: at ?? outcome?.at ?? null,
     // A dearer item: who settles the difference is on the ledger too (review of #846): the customer pays it (to collect),
     // or we absorb it.

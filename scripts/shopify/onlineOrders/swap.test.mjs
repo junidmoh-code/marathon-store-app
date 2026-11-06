@@ -429,6 +429,8 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     const out = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: 5000, paidInRef: "PF9", by: YASMIN, via: "cli", now: NOW, increment });
     expect(out.ok).toBe(true);
     expect(Object.values(line(f, 1).resolution.moneyIn || {})).toEqual([expect.objectContaining({ state: "done", via: "payment", amountCents: 5000, ref: "PF9" })]);
+    // the saved ledger counts it (CodeRabbit on #848)
+    expect(line(f, 1).ledger.paidCents).toBe(lineLedger({ ...line(f, 1), resolution: {} }, { priceCents: 0 }).paidCents + 5000);
   });
 
   it("CodeRabbit on #848: a bad paidInCents is refused, nothing swapped", async () => {
