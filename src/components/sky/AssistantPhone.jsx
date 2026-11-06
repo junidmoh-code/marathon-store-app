@@ -12,7 +12,7 @@
 // the existing label finder, a store pick asks the existing red switch-confirm,
 // the bar opens the existing checkout. Nothing here reads or writes data.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { SkyHeader, SkySearch, SkyBrandStrip, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
 
@@ -26,39 +26,28 @@ export default function AssistantPhone({
   onExit, who = "", children = null, emptyText = "No products match your search.", showGrid = true, showBar = true,
 }) {
   const [me, setMe] = useState(false);
-  // THE STICKY TOP (Junid, 6 Nov): wordmark, store line, search and brands stay
-  // put; only the grid scrolls, passing underneath. The band is sticky from the
-  // start (no reflow when it "sticks"); its glass fades in once the page has
-  // moved, so at rest it is the frozen picture.
-  const [stuck, setStuck] = useState(false);
-  // FIXED, like the laptop (Junid, 6 Nov: "the mobile app should act like the
-  // laptop version"). Sticky was silently cancelled by AssistantView's
-  // overflow-x:hidden wrapper, so the band scrolled away on a real phone. Now
-  // the band is position:fixed and a spacer of its measured height holds its
-  // place, so the first card row starts fully below it and nothing jumps.
-  const topRef = useRef(null);
+  // LIKE THE LAPTOP (Junid, 6 Nov): the header and the search are FIXED at the
+  // top on no background; the brand logos FLOAT over the shoes with nothing
+  // behind them; only the shoes scroll — in their own area (.ap-scroll) that
+  // starts under the search, so nothing ever slides behind the header or the
+  // search box. (A sticky band was cancelled by AssistantView's
+  // overflow-x:hidden wrapper and scrolled away on real phones.)
+  const topRef = useRef(null), brandsRef = useRef(null);
   const [topH, setTopH] = useState(0);
+  const [brandsH, setBrandsH] = useState(0);
   useLayoutEffect(() => {
-    const el = topRef.current;
-    if (!el) return undefined;
-    const set = () => setTopH(Math.round(el.getBoundingClientRect().height));
+    const els = [[topRef.current, setTopH], [brandsRef.current, setBrandsH]].filter(([el]) => el);
+    const set = () => els.forEach(([el, f]) => f(Math.round(el.getBoundingClientRect().height)));
     set();
     if (typeof ResizeObserver === "undefined") return undefined;
     const ro = new ResizeObserver(set);
-    ro.observe(el);
+    els.forEach(([el]) => ro.observe(el));
     return () => ro.disconnect();
-  }, []);
-  useEffect(() => {
-    const on = () => setStuck(window.scrollY > 2);
-    on();
-    window.addEventListener("scroll", on, { passive: true });
-    return () => window.removeEventListener("scroll", on);
-  }, []);
+  }, [brands && brands.length > 1 && onBrand ? 1 : 0]);   // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="ap-root" data-testid="assistant-phone">
       <style>{AP_CSS}</style>
-      <div className="ap-top" ref={topRef} data-testid="ap-top" data-stuck={stuck ? "true" : undefined}>
-        <div className="ap-topglass" aria-hidden="true" />
+      <div className="ap-top" ref={topRef} data-testid="ap-top">
       {/* The store pill replaces the old ASSISTANT tag and the store row.
           Only the shops this account is assigned to; with one (auto-selected)
           it is a plain pill, so nobody can mis-pick a store that is not theirs. */}
@@ -80,13 +69,20 @@ export default function AssistantPhone({
         <SkySearch value={search} onChange={onSearch} onAction={onScan} action="camera" actionLabel="Find by the tongue label" />
       </div>
 
-      {/* The brand strip — phones only (below 768px; the CSS hides it above).
-          The same brand value as the desktop chip row (AssistantView). */}
-      {brands && brands.length > 1 && onBrand ? (
-        <div data-contrast-exempt=""><SkyBrandStrip className="ap-brands" brands={brands} value={brand} onChange={onBrand} /></div>
-      ) : null}
       </div>
-      <div className="ap-topspace" aria-hidden="true" style={{ height: topH }} />
+
+      {/* The brand strip — phones only (below 768px; the CSS hides it above).
+          The same brand value as the desktop chip row (AssistantView). It
+          FLOATS over the shoes: no background, the cards scroll under it. */}
+      {brands && brands.length > 1 && onBrand ? (
+        <div className="ap-brandsfloat" ref={brandsRef} data-contrast-exempt="" data-testid="ap-brands-float" style={{ top: topH }}>
+          <SkyBrandStrip className="ap-brands" brands={brands} value={brand} onChange={onBrand} />
+        </div>
+      ) : null}
+
+      {/* THE ONLY SCROLLER: everything from here down. Its top is the bottom of
+          the search; its padding holds the first row below the logos. */}
+      <div className="ap-scroll" data-scroll="" data-testid="ap-scroll" style={{ top: topH, paddingTop: brandsH + 11 }}>
 
       {children}
 
@@ -130,6 +126,7 @@ export default function AssistantPhone({
 
       {/* Bottom room for the cart bar + safe area, so the last row is never under it. */}
       <div style={{ height: "var(--sky-bar-space)" }} />
+      </div>
       {showBar && cartCount > 0 ? <SkyBottomBar count={cartCount} onOpen={onCart} label={cartLabel} disabled={cartDisabled} /> : null}
     </div>
   );
@@ -147,13 +144,14 @@ export default function AssistantPhone({
 const AP_CSS = `
 .ap-root{max-width:880px;margin:0 auto;color:#fff;font-family:var(--sky-font);position:relative;padding-left:var(--sky-sal);padding-right:var(--sky-sar)}
 /* Sticky top band (Junid 6 Nov): stays put, the grid passes under it; its glass fades in once scrolled. */
-.ap-top{position:fixed;top:0;left:0;right:0;z-index:40;max-width:880px;margin:0 auto;padding-bottom:11px;padding-left:var(--sky-sal);padding-right:var(--sky-sar)}
-.ap-topglass{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;transition:opacity .18s ease-out;
-  background:linear-gradient(180deg,rgba(24,110,222,.95),rgba(36,126,232,.9));-webkit-backdrop-filter:blur(20px) saturate(1.4);backdrop-filter:blur(20px) saturate(1.4);
-  border-bottom:1px solid rgba(255,255,255,.32);box-shadow:0 10px 24px -16px rgba(0,30,90,.55)}
-.ap-top[data-stuck="true"] .ap-topglass{opacity:1}
-.ap-top > .sky-header,.ap-top > .ap-search,.ap-top > [data-contrast-exempt]{position:relative;z-index:1}
-@media (prefers-reduced-motion:reduce){.ap-topglass{transition:none}}
+.ap-top{position:fixed;top:0;left:0;right:0;z-index:40;max-width:880px;margin:0 auto;padding-left:var(--sky-sal);padding-right:var(--sky-sar)}
+.ap-brandsfloat{position:fixed;left:0;right:0;z-index:39;max-width:880px;margin:0 auto;padding:18px var(--sky-sar) 0 var(--sky-sal);background:none;pointer-events:none}
+.ap-brandsfloat .sky-brandstrip{pointer-events:auto}
+.ap-root .ap-brandsfloat .sky-brandchip:not([aria-pressed="true"]){filter:drop-shadow(0 1px 3px rgba(0,30,90,.6)) drop-shadow(0 0 8px rgba(0,30,90,.3))!important}
+.ap-scroll{position:fixed;left:0;right:0;bottom:0;max-width:880px;margin:0 auto;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+  padding-left:var(--sky-sal);padding-right:var(--sky-sar);scrollbar-width:none;
+  -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 10px);mask-image:linear-gradient(180deg,transparent 0,#000 10px)}
+.ap-scroll::-webkit-scrollbar{display:none}
 .ap-root .sky-header{padding:calc(var(--sky-sat) + 14px) 17px 0;--sky-logo-mid:20px}
 .ap-root .sky-header__c{gap:0;margin-top:0}
 html[data-sky="on"] #root .ap-root .sky-header .sky-round{width:36px;height:36px;background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;color:#fff!important;filter:drop-shadow(0 1px 4px rgba(0,40,110,.35))}
@@ -180,7 +178,7 @@ html[data-sky="on"] #root .ap-root .ap-search .sky-search input::placeholder{col
 .ap-root .ap-search .sky-search__div{display:none}
 .ap-root .ap-search .sky-search__btn{width:30px;height:30px;color:#fff}
 .ap-root .ap-search .sky-search__btn svg{width:17px;height:17px;color:#fff;stroke:#fff}
-.ap-brands{margin:18px 0 0}
+.ap-brands{margin:0}
 .ap-root .sky-brandstrip{gap:8px;padding:0 24px 0;scroll-padding-inline:24px;align-items:center;height:32px}
 html[data-sky="on"] #root .ap-root .sky-brandchip{height:32px;min-width:57px;padding:0 15px;background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;color:#fff!important;filter:drop-shadow(0 1px 3px rgba(0,40,110,.3))}
 html[data-sky="on"] #root .ap-root .sky-brandchip[aria-pressed="true"]{background:#fff!important;color:var(--sky-navy)!important;filter:none;box-shadow:0 3px 10px rgba(0,40,120,.15)!important}

@@ -130,14 +130,15 @@ try {
       const page = await open("screen=phone&fixture=synthetic&many=1&n=64&cart=2", 390, 844, true);
       const b0 = { band: await box(page, "[data-testid=ap-top]"), search: await box(page, ".ap-search .sky-search"), chips: await box(page, ".ap-brands"), head: await box(page, ".ap-root .sky-header") };
       const card0 = await box(page, ".ap-card");
-      check(card0.top >= b0.band.bottom - 0.5, "the first card row starts fully below the band");
-      await page.evaluate(() => window.scrollBy(0, 3000));
+      const band0 = Math.max(b0.band.bottom, b0.chips.bottom);
+      check(card0.top >= band0 - 0.5, "the first card row starts fully below the logos");
+      await page.evaluate(() => { document.querySelector("[data-testid=ap-scroll]").scrollTop = 3000; });
       await page.waitForTimeout(400);
       const b1 = { band: await box(page, "[data-testid=ap-top]"), search: await box(page, ".ap-search .sky-search"), chips: await box(page, ".ap-brands"), head: await box(page, ".ap-root .sky-header") };
       check(same(b0.head, b1.head) && same(b0.search, b1.search) && same(b0.chips, b1.chips), "header, search and brand strip boxes are unchanged after 3000px");
-      check((await box(page, ".ap-card")).bottom < 0, "the first card has left the viewport");
+      check((await box(page, ".ap-card")).bottom < (await box(page, "[data-testid=ap-scroll]")).top, "the first card has left the view");
       const bar = await box(page, "[data-testid=sky-cartbar]");
-      const share = (b1.band.height + (bar ? 844 - bar.top : 0)) / 844;
+      const share = (Math.max(b1.band.bottom, b1.chips.bottom) + (bar ? 844 - bar.top : 0)) / 844;
       check(bar && share < 0.45, `band + cart bar take ${(share * 100).toFixed(1)}% of the screen (< 45%)`);
       await page.close();
     }

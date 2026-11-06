@@ -6,9 +6,9 @@
 // cannot set env(); the app reads the insets through those variables):
 //   1. SAFE AREAS: the header sits 12–16px below the inset; nothing is wider
 //      than the screen.
-//   2. STICKY HEADER: the logo, store line, search and brand chips stay where
-//      they are while the page scrolls; the band keeps its height (no reflow);
-//      the grid passes under it and the band's glass shows.
+//   2. PINNED TOP (like the laptop): the logo, store line, search and brand
+//      logos stay put; only the shoes scroll, in their own area under the
+//      search; the logos float over them with nothing behind them.
 //   3. THE SHEET: a card tap opens it (bottom-anchored, opaque); a tap on the
 //      dimmed area, the close button and a drag down on the handle each close
 //      it; a long press on a size shows its count and does not select it.
@@ -62,20 +62,25 @@ try {
       const wide = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       check(wide <= 0, `nothing runs off the sides (overflow ${wide}px)`);
 
-      // 2. sticky header
+      // 2. pinned top, like the laptop: only the shoes scroll (.ap-scroll),
+      //    the logos float over them with nothing behind them.
       const before = { top: await rect(page, "[data-testid=ap-top]"), search: await rect(page, ".ap-search .sky-search"), chips: await rect(page, ".ap-brands"), card: await rect(page, ".ap-card") };
-      await page.evaluate(() => window.scrollTo(0, 420));
+      await page.evaluate(() => { document.querySelector("[data-testid=ap-scroll]").scrollTop = 420; });
       await page.waitForTimeout(400);
       const after = { top: await rect(page, "[data-testid=ap-top]"), search: await rect(page, ".ap-search .sky-search"), chips: await rect(page, ".ap-brands"), card: await rect(page, ".ap-card") };
-      check(Math.abs(after.top.top) < 0.5 && Math.abs(after.top.height - before.top.height) < 0.5, `the band stays at the top with the same height (${before.top.height.toFixed(1)} → ${after.top.height.toFixed(1)})`);
-      check(Math.abs(after.search.top - before.search.top) < 0.5 && Math.abs(after.chips.top - before.chips.top) < 0.5, "the search box and the brand chips do not move");
-      check(after.card.top < before.card.top - 300, "the grid scrolled (it passes under the band)");
-      check(await page.locator("[data-testid=ap-top]").getAttribute("data-stuck") === "true", "the band's glass is on once scrolled");
-      const glass = await page.evaluate(() => getComputedStyle(document.querySelector(".ap-topglass")).opacity);
-      check(Number(glass) > 0.9, `the glass is visible (opacity ${glass})`);
-      await page.evaluate(() => window.scrollTo(0, 0));
+      check(Math.abs(after.top.top) < 0.5 && Math.abs(after.top.height - before.top.height) < 0.5, `the header stays at the top with the same height (${before.top.height.toFixed(1)} → ${after.top.height.toFixed(1)})`);
+      check(Math.abs(after.search.top - before.search.top) < 0.5 && Math.abs(after.chips.top - before.chips.top) < 0.5, "the search box and the brand logos do not move");
+      check(after.card.top < before.card.top - 300, "the shoes scrolled under the logos");
+      check(await page.evaluate(() => window.scrollY) === 0, "the page itself never scrolls");
+      const behind = await page.evaluate(() => ["[data-testid=ap-top]", "[data-testid=ap-brands-float]", ".ap-brands"].map((sel) => {
+        const c = getComputedStyle(document.querySelector(sel));
+        return `${c.backgroundColor}|${c.backgroundImage}|${c.backdropFilter || c.webkitBackdropFilter || "none"}`;
+      }));
+      check(behind.every((x) => /^rgba\(0, 0, 0, 0\)\|none\|none$/.test(x)), `nothing behind the header, search or logos (${behind.join(" · ")})`);
+      const scrollTop = (await rect(page, "[data-testid=ap-scroll]")).top;
+      check(Math.abs(scrollTop - after.search.bottom) < 14, "the shoes' area starts under the search box (nothing slides behind the header)");
+      await page.evaluate(() => { document.querySelector("[data-testid=ap-scroll]").scrollTop = 0; });
       await page.waitForTimeout(300);
-      check(await page.locator("[data-testid=ap-top]").getAttribute("data-stuck") === null, "at rest (top) the band is clear — the frozen picture");
 
       // 3. the sheet
       const tapCard = async () => { const b = await page.locator(".ap-card").nth(0).boundingBox(); await page.touchscreen.tap(b.x + b.width / 2, b.y + 40); await page.waitForTimeout(450); };
