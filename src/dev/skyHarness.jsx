@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import SkyHome from "../components/sky/SkyHome.jsx";
 import AssistantPhone from "../components/sky/AssistantPhone.jsx";
+import { SkySheet, SkySheetHead, SkyStepperRow } from "../components/sky/SkySheet.jsx";
 import { brandOptions, filterByBrand, reconcileBrand } from "../components/assistant/brandFilter.js";
 
 installZoomLock();
@@ -108,13 +109,60 @@ function Phone({ products }) {
   const opts = useMemo(() => brandOptions(pool), [pool.length]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { const n = reconcileBrand(brand, opts); if (n !== brand) setBrand(n); }, [opts]); // eslint-disable-line react-hooks/exhaustive-deps
   const list = filterByBrand(pool.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase())), brand);
+  // The size sheet (SkySheet) opens on a card tap, as AssistantView's does;
+  // ?sheet=1 opens it on the first card at load.
+  const [sheet, setSheet] = useState(q.get("sheet") ? list[0] || null : null);
   return (
-    <AssistantPhone mode={mode} onMode={setMode} brands={opts} brand={brand} onBrand={setBrand}
-      shops={[{ id: "concrete" }, { id: "marathon-pe" }, { id: "pine" }, { id: "trophy" }]} effectiveShop={shop}
-      shopLabel={(id) => ({ concrete: "Concrete", "marathon-pe": "Marathon PE", pine: "Pine", trophy: "Trophy" }[id])} onShop={setShop}
-      search={search} onSearch={setSearch} onScan={() => {}}
-      products={list} selectedId={picked} onOpen={(p) => setPicked(p.id)} onViewPhotos={() => {}} photoCount={() => 1}
-      cartCount={cart} onCart={() => {}} cartDisabled={!cart} onExit={() => {}} who="2pos" />
+    <>
+      <AssistantPhone mode={mode} onMode={setMode} brands={opts} brand={brand} onBrand={setBrand}
+        shops={[{ id: "concrete" }, { id: "marathon-pe" }, { id: "pine" }, { id: "trophy" }]} effectiveShop={shop}
+        shopLabel={(id) => ({ concrete: "Concrete", "marathon-pe": "Marathon PE", pine: "Pine", trophy: "Trophy" }[id])} onShop={setShop}
+        search={search} onSearch={setSearch} onScan={() => {}}
+        products={list} selectedId={picked} onOpen={(p) => { setPicked(p.id); setSheet(p); }} onViewPhotos={() => {}} photoCount={() => 1}
+        cartCount={cart} onCart={() => {}} cartDisabled={!cart} onExit={() => {}} who="2pos" />
+      {sheet && <HarnessSheet p={sheet} onClose={() => setSheet(null)} />}
+    </>
+  );
+}
+
+// The phone size sheet with the REAL SkySheet / SkySheetHead / SkyStepperRow
+// and the same size-pill markup AssistantView renders (its size logic needs
+// live stock, which the harness never reads): 10 is unavailable.
+function HarnessSheet({ p, onClose }) {
+  const [size, setSize] = useState("");
+  const [qty, setQty] = useState(1);
+  const [dp, setDp] = useState(false);
+  const [peek, setPeek] = useState(null);
+  const t = useMemo(() => ({ id: null, fired: false }), []);
+  const sizes = p.sizes || ["6", "7", "8", "9", "10"];
+  const onHand = (s) => (s === "10" ? 0 : (Number(String(s).replace(/\D/g, "")) % 4) + 1);
+  return (
+    <SkySheet onClose={onClose} label={p.name} testId="phone-popup">
+      <SkySheetHead p={p} onClose={onClose} chips={[p.styleCode || "W2401", "Hub 1"]} price={`R${p.retailPrice || 750}`} />
+      <div className="sky-sheet__lab">Size</div>
+      {peek && <div className="sky-sheet__peek" role="status" data-testid="size-peek">Size {peek} · {onHand(peek)} on hand</div>}
+      <div className="sky-szgrid">
+        {sizes.map((s) => {
+          const out = onHand(s) === 0;
+          return (
+            <button key={s} className="sky-szq" aria-pressed={size === s} aria-disabled={out && size !== s}
+              onPointerDown={() => { clearTimeout(t.id); t.fired = false; t.id = setTimeout(() => { t.fired = true; setPeek(s); }, 450); }}
+              onPointerUp={() => clearTimeout(t.id)} onPointerLeave={() => clearTimeout(t.id)} onContextMenu={(e) => e.preventDefault()}
+              onClick={() => { if (t.fired) { t.fired = false; return; } if (!out) setSize(size === s ? "" : s); }}>
+              {s}<span className="sky-szq__n">{onHand(s)}</span>
+            </button>
+          );
+        })}
+      </div>
+      <SkyStepperRow value={qty} onDec={() => setQty((v) => Math.max(1, v - 1))} decDisabled={qty <= 1} onInc={() => setQty((v) => Math.min(10, v + 1))} incDisabled={qty >= 10} />
+      <button type="button" className="sky-sheet__dp" aria-pressed={dp} data-contrast-exempt="" onClick={() => setDp((v) => !v)}>
+        <span className="sky-sheet__dpt">Display Partner <em>(Optional)</em><small>{dp ? "Requested — tap to cancel" : "Request a display partner"}</small></span>
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+      </button>
+      <button className="sky-primary sky-sheet__add" disabled={!size && !dp} style={{ width: "100%", opacity: size || dp ? 1 : 0.4 }}>
+        {size ? `Add Size ${size} to Cart` : "Select a size or display option"}
+      </button>
+    </SkySheet>
   );
 }
 
@@ -152,6 +200,58 @@ function Desktop({ products, AssistantDesktop }) {
       alternativesFor={(p, size) => ({ rows: products.filter((x) => x.id !== p.id).slice(0, 4).map((x) => ({
         product: x, hasRequestedSize: true, matchedSize: size, sizes: (x.sizes || []).slice(0, 5),
         why: "Same model — Air Force 1", hubLabel: "Hub 1" })) })} />
+  );
+}
+
+function Warehouse({ products, Top, css }) {
+  const [tab, setTab] = useState("queue");
+  const [f, setF] = useState("incoming");
+  const ids = ["FQV", "LCD", "RCA"];
+  const btn = (cls, label) => <button className={cls} style={{ padding: "11px 8px", borderRadius: 10, fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>{label}</button>;
+  return (
+    <div className="wh-sky" style={{ minHeight: "100vh", maxWidth: 430, margin: "0 auto", paddingBottom: 40 }}>
+      <style>{css}</style>
+      <Top hubLabel="Hub 1" incomingCount={10} tabs={[["queue", "Order Queue", null], ["refills", "Display Refills", 4], ["layby", "Layby", null]]}
+           tab={tab} onTab={setTab} onExit={() => {}} onSwitchHub={() => {}} />
+      <div className="wh-chips">
+        {[["incoming", "Incoming", 10], ["ready", "Ready", 663], ["out_of_stock", "Out of Stock", 80], ["all", "All", 927]].map(([k, l, n]) => (
+          <div key={k} className="wh-chip" data-on={f === k ? "" : undefined} onClick={() => setF(k)} style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+            {l}<span style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>{n}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ padding: "0 13px" }}>
+        <div data-day-section="" style={{ overflow: "hidden" }}>
+          <div data-day-head="" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div>Today</div><div style={{ border: "1px solid", borderRadius: 999, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>7</div></div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "12px 10px" }}>
+            {products.slice(0, 3).map((p, i) => (
+              <div key={p.id} data-order-card={ids[i]} style={{ position: "relative", overflow: "hidden" }}>
+                <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3 }} />
+                <div style={{ padding: "12px 12px 12px 16px", display: "flex", gap: 11 }}>
+                  <img src={p.photoUrl} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 10 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <div style={{ fontSize: 13, fontWeight: 800 }}>#{ids[i]}</div>
+                      <div style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 10, background: "#fff", color: "#1d3fb8" }}>● Incoming</div>
+                      <div style={{ marginLeft: "auto" }}>···</div>
+                    </div>
+                    <div style={{ fontSize: 15, fontWeight: 600 }}>{p.name} — Size {8 + i}</div>
+                    <div style={{ fontSize: 11, marginTop: 3 }}>Shopify · 6:31:20 AM</div>
+                  </div>
+                </div>
+                <div style={{ padding: "0 12px 10px 16px" }}>
+                  <div className="wh-actgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    {btn("wh-act--sent", "✓ Mark as Sent")}{btn("wh-act--oos", "✕ Mark as Out of Stock")}{btn("", "Coming tomorrow")}{btn("", "⇄ Substitute Size")}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -225,6 +325,12 @@ function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
     const { GalleryLightbox } = await import("../App.jsx");
     const svg = "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><rect width="600" height="600" fill="#e8eef7"/><circle cx="300" cy="300" r="180" fill="#0026c2"/></svg>');
     el = <GalleryLightbox photos={[svg]} onClose={() => {}} />;
+  } else if (screen === "warehouse") {
+    // The warehouse phone top band (the real WarehouseTop) over sample queue
+    // markup drawn with the same classes the real queue carries; the real
+    // WarehouseView streams /orders, which the harness never reads.
+    const { default: WarehouseTop, WAREHOUSE_SKY_CSS } = await import("../components/sky/WarehouseTop.jsx");
+    el = <Warehouse products={products} Top={WarehouseTop} css={WAREHOUSE_SKY_CSS} />;
   } else if (screen === "phone") {
     el = <Phone products={products.slice(0, Number(q.get("n") || 16))} />;
   } else {

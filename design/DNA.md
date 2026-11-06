@@ -130,10 +130,33 @@ prices 700–800 tabular, "R" and no decimals.
   glass plus). `scripts/sky-phone-visual.e2e.mjs` fails CI on more than 1%
   pixel drift (photos and prices masked). ANY change to the phone assistant
   layout needs Junid's say-so; only then re-run it with `--update`.
+  **Re-frozen 6 Nov (sky-wall v3, Junid's six changes):** type and brand
+  logos up ~11% (names 12.75, prices 17.25, chips 32 tall); the header sits
+  14px below the real safe-area inset (`--sky-sat`/`--sky-sab`/`--sky-sal`/
+  `--sky-sar` in sky.css wrap `env(safe-area-inset-*)` so a test can simulate
+  a notch); the top band (logo, store line, search, brands) is sticky and only
+  the grid scrolls under it, its glass fading in once scrolled; no back-to-top
+  button; no three-dot on the tiles (the admin actions moved into the sheet);
+  the size picker is `SkySheet` (src/components/sky/SkySheet.jsx): dimmed,
+  blurred grid; a solid glass sheet with handle and close; drag down, close,
+  Escape or the dimmed area dismiss it; size pills (chosen = white), counts
+  behind a long press; stepper; the Display Partner (Optional) row; a white
+  full-width Add to Cart. `scripts/sky-wall-v3.e2e.mjs` proves all of it.
+- **Laptop Store Assistant** (Junid's mock-up, 6 Nov): no nav pill; the store
+  and the product type are two pills under the wordmark (pin / box icons);
+  search and account are bare glass rounds; the search bar is 82vw; a full
+  row of white brand logos between hairline dividers; four-up LANDSCAPE cards
+  (photo left, white name, white price behind a hairline). Only the sneakers
+  scroll (`.ad-scroll`); everything above is fixed. All in vw.
+- **Warehouse, phone** (Junid's mock-up, 6 Nov): `WarehouseTop`
+  (src/components/sky/WarehouseTop.jsx) — header with the WAREHOUSE pill;
+  Switch View · Viewing as WAREHOUSE · incoming; the navy hub pill and Switch
+  Hub; the live line; the tabs as glass tiles. Order cards are glass, Mark as
+  Sent mint, Mark as Out of Stock pink, the rest glass pills.
 - **No zoom** (Junid 5 Nov): the viewport meta forbids scaling, html/body are
   `touch-action: manipulation`, `src/device/zoomLock.js` cancels WebKit pinch
   gestures, every field is ≥16px on touch screens (the phone search is drawn
-  at 72% so it still looks 11.5px). The only thing that zooms is the photo
+  at 79.7% so it looks 12.75px). The only thing that zooms is the photo
   viewer (`ZoomImage`: pinch 1–4×, pan, double-tap 1 ↔ 2.5, own transform).
   `scripts/sky-zoom-lock.e2e.mjs` proves both.
 - **One screen on a laptop**: the home and the admin view never scroll; the

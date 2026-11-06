@@ -393,6 +393,9 @@ span.sky-storepill { cursor: default; padding: 0 13px; }
 .sky-bottombar__div { width: 1px; align-self: stretch; margin: 6px 0; background: rgba(11, 42, 82, 0.18); }
 /* The height the grid reserves so the last row is never under the bar. */
 :root { --sky-bar-space: calc(48px + 24px + env(safe-area-inset-bottom, 0px)); }
+/* The device's safe areas, as variables so a test can simulate a notch
+   (Playwright cannot set env()); viewport-fit=cover is in the meta. */
+:root { --sky-sat: env(safe-area-inset-top, 0px); --sky-sab: env(safe-area-inset-bottom, 0px); --sky-sal: env(safe-area-inset-left, 0px); --sky-sar: env(safe-area-inset-right, 0px); }
 .sky-bottombar__cta {
   margin-left: auto;
   min-width: 140px; height: 38px;
@@ -477,3 +480,64 @@ html[data-sky="on"] #root .sky-secondary.sky-secondary { background: rgba(255,25
 .sky-pop .sky-seg { width: 100%; }
 .sky-pop__who { font: 800 16px/1.2 var(--sky-font); padding: 4px 8px 0; }
 .sky-pop__sub { font: 500 12.5px/1.3 var(--sky-font); color: var(--sky-ink-2); padding: 2px 8px 10px; }
+
+/* ── THE PHONE BOTTOM SHEET v3 (Junid, 6 Nov — SkySheet) ─────────────────────
+   The grid dims and blurs behind; a solid glass sheet slides up with a drag
+   handle and a close button. Sizes are pills (the chosen one white), counts
+   hidden behind a long press; a glass stepper; the Display Partner row with a
+   chevron; a full-width white Add to Cart. */
+.sky-sheetscrim { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: flex-end; justify-content: center;
+  background: rgba(3,20,58,.42); -webkit-backdrop-filter: blur(10px) saturate(1.1); backdrop-filter: blur(10px) saturate(1.1); animation: skyScrimIn .22s ease-out; }
+.sky-sheet.sky-sheet--v3 { position: relative; width: 100%; max-width: 520px; max-height: min(88vh, calc(100dvh - var(--sky-sat) - 24px)); overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 28px 28px 0 0; padding: 0 20px calc(18px + var(--sky-sab)); color: #fff; font-family: var(--sky-font);
+  background: linear-gradient(180deg, #2c86ee 0%, #1a6ad8 55%, #0f56c4 100%);
+  border: 1px solid rgba(255,255,255,.45); border-bottom: 0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.55), 0 -20px 50px -20px rgba(0,30,100,.55);
+  animation: skySheetUp .3s cubic-bezier(.2,.85,.25,1); transition: transform .22s cubic-bezier(.2,.85,.25,1); scrollbar-width: none; }
+.sky-sheet--v3::-webkit-scrollbar { display: none; }
+.sky-sheet--v3[data-dragging="true"] { transition: none; }
+@keyframes skySheetUp { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes skyScrimIn { from { opacity: 0; } to { opacity: 1; } }
+.sky-sheet__handle { display: flex; justify-content: center; align-items: center; height: 24px; margin: 0 -20px; touch-action: none; cursor: grab; }
+.sky-sheet__handle span { width: 42px; height: 5px; border-radius: 999px; background: rgba(255,255,255,.6); }
+.sky-sheet__head { position: relative; display: grid; grid-template-columns: 118px minmax(0,1fr); gap: 14px; padding: 2px 0 4px; touch-action: none; }
+.sky-sheet--v3 .sky-sheet__img { width: 118px; height: 118px; border-radius: 16px; overflow: visible; background: none; border: 0; filter: drop-shadow(0 14px 14px rgba(0,18,70,.45)); }
+.sky-sheet--v3 .sky-sheet__img .sky-stage { border-radius: 16px; }
+.sky-sheet--v3 .sky-sheet__img .sky-frame { inset: 0; border-radius: 16px; background: none; }
+.sky-sheet--v3 .sky-sheet__img .sky-frame img { width: 100%; height: 100%; max-width: none; max-height: none; object-fit: cover; border-radius: 16px; }
+.sky-sheet__info { display: flex; flex-direction: column; min-width: 0; min-height: 118px; padding-right: 40px; }
+.sky-sheet__name { font: 700 16.5px/1.22 var(--sky-font); color: #fff; letter-spacing: -.005em; text-shadow: 0 1px 4px rgba(0,30,90,.25); }
+.sky-sheet__dead { margin-left: 6px; font-size: 10px; font-weight: 800; letter-spacing: .06em; padding: 2px 6px; border-radius: 6px; background: rgba(255,255,255,.25); border: 1px solid rgba(255,255,255,.6); vertical-align: middle; }
+.sky-sheet--v3 .sky-sheet__meta { margin-top: 8px; gap: 6px; }
+.sky-sheet--v3 .sky-sheet__meta span { font: 700 11px/1 var(--sky-font); letter-spacing: .04em; padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.55); color: #fff; }
+.sky-sheet__price { margin-top: auto; align-self: flex-end; font: 800 25px/1 var(--sky-font); color: #fff; font-variant-numeric: tabular-nums; letter-spacing: -.01em; padding-top: 10px; }
+.sky-sheet__noprice { font-size: 13px; font-weight: 700; }
+.sky-sheet--v3 .sky-sheet__x { top: 0; right: 0; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.6); }
+.sky-sheet__acts { position: absolute; top: 42px; right: 0; }
+.sky-sheet--v3 .sky-sheet__lab { margin: 20px 0 10px; font: 700 12px/1 var(--sky-font); letter-spacing: .12em; text-transform: uppercase; color: #fff; }
+.sky-sheet__peek { display: inline-block; margin: -2px 0 10px; padding: 6px 12px; border-radius: 999px; background: #fff; color: var(--sky-navy); font: 700 12.5px/1 var(--sky-font); }
+.sky-sheet.sky-sheet--v3 .sky-szgrid { display: flex !important; flex-wrap: wrap; gap: 8px !important; margin-bottom: 4px !important; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq { aspect-ratio: auto; height: 40px; min-width: 54px; padding: 0 14px !important; border-radius: 999px !important; flex-direction: row;
+  font-size: 15px !important; font-weight: 700 !important; color: #fff !important; background: rgba(255,255,255,.14) !important; border: 1px solid rgba(255,255,255,.55) !important; box-shadow: none;
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-pressed="true"] { background: #fff !important; border-color: #fff !important; box-shadow: 0 8px 18px -8px rgba(0,20,80,.6) !important; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-pressed="true"], html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-pressed="true"] * { color: var(--sky-navy) !important; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-disabled="true"]:not([aria-pressed="true"]) { color: rgba(255,255,255,.42) !important; background: rgba(255,255,255,.05) !important; border-color: rgba(255,255,255,.22) !important; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-disabled="true"]:not([aria-pressed="true"])::after {
+  background: linear-gradient(to top right, transparent calc(50% - .75px), rgba(255,255,255,.4) calc(50% - .75px), rgba(255,255,255,.4) calc(50% + .75px), transparent calc(50% + .75px)); }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq__n { display: none; }
+.sky-sheet__row { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 14px; }
+.sky-sheet__rowlab { font: 600 15px/1 var(--sky-font); color: #fff; }
+.sky-step { display: inline-flex; align-items: center; height: 40px; border-radius: 999px; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.55); overflow: hidden; }
+.sky-step button { width: 42px; height: 100%; border: 0; background: transparent; color: #fff; font: 600 20px/1 var(--sky-font); cursor: pointer; }
+.sky-step button:disabled { color: rgba(255,255,255,.35); cursor: not-allowed; }
+.sky-step span { min-width: 30px; text-align: center; font: 700 16px/1 var(--sky-font); font-variant-numeric: tabular-nums; color: #fff; }
+.sky-sheet__dp { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; padding: 13px 14px 13px 16px; border-radius: 16px; cursor: pointer; text-align: left;
+  color: #fff; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.45); font-family: var(--sky-font); }
+.sky-sheet__dp[aria-pressed="true"] { background: rgba(255,255,255,.26); border-color: #fff; }
+.sky-sheet__dpt { font: 600 15px/1.2 var(--sky-font); }
+.sky-sheet__dpt em { font-style: normal; font-weight: 500; opacity: .85; }
+.sky-sheet__dpt small { display: block; margin-top: 3px; font: 500 12px/1.2 var(--sky-font); opacity: .85; }
+html[data-sky="on"] #root .sky-primary.sky-primary.sky-sheet__add { height: 52px; padding: 0 !important; background: #fff !important; color: var(--sky-navy) !important; font-size: 16px !important; border-radius: 999px !important;
+  box-shadow: 0 12px 26px -12px rgba(0,20,80,.7) !important; }
+@media (prefers-reduced-motion: reduce) { .sky-sheet.sky-sheet--v3, .sky-sheetscrim { animation: none; transition: none; } }

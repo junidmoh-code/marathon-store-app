@@ -29,6 +29,7 @@ jobs:
       - run: node scripts/sky-zoom-lock.e2e.mjs --port 5201
       # Junid 5 Nov: the phone Store Assistant layout is frozen (1% pixel drift fails).
       - run: node scripts/sky-phone-visual.e2e.mjs --port 5203
+      - run: node scripts/sky-wall-v3.e2e.mjs --port 5205
       - if: always()
         uses: actions/upload-artifact@v4
         with:

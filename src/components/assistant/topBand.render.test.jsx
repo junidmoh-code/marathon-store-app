@@ -190,8 +190,10 @@ describe("desktop: store pill + Stores tab share one store list, no store row", 
     let m = null;
     const r = mountDesktop({ setMode: (v) => { m = v; } });
     expect(r.root.findAll((n) => n.props?.role === "group" && ["Order for", "Product type"].includes(n.props["aria-label"]))).toHaveLength(0);
-    expect(byTestId(r, "store-tag")[0].findAll((n) => n.type === "span")[0].children).toEqual(["Marathon PE · Sneakers"]);
-    press(byTestId(r, "store-tag")[0]);
+    // Laptop (Junid, 6 Nov): the store and the product type are two pills.
+    expect(byTestId(r, "store-tag")[0].findAll((n) => n.type === "span")[0].children).toEqual(["Marathon PE"]);
+    expect(byTestId(r, "mode-pill")[0].findAll((n) => n.type === "span")[0].children).toEqual(["Sneaker pickup"]);
+    press(byTestId(r, "mode-pill")[0]);
     press(items(r, "mode")[1]);
     expect(m).toBe("clothing");
   });

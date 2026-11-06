@@ -135,7 +135,9 @@ import SkyHome from "./components/sky/SkyHome.jsx";
 import AssistantPhone from "./components/sky/AssistantPhone.jsx";
 import { brandOptions, filterByBrand, reconcileBrand } from "./components/assistant/brandFilter.js";
 import ZoomImage from "./components/sky/ZoomImage.jsx";
-import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
+import { SkySheet, SkySheetHead, SkyStepperRow } from "./components/sky/SkySheet.jsx";
+import WarehouseTop, { WAREHOUSE_SKY_CSS } from "./components/sky/WarehouseTop.jsx";
+import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, SkyModePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconSearch as SkyIconSearch, IconMore, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
@@ -1502,8 +1504,8 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
         if (s.items.length === 0) return null;
         const open = !!openMap[s.key];
         return (
-          <div key={s.key} style={{ background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, overflow:"hidden" }}>
-            <div onClick={() => toggle(s.key)}
+          <div key={s.key} data-day-section="" style={{ background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, overflow:"hidden" }}>
+            <div onClick={() => toggle(s.key)} data-day-head=""
                  style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", cursor:"pointer" }}>
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                 <div style={{ fontSize:13, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.3px" }}>{s.label}</div>
@@ -8858,15 +8860,23 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               through the red switch-confirm (setPendingShop), exactly as the
               Stores tab's list does; the two share one panel slot, so only
               one store list is ever open. */}
-          <SkyStorePill value={effectiveShop} stores={availableShops || []} labelOf={(id) => labelFor(id, shopRegistry)}
-                        onPick={(id) => { if (id !== effectiveShop) setPendingShop(id); }}
-                        open={panel === "storepill"} onOpenChange={(v) => setPanel(v ? "storepill" : null)}
-                        mode={mode === "clothing" ? "clothing" : "sneaker"}
-                        modes={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]} onMode={(v) => setMode(v)}
-                        className="ad-storepill" testId="store-tag" />
+          {/* TWO PILLS (Junid's laptop mock-up, 6 Nov): the store, and the
+              product type. Same handlers as before — a different store still
+              goes through the red switch-confirm; one panel slot, so only one
+              list is ever open. */}
+          <div className="ad-pills" data-contrast-exempt="">
+            <SkyStorePill value={effectiveShop} stores={availableShops || []} labelOf={(id) => labelFor(id, shopRegistry)}
+                          onPick={(id) => { if (id !== effectiveShop) setPendingShop(id); }}
+                          open={panel === "storepill"} onOpenChange={(v) => setPanel(v ? "storepill" : null)}
+                          className="ad-storepill ad-pill--store" testId="store-tag" />
+            <SkyModePill mode={mode === "clothing" ? "clothing" : "sneaker"}
+                         modes={[["sneaker", "Sneaker pickup"], ["clothing", "Clothing"]]} onMode={(v) => setMode(v)}
+                         open={panel === "modepill"} onOpenChange={(v) => setPanel(v ? "modepill" : null)}
+                         className="ad-storepill" testId="mode-pill" />
+          </div>
 
         </div>
-        <div className="ad-hr">
+        <div className="ad-hr" data-contrast-exempt="">
           <SkyRound label="Search" className="ad-round" onClick={() => searchRef.current?.focus()}><SkyIconSearch /></SkyRound>
           <SkyRound label="Account" className="ad-round ad-me" buttonRef={meRef} onClick={() => togglePanel("me")}>{who[0].toUpperCase()}</SkyRound>
           <SkyPopover anchorRef={meRef} open={panel === "me"} onClose={closePanel} align="end" width={240} label="Account">
@@ -8900,7 +8910,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
         </div>
 
         {/* BRAND CHIPS — logos, "All" first, the rest behind "…". */}
-        <div className="sky-chips ad-chips" role="group" aria-label="Brand">
+        <div className="sky-chips ad-chips" role="group" aria-label="Brand" data-contrast-exempt="">
           <button type="button" className="sky-chip sky-glass" aria-pressed={brand === "All"} onClick={() => setBrand("All")}>All</button>
           {chipBrands.map(([b, n]) => (
             <button key={b} type="button" className="sky-chip sky-glass" aria-pressed={brand === b}
@@ -8934,6 +8944,9 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           </button>
         )}
 
+        {/* Only the sneakers scroll (Junid, 6 Nov): the wordmark, pills,
+            search and brand row stay put above this. */}
+        <div className="ad-scroll" data-testid="ad-scroll">
         {shown.length === 0 ? (
           <div className="ad-none sky-glass sky-glass--soft">{flow === "refill" ? "No clothing products yet." : "No products match."}</div>
         ) : (
@@ -8960,10 +8973,10 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                   <ProductActionsButton product={p} products={products}
                                         style={{ position: "absolute", top: 8, left: 8, zIndex: 3 }} />
                   <div className="ad-body">
-                    <div className="sky-name ad-name">{p.name}
+                    <div className="sky-name ad-name" data-contrast-exempt>{p.name}
                       {isDeactivated(p) && <span className="ad-deact">DEACTIVATED</span>}
                     </div>
-                    {priced ? <span className="sky-price ad-price">{fmtR(p.retailPrice)}</span> : <span className="ad-price no">No price set</span>}
+                    {priced ? <span className="sky-price ad-price" data-contrast-exempt>{fmtR(p.retailPrice)}</span> : <span className="ad-price no" data-contrast-exempt>No price set</span>}
                   </div>
                   {/* Order flow: hover reveals per-size quick-add. Refill flow:
                       multi-size qty is set in the quick-view (tap the card). */}
@@ -9037,6 +9050,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
             <span className="ad-more-n">{shown.length - visible.length} left</span>
           </button>
         )}
+        </div>
       </main>
 
       {/* ORDER PANEL — the order cart (→ checkout) or the refill cart (→ place
@@ -9407,7 +9421,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
 function useChipCount() {
   const pick = () => {
     const w = typeof window !== "undefined" ? window.innerWidth || 1440 : 1440;
-    return w >= 1560 ? 7 : w >= 1320 ? 6 : w >= 1150 ? 5 : 4;
+    return w >= 1560 ? 11 : w >= 1400 ? 10 : w >= 1260 ? 9 : w >= 1150 ? 7 : 5;
   };
   const [n, setN] = useState(pick);
   useEffect(() => {
@@ -9587,6 +9601,78 @@ const AD_SKY_CSS = `
 .ad-rqty button{width:28px;height:32px;border:0;background:transparent;color:var(--sky-navy);cursor:pointer;font-size:15px;font-weight:800}
 .ad-rqty input{width:38px;height:32px;text-align:center;border:0;background:transparent;color:var(--sky-ink);font-size:13px;font-weight:800;outline:none;font-family:inherit}
 @media (max-width:1180px){.ad-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.ad-root{--ad-w:min(88vw,1362px)}.ad-searchwrap{width:min(62vw,809px)}}
+/* ─── JUNID'S LAPTOP MOCK-UP (6 Nov) — measured on the 1585-wide frame ─────
+   One screen: the header, pills, search and brand row are fixed; only the
+   sneakers scroll (.ad-scroll). Cards are landscape: photo left, name and
+   price right, white on ice glass. Everything is vw so a smaller laptop is
+   the same picture, scaled. */
+.ad-root{overflow:hidden;display:flex;flex-direction:column;--ad-w:87.07vw}
+.ad-hd{flex:0 0 auto;padding:.75vw 7.5vw 0}
+.ad-navpill{display:none}
+.ad-hc{margin-top:0;gap:0;grid-column:2;grid-row:1}
+.ad-logo .sky-logo__c{margin-top:.15vw}
+.ad-pills{display:flex;align-items:center;justify-content:center;gap:2.65vw;margin-top:0}
+html[data-sky="on"] #root .ad-root .ad-storepill,.ad-root .ad-storepill{height:2.84vw;min-height:36px;padding:0 1.5vw;gap:.95vw;border-radius:999px;
+  font:700 max(12px,1.01vw)/1 var(--sky-font);letter-spacing:.01em;text-transform:uppercase;color:#fff!important;
+  background:rgba(255,255,255,.13)!important;border:1.5px solid rgba(255,255,255,.62)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 6px 18px -8px rgba(0,40,120,.35)!important;text-shadow:0 1px 4px rgba(0,40,110,.25)}
+.ad-storepill .sky-storepill__chev{width:max(11px,.9vw);height:max(11px,.9vw);stroke-width:2.6}
+.ad-pill--store::before{content:"";width:max(15px,1.3vw);height:max(15px,1.3vw);flex:0 0 auto;background:#fff;
+  -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9'%3E%3Cpath d='M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z'/%3E%3Ccircle cx='12' cy='9.5' r='2.6'/%3E%3C/svg%3E") center/contain no-repeat;
+          mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9'%3E%3Cpath d='M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z'/%3E%3Ccircle cx='12' cy='9.5' r='2.6'/%3E%3C/svg%3E") center/contain no-repeat}
+.ad-root .sky-modepill__ic{width:max(15px,1.3vw);height:max(15px,1.3vw)}
+.ad-hr{grid-column:3;grid-row:1;align-self:start;margin-top:2.1vw;gap:2.3vw}
+html[data-sky="on"] #root .ad-root .ad-round,.ad-root .ad-round{width:3.3vw!important;height:3.3vw!important;min-width:40px;min-height:40px;color:#fff!important;
+  background:rgba(255,255,255,.13)!important;border:1.5px solid rgba(255,255,255,.62)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3)!important}
+.ad-round svg{width:1.4vw;height:1.4vw;min-width:17px;min-height:17px;color:#fff;stroke:#fff}
+html[data-sky="on"] #root .ad-root .ad-me,.ad-root .ad-me{font:600 max(15px,1.3vw)/1 var(--sky-font);color:#fff!important}
+.ad-main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:0;width:var(--ad-w)}
+.ad-searchwrap{flex:0 0 auto;width:82.4vw;margin:1.58vw auto 0}
+html[data-sky="on"] #root .ad-root .ad-searchwrap .sky-search{height:2.97vw;min-height:38px;padding:0 1.1vw 0 1.64vw;gap:1.9vw;
+  background:rgba(255,255,255,.15)!important;border:1.5px solid rgba(255,255,255,.62)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 8px 22px -12px rgba(0,40,120,.35)!important}
+.ad-searchwrap .sky-search > svg{width:1.5vw;height:1.5vw;min-width:18px;min-height:18px;color:#fff;stroke:#fff}
+html[data-sky="on"] #root .ad-root .ad-searchwrap .sky-search input:not([type="checkbox"]):not([type="radio"]){font:400 max(14px,1.07vw)/1 var(--sky-font);color:#fff!important;caret-color:#fff;background:transparent!important;border:0!important}
+html[data-sky="on"] #root .ad-root .ad-searchwrap .sky-search input::placeholder{color:rgba(255,255,255,.95)!important}
+.ad-searchwrap .sky-search__div{display:none}
+.ad-searchwrap .sky-search__btn{color:#fff}
+.ad-searchwrap .sky-search__btn svg{width:1.5vw;height:1.5vw;min-width:18px;min-height:18px;color:#fff;stroke:#fff}
+.ad-chips{flex:0 0 auto;width:100%;margin:1.39vw 0 0;padding:0 .75vw;gap:0;justify-content:center;align-items:center}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip{position:relative;height:2.27vw;min-height:30px;min-width:0;padding:0 .6vw;flex:1 1 0;max-width:8vw;border-radius:999px;
+  background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;color:#fff!important;filter:drop-shadow(0 1px 3px rgba(0,40,110,.3))}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:first-child{flex:0 0 auto;width:4.73vw;min-width:56px;margin-right:1.5vw;font:700 max(13px,1.07vw)/1 var(--sky-font)}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip[aria-pressed="true"]{background:#fff!important;color:var(--sky-navy)!important;filter:none;box-shadow:0 3px 10px rgba(0,40,120,.15)!important}
+.ad-chips .sky-chip:not(:first-child)::before{content:"";position:absolute;left:0;top:50%;width:1px;height:1.7vw;transform:translateY(-50%);background:rgba(255,255,255,.45)}
+.ad-chips .sky-chip svg{height:1.6vw;min-height:18px;max-width:4.6vw;fill:currentColor}
+.ad-chips .sky-chip .sky-chip__txt{font-size:max(12px,1.07vw);font-weight:700}
+html[data-sky="on"] #root .ad-root .ad-chips .ad-more-chip{flex:0 0 auto;width:2.52vw!important;height:2.52vw;min-width:32px!important;min-height:32px;padding:0!important;margin-left:1.4vw;
+  background:rgba(255,255,255,.14)!important;border:1.5px solid rgba(255,255,255,.62)!important}
+.ad-chips .ad-more-chip::before{left:-.7vw!important}
+.ad-chips .ad-more-chip svg{height:1.4vw;min-height:16px}
+.ad-trackbar{flex:0 0 auto}
+/* The one scroller: the grid passes under the fixed band, faded at its top edge. */
+.ad-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin-top:1.75vw;padding:.4vw 0 120px;scrollbar-width:none;
+  -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 .9vw);mask-image:linear-gradient(180deg,transparent 0,#000 .9vw)}
+.ad-scroll::-webkit-scrollbar{display:none}
+.ad-grid{margin-top:0;gap:1.26vw 1.33vw}
+html[data-sky="on"] #root .ad-root .ad-card,.ad-root .ad-card{display:grid;grid-template-columns:7.76vw minmax(0,1fr);align-items:stretch;height:11.1vw;min-height:140px;padding:1.45vw 0 1.39vw 1.2vw;border-radius:1.39vw;color:#fff;
+  background:linear-gradient(180deg,rgba(255,255,255,.2),rgba(255,255,255,.12))!important;border:1.5px solid rgba(255,255,255,.6)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 0 24px rgba(255,255,255,.08),0 10px 26px -14px rgba(0,40,120,.45)!important;
+  -webkit-backdrop-filter:blur(16px) saturate(1.3);backdrop-filter:blur(16px) saturate(1.3)}
+.ad-root .ad-card .sky-stage{height:100%!important;padding:0;border-radius:.88vw;overflow:hidden;background:rgba(10,30,70,.25)}
+.ad-root .ad-card .sky-frame{inset:0;border-radius:.88vw;background:none}
+.ad-root .ad-card .sky-frame img{width:100%;height:100%;max-width:none;max-height:none;object-fit:cover;border-radius:.88vw}
+.ad-root .ad-card .sky-podium{width:80%;bottom:6%}
+.ad-root .ad-card .sky-cutout{max-width:88%}
+.ad-body{background:none!important;border-radius:0;display:flex;flex-direction:column;align-items:stretch;justify-content:space-between;gap:.4vw;padding:.3vw 1.32vw .35vw 1.26vw;min-width:0}
+.ad-name{font-size:max(12.5px,1.01vw);font-weight:500;line-height:1.38;color:#fff;min-height:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;text-shadow:0 1px 4px rgba(0,40,110,.25)}
+.ad-price{align-self:flex-end;display:flex;align-items:center;font-size:max(18px,1.7vw);font-weight:700;color:#fff;letter-spacing:-.01em;text-shadow:0 1px 4px rgba(0,40,110,.25)}
+.ad-price::before{content:"";width:1px;height:1.6vw;margin-right:1.26vw;background:rgba(255,255,255,.45)}
+.ad-price.no{font-size:max(11px,.8vw);font-weight:600;color:rgba(255,255,255,.92)}
+.ad-price.no::before{display:none}
+.ad-zoom{top:auto;bottom:1.7vw;right:auto;left:1.6vw;width:24px;height:24px;opacity:0;transition:opacity .15s}
+.ad-card:hover .ad-zoom,.ad-zoom:focus-visible{opacity:1}
+@media (max-width:1180px){.ad-root{--ad-w:92vw}.ad-searchwrap{width:88vw}
+  html[data-sky="on"] #root .ad-root .ad-card,.ad-root .ad-card{grid-template-columns:10.2vw minmax(0,1fr);height:14.6vw}}
 @media (prefers-reduced-motion:reduce){.ad-quick,.ad-zoom{transition:none}.ad-danger,.ad-warnpulse{animation:none}}
 `;
 
@@ -10037,16 +10123,22 @@ function AssistantView({ products, onExit, orders = [] }) {
     () => (orders || []).filter(o => o && o.customerName === "Shop Refill" && o.destShop === effectiveShop && !o.clothingRefillStatus).length,
     [orders, effectiveShop]
   );
-  // Scroll-to-top FAB: appears once the user has scrolled past the search box so
-  // a single tap returns to the top (the search bar) after browsing the grid.
-  const [showScrollTop, setShowScrollTop]               = useState(false);
-  useEffect(() => {
-    const onScroll = () => setShowScrollTop(window.scrollY > 400);
-    window.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-  const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
+  // No back-to-top button (Junid, 6 Nov): the header is sticky now, so the
+  // search is always on screen.
+  // Long-press a size in the sheet: its on-hand count, for 2s. Never selects.
+  const [peekSize, setPeekSize]                         = useState(null);
+  const sizePeekTimer = useRef(null);
+  const sizePeekFired = useRef(false);
+  const startSizePeek = (s) => {
+    clearTimeout(sizePeekTimer.current);
+    sizePeekFired.current = false;
+    sizePeekTimer.current = setTimeout(() => {
+      sizePeekFired.current = true;
+      setPeekSize({ size: s });
+      setTimeout(() => setPeekSize((p) => (p && p.size === s ? null : p)), 2000);
+    }, 450);
+  };
+  const endSizePeek = () => clearTimeout(sizePeekTimer.current);
   const [pendingSize, setPendingSize]                   = useState("");
   // Clothing availability note — { size, left } for the size the assistant
   // tapped/added that the serving hub can't (fully) cover; `left` is how many
@@ -11581,11 +11673,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           selectedId={selected?.id || null}
           onOpen={(p) => { resetSheet(); setSelected(p); }}
           onViewPhotos={(p) => setFullPhoto(productPhotos(p))} photoCount={(p) => productPhotos(p).length}
-          renderActions={(p) => (
-            // ADMIN ACTIONS ON THE CARD ITSELF (owner spec 2026-08-31):
-            // deactivate / reactivate / merge. Nothing for a non-admin.
-            <ProductActionsButton product={p} products={products} style={{ position:"absolute", top:8, left:8, zIndex:2 }} />
-          )}
+          // No three-dot on the tiles (Junid, 6 Nov): the admin actions
+          // (deactivate / reactivate / merge) moved into the size sheet's header.
           renderDeactivated={(p) => (isDeactivated(p) ? <DeactivatedChip small /> : null)}
           isDead={deadForOrder}
           who={(assistantUser?.email || "").split("@")[0]}
@@ -11764,39 +11853,40 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       )}
 
-      {/* ── Size picker bottom sheet — the phone's product popup ── */}
+      {/* ── Size picker: THE BOTTOM SHEET (Junid, 6 Nov — SkySheet) ──
+          The grid dims and blurs behind; a solid glass sheet slides up with a
+          handle and a close button; drag down, close, Escape or a tap on the
+          dimmed area all call resetSheet — the same reset as before. */}
       {selected && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000 }}>
-          <div style={sheetStyle} className="sky-sheet" data-testid="phone-popup">
-            {/* Image on a podium left; name, style code, hub and price right. */}
-            <div style={{ display:"flex", alignItems:"stretch", gap:14, marginBottom:"1.2rem", position:"relative" }}>
-              <div className="sky-sheet__img" onClick={() => selected.photoUrl && setFullPhoto(productPhotos(selected))}
-                   title={selected.gallery?.length ? `View ${productPhotos(selected).length} photos` : "View full photo"}
-                   style={{ cursor: selected.photoUrl ? "zoom-in" : "default" }}>
-                <ProductStage p={selected} height="100%" emoji={selected.photo || "👟"} priority cutoutHeight="66%" />
-                {selected.gallery?.length > 0 && <span className="sky-sheet__n">{productPhotos(selected).length}</span>}
-              </div>
-              <div style={{ flex:1, minWidth:0, paddingRight:34 }}>
-                <div style={{ fontWeight:800, fontSize:"1.08rem", lineHeight:1.2 }}>{selected.name}
-                  {isDeactivated(selected) && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, letterSpacing: ".06em", padding: "2px 6px", borderRadius: 6, background: "rgba(255,255,255,.3)", border: "1px solid rgba(255,255,255,.6)", verticalAlign: "middle" }}>DEACTIVATED</span>}
-                </div>
-                <div className="sky-sheet__meta">
-                  {selected.styleCode ? <span>{selected.styleCode}</span> : null}
-                  {(() => {
-                    const clothing = (selected.productType || "sneaker") === "clothing";
-                    const hub = clothing ? clothingHubLabelOf(selected.id) : hubLabelForSize(selected, pendingSize);
-                    return hub ? <span>{hub}</span> : null;
-                  })()}
-                  {!selected.styleCode && selected.category ? <span>{selected.category}</span> : null}
-                </div>
-                {typeof selected.retailPrice === "number" && selected.retailPrice > 0
-                  ? <div style={{ fontSize:26, color:"var(--sky-navy)", fontWeight:800, marginTop:8, fontVariantNumeric:"tabular-nums" }}>{fmtR(selected.retailPrice)}</div>
-                  : <div style={{ fontSize:13, fontWeight:700, marginTop:8 }}>No price set</div>}
-              </div>
-              <button onClick={resetSheet} aria-label="Close" className="sky-sheet__x">✕</button>
-            </div>
+        <SkySheet onClose={resetSheet} label={selected.name} testId="phone-popup">
+            {/* The shoe floating on the left; name, W-code and hub chips, price
+                on the right; the admin actions (moved off the tiles) by close. */}
+            <SkySheetHead p={selected} onClose={resetSheet}
+              onPhoto={selected.photoUrl ? () => setFullPhoto(productPhotos(selected)) : null}
+              photoTitle={selected.gallery?.length ? `View ${productPhotos(selected).length} photos` : "View full photo"}
+              photoCount={selected.gallery?.length > 0 ? productPhotos(selected).length : 0}
+              badge={isDeactivated(selected) ? <span className="sky-sheet__dead">DEACTIVATED</span> : null}
+              chips={[
+                selected.styleCode || null,
+                (() => {
+                  const clothing = (selected.productType || "sneaker") === "clothing";
+                  return (clothing ? clothingHubLabelOf(selected.id) : hubLabelForSize(selected, pendingSize)) || null;
+                })(),
+                !selected.styleCode && selected.category ? selected.category : null,
+              ]}
+              price={typeof selected.retailPrice === "number" && selected.retailPrice > 0
+                ? fmtR(selected.retailPrice)
+                : <span className="sky-sheet__noprice">No price set</span>}
+              actions={<ProductActionsButton product={selected} products={products} />} />
 
-            <div className="sky-sheet__lab">Select size</div>
+            <div className="sky-sheet__lab">Size</div>
+            {/* Long-press a size: its on-hand count (counts are hidden on the pills). */}
+            {peekSize && (() => {
+              const n = sizeOnHand(selected, peekSize.size, (selected.productType || "sneaker") === "clothing");
+              return Number.isFinite(n)
+                ? <div className="sky-sheet__peek" role="status" data-testid="size-peek">Size {formatSize(peekSize.size)} · {Math.max(0, n)} on hand</div>
+                : null;
+            })()}
             {/* Inline availability note — shows ABOVE the size row when a
                 greyed (zero-at-hub) size is tapped or an Add asks for more
                 than the hub can still cover. Live: it recomputes remaining
@@ -11886,7 +11976,11 @@ function AssistantView({ products, onExit, orders = [] }) {
                   // raise the why-note below (selection is still blocked by
                   // the `out` guard in the handler). aria keeps the truth.
                   <button key={s} aria-disabled={out && pendingSize !== s} aria-pressed={pendingSize === s} className="sky-szq"
+                    onPointerDown={() => startSizePeek(s)} onPointerUp={endSizePeek} onPointerLeave={endSizePeek} onPointerCancel={endSizePeek}
+                    onContextMenu={(e) => e.preventDefault()}
                     onClick={() => {
+                      // A long press only shows the count; it never selects.
+                      if (sizePeekFired.current) { sizePeekFired.current = false; return; }
                       // Tapping the ALREADY-SELECTED size deselects it — a
                       // mis-tapped size was otherwise stuck (owner bug report
                       // 2026-08-26; it matters most on a size-optional Display
@@ -11933,34 +12027,28 @@ function AssistantView({ products, onExit, orders = [] }) {
 
             {/* Quantity stepper — same-size, multiple-pair shortcut. Pushes
                 N identical cart lines on Add to Cart (one box per pair). */}
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.25rem", padding:"4px 0" }}>
-              <div style={{ color:"#ccc", fontSize:"0.95rem", fontWeight:600 }}>Quantity</div>
-              <div style={{ display:"flex", alignItems:"center", gap:"0.5rem" }}>
-                <button onClick={() => setPendingQty(q => Math.max(1, q - 1))} disabled={pendingQty <= 1}
-                        style={{ width:36, height:36, borderRadius:10, border:"1px solid rgba(60,110,255,.25)", background:"rgba(60,110,255,.08)", color: pendingQty <= 1 ? "rgba(255,255,255,.25)" : "#4A7FFF", fontSize:18, fontWeight:700, cursor: pendingQty <= 1 ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>−</button>
-                <div style={{ minWidth:34, textAlign:"center", color:"#fff", fontSize:"1.05rem", fontWeight:700, fontVariantNumeric:"tabular-nums" }}>{pendingQty}</div>
-                <button onClick={() => setPendingQty(q => Math.min(10, q + 1))} disabled={pendingQty >= 10}
-                        style={{ width:36, height:36, borderRadius:10, border:"1px solid rgba(60,110,255,.35)", background:"rgba(60,110,255,.12)", color: pendingQty >= 10 ? "rgba(255,255,255,.25)" : "#4A7FFF", fontSize:18, fontWeight:700, cursor: pendingQty >= 10 ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>+</button>
-              </div>
-            </div>
+            <SkyStepperRow value={pendingQty}
+              onDec={() => setPendingQty(q => Math.max(1, q - 1))} decDisabled={pendingQty <= 1}
+              onInc={() => setPendingQty(q => Math.min(10, q + 1))} incDisabled={pendingQty >= 10} />
 
             {/* Display Partner request — sneakers only (it routes to Hub 1, which
                 clothing can't use). Hidden for clothing customer orders. */}
             {(selected.productType || "sneaker") !== "clothing" && (
-            <div style={{ marginBottom:"1.25rem" }}>
-              <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
-              <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
-                <button onClick={() => {
+            // The Display Partner (Optional) ROW with a chevron (Junid, 6 Nov) —
+            // the same toggle, the same flag; pressed, it reads "Requested ✓".
+            <button type="button" className="sky-sheet__dp" aria-pressed={pendingDisplayPartner} data-contrast-exempt=""
+              onClick={() => {
                   setPendingDisplayPartner(v => !v);
                   // Partner mode lifts every ✕ — a lingering "can't be
                   // ordered" note would contradict the now-selectable tiles.
                   setNaNote(null);
-                }}
-                  style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
-                  Request Display Partner
-                </button>
-              </div>
-            </div>
+                }}>
+              <span className="sky-sheet__dpt">Display Partner <em>(Optional)</em>
+                <small>{pendingDisplayPartner ? "Requested — tap to cancel" : "Request Display Partner"}</small></span>
+              {pendingDisplayPartner
+                ? <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                : <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>}
+            </button>
             )}
 
             {(() => {
@@ -11979,7 +12067,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                       : `Add Size ${formatSize(pendingSize)} to Cart`)
                   : ((selected.productType || "sneaker") === "clothing" ? "Select a size" : "Select a size or display option");
               return (
-                <button onClick={addToCart} disabled={!canAdd} className="sky-primary"
+                <button onClick={addToCart} disabled={!canAdd} className="sky-primary sky-sheet__add"
                   style={{ width:"100%", ...bBlue, borderRadius:"10px", padding:"0.9rem", fontSize:"1rem", marginBottom:"0.65rem", opacity:canAdd?1:0.4, cursor:canAdd?"pointer":"not-allowed" }}>
                   {btnLabel}
                 </button>
@@ -11995,8 +12083,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                   : `Place Refill Request (${refillCount} item${refillCount > 1 ? "s" : ""}) →`}
               </button>
             )}
-          </div>
-        </div>
+        </SkySheet>
       )}
 
       {/* ── Checkout bottom sheet ── */}
@@ -12147,17 +12234,6 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       )}
 
-      {/* ── Scroll-to-top FAB ── appears after scrolling down; one tap returns
-          to the search box. Sits above the floating cart bar when it's shown. */}
-      {showScrollTop && !isDesktop && (
-        <button onClick={scrollToTop} aria-label="Scroll to top"
-          style={{ position:"fixed", right:16, bottom: 96, zIndex:60,
-                   width:46, height:46, borderRadius:"50%", cursor:"pointer",
-                   background:"#4A7FFF", border:"1px solid rgba(60,110,255,.55)", color:"#fff",
-                   boxShadow:"0 4px 16px rgba(0,0,0,.45)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-        </button>
-      )}
     </div>
   );
 }
@@ -13704,11 +13780,11 @@ function WarehouseView({ products = [], orders, onExit }) {
       {mainTab === "queue" && (
         <>
           {/* PILLS */}
-          <div style={{ display:"flex", gap:7, padding:"0 13px 12px", overflowX:"auto", scrollbarWidth:"none" }}>
+          <div className="wh-chips" style={{ display:"flex", gap:7, padding:"0 13px 12px", overflowX:"auto", scrollbarWidth:"none" }}>
             {queueFilters.map(t => {
               const on = filter === t.key;
               return (
-                <div key={t.key} onClick={() => setFilter(t.key)}
+                <div key={t.key} onClick={() => setFilter(t.key)} className="wh-chip" data-on={on ? "" : undefined}
                      style={{ padding:"6px 14px", borderRadius:20, fontSize:12, fontWeight:600, whiteSpace:"nowrap", cursor:"pointer", display:"flex", alignItems:"center", gap:5,
                               background: on ? "rgba(60,110,255,.12)" : "rgba(6,9,20,1)",
                               border:"1px solid " + (on ? "rgba(60,110,255,.4)" : "rgba(255,255,255,.07)"),
@@ -13990,13 +14066,13 @@ function WarehouseView({ products = [], orders, onExit }) {
                       {displayPairBanner}
                       {!pickerOpen ? (
                         // 2×2 action grid — Sent / OOS on top row, Tomorrow / Substitute on bottom.
-                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-                          <button onClick={() => markSentAndPrint(order)}
+                        <div className="wh-actgrid" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                          <button onClick={() => markSentAndPrint(order)} className="wh-act--sent"
                                   style={{ padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.3)", color:"#4ACA7A" }}>
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                             Mark as Sent
                           </button>
-                          <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)}
+                          <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)} className="wh-act--oos"
                                   style={{ padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B" }}>
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                             Mark as Out of Stock
@@ -14208,7 +14284,8 @@ function WarehouseView({ products = [], orders, onExit }) {
 
 
   return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+    <div className="wh-sky" style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      <style>{WAREHOUSE_SKY_CSS}</style>
       {/* What was just sent — visible for a few seconds after the card leaves,
           so the operator can SEE what they did (owner fix 2026-08-06). */}
       {sentBanner && (
@@ -14228,59 +14305,13 @@ function WarehouseView({ products = [], orders, onExit }) {
           {printToast.text}
         </div>
       )}
-      {/* TOP BAR */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
-        <div onClick={onExit}
-             style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>
-          ← Switch View
-        </div>
-        <div className="sky-glass sky-glass--strong" style={{ textAlign:"center", borderRadius:14, padding:"4px 14px" }}>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-          <div style={{ fontSize:15, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>WAREHOUSE</div>
-        </div>
-        <div style={{ background:"rgba(20,40,100,.6)", border:"1px solid rgba(60,110,255,.35)", borderRadius:12, padding:"7px 12px", display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
-          <div style={{ width:7, height:7, background:"#4A7FFF", borderRadius:"50%", boxShadow:"0 0 6px rgba(60,110,255,.8)" }}/>
-          <div>
-            <div style={{ fontSize:14, fontWeight:700, color:"#fff", lineHeight:1 }}>{incomingCount}</div>
-            <div style={{ fontSize:9, color:"rgba(255,255,255,.5)" }}>incoming</div>
-          </div>
-          <span style={{ color:"#4A7FFF", fontSize:13 }}>›</span>
-        </div>
-      </div>
-
-      {/* CIRCUIT LINE */}
-      <div style={{ height:20, padding:"0 14px", margin:"4px 0 2px", overflow:"hidden" }}>
-        <svg width="100%" height="100%" viewBox="0 0 400 20" preserveAspectRatio="none">
-          <path d="M0,10 L60,10 L80,3 L140,3 L160,10 L220,10 L240,17 L300,17 L320,10 L400,10" stroke="rgba(60,110,255,.4)" strokeWidth="1" fill="none" strokeLinecap="round"/>
-          <circle cx="80" cy="3" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="160" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="240" cy="17" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="320" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
-        </svg>
-      </div>
-
-      {/* WAREHOUSE QUEUE HERO IMAGE */}
-      <div style={{ position:"relative", width:"100%", height:130, overflow:"hidden", margin:"4px 0 0" }}>
-        <img src="/hero/warehouse.jpg" alt="Warehouse Queue" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:50, background:"linear-gradient(transparent,#000)" }}/>
-        <div style={{ position:"absolute", top:0, left:0, right:0, height:20, background:"linear-gradient(#000,transparent)" }}/>
-      </div>
-
-      {/* HUB ROW */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px 10px" }}>
-        <div style={{ background:"rgba(20,40,120,.5)", border:"1px solid rgba(60,110,255,.5)", borderRadius:10, padding:"7px 16px", color:"#4A7FFF", fontSize:13, fontWeight:700 }}>
-          {HUB_LABELS[selectedHub] || selectedHub}
-        </div>
-        <div onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }}
-             style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"7px 16px", color:"rgba(255,255,255,.7)", fontSize:12, fontWeight:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2">
-            <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/>
-          </svg>
-          Switch Hub
-        </div>
-      </div>
-
-      <div style={{ fontSize:12, color:"rgba(255,255,255,.3)", padding:"2px 14px 10px" }}>Update order status in real time.</div>
+      {/* THE SKY TOP BAND (Junid's warehouse mock-up, 6 Nov): header, Switch
+          View / Viewing as / incoming, hub + Switch Hub, the live line, and the
+          tabs as glass tiles. Same handlers: onExit, the Switch Hub reset, and
+          setMainTab over tabDefs. */}
+      <WarehouseTop hubLabel={HUB_LABELS[selectedHub] || selectedHub} incomingCount={incomingCount}
+        tabs={tabDefs} tab={mainTab} onTab={setMainTab} onExit={onExit}
+        onSwitchHub={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }} />
 
       {/* ON HOLD CARD */}
       {onHoldCard}
@@ -14292,28 +14323,6 @@ function WarehouseView({ products = [], orders, onExit }) {
         <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
           onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
       )}
-
-      {/* TABS — same hub→tabs wiring as the desktop rail; tabDefs is the single
-          source of truth (CR Orders on the CR hubs: hub2 for PE/Trophy, hub3 for
-          Pine — see CR_HUB_BY_UNIVERSE). Only the mobile chrome differs below. */}
-      <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
-        {tabDefs.map(([key, label, badge]) => (
-          <div key={key} onClick={() => setMainTab(key)}
-               style={{ flex:1, padding:"10px 6px", borderRadius:10, fontSize:11.5, fontWeight:600, textAlign:"center", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5,
-                        background: mainTab===key ? "rgba(60,110,255,.12)" : "rgba(6,9,20,1)",
-                        border: mainTab===key ? "1px solid rgba(60,110,255,.4)" : "1px solid rgba(255,255,255,.07)",
-                        color: mainTab===key ? "#4A7FFF" : "rgba(255,255,255,.3)" }}>
-            {key === "queue"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>}
-            {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
-            {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
-            {key === "layby"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/></svg>}
-            <span>{label}</span>
-            {badge != null && badge > 0 && (
-              <span style={{ background: mainTab===key ? "#F59E0B" : "rgba(245,158,11,.85)", color:"#000", fontSize:10, fontWeight:800, minWidth:18, height:18, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
-            )}
-          </div>
-        ))}
-      </div>
 
       {content}
     </div>
