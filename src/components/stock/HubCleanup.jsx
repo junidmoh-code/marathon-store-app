@@ -71,11 +71,12 @@ import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
   confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
 } from "./hubCountStore";
-import { isCountableSizeKey, cellKey, sizeLabelOf, recordIsCurrent } from "./hubCountCore";
+import { isCountableSizeKey, isCountableCellKey, isOneSizeCountable, countsAllCategories, ALL_CATEGORY_COUNT_HUBS, cellKey, sizeLabelOf, recordIsCurrent } from "./hubCountCore";
 import { loadOffShelfSources, offShelfForCell, expectedOnShelf } from "./offShelf";
 import { loadDisplaySlots } from "./displaySlots";
 import { stockSizeKey } from "../../utils/sizeKey";
 import CameraScanner from "./CameraScanner.jsx";
+import { productIsFootwear } from "../../utils/footwearLine";
 import CandidateCards from "../shared/CandidateCards.jsx";
 import IdentityLine from "../shared/IdentityLine.jsx";
 import { identityFor } from "../../utils/labelIdentity";
@@ -83,6 +84,7 @@ import { useLabelIdentity, invalidateIdentity, noteRegistered } from "../../util
 import { TongueLabelReader } from "./TongueLabelReader.jsx";
 import MergeProducts from "./MergeProducts.jsx";
 import HubSneakerCount from "./HubSneakerCount.jsx";
+import { CountModeToggle } from "./CountModeToggle.jsx";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 const qtyOf = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
@@ -236,15 +238,22 @@ function Panel({ title, onClose, children }) {
 
 // ─── The module ──────────────────────────────────────────────────────────────
 
+// The card's hubs: the live cleanup hubs, plus every all-category count hub
+// (Hub 3 — Junid, 6 Nov 2026). Hub 3 is not "live" in the registry (its
+// Auto-refill is "solved"), so cleanupHubs alone never offered it, yet it is
+// the hub being recounted. It opens on the Count tab.
+const countCardHubs = () => [...new Set([...cleanupHubs(), ...ALL_CATEGORY_COUNT_HUBS])];
+const isCountCardHub = (h) => isCleanupHub(h) || countsAllCategories(h);
+
 export default function HubCleanup({ products = [], actorRole, viewer, onExit }) {
   const registry = useLocationRegistryOnce();
   const [hub, setHubRaw] = useState(() => {
     const h = rememberedHub();
-    return isCleanupHub(h) ? h : "";
+    return isCountCardHub(h) ? h : "";
   });
-  const setHub = useCallback((id) => { rememberHub(id); setHubRaw(id); }, []);
+  const [tab, setTab] = useState(() => (countsAllCategories(rememberedHub()) ? "count" : "register"));
+  const setHub = useCallback((id) => { rememberHub(id); setHubRaw(id); if (countsAllCategories(id)) setTab("count"); }, []);
 
-  const [tab, setTab] = useState("register");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
@@ -328,8 +337,12 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         const c = await loadCounted(hub, s.sessionId);
         if (cancelled) return;
         setCounted(c || {});
-        const total = Object.values(hubStock).reduce(
-          (n, cells) => n + Object.keys(cells || {}).filter(isCountableSizeKey).length, 0);
+        // Every category at Hub 3 (countsAllCategories): a non-footwear
+        // product's one-size "_" cell counts too.
+        const all = countsAllCategories(hub);
+        const byId = new Map((products || []).filter((p) => p && p.id).map((p) => [p.id, p]));
+        const total = Object.entries(hubStock).reduce(
+          (n, [pid, cells]) => n + Object.keys(cells || {}).filter((k) => isCountableCellKey(k, byId.get(pid), all)).length, 0);
         publishSessionTotal(hub, s.sessionId, total).catch(() => {});
       } catch (err) {
         if (!cancelled) flash("err", `Could not open the count session: ${err?.message || err}`);
@@ -379,7 +392,14 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // constructor the search results and the unregistered list use, so the
         // optional barcode shortcut lands on the identical screen.
         if (tab === "count") {
-          setPanel(countPanelFor(out.product, out.size));
+          // SCAN + QUANTITY (Hub 3, Junid 6 Nov 2026): every scan of the same
+          // product+size while its panel is open adds ONE to that size's count;
+          // a scan of anything else opens that item at 1. The count still goes
+          // in through Adjust / Shelf matches — an absolute set, never a delta.
+          const size = out.size != null ? String(out.size) : null;
+          setPanel((prev) => (prev && prev.mode === "count" && prev.product && prev.product.id === out.product.id && (prev.size ?? null) === size
+            ? { ...prev, tally: (Number(prev.tally) || 0) + 1 }
+            : { ...countPanelFor(out.product, size), tally: 1 }));
         } else {
           setPanel(registerPanelFor(out.product, out.size));
           // The panel shows stock by location — the shortcut must start that
@@ -1005,8 +1025,10 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   const countDone = Object.keys(counted).length;
   const countTotal = useMemo(() => {
     if (!hubStock) return 0;
-    return Object.values(hubStock).reduce((n, cells) => n + Object.keys(cells || {}).filter(isCountableSizeKey).length, 0);
-  }, [hubStock]);
+    const all = countsAllCategories(hub);
+    const byId = new Map((products || []).filter((p) => p && p.id).map((p) => [p.id, p]));
+    return Object.entries(hubStock).reduce((n, [pid, cells]) => n + Object.keys(cells || {}).filter((k) => isCountableCellKey(k, byId.get(pid), all)).length, 0);
+  }, [hubStock, hub, products]);
 
   // ── LEFTOVERS RECOMPUTE, THEY ARE NOT A SNAPSHOT ──────────────────────────
   // Every input is live state: `products` is the app's subscribed catalogue,
@@ -1299,7 +1321,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
         {header}
         <div style={{ maxWidth: 560, margin: "0 auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
-          {cleanupHubs().map((h) => (
+          {countCardHubs().map((h) => (
             <button key={h} type="button" onClick={() => setHub(h)}
               style={{ minHeight: 96, borderRadius: 18, fontSize: 26, fontWeight: 900, fontFamily: FONT, cursor: "pointer",
                        background: "rgba(74,127,255,.14)", border: "2px solid rgba(74,127,255,.5)", color: "#D7E3FF" }}>
@@ -1336,6 +1358,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             ? <>checking which products carry a code, a claim or a label alias…</>
             : <>{leftovers.length} products hold stock here and carry no style code, claim or label alias</>)}
         </div>
+
+        {/* Hub 3 count mode — admin stock accounts (Junid, 6 Nov 2026). */}
+        {hub === "hub3" && canAdjust && (
+          <div style={{ margin: "0 0 14px" }}><CountModeToggle hub={hub} /></div>
+        )}
 
         {loading && <div style={{ color: GRAY, fontSize: 13, padding: "18px 2px" }}>Loading {cleanupHubLabel(hub)}…</div>}
         {loadError && <div style={{ color: RED, fontSize: 13, padding: "10px 2px" }}>Could not load: {loadError}</div>}
@@ -1442,10 +1469,19 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             subordinate barcode shortcut. ───────────────────────────────────── */}
         {!loading && tab === "count" && (
           <>
-            <div style={{ fontSize: 12, color: GRAY, margin: "0 2px 10px" }}>
-              Pick up a shoe and photograph the label <u>inside the tongue</u> — the style number
-              brings up its count. Not the shop barcode sticker, not the box.
-            </div>
+            {countsAllCategories(hub) ? (
+              <div data-testid="all-category-help" style={{ fontSize: 12.5, color: "#D7E3FF", margin: "0 2px 10px", lineHeight: 1.55,
+                            background: "rgba(74,127,255,.08)", border: "1px solid rgba(74,127,255,.3)", borderRadius: 11, padding: "9px 11px" }}>
+                <strong>{cleanupHubLabel(hub)} counts everything — shoes, clothing, one-size.</strong> Scan an item's shop
+                barcode: each scan of the same item and size adds one. When that shelf is done, tap{" "}
+                {canAdjust ? "Adjust" : "Flag"} (or Shelf matches). Shoes without a barcode: photograph the tongue label.
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: GRAY, margin: "0 2px 10px" }}>
+                Pick up a shoe and photograph the label <u>inside the tongue</u> — the style number
+                brings up its count. Not the shop barcode sticker, not the box.
+              </div>
+            )}
             {/* The layby blind spot, said plainly rather than hidden: those
                 pulls carry no product or size, so no cell's shelf number can
                 ever include them (offShelf.js header). */}
@@ -2814,14 +2850,28 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
 function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources, offError, onRetryOffShelf, registry, identityMap, onRecord, onClose }) {
   const { product } = panel;
   const cells = hubStock[product.id] || {};
+  // Every category at Hub 3: a non-footwear product's one-size "_" cell is a
+  // real cell, and a one-size product with no size run counts as "_".
+  const allCategories = countsAllCategories(hub);
   const sizeKeys = useMemo(() => {
-    const fromCells = Object.keys(cells).filter(isCountableSizeKey);
+    const fromCells = Object.keys(cells).filter((k) => isCountableCellKey(k, product, allCategories));
     const fromSizes = realSizes(product).map(stockSizeKey);
-    return [...new Set([...fromCells, ...fromSizes])];
-  }, [cells, product]);
-  const scannedKey = panel.size ? stockSizeKey(String(panel.size)) : null;
+    const keys = [...new Set([...fromCells, ...fromSizes])];
+    if (!keys.length && allCategories && isOneSizeCountable(product)) keys.push(stockSizeKey(null));
+    return keys;
+  }, [cells, product, allCategories]);
+  // The scanned size's cell key; a product with ONE countable size takes that
+  // one whatever its barcode row spells (no size, "One Size", "OS"…).
+  const scannedRaw = panel.size ? stockSizeKey(String(panel.size)) : null;
+  const scannedKey = scannedRaw && sizeKeys.includes(scannedRaw) ? scannedRaw : (sizeKeys.length === 1 ? sizeKeys[0] : scannedRaw);
   const [sizeKey, setSizeKey] = useState(scannedKey && sizeKeys.includes(scannedKey) ? scannedKey : null);
-  const [actual, setActual] = useState("");
+  const [actual, setActual] = useState(panel.tally && scannedKey && sizeKeys.includes(scannedKey) ? String(panel.tally) : "");
+  // Each further scan of this product+size raises the count by one (HubCleanup
+  // handleCode). It lands in the count box for the scanned size only.
+  useEffect(() => {
+    if (panel.tally && scannedKey && sizeKey === scannedKey) setActual(String(panel.tally));
+  }, [panel.tally, sizeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const unitWord = productIsFootwear(product) ? "pairs" : "units";
 
   // A display can change size MID-COUNT (one sells, another goes out). The
   // slots half of the off-shelf picture is re-read one-shot when this panel
@@ -2935,7 +2985,12 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
               <div style={{ textAlign: "center", margin: "6px 0 16px" }}>
                 <div style={{ fontSize: 13, color: GRAY }}>Expect on this shelf</div>
                 <div style={{ fontSize: 44, fontWeight: 900, fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>{shelfExpected}</div>
-                <div style={{ fontSize: 13, color: GRAY }}>pairs of size {sizeLabelOf(sizeKey)}</div>
+                <div style={{ fontSize: 13, color: GRAY }}>{unitWord} of size {sizeLabelOf(sizeKey)}</div>
+                {panel.tally > 0 && sizeKey === scannedKey && (
+                  <div data-testid="scan-tally" style={{ fontSize: 13, color: BLUE_L, marginTop: 8 }}>
+                    Scanned {panel.tally} — scan the next one, or tap {canAdjust ? "Adjust" : "Flag"} when the shelf is done.
+                  </div>
+                )}
                 {off.total > 0 && (
                   <div style={{ fontSize: 12.5, color: BLUE_L, marginTop: 8, lineHeight: 1.5 }}>
                     {Math.max(0, expected)} booked{off.parts.map((p, i) => (

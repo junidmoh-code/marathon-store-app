@@ -56,3 +56,4 @@ tools/**/.pytest_cache/
 
 # sky contrast gate output
 contrast-report/
+scripts/out/

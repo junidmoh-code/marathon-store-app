@@ -45,6 +45,7 @@
 
 "use strict";
 
+const { isLocationPaused } = require("./paused-locations.cjs");
 const { resolveTarget, encodeSizeKey, policyCategoryKey, networkRouting } = require("./refill-engine.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
 const { hubPresenceSignals, pickInProgress } = require("./shop-source-rule.cjs");
@@ -523,6 +524,14 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     if (seedNeeded) await seedIfAbsent(db, seedPath, now, network);
     await reqRef.update({ "firstBatch/hub2Leg": { none: "engine_off", at: now }, ...declineStamp });
     return { raised: false, none: "engine_off", seeded: seedNeeded };
+  }
+  // PAUSED HUB (/config/refillEngine/pausedLocations/{hub} — Hub 3 while it is
+  // recounted from zero, Junid 6 Nov 2026): no lock, no request, and no seed —
+  // nothing is written at a hub staff are counting. The marker says why; the
+  // scan raises the hub's own restock from the counted cells once it resumes.
+  if (isLocationPaused(config, HUB)) {
+    await reqRef.update({ "firstBatch/hub2Leg": { none: "location_paused", at: now }, ...declineStamp });
+    return { raised: false, none: "location_paused" };
   }
 
   // Hub 2's target for this size, resolved by the REAL engine function over
