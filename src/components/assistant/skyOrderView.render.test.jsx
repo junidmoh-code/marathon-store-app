@@ -131,14 +131,14 @@ describe("the sky layout", () => {
     click(r.root.findAll(n => n.type === "button" && n.children.includes("Yes, switch"))[0]);
     expect(picked).toBe("trophy");
   });
-  it("the filter popover sorts; Sneakers / Clothing is in the product-type pill, not on the page", () => {
+  it("the filter popover sorts; Sneakers / Clothing is in the store pill, not on the page", () => {
     let m = null;
     const r = mount({ setMode: (v) => { m = v; } });
     click(r.root.findAll(n => n.type === "button" && n.props["aria-label"] === "Filter and sort")[0]);
     expect(text(r)).toContain("Price · high");
     expect(r.root.findAll(n => n.type === "button" && n.children.includes("Clothing"))).toHaveLength(0);
-    // Laptop (Junid, 6 Nov): the product type has its own pill beside the store.
-    click(r.root.findAll(n => n.props?.["data-testid"] === "mode-pill" && n.type === "button")[0]);
+    // Laptop (Junid, 6 Nov): store · type is one small pill beside the account.
+    click(r.root.findAll(n => n.props?.["data-testid"] === "store-tag" && n.type === "button")[0]);
     click(r.root.findAll(n => n.type === "button" && n.props["data-group"] === "mode" && n.children.includes("Clothing"))[0]);
     expect(m).toBe("clothing");
   });

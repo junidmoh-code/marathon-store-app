@@ -142,12 +142,14 @@ prices 700–800 tabular, "R" and no decimals.
   Escape or the dimmed area dismiss it; size pills (chosen = white), counts
   behind a long press; stepper; the Display Partner (Optional) row; a white
   full-width Add to Cart. `scripts/sky-wall-v3.e2e.mjs` proves all of it.
-- **Laptop Store Assistant** (Junid's mock-up, 6 Nov): no nav pill; the store
-  and the product type are two pills under the wordmark (pin / box icons);
-  search and account are bare glass rounds; the search bar is 82vw; a full
-  row of white brand logos between hairline dividers; four-up LANDSCAPE cards
-  (photo left, white name, white price behind a hairline). Only the sneakers
-  scroll (`.ad-scroll`); everything above is fixed. All in vw.
+- **Laptop Store Assistant** (Junid's mock-up, 6 Nov, revised the same day):
+  no nav pill; ONE small "STORE · TYPE" pill beside the account round (no
+  search round, no pills under the wordmark); the search bar is 82vw; the
+  brand row is bare white logos on no background, every brand (no "…"),
+  sliding sideways, and it FLOATS — the sneakers scroll up under it; four-up
+  LANDSCAPE cards (photo left on a plain background, white name, white price
+  behind a hairline), no three-dot on the cards (the actions are in the
+  popup). Only the sneakers scroll (`.ad-scroll`). All in vw.
 - **Warehouse, phone** (Junid's mock-up, 6 Nov): `WarehouseTop`
   (src/components/sky/WarehouseTop.jsx) — header with the WAREHOUSE pill;
   Switch View · Viewing as WAREHOUSE · incoming; the navy hub pill and Switch

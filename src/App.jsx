@@ -137,8 +137,8 @@ import { brandOptions, filterByBrand, reconcileBrand } from "./components/assist
 import ZoomImage from "./components/sky/ZoomImage.jsx";
 import { SkySheet, SkySheetHead, SkyStepperRow } from "./components/sky/SkySheet.jsx";
 import WarehouseTop, { WAREHOUSE_SKY_CSS } from "./components/sky/WarehouseTop.jsx";
-import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, SkyModePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
-import { IconCart, IconBox, IconBag, IconLayers, IconSearch as SkyIconSearch, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
+import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
+import { IconCart, IconBox, IconBag, IconLayers, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
@@ -8864,24 +8864,18 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               through the red switch-confirm (setPendingShop), exactly as the
               Stores tab's list does; the two share one panel slot, so only
               one store list is ever open. */}
-          {/* TWO PILLS (Junid's laptop mock-up, 6 Nov): the store, and the
-              product type. Same handlers as before — a different store still
-              goes through the red switch-confirm; one panel slot, so only one
-              list is ever open. */}
-          <div className="ad-pills" data-contrast-exempt="">
-            <SkyStorePill value={effectiveShop} stores={availableShops || []} labelOf={(id) => labelFor(id, shopRegistry)}
-                          onPick={(id) => { if (id !== effectiveShop) setPendingShop(id); }}
-                          open={panel === "storepill"} onOpenChange={(v) => setPanel(v ? "storepill" : null)}
-                          className="ad-storepill ad-pill--store" testId="store-tag" />
-            <SkyModePill mode={mode === "clothing" ? "clothing" : "sneaker"}
-                         modes={[["sneaker", "Sneaker pickup"], ["clothing", "Clothing"]]} onMode={(v) => setMode(v)}
-                         open={panel === "modepill"} onOpenChange={(v) => setPanel(v ? "modepill" : null)}
-                         className="ad-storepill" testId="mode-pill" />
-          </div>
 
         </div>
         <div className="ad-hr" data-contrast-exempt="">
-          <SkyRound label="Search" className="ad-round" onClick={() => searchRef.current?.focus()}><SkyIconSearch /></SkyRound>
+          {/* ONE small picker beside the account (Junid, 6 Nov): store · product
+              type, in place of the two big pills and the search round. A
+              different store still goes through the red switch-confirm. */}
+          <SkyStorePill value={effectiveShop} stores={availableShops || []} labelOf={(id) => labelFor(id, shopRegistry)}
+                        onPick={(id) => { if (id !== effectiveShop) setPendingShop(id); }}
+                        open={panel === "storepill"} onOpenChange={(v) => setPanel(v ? "storepill" : null)}
+                        mode={mode === "clothing" ? "clothing" : "sneaker"}
+                        modes={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]} onMode={(v) => setMode(v)}
+                        className="ad-storepill ad-pill--store" testId="store-tag" />
           <SkyRound label="Account" className="ad-round ad-me" buttonRef={meRef} onClick={() => togglePanel("me")}>{who[0].toUpperCase()}</SkyRound>
           <SkyPopover anchorRef={meRef} open={panel === "me"} onClose={closePanel} align="end" width={240} label="Account">
             <div className="sky-pop__who">{who}</div>
@@ -9583,23 +9577,22 @@ const AD_SKY_CSS = `
 .ad-navpill{display:none}
 .ad-hc{margin-top:0;gap:0;grid-column:2;grid-row:1}
 .ad-logo .sky-logo__c{margin-top:.15vw}
-.ad-pills{display:flex;align-items:center;justify-content:center;gap:2.65vw;margin-top:0}
-html[data-sky="on"] #root .ad-root .ad-storepill,.ad-root .ad-storepill{height:2.84vw;min-height:36px;padding:0 1.5vw;gap:.95vw;border-radius:999px;
-  font:700 max(12px,1.01vw)/1 var(--sky-font);letter-spacing:.01em;text-transform:uppercase;color:#fff!important;
+html[data-sky="on"] #root .ad-root .ad-storepill,.ad-root .ad-storepill{height:2.3vw;min-height:32px;padding:0 1vw;gap:.6vw;border-radius:999px;
+  font:700 max(11px,.8vw)/1 var(--sky-font);letter-spacing:.01em;text-transform:uppercase;color:#fff!important;
   background:rgba(255,255,255,.13)!important;border:1.5px solid rgba(255,255,255,.62)!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 6px 18px -8px rgba(0,40,120,.35)!important;text-shadow:0 1px 4px rgba(0,40,110,.25)}
 .ad-storepill .sky-storepill__chev{width:max(11px,.9vw);height:max(11px,.9vw);stroke-width:2.6}
-.ad-pill--store::before{content:"";width:max(15px,1.3vw);height:max(15px,1.3vw);flex:0 0 auto;background:#fff;
+.ad-pill--store::before{content:"";width:max(13px,1vw);height:max(13px,1vw);flex:0 0 auto;background:#fff;
   -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9'%3E%3Cpath d='M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z'/%3E%3Ccircle cx='12' cy='9.5' r='2.6'/%3E%3C/svg%3E") center/contain no-repeat;
           mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9'%3E%3Cpath d='M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z'/%3E%3Ccircle cx='12' cy='9.5' r='2.6'/%3E%3C/svg%3E") center/contain no-repeat}
 .ad-root .sky-modepill__ic{width:max(15px,1.3vw);height:max(15px,1.3vw)}
-.ad-hr{grid-column:3;grid-row:1;align-self:start;margin-top:2.1vw;gap:2.3vw}
+.ad-hr{grid-column:3;grid-row:1;align-self:center;margin-top:0;gap:1vw}
 html[data-sky="on"] #root .ad-root .ad-round,.ad-root .ad-round{width:3.3vw!important;height:3.3vw!important;min-width:40px;min-height:40px;color:#fff!important;
   background:rgba(255,255,255,.13)!important;border:1.5px solid rgba(255,255,255,.62)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3)!important}
 .ad-round svg{width:1.4vw;height:1.4vw;min-width:17px;min-height:17px;color:#fff;stroke:#fff}
 html[data-sky="on"] #root .ad-root .ad-me,.ad-root .ad-me{font:600 max(15px,1.3vw)/1 var(--sky-font);color:#fff!important}
 .ad-main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:0;width:var(--ad-w)}
-.ad-searchwrap{flex:0 0 auto;width:82.4vw;margin:1.58vw auto 0}
+.ad-searchwrap{flex:0 0 auto;width:82.4vw;margin:1vw auto 0}
 html[data-sky="on"] #root .ad-root .ad-searchwrap .sky-search{height:2.97vw;min-height:38px;padding:0 1.1vw 0 1.64vw;gap:1.9vw;
   background:rgba(255,255,255,.15)!important;border:1.5px solid rgba(255,255,255,.62)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 8px 22px -12px rgba(0,40,120,.35)!important}
 .ad-searchwrap .sky-search > svg{width:1.5vw;height:1.5vw;min-width:18px;min-height:18px;color:#fff;stroke:#fff}
@@ -9608,23 +9601,25 @@ html[data-sky="on"] #root .ad-root .ad-searchwrap .sky-search input::placeholder
 .ad-searchwrap .sky-search__div{display:none}
 .ad-searchwrap .sky-search__btn{color:#fff}
 .ad-searchwrap .sky-search__btn svg{width:1.5vw;height:1.5vw;min-width:18px;min-height:18px;color:#fff;stroke:#fff}
-.ad-chips{flex:0 0 auto;width:100%;margin:1.39vw 0 0;padding:.3vw .2vw;gap:.75vw;justify-content:flex-start;align-items:center;flex-wrap:nowrap;
-  overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-width:none;
+/* THE BRAND ROW FLOATS (Junid, 6 Nov): bare white logos, no boxes, on no
+   background — the sneakers scroll up UNDER them (the scroller starts behind
+   the row; see .ad-scroll). The row still slides left. */
+.ad-chips{position:relative;z-index:3;flex:0 0 auto;width:100%;height:3.4vw;min-height:40px;margin:1vw 0 0;padding:0 .2vw;gap:1.6vw;justify-content:flex-start;align-items:center;flex-wrap:nowrap;
+  overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-width:none;pointer-events:auto;
   -webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 4vw),transparent);mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 4vw),transparent)}
 .ad-chips::-webkit-scrollbar{display:none}
-/* Each brand in its own very light, rounded box (Junid, 6 Nov). */
-html[data-sky="on"] #root .ad-root .ad-chips .sky-chip{flex:0 0 auto;scroll-snap-align:start;height:2.6vw;min-height:32px;min-width:6.3vw;padding:0 1.2vw;border-radius:1vw;
-  color:#fff!important;background:rgba(255,255,255,.12)!important;border:1px solid rgba(255,255,255,.42)!important;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.3)!important;-webkit-backdrop-filter:blur(10px)!important;backdrop-filter:blur(10px)!important;filter:none}
-html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:hover{background:rgba(255,255,255,.2)!important}
-html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:first-child{min-width:5vw;font:700 max(13px,1.07vw)/1 var(--sky-font)}
-html[data-sky="on"] #root .ad-root .ad-chips .sky-chip[aria-pressed="true"]{background:#fff!important;color:var(--sky-navy)!important;border-color:#fff!important;box-shadow:0 3px 10px rgba(0,40,120,.15)!important}
-.ad-chips .sky-chip svg{height:1.55vw;min-height:17px;max-width:4.4vw;fill:currentColor;filter:drop-shadow(0 1px 2px rgba(0,40,110,.25))}
-.ad-chips .sky-chip .sky-chip__txt{font-size:max(12px,1vw);font-weight:700}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip{flex:0 0 auto;scroll-snap-align:start;height:2.4vw;min-height:30px;min-width:0;padding:0 .9vw;border-radius:999px;
+  color:#fff!important;background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;
+  filter:drop-shadow(0 1px 3px rgba(0,30,90,.55)) drop-shadow(0 0 8px rgba(0,30,90,.25))}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:hover{opacity:.85}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:first-child{min-width:4.7vw;font:700 max(13px,1.07vw)/1 var(--sky-font)}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip[aria-pressed="true"]{background:#fff!important;color:var(--sky-navy)!important;filter:none;box-shadow:0 3px 10px rgba(0,40,120,.25)!important}
+.ad-chips .sky-chip svg{height:1.6vw;min-height:18px;max-width:4.6vw;fill:currentColor}
+.ad-chips .sky-chip .sky-chip__txt{font-size:max(12px,1.05vw);font-weight:700}
 .ad-trackbar{flex:0 0 auto}
 /* The one scroller: the grid passes under the fixed band, faded at its top edge. */
-.ad-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin-top:1.75vw;padding:.4vw 0 120px;scrollbar-width:none;
-  -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 .9vw);mask-image:linear-gradient(180deg,transparent 0,#000 .9vw)}
+.ad-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin-top:calc(-1 * max(40px,3.4vw));padding:calc(max(40px,3.4vw) + 1vw) 0 120px;scrollbar-width:none;position:relative;z-index:1;
+  -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 1.1vw);mask-image:linear-gradient(180deg,transparent 0,#000 1.1vw)}
 .ad-scroll::-webkit-scrollbar{display:none}
 .ad-grid{margin-top:0;gap:1.26vw 1.33vw}
 html[data-sky="on"] #root .ad-root .ad-card,.ad-root .ad-card{display:grid;grid-template-columns:7.76vw minmax(0,1fr);align-items:stretch;height:11.1vw;min-height:140px;padding:1.45vw 0 1.39vw 1.2vw;border-radius:1.39vw;color:#fff;

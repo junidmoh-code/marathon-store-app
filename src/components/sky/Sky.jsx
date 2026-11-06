@@ -137,38 +137,6 @@ export function SkyStorePill({ value, stores, labelOf, onPick, mode = null, mode
   );
 }
 
-/** The product-type pill (laptop order screen, Junid 6 Nov): "SNEAKER PICKUP"
- *  with a box icon; its popover sets the mode — the same setter the store
- *  pill's Products group used. */
-export function SkyModePill({ mode, modes, onMode, open: openProp, onOpenChange, className = "", testId = "mode-pill" }) {
-  const ref = useRef(null);
-  const [openOwn, setOpenOwn] = useState(false);
-  const open = openProp ?? openOwn;
-  const setOpen = onOpenChange || setOpenOwn;
-  const label = (modes.find(([v]) => v === mode) || modes[0] || [])[1] || "";
-  return (
-    <>
-      <button type="button" ref={ref} className={cx("sky-tag sky-glass sky-storepill sky-modepill", className)}
-              aria-haspopup="menu" aria-expanded={open} aria-label={`Products: ${label}. Change`}
-              data-testid={testId} onClick={() => setOpen(!open)}>
-        <svg className="sky-modepill__ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 2.8 20.5 7.4v9.2L12 21.2 3.5 16.6V7.4z" /><path d="M3.5 7.4 12 12l8.5-4.6M12 12v9.2" />
-        </svg>
-        <span>{label}</span>
-      </button>
-      <SkyPopover anchorRef={ref} open={open} onClose={() => setOpen(false)} align="center" width={220} label="Products" testId="mode-popover">
-        <div className="sky-pop__lab">Products</div>
-        {modes.map(([v, l]) => (
-          <button key={v} type="button" role="menuitemradio" className="sky-pop__i" aria-checked={mode === v} data-group="mode"
-                  onClick={() => { setOpen(false); if (v !== mode) onMode(v); }}>
-            {l}
-          </button>
-        ))}
-      </SkyPopover>
-    </>
-  );
-}
-
 /** Glass pill segmented toggle (Sneakers / Clothing, the store chips). */
 export function SkySegmented({ options, value, onChange, className = "", size = "md", ariaLabel }) {
   return (
