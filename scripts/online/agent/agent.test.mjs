@@ -544,7 +544,7 @@ describe("review of #846: held picks, the ledger on settle", () => {
     await h.run({ inbox: { replies: async () => [reply("refund")] } });
     await h.run({ inbox: { replies: async () => [reply("refund"), reply("refund please", 2)] } });
     expect(h.mails.length).toBe(mails);
-    expect(h.junid.filter((m) => /already has money on it/.test(m.subject))).toHaveLength(1);
+    expect(h.junid.filter((m) => /was refused/.test(m.subject))).toHaveLength(1);
   });
 
   it("review of #847: the credit is claimed in the swap's own write; the customer is told 'on your account' only when it is done", async () => {
@@ -605,5 +605,26 @@ describe("review of #846: held picks, the ledger on settle", () => {
     const l0 = f.read("online_orders/9001/lines/0");
     expect(amt).toBe(lineLedger({ ...l0, resolution: {} }, { priceCents: 0 }).paidCents); // the order's own payment, not + R30
     expect(h.junid.some((x) => /paid separately/.test(x.subject))).toBe(true);
+  });
+
+  it("CodeRabbit on #851: a settle whose claim write merely raced says nothing; a ledger refusal tells Junid once", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    const realRef = f.db.ref;
+    // The claim's write never commits (someone keeps changing the line), and the ledger itself does not object.
+    const db = { ref: (p) => {
+      const r = realRef(p);
+      if (p !== "online_orders/9001/lines/0") return r;
+      return { ...r, transaction: async (fn) => {
+        const cur = structuredClone(f.read(p));
+        const out = fn(structuredClone(cur));
+        if (out?.resolution?.money?.state === "claimed") return { committed: false, snapshot: { val: () => cur } };
+        return r.transaction(fn);
+      } };
+    } };
+    const before = h.junid.length;
+    await h.run({ db, inbox: { replies: async () => [reply("credit")] } });
+    expect(h.junid.slice(before).filter((m) => /was refused/.test(m.subject))).toHaveLength(0);
   });
 });

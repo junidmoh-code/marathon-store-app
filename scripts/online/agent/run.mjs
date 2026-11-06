@@ -513,11 +513,12 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
   if (!res) {
     // Refused. A money slot already on the line: Junid hears once, in the app; the line merely changed meanwhile (the
     // claim's write aborted): tried again next run, nothing said (Sonnet review of #848, minor).
-    const nowMoney = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/resolution/money`);
-    if (!nowMoney) return;
+    const lr = ctx.lastMoneyRefusal && ctx.lastMoneyRefusal.orderId === orderId && ctx.lastMoneyRefusal.i === i ? ctx.lastMoneyRefusal : null;
+    ctx.lastMoneyRefusal = null;
+    if (!lr || lr.race) return; // the write raced (or a resumed claim): tried again next run, nothing said
     if (!line.resolution?.conversation?.settleRefusedAt) {
       await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, settleRefusedAt: ctx.now } } } : undefined));
-      await tellJunid(ctx, `Website order ${order.ref}: the customer asked for ${kind}, but the line already has money on it`, [`Line: ${line.title}. Nothing was sent to the customer; settle the line's money first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go").`]);
+      await tellJunid(ctx, `Website order ${order.ref}: the customer asked for ${kind}, but it was refused`, [`Line: ${line.title}. Why: ${lr.why}. Nothing was sent to the customer; settle the line's money first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go").`]);
     }
     return;
   }
@@ -594,6 +595,8 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
   });
   if (!claimed) {
     await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents, note: refused || "the line moved" });
+    // Which it was, for the caller (CodeRabbit on #851): the ledger's own refusal, or a write that merely raced.
+    ctx.lastMoneyRefusal = { orderId, i, kind, why: refused || null, race: !refused };
     return null;
   }
   const scopes = ctx.scopes ? await ctx.scopes() : new Set();
