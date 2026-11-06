@@ -628,6 +628,99 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(h.junid.slice(before).filter((m) => /was refused/.test(m.subject))).toHaveLength(0);
   });
 
+  it("CodeRabbit on #856: a credit answer whose settle did not finish is kept and retried, never replaced by the 48-hour credit", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    const realRef = f.db.ref;
+    const db = { ref: (p) => {
+      const r = realRef(p);
+      if (p !== "online_orders/9001/lines/0") return r;
+      return { ...r, transaction: async (fn) => {
+        const cur = structuredClone(f.read(p));
+        const out = fn(structuredClone(cur));
+        if (out?.resolution?.money?.state === "claimed") return { committed: false, snapshot: { val: () => cur } };
+        return r.transaction(fn);
+      } };
+    } };
+    await h.run({ db, inbox: { replies: async () => [reply("credit")] } });
+    expect(conv(f).heldSettle?.kind).toBe("credit"); // the answer is on the line; the reply itself is already seen
+    expect(f.read("online_orders/9001/lines/0/resolution/outcome")).toBeFalsy();
+    await h.run({ nowMs: async () => NOW + 72 * H }); // past 48 hours, no new reply: the customer's own answer settles
+    const out = f.read("online_orders/9001/lines/0/resolution/outcome") || {};
+    expect(out.kind).toBe("credit");
+    expect(conv(f).state).toBe("closed");
+  });
+
+  it("Sonnet review of #856: a credit filed whose closing write failed is finished next run: one credit, one message, never 'nothing left'", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    const realRef = f.db.ref;
+    let failClose = true;
+    const db = { ref: (p) => {
+      const r = realRef(p);
+      if (p !== "online_orders/9001/lines/0") return r;
+      return { ...r, transaction: async (fn) => {
+        const cur = structuredClone(f.read(p));
+        const out = fn(structuredClone(cur));
+        if (failClose && out?.resolution?.outcome && !cur?.resolution?.outcome) { failClose = false; return { committed: false, snapshot: { val: () => cur } }; }
+        return r.transaction(fn);
+      } };
+    } };
+    const credits = () => h.gql.filter((g) => /storeCreditAccountCredit/.test(g.q)).length;
+    const mailsBefore = h.mails.length;
+    await h.run({ db, inbox: { replies: async () => [reply("credit")] } });
+    expect(credits()).toBe(1);
+    expect(f.read("online_orders/9001/lines/0/resolution/outcome")).toBeFalsy();
+    expect(h.mails.length).toBe(mailsBefore); // not told before the close landed
+    const junidBefore = h.junid.length;
+    await h.run();
+    expect(credits()).toBe(1); // never filed twice
+    expect((f.read("online_orders/9001/lines/0/resolution/outcome") || {}).kind).toBe("credit");
+    expect(conv(f).state).toBe("closed");
+    expect(conv(f).heldSettle ?? null).toBeNull();
+    expect(h.mails.length).toBe(mailsBefore + 1); // one message
+    expect(h.junid.slice(junidBefore).filter((m) => /nothing is left/.test(m.subject))).toHaveLength(0);
+    await h.run({ nowMs: async () => NOW + 72 * H });
+    expect(credits()).toBe(1);
+    expect(h.mails.length).toBe(mailsBefore + 1);
+  });
+
+  it("CodeRabbit on #856: a refund resumed after its close failed tells Junid of the separately paid part once, sent before or on resume", async () => {
+    for (const crashBeforeNotice of [false, true]) {
+      const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } } } }) }));
+      const h = harness(f, { scopes: ["write_store_credit_account_transactions", "write_orders"] });
+      await h.run();
+      const realRef = f.db.ref;
+      let failClose = true;
+      const db = { ref: (p) => {
+        const r = realRef(p);
+        if (p !== "online_orders/9001/lines/0") return r;
+        return { ...r, transaction: async (fn) => {
+          const cur = structuredClone(f.read(p));
+          const out = fn(structuredClone(cur));
+          if (failClose && out?.resolution?.outcome && !cur?.resolution?.outcome) { failClose = false; return { committed: false, snapshot: { val: () => cur } }; }
+          return r.transaction(fn);
+        } };
+      } };
+      let base = 0;
+      const told = () => h.junid.filter((m) => /paid separately/.test(m.subject)).length - base;
+      await h.run({ db, inbox: { replies: async () => [reply("refund")] } });
+      expect(f.read("online_orders/9001/lines/0/resolution/outcome")).toBeFalsy();
+      expect(f.read("online_orders/9001/lines/0/resolution/money")?.state).toBeTruthy(); // filed, not closed
+      if (crashBeforeNotice) {
+        // as if the process died after the refund was filed and before the notice: neither the mail nor its mark exist
+        base = told();
+        await f.db.ref("online_orders/9001/lines/0/resolution/conversation/heldBackToldAt").set(null);
+      }
+      await h.run();
+      await h.run();
+      expect(told()).toBe(1);
+      expect((f.read("online_orders/9001/lines/0/resolution/outcome") || {}).kind).toBe("refund");
+    }
+  });
+
   it("CodeRabbit on #851: a refund with only a separately paid difference left is Junid's; no 48-hour credit pays it after", async () => {
     // Paid R250 on the order; R250 refunded to it already; R30 paid on its own PayFast payment remains.
     const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } }, moneySettled: { r: { kind: "refund", state: "done", amountCents: 25000 } } } }) }));
@@ -639,7 +732,7 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(conv(f).state).toBe("with_junid");
     const credits = () => h.gql.filter((g) => /storeCreditAccountCredit/.test(g.q)).length;
     const before = credits();
-    await h.run({ now: NOW + 72 * H });
+    await h.run({ nowMs: async () => NOW + 72 * H });
     expect(credits()).toBe(before);
   });
 });
