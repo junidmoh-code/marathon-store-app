@@ -503,8 +503,8 @@ describe("review of #846: held picks, the ledger on settle", () => {
     await h.run({ inbox: { replies: async () => [reply("1")] } });
     expect(line(f).pid).toBe("TEE");
     expect(conv(f).heldPick).toBeUndefined();
-    expect(h.mails.at(-1).text).toMatch(/already refunded to you in full/);
-    expect(h.junid.some((m) => /refunded in full/.test(m.subject))).toBe(true);
+    expect(h.mails.at(-1).text).toMatch(/already given back to you/);
+    expect(h.junid.some((m) => /given back already/.test(m.subject))).toBe(true);
   });
 
   it("review of #847: a pick whose swap does not commit is held and retried, never dropped; Junid hears on the 3rd try", async () => {

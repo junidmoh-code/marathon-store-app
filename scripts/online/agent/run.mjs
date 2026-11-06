@@ -123,6 +123,8 @@ async function handleLine(ctx, key, row) {
   const out = line.resolution?.outcome;
   if (out?.kind === "swap" && conv.state === "closed" && !Object.values(conv.sends || {}).some((x) => x?.kind === "swapped")) {
     const diff = out.creditCents > 0 ? await money(ctx, orderId, order, i, line, "credit", out.creditCents, "swap difference") : null;
+    // A packed order's follow-up mirror is brought in line with the parent's result too (CodeRabbit on #848).
+    if (out.creditCents > 0 && (line.source?.movedTo || out.movedTo)) await syncMirror(ctx, orderId, i, { claimAt: Number(out.at), creditCents: out.creditCents, diff });
     // A pre-claim met again is NOT proof the credit was filed (CodeRabbit on #848): the customer hears the amount only when
     // money() filed it (done, or with Junid by hand); an unresolved claim is Junid's (told at once) and they hear the swap.
     await send(ctx, orderId, order, i, line, "swapped", creditWords(diff, out.creditCents));
@@ -314,6 +316,28 @@ async function nextReply(ctx, orderId, i, conv) {
 // ── pick N ───────────────────────────────────────────────────────────────────
 // A held pick is dropped only once it has an outcome: a committed swap, or a final answer (dearer, gone): CodeRabbit #847.
 /**
+ * A packed order's follow-up line carries a mirror of the parent's swap credit (store-app #847): it follows the parent's
+ * result. done → the follow-up's moneySettled under p<claimAt> (stable: a recovery re-run never adds it twice); not filed
+ * → the mirror goes; filed but not done → the mirror shows that state (unclear until settled). Used by the swap and by
+ * its crash recovery (CodeRabbit on #848).
+ */
+async function syncMirror(ctx, orderId, i, { claimAt, creditCents, diff }) {
+  const entry = clean({ kind: "credit", amountCents: creditCents, via: diff?.via ?? null, ref: diff?.ref ?? null, at: claimAt, ...(Number.isInteger(diff?.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
+  await lineTxn(ctx, followUpId(orderId, i), 0, (line0) => {
+    const cur = line0.resolution || {};
+    const m = cur.money;
+    const mine = m && typeof m === "object" && m.mirroredFrom === `${orderId}/${i}` && Number(m.at) === Number(claimAt);
+    const { money: _m, ...rest } = cur;
+    const key = `p${claimAt}`;
+    let next;
+    if (diff?.state === "done") next = cur.moneySettled?.[key] && !mine ? undefined : { ...(mine ? rest : cur), moneySettled: { ...(cur.moneySettled || {}), [key]: { ...entry, state: "done" } } };
+    else if (!diff) next = mine ? rest : undefined;
+    else next = mine || !m ? { ...cur, money: clean({ ...entry, state: diff.state || "manual", ...(diff.ambiguous != null ? { ambiguous: diff.ambiguous } : {}), mirroredFrom: `${orderId}/${i}` }) } : undefined;
+    return next === undefined ? undefined : { ...line0, resolution: next };
+  });
+}
+
+/**
  * What the customer may be told of a swap's credit, from what money() returned: filed (done → "on your account"; with
  * Junid by hand → "being added") → the amount; nothing filed, refused, or a claim with no result → no amount.
  */
@@ -356,7 +380,7 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
     if (held) await clearHeld(ctx, orderId, i);
     await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: ${judged.note}` });
     await send(ctx, orderId, order, i, line, "refunded_full");
-    await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, but the line was refunded in full`, [`Line: ${line.title}. ${judged.note}. The customer was told nothing is left to swap; nothing was changed.`]);
+    await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, but everything paid for the line was given back already`, [`Line: ${line.title}. ${judged.note}. The customer was told nothing is left to swap; nothing was changed.`]);
     return;
   }
   if (!judged.ok) {
@@ -452,21 +476,7 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
   // answer) is mirrored as the follow-up line's money slot, so a swap there waits until it is settled (Junid's
   // settle_line_money settles the mirror too).
   // The follow-up's mirror follows the parent's result: done → its moneySettled (own key), else the same state.
-  if (followed && creditClaim) {
-    const entry = clean({ kind: "credit", amountCents: judged.creditCents, via: diff?.via ?? null, ref: diff?.ref ?? null, at: creditClaim.at, ...(Number.isInteger(diff?.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
-    await lineTxn(ctx, followUpId(orderId, i), 0, (line0) => {
-      const cur = line0.resolution || {};
-      const m = cur.money;
-      const mine = m && typeof m === "object" && m.mirroredFrom === `${orderId}/${i}` && Number(m.at) === Number(creditClaim.at);
-      const { money: _m, ...rest } = cur;
-      let next;
-      if (diff?.state === "done") next = { ...(mine ? rest : cur), moneySettled: { ...(cur.moneySettled || {}), [`p${ctx.now}`]: { ...entry, state: "done" } } };
-      // Not filed at all (refused): the mirror goes; filed but not done: the mirror shows it (unclear until settled).
-      else if (!diff) next = mine ? rest : undefined;
-      else next = mine || !m ? { ...cur, money: clean({ ...entry, state: diff.state || "manual", ...(diff.ambiguous != null ? { ambiguous: diff.ambiguous } : {}), mirroredFrom: `${orderId}/${i}` }) } : undefined;
-      return next === undefined ? undefined : { ...line0, resolution: next };
-    });
-  }
+  if (followed && creditClaim) await syncMirror(ctx, orderId, i, { claimAt: creditClaim.at, creditCents: judged.creditCents, diff });
   // The customer hears of a credit only as far as money() really filed it (review of #847, 6): none filed → no amount
   // (Junid hears); filed but not done → "being added"; done → "on your account".
   if (creditClaim && !diff) await tellJunid(ctx, `Website order ${order.ref}: ${rands(judged.creditCents)} store credit owed after the swap was NOT filed`, [`Line: ${line.title} → ${offer.title}. The customer was told of the swap, not of the credit. Please credit it by hand or tell Jamie.`]);

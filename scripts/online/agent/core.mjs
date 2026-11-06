@@ -170,7 +170,7 @@ export function judgeSwap(line, offer, { now = Date.now() } = {}) {
   if (lg.busy || lg.unclear) return { ok: false, why: "money_unclear", note: lg.unclearWhy || "money for this line is being issued right now" };
   // Everything paid for the line was given back already: nothing is left to swap against. A final answer, never "unclear"
   // (never held for ever) and never "costs more" (review of #847).
-  if (lg.paidCents > 0 && lg.refundableCents === 0) return { ok: false, why: "refunded_full", note: `the line was refunded in full (${rands(lg.settledCents)}): nothing is left to swap against` };
+  if (lg.paidCents > 0 && lg.refundableCents === 0) return { ok: false, why: "refunded_full", note: `everything paid for the line was given back already (${rands(lg.settledCents)}, refund or store credit): nothing is left to swap against` };
   if (lg.extraCents > 0) return { ok: false, why: "costs_more", extraCents: lg.extraCents };
   return { ok: true, creditCents: lg.creditCents };
 }
@@ -235,7 +235,7 @@ export function composeMessage(kind, { ref, firstName, line, offers = [], amount
     }
     parts.push(`If we don't hear from you in 48 hours we'll put ${rands(left)} on your account as store credit, and you can still ask for a refund instead for 14 days after that.`);
   } else if (kind === "refunded_full") {
-    parts.push(`${itemWords(line)} was already refunded to you in full, so there is nothing left to swap it for. Nothing more is needed from you.`);
+    parts.push(`Everything you paid for ${itemWords(line)} was already given back to you (as a refund or store credit), so there is nothing left to swap it for. Nothing more is needed from you.`);
   } else if (kind === "swapped") {
     parts.push(`Your new item: ${itemWords(line)}. It ships to you as soon as it is packed.`);
     if (amountCents > 0) parts.push(`It costs less than what you paid, so ${rands(amountCents)} goes back to you as store credit. ${creditState}`);
