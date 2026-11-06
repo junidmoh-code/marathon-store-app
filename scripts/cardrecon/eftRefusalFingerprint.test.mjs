@@ -210,13 +210,15 @@ describe("settledFingerprintPlan / settledClaimStep — never the wrong money, n
   it("refuses a different amount, a different reference, an unused spender, or one record twice", () => {
     expect(plan({ spender: { ...used, amountCents: 70000 } }).ok).toBe(false);
     expect(plan({ spender: { ...used, reference: "OTHER" } }).ok).toBe(false);
-    expect(plan({ spender: { ...used, status: "unmatched" } }).ok).toBe(false);
+    expect(plan({ spender: { ...used, status: "reversed" } }).ok).toBe(false);
+    expect(plan({ spender: { ...used, outcome: "held-duplicate" } }).ok).toBe(false);
     expect(plan({ spenderKey: "r" }).ok).toBe(false);
     expect(plan({ refused: { ...refused, auth: { verdict: "fail" } } }).ok).toBe(false);
   });
-  it("only a manual entry may be named as the spender", () => {
+  it("only a manual entry may be named as the spender — floated (unmatched) or used", () => {
     const manual = { ...used, manualEntry: { at: 1 } };
     expect(plan({ spender: manual }).ok).toBe(true);
+    expect(plan({ spender: { ...manual, status: "unmatched" } }).ok).toBe(true);
     expect(plan({ spender: { ...manual, reader: "standardbank" } }).ok).toBe(false);
     expect(plan({ spender: used }).ok).toBe(false);   // reader manual but no manualEntry stamp
   });
@@ -225,10 +227,13 @@ describe("settledFingerprintPlan / settledClaimStep — never the wrong money, n
     expect(settledClaimStep({ spenderKey: "m", refusedKey: "r", at: 9 })({ poolKey: "x", at: 1, spentBy: "x" })).toBeUndefined();
     expect(settledClaimStep({ spenderKey: "m", refusedKey: "r", at: 9 })("garbage")).toBeUndefined();
   });
-  it("the script writes only the fingerprint node — never a pool record", () => {
+  it("the script writes the fingerprint node and stamps the REFUSED record — never the manual entry", () => {
     const src = readFileSync(resolve(HERE, "claim-settled-bank-fingerprint.mjs"), "utf8");
     const writes = [...src.matchAll(/\)\.(set|update|remove|transaction|push)\(/g)];   // calls on a ref(…), not on arrays
-    expect(writes).toHaveLength(1);
+    expect(writes).toHaveLength(2);
+    // Exactly two write targets: the fingerprint node and the REFUSED record.
+    const targets = [...src.matchAll(/db\.ref\(([^)]*)\)\.(set|update|remove|transaction|push)\(/g)].map((m) => m[1]);
+    expect(targets).toEqual(["path", "`${EFT_POOL_PATH}/${refusedKey}`"]);
     expect(src).toMatch(/db\.ref\(path\)\.transaction\(settledClaimStep/);
     expect(src).toMatch(/const path = `\$\{EFT_FINGERPRINT_PATH\}\//);
   });
