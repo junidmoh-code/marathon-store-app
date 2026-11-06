@@ -138,7 +138,7 @@ import ZoomImage from "./components/sky/ZoomImage.jsx";
 import { SkySheet, SkySheetHead, SkyStepperRow } from "./components/sky/SkySheet.jsx";
 import WarehouseTop, { WAREHOUSE_SKY_CSS } from "./components/sky/WarehouseTop.jsx";
 import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, SkyModePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
-import { IconCart, IconBox, IconBag, IconLayers, IconSearch as SkyIconSearch, IconMore, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
+import { IconCart, IconBox, IconBag, IconLayers, IconSearch as SkyIconSearch, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
@@ -8729,7 +8729,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const togglePanel = (k) => setPanel((p) => (p === k ? null : k));
   const closePanel = useCallback(() => setPanel(null), []);
   // Popover anchors (the popovers render in a portal at <body>: SkyPopover).
-  const storesRef = useRef(null), meRef = useRef(null), filterRef = useRef(null), brandsRef = useRef(null);
+  const storesRef = useRef(null), meRef = useRef(null), filterRef = useRef(null);
   // A stock-guard refusal always lands on an OPEN panel. The destination-
   // confirm path closes it before the guard runs (placeOrders returns
   // undefined to the button, then the modal re-invokes it), so the refusal
@@ -8752,10 +8752,9 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // the list someone works through to set the missing brands. The first few
   // are logo chips; the rest live behind the "…" chip.
   const brandOpts = useMemo(() => brandOptions(catalog), [catalog]);
-  const chipCount = useChipCount();
-  const chipBrands = brandOpts.slice(1, 1 + chipCount);
-  const moreBrands = brandOpts.slice(1 + chipCount);
-  const brandInMore = brand !== "All" && !chipBrands.some(([b]) => b === brand);
+  // Every brand is its own chip in ONE row that slides sideways (Junid, 6 Nov:
+  // no "…" chip, no popover).
+  const chipBrands = brandOpts.slice(1);
 
   // SEARCH RESULTS come from AssistantView's `searchResults` — the ONE search
   // implementation, shared with the phone layout: barcode + SKU + per-size code
@@ -8914,8 +8913,10 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           </SkyPopover>
         </div>
 
-        {/* BRAND CHIPS — logos, "All" first, the rest behind "…". */}
-        <div className="sky-chips ad-chips" role="group" aria-label="Brand" data-contrast-exempt="">
+        {/* BRAND CHIPS — logos, "All" first, every brand in its own light box;
+            the row slides left (trackpad, drag, or the mouse wheel). */}
+        <div className="sky-chips ad-chips" role="group" aria-label="Brand" data-contrast-exempt=""
+             onWheel={(e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) e.currentTarget.scrollLeft += e.deltaY; }}>
           <button type="button" className="sky-chip sky-glass" aria-pressed={brand === "All"} onClick={() => setBrand("All")}>All</button>
           {chipBrands.map(([b, n]) => (
             <button key={b} type="button" className="sky-chip sky-glass" aria-pressed={brand === b}
@@ -8923,22 +8924,6 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               <BrandMark brand={b} />
             </button>
           ))}
-          {moreBrands.length > 0 && (
-            <>
-              <button type="button" ref={brandsRef} className="sky-chip sky-glass ad-more-chip" aria-pressed={brandInMore}
-                      aria-expanded={panel === "brands"} aria-label="More brands" title="More brands" onClick={() => togglePanel("brands")}>
-                {brandInMore ? <BrandMark brand={brand} /> : <IconMore width={22} height={22} />}
-              </button>
-              <SkyPopover anchorRef={brandsRef} open={panel === "brands"} onClose={closePanel} align="center" width={280} label="More brands" testId="brands-popover">
-                {moreBrands.map(([b, n]) => (
-                  <button key={b} type="button" className="sky-pop__i" role="menuitemradio" aria-checked={brand === b}
-                          onClick={() => { setBrand(b); setPanel(null); }}>
-                    <span>{b}</span><span className="sky-pop__n">{n}</span>
-                  </button>
-                ))}
-              </SkyPopover>
-            </>
-          )}
         </div>
 
         {flow === "refill" && (
@@ -8972,11 +8957,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                       <IconExpand width={15} height={15} />
                     </button>
                   )}
-                  {/* Deactivate / reactivate / merge, right on the card the
-                      operator is looking at (owner spec 2026-08-31).
-                      Renders nothing for a non-admin. */}
-                  <ProductActionsButton product={p} products={products}
-                                        style={{ position: "absolute", top: 8, left: 8, zIndex: 3 }} />
+                  {/* No three-dot on the cards (Junid, 6 Nov): deactivate /
+                      reactivate / merge live in the product popup's header. */}
                   <div className="ad-body">
                     <div className="sky-name ad-name" data-contrast-exempt>{p.name}
                       {isDeactivated(p) && <span className="ad-deact">DEACTIVATED</span>}
@@ -9423,21 +9405,6 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
 
 // How many brand logo chips fit on the row before "…" (assistant-desktop.png
 // shows seven at 1672px). Read once per resize, never per render.
-function useChipCount() {
-  const pick = () => {
-    const w = typeof window !== "undefined" ? window.innerWidth || 1440 : 1440;
-    return w >= 1560 ? 11 : w >= 1400 ? 10 : w >= 1260 ? 9 : w >= 1150 ? 7 : 5;
-  };
-  const [n, setN] = useState(pick);
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.addEventListener) return undefined;
-    const on = () => setN(pick());
-    window.addEventListener("resize", on);
-    return () => window.removeEventListener("resize", on);
-  }, []);
-  return n;
-}
-
 // ─── THE DESKTOP ORDER SCREEN ON THE SKY DNA (design/assistant-desktop.png) ──
 // Measured off the 1672px reference and expressed in vw with px clamps, so a
 // 1280–1680 Mac and an iPad in landscape keep the reference's proportions.
@@ -9641,18 +9608,19 @@ html[data-sky="on"] #root .ad-root .ad-searchwrap .sky-search input::placeholder
 .ad-searchwrap .sky-search__div{display:none}
 .ad-searchwrap .sky-search__btn{color:#fff}
 .ad-searchwrap .sky-search__btn svg{width:1.5vw;height:1.5vw;min-width:18px;min-height:18px;color:#fff;stroke:#fff}
-.ad-chips{flex:0 0 auto;width:100%;margin:1.39vw 0 0;padding:0 .75vw;gap:0;justify-content:center;align-items:center}
-html[data-sky="on"] #root .ad-root .ad-chips .sky-chip{position:relative;height:2.27vw;min-height:30px;min-width:0;padding:0 .6vw;flex:1 1 0;max-width:8vw;border-radius:999px;
-  background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;color:#fff!important;filter:drop-shadow(0 1px 3px rgba(0,40,110,.3))}
-html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:first-child{flex:0 0 auto;width:4.73vw;min-width:56px;margin-right:1.5vw;font:700 max(13px,1.07vw)/1 var(--sky-font)}
-html[data-sky="on"] #root .ad-root .ad-chips .sky-chip[aria-pressed="true"]{background:#fff!important;color:var(--sky-navy)!important;filter:none;box-shadow:0 3px 10px rgba(0,40,120,.15)!important}
-.ad-chips .sky-chip:not(:first-child)::before{content:"";position:absolute;left:0;top:50%;width:1px;height:1.7vw;transform:translateY(-50%);background:rgba(255,255,255,.45)}
-.ad-chips .sky-chip svg{height:1.6vw;min-height:18px;max-width:4.6vw;fill:currentColor}
-.ad-chips .sky-chip .sky-chip__txt{font-size:max(12px,1.07vw);font-weight:700}
-html[data-sky="on"] #root .ad-root .ad-chips .ad-more-chip{flex:0 0 auto;width:2.52vw!important;height:2.52vw;min-width:32px!important;min-height:32px;padding:0!important;margin-left:1.4vw;
-  background:rgba(255,255,255,.14)!important;border:1.5px solid rgba(255,255,255,.62)!important}
-.ad-chips .ad-more-chip::before{left:-.7vw!important}
-.ad-chips .ad-more-chip svg{height:1.4vw;min-height:16px}
+.ad-chips{flex:0 0 auto;width:100%;margin:1.39vw 0 0;padding:.3vw .2vw;gap:.75vw;justify-content:flex-start;align-items:center;flex-wrap:nowrap;
+  overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-width:none;
+  -webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 4vw),transparent);mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 4vw),transparent)}
+.ad-chips::-webkit-scrollbar{display:none}
+/* Each brand in its own very light, rounded box (Junid, 6 Nov). */
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip{flex:0 0 auto;scroll-snap-align:start;height:2.6vw;min-height:32px;min-width:6.3vw;padding:0 1.2vw;border-radius:1vw;
+  color:#fff!important;background:rgba(255,255,255,.12)!important;border:1px solid rgba(255,255,255,.42)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.3)!important;-webkit-backdrop-filter:blur(10px)!important;backdrop-filter:blur(10px)!important;filter:none}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:hover{background:rgba(255,255,255,.2)!important}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:first-child{min-width:5vw;font:700 max(13px,1.07vw)/1 var(--sky-font)}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip[aria-pressed="true"]{background:#fff!important;color:var(--sky-navy)!important;border-color:#fff!important;box-shadow:0 3px 10px rgba(0,40,120,.15)!important}
+.ad-chips .sky-chip svg{height:1.55vw;min-height:17px;max-width:4.4vw;fill:currentColor;filter:drop-shadow(0 1px 2px rgba(0,40,110,.25))}
+.ad-chips .sky-chip .sky-chip__txt{font-size:max(12px,1vw);font-weight:700}
 .ad-trackbar{flex:0 0 auto}
 /* The one scroller: the grid passes under the fixed band, faded at its top edge. */
 .ad-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin-top:1.75vw;padding:.4vw 0 120px;scrollbar-width:none;
@@ -9663,8 +9631,8 @@ html[data-sky="on"] #root .ad-root .ad-card,.ad-root .ad-card{display:grid;grid-
   background:linear-gradient(180deg,rgba(255,255,255,.2),rgba(255,255,255,.12))!important;border:1.5px solid rgba(255,255,255,.6)!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 0 24px rgba(255,255,255,.08),0 10px 26px -14px rgba(0,40,120,.45)!important;
   -webkit-backdrop-filter:blur(16px) saturate(1.3);backdrop-filter:blur(16px) saturate(1.3)}
-.ad-root .ad-card .sky-stage{height:100%!important;padding:0;border-radius:.88vw;overflow:hidden;background:rgba(10,30,70,.25)}
-.ad-root .ad-card .sky-frame{inset:0;border-radius:.88vw;background:none}
+.ad-root .ad-card .sky-stage{height:100%!important;padding:0;border-radius:0;overflow:visible;background:none!important}
+.ad-root .ad-card .sky-frame{inset:0;border-radius:0;background:none!important;border:0!important;box-shadow:none!important;display:flex;align-items:center;justify-content:center}
 .ad-root .ad-card .sky-frame img{max-width:100%;max-height:100%;object-fit:contain;border-radius:.88vw}
 .ad-root .ad-card .sky-podium{width:80%;bottom:6%}
 .ad-root .ad-card .sky-cutout{max-width:88%}
