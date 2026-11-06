@@ -34,12 +34,14 @@ import {
 } from "../../config/hubSneakerCount";
 import {
   hubOptions, buildHubRows, seededRowFor, mergeSeededRows, progressOf,
-  isRowSettled, historyRows, filterRows, cellKey, recoverSeededRows, recordIsCurrent,
+  isRowSettled, historyRows, filterRows, cellKey, recoverSeededRows, recordIsCurrent, countsAllCategories,
 } from "./hubCountCore";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
   confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
+  COUNT_MODE_HUBS,
 } from "./hubCountStore";
+import { CountModeToggle } from "./CountModeToggle.jsx";
 import { loadOffShelfSources, offShelfForCell, expectedOnShelf } from "./offShelf";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
@@ -188,7 +190,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
         // reload — or the second counter's tablet — sees them. Without this the
         // records exist in RTDB but no row does, and the same shelf gets counted
         // twice while progress quietly disagrees with itself.
-        setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock, products }));
+        setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock, products, allCategories: countsAllCategories(hub) }));
       } catch (err) {
         if (!cancelled) setLoadError(String(err?.message || err));
       } finally {
@@ -209,8 +211,8 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   );
 
   const hubRows = useMemo(
-    () => (snapshot ? buildHubRows({ products: catalogue, hubStock: snapshot.hubStock }) : []),
-    [snapshot, catalogue]
+    () => (snapshot ? buildHubRows({ products: catalogue, hubStock: snapshot.hubStock, allCategories: countsAllCategories(hub) }) : []),
+    [snapshot, catalogue, hub]
   );
   const rows = useMemo(() => mergeSeededRows(hubRows, seeded), [hubRows, seeded]);
   const progress = useMemo(() => progressOf(rows, counted), [rows, counted]);
@@ -239,13 +241,13 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   const addMatches = useMemo(
     () => searchProducts(catalogue, addQuery, {
       limit: 12,
-      predicate: (p) => isFootwearProduct(p) && !alreadyListed.has(p.id),
+      predicate: (p) => (countsAllCategories(hub) || isFootwearProduct(p)) && !alreadyListed.has(p.id),
     }),
-    [catalogue, addQuery, alreadyListed]
+    [catalogue, addQuery, alreadyListed, hub]
   );
 
   const addProduct = (p) => {
-    const row = seededRowFor(p);
+    const row = seededRowFor(p, { allCategories: countsAllCategories(hub) });
     if (!row) return flash("err", `${p.name} has no countable sizes.`);
     setSeeded((s) => (s.some((r) => r.id === row.id) ? s : [...s, row]));
     setAddQuery("");
@@ -394,7 +396,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
     try {
       const recorded = await loadCounted(hub, session.sessionId);
       setCounted(recorded || {});
-      setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock: snapshot?.hubStock || {}, products: catalogue }));
+      setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock: snapshot?.hubStock || {}, products: catalogue, allCategories: countsAllCategories(hub) }));
       // The off-shelf picture refreshes on the same tap — a display that
       // changed size since entry moves to its new cell here, and a failed
       // entry load gets its retry (writes unblock only on success).
@@ -421,7 +423,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <button onClick={onExit} style={{ ...bGray, padding: "7px 12px" }}>← Back</button>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>Hub Sneaker Count</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>{countsAllCategories(hub) ? "Hub Count — every category" : "Hub Sneaker Count"}</div>
           <div style={{ fontSize: 11, color: GRAY }}>Temporary stock-take · counts are recorded, corrections are ledgered</div>
         </div>
       </div>
@@ -440,6 +442,9 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
             size cells counted at {labelFor(hub, registry)}
             {session?.sessionId && <span style={{ color: GRAY }}> · session {session.sessionId.slice(-6)}</span>}
           </div>
+        )}
+        {COUNT_MODE_HUBS.includes(hub) && canAdjust && (
+          <CountModeToggle hub={hub} />
         )}
       </Card>
 

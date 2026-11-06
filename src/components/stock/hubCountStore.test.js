@@ -139,7 +139,7 @@ const applyMovementMock = vi.fn(async (mv, { maxRetries = 6 } = {}) => {
 
 vi.mock("./applyMovement", () => ({ applyMovement: (...args) => applyMovementMock(...args) }));
 
-const { adjustCell, confirmCell, flagCell, openOrResumeSession, loadCardSummary } = await import("./hubCountStore.js");
+const { adjustCell, confirmCell, flagCell, openOrResumeSession, loadCardSummary, setHubCountMode, loadHubCountMode, hubCountModeUpdate } = await import("./hubCountStore.js");
 
 const HUB = "hub1";
 const PID = "sh1";
@@ -648,5 +648,52 @@ describe("books-disagree confirm rejection", () => {
     expect(res.message).toMatch(/books disagree/i);
     expect(recordNow()).toBeNull();
     expect(applyMovementMock).not.toHaveBeenCalled();
+  });
+});
+
+
+// ── HUB 3 COUNT MODE — one toggle, both flags (Junid, 6 Nov 2026) ────────────
+describe("Hub 3 count-mode toggle", () => {
+  it("ON sets BOTH the engine pause and the POS count-mode flag, in one update", async () => {
+    const r = await setHubCountMode("hub3", true);
+    expect(r.ok).toBe(true);
+    expect(getPath("config/refillEngine/pausedLocations/hub3")).toBe(true);
+    expect(getPath("settings/hubSneakerCount/countMode/hub3")).toBe(true);
+    expect(getPath("settings/hubSneakerCount/countModeMeta/hub3")).toMatchObject({ on: true, by: "counter-1" });
+    expect(await loadHubCountMode("hub3")).toEqual({ paused: true, countMode: true, on: true });
+  });
+  it("OFF clears both in one tap", async () => {
+    await setHubCountMode("hub3", true);
+    const r = await setHubCountMode("hub3", false);
+    expect(r.ok).toBe(true);
+    expect(getPath("config/refillEngine/pausedLocations/hub3")).toBe(null);
+    expect(getPath("settings/hubSneakerCount/countMode/hub3")).toBe(null);
+    expect(await loadHubCountMode("hub3")).toEqual({ paused: false, countMode: false, on: false });
+  });
+  it("is ONE multi-path update — the two flags are written together", () => {
+    const u = hubCountModeUpdate("hub3", true, { uid: "u", at: "t" });
+    expect(Object.keys(u).sort()).toEqual([
+      "config/refillEngine/pausedLocations/hub3",
+      "settings/hubSneakerCount/countMode/hub3",
+      "settings/hubSneakerCount/countModeMeta/hub3",
+    ]);
+    expect(hubCountModeUpdate("hub3", false, { uid: "u", at: "t" })["config/refillEngine/pausedLocations/hub3"]).toBe(null);
+  });
+  it("refuses any hub but Hub 3 and writes nothing", async () => {
+    const r = await setHubCountMode("hub2", true);
+    expect(r.ok).toBe(false);
+    expect(getPath("config/refillEngine/pausedLocations/hub2")).toBe(null);
+    expect(getPath("settings/hubSneakerCount/countMode/hub2")).toBe(null);
+  });
+  it("a refused write (non-admin) says so plainly", async () => {
+    failWritesUnder = "config/refillEngine";
+    const r = await setHubCountMode("hub3", true);
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/admin/);
+  });
+  it("only `true` reads as on — a stray value never claims the hub is paused", async () => {
+    setPath("config/refillEngine/pausedLocations/hub3", "true");
+    setPath("settings/hubSneakerCount/countMode/hub3", true);
+    expect(await loadHubCountMode("hub3")).toEqual({ paused: false, countMode: true, on: false });
   });
 });

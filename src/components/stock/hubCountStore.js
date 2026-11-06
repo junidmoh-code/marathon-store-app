@@ -507,3 +507,52 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
   }
   return { ok: true, record: rec };
 }
+
+// ── HUB 3 COUNT MODE — one toggle, two flags (Junid, 6 Nov 2026) ──────────────
+// While a hub is being recounted from zero:
+//   /config/refillEngine/pausedLocations/{hub} = true  → refillHealthScan and the
+//       first-batch leg treat the hub as paused (functions/lib/paused-locations.cjs)
+//   /settings/hubSneakerCount/countMode/{hub}   = true  → marathon-pos-app skips
+//       deductions on the hub's UNCOUNTED cells (this repo owns the flag; the
+//       POS only reads it — SCHEMA.md)
+// ON sets both, OFF clears both, in ONE multi-path update: they can never
+// disagree because of this toggle. /config/refillEngine is admin-only in the
+// rules, so a non-admin account is refused whole and nothing changes.
+// countModeMeta/{hub} records who flipped it and when (History, not a gate).
+export const COUNT_MODE_HUBS = Object.freeze(["hub3"]);
+export const countModePaths = (hub) => ({
+  paused: `config/refillEngine/pausedLocations/${hub}`,
+  countMode: `${HUB_COUNT_ROOT}/countMode/${hub}`,
+  meta: `${HUB_COUNT_ROOT}/countModeMeta/${hub}`,
+});
+
+/** { paused, countMode } — both read one-shot; `on` only when BOTH are true. */
+export async function loadHubCountMode(hub) {
+  const p = countModePaths(hub);
+  const [paused, countMode] = await Promise.all([one(p.paused), one(p.countMode)]);
+  return { paused: paused === true, countMode: countMode === true, on: paused === true && countMode === true };
+}
+
+export function hubCountModeUpdate(hub, on, { uid = null, at } = {}) {
+  const p = countModePaths(hub);
+  return {
+    [p.paused]: on ? true : null,
+    [p.countMode]: on ? true : null,
+    [p.meta]: { on: !!on, at, by: uid },
+  };
+}
+
+export async function setHubCountMode(hub, on) {
+  if (!COUNT_MODE_HUBS.includes(hub)) return { ok: false, message: "Count mode is for Hub 3 only." };
+  const user = auth.currentUser;
+  try {
+    await update(ref(database), hubCountModeUpdate(hub, on, { uid: user ? user.uid : null, at: serverNowIso() }));
+  } catch (err) {
+    return { ok: false, message: `Could not switch count mode: ${String(err?.message || err)} — this needs an admin stock account.` };
+  }
+  const after = await loadHubCountMode(hub).catch(() => null);
+  if (!after) return { ok: true, unverified: true };
+  return after.on === !!on && after.paused === !!on && after.countMode === !!on
+    ? { ok: true, state: after }
+    : { ok: false, state: after, message: "The switch did not read back as written — check again." };
+}
