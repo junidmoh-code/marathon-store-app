@@ -50,6 +50,8 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   const moved = (x) => Math.max(0, Math.round(Number(x?.paidCents ?? x?.amountCents) || 0));
   const earlier = Object.values(line?.resolution?.moneySettled || {}).filter((x) => x && typeof x === "object" && x.state === "done");
   const settled = earlier.reduce((t, x) => t + moved(x), 0) + (isObj && m.state === "done" ? moved(m) : 0);
+  // Of that, what went back to the order's own payment as a refund (a credit never touched it).
+  const refundedOrig = earlier.filter((x) => x.kind === "refund").reduce((t, x) => t + moved(x), 0) + (isObj && m.state === "done" && m.kind === "refund" ? moved(m) : 0);
   const nowCents = Math.max(0, Math.round(Number(priceCents) || 0)) * qty;
   const net = paid - settled - nowCents;
   const claimedAt = Number(m?.at) || 0;
@@ -65,7 +67,8 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
     refundableCents: Math.max(0, paid - settled),
     // What a REFUND may send back to the order's own payment (Sonnet review of #848, 1): never the collected difference
     // (it came in on its own PayFast payment), never more than the order's payment took for the line.
-    refundToOriginalCents: Math.max(0, Math.min(paid - settled, paidCents(line) - settled)),
+    // Credits given back do not lower it; only earlier refunds (which went to that payment) do (CodeRabbit on #851).
+    refundToOriginalCents: Math.max(0, Math.min(paid - settled, paidCents(line) - refundedOrig)),
     paidInCents: paidIn,
     busy: isObj && m.state === "claimed" && !stale,
     unclear: !!unclearWhy, unclearWhy,

@@ -467,6 +467,11 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(moneyAllowed(null, { kind: "refund", amountCents: 80000, line: l }).ok).toBe(false);
     expect(moneyAllowed(null, { kind: "refund", amountCents: 50000, line: l }).ok).toBe(true);
     expect(moneyAllowed(null, { kind: "credit", amountCents: 80000, line: l }).ok).toBe(true);
+    // a credit given back does not lower the refund cap; an earlier refund does (CodeRabbit on #851)
+    const credited = { ...l, resolution: { ...l.resolution, moneySettled: { c: { kind: "credit", state: "done", amountCents: 10000 } } } };
+    expect(lineLedger(credited, { priceCents: 0 }).refundToOriginalCents).toBe(50000);
+    const refunded = { ...l, resolution: { ...l.resolution, moneySettled: { r: { kind: "refund", state: "done", amountCents: 10000 } } } };
+    expect(lineLedger(refunded, { priceCents: 0 }).refundToOriginalCents).toBe(40000);
   });
 
   it("CodeRabbit on #848: a bad paidInCents is refused, nothing swapped", async () => {
