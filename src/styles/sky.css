@@ -638,6 +638,11 @@ html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="; heigh
     top: 0px !important; }
 }
 
+/* The old status-bar allowance (a 44–50px top padding on a page's first bar,
+   from before the shell header existed) is the shell's job now: content starts
+   right under the header, on every screen. */
+html[data-sky="on"] #root .sky-shellbar ~ * :is([style^="padding: 50px "], [style*="; padding: 50px "], [style^="padding: 44px "], [style*="; padding: 44px "]) { padding-top: 8px !important; }
+
 /* ── THE GRID / BACK BUTTON (SkyBackGrid, Junid 6 Nov) ───────────────────────
    Off Home it widens into a pill: a small navy chevron, then the grid. Holding
    it (500ms) goes Home, so no callout / selection on a long touch. */

@@ -48,6 +48,13 @@ export function parentOf({ role = null, hash = "" } = {}) {
   return { level: "admin", hash: "", role: null, panel: "admin", label: "Admin" };
 }
 
+/** Screens that wear the admin design system (src/styles/sky-admin.css). */
+export const ADMIN_DESIGN_ROLES = new Set(["admin", "shopify_publish", "social", "ai_studio", "tv_ad"]);
+export function isAdminDesignScreen(role, hash = "") {
+  const h = String(hash || "");
+  return ADMIN_DESIGN_ROLES.has(role) || /^#product\//.test(h) || /^#shopify\//.test(h) || ADMIN_HASH.test(h.replace(/\/+$/, ""));
+}
+
 /** Home itself, from anywhere (the long-press). */
 export const HOME = Object.freeze({ level: "home", hash: "", role: null, panel: null, label: "Home" });
 

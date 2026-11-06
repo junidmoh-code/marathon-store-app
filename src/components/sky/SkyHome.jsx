@@ -44,7 +44,7 @@ function MiniCard({ card }) {
             data-corner={card.badge > 0 && String(card.name).length > 12 ? "1" : undefined}
             title={card.desc || undefined} aria-label={card.desc ? `${card.name} — ${card.desc}` : undefined}>
       <span className="sky-mini__ic">{card.icon}</span>
-      <span className="sky-mini__nm" data-contrast-exempt="">{card.name}</span>
+      <span className="sky-mini__nm">{card.name}</span>
       {card.badge > 0 ? <span className="sky-mini__bd">{card.badge}</span> : null}
     </button>
   );
@@ -242,4 +242,16 @@ html[data-sky="on"] #root .sky-hub__livecard button[style]:hover{background:rgba
 .sky-acct__nm{display:block;font-size:17px;font-weight:800}
 .sky-acct__tag{display:inline-block;margin-top:3px;font-size:10px;font-weight:800;letter-spacing:.06em;padding:3px 9px;border-radius:999px;background:rgba(255,255,255,.7);border:1px solid #fff}
 @media (prefers-reduced-motion:reduce){.sky-tile,.sky-mini{transition:none}.sky-tile:hover,.sky-mini:hover{transform:none}}
+
+/* ADMIN DESIGN SYSTEM (Junid, 6 Nov): navy text on glass, never white — the
+   Admin cards are standard glass (0.40) with navy ink and navy line icons. */
+.sky-home .sky-mini{color:var(--sky-ink-deep,#04122b) !important;text-shadow:none !important;
+  background:rgba(255,255,255,.40) !important;border:1px solid rgba(255,255,255,.72) !important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 10px 26px -14px rgba(0,30,90,.35) !important}
+.sky-home .sky-mini:hover{background:rgba(255,255,255,.52) !important}
+.sky-home .sky-mini:focus-visible{outline-color:var(--sky-navy)}
+.sky-home .sky-mini__ic svg{filter:none !important}
+.sky-home .sky-mini__ic svg,.sky-home .sky-mini__ic svg [stroke]:not([stroke="none"]){stroke:var(--sky-navy) !important}
+.sky-home .sky-mini__ic svg [fill]:not([fill="none"]){fill:var(--sky-navy) !important}
+.sky-home .sky-mini__bd{background:var(--sky-navy) !important;color:#fff !important}
 `;

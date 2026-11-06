@@ -213,3 +213,50 @@ gradients over the photo → glass, the old `/hero/*` photos hidden, sidebars �
 strong glass, form fields → white with navy ink. To extend: add the
 serialised value (`rgb(r, g, b)` with spaces) to the matching block. Never add a
 rule that paints over the room.
+
+## 8. Admin, Shopify, Social (Junid, 6 Nov) — `src/styles/sky-admin.css`
+
+**The overlap bug, and the rule that stops it coming back.** On Shopify and
+Social the page's sticky search/tab bar was drawn 103px below its own slot
+(measured: flow top 102.5px, rendered 205.5px = the shell's height), leaving a
+band under the header and lying on the counts and first rows. Two causes
+together: the page wrapper's `overflow-x:hidden` made it a scroll container
+that never scrolls (so the bar stuck to it, not the window), and the shell
+rewrote every sticky `top:0` to `top:var(--sky-shell-h)` — inside a box that
+never scrolls, a sticky offset is just a shift. Fixed once for every screen
+(`sky.css`): page wrappers under the shell CLIP (`overflow-x:clip`, not a scroll
+container), a page sticky bar pins under the shell at `top:var(--shell-h)` with
+the shell's glass, a sticky bar inside a REAL scroller keeps `top:0`, and the old
+44–50px status-bar paddings are gone (content starts under the header). The check:
+`scripts/sky-admin.e2e.mjs` — no two visible text boxes intersect and the first
+content starts within 24px of the header, per admin route, 390x844 and 1440x900,
+Chromium and WebKit, on the REAL App over an offline synthetic database
+(`dev/sky-app.html`, `dev/vite.harness.config.mjs`, `dev/fake-firebase/`).
+
+**The admin design system** (on while an admin screen is open —
+`html[data-sky-admin="on"]`): one surface level (sections are standard glass;
+glass inside glass keeps only its rim); inputs 0.18 white with a 1px navy-tinted
+rim, navy text, 16px minimum, placeholder navy 60%; read-only = plain navy text
+with a lock; one primary (solid navy) — per-row actions are secondary (navy
+outline); destructive = navy outline + a red ICON, never red text; chips are
+glass pills, selected solid navy; status chips `[data-status]` live/approved navy
+outline, awaiting/draft neutral glass, blocked red outline with navy text; chip
+and tab rows are ONE scrolling line (`.sky-row1`); notices are slim inline glass
+with an icon and their action inline (`.sky-notice`); empty thumbnails are
+neutral glass with a line icon (`.sky-thumb-empty`); list rows are thumb 56 ·
+one-line bold title · one secondary line · status chip right (`.sky-li`).
+Disabled controls keep full-strength ink with a dashed rim (they must still be
+read). Admin ink is `#000a1c` — `#04122b` measured 4.36:1 for titles on the
+phone's mid-blue sky. The Admin home cards are navy ink on standard glass (the
+5 Nov mock-up's white names broke "navy on glass, never white").
+Contrast: `node scripts/sky-contrast.mjs --admin --webkit` judges every admin
+route including field values, disabled and destructive controls.
+
+**Navigation: the grid button goes up ONE level** (`src/components/sky/skyNav.js`,
+explicit hierarchy, never browser history):
+Home → Admin (the Admin panel on Home) → card (Products / any section, Shopify,
+Social, every Admin card or `#admin/…` screen) → item (`#product/{id}` → Products;
+`#shopify/{pid}` → Shopify; `#admin/users/{uid}` → Users). Store Assistant,
+Warehouse and Display Check sit directly under Home. Off Home the button shows a
+small navy back chevron left of the grid; a 500ms long-press goes Home. Browser
+/ OS back is unchanged.

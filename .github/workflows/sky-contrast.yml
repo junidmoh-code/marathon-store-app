@@ -31,6 +31,12 @@ jobs:
       - run: node scripts/sky-phone-visual.e2e.mjs --port 5203
       - run: node scripts/sky-wall-v3.e2e.mjs --port 5205
       - run: node scripts/sky-shell.e2e.mjs --port 5207
+      # Junid 6 Nov: admin screens — no overlapping text, content under the
+      # header, one-level back + long-press Home; and the contrast gate over
+      # every admin route (inputs, chips, disabled, destructive) on the real
+      # App with the offline synthetic database.
+      - run: node scripts/sky-admin.e2e.mjs --port 5209
+      - run: node scripts/sky-contrast.mjs --admin --webkit --port 5211 --out contrast-report/admin
       - if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -4,6 +4,7 @@
 // never read or write the live database by accident.
 import "../styles/sky.css";
 import "../styles/sky-theme.css";
+import "../styles/sky-admin.css";
 import { createRoot } from "react-dom/client";
 import { database } from "../firebase.js";
 

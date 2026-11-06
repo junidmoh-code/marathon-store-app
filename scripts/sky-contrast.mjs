@@ -64,6 +64,33 @@ export const ROUTES = [
   ["overlay-confirm-desktop", `${H}?screen=desktop&chips=ref&switch=1`],
   ["overlay-account-desktop", `${H}?screen=desktop&chips=ref&me=1`],
 ];
+// --admin: the admin screens (Junid 6 Nov — admin design system), on the REAL
+// App over the offline synthetic database (dev/sky-app.html under
+// dev/vite.harness.config.mjs). Each route lands by localStorage (+ hash, + a
+// tap). In this mode inputs (their value text), disabled controls and
+// destructive buttons are judged too — the brief names all three.
+const ADMIN = args.includes("--admin");
+const A = "/dev/sky-app.html";
+const PID = "p1790000000000";
+export const ADMIN_ROUTES = [
+  ["admin-home", A, { ls: {}, tap: "[data-testid=home-tile-admin]" }],
+  ["admin-products", A, { ls: { marathon_role: "admin", marathon_admin_section: "products" } }],
+  ["admin-product-edit", `${A}#product/${PID}`, { ls: { marathon_role: "admin" } }],
+  ["admin-missing-prices", A, { ls: { marathon_role: "admin", marathon_admin_section: "missing-prices" } }],
+  ["admin-assign-categories", A, { ls: { marathon_role: "admin", marathon_admin_section: "assign-categories" } }],
+  ["admin-categories", A, { ls: { marathon_role: "admin", marathon_admin_section: "review-categories" } }],
+  ["admin-bulk-pricing", A, { ls: { marathon_role: "admin", marathon_admin_section: "bulk-pricing" } }],
+  ["admin-specials", A, { ls: { marathon_role: "admin", marathon_admin_section: "specials" } }],
+  ["admin-taxonomy", A, { ls: { marathon_role: "admin", marathon_admin_section: "taxonomy" } }],
+  ["shopify", A, { ls: { marathon_role: "shopify_publish" } }],
+  ["shopify-live", A, { ls: { marathon_role: "shopify_publish" }, tap: "[data-testid=shopify-tab-live]" }],
+  ["shopify-product", `${A}#shopify/${PID}`, { ls: { marathon_role: "shopify_publish" } }],
+  ["social", A, { ls: { marathon_role: "social" } }],
+  ["social-album", A, { ls: { marathon_role: "social" }, tap: "[data-testid=social-tab-album]" }],
+  ["social-style", A, { ls: { marathon_role: "social" }, tap: "[data-testid=social-tab-library]" }],
+  ["social-generate", A, { ls: { marathon_role: "social" }, tap: "[data-testid=social-tab-generate]" }],
+  ["social-policy", A, { ls: { marathon_role: "social" }, tap: "[data-testid=social-tab-policy]" }],
+];
 export const SIZES = [[1440, 900], [390, 844]];
 const EXEMPT = ".sky-logo, .sky-tile, [data-contrast-exempt]";
 
@@ -81,16 +108,38 @@ async function waitFor(url, ms = 60000) {
   throw new Error(`dev server did not answer at ${url}`);
 }
 
-async function textElements(page) {
-  return page.evaluate((EXEMPT) => {
+async function textElements(page, strict = false) {
+  return page.evaluate(([EXEMPT, strict]) => {
     const out = [];
     const vw = innerWidth, vh = innerHeight;
+    // Strict (admin): the value text of every field is judged like any text.
+    if (strict) {
+      for (const el of document.querySelectorAll("input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=hidden]), textarea, select")) {
+        if (el.closest(EXEMPT) || !el.value) continue;
+        const cs = getComputedStyle(el);
+        if (cs.visibility === "hidden" || cs.display === "none" || (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true }))) continue;
+        const b = el.getBoundingClientRect();
+        const pl = parseFloat(cs.paddingLeft) || 0, pr = parseFloat(cs.paddingRight) || 0, fs = parseFloat(cs.fontSize);
+        const cy = b.top + b.height / 2;
+        const x0 = Math.max(0, b.left + pl), x1 = Math.min(vw, b.right - pr), y0 = Math.max(0, cy - fs * 0.45), y1 = Math.min(vh, cy + fs * 0.45);
+        if (x1 - x0 < 3 || y1 - y0 < 4) continue;
+        const top = document.elementFromPoint((x0 + x1) / 2, cy);
+        if (!top || (top !== el && !el.contains(top))) continue;
+        const m = cs.color.match(/rgba?\(([^)]+)\)/);
+        if (!m) continue;
+        const [r, g, bb, a = 1] = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+        out.push({ text: `[field] ${String(el.value).slice(0, 40)}`, tag: el.tagName.toLowerCase(), cls: String(el.className || "").slice(0, 60),
+                   box: [Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1)], color: [r, g, bb, a * (Number(cs.opacity) || 1)],
+                   size: fs, weight: Number(cs.fontWeight) || 400 });
+      }
+    }
     for (const el of document.querySelectorAll("body *")) {
       if (["SCRIPT", "STYLE", "NOSCRIPT", "INPUT", "TEXTAREA", "SELECT", "OPTION", "svg"].includes(el.tagName)) continue;
       if (el.closest(EXEMPT) || el.closest("[aria-hidden='true']")) continue;
       // WCAG 1.4.3 exempts inactive controls; screen-reader-only text is not seen.
       // The navy "0" on an unavailable size IS the signal, so it is checked anyway.
-      if (el.closest("button:disabled, [aria-disabled='true'], [disabled]") && !el.closest("[data-contrast-check]")) continue;
+      // Strict (admin) mode judges disabled controls too.
+      if (!strict && el.closest("button:disabled, [aria-disabled='true'], [disabled]") && !el.closest("[data-contrast-check]")) continue;
       const box = el.getBoundingClientRect();
       if (box.width <= 2 || box.height <= 2) continue;
       const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 0);
@@ -116,14 +165,17 @@ async function textElements(page) {
       if (!top || (top !== el && !el.contains(top))) continue;   // covered, or scrolled out of its container
       const m = cs.color.match(/rgba?\(([^)]+)\)/);
       if (!m) continue;
-      const [r, g, b, a = 1] = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+      const [r, g, b, a0 = 1] = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+      // An ancestor's opacity (a disabled button at .55) fades the ink too.
+      let a = a0;
+      for (let p = el; p && p !== document.body; p = p.parentElement) a *= Number(getComputedStyle(p).opacity) || 1;
       if (a === 0) continue;
       out.push({ text: el.textContent.trim().slice(0, 48), tag: el.tagName.toLowerCase(), cls: String(el.className || "").slice(0, 60),
                  box: [Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1)], color: [r, g, b, a],
                  size: parseFloat(cs.fontSize), weight: Number(cs.fontWeight) || 400 });
     }
     return out;
-  }, EXEMPT);
+  }, [EXEMPT, strict]);
 }
 
 async function rawShot(page) {
@@ -151,19 +203,25 @@ function judge(el, bg, dpr) {
 
 async function run() {
   mkdirSync(OUT, { recursive: true });
-  const vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "--port", String(PORT), "--strictPort"], { stdio: "ignore" });
+  const vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", ...(ADMIN ? ["--config", "dev/vite.harness.config.mjs"] : []), "--port", String(PORT), "--strictPort"], { stdio: "ignore" });
   const report = { min: MIN, results: [], failures: 0 };
   try {
-    await waitFor(`${BASE}${H}`);
+    await waitFor(`${BASE}${ADMIN ? A : H}`);
     for (const [ename, engine] of ENGINES) {
       const browser = await engine.launch();
       for (const [w, h] of SIZES) {
         const dpr = w < 600 ? 2 : 1;
         const ctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: dpr });
-        for (const [name, path] of ROUTES) {
+        for (const [name, path, setup] of (ADMIN ? ADMIN_ROUTES : ROUTES)) {
           const page = await ctx.newPage();
+          if (setup) await page.addInitScript((ls) => { try { localStorage.clear(); for (const [k, v] of Object.entries(ls)) localStorage.setItem(k, v); } catch { /* none */ } }, setup.ls || {});
           await page.goto(BASE + path, { waitUntil: "networkidle", timeout: 90000 }).catch(() => {});
           await page.waitForTimeout(2500);
+          if (setup?.tap) {
+            const ok = await page.click(setup.tap, { timeout: 8000 }).then(() => true, () => false);
+            if (!ok) { report.failures++; console.log(`  FAIL ${ename} ${name} ${w}x${h}: could not open (${setup.tap})`); }
+            await page.waitForTimeout(1200);
+          }
           // An overlay route must actually HAVE its overlay open — else the
           // gate would pass by sampling nothing.
           if (name.startsWith("overlay-")) {
@@ -174,7 +232,7 @@ async function run() {
           // computed backdrop filter came out "none".
           const deadGlass = await page.evaluate(() => [...document.querySelectorAll(".sky-glass, .sky-pop")]
             .filter((e) => { const cs = getComputedStyle(e); return (cs.backdropFilter || cs.webkitBackdropFilter || "none") === "none"; }).length);
-          const els = await textElements(page);
+          const els = await textElements(page, ADMIN);
           const shot = await page.screenshot();
           writeFileSync(join(OUT, `${ename}-${name}-${w}x${h}.png`), shot);
           await page.addStyleTag({ content: "*,*::before,*::after{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important;caret-color:transparent!important}input::placeholder,textarea::placeholder{color:transparent!important}" });

@@ -56,7 +56,7 @@ STATUS.forEach((status, i) => {
   const id = `-post${i.toString().padStart(3, "0")}`;
   social_posts[id] = {
     id, status, kind: i % 3 === 0 ? "reel" : "post", caption: CAPTIONS[i % CAPTIONS.length],
-    media: [{ type: "photo", url: shoe(i), productId: ids[i] }], platforms: ["instagram", "facebook"],
+    media: i % 4 === 3 ? [] : [{ type: "image", url: shoe(i), thumbUrl: shoe(i), productId: ids[i] }], platforms: ["instagram", "facebook"],
     createdAt: T0 + i * 7200000, scheduledAt: status === "approved" ? T0 + 86400000 * (i + 1) : null,
     productIds: [ids[i]],
   };

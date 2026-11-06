@@ -97,18 +97,31 @@ function PublisherStrip() {
   const colour = st.state === "down" ? RED : st.state === "late" ? AMBER : st.state === "ok" ? GREEN : GRAY;
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+    <div className={`sky-notice${st.state === "down" || st.state === "unknown" ? " sky-notice--bad" : ""}`} role="status"
+         style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
                   padding: "8px 10px", marginBottom: 10, background: GLASS,
                   border: `1px solid ${st.state === "down" ? "rgba(248,113,113,.5)" : "rgba(255,255,255,.12)"}`,
                   borderRadius: 10 }}>
-      <span style={{ width: 8, height: 8, borderRadius: 8, background: colour, flex: "0 0 auto" }} />
-      <span style={{ fontSize: ".78rem", color: colour }}>{st.text}</span>
+      <span className="sky-notice__dot" style={{ width: 8, height: 8, borderRadius: 8, background: colour, flex: "0 0 auto" }} />
+      <NoticeIcon state={st.state} />
+      <span className="sky-notice__t" style={{ fontSize: ".78rem", color: colour }}>{st.text}</span>
       <button onClick={revive} disabled={busy}
               style={{ ...bGray, fontSize: ".74rem", marginLeft: "auto" }}>
         {busy ? "asking…" : "Revive publisher"}
       </button>
       {said && <span style={{ fontSize: ".72rem", color: GRAY, flexBasis: "100%" }}>{said}</span>}
     </div>
+  );
+}
+
+// The notice's line icon (sky only — sky-admin.css): a pulse when the
+// publisher is fine or late, an alert when it is down or unreadable.
+function NoticeIcon({ state }) {
+  const bad = state === "down" || state === "unknown";
+  return (
+    <svg className="sky-notice__ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {bad ? <><circle cx="12" cy="12" r="9" /><path d="M12 7.5V13M12 16.5h.01" /></> : <path d="M3 12h4l2-5 4 10 2-5h6" />}
+    </svg>
   );
 }
 
@@ -166,8 +179,9 @@ function SendingChip() {
 
 function StatusChip({ status }) {
   const b = STATUS_BADGE[status] || STATUS_BADGE.draft;
+  const kind = status === "approved" || status === "posted" ? "approved" : status === "failed" ? "failed" : "draft";
   return (
-    <span style={{ fontSize: 9.5, fontWeight: 800, color: b.color, border: `1px solid ${b.border}`,
+    <span data-status={kind} style={{ fontSize: 9.5, fontWeight: 800, color: b.color, border: `1px solid ${b.border}`,
                    borderRadius: 8, padding: "3px 7px", whiteSpace: "nowrap", flexShrink: 0 }}>
       {b.label.toUpperCase()}
     </span>
@@ -186,9 +200,19 @@ function Cover({ media }) {
     display: "flex", alignItems: "center", justifyContent: "center",
     fontSize: 9, color: GRAY, overflow: "hidden",
   };
-  if (!src) return <div style={box}>{first?.type === "video" ? "VIDEO" : "—"}</div>;
+  if (!src) {
+    return (
+      <div className="sky-li__thumb sky-thumb-empty" style={box}>
+        <span>{first?.type === "video" ? "VIDEO" : "—"}</span>
+        <svg className="sky-thumb-empty__ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          {first?.type === "video" ? <><rect x="3" y="6" width="13" height="12" rx="2.5" /><path d="M16 10l5-3v10l-5-3" /></>
+            : <><rect x="3" y="5" width="18" height="14" rx="2.5" /><circle cx="9" cy="10" r="1.6" /><path d="M21 16l-5-5-8 8" /></>}
+        </svg>
+      </div>
+    );
+  }
   return (
-    <div style={box}>
+    <div className="sky-li__thumb" style={box}>
       <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
     </div>
   );
@@ -244,26 +268,27 @@ function PostRow({ post, twins = [], formats = [], onChanged, onNotice }) {
 
   return (
     <div style={{ borderBottom: "1px solid rgba(255,255,255,.06)", padding: "12px 2px" }}>
-      <div onClick={() => setOpen((o) => !o)}
+      <div onClick={() => setOpen((o) => !o)} className="sky-li"
            style={{ display: "flex", gap: 11, alignItems: "flex-start", cursor: "pointer" }}>
         <Cover media={post.media} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 13.5, fontWeight: 700 }}>{kind ? kind.label : post.kind}</span>
-            <StatusChip status={post.status} />
-            <SurfacesChip formats={formats} />
-            {isSendingSoon(post) && <SendingChip />}
-          </div>
-          <div style={{ fontSize: 11.5, color: GRAY, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div className="sky-li__body" style={{ flex: 1, minWidth: 0 }}>
+          <div className="sky-li__title" style={{ fontSize: 13.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {(post.caption || "").replace(/\s+/g, " ").slice(0, 90) || "no caption"}
           </div>
-          <div style={{ fontSize: 10.5, color: GRAY, marginTop: 4 }}>
+          <div className="sky-li__sub" style={{ fontSize: 10.5, color: GRAY, marginTop: 4 }}>
+            {kind ? kind.label : post.kind}
+            {" · "}
             {enabledPlatforms(post).map((k) => platform(k).label).join(" · ") || "no platform"}
             {" · "}
             {isSample ? "never scheduled" : formatSlot(post.scheduledAt)}
           </div>
         </div>
-        <span style={{ fontSize: 12, color: GRAY, flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
+        <div className="sky-li__end" style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+          <SurfacesChip formats={formats} />
+          {isSendingSoon(post) && <SendingChip />}
+          <StatusChip status={post.status} />
+          <span style={{ fontSize: 12, color: GRAY, flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
+        </div>
       </div>
 
       {open && (
@@ -529,9 +554,9 @@ function Queue({ notice, onNotice }) {
 
   return (
     <div style={{ padding: "6px 14px 0" }}>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+      <div className="sky-row1" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
         {QUEUE_FILTERS.map(({ key, label }) => (
-          <button key={key} onClick={() => setFilter(key)}
+          <button key={key} onClick={() => setFilter(key)} aria-pressed={filter === key} data-testid={`social-filter-${key}`}
                   style={{ ...(filter === key ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.74rem" }}>
             {label}
           </button>
@@ -602,9 +627,9 @@ export default function SocialView({ products = [], onExit }) {
       </div>
 
       <div style={{ position: "sticky", top: 0, zIndex: 20, background: "#000", padding: "10px 14px 12px", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <div className="sky-row1" role="tablist" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {TABS.map(({ key, label }) => (
-            <button key={key} onClick={() => setTab(key)}
+            <button key={key} onClick={() => setTab(key)} aria-pressed={tab === key} data-testid={`social-tab-${key}`}
                     style={{ ...(tab === key ? tabOn : tabOff), padding: "7px 14px", fontSize: "0.78rem" }}>
               {label}
             </button>
@@ -612,7 +637,7 @@ export default function SocialView({ products = [], onExit }) {
         </div>
       </div>
 
-      <PublisherStrip />
+      <div style={{ padding: "10px 14px 0" }}><PublisherStrip /></div>
 
       {tab === "queue" && <Queue notice={notice} onNotice={onNotice} />}
       {tab === "album" && <AlbumCard products={products} onNotice={onNotice} />}

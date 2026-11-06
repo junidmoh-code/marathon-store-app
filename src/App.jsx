@@ -139,7 +139,7 @@ import { SkySheet, SkySheetHead, SkyStepperRow } from "./components/sky/SkySheet
 import WarehouseTop, { WAREHOUSE_SKY_CSS } from "./components/sky/WarehouseTop.jsx";
 import { SkyConfirm } from "./components/sky/SkyOverlay.jsx";
 import ShopSwitchConfirm from "./components/sky/ShopSwitchConfirm.jsx";
-import { parentOf, requestHomePanel, takeHomePanel } from "./components/sky/skyNav.js";
+import { parentOf, requestHomePanel, takeHomePanel, isAdminDesignScreen } from "./components/sky/skyNav.js";
 import { useSkyOff, SkyShellHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
@@ -5190,6 +5190,16 @@ const MISSING_PRICE_FILTERS = [
   [UNCATEGORIZED_TOP, "Uncategorized"],
 ];
 
+// The empty-thumbnail line icon (a photo frame); sky-admin.css shows it on
+// neutral glass, and only on the sky.
+function EmptyThumbIcon() {
+  return (
+    <svg className="sky-thumb-empty__ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="2.5" /><circle cx="9" cy="10" r="1.6" /><path d="M21 16l-5-5-8 8" />
+    </svg>
+  );
+}
+
 function MissingPricesTab({ products = [] }) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("newest"); // "newest" | "oldest"
@@ -5389,9 +5399,9 @@ function MissingPricesTab({ products = [] }) {
       )}
 
       {/* Category summary */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+      <div className="sky-row1" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         {CATEGORY_FILTERS.map(([k, l]) => (
-          <button key={k} onClick={() => { setFilter(k); setPage(1); }}
+          <button key={k} onClick={() => { setFilter(k); setPage(1); }} aria-pressed={filter === k}
             style={{ background: filter === k ? "rgba(74,127,255,.2)" : "rgba(255,255,255,.04)", border: filter === k ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.1)", borderRadius: 8, color: filter === k ? "#9DBCFF" : "rgba(255,255,255,.6)", padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
             {l} <span style={{ color: filter === k ? "#fff" : "#FBBF24", fontWeight: 800 }}>{summary[k] ?? 0}</span>
           </button>
@@ -5447,22 +5457,22 @@ function MissingPricesTab({ products = [] }) {
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: liveSelected.has(p.id) ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (liveSelected.has(p.id) ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
                 <input type="checkbox" checked={liveSelected.has(p.id)} onChange={() => toggleSelect(p.id)}
                   style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: "pointer", flexShrink: 0 }} />
-                <PrimaryPhoto product={p} alt="" fallback={<span style={{ width: 44, height: 44, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
+                <PrimaryPhoto product={p} alt="" className="sky-li__thumb"
+                  fallback={<span className="sky-li__thumb sky-thumb-empty" style={{ width: 44, height: 44, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }}><EmptyThumbIcon /></span>}
                   style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                  <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)", marginTop: 2 }}>
+                <div className="sky-li__body" style={{ flex: 1, minWidth: 0 }}>
+                  <div className="sky-li__title" style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                  {/* ONE secondary line (ellipsis): who, what, the SKU, the dates. */}
+                  <div className="sky-li__sub" style={{ fontSize: 11, color: "rgba(255,255,255,.4)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {p.brand ? `${p.brand} · ` : ""}{p.category || "—"} · SKU {p.sku || "—"}
-                  </div>
-                  <div style={{ fontSize: 10, color: "rgba(255,255,255,.3)", marginTop: 2 }}>
-                    Created {fmtDate(createdAt(p))} · Updated {fmtDate(updatedAt(p))}
+                    {" · "}Created {fmtDate(createdAt(p))} · Updated {fmtDate(updatedAt(p))}
                   </div>
                 </div>
-                <div style={{ textAlign: "right", flexShrink: 0 }}>
-                  <div style={{ fontSize: 12, color: "#FBBF24", fontWeight: 700, marginBottom: 4 }}>
+                <div className="sky-li__end sky-li__end--stack" style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div data-status="awaiting" style={{ fontSize: 12, color: "#FBBF24", fontWeight: 700, marginBottom: 4 }}>
                     {needsCost(p) && needsRetail(p) ? "No Cost/Retail" : needsCost(p) ? "No Cost" : "No Retail"}
                   </div>
-                  <button onClick={() => openEdit(p)}
+                  <button onClick={() => openEdit(p)} data-secondary=""
                     style={{ background: "#4A7FFF", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     Edit Price
                   </button>
@@ -6947,12 +6957,12 @@ export function AdminView({ products, orders, onExit }) {
   // NO count badges here (owner call 2026-08-28): on a phone the numbers
   // spilled outside the chips. The counts still live on the desktop rail.
   const sectionToggle = (
-    <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
+    <div className="sky-row1 sky-row1--gutter" data-testid="admin-sections" style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
       {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
         .map(([val, label]) => {
         const on = adminSection === val;
         return (
-          <button key={val} onClick={() => setAdminSection(val)}
+          <button key={val} onClick={() => setAdminSection(val)} aria-pressed={on}
             style={{ flex:"1 1 88px", minWidth:88, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 6px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
             {label}
           </button>
@@ -7110,11 +7120,11 @@ export function AdminView({ products, orders, onExit }) {
       {/* CATEGORY TABS — one per real top-level category (+ Uncategorized when
           needed). Wraps to a second row on narrow screens so longer labels
           ("Accessories") stay readable. */}
-      <div style={{ display:"flex", flexWrap:"wrap", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2, marginBottom:14 }}>
+      <div className="sky-row1 sky-row1--gutter sky-row1--bare" style={{ display:"flex", flexWrap:"wrap", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2, marginBottom:14 }}>
         {categoryTabs.map(([val, label, count]) => {
           const on = typeFilter === val;
           return (
-            <button key={val} onClick={() => setTypeFilter(val)}
+            <button key={val} onClick={() => setTypeFilter(val)} aria-pressed={on}
               style={{ flex:"1 1 78px", minWidth:78, padding:"8px 6px", borderRadius:9, border:"none", cursor:"pointer", fontSize:13, fontWeight:700,
                        background: on ? "rgba(60,110,255,.25)" : "transparent",
                        color: on ? "#fff" : "rgba(255,255,255,.5)",
@@ -7187,7 +7197,7 @@ export function AdminView({ products, orders, onExit }) {
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
-        <button key={key} onClick={() => setAdminSection(key)}
+        <button key={key} onClick={() => setAdminSection(key)} aria-pressed={on}
           style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
                    background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
                    color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
@@ -7876,7 +7886,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
               {photoUploading ? "Uploading…" : "Replace photo"}
             </button>
             {product.photoUrl && (
-              <button onClick={removePhoto} disabled={photoUploading}
+              <button onClick={removePhoto} disabled={photoUploading} data-destructive=""
                       style={{ background:"rgba(180,40,40,.08)", border:"1px solid rgba(180,40,40,.25)", color:"#FF8888", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
                 Remove photo
               </button>
@@ -7994,7 +8004,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           {sizeChoices.map(s => {
             const on = productSizes.includes(s);
             return (
-              <button key={s} onClick={() => toggleSize(s)}
+              <button aria-pressed={on} key={s} onClick={() => toggleSize(s)}
                       style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.18)" : "rgba(255,255,255,.03)", color: on ? "#4A7FFF" : "rgba(255,255,255,.7)", cursor:"pointer", fontSize:13, fontWeight:600 }}><SizeTag size={s} /></button>
             );
           })}
@@ -8192,7 +8202,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       {/* DELETE */}
       <div style={{ height:1, background:"rgba(255,255,255,.08)", margin:"32px 14px 16px" }}/>
       <div style={{ padding:"0 14px 28px" }}>
-        <button onClick={handleDelete}
+        <button onClick={handleDelete} data-destructive=""
                 style={{ width:"100%", background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:15, fontWeight:600, padding:"14px", borderRadius:12, cursor:"pointer" }}>
           Delete product
         </button>
@@ -8275,7 +8285,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
             <span style={{ fontSize:10.5, fontWeight:700, color:"rgba(233,238,255,.6)", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:7, padding:"3px 9px" }}>{productHubs.length} hub{productHubs.length !== 1 ? "s" : ""}</span>
           </div>
           <div style={{ flex:1 }} />
-          <button onClick={handleDelete} style={{ background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:12.5, fontWeight:700, padding:"10px", borderRadius:11, cursor:"pointer", fontFamily:FONT }}>Delete product</button>
+          <button onClick={handleDelete} data-destructive="" style={{ background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:12.5, fontWeight:700, padding:"10px", borderRadius:11, cursor:"pointer", fontFamily:FONT }}>Delete product</button>
         </aside>
         {/* MAIN */}
         <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
@@ -20583,6 +20593,15 @@ function AppInner() {
   // cleanup it did now lives in HomeSignOutRow, the app's one logout.
 
   const [role, setRole] = useState(() => localStorage.getItem("marathon_role") || null);
+  // THE ADMIN DESIGN SYSTEM (src/styles/sky-admin.css) is on while an admin
+  // screen is open: Admin (every section + product edit), Shopify publishing,
+  // Social, AI Studio, TV Ad and the #admin/… cards. Look only.
+  const skyAdmin = isAdminDesignScreen(role, hash);
+  useEffect(() => {
+    const el = document.documentElement;
+    if (skyAdmin) el.dataset.skyAdmin = "on"; else delete el.dataset.skyAdmin;
+    return () => { delete el.dataset.skyAdmin; };
+  }, [skyAdmin]);
   useEffect(() => {
     if (role) localStorage.setItem("marathon_role", role);
     else localStorage.removeItem("marathon_role");

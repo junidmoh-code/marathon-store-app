@@ -70,7 +70,7 @@ function measure() {
   };
   const clipOf = (el) => {
     let r = { l: 0, t: 0, r: innerWidth, b: innerHeight };
-    for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+    for (let a = el; a && a !== document.body; a = a.parentElement) {   // the element itself too: an ellipsis clips its own text
       const cs = getComputedStyle(a);
       if (cs.overflowX !== "visible" || cs.overflowY !== "visible") {
         const b = a.getBoundingClientRect();
