@@ -960,6 +960,24 @@ export function applyFingerprintHold(record, { fingerprint, holder, poolKey, man
         : "The bank transaction id's claim could not be read cleanly — HELD rather than risk a second spendable copy.",
     };
   }
+  // THIS RECORD HOLDS THE CLAIM, BUT ANOTHER RECORD SPENT THE MONEY (6 Nov
+  // 2026). A refusal holds its id's claim; when Junid settles that payment by
+  // hand, claim-settled-bank-fingerprint.mjs stamps the claim spentBy his
+  // manual entry. If the refusal is ever re-run (retry-eft-message.mjs, or a
+  // rule change — the Standard Bank same-bank rule would now pass it), it
+  // lands on the SAME key, so it is the holder — and before this it came back
+  // "recorded": a second spendable copy of money already floated by hand,
+  // refused only later at the settle. Held here, at ingest, instead.
+  if (spentBy && spentBy !== poolKey) {
+    return {
+      ...held,
+      outcome: "held-duplicate",
+      fingerprint,
+      duplicateOf: spentBy,
+      approvedByHand: spentBy,
+      reason: "A payment Junid already settled by hand — its bank transaction id is spent by his entry, which holds this money. HELD, never spendable.",
+    };
+  }
   return { ...record, fingerprint };
 }
 
@@ -1018,13 +1036,35 @@ export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spende
   if (refusedKey === spenderKey) return { ok: false, why: "The refused record and the settling record must be two different records." };
   const fingerprint = refusalFingerprint(refused);
   if (!fingerprint) return { ok: false, why: `${refusedKey} is not a DKIM-verified bank refusal carrying a bank transaction id (outcome ${refused.outcome}).` };
-  if (spender.outcome !== "recorded" || spender.status !== "used") return { ok: false, why: `${spenderKey} is not a USED payment (outcome ${spender.outcome}, status ${spender.status ?? "none"}).` };
+  // A manual entry SETTLES the payment the moment Junid floats it, used at a
+  // till yet or not: the bank's id must be spent from then, or the bank copy
+  // could float beside it (Beverly's R400, 6 Nov 2026 — marked while his entry
+  // was still unmatched). Anything else — a reversed or held entry — is not.
+  if (spender.outcome !== "recorded" || !["used", "unmatched"].includes(spender.status)) return { ok: false, why: `${spenderKey} is not a floated or used payment (outcome ${spender.outcome}, status ${spender.status ?? "none"}).` };
   // Only Junid's hand entry settles a refusal: a bank record with this id
   // would already hold the claim. (Sonnet architect review.)
   if (spender.reader !== "manual" || !spender.manualEntry) return { ok: false, why: `${spenderKey} is not a manual entry — only Junid's hand entry settles a refused payment.` };
   if (spender.amountCents !== refused.amountCents) return { ok: false, why: `The amounts differ (${refused.amountCents}c refused, ${spender.amountCents}c used) — not the same money.` };
   if (!sameRef(spender.reference, refused.reference)) return { ok: false, why: `The references differ ("${clip(refused.reference, 40)}" refused, "${clip(spender.reference, 40)}" used) — not the same money.` };
   return { ok: true, fingerprint };
+}
+
+/**
+ * The refused notice's own mark (6 Nov 2026): `settledByHand` added once to a
+ * REFUSED record — never to a recorded or held one, never over an earlier
+ * mark, never creating a record that is not there. Every other field is kept.
+ */
+export function settledByHandStep({ spenderKey, at }) {
+  return (cur) => {
+    // null may be only the SDK's empty local cache on the first pass: writing
+    // null back is a no-op the server corrects by re-running with the real
+    // record (aborting here would end the transaction without ever seeing it).
+    if (cur === null || cur === undefined) return null;
+    if (typeof cur !== "object") return undefined;
+    if (cur.outcome === "recorded" || HELD_OUTCOMES.includes(cur.outcome)) return undefined;
+    if (cur.settledByHand) return undefined;
+    return { ...cur, settledByHand: { spentBy: spenderKey, at } };
+  };
 }
 
 // ─── …AND ONE REFUSED FOR WANT OF A READER ───────────────────────────────────
@@ -1186,6 +1226,9 @@ export function eftRetryPlan({ poolKey, record, seenRow, at }) {
   }
   if (record.outcome === "unknown-bank") {
     return { ok: false, why: "That is an unknown-bank sighting, not a refusal: the message was never claimed or marked read, so there is nothing to undo. Add the bank's domain to EFT_ALLOWED_DOMAINS and a reader, and the next tick reads it." };
+  }
+  if (record.settledByHand) {
+    return { ok: false, why: `That notification was settled BY HAND (manual entry ${record.settledByHand.spentBy ?? "?"}). Re-running it could only float the same money twice; it is never re-run.` };
   }
   if (!seenRow) {
     return { ok: false, why: `No claim row exists at card_batch_intake_seen/${poolKey}. Either the message was batched (its payments carry per-payment keys and the claim sits under the message key — find the message key on the sibling records) or the claim was already cleared. Nothing to undo here.` };

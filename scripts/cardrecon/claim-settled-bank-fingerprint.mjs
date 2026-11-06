@@ -8,12 +8,17 @@
 //
 //   node scripts/cardrecon/claim-settled-bank-fingerprint.mjs <refusedPoolKey> <usedPoolKey> [--execute]
 //
-// Without --execute it only reads and says what it would write. It writes ONE
-// node, /eft_pool_fingerprints/{fp}, create-or-add-spender, never replacing a
-// spender already there. NEITHER POOL RECORD IS EVER WRITTEN. The whole
-// judgement is settledFingerprintPlan (eftCore.mjs), pure and tested.
+// Without --execute it only reads and says what it would write. It writes
+// /eft_pool_fingerprints/{fp}, create-or-add-spender, never replacing a
+// spender already there — and, since 6 Nov 2026, stamps the REFUSED notice
+// itself `settledByHand: {spentBy, at}` (added once, never overwritten), so
+// the EFT tab shows it handled and retry-eft-message.mjs refuses to re-run it
+// (eftRetryPlan). The manual entry is NEVER written. The whole judgement is
+// settledFingerprintPlan (eftCore.mjs), pure and tested. Run it once per
+// refused copy: the second copy's claim is already spent (unchanged) and only
+// its stamp is added.
 import { createRequire } from "node:module";
-import { EFT_POOL_PATH, EFT_FINGERPRINT_PATH, settledFingerprintPlan, settledClaimStep } from "./eftCore.mjs";
+import { EFT_POOL_PATH, EFT_FINGERPRINT_PATH, settledFingerprintPlan, settledClaimStep, settledByHandStep } from "./eftCore.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -44,8 +49,11 @@ try {
     else {
       // The server's clock, not this machine's (serverNowMs, as in the poller).
       const offset = (await db.ref(".info/serverTimeOffset").once("value")).val() || 0;
-      const res = await db.ref(path).transaction(settledClaimStep({ spenderKey, refusedKey, at: Date.now() + offset }));
+      const at = Date.now() + offset;
+      const res = await db.ref(path).transaction(settledClaimStep({ spenderKey, refusedKey, at }));
       console.log(`${res.committed ? "✓ marked spent" : "· unchanged (a spender is already recorded)"}: ${JSON.stringify(res.snapshot.val())}`);
+      const stamp = await db.ref(`${EFT_POOL_PATH}/${refusedKey}`).transaction(settledByHandStep({ spenderKey, at }));
+      console.log(`${stamp.committed ? "✓ refusal stamped" : "· refusal unchanged (already stamped, or gone)"}: settledByHand ${JSON.stringify(stamp.snapshot.val()?.settledByHand ?? null)}`);
     }
   }
 } finally {
