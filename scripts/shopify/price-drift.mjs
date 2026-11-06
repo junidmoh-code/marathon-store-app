@@ -26,6 +26,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { graphql } from "./client.mjs";
 import { comparePrices, driftPattern, syncProductPrice, PRICE_LOG_PATH } from "./priceSync.mjs";
+import { serverNowMs } from "./publishNode.mjs";
 
 const flags = process.argv.slice(2);
 const APPLY = flags.includes("--apply");
@@ -136,7 +137,7 @@ console.log(`\nrollback file written: ${file}`);
 let fixed = 0, failed = 0;
 for (const r of before.bad) {
   try {
-    const res = await syncProductPrice(db, graphql, r.pid, { commit: true, source: "price-drift --apply", log: (l) => console.log(l) });
+    const res = await syncProductPrice(db, graphql, r.pid, { commit: true, source: "price-drift --apply", now: () => serverNowMs(db), log: (l) => console.log(l) });
     if (res.changed) fixed++; else if (!res.ok) { failed++; console.error(`  ⚠ ${r.pid}: ${res.why}`); }
   } catch (e) { failed++; console.error(`  ⚠ ${r.pid}: ${String(e?.message || e)}`); }
 }

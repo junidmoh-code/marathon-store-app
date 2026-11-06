@@ -122,7 +122,7 @@ export async function syncProductPrice(db, graphql, pid, { commit = false, sourc
   if (!commit) return { pid, ok: true, changed: false, wouldChange: true, from, to: want, fixes };
   await writePrices(graphql, gid, fixes);
   await db.ref(`${PRICE_LOG_PATH}/${pid}`).set({
-    at: now(), from, to: want, variants: fixes.length, source, gid,
+    at: await now(), from, to: want, variants: fixes.length, source, gid,
   });
   log(`  price ${pid}: Shopify R${from} → R${want} (${fixes.length} variant(s), ${source})`);
   return { pid, ok: true, changed: true, from, to: want };
