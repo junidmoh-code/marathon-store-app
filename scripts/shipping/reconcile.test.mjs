@@ -9,7 +9,7 @@ import fx from "./fixtures/tcg200369959t.json";
 
 const NOW = Date.parse("2026-11-09T08:30:00+02:00"); // a Monday, 08:30 SAST
 const declared5 = { kind: "shoebox", pairs: 5, lengthCm: 34, widthCm: 46, heightCm: 39, actualKg: 6.1 };
-const order1942 = { shipping: { provider: "courier_guy", waybill: "VL4G7H", trackingReference: "VL4G7H", cost: 355.68, priced: { quoted: 355.68 }, parcel: { parcels: [declared5] } } };
+const order1942 = { shipping: { provider: "courier_guy", waybill: "VL4G7H", trackingReference: "VL4G7H", cost: 355.68, priced: { quoted: 355.68 }, bookedAt: NOW - 7 * 86400e3, parcel: { ruleVersion: 4, parcels: [declared5] } } };
 
 describe("reconcileOrder — what TCG invoiced, kept on the order", () => {
   it("TCG200369959T: invoiced R249.60 against our R355.68 → a −30% diff and a measurement sample", () => {
@@ -35,8 +35,22 @@ describe("reconcileOrder — what TCG invoiced, kept on the order", () => {
   it("a parcel TCG never measured gives no sample; the sample divides out the factor the declaration carried", () => {
     const unmeasured = { ...fx.shipment, parcels: [{ ...fx.shipment.parcels[0], has_been_dimensioned: false }] };
     expect(reconcileOrder("1", order1942, unmeasured, NOW).sample).toBe(null);
-    const withFactor = { shipping: { ...order1942.shipping, parcel: { parcels: [{ ...declared5, calibrationFactor: 0.9 }] } } };
+    const withFactor = { shipping: { ...order1942.shipping, parcel: { ruleVersion: 4, parcels: [{ ...declared5, calibrationFactor: 0.9 }] } } };
     expect(reconcileOrder("1", withFactor, fx.shipment, NOW).sample).toMatchObject({ ratio: 0.96, implied: 0.86 });
+  });
+});
+
+describe("only the current rule's parcels teach the table (Sonnet review of #853)", () => {
+  it("a parcel declared under the old padded rule is reconciled and diffed but gives no sample", () => {
+    const old = { shipping: { ...order1942.shipping, parcel: { parcels: [declared5] } } };
+    const r = reconcileOrder("1", old, fx.shipment, NOW);
+    expect(r.invoiced.rand).toBe(249.6);
+    expect(r.diff).not.toBe(null);
+    expect(r.sample).toBe(null);
+  });
+  it("a sample is dated by TCG's delivery, not the pass", () => {
+    const r = reconcileOrder("1", order1942, { ...fx.shipment, delivered_date: "2026-11-03T09:09:01.95Z" }, NOW);
+    expect(r.sample.at).toBe(Date.parse("2026-11-03T09:09:01.95Z"));
   });
 });
 
@@ -147,10 +161,31 @@ describe("runReconcile — one pass", () => {
     expect(sent).toEqual([]);
   });
 
+  it("only an exact waybill match is reconciled; a waybill 45 days old is given up", async () => {
+    const d = fakeDb({ online_orders: {
+      1: { shipping: { ...order1942.shipping, waybill: "OTHER", trackingReference: "OTHER" } },
+      2: { shipping: { ...order1942.shipping, waybill: "OLD1", trackingReference: "OLD1", bookedAt: NOW - 46 * 86400e3 } },
+    }, shipping_recon: { weekly: { "2026-11-02": { sentAt: 1 } } } });
+    const out = await runReconcile({ db: withQueries(d), client: client(), sendJunid: async () => true, now: NOW });
+    expect(out.reconciled).toBe(0);
+    expect(d.root.online_orders[1].shipping.invoiced).toBeUndefined();
+    expect(d.root.online_orders[2].shipping.invoiced).toMatchObject({ unreconciled: expect.any(String) });
+  });
+
+  it("the weekly fetch reads until an empty page, whatever size TCG's pages are", async () => {
+    const d = fakeDb({});
+    const page = (n, base) => Array.from({ length: n }, (_, i) => ({ created_by: "marathon-pos", status: "delivered", has_been_invoiced: true, time_created: "2026-11-04T09:00:00Z", original_rate: 100, rate: 100, id: base + i }));
+    const pages = [page(50, 0), page(50, 50), []];
+    const c = { getShipments: async (q) => (q.tracking_reference ? { shipments: [] } : { shipments: pages[q.offset / 50] ?? [] }) };
+    const out = await runReconcile({ db: withQueries(d), client: c, sendJunid: async () => true, now: NOW });
+    expect(out.weekly).toMatch(/: 100 bookings,/);
+  });
+
   it("a line Jamie could not take is kept for the next pass", async () => {
     const d = fakeDb({ shipping_recon: { junidLines: { a: { text: "x" } }, weekly: { "2026-11-02": { sentAt: 1 } } } });
     await runReconcile({ db: withQueries(d), client: client(), sendJunid: async () => false, now: NOW });
     expect(d.root[RECON_PATH].junidLines.a.sentAt).toBeUndefined();
+    expect(d.root[RECON_PATH].weekly["2026-11-02"]).toMatchObject({ sentAt: 1 });
   });
 
   it("three consistent samples write the calibration; a 'bigger' class is only reported", async () => {

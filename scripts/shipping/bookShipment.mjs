@@ -294,7 +294,9 @@ export async function bookShipment(order, deps = {}) {
     waybill: res?.custom_tracking_reference || res?.short_tracking_reference || null,
     trackingReference: res?.short_tracking_reference ?? null,
     service: res?.service_level_code ?? plan.chosen.rate.code,
-    parcel: plain(plan.parcel),
+    // The rule the parcel was declared under: the reconciliation loop learns
+    // only from parcels declared by the current rule (reconcile.mjs).
+    parcel: plain({ ...plan.parcel, ruleVersion: ESTIMATE_RULE_VERSION }),
     cost: finiteOrNull(res?.charged_amount ?? res?.rate ?? plan.chosen.rate.rate),
     // The quote's make-up (base, surcharges, weights) — what the >R250 email explains.
     priced: plain({ quoted: plan.chosen.rate.rate, mode: plan.chosen.mode, ...(plan.chosen.rate.breakdown || {}) }),

@@ -32,6 +32,13 @@ export const DIFF_SHARE = 0.05;
 export const MIN_SAMPLES = 3;
 export const SAMPLE_WINDOW = 5;
 export const CONSISTENT_SHARE = 0.05;
+// Only parcels declared by the no-padding rule (bookShipment ESTIMATE_RULE_VERSION
+// 4, 6 Nov 2026) teach the table: the old padded declarations (18 cm clothing
+// boxes, the empty stack slot) were already corrected by the rule itself, and
+// learning from them would correct twice (Sonnet review of #853).
+export const MIN_SAMPLE_RULE_VERSION = 4;
+// A waybill still not delivered + invoiced this long after booking stops being asked for.
+export const GIVE_UP_AFTER_MS = 45 * 86400e3;
 
 const num = (v) => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -83,8 +90,11 @@ export function reconcileOrder(orderId, order, shipment, now) {
   // times the factor the declaration carried, so the sample says how far the
   // UNCALIBRATED table is off (the learning never compounds on itself).
   const dv = vol(declared), mv = vol(measured);
-  const sample = dv && mv && cls
-    ? { orderId, waybill, class: cls, ratio: round2(mv / dv), implied: round2((mv / dv) * (num(declaredP.calibrationFactor) ?? 1)), at: now }
+  const current = (num(s.parcel?.ruleVersion) ?? 0) >= MIN_SAMPLE_RULE_VERSION;
+  // Ordered by when TCG delivered it (a first pass reconciles many at once).
+  const at = Date.parse(shipment.delivered_date) || now;
+  const sample = current && dv && mv && cls
+    ? { orderId, waybill, class: cls, ratio: round2(mv / dv), implied: round2((mv / dv) * (num(declaredP.calibrationFactor) ?? 1)), at }
     : null;
   return { invoiced, diff, sample };
 }
@@ -189,9 +199,15 @@ export async function runReconcile({ db, client, sendJunid, now = Date.now(), lo
     const s = order?.shipping ?? {};
     const ref = s.trackingReference || s.waybill;
     if (!ref || s.invoiced || s.cancelledAt) continue;
+    if (Number(s.bookedAt) > 0 && now - Number(s.bookedAt) > GIVE_UP_AFTER_MS) {
+      await db.ref(`online_orders/${id}/shipping/invoiced`).set({ unreconciled: "not delivered and invoiced within 45 days", at: now });
+      continue;
+    }
     try {
       const res = await client.getShipments({ tracking_reference: ref });
-      const shipment = (res?.shipments ?? []).find((x) => x.short_tracking_reference === ref || x.custom_tracking_reference === ref) ?? res?.shipments?.[0];
+      // Exactly this waybill, never "the first one TCG listed".
+      const shipment = (res?.shipments ?? []).find((x) => x.short_tracking_reference === ref || x.custom_tracking_reference === ref);
+      if (!shipment) continue;
       const r = reconcileOrder(id, order, shipment, now);
       if (!r) continue;
       const writes = { [`online_orders/${id}/shipping/invoiced`]: r.invoiced };
@@ -228,10 +244,11 @@ export async function runReconcile({ db, client, sendJunid, now = Date.now(), lo
   const lines = (await db.ref(`${RECON_PATH}/junidLines`).get()).val() ?? {};
   for (const [k, l] of Object.entries(lines)) {
     if (!l?.text || l.sentAt) continue;
-    if (await sendJunid(l.text, `courier-ceiling-${k}`)) {
-      await db.ref(`${RECON_PATH}/junidLines/${k}/sentAt`).set(now);
-      out.lines++;
-    }
+    // Claimed BEFORE the send: a crash after it can lose a line, never send it twice.
+    const mark = db.ref(`${RECON_PATH}/junidLines/${k}/sentAt`);
+    await mark.set(now);
+    if (await sendJunid(l.text, `courier-ceiling-${k}`)) out.lines++;
+    else await mark.remove();
   }
 
   // 4. The weekly line, Monday from 08:00 SAST, once per week.
@@ -242,16 +259,18 @@ export async function runReconcile({ db, client, sendJunid, now = Date.now(), lo
     if (!sent) {
       const shipments = [];
       const startDate = new Date(start + SAST_MS).toISOString().slice(0, 10);
-      for (let offset = 0; offset < 5000; offset += 100) {
+      // Until an EMPTY page: TCG may cap a page below what was asked.
+      for (let offset = 0; offset < 5000;) {
         const page = (await client.getShipments({ limit: 100, offset, start_date: startDate }))?.shipments ?? [];
+        if (!page.length) break;
         shipments.push(...page);
-        if (page.length < 100) break;
+        offset += page.length;
       }
       const line = weeklyLine(shipments, start);
-      if (await sendJunid(line, `courier-week-${weekKey}`)) {
-        await db.ref(`${RECON_PATH}/weekly/${weekKey}`).set({ line, sentAt: now });
-        out.weekly = line;
-      }
+      const mark = db.ref(`${RECON_PATH}/weekly/${weekKey}`);
+      await mark.set({ line, sentAt: now });
+      if (await sendJunid(line, `courier-week-${weekKey}`)) out.weekly = line;
+      else await mark.remove();
     }
   }
   return out;

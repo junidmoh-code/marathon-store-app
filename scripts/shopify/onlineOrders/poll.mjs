@@ -803,8 +803,8 @@ async function shipOrder(ctx, id, order) {
   // the courier-recon runner sends it through Jamie (scripts/shipping/courier-recon.mjs).
   if (booking?.junidLine) {
     try {
-      const k = `${id}_${Math.round(Number(booking.overCeiling?.chosen?.rate) || 0)}`;
-      const lineRef = db.ref(`shipping_recon/junidLines/${k}`);
+      // One line per order (a re-quote at another rate does not send a second).
+      const lineRef = db.ref(`shipping_recon/junidLines/${id}`);
       if (!(await lineRef.get()).exists()) await lineRef.set({ orderId: id, text: booking.junidLine, at: now });
     } catch (e) {
       log(`  ! ${orderLabel(order)}: ceiling line not queued — ${String(e?.message || e).slice(0, 200)}`);

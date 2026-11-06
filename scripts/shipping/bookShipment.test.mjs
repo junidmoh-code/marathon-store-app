@@ -194,6 +194,8 @@ describe("bookShipment — live", () => {
     });
     expect(res.quotes.map((q) => q.rate)).toEqual([...res.quotes.map((q) => q.rate)].sort((a, b) => a - b));
     expect(d.root.online_orders["1001"].shipping.quotes).toEqual(res.quotes);
+    // The rule the parcel was declared under (the reconciliation loop learns only from the current one).
+    expect(d.root.online_orders["1001"].shipping.parcel.ruleVersion).toBe(4);
     expect(d.root.online_orders["1001"].shipping).toMatchObject({ provider: "courier_guy", waybill: "LD-TEST01", courierBooking: { state: "booked" } });
   });
 
