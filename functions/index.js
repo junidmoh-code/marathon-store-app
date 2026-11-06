@@ -5,6 +5,7 @@ const { onValueWritten, onValueCreated } = require("firebase-functions/v2/databa
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { markInventoryDirty } = require("./lib/shopify-inventory-dirty.cjs");
+const { markPriceDirty } = require("./lib/shopify-price-dirty.cjs");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
 const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
@@ -747,6 +748,39 @@ exports.shopifyInventoryDirty = onValueWritten(
       // again. Failing LOUDLY here would put retries on the busiest node in the
       // database for no gain.
       console.error(`shopifyInventoryDirty: ${String(e?.message || e)}`);
+    }
+  }
+);
+
+// ─── SHOPIFY PRICE MARKER: an app price edit reaches the website ────────────
+// The reconciler priced a product on Shopify only when it went live, so a
+// later retail edit in the app never reached the website (Travis Scott
+// p1778140291773: R700 in the app, R450 online, 6 Nov 2026). This writes one
+// counter key per edited LISTED product; scripts/shopify/priceSync.mjs drains
+// it on the next commit tick. Decision logic in lib/shopify-price-dirty.cjs.
+// retry: false — the reconciler's price backstop re-checks every live product.
+//   firebase deploy --only functions:shopifyPriceDirty
+exports.shopifyPriceDirty = onValueWritten(
+  {
+    ref:            "/products/{pid}/retailPrice",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          false,
+  },
+  async (event) => {
+    try {
+      await markPriceDirty(
+        {
+          db:        admin.database(),
+          increment: (n) => admin.database.ServerValue.increment(n),
+          log:       () => {},
+        },
+        { pid: event.params.pid, before: event.data.before.val() }
+      );
+    } catch (e) {
+      console.error(`shopifyPriceDirty: ${String(e?.message || e)}`);
     }
   }
 );
