@@ -495,5 +495,84 @@ describe("review of #846: held picks, the ledger on settle", () => {
     await h.run({ nowMs: async () => NOW + 72 * H, inbox: { replies: async () => [reply("credit"), reply("credit please", 2)] } });
     expect(h.junid.filter((m) => /nothing is left to give back/.test(m.subject))).toHaveLength(1);
   });
-});
 
+  it("review of #847: a fully refunded line answers the pick plainly (customer and Junid) and is never held", async () => {
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { moneySettled: { a: { state: "done", amountCents: 25000 } } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation").set({ state: "offering", email: "thandi@example.com", tag: "T", startedAt: NOW - H, offers: { 0: OFFERS[0], 1: OFFERS[1] }, sends: { 1: { kind: "offer", sentAt: NOW - H } } });
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).pid).toBe("TEE");
+    expect(conv(f).heldPick).toBeUndefined();
+    expect(h.mails.at(-1).text).toMatch(/already refunded to you in full/);
+    expect(h.junid.some((m) => /refunded in full/.test(m.subject))).toBe(true);
+  });
+
+  it("review of #847: a pick whose swap does not commit is held and retried, never dropped; Junid hears on the 3rd try", async () => {
+    const f = fakeDb(world());
+    const h = harness(f);
+    await h.run();
+    const realGet = f.db.ref;
+    // Only the SWAP's write fails (someone keeps changing the line); the hold's own write goes through.
+    const db = { ref: (p) => {
+      const r = realGet(p);
+      if (p !== "online_orders/9001/lines/0") return r;
+      return { ...r, transaction: async (fn) => {
+        const cur = structuredClone(f.read(p));
+        const out = fn(structuredClone(cur));
+        if (out && out.pid === "ALT1") return { committed: false, snapshot: { val: () => cur } };
+        return r.transaction(fn);
+      } };
+    } };
+    await h.run({ db, inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).pid).toBe("TEE");
+    expect(conv(f).heldPick).toMatchObject({ n: 1, pid: "ALT1", tries: 1 });
+    await h.run({ db, inbox: { replies: async () => [reply("1")] } }); // no new reply: the held pick is tried again
+    await h.run({ db, inbox: { replies: async () => [reply("1")] } });
+    expect(conv(f).heldPick.tries).toBe(3);
+    expect(h.junid.filter((m) => /would not go on/.test(m.subject))).toHaveLength(1);
+    // The line settles down: the next run swaps it.
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).pid).toBe("ALT1");
+  });
+
+  it("review of #847: settle refused (money already on the line) tells Junid once, the customer nothing", async () => {
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { money: { kind: "credit", amountCents: 1000, state: "done" } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation").set({ state: "offering", email: "thandi@example.com", tag: "T", startedAt: NOW - H, offers: { 0: OFFERS[0], 1: OFFERS[1] }, sends: { 1: { kind: "offer", sentAt: NOW - H } } });
+    const mails = h.mails.length;
+    await h.run({ inbox: { replies: async () => [reply("refund")] } });
+    await h.run({ inbox: { replies: async () => [reply("refund"), reply("refund please", 2)] } });
+    expect(h.mails.length).toBe(mails);
+    expect(h.junid.filter((m) => /already has money on it/.test(m.subject))).toHaveLength(1);
+  });
+
+  it("review of #847: the credit is claimed in the swap's own write; the customer is told 'on your account' only when it is done", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: [] }); // no scope: the credit is filed for Junid by hand (manual)
+    await h.run();
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).resolution.money).toMatchObject({ kind: "credit", amountCents: 1000, state: "manual", preclaimed: true });
+    expect(h.mails.at(-1).text).toMatch(/being added to your account/);
+    expect(h.mails.at(-1).text).not.toMatch(/on your account now/);
+  });
+
+  it("CodeRabbit on #848: recovering a swap whose pre-claim has no result tells Junid at once and the customer no credit amount", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    const rows = structuredClone(f.read("online_escalations"));
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    await f.db.ref("online_escalations").set(rows); // the crashed run never cleared its row
+    // As if the run that swapped stopped before paying: the line swapped, the pre-claim unresolved, no "swapped" message.
+    const conv0 = conv(f);
+    const sends = Object.fromEntries(Object.entries(conv0.sends || {}).filter(([, x]) => x?.kind !== "swapped"));
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation/sends").set(sends);
+    await f.db.ref("online_orders/9001/lines/0/resolution/money").set({ kind: "credit", amountCents: 1000, state: "claimed", at: NOW + 1, why: "swap difference", preclaimed: true });
+    const before = h.mails.length;
+    await h.run();
+    const sent = h.mails.slice(before);
+    expect(sent.length).toBe(1);
+    expect(sent[0].text).not.toMatch(/store credit/);
+    expect(h.junid.some((m) => /CHECK SHOPIFY/.test(m.subject))).toBe(true);
+  });
+});
