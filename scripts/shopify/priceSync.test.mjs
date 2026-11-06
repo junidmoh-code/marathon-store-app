@@ -186,3 +186,38 @@ describe("sweepPriceBackstop — catches an admin edit or a lost marker", () => 
     expect(shop.writes).toEqual([]);
   });
 });
+
+describe("review fixes", () => {
+  it("a merge loser's listing is never priced", async () => {
+    const s = travis(); s.products.p1778140291773.mergedInto = "pSurvivor";
+    const { db } = fakeDb(s);
+    const shop = fakeShop({ [GID]: [{ id: "v6", price: "450.00" }] });
+    const r = await syncProductPrice(db, shop.graphql, "p1778140291773", { commit: true });
+    expect(r.changed).toBe(false);
+    expect(shop.writes).toEqual([]);
+  });
+  it(">100 variants: reported once, marker cleared (not retried every tick)", async () => {
+    const s = travis(); s[PRICE_DIRTY_PATH] = { p1778140291773: 1 };
+    const { db, store } = fakeDb(s);
+    const graphql = async () => ({ product: { id: GID, variants: { pageInfo: { hasNextPage: true }, nodes: [] } } });
+    const out = await sweepPriceDirty(db, graphql, { commit: true, isLive: async () => true });
+    expect(out.results[0]).toMatchObject({ ok: false });
+    expect(out.cleared).toBe(1);
+    expect(store[PRICE_DIRTY_PATH]?.p1778140291773 ?? null).toBeNull();
+  });
+  it("more markers than the cap: every marker is eventually reached", async () => {
+    const s = travis(); s[PRICE_DIRTY_PATH] = {};
+    for (let i = 0; i < 10; i++) s[PRICE_DIRTY_PATH][`p${i}`] = 1;
+    const seen = new Set();
+    for (let k = 0; k < 60; k++) {
+      const { db } = fakeDb(structuredClone(s));
+      await sweepPriceDirty(db, async () => { throw new Error("down"); }, { commit: true, max: 2, isLive: async (pid) => { seen.add(pid); return true; } });
+    }
+    expect(seen.size).toBe(10);
+  });
+  it("reconcile.mjs drains price markers and runs the backstop, both committing and both skipped on --pids", () => {
+    const src = readFileSync(new URL("./reconcile.mjs", import.meta.url), "utf8");
+    expect(src).toMatch(/if \(!ONLY\) try \{\n  const pr = await sweepPriceDirty\(db, graphql, \{\n    commit: true,/);
+    expect(src).toMatch(/if \(!ONLY && liveNow && [^\n]*PRICE_BACKSTOP_INTERVAL_MS\) \{\n  try \{\n    const pb = await sweepPriceBackstop\(db, graphql, \{\n      livePids: liveNow,\n      commit: true,/);
+  });
+});

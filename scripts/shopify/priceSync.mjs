@@ -84,7 +84,9 @@ async function readVariants(graphql, gid) {
     { id: gid }
   );
   if (!r.product) return null;
-  if (r.product.variants.pageInfo.hasNextPage) throw new Error(">100 variants — not priced");
+  // >100 variants is permanent, not a blip: say so and stop, rather than throw
+  // and have the marker retried every tick for ever.
+  if (r.product.variants.pageInfo.hasNextPage) return { tooMany: true };
   return r.product.variants.nodes;
 }
 
@@ -112,10 +114,14 @@ export async function syncProductPrice(db, graphql, pid, { commit = false, sourc
     db.ref(`shopify_sync/${pid}/shopifyProductId`).get().then((s) => s.val()),
   ]);
   if (!gid) return { pid, ok: true, changed: false, why: "no Shopify mapping" };
+  // A merge loser's price is stale by definition — the survivor carries the
+  // product now. Never price a loser's listing (the publish path refuses it too).
+  if (product?.mergedInto) return { pid, ok: true, changed: false, why: `merged into ${product.mergedInto}` };
   const want = shopifyPriceFor(product);
   if (want == null) return { pid, ok: false, changed: false, why: "no retailPrice > 0 on the record — Shopify left as it is" };
   const variants = await readVariants(graphql, gid);
   if (!variants) return { pid, ok: false, changed: false, productGone: true, why: `${gid} is not on Shopify` };
+  if (variants.tooMany) return { pid, ok: false, changed: false, why: ">100 variants on Shopify — not priced automatically" };
   const fixes = planPriceFix(want, variants);
   if (!fixes.length) return { pid, ok: true, changed: false };
   const from = [...new Set(fixes.map((f) => f.from))].join("/");
@@ -134,7 +140,12 @@ export async function syncProductPrice(db, graphql, pid, { commit = false, sourc
  */
 export async function sweepPriceDirty(db, graphql, { commit = false, isLive, max = PRICE_MAX_PER_RUN, now, log = () => {} } = {}) {
   const markers = (await db.ref(PRICE_DIRTY_PATH).get()).val() || {};
-  const pids = Object.keys(markers).sort().slice(0, max);
+  // Rotating start: a marker that keeps failing (Shopify down for it) is kept,
+  // and a fixed sorted slice would let 40 of those starve everything after
+  // them. Starting at a random point gives every marker its turn.
+  const all = Object.keys(markers).sort();
+  const start = all.length > max ? Math.floor(Math.random() * all.length) : 0;
+  const pids = Array.from({ length: Math.min(max, all.length) }, (_, i) => all[(start + i) % all.length]);
   const out = { seen: Object.keys(markers).length, pushed: 0, cleared: 0, kept: 0, results: [] };
   for (const pid of pids) {
     const revision = markers[pid];

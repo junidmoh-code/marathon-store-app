@@ -1758,7 +1758,10 @@ if (!ONLY && liveNow && runStartedAt - (Number(scanState?.lastPriceSweepAt) || 0
     console.log(`price backstop: ${pb.checked} checked · ${pb.drifted} disagreed · ${pb.fixed} corrected` +
       (pb.failed ? ` · ${pb.failed} failed` : "") + (pb.refused ? " · REFUSED (over the cap — see above)" : ""));
     for (const r of pb.results) if (r.ok === false) console.error(`  ⚠ price ${r.pid}: ${r.why}`);
-    if (!pb.failed && !pb.refused) priceSweptAt = runStartedAt;
+    // Stamped whenever the run COMPARED, even with failures or a refusal: a
+    // standing failure is reported every 3 h, not re-paid every 30 minutes.
+    // Only a run that threw before comparing leaves the stamp for a retry.
+    priceSweptAt = runStartedAt;
   } catch (e) {
     console.error(`  ⚠ price backstop failed (${String(e?.message || e)}) — it runs again on the next sweep`);
   }
