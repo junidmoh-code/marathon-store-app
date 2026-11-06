@@ -604,5 +604,36 @@ html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style*="; height:
 html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style^="height: 100vh"],
 html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="; height: 100vh"] {
   height: calc(100dvh - var(--sky-shell-h, 0px)) !important; max-height: calc(100dvh - var(--sky-shell-h, 0px)) !important; }
-html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style*="position: sticky"][style*="top: 0px"],
-html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="position: sticky"][style*="top: 0px"] { top: var(--sky-shell-h, 0px) !important; }
+/* ── THE OVERLAP BUG (Junid, 6 Nov — Shopify publisher + Social) ────────────
+   Measured: the Shopify page's sticky search/tab bar was drawn 103px BELOW its
+   own slot (the shell's height), leaving an empty band under the header and
+   lying on top of the counts and the first rows. Cause, two halves:
+     1. its page wrapper has overflow-x:hidden, which (CSS overflow rules) makes
+        overflow-y compute to auto — the wrapper becomes a scroll container that
+        never scrolls (it grows with its content), so the sticky bar sticks to
+        THAT box, not to the window;
+     2. the rule here rewrote every sticky top:0 to top:var(--sky-shell-h).
+        Inside a box that never scrolls, a sticky offset is simply a shift.
+   The fix, for every screen at once:
+     · page wrappers CLIP instead of hide (overflow-x:clip is not a scroll
+       container), so a page sticky bar pins to the window — under the shell;
+     · a sticky bar inside a REAL scroller (an inline overflow auto/scroll box —
+       the desktop workspaces) keeps top:0 of that scroller;
+     · a browser without overflow:clip (Safari < 16) gets no rewrite at all: the
+       bar scrolls with the page, but it is never shifted onto the content.
+   Pinned page bars carry the shell's glass so rows pass UNDER them, never
+   through them. --shell-h is the same measured height under its short name. */
+:root { --shell-h: var(--sky-shell-h, 0px); }
+@supports (overflow-x: clip) {
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style*="overflow-x: hidden"],
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="overflow-x: hidden"]:not([style*="overflow-y"]):not([style*="overflow: "]) { overflow-x: clip !important; }
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style*="position: sticky"][style*="top: 0px"],
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="position: sticky"][style*="top: 0px"] {
+    top: var(--sky-shell-h, 0px) !important; z-index: 40 !important;
+    background: linear-gradient(180deg, rgba(36,126,232,.90), rgba(52,140,238,.84)) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4);
+    border-bottom: 1px solid rgba(255,255,255,.32) !important; box-shadow: 0 10px 24px -18px rgba(0,30,90,.55) !important; }
+  /* …except inside a real scroller: top:0 of that scroller, as written. */
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * :is([style*="overflow-y: auto"], [style*="overflow-y: scroll"], [style*="overflow: auto"], [style*="overflow: scroll"]) [style*="position: sticky"][style*="top: 0px"] {
+    top: 0px !important; }
+}
