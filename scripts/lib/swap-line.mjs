@@ -112,7 +112,9 @@ export function swappedLine(cur, item, { swappedFrom, outcome, resolution, at = 
   // The old item's customer-wait mark goes with it: the new line is settled by this swap (5 Nov 2026, #1866).
   const { escalation: _e, escalationOverride: _o, awaitingCustomer: _w, ...rest } = cur;
   // The line's money, from scratch, the same for every caller (COMMIT 6): what was paid, given back, now, owed.
-  const lg = lineLedger(cur, { priceCents: item.priceCents });
+  // A payment this swap records (resolution.moneyIn) is in the saved ledger too (CodeRabbit on #848): the line's balance and
+  // its payment record agree.
+  const lg = lineLedger(resolution?.moneyIn ? { ...cur, resolution: { ...(cur.resolution || {}), moneyIn: resolution.moneyIn } } : cur, { priceCents: item.priceCents });
   const ledger = { paidCents: lg.paidCents, settledCents: lg.settledCents, nowCents: lg.nowCents, creditCents: lg.creditCents, extraCents: lg.extraCents, swaps: (Number(cur.ledger?.swaps) || (cur.swappedFrom ? 1 : 0)) + 1, at: at ?? outcome?.at ?? null,
     // A dearer item: who settles the difference is on the ledger too (review of #846): the customer pays it (to collect),
     // or we absorb it.
@@ -160,9 +162,12 @@ async function defaultAvailable({ get, orderKey, order, i, pid, sizeKey, display
  * `summary` is the one line Jimmy relays ("#1776 updated: …" / "#1776 NOT changed: …").
  */
 export async function swapOnlineOrderLine({
-  orderKey, lineIndex, newPid, size, dry = false, allowHigher = false, priceDecision = null,
+  orderKey, lineIndex, newPid, size, dry = false, allowHigher = false, priceDecision = null, paidInCents = null, paidInRef = null,
   by = null, via = "cli", requestId = null, expect = null, db = null, admin = null, increment = null, now = Date.now(), log = () => {}, displayFeedOn = null,
 }) {
+  // A payment amount, when given, is a positive whole number of cents (CodeRabbit on #848); null/0 means none.
+  if (paidInCents != null && paidInCents !== 0 && !(Number.isInteger(paidInCents) && paidInCents > 0)) throw new Error(`paidInCents must be a positive whole number of cents (got ${paidInCents})`);
+  const paidIn = paidInCents > 0 ? paidInCents : 0;
   if (!db) ({ db, admin } = openDb());
   const get = async (p) => (await db.ref(p).get()).val();
   const inc = increment || (admin?.database?.ServerValue?.increment ? (n) => admin.database.ServerValue.increment(n) : null);
@@ -255,7 +260,15 @@ export async function swapOnlineOrderLine({
     if (JSON.stringify(m ?? null) !== JSON.stringify(line.resolution?.money ?? null)) { why = "the line's money changed meanwhile"; return undefined; }
     // A completed money action moves to moneySettled; one that never moved money is kept as supersededMoney (doNotIssue).
     void conv;
-    const resolution = swapResolution(cur.resolution, { now, outcome, closeConversation: via });
+    const resolution0 = swapResolution(cur.resolution, { now, outcome, closeConversation: via });
+    // A difference the customer PAID for this dearer item counts as paid for the line (review of #847, spec; CodeRabbit on
+    // #848): only a confirmed payment the caller passes (paidInCents, e.g. the PayFast difference) is "done". Junid's
+    // "customer pays" decision is owed, not paid: recorded as to_collect (never counted) until a payment confirms it.
+    const owedIn = !paidIn && plan.price.decision === "customer_pays" && plan.price.extraCents > 0 ? plan.price.extraCents : 0;
+    const inEntry = paidIn ? clean({ amountCents: paidIn, state: "done", via: "payment", ref: paidInRef || null, at: now }) : owedIn ? clean({ amountCents: owedIn, state: "to_collect", via: "customer_pays", at: now }) : null;
+    // Its own key, never the timestamp alone (CodeRabbit on #848): two swaps in one millisecond keep both entries.
+    const inKey = (have) => { let k = `m${now}${requestId ? `-${String(requestId).replace(/[^\w-]/g, "")}` : ""}`; for (let n = 1; have && have[k]; n++) k = `m${now}-${n}`; return k; };
+    const resolution = inEntry ? { ...resolution0, moneyIn: { ...(cur.resolution?.moneyIn || {}), [inKey(cur.resolution?.moneyIn)]: inEntry } } : resolution0;
     const next = { ...ord, lines: Array.isArray(ord.lines) ? [...ord.lines] : { ...ord.lines } };
     next.lines[i] = swappedLine(cur, item, { swappedFrom, outcome, resolution, at: now });
     const drop = (node, key) => { if (node && typeof node === "object" && key in node) { const c = Array.isArray(node) ? [...node] : { ...node }; if (Array.isArray(c)) c[key] = null; else delete c[key]; return c; } return node; };

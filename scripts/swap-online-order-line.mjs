@@ -2,17 +2,25 @@
 // Swap one line of a website order for another product, on the live records the till app reads
 // (scripts/lib/swap-line.mjs has the rules and is what the dm-agent calls in-process).
 //
-//   node scripts/swap-online-order-line.mjs --order <orderKey> --line <index> --pid <newPid> --size <size|_> [--dry] [--allow-higher]
+//   node scripts/swap-online-order-line.mjs --order <orderKey> --line <index> --pid <newPid> --size <size|_> [--dry] [--allow-higher] [--paid-in-cents <n> --paid-ref <ref>]
 //
 // Prints Junid's one line: "#1776 updated: <old> → <new>, pick raised at <place>".
 import { swapOnlineOrderLine } from "./lib/swap-line.mjs";
 
 const args = Object.fromEntries(process.argv.slice(2).map((a, i, all) => (a.startsWith("--") ? [a.slice(2), all[i + 1] && !all[i + 1].startsWith("--") ? all[i + 1] : "true"] : null)).filter(Boolean));
 if (!args.order || args.line == null || !args.pid) {
-  console.error("usage: --order <orderKey> --line <index> --pid <newPid> --size <size|_> [--dry] [--allow-higher]");
+  console.error("usage: --order <orderKey> --line <index> --pid <newPid> --size <size|_> [--dry] [--allow-higher] [--paid-in-cents <n> --paid-ref <ref>]");
   process.exit(2);
 }
-const r = await swapOnlineOrderLine({ orderKey: String(args.order), lineIndex: Number(args.line), newPid: String(args.pid), size: args.size ?? "_", dry: args.dry === "true", allowHigher: args["allow-higher"] === "true", via: "cli" });
+// --paid-in-cents: a positive whole number when given; --paid-ref only with it (CodeRabbit on #848).
+let paidIn = {};
+if (args["paid-in-cents"] !== undefined || args["paid-ref"] !== undefined) {
+  const c = Number(args["paid-in-cents"]);
+  if (args["paid-in-cents"] === undefined || !/^\d+$/.test(String(args["paid-in-cents"])) || !(c > 0)) { console.error("--paid-in-cents must be a positive whole number of cents"); process.exit(2); }
+  if (args["paid-ref"] !== undefined && (args["paid-ref"] === "true" || !String(args["paid-ref"]).trim())) { console.error("--paid-ref needs a value"); process.exit(2); }
+  paidIn = { paidInCents: c, paidInRef: args["paid-ref"] !== undefined ? String(args["paid-ref"]) : null };
+}
+const r = await swapOnlineOrderLine({ orderKey: String(args.order), lineIndex: Number(args.line), newPid: String(args.pid), size: args.size ?? "_", dry: args.dry === "true", allowHigher: args["allow-higher"] === "true", ...paidIn, via: "cli" });
 console.log(r.summary);
 if (r.plan) {
   const p = r.plan;

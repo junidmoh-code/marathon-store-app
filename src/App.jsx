@@ -412,6 +412,10 @@ function productPhotos(p) {
   return out;
 }
 
+// Generated sneaker-wall tiles (marathon-photo-studio) are transparent PNGs at products/<id>/studio-wall.png.
+const isStudioTile = (u) => typeof u === "string" && /products%2F[A-Za-z0-9_-]+%2Fstudio-wall\.png/.test(u);
+const STUDIO_GROUND = { background: "radial-gradient(120% 100% at 50% 40%,#fff 0%,#eef0f3 70%,#e3e6eb 100%)" };
+
 // Full-screen photo viewer: shows a product's photos (primary + extra angles) with
 // prev/next arrows, swipe, dots + a thumbnail strip. Accepts an array of URLs (or a
 // single URL string for back-compat). Reused by assistant view, admin, etc.
@@ -434,7 +438,8 @@ export function GalleryLightbox({ photos, onClose }) {
          onTouchStart={(e) => { touch.current = e.touches.length === 1 && !zoomed ? (e.touches[0]?.clientX ?? null) : null; }}
          onTouchEnd={(e) => { const s = touch.current, en = e.changedTouches[0]?.clientX; if (multi && !zoomed && s != null && en != null && Math.abs(en - s) > 45) go(en < s ? 1 : -1); touch.current = null; }}
          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.93)", zIndex:2000, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24 }}>
-      <ZoomImage src={list[idx]} alt="" onZoomChange={setZoomed} onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10, position:"relative", zIndex:1 }} />
+      {/* A generated wall tile is a transparent PNG: give it the wall's light studio ground so its soft shadow reads on the dark backdrop. */}
+      <ZoomImage src={list[idx]} alt="" onZoomChange={setZoomed} onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10, position:"relative", zIndex:1, ...(isStudioTile(list[idx]) ? STUDIO_GROUND : null) }} />
       {multi && (
         <>
           <button onClick={e => { e.stopPropagation(); go(-1); }} aria-label="Previous" style={nav("left")}>‹</button>
@@ -9660,7 +9665,7 @@ html[data-sky="on"] #root .ad-root .ad-card,.ad-root .ad-card{display:grid;grid-
   -webkit-backdrop-filter:blur(16px) saturate(1.3);backdrop-filter:blur(16px) saturate(1.3)}
 .ad-root .ad-card .sky-stage{height:100%!important;padding:0;border-radius:.88vw;overflow:hidden;background:rgba(10,30,70,.25)}
 .ad-root .ad-card .sky-frame{inset:0;border-radius:.88vw;background:none}
-.ad-root .ad-card .sky-frame img{width:100%;height:100%;max-width:none;max-height:none;object-fit:cover;border-radius:.88vw}
+.ad-root .ad-card .sky-frame img{max-width:100%;max-height:100%;object-fit:contain;border-radius:.88vw}
 .ad-root .ad-card .sky-podium{width:80%;bottom:6%}
 .ad-root .ad-card .sky-cutout{max-width:88%}
 .ad-body{background:none!important;border-radius:0;display:flex;flex-direction:column;align-items:stretch;justify-content:space-between;gap:.4vw;padding:.3vw 1.32vw .35vw 1.26vw;min-width:0}
