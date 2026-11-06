@@ -13,7 +13,7 @@
 // the bar opens the existing checkout. Nothing here reads or writes data.
 
 import { useLayoutEffect, useRef, useState } from "react";
-import { SkyHeader, SkySearch, SkyBrandStrip, SkyStorePill, SkyPopover, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
+import { SkyHeader, SkyBackGrid, SkySearch, SkyBrandStrip, SkyStorePill, SkyPopover, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
 
 export default function AssistantPhone({
@@ -51,7 +51,7 @@ export default function AssistantPhone({
       {/* The store pill replaces the old ASSISTANT tag and the store row.
           Only the shops this account is assigned to; with one (auto-selected)
           it is a plain pill, so nobody can mis-pick a store that is not theirs. */}
-      <SkyHeader onGrid={onExit} gridLabel="Switch view"
+      <SkyHeader left={<SkyBackGrid back onBack={onExit} onLongPress={onExit} label="Back to Home" />}
                  tagNode={<span className="ap-store" data-contrast-exempt=""><SkyStorePill value={effectiveShop} stores={shops} labelOf={shopLabel}
                                         onPick={(id) => { if (id !== effectiveShop) onShop(id); }}
                                         mode={mode === "clothing" ? "clothing" : mode === "cr" ? "cr" : "sneaker"}

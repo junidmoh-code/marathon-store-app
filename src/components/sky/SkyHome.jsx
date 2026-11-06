@@ -11,7 +11,7 @@
 // RoleSelector exactly as before; this component only lays them out.
 
 import { useEffect, useState } from "react";
-import { SkyHeader } from "./Sky.jsx";
+import { SkyHeader, SkyBackGrid } from "./Sky.jsx";
 import { IconBag, IconBox, IconMonitorCheck, IconLayersShield, IconChevronLeft, IconClose } from "./SkyIcons.jsx";
 
 const TILE_ICON = {
@@ -58,7 +58,7 @@ function MiniCard({ card }) {
  * @param account     { name, initial, rows } — rows are the notification + sign-out rows
  */
 export default function SkyHome({ tiles, groups, liveCards = [], tag, account, emptyMessage, initialPanel = null }) {
-  const [panel, setPanel] = useState(initialPanel);   // null | "admin" | "account"
+  const [panel, setPanel] = useState(() => (initialPanel === "admin" && !groups.some((g) => g.cards.length > 0) && !liveCards.some((e) => e && e[1]) ? null : initialPanel));   // null | "admin" | "account"
   useEffect(() => {
     if (!panel) return undefined;
     const onKey = (e) => { if (e.key === "Escape") setPanel(null); };
@@ -84,8 +84,14 @@ export default function SkyHome({ tiles, groups, liveCards = [], tag, account, e
                    <button type="button" className="sky-round sky-glass sky-glass--soft" aria-label="Back to home" title="Back" onClick={() => setPanel(null)}>
                      <IconChevronLeft />
                    </button>
-                 ) : null}
-                 onGrid={() => setPanel(panel === "admin" ? null : (hasHub ? "admin" : null))} gridLabel={panel === "admin" ? "Back to home" : "All tools"}
+                 ) : (
+                   // Home: the plain grid (opens Admin). The Admin panel is one
+                   // level down, so there it is the back button (chevron + grid):
+                   // tap or hold → Home.
+                   <SkyBackGrid back={panel === "admin"} label={panel === "admin" ? "Back to Home" : "All tools"}
+                                onBack={() => setPanel(panel === "admin" ? null : (hasHub ? "admin" : null))}
+                                onLongPress={panel === "admin" ? () => setPanel(null) : undefined} />
+                 )}
                  onUser={panel === "admin" ? undefined : () => setPanel(panel === "account" ? null : "account")} userLabel="Account" />
 
       {panel === "admin" ? (

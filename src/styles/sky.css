@@ -637,3 +637,11 @@ html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="; heigh
   html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * :is([style*="overflow-y: auto"], [style*="overflow-y: scroll"], [style*="overflow: auto"], [style*="overflow: scroll"]) [style*="position: sticky"][style*="top: 0px"] {
     top: 0px !important; }
 }
+
+/* ── THE GRID / BACK BUTTON (SkyBackGrid, Junid 6 Nov) ───────────────────────
+   Off Home it widens into a pill: a small navy chevron, then the grid. Holding
+   it (500ms) goes Home, so no callout / selection on a long touch. */
+.sky-backgrid { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+html .sky-header .sky-round.sky-backgrid.sky-backgrid--back { display: inline-flex; align-items: center; justify-content: center;
+  width: auto !important; min-width: 46px; padding: 0 13px 0 10px !important; gap: 3px; border-radius: 999px; }
+html .sky-round svg.sky-backgrid__chev { width: 14px; height: 14px; min-width: 14px; min-height: 14px; flex: 0 0 auto; color: var(--sky-navy); }

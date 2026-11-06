@@ -72,6 +72,43 @@ export function SkyHeader({ tag, tagNode = null, onGrid, onUser, userInitial = n
   );
 }
 
+// ── THE GRID / BACK BUTTON (Junid, 6 Nov — "goes back ONE level") ──────────
+// The header's left button. On Home: the plain grid. Anywhere else: a small
+// navy back chevron to the LEFT of the grid icon, inside the same button, so
+// staff read it as "back". Tap = up one level (onBack — the parent in the route
+// hierarchy, src/components/sky/skyNav.js). Long-press (500ms) = Home
+// (onLongPress); the tap that ends a long-press is swallowed.
+export const LONG_PRESS_MS = 500;
+export function SkyBackGrid({ back = true, onBack, onLongPress, label, className = "" }) {
+  const timer = useRef(null);
+  const fired = useRef(false);
+  const clear = () => { if (timer.current) { clearTimeout(timer.current); timer.current = null; } };
+  useEffect(() => clear, []);
+  const down = (e) => {
+    if (!onLongPress || (e.button != null && e.button !== 0)) return;
+    fired.current = false; clear();
+    timer.current = setTimeout(() => { timer.current = null; fired.current = true; onLongPress(); }, LONG_PRESS_MS);
+  };
+  const click = (e) => {
+    clear();
+    if (fired.current) { fired.current = false; e.preventDefault(); return; }
+    onBack?.();
+  };
+  const name = label || (back ? "Back" : "All tools");
+  return (
+    <button type="button" className={cx("sky-round sky-glass sky-backgrid", back && "sky-backgrid--back", className)}
+            aria-label={onLongPress ? `${name} (hold for Home)` : name} title={name} data-testid="sky-back"
+            onPointerDown={down} onPointerUp={() => { if (!fired.current) clear(); }} onPointerLeave={clear} onPointerCancel={clear}
+            onContextMenu={(e) => e.preventDefault()} onClick={click}>
+      {back ? (
+        <svg className="sky-backgrid__chev" data-testid="sky-back-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+             strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+      ) : null}
+      <IconGrid />
+    </button>
+  );
+}
+
 // ── THE SHELL HEADER (Junid, 6 Nov — one header per screen) ─────────────────
 // The ONE header every screen wears (App.jsx draws it above the view): grid =
 // home, the wordmark, the screen pill with a chevron (opens the view switcher —
@@ -80,7 +117,7 @@ export function SkyHeader({ tag, tagNode = null, onGrid, onUser, userInitial = n
 // page). PINNED: sticky at the top, everything under it scrolls; its glass
 // fades in once the page has moved, so content passing under is softened.
 // Barcode Studio opts out (sticky={false}): it keeps its own fixed frame.
-export function SkyShellHeader({ tag, onHome, onSwitch, onUser, sticky = true }) {
+export function SkyShellHeader({ tag, onHome, onBack, backLabel, onSwitch, onUser, sticky = true }) {
   const [stuck, setStuck] = useState(false);
   useEffect(() => {
     if (!sticky || typeof window === "undefined" || !window.addEventListener) return undefined;
@@ -104,7 +141,8 @@ export function SkyShellHeader({ tag, onHome, onSwitch, onUser, sticky = true })
   return (
     <div ref={barRef} className="sky-shellbar" data-testid="sky-shellbar" data-sticky={sticky ? "true" : undefined} data-stuck={stuck ? "true" : undefined}>
       <div className="sky-shellbar__glass" aria-hidden="true" />
-      <SkyHeader gridLabel="Home" onGrid={onHome} onUser={onUser || onHome} userLabel="Account"
+      <SkyHeader left={<SkyBackGrid back onBack={onBack || onHome} onLongPress={onHome} label={backLabel ? `Back to ${backLabel}` : "Back"} />}
+                 onUser={onUser || onHome} userLabel="Account"
                  tagNode={
                    <button type="button" className="sky-tag sky-glass sky-shellpill" onClick={onSwitch || onHome}
                            aria-label={`${tag} — switch view`} data-testid="screen-pill">

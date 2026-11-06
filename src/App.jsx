@@ -139,6 +139,7 @@ import { SkySheet, SkySheetHead, SkyStepperRow } from "./components/sky/SkySheet
 import WarehouseTop, { WAREHOUSE_SKY_CSS } from "./components/sky/WarehouseTop.jsx";
 import { SkyConfirm } from "./components/sky/SkyOverlay.jsx";
 import ShopSwitchConfirm from "./components/sky/ShopSwitchConfirm.jsx";
+import { parentOf, requestHomePanel, takeHomePanel } from "./components/sky/skyNav.js";
 import { useSkyOff, SkyShellHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
@@ -3410,6 +3411,8 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
 const SHOW_HUB_LIVE_CARDS = false;
 
 function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push, mute }) {
+  // "Up" from an Admin card lands on the Admin panel (skyNav.js).
+  const [homePanel] = useState(() => takeHomePanel());
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut, deviceIdentity: homeDevice } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
   // MIRROR — not hasPermission, not the permissions array, not stockRole. The
@@ -3705,6 +3708,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   const homeTag = String(homePerm?.username || homeUser?.email?.split("@")[0] || name || "").toUpperCase();
   return (
     <SkyHome
+      initialPanel={homePanel}
       tiles={homeTiles}
       groups={hubGroups}
       liveCards={SHOW_HUB_LIVE_CARDS ? [["hubCount", isPhoneHome ? null : hubCountCard], ["stockHold", isPhoneHome ? null : stockHoldCard], ["displayReg", displayRegCard]] : []}
@@ -7140,7 +7144,7 @@ export function AdminView({ products, orders, onExit }) {
             {productSearch.trim() ? "No products match your search." : `No ${typeFilter} products yet. Add one above.`}
           </div>
         )}
-        <div style={isWide ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10, alignItems:"start" } : undefined}>
+        <div data-testid="admin-product-list" style={isWide ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10, alignItems:"start" } : undefined}>
           {filteredProducts.map(p => <AdminProductRow key={p.id} product={p} />)}
         </div>
       </div>
@@ -21054,7 +21058,16 @@ function AppInner() {
               board has its own world and none. */}
           {view && view.type !== RoleSelector && role !== ROLES.ASSISTANT && role !== ROLES.DISPLAY && (
             <SkyShellHeader tag={skyScreenTag(role, hash)} sticky={role !== ROLES.BARCODES}
-                            onHome={() => { setRole(null); if (window.location.hash) window.location.hash = ""; }} />
+                            backLabel={parentOf({ role, hash }).label}
+                            onBack={() => {
+                              // Up ONE level in the route hierarchy (skyNav.js), not
+                              // browser history: an item → its list; a card → Admin.
+                              const up = parentOf({ role, hash: window.location.hash });
+                              if (up.level === "card") { window.location.hash = up.hash; return; }
+                              requestHomePanel(up.panel);
+                              setRole(null); if (window.location.hash) window.location.hash = "";
+                            }}
+                            onHome={() => { requestHomePanel(null); setRole(null); if (window.location.hash) window.location.hash = ""; }} />
           )}
           {view}
         </AppErrorBoundary>
