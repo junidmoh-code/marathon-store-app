@@ -97,6 +97,13 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 // offering 220 variants it had none of. See inventorySync.mjs.
 import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, releasedBySize, onlineHoldAdjustment } from "./inventorySync.mjs";
 import { sweepMovements } from "./movementSync.mjs";
+// PRICE. The app owns it; this module is the only place that decides the
+// number Shopify shows (retail, never the trade price), drains the
+// shopifyPriceDirty markers every tick, and runs the price backstop on its own
+// cadence. See priceSync.mjs.
+import {
+  shopifyPriceFor, sweepPriceDirty, sweepPriceBackstop, PRICE_BACKSTOP_INTERVAL_MS,
+} from "./priceSync.mjs";
 import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
 import { metaReadyFirstPhoto } from "./metaReadyCreate.mjs";
 import { drainAutoPublish } from "./autoPublish.mjs";
@@ -807,7 +814,7 @@ for (const { pid, want } of capped) {
     }
 
     const problems = [];
-    if (!(Number(product.retailPrice) > 0)) problems.push("no retailPrice > 0");
+    if (shopifyPriceFor(product) == null) problems.push("no retailPrice > 0");
     const sizes = Array.isArray(product.sizes) && product.sizes.length ? sortSizes(product.sizes) : null;
     if (!sizes) problems.push("no sizes array");
     if (sizes) problems.push(...findSizeCollisions(sizes));
@@ -947,7 +954,7 @@ for (const { pid, want } of capped) {
         await refuse(pid, "another listing on the shop already carries this exact title. A new name has been asked for automatically; it will appear under Suggested names when it is ready.");
         continue;
       }
-      const price = Number(product.retailPrice).toFixed(2);
+      const price = shopifyPriceFor(product);
       const created = await graphql(
         `mutation ($input: ProductSetInput!) {
           productSet(synchronous: true, input: $input) {
@@ -1031,7 +1038,7 @@ for (const { pid, want } of capped) {
       // The create path prices every variant at creation; the mapped path must
       // push the CURRENT retailPrice too — a price correction made while the
       // product sat OFF would otherwise go live stale.
-      const priceNow = Number(product.retailPrice).toFixed(2);
+      const priceNow = shopifyPriceFor(product);
       const priced = await graphql(
         `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
           productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
@@ -1509,6 +1516,9 @@ let inventoryCursorWritten = false;
 // different rates.
 let markerCursor = null;
 let markerCursorWritten = false;
+// The price backstop's own cadence (PRICE_BACKSTOP_INTERVAL_MS). Stamped only
+// when it ran to the end, so a failed run is retried on the next due sweep.
+let priceSweptAt = null;
 // The live set this tick read, hoisted so the inventory backstop can re-use it
 // instead of paying 747 KB for its own copy. Null when the sweep did not run or
 // could not read it — the backstop then simply does not run this tick.
@@ -1624,6 +1634,29 @@ if (!ONLY) try {
   console.error(`  ⚠ inventory sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
 }
 
+// ── The price sweep — an app price edit reaches the website next tick ───────
+// Same shape as the inventory sweep above, and for the same defect: the apply
+// block above priced a product ONCE, when it went live, and a later edit in the
+// app never reached Shopify (p1778140291773: R700 in the app, R450 online,
+// 6 Nov 2026). The shopifyPriceDirty trigger marks the product when its
+// retailPrice changes; this drains the marks. A quiet tick costs one read of
+// an empty node. A failure never fails the tick — the markers survive.
+if (!ONLY) try {
+  const pr = await sweepPriceDirty(db, graphql, {
+    commit: true,
+    isLive: listed,
+    now: () => runStartedAt,
+    log: (line) => console.log(line),
+  });
+  if (pr.seen) {
+    console.log(`\nprice: ${pr.seen} marker(s) · ${pr.pushed} product(s) re-priced on Shopify · ${pr.cleared} cleared` +
+      (pr.kept ? ` · ${pr.kept} kept (they retry)` : ""));
+    for (const r of pr.results) if (r.ok === false) console.error(`  ⚠ price ${r.pid}: ${r.why}`);
+  }
+} catch (e) {
+  console.error(`  ⚠ price sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
+}
+
 // ── The review list's stock gate (docs/SHOPIFY-REVIEW-INSTOCK.md) ───────────
 // Hides products with no sellable stock from the Publisher's review list, and
 // shows them again when stock returns. It writes ONLY
@@ -1705,6 +1738,33 @@ if (!ONLY && sweepDue && liveNow) {
     } catch (e) {
       console.error(`  ⚠ inventory backstop failed (${String(e?.message || e)}) — the cursor is unchanged, the next sweep resumes there`);
     }
+}
+
+// ── THE PRICE BACKSTOP — Shopify's price for every live product, checked ────
+// The markers are the fast path. This catches whatever they cannot: a marker
+// lost to a failed trigger, a price typed in Shopify admin, an import. The app
+// owns price, so a disagreement is always settled in the app's favour and
+// logged (/shopify_sync/_priceLog/{pid}). Rides the live set the search-index
+// sweep already paid for, on its own slower cadence: one Shopify bulk query and
+// two tiny RTDB reads per live product.
+if (!ONLY && liveNow && runStartedAt - (Number(scanState?.lastPriceSweepAt) || 0) >= PRICE_BACKSTOP_INTERVAL_MS) {
+  try {
+    const pb = await sweepPriceBackstop(db, graphql, {
+      livePids: liveNow,
+      commit: true,
+      now: () => runStartedAt,
+      log: (line) => console.log(line),
+    });
+    console.log(`price backstop: ${pb.checked} checked · ${pb.drifted} disagreed · ${pb.fixed} corrected` +
+      (pb.failed ? ` · ${pb.failed} failed` : "") + (pb.refused ? " · REFUSED (over the cap — see above)" : ""));
+    for (const r of pb.results) if (r.ok === false) console.error(`  ⚠ price ${r.pid}: ${r.why}`);
+    // Stamped whenever the run COMPARED, even with failures or a refusal: a
+    // standing failure is reported every 3 h, not re-paid every 30 minutes.
+    // Only a run that threw before comparing leaves the stamp for a retry.
+    priceSweptAt = runStartedAt;
+  } catch (e) {
+    console.error(`  ⚠ price backstop failed (${String(e?.message || e)}) — it runs again on the next sweep`);
+  }
 }
 
 // ── LIVE MEDIA — photos and videos on products already on the shop ─────────
@@ -1862,6 +1922,7 @@ if (COMMIT && !ONLY) {
     ...(sweepRan ? { lastSweepAt: runStartedAt } : sweepUnfinished ? { lastSweepAt: null } : {}),
     ...(inventoryCursorWritten ? { inventoryCursor } : {}),
     ...(markerCursorWritten ? { markerCursor } : {}),
+    ...(priceSweptAt ? { lastPriceSweepAt: priceSweptAt } : {}),
     ...(mediaCursor ? { mediaCursor } : {}),
     // What this reconciler understands. relist-in-stock.mjs refuses to write
     // a relistKeep intent unless a recent tick stamped this: an older
