@@ -43,9 +43,9 @@ try {
   else {
     const path = `${EFT_FINGERPRINT_PATH}/${plan.fingerprint}`;
     const before = (await db.ref(path).once("value")).val();
-    console.log(`· ${refusedKey} (${refused.outcome}, ${refused.reader}) and ${spenderKey} (used) are the same ${refused.amountCents}c payment`);
+    console.log(`· ${refusedKey} (${refused.outcome}, ${refused.reader}) and ${spenderKey} (manual entry, ${spender.status}) are the same ${refused.amountCents}c payment`);
     console.log(`· ${path} now: ${JSON.stringify(before)}`);
-    if (!EXECUTE) console.log("· dry run — re-run with --execute to mark the bank id spent by the used record");
+    if (!EXECUTE) console.log("· dry run — re-run with --execute to mark the bank id spent by the manual entry");
     else {
       // The server's clock, not this machine's (serverNowMs, as in the poller).
       const offset = (await db.ref(".info/serverTimeOffset").once("value")).val() || 0;
