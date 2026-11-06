@@ -121,8 +121,16 @@ async function handleLine(ctx, key, row) {
   // A swap whose difference credit (or its message) never happened — a crash
   // between the swap and the money (Sonnet review, PR #778): finish it.
   const out = line.resolution?.outcome;
-  if (out?.kind === "swap" && conv.state === "closed" && !Object.values(conv.sends || {}).some((x) => x?.kind === "swapped")) {
-    const diff = out.creditCents > 0 ? await money(ctx, orderId, order, i, line, "credit", out.creditCents, "swap difference") : null;
+  // Only the agent's own swap (never a CLI, POS or Jamie swap: their money waits for Junid; Sonnet review of #848, 4), only
+  // on the line it swapped (never a follow-up that copies its outcome: 3), and money only for its own pre-claim (the swap
+  // wrote it with the line); a credit with no pre-claim is Junid's.
+  const ownSwap = out?.kind === "swap" && out.via === "agent" && !order.followUpOf;
+  if (ownSwap && conv.state === "closed" && !Object.values(conv.sends || {}).some((x) => x?.kind === "swapped")) {
+    const pm = line.resolution?.money;
+    const preclaimed = !!pm && typeof pm === "object" && pm.preclaimed === true && Number(pm.at) === Number(out.at) && pm.kind === "credit";
+    const settledAlready = Object.values(line.resolution?.moneySettled || {}).some((x) => x && x.kind === "credit" && Number(x.at) === Number(out.at));
+    if (out.creditCents > 0 && !preclaimed && !settledAlready && !(pm && pm.at && Number(pm.at) === Number(out.at))) await tellJunid(ctx, `Website order ${order.ref}: a swap's ${rands(out.creditCents)} credit has no record of being filed`, [`Line: ${line.title}. The customer is told of the swap only; please check Shopify and credit it by hand if it is owed.`]);
+    const diff = out.creditCents > 0 && preclaimed ? await money(ctx, orderId, order, i, line, "credit", out.creditCents, "swap difference") : out.creditCents > 0 && (settledAlready || (pm && Number(pm.at) === Number(out.at))) ? (settledAlready ? { state: "done" } : pm) : null;
     // A packed order's follow-up mirror is brought in line with the parent's result too (CodeRabbit on #848).
     if (out.creditCents > 0 && (line.source?.movedTo || out.movedTo)) await syncMirror(ctx, orderId, i, { claimAt: Number(out.at), creditCents: out.creditCents, diff });
     // A pre-claim met again is NOT proof the credit was filed (CodeRabbit on #848): the customer hears the amount only when
@@ -487,7 +495,11 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
 // ── credit / refund ─────────────────────────────────────────────────────────
 async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
   // What is left of what was paid for the line (the ledger; review of #846, 5): never the full price again after a credit.
-  let amount = lineLedger(line, { priceCents: 0, now: ctx.now }).refundableCents;
+  const lg0 = lineLedger(line, { priceCents: 0, now: ctx.now });
+  // A refund goes back to the order's own payment only, never above what it took (Sonnet review of #848, 1); a difference
+  // collected on its own PayFast payment is Junid's to give back there.
+  let amount = kind === "refund" ? lg0.refundToOriginalCents : lg0.refundableCents;
+  const heldBack = kind === "refund" ? lg0.refundableCents - lg0.refundToOriginalCents : 0;
   if (!(amount > 0)) {
     // Told once (CodeRabbit on #847): a marker on the conversation, so the next run (or the 48-hour credit) is silent.
     if (line.resolution?.conversation?.nothingLeftAt) return;
@@ -499,13 +511,17 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
   }
   const res = await money(ctx, orderId, order, i, line, kind, amount, messageKind === "auto_credit" ? "no reply in 48 hours" : `the customer chose ${kind}`);
   if (!res) {
-    // Refused (a money slot already on the line): Junid hears once, in the app; the customer is told nothing false.
+    // Refused. A money slot already on the line: Junid hears once, in the app; the line merely changed meanwhile (the
+    // claim's write aborted): tried again next run, nothing said (Sonnet review of #848, minor).
+    const nowMoney = await ctx.get(`${ONLINE_ORDERS_PATH}/${orderId}/lines/${i}/resolution/money`);
+    if (!nowMoney) return;
     if (!line.resolution?.conversation?.settleRefusedAt) {
       await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, settleRefusedAt: ctx.now } } } : undefined));
       await tellJunid(ctx, `Website order ${order.ref}: the customer asked for ${kind}, but the line already has money on it`, [`Line: ${line.title}. Nothing was sent to the customer; settle the line's money first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go").`]);
     }
     return;
   }
+  if (heldBack > 0) await tellJunid(ctx, `Website order ${order.ref}: refund of ${rands(amount)} filed; ${rands(heldBack)} more was paid separately`, [`Line: ${line.title}. The customer also paid a ${rands(heldBack)} difference on its own PayFast payment for the swap; a refund never goes above what the order's payment took, so that part is NOT in this refund. Refund it on that PayFast payment by hand, or tell Jamie to credit it.`]);
   // What Shopify actually refunded (it may suggest less than the line).
   if (Number.isInteger(res.paidCents) && res.paidCents > 0) amount = res.paidCents;
   const windowUntil = messageKind === "auto_credit" ? ctx.now + REFUND_WINDOW_MS : null;

@@ -63,6 +63,10 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   return {
     paidCents: paid, settledCents: settled, nowCents, creditCents: Math.max(0, net), extraCents: Math.max(0, -net),
     refundableCents: Math.max(0, paid - settled),
+    // What a REFUND may send back to the order's own payment (Sonnet review of #848, 1): never the collected difference
+    // (it came in on its own PayFast payment), never more than the order's payment took for the line.
+    refundToOriginalCents: Math.max(0, Math.min(paid - settled, paidCents(line) - settled)),
+    paidInCents: paidIn,
     busy: isObj && m.state === "claimed" && !stale,
     unclear: !!unclearWhy, unclearWhy,
     // Never moved money: superseded by the next swap (a definite refusal, or a pending request).
@@ -152,8 +156,10 @@ export function canSend(conversation) {
 export function moneyAllowed(money, { kind, amountCents, line }) {
   if (kind !== "credit" && kind !== "refund") return { ok: false, why: "unknown money action" };
   if (money) return { ok: false, why: `this line already has a ${money.kind} (${rands(money.amountCents)}) — never both, never twice` };
-  // What is left of what was paid, after money already given back for this line (the ledger, COMMIT 6).
-  const left = lineLedger(line, { priceCents: 0 }).refundableCents;
+  // What is left of what was paid, after money already given back for this line (the ledger, COMMIT 6). A refund is capped
+  // at what the order's own payment took for the line (Sonnet review of #848, 1).
+  const lg0 = lineLedger(line, { priceCents: 0 });
+  const left = kind === "refund" ? lg0.refundToOriginalCents : lg0.refundableCents;
   if (!Number.isInteger(amountCents) || amountCents <= 0) return { ok: false, why: "nothing to pay" };
   if (amountCents > left) return { ok: false, why: `${rands(amountCents)} is more than the ${rands(left)} left of what was paid for this line` };
   return { ok: true };
@@ -220,7 +226,9 @@ export function composeMessage(kind, { ref, firstName, line, offers = [], amount
   const parts = [hi, "", words.opening, ""];
   const tag = subjectTag(ref, line);
   // What is still to give back for the line (the ledger), never the full price when part of it went back already.
-  const left = lineLedger(line, { priceCents: 0 }).refundableCents;
+  const lgL = lineLedger(line, { priceCents: 0 });
+  const left = lgL.refundableCents;
+  const leftRefund = lgL.refundToOriginalCents;
   if (kind === "offer" || kind === "costs_more" || kind === "unclear" || kind === "gone") {
     if (kind === "gone") parts.push("That one has just sold out, so we can't swap to it.", "");
     if (kind === "costs_more") parts.push(`That one costs ${rands(amountCents)} more than what you paid, and we'll never ask you to pay more — so we can't swap to it.`, "");
@@ -229,9 +237,9 @@ export function composeMessage(kind, { ref, firstName, line, offers = [], amount
       parts.push(kind === "offer" ? "These are in stock in your size and close in price:" : "Your choices again:");
       offers.forEach((o, i) => parts.push(`  ${i + 1}. ${o.title} — ${rands(o.priceCents)} — ${o.url}`));
       parts.push("");
-      parts.push(`Reply with the number you want (1${offers.length > 1 ? `–${offers.length}` : ""}), or the word "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(left)}.`);
+      parts.push(`Reply with the number you want (1${offers.length > 1 ? `–${offers.length}` : ""}), or the word "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(leftRefund)}.`);
     } else {
-      parts.push(`Reply "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(left)}.`);
+      parts.push(`Reply "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(leftRefund)}.`);
     }
     parts.push(`If we don't hear from you in 48 hours we'll put ${rands(left)} on your account as store credit, and you can still ask for a refund instead for 14 days after that.`);
   } else if (kind === "refunded_full") {

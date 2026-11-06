@@ -14,6 +14,7 @@ import { candidateCode } from "./orderRefs.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import { swapOnlineOrderLine, swappedLine, swapFromRecord, lineLedger } from "../../lib/swap-line.mjs";
 import { runCustomerAgent } from "../../online/agent/run.mjs";
+import { moneyAllowed } from "../../online/agent/core.mjs";
 import { planProduct } from "../inventorySync.mjs";
 import { holdRowsFor } from "./orderModel.mjs";
 
@@ -437,6 +438,35 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(Object.values(line(f, 1).resolution.moneyIn || {})).toHaveLength(1);
     expect(down.creditCents).toBe(lineLedger(line(f, 1), { priceCents: line(f, 1).unitPriceCents }).paidCents - line(f, 1).unitPriceCents * (Number(line(f, 1).qty) || 1));
     expect(down.creditCents).toBeGreaterThanOrEqual(5000);
+  });
+
+  it("Sonnet review of #848, 1-2: a payment above the difference, with no difference, or a reused ref is refused, nothing written", async () => {
+    const { f } = await ingested();
+    const big = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: 9999999, paidInRef: "PFX", by: YASMIN, via: "cli", now: NOW, increment });
+    expect(big.ok).toBe(false);
+    expect(big.summary || big.why || "").toMatch(/more than the/);
+    expect(line(f, 1).pid).not.toBe("JKT");
+    const ok = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: 5000, paidInRef: "PF9", by: YASMIN, via: "cli", now: NOW, increment });
+    expect(ok.ok).toBe(true);
+    const back = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "TEE", size: "M", paidInCents: 5000, paidInRef: "PF10", by: YASMIN, via: "cli", now: NOW + 1, increment });
+    expect(back.ok).toBe(false); // a cheaper swap has no difference to pay
+    const down = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "TEE", size: "M", by: YASMIN, via: "cli", now: NOW + 2, increment });
+    expect(down.ok).toBe(true);
+    // the same PF9 again for a second dearer swap: refused, counted once
+    const again = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: 5000, paidInRef: "PF9", by: YASMIN, via: "cli", now: NOW + 3, increment });
+    expect(again.ok).toBe(false);
+    expect(again.summary || again.why || "").toMatch(/already counted/);
+    expect(Object.values(line(f, 1).resolution?.moneyIn || {})).toHaveLength(1);
+  });
+
+  it("Sonnet review of #848, 1: a refund never includes the difference paid on its own PayFast payment", () => {
+    const l = { qty: 1, unitPriceCents: 80000, originalUnitPriceCents: 50000, resolution: { moneyIn: { a: { state: "done", amountCents: 30000 } } } };
+    const lg = lineLedger(l, { priceCents: 0 });
+    expect(lg.refundableCents).toBe(80000);
+    expect(lg.refundToOriginalCents).toBe(50000);
+    expect(moneyAllowed(null, { kind: "refund", amountCents: 80000, line: l }).ok).toBe(false);
+    expect(moneyAllowed(null, { kind: "refund", amountCents: 50000, line: l }).ok).toBe(true);
+    expect(moneyAllowed(null, { kind: "credit", amountCents: 80000, line: l }).ok).toBe(true);
   });
 
   it("CodeRabbit on #848: a bad paidInCents is refused, nothing swapped", async () => {

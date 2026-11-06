@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { fakeDb, increment } from "../../shopify/onlineOrders/fakeDb.testutil.mjs";
 import { runCustomerAgent, money } from "./run.mjs";
+import { lineLedger } from "./core.mjs";
 import {
   MAX_OUTBOUND, parseReplyCode, validateClassification, moneyAllowed, judgeSwap, acceptModelText,
   composeMessage, canSend, paidCents, stripQuoted, fallbackWords,
@@ -567,12 +568,42 @@ describe("review of #846: held picks, the ledger on settle", () => {
     const conv0 = conv(f);
     const sends = Object.fromEntries(Object.entries(conv0.sends || {}).filter(([, x]) => x?.kind !== "swapped"));
     await f.db.ref("online_orders/9001/lines/0/resolution/conversation/sends").set(sends);
-    await f.db.ref("online_orders/9001/lines/0/resolution/money").set({ kind: "credit", amountCents: 1000, state: "claimed", at: NOW + 1, why: "swap difference", preclaimed: true });
+    await f.db.ref("online_orders/9001/lines/0/resolution/money").set({ kind: "credit", amountCents: 1000, state: "claimed", at: NOW, why: "swap difference", preclaimed: true });
     const before = h.mails.length;
     await h.run();
     const sent = h.mails.slice(before);
     expect(sent.length).toBe(1);
     expect(sent[0].text).not.toMatch(/store credit/);
     expect(h.junid.some((m) => /CHECK SHOPIFY/.test(m.subject))).toBe(true);
+  });
+
+  it("Sonnet review of #848, 3-4: recovery never files money for a CLI/Jamie swap, a follow-up copy, or a swap with no pre-claim", async () => {
+    for (const variant of ["cli", "followUp", "noPreclaim"]) {
+      const f = fakeDb(world());
+      const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+      await h.run();
+      const at = NOW - 1000;
+      await f.db.ref("online_orders/9001/lines/0/resolution/outcome").set({ kind: "swap", pid: "ALT1", creditCents: 1000, at, via: variant === "cli" ? "cli" : "agent" });
+      await f.db.ref("online_orders/9001/lines/0/resolution/conversation/state").set("closed");
+      if (variant === "followUp") await f.db.ref("online_orders/9001/followUpOf").set("9000");
+      if (variant !== "noPreclaim") await f.db.ref("online_orders/9001/lines/0/resolution/money").set(null);
+      const credits = () => h.gql.filter((g) => /storeCreditAccountCredit/.test(g.q)).length;
+      const before = credits();
+      await h.run();
+      expect(credits(), variant).toBe(before);
+    }
+  });
+
+  it("Sonnet review of #848, 1: a refund after a paid difference sends only what the order's payment took; Junid hears of the rest", async () => {
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions", "write_orders"] });
+    await h.run();
+    await h.run({ inbox: { replies: async () => [reply("refund")] } });
+    const m = f.read("online_orders/9001/lines/0/resolution/money") || {};
+    const out = f.read("online_orders/9001/lines/0/resolution/outcome") || {};
+    const amt = Number(m.amountCents ?? out.amountCents);
+    const l0 = f.read("online_orders/9001/lines/0");
+    expect(amt).toBe(lineLedger({ ...l0, resolution: {} }, { priceCents: 0 }).paidCents); // the order's own payment, not + R30
+    expect(h.junid.some((x) => /paid separately/.test(x.subject))).toBe(true);
   });
 });
