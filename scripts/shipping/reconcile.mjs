@@ -165,23 +165,25 @@ export function weeklyLine(shipments, weekStartMs, { createdBy = "marathon-pos" 
   const end = weekStartMs + 7 * DAY;
   const rows = (shipments ?? []).filter((s) => s?.created_by === createdBy && s.status !== "cancelled"
     && Date.parse(s.time_created) >= weekStartMs && Date.parse(s.time_created) < end);
+  // Like for like: our quotes are summed over the SAME invoiced bookings as the invoices.
   let quoted = 0, invoiced = 0, nInvoiced = 0, over = 0, nOver = 0, under = 0, nUnder = 0;
   for (const s of rows) {
     const q = num(s.original_rate) ?? num(s.rate) ?? 0;
-    quoted += q;
     if (s.has_been_invoiced) {
       const f = num(s.rate) ?? q;
-      invoiced += f; nInvoiced++;
+      quoted += q; invoiced += f; nInvoiced++;
       if (q - f > 0.005) { over += q - f; nOver++; }
       if (f - q > 0.005) { under += f - q; nUnder++; }
     }
   }
   const span = `${dayWords(weekStartMs)}–${dayWords(end - DAY)}`;
   if (!rows.length) return `Courier ${span}: no bookings.`;
-  const inv = nInvoiced === rows.length ? `invoiced ${R(invoiced)}` : `invoiced ${R(invoiced)} (${nInvoiced} of ${rows.length} invoiced so far)`;
+  const n = `${rows.length} booking${rows.length === 1 ? "" : "s"}`;
+  if (!nInvoiced) return `Courier ${span}: ${n}, none invoiced yet.`;
+  const scope = nInvoiced === rows.length ? "" : ` (the ${nInvoiced} invoiced so far)`;
   const overWords = nOver ? `overpaid ${R(over)} on ${nOver} (re-rated down by TCG)` : "overpaid R0.00";
   const underWords = nUnder ? `, under-quoted ${R(under)} on ${nUnder}` : "";
-  return `Courier ${span}: ${rows.length} booking${rows.length === 1 ? "" : "s"}, our quotes ${R(quoted)} vs ${inv}; ${overWords}${underWords}.`;
+  return `Courier ${span}: ${n}; our quotes ${R(quoted)} vs invoiced ${R(invoiced)}${scope}; ${overWords}${underWords}.`;
 }
 
 // ── the runner's body ───────────────────────────────────────────────────────

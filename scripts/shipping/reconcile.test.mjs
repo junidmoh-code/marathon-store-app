@@ -123,11 +123,12 @@ describe("the weekly line", () => {
       sh({ created_by: "distreda-794196", original_rate: 999 }), // staff portal bookings are not ours
       sh({ time_created: "2026-10-30T09:00:00Z", original_rate: 999 }), // the week before
     ], lastWeekStart(NOW));
-    expect(line).toBe("Courier 2 Nov–8 Nov: 3 bookings, our quotes R641.52 vs invoiced R597.84; overpaid R106.08 on 1 (re-rated down by TCG), under-quoted R62.40 on 1.");
+    expect(line).toBe("Courier 2 Nov–8 Nov: 3 bookings; our quotes R641.52 vs invoiced R597.84; overpaid R106.08 on 1 (re-rated down by TCG), under-quoted R62.40 on 1.");
   });
 
   it("says when not everything is invoiced yet, and when there was nothing", () => {
-    expect(weeklyLine([sh({}), sh({ has_been_invoiced: false })], lastWeekStart(NOW))).toMatch(/invoiced R100\.00 \(1 of 2 invoiced so far\); overpaid R0\.00\.$/);
+    expect(weeklyLine([sh({}), sh({ has_been_invoiced: false })], lastWeekStart(NOW))).toBe("Courier 2 Nov–8 Nov: 2 bookings; our quotes R100.00 vs invoiced R100.00 (the 1 invoiced so far); overpaid R0.00.");
+    expect(weeklyLine([sh({ has_been_invoiced: false })], lastWeekStart(NOW))).toBe("Courier 2 Nov–8 Nov: 1 booking, none invoiced yet.");
     expect(weeklyLine([], lastWeekStart(NOW))).toBe("Courier 2 Nov–8 Nov: no bookings.");
   });
 });
@@ -152,7 +153,7 @@ describe("runReconcile — one pass", () => {
     expect(d.root[RECON_PATH].diffs.VL4G7H).toMatchObject({ share: -0.3 });
     expect(Object.keys(d.root[RECON_PATH].samples["shoebox_3_"])).toEqual(["VL4G7H"]);
     expect(sent.map((x) => x[0])).toEqual(["courier-ceiling-9_352", "courier-week-2026-11-02"]);
-    expect(out.weekly).toMatch(/^Courier 2 Nov–8 Nov: 1 booking, our quotes R355\.68 vs invoiced R249\.60; overpaid R106\.08 on 1/);
+    expect(out.weekly).toMatch(/^Courier 2 Nov–8 Nov: 1 booking; our quotes R355\.68 vs invoiced R249\.60; overpaid R106\.08 on 1/);
 
     // The open set was seeded once (order 2 already invoiced: never in it) and emptied by the reconcile.
     expect(d.root[RECON_PATH].seededAt).toBe(NOW);
@@ -181,7 +182,7 @@ describe("runReconcile — one pass", () => {
     const pages = [page(50, 0), page(50, 50), []];
     const c = { getShipments: async (q) => (q.tracking_reference ? { shipments: [] } : { shipments: pages[q.offset / 50] ?? [] }) };
     const out = await runReconcile({ db: withQueries(d), client: c, sendJunid: async () => true, now: NOW });
-    expect(out.weekly).toMatch(/: 100 bookings,/);
+    expect(out.weekly).toMatch(/: 100 bookings;/);
   });
 
   it("a line Jamie could not take is kept for the next pass", async () => {
