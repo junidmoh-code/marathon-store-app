@@ -44,3 +44,4 @@ functions/test/fixtures/Till2FNB-Txn-Notification.expected.json
 functions/test/fixtures/Till2FNB-Txn-Notification.lines.json
 functions/test/fixtures/Till3-Batch81-Empty-FNB-Txn-Notification.expected.json
 functions/test/fixtures/Till3-Batch81-Empty-FNB-Txn-Notification.lines.json
+scripts/out/

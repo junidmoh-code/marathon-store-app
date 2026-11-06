@@ -31,17 +31,17 @@ import { FONT, BG, CARD, BORDER, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGray,
 import {
   HUB_COUNT_PAGE_SIZE,
   canAdjustHubCount,
-  isHubCountSuperAdmin,
 } from "../../config/hubSneakerCount";
 import {
   hubOptions, buildHubRows, seededRowFor, mergeSeededRows, progressOf,
-  isRowSettled, historyRows, filterRows, cellKey, recoverSeededRows, recordIsCurrent,
+  isRowSettled, historyRows, filterRows, cellKey, recoverSeededRows, recordIsCurrent, countsAllCategories,
 } from "./hubCountCore";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
   confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
-  COUNT_MODE_HUBS, loadHubCountMode, setHubCountMode,
+  COUNT_MODE_HUBS,
 } from "./hubCountStore";
+import { CountModeToggle } from "./CountModeToggle.jsx";
 import { loadOffShelfSources, offShelfForCell, expectedOnShelf } from "./offShelf";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
@@ -190,7 +190,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
         // reload — or the second counter's tablet — sees them. Without this the
         // records exist in RTDB but no row does, and the same shelf gets counted
         // twice while progress quietly disagrees with itself.
-        setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock, products }));
+        setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock, products, allCategories: countsAllCategories(hub) }));
       } catch (err) {
         if (!cancelled) setLoadError(String(err?.message || err));
       } finally {
@@ -211,8 +211,8 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   );
 
   const hubRows = useMemo(
-    () => (snapshot ? buildHubRows({ products: catalogue, hubStock: snapshot.hubStock }) : []),
-    [snapshot, catalogue]
+    () => (snapshot ? buildHubRows({ products: catalogue, hubStock: snapshot.hubStock, allCategories: countsAllCategories(hub) }) : []),
+    [snapshot, catalogue, hub]
   );
   const rows = useMemo(() => mergeSeededRows(hubRows, seeded), [hubRows, seeded]);
   const progress = useMemo(() => progressOf(rows, counted), [rows, counted]);
@@ -241,13 +241,13 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   const addMatches = useMemo(
     () => searchProducts(catalogue, addQuery, {
       limit: 12,
-      predicate: (p) => isFootwearProduct(p) && !alreadyListed.has(p.id),
+      predicate: (p) => (countsAllCategories(hub) || isFootwearProduct(p)) && !alreadyListed.has(p.id),
     }),
-    [catalogue, addQuery, alreadyListed]
+    [catalogue, addQuery, alreadyListed, hub]
   );
 
   const addProduct = (p) => {
-    const row = seededRowFor(p);
+    const row = seededRowFor(p, { allCategories: countsAllCategories(hub) });
     if (!row) return flash("err", `${p.name} has no countable sizes.`);
     setSeeded((s) => (s.some((r) => r.id === row.id) ? s : [...s, row]));
     setAddQuery("");
@@ -396,7 +396,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
     try {
       const recorded = await loadCounted(hub, session.sessionId);
       setCounted(recorded || {});
-      setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock: snapshot?.hubStock || {}, products: catalogue }));
+      setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock: snapshot?.hubStock || {}, products: catalogue, allCategories: countsAllCategories(hub) }));
       // The off-shelf picture refreshes on the same tap — a display that
       // changed size since entry moves to its new cell here, and a failed
       // entry load gets its retry (writes unblock only on success).
@@ -423,7 +423,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <button onClick={onExit} style={{ ...bGray, padding: "7px 12px" }}>← Back</button>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>Hub Sneaker Count</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>{countsAllCategories(hub) ? "Hub Count — every category" : "Hub Sneaker Count"}</div>
           <div style={{ fontSize: 11, color: GRAY }}>Temporary stock-take · counts are recorded, corrections are ledgered</div>
         </div>
       </div>
@@ -443,7 +443,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
             {session?.sessionId && <span style={{ color: GRAY }}> · session {session.sessionId.slice(-6)}</span>}
           </div>
         )}
-        {COUNT_MODE_HUBS.includes(hub) && (isHubCountSuperAdmin(viewer) || viewer?.stockRole === "admin") && (
+        {COUNT_MODE_HUBS.includes(hub) && canAdjust && (
           <CountModeToggle hub={hub} />
         )}
       </Card>
@@ -502,51 +502,6 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
       )}
       <PhotoLightbox url={photo} onClose={() => setPhoto(null)} />
       <Toast msg={toast} />
-    </div>
-  );
-}
-
-// ── HUB 3 COUNT MODE — the one toggle (owner + admin) ─────────────────────────
-// ON  → refill engine paused for Hub 3 AND uncounted Hub 3 sales not deducted.
-// OFF → both cleared, one tap. Reads both flags one-shot; shows "mixed" if a
-// console edit left them disagreeing, and the next tap sets both together.
-export function CountModeToggle({ hub }) {
-  const [state, setState] = useState(null);   // { paused, countMode, on } | null while loading
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
-  useEffect(() => {
-    let live = true;
-    loadHubCountMode(hub).then((s) => { if (live) setState(s); }).catch((e) => { if (live) setMsg(String(e?.message || e)); });
-    return () => { live = false; };
-  }, [hub]);
-  const mixed = !!state && state.paused !== state.countMode;
-  const on = !!state && state.on;
-  const flip = async () => {
-    if (busy || !state) return;
-    setBusy(true); setMsg("");
-    const want = mixed ? true : !on;
-    const r = await setHubCountMode(hub, want);
-    if (r.state) setState(r.state);
-    else if (r.ok) setState({ paused: want, countMode: want, on: want });
-    if (!r.ok) setMsg(r.message || "Could not switch.");
-    setBusy(false);
-  };
-  return (
-    <div data-testid="count-mode-toggle" style={{ marginTop: 10, padding: "10px 11px", borderRadius: 11,
-      border: on ? "1px solid rgba(251,191,36,.5)" : BORDER, background: on ? "rgba(251,191,36,.08)" : "transparent" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: "#fff", lineHeight: 1.4 }}>
-          <strong>Hub 3 counting — engine paused, uncounted sales not deducted</strong>
-          <div style={{ fontSize: 11, color: on ? AMBER : GRAY }}>
-            {!state ? "Reading…" : mixed ? "Mixed — one flag is on, one is off. Tap to switch both ON." : on ? "ON — tap when the count is finished to switch both off." : "OFF"}
-          </div>
-        </div>
-        <button onClick={flip} disabled={busy || !state} aria-pressed={on}
-          style={{ ...(on ? bGreen : bGray), padding: "8px 14px", opacity: busy || !state ? 0.6 : 1 }}>
-          {busy ? "…" : on ? "ON" : "OFF"}
-        </button>
-      </div>
-      {msg && <div style={{ marginTop: 6, fontSize: 11.5, color: RED }}>{msg}</div>}
     </div>
   );
 }

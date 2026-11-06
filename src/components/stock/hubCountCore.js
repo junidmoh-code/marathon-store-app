@@ -28,6 +28,7 @@
 // a stock cell.
 
 import { isFootwearProduct, footwearSizeRank } from "./missingFootwearCore";
+import { productIsFootwear } from "../../utils/footwearLine";
 import { decodeSizeKey, stockSizeKey } from "../../utils/sizeKey";
 import { warehouseLocations, labelFor } from "./locations";
 import { SIZES_FOOTWEAR } from "../../utils/productTaxonomy";
@@ -55,6 +56,37 @@ export function hubOptions(registry) {
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+// ── EVERY CATEGORY (Hub 3, Junid 6 Nov 2026) ─────────────────────────────────
+// Hub 3 holds shoes AND clothing (and one-size lines) for the Concrete
+// division, and is recounted from zero. At these hubs the count lists every
+// product holding a cell; Marathon's hubs keep the sneaker-only count.
+export const ALL_CATEGORY_COUNT_HUBS = Object.freeze(["hub3"]);
+export function countsAllCategories(hub) {
+  return ALL_CATEGORY_COUNT_HUBS.includes(hub);
+}
+// At an all-category hub (config/hubSneakerCount.js countsAllCategories) the
+// count lists every product, and the one-size "_" cell of a NON-footwear
+// product (a bag, a cap, a one-size tee) is a real shelf cell. A shoe's "_" cell
+// stays excluded everywhere — rule 3 above still holds for footwear.
+export function isOneSizeCountable(product) {
+  return !!product && !isFootwearProduct(product) && !productIsFootwear(product);
+}
+/** Countable cell for THIS product at a hub counted in `allCategories` mode? */
+export function isCountableCellKey(k, product, allCategories = false) {
+  if (k === ONE_SIZE_SENTINEL) return !!allCategories && isOneSizeCountable(product);
+  return isCountableSizeKey(k);
+}
+
+const CLOTHING_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "2XL", "XXXL", "3XL", "4XL", "5XL"];
+/** Size order: one-size first, then the clothing run, then numbers (shoe sizes, waists), then the rest. */
+export function sizeRank(sizeKey) {
+  if (sizeKey === ONE_SIZE_SENTINEL) return -1;
+  const i = CLOTHING_ORDER.indexOf(String(sizeKey).toUpperCase());
+  if (i >= 0) return i / 100;
+  return footwearSizeRank(sizeKey) === 999 ? 9999 : footwearSizeRank(sizeKey);
+}
+const bySize = (a, b) => (sizeRank(a.sizeKey) - sizeRank(b.sizeKey)) || String(a.sizeKey).localeCompare(String(b.sizeKey));
+
 /** Stable identity of one countable cell, used as the session record key. */
 export function cellKey(productId, sizeKey) {
   return `${productId}::${sizeKey}`;
@@ -62,6 +94,7 @@ export function cellKey(productId, sizeKey) {
 
 /** Display label for a stored (encoded) size key: "5_5" → "5.5". */
 export function sizeLabelOf(sizeKey) {
+  if (sizeKey === ONE_SIZE_SENTINEL) return "One size";
   return decodeSizeKey(sizeKey);
 }
 
@@ -76,7 +109,7 @@ const qtyOf = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
  *                  (encoded size keys, exactly as stored — no decode applied)
  * @returns rows sorted by name, each with its size rows sorted by numeric size
  */
-export function buildHubRows({ products = [], hubStock = {} }) {
+export function buildHubRows({ products = [], hubStock = {}, allCategories = false }) {
   const byId = products instanceof Map ? products : new Map((products || []).map((p) => [p?.id, p]).filter(([id]) => id));
   const rows = [];
 
@@ -86,9 +119,10 @@ export function buildHubRows({ products = [], hubStock = {} }) {
     // A cell whose product record is missing or is not footwear is not part of a
     // SNEAKER count. Skipping silently is correct here: the hub holds clothing
     // cells too, and this screen is explicitly the sneaker count.
-    if (!product || !isFootwearProduct(product)) continue;
+    // (At an all-category hub — Hub 3 — every product with a record counts.)
+    if (!product || (!allCategories && !isFootwearProduct(product))) continue;
 
-    const sizes = sizeRowsFor(hubStock[pid]);
+    const sizes = sizeRowsFor(hubStock[pid], product, allCategories);
     if (!sizes.length) continue;                       // only "_" / "_meta" → nothing to count
     rows.push(makeRow(product, sizes));
   }
@@ -96,11 +130,11 @@ export function buildHubRows({ products = [], hubStock = {} }) {
   return rows.sort(byQuantityDesc);
 }
 
-function sizeRowsFor(node) {
+function sizeRowsFor(node, product = null, allCategories = false) {
   return Object.keys(node || {})
-    .filter(isCountableSizeKey)
+    .filter((k) => isCountableCellKey(k, product, allCategories))
     .map((sizeKey) => ({ sizeKey, label: sizeLabelOf(sizeKey), expected: qtyOf(node[sizeKey]) }))
-    .sort((a, b) => footwearSizeRank(a.sizeKey) - footwearSizeRank(b.sizeKey));
+    .sort(bySize);
 }
 
 function makeRow(product, sizes, seeded = false) {
@@ -137,20 +171,25 @@ const byQuantityDesc = (a, b) => (b.displayTotal - a.displayTotal) || byName(a, 
  * The size run comes from the product's own `sizes` when it has them, falling
  * back to the taxonomy footwear run. The "_" sentinel is stripped either way.
  */
-export function seededRowFor(product) {
+export function seededRowFor(product, { allCategories = false } = {}) {
   if (!product || !product.id) return null;
+  if (allCategories && isOneSizeCountable(product)) {
+    // A non-footwear product with no real size run is ONE-SIZE ("_").
+    const own = Array.isArray(product.sizes) ? product.sizes.filter((s) => s != null && String(s).trim() && String(s).trim() !== "_") : [];
+    return seededRowForSizes(product, (own.length ? own : [null]).map((s) => stockSizeKey(s)), { allCategories });
+  }
   const raw = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : SIZES_FOOTWEAR;
-  return seededRowForSizes(product, raw.map((s) => stockSizeKey(s)));
+  return seededRowForSizes(product, raw.map((s) => stockSizeKey(s)), { allCategories });
 }
 
 /** A seeded row restricted to specific (already-encoded) size keys. */
-export function seededRowForSizes(product, sizeKeys) {
+export function seededRowForSizes(product, sizeKeys, { allCategories = false } = {}) {
   if (!product || !product.id) return null;
   const sizes = (sizeKeys || [])
-    .filter(isCountableSizeKey)
+    .filter((k) => isCountableCellKey(k, product, allCategories))
     .filter((k, i, arr) => arr.indexOf(k) === i)
     .map((sizeKey) => ({ sizeKey, label: sizeLabelOf(sizeKey), expected: 0 }))
-    .sort((a, b) => footwearSizeRank(a.sizeKey) - footwearSizeRank(b.sizeKey));
+    .sort(bySize);
   if (!sizes.length) return null;
   return makeRow(product, sizes, true);
 }
@@ -185,7 +224,7 @@ export function mergeSeededRows(hubRows, seededRows) {
     const have = new Set(row.sizes.map((s) => s.sizeKey));
     const extra = seed.sizes.filter((s) => !have.has(s.sizeKey));
     if (!extra.length) return row;
-    const sizes = [...row.sizes, ...extra].sort((a, b) => footwearSizeRank(a.sizeKey) - footwearSizeRank(b.sizeKey));
+    const sizes = [...row.sizes, ...extra].sort(bySize);
     return { ...row, sizes,
       total: sizes.reduce((t, s) => t + s.expected, 0),
       displayTotal: sizes.reduce((t, s) => t + Math.max(0, s.expected), 0),
@@ -211,12 +250,12 @@ export function mergeSeededRows(hubRows, seededRows) {
  *     size. Restoring the full run here would invent sizes this hub never
  *     carried and inflate the denominator.
  */
-export function recoverSeededRows({ counted = {}, hubStock = {}, products = [] }) {
+export function recoverSeededRows({ counted = {}, hubStock = {}, products = [], allCategories = false }) {
   const byId = products instanceof Map ? products : new Map((products || []).map((p) => [p?.id, p]).filter(([id]) => id));
   const missing = new Map();                       // pid -> Set(sizeKey)
 
   for (const rec of Object.values(counted || {})) {
-    if (!rec || !rec.productId || !isCountableSizeKey(rec.sizeKey)) continue;
+    if (!rec || !rec.productId || !isCountableCellKey(rec.sizeKey, byId.get(rec.productId), allCategories)) continue;
     const node = hubStock[rec.productId];
     if (node && node[rec.sizeKey]) continue;       // a real cell exists — nothing to recover
     if (!missing.has(rec.productId)) missing.set(rec.productId, new Set());
@@ -228,8 +267,8 @@ export function recoverSeededRows({ counted = {}, hubStock = {}, products = [] }
     const product = byId.get(pid);
     if (!product) continue;
     const node = hubStock[pid];
-    const hasAnyCell = !!node && Object.keys(node).some(isCountableSizeKey);
-    const row = hasAnyCell ? seededRowForSizes(product, [...keys]) : seededRowFor(product);
+    const hasAnyCell = !!node && Object.keys(node).some((k) => isCountableCellKey(k, product, allCategories));
+    const row = hasAnyCell ? seededRowForSizes(product, [...keys], { allCategories }) : seededRowFor(product, { allCategories });
     if (row) rows.push(row);
   }
   return rows;
