@@ -12,7 +12,7 @@
 // the existing label finder, a store pick asks the existing red switch-confirm,
 // the bar opens the existing checkout. Nothing here reads or writes data.
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SkyHeader, SkySearch, SkyBrandStrip, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
 
@@ -31,6 +31,23 @@ export default function AssistantPhone({
   // start (no reflow when it "sticks"); its glass fades in once the page has
   // moved, so at rest it is the frozen picture.
   const [stuck, setStuck] = useState(false);
+  // FIXED, like the laptop (Junid, 6 Nov: "the mobile app should act like the
+  // laptop version"). Sticky was silently cancelled by AssistantView's
+  // overflow-x:hidden wrapper, so the band scrolled away on a real phone. Now
+  // the band is position:fixed and a spacer of its measured height holds its
+  // place, so the first card row starts fully below it and nothing jumps.
+  const topRef = useRef(null);
+  const [topH, setTopH] = useState(0);
+  useLayoutEffect(() => {
+    const el = topRef.current;
+    if (!el) return undefined;
+    const set = () => setTopH(Math.round(el.getBoundingClientRect().height));
+    set();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   useEffect(() => {
     const on = () => setStuck(window.scrollY > 2);
     on();
@@ -40,7 +57,7 @@ export default function AssistantPhone({
   return (
     <div className="ap-root" data-testid="assistant-phone">
       <style>{AP_CSS}</style>
-      <div className="ap-top" data-testid="ap-top" data-stuck={stuck ? "true" : undefined}>
+      <div className="ap-top" ref={topRef} data-testid="ap-top" data-stuck={stuck ? "true" : undefined}>
         <div className="ap-topglass" aria-hidden="true" />
       {/* The store pill replaces the old ASSISTANT tag and the store row.
           Only the shops this account is assigned to; with one (auto-selected)
@@ -69,6 +86,7 @@ export default function AssistantPhone({
         <div data-contrast-exempt=""><SkyBrandStrip className="ap-brands" brands={brands} value={brand} onChange={onBrand} /></div>
       ) : null}
       </div>
+      <div className="ap-topspace" aria-hidden="true" style={{ height: topH }} />
 
       {children}
 
@@ -129,8 +147,8 @@ export default function AssistantPhone({
 const AP_CSS = `
 .ap-root{max-width:880px;margin:0 auto;color:#fff;font-family:var(--sky-font);position:relative;padding-left:var(--sky-sal);padding-right:var(--sky-sar)}
 /* Sticky top band (Junid 6 Nov): stays put, the grid passes under it; its glass fades in once scrolled. */
-.ap-top{position:sticky;top:0;z-index:40;padding-bottom:11px}
-.ap-topglass{position:absolute;inset:0 calc(-1 * var(--sky-sar)) 0 calc(-1 * var(--sky-sal));z-index:0;pointer-events:none;opacity:0;transition:opacity .18s ease-out;
+.ap-top{position:fixed;top:0;left:0;right:0;z-index:40;max-width:880px;margin:0 auto;padding-bottom:11px;padding-left:var(--sky-sal);padding-right:var(--sky-sar)}
+.ap-topglass{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;transition:opacity .18s ease-out;
   background:linear-gradient(180deg,rgba(24,110,222,.95),rgba(36,126,232,.9));-webkit-backdrop-filter:blur(20px) saturate(1.4);backdrop-filter:blur(20px) saturate(1.4);
   border-bottom:1px solid rgba(255,255,255,.32);box-shadow:0 10px 24px -16px rgba(0,30,90,.55)}
 .ap-top[data-stuck="true"] .ap-topglass{opacity:1}

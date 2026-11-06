@@ -338,7 +338,10 @@ function Barcodes({ products, BcsCard, css, Studio, shell }) {
     const { default: WarehouseTop, WAREHOUSE_SKY_CSS } = await import("../components/sky/WarehouseTop.jsx");
     el = <div>{shell("WAREHOUSE")}<Warehouse products={products} Top={WarehouseTop} css={WAREHOUSE_SKY_CSS} /></div>;
   } else if (screen === "phone") {
-    el = <Phone products={products.slice(0, Number(q.get("n") || 16))} />;
+    // Inside AssistantView's own wrapper (overflow-x:hidden — it cancels a
+    // sticky band, which is how the band scrolled away on a real phone).
+    el = <div style={{ minHeight: "100vh", color: "#fff", fontFamily: "var(--sky-font)", maxWidth: 880, margin: "0 auto", overflowX: "hidden", paddingBottom: 40 }}>
+      <Phone products={products.slice(0, Number(q.get("n") || 16))} /></div>;
   } else {
     const { RoleIcons } = q.get("mock") ? await import("../App.jsx") : {};
     el = <Home icons={RoleIcons || null} />;
