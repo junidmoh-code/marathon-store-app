@@ -49,11 +49,12 @@ describe("classifyLine — every category", () => {
 describe("footwear weight is stepped by size band", () => {
   const spec = cfg.items.sneakerAdult;
   it.each([
-    ["3", 1.2], ["6", 1.2], ["6.5", 1.2], ["6_5", 1.2],
-    ["7", 1.3], ["9.5", 1.3], ["9_5", 1.3],
-    ["10", 1.4], ["13", 1.4],
-    ["EU 40", 1.2], ["EU 41", 1.3], ["42", 1.3], ["45", 1.4], ["39", 1.2],
-    ["", 1.3], ["XL", 1.3],
+    // Measured 6 Nov 2026 (TCG weighed our single pairs at 1.02–1.3 kg).
+    ["3", 1.1], ["6", 1.1], ["6.5", 1.1], ["6_5", 1.1],
+    ["7", 1.2], ["9.5", 1.2], ["9_5", 1.2],
+    ["10", 1.3], ["13", 1.3],
+    ["EU 40", 1.1], ["EU 41", 1.2], ["42", 1.2], ["45", 1.3], ["39", 1.1],
+    ["", 1.2], ["XL", 1.2],
   ])("UK/EU %s → %s kg", (size, kg) => expect(itemWeightKg(spec, { size })).toBe(kg));
 
   it.each([
@@ -65,8 +66,8 @@ describe("footwear weight is stepped by size band", () => {
     expect(itemWeightKg(cfg.items.slides, { size })).toBe(kg));
 
   it("band edges are inclusive at upToSize", () => {
-    expect(itemWeightKg(spec, { size: "6.5" })).toBe(1.2);
-    expect(itemWeightKg(spec, { size: "7" })).toBe(1.3);
+    expect(itemWeightKg(spec, { size: "6.5" })).toBe(1.1);
+    expect(itemWeightKg(spec, { size: "7" })).toBe(1.2);
   });
 
   it("size helpers", () => {
@@ -91,12 +92,12 @@ describe("THE PARCEL RULE — ONE parcel, never split (Junid, 23 Oct 2026)", () 
     const r = estimateParcel([sneaker("9"), T(2), CAP]);
     expect(r.parcelCount).toBe(1);
     expect(r.parcels).toHaveLength(1);
-    expect(r.parcels[0]).toMatchObject({ kind: "shoebox", lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 2.25, pairs: 1, overflowBundles: 0, layout: { columns: 1, rows: 1 } });
+    expect(r.parcels[0]).toMatchObject({ kind: "shoebox", lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 2.15, pairs: 1, overflowBundles: 0, layout: { columns: 1, rows: 1 } });
     expect(kinds(r.parcels[0]).sort()).toEqual(["cap", "foldedTop", "foldedTop", "sneakerAdult"]);
   });
 
   it("two pairs = two shoeboxes stacked, 34×23×26", () => {
-    expect(estimateParcel([sneaker("9", 2)]).parcels[0]).toMatchObject({ lengthCm: 34, widthCm: 23, heightCm: 26, pairs: 2, layout: { columns: 1, rows: 2 }, actualKg: 2.6 });
+    expect(estimateParcel([sneaker("9", 2)]).parcels[0]).toMatchObject({ lengthCm: 34, widthCm: 23, heightCm: 26, pairs: 2, layout: { columns: 1, rows: 2 }, actualKg: 2.4 });
   });
 
   it("three pairs + 4 tees = ONE parcel 34×23×39 (the tees fit the 3.6 kg budget)", () => {
@@ -105,7 +106,7 @@ describe("THE PARCEL RULE — ONE parcel, never split (Junid, 23 Oct 2026)", () 
     const p = r.parcels[0];
     expect(p).toMatchObject({ kind: "shoebox", lengthCm: 34, widthCm: 23, heightCm: 39, pairs: 3, overflowBundles: 0 });
     expect(Math.max(p.lengthCm, p.widthCm, p.heightCm)).toBeLessThanOrEqual(39);
-    expect(p.actualKg).toBe(5.5); // 3 × 1.3 + 4 × 0.4
+    expect(p.actualKg).toBe(5.2); // 3 × 1.2 + 4 × 0.4
     expect(kinds(p).filter((k) => k === "foldedTop")).toHaveLength(4);
   });
 
@@ -120,23 +121,32 @@ describe("THE PARCEL RULE — ONE parcel, never split (Junid, 23 Oct 2026)", () 
   it("ten pairs are STILL one parcel", () => {
     const r = estimateParcel([sneaker("9", 10)]);
     expect(r.parcelCount).toBe(1);
-    expect(r.parcels[0]).toMatchObject({ pairs: 10, actualKg: 13 });
+    expect(r.parcels[0]).toMatchObject({ pairs: 10, actualKg: 12 });
     expect(r.parcels[0].layout.columns * r.parcels[0].layout.rows).toBeGreaterThanOrEqual(10);
   });
 
-  it("10 tees alone = ONE flat box from the box list", () => {
+  it("clothing with no footwear = ONE flat courier bag as thick as the goods (TCG measured 3 tees at 5.7–8 cm)", () => {
+    const r = estimateParcel([T(3)]);
+    expect(r.parcelCount).toBe(1);
+    // 3 × 2.2 = 6.6 cm, never below the bag's 8 cm; 0.05 kg bag.
+    expect(r.parcels[0]).toMatchObject({ kind: "flatBag", boxCode: "BAG", lengthCm: 41, widthCm: 34, heightCm: 8, actualKg: 1.25, pairs: 0, layout: null });
+    // Four tops + a tracksuit: 8.8 + 5 = 13.8 cm.
+    expect(estimateParcel([T(4), { category: "Clothing", subcategory: "Tracksuits & Sets", qty: 1 }]).parcels[0]).toMatchObject({ kind: "flatBag", heightCm: 13.8 });
+  });
+
+  it("10 tees are thicker than a bag holds (22 cm > 18) → ONE box from the box list", () => {
     const r = estimateParcel([T(10)]);
     expect(r.parcelCount).toBe(1);
     expect(r.parcels[0]).toMatchObject({ kind: "box", boxCode: "MEDIUM", pairs: 0, layout: null });
   });
 
-  it("soft goods past the fill budget NEVER make a second parcel: each overflow bundle adds 3 cm to the height", () => {
-    // 1 pair: 1.2 kg budget = 3 tees; the 4th (0.4 kg) is one bundle on top.
+  it("soft goods past the fill budget NEVER make a second parcel: they lie on top at their own thickness, no padding", () => {
+    // 1 pair: 1.2 kg budget = 3 tees; the 4th (0.4 kg) lies on top, +2.2 cm.
     const one = estimateParcel([sneaker("9"), T(4)]);
     expect(one.parcelCount).toBe(1);
-    expect(one.parcels[0]).toMatchObject({ kind: "shoebox", heightCm: 16, overflowBundles: 1, actualKg: 2.9 });
-    // 7 tees: 1.6 kg overflow = 2 bundles (1.2 + 0.4) → +6 cm.
-    expect(estimateParcel([sneaker("9"), T(7)]).parcels[0]).toMatchObject({ heightCm: 19, overflowBundles: 2 });
+    expect(one.parcels[0]).toMatchObject({ kind: "shoebox", heightCm: 15.2, overflowBundles: 1, actualKg: 2.8 });
+    // 7 tees: 4 on top → +8.8 cm.
+    expect(estimateParcel([sneaker("9"), T(7)]).parcels[0]).toMatchObject({ heightCm: 21.8, overflowBundles: 4 });
     // 2 pairs: the same 4 tees fit the 2.4 kg budget — no extra height.
     expect(estimateParcel([sneaker("9", 2), T(4)]).parcels[0]).toMatchObject({ heightCm: 26, overflowBundles: 0 });
     // Exactly at the budget is still inside.
@@ -145,10 +155,10 @@ describe("THE PARCEL RULE — ONE parcel, never split (Junid, 23 Oct 2026)", () 
 });
 
 describe("THE PARCEL RULE — the details", () => {
-  it("weight: a shoebox with a pair is 1.3 kg (size bands stay) plus what is stuffed in it", () => {
-    expect(estimateParcel([sneaker("8")]).parcels[0].actualKg).toBe(1.3);
-    expect(estimateParcel([sneaker("11")]).parcels[0].actualKg).toBe(1.4);
-    expect(estimateParcel([sneaker("8"), CAP]).parcels[0].actualKg).toBe(1.45);
+  it("weight: a shoebox with a pair is 1.2 kg (size bands stay) plus what is stuffed in it", () => {
+    expect(estimateParcel([sneaker("8")]).parcels[0].actualKg).toBe(1.2);
+    expect(estimateParcel([sneaker("11")]).parcels[0].actualKg).toBe(1.3);
+    expect(estimateParcel([sneaker("8"), CAP]).parcels[0].actualKg).toBe(1.35);
   });
 
   it("chargeable = max(actual, volumetric) for the one parcel; the totals ARE the parcel", () => {
@@ -157,7 +167,7 @@ describe("THE PARCEL RULE — the details", () => {
     expect(p.volumetricKg).toBe(5.08); // 34×23×26 / 4000
     expect(p.chargeableKg).toBe(Math.max(p.actualKg, p.volumetricKg));
     expect(r.chargeableKg).toBe(5.08);
-    expect(r.actualKg).toBe(2.6);
+    expect(r.actualKg).toBe(2.4);
   });
 
   it("kids pairs and slides are shoeboxes in the stack, unless their item says otherwise", () => {
@@ -168,18 +178,23 @@ describe("THE PARCEL RULE — the details", () => {
     expect(s2.parcels[0]).toMatchObject({ pairs: 1, heightCm: 13 });
   });
 
-  it("a bag is neither a shoebox nor stuffed: it rides on top as an overflow bundle, same parcel", () => {
+  it("a bag is neither a shoebox nor stuffed: it lies on top at its flat thickness (3 cm), same parcel", () => {
     const r = estimateParcel([sneaker("9"), { category: "Accessories", subcategory: "Bags", qty: 1 }]);
     expect(r.parcelCount).toBe(1);
     expect(r.parcels[0]).toMatchObject({ kind: "shoebox", overflowBundles: 1, heightCm: 16 });
     expect(kinds(r.parcels[0]).sort()).toEqual(["bag", "sneakerAdult"]);
   });
 
-  it("the shoebox size, the fill budget and the bundle height come from the card", () => {
-    const cfg = mergeShippingConfig({ shoebox: { lengthCm: 35, widthCm: 24, heightCm: 14, fillBudgetKg: 0.4, overflowBundleCm: 5 } });
+  it("the shoebox size, the fill budget and each item's flat thickness come from the card", () => {
+    const cfg = mergeShippingConfig({ shoebox: { lengthCm: 35, widthCm: 24, heightCm: 14, fillBudgetKg: 0.4 }, items: { foldedTop: { flatCm: 5 } } });
     const r = estimateParcel([sneaker("9"), T(2)], cfg);
     expect(r.parcelCount).toBe(1);
     expect(r.parcels[0]).toMatchObject({ lengthCm: 35, widthCm: 24, heightCm: 19, overflowBundles: 1 }); // one tee fits, one on top (+5)
+  });
+
+  it("an old card's overflowBundleCm pads nothing any more", () => {
+    const cfg = mergeShippingConfig({ shoebox: { overflowBundleCm: 9 } });
+    expect(estimateParcel([sneaker("9"), T(4)], cfg).parcels[0].heightCm).toBe(15.2);
   });
 
   it("no footwear and nothing fits a box → a custom parcel, fits:false", () => {
@@ -188,19 +203,30 @@ describe("THE PARCEL RULE — the details", () => {
     expect(r.parcels[0].kind).toBe("custom");
   });
 
-  it("caps lie 2×2 per layer: order #1859 (6 caps/visors + a bag) fits the LARGE box", () => {
-    const caps = { category: "Clothing", subcategory: "Caps & Hats" };
-    const r = estimateParcel([
-      { category: "Accessories", subcategory: "Bags", qty: 1 },
-      { ...caps, qty: 1 }, { ...caps, qty: 3 }, { ...caps, qty: 2 },
-    ]);
+  const NO_BAG = mergeShippingConfig({ flatBag: null });
+  const caps = { category: "Clothing", subcategory: "Caps & Hats" };
+  const order1859 = [
+    { category: "Accessories", subcategory: "Bags", qty: 1 },
+    { ...caps, qty: 1 }, { ...caps, qty: 3 }, { ...caps, qty: 2 },
+  ];
+
+  it("order #1859 (6 caps + a bag): the caps nest in the flat bag, 41×34×14 — not the 55×40×35 LARGE box", () => {
+    // TCG measured it at 37.5×32.3×15.4 and re-rated R355.68 → R143.52.
+    const r = estimateParcel(order1859);
+    expect(r.fits).toBe(true);
+    expect(r.parcels[0]).toMatchObject({ kind: "flatBag", lengthCm: 41, widthCm: 34, heightCm: 14 }); // bag 3 + cap 6 + 5 × 1
+  });
+
+  it("without a bag, caps lie 2×2 per layer: #1859 fits the LARGE box", () => {
+    const r = estimateParcel(order1859, NO_BAG);
     expect(r.fits).toBe(true);
     expect(r.parcels[0]).toMatchObject({ kind: "box", boxCode: "LARGE" });
   });
 
-  it("side by side still wins when layers can't: a tee + a perfume lie next to each other in FLAT", () => {
-    const r = estimateParcel([T(1), { category: "Perfume", qty: 1 }]);
+  it("without a bag, side by side still wins when layers can't: a tee + a perfume lie next to each other in FLAT", () => {
+    const r = estimateParcel([T(1), { category: "Perfume", qty: 1 }], NO_BAG);
     expect(r.parcels[0]).toMatchObject({ kind: "box", boxCode: "FLAT" });
+    expect(r.parcels[0].actualKg).toBe(0.9); // 0.4 + 0.35 + the FLAT mailer's 0.15
   });
 
   it("layers: a bad box row never fits, and decimal heights fit exactly", () => {
@@ -231,12 +257,14 @@ describe("THE PARCEL RULE — the details", () => {
   it("an unclassifiable line is treated as a folded top and reported", () => {
     const r = estimateParcel([{ name: "Mystery item", qty: 1 }]);
     expect(r.guessed).toEqual(["Mystery item"]);
-    expect(r.parcels[0].boxCode).toBe("FLAT");
+    expect(r.parcels[0].boxCode).toBe("BAG");
   });
 
   it("reports which numbers are still unmeasured", () => {
-    expect(estimateParcel([sneaker("9")]).unmeasured).toEqual(["item:sneakerAdult", "shoebox"]);
-    expect(estimateParcel([T(1)]).unmeasured).toEqual(["item:foldedTop", "box:FLAT"]);
+    expect(estimateParcel([sneaker("9")]).unmeasured).toEqual([]);
+    expect(estimateParcel([T(1)]).unmeasured).toEqual([]);
+    expect(estimateParcel([T(1), { category: "Perfume", qty: 1 }], NO_BAG).unmeasured).toEqual(["item:perfume", "box:FLAT"]);
+    expect(estimateParcel([sneaker("9")], mergeShippingConfig({ shoebox: { measured: false } })).unmeasured).toEqual(["shoebox"]);
   });
 
   it("is deterministic and does not mutate its inputs", () => {

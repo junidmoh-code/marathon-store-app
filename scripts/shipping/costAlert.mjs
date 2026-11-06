@@ -1,8 +1,9 @@
 // ── THE EXPENSIVE-WAYBILL EMAIL — pure ──────────────────────────────────────
-// Junid, 30 Oct 2026: the courier ceiling stays OFF (maxChargeRand 0) — every
-// order books itself — and instead he is emailed once for each waybill above
-// R250, with the order, the box and WHY it cost that much, so a wrong box or a
-// surcharge is spotted. The poller (onlineOrders/poll.mjs) sends it right after
+// Junid, 30 Oct 2026: email once for each waybill above R250, with the order,
+// the box and WHY it cost that much, so a wrong box or a surcharge is spotted.
+// (The ceiling was off then; since 6 Nov 2026 the R300 ceiling is back —
+// above it nothing books and he gets one WhatsApp line instead, bookShipment.mjs.)
+// The poller (onlineOrders/poll.mjs) sends it right after
 // a live booking; this file only decides and writes the words.
 //
 // The "why" is read off what Courier Guy quoted (shipping.priced, kept by

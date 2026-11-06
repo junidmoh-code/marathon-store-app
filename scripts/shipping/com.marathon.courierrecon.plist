@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the courier reconciliation loop
+  (scripts/shipping/courier-recon.mjs), 6 Nov 2026. One pass every 3 hours:
+  invoiced amount per delivered waybill, the >5% diffs, the parcel-table
+  calibration, Junid's over-ceiling lines and the Monday weekly line (via
+  ~/marathon-dm-agent bin/jimmy-send.mjs). READS ONLY at Courier Guy.
+  INSTALL: copy to ~/Library/LaunchAgents, then
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marathon.courierrecon.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.courierrecon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/shipping/courier-recon.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- The same RTDB service account the Shopify reconciler uses. -->
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>StartInterval</key><integer>10800</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-courierrecon.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-courierrecon.err.log</string>
+</dict>
+</plist>

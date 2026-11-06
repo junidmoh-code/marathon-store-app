@@ -25,6 +25,7 @@ const CLIENT = "scripts/shipping/courier-client.mjs";
 const EST = "src/shipping/estimateParcel.js";
 const CHOOSE = "src/shipping/chooseService.js";
 const CARD = "src/components/admin/ShippingCard.jsx";
+const REC = "scripts/shipping/reconcile.mjs";
 const ORDER = "src/shipping/orderShipment.js";
 const TESTS = ["src/shipping", "scripts/shipping", "src/components/admin/ShippingCard.gate.test.jsx"];
 
@@ -60,7 +61,7 @@ const MUTATIONS = [
   { id: "L11", file: BOOK, guard: "the spend ceiling blocks a live booking quoted above it",
     from: "chosen.rate.rate > ceiling)", to: "chosen.rate.rate > ceiling * 1000)" },
   { id: "L12", file: BOOK, guard: "booking never mints an order node — the order must exist at its key",
-    from: "if (!(await db.ref(`online_orders/${key}/ref`).get()).exists()) {", to: "if (false) {" },
+    from: "if (!(await db.ref(`online_orders/${key}/${existsField}`).get()).exists()) {", to: "if (false) {" },
   { id: "L13", file: BOOK, guard: "a create response naming no shipment is UNKNOWN, never 'booked'",
     from: "(res.id == null && !res.short_tracking_reference && !res.custom_tracking_reference)", to: "(false)" },
   { id: "C1", file: CLIENT, guard: "a create is NEVER retried on 5xx (a retry could book twice)",
@@ -102,9 +103,29 @@ const MUTATIONS = [
   { id: "B3", file: EST, guard: "every pair is in the stack (never a second parcel, never a dropped pair)",
     from: "const stack = shoeboxStack(pairs.length, sb);", to: "const stack = shoeboxStack(1, sb);" },
   { id: "B4", file: EST, guard: "the arrangement with the smallest LONGEST side wins",
-    from: "if (!best || dims[0] < best.dims[0] || (dims[0] === best.dims[0] && v < best.v)) best = { columns, rows, dims, v };", to: "if (!best) best = { columns, rows, dims, v };" },
-  { id: "B5", file: EST, guard: "overflow adds height per bundle",
-    from: "heightCm: stack.heightCm + overflowBundles * bundleCm,", to: "heightCm: stack.heightCm," },
+    from: "if (!best || longest < best.longest || (longest === best.longest && v < best.v)) best = { columns, rows, dims, longest, v };", to: "if (!best) best = { columns, rows, dims, longest, v };" },
+  { id: "B5", file: EST, guard: "what lies on top adds its own flat thickness",
+    from: "heightCm: round1(stack.heightCm + onTopCm),", to: "heightCm: round1(stack.heightCm),", },
+
+  // ── NO PADDING (Junid, 6 Nov 2026 — TCG200369959T) ──
+  { id: "P1", file: EST, guard: "a stack never declares an empty slot (5 pairs = 34×46×32.5, not 39)",
+    from: "const dims = [l, w * columns, round1((h * pairs) / columns)];", to: "const dims = [l, w * columns, h * rows];" },
+  { id: "P2", file: EST, guard: "clothing with no footwear ships in the flat bag, not a box",
+    from: "parcel = { ...(flatBagParcel(items, cfg, divisor) ?? flatParcel(items, cfg, divisor)),", to: "parcel = { ...(flatParcel(items, cfg, divisor)),", },
+  { id: "P3", file: EST, guard: "a cap after the first nests into it",
+    from: "t += caps++ === 0 ? own : Number.isFinite(nest) && nest >= 0 ? nest : own;", to: "t += own; caps++;" },
+  { id: "P4", file: EST, guard: "the bag is never below its minimum height",
+    from: "const heightCm = round1(Math.max(Number(bag.minHeightCm) || 0, thick));", to: "const heightCm = round1(thick);" },
+  { id: "P5", file: EST, guard: "a learned factor scales the declared height",
+    from: "if (factor !== 1) parcel = finish({ ...parcel, heightCm: round1(parcel.heightCm * factor) }, divisor);", to: "" },
+  { id: "P6", file: REC, guard: "calibration is DOWN only — a bigger class is reported, never padded",
+    from: "const factor = round2(Math.min(1, Math.max(CALIBRATION_MIN, med)));", to: "const factor = round2(Math.max(CALIBRATION_MIN, med));" },
+  { id: "P7", file: REC, guard: "calibration needs a consistent pattern",
+    from: "const allSmaller = implied.every((r) => r < 1 - CONSISTENT_SHARE);", to: "const allSmaller = implied.some((r) => r < 1 - CONSISTENT_SHARE);" },
+  { id: "P8", file: REC, guard: "a diff is logged only beyond 5%",
+    from: "Math.abs(share) > DIFF_SHARE", to: "Math.abs(share) >= 0" },
+  { id: "P9", file: BOOK, guard: "a booking over the ceiling is refused (one line to Junid)",
+    from: "liveBlockers.push(`quote R${chosen.rate.rate.toFixed(2)} is over the R${ceiling} ceiling`);", to: "" },
 
   // ── THE RATE CHOICE ──────────────────────────────────────────────────────
   { id: "R1", file: CHOOSE, guard: "an excluded service (SDX) is never chosen",

@@ -30,7 +30,7 @@
 // No waybill printing: waybills stay handwritten. `waybill` is returned for
 // that, and a later label-print step can open TCG's label PDF
 // (GET /shipments/label?id=) with window.print — never WebUSB.
-import { estimateParcel } from "../../src/shipping/estimateParcel.js";
+import { estimateParcel, chooseLocker } from "../../src/shipping/estimateParcel.js";
 import { mergeShippingConfig } from "../../src/shipping/shippingConfig.js";
 import { chooseRate } from "../../src/shipping/chooseService.js";
 import { orderLines, deliveryAddress, deliveryContact, orderRef, orderKey as keyOf } from "../../src/shipping/orderShipment.js";
@@ -138,11 +138,24 @@ export async function planShipment(order, { db, client, products = null }) {
   if (!chosen) {
     return { ok: false, reason: `no usable rate (door: ${quoted.door.error ?? "none"}; locker: ${quoted.locker.error ?? "none"})`, parcel, quoted };
   }
-  // THE SPEND CEILING. The account is prepaid; an order that quotes above
-  // this is booked by a person in the portal, not by this code.
+  // THE SPEND CEILING (Junid, 6 Nov 2026: "the R300-per-booking ceiling
+  // stays; a booking above it goes to Junid as one line with the cheaper
+  // option"). The account is prepaid; an order that quotes above this is
+  // booked by a person in the portal, not by this code. The cheaper option is
+  // a locker drop-off when the parcel fits one (asked here even while the
+  // drop box is off — rates book nothing), else the next service quoted.
   const ceiling = Number(cfg.maxChargeRand);
+  let overCeiling = null;
   if (Number.isFinite(ceiling) && ceiling > 0 && chosen.rate.rate > ceiling) {
     liveBlockers.push(`quote R${chosen.rate.rate.toFixed(2)} is over the R${ceiling} ceiling`);
+    let lockerRates = quoted.locker.rates;
+    const p0 = parcel.parcels[0];
+    const fitsLocker = chooseLocker([p0.lengthCm, p0.widthCm, p0.heightCm], p0.actualKg, { ...(cfg.dropBox ?? {}), enabled: true });
+    if (!lockerRates.length && fitsLocker && cfg.dropBox?.pickupPointId) {
+      const lk = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: quoted.deliveryAddress ?? address, parcels: parcel.parcels, dropBox: { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider } });
+      lockerRates = lk.locker.rates;
+    }
+    overCeiling = { ceiling, chosen: { mode: chosen.mode, code: chosen.rate.code, rate: chosen.rate.rate }, cheaper: cheaperOption(chosen.rate, quoted.door.rates, lockerRates, cfg) };
   }
 
   const payload = {
@@ -159,7 +172,45 @@ export async function planShipment(order, { db, client, products = null }) {
     customer_reference_name: "Order no.",
     mute_notifications: false,
   };
-  return { ok: true, payload, parcel, chosen, quoted, ref, liveBlockers };
+  return { ok: true, payload, parcel, chosen, quoted, ref, liveBlockers, overCeiling, quotes: quoteList(quoted) };
+}
+
+// Every service TCG quoted for the parcel, door and locker, cheapest first —
+// recorded on the order with the booking (Junid, 6 Nov 2026: "record the
+// quote list on the order").
+export function quoteList(quoted) {
+  const rows = [
+    ...(quoted?.door?.rates ?? []).map((r) => ({ mode: "door", ...r })),
+    ...(quoted?.locker?.rates ?? []).map((r) => ({ mode: "locker", ...r })),
+  ];
+  return rows
+    .map((r) => ({ mode: r.mode, code: r.code, name: r.name ?? "", rate: finiteOrNull(r.rate), chargedKg: finiteOrNull(r.chargedKg) }))
+    .filter((r) => r.rate !== null)
+    .sort((a, b) => a.rate - b.rate);
+}
+
+/** The cheapest option below the chosen one: a locker drop-off, else another door service (SDX excluded). Pure. */
+export function cheaperOption(chosen, doorRates, lockerRates, cfg = {}) {
+  const exclude = new Set(cfg.excludeServiceCodes ?? []);
+  const options = [
+    ...(lockerRates ?? []).map((r) => ({ mode: "locker", code: r.code, rate: r.rate })),
+    ...(doorRates ?? []).map((r) => ({ mode: "door", code: r.code, rate: r.rate })),
+  ].filter((r) => !exclude.has(r.code) && Number.isFinite(Number(r.rate)) && r.rate < chosen.rate);
+  return options.sort((a, b) => a.rate - b.rate)[0] ?? null;
+}
+
+const rand = (n) => `R${Number(n).toFixed(2)}`;
+/** The one line Junid gets for a booking over the ceiling. Pure. */
+export function ceilingLine(ref, plan) {
+  const oc = plan?.overCeiling;
+  if (!oc) return null;
+  const p = plan.parcel?.parcels?.[0] ?? {};
+  const dims = [p.lengthCm, p.widthCm, p.heightCm].every((v) => Number.isFinite(Number(v))) ? `${p.lengthCm}×${p.widthCm}×${p.heightCm} cm, ` : "";
+  const kg = Number.isFinite(Number(p.chargeableKg)) ? `${Math.ceil(Number(p.chargeableKg) - 1e-9)} kg` : "";
+  const cheaper = oc.cheaper
+    ? `Cheaper: ${oc.cheaper.mode === "locker" ? "locker drop-off " : ""}${oc.cheaper.code} ${rand(oc.cheaper.rate)}.`
+    : "No cheaper service quoted.";
+  return `${ref}: Courier Guy quotes ${rand(oc.chosen.rate)} (${oc.chosen.code}, ${dims}${kg}), over the R${oc.ceiling} ceiling, not booked. ${cheaper} Book it in the portal.`;
 }
 
 /**
@@ -188,13 +239,15 @@ export async function bookShipment(order, deps = {}) {
     return {
       skipped: true, dryRun: plan.payload, parcel: plan.parcel, liveBlockers: plan.liveBlockers,
       quote: { mode: plan.chosen.mode, code: plan.chosen.rate.code, rate: plan.chosen.rate.rate },
+      quotes: plan.quotes,
     };
   }
 
   // ── LIVE ──────────────────────────────────────────────────────────────────
   if (plan.liveBlockers.length) {
     log(`bookShipment ${key} REFUSED ${plan.liveBlockers.join(", ")}`);
-    return { skipped: true, reason: plan.liveBlockers.join(", ") };
+    const junidLine = ceilingLine(plan.ref, plan);
+    return { skipped: true, reason: plan.liveBlockers.join(", "), quotes: plan.quotes, ...(junidLine ? { junidLine, overCeiling: plan.overCeiling } : {}) };
   }
   // The order must exist at that key — never mint a node by booking.
   // shopifyGid is on every ingested order (ref is not, since 2026-10-21 —
@@ -242,10 +295,14 @@ export async function bookShipment(order, deps = {}) {
     waybill: res?.custom_tracking_reference || res?.short_tracking_reference || null,
     trackingReference: res?.short_tracking_reference ?? null,
     service: res?.service_level_code ?? plan.chosen.rate.code,
-    parcel: plain(plan.parcel),
+    // The rule the parcel was declared under: the reconciliation loop learns
+    // only from parcels declared by the current rule (reconcile.mjs).
+    parcel: plain({ ...plan.parcel, ruleVersion: ESTIMATE_RULE_VERSION }),
     cost: finiteOrNull(res?.charged_amount ?? res?.rate ?? plan.chosen.rate.rate),
     // The quote's make-up (base, surcharges, weights) — what the >R250 email explains.
     priced: plain({ quoted: plan.chosen.rate.rate, mode: plan.chosen.mode, ...(plan.chosen.rate.breakdown || {}) }),
+    // Every service quoted for this parcel, cheapest first (the one booked is the cheapest usable).
+    quotes: plain(plan.quotes),
     bookedAt: now(),
   };
   log(`bookShipment ${key} BOOKED ${shipping.waybill} ${shipping.service} R${shipping.cost}`);
@@ -304,8 +361,10 @@ export async function cancelShipment(order, deps = {}) {
  */
 // Bump when the RULE changes: every open order's estimate is then rewritten on
 // the poller's next tick (2 = one parcel, never split — 2026-10-23;
-// 3 = boxes also packed in flat layers, so a box of caps fits — 2026-10-29).
-export const ESTIMATE_RULE_VERSION = 3;
+// 3 = boxes also packed in flat layers, so a box of caps fits — 2026-10-29;
+// 4 = no padding: clothing in the flat bag, no empty stack slot, overflow at
+// its own thickness — 2026-11-06, docs/courier-rate-audit.md).
+export const ESTIMATE_RULE_VERSION = 4;
 
 /** The estimate's signature: the order's lines, the config they are packed with, AND the rule version. */
 export function estimateSig(order, rawConfig) {
@@ -327,7 +386,7 @@ export async function estimateForOrder(order, { db, products = null, rawConfig, 
     parcelCount: est.parcelCount,
     chargeableKg: est.chargeableKg,
     parcels: est.parcels.map((p) => ({
-      kind: p.kind, boxCode: p.boxCode, lengthCm: p.lengthCm, widthCm: p.widthCm, heightCm: p.heightCm,
+      kind: p.kind, boxCode: p.boxCode, lengthCm: p.lengthCm, widthCm: p.widthCm, heightCm: p.heightCm, calibrationClass: p.calibrationClass ?? null,
       actualKg: p.actualKg, chargeableKg: p.chargeableKg, items: p.contents.length,
       pairs: p.pairs ?? 0, overflowBundles: p.overflowBundles ?? 0, ...(p.layout ? { layout: p.layout } : {}),
       ...(p.contents.length ? { contents: p.contents.map((c) => c.kind) } : {}),

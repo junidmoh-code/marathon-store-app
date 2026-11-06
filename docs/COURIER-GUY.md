@@ -142,8 +142,11 @@ Measured with a 50×40×30 cm (60,000 cm³), 1 kg parcel:
 | ECO, all locker services | 15 kg | **4000** |
 | PRI, SDX, LPP, LPF, LSP, LSF | 12 kg | **5000** |
 
-The estimator uses **4000** by default (the services we mostly use, and the
-safe side), with per-service overrides in `/config/shipping`.
+The estimator uses **4000** by default, with per-service overrides in
+`/config/shipping`. **Confirmed 6 Nov 2026** from TCG's own re-rating of our
+parcels (docs/courier-rate-audit.md): ECO and ECOR ÷4000 (TCG200369959T,
+9DBT3G), LPF ÷5000 (RG9SJJ). 4000 is TCG's divisor for what we book, not a
+safety margin.
 
 ## Where the code lives
 
@@ -256,3 +259,52 @@ estimate is rewritten on the poller's first tick after the rule changes.
 The poller writes the estimate to `online_orders/{id}/shipping/estimate`; the
 POS order card shows "Ships as 1 parcel — <dims>, <kg>" before Pack, and
 bookShipment sends that one parcel.
+
+## No padding (Junid, 6 Nov 2026) — docs/courier-rate-audit.md
+
+TCG200369959T was declared 34×46×39 (five pairs in a 2 × 3 grid, the sixth
+slot empty) and charged R355.68; TCG measured it and re-rated it R249.60.
+Junid: stop over-declaring; book the real parcel at the cheapest service.
+Since `ESTIMATE_RULE_VERSION` 4:
+
+- a stack never declares an empty slot (5 pairs = 34×46×32.5);
+- clothing with no footwear ships in the **flat courier bag** (`flatBag`,
+  41×34 cm, as thick as the goods' `flatCm`, 8–18 cm); a box only beyond that;
+- overflow on top of shoeboxes adds each item's own `flatCm`, never a 3 cm
+  bundle (`shoebox.overflowBundleCm` is ignored);
+- shoebox, pair weights and the garment thicknesses are marked measured
+  (TCG's dimensioning of 178 of our parcels).
+
+**Every quote is recorded** on the booking (`shipping.quotes`, door and
+locker, cheapest first); the cheapest usable door service is booked, as before.
+
+**The R300 ceiling** (`maxChargeRand`, 0 = off): a quote above it is not
+booked; Junid gets ONE WhatsApp line with the cheaper option (a locker
+drop-off when the parcel fits one), queued at
+`/shipping_recon/junidLines/{orderId}_{rand}`.
+
+## The reconciliation loop (scripts/shipping/reconcile.mjs)
+
+`scripts/shipping/courier-recon.mjs` on the Mac mini (launchd
+`com.marathon.courierrecon`, every 3 h; `--dry` writes and sends nothing).
+Reads only at TCG (`GET /shipments`).
+
+- **Invoiced:** once a waybill is delivered and invoiced, TCG's final `rate`
+  (= the net of its billing transactions) goes to
+  `online_orders/{id}/shipping/invoiced` with the charged weight and TCG's
+  measurement.
+- **Diffs:** more than 5% off our quote → `/shipping_recon/diffs/{waybill}`.
+- **Calibration:** each measured parcel is a sample
+  (`/shipping_recon/samples/{class}`, measured ÷ declared volume). When the
+  latest ≥3 of a class (`shoebox:1|2|3+`, `flatBag`, `box`) are all more than
+  5% SMALLER, `/config/shipping/calibration/{class}.factor` is set to their
+  median (≥0.75) and every open order is re-estimated. **Down only:** a class
+  TCG keeps measuring bigger is recorded at `/shipping_recon/bigger/{class}`,
+  never padded (Junid: no multiplier that inflates size).
+- **Junid's lines** (over-ceiling, and the Monday weekly line: bookings, our
+  quotes vs invoiced, overpaid) go through Jamie: marathon-dm-agent
+  `bin/jimmy-send.mjs --kind junid`. A line Jamie refuses is retried next pass.
+
+Install on the mini: `git pull --ff-only`, then
+`cp scripts/shipping/com.marathon.courierrecon.plist ~/Library/LaunchAgents/ &&
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marathon.courierrecon.plist`.
