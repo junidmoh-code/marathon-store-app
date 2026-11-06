@@ -270,6 +270,10 @@ async function offering(ctx, key, orderId, order, i, line) {
     const offer = offers[Number(conv.heldPick.n) - 1];
     if (offer) return pick(ctx, key, orderId, order, i, line, offer, { held: true });
   }
+  // A credit/refund answer whose settle did not finish (a failed hand-over write, a raced settle): CodeRabbit on #856. The
+  // reply is already seen, so the decision kept on the line is what is tried again, every run, before the 48-hour credit
+  // path can run over it.
+  if (!reply && (conv.heldSettle?.kind === "credit" || conv.heldSettle?.kind === "refund")) return settle(ctx, key, orderId, order, i, line, conv.heldSettle.kind, conv.heldSettle.kind);
   if (reply && conv.heldPick) await lineTxn(ctx, orderId, i, (cur) => { const c = cur.resolution?.conversation; if (!c?.heldPick) return undefined; const { heldPick: _h, ...rest } = c; return { ...cur, resolution: { ...cur.resolution, conversation: rest } }; });
   if (reply) {
     ctx.summary.replies++;
@@ -281,6 +285,19 @@ async function offering(ctx, key, orderId, order, i, line) {
       catch { decision = { kind: "unclear" }; }
     }
     await record(ctx, orderId, i, order.ref, "reply", { decision: decision.kind, n: decision.n ?? null, via });
+    // Kept before acting (CodeRabbit on #856): a credit/refund answer is written on the line first, so a settle that does
+    // not finish is retried from it; any other answer replaces an older kept one.
+    const keep = decision.kind === "credit" || decision.kind === "refund" ? { kind: decision.kind, at: ctx.now } : null;
+    if (keep || conv.heldSettle) {
+      const kept = await lineTxn(ctx, orderId, i, (cur) => {
+        const c = cur.resolution?.conversation;
+        if (!c) return undefined;
+        const { heldSettle: _h, ...rest } = c;
+        return { ...cur, resolution: { ...cur.resolution, conversation: keep ? { ...rest, heldSettle: keep } : rest } };
+      });
+      // not kept (a raced write): settled now all the same, as before; only a later failure relies on the kept answer
+      void kept;
+    }
     if (decision.kind === "pick") return pick(ctx, key, orderId, order, i, line, offers[decision.n - 1]);
     if (decision.kind === "credit") return settle(ctx, key, orderId, order, i, line, "credit", "credit");
     if (decision.kind === "refund") return settle(ctx, key, orderId, order, i, line, "refund", "refund");

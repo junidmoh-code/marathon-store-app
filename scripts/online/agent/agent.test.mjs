@@ -628,6 +628,30 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(h.junid.slice(before).filter((m) => /was refused/.test(m.subject))).toHaveLength(0);
   });
 
+  it("CodeRabbit on #856: a credit answer whose settle did not finish is kept and retried, never replaced by the 48-hour credit", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    const realRef = f.db.ref;
+    const db = { ref: (p) => {
+      const r = realRef(p);
+      if (p !== "online_orders/9001/lines/0") return r;
+      return { ...r, transaction: async (fn) => {
+        const cur = structuredClone(f.read(p));
+        const out = fn(structuredClone(cur));
+        if (out?.resolution?.money?.state === "claimed") return { committed: false, snapshot: { val: () => cur } };
+        return r.transaction(fn);
+      } };
+    } };
+    await h.run({ db, inbox: { replies: async () => [reply("credit")] } });
+    expect(conv(f).heldSettle?.kind).toBe("credit"); // the answer is on the line; the reply itself is already seen
+    expect(f.read("online_orders/9001/lines/0/resolution/outcome")).toBeFalsy();
+    await h.run({ nowMs: async () => NOW + 72 * H }); // past 48 hours, no new reply: the customer's own answer settles
+    const out = f.read("online_orders/9001/lines/0/resolution/outcome") || {};
+    expect(out.kind).toBe("credit");
+    expect(conv(f).state).toBe("closed");
+  });
+
   it("CodeRabbit on #851: a refund with only a separately paid difference left is Junid's; no 48-hour credit pays it after", async () => {
     // Paid R250 on the order; R250 refunded to it already; R30 paid on its own PayFast payment remains.
     const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } }, moneySettled: { r: { kind: "refund", state: "done", amountCents: 25000 } } } }) }));
