@@ -64,7 +64,7 @@ export const ALL_CATEGORY_COUNT_HUBS = Object.freeze(["hub3"]);
 export function countsAllCategories(hub) {
   return ALL_CATEGORY_COUNT_HUBS.includes(hub);
 }
-// At an all-category hub (config/hubSneakerCount.js countsAllCategories) the
+// At an all-category hub (countsAllCategories, below) the
 // count lists every product, and the one-size "_" cell of a NON-footwear
 // product (a bag, a cap, a one-size tee) is a real shelf cell. A shoe's "_" cell
 // stays excluded everywhere — rule 3 above still holds for footwear.

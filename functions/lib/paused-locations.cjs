@@ -41,27 +41,15 @@ function isLocationPaused(config, loc) {
 // `dest` (engine shape).
 const DEST_LISTS = ["intents", "closes", "satisfiedClosures", "resizes", "retryOps", "streakOps"];
 
-// The SOURCE of an open engine lock (/refill_engine/open/{dest}/{pid}/{sizeKey}).
-function lockSource(openIndex, e) {
-  const entry = openIndex && openIndex[e.dest] && openIndex[e.dest][e.pid] && openIndex[e.dest][e.pid][e.sizeKey];
-  return entry && entry.source ? entry.source : null;
-}
-
-// Is this plan entry held because it touches a paused location?
-//   • any entry whose DESTINATION is paused (no new request, no close, no
-//     resize, no retry, no streak change there);
-//   • an engine WITHDRAWAL (a close carrying the engine's own cancelReason) or a
-//     RESIZE of a request whose SOURCE is paused. Without this, a hub being
-//     counted from zero reads empty and every open shop request it serves is
-//     withdrawn as "awaiting_upstream" on the next scan — the count itself
-//     would cancel Pine's and Concrete's open requests. A close that only
-//     records what a person already did (fulfilled / rejected) is not held.
-function held(key, e, paused, openIndex) {
-  if (!e) return false;
-  if (paused.has(e.dest)) return true;
-  if (key === "closes" && e.cancelReason) return paused.has(lockSource(openIndex, e));
-  if (key === "resizes") return paused.has(lockSource(openIndex, e));
-  return false;
+// Is this plan entry held? Only when its DESTINATION is paused — Junid asked
+// for Hub 3 to be skipped "as a destination entirely", and nothing more.
+//
+// NOT held (reported to Junid, not decided here — CLAUDE.md): an engine
+// withdrawal of a SHOP request whose SOURCE is the paused hub. With Hub 3 at 0
+// the scan withdraws open Pine/Concrete requests served from Hub 3 as
+// "awaiting_upstream"; they are re-raised from Hub 3's counted cells.
+function held(key, e, paused) {
+  return !!e && paused.has(e.dest);
 }
 
 /**
@@ -69,16 +57,15 @@ function held(key, e, paused, openIndex) {
  * object when nothing is paused (identity: the unpaused scan is unchanged).
  * Otherwise a shallow copy with every destination list filtered, plus
  * `pausedDropped` — how many entries were held, by list — for the run record.
- * `openIndex` is the /refill_engine/open snapshot the plan was computed from.
  */
-function withoutPausedDestinations(plan, paused, openIndex = {}) {
+function withoutPausedDestinations(plan, paused) {
   if (!plan || !paused || paused.size === 0) return plan;
   const out = { ...plan };
   const dropped = {};
   for (const key of DEST_LISTS) {
     const list = plan[key];
     if (!Array.isArray(list)) continue;
-    const kept = list.filter((e) => !held(key, e, paused, openIndex));
+    const kept = list.filter((e) => !held(key, e, paused));
     if (kept.length !== list.length) dropped[key] = list.length - kept.length;
     out[key] = kept;
   }

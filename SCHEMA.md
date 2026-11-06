@@ -1022,7 +1022,8 @@ carries a `refillId` still closes its `/refill_requests/{id}` on success.
 
 Junid, 6 Nov 2026: Hub 3 is recounted from zero. Two flags, **set and cleared
 together** by the Hub Count card's toggle ("Hub 3 counting — engine paused,
-uncounted sales not deducted", owner + admin, Hub 3 only;
+uncounted sales not deducted", Hub 3 only, shown to accounts whose stored
+`stockRole` is `admin` — the rules' own gate on `/config/refillEngine`;
 `hubCountStore.setHubCountMode`) and by `scripts/hub3-count-reset.mjs`:
 
 | Path | Value | Owner | Read by |
@@ -1030,13 +1031,14 @@ uncounted sales not deducted", owner + admin, Hub 3 only;
 | `/config/refillEngine/pausedLocations/{loc}` | `true` or absent | this repo | `refillHealthScan`, `firstBatchLeg` (`functions/lib/paused-locations.cjs`) |
 | `/settings/hubSneakerCount/countMode/{loc}` | `true` or absent | **this repo** (writes it) | **marathon-pos-app** (reads only: `=== true` → skip the deduction on an UNCOUNTED cell at that hub, and its reversal watcher) |
 | `/settings/hubSneakerCount/countModeMeta/{loc}` | `{ on, at, by }` | this repo | History only |
-| `/settings/hubSneakerCount/resets/{loc}/{resetId}` | before-state of a reset: `{ at, by, cells, units, nonZeroCells, positives, negatives, positiveUnits, negativeUnits, file, applied? }` | `scripts/hub3-count-reset.mjs` | audit / recovery |
+| `/settings/hubSneakerCount/resets/{loc}/{resetId}` | before-state of a reset: `{ at, by, cells, units, nonZeroCells, positives, negatives, positiveUnits, negativeUnits, nonZero: { pid: { sizeKey: qty } }, file, applied? }` | `scripts/hub3-count-reset.mjs` | audit / recovery |
 
 Only the value `true` counts as on. While `pausedLocations/{loc}` is true the
 scan computes its plan exactly as always and then holds the paused location's
-share: no new request, close, resize, retry or streak change with that location
-as destination, no engine withdrawal or resize of a request it is the SOURCE of,
-and no refusal write-off there; its intents leave before the per-run cap is dealt.
+share as a DESTINATION: no new request, close, resize, retry or streak change
+with that location as destination, and no refusal write-off there; its intents
+leave before the per-run cap is dealt. A shop request the paused hub SERVES is
+not held: with the hub at 0 the scan may withdraw it as `awaiting_upstream`.
 `firstBatchLeg` raises no Central→hub leg for it (marker `none: "location_paused"`).
 No policy, target or route is read differently. Open requests are left as they are.
 

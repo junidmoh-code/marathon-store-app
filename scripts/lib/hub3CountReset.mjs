@@ -25,8 +25,8 @@ export const COUNT_ROOT = "settings/hubSneakerCount";
 
 const UNSAFE = /[.#$/\[\]\s]/;
 const qtyOf = (cell) => (cell && typeof cell === "object" && typeof cell.qty === "number" ? cell.qty : null);
-// The client's decodeSizeKey (src/utils/sizeKey.js): only digit_digit → digit.digit.
-export const decodeSizeKey = (k) => (typeof k === "string" ? k.replace(/(\d)_(\d)/g, "$1.$2") : k);
+import { decodeSizeKey } from "../../src/utils/sizeKey.js";
+export { decodeSizeKey };
 export const movementIdFor = (resetId, pid, sizeKey) => `h3reset_${resetId}_${pid}_${sizeKey}`;
 
 /** The before-state + the per-cell plan, from ONE read of /stock/hub3. */
@@ -147,6 +147,9 @@ export async function verifyReset({ db, plan }) {
     const cell = stock[c.pid] && stock[c.pid][c.sizeKey];
     const q = qtyOf(cell);
     const row = (await db.ref(`stock_movements/${c.movementId}`).once("value")).val();
+    // A cell that was already 0 by the time the reset reached it (a sale in
+    // the gap took it there) needs no movement — applied 0, no row.
+    if (!row && c.applied === 0 && q === 0) continue;
     if (!row) { problems.push(`${c.path}: no reset movement ${c.movementId}`); continue; }
     rows++;
     const signed = row.to === HUB ? Number(row.qty) : -Number(row.qty);
@@ -164,6 +167,8 @@ export async function verifyReset({ db, plan }) {
       if (qtyOf(cell)) otherNonZero++;
     }
   }
+  // Skipped at planning (unsafe key / no numeric qty) → never zeroed: a FAIL.
+  for (const sk of plan.skipped || []) problems.push(`skipped at planning: ${sk.pid}/${sk.sizeKey ?? ""} (${sk.why})`);
   // Each row's qty is the before it actually zeroed (a moved cell was retried
   // against its new qty), so the reset rows sum to −(what they zeroed).
   const expectedNet = -plan.cells.reduce((t, c) => t + (c.applied ?? c.before), 0);

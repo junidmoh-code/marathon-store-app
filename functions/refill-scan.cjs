@@ -652,14 +652,14 @@ async function runScan() {
 
     // PAUSED LOCATIONS (/config/refillEngine/pausedLocations/{loc} = true —
     // Hub 3 while it is recounted, Junid 6 Nov 2026): the plan is computed as
-    // always, then the paused location's share is held — no new request, close,
-    // resize or retry there, and no withdrawal of a request it is the source
-    // of. Nothing paused → the same plan object, unchanged.
+    // always, then the paused location's share AS A DESTINATION is held — no
+    // new request, close, resize or retry there. Nothing paused → the same
+    // plan object, unchanged.
     const paused = pausedLocations.pausedLocationSet(config);
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines, locations,
       network,
-    }), paused, openIndex);
+    }), paused);
     if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };
     counts.errors.push(...plan.errors);
 

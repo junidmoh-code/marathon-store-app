@@ -1,7 +1,7 @@
 // ─── PAUSED LOCATIONS — Hub 3 recount (Junid, 6 Nov 2026) ─────────────────────
 // /config/refillEngine/pausedLocations/hub3 = true holds Hub 3's share of every
-// scan: no new request there, nothing closed, resized or retried there, and no
-// withdrawal of a request Hub 3 is the source of. With the flag clear the plan
+// scan AS A DESTINATION: no new request there, nothing closed, resized or
+// retried there. With the flag clear the plan
 // is byte-identical to the plan without the feature.
 // Run: cd functions && node --test test/paused-locations.test.cjs
 "use strict";
@@ -57,7 +57,7 @@ test("FLAG SET: a scan over Hub 3 cells at 0 raises ZERO Hub 3 requests (and the
   assert.ok(before.intents.some((i) => i.dest === "hub3"), "fixture must raise Hub 3 intents when unpaused");
   const cfg = withPause(clone(FIXTURE.config), { hub3: true });
   const raw = plan({ config: cfg, stock });
-  const held = pl.withoutPausedDestinations(raw, pl.pausedLocationSet(cfg), {});
+  const held = pl.withoutPausedDestinations(raw, pl.pausedLocationSet(cfg));
   assert.equal(held.intents.filter((i) => i.dest === "hub3").length, 0);
   for (const key of pl.DEST_LISTS) assert.equal((held[key] || []).filter((e) => e.dest === "hub3").length, 0, key);
   // Every other destination's intents are exactly what they were.
@@ -87,35 +87,31 @@ test("FLAG CLEAR: the plan is byte-identical — absent, {}, {hub3:false} and ju
     for (const node of [undefined, {}, { hub3: false }, { hub3: "true" }, null]) {
       const cfg = node === undefined ? clone(FIXTURE.config) : withPause(clone(FIXTURE.config), node);
       const p = plan({ config: cfg, stock });
-      const out = pl.withoutPausedDestinations(p, pl.pausedLocationSet(cfg), {});
+      const out = pl.withoutPausedDestinations(p, pl.pausedLocationSet(cfg));
       assert.equal(out, p, "nothing paused → the same plan object");
       assert.equal(JSON.stringify(out), base, JSON.stringify(node));
     }
   }
 });
 
-test("FLAG SET: a request Hub 3 is the SOURCE of is not withdrawn because Hub 3 reads 0; a person's close still lands", () => {
+test("FLAG SET: every plan list drops its Hub 3 entries — and ONLY those (a shop request Hub 3 serves is not held)", () => {
   const paused = new Set(["hub3"]);
-  const openIndex = {
-    "marathon-pine": { p1: { M: { source: "hub3", refillId: "rA" }, L: { source: "hub3", refillId: "rB" } } },
-    trophy: { p1: { M: { source: "hub2", refillId: "rC" } } },
-  };
+  const h3 = { dest: "hub3", pid: "p1", sizeKey: "M" };
+  const pine = { dest: "marathon-pine", pid: "p1", sizeKey: "M" };
   const p = {
-    intents: [], satisfiedClosures: [], retryOps: [], streakOps: [], errors: [],
-    closes: [
-      { dest: "marathon-pine", pid: "p1", sizeKey: "M", refillId: "rA", reason: "awaiting_upstream", cancelReason: "awaiting_upstream", rrStatus: "cancelled" },
-      { dest: "marathon-pine", pid: "p1", sizeKey: "L", refillId: "rB", reason: "fulfilled", rrStatus: "fulfilled" },
-      { dest: "trophy", pid: "p1", sizeKey: "M", refillId: "rC", reason: "awaiting_upstream", cancelReason: "awaiting_upstream", rrStatus: "cancelled" },
-    ],
-    resizes: [
-      { dest: "marathon-pine", pid: "p1", sizeKey: "M", refillId: "rA", from: 2, to: 1 },
-      { dest: "trophy", pid: "p1", sizeKey: "M", refillId: "rC", from: 2, to: 1 },
-    ],
+    errors: [],
+    intents: [{ ...h3, source: "central" }, { ...pine, source: "hub3" }],
+    closes: [{ ...h3, refillId: "r1", cancelReason: "no_longer_needed" }, { ...pine, refillId: "r2", reason: "awaiting_upstream", cancelReason: "awaiting_upstream" }],
+    satisfiedClosures: [{ ...h3, refillId: "r3" }, { ...pine, refillId: "r4" }],
+    resizes: [{ ...h3, refillId: "r5", from: 2, to: 3 }, { ...pine, refillId: "r6", from: 2, to: 1 }],
+    retryOps: [{ ...h3, op: "retry" }, { ...pine, op: "reset" }],
+    streakOps: [{ ...h3, op: "reset" }, { ...pine, op: "reset" }],
   };
-  const out = pl.withoutPausedDestinations(p, paused, openIndex);
-  assert.deepEqual(out.closes.map((c) => c.refillId), ["rB", "rC"]);
-  assert.deepEqual(out.resizes.map((c) => c.refillId), ["rC"]);
-  assert.deepEqual(out.pausedDropped, { closes: 1, resizes: 1 });
+  const out = pl.withoutPausedDestinations(p, paused);
+  for (const key of pl.DEST_LISTS) {
+    assert.deepEqual(out[key].map((e) => e.dest), ["marathon-pine"], key);
+  }
+  assert.deepEqual(out.pausedDropped, { intents: 1, closes: 1, satisfiedClosures: 1, resizes: 1, retryOps: 1, streakOps: 1 });
 });
 
 test("FLAG SET: a refusal write-off at Hub 3 is held; elsewhere it stands", () => {

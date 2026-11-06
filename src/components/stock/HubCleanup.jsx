@@ -2860,14 +2860,17 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
     if (!keys.length && allCategories && isOneSizeCountable(product)) keys.push(stockSizeKey(null));
     return keys;
   }, [cells, product, allCategories]);
-  const scannedKey = panel.size ? stockSizeKey(String(panel.size)) : (sizeKeys.length === 1 ? sizeKeys[0] : null);
+  // The scanned size's cell key; a product with ONE countable size takes that
+  // one whatever its barcode row spells (no size, "One Size", "OS"…).
+  const scannedRaw = panel.size ? stockSizeKey(String(panel.size)) : null;
+  const scannedKey = scannedRaw && sizeKeys.includes(scannedRaw) ? scannedRaw : (sizeKeys.length === 1 ? sizeKeys[0] : scannedRaw);
   const [sizeKey, setSizeKey] = useState(scannedKey && sizeKeys.includes(scannedKey) ? scannedKey : null);
   const [actual, setActual] = useState(panel.tally && scannedKey && sizeKeys.includes(scannedKey) ? String(panel.tally) : "");
   // Each further scan of this product+size raises the count by one (HubCleanup
   // handleCode). It lands in the count box for the scanned size only.
   useEffect(() => {
     if (panel.tally && scannedKey && sizeKey === scannedKey) setActual(String(panel.tally));
-  }, [panel.tally]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [panel.tally, sizeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const unitWord = productIsFootwear(product) ? "pairs" : "units";
 
   // A display can change size MID-COUNT (one sells, another goes out). The
