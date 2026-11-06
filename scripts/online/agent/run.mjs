@@ -507,7 +507,10 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
       // Nothing can go back to the order's own payment, but a difference paid separately is still owed (CodeRabbit on #851).
       // The conversation is Junid's now (CodeRabbit on #851): never "offering", so no 48-hour credit can pay the same money
       // he refunds by hand.
-      await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, nothingLeftAt: ctx.now, state: "with_junid", withJunidAt: ctx.now } } } : undefined));
+      // Only once the hand-over is WRITTEN (Sonnet review of #851): a failed write leaves the conversation as it was, so nothing
+      // is said and the next run tries again; never told Junid while the 48-hour credit could still pay the same money.
+      const handed = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, nothingLeftAt: ctx.now, state: "with_junid", withJunidAt: ctx.now } } } : undefined));
+      if (!handed) return;
       await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents: 0, note: `${rands(heldBack)} was paid on its own PayFast payment; Junid's to refund there` });
       await tellJunid(ctx, `Website order ${order.ref}: refund asked; ${rands(heldBack)} left, paid on its own PayFast payment`, [`Line: ${line.title}. Nothing is left to refund to the order's payment; the customer's ${rands(heldBack)} difference was paid on a separate PayFast payment. Refund it there by hand, or tell Jamie to credit it. Nothing was sent to the customer.`]);
       await setAgentRow(ctx, key, { state: "needs_junid" });

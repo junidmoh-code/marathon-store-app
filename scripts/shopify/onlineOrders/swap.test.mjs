@@ -488,6 +488,21 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(lineLedger(refunded, { priceCents: 0 }).refundToOriginalCents).toBe(40000);
   });
 
+  it("Sonnet review of #851: a paid-in amount needs its ref, and a ref counts once whatever its case or spaces", async () => {
+    const { f } = await ingested();
+    await expect(swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: 5000, by: YASMIN, via: "cli", now: NOW, increment })).rejects.toThrow(/payment reference/);
+    await expect(swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: 5000, paidInRef: "  ", by: YASMIN, via: "cli", now: NOW, increment })).rejects.toThrow(/payment reference/);
+    expect(line(f, 1).pid).not.toBe("JKT");
+    const ok = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: 5000, paidInRef: "PF-123", by: YASMIN, via: "cli", now: NOW, increment });
+    expect(ok.ok).toBe(true);
+    const down = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "TEE", size: "M", by: YASMIN, via: "cli", now: NOW + 1, increment });
+    expect(down.ok).toBe(true);
+    const again = await swapOnlineOrderLine({ db: f.db, orderKey: "9001", lineIndex: 1, newPid: "JKT", size: "M", allowHigher: true, paidInCents: 5000, paidInRef: " pf-123 ", by: YASMIN, via: "cli", now: NOW + 2, increment });
+    expect(again.ok).toBe(false);
+    expect(again.summary || again.why || "").toMatch(/already counted/);
+    expect(Object.values(line(f, 1).resolution?.moneyIn || {})).toHaveLength(1);
+  });
+
   it("CodeRabbit on #848: a bad paidInCents is refused, nothing swapped", async () => {
     const { f } = await ingested();
     for (const bad of [-5, 12.5, Number.NaN]) {
