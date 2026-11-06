@@ -639,7 +639,7 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(conv(f).state).toBe("with_junid");
     const credits = () => h.gql.filter((g) => /storeCreditAccountCredit/.test(g.q)).length;
     const before = credits();
-    await h.run({ now: NOW + 72 * H });
+    await h.run({ nowMs: async () => NOW + 72 * H });
     expect(credits()).toBe(before);
   });
 });
