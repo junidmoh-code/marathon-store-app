@@ -50,6 +50,9 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   const moved = (x) => Math.max(0, Math.round(Number(x?.paidCents ?? x?.amountCents) || 0));
   const earlier = Object.values(line?.resolution?.moneySettled || {}).filter((x) => x && typeof x === "object" && x.state === "done");
   const settled = earlier.reduce((t, x) => t + moved(x), 0) + (isObj && m.state === "done" ? moved(m) : 0);
+  // Of that, what went back to the order's own payment as a refund (a credit never touched it).
+  // An entry with no kind is ambiguous: counted as a refund (it only lowers the cap; fails closed, CodeRabbit on dm #130).
+  const refundedOrig = earlier.filter((x) => x.kind !== "credit").reduce((t, x) => t + moved(x), 0) + (isObj && m.state === "done" && m.kind !== "credit" ? moved(m) : 0);
   const nowCents = Math.max(0, Math.round(Number(priceCents) || 0)) * qty;
   const net = paid - settled - nowCents;
   const claimedAt = Number(m?.at) || 0;
@@ -63,6 +66,11 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   return {
     paidCents: paid, settledCents: settled, nowCents, creditCents: Math.max(0, net), extraCents: Math.max(0, -net),
     refundableCents: Math.max(0, paid - settled),
+    // What a REFUND may send back to the order's own payment (Sonnet review of #848, 1): never the collected difference
+    // (it came in on its own PayFast payment), never more than the order's payment took for the line.
+    // Credits given back do not lower it; only earlier refunds (which went to that payment) do (CodeRabbit on #851).
+    refundToOriginalCents: Math.max(0, Math.min(paid - settled, paidCents(line) - refundedOrig)),
+    paidInCents: paidIn,
     busy: isObj && m.state === "claimed" && !stale,
     unclear: !!unclearWhy, unclearWhy,
     // Never moved money: superseded by the next swap (a definite refusal, or a pending request).
@@ -152,8 +160,10 @@ export function canSend(conversation) {
 export function moneyAllowed(money, { kind, amountCents, line }) {
   if (kind !== "credit" && kind !== "refund") return { ok: false, why: "unknown money action" };
   if (money) return { ok: false, why: `this line already has a ${money.kind} (${rands(money.amountCents)}) — never both, never twice` };
-  // What is left of what was paid, after money already given back for this line (the ledger, COMMIT 6).
-  const left = lineLedger(line, { priceCents: 0 }).refundableCents;
+  // What is left of what was paid, after money already given back for this line (the ledger, COMMIT 6). A refund is capped
+  // at what the order's own payment took for the line (Sonnet review of #848, 1).
+  const lg0 = lineLedger(line, { priceCents: 0 });
+  const left = kind === "refund" ? lg0.refundToOriginalCents : lg0.refundableCents;
   if (!Number.isInteger(amountCents) || amountCents <= 0) return { ok: false, why: "nothing to pay" };
   if (amountCents > left) return { ok: false, why: `${rands(amountCents)} is more than the ${rands(left)} left of what was paid for this line` };
   return { ok: true };
@@ -170,7 +180,7 @@ export function judgeSwap(line, offer, { now = Date.now() } = {}) {
   if (lg.busy || lg.unclear) return { ok: false, why: "money_unclear", note: lg.unclearWhy || "money for this line is being issued right now" };
   // Everything paid for the line was given back already: nothing is left to swap against. A final answer, never "unclear"
   // (never held for ever) and never "costs more" (review of #847).
-  if (lg.paidCents > 0 && lg.refundableCents === 0) return { ok: false, why: "refunded_full", note: `the line was refunded in full (${rands(lg.settledCents)}): nothing is left to swap against` };
+  if (lg.paidCents > 0 && lg.refundableCents === 0) return { ok: false, why: "refunded_full", note: `everything paid for the line was given back already (${rands(lg.settledCents)}, refund or store credit): nothing is left to swap against` };
   if (lg.extraCents > 0) return { ok: false, why: "costs_more", extraCents: lg.extraCents };
   return { ok: true, creditCents: lg.creditCents };
 }
@@ -220,7 +230,9 @@ export function composeMessage(kind, { ref, firstName, line, offers = [], amount
   const parts = [hi, "", words.opening, ""];
   const tag = subjectTag(ref, line);
   // What is still to give back for the line (the ledger), never the full price when part of it went back already.
-  const left = lineLedger(line, { priceCents: 0 }).refundableCents;
+  const lgL = lineLedger(line, { priceCents: 0 });
+  const left = lgL.refundableCents;
+  const leftRefund = lgL.refundToOriginalCents;
   if (kind === "offer" || kind === "costs_more" || kind === "unclear" || kind === "gone") {
     if (kind === "gone") parts.push("That one has just sold out, so we can't swap to it.", "");
     if (kind === "costs_more") parts.push(`That one costs ${rands(amountCents)} more than what you paid, and we'll never ask you to pay more — so we can't swap to it.`, "");
@@ -229,13 +241,13 @@ export function composeMessage(kind, { ref, firstName, line, offers = [], amount
       parts.push(kind === "offer" ? "These are in stock in your size and close in price:" : "Your choices again:");
       offers.forEach((o, i) => parts.push(`  ${i + 1}. ${o.title} — ${rands(o.priceCents)} — ${o.url}`));
       parts.push("");
-      parts.push(`Reply with the number you want (1${offers.length > 1 ? `–${offers.length}` : ""}), or the word "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(left)}.`);
+      parts.push(`Reply with the number you want (1${offers.length > 1 ? `–${offers.length}` : ""}), or the word "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(leftRefund)}.`);
     } else {
-      parts.push(`Reply "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(left)}.`);
+      parts.push(`Reply "credit" for store credit of ${rands(left)}, or "refund" for a refund of ${rands(leftRefund)}.`);
     }
     parts.push(`If we don't hear from you in 48 hours we'll put ${rands(left)} on your account as store credit, and you can still ask for a refund instead for 14 days after that.`);
   } else if (kind === "refunded_full") {
-    parts.push(`${itemWords(line)} was already refunded to you in full, so there is nothing left to swap it for. Nothing more is needed from you.`);
+    parts.push(`Everything you paid for ${itemWords(line)} was already given back to you (as a refund or store credit), so there is nothing left to swap it for. Nothing more is needed from you.`);
   } else if (kind === "swapped") {
     parts.push(`Your new item: ${itemWords(line)}. It ships to you as soon as it is packed.`);
     if (amountCents > 0) parts.push(`It costs less than what you paid, so ${rands(amountCents)} goes back to you as store credit. ${creditState}`);

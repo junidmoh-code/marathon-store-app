@@ -121,8 +121,18 @@ async function handleLine(ctx, key, row) {
   // A swap whose difference credit (or its message) never happened — a crash
   // between the swap and the money (Sonnet review, PR #778): finish it.
   const out = line.resolution?.outcome;
-  if (out?.kind === "swap" && conv.state === "closed" && !Object.values(conv.sends || {}).some((x) => x?.kind === "swapped")) {
-    const diff = out.creditCents > 0 ? await money(ctx, orderId, order, i, line, "credit", out.creditCents, "swap difference") : null;
+  // Only the agent's own swap (never a CLI, POS or Jamie swap: their money waits for Junid; Sonnet review of #848, 4), only
+  // on the line it swapped (never a follow-up that copies its outcome: 3), and money only for its own pre-claim (the swap
+  // wrote it with the line); a credit with no pre-claim is Junid's.
+  const ownSwap = out?.kind === "swap" && out.via === "agent" && !order.followUpOf;
+  if (ownSwap && conv.state === "closed" && !Object.values(conv.sends || {}).some((x) => x?.kind === "swapped")) {
+    const pm = line.resolution?.money;
+    const preclaimed = !!pm && typeof pm === "object" && pm.preclaimed === true && Number(pm.at) === Number(out.at) && pm.kind === "credit";
+    const settledAlready = Object.values(line.resolution?.moneySettled || {}).some((x) => x && x.kind === "credit" && Number(x.at) === Number(out.at));
+    if (out.creditCents > 0 && !preclaimed && !settledAlready && !(pm && pm.at && Number(pm.at) === Number(out.at))) await tellJunid(ctx, `Website order ${order.ref}: a swap's ${rands(out.creditCents)} credit has no record of being filed`, [`Line: ${line.title}. The customer is told of the swap only; please check Shopify and credit it by hand if it is owed.`]);
+    const diff = out.creditCents > 0 && preclaimed ? await money(ctx, orderId, order, i, line, "credit", out.creditCents, "swap difference") : out.creditCents > 0 && (settledAlready || (pm && Number(pm.at) === Number(out.at))) ? (settledAlready ? { state: "done" } : pm) : null;
+    // A packed order's follow-up mirror is brought in line with the parent's result too (CodeRabbit on #848).
+    if (out.creditCents > 0 && (line.source?.movedTo || out.movedTo)) await syncMirror(ctx, orderId, i, { claimAt: Number(out.at), creditCents: out.creditCents, diff });
     // A pre-claim met again is NOT proof the credit was filed (CodeRabbit on #848): the customer hears the amount only when
     // money() filed it (done, or with Junid by hand); an unresolved claim is Junid's (told at once) and they hear the swap.
     await send(ctx, orderId, order, i, line, "swapped", creditWords(diff, out.creditCents));
@@ -144,7 +154,7 @@ async function handleLine(ctx, key, row) {
   await retryUnsent(ctx, orderId, order, i, line);
   if (conv.state === "offering") return offering(ctx, key, orderId, order, i, line);
   if (conv.state === "credited_window") return creditedWindow(ctx, key, orderId, order, i, line);
-  if (conv.state === "no_contact") await setAgentRow(ctx, key, { state: "needs_junid" });
+  if (conv.state === "no_contact" || conv.state === "with_junid") await setAgentRow(ctx, key, { state: "needs_junid" });
   else if (conv.state === "closed") await setAgentRow(ctx, key, null);
 }
 
@@ -314,6 +324,28 @@ async function nextReply(ctx, orderId, i, conv) {
 // ── pick N ───────────────────────────────────────────────────────────────────
 // A held pick is dropped only once it has an outcome: a committed swap, or a final answer (dearer, gone): CodeRabbit #847.
 /**
+ * A packed order's follow-up line carries a mirror of the parent's swap credit (store-app #847): it follows the parent's
+ * result. done → the follow-up's moneySettled under p<claimAt> (stable: a recovery re-run never adds it twice); not filed
+ * → the mirror goes; filed but not done → the mirror shows that state (unclear until settled). Used by the swap and by
+ * its crash recovery (CodeRabbit on #848).
+ */
+async function syncMirror(ctx, orderId, i, { claimAt, creditCents, diff }) {
+  const entry = clean({ kind: "credit", amountCents: creditCents, via: diff?.via ?? null, ref: diff?.ref ?? null, at: claimAt, ...(Number.isInteger(diff?.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
+  await lineTxn(ctx, followUpId(orderId, i), 0, (line0) => {
+    const cur = line0.resolution || {};
+    const m = cur.money;
+    const mine = m && typeof m === "object" && m.mirroredFrom === `${orderId}/${i}` && Number(m.at) === Number(claimAt);
+    const { money: _m, ...rest } = cur;
+    const key = `p${claimAt}`;
+    let next;
+    if (diff?.state === "done") next = cur.moneySettled?.[key] && !mine ? undefined : { ...(mine ? rest : cur), moneySettled: { ...(cur.moneySettled || {}), [key]: { ...entry, state: "done" } } };
+    else if (!diff) next = mine ? rest : undefined;
+    else next = mine || !m ? { ...cur, money: clean({ ...entry, state: diff.state || "manual", ...(diff.ambiguous != null ? { ambiguous: diff.ambiguous } : {}), mirroredFrom: `${orderId}/${i}` }) } : undefined;
+    return next === undefined ? undefined : { ...line0, resolution: next };
+  });
+}
+
+/**
  * What the customer may be told of a swap's credit, from what money() returned: filed (done → "on your account"; with
  * Junid by hand → "being added") → the amount; nothing filed, refused, or a claim with no result → no amount.
  */
@@ -356,7 +388,7 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
     if (held) await clearHeld(ctx, orderId, i);
     await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: ${judged.note}` });
     await send(ctx, orderId, order, i, line, "refunded_full");
-    await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, but the line was refunded in full`, [`Line: ${line.title}. ${judged.note}. The customer was told nothing is left to swap; nothing was changed.`]);
+    await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, but everything paid for the line was given back already`, [`Line: ${line.title}. ${judged.note}. The customer was told nothing is left to swap; nothing was changed.`]);
     return;
   }
   if (!judged.ok) {
@@ -452,21 +484,7 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
   // answer) is mirrored as the follow-up line's money slot, so a swap there waits until it is settled (Junid's
   // settle_line_money settles the mirror too).
   // The follow-up's mirror follows the parent's result: done → its moneySettled (own key), else the same state.
-  if (followed && creditClaim) {
-    const entry = clean({ kind: "credit", amountCents: judged.creditCents, via: diff?.via ?? null, ref: diff?.ref ?? null, at: creditClaim.at, ...(Number.isInteger(diff?.paidCents) ? { paidCents: diff.paidCents } : {}), onParent: `${orderId}/${i}` });
-    await lineTxn(ctx, followUpId(orderId, i), 0, (line0) => {
-      const cur = line0.resolution || {};
-      const m = cur.money;
-      const mine = m && typeof m === "object" && m.mirroredFrom === `${orderId}/${i}` && Number(m.at) === Number(creditClaim.at);
-      const { money: _m, ...rest } = cur;
-      let next;
-      if (diff?.state === "done") next = { ...(mine ? rest : cur), moneySettled: { ...(cur.moneySettled || {}), [`p${ctx.now}`]: { ...entry, state: "done" } } };
-      // Not filed at all (refused): the mirror goes; filed but not done: the mirror shows it (unclear until settled).
-      else if (!diff) next = mine ? rest : undefined;
-      else next = mine || !m ? { ...cur, money: clean({ ...entry, state: diff.state || "manual", ...(diff.ambiguous != null ? { ambiguous: diff.ambiguous } : {}), mirroredFrom: `${orderId}/${i}` }) } : undefined;
-      return next === undefined ? undefined : { ...line0, resolution: next };
-    });
-  }
+  if (followed && creditClaim) await syncMirror(ctx, orderId, i, { claimAt: creditClaim.at, creditCents: judged.creditCents, diff });
   // The customer hears of a credit only as far as money() really filed it (review of #847, 6): none filed → no amount
   // (Junid hears); filed but not done → "being added"; done → "on your account".
   if (creditClaim && !diff) await tellJunid(ctx, `Website order ${order.ref}: ${rands(judged.creditCents)} store credit owed after the swap was NOT filed`, [`Line: ${line.title} → ${offer.title}. The customer was told of the swap, not of the credit. Please credit it by hand or tell Jamie.`]);
@@ -477,10 +495,24 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
 // ── credit / refund ─────────────────────────────────────────────────────────
 async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
   // What is left of what was paid for the line (the ledger; review of #846, 5): never the full price again after a credit.
-  let amount = lineLedger(line, { priceCents: 0, now: ctx.now }).refundableCents;
+  const lg0 = lineLedger(line, { priceCents: 0, now: ctx.now });
+  // A refund goes back to the order's own payment only, never above what it took (Sonnet review of #848, 1); a difference
+  // collected on its own PayFast payment is Junid's to give back there.
+  let amount = kind === "refund" ? lg0.refundToOriginalCents : lg0.refundableCents;
+  const heldBack = kind === "refund" ? lg0.refundableCents - lg0.refundToOriginalCents : 0;
   if (!(amount > 0)) {
     // Told once (CodeRabbit on #847): a marker on the conversation, so the next run (or the 48-hour credit) is silent.
     if (line.resolution?.conversation?.nothingLeftAt) return;
+    if (heldBack > 0) {
+      // Nothing can go back to the order's own payment, but a difference paid separately is still owed (CodeRabbit on #851).
+      // The conversation is Junid's now (CodeRabbit on #851): never "offering", so no 48-hour credit can pay the same money
+      // he refunds by hand.
+      await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, nothingLeftAt: ctx.now, state: "with_junid", withJunidAt: ctx.now } } } : undefined));
+      await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents: 0, note: `${rands(heldBack)} was paid on its own PayFast payment; Junid's to refund there` });
+      await tellJunid(ctx, `Website order ${order.ref}: refund asked; ${rands(heldBack)} left, paid on its own PayFast payment`, [`Line: ${line.title}. Nothing is left to refund to the order's payment; the customer's ${rands(heldBack)} difference was paid on a separate PayFast payment. Refund it there by hand, or tell Jamie to credit it. Nothing was sent to the customer.`]);
+      await setAgentRow(ctx, key, { state: "needs_junid" });
+      return;
+    }
     await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, nothingLeftAt: ctx.now } } } : undefined));
     await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents: 0, note: "nothing is left of what was paid for this line" });
     await tellJunid(ctx, `Website order ${order.ref}: ${kind} asked, but nothing is left to give back on ${line.title}`, [`Everything paid for the line was given back already; nothing was sent to the customer.`]);
@@ -489,13 +521,18 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
   }
   const res = await money(ctx, orderId, order, i, line, kind, amount, messageKind === "auto_credit" ? "no reply in 48 hours" : `the customer chose ${kind}`);
   if (!res) {
-    // Refused (a money slot already on the line): Junid hears once, in the app; the customer is told nothing false.
+    // Refused. A money slot already on the line: Junid hears once, in the app; the line merely changed meanwhile (the
+    // claim's write aborted): tried again next run, nothing said (Sonnet review of #848, minor).
+    const lr = ctx.lastMoneyRefusal && ctx.lastMoneyRefusal.orderId === orderId && ctx.lastMoneyRefusal.i === i ? ctx.lastMoneyRefusal : null;
+    ctx.lastMoneyRefusal = null;
+    if (!lr || lr.race) return; // the write raced (or a resumed claim): tried again next run, nothing said
     if (!line.resolution?.conversation?.settleRefusedAt) {
       await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, settleRefusedAt: ctx.now } } } : undefined));
-      await tellJunid(ctx, `Website order ${order.ref}: the customer asked for ${kind}, but the line already has money on it`, [`Line: ${line.title}. Nothing was sent to the customer; settle the line's money first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go").`]);
+      await tellJunid(ctx, `Website order ${order.ref}: the customer asked for ${kind}, but it was refused`, [`Line: ${line.title}. Why: ${lr.why}. Nothing was sent to the customer; settle the line's money first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go").`]);
     }
     return;
   }
+  if (heldBack > 0) await tellJunid(ctx, `Website order ${order.ref}: refund of ${rands(amount)} filed; ${rands(heldBack)} more was paid separately`, [`Line: ${line.title}. The customer also paid a ${rands(heldBack)} difference on its own PayFast payment for the swap; a refund never goes above what the order's payment took, so that part is NOT in this refund. Refund it on that PayFast payment by hand, or tell Jamie to credit it.`]);
   // What Shopify actually refunded (it may suggest less than the line).
   if (Number.isInteger(res.paidCents) && res.paidCents > 0) amount = res.paidCents;
   const windowUntil = messageKind === "auto_credit" ? ctx.now + REFUND_WINDOW_MS : null;
@@ -568,6 +605,8 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
   });
   if (!claimed) {
     await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents, note: refused || "the line moved" });
+    // Which it was, for the caller (CodeRabbit on #851): the ledger's own refusal, or a write that merely raced.
+    ctx.lastMoneyRefusal = { orderId, i, kind, why: refused || null, race: !refused };
     return null;
   }
   const scopes = ctx.scopes ? await ctx.scopes() : new Set();

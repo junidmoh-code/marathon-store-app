@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { fakeDb, increment } from "../../shopify/onlineOrders/fakeDb.testutil.mjs";
 import { runCustomerAgent, money } from "./run.mjs";
+import { lineLedger } from "./core.mjs";
 import {
   MAX_OUTBOUND, parseReplyCode, validateClassification, moneyAllowed, judgeSwap, acceptModelText,
   composeMessage, canSend, paidCents, stripQuoted, fallbackWords,
@@ -503,8 +504,8 @@ describe("review of #846: held picks, the ledger on settle", () => {
     await h.run({ inbox: { replies: async () => [reply("1")] } });
     expect(line(f).pid).toBe("TEE");
     expect(conv(f).heldPick).toBeUndefined();
-    expect(h.mails.at(-1).text).toMatch(/already refunded to you in full/);
-    expect(h.junid.some((m) => /refunded in full/.test(m.subject))).toBe(true);
+    expect(h.mails.at(-1).text).toMatch(/already given back to you/);
+    expect(h.junid.some((m) => /given back already/.test(m.subject))).toBe(true);
   });
 
   it("review of #847: a pick whose swap does not commit is held and retried, never dropped; Junid hears on the 3rd try", async () => {
@@ -543,7 +544,7 @@ describe("review of #846: held picks, the ledger on settle", () => {
     await h.run({ inbox: { replies: async () => [reply("refund")] } });
     await h.run({ inbox: { replies: async () => [reply("refund"), reply("refund please", 2)] } });
     expect(h.mails.length).toBe(mails);
-    expect(h.junid.filter((m) => /already has money on it/.test(m.subject))).toHaveLength(1);
+    expect(h.junid.filter((m) => /was refused/.test(m.subject))).toHaveLength(1);
   });
 
   it("review of #847: the credit is claimed in the swap's own write; the customer is told 'on your account' only when it is done", async () => {
@@ -567,7 +568,7 @@ describe("review of #846: held picks, the ledger on settle", () => {
     const conv0 = conv(f);
     const sends = Object.fromEntries(Object.entries(conv0.sends || {}).filter(([, x]) => x?.kind !== "swapped"));
     await f.db.ref("online_orders/9001/lines/0/resolution/conversation/sends").set(sends);
-    await f.db.ref("online_orders/9001/lines/0/resolution/money").set({ kind: "credit", amountCents: 1000, state: "claimed", at: NOW + 1, why: "swap difference", preclaimed: true });
+    await f.db.ref("online_orders/9001/lines/0/resolution/money").set({ kind: "credit", amountCents: 1000, state: "claimed", at: NOW, why: "swap difference", preclaimed: true });
     const before = h.mails.length;
     await h.run();
     const sent = h.mails.slice(before);
@@ -575,4 +576,71 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(sent[0].text).not.toMatch(/store credit/);
     expect(h.junid.some((m) => /CHECK SHOPIFY/.test(m.subject))).toBe(true);
   });
+
+  it("Sonnet review of #848, 3-4: recovery never files money for a CLI/Jamie swap, a follow-up copy, or a swap with no pre-claim", async () => {
+    for (const variant of ["cli", "followUp", "noPreclaim"]) {
+      const f = fakeDb(world());
+      const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+      await h.run();
+      const at = NOW - 1000;
+      await f.db.ref("online_orders/9001/lines/0/resolution/outcome").set({ kind: "swap", pid: "ALT1", creditCents: 1000, at, via: variant === "cli" ? "cli" : "agent" });
+      await f.db.ref("online_orders/9001/lines/0/resolution/conversation/state").set("closed");
+      if (variant === "followUp") await f.db.ref("online_orders/9001/followUpOf").set("9000");
+      if (variant !== "noPreclaim") await f.db.ref("online_orders/9001/lines/0/resolution/money").set(null);
+      const credits = () => h.gql.filter((g) => /storeCreditAccountCredit/.test(g.q)).length;
+      const before = credits();
+      await h.run();
+      expect(credits(), variant).toBe(before);
+    }
+  });
+
+  it("Sonnet review of #848, 1: a refund after a paid difference sends only what the order's payment took; Junid hears of the rest", async () => {
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions", "write_orders"] });
+    await h.run();
+    await h.run({ inbox: { replies: async () => [reply("refund")] } });
+    const m = f.read("online_orders/9001/lines/0/resolution/money") || {};
+    const out = f.read("online_orders/9001/lines/0/resolution/outcome") || {};
+    const amt = Number(m.amountCents ?? out.amountCents);
+    const l0 = f.read("online_orders/9001/lines/0");
+    expect(amt).toBe(lineLedger({ ...l0, resolution: {} }, { priceCents: 0 }).paidCents); // the order's own payment, not + R30
+    expect(h.junid.some((x) => /paid separately/.test(x.subject))).toBe(true);
+  });
+
+  it("CodeRabbit on #851: a settle whose claim write merely raced says nothing; a ledger refusal tells Junid once", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    const realRef = f.db.ref;
+    // The claim's write never commits (someone keeps changing the line), and the ledger itself does not object.
+    const db = { ref: (p) => {
+      const r = realRef(p);
+      if (p !== "online_orders/9001/lines/0") return r;
+      return { ...r, transaction: async (fn) => {
+        const cur = structuredClone(f.read(p));
+        const out = fn(structuredClone(cur));
+        if (out?.resolution?.money?.state === "claimed") return { committed: false, snapshot: { val: () => cur } };
+        return r.transaction(fn);
+      } };
+    } };
+    const before = h.junid.length;
+    await h.run({ db, inbox: { replies: async () => [reply("credit")] } });
+    expect(h.junid.slice(before).filter((m) => /was refused/.test(m.subject))).toHaveLength(0);
+  });
+
+  it("CodeRabbit on #851: a refund with only a separately paid difference left is Junid's; no 48-hour credit pays it after", async () => {
+    // Paid R250 on the order; R250 refunded to it already; R30 paid on its own PayFast payment remains.
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } }, moneySettled: { r: { kind: "refund", state: "done", amountCents: 25000 } } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions", "write_orders"] });
+    await h.run();
+    expect(conv(f)).toBeTruthy();
+    await h.run({ inbox: { replies: async () => [reply("refund")] } });
+    expect(h.junid.some((m) => /paid on its own PayFast payment/.test(m.subject))).toBe(true);
+    expect(conv(f).state).toBe("with_junid");
+    const credits = () => h.gql.filter((g) => /storeCreditAccountCredit/.test(g.q)).length;
+    const before = credits();
+    await h.run({ now: NOW + 72 * H });
+    expect(credits()).toBe(before);
+  });
 });
+

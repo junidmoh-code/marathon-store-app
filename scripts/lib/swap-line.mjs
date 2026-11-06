@@ -228,6 +228,10 @@ export async function swapOnlineOrderLine({
     willRemoveHubOrders: oldKeys, willTombstoneEntry: oldEntry,
     willWithdrawRequest: esc?.phase === "await" && esc.request ? esc.request : null,
   };
+  // A payment recorded with a swap is the difference this swap needs, never more (Sonnet review of #848, 1): a typo or a
+  // stale amount is refused, nothing written.
+  if (paidIn > 0 && !(plan.price.extraCents > 0)) return refuse(`a ${rands(paidIn)} payment was given, but this swap has no difference to pay; nothing written`, { plan });
+  if (paidIn > plan.price.extraCents) return refuse(`the ${rands(paidIn)} payment given is more than the ${rands(plan.price.extraCents)} difference; check the amount, nothing written`, { plan });
   const superseded = ledger.supersedes && ledger.supersedes.amountCents > 0 ? ` The earlier ${rands(ledger.supersedes.amountCents)} ${ledger.supersedes.kind || "money"} request (${ledger.supersedes.state}) is superseded: do not issue it.` : "";
   const summary = `#${ref} updated: ${plan.from} → ${plan.to}, ${piece.status === "display" ? "display pick" : "pick"} raised at ${placeName(piece.locationId)}${superseded}`;
   if (dry) return { ok: true, dry: true, summary: `DRY RUN — ${summary}`, plan, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents };
@@ -264,6 +268,12 @@ export async function swapOnlineOrderLine({
     // A difference the customer PAID for this dearer item counts as paid for the line (review of #847, spec; CodeRabbit on
     // #848): only a confirmed payment the caller passes (paidInCents, e.g. the PayFast difference) is "done". Junid's
     // "customer pays" decision is owed, not paid: recorded as to_collect (never counted) until a payment confirms it.
+    // A payment reference counts once on the whole order (Sonnet review of #848, 2): a rerun with the same --paid-ref, on this
+    // line or another, is refused, nothing written.
+    if (paidIn && paidInRef) {
+      const seenOn = Object.entries(Array.isArray(ord.lines) ? Object.fromEntries(ord.lines.map((l, k) => [k, l])) : ord.lines || {}).find(([, l]) => Object.values(l?.resolution?.moneyIn || {}).some((x) => x && x.ref != null && String(x.ref) === String(paidInRef)));
+      if (seenOn) { why = `payment ${paidInRef} is already counted on line ${Number(seenOn[0]) + 1}`; return undefined; }
+    }
     const owedIn = !paidIn && plan.price.decision === "customer_pays" && plan.price.extraCents > 0 ? plan.price.extraCents : 0;
     const inEntry = paidIn ? clean({ amountCents: paidIn, state: "done", via: "payment", ref: paidInRef || null, at: now }) : owedIn ? clean({ amountCents: owedIn, state: "to_collect", via: "customer_pays", at: now }) : null;
     // Its own key, never the timestamp alone (CodeRabbit on #848): two swaps in one millisecond keep both entries.
