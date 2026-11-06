@@ -9,18 +9,26 @@
 //     3 pairs 34 × 23 × 39, 4 pairs 2×2 → 34 × 46 × 26 — of every stack/column
 //     arrangement the one with the SMALLEST LONGEST SIDE wins (ties → smaller
 //     volume);
+//   • a stack that leaves a slot empty (5 pairs in a 2 × 3 grid) is declared
+//     at the volume of the boxes actually in it (34 × 46 × 32.5, not 39): the
+//     packers close the gap, and TCG measures what they send
+//     (TCG200369959T, 6 Nov 2026 — 34×46×39 declared, 16 kg, R355.68;
+//     TCG measured it at 15 kg and re-rated it R249.60);
 //   • soft goods (caps, tees, perfume …) are stuffed inside at no extra size
 //     until the fill budget (cfg.shoebox.fillBudgetKg × pairs) is used; what
-//     overflows is bundled (one bundle per fill budget of overflow weight) and
-//     each bundle adds cfg.shoebox.overflowBundleCm (3 cm) to the height;
-//   • an item that is neither (a bag) rides on top as an overflow bundle too;
-//   • no footwear: one flat box from the box list sized to the folded stack
-//     (a custom parcel, fits: false, when none holds it).
-// Weight = everything (plus a flat box's tare). Chargeable = max(actual,
-// volumetric) for that single parcel.
+//     overflows lies flat on top, adding its own flat thickness (flatCm);
+//   • an item that is neither (a bag) lies on top the same way;
+//   • no footwear: one flat courier bag (cfg.flatBag) as thick as the goods,
+//     or, past its maxHeightCm, a box from the box list (a custom parcel,
+//     fits: false, when none holds it).
+// NO PADDING: every size is the goods' or the box's own; nothing is rounded
+// up. Weight = everything (plus a bag's or box's tare). Chargeable =
+// max(actual, volumetric) for that single parcel. A calibration factor
+// (cfg.calibration[class].factor) learned from TCG's own measurements may
+// scale the declared volume (scripts/shipping/reconcile.mjs).
 //
 //   estimateParcel(lines, config?) → {
-//     parcels: [ ONE { kind: "shoebox"|"box"|"custom", boxCode, lengthCm, widthCm, heightCm,
+//     parcels: [ ONE { kind: "shoebox"|"flatBag"|"box"|"custom", boxCode, lengthCm, widthCm, heightCm, calibrationClass,
 //                      actualKg, volumetricKg, chargeableKg, contents: [{ kind, kg }],
 //                      pairs, layout: { columns, rows } | null, overflowBundles } ],
 //     parcelCount: 1, actualKg, chargeableKg,
@@ -30,6 +38,7 @@
 import { DEFAULT_SHIPPING_CONFIG, mergeShippingConfig } from "./shippingConfig.js";
 
 const round2 = (n) => Math.round(n * 100) / 100;
+const round1 = (n) => Math.round(n * 10) / 10;
 const sortDesc = (dims) => [...dims].sort((a, b) => b - a);
 const volume = (d) => d[0] * d[1] * d[2];
 const fitsIn = (inner, outer) => {
@@ -216,6 +225,50 @@ export function chooseLocker(dims, actualKg, dropBox) {
   return lockers.find((lk) => fitsIn(dims, [lk.lengthCm, lk.widthCm, lk.heightCm]) && actualKg <= Number(lk.maxKg)) ?? null;
 }
 
+/**
+ * How thick `items` lie flat, one on another: each item's flatCm (its
+ * smallest side when the card gives none); a cap after the first nests into
+ * it (nestCm). Pure.
+ */
+export function flatThicknessCm(items, config) {
+  let caps = 0;
+  let t = 0;
+  for (const it of items) {
+    const spec = config.items?.[it.kind] ?? {};
+    const flat = Number(spec.flatCm);
+    const own = Number.isFinite(flat) && flat > 0 ? flat : it.h;
+    if (it.kind === "cap") {
+      const nest = Number(spec.nestCm);
+      t += caps++ === 0 ? own : Number.isFinite(nest) && nest >= 0 ? nest : own;
+    } else t += own;
+  }
+  return round1(t);
+}
+
+/**
+ * The flat courier bag (cfg.flatBag) for goods with no footwear, or null when
+ * there is no bag, an item's footprint is wider than the bag, or the goods
+ * are thicker than its maxHeightCm. Height = the goods' own flat thickness
+ * (never below minHeightCm). Pure.
+ */
+export function flatBagParcel(items, cfg, divisor) {
+  const bag = cfg.flatBag;
+  const L = Number(bag?.lengthCm), W = Number(bag?.widthCm);
+  if (!(L > 0 && W > 0)) return null;
+  const footprint = sortDesc([L, W]);
+  if (!items.every((it) => it.l <= footprint[0] && it.w <= footprint[1])) return null;
+  const thick = flatThicknessCm(items, cfg);
+  const max = Number(bag.maxHeightCm);
+  if (Number.isFinite(max) && max > 0 && thick > max) return null;
+  const heightCm = round1(Math.max(Number(bag.minHeightCm) || 0, thick));
+  return finish({
+    kind: "flatBag", boxCode: "BAG", lengthCm: footprint[0], widthCm: footprint[1], heightCm,
+    actualKg: round2(items.reduce((t, it) => t + it.kg, 0) + (Number(bag.tareKg) || 0)),
+    contents: items.map((it) => ({ kind: it.kind, kg: it.kg })),
+    measured: bag.measured === true,
+  }, divisor);
+}
+
 // One flat parcel from a set of items: the smallest standard box (or a custom
 // parcel when none holds them, fits: false).
 function flatParcel(items, cfg, divisor) {
@@ -242,6 +295,9 @@ function finish(parcel, divisor) {
  * box's own. Every grid that holds them is tried; the smallest LONGEST side
  * wins, ties by volume. → { columns, rows, lengthCm, widthCm, heightCm }:
  * 1 → 34×23×13, 2 → 34×23×26, 3 → 34×23×39, 4 → 34×46×26.
+ * A grid with an empty slot is declared at the boxes' own volume — the height
+ * is pairs ÷ columns boxes high, not a full row more: 5 → 34×46×32.5 (the
+ * packers close the gap; TCG measured TCG200369959T at 59.1×37×26.7).
  */
 export function shoeboxStack(pairs, shoebox) {
   const [l, w, h] = sortDesc([shoebox.lengthCm, shoebox.widthCm, shoebox.heightCm].map(Number));
@@ -249,12 +305,34 @@ export function shoeboxStack(pairs, shoebox) {
   for (let columns = 1; columns <= pairs; columns++) {
     const rows = Math.ceil(pairs / columns);
     if (columns > 1 && (columns - 1) * rows >= pairs) continue; // a column would be empty
-    const dims = [l, w * columns, h * rows];
+    // No empty slot is ever declared: the height is the boxes' own.
+    const dims = [l, w * columns, round1((h * pairs) / columns)];
     const longest = Math.max(...dims);
     const v = volume(dims);
     if (!best || longest < best.longest || (longest === best.longest && v < best.v)) best = { columns, rows, dims, longest, v };
   }
   return { columns: best.columns, rows: best.rows, lengthCm: best.dims[0], widthCm: best.dims[1], heightCm: best.dims[2] };
+}
+
+// The calibration factor's bounds: a learned correction never more than a
+// quarter either way (a wild TCG measurement cannot run away with the table).
+export const CALIBRATION_MIN = 0.75;
+export const CALIBRATION_MAX = 1.25;
+
+/** The class a parcel is calibrated under: shoebox:1 | shoebox:2 | shoebox:3+ | flatBag | box. Pure. */
+export function parcelClass(p) {
+  if (p?.kind === "shoebox") {
+    const n = Number(p.pairs) || 0;
+    return n >= 3 ? "shoebox:3+" : `shoebox:${Math.max(1, n)}`;
+  }
+  return p?.kind === "flatBag" ? "flatBag" : "box";
+}
+
+/** cfg.calibration[class].factor, clamped; 1 when absent or unusable. Pure. */
+export function calibrationFactor(calibration, cls) {
+  const f = Number(calibration?.[cls]?.factor);
+  if (!Number.isFinite(f) || f <= 0) return 1;
+  return Math.min(CALIBRATION_MAX, Math.max(CALIBRATION_MIN, f));
 }
 
 export function estimateParcel(lines, config = DEFAULT_SHIPPING_CONFIG) {
@@ -264,7 +342,6 @@ export function estimateParcel(lines, config = DEFAULT_SHIPPING_CONFIG) {
   const divisor = Number(cfg.volumetricDivisor) || 4000;
   const sb = cfg.shoebox ?? {};
   const budgetPerPair = Math.max(0, Number(sb.fillBudgetKg) || 0);
-  const bundleCm = Math.max(0, Number(sb.overflowBundleCm) || 0);
 
   const pairs = items.filter((it) => cfg.items[it.kind]?.ownShoebox === true);
   const stuffable = items.filter((it) => cfg.items[it.kind]?.ownShoebox !== true && cfg.items[it.kind]?.stuffable === true);
@@ -272,8 +349,9 @@ export function estimateParcel(lines, config = DEFAULT_SHIPPING_CONFIG) {
 
   let parcel;
   if (pairs.length === 0) {
-    // No footwear: one flat box sized to the folded stack.
-    parcel = { ...flatParcel(items, cfg, divisor), pairs: 0, layout: null, overflowBundles: 0 };
+    // No footwear: the flat courier bag, as thick as the goods; a box only
+    // when the bag cannot hold them.
+    parcel = { ...(flatBagParcel(items, cfg, divisor) ?? flatParcel(items, cfg, divisor)), pairs: 0, layout: null, overflowBundles: 0 };
   } else {
     // The shoebox block, soft goods inside up to the budget, the rest on top.
     const stack = shoeboxStack(pairs.length, sb);
@@ -284,13 +362,14 @@ export function estimateParcel(lines, config = DEFAULT_SHIPPING_CONFIG) {
       if (stuffedKg + it.kg <= budget + 1e-9) stuffedKg += it.kg;
       else overflow.push(it);
     }
+    // What does not fit inside lies flat on top: its own thickness, no bundle padding.
     const onTop = [...overflow, ...flat];
-    const onTopKg = onTop.reduce((t, it) => t + it.kg, 0);
-    const overflowBundles = onTop.length === 0 ? 0 : Math.max(1, Math.ceil((onTopKg - 1e-9) / (budgetPerPair || onTopKg || 1)));
+    const onTopCm = onTop.length ? flatThicknessCm(onTop, cfg) : 0;
+    const overflowBundles = onTop.length;
     const actualKg = round2(items.reduce((t, it) => t + it.kg, 0));
     parcel = finish({
       kind: "shoebox", boxCode: "SHOEBOX",
-      lengthCm: stack.lengthCm, widthCm: stack.widthCm, heightCm: stack.heightCm + overflowBundles * bundleCm,
+      lengthCm: stack.lengthCm, widthCm: stack.widthCm, heightCm: round1(stack.heightCm + onTopCm),
       actualKg,
       contents: [...pairs, ...stuffable, ...flat].map((it) => ({ kind: it.kind, kg: it.kg })),
       measured: sb.measured === true,
@@ -298,12 +377,21 @@ export function estimateParcel(lines, config = DEFAULT_SHIPPING_CONFIG) {
     }, divisor);
   }
 
+  // THE LEARNED CORRECTION (reconcile.mjs): TCG's own measurements of this
+  // class of parcel, consistently off by more than 5%, scale the declared
+  // volume through the height. Clamped; absent = the goods as they are.
+  const calibrationClass = parcelClass(parcel);
+  const factor = calibrationFactor(cfg.calibration, calibrationClass);
+  if (factor !== 1) parcel = finish({ ...parcel, heightCm: round1(parcel.heightCm * factor) }, divisor);
+  parcel = { ...parcel, calibrationClass, ...(factor !== 1 ? { calibrationFactor: factor } : {}) };
+
   const locker = chooseLocker([parcel.lengthCm, parcel.widthCm, parcel.heightCm], parcel.actualKg, cfg.dropBox);
   const kinds = [...new Set(items.map((i) => i.kind))];
   const unmeasured = [
     ...kinds.filter((k) => cfg.items[k]?.measured !== true).map((k) => `item:${k}`),
     ...(pairs.length && sb.measured !== true ? ["shoebox"] : []),
     ...(parcel.kind === "box" && parcel.measured !== true ? [`box:${parcel.boxCode}`] : []),
+    ...(parcel.kind === "flatBag" && parcel.measured !== true ? ["flatBag"] : []),
     ...(locker && locker.measured !== true ? [`locker:${locker.size}`] : []),
   ];
   const { measured, ...one } = parcel;

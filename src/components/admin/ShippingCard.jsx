@@ -28,7 +28,7 @@ import { assertSafeSegment } from "../../utils/sizeKey.js";
 
 export const QUOTE_TIMEOUT_MS = 60_000;
 
-const EDITABLE_KEYS = ["collectionAddress", "collectionContact", "shoebox", "volumetricDivisor", "divisorByServiceGroup", "items", "boxes", "dropBox", "doorServiceCode", "excludeServiceCodes", "maxChargeRand"];
+const EDITABLE_KEYS = ["collectionAddress", "collectionContact", "shoebox", "flatBag", "volumetricDivisor", "divisorByServiceGroup", "items", "boxes", "dropBox", "doorServiceCode", "excludeServiceCodes", "maxChargeRand"];
 
 export const RULE_TEXT = `"config": {
   "shipping": {
@@ -330,6 +330,11 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
                   <Num label={`${it.label} kg`} value={it.kg} step={0.05} onChange={(v) => setIt({ ...it, kg: v })} /><span style={S.muted}>kg</span>
                 </span>
               )}
+              {it.flatCm !== undefined && (
+                <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+                  <Num label={`${it.label} flat cm`} value={it.flatCm} step={0.1} onChange={(v) => setIt({ ...it, flatCm: v })} /><span style={S.muted}>cm flat</span>
+                </span>
+              )}
               <Measured value={it.measured} onChange={(v) => setIt({ ...it, measured: v })} />
             </div>
           );
@@ -349,12 +354,28 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
           <Num label="shoebox fill budget kg" value={cfg.shoebox?.fillBudgetKg} step={0.1}
             onChange={(v) => patch((c) => { c.shoebox.fillBudgetKg = v; return c; })} /><span style={S.muted}>kg</span>
         </div>
-        <div style={S.row}>
-          <span style={S.label}>Each overflow bundle adds</span>
-          <Num label="overflow bundle cm" value={cfg.shoebox?.overflowBundleCm} step={1}
-            onChange={(v) => patch((c) => { c.shoebox.overflowBundleCm = v; return c; })} /><span style={S.muted}>cm to the height — soft goods past the fill budget ride on top</span>
-        </div>
+        <div style={{ ...S.muted, marginTop: 4 }}>Soft goods past the fill budget lie flat on top, each at its own flat thickness (below). No padding.</div>
       </div>
+
+      {/* ── the flat courier bag: clothing with no footwear ── */}
+      {cfg.flatBag && (
+        <div style={S.section}>
+          <h2 style={S.h2}>Flat courier bag (clothing, no footwear)</h2>
+          <div style={S.row}>
+            <span style={S.label}>Bag size</span>
+            <Num label="flat bag length cm" value={cfg.flatBag.lengthCm} step={0.5} onChange={(v) => patch((c) => { c.flatBag.lengthCm = v; return c; })} />×
+            <Num label="flat bag width cm" value={cfg.flatBag.widthCm} step={0.5} onChange={(v) => patch((c) => { c.flatBag.widthCm = v; return c; })} /><span style={S.muted}>cm</span>
+            <Measured value={cfg.flatBag.measured} onChange={(v) => patch((c) => { c.flatBag.measured = v; return c; })} />
+          </div>
+          <div style={S.row}>
+            <span style={S.label}>Height: the goods' thickness, from</span>
+            <Num label="flat bag min height cm" value={cfg.flatBag.minHeightCm} step={0.5} onChange={(v) => patch((c) => { c.flatBag.minHeightCm = v; return c; })} />
+            <span style={S.muted}>to</span>
+            <Num label="flat bag max height cm" value={cfg.flatBag.maxHeightCm} step={0.5} onChange={(v) => patch((c) => { c.flatBag.maxHeightCm = v; return c; })} />
+            <span style={S.muted}>cm (thicker → a box below)</span>
+          </div>
+        </div>
+      )}
 
       {/* ── boxes ── */}
       <div style={S.section}>
@@ -494,7 +515,7 @@ export default function ShippingCard({ authUser, products = null, onExit }) {
                   <div><b>{test.parcel.parcelCount} {test.parcel.parcelCount === 1 ? "parcel" : "parcels"}</b> · {test.parcel.chargeableKg} kg chargeable in all</div>
                   {test.parcel.parcels.map((p, i) => (
                     <div key={i} style={{ marginTop: 4 }}>
-                      {i + 1}. <b>{p.kind === "shoebox" ? "Shoebox" : p.boxCode ?? "No standard box fits"}</b> · {p.lengthCm}×{p.widthCm}×{p.heightCm} cm
+                      {i + 1}. <b>{p.kind === "shoebox" ? "Shoebox" : p.kind === "flatBag" ? "Flat bag" : p.boxCode ?? "No standard box fits"}</b> · {p.lengthCm}×{p.widthCm}×{p.heightCm} cm
                       · {p.actualKg} kg actual · {p.volumetricKg} kg vol · <b>{p.chargeableKg} kg</b>
                       <span style={S.muted}> — {summariseContents(p.contents)}</span>
                     </div>

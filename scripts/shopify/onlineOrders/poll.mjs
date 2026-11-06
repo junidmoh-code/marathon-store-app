@@ -798,6 +798,18 @@ async function shipOrder(ctx, id, order) {
       log(`  ! ${orderLabel(order)}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
     }
   }
+  // OVER THE R300 CEILING (Junid, 6 Nov 2026): not booked; Junid gets ONE
+  // WhatsApp line with the cheaper option. Queued once per order and quote;
+  // the courier-recon runner sends it through Jamie (scripts/shipping/courier-recon.mjs).
+  if (booking?.junidLine) {
+    try {
+      const k = `${id}_${Math.round(Number(booking.overCeiling?.chosen?.rate) || 0)}`;
+      const lineRef = db.ref(`shipping_recon/junidLines/${k}`);
+      if (!(await lineRef.get()).exists()) await lineRef.set({ orderId: id, text: booking.junidLine, at: now });
+    } catch (e) {
+      log(`  ! ${orderLabel(order)}: ceiling line not queued — ${String(e?.message || e).slice(0, 200)}`);
+    }
+  }
   // A real booking above R250 (or /config/shipping/costAlertRand): Junid is
   // emailed once, with the box and why (costAlert.mjs). Never blocks the ship.
   if (booking && !booking.skipped && booking.waybill) await queueCostAlert(ctx, id, order, booking);

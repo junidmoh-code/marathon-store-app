@@ -63,7 +63,7 @@ describe("bookShipment — dry run (live off)", () => {
       delivery_address: { type: "residential", company: "", street_address: "5 Esplanade Road", local_area: "Century City", city: "Cape Town", zone: "WC", country: "ZA", code: "7441" },
       delivery_contact: { name: "A Customer", mobile_number: "0820000000", email: "a@example.com" },
       // The parcel rule: one pair = one shoebox, 34×23×13, 1.3 kg (size 9).
-      parcels: [{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.3 }],
+      parcels: [{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.2 }],
       // Door-to-door: the cheapest door service quoted (Cape Town → ECO).
       service_level_code: "ECO",
       customer_reference: "#1801",
@@ -189,7 +189,11 @@ describe("bookShipment — live", () => {
       service: "L2DS - ECO", parcel: expect.objectContaining({ parcelCount: 1 }), cost: 100, bookedAt: 1_700_000_000_000,
       // the quote's make-up, for the >R250 email (costAlert.mjs)
       priced: expect.objectContaining({ quoted: 100, mode: "door", base: 100, chargedKg: 3, actualKg: 2, surcharges: expect.any(Array), adjustments: expect.any(Array) }),
+      // every service quoted, cheapest first (Junid, 6 Nov 2026: "record the quote list on the order")
+      quotes: expect.arrayContaining([expect.objectContaining({ mode: "door", code: "ECO", rate: 100 })]),
     });
+    expect(res.quotes.map((q) => q.rate)).toEqual([...res.quotes.map((q) => q.rate)].sort((a, b) => a - b));
+    expect(d.root.online_orders["1001"].shipping.quotes).toEqual(res.quotes);
     expect(d.root.online_orders["1001"].shipping).toMatchObject({ provider: "courier_guy", waybill: "LD-TEST01", courierBooking: { state: "booked" } });
   });
 
@@ -287,8 +291,8 @@ describe("the website-order ingester's real shape (feat/online-orders orderModel
     expect(body.customer_reference).toBe("#1042"); // owner decision 2026-10-21: the Shopify number, never a code
     expect(body.delivery_address).toMatchObject({ street_address: "5 Esplanade Road, Century City", zone: "WC", country: "ZA", code: "7441" });
     expect(body.delivery_contact).toEqual({ name: "Ann Bee", mobile_number: "+27820000000", email: "ann@example.com" });
-    // "Item 7" says nothing; /products/p_x says jeans → 2 × 0.5 kg + the flat mailer
-    expect(body.parcels[0]).toMatchObject({ submitted_height_cm: 8, submitted_weight_kg: 1.15 });
+    // "Item 7" says nothing; /products/p_x says jeans → 2 × 0.5 kg in the flat courier bag (0.05 kg), 8 cm
+    expect(body.parcels[0]).toMatchObject({ submitted_length_cm: 41, submitted_width_cm: 34, submitted_height_cm: 8, submitted_weight_kg: 1.05 });
     expect(d.root.online_orders["5551234"].shipping.provider).toBe("courier_guy");
     expect(d.root.online_orders["KQZ"]).toBeUndefined();
   });
