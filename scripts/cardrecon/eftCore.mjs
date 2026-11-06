@@ -60,7 +60,7 @@ export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, absaSyn
 const { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue } = require("./lib/eft-text.cjs");
 export { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue };
 const {
-  parseAllowedAccounts, parseAccountPolicies, accountPolicyProblems, destinationVerdict, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR,
+  parseAllowedAccounts, parseAccountPolicies, accountPolicyProblems, destinationVerdict, destinationBankOf, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR,
 } = require("./lib/eft-destination.cjs");
 export { parseAllowedAccounts, parseAccountPolicies, accountPolicyProblems, destinationVerdict, EFT_ACCOUNTS_ENV_VAR };
 
@@ -543,6 +543,9 @@ export function immediacyRequiredFor(bankTs) {
 // Confirmation", never the footer). Every other account keeps the date-phased
 // rule. `immediateOnly` is destinationVerdict's answer for the matched account
 // — the caller passes it; nothing here knows any account number.
+// A Standard-Bank-to-Standard-Bank payment is intra-bank and counts as
+// immediate by its nature, like FNB-to-FNB (Junid, 6 Nov 2026 — see below);
+// payments into the account from any other bank must still be immediate.
 
 /**
  * @param {{parsed:object, reader?:string, receivedAt:number|null, immediateOnly?:boolean}} p
@@ -578,6 +581,23 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     return { ok: false, reason: parsed?.destBankName
       ? `This FNB notification pays "${clip(parsed.destBankName, 60)}", not an FNB account, so it is not an FNB-to-FNB immediate payment.`
       : "This FNB notification does not name an FNB destination account, so it cannot be confirmed as an FNB-to-FNB immediate payment." };
+  }
+  if (id === "standardbank" && destinationBankOf(parsed?.destBankName) === "standardbank") {
+    // SAME-BANK, STANDARD BANK TO STANDARD BANK (Junid, 6 Nov 2026) — the
+    // FNB rule above, for Standard Bank. The notification is sent by the
+    // PAYER's bank (selected for a standardbank.co.za sender, and refused
+    // as refused-auth unless DKIM passes for that domain — eftPoolRecord
+    // checks the signature before this verdict counts), so a Standard Bank notice paying a Standard
+    // Bank account is an intra-bank transfer, which settles at once. Standard
+    // Bank prints the "Immediate Payment Confirmation" heading only for its
+    // paid inter-bank real-time service, so a same-bank payment carries no
+    // heading at all — the real R400 "BEVERLY" notice of 6 Nov 2026 into the
+    // ATUGAR account: no heading, "Bank name STANDARD BANK", footer
+    // "Payments to Standard Bank accounts …". The destination bank is the
+    // printed name 7a already checked against the matched account's bank.
+    // A payment into the account FROM ANY OTHER BANK (Capitec, Absa, FNB,
+    // Nedbank notices) still needs that bank's immediate signal.
+    return { ok: true };
   }
   if (parsed?.immediate === true) return { ok: true };
   return {
