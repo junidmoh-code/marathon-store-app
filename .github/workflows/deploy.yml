@@ -3,11 +3,30 @@ name: Deploy hosting (marathon-club)
 on:
   push:
     branches: [main]
+  # Manual run. dry_run (the default) builds and runs `firebase deploy --dry-run`
+  # with the CI service account: it proves the credentials and permissions
+  # without changing live. Untick it only to redeploy main by hand.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run only (no deploy)"
+        type: boolean
+        default: true
 
 # Hosting only. This workflow must never gain a `firebase deploy --only functions`
 # or `--only database` step — functions are shared with marathon-pos-app and a
 # bare functions deploy from this repo offers to delete its functions; rules are
 # never deployed from CI. See DEPLOY-TRACKER.md.
+#
+# firebase-tools is PINNED. It used to float on `latest`: 15.34.1 (22 Oct 2026)
+# started checking the Hosting API through serviceusage.googleapis.com, which the
+# hosting-deploy-ci service account could not read, and every deploy from 23 Oct
+# failed with a 403 while the key and roles were unchanged. The account now also
+# holds roles/serviceusage.serviceUsageViewer. Bump this version on purpose, and
+# run the dry run (Actions → this workflow → Run workflow) after bumping it.
+env:
+  FIREBASE_TOOLS_VERSION: 15.34.1
+
 jobs:
   deploy-hosting:
     runs-on: ubuntu-latest
@@ -30,9 +49,22 @@ jobs:
 
       - run: npm run build
 
+      - name: Dry run (no deploy)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        env:
+          SA_JSON: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
+        run: |
+          creds="$RUNNER_TEMP/sa.json"
+          printf '%s' "$SA_JSON" > "$creds"
+          export GOOGLE_APPLICATION_CREDENTIALS="$creds"
+          npx -y "firebase-tools@${FIREBASE_TOOLS_VERSION}" deploy --only hosting --project marathon-club --dry-run
+          rm -f "$creds"
+
       - uses: FirebaseExtended/action-hosting-deploy@v0
+        if: github.event_name == 'push' || !inputs.dry_run
         with:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           projectId: marathon-club
           channelId: live
+          firebaseToolsVersion: '${{ env.FIREBASE_TOOLS_VERSION }}'
