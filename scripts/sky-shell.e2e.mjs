@@ -156,6 +156,46 @@ try {
       check((await box(page, ".ad-card")).bottom < 0 + (await box(page, ".ad-scroll")).top, "the first card has left the view");
       await page.close();
     }
+    // 4. THE ONE OVERLAY (Junid 6 Nov): body-level, scrim, strong glass.
+    console.log(`${ename}: the one overlay`);
+    {
+      const page = await open("screen=phone&fixture=synthetic&pill=1", 390, 844, true);
+      await page.waitForSelector(".sky-ovl", { timeout: 10000 });
+      const o = await page.evaluate(() => {
+        const el = document.querySelector(".sky-ovl"), r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+        const scrim = getComputedStyle(document.querySelector(".sky-ovl-scrim"));
+        return { inBody: el.parentElement.parentElement === document.body, variant: el.dataset.variant, bottom: r.bottom, height: r.height,
+                 bg: cs.backgroundColor, scrim: scrim.backgroundColor, blur: scrim.backdropFilter || scrim.webkitBackdropFilter,
+                 cards: [...el.querySelectorAll(".sky-pop__i")].map((b) => Math.round(b.getBoundingClientRect().height)) };
+      });
+      check(o.inBody, "the picker renders at <body> (no ancestor can break it)");
+      check(o.variant === "sheet" && Math.abs(o.bottom - 844) < 1.5 && o.height <= 844 * 0.7 + 1, `on a phone it is a bottom sheet, max 70vh (${o.variant}, ${o.height.toFixed(0)}px)`);
+      check(/blur\(6px\)/.test(o.blur) && /rgba\(10, 40, 100/.test(o.scrim), `the scrim dims and blurs the page (${o.scrim} ${o.blur})`);
+      check(o.cards.length === 6 && o.cards.every((hh) => hh >= 56), `each option is its own card, 56px tall (${o.cards.join(",")})`);
+      // a store card → the confirmation; Escape closes only the top one
+      await page.locator(".sky-ovl .sky-pop__i[data-group=store]").first().click();
+      await page.waitForSelector("[data-testid=shop-switch-confirm]", { timeout: 5000 });
+      check(await page.locator(".sky-ovl").count() === 1, "picking a store closes the picker and opens the confirmation");
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(250);
+      check(await page.locator(".sky-ovl").count() === 0, "Escape closes the confirmation");
+      await page.close();
+    }
+    {
+      const page = await open("screen=desktop&fixture=synthetic&chips=ref", 1440, 900);
+      await page.waitForSelector(".ad-card", { timeout: 30000 });
+      await page.locator("[data-testid=store-tag]").click();
+      await page.waitForSelector(".sky-ovl", { timeout: 5000 });
+      const pill = await box(page, "[data-testid=store-tag]"), pan = await box(page, ".sky-ovl");
+      check(await page.locator(".sky-ovl").getAttribute("data-variant") === "anchored" && pan.top >= pill.bottom, "on a laptop it hangs under the pill");
+      for (let k = 0; k < 9; k++) await page.keyboard.press("Tab");
+      check(await page.evaluate(() => document.querySelector(".sky-ovl").contains(document.activeElement)), "Tab stays inside the overlay");
+      await page.mouse.click(40, 860);
+      await page.waitForTimeout(250);
+      check(await page.locator(".sky-ovl").count() === 0, "a tap on the dimmed page closes it");
+      check(await page.evaluate(() => document.activeElement?.dataset?.testid === "store-tag"), "focus returns to the pill");
+      await page.close();
+    }
     await browser.close();
   }
 } finally {

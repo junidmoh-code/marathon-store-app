@@ -137,6 +137,8 @@ import { brandOptions, filterByBrand, reconcileBrand } from "./components/assist
 import ZoomImage from "./components/sky/ZoomImage.jsx";
 import { SkySheet, SkySheetHead, SkyStepperRow } from "./components/sky/SkySheet.jsx";
 import WarehouseTop, { WAREHOUSE_SKY_CSS } from "./components/sky/WarehouseTop.jsx";
+import { SkyConfirm } from "./components/sky/SkyOverlay.jsx";
+import ShopSwitchConfirm from "./components/sky/ShopSwitchConfirm.jsx";
 import { useSkyOff, SkyShellHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
@@ -9374,24 +9376,13 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           every order to a different physical store. The red stays: it is the
           one colour on this screen that means something. */}
       {pendingShop && (
-        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setPendingShop(null); }}>
-          <div className="ad-sv sky-glass ad-danger" style={{ gridTemplateColumns: "1fr", width: "min(430px,100%)" }}>
-            <div className="ad-svbody" style={{ gap: 15, alignItems: "center", textAlign: "center", padding: "30px 26px 26px" }}>
-              <span className="ad-warnpulse" style={{ width: 64, height: 64, borderRadius: "50%", flexShrink: 0, background: "rgba(255,255,255,.9)", border: "2px solid rgba(225,40,40,.85)", display: "grid", placeItems: "center" }}>
-                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#E02828" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-              </span>
-              <div style={{ fontSize: 11.5, letterSpacing: ".18em", textTransform: "uppercase", color: "#ffffff", fontWeight: 900, background: "rgba(200,20,20,.95)", borderRadius: 999, padding: "4px 12px" }}>Warning · this re-routes orders</div>
-              <div className="ad-svname" style={{ fontSize: 22 }}>Change shop to {labelFor(pendingShop, shopRegistry)}?</div>
-              <div style={{ fontSize: 14, lineHeight: 1.55 }}>
-                You're ordering for <b>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ textDecoration: "underline" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
-              </div>
-              <div style={{ display: "flex", gap: 10, width: "100%", marginTop: 4 }}>
-                <button onClick={() => setPendingShop(null)} className="ad-btn2" style={{ flex: 1 }}>Cancel</button>
-                <button onClick={() => { onSelectShop(pendingShop); setPendingShop(null); }} style={{ flex: "0 0 auto", padding: "13px 20px", borderRadius: 999, border: "1px solid rgba(255,80,80,.7)", background: "rgba(225,40,40,.95)", color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 8px 26px -8px rgba(225,40,40,.75)" }}>Yes, switch</button>
-              </div>
-            </div>
-          </div>
-        </div>
+        // On THE ONE OVERLAY (Junid, 6 Nov): navy on strong glass, no red —
+        // the same copy and the same two actions.
+        <SkyConfirm title={`Change shop to ${labelFor(pendingShop, shopRegistry)}?`} eyebrow="Warning · this re-routes orders"
+                    confirmLabel="Yes, switch" onCancel={() => setPendingShop(null)} testId="shop-switch-confirm"
+                    onConfirm={() => { onSelectShop(pendingShop); setPendingShop(null); }}>
+          You're ordering for <b>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ textDecoration: "underline" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
+        </SkyConfirm>
       )}
     </div>
   );
@@ -11699,95 +11690,25 @@ function AssistantView({ products, onExit, orders = [] }) {
           DIFFERENT shop on the toggle. Names the from/to shops in plain words,
           spells out that every future order routes to the new store, and flags
           any cart lines that would go with it. Only "Yes, switch" commits. */}
-      {pendingShopSwitch && (() => {
-        const fromLabel = labelFor(effectiveShop, shopRegistry);
-        const toLabel   = labelFor(pendingShopSwitch, shopRegistry);
-        const cartCount = cart.length;
-        return (
-          <div onClick={() => setPendingShopSwitch(null)}
-               style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,.8)", backdropFilter:"blur(3px)",
-                        display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-            <div onClick={e => e.stopPropagation()}
-                 style={{ width:"100%", maxWidth:380, background:"#1c0e0e", border:"2px solid rgba(255,70,70,.6)",
-                          borderRadius:18, padding:"26px 22px", textAlign:"center", fontFamily:FONT,
-                          boxShadow:"0 0 44px rgba(255,45,45,.4)" }}>
-              <div style={{ fontSize:46, lineHeight:1, marginBottom:12 }}>⚠️</div>
-              <div style={{ color:"#FF5C5C", fontWeight:800, fontSize:19, letterSpacing:".4px", marginBottom:12 }}>
-                CHANGING STORE
-              </div>
-              <div style={{ color:"#fff", fontSize:14.5, lineHeight:1.55, marginBottom:9 }}>
-                Switching from <strong style={{ color:"#FFD166" }}>{fromLabel}</strong> to{" "}
-                <strong style={{ color:"#FF8A8A" }}>{toLabel}</strong>.
-              </div>
-              <div style={{ color:"rgba(255,255,255,.78)", fontSize:13.5, lineHeight:1.55, marginBottom: cartCount ? 12 : 22 }}>
-                Every order you place will now go to <strong style={{ color:"#FF8A8A" }}>{toLabel}</strong>.
-                If this is the wrong store, the stock ships to the wrong branch.
-              </div>
-              {cartCount > 0 && (
-                <div style={{ color:"#FFD166", fontSize:12.5, fontWeight:700, marginBottom:22, lineHeight:1.5,
-                              background:"rgba(245,196,81,.1)", border:"1px solid rgba(245,196,81,.35)",
-                              borderRadius:10, padding:"9px 11px" }}>
-                  You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — they’ll be placed for {toLabel}.
-                </div>
-              )}
-              <div style={{ display:"flex", gap:10 }}>
-                <button onClick={() => setPendingShopSwitch(null)}
-                        style={{ flex:1, padding:"13px 0", borderRadius:11, border:"1px solid rgba(255,255,255,.28)",
-                                 background:"transparent", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
-                  Cancel
-                </button>
-                <button onClick={confirmShopSwitch}
-                        style={{ flex:1.4, padding:"13px 8px", borderRadius:11, border:"none",
-                                 background:"#E03131", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
-                  Switch to {toLabel}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {pendingShopSwitch && (
+        <ShopSwitchConfirm fromLabel={labelFor(effectiveShop, shopRegistry)} toLabel={labelFor(pendingShopSwitch, shopRegistry)}
+                           cartCount={cart.length} onCancel={() => setPendingShopSwitch(null)} onConfirm={confirmShopSwitch} />
+      )}
 
       {/* ── Placement destination confirm ── fires on the FIRST order of a shop-
           session for multi-shop users (see PLACEMENT DESTINATION GUARD). Calmer
           than the red switch modal — it's a routine "confirm where this ships",
           the backstop for a device left on the wrong shop that never switched. */}
-      {destConfirm && (() => {
-        const toLabel = labelFor(effectiveShop, shopRegistry);
-        return (
-          <div onClick={() => { setDestConfirm(null); setCheckoutOpen(false); }}
-               style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,.8)", backdropFilter:"blur(3px)",
-                        display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-            <div onClick={e => e.stopPropagation()}
-                 style={{ width:"100%", maxWidth:380, background:"#0c1730", border:"2px solid rgba(74,127,255,.6)",
-                          borderRadius:18, padding:"26px 22px", textAlign:"center", fontFamily:FONT,
-                          boxShadow:"0 0 44px rgba(60,110,255,.35)" }}>
-              <div style={{ fontSize:42, lineHeight:1, marginBottom:12 }}>🏬</div>
-              <div style={{ color:"#6A9FFF", fontWeight:800, fontSize:18, letterSpacing:".4px", marginBottom:12 }}>
-                CONFIRM STORE
-              </div>
-              <div style={{ color:"#fff", fontSize:14.5, lineHeight:1.55, marginBottom:9 }}>
-                This order ships to <strong style={{ color:"#FFD166" }}>{toLabel}</strong>.
-              </div>
-              <div style={{ color:"rgba(255,255,255,.72)", fontSize:13, lineHeight:1.55, marginBottom:22 }}>
-                If the customer is at a different branch, tap <strong style={{ color:"#fff" }}>Wrong store</strong> and switch
-                stores first — otherwise the stock ships to the wrong shop.
-              </div>
-              <div style={{ display:"flex", gap:10 }}>
-                <button onClick={() => { setDestConfirm(null); setCheckoutOpen(false); }}
-                        style={{ flex:1, padding:"13px 0", borderRadius:11, border:"1px solid rgba(255,255,255,.28)",
-                                 background:"transparent", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
-                  Wrong store
-                </button>
-                <button onClick={runDestConfirm}
-                        style={{ flex:1.4, padding:"13px 8px", borderRadius:11, border:"none",
-                                 background:"#2F6FE0", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
-                  Send to {toLabel}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {destConfirm && (
+        // On THE ONE OVERLAY (Junid, 6 Nov): readable navy on strong glass, the
+        // same copy and the same two actions.
+        <SkyConfirm title="Confirm store" confirmLabel={`Send to ${labelFor(effectiveShop, shopRegistry)}`} cancelLabel="Wrong store"
+                    icon="pin" testId="dest-confirm" onConfirm={runDestConfirm}
+                    onCancel={() => { setDestConfirm(null); setCheckoutOpen(false); }}>
+          <div>This order ships to <b>{labelFor(effectiveShop, shopRegistry)}</b>.</div>
+          <div style={{ marginTop: 8 }}>If the customer is at a different branch, tap <b>Wrong store</b> and switch stores first — otherwise the stock ships to the wrong shop.</div>
+        </SkyConfirm>
+      )}
 
       {/* "Track requests" (refill tracking) button REMOVED from the assistant
           view (owner decision 2026-07-16) — the engine's refill requests are

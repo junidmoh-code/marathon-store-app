@@ -150,6 +150,18 @@ prices 700–800 tabular, "R" and no decimals.
   LANDSCAPE cards (photo left on a plain background, white name, white price
   behind a hairline), no three-dot on the cards (the actions are in the
   popup). Only the sneakers scroll (`.ad-scroll`). All in vw.
+- **THE ONE OVERLAY** (Junid, 6 Nov — popup readability): `SkyOverlay`
+  (src/components/sky/SkyOverlay.jsx) — a body-level portal, a scrim that dims
+  and blurs (rgba(10,40,100,.42), 6px), the panel on strong glass with navy
+  text; anchored on a laptop, a bottom sheet on a phone (handle, drag down,
+  max 70vh), centred dialogs; Escape closes only the top one; focus trapped
+  and returned to the anchor; page scroll locked and restored. Option rows are
+  56px glass cards, the current one white with a navy check. `SkyConfirm` is a
+  message card + two button cards (Cancel navy outline, the action solid
+  navy) — no red. Every `SkyPopover` runs through it. The legacy dark
+  overlays still inside the page get the same scrim on the sky (sky.css).
+  The panels are more opaque than the 0.62 brief (0.86, cards 0.9) so they
+  stay readable where a device draws no blur.
 - **ONE HEADER, PINNED** (Junid, 6 Nov): every screen but home, the order
   view and the TV board wears the shell's `SkyShellHeader` (grid, wordmark, the
   screen pill whose chevron opens the view switcher, account). It is sticky at

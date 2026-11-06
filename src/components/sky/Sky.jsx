@@ -5,8 +5,8 @@
 // stage (cut-out on a podium, or the full photo in a white frame) and the
 // glass bottom bar. Presentation only — every handler is the caller's.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef, useState } from "react";
+import SkyOverlay from "./SkyOverlay.jsx";
 import { HiResPhoto } from "../assistant/HiResPhoto.jsx";
 import { IconGrid, IconUser, IconSearch, IconCamera, IconFilter, IconPlus, IconCart } from "./SkyIcons.jsx";
 import { brandIcon, brandTextLabel, noteUnmappedBrand } from "./brandLogos.js";
@@ -286,38 +286,14 @@ export function SkySearch({ value, onChange, placeholder = "Search products...",
  * closes it. Falls back to rendering in place where there is no DOM (tests).
  */
 export function SkyPopover({ anchorRef, open, onClose, align = "start", width = 260, label, role = "menu", className = "", children, testId }) {
-  const [pos, setPos] = useState(null);
-  const canPortal = typeof document !== "undefined" && !!document.body && typeof document.body.appendChild === "function";
-  useLayoutEffect(() => {
-    if (!open || !canPortal) return undefined;
-    const place = () => {
-      const r = anchorRef?.current?.getBoundingClientRect?.();
-      if (!r) return;
-      const vw = window.innerWidth;
-      let left = align === "end" ? r.right - width : align === "center" ? r.left + r.width / 2 - width / 2 : r.left;
-      left = Math.max(12, Math.min(left, vw - width - 12));
-      setPos({ top: r.bottom + 10, left });
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); };
-  }, [open, canPortal, align, width, anchorRef]);
-  useEffect(() => {
-    if (!open || typeof window === "undefined" || !window.addEventListener) return undefined;
-    const k = (e) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", k);
-    return () => window.removeEventListener("keydown", k);
-  }, [open, onClose]);
-  if (!open) return null;
-  const body = (
-    <div className={cx("sky-pop", className)} role={role} aria-label={label} data-testid={testId}
-         style={canPortal ? { top: pos?.top ?? -9999, left: pos?.left ?? -9999, width } : { width }}>
+  // THE ONE OVERLAY (SkyOverlay): hangs under its anchor on a laptop, a bottom
+  // sheet on a phone; scrim that dims + blurs; strong glass; Escape; focus trap.
+  return (
+    <SkyOverlay open={open} onClose={onClose} variant={anchorRef ? "auto" : "sheet"} anchorRef={anchorRef} align={align} width={width}
+                label={label} role={role} className={cx("sky-pop", className)} testId={testId}>
       {children}
-    </div>
+    </SkyOverlay>
   );
-  if (!canPortal) return body;
-  return createPortal(<><div className="sky-pop-scrim" onClick={onClose} aria-hidden="true" />{body}</>, document.body);
 }
 
 // ── THE PRODUCT STAGE ─────────────────────────────────────────────────────────

@@ -55,6 +55,14 @@ export const ROUTES = [
   // Warehouse (Junid 6 Nov): one glass level per nesting, navy ink on glass.
   ["warehouse", `${H}?screen=warehouse`],
   ["assistant-phone-sheet", `${H}?screen=phone&sheet=1`],
+  // THE ONE OVERLAY (Junid 6 Nov): each overlay opened, its text sampled over
+  // the panel (the page behind is under the scrim and not sampled).
+  ["overlay-picker-phone", `${H}?screen=phone&pill=1`],
+  ["overlay-confirm-phone", `${H}?screen=phone&switch=1&cart=2`],
+  ["overlay-account-phone", `${H}?screen=phone&me=1`],
+  ["overlay-picker-desktop", `${H}?screen=desktop&chips=ref&pill=1`],
+  ["overlay-confirm-desktop", `${H}?screen=desktop&chips=ref&switch=1`],
+  ["overlay-account-desktop", `${H}?screen=desktop&chips=ref&me=1`],
 ];
 export const SIZES = [[1440, 900], [390, 844]];
 const EXEMPT = ".sky-logo, .sky-tile, [data-contrast-exempt]";
@@ -156,6 +164,12 @@ async function run() {
           const page = await ctx.newPage();
           await page.goto(BASE + path, { waitUntil: "networkidle", timeout: 90000 }).catch(() => {});
           await page.waitForTimeout(2500);
+          // An overlay route must actually HAVE its overlay open — else the
+          // gate would pass by sampling nothing.
+          if (name.startsWith("overlay-")) {
+            const open = await page.evaluate(() => !!document.querySelector(".sky-ovl"));
+            if (!open) { report.failures++; console.log(`  FAIL ${ename} ${name} ${w}x${h}: the overlay did not open`); }
+          }
           // Backdrop-filter must actually run: report any glass surface whose
           // computed backdrop filter came out "none".
           const deadGlass = await page.evaluate(() => [...document.querySelectorAll(".sky-glass, .sky-pop")]

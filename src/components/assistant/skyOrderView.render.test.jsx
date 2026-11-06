@@ -127,7 +127,8 @@ describe("the sky layout", () => {
     expect(items).toHaveLength(2);
     click(items[1]);
     expect(picked).toBe(null);                       // not switched yet
-    expect(all(r, "ad-danger")).toHaveLength(1);     // the alarm confirm
+    // the confirm (THE ONE OVERLAY since 6 Nov — navy, no red)
+    expect(r.root.findAll(n => n.props?.["data-testid"] === "shop-switch-confirm" && typeof n.type === "string")).toHaveLength(1);
     click(r.root.findAll(n => n.type === "button" && n.children.includes("Yes, switch"))[0]);
     expect(picked).toBe("trophy");
   });

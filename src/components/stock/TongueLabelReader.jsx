@@ -80,6 +80,13 @@ export function LabelCamera({
   const streamRef = useRef(null);
   const [error, setError] = useState(null);
   const [shooting, setShooting] = useState(false);
+  // Escape (a keyboard, the iPad case) leaves the camera too.
+  useEffect(() => {
+    if (typeof document === "undefined" || !document.addEventListener) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") onClose?.(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,10 +139,14 @@ export function LabelCamera({
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.96)", display: "flex", flexDirection: "column" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 18px", color: "#fff" }}>
+    // The way out sits BELOW the iPhone's status bar / notch (Junid, 6 Nov: on
+    // the installed app the Close was under the notch — "no going out").
+    <div data-camera-overlay="" style={{ position: "fixed", inset: 0, zIndex: 3000, background: "rgba(0,0,0,.96)", display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, color: "#fff",
+                    padding: "calc(env(safe-area-inset-top, 0px) + 14px) calc(env(safe-area-inset-right, 0px) + 16px) 12px calc(env(safe-area-inset-left, 0px) + 18px)" }}>
         <div style={{ fontWeight: 800, fontSize: 15 }}>{title}</div>
-        <button onClick={onClose} style={{ ...bGhost, padding: "10px 16px", fontSize: 13 }}>Close</button>
+        <button onClick={onClose} aria-label="Close the camera" data-testid="camera-close"
+          style={{ ...bGhost, minHeight: 44, padding: "0 18px", fontSize: 15, fontWeight: 800, color: "#fff", background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.55)", borderRadius: 999 }}>✕ Close</button>
       </div>
       {error ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
@@ -151,7 +162,7 @@ export function LabelCamera({
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
             <video ref={videoRef} playsInline muted style={{ maxWidth: "100%", maxHeight: "100%" }} />
           </div>
-          <div style={{ padding: "14px 18px 30px" }}>
+          <div style={{ padding: "14px 18px calc(env(safe-area-inset-bottom, 0px) + 24px)" }}>
             <div style={{ color: "rgba(255,255,255,.6)", fontSize: 12.5, textAlign: "center", marginBottom: 10 }}>
               {hint}
             </div>

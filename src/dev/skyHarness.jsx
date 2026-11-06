@@ -15,6 +15,7 @@ import { createRoot } from "react-dom/client";
 import SkyHome from "../components/sky/SkyHome.jsx";
 import AssistantPhone from "../components/sky/AssistantPhone.jsx";
 import { SkySheet, SkySheetHead, SkyStepperRow } from "../components/sky/SkySheet.jsx";
+import ShopSwitchConfirm from "../components/sky/ShopSwitchConfirm.jsx";
 import { brandOptions, filterByBrand, reconcileBrand } from "../components/assistant/brandFilter.js";
 
 installZoomLock();
@@ -112,15 +113,24 @@ function Phone({ products }) {
   // The size sheet (SkySheet) opens on a card tap, as AssistantView's does;
   // ?sheet=1 opens it on the first card at load.
   const [sheet, setSheet] = useState(q.get("sheet") ? list[0] || null : null);
+  // The store switch asks first, exactly as AssistantView does (?switch=1 opens it).
+  const [pending, setPending] = useState(q.get("switch") ? "concrete" : null);
+  const label = (id) => ({ concrete: "Concrete", "marathon-pe": "Marathon PE", pine: "Pine", trophy: "Trophy" }[id]);
+  useEffect(() => {
+    if (q.get("pill")) setTimeout(() => document.querySelector("[data-testid=store-pill]")?.click(), 500);
+    if (q.get("me")) setTimeout(() => document.querySelector(".ap-root .sky-header__r .sky-round")?.click(), 500);
+  }, []);
   return (
     <>
       <AssistantPhone mode={mode} onMode={setMode} brands={opts} brand={brand} onBrand={setBrand}
         shops={[{ id: "concrete" }, { id: "marathon-pe" }, { id: "pine" }, { id: "trophy" }]} effectiveShop={shop}
-        shopLabel={(id) => ({ concrete: "Concrete", "marathon-pe": "Marathon PE", pine: "Pine", trophy: "Trophy" }[id])} onShop={setShop}
+        shopLabel={label} onShop={setPending}
         search={search} onSearch={setSearch} onScan={() => {}}
         products={list} selectedId={picked} onOpen={(p) => { setPicked(p.id); setSheet(p); }} onViewPhotos={() => {}} photoCount={() => 1}
         cartCount={cart} onCart={() => {}} cartDisabled={!cart} onExit={() => {}} who="2pos" />
       {sheet && <HarnessSheet p={sheet} onClose={() => setSheet(null)} />}
+      {pending && <ShopSwitchConfirm fromLabel={label(shop)} toLabel={label(pending)} cartCount={cart}
+                                     onCancel={() => setPending(null)} onConfirm={() => { setShop(pending); setPending(null); }} />}
     </>
   );
 }
@@ -176,6 +186,9 @@ function Desktop({ products, AssistantDesktop }) {
     // &out=1: then tap the quick view's first unavailable size (why-note + alternatives).
     if (q.get("popup") && q.get("out")) setTimeout(() => document.querySelector('.ad-svsz button[aria-disabled="true"]')?.click(), 900);
     if (q.get("brands")) setTimeout(() => document.querySelector(".ad-more-chip")?.click(), 400);
+    if (q.get("pill") || q.get("switch")) setTimeout(() => document.querySelector("[data-testid=store-tag]")?.click(), 500);
+    if (q.get("me")) setTimeout(() => document.querySelector(".ad-me")?.click(), 500);
+    if (q.get("switch")) setTimeout(() => [...document.querySelectorAll("[data-group=store]")].find((b) => b.getAttribute("aria-checked") !== "true")?.click(), 900);
   }, []);
   // Brands for the chip row as the reference draws them.
   const fill = ["Puma", "Lacoste", "Boss", "Armani", "Diesel", "Gucci", "Prada"];

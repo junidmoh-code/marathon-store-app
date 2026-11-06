@@ -13,7 +13,7 @@
 // the bar opens the existing checkout. Nothing here reads or writes data.
 
 import { useLayoutEffect, useRef, useState } from "react";
-import { SkyHeader, SkySearch, SkyBrandStrip, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
+import { SkyHeader, SkySearch, SkyBrandStrip, SkyStorePill, SkyPopover, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
 
 export default function AssistantPhone({
@@ -57,13 +57,12 @@ export default function AssistantPhone({
                                         mode={mode === "clothing" ? "clothing" : mode === "cr" ? "cr" : "sneaker"}
                                         modes={onMode ? [["sneaker", "Sneakers"], ["clothing", "Clothing"]] : null} onMode={onMode} /></span>}
                  onUser={() => setMe((v) => !v)} userLabel="Account" />
-      {me && (
-        <div className="ap-me sky-glass" role="menu">
-          <div className="ap-mewho">{who || "Store assistant"}</div>
-          <div className="ap-mesub">Store assistant{effectiveShop ? ` · ${shopLabel(effectiveShop)}` : ""}</div>
-          <button type="button" className="ap-mebtn" onClick={() => { setMe(false); onExit(); }}>Switch view</button>
-        </div>
-      )}
+      {/* The account menu, on THE ONE OVERLAY (a bottom sheet on a phone). */}
+      <SkyPopover open={me} onClose={() => setMe(false)} label="Account" testId="account-popover">
+        <div className="sky-pop__who">{who || "Store assistant"}</div>
+        <div className="sky-pop__sub">Store assistant{effectiveShop ? ` · ${shopLabel(effectiveShop)}` : ""}</div>
+        <button type="button" className="sky-pop__i" onClick={() => { setMe(false); onExit(); }}>Switch view</button>
+      </SkyPopover>
 
       <div className="ap-search">
         <SkySearch value={search} onChange={onSearch} onAction={onScan} action="camera" actionLabel="Find by the tongue label" />
@@ -162,10 +161,6 @@ html[data-sky="on"] #root .ap-root .sky-header .sky-round{width:36px;height:36px
 html[data-sky="on"] #root .ap-root .ap-store .sky-storepill{height:auto;min-width:0;padding:3px 6px;background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;
   color:#fff!important;font:600 12.2px/1.2 var(--sky-font);letter-spacing:.045em;text-shadow:0 1px 6px rgba(0,40,110,.35);gap:7px}
 .ap-store .sky-storepill__chev{width:11px;height:11px;stroke-width:2.6}
-.ap-me{position:absolute;right:16px;top:calc(env(safe-area-inset-top,0px) + 64px);z-index:70;width:230px;border-radius:20px;padding:14px;background:var(--sky-glass-strong)!important;color:var(--sky-ink)}
-.ap-mewho{font-size:16px;font-weight:800}
-.ap-mesub{font-size:12px;color:var(--sky-ink-2);margin:2px 0 10px}
-.ap-mebtn{width:100%;height:40px;border-radius:999px;border:1px solid #fff;background:var(--sky-glass-solid);color:var(--sky-navy);font:800 14px/1 var(--sky-font);cursor:pointer}
 .ap-search{padding:14px 18px 0;max-width:560px;margin:0 auto}
 html[data-sky="on"] #root .ap-root .ap-search .sky-search{height:36px;padding:0 4px 0 15px;gap:11px;background:rgba(255,255,255,.18)!important;border:1px solid rgba(255,255,255,.55)!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 6px 18px rgba(0,40,120,.1)!important}
