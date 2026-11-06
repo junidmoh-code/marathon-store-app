@@ -1,0 +1,99 @@
+{
+ "_comment": "TCG200369959T (VL4G7H, order #1942) \u2014 read 6 Nov 2026 from GET /shipments and POST /rates (rates book nothing). Personal details removed; the delivery address is reduced to suburb/city/zone/code. ecoBands: the ECO price this lane quoted on 6 Nov for each charged weight (probed at 20x20x20 cm with the weight set).",
+ "shipment": {
+  "short_tracking_reference": "VL4G7H",
+  "customer_reference": "#1942",
+  "created_by": "marathon-pos",
+  "status": "delivered",
+  "has_been_invoiced": true,
+  "service_level_code": "ECO",
+  "original_rate": 355.68,
+  "rate": 249.6,
+  "charged_weight": 15,
+  "volumetric_weight": 15,
+  "actual_weight": 5,
+  "time_created": "2026-11-02T10:55:07.47683Z",
+  "parcels": [
+   {
+    "alternative_tracking_reference": "TCG200369959T",
+    "submitted_length_cm": 34,
+    "submitted_width_cm": 46,
+    "submitted_height_cm": 39,
+    "submitted_weight_kg": 6.1,
+    "actual_length_cm": 59.1,
+    "actual_width_cm": 37,
+    "actual_height_cm": 26.7,
+    "actual_weight_kg": 4.75,
+    "has_been_dimensioned": true
+   }
+  ]
+ },
+ "deliveryArea": {
+  "local_area": "Morningside",
+  "city": "Sandton",
+  "zone": "GP",
+  "code": "2191"
+ },
+ "ecoBands": [
+  {
+   "upToKg": 5,
+   "rate": 142.32
+  },
+  {
+   "upToKg": 10,
+   "rate": 204.2
+  },
+  {
+   "upToKg": 15,
+   "rate": 247.52
+  },
+  {
+   "upToKg": 99,
+   "rate": 352.72
+  }
+ ],
+ "probes": [
+  {
+   "dims": [
+    34,
+    46,
+    39,
+    6.1
+   ],
+   "eco": {
+    "code": "ECO",
+    "rate": 352.72,
+    "cw": 16,
+    "vw": 16
+   }
+  },
+  {
+   "dims": [
+    59.1,
+    37,
+    26.7,
+    4.75
+   ],
+   "eco": {
+    "code": "ECO",
+    "rate": 247.52,
+    "cw": 15,
+    "vw": 15
+   }
+  },
+  {
+   "dims": [
+    34,
+    46,
+    32.5,
+    4.75
+   ],
+   "eco": {
+    "code": "ECO",
+    "rate": 247.52,
+    "cw": 13,
+    "vw": 13
+   }
+  }
+ ]
+}

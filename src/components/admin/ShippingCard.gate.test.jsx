@@ -93,12 +93,14 @@ describe("the live switch", () => {
     expect(r.path).toBe("config/shipping");
     expect(payload).not.toHaveProperty("live");
     expect(payload.volumetricDivisor).toBe(5000);
-    expect(Object.keys(payload).sort()).toEqual(["boxes", "collectionAddress", "collectionContact", "divisorByServiceGroup", "doorServiceCode", "dropBox", "excludeServiceCodes", "items", "maxChargeRand", "shoebox", "volumetricDivisor"]);
+    expect(Object.keys(payload).sort()).toEqual(["boxes", "collectionAddress", "collectionContact", "divisorByServiceGroup", "doorServiceCode", "dropBox", "excludeServiceCodes", "flatBag", "items", "maxChargeRand", "shoebox", "volumetricDivisor"]);
+    // The learned calibration is the mini's (scripts/shipping/reconcile.mjs): Save never overwrites it.
+    expect(payload).not.toHaveProperty("calibration");
   });
 
   it("every unmeasured seed carries the marker", async () => {
     const tree = await render(ADMIN);
-    expect((text(tree).match(/"unmeasured"/g) || []).length).toBeGreaterThanOrEqual(10 + 6 + 1);
+    expect((text(tree).match(/"unmeasured"/g) || []).length).toBeGreaterThanOrEqual(5 + 6 + 1); // 5 item kinds, 6 boxes, locker XS — the rest measured 6 Nov 2026
   });
 });
 
@@ -154,7 +156,7 @@ describe("test an order", () => {
     expect(pushMock.mock.calls[0][0].path).toBe("shipping_quotes/requests");
     expect(setMock).toHaveBeenCalledTimes(1);
     expect(setMock.mock.calls[0][0].path).toBe("shipping_quotes/requests/req1");
-    expect(setMock.mock.calls[0][1]).toMatchObject({ ref: "W1001", parcels: [{ lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.3 }] });
+    expect(setMock.mock.calls[0][1]).toMatchObject({ ref: "W1001", parcels: [{ lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.2 }] });
     expect(onValueMock.mock.calls.map((c) => c[0].path)).toEqual(["shipping_quotes/answers/req1"]);
   });
 });
