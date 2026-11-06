@@ -25,6 +25,7 @@
 // Group and per-size resolution lives in a LEAF module (it requires nothing),
 // so this file can consume it without the module that reasons about this file
 // having to reach back in. See policy-resolve.cjs for the precedence order.
+const { pausedLocationSet } = require("./paused-locations.cjs");
 const networkRegistry = require("./network-registry.cjs");
 const stockTrust = require("./stock-trust.cjs");
 const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
@@ -2356,7 +2357,15 @@ function computeRefillPlan(snapshot) {
   const isFootwearIntent = (i) => isFootwear(products?.[i.productId]);
   // THE BACKSTOP — every engine intent leaves through here, so no planning
   // branch (deficit, pass-through, a future one) can emit shop ← Central.
+  // PAUSED LOCATIONS (Junid, 6 Nov 2026 — Hub 3 recount): a paused
+  // destination's intents leave HERE, before the cap is dealt, so a location
+  // being counted from zero can never take the run's slots from the rest of
+  // the network. Nothing paused → this filter keeps everything (no change).
+  // The scan drops the paused location's closes/resizes/retries as well
+  // (lib/paused-locations.cjs withoutPausedDestinations).
+  const pausedDests = pausedLocationSet(rawConfig);
   const routedIntents = intents.filter((i) => {
+    if (pausedDests.size && pausedDests.has(i.dest)) return false;
     if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations, routing, product: products?.[i.productId], pid: i.productId })) return true;
     errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
     return false;

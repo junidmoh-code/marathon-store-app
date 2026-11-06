@@ -37,6 +37,7 @@ const { loadNetwork } = require("./lib/network-load.cjs");
 const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
 const { requestUntouched, pickInProgress } = require("./lib/shop-source-rule.cjs");
 const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
+const pausedLocations = require("./lib/paused-locations.cjs");
 
 const LOCK_STEAL_MS = 10 * 60e3;
 // The ledger slice every run reads. HELD AT 45 — the reduction to 31 was
@@ -630,6 +631,9 @@ async function runScan() {
     try {
       const woSnap = { nowMs, config, stock, products, refillRequests, movements, rejectStreak, cursors: writeoffCursors, windowStartMs: Date.parse(windowStart), network };
       const wo = refusalWriteoff.planRefusalWriteoffs(woSnap);
+      // A paused location (Hub 3 being counted) takes no write-off: the count
+      // is the truth there, never a refusal history.
+      wo.writeoffs = pausedLocations.withoutPausedWriteoffs(wo.writeoffs, pausedLocations.pausedLocationSet(config));
       if (wo.writeoffs.length) {
         const r = await refusalWriteoff.applyRefusalWriteoffs({
           db, writeoffs: wo.writeoffs, snapshot: woSnap, nowMs, runId,
@@ -646,10 +650,17 @@ async function runScan() {
       counts.errors.push(`refusal write-off: ${String(e && e.message ? e.message : e)}`);
     }
 
-    const plan = engine.computeRefillPlan({
+    // PAUSED LOCATIONS (/config/refillEngine/pausedLocations/{loc} = true —
+    // Hub 3 while it is recounted, Junid 6 Nov 2026): the plan is computed as
+    // always, then the paused location's share is held — no new request, close,
+    // resize or retry there, and no withdrawal of a request it is the source
+    // of. Nothing paused → the same plan object, unchanged.
+    const paused = pausedLocations.pausedLocationSet(config);
+    const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines, locations,
       network,
-    });
+    }), paused, openIndex);
+    if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };
     counts.errors.push(...plan.errors);
 
     // ── apply closes ──────────────────────────────────────────────────────────
