@@ -79,7 +79,9 @@ function labelledLine(lines, re, what) {
 // No heading, two different headings, a heading merged into another line by
 // the PDF extraction, the sentence printed more than once, or a heading line
 // anywhere BELOW the sentence: `immediate` is null, and the pool refuses (eftCore
-// immediacyVerdict). The reader only ever runs on a message that passed DKIM
+// immediacyVerdict) — EXCEPT a Standard Bank notice paying a Standard Bank
+// account with no heading or a clean one: same-bank, accepted as immediate
+// (6 Nov 2026, immediacyVerdict); an out-of-shape heading still refuses. The reader only ever runs on a message that passed DKIM
 // for standardbank.co.za (email-poller.mjs), so the heading is the bank's.
 const SB_HEADINGS = [
   { re: /^immediate payment confirmation$/i, immediate: true, label: "Immediate Payment Confirmation" },

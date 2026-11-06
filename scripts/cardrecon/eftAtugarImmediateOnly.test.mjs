@@ -133,13 +133,13 @@ describe("a payment into the Standard Bank account", () => {
     expect(sb({ account: SB_GROUPED }).outcome).toBe("recorded");
   });
 
-  it("a REGULAR payment into it is REFUSED — even dated on/after 2026-10-27", () => {
+  it("a REGULAR payment into it from ANOTHER bank is REFUSED — even dated on/after 2026-10-27", () => {
+    // A Standard Bank notice paying it is Standard-to-Standard — same-bank,
+    // immediate by nature (6 Nov 2026; eftStandardSameBank.test.mjs).
     for (const date of ["2026-10-27 08h00", "2026-11-01 10h15"]) {
-      const r = sb({ heading: "Payment Confirmation", date });
-      expect(r.outcome, date).toBe("refused-not-immediate");
-      expect(r.reason).toMatch(/IMMEDIATE payments only/);
+      expect(sb({ heading: "Payment Confirmation", date }).outcome, date).toBe("recorded");
     }
-    // Capitec "Regular Payment" into it: refused the same way.
+    // Capitec "Regular Payment" into it: refused.
     const c = cap({ type: "Regular Payment" });
     expect(c.outcome).toBe("refused-not-immediate");
     expect(c.reason).toMatch(/IMMEDIATE payments only/);
@@ -147,11 +147,14 @@ describe("a payment into the Standard Bank account", () => {
     expect(cap().outcome).toBe("recorded");
   });
 
-  it("the FOOTER's mention of immediate payments never passes a regular one", () => {
-    // No heading at all (the older layout): immediacy unreadable → refused.
-    const r = sb({ heading: null });
-    expect(r.outcome).toBe("refused-not-immediate");
-    expect(r.reason).toMatch(/IMMEDIATE payments only/);
+  it("no heading (the same-bank layout) into it confirms on the BANK, never on the footer's wording", () => {
+    // Same-bank because the notice is Standard Bank's and the destination is
+    // Standard Bank — the footer's "immediate" never decides anything.
+    expect(sb({ heading: null }).outcome).toBe("recorded");
+    // The same notice paying the FNB account dated 20–26 Oct is not same-bank:
+    // no heading there is still unreadable immediacy, refused.
+    const fnb = sb({ heading: null, bank: "FIRST NATIONAL BANK", account: "XXXXXXXXXXXXX4321", date: "2026-10-24 10h15" });
+    expect(fnb.outcome).toBe("refused-not-immediate");
   });
 
   it("the beneficiary NAME is never a reason — ATUGAR, Marathon Club or anything else", () => {
