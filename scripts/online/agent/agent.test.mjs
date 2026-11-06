@@ -652,6 +652,41 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(conv(f).state).toBe("closed");
   });
 
+  it("Sonnet review of #856: a credit filed whose closing write failed is finished next run: one credit, one message, never 'nothing left'", async () => {
+    const f = fakeDb(world());
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await h.run();
+    const realRef = f.db.ref;
+    let failClose = true;
+    const db = { ref: (p) => {
+      const r = realRef(p);
+      if (p !== "online_orders/9001/lines/0") return r;
+      return { ...r, transaction: async (fn) => {
+        const cur = structuredClone(f.read(p));
+        const out = fn(structuredClone(cur));
+        if (failClose && out?.resolution?.outcome && !cur?.resolution?.outcome) { failClose = false; return { committed: false, snapshot: { val: () => cur } }; }
+        return r.transaction(fn);
+      } };
+    } };
+    const credits = () => h.gql.filter((g) => /storeCreditAccountCredit/.test(g.q)).length;
+    const mailsBefore = h.mails.length;
+    await h.run({ db, inbox: { replies: async () => [reply("credit")] } });
+    expect(credits()).toBe(1);
+    expect(f.read("online_orders/9001/lines/0/resolution/outcome")).toBeFalsy();
+    expect(h.mails.length).toBe(mailsBefore); // not told before the close landed
+    const junidBefore = h.junid.length;
+    await h.run();
+    expect(credits()).toBe(1); // never filed twice
+    expect((f.read("online_orders/9001/lines/0/resolution/outcome") || {}).kind).toBe("credit");
+    expect(conv(f).state).toBe("closed");
+    expect(conv(f).heldSettle ?? null).toBeNull();
+    expect(h.mails.length).toBe(mailsBefore + 1); // one message
+    expect(h.junid.slice(junidBefore).filter((m) => /nothing is left/.test(m.subject))).toHaveLength(0);
+    await h.run({ nowMs: async () => NOW + 72 * H });
+    expect(credits()).toBe(1);
+    expect(h.mails.length).toBe(mailsBefore + 1);
+  });
+
   it("CodeRabbit on #851: a refund with only a separately paid difference left is Junid's; no 48-hour credit pays it after", async () => {
     // Paid R250 on the order; R250 refunded to it already; R30 paid on its own PayFast payment remains.
     const f = fakeDb(world({ line: unavailableLine({ resolution: { moneyIn: { a: { state: "done", amountCents: 3000, via: "payment" } }, moneySettled: { r: { kind: "refund", state: "done", amountCents: 25000 } } } }) }));

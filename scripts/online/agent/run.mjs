@@ -289,14 +289,16 @@ async function offering(ctx, key, orderId, order, i, line) {
     // not finish is retried from it; any other answer replaces an older kept one.
     const keep = decision.kind === "credit" || decision.kind === "refund" ? { kind: decision.kind, at: ctx.now } : null;
     if (keep || conv.heldSettle) {
-      const kept = await lineTxn(ctx, orderId, i, (cur) => {
-        const c = cur.resolution?.conversation;
-        if (!c) return undefined;
-        const { heldSettle: _h, ...rest } = c;
-        return { ...cur, resolution: { ...cur.resolution, conversation: keep ? { ...rest, heldSettle: keep } : rest } };
-      });
-      // not kept (a raced write): settled now all the same, as before; only a later failure relies on the kept answer
-      void kept;
+      // Tried 3 times (Sonnet review of #856): a stale kept answer of the other kind must never outlive this one.
+      for (let t = 0; t < 3; t++) {
+        const kept = await lineTxn(ctx, orderId, i, (cur) => {
+          const c = cur.resolution?.conversation;
+          if (!c) return undefined;
+          const { heldSettle: _h, ...rest } = c;
+          return { ...cur, resolution: { ...cur.resolution, conversation: keep ? { ...rest, heldSettle: keep } : rest } };
+        });
+        if (kept) break;
+      }
     }
     if (decision.kind === "pick") return pick(ctx, key, orderId, order, i, line, offers[decision.n - 1]);
     if (decision.kind === "credit") return settle(ctx, key, orderId, order, i, line, "credit", "credit");
@@ -511,6 +513,14 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
 
 // ── credit / refund ─────────────────────────────────────────────────────────
 async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
+  // Filed, never closed (Sonnet review of #856): money() filed this answer's slot but the closing write did not land. The
+  // retry finishes THAT settle (outcome, the customer's one message) from the slot; it never files again, and never reads
+  // the now-settled ledger as "nothing left".
+  const m0 = line.resolution?.money;
+  if (m0 && m0.kind === kind && m0.state && m0.state !== "claimed" && !line.resolution?.outcome) {
+    const amt0 = Number.isInteger(m0.paidCents) && m0.paidCents > 0 ? m0.paidCents : Number(m0.amountCents) || 0;
+    return closeSettle(ctx, key, orderId, order, i, line, messageKind, amt0, m0);
+  }
   // What is left of what was paid for the line (the ledger; review of #846, 5): never the full price again after a credit.
   const lg0 = lineLedger(line, { priceCents: 0, now: ctx.now });
   // A refund goes back to the order's own payment only, never above what it took (Sonnet review of #848, 1); a difference
@@ -526,7 +536,7 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
       // he refunds by hand.
       // Only once the hand-over is WRITTEN (Sonnet review of #851): a failed write leaves the conversation as it was, so nothing
       // is said and the next run tries again; never told Junid while the 48-hour credit could still pay the same money.
-      const handed = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, nothingLeftAt: ctx.now, state: "with_junid", withJunidAt: ctx.now } } } : undefined));
+      const handed = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, heldSettle: null, nothingLeftAt: ctx.now, state: "with_junid", withJunidAt: ctx.now } } } : undefined));
       if (!handed) return;
       await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents: 0, note: `${rands(heldBack)} was paid on its own PayFast payment; Junid's to refund there` });
       await tellJunid(ctx, `Website order ${order.ref}: refund asked; ${rands(heldBack)} left, paid on its own PayFast payment`, [`Line: ${line.title}. Nothing is left to refund to the order's payment; the customer's ${rands(heldBack)} difference was paid on a separate PayFast payment. Refund it there by hand, or tell Jamie to credit it. Nothing was sent to the customer.`]);
@@ -555,12 +565,23 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
   if (heldBack > 0) await tellJunid(ctx, `Website order ${order.ref}: refund of ${rands(amount)} filed; ${rands(heldBack)} more was paid separately`, [`Line: ${line.title}. The customer also paid a ${rands(heldBack)} difference on its own PayFast payment for the swap; a refund never goes above what the order's payment took, so that part is NOT in this refund. Refund it on that PayFast payment by hand, or tell Jamie to credit it.`]);
   // What Shopify actually refunded (it may suggest less than the line).
   if (Number.isInteger(res.paidCents) && res.paidCents > 0) amount = res.paidCents;
+  return closeSettle(ctx, key, orderId, order, i, line, messageKind, amount, res);
+}
+
+// The settle's closing write, then the customer's one message: only once the write landed (Sonnet review of #856), so a
+// failed write is finished by the next run from the filed slot, never told twice. A kept answer (heldSettle) goes with it.
+async function closeSettle(ctx, key, orderId, order, i, line, messageKind, amount, res) {
   const windowUntil = messageKind === "auto_credit" ? ctx.now + REFUND_WINDOW_MS : null;
-  await lineTxn(ctx, orderId, i, (cur) => ({
-    ...cur,
-    source: { status: LINE_STATUS.RESOLVED },
-    resolution: { ...cur.resolution, outcome: { kind: messageKind, amountCents: amount, at: ctx.now }, conversation: { ...cur.resolution.conversation, state: windowUntil ? "credited_window" : "closed", ...(windowUntil ? { refundWindowUntil: windowUntil } : { closedAt: ctx.now }) } },
-  }));
+  const closed = await lineTxn(ctx, orderId, i, (cur) => {
+    if (cur.resolution?.outcome) return undefined; // closed already (a concurrent run): nothing said twice
+    const { heldSettle: _h, ...c } = cur.resolution?.conversation || {};
+    return {
+      ...cur,
+      source: { status: LINE_STATUS.RESOLVED },
+      resolution: { ...cur.resolution, outcome: { kind: messageKind, amountCents: amount, at: ctx.now }, conversation: { ...c, state: windowUntil ? "credited_window" : "closed", ...(windowUntil ? { refundWindowUntil: windowUntil } : { closedAt: ctx.now }) } },
+    };
+  });
+  if (!closed) return;
   await send(ctx, orderId, order, i, line, messageKind, { amountCents: amount, pending: res.via !== "api" });
   await setAgentRow(ctx, key, windowUntil ? { state: "credited_window", until: windowUntil } : null);
 }
@@ -624,7 +645,8 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
     return { ...cur, resolution: { ...(cur.resolution || {}), money: { kind, amountCents, state: "claimed", at: ctx.now, why } } };
   });
   if (!claimed) {
-    await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents, note: refused || "the line moved" });
+    // Logged once per refusal (Sonnet review of #856): a kept answer retried every run does not grow the log.
+    if (!(refused && line?.resolution?.conversation?.settleRefusedAt)) await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents, note: refused || "the line moved" });
     // Which it was, for the caller (CodeRabbit on #851): the ledger's own refusal, or a write that merely raced.
     ctx.lastMoneyRefusal = { orderId, i, kind, why: refused || null, race: !refused };
     return null;
