@@ -211,8 +211,8 @@ function Warehouse({ products, Top, css }) {
   return (
     <div className="wh-sky" style={{ minHeight: "100vh", maxWidth: 430, margin: "0 auto", paddingBottom: 40 }}>
       <style>{css}</style>
-      <Top hubLabel="Hub 1" incomingCount={10} tabs={[["queue", "Order Queue", null], ["refills", "Display Refills", 4], ["layby", "Layby", null]]}
-           tab={tab} onTab={setTab} onExit={() => {}} onSwitchHub={() => {}} />
+      <Top hubLabel="Hub 1" tabs={[["queue", "Order Queue", null], ["refills", "Display Refills", 4], ["layby", "Layby", null]]}
+           tab={tab} onTab={setTab} onSwitchHub={() => {}} />
       <div className="wh-chips">
         {[["incoming", "Incoming", 10], ["ready", "Ready", 663], ["out_of_stock", "Out of Stock", 80], ["all", "All", 927]].map(([k, l, n]) => (
           <div key={k} className="wh-chip" data-on={f === k ? "" : undefined} onClick={() => setF(k)} style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
@@ -226,14 +226,14 @@ function Warehouse({ products, Top, css }) {
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div>Today</div><div style={{ border: "1px solid", borderRadius: 999, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>7</div></div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "12px 10px" }}>
-            {products.slice(0, 3).map((p, i) => (
-              <div key={p.id} data-order-card={ids[i]} style={{ position: "relative", overflow: "hidden" }}>
+            {Array.from({ length: Number(q.get("n") || 3) }, (_, i) => products[i % products.length]).map((p, i) => (
+              <div key={`${p.id}-${i}`} data-order-card={ids[i % 3]} style={{ position: "relative", overflow: "hidden" }}>
                 <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3 }} />
                 <div style={{ padding: "12px 12px 12px 16px", display: "flex", gap: 11 }}>
                   <img src={p.photoUrl} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 10 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                      <div style={{ fontSize: 13, fontWeight: 800 }}>#{ids[i]}</div>
+                      <div style={{ fontSize: 13, fontWeight: 800 }}>#{ids[i % 3]}</div>
                       <div style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 10, background: "#fff", color: "#1d3fb8" }}>● Incoming</div>
                       <div style={{ marginLeft: "auto" }}>···</div>
                     </div>
@@ -255,7 +255,7 @@ function Warehouse({ products, Top, css }) {
   );
 }
 
-function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
+function Barcodes({ products, BcsCard, css, Studio, shell }) {
   const cats = ["Sneakers", "Sneakers", "Clothing"];
   // ?many=1: the catalogue repeated to 60 cards, so the list really scrolls.
   const base = q.get("many") ? Array.from({ length: 60 }, (_, i) => ({ ...products[i % products.length], id: `${products[i % products.length].id}-${i}` })) : products.slice(0, 12);
@@ -275,7 +275,7 @@ function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
     const shown = list.filter((p) => (cat === "all" || p.category === cat) && p.name.toLowerCase().includes(search.toLowerCase()));
     return (
       <>
-        <SkyHeader tag="BARCODES" gridLabel="Home" onGrid={() => {}} />
+        {shell("BARCODES", false)}
         <Studio onExit={() => {}} loc={loc} setLoc={setLoc} locOptions={[{ id: "all", label: "All locations" }, { id: "hub1", label: "Hub 1" }]}
           categories={["Clothing", "Sneakers"]} cat={cat} setCat={setCat} transport={transport} setTransport={setTransport}
           diagText={null} setDiagText={() => {}} totalCopies={selList.reduce((n, [, it]) => n + (parseInt(it.count, 10) || 0), 0)} canMint
@@ -287,7 +287,7 @@ function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
     );
   }
   return (
-    <div style={{ padding: "14px" }}>
+    <>{shell("BARCODES")}<div style={{ padding: "14px" }}>
       <style>{css}</style>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {list.map((p) => (
@@ -296,7 +296,7 @@ function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
                    onPick={(s) => toggle(p, s)} onCount={(k, v) => setSel((x) => ({ ...x, [k]: { ...x[k], count: v } }))} />
         ))}
       </div>
-    </div>
+    </div></>
   );
 }
 
@@ -304,21 +304,27 @@ function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
   const all = await loadFixture();
   const byId = Object.fromEntries(all.map((p) => [p.id, p]));
   const order = q.get("fixture") ? all.map((p) => p.id) : ORDER;
-  const products = order.map((id) => byId[id]).filter(Boolean).map((p) => ({ ...p, retailPrice: p.retailPrice || 750 }));
+  const base = order.map((id) => byId[id]).filter(Boolean).map((p) => ({ ...p, retailPrice: p.retailPrice || 750 }));
+  // ?many=1 (phone / desktop / warehouse): the catalogue repeated to 64, so the
+  // pinned-header tests can scroll 3000px.
+  const products = q.get("many") && screen !== "barcodes"
+    ? Array.from({ length: 64 }, (_, i) => ({ ...base[i % base.length], id: `${base[i % base.length].id}-${i}` })) : base;
+  const { SkyShellHeader } = await import("../components/sky/Sky.jsx");
+  // The shell header App.jsx draws above every screen but home and the order view.
+  const shell = (tag, sticky = true) => <SkyShellHeader tag={tag} sticky={sticky} onHome={() => {}} />;
   let el;
   if (screen === "desktop") {
     const { AssistantDesktop } = await import("../App.jsx");
     el = <Desktop products={products} AssistantDesktop={AssistantDesktop} />;
   } else if (screen === "admin") {
     const { AdminView } = await import("../App.jsx");
-    el = <AdminView products={products} orders={[]} onExit={() => {}} />;
+    el = <>{shell("ADMIN")}<AdminView products={products} orders={[]} onExit={() => {}} /></>;
   } else if (screen === "barcodes") {
     // The Barcode Studio page (desktop: the real BarcodeStudioDesktop with
     // fixture state; phone: the cards). The screen itself streams stock
     // cells, which the harness never reads. ?open=1 opens + picks the first.
     const { BcsCard, BCS_CSS, BarcodeStudioDesktop } = await import("../components/stock/BarcodeCatalog.jsx");
-    const { SkyHeader } = await import("../components/sky/Sky.jsx");
-    el = <div id="root-inner"><Barcodes products={products} BcsCard={BcsCard} css={BCS_CSS} Studio={BarcodeStudioDesktop} SkyHeader={SkyHeader} /></div>;
+    el = <div id="root-inner"><Barcodes products={products} BcsCard={BcsCard} css={BCS_CSS} Studio={BarcodeStudioDesktop} shell={shell} /></div>;
   } else if (screen === "viewer") {
     // The product photo viewer on its own (zoom test): an inline photo, so CI
     // needs no Storage URL.
@@ -330,7 +336,7 @@ function Barcodes({ products, BcsCard, css, Studio, SkyHeader }) {
     // markup drawn with the same classes the real queue carries; the real
     // WarehouseView streams /orders, which the harness never reads.
     const { default: WarehouseTop, WAREHOUSE_SKY_CSS } = await import("../components/sky/WarehouseTop.jsx");
-    el = <Warehouse products={products} Top={WarehouseTop} css={WAREHOUSE_SKY_CSS} />;
+    el = <div>{shell("WAREHOUSE")}<Warehouse products={products} Top={WarehouseTop} css={WAREHOUSE_SKY_CSS} /></div>;
   } else if (screen === "phone") {
     el = <Phone products={products.slice(0, Number(q.get("n") || 16))} />;
   } else {

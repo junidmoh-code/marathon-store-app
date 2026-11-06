@@ -137,7 +137,7 @@ import { brandOptions, filterByBrand, reconcileBrand } from "./components/assist
 import ZoomImage from "./components/sky/ZoomImage.jsx";
 import { SkySheet, SkySheetHead, SkyStepperRow } from "./components/sky/SkySheet.jsx";
 import WarehouseTop, { WAREHOUSE_SKY_CSS } from "./components/sky/WarehouseTop.jsx";
-import { useSkyOff, SkyHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
+import { useSkyOff, SkyShellHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
 import { IconCart, IconBox, IconBag, IconLayers, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
@@ -2732,7 +2732,7 @@ function CustomersView({ onExit }) {
     return (
       <div style={{ height: "100vh", maxHeight: "100dvh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "240px minmax(0,1fr)", overflow: "hidden" }}>
         <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 13px 16px", display: "flex", flexDirection: "column", gap: 3, overflow: "auto" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
+          <div data-legacy-header="" style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
             <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
             <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
           </div>
@@ -5941,7 +5941,7 @@ function AiStudioView({ products, onExit }) {
     <aside style={{ width:224, flexShrink:0, position:"sticky", top:0, height:"100vh", boxSizing:"border-box",
                     display:"flex", flexDirection:"column", gap:4, padding:"24px 14px 18px",
                     background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.07)" }}>
-      <div style={{ padding:"0 10px 20px" }}>
+      <div data-legacy-header="" style={{ padding:"0 10px 20px" }}>
         <div style={{ fontSize:22, fontWeight:800, fontStyle:"italic", letterSpacing:-.6, color:"#fff" }}>marathon</div>
         <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF", marginTop:1 }}>CLUB</div>
       </div>
@@ -6958,7 +6958,7 @@ export function AdminView({ products, orders, onExit }) {
   // Shared admin chrome (was copy-pasted across the four tab branches).
   const ADMIN_WRAP = { minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 };
   const adminTopBar = (
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
+    <div data-legacy-header="" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
       <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
       <div className="sky-glass sky-glass--strong" style={{ textAlign:"center", borderRadius:14, padding:"4px 14px" }}>
         <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
@@ -7228,7 +7228,7 @@ export function AdminView({ products, orders, onExit }) {
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -8246,7 +8246,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"250px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 15px 18px", display:"flex", flexDirection:"column", gap:12, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 3px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 3px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -14195,7 +14195,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         )}
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -14273,12 +14273,12 @@ function WarehouseView({ products = [], orders, onExit }) {
           {printToast.text}
         </div>
       )}
-      {/* THE SKY TOP BAND (Junid's warehouse mock-up, 6 Nov): header, Switch
-          View / Viewing as / incoming, hub + Switch Hub, the live line, and the
-          tabs as glass tiles. Same handlers: onExit, the Switch Hub reset, and
-          setMainTab over tabDefs. */}
-      <WarehouseTop hubLabel={HUB_LABELS[selectedHub] || selectedHub} incomingCount={incomingCount}
-        tabs={tabDefs} tab={mainTab} onTab={setMainTab} onExit={onExit}
+      {/* THE SKY TOP BAND (Junid, 6 Nov): the header is the shell's (one header
+          per screen); this is the hub + Switch Hub, the live line and the tabs
+          as glass tiles. Same handlers: the Switch Hub reset and setMainTab over
+          tabDefs. */}
+      <WarehouseTop hubLabel={HUB_LABELS[selectedHub] || selectedHub}
+        tabs={tabDefs} tab={mainTab} onTab={setMainTab}
         onSwitchHub={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }} />
 
       {/* ON HOLD CARD */}
@@ -15111,7 +15111,7 @@ function CustomerView({ orders, onExit }) {
         <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <div style={{ padding: "22px 16px 12px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+              <div data-legacy-header="" style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
                 <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
                 <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
               </div>
@@ -15234,7 +15234,7 @@ function CustomerView({ orders, onExit }) {
 
       {/* Brand header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <div data-legacy-header="" style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
           <span style={{ fontSize: 20, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
           <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
         </div>
@@ -17512,7 +17512,7 @@ function ReturnsView({ orders, products = [], onExit }) {
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -19532,7 +19532,7 @@ function InsightsView({ onExit }) {
     return (
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 6px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 6px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -21132,8 +21132,8 @@ function AppInner() {
               draw their own (they have reference images); the customer TV
               board has its own world and none. */}
           {view && view.type !== RoleSelector && role !== ROLES.ASSISTANT && role !== ROLES.DISPLAY && (
-            <SkyHeader tag={skyScreenTag(role, hash)} gridLabel="Home"
-                       onGrid={() => { setRole(null); if (window.location.hash) window.location.hash = ""; }} />
+            <SkyShellHeader tag={skyScreenTag(role, hash)} sticky={role !== ROLES.BARCODES}
+                            onHome={() => { setRole(null); if (window.location.hash) window.location.hash = ""; }} />
           )}
           {view}
         </AppErrorBoundary>

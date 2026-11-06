@@ -52,6 +52,9 @@ export const ROUTES = [
   ["assistant-phone", `${H}?screen=phone&cart=2`],
   ["barcode-cards", `${H}?screen=barcodes&open=1`],
   ["assistant-phone-brands", `${H}?screen=phone&chips=ref&brand=Reebok`],
+  // Warehouse (Junid 6 Nov): one glass level per nesting, navy ink on glass.
+  ["warehouse", `${H}?screen=warehouse`],
+  ["assistant-phone-sheet", `${H}?screen=phone&sheet=1`],
 ];
 export const SIZES = [[1440, 900], [390, 844]];
 const EXEMPT = ".sky-logo, .sky-tile, [data-contrast-exempt]";

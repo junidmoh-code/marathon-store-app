@@ -293,7 +293,7 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
       <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "236px minmax(0,1fr)", overflow: "hidden" }}>
         {/* RAIL */}
         <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 13px 16px", display: "flex", flexDirection: "column", gap: 3, overflow: "auto" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
+          <div data-legacy-header="" style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
             <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: -.6 }}>marathon</span>
             <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
           </div>
@@ -339,7 +339,7 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
   return (
     <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: 880, margin: "0 auto", overflowX: "hidden", paddingBottom: 40 }}>
       {/* TOP BAR */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "50px 14px 12px" }}>
+      <div data-legacy-header="" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "50px 14px 12px" }}>
         <div onClick={onExit}
           style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: "8px 14px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
           <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>← Switch View</span>

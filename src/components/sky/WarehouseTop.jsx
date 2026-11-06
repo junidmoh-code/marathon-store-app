@@ -1,16 +1,15 @@
-// ─── WAREHOUSE, PHONE — THE TOP BAND (Junid's mock-up, 6 Nov) ────────────────
+// ─── WAREHOUSE, PHONE — THE TOP BAND (Junid, 6 Nov; revised the same day) ────
 //
-// Header (grid · wordmark · account) with the WAREHOUSE pill; a row of three
-// glass pills — Switch View, "Viewing as WAREHOUSE", the incoming count; the
-// hub pill and Switch Hub; the live line; then the tabs as three glass tiles
-// (Order Queue · Display Refills · Layby, and CR Orders on a CR hub).
+// The header is the SHELL's (App.jsx → SkyShellHeader: grid, wordmark, the
+// WAREHOUSE pill whose chevron opens the view switcher, account). This band
+// draws no header of its own and no "Switch View · Viewing as · Incoming"
+// strip — the pill does Switch View, and the Incoming count is the Incoming
+// chip's below. What stays: the hub pill + Switch Hub, the live line, and the
+// tabs as glass tiles.
 //
-// Presentation only. Every handler is WarehouseView's own: onExit is the old
-// "← Switch View", onSwitchHub the old "Switch Hub" (forget the hub, pick
-// again), onTab the old tab strip's setMainTab. The tabs list is tabDefs,
+// Presentation only. onSwitchHub is the old "Switch Hub" (forget the hub, pick
+// again), onTab the old tab strip's setMainTab; the tabs list is tabDefs,
 // unchanged — this draws it, it does not decide it.
-
-import { SkyHeader } from "./Sky.jsx";
 
 const I = {
   grid: <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.9"><rect x="3.5" y="3.5" width="7" height="7" rx="2" /><rect x="13.5" y="3.5" width="7" height="7" rx="2" /><rect x="3.5" y="13.5" width="7" height="7" rx="2" /><rect x="13.5" y="13.5" width="7" height="7" rx="2" /></svg>,
@@ -24,25 +23,9 @@ const I = {
   clothing: <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4" /></svg>,
 };
 
-export default function WarehouseTop({ hubLabel, incomingCount = 0, tabs = [], tab, onTab, onExit, onSwitchHub, role = "WAREHOUSE" }) {
+export default function WarehouseTop({ hubLabel, tabs = [], tab, onTab, onSwitchHub }) {
   return (
-    <div className="wht" data-contrast-exempt="">
-      <SkyHeader onGrid={onExit} gridLabel="Switch view" onUser={onExit} userLabel="Account"
-                 tagNode={<button type="button" className="wht-role" onClick={onExit} aria-label={`Viewing as ${role.toLowerCase()} — switch view`}>{role}{I.chev}</button>} />
-
-      <div className="wht-row">
-        <button type="button" className="wht-pill" onClick={onExit}>{I.grid}<span>Switch View</span></button>
-        <div className="wht-pill wht-pill--on" aria-label={`Viewing as ${role}`}>
-          {I.house}
-          <span className="wht-two"><small>Viewing as</small><b>{role}</b></span>
-        </div>
-        <div className="wht-pill wht-pill--count" aria-label={`${incomingCount} incoming`}>
-          <i className="wht-dot" aria-hidden="true" />
-          <span className="wht-two"><b>{incomingCount}</b><small>Incoming</small></span>
-          {I.right}
-        </div>
-      </div>
-
+    <div className="wht">
       <div className="wht-row wht-row--hub">
         <button type="button" className="wht-hub" onClick={onSwitchHub} aria-label={`${hubLabel} — switch hub`}>
           <span>{hubLabel}</span><i aria-hidden="true" />{I.chev}
@@ -50,7 +33,7 @@ export default function WarehouseTop({ hubLabel, incomingCount = 0, tabs = [], t
         <button type="button" className="wht-pill wht-pill--sm" onClick={onSwitchHub}>{I.swap}<span>Switch Hub</span></button>
       </div>
 
-      <div className="wht-live"><i aria-hidden="true" />Update order status in real time.</div>
+      <div className="wht-live" data-contrast-exempt=""><i aria-hidden="true" />Update order status in real time.</div>
 
       <div className="wht-tiles" role="tablist" style={{ gridTemplateColumns: `repeat(${Math.max(1, tabs.length)}, minmax(0, 1fr))` }}>
         {tabs.map(([key, label, badge]) => (
@@ -65,60 +48,58 @@ export default function WarehouseTop({ hubLabel, incomingCount = 0, tabs = [], t
   );
 }
 
+// ONE GLASS LEVEL PER NESTING (Junid, 6 Nov — "too white"): the hub pill,
+// Switch Hub, the tiles, the chips and the Today group are standard glass
+// (0.40) with navy ink; the order cards INSIDE the Today group are not another
+// glass layer — a 1px rim on the same surface, 12px apart. Mark as Sent is
+// solid navy, Mark as Out of Stock a soft red glass with navy text, the rest
+// navy outlines with no fill. The selected chip is solid navy.
 export const WAREHOUSE_SKY_CSS = `
-.wh-sky{background:transparent!important;color:#fff;padding-left:var(--sky-sal);padding-right:var(--sky-sar)}
-.wht{padding:0 0 4px}
-.wht .sky-header{padding:calc(var(--sky-sat) + 14px) 16px 0}
-html[data-sky="on"] #root .wht .sky-header__l .sky-round{width:40px;height:40px;color:#fff!important;background:rgba(255,255,255,.16)!important;border:1px solid rgba(255,255,255,.5)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.35)!important}
-html[data-sky="on"] #root .wht .sky-header__r .sky-round{width:40px;height:40px;color:#fff!important;background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
-.wht .sky-round svg{width:21px;height:21px;color:#fff;stroke:#fff}
-.wht .sky-logo__m{font-size:27px}
-.wht .sky-logo__c{font-size:9px;margin-top:4px}
-.wht-role{display:inline-flex;align-items:center;gap:8px;margin-top:9px;height:27px;padding:0 13px 0 16px;border-radius:999px;cursor:pointer;
-  font:700 12.5px/1 var(--sky-font);letter-spacing:.02em;color:#fff;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.55);box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 6px 16px -8px rgba(0,40,120,.4)}
-.wht-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;padding:0 14px;margin-top:20px}
-.wht-pill{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:40px;padding:0 11px;min-width:0;border-radius:999px;cursor:pointer;color:#fff;
-  font:600 12px/1 var(--sky-font);background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.5);box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 6px 16px -10px rgba(0,40,120,.45);white-space:nowrap}
-.wht-pill svg{flex:0 0 auto}
-.wht-row:first-of-type .wht-pill > svg:first-child{width:18px;height:18px}
-.wht-pill--on{cursor:default;height:44px;padding:0 9px;background:rgba(255,255,255,.24);border:1.5px solid rgba(255,255,255,.85);box-shadow:inset 0 1px 0 rgba(255,255,255,.5),0 0 18px rgba(170,220,255,.45)}
-.wht-pill--count{cursor:default;gap:7px;padding:0 8px 0 10px}
-.wht-two{display:flex;flex-direction:column;align-items:flex-start;gap:2px;line-height:1}
-.wht-two small{font:500 11px/1.1 var(--sky-font);color:rgba(255,255,255,.92)}
-.wht-two b{font:700 13px/1.1 var(--sky-font);letter-spacing:.02em}
-.wht-pill--count .wht-two b{font-size:13.5px}
-.wht-dot{width:8px;height:8px;border-radius:50%;background:#dfe9ff;box-shadow:0 0 8px rgba(255,255,255,.9)}
-.wht-row--hub{grid-template-columns:auto 1fr auto;margin-top:17px}
+.wh-sky{background:transparent!important;color:var(--sky-ink);padding-left:var(--sky-sal);padding-right:var(--sky-sar)}
+.wht{padding:2px 0 4px}
+.wht-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;padding:0 14px}
 .wht-row--hub .wht-pill--sm{grid-column:3}
-.wht-hub{display:inline-flex;align-items:center;gap:11px;height:36px;padding:0 13px 0 17px;border-radius:999px;cursor:pointer;color:#fff;
-  font:700 14px/1 var(--sky-font);background:linear-gradient(180deg,#123a8a,#0b2a6e);border:1px solid rgba(255,255,255,.35);box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 8px 18px -10px rgba(0,20,70,.7)}
-.wht-hub i{width:1px;height:16px;background:rgba(255,255,255,.35)}
-.wht-pill--sm{height:34px;font-size:12px}
-.wht-live{display:flex;align-items:center;gap:10px;padding:0 19px;margin-top:15px;font:500 12px/1.2 var(--sky-font);color:rgba(255,255,255,.95)}
+.wht-glass,.wht-hub,.wht-pill,.wht-tile{background:var(--sky-glass);border:1px solid var(--sky-rim);box-shadow:var(--sky-highlight),0 6px 16px -10px rgba(0,40,120,.35);
+  -webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5);color:var(--sky-ink)}
+.wht-hub{display:inline-flex;align-items:center;gap:11px;height:36px;padding:0 13px 0 17px;border-radius:999px;cursor:pointer;font:800 14px/1 var(--sky-font)}
+.wht-hub i{width:1px;height:16px;background:rgba(11,42,82,.25)}
+.wht-pill{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:34px;padding:0 13px;border-radius:999px;cursor:pointer;font:700 12px/1 var(--sky-font);white-space:nowrap}
+.wht-pill svg,.wht-hub svg{flex:0 0 auto;color:var(--sky-navy)}
+.wht-live{display:flex;align-items:center;gap:10px;padding:0 19px;margin-top:15px;font:500 12px/1.2 var(--sky-font);color:#fff;text-shadow:0 1px 4px rgba(0,30,90,.35)}
 .wht-live i{width:8px;height:8px;border-radius:50%;background:#33d17a;box-shadow:0 0 8px rgba(51,209,122,.8)}
 .wht-tiles{display:grid;gap:10px;padding:0 15px;margin-top:15px}
-.wht-tile{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:62px;padding:8px 6px;border-radius:18px;cursor:pointer;color:#fff;
-  font:600 11.5px/1.15 var(--sky-font);text-align:center;background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.45);box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 8px 18px -12px rgba(0,40,120,.45)}
-.wht-tile[aria-selected="true"]{background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.85)}
-.wht-tile svg{width:22px;height:22px}
+.wht-tile{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:62px;padding:8px 6px;border-radius:18px;cursor:pointer;
+  font:700 11.5px/1.15 var(--sky-font);text-align:center}
+.wht-tile svg{width:22px;height:22px;color:var(--sky-navy)}
+.wht-tile[aria-selected="true"]{border:1.5px solid var(--sky-navy)}
 .wht-tlab{max-width:90%}
-.wht-badge{position:absolute;top:7px;right:9px;min-width:20px;height:20px;padding:0 6px;border-radius:999px;display:grid;place-items:center;background:#fff;color:#0b2a6e;font:800 11px/1 var(--sky-font)}
-/* The queue under it: chips, the day groups, the order cards. */
+.wht-badge{position:absolute;top:7px;right:9px;min-width:20px;height:20px;padding:0 6px;border-radius:999px;display:grid;place-items:center;background:var(--sky-navy);color:#fff;font:800 11px/1 var(--sky-font)}
+/* The tab row (Incoming · Ready · Out of Stock · All). */
 .wh-sky .wh-chips{display:flex;gap:8px;padding:14px 15px 12px!important;overflow-x:auto;scrollbar-width:none}
-html[data-sky="on"] #root .wh-sky .wh-chip{height:30px;padding:0 6px 0 13px!important;border-radius:999px!important;font:600 12px/1 var(--sky-font)!important;color:#fff!important;
-  background:rgba(255,255,255,.14)!important;border:1px solid rgba(255,255,255,.5)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3)}
-html[data-sky="on"] #root .wh-sky .wh-chip > span{min-width:22px;width:auto!important;height:20px!important;padding:0 6px;border-radius:999px!important;background:rgba(255,255,255,.28)!important;color:#fff!important;font-size:10.5px!important}
-html[data-sky="on"] #root .wh-sky .wh-chip[data-on]{background:#fff!important;color:#0b2a6e!important;border-color:#fff!important}
-html[data-sky="on"] #root .wh-sky .wh-chip[data-on] > span{background:#1d3fb8!important;color:#fff!important}
-html[data-sky="on"] #root .wh-sky [data-day-section]{background:rgba(255,255,255,.12)!important;border:1px solid rgba(255,255,255,.45)!important;border-radius:20px!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3)}
-html[data-sky="on"] #root .wh-sky [data-day-head]{border-bottom:1px solid rgba(255,255,255,.2)}
-html[data-sky="on"] #root .wh-sky [data-day-head] > div:first-child > div:first-child{font-size:16px!important;font-weight:800!important;color:#fff!important}
-html[data-sky="on"] #root .wh-sky [data-day-head] > div:first-child > div:nth-child(2){background:rgba(255,255,255,.2)!important;border-color:rgba(255,255,255,.5)!important;color:#fff!important}
-html[data-sky="on"] #root .wh-sky [data-order-card]{background:rgba(255,255,255,.12)!important;border:1px solid rgba(255,255,255,.5)!important;border-radius:18px!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 8px 18px -12px rgba(0,40,120,.4)}
+html[data-sky="on"] #root .wh-sky .wh-chip{height:30px;padding:0 6px 0 13px!important;border-radius:999px!important;font:700 12px/1 var(--sky-font)!important;color:var(--sky-ink)!important;
+  background:var(--sky-glass)!important;border:1px solid var(--sky-rim)!important;box-shadow:var(--sky-highlight)}
+html[data-sky="on"] #root .wh-sky .wh-chip > span{min-width:22px;width:auto!important;height:20px!important;padding:0 6px;border-radius:999px!important;background:rgba(11,42,82,.1)!important;color:var(--sky-ink)!important;font-size:10.5px!important}
+html[data-sky="on"] #root .wh-sky .wh-chip[data-on]{background:var(--sky-navy)!important;color:#fff!important;border-color:var(--sky-navy)!important}
+html[data-sky="on"] #root .wh-sky .wh-chip[data-on] > span{background:rgba(255,255,255,.22)!important;color:#fff!important}
+/* The Today group: standard glass, the ONE glass level. */
+html[data-sky="on"] #root .wh-sky [data-day-section]{background:var(--sky-glass)!important;border:1px solid var(--sky-rim)!important;border-radius:20px!important;box-shadow:var(--sky-highlight),0 10px 24px -16px rgba(0,40,120,.4)!important;
+  -webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5)}
+html[data-sky="on"] #root .wh-sky [data-day-head]{border-bottom:1px solid rgba(11,42,82,.12)}
+html[data-sky="on"] #root .wh-sky [data-day-head] > div:first-child > div:first-child{font-size:16px!important;font-weight:800!important;color:var(--sky-ink)!important}
+html[data-sky="on"] #root .wh-sky [data-day-head] > div:first-child > div:nth-child(2){background:rgba(11,42,82,.08)!important;border-color:rgba(11,42,82,.2)!important;color:var(--sky-ink)!important}
+html[data-sky="on"] #root .wh-sky [data-day-head] svg{color:var(--sky-ink)!important;stroke:var(--sky-ink)!important}
+/* Order cards: NOT another glass layer — a 1px rim on the group's surface. */
+html[data-sky="on"] #root .wh-sky [data-order-card]{background:transparent!important;border:1px solid rgba(11,42,82,.16)!important;border-radius:16px!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
 html[data-sky="on"] #root .wh-sky [data-order-card] > div:first-child{display:none}
-html[data-sky="on"] #root .wh-sky [data-order-card] .wh-actgrid > button{min-height:34px;border-radius:999px!important;font-size:12px!important;font-weight:600!important;color:#fff!important;
-  background:rgba(255,255,255,.14)!important;border:1px solid rgba(255,255,255,.45)!important}
-html[data-sky="on"] #root .wh-sky [data-order-card] .wh-actgrid > button.wh-act--sent{background:rgba(205,250,228,.85)!important;border-color:rgba(255,255,255,.9)!important;color:#0d6b3a!important}
-html[data-sky="on"] #root .wh-sky [data-order-card] .wh-actgrid > button.wh-act--oos{background:rgba(255,218,228,.85)!important;border-color:rgba(255,255,255,.9)!important;color:#c0182c!important}
-html[data-sky="on"] #root .wh-sky [data-order-card] .wh-actgrid > button:disabled{opacity:.55}
+html[data-sky="on"] #root .wh-sky [data-order-card] > div:nth-child(2) > div:first-child{background:transparent!important;box-shadow:none!important;border:0!important}
+html[data-sky="on"] #root .wh-sky [data-order-card] > div:nth-child(2) > div:nth-child(2) > div:not(:first-child),
+html[data-sky="on"] #root .wh-sky [data-order-card] > div:nth-child(2) > div:nth-child(2) > div:first-child > div:first-child,
+html[data-sky="on"] #root .wh-sky [data-order-card] > div:nth-child(2) > div:nth-child(2) > div:first-child > div:last-child{color:var(--sky-ink)!important}
+html[data-sky="on"] #root .wh-sky [data-order-card] > div:nth-child(2) svg{color:var(--sky-ink)}
+html[data-sky="on"] #root .wh-sky [data-order-card] .wh-actgrid > button{min-height:36px;padding:0 6px!important;white-space:nowrap;border-radius:999px!important;font-size:11.5px!important;font-weight:700!important;letter-spacing:-.01em;
+  color:var(--sky-navy)!important;background:transparent!important;border:1.5px solid var(--sky-navy)!important;box-shadow:none!important}
+html[data-sky="on"] #root .wh-sky [data-order-card] .wh-actgrid > button *{color:inherit!important}
+html[data-sky="on"] #root .wh-sky [data-order-card] .wh-actgrid > button.wh-act--sent{background:var(--sky-navy)!important;border-color:var(--sky-navy)!important;color:#fff!important}
+html[data-sky="on"] #root .wh-sky [data-order-card] .wh-actgrid > button.wh-act--oos{background:rgba(255,120,140,.24)!important;border:1px solid rgba(225,60,80,.45)!important;color:var(--sky-ink)!important}
+html[data-sky="on"] #root .wh-sky [data-order-card] .wh-actgrid > button:disabled{opacity:.5}
 `;

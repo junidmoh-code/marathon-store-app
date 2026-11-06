@@ -206,7 +206,7 @@ export function BarcodeStudioDesktop(v) {
       <style>{BCS_PAGE_CSS}</style>
 
       <aside className="bcsp__side bcsp__glass">
-        <div className="bcsp__mark" data-contrast-exempt=""><b>marathon</b><span>CLUB</span></div>
+        <div className="bcsp__mark" data-contrast-exempt="" data-legacy-header=""><b>marathon</b><span>CLUB</span></div>
         <button type="button" className="bcsp__home" onClick={onExit}>← Home</button>
 
         <div className="bcsp__lab" data-contrast-exempt="">Location</div>

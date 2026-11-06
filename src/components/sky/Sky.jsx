@@ -72,6 +72,50 @@ export function SkyHeader({ tag, tagNode = null, onGrid, onUser, userInitial = n
   );
 }
 
+// ── THE SHELL HEADER (Junid, 6 Nov — one header per screen) ─────────────────
+// The ONE header every screen wears (App.jsx draws it above the view): grid =
+// home, the wordmark, the screen pill with a chevron (opens the view switcher —
+// the role picker on the home page, as the old per-screen "Switch View" did)
+// and the account button (the account and its one sign-out live on the home
+// page). PINNED: sticky at the top, everything under it scrolls; its glass
+// fades in once the page has moved, so content passing under is softened.
+// Barcode Studio opts out (sticky={false}): it keeps its own fixed frame.
+export function SkyShellHeader({ tag, onHome, onSwitch, onUser, sticky = true }) {
+  const [stuck, setStuck] = useState(false);
+  useEffect(() => {
+    if (!sticky || typeof window === "undefined" || !window.addEventListener) return undefined;
+    const on = () => setStuck(window.scrollY > 2);
+    on();
+    window.addEventListener("scroll", on, { passive: true });
+    return () => window.removeEventListener("scroll", on);
+  }, [sticky]);
+  // Publish the pinned header's height (--sky-shell-h) so full-height screens
+  // (the desktop workspaces, 100vh) fit UNDER it instead of behind it.
+  const barRef = useRef(null);
+  useEffect(() => {
+    const el = barRef.current, root = typeof document !== "undefined" ? document.documentElement : null;
+    if (!sticky || !el || !root || typeof ResizeObserver === "undefined") return undefined;
+    const set = () => root.style.setProperty("--sky-shell-h", `${Math.round(el.getBoundingClientRect().height)}px`);
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => { ro.disconnect(); root.style.removeProperty("--sky-shell-h"); };
+  }, [sticky]);
+  return (
+    <div ref={barRef} className="sky-shellbar" data-testid="sky-shellbar" data-sticky={sticky ? "true" : undefined} data-stuck={stuck ? "true" : undefined}>
+      <div className="sky-shellbar__glass" aria-hidden="true" />
+      <SkyHeader gridLabel="Home" onGrid={onHome} onUser={onUser || onHome} userLabel="Account"
+                 tagNode={
+                   <button type="button" className="sky-tag sky-glass sky-shellpill" onClick={onSwitch || onHome}
+                           aria-label={`${tag} — switch view`} data-testid="screen-pill">
+                     <span>{tag}</span>
+                     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+                   </button>
+                 } />
+    </div>
+  );
+}
+
 // ── THE STORE PILL (Junid, 5 Nov: compact top band) ──────────────────────────
 // The pill under the wordmark names the store every order goes to, in bold
 // caps with a chevron. Tapping it opens a body-level glass popover listing the

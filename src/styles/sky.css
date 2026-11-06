@@ -490,7 +490,7 @@ html[data-sky="on"] #root .sky-secondary.sky-secondary { background: rgba(255,25
   background: rgba(3,20,58,.42); -webkit-backdrop-filter: blur(10px) saturate(1.1); backdrop-filter: blur(10px) saturate(1.1); animation: skyScrimIn .22s ease-out; }
 .sky-sheet.sky-sheet--v3 { position: relative; width: 100%; max-width: 520px; max-height: min(88vh, calc(100dvh - var(--sky-sat) - 24px)); overflow-y: auto; overscroll-behavior: contain;
   border-radius: 28px 28px 0 0; padding: 0 20px calc(18px + var(--sky-sab)); color: #fff; font-family: var(--sky-font);
-  background: linear-gradient(180deg, #2c86ee 0%, #1a6ad8 55%, #0f56c4 100%);
+  background: linear-gradient(180deg, #1d62cf 0%, #155ac6 55%, #0b48b4 100%);
   border: 1px solid rgba(255,255,255,.45); border-bottom: 0;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.55), 0 -20px 50px -20px rgba(0,30,100,.55);
   animation: skySheetUp .3s cubic-bezier(.2,.85,.25,1); transition: transform .22s cubic-bezier(.2,.85,.25,1); scrollbar-width: none; }
@@ -518,7 +518,7 @@ html[data-sky="on"] #root .sky-secondary.sky-secondary { background: rgba(255,25
 .sky-sheet__peek { display: inline-block; margin: -2px 0 10px; padding: 6px 12px; border-radius: 999px; background: #fff; color: var(--sky-navy); font: 700 12.5px/1 var(--sky-font); }
 .sky-sheet.sky-sheet--v3 .sky-szgrid { display: flex !important; flex-wrap: wrap; gap: 8px !important; margin-bottom: 4px !important; }
 html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq { aspect-ratio: auto; height: 40px; min-width: 54px; padding: 0 14px !important; border-radius: 999px !important; flex-direction: row;
-  font-size: 15px !important; font-weight: 700 !important; color: #fff !important; background: rgba(255,255,255,.14) !important; border: 1px solid rgba(255,255,255,.55) !important; box-shadow: none;
+  font-size: 15px !important; font-weight: 700 !important; color: #fff !important; background: rgba(255,255,255,.08) !important; border: 1px solid rgba(255,255,255,.55) !important; box-shadow: none;
   -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-pressed="true"] { background: #fff !important; border-color: #fff !important; box-shadow: 0 8px 18px -8px rgba(0,20,80,.6) !important; }
 html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-pressed="true"], html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-pressed="true"] * { color: var(--sky-navy) !important; }
@@ -541,3 +541,32 @@ html[data-sky="on"] #root .sky-sheet--v3 .sky-szq__n { display: none; }
 html[data-sky="on"] #root .sky-primary.sky-primary.sky-sheet__add { height: 52px; padding: 0 !important; background: #fff !important; color: var(--sky-navy) !important; font-size: 16px !important; border-radius: 999px !important;
   box-shadow: 0 12px 26px -12px rgba(0,20,80,.7) !important; }
 @media (prefers-reduced-motion: reduce) { .sky-sheet.sky-sheet--v3, .sky-sheetscrim { animation: none; transition: none; } }
+
+/* ── THE SHELL HEADER, PINNED (SkyShellHeader, Junid 6 Nov) ─────────────────
+   One header per screen, sticky at the top; the page scrolls under it. Its
+   glass (standard glass) fades in once scrolled. Barcode Studio opts out. */
+.sky-shellbar { position: relative; z-index: 50; padding-left: var(--sky-sal); padding-right: var(--sky-sar); }
+.sky-shellbar[data-sticky="true"] { position: sticky; top: 0; }
+.sky-shellbar > .sky-header { position: relative; z-index: 1; padding-bottom: 12px; }
+.sky-shellbar__glass { position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: 0; transition: opacity .18s ease-out;
+  background: linear-gradient(180deg, rgba(24,110,222,.94), rgba(36,126,232,.88));
+  -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4);
+  border-bottom: 1px solid rgba(255,255,255,.32); box-shadow: 0 10px 24px -16px rgba(0,30,90,.55); }
+.sky-shellbar[data-stuck="true"] .sky-shellbar__glass { opacity: 1; }
+.sky-shellpill { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.sky-shellpill svg { flex: 0 0 auto; }
+@media (prefers-reduced-motion: reduce) { .sky-shellbar__glass { transition: none; } }
+/* Legacy per-screen headers (the italic "marathon CLUB" rail wordmarks and the
+   "← Switch View · Viewing as:" bars): the shell header replaces them on the
+   sky. They stay in the code, so the classic look is untouched with the sky off. */
+html[data-sky="on"] #root [data-legacy-header] { display: none !important; }
+/* Full-height screens under the pinned header: a 100vh workspace becomes the
+   space BELOW the header (no page scroll, nothing hidden behind it), and a
+   top-sticky element sticks under the header, not behind it. */
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style^="height: 100vh"],
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style*="; height: 100vh"],
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style^="height: 100vh"],
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="; height: 100vh"] {
+  height: calc(100dvh - var(--sky-shell-h, 0px)) !important; max-height: calc(100dvh - var(--sky-shell-h, 0px)) !important; }
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style*="position: sticky"][style*="top: 0px"],
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="position: sticky"][style*="top: 0px"] { top: var(--sky-shell-h, 0px) !important; }

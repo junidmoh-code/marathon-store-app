@@ -150,11 +150,23 @@ prices 700–800 tabular, "R" and no decimals.
   LANDSCAPE cards (photo left on a plain background, white name, white price
   behind a hairline), no three-dot on the cards (the actions are in the
   popup). Only the sneakers scroll (`.ad-scroll`). All in vw.
-- **Warehouse, phone** (Junid's mock-up, 6 Nov): `WarehouseTop`
-  (src/components/sky/WarehouseTop.jsx) — header with the WAREHOUSE pill;
-  Switch View · Viewing as WAREHOUSE · incoming; the navy hub pill and Switch
-  Hub; the live line; the tabs as glass tiles. Order cards are glass, Mark as
-  Sent mint, Mark as Out of Stock pink, the rest glass pills.
+- **ONE HEADER, PINNED** (Junid, 6 Nov): every screen but home, the order
+  view and the TV board wears the shell's `SkyShellHeader` (grid, wordmark, the
+  screen pill whose chevron opens the view switcher, account). It is sticky at
+  the top; everything under it scrolls; its glass fades in once scrolled; it
+  publishes `--sky-shell-h` so 100vh workspaces fit under it and top-sticky
+  rails stick below it. Barcode Studio opts out (its own fixed frame). Legacy
+  per-screen headers — the italic "marathon CLUB" rail wordmarks and the
+  "← Switch View · Viewing as:" bars — carry `data-legacy-header` and are
+  hidden on the sky (kept for the sky-off look). `scripts/sky-shell.e2e.mjs`
+  counts exactly one wordmark per screen and sweeps src/ for untagged ones.
+- **Warehouse, phone** (Junid, 6 Nov): `WarehouseTop` draws no header and no
+  "Switch View · Viewing as · Incoming" strip — the hub pill and Switch Hub,
+  the live line, the tabs as tiles. ONE GLASS LEVEL PER NESTING: the hub pill,
+  Switch Hub, tiles, chips and the Today group are standard glass (0.40) with
+  navy ink; the order cards inside are a 1px rim on the same surface; Mark as
+  Sent solid navy, Mark as Out of Stock soft red glass with navy text, the rest
+  navy outlines; the selected chip solid navy.
 - **No zoom** (Junid 5 Nov): the viewport meta forbids scaling, html/body are
   `touch-action: manipulation`, `src/device/zoomLock.js` cancels WebKit pinch
   gestures, every field is ≥16px on touch screens (the phone search is drawn
