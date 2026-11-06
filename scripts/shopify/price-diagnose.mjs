@@ -1,11 +1,11 @@
 // ── One product's price, end to end: app record → Shopify → reconciler log ───
 // Read-only. Answers "why does the website show a different price from the
-// app?" for the products whose Shopify title matches a phrase.
+// app?" for the live products whose app name matches a phrase.
 //
 //   node scripts/shopify/price-diagnose.mjs "travis scott"
 //
 // How it finds the records WITHOUT a whole-node read:
-//   1. Shopify title search → product gids, variant prices, updatedAt, events.
+//   1. /search_index/docs (one read, live products only) → name match → pids.
 //   2. /shopify_publish ordered by `state` == "live" (the indexed query the
 //      reconciler already uses) → each live node's adminUrl carries the
 //      numeric Shopify id, so gid → productId with no scan of /products.
@@ -39,17 +39,29 @@ function priceFields(obj, prefix = "") {
   return out;
 }
 
-const words = phrase.split(/\s+/).map((w) => `title:*${w.replace(/[^a-z0-9]/gi, "")}*`).join(" AND ");
-const found = await graphql(
-  `query ($q: String!) { products(first: 25, query: $q) { nodes {
-     id title handle status updatedAt createdAt
+// Shopify titles are CLEANED (brand and collab words stripped by
+// shopifyTriggers.js), so a title search cannot find "Travis Scott". The
+// storefront search index keeps the app's identity text in `name` — match the
+// phrase there (every word, case-insensitive) to get the productIds, then ask
+// Shopify by gid.
+const SHOPIFY_PRODUCT = `id title handle status updatedAt createdAt
      variants(first: 100) { nodes { id title price compareAtPrice updatedAt } }
-     events(first: 20, sortKey: CREATED_AT, reverse: true) { nodes { createdAt message appTitle } }
-   } } }`,
-  { q: words }
-);
-const products = found.products.nodes;
-if (!products.length) { console.log(`no Shopify product title matches ${JSON.stringify(phrase)}`); process.exit(0); }
+     events(first: 20, sortKey: CREATED_AT, reverse: true) { nodes { createdAt message appTitle } }`;
+const want = phrase.toLowerCase().split(/\s+/);
+const docs = (await db.ref("search_index/docs").get()).val() || {};
+const matchedPids = Object.entries(docs)
+  .filter(([, d]) => { const t = `${d?.name || ""} ${d?.extras || ""} ${d?.aliases || ""}`.toLowerCase(); return want.every((w) => t.includes(w)); })
+  .map(([pid]) => pid);
+console.log(`search index: ${matchedPids.length} live product(s) match ${JSON.stringify(phrase)}: ${matchedPids.join(", ")}`);
+const products = [];
+for (const pid of matchedPids) {
+  const node = (await db.ref(`shopify_publish/${pid}`).get()).val() || {};
+  const num = String(node.adminUrl || "").split("/").pop();
+  if (!num) { console.log(`   ${pid}: no adminUrl on its publish node`); continue; }
+  const r = await graphql(`query ($id: ID!) { product(id: $id) { ${SHOPIFY_PRODUCT} } }`, { id: `gid://shopify/Product/${num}` });
+  if (r.product) products.push(r.product); else console.log(`   ${pid}: gid ${num} not found on Shopify`);
+}
+if (!products.length) process.exit(0);
 
 const liveSnap = await db.ref("shopify_publish").orderByChild("state").equalTo("live").get();
 const byNumeric = new Map();
