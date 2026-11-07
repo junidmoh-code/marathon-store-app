@@ -1,0 +1,3615 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Marathon's register panel is byte-for-byte what it was (snapshot from main) > hub1: the register panel, size picked, before and after the shop is picked > hub1 Trophy picked 1`] = `
+<div
+  style={
+    {
+      "background": "#000000",
+      "color": "#fff",
+      "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+      "minHeight": "100vh",
+      "paddingBottom": 50,
+    }
+  }
+>
+  <div
+    style={
+      {
+        "alignItems": "center",
+        "display": "flex",
+        "justifyContent": "space-between",
+        "padding": "50px 16px 10px",
+      }
+    }
+  >
+    <div
+      onClick={[Function]}
+      style={
+        {
+          "background": "rgba(255,255,255,.06)",
+          "border": "1px solid rgba(255,255,255,.1)",
+          "borderRadius": 10,
+          "color": "rgba(255,255,255,.7)",
+          "cursor": "pointer",
+          "fontSize": 13,
+          "padding": "9px 15px",
+        }
+      }
+    >
+      ← 
+      Hubs
+    </div>
+    <div
+      style={
+        {
+          "textAlign": "center",
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(255,255,255,.4)",
+            "fontSize": 10,
+            "letterSpacing": ".5px",
+          }
+        }
+      >
+        Hub Stock Cleanup
+      </div>
+      <div
+        style={
+          {
+            "color": "#9DBCFF",
+            "fontSize": 15,
+            "fontWeight": 800,
+          }
+        }
+      >
+        Hub 1
+      </div>
+    </div>
+    <div
+      style={
+        {
+          "width": 78,
+        }
+      }
+    />
+  </div>
+  <div
+    style={
+      {
+        "margin": "0 auto",
+        "maxWidth": 560,
+        "padding": "0 16px",
+      }
+    }
+  >
+    <div
+      style={
+        {
+          "display": "flex",
+          "gap": 8,
+          "margin": "8px 0 6px",
+        }
+      }
+    >
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(74,127,255,.16)",
+            "border": "1px solid rgba(74,127,255,.45)",
+            "borderRadius": 12,
+            "color": "#9DBCFF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Register
+      </button>
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(255,255,255,.03)",
+            "border": "1px solid rgba(255,255,255,.1)",
+            "borderRadius": 12,
+            "color": "#9CA3AF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Count
+      </button>
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(255,255,255,.03)",
+            "border": "1px solid rgba(255,255,255,.1)",
+            "borderRadius": 12,
+            "color": "#9CA3AF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Leftovers · 0
+      </button>
+    </div>
+    <div
+      style={
+        {
+          "color": "#9CA3AF",
+          "fontSize": 12.5,
+          "fontVariantNumeric": "tabular-nums",
+          "margin": "0 2px 14px",
+        }
+      }
+    >
+      Scanned 
+      <strong
+        style={
+          {
+            "color": "#9DBCFF",
+          }
+        }
+      >
+        0
+      </strong>
+       of 
+      0
+       products holding stock here · 
+      0
+       display units added
+    </div>
+    <input
+      autoFocus={false}
+      onChange={[Function]}
+      placeholder="Search the catalogue by name…"
+      style={
+        {
+          "background": "rgba(255,255,255,.05)",
+          "border": "1px solid rgba(255,255,255,.14)",
+          "borderRadius": "12px",
+          "boxSizing": "border-box",
+          "color": "#fff",
+          "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+          "fontSize": 17,
+          "fontWeight": 600,
+          "minHeight": 58,
+          "outline": "none",
+          "padding": "11px 13px",
+          "width": "100%",
+        }
+      }
+      value=""
+    />
+    <div
+      style={
+        {
+          "marginTop": 18,
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(233,238,255,.55)",
+            "fontSize": 11.5,
+            "fontWeight": 800,
+            "letterSpacing": ".08em",
+            "marginBottom": 8,
+            "textTransform": "uppercase",
+          }
+        }
+      >
+        Not yet registered — holds stock at 
+        Hub 1
+      </div>
+      <div
+        style={
+          {
+            "color": "#9CA3AF",
+            "fontSize": 13,
+            "padding": "8px 2px",
+          }
+        }
+      >
+        Everything holding stock here has been registered. Search above for anything else on the floor.
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "flexDirection": "column",
+            "gap": 7,
+          }
+        }
+      />
+    </div>
+    <div
+      style={
+        {
+          "borderTop": "1px solid rgba(255,255,255,.07)",
+          "marginTop": 22,
+          "paddingTop": 14,
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(233,238,255,.45)",
+            "fontSize": 11.5,
+            "marginBottom": 8,
+          }
+        }
+      >
+        Shortcut, if this shoe happens to carry one of our shop barcode stickers:
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "gap": 8,
+          }
+        }
+      >
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(255,255,255,.03)",
+              "border": "1px solid rgba(255,255,255,.14)",
+              "borderRadius": "11px",
+              "color": "#dfe7ff",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 12.5,
+              "fontWeight": "700",
+              "minHeight": 42,
+              "padding": "0 14px",
+            }
+          }
+          type="button"
+        >
+          Scan a shop barcode
+        </button>
+        <form
+          onSubmit={[Function]}
+          style={
+            {
+              "display": "flex",
+              "flex": 1,
+              "gap": 6,
+            }
+          }
+        >
+          <input
+            onChange={[Function]}
+            placeholder="…or type its digits"
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": "12px",
+                "color": "#fff",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 12.5,
+                "minHeight": 42,
+                "opacity": 0.85,
+                "outline": "none",
+                "padding": "11px 13px",
+              }
+            }
+            value=""
+          />
+          <button
+            style={
+              {
+                "background": "rgba(255,255,255,.03)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": "11px",
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 12.5,
+                "fontWeight": "700",
+                "minHeight": 42,
+                "padding": "0 12px",
+              }
+            }
+            type="submit"
+          >
+            Go
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div
+    style={
+      {
+        "background": "#05070C",
+        "color": "#fff",
+        "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+        "inset": 0,
+        "overflowY": "auto",
+        "position": "fixed",
+        "zIndex": 60,
+      }
+    }
+  >
+    <div
+      style={
+        {
+          "margin": "0 auto",
+          "maxWidth": 560,
+          "padding": "14px 16px 60px",
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "justifyContent": "space-between",
+            "padding": "6px 0 14px",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "color": "#9DBCFF",
+              "fontSize": 15,
+              "fontWeight": 800,
+              "letterSpacing": ".02em",
+            }
+          }
+        >
+          Register display
+        </div>
+        <button
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(255,255,255,.03)",
+              "border": "1px solid rgba(255,255,255,.14)",
+              "borderRadius": 12,
+              "color": "#dfe7ff",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 14,
+              "fontWeight": "700",
+              "padding": "10px 18px",
+            }
+          }
+          type="button"
+        >
+          ✕ Close
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "gap": 14,
+            "marginBottom": 10,
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "alignItems": "center",
+              "background": "rgba(120,150,255,.08)",
+              "borderRadius": 14,
+              "display": "flex",
+              "flexShrink": 0,
+              "fontSize": 28,
+              "height": 84,
+              "justifyContent": "center",
+              "width": 84,
+            }
+          }
+        >
+          👟
+        </div>
+        <div
+          style={
+            {
+              "minWidth": 0,
+            }
+          }
+        >
+          <div
+            style={
+              {
+                "fontSize": 19,
+                "fontWeight": 800,
+                "lineHeight": 1.25,
+              }
+            }
+          >
+            Lacoste Court Cage White
+          </div>
+          <div
+            style={
+              {
+                "color": "#9CA3AF",
+                "fontSize": 12.5,
+                "marginTop": 3,
+              }
+            }
+          >
+            Adds to 
+            Hub 1
+             stock for the size you pick
+          </div>
+          <div
+            style={
+              {
+                "marginTop": 6,
+              }
+            }
+          >
+            <div
+              style={
+                {
+                  "alignItems": "center",
+                  "display": "flex",
+                  "flexWrap": "wrap",
+                  "gap": 6,
+                }
+              }
+            >
+              <span
+                style={
+                  {
+                    "color": "rgba(233,238,255,.5)",
+                    "fontSize": 11,
+                    "fontWeight": 700,
+                  }
+                }
+              >
+                CODE
+              </span>
+              <button
+                disabled={false}
+                onClick={[Function]}
+                style={
+                  {
+                    "background": "rgba(74,127,255,.14)",
+                    "border": "1px solid rgba(74,127,255,.42)",
+                    "borderRadius": 9,
+                    "color": "#CFE0FF",
+                    "cursor": "pointer",
+                    "fontFamily": "inherit",
+                    "fontSize": 12.5,
+                    "fontWeight": 800,
+                    "letterSpacing": ".02em",
+                    "maxWidth": "100%",
+                    "minHeight": 44,
+                    "overflow": "hidden",
+                    "padding": "0 12px",
+                    "textOverflow": "ellipsis",
+                    "whiteSpace": "nowrap",
+                  }
+                }
+                title="Tap to copy 745SMA00421G"
+                type="button"
+              >
+                745SMA00421G
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "flexWrap": "wrap",
+            "gap": 6,
+            "marginBottom": 16,
+          }
+        }
+      >
+        <span
+          style={
+            {
+              "color": "#9CA3AF",
+              "fontSize": 11.5,
+            }
+          }
+        >
+          No stock recorded anywhere yet.
+        </span>
+      </div>
+      <div
+        style={
+          {
+            "fontSize": 14,
+            "fontWeight": 800,
+            "letterSpacing": ".05em",
+            "margin": "0 0 4px",
+          }
+        }
+      >
+        1 · STYLE NUMBER — the label 
+        <u>
+          inside the tongue
+        </u>
+      </div>
+      <div
+        style={
+          {
+            "color": "#9CA3AF",
+            "fontSize": 12,
+            "marginBottom": 10,
+          }
+        }
+      >
+        Fold the tongue forward: the small printed label with a code like CT8527-016. Not the shop barcode sticker, not the box.
+      </div>
+      <div
+        style={
+          {
+            "marginBottom": 18,
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "background": "rgba(74,222,128,.08)",
+              "border": "1px solid rgba(74,222,128,.3)",
+              "borderRadius": 13,
+              "color": "#B7F0CC",
+              "fontSize": 14,
+              "padding": "12px 14px",
+            }
+          }
+        >
+          ✓ Style number already on file: 
+          <strong>
+            745SMA00421G
+          </strong>
+          <div
+            style={
+              {
+                "color": "#9CA3AF",
+                "fontSize": 11.5,
+                "marginTop": 4,
+              }
+            }
+          >
+            Nothing to capture — check it matches the tongue label of the shoe in your hand.
+          </div>
+        </div>
+        <button
+          onClick={[Function]}
+          style={
+            {
+              "background": "none",
+              "border": "none",
+              "color": "rgba(233,238,255,.42)",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 12,
+              "marginTop": 8,
+              "textDecoration": "underline",
+            }
+          }
+          type="button"
+        >
+          Also capture the label wording (optional)
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "fontSize": 14,
+            "fontWeight": 800,
+            "letterSpacing": ".05em",
+            "margin": "0 0 10px",
+          }
+        }
+      >
+        2 · WHICH SIZE IS ON DISPLAY?
+      </div>
+      <div
+        style={
+          {
+            "display": "grid",
+            "gap": 10,
+            "gridTemplateColumns": "repeat(auto-fill, minmax(76px, 1fr))",
+          }
+        }
+      >
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(74,127,255,.13)",
+              "border": "2px solid rgba(74,127,255,.45)",
+              "borderRadius": 14,
+              "color": "#D7E3FF",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 22,
+              "fontWeight": 900,
+              "letterSpacing": "-0.01em",
+              "minHeight": 64,
+              "position": "relative",
+            }
+          }
+          type="button"
+        >
+          <span>
+            6
+          </span>
+        </button>
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(74,222,128,.22)",
+              "border": "2px solid rgba(74,222,128,.9)",
+              "borderRadius": 14,
+              "color": "#B7F0CC",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 22,
+              "fontWeight": 900,
+              "letterSpacing": "-0.01em",
+              "minHeight": 64,
+              "position": "relative",
+            }
+          }
+          type="button"
+        >
+          <span>
+            7
+          </span>
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "margin": "18px 0 0",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "fontSize": 14,
+              "fontWeight": 800,
+              "letterSpacing": ".05em",
+              "margin": "0 0 10px",
+            }
+          }
+        >
+          3 · WHICH SHOP IS THIS DISPLAY AT?
+        </div>
+        <div
+          style={
+            {
+              "display": "flex",
+              "gap": 10,
+            }
+          }
+        >
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(74,127,255,.13)",
+                "border": "2px solid rgba(74,127,255,.45)",
+                "borderRadius": 14,
+                "color": "#D7E3FF",
+                "cursor": "pointer",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 16,
+                "fontWeight": 800,
+                "minHeight": 56,
+              }
+            }
+            type="button"
+          >
+            Marathon PE
+          </button>
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(74,222,128,.22)",
+                "border": "2px solid rgba(74,222,128,.9)",
+                "borderRadius": 14,
+                "color": "#B7F0CC",
+                "cursor": "pointer",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 16,
+                "fontWeight": 800,
+                "minHeight": 56,
+              }
+            }
+            type="button"
+          >
+            Trophy
+          </button>
+        </div>
+      </div>
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "gap": 14,
+            "margin": "20px 0",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "color": "rgba(233,238,255,.8)",
+              "flex": 1,
+              "fontSize": 14,
+              "fontWeight": 700,
+            }
+          }
+        >
+          How many size 
+          <span>
+            7
+          </span>
+           on display?
+        </div>
+        <div
+          style={
+            {
+              "alignItems": "center",
+              "display": "flex",
+              "gap": 10,
+            }
+          }
+        >
+          <button
+            disabled={true}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": 13,
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 22,
+                "fontWeight": "700",
+                "minHeight": 52,
+                "minWidth": 52,
+                "padding": "10px 14px",
+              }
+            }
+            type="button"
+          >
+            −
+          </button>
+          <span
+            style={
+              {
+                "fontSize": 24,
+                "fontVariantNumeric": "tabular-nums",
+                "fontWeight": 900,
+                "minWidth": 34,
+                "textAlign": "center",
+              }
+            }
+          >
+            1
+          </span>
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": 13,
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 22,
+                "fontWeight": "700",
+                "minHeight": 52,
+                "minWidth": 52,
+                "padding": "10px 14px",
+              }
+            }
+            type="button"
+          >
+            +
+          </button>
+        </div>
+      </div>
+      <button
+        disabled={false}
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(74,222,128,.18)",
+            "border": "2px solid rgba(74,222,128,.6)",
+            "borderRadius": 15,
+            "color": "#B7F0CC",
+            "cursor": "pointer",
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 19,
+            "fontWeight": 800,
+            "minHeight": 68,
+            "opacity": 1,
+            "width": "100%",
+          }
+        }
+        type="button"
+      >
+        ✓ REGISTER — size 
+        7
+         + style number
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Marathon's register panel is byte-for-byte what it was (snapshot from main) > hub1: the register panel, size picked, before and after the shop is picked > hub1 size picked 1`] = `
+<div
+  style={
+    {
+      "background": "#000000",
+      "color": "#fff",
+      "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+      "minHeight": "100vh",
+      "paddingBottom": 50,
+    }
+  }
+>
+  <div
+    style={
+      {
+        "alignItems": "center",
+        "display": "flex",
+        "justifyContent": "space-between",
+        "padding": "50px 16px 10px",
+      }
+    }
+  >
+    <div
+      onClick={[Function]}
+      style={
+        {
+          "background": "rgba(255,255,255,.06)",
+          "border": "1px solid rgba(255,255,255,.1)",
+          "borderRadius": 10,
+          "color": "rgba(255,255,255,.7)",
+          "cursor": "pointer",
+          "fontSize": 13,
+          "padding": "9px 15px",
+        }
+      }
+    >
+      ← 
+      Hubs
+    </div>
+    <div
+      style={
+        {
+          "textAlign": "center",
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(255,255,255,.4)",
+            "fontSize": 10,
+            "letterSpacing": ".5px",
+          }
+        }
+      >
+        Hub Stock Cleanup
+      </div>
+      <div
+        style={
+          {
+            "color": "#9DBCFF",
+            "fontSize": 15,
+            "fontWeight": 800,
+          }
+        }
+      >
+        Hub 1
+      </div>
+    </div>
+    <div
+      style={
+        {
+          "width": 78,
+        }
+      }
+    />
+  </div>
+  <div
+    style={
+      {
+        "margin": "0 auto",
+        "maxWidth": 560,
+        "padding": "0 16px",
+      }
+    }
+  >
+    <div
+      style={
+        {
+          "display": "flex",
+          "gap": 8,
+          "margin": "8px 0 6px",
+        }
+      }
+    >
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(74,127,255,.16)",
+            "border": "1px solid rgba(74,127,255,.45)",
+            "borderRadius": 12,
+            "color": "#9DBCFF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Register
+      </button>
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(255,255,255,.03)",
+            "border": "1px solid rgba(255,255,255,.1)",
+            "borderRadius": 12,
+            "color": "#9CA3AF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Count
+      </button>
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(255,255,255,.03)",
+            "border": "1px solid rgba(255,255,255,.1)",
+            "borderRadius": 12,
+            "color": "#9CA3AF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Leftovers · 0
+      </button>
+    </div>
+    <div
+      style={
+        {
+          "color": "#9CA3AF",
+          "fontSize": 12.5,
+          "fontVariantNumeric": "tabular-nums",
+          "margin": "0 2px 14px",
+        }
+      }
+    >
+      Scanned 
+      <strong
+        style={
+          {
+            "color": "#9DBCFF",
+          }
+        }
+      >
+        0
+      </strong>
+       of 
+      0
+       products holding stock here · 
+      0
+       display units added
+    </div>
+    <input
+      autoFocus={false}
+      onChange={[Function]}
+      placeholder="Search the catalogue by name…"
+      style={
+        {
+          "background": "rgba(255,255,255,.05)",
+          "border": "1px solid rgba(255,255,255,.14)",
+          "borderRadius": "12px",
+          "boxSizing": "border-box",
+          "color": "#fff",
+          "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+          "fontSize": 17,
+          "fontWeight": 600,
+          "minHeight": 58,
+          "outline": "none",
+          "padding": "11px 13px",
+          "width": "100%",
+        }
+      }
+      value=""
+    />
+    <div
+      style={
+        {
+          "marginTop": 18,
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(233,238,255,.55)",
+            "fontSize": 11.5,
+            "fontWeight": 800,
+            "letterSpacing": ".08em",
+            "marginBottom": 8,
+            "textTransform": "uppercase",
+          }
+        }
+      >
+        Not yet registered — holds stock at 
+        Hub 1
+      </div>
+      <div
+        style={
+          {
+            "color": "#9CA3AF",
+            "fontSize": 13,
+            "padding": "8px 2px",
+          }
+        }
+      >
+        Everything holding stock here has been registered. Search above for anything else on the floor.
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "flexDirection": "column",
+            "gap": 7,
+          }
+        }
+      />
+    </div>
+    <div
+      style={
+        {
+          "borderTop": "1px solid rgba(255,255,255,.07)",
+          "marginTop": 22,
+          "paddingTop": 14,
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(233,238,255,.45)",
+            "fontSize": 11.5,
+            "marginBottom": 8,
+          }
+        }
+      >
+        Shortcut, if this shoe happens to carry one of our shop barcode stickers:
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "gap": 8,
+          }
+        }
+      >
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(255,255,255,.03)",
+              "border": "1px solid rgba(255,255,255,.14)",
+              "borderRadius": "11px",
+              "color": "#dfe7ff",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 12.5,
+              "fontWeight": "700",
+              "minHeight": 42,
+              "padding": "0 14px",
+            }
+          }
+          type="button"
+        >
+          Scan a shop barcode
+        </button>
+        <form
+          onSubmit={[Function]}
+          style={
+            {
+              "display": "flex",
+              "flex": 1,
+              "gap": 6,
+            }
+          }
+        >
+          <input
+            onChange={[Function]}
+            placeholder="…or type its digits"
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": "12px",
+                "color": "#fff",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 12.5,
+                "minHeight": 42,
+                "opacity": 0.85,
+                "outline": "none",
+                "padding": "11px 13px",
+              }
+            }
+            value=""
+          />
+          <button
+            style={
+              {
+                "background": "rgba(255,255,255,.03)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": "11px",
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 12.5,
+                "fontWeight": "700",
+                "minHeight": 42,
+                "padding": "0 12px",
+              }
+            }
+            type="submit"
+          >
+            Go
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div
+    style={
+      {
+        "background": "#05070C",
+        "color": "#fff",
+        "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+        "inset": 0,
+        "overflowY": "auto",
+        "position": "fixed",
+        "zIndex": 60,
+      }
+    }
+  >
+    <div
+      style={
+        {
+          "margin": "0 auto",
+          "maxWidth": 560,
+          "padding": "14px 16px 60px",
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "justifyContent": "space-between",
+            "padding": "6px 0 14px",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "color": "#9DBCFF",
+              "fontSize": 15,
+              "fontWeight": 800,
+              "letterSpacing": ".02em",
+            }
+          }
+        >
+          Register display
+        </div>
+        <button
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(255,255,255,.03)",
+              "border": "1px solid rgba(255,255,255,.14)",
+              "borderRadius": 12,
+              "color": "#dfe7ff",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 14,
+              "fontWeight": "700",
+              "padding": "10px 18px",
+            }
+          }
+          type="button"
+        >
+          ✕ Close
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "gap": 14,
+            "marginBottom": 10,
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "alignItems": "center",
+              "background": "rgba(120,150,255,.08)",
+              "borderRadius": 14,
+              "display": "flex",
+              "flexShrink": 0,
+              "fontSize": 28,
+              "height": 84,
+              "justifyContent": "center",
+              "width": 84,
+            }
+          }
+        >
+          👟
+        </div>
+        <div
+          style={
+            {
+              "minWidth": 0,
+            }
+          }
+        >
+          <div
+            style={
+              {
+                "fontSize": 19,
+                "fontWeight": 800,
+                "lineHeight": 1.25,
+              }
+            }
+          >
+            Lacoste Court Cage White
+          </div>
+          <div
+            style={
+              {
+                "color": "#9CA3AF",
+                "fontSize": 12.5,
+                "marginTop": 3,
+              }
+            }
+          >
+            Adds to 
+            Hub 1
+             stock for the size you pick
+          </div>
+          <div
+            style={
+              {
+                "marginTop": 6,
+              }
+            }
+          >
+            <div
+              style={
+                {
+                  "alignItems": "center",
+                  "display": "flex",
+                  "flexWrap": "wrap",
+                  "gap": 6,
+                }
+              }
+            >
+              <span
+                style={
+                  {
+                    "color": "rgba(233,238,255,.5)",
+                    "fontSize": 11,
+                    "fontWeight": 700,
+                  }
+                }
+              >
+                CODE
+              </span>
+              <button
+                disabled={false}
+                onClick={[Function]}
+                style={
+                  {
+                    "background": "rgba(74,127,255,.14)",
+                    "border": "1px solid rgba(74,127,255,.42)",
+                    "borderRadius": 9,
+                    "color": "#CFE0FF",
+                    "cursor": "pointer",
+                    "fontFamily": "inherit",
+                    "fontSize": 12.5,
+                    "fontWeight": 800,
+                    "letterSpacing": ".02em",
+                    "maxWidth": "100%",
+                    "minHeight": 44,
+                    "overflow": "hidden",
+                    "padding": "0 12px",
+                    "textOverflow": "ellipsis",
+                    "whiteSpace": "nowrap",
+                  }
+                }
+                title="Tap to copy 745SMA00421G"
+                type="button"
+              >
+                745SMA00421G
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "flexWrap": "wrap",
+            "gap": 6,
+            "marginBottom": 16,
+          }
+        }
+      >
+        <span
+          style={
+            {
+              "color": "#9CA3AF",
+              "fontSize": 11.5,
+            }
+          }
+        >
+          No stock recorded anywhere yet.
+        </span>
+      </div>
+      <div
+        style={
+          {
+            "fontSize": 14,
+            "fontWeight": 800,
+            "letterSpacing": ".05em",
+            "margin": "0 0 4px",
+          }
+        }
+      >
+        1 · STYLE NUMBER — the label 
+        <u>
+          inside the tongue
+        </u>
+      </div>
+      <div
+        style={
+          {
+            "color": "#9CA3AF",
+            "fontSize": 12,
+            "marginBottom": 10,
+          }
+        }
+      >
+        Fold the tongue forward: the small printed label with a code like CT8527-016. Not the shop barcode sticker, not the box.
+      </div>
+      <div
+        style={
+          {
+            "marginBottom": 18,
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "background": "rgba(74,222,128,.08)",
+              "border": "1px solid rgba(74,222,128,.3)",
+              "borderRadius": 13,
+              "color": "#B7F0CC",
+              "fontSize": 14,
+              "padding": "12px 14px",
+            }
+          }
+        >
+          ✓ Style number already on file: 
+          <strong>
+            745SMA00421G
+          </strong>
+          <div
+            style={
+              {
+                "color": "#9CA3AF",
+                "fontSize": 11.5,
+                "marginTop": 4,
+              }
+            }
+          >
+            Nothing to capture — check it matches the tongue label of the shoe in your hand.
+          </div>
+        </div>
+        <button
+          onClick={[Function]}
+          style={
+            {
+              "background": "none",
+              "border": "none",
+              "color": "rgba(233,238,255,.42)",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 12,
+              "marginTop": 8,
+              "textDecoration": "underline",
+            }
+          }
+          type="button"
+        >
+          Also capture the label wording (optional)
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "fontSize": 14,
+            "fontWeight": 800,
+            "letterSpacing": ".05em",
+            "margin": "0 0 10px",
+          }
+        }
+      >
+        2 · WHICH SIZE IS ON DISPLAY?
+      </div>
+      <div
+        style={
+          {
+            "display": "grid",
+            "gap": 10,
+            "gridTemplateColumns": "repeat(auto-fill, minmax(76px, 1fr))",
+          }
+        }
+      >
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(74,127,255,.13)",
+              "border": "2px solid rgba(74,127,255,.45)",
+              "borderRadius": 14,
+              "color": "#D7E3FF",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 22,
+              "fontWeight": 900,
+              "letterSpacing": "-0.01em",
+              "minHeight": 64,
+              "position": "relative",
+            }
+          }
+          type="button"
+        >
+          <span>
+            6
+          </span>
+        </button>
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(74,222,128,.22)",
+              "border": "2px solid rgba(74,222,128,.9)",
+              "borderRadius": 14,
+              "color": "#B7F0CC",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 22,
+              "fontWeight": 900,
+              "letterSpacing": "-0.01em",
+              "minHeight": 64,
+              "position": "relative",
+            }
+          }
+          type="button"
+        >
+          <span>
+            7
+          </span>
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "margin": "18px 0 0",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "fontSize": 14,
+              "fontWeight": 800,
+              "letterSpacing": ".05em",
+              "margin": "0 0 10px",
+            }
+          }
+        >
+          3 · WHICH SHOP IS THIS DISPLAY AT?
+        </div>
+        <div
+          style={
+            {
+              "display": "flex",
+              "gap": 10,
+            }
+          }
+        >
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(74,127,255,.13)",
+                "border": "2px solid rgba(74,127,255,.45)",
+                "borderRadius": 14,
+                "color": "#D7E3FF",
+                "cursor": "pointer",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 16,
+                "fontWeight": 800,
+                "minHeight": 56,
+              }
+            }
+            type="button"
+          >
+            Marathon PE
+          </button>
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(74,127,255,.13)",
+                "border": "2px solid rgba(74,127,255,.45)",
+                "borderRadius": 14,
+                "color": "#D7E3FF",
+                "cursor": "pointer",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 16,
+                "fontWeight": 800,
+                "minHeight": 56,
+              }
+            }
+            type="button"
+          >
+            Trophy
+          </button>
+        </div>
+      </div>
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "gap": 14,
+            "margin": "20px 0",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "color": "rgba(233,238,255,.8)",
+              "flex": 1,
+              "fontSize": 14,
+              "fontWeight": 700,
+            }
+          }
+        >
+          How many size 
+          <span>
+            7
+          </span>
+           on display?
+        </div>
+        <div
+          style={
+            {
+              "alignItems": "center",
+              "display": "flex",
+              "gap": 10,
+            }
+          }
+        >
+          <button
+            disabled={true}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": 13,
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 22,
+                "fontWeight": "700",
+                "minHeight": 52,
+                "minWidth": 52,
+                "padding": "10px 14px",
+              }
+            }
+            type="button"
+          >
+            −
+          </button>
+          <span
+            style={
+              {
+                "fontSize": 24,
+                "fontVariantNumeric": "tabular-nums",
+                "fontWeight": 900,
+                "minWidth": 34,
+                "textAlign": "center",
+              }
+            }
+          >
+            1
+          </span>
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": 13,
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 22,
+                "fontWeight": "700",
+                "minHeight": 52,
+                "minWidth": 52,
+                "padding": "10px 14px",
+              }
+            }
+            type="button"
+          >
+            +
+          </button>
+        </div>
+      </div>
+      <button
+        disabled={true}
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(74,222,128,.18)",
+            "border": "2px solid rgba(74,222,128,.6)",
+            "borderRadius": 15,
+            "color": "#B7F0CC",
+            "cursor": "not-allowed",
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 19,
+            "fontWeight": 800,
+            "minHeight": 68,
+            "opacity": 0.45,
+            "width": "100%",
+          }
+        }
+        type="button"
+      >
+        ✓ REGISTER — size 
+        7
+         + style number
+      </button>
+      <div
+        style={
+          {
+            "color": "#FBBF24",
+            "fontSize": 12,
+            "marginTop": 8,
+          }
+        }
+      >
+        Pick which shop the display stands at — the count needs to know where it is.
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Marathon's register panel is byte-for-byte what it was (snapshot from main) > hub2: the register panel, size picked, before and after the shop is picked > hub2 Trophy picked 1`] = `
+<div
+  style={
+    {
+      "background": "#000000",
+      "color": "#fff",
+      "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+      "minHeight": "100vh",
+      "paddingBottom": 50,
+    }
+  }
+>
+  <div
+    style={
+      {
+        "alignItems": "center",
+        "display": "flex",
+        "justifyContent": "space-between",
+        "padding": "50px 16px 10px",
+      }
+    }
+  >
+    <div
+      onClick={[Function]}
+      style={
+        {
+          "background": "rgba(255,255,255,.06)",
+          "border": "1px solid rgba(255,255,255,.1)",
+          "borderRadius": 10,
+          "color": "rgba(255,255,255,.7)",
+          "cursor": "pointer",
+          "fontSize": 13,
+          "padding": "9px 15px",
+        }
+      }
+    >
+      ← 
+      Hubs
+    </div>
+    <div
+      style={
+        {
+          "textAlign": "center",
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(255,255,255,.4)",
+            "fontSize": 10,
+            "letterSpacing": ".5px",
+          }
+        }
+      >
+        Hub Stock Cleanup
+      </div>
+      <div
+        style={
+          {
+            "color": "#9DBCFF",
+            "fontSize": 15,
+            "fontWeight": 800,
+          }
+        }
+      >
+        Hub 2
+      </div>
+    </div>
+    <div
+      style={
+        {
+          "width": 78,
+        }
+      }
+    />
+  </div>
+  <div
+    style={
+      {
+        "margin": "0 auto",
+        "maxWidth": 560,
+        "padding": "0 16px",
+      }
+    }
+  >
+    <div
+      style={
+        {
+          "display": "flex",
+          "gap": 8,
+          "margin": "8px 0 6px",
+        }
+      }
+    >
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(74,127,255,.16)",
+            "border": "1px solid rgba(74,127,255,.45)",
+            "borderRadius": 12,
+            "color": "#9DBCFF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Register
+      </button>
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(255,255,255,.03)",
+            "border": "1px solid rgba(255,255,255,.1)",
+            "borderRadius": 12,
+            "color": "#9CA3AF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Count
+      </button>
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(255,255,255,.03)",
+            "border": "1px solid rgba(255,255,255,.1)",
+            "borderRadius": 12,
+            "color": "#9CA3AF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Leftovers · 0
+      </button>
+    </div>
+    <div
+      style={
+        {
+          "color": "#9CA3AF",
+          "fontSize": 12.5,
+          "fontVariantNumeric": "tabular-nums",
+          "margin": "0 2px 14px",
+        }
+      }
+    >
+      Scanned 
+      <strong
+        style={
+          {
+            "color": "#9DBCFF",
+          }
+        }
+      >
+        0
+      </strong>
+       of 
+      0
+       products holding stock here · 
+      0
+       display units added
+    </div>
+    <input
+      autoFocus={false}
+      onChange={[Function]}
+      placeholder="Search the catalogue by name…"
+      style={
+        {
+          "background": "rgba(255,255,255,.05)",
+          "border": "1px solid rgba(255,255,255,.14)",
+          "borderRadius": "12px",
+          "boxSizing": "border-box",
+          "color": "#fff",
+          "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+          "fontSize": 17,
+          "fontWeight": 600,
+          "minHeight": 58,
+          "outline": "none",
+          "padding": "11px 13px",
+          "width": "100%",
+        }
+      }
+      value=""
+    />
+    <div
+      style={
+        {
+          "marginTop": 18,
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(233,238,255,.55)",
+            "fontSize": 11.5,
+            "fontWeight": 800,
+            "letterSpacing": ".08em",
+            "marginBottom": 8,
+            "textTransform": "uppercase",
+          }
+        }
+      >
+        Not yet registered — holds stock at 
+        Hub 2
+      </div>
+      <div
+        style={
+          {
+            "color": "#9CA3AF",
+            "fontSize": 13,
+            "padding": "8px 2px",
+          }
+        }
+      >
+        Everything holding stock here has been registered. Search above for anything else on the floor.
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "flexDirection": "column",
+            "gap": 7,
+          }
+        }
+      />
+    </div>
+    <div
+      style={
+        {
+          "borderTop": "1px solid rgba(255,255,255,.07)",
+          "marginTop": 22,
+          "paddingTop": 14,
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(233,238,255,.45)",
+            "fontSize": 11.5,
+            "marginBottom": 8,
+          }
+        }
+      >
+        Shortcut, if this shoe happens to carry one of our shop barcode stickers:
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "gap": 8,
+          }
+        }
+      >
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(255,255,255,.03)",
+              "border": "1px solid rgba(255,255,255,.14)",
+              "borderRadius": "11px",
+              "color": "#dfe7ff",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 12.5,
+              "fontWeight": "700",
+              "minHeight": 42,
+              "padding": "0 14px",
+            }
+          }
+          type="button"
+        >
+          Scan a shop barcode
+        </button>
+        <form
+          onSubmit={[Function]}
+          style={
+            {
+              "display": "flex",
+              "flex": 1,
+              "gap": 6,
+            }
+          }
+        >
+          <input
+            onChange={[Function]}
+            placeholder="…or type its digits"
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": "12px",
+                "color": "#fff",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 12.5,
+                "minHeight": 42,
+                "opacity": 0.85,
+                "outline": "none",
+                "padding": "11px 13px",
+              }
+            }
+            value=""
+          />
+          <button
+            style={
+              {
+                "background": "rgba(255,255,255,.03)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": "11px",
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 12.5,
+                "fontWeight": "700",
+                "minHeight": 42,
+                "padding": "0 12px",
+              }
+            }
+            type="submit"
+          >
+            Go
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div
+    style={
+      {
+        "background": "#05070C",
+        "color": "#fff",
+        "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+        "inset": 0,
+        "overflowY": "auto",
+        "position": "fixed",
+        "zIndex": 60,
+      }
+    }
+  >
+    <div
+      style={
+        {
+          "margin": "0 auto",
+          "maxWidth": 560,
+          "padding": "14px 16px 60px",
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "justifyContent": "space-between",
+            "padding": "6px 0 14px",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "color": "#9DBCFF",
+              "fontSize": 15,
+              "fontWeight": 800,
+              "letterSpacing": ".02em",
+            }
+          }
+        >
+          Register display
+        </div>
+        <button
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(255,255,255,.03)",
+              "border": "1px solid rgba(255,255,255,.14)",
+              "borderRadius": 12,
+              "color": "#dfe7ff",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 14,
+              "fontWeight": "700",
+              "padding": "10px 18px",
+            }
+          }
+          type="button"
+        >
+          ✕ Close
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "gap": 14,
+            "marginBottom": 10,
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "alignItems": "center",
+              "background": "rgba(120,150,255,.08)",
+              "borderRadius": 14,
+              "display": "flex",
+              "flexShrink": 0,
+              "fontSize": 28,
+              "height": 84,
+              "justifyContent": "center",
+              "width": 84,
+            }
+          }
+        >
+          👟
+        </div>
+        <div
+          style={
+            {
+              "minWidth": 0,
+            }
+          }
+        >
+          <div
+            style={
+              {
+                "fontSize": 19,
+                "fontWeight": 800,
+                "lineHeight": 1.25,
+              }
+            }
+          >
+            Lacoste Court Cage White
+          </div>
+          <div
+            style={
+              {
+                "color": "#9CA3AF",
+                "fontSize": 12.5,
+                "marginTop": 3,
+              }
+            }
+          >
+            Adds to 
+            Hub 2
+             stock for the size you pick
+          </div>
+          <div
+            style={
+              {
+                "marginTop": 6,
+              }
+            }
+          >
+            <div
+              style={
+                {
+                  "alignItems": "center",
+                  "display": "flex",
+                  "flexWrap": "wrap",
+                  "gap": 6,
+                }
+              }
+            >
+              <span
+                style={
+                  {
+                    "color": "rgba(233,238,255,.5)",
+                    "fontSize": 11,
+                    "fontWeight": 700,
+                  }
+                }
+              >
+                CODE
+              </span>
+              <button
+                disabled={false}
+                onClick={[Function]}
+                style={
+                  {
+                    "background": "rgba(74,127,255,.14)",
+                    "border": "1px solid rgba(74,127,255,.42)",
+                    "borderRadius": 9,
+                    "color": "#CFE0FF",
+                    "cursor": "pointer",
+                    "fontFamily": "inherit",
+                    "fontSize": 12.5,
+                    "fontWeight": 800,
+                    "letterSpacing": ".02em",
+                    "maxWidth": "100%",
+                    "minHeight": 44,
+                    "overflow": "hidden",
+                    "padding": "0 12px",
+                    "textOverflow": "ellipsis",
+                    "whiteSpace": "nowrap",
+                  }
+                }
+                title="Tap to copy 745SMA00421G"
+                type="button"
+              >
+                745SMA00421G
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "flexWrap": "wrap",
+            "gap": 6,
+            "marginBottom": 16,
+          }
+        }
+      >
+        <span
+          style={
+            {
+              "color": "#9CA3AF",
+              "fontSize": 11.5,
+            }
+          }
+        >
+          No stock recorded anywhere yet.
+        </span>
+      </div>
+      <div
+        style={
+          {
+            "fontSize": 14,
+            "fontWeight": 800,
+            "letterSpacing": ".05em",
+            "margin": "0 0 4px",
+          }
+        }
+      >
+        1 · STYLE NUMBER — the label 
+        <u>
+          inside the tongue
+        </u>
+      </div>
+      <div
+        style={
+          {
+            "color": "#9CA3AF",
+            "fontSize": 12,
+            "marginBottom": 10,
+          }
+        }
+      >
+        Fold the tongue forward: the small printed label with a code like CT8527-016. Not the shop barcode sticker, not the box.
+      </div>
+      <div
+        style={
+          {
+            "marginBottom": 18,
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "background": "rgba(74,222,128,.08)",
+              "border": "1px solid rgba(74,222,128,.3)",
+              "borderRadius": 13,
+              "color": "#B7F0CC",
+              "fontSize": 14,
+              "padding": "12px 14px",
+            }
+          }
+        >
+          ✓ Style number already on file: 
+          <strong>
+            745SMA00421G
+          </strong>
+          <div
+            style={
+              {
+                "color": "#9CA3AF",
+                "fontSize": 11.5,
+                "marginTop": 4,
+              }
+            }
+          >
+            Nothing to capture — check it matches the tongue label of the shoe in your hand.
+          </div>
+        </div>
+        <button
+          onClick={[Function]}
+          style={
+            {
+              "background": "none",
+              "border": "none",
+              "color": "rgba(233,238,255,.42)",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 12,
+              "marginTop": 8,
+              "textDecoration": "underline",
+            }
+          }
+          type="button"
+        >
+          Also capture the label wording (optional)
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "fontSize": 14,
+            "fontWeight": 800,
+            "letterSpacing": ".05em",
+            "margin": "0 0 10px",
+          }
+        }
+      >
+        2 · WHICH SIZE IS ON DISPLAY?
+      </div>
+      <div
+        style={
+          {
+            "display": "grid",
+            "gap": 10,
+            "gridTemplateColumns": "repeat(auto-fill, minmax(76px, 1fr))",
+          }
+        }
+      >
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(74,127,255,.13)",
+              "border": "2px solid rgba(74,127,255,.45)",
+              "borderRadius": 14,
+              "color": "#D7E3FF",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 22,
+              "fontWeight": 900,
+              "letterSpacing": "-0.01em",
+              "minHeight": 64,
+              "position": "relative",
+            }
+          }
+          type="button"
+        >
+          <span>
+            6
+          </span>
+        </button>
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(74,222,128,.22)",
+              "border": "2px solid rgba(74,222,128,.9)",
+              "borderRadius": 14,
+              "color": "#B7F0CC",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 22,
+              "fontWeight": 900,
+              "letterSpacing": "-0.01em",
+              "minHeight": 64,
+              "position": "relative",
+            }
+          }
+          type="button"
+        >
+          <span>
+            7
+          </span>
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "margin": "18px 0 0",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "fontSize": 14,
+              "fontWeight": 800,
+              "letterSpacing": ".05em",
+              "margin": "0 0 10px",
+            }
+          }
+        >
+          3 · WHICH SHOP IS THIS DISPLAY AT?
+        </div>
+        <div
+          style={
+            {
+              "display": "flex",
+              "gap": 10,
+            }
+          }
+        >
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(74,127,255,.13)",
+                "border": "2px solid rgba(74,127,255,.45)",
+                "borderRadius": 14,
+                "color": "#D7E3FF",
+                "cursor": "pointer",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 16,
+                "fontWeight": 800,
+                "minHeight": 56,
+              }
+            }
+            type="button"
+          >
+            Marathon PE
+          </button>
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(74,222,128,.22)",
+                "border": "2px solid rgba(74,222,128,.9)",
+                "borderRadius": 14,
+                "color": "#B7F0CC",
+                "cursor": "pointer",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 16,
+                "fontWeight": 800,
+                "minHeight": 56,
+              }
+            }
+            type="button"
+          >
+            Trophy
+          </button>
+        </div>
+      </div>
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "gap": 14,
+            "margin": "20px 0",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "color": "rgba(233,238,255,.8)",
+              "flex": 1,
+              "fontSize": 14,
+              "fontWeight": 700,
+            }
+          }
+        >
+          How many size 
+          <span>
+            7
+          </span>
+           on display?
+        </div>
+        <div
+          style={
+            {
+              "alignItems": "center",
+              "display": "flex",
+              "gap": 10,
+            }
+          }
+        >
+          <button
+            disabled={true}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": 13,
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 22,
+                "fontWeight": "700",
+                "minHeight": 52,
+                "minWidth": 52,
+                "padding": "10px 14px",
+              }
+            }
+            type="button"
+          >
+            −
+          </button>
+          <span
+            style={
+              {
+                "fontSize": 24,
+                "fontVariantNumeric": "tabular-nums",
+                "fontWeight": 900,
+                "minWidth": 34,
+                "textAlign": "center",
+              }
+            }
+          >
+            1
+          </span>
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": 13,
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 22,
+                "fontWeight": "700",
+                "minHeight": 52,
+                "minWidth": 52,
+                "padding": "10px 14px",
+              }
+            }
+            type="button"
+          >
+            +
+          </button>
+        </div>
+      </div>
+      <button
+        disabled={false}
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(74,222,128,.18)",
+            "border": "2px solid rgba(74,222,128,.6)",
+            "borderRadius": 15,
+            "color": "#B7F0CC",
+            "cursor": "pointer",
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 19,
+            "fontWeight": 800,
+            "minHeight": 68,
+            "opacity": 1,
+            "width": "100%",
+          }
+        }
+        type="button"
+      >
+        ✓ REGISTER — size 
+        7
+         + style number
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Marathon's register panel is byte-for-byte what it was (snapshot from main) > hub2: the register panel, size picked, before and after the shop is picked > hub2 size picked 1`] = `
+<div
+  style={
+    {
+      "background": "#000000",
+      "color": "#fff",
+      "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+      "minHeight": "100vh",
+      "paddingBottom": 50,
+    }
+  }
+>
+  <div
+    style={
+      {
+        "alignItems": "center",
+        "display": "flex",
+        "justifyContent": "space-between",
+        "padding": "50px 16px 10px",
+      }
+    }
+  >
+    <div
+      onClick={[Function]}
+      style={
+        {
+          "background": "rgba(255,255,255,.06)",
+          "border": "1px solid rgba(255,255,255,.1)",
+          "borderRadius": 10,
+          "color": "rgba(255,255,255,.7)",
+          "cursor": "pointer",
+          "fontSize": 13,
+          "padding": "9px 15px",
+        }
+      }
+    >
+      ← 
+      Hubs
+    </div>
+    <div
+      style={
+        {
+          "textAlign": "center",
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(255,255,255,.4)",
+            "fontSize": 10,
+            "letterSpacing": ".5px",
+          }
+        }
+      >
+        Hub Stock Cleanup
+      </div>
+      <div
+        style={
+          {
+            "color": "#9DBCFF",
+            "fontSize": 15,
+            "fontWeight": 800,
+          }
+        }
+      >
+        Hub 2
+      </div>
+    </div>
+    <div
+      style={
+        {
+          "width": 78,
+        }
+      }
+    />
+  </div>
+  <div
+    style={
+      {
+        "margin": "0 auto",
+        "maxWidth": 560,
+        "padding": "0 16px",
+      }
+    }
+  >
+    <div
+      style={
+        {
+          "display": "flex",
+          "gap": 8,
+          "margin": "8px 0 6px",
+        }
+      }
+    >
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(74,127,255,.16)",
+            "border": "1px solid rgba(74,127,255,.45)",
+            "borderRadius": 12,
+            "color": "#9DBCFF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Register
+      </button>
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(255,255,255,.03)",
+            "border": "1px solid rgba(255,255,255,.1)",
+            "borderRadius": 12,
+            "color": "#9CA3AF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Count
+      </button>
+      <button
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(255,255,255,.03)",
+            "border": "1px solid rgba(255,255,255,.1)",
+            "borderRadius": 12,
+            "color": "#9CA3AF",
+            "cursor": "pointer",
+            "flex": 1,
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 14,
+            "fontWeight": 700,
+            "minHeight": 46,
+            "padding": "7px 14px",
+          }
+        }
+        type="button"
+      >
+        Leftovers · 0
+      </button>
+    </div>
+    <div
+      style={
+        {
+          "color": "#9CA3AF",
+          "fontSize": 12.5,
+          "fontVariantNumeric": "tabular-nums",
+          "margin": "0 2px 14px",
+        }
+      }
+    >
+      Scanned 
+      <strong
+        style={
+          {
+            "color": "#9DBCFF",
+          }
+        }
+      >
+        0
+      </strong>
+       of 
+      0
+       products holding stock here · 
+      0
+       display units added
+    </div>
+    <input
+      autoFocus={false}
+      onChange={[Function]}
+      placeholder="Search the catalogue by name…"
+      style={
+        {
+          "background": "rgba(255,255,255,.05)",
+          "border": "1px solid rgba(255,255,255,.14)",
+          "borderRadius": "12px",
+          "boxSizing": "border-box",
+          "color": "#fff",
+          "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+          "fontSize": 17,
+          "fontWeight": 600,
+          "minHeight": 58,
+          "outline": "none",
+          "padding": "11px 13px",
+          "width": "100%",
+        }
+      }
+      value=""
+    />
+    <div
+      style={
+        {
+          "marginTop": 18,
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(233,238,255,.55)",
+            "fontSize": 11.5,
+            "fontWeight": 800,
+            "letterSpacing": ".08em",
+            "marginBottom": 8,
+            "textTransform": "uppercase",
+          }
+        }
+      >
+        Not yet registered — holds stock at 
+        Hub 2
+      </div>
+      <div
+        style={
+          {
+            "color": "#9CA3AF",
+            "fontSize": 13,
+            "padding": "8px 2px",
+          }
+        }
+      >
+        Everything holding stock here has been registered. Search above for anything else on the floor.
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "flexDirection": "column",
+            "gap": 7,
+          }
+        }
+      />
+    </div>
+    <div
+      style={
+        {
+          "borderTop": "1px solid rgba(255,255,255,.07)",
+          "marginTop": 22,
+          "paddingTop": 14,
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "color": "rgba(233,238,255,.45)",
+            "fontSize": 11.5,
+            "marginBottom": 8,
+          }
+        }
+      >
+        Shortcut, if this shoe happens to carry one of our shop barcode stickers:
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "gap": 8,
+          }
+        }
+      >
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(255,255,255,.03)",
+              "border": "1px solid rgba(255,255,255,.14)",
+              "borderRadius": "11px",
+              "color": "#dfe7ff",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 12.5,
+              "fontWeight": "700",
+              "minHeight": 42,
+              "padding": "0 14px",
+            }
+          }
+          type="button"
+        >
+          Scan a shop barcode
+        </button>
+        <form
+          onSubmit={[Function]}
+          style={
+            {
+              "display": "flex",
+              "flex": 1,
+              "gap": 6,
+            }
+          }
+        >
+          <input
+            onChange={[Function]}
+            placeholder="…or type its digits"
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": "12px",
+                "color": "#fff",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 12.5,
+                "minHeight": 42,
+                "opacity": 0.85,
+                "outline": "none",
+                "padding": "11px 13px",
+              }
+            }
+            value=""
+          />
+          <button
+            style={
+              {
+                "background": "rgba(255,255,255,.03)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": "11px",
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 12.5,
+                "fontWeight": "700",
+                "minHeight": 42,
+                "padding": "0 12px",
+              }
+            }
+            type="submit"
+          >
+            Go
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div
+    style={
+      {
+        "background": "#05070C",
+        "color": "#fff",
+        "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+        "inset": 0,
+        "overflowY": "auto",
+        "position": "fixed",
+        "zIndex": 60,
+      }
+    }
+  >
+    <div
+      style={
+        {
+          "margin": "0 auto",
+          "maxWidth": 560,
+          "padding": "14px 16px 60px",
+        }
+      }
+    >
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "justifyContent": "space-between",
+            "padding": "6px 0 14px",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "color": "#9DBCFF",
+              "fontSize": 15,
+              "fontWeight": 800,
+              "letterSpacing": ".02em",
+            }
+          }
+        >
+          Register display
+        </div>
+        <button
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(255,255,255,.03)",
+              "border": "1px solid rgba(255,255,255,.14)",
+              "borderRadius": 12,
+              "color": "#dfe7ff",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 14,
+              "fontWeight": "700",
+              "padding": "10px 18px",
+            }
+          }
+          type="button"
+        >
+          ✕ Close
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "gap": 14,
+            "marginBottom": 10,
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "alignItems": "center",
+              "background": "rgba(120,150,255,.08)",
+              "borderRadius": 14,
+              "display": "flex",
+              "flexShrink": 0,
+              "fontSize": 28,
+              "height": 84,
+              "justifyContent": "center",
+              "width": 84,
+            }
+          }
+        >
+          👟
+        </div>
+        <div
+          style={
+            {
+              "minWidth": 0,
+            }
+          }
+        >
+          <div
+            style={
+              {
+                "fontSize": 19,
+                "fontWeight": 800,
+                "lineHeight": 1.25,
+              }
+            }
+          >
+            Lacoste Court Cage White
+          </div>
+          <div
+            style={
+              {
+                "color": "#9CA3AF",
+                "fontSize": 12.5,
+                "marginTop": 3,
+              }
+            }
+          >
+            Adds to 
+            Hub 2
+             stock for the size you pick
+          </div>
+          <div
+            style={
+              {
+                "marginTop": 6,
+              }
+            }
+          >
+            <div
+              style={
+                {
+                  "alignItems": "center",
+                  "display": "flex",
+                  "flexWrap": "wrap",
+                  "gap": 6,
+                }
+              }
+            >
+              <span
+                style={
+                  {
+                    "color": "rgba(233,238,255,.5)",
+                    "fontSize": 11,
+                    "fontWeight": 700,
+                  }
+                }
+              >
+                CODE
+              </span>
+              <button
+                disabled={false}
+                onClick={[Function]}
+                style={
+                  {
+                    "background": "rgba(74,127,255,.14)",
+                    "border": "1px solid rgba(74,127,255,.42)",
+                    "borderRadius": 9,
+                    "color": "#CFE0FF",
+                    "cursor": "pointer",
+                    "fontFamily": "inherit",
+                    "fontSize": 12.5,
+                    "fontWeight": 800,
+                    "letterSpacing": ".02em",
+                    "maxWidth": "100%",
+                    "minHeight": 44,
+                    "overflow": "hidden",
+                    "padding": "0 12px",
+                    "textOverflow": "ellipsis",
+                    "whiteSpace": "nowrap",
+                  }
+                }
+                title="Tap to copy 745SMA00421G"
+                type="button"
+              >
+                745SMA00421G
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div
+        style={
+          {
+            "display": "flex",
+            "flexWrap": "wrap",
+            "gap": 6,
+            "marginBottom": 16,
+          }
+        }
+      >
+        <span
+          style={
+            {
+              "color": "#9CA3AF",
+              "fontSize": 11.5,
+            }
+          }
+        >
+          No stock recorded anywhere yet.
+        </span>
+      </div>
+      <div
+        style={
+          {
+            "fontSize": 14,
+            "fontWeight": 800,
+            "letterSpacing": ".05em",
+            "margin": "0 0 4px",
+          }
+        }
+      >
+        1 · STYLE NUMBER — the label 
+        <u>
+          inside the tongue
+        </u>
+      </div>
+      <div
+        style={
+          {
+            "color": "#9CA3AF",
+            "fontSize": 12,
+            "marginBottom": 10,
+          }
+        }
+      >
+        Fold the tongue forward: the small printed label with a code like CT8527-016. Not the shop barcode sticker, not the box.
+      </div>
+      <div
+        style={
+          {
+            "marginBottom": 18,
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "background": "rgba(74,222,128,.08)",
+              "border": "1px solid rgba(74,222,128,.3)",
+              "borderRadius": 13,
+              "color": "#B7F0CC",
+              "fontSize": 14,
+              "padding": "12px 14px",
+            }
+          }
+        >
+          ✓ Style number already on file: 
+          <strong>
+            745SMA00421G
+          </strong>
+          <div
+            style={
+              {
+                "color": "#9CA3AF",
+                "fontSize": 11.5,
+                "marginTop": 4,
+              }
+            }
+          >
+            Nothing to capture — check it matches the tongue label of the shoe in your hand.
+          </div>
+        </div>
+        <button
+          onClick={[Function]}
+          style={
+            {
+              "background": "none",
+              "border": "none",
+              "color": "rgba(233,238,255,.42)",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 12,
+              "marginTop": 8,
+              "textDecoration": "underline",
+            }
+          }
+          type="button"
+        >
+          Also capture the label wording (optional)
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "fontSize": 14,
+            "fontWeight": 800,
+            "letterSpacing": ".05em",
+            "margin": "0 0 10px",
+          }
+        }
+      >
+        2 · WHICH SIZE IS ON DISPLAY?
+      </div>
+      <div
+        style={
+          {
+            "display": "grid",
+            "gap": 10,
+            "gridTemplateColumns": "repeat(auto-fill, minmax(76px, 1fr))",
+          }
+        }
+      >
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(74,127,255,.13)",
+              "border": "2px solid rgba(74,127,255,.45)",
+              "borderRadius": 14,
+              "color": "#D7E3FF",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 22,
+              "fontWeight": 900,
+              "letterSpacing": "-0.01em",
+              "minHeight": 64,
+              "position": "relative",
+            }
+          }
+          type="button"
+        >
+          <span>
+            6
+          </span>
+        </button>
+        <button
+          disabled={false}
+          onClick={[Function]}
+          style={
+            {
+              "background": "rgba(74,222,128,.22)",
+              "border": "2px solid rgba(74,222,128,.9)",
+              "borderRadius": 14,
+              "color": "#B7F0CC",
+              "cursor": "pointer",
+              "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+              "fontSize": 22,
+              "fontWeight": 900,
+              "letterSpacing": "-0.01em",
+              "minHeight": 64,
+              "position": "relative",
+            }
+          }
+          type="button"
+        >
+          <span>
+            7
+          </span>
+        </button>
+      </div>
+      <div
+        style={
+          {
+            "margin": "18px 0 0",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "fontSize": 14,
+              "fontWeight": 800,
+              "letterSpacing": ".05em",
+              "margin": "0 0 10px",
+            }
+          }
+        >
+          3 · WHICH SHOP IS THIS DISPLAY AT?
+        </div>
+        <div
+          style={
+            {
+              "display": "flex",
+              "gap": 10,
+            }
+          }
+        >
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(74,127,255,.13)",
+                "border": "2px solid rgba(74,127,255,.45)",
+                "borderRadius": 14,
+                "color": "#D7E3FF",
+                "cursor": "pointer",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 16,
+                "fontWeight": 800,
+                "minHeight": 56,
+              }
+            }
+            type="button"
+          >
+            Marathon PE
+          </button>
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(74,127,255,.13)",
+                "border": "2px solid rgba(74,127,255,.45)",
+                "borderRadius": 14,
+                "color": "#D7E3FF",
+                "cursor": "pointer",
+                "flex": 1,
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 16,
+                "fontWeight": 800,
+                "minHeight": 56,
+              }
+            }
+            type="button"
+          >
+            Trophy
+          </button>
+        </div>
+      </div>
+      <div
+        style={
+          {
+            "alignItems": "center",
+            "display": "flex",
+            "gap": 14,
+            "margin": "20px 0",
+          }
+        }
+      >
+        <div
+          style={
+            {
+              "color": "rgba(233,238,255,.8)",
+              "flex": 1,
+              "fontSize": 14,
+              "fontWeight": 700,
+            }
+          }
+        >
+          How many size 
+          <span>
+            7
+          </span>
+           on display?
+        </div>
+        <div
+          style={
+            {
+              "alignItems": "center",
+              "display": "flex",
+              "gap": 10,
+            }
+          }
+        >
+          <button
+            disabled={true}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": 13,
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 22,
+                "fontWeight": "700",
+                "minHeight": 52,
+                "minWidth": 52,
+                "padding": "10px 14px",
+              }
+            }
+            type="button"
+          >
+            −
+          </button>
+          <span
+            style={
+              {
+                "fontSize": 24,
+                "fontVariantNumeric": "tabular-nums",
+                "fontWeight": 900,
+                "minWidth": 34,
+                "textAlign": "center",
+              }
+            }
+          >
+            1
+          </span>
+          <button
+            disabled={false}
+            onClick={[Function]}
+            style={
+              {
+                "background": "rgba(255,255,255,.05)",
+                "border": "1px solid rgba(255,255,255,.14)",
+                "borderRadius": 13,
+                "color": "#dfe7ff",
+                "cursor": "pointer",
+                "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                "fontSize": 22,
+                "fontWeight": "700",
+                "minHeight": 52,
+                "minWidth": 52,
+                "padding": "10px 14px",
+              }
+            }
+            type="button"
+          >
+            +
+          </button>
+        </div>
+      </div>
+      <button
+        disabled={true}
+        onClick={[Function]}
+        style={
+          {
+            "background": "rgba(74,222,128,.18)",
+            "border": "2px solid rgba(74,222,128,.6)",
+            "borderRadius": 15,
+            "color": "#B7F0CC",
+            "cursor": "not-allowed",
+            "fontFamily": "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+            "fontSize": 19,
+            "fontWeight": 800,
+            "minHeight": 68,
+            "opacity": 0.45,
+            "width": "100%",
+          }
+        }
+        type="button"
+      >
+        ✓ REGISTER — size 
+        7
+         + style number
+      </button>
+      <div
+        style={
+          {
+            "color": "#FBBF24",
+            "fontSize": 12,
+            "marginTop": 8,
+          }
+        }
+      >
+        Pick which shop the display stands at — the count needs to know where it is.
+      </div>
+    </div>
+  </div>
+</div>
+`;
