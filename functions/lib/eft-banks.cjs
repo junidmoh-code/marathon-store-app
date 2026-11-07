@@ -346,19 +346,34 @@ const fnb = {
 // rail: it settles in seconds, so it is an IMMEDIATE payment whichever bank
 // it pays into (Junid: "it's an immediate payment, I did receive the money").
 //
-// Read ONLY below "END OF NOTIFICATION": everything the payer can type (their
-// name, the reference) is printed above that line, so a reference cannot
-// pose as FNB's sentence. The sentence must START the line, as FNB prints it.
-// No END line, no PayShap — never assumed.
+// Read ONLY directly below the ONE "END OF NOTIFICATION" line: everything the
+// payer can type (their name, the reference) is printed above it, so a
+// reference cannot pose as FNB's sentence. The whole two-line sentence must
+// be there as FNB prints it, and the ordinary notice's "To authenticate this
+// Payment Notification" must not. No END line, two END lines, or anything
+// out of shape: no PayShap — never assumed.
 /**
  * Does this FNB notice carry FNB's own PayShap sentence below END OF NOTIFICATION?
  * @param {string[]} lines the document's text lines
  * @returns {boolean}
  */
 function fnbPayShap(lines) {
-  const end = lines.findIndex((l) => /^END OF NOTIFICATION\s*$/i.test(l.trim()));
-  if (end < 0) return false;
-  return lines.slice(end + 1).some((l) => /^Please note that this PayShap Payment Notification\b/i.test(l.trim()));
+  const trimmed = lines.map((l) => String(l ?? "").trim());
+  // Exactly ONE end line: a second (a payer-typed "END OF NOTIFICATION")
+  // would move the boundary into text the payer controls. (Sonnet review.)
+  const ends = trimmed.reduce((acc, l, i) => (/^END OF NOTIFICATION$/i.test(l) ? [...acc, i] : acc), []);
+  if (ends.length !== 1) return false;
+  // The ordinary notice's own sentence means it is NOT a PayShap notice.
+  if (trimmed.some((l) => /^To authenticate this Payment Notification\b/i.test(l))) return false;
+  // FNB's full two-line sentence, directly below the end line, as printed:
+  //   "Please note that this PayShap Payment Notification cannot be
+  //    authenticated using our FNB “Verify Payments” link, however, as
+  //    PayShap payments are made in"
+  //   "real time, to verify this payment please check …"
+  const first = trimmed[ends[0] + 1] ?? "";
+  const second = trimmed[ends[0] + 2] ?? "";
+  return /^Please note that this PayShap Payment Notification cannot be authenticated\b.*\bas PayShap payments are made in$/i.test(first)
+    && /^real time\b/i.test(second);
 }
 
 // ─── CAPITEC ─────────────────────────────────────────────────────────────────

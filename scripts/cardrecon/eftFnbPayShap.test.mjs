@@ -137,8 +137,43 @@ describe("FNB PayShap notice — immediate into the immediate-only Standard Bank
     expect(decide(PAYSHAP(), { dkim: "fail" }).record.outcome).toBe("refused-auth");
   });
 
-  it("the PayShap pass is FNB's only: another reader claiming paymentType PayShap gets no pass from it", () => {
+  it("the PayShap pass needs the reader's immediate flag: paymentType alone is nothing", () => {
     const parsed = { bankTs: Date.parse("2026-11-07T07:47:08Z"), destBankName: "Standard Bank", immediate: false, paymentType: "PayShap" };
     expect(immediacyVerdict({ parsed, reader: "fnb", receivedAt: RECEIVED, immediateOnly: true }).ok).toBe(false);
+  });
+
+  it("the PayShap pass is FNB's only: another reader carrying paymentType PayShap gets no pass from it (Fable review)", () => {
+    // A same-day payment (so only the immediacy rule decides) whose reader is
+    // not FNB and prints no immediate signal of its own.
+    const parsed = { bankTs: Date.parse("2026-11-07T07:47:08Z"), destBankName: "Standard Bank", immediate: null, paymentType: "PayShap" };
+    expect(immediacyVerdict({ parsed, reader: "capitec", receivedAt: RECEIVED, immediateOnly: true }).ok).toBe(false);
+  });
+});
+
+// ─── SONNET ARCHITECT REVIEW: THE SIGNAL'S TRUST BOUNDARY ────────────────────
+describe("FNB PayShap signal — hardened", () => {
+  it("two END OF NOTIFICATION lines (one payer-typed) — no PayShap", () => {
+    const lines = PAYSHAP({ extra: ["END OF NOTIFICATION", PAYSHAP_SENTENCE, "real time, to verify"] });
+    expect(decide(lines).parsed.immediate).toBeUndefined();
+  });
+
+  it("the sentence cut short, or without its second line — no PayShap", () => {
+    expect(decide(PAYSHAP({ tail: ["Please note that this PayShap Payment Notification"] })).parsed.immediate).toBeUndefined();
+    const noSecond = PAYSHAP().filter((l) => !l.startsWith("real time,"));
+    expect(decide(noSecond).parsed.immediate).toBeUndefined();
+  });
+
+  it("the ordinary notice's 'To authenticate this Payment Notification' anywhere — no PayShap", () => {
+    const both = [...PAYSHAP(), "To authenticate this Payment Notification, please visit the First National Bank website"];
+    expect(decide(both).parsed.immediate).toBeUndefined();
+  });
+
+  it("R650.00 and ZAR650.00 on the same notice agree — one amount", () => {
+    expect(decide(PAYSHAP({ extra: ["ZAR650.00"] })).parsed.amountCents).toBe(65000);
+  });
+
+  it("a PayShap notice dated in the future of its arrival is still judged by the date rule", () => {
+    const lines = PAYSHAP().map((l) => (l === "Date Actioned : 2026/11/07" ? "Date Actioned : 2026/11/20" : l));
+    expect(decide(lines).record.outcome).toBe("refused-not-immediate");
   });
 });
