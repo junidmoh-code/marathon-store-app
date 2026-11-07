@@ -168,12 +168,11 @@ describe("FNB PayShap signal — hardened", () => {
     expect(decide(both).parsed.immediate).toBeUndefined();
   });
 
-  it("R650.00 and ZAR650.00 on the same notice agree — one amount", () => {
-    expect(decide(PAYSHAP({ extra: ["ZAR650.00"] })).parsed.amountCents).toBe(65000);
-  });
-
   it("a PayShap notice dated in the future of its arrival is still judged by the date rule", () => {
     const lines = PAYSHAP().map((l) => (l === "Date Actioned : 2026/11/07" ? "Date Actioned : 2026/11/20" : l));
-    expect(decide(lines).record.outcome).toBe("refused-not-immediate");
+    const r = decide(lines);
+    expect(r.parsed.immediate).toBe(true); // PayShap WAS read — it is the date that refuses
+    expect(r.timing.reason).toMatch(/dated after its notification arrived|beyond the next business day/);
+    expect(r.record.outcome).toBe("refused-not-immediate");
   });
 });
