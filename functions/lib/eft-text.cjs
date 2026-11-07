@@ -102,8 +102,56 @@ function maskAccountValue(value) {
   return s.replace(/\d(?=(?:\D*\d){4})/g, "X");
 }
 
+// ─── SOUTH AFRICAN PUBLIC HOLIDAYS (Junid, 7 Nov 2026) ───────────────────────
+// Local and deterministic: no calendar service, no network, no clock. The
+// Public Holidays Act 36 of 1994 fixes ten dates; Good Friday and Family Day
+// (Easter Monday) move with Easter (computed below — the Gregorian computus);
+// and "whenever any public holiday falls on a Sunday, the Monday following
+// on it shall be a public holiday" (section 2(1)). A holiday on a Saturday is
+// NOT moved. A day the President declares as a one-off public holiday (an
+// election day) is added to SA_DECLARED_HOLIDAYS by hand.
+const SA_FIXED_HOLIDAYS = [
+  "01-01", // New Year's Day
+  "03-21", // Human Rights Day
+  "04-27", // Freedom Day
+  "05-01", // Workers' Day
+  "06-16", // Youth Day
+  "08-09", // National Women's Day
+  "09-24", // Heritage Day
+  "12-16", // Day of Reconciliation
+  "12-25", // Christmas Day
+  "12-26", // Day of Goodwill
+];
+// One-off declared public holidays (YYYY-MM-DD). Add a newly declared one here.
+const SA_DECLARED_HOLIDAYS = new Set([
+  "2024-05-29", // national and provincial elections
+]);
 const utcDay = (y, m, d) => new Date(Date.UTC(y, m - 1, d));
 const isoDay = (d) => d.toISOString().slice(0, 10);
+/** Easter Sunday of `year` (Gregorian; anonymous / Meeus–Jones–Butcher). */
+function easterSunday(year) {
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100;
+  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
+  return utcDay(year, month, day);
+}
+const holidayCache = new Map();
+/** Every South African public holiday of `year`, as a Set of "YYYY-MM-DD". */
+function saPublicHolidays(year) {
+  if (!Number.isInteger(year) || year < 1995 || year > 2200) return new Set();
+  if (holidayCache.has(year)) return holidayCache.get(year);
+  const days = SA_FIXED_HOLIDAYS.map((md) => utcDay(year, Number(md.slice(0, 2)), Number(md.slice(3))));
+  const easter = easterSunday(year);
+  days.push(new Date(easter.getTime() - 2 * 86400000), new Date(easter.getTime() + 86400000));
+  const out = new Set(days.map(isoDay));
+  // A Sunday holiday gives the Monday after it (the Act, s 2(1)).
+  for (const d of days) if (d.getUTCDay() === 0) out.add(isoDay(new Date(d.getTime() + 86400000)));
+  for (const d of SA_DECLARED_HOLIDAYS) if (d.startsWith(`${year}-`)) out.add(d);
+  holidayCache.set(year, out);
+  return out;
+}
 /** "YYYY-MM-DD" → a Date at UTC midnight, or null for anything not a real day. */
 function parseDay(sastDay) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(sastDay ?? ""));
@@ -111,19 +159,22 @@ function parseDay(sastDay) {
   const d = utcDay(Number(m[1]), Number(m[2]), Number(m[3]));
   return isoDay(d) === sastDay ? d : null; // 2026-02-31 is no date
 }
-// No public-holiday calendar yet (next commit).
-const isSaPublicHoliday = () => false;
-/** A business day: Monday to Friday. null for no date. */
+/** Is this SAST day a South African public holiday? */
+function isSaPublicHoliday(sastDay) {
+  const d = parseDay(sastDay);
+  return !!d && saPublicHolidays(d.getUTCFullYear()).has(sastDay);
+}
+/** A business day: Monday to Friday and not a public holiday. null for no date. */
 function isBusinessDay(sastDay) {
   const d = parseDay(sastDay);
   if (!d) return null;
-  return d.getUTCDay() !== 0 && d.getUTCDay() !== 6;
+  return d.getUTCDay() !== 0 && d.getUTCDay() !== 6 && !isSaPublicHoliday(sastDay);
 }
 
 // ─── THE NEXT BUSINESS DAY (Junid, 7 Nov 2026) ───────────────────────────────
 // A non-immediate EFT made on a weekend is dated by the payer's bank for the
 // day it settles: a Saturday Nedbank "Internet payment" prints Monday's date.
-// Business days skip Saturday and Sunday.
+// Business days skip Saturday, Sunday and the public holidays above.
 /** "2026-11-07" (a Saturday) → "2026-11-09"; "2026-12-24" → "2026-12-28". */
 function nextBusinessDay(sastDay) {
   const d = parseDay(sastDay);
@@ -188,5 +239,6 @@ function settlementDateVerdict(bankTs, todayMs) {
 
 module.exports = {
   clip, parseBankTimestamp, sastDate, redactAccountDigits, maskAccountValue, SAST_OFFSET_MS,
-  nextBusinessDay, settlementDateVerdict, isBusinessDay, laterDatedAllowedOn, latestSettledDay,
+  nextBusinessDay, settlementDateVerdict, saPublicHolidays, isSaPublicHoliday, isBusinessDay,
+  laterDatedAllowedOn, latestSettledDay, SA_DECLARED_HOLIDAYS,
 };
