@@ -350,6 +350,11 @@ const fnb = {
 // name, the reference) is printed above that line, so a reference cannot
 // pose as FNB's sentence. The sentence must START the line, as FNB prints it.
 // No END line, no PayShap — never assumed.
+/**
+ * Does this FNB notice carry FNB's own PayShap sentence below END OF NOTIFICATION?
+ * @param {string[]} lines the document's text lines
+ * @returns {boolean}
+ */
 function fnbPayShap(lines) {
   const end = lines.findIndex((l) => /^END OF NOTIFICATION\s*$/i.test(l.trim()));
   if (end < 0) return false;
