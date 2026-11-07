@@ -342,6 +342,13 @@ test("Junid's entry lands in the pool: recorded, unmatched, stamped, fingerprint
   const inFlight = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second004", note: "second payment" } });
   assert.deepEqual({ already: inFlight.already, doubleSubmit: inFlight.doubleSubmit, key: inFlight.key }, { already: true, doubleSubmit: true, key: noted.key });
   assert.equal(db.reads[`eft_pool/${manualEntryKeyOf("ME-second004")}`], undefined);
+  // A lock whose holder has NO record (still writing, or its write failed):
+  // the tap is refused, never written beside it (CodeRabbit).
+  const lockKey = Object.keys(db.reads).find((k) => k.startsWith("eft_manual_submit_locks/") && db.reads[k].key === noted.key);
+  db.reads[lockKey] = { key: "f".repeat(40), at: Date.now() };
+  const busy = await rejects(eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second005", note: "second payment" } }), "aborted");
+  assert.equal(busy.details.code, "submit-in-progress");
+  assert.equal(db.reads[`eft_pool/${manualEntryKeyOf("ME-second005")}`], undefined);
 });
 
 test("a cashier consumes it through the ORDINARY settle, once; the log says who, where, for whom", async () => {

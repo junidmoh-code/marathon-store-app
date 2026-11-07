@@ -971,11 +971,21 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
     // written, so the exact entry takes a short create-only lock too.
     let lock = null;
     await db.ref(`${MANUAL_SUBMIT_LOCK_PATH}/${manualSubmitLockKeyOf(input)}`).transaction(manualSubmitLockStep(key, now, (d) => { lock = d; }));
-    const first = lock?.holder && lock.holder !== key
-      ? (await db.ref(`${EFT_POOL_PATH}/${lock.holder}`).once("value")).val() : null;
-    // Answered from the lock only when the first entry's record exists: a
-    // lock left by a submit whose write then failed names nothing to use
-    // (Fable spec review) — this entry is written as usual instead.
+    let first = null;
+    if (lock?.holder && lock.holder !== key) {
+      // The holder may still be WRITING its record (CodeRabbit): wait a
+      // moment for it. Still absent — in progress, or a write that failed —
+      // this tap is refused, never written beside it; the lock expires in
+      // MANUAL_DOUBLE_SUBMIT_MS, so a retry after that writes normally.
+      for (let i = 0; i < 6 && !isManualEntry(first); i++) {
+        if (i) await new Promise((r) => setTimeout(r, 500));
+        first = (await db.ref(`${EFT_POOL_PATH}/${lock.holder}`).once("value")).val();
+      }
+      if (!isManualEntry(first)) {
+        console.warn(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} refused — ${lock.holder} holds the submit lock with no record yet`);
+        throw new HttpsError("aborted", "The same entry is being put in the pool right now. Check the entries list, and try again in a few seconds if it is not there.", { code: "submit-in-progress", key: lock.holder });
+      }
+    }
     if (isManualEntry(first)) {
       console.log(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} answered with ${lock.holder} (submit lock)`);
       return { ok: true, already: true, doubleSubmit: true, key: lock.holder, reference: first.reference, amountCents: first.amountCents, at: first.manualEntry.at, by: MANUAL_ENTRY_BY, status: first.status };
