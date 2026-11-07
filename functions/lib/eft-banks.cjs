@@ -354,7 +354,7 @@ const fnb = {
 // out of shape: no PayShap — never assumed.
 /**
  * Does this FNB notice carry FNB's own PayShap sentence below END OF NOTIFICATION?
- * @param {string[]} lines the document's text lines
+ * @param {(string|null|undefined)[]} lines the document's text lines
  * @returns {boolean}
  */
 function fnbPayShap(lines) {
@@ -373,7 +373,7 @@ function fnbPayShap(lines) {
   const first = trimmed[ends[0] + 1] ?? "";
   const second = trimmed[ends[0] + 2] ?? "";
   return /^Please note that this PayShap Payment Notification cannot be authenticated\b.*\bas PayShap payments are made in$/i.test(first)
-    && /^real time\b/i.test(second);
+    && /^real time, to verify this payment\b/i.test(second);
 }
 
 // ─── CAPITEC ─────────────────────────────────────────────────────────────────
