@@ -530,8 +530,10 @@ export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank
 //
 // A reader that cannot say immediate-vs-regular cannot prove a pre-27
 // payment immediate, so it refuses; a 27+ payment does not need it. A payment
-// dated after its notification arrived is refused whatever its date: that is
-// a scheduled payment. No bank date at all is not "27 or later": it falls to
+// dated BEYOND the next business day after its notification arrived is
+// refused: that is a scheduled payment (7 Nov 2026; one dated a later day up
+// to the next business day settles then, and one timestamped later the SAME
+// day is still scheduled). No bank date at all is not "27 or later": it falls to
 // the immediate rule here and is refused by the cutoff anyway.
 export const IMMEDIATE_NOT_REQUIRED_FROM = "2026-10-27";
 
@@ -541,7 +543,10 @@ export function immediacyRequiredFor(bankTs) {
   return sastDate(bankTs) < IMMEDIATE_NOT_REQUIRED_FROM;
 }
 
-// ─── IMMEDIATE-ONLY ACCOUNTS — THE DATE NEVER RELAXES THEM ──────────────────
+// ─── IMMEDIATE-ONLY ACCOUNTS — THE DATE-PHASED RULE NEVER RELAXES THEM ──────
+// (7 Nov 2026: the NEXT-BUSINESS-DAY window does — a non-immediate payment
+// the bank dates a later day, up to the next business day, is accepted into
+// an immediate-only account; see immediacyVerdict.)
 // Junid, 2 Nov 2026: an account whose EFT_ALLOWED_ACCOUNTS entry is tagged
 // "immediate" (the Standard Bank ATUGAR account) takes IMMEDIATE payments
 // only. For a payment into it the date-phased relaxation above does not
@@ -570,10 +575,18 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
   // settlementDateVerdict; Saturday and Sunday skipped); dated later, it is a
   // scheduled payment and refuses, saying so. Judged from the notice's own
   // arrival, so a replay decides exactly as the first read did.
-  if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)
-    && (parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS || sastDate(parsed.bankTs) > sastDate(receivedAt))) {
-    const dated = settlementDateVerdict(parsed.bankTs, receivedAt);
-    if (!dated.ok) return { ok: false, reason: dated.reason };
+  if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)) {
+    if (sastDate(parsed.bankTs) > sastDate(receivedAt)) {
+      // A LATER DAY: settled on date grounds up to the next business day.
+      const dated = settlementDateVerdict(parsed.bankTs, receivedAt);
+      if (!dated.ok) return { ok: false, reason: dated.reason };
+    } else if (parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS) {
+      // The SAME day, timestamped hours after its own notice (a timestamped
+      // bank: Standard Bank, FNB, Capitec) — scheduled for later today, as
+      // before; the next-business-day window is for a later DATE only.
+      // (Sonnet architect review of #866.)
+      return { ok: false, reason: "The payment is timestamped later today than its notification arrived — a payment scheduled for later today, not a settled one." };
+    }
   }
   // IMMEDIATE-ONLY ACCOUNTS RELAX FOR THAT WINDOW (Junid, 7 Nov 2026).
   // Concrete's Standard Bank account takes immediate payments only. A payment
@@ -606,7 +619,7 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     // including the immediate-only Standard Bank account. The reader sets
     // this only from FNB's sentence below END OF NOTIFICATION (eft-banks.cjs
     // fnbPayShap); the destination account is still checked digit for digit
-    // by destinationVerdict (7a), and future-dated still refuses above.
+    // by destinationVerdict (7a), and the date rule above still applies.
     if (parsed?.immediate === true && parsed?.paymentType === "PayShap") return { ok: true };
     return { ok: false, reason: parsed?.destBankName
       ? `This FNB notification pays "${clip(parsed.destBankName, 60)}", not an FNB account, so it is not an FNB-to-FNB immediate payment.`
@@ -632,7 +645,8 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     // A plain "Payment Confirmation" heading (immediate: false) passes too:
     // it is what a NORMAL payment prints, and a same-bank normal payment is
     // exactly what Junid accepts. A scheduled one is still refused above
-    // when the bank dates it after its notice arrived. A heading the reader
+    // when the bank dates it beyond the next business day (or later the same
+    // day than its notice). A heading the reader
     // found ANOMALOUS (two headings, one split, one below the confirmation)
     // still refuses: that is a document out of shape, not a payment type.
     // This applies wherever immediacy is required — also a Standard Bank
