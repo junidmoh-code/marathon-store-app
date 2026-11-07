@@ -1294,7 +1294,7 @@ async function sbSequenceProofFor(db, { terminal, tid, extraction, terminals = {
   const rivals = [];
   if (candidates.length) {
     for (const [otherTid, row] of Object.entries(terminals)) {
-      if (otherTid === tid || !row || !row.storeId || isRetiredTerminal(row)) continue;
+      if (otherTid === tid || !row || !row.storeId) continue; // retired machines too: stricter
       for (const r of await inForceUnder(db, row.storeId, otherTid, printed - 1)) rivals.push({ ...r, tid: otherTid, label: row.label || otherTid });
     }
   }
