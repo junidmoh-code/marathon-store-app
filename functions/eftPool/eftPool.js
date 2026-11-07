@@ -946,14 +946,16 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
     }
     throw new HttpsError("already-exists", "That entry id is taken by another record — reload and try again.", { code: "key-taken" });
   }
-  // The SAME money typed twice would be two spendable records: refused while
-  // the earlier entry is in the pool tail (used or waiting).
+  // The SAME money typed twice would be two spendable records: refused when
+  // the earlier entry was typed the same SAST day (used or waiting). An
+  // earlier day's entry with the same reference and amount is a repeat
+  // customer's next payment, not this one — no renaming to "… 2".
   const tail = await readPoolTail();
-  const bankTwin = bankTwinOfEntry(input, Object.entries(tail));
+  const bankTwin = bankTwinOfEntry({ ...input, at: now }, Object.entries(tail));
   if (bankTwin) {
     throw new HttpsError("failed-precondition", `The bank's own notification for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} is already in the pool, unused — the cashier can use that one. No manual entry is needed.`, { code: "bank-twin-waiting", key: bankTwin.key });
   }
-  const dup = manualDuplicateOf(input, Object.entries(tail));
+  const dup = manualDuplicateOf({ ...input, at: now }, Object.entries(tail));
   if (dup) {
     const state = dup.record.status === "used" ? "has already been used" : "is already in the pool, waiting";
     throw new HttpsError("failed-precondition", `A manual entry for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} ${state}. If this is a second, separate payment, give it a different reference.`, { code: "already-entered", key: dup.key });
