@@ -7,8 +7,9 @@
 // THE MODEL (owner spec 2026-08-06): a display shoe sitting on a shop shelf IS
 // hub stock. Registering it ADDS one unit to the hub's existing quantity for
 // that size, through applyMovement like every other stock write. Scope is
-// HUB 1 and HUB 2 only — Pine (marathon-pine / hub3) is entirely out of scope
-// and no id from it may ever appear here.
+// every hub in the network registry and the shops each one feeds (Junid,
+// 7 Nov 2026 — the August "Pine is out" scope is gone; Hub 3 is registered and
+// counted like Hub 1 and Hub 2).
 
 import { normaliseStyleCode } from "../../utils/styleCode.js";
 import { choosePrimaryCodeIndex } from "../../utils/labelPrimary.js";
@@ -18,42 +19,50 @@ import { productIsFootwear } from "../../utils/footwearLine.js";
 import { isRegistered } from "../../utils/labelIdentity.js";
 import { isDeactivated } from "../../utils/deactivation.js";
 import { claimOwnerIds, allRegisteredSiblings } from "../../utils/styleCodeSiblings.js";
-import { net, hubIds, storeIds, nameOf } from "./sectionRouting.js";
+import { net, hubIds, storeIds, nameOf, sectionOfLoc } from "./sectionRouting.js";
+import { storesServedBy, backStockHubsOf, sectionsInOrder, wallAllows } from "../../utils/networkRegistry.js";
 
-// The ONLY hubs this feature touches. A closed list, deliberately NOT derived
-// from the location registry: the registry contains hub3 (Pine's lane), and
-// "everything warehouse-shaped" is exactly the derivation that would leak it in.
-export const CLEANUP_HUBS = Object.freeze(["hub1", "hub2"]);
-export const CLEANUP_HUB_LABELS = Object.freeze({ hub1: "Hub 1", hub2: "Hub 2" });
-
-// ── THE SAME DECISION, HELD BY THE LIVE FLAG ─────────────────────────────────
-// "Hub 3 / Pine is out" is the owner's recorded decision, and the network
-// registry now carries it as a flag rather than as a list: a location that is
-// not LIVE is out. On the registry's seed the live hubs are Hub 1 and Hub 2
-// and the live shops are Marathon PE and Trophy — the two constants here,
-// which are kept for the callers that import them (pinned equal by test).
-// WHAT SWITCHES ON when the owner makes Hub 3 (or Pine, or Concrete) live:
-// the hub is offered for cleanup and display registration, and the shop floor
-// can hold a display slot — with no code change.
+// ── THE HUBS AND THE SHOPS, FROM THE NETWORK REGISTRY ───────────────────────
+// No list is kept here. The hubs are every hub in the registry (not retired),
+// Marathon's section first and then Concrete's, so the card still opens on
+// Hub 1: on the seed that is Hub 1, Hub 2, Hub 3. A display's shop is one of
+// the shops its hub FEEDS — the registry's backStock map, the same map Solve
+// and Missing Products route by (storesServedBy) — so Hub 1 and Hub 2 offer
+// Marathon PE and Trophy, and Hub 3 offers Marathon Pine and Concrete.
+// Nothing here reads the live flag: registering and counting are things a
+// person does by hand, and Hub 3's Auto-refill being "solved" says nothing
+// about whether its displays exist.
 export function cleanupHubs(network) {
-  return hubIds(net(network), { liveOnly: true });
+  const N = net(network);
+  const sections = sectionsInOrder(N, [...new Set(hubIds(N).map((h) => sectionOfLoc(h, N)))]);
+  return sections.flatMap((section) => hubIds(N, { section }));
 }
 export function isCleanupHub(hub, network) {
   return cleanupHubs(network).includes(hub);
 }
+// Every shop floor a display can stand on, in the same section order.
 export function displayStores(network) {
-  return storeIds(net(network), { liveOnly: true });
+  const N = net(network);
+  const sections = sectionsInOrder(N, [...new Set(storeIds(N).map((s) => sectionOfLoc(s, N)))]);
+  return sections.flatMap((section) => storeIds(N, { section }));
+}
+// The shops THIS hub feeds, registry order. Hub 1 / Hub 2 → Marathon PE,
+// Trophy; Hub 3 → Marathon Pine, Concrete. The wall is asked as well, so a
+// mis-written backStock entry can never offer a shop across it.
+export function displayStoresForHub(hub, network) {
+  const N = net(network);
+  const served = new Set(storesServedBy(N, hub));
+  return storeIds(N).filter((s) => served.has(s) && wallAllows(N, hub, s));
+}
+// The hubs that feed THIS shop's back stock (any category), registry order.
+export function displayHubsForStore(store, network) {
+  const N = net(network);
+  const feeding = new Set(backStockHubsOf(N, store));
+  return cleanupHubs(N).filter((h) => feeding.has(h) && wallAllows(N, h, store));
 }
 // Labels come from the registry, so a location that joins has a name.
 export const cleanupHubLabel = (hub, network) => nameOf(hub, network);
 export const displayStoreLabel = (store, network) => nameOf(store, network);
-
-// The shop floors a hub display can stand on (owner spec 2026-08-12: a display
-// is a SLOT per product per STORE). A closed list for the same reason as
-// CLEANUP_HUBS — Pine is out of scope, and deriving "everything store-shaped"
-// from the registry would leak marathon-pine in.
-export const DISPLAY_STORES = Object.freeze(["marathon-pe", "trophy"]);
-export const DISPLAY_STORE_LABELS = Object.freeze({ "marathon-pe": "Marathon PE", trophy: "Trophy" });
 
 // ── REGISTRATION KEYS ────────────────────────────────────────────────────────
 // One registration slot per (product, size) per hub, and a DETERMINISTIC

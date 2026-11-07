@@ -32,7 +32,7 @@ import { deactivateUpdates, reactivateUpdates } from "../../utils/deactivation.j
 import { normaliseStyleCode, formatStyleCodeForDisplay } from "../../utils/styleCode";
 import { enqueueStyleCodeCapture } from "../../utils/styleCodeCapture";
 import {
-  isCleanupHub, registerKey, registerMovementId, extraUnitMovementId,
+  isCleanupHub, displayStoresForHub, registerKey, registerMovementId, extraUnitMovementId,
   STYLE_SKIP_REASONS,
 } from "./hubCleanupCore";
 import { setDisplaySlot } from "./displaySlots";
@@ -173,7 +173,13 @@ export async function loadUnresolved(hub) {
  * (the stock unit is the fact that must not be dropped).
  */
 export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCode = null, store = null }) {
-  if (!isCleanupHub(hub)) return { ok: false, message: "Only Hub 1 and Hub 2 are in scope." };
+  if (!isCleanupHub(hub)) return { ok: false, message: `${hub} is not a hub in the network registry.` };
+  // The shop must be one this hub feeds — the registration screen only offers
+  // those, and a stale or hand-built call naming another shop is refused before
+  // anything writes (a Hub 1 display can never land on Pine's floor).
+  if (store && !displayStoresForHub(hub).includes(store)) {
+    return { ok: false, message: `${store} is not fed by ${hub} — pick one of its shops.` };
+  }
   if (!product || !product.id) return { ok: false, message: "No product." };
   const n = Number(qty);
   if (!Number.isInteger(n) || n < 1) return { ok: false, message: "Quantity must be a whole number, 1 or more." };
@@ -373,7 +379,10 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
  * transaction against that same base.
  */
 export async function addExtraDisplayUnit({ hub, product, size, store = null }) {
-  if (!isCleanupHub(hub)) return { ok: false, message: "Only Hub 1 and Hub 2 are in scope." };
+  if (!isCleanupHub(hub)) return { ok: false, message: `${hub} is not a hub in the network registry.` };
+  if (store && !displayStoresForHub(hub).includes(store)) {
+    return { ok: false, message: `${store} is not fed by ${hub} — pick one of its shops.` };
+  }
   if (!product || !product.id) return { ok: false, message: "No product." };
   const rawSize = String(size ?? "").trim();
   const sizeKey = stockSizeKey(rawSize);
