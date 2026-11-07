@@ -285,7 +285,10 @@ test("the HAND capture path refuses a retired terminal at extract AND at submit"
   // dispatch, before the photo is stored; its submit is the typed path's.
   // EIGHT since 17 Oct 2026: the one-till list (slipTills) leaves a retired
   // machine out, so a staff screen never draws one.
-  assert.equal(guards.length, 8, "receive, slip, slipTills, photo extract, picked-PDF extract, submit and the typed path's two each refuse a retired terminal");
+  // NINE since 7 Nov 2026: a Standard Bank photo that could not be read falls
+  // back to the typed total sent beside it (recordTypedFallback), and refuses
+  // a machine retired between the send and the read before recording it.
+  assert.equal(guards.length, 9, "receive, slip, slipTills, photo extract, picked-PDF extract, submit, the typed path's two and the unread-photo fallback each refuse a retired terminal");
   assert.match(code, /retiredCaptureRefusal\(/, "and the refusal is the shared sentence, not a second wording");
   // The submit guard must sit against the registry as it stands NOW, not
   // against the terminal the draft remembers — the draft's copy was taken
