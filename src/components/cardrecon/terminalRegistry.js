@@ -47,13 +47,32 @@ export function captureMode(row) {
  * else; a typed-total till shows one box for the figure and no camera at all.
  */
 export function takesPhoto(row) {
+  if (isPhotoPrimary(row)) return true;
   const m = captureMode(row);
   return m !== "email" && m !== "typed";
 }
 
 /** Is this card captured by typing its total, with no photograph at all? */
 export function typesTotal(row) {
+  if (isPhotoPrimary(row)) return false;
   return captureMode(row) === "typed";
+}
+
+/**
+ * A STANDARD BANK till is photographed (Junid, 7 Nov 2026) — the server half
+ * is isPhotoPrimary in functions/lib/card-terminals.cjs. Its printed
+ * end-of-day report is the record; the typed total is optional; nothing waits
+ * for an email. Decided by the row's bank, never by a list of tills.
+ */
+export function isPhotoPrimary(row) {
+  return row?.bank === "standard-bank";
+}
+
+/** Does this machine's report arrive by email? Never a Standard Bank one. */
+export function expectsEmail(row) {
+  if (isPhotoPrimary(row)) return false;
+  const m = captureMode(row);
+  return m === "email" || m === "both";
 }
 
 /**

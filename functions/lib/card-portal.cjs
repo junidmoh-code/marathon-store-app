@@ -316,7 +316,18 @@ function samePortalFigures(rec, extraction) {
  *     beside it;
  *   • nothing that day → the terminal's next filing number.
  */
-function planPortalWrite({ dayRecords, lastBatchNo, extraction }) {
+// ─── FROM 7 NOV 2026 THE PORTAL IS A CROSS-CHECK, NEVER THE RECORD ──────────
+// Junid, 7 Nov 2026: the photographed end-of-day report is the record for a
+// Standard Bank till (lib/card-sb-photo.cjs). The portal had recorded Marathon
+// PE Till 2 at R0.00 against R33,440 of card sales (its merchant shows no
+// rows), and Concrete short of the till on 3 and 6 Nov. So a pull no longer
+// creates a record and never replaces one: it writes the day's portal figure
+// onto the record in force as `portalCheck` (Junid's eyes only), and a day
+// with no record waits for its photo. A portal record already on file (3–6
+// Nov) is still revised by a later pull of the same day — until the photo
+// takes the day over, after which its chain is the photo's and the pull is a
+// cross-check like any other.
+function planPortalWrite({ dayRecords, lastBatchNo: _lastBatchNo, extraction }) {
   const recs = (dayRecords || []).filter((r) => r && r.record && Number.isFinite(Number(r.record.batchNo)));
   const latestOf = (list) => list.slice().sort((a, b) => Number(a.record.batchNo) - Number(b.record.batchNo)
     || (Number(a.record.revision) || 1) - (Number(b.record.revision) || 1)).at(-1) || null;
@@ -327,15 +338,28 @@ function planPortalWrite({ dayRecords, lastBatchNo, extraction }) {
     const chain = latestOf(recs.filter((r) => Number(r.record.batchNo) === Number(portalBatch.record.batchNo)));
     // Junid corrected the portal's figure ("Correct these figures"): his
     // correction stands — a later pull never writes over it.
-    if (!isPortalRecord(chain.record)) return { action: "noop", key: chain.key, correctionStands: true };
+    if (!isPortalRecord(chain.record)) return { action: "check", key: chain.key, correctionStands: true };
     if (samePortalFigures(chain.record, extraction)) return { action: "noop", key: chain.key };
     return { action: "revise", batchNo: Number(chain.record.batchNo), supersedes: chain.key, replacing: "portal" };
   }
-  // No portal record yet: another record in force that day is replaced.
+  // No portal record: the record in force that day (a photographed report,
+  // Junid's entry, a typed total) stands, and the portal figure goes beside
+  // it. No record at all: nothing is written — the day waits for its photo.
   const inForce = latestOf(recs);
-  if (inForce) return { action: "revise", batchNo: Number(inForce.record.batchNo), supersedes: inForce.key, replacing: "other" };
-  const next = Number.isInteger(lastBatchNo) && lastBatchNo >= 0 ? lastBatchNo + 1 : 1;
-  return { action: "new", batchNo: next };
+  return { action: "check", key: inForce ? inForce.key : null };
+}
+
+/** The portal's figure for a day, as it sits beside the record in force (`portalCheck`). */
+function portalCheckOf({ extraction, recordTotalCents = null, merchantNo = null, nowMs }) {
+  const total = Number.isInteger(extraction && extraction.totalCents) ? extraction.totalCents : null;
+  return {
+    totalCents: total,
+    txnCount: Number.isInteger(extraction && extraction.txnCount) ? extraction.txnCount : null,
+    dayYmd: sastDayYmd(extraction.openedAt),
+    merchantNo: merchantNo || null,
+    differsCents: Number.isInteger(total) && Number.isInteger(recordTotalCents) ? total - recordTotalCents : null,
+    at: nowMs,
+  };
 }
 
 /** The sentence(s) a portal record carries. */
@@ -386,5 +410,5 @@ module.exports = {
   METABASE_ROW_CAP, SAFE_KEY,
   isPortalDay, portalDayWindow, columnIndex, parsePortalRows, randsToCents, isTidLike,
   mapPortalTids, unassignedKey, portalExtraction, isPortalRecord, samePortalFigures, lineSignature,
-  planPortalWrite, portalWarnings, portalTerminalsOn, daysToPull,
+  planPortalWrite, portalCheckOf, portalWarnings, portalTerminalsOn, daysToPull,
 };

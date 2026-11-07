@@ -163,6 +163,19 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     .map(([key, record]) => ({ key, record: { ...record, batchKey: record.batchKey || key } }));
   const last = await core().readLastBatchFor(db, storeId, tid);
   const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction });
+  // A CROSS-CHECK (from 7 Nov 2026): the portal's figure beside the record in
+  // force, or — no record yet — only on the day's status; never a record.
+  if (plan.action === "check") {
+    if (!plan.key) return { outcome: "awaiting-photo", totalCents: extraction.totalCents, txnCount: extraction.txnCount };
+    let differs = null;
+    await db.ref(`${tidPath}/${plan.key}`).transaction((cur) => {
+      if (cur === null) return null; // cold-null: a deleted record stays deleted
+      const check = P.portalCheckOf({ extraction, recordTotalCents: cur.slip && cur.slip.totalCents, merchantNo, nowMs });
+      differs = check.differsCents;
+      return { ...cur, portalCheck: check };
+    });
+    return { outcome: "checked", key: plan.key, totalCents: extraction.totalCents, txnCount: extraction.txnCount, differsCents: differs };
+  }
   if (plan.action === "noop") {
     const swept = await sweepHeld(db, { storeId, tid, dayYmd, key: plan.key });
     return { outcome: "unchanged", key: plan.key, ...(plan.correctionStands ? { note: "Junid's correction stands" } : {}), ...(swept ? { sweptSlips: swept } : {}) };

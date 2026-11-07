@@ -536,7 +536,51 @@ non-FNB terminals in the estate. Registered by
   photo is read in the background with a Standard Bank prompt only to flag a
   different total or TID. Switch the rows to "Both" once the reader ships.
 
-## The SimplyBLU portal is the record for Standard Bank tills (from 3 Nov 2026)
+## Standard Bank tills are photographed — the read report is the record (from 7 Nov 2026)
+
+Junid, 7 Nov 2026: SimplyBLU does not email the Standard Bank machines' batch
+reports, and the portal's transaction list was not the till's money — merchant
+4977890 (Marathon PE Till 2, Trophy Till 2) showed **no rows at all** from 3
+Nov, so PE Till 2 was recorded R0.00 against R33,440 of card sales on 3 Nov,
+and Concrete fell short of the till on 3 and 6 Nov. So for **every till whose
+terminal's registry row says `bank: "standard-bank"`** (`isPhotoPrimary`,
+`lib/card-terminals.cjs` — the bank decides, never a list of tills; a stored
+`capture` is ignored):
+
+* **Staff (Card Slip screen):** "Photograph the end-of-day report" — one photo,
+  or up to six for a long roll — and an **optional** card total. "Sent — thank
+  you" only with the server's receipt; otherwise "Not sent — try again". No
+  figure or verdict is ever shown back.
+* **The read:** the photos are stored at once and read in the background
+  (`cardBatchReadJob`/`cardBatchReadRetry`) with the Standard Bank prompt, built
+  from Yasmin's real photos of 0000HP1X #556–#561 (the PAX prints the same
+  "Batch Report (#N)" blocks as an FNB speedpoint). The TID must be the till's
+  (O/0 and padding forgiven, another machine refused by name), the arithmetic
+  must add up (purchases + cash − refunds = TOTAL), and the record is
+  `capturedVia: "photo"` with `photoReport { bank, readerVersion, filing }`.
+* **A typed total** is a cross-check: `typedCheck { typedCents, readCents,
+  differs }` on the record and a warning when it differs — Junid's eyes only.
+* **The read fails:** with a typed total, that total is recorded (staff-typed)
+  with `photoRead.status: "unread"` and a `PHOTO NOT READ` warning; with none,
+  the day is Unread with `photoReceived: true` — "photo received — total
+  unreadable", never "awaiting a slip".
+* **Filing (`lib/card-sb-photo.cjs planSbFiling`):** the portal numbered its
+  3–6 Nov days on from the last real batch, so a real report usually prints the
+  same number for the same day. A report whose day is held by the portal's
+  record (or a staff-typed one) **takes it over as a revision** (one card); a
+  printed number taken by **another** day's portal record is filed under the
+  next free number with `printedBatchNo`; a second photo of the same report is a
+  duplicate.
+* **The portal becomes a cross-check** (`planPortalWrite` → `check`): a pull
+  never creates a record and never replaces one; it writes `portalCheck
+  { totalCents, txnCount, differsCents }` onto the record in force, and a day
+  with no record is "awaiting-photo" in `portal/days`. Portal records already
+  written (3–6 Nov) stay, and are revised by a later pull of their own day
+  until a photo takes the day over.
+* **FNB is untouched:** FNB tills keep the emailed path and the FNB prompt; the
+  real FNB corpus gives identical results.
+
+## The SimplyBLU portal was the record for Standard Bank tills (3–6 Nov 2026; a cross-check from 7 Nov)
 
 Junid, 2 Nov 2026: from **3 Nov 2026** the Standard Bank tills take every card
 payment through the SimplyBLU app on the machine, so the **SimplyBLU portal**
