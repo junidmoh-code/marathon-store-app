@@ -102,4 +102,38 @@ function maskAccountValue(value) {
   return s.replace(/\d(?=(?:\D*\d){4})/g, "X");
 }
 
-module.exports = { clip, parseBankTimestamp, sastDate, redactAccountDigits, maskAccountValue, SAST_OFFSET_MS };
+// ─── THE NEXT BUSINESS DAY (Junid, 7 Nov 2026) ───────────────────────────────
+// A non-immediate EFT made on a weekend is dated by the payer's bank for the
+// day it settles: a Saturday Nedbank "Internet payment" prints Monday's date.
+// Such a payment is accepted on date grounds; anything dated LATER than the
+// next business day is a scheduled payment and is not. Business days skip
+// Saturday and Sunday. There is no South African public-holiday list in this
+// repo (and no paid calendar service is to be added), so a payment dated the
+// day after a public holiday that falls on a Monday is refused as too far out
+// — the safe side; Junid floats it by hand.
+/** "2026-11-07" (a Saturday) → "2026-11-09"; "2026-11-04" → "2026-11-05". */
+function nextBusinessDay(sastDay) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(sastDay ?? ""));
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Is a payment the bank dates `bankTs` settled on date grounds, judged from
+ * `todayMs` (the notification's arrival, or the server's now)? Dated on or
+ * before the next business day after today's SAST date: yes.
+ * @returns {{ok:true, paidDay:string, nextBusinessDay:string, settlesLater:boolean} | {ok:false, paidDay:string, nextBusinessDay:string, reason:string}}
+ */
+function settlementDateVerdict(bankTs, todayMs) {
+  const paidDay = sastDate(bankTs);
+  const today = sastDate(todayMs);
+  const nbd = nextBusinessDay(today);
+  if (paidDay > nbd) {
+    return { ok: false, paidDay, nextBusinessDay: nbd, reason: `Payment dated ${paidDay} — beyond the next business day, not treated as settled.` };
+  }
+  return { ok: true, paidDay, nextBusinessDay: nbd, settlesLater: paidDay > today };
+}
+
+module.exports = { clip, parseBankTimestamp, sastDate, redactAccountDigits, maskAccountValue, SAST_OFFSET_MS, nextBusinessDay, settlementDateVerdict };

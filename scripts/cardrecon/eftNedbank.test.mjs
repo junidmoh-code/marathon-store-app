@@ -186,10 +186,10 @@ describe("a genuine immediate Nedbank payment confirms ONCE; a resend never re-f
 });
 
 describe("what is NOT confirmed", () => {
-  it("a future-dated (scheduled) payment refuses even when the channel says immediate", () => {
+  it("a payment dated BEYOND the next business day (scheduled) refuses even when the channel says immediate", () => {
     const later = swap("Date of Payment : 27/10/2026", "Date of Payment : 30/10/2026", IMMEDIATE);
     const { timing, record } = decide(later);
-    expect(timing.reason).toMatch(/scheduled \/ future-dated/);
+    expect(timing.reason).toBe("Payment dated 2026-10-30 — beyond the next business day, not treated as settled.");
     expect(record.outcome).toBe("refused-not-immediate");
   });
   it("a payment into someone else's account refuses", () => {

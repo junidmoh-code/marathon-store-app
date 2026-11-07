@@ -57,8 +57,8 @@ export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, absaSyn
 // functions/lib/eft-banks.cjs, shared with eftPoolManualApprove) can use them
 // from Cloud Functions. Re-exported here unchanged: every importer still reads
 // them from eftCore.
-const { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue } = require("./lib/eft-text.cjs");
-export { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue };
+const { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue, nextBusinessDay, settlementDateVerdict } = require("./lib/eft-text.cjs");
+export { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue, nextBusinessDay, settlementDateVerdict };
 const {
   parseAllowedAccounts, parseAccountPolicies, accountPolicyProblems, destinationVerdict, destinationBankOf, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR,
 } = require("./lib/eft-destination.cjs");
@@ -503,8 +503,9 @@ export function accountVerdict({ accountMask, allowedTails, configured }) {
 //                 real samples 27 Oct 2026 — all "Internet payment")
 //   fnb           NO such field — see below; a PayShap notice says PayShap
 //                 (reader: paymentType "PayShap", immediate: true)
-// Whatever a bank prints, a payment dated in the FUTURE of its own
-// notification's arrival is scheduled and refuses.
+// Whatever a bank prints, a payment dated BEYOND THE NEXT BUSINESS DAY after
+// its own notification's arrival is scheduled and refuses (7 Nov 2026: one
+// dated on or before the next business day settles then — see below).
 export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
 // fnb: no printed field, but FNB sends this notification ONLY for a payment
 // from its OWN customer, and the account check (7a) admits only an FNB
@@ -559,14 +560,20 @@ export function immediacyRequiredFor(bankTs) {
  */
 export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = false }) {
   const id = reader ?? parsed?.reader ?? null;
-  // Future-dated by the clock (15-minute tolerance) OR by the SAST calendar
-  // day: a date-only bank (Nedbank, Absa) prints tomorrow as tomorrow's
-  // midnight, which a notification arriving after 23:45 would otherwise slip
-  // under the tolerance — and from 27 Oct nothing else stops it. (Sonnet
-  // architect review, date-phased PR.)
+  // NEXT-BUSINESS-DAY SETTLEMENT (Junid, 7 Nov 2026). A payment dated after
+  // its notification arrived used to refuse as scheduled — but a weekend
+  // non-immediate EFT is dated for the day it SETTLES: RICHARD CHETTY's two
+  // Nedbank "Internet payment"s of Saturday 7 Nov print Monday 09/11 and were
+  // refused, though DKIM-signed and paid into the shop's own accounts. Now a
+  // payment the bank dates on or before the NEXT BUSINESS DAY after the
+  // notice's SAST day is settled on date grounds (eft-text.cjs
+  // settlementDateVerdict; Saturday and Sunday skipped); dated later, it is a
+  // scheduled payment and refuses, saying so. Judged from the notice's own
+  // arrival, so a replay decides exactly as the first read did.
   if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)
     && (parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS || sastDate(parsed.bankTs) > sastDate(receivedAt))) {
-    return { ok: false, reason: "The payment is dated after its notification arrived — a scheduled / future-dated payment, not an immediate one." };
+    const dated = settlementDateVerdict(parsed.bankTs, receivedAt);
+    if (!dated.ok) return { ok: false, reason: dated.reason };
   }
   const onlyImmediate = immediateOnly === true;
   if (!onlyImmediate && !immediacyRequiredFor(parsed?.bankTs)) return { ok: true };

@@ -709,7 +709,11 @@ test("imageKindOf and keyedIdentityCheck, as data", () => {
   assert.equal(imageKindOf(Buffer.from("%PDF-1.4 not an image")), null);
   assert.equal(imageKindOf(null), null);
   const ok = keyedIdentityCheck(ABSA_KEYED, { allowedAccounts: ["62900004321"], now: PINNED_NOW });
-  assert.equal(keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-10-30" }, { allowedAccounts: ["62900004321"], now: PINNED_NOW }).code, "bad-date", "tomorrow (SAST) is the future");
+  // 7 Nov 2026: the NEXT BUSINESS DAY (Fri 30 Oct, for a proof keyed Thu 29 Oct) settles on date grounds; the day after does not.
+  assert.equal(keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-10-30" }, { allowedAccounts: ["62900004321"], now: PINNED_NOW }).ok, true, "the next business day is not the future");
+  const beyond = keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-10-31" }, { allowedAccounts: ["62900004321"], now: PINNED_NOW });
+  assert.equal(beyond.code, "bad-date", "beyond the next business day");
+  assert.match(beyond.message, /^Payment dated 2026-10-31 — beyond the next business day, not treated as settled\./);
   assert.equal(ok.ok, true);
   assert.equal(ok.readerId, "absa");
   assert.equal(ok.parse.bankTs, EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN).bankTs, "the date is the reader's own bank timestamp");
