@@ -33,10 +33,16 @@ case:
 The key is `sha256("eftmanual1|" + entryId)[0:40]`: a retried submit lands on
 the same key (create-if-absent → `already: true`). Refused at entry:
 
-* the same normalised reference **and** amount already entered by hand while
-  that entry is in the pool tail (`already-entered`);
 * the **bank's own unmatched notification** for that reference and amount
   already in the tail (`bank-twin-waiting`) — the cashier uses that one.
+
+**Same reference, warned not blocked (Junid, 7 Nov 2026).** A second hand
+entry with the same normalised reference and amount typed the same SAST day
+(or within 12 hours) is ACCEPTED as its own record, and the answer carries
+`warning: { code: "similar-entry", key, status, message }` — no renaming to
+"… 2". Only the EXACT same entry (reference, amount and note) under another
+entryId within 10 seconds is an accidental double tap: it is answered with the
+first record (`already: true, doubleSubmit: true`) and nothing new is written.
 
 The fingerprint is claimed create-only at entry, in the poller's order.
 
@@ -48,7 +54,7 @@ payment. Three rules do:
 
 | situation | what happens |
 |---|---|
-| manual entry **used**, bank twin arrives | the search warns on the row (`sameUsed`); the **settle refuses** the bank record (`twin-used`; the log line says `manual-twin-used`). Junid reverses the manual entry if the customer really paid twice. |
+| manual entry **used**, bank twin arrives | since 7 Nov 2026 (Junid) a bank record carrying its **own transaction number** is judged on that number alone: no `sameUsed` warning, no refusal — the settle logs `EFT_TXN_OVER_MANUAL_TWIN` for Junid's review. When Junid hand-settles a REFUSED notice, `claim-settled-bank-fingerprint.mjs` / `claim-settled-reread-fingerprint.mjs` marks its number spent, so a resend is held. (A bank record with NO number still gets the warning and the refusal.) |
 | manual entry **waiting**, bank twin arrives | the search answers with the **bank** record (not "ambiguous"); no warning — the manual one stays unused and is refused once the bank's is spent. Junid reverses it or marks it used. |
 | bank record already waiting when Junid types | refused at entry (`bank-twin-waiting`). |
 | bank twin arrives and is **used** while the manual entry still waits | the search warns on the manual row (`sameUsed`); the **settle refuses** the manual entry (`twin-used`; the log line says `bank-twin-used`). Junid marks it used or reverses the bank settlement. |
@@ -61,8 +67,8 @@ end date, let one used entry block every later payment a repeat customer made
 under the same reference and amount). A payment the bank dates after the
 entry was typed is a new payment. `bank-twin-waiting` looks at unused bank
 payments dated from 7 days back to tomorrow; a second manual entry is
-`already-entered` only when typed the same SAST day or within 12 hours of the
-first.
+`similar-entry` (a warning) only when typed the same SAST day or within 12
+hours of the first.
 
 Limit: all three look at the pool tail (the newest 400), as every settle-time
 check does.

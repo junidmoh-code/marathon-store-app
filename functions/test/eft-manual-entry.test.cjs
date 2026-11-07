@@ -308,11 +308,33 @@ test("Junid's entry lands in the pool: recorded, unmatched, stamped, fingerprint
   const again = await eftPoolManualEntry({ ...OWNER, data: ENTRY });
   assert.equal(again.already, true);
   assert.equal(again.key, key);
-  // The same money with a NEW entry id is refused while the first is in the pool.
+  // THE EXACT SAME ENTRY under a new entry id within seconds: an accidental
+  // double tap — answered with the first record, nothing new written.
   db.tail = { [key]: rec };
-  const dup = await rejects(eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second001" } }), "failed-precondition");
-  assert.equal(dup.details.code, "already-entered");
+  const tap = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second001" } });
+  assert.deepEqual({ ok: tap.ok, already: tap.already, doubleSubmit: tap.doubleSubmit, key: tap.key }, { ok: true, already: true, doubleSubmit: true, key });
   assert.equal(db.reads[`eft_pool/${manualEntryKeyOf("ME-second001")}`], undefined);
+  // The same reference and amount as a SEPARATE entry (Junid, 7 Nov 2026):
+  // accepted, with a warning — its own record, its own fingerprint.
+  const earlier = { ...rec, manualEntry: { ...rec.manualEntry, at: rec.manualEntry.at - 60 * 1000 } };
+  db.tail = { [key]: earlier };
+  const second = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second002" } });
+  assert.equal(second.ok, true);
+  assert.equal(second.already, false);
+  assert.notEqual(second.key, key);
+  assert.equal(second.reference, "THABO 0821", "the same reference — no renaming to \"… 2\"");
+  assert.equal(second.warning.code, "similar-entry");
+  assert.equal(second.warning.key, key);
+  assert.match(second.warning.message, /SEPARATE payment/);
+  const secondRec = db.reads[`eft_pool/${second.key}`];
+  assert.equal(secondRec.status, "unmatched");
+  assert.notEqual(paymentFingerprint(secondRec), paymentFingerprint(rec), "each hand entry is its own record");
+  // A different note seconds later is a deliberate entry, not a double tap.
+  db.tail = { [key]: rec };
+  const noted = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second003", note: "second payment" } });
+  assert.equal(noted.already, false);
+  assert.equal(noted.warning.code, "similar-entry");
+  db.tail = {};
 });
 
 test("a cashier consumes it through the ORDINARY settle, once; the log says who, where, for whom", async () => {
@@ -352,7 +374,7 @@ test("the review list is Junid's alone and reads one bounded page by key order",
   db.queries = [];
   const out = await eftPoolManualEntry({ ...OWNER, data: { action: "list" } });
   assert.equal(out.ok, true);
-  assert.equal(out.counts.entered, 1);
+  assert.equal(out.counts.entered, 3, "the first entry and the two separate same-reference entries above");
   const q = db.queries.find((x) => x.path === "eft_manual_entries");
   assert.deepEqual(q.cs.map((c) => c[0]), ["orderByKey", "limitToLast"], "no index needed, never the node");
 });

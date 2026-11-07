@@ -26,10 +26,14 @@
 //     (consumeFingerprintCheck, claimHolderCheck, the in-transaction
 //     re-derivation) all apply. One entry, one spend.
 //   · the KEY is derived from the client's entryId, so a retried tap lands
-//     on the same key and the create-if-absent write makes it idempotent;
-//     and a second entry with the SAME reference AND amount TYPED THE SAME
-//     SAST DAY is refused — a double-entered payment would be two spendable
-//     records for one sum of money. (An earlier day's is another payment.)
+//     on the same key and the create-if-absent write makes it idempotent.
+//     A second entry with the SAME reference AND amount typed the same SAST
+//     day is ACCEPTED WITH A WARNING (Junid, 7 Nov 2026 — it used to be
+//     refused, forcing "… 2" references): a customer can genuinely pay twice
+//     under one reference, and each hand entry is its own record. Only the
+//     EXACT same entry (reference, amount and note) submitted again within
+//     MANUAL_DOUBLE_SUBMIT_MS is an accidental double tap, answered with the
+//     first record instead of a second (manualDoubleSubmitOf).
 //
 // Every entry and every consumption is LOGGED (eft-manual log, commit 3) so
 // Junid can see how often the hatch is used and retire it when enforcement
@@ -211,8 +215,11 @@ function isManualEntry(record) {
     && record.manualEntry && typeof record.manualEntry === "object");
 }
 
+// An accidental double-submit: the exact same entry again within seconds.
+const MANUAL_DOUBLE_SUBMIT_MS = 10 * 1000;
+
 /**
- * A second entry for money already entered: the same normalised reference,
+ * A SIMILAR entry — a WARNING since 7 Nov 2026, never a refusal: the same normalised reference,
  * the same amount, on a manual record TYPED THE SAME SAST DAY OR WITHIN 12
  * HOURS (any status — a
  * used one has been spent, an unmatched one is waiting). The same entryId is
@@ -231,6 +238,30 @@ function manualDuplicateOf({ reference, amountCents, entryId, at = null }, sibli
     if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
     if (Number.isInteger(at) && Number.isInteger(rec.manualEntry.at)
       && !sameSastDay(at, rec.manualEntry.at) && Math.abs(at - rec.manualEntry.at) >= DUPLICATE_ROLLING_MS) continue;
+    return { key, record: rec };
+  }
+  return null;
+}
+
+/**
+ * THE ACCIDENTAL DOUBLE-SUBMIT (Junid, 7 Nov 2026): the EXACT same entry —
+ * same normalised reference, same amount, same note — typed under another
+ * entryId no more than MANUAL_DOUBLE_SUBMIT_MS before `at`. Answered with
+ * that record (no second one). A deliberate second entry seconds later with
+ * the same fields is indistinguishable from a double tap, so it is answered
+ * the same way; Junid adds a note, or waits a few seconds, to enter it.
+ * @returns {{key:string, record:object}|null}
+ */
+function manualDoubleSubmitOf({ reference, amountCents, note = null, entryId, at }, siblings) {
+  if (!Number.isInteger(at)) return null;
+  const want = normaliseText(reference);
+  const wantNote = String(note ?? "").trim();
+  for (const [key, rec] of siblings ?? []) {
+    if (!isManualEntry(rec) || rec.manualEntry.entryId === entryId) continue;
+    if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
+    if (String(rec.manualEntry.note ?? "").trim() !== wantNote) continue;
+    const typed = rec.manualEntry.at;
+    if (!Number.isInteger(typed) || at - typed < 0 || at - typed > MANUAL_DOUBLE_SUBMIT_MS) continue;
     return { key, record: rec };
   }
   return null;
@@ -328,6 +359,7 @@ module.exports = {
   MANUAL_READER, MANUAL_ENTRY_BY, MANUAL_LOG_PATH,
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
+  manualDoubleSubmitOf, MANUAL_DOUBLE_SUBMIT_MS,
   bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin,
 };
 

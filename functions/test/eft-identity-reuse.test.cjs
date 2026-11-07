@@ -189,7 +189,7 @@ test("Friday's unused notice still redirects a Monday hand entry of the same mon
   assert.equal(bankTwinOfEntry({ reference: "SOCCER T SHIRT", amountCents: 87000, at: sast("2026-11-09T09:00:00") }, [["f", friday]])?.key, "f");
 });
 
-test("the same money typed twice the SAME day is still refused; the bank's notice already waiting today still redirects", () => {
+test("the same reference + amount typed twice the SAME day is still FOUND (a warning since 7 Nov 2026); the bank's notice already waiting today still redirects", () => {
   const firstKey = manualEntryKeyOf("ME-twice-001");
   const first = manual({ entryId: "ME-twice-001", typed: "2026-11-07T10:00:00" });
   const again = manualDuplicateOf({ reference: "soccer t-shirt", amountCents: 87000, entryId: "ME-twice-002", at: sast("2026-11-07T16:00:00") }, [[firstKey, first]]);
@@ -240,7 +240,7 @@ test("a hand entry of money already approved from its proof is refused: MANUAL-â
   assert.equal(approvedTwinSettleCheck({ poolKey: "l", record: later, siblings: [["ap", approved]] }).ok, true);
 });
 
-test("the same money typed at 23:55 and again at 00:05 is still a duplicate (12-hour rolling window)", () => {
+test("the same reference + amount typed at 23:55 and again at 00:05 is still found as similar (12-hour rolling window)", () => {
   const firstKey = manualEntryKeyOf("ME-midn-0001");
   const first = manual({ entryId: "ME-midn-0001", typed: "2026-11-07T23:55:00" });
   assert.equal(manualDuplicateOf({ reference: "SOCCER T SHIRT", amountCents: 87000, entryId: "ME-midn-0002", at: sast("2026-11-08T00:05:00") }, [[firstKey, first]])?.key, firstKey);
