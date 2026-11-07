@@ -25,6 +25,7 @@ const {
 const { paymentFingerprint, consumeFingerprintCheck, claimHolderCheck } = require("../lib/eft-fingerprint.cjs");
 const { settleDecision } = require("../lib/eft-settle.cjs");
 const { publicEftView, searchEftPool } = require("../lib/eft-pool.cjs");
+const { linkedCopySettleCheck } = require("../lib/eft-linked-copies.cjs");
 
 const ACTOR = { uid: "owner-uid", email: "gunidmoh@gmail.com", name: "Junid" };
 const ENTRY = { entryId: "ME-abc12345", reference: "Thabo 0821", amountCents: 55000, note: "Capitec, no email" };
@@ -145,16 +146,16 @@ test("the same reference and amount twice is a duplicate; the same entryId is a 
   assert.equal(manualDuplicateOf({ reference: "Thabo 0821", amountCents: 56000, entryId: "ME-second001" }, [[key, r]]), null, "a different amount is a different payment");
   const bankRec = { outcome: "recorded", status: "unmatched", amountCents: 100, reference: "X", reader: "fnb", bankRef: "5TG59DVQ", at: 1 };
   assert.equal(manualDuplicateOf({ reference: "X", amountCents: 100, entryId: "ME-second001" }, [["b", bankRec]]), null, "a bank payment is never a manual duplicate");
-  // The real notification lands AFTER the manual entry was spent. It carries
-  // its OWN bank transaction number, so since 7 Nov 2026 (Junid) it is judged
-  // on that number alone: no "already used" warning at the till and no
-  // refusal at the settle on the shared reference + amount — the settle only
-  // reports the used hand entry for the server's log line.
+  // The real notification lands AFTER the manual entry was spent. The poller
+  // holds it at ingest (eft-linked-copies.cjs, 7 Nov 2026 evening); a pair
+  // recorded before that is warned about at the till and refused at the
+  // settle (linkedCopySettleCheck) — eftPoolSettle runs both checks.
   const spent = { ...r, status: "used", used: { at: 2000, sale: { receiptNumber: "S-9" } } };
   const bankTwin = { outcome: "recorded", status: "unmatched", amountCents: 55000, reference: "THABO 0821", reader: "capitec", bankRef: "ABCD1234", at: 3000 };
   const out = searchEftPool({ [key]: spent, b: bankTwin }, "thabo 0821");
   assert.equal(out.results[0].key, "b");
-  assert.equal(out.results[0].sameUsed, undefined);
+  assert.deepEqual(out.results[0].sameUsed, { at: 2000, receiptNumber: "S-9" });
+  assert.equal(linkedCopySettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, spent], ["b", bankTwin]] }).code, "twin-used");
   const settleTwin = manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, spent], ["b", bankTwin]] });
   assert.equal(settleTwin.ok, true);
   assert.equal(settleTwin.txnOverManualTwin, key);

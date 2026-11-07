@@ -15,6 +15,7 @@ import { selectReader } from "./eftBanks.mjs";
 import {
   destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, parseAccountPolicies,
   eftPoolRecord, applyFingerprintHold, paymentFingerprint, fingerprintClaimStep, sastDate,
+  linkedIngestDecision, linkedCopySettleCheck,
 } from "./eftCore.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
@@ -91,7 +92,9 @@ function pool() {
         const out = fingerprintClaimStep(key, 1, (d) => { seen = d; })(claims[fingerprint] ?? null);
         if (out !== undefined && claims[fingerprint] == null) claims[fingerprint] = out;
       }
-      const held = applyFingerprintHold(record, { fingerprint, holder: seen.holder, poolKey: key, manualApproved: seen.manualApproved, spentBy: seen.spentBy });
+      let held = applyFingerprintHold(record, { fingerprint, holder: seen.holder, poolKey: key, manualApproved: seen.manualApproved, spentBy: seen.spentBy });
+      // …then the linked-copy check, as email-poller.mjs runs it.
+      held = linkedIngestDecision(held, key, Object.entries(records), 7).record;
       records[key] = held;
       return held;
     },
@@ -103,6 +106,8 @@ function pool() {
       if (!fp.ok) return fp;
       const twin = manualTwinSettleCheck({ poolKey: key, record, siblings });
       if (!twin.ok) return twin;
+      const linked = linkedCopySettleCheck({ poolKey: key, record, siblings });
+      if (!linked.ok) return linked;
       const approved = approvedTwinSettleCheck({ poolKey: key, record, siblings });
       if (!approved.ok) return approved;
       const claim = claims[fp.fingerprint];
@@ -185,10 +190,13 @@ describe("a reference + amount collision never blocks a payment that has its own
   };
   const usedOtherBank = { outcome: "recorded", status: "used", reader: "absa", amountCents: 395000, reference: "A Payer", bankRef: "80000000Z9-9", bankTs: sast("2026-11-07T00:00:00"), used: { at: 1, sale: { receiptNumber: "S-21" } } };
 
-  it("not a used hand entry, not a number-less approved proof, not another bank payment — none of them blocks, holds or warns", () => {
+  it("a hand entry from another week, a number-less approved proof from another payer, another numbered bank payment — none of them blocks, holds or warns", () => {
+    // (The SAME money — a hand entry inside its twin window, or the blank-
+    // number copy of this very payment — IS held: eftLinkedCopies.test.mjs.)
     const p = pool();
-    p.records.m = usedManual;
-    p.records.ap = usedApprovedNoTxn;
+    const lastWeek = sast("2026-10-29T10:00:00");
+    p.records.m = { ...usedManual, manualEntry: { ...usedManual.manualEntry, at: lastWeek }, at: lastWeek, receivedAt: lastWeek, bankTs: lastWeek };
+    p.records.ap = { ...usedApprovedNoTxn, payer: "MR B OTHER", syntheticRef: "ABSA|MRBOTHER|6625|2026-11-07|395000|APAYER" };
     p.records.other = usedOtherBank;
     const rec = p.ingest("fresh", decide(absaPayerCopy({ txn: "80000000B1-1" })).record);
     expect(rec).toMatchObject({ outcome: "recorded", status: "unmatched" });
@@ -196,9 +204,7 @@ describe("a reference + amount collision never blocks a payment that has its own
     const row = searchEftPool(p.records, "a payer").results.find((r) => r.key === "fresh");
     expect(row).toBeTruthy();
     expect(row.sameUsed).toBeUndefined();
-    // The settle reports the used hand entry for its log line, never refuses.
-    expect(manualTwinSettleCheck({ poolKey: "fresh", record: p.records.fresh, siblings: Object.entries(p.records) }))
-      .toEqual({ ok: true, txnOverManualTwin: "m" });
+    expect(manualTwinSettleCheck({ poolKey: "fresh", record: p.records.fresh, siblings: Object.entries(p.records) })).toEqual({ ok: true });
   });
 
   it("…while a payment with NO number (a hand entry) is still refused when its bank twin was spent", () => {
@@ -278,8 +284,9 @@ describe("a later-dated payment is accepted only when its notice arrives on a no
     expect(decide(nonImmediate({ day: "2026-12-28" }), { received: sast("2026-12-25T10:00:00") }).record.outcome).toBe("recorded");
   });
 
-  it("an ordinary Friday does not open the window; a Friday before a Saturday holiday does (holiday-eve rule)", () => {
-    expect(settlementDateVerdict(sast("2026-11-09T00:00:00"), sast("2026-11-06T17:00:00")).ok).toBe(false);
+  it("a Friday opens the window up to Monday (not Tuesday); so does a Friday before a Saturday holiday", () => {
+    expect(settlementDateVerdict(sast("2026-11-09T00:00:00"), sast("2026-11-06T17:00:00")).ok).toBe(true);
+    expect(settlementDateVerdict(sast("2026-11-10T00:00:00"), sast("2026-11-06T17:00:00")).ok).toBe(false);
     // Fri 24 Dec 2027: Christmas Sat, Goodwill Sun → Mon 27 a holiday; next business day Tue 28.
     expect(settlementDateVerdict(sast("2027-12-28T00:00:00"), sast("2027-12-24T17:00:00")).ok).toBe(true);
     expect(settlementDateVerdict(sast("2027-12-29T00:00:00"), sast("2027-12-24T17:00:00")).ok).toBe(false);

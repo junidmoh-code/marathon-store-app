@@ -669,8 +669,14 @@ function releaseHoldDecision(current, { at, by, reason }) {
     && !paymentFingerprint(current) && !current.releasedFromHold;
   const possibleDuplicate = current.outcome === "held-possible-duplicate"
     && typeof current.syntheticRef === "string" && !normaliseBankRef(current.bankRef);
-  if (current.outcome !== "held-no-bankref" && !legacyIdless && !possibleDuplicate) {
-    return refuse("not-held", "Only a payment held for having no bank transaction id, or an Absa notice held as a possible duplicate, can be released.");
+  // A LINKED HOLD (7 Nov 2026, eft-linked-copies.cjs) on a payment with its
+  // OWN bank number: it already holds its fingerprint's claim, so a release
+  // keeps that identity — the claim spends it once, and releasedFromHold lets
+  // the settle's linked-copy check pass.
+  const linkedNumbered = current.outcome === "held-possible-duplicate"
+    && typeof current.linkedHold === "string" && !!normaliseBankRef(current.bankRef);
+  if (current.outcome !== "held-no-bankref" && !legacyIdless && !possibleDuplicate && !linkedNumbered) {
+    return refuse("not-held", "Only a payment held for having no bank transaction id, or held as a possible duplicate, can be released.");
   }
   const why = String(reason ?? "").trim();
   if (why.length < RELEASE_REASON_MIN) return refuse("bad-reason", "Say how you checked it — the reason stays on the record.");
@@ -686,6 +692,10 @@ function releaseHoldDecision(current, { at, by, reason }) {
     status: "unmatched",
     releasedFromHold: { at, by: String(by ?? ""), reason: why.slice(0, RELEASE_REASON_MAX), from },
   };
+  if (linkedNumbered) {
+    value.fingerprint = paymentFingerprint(value);
+    if (!value.fingerprint) return refuse("no-identity", "This payment's bank number could not be read for release — not released.");
+  }
   if (possibleDuplicate) {
     value.fingerprint = paymentFingerprint(value);
     // A released copy with no fingerprint of its own would settle under the

@@ -54,8 +54,8 @@ payment. Three rules do:
 
 | situation | what happens |
 |---|---|
-| manual entry **used**, bank twin arrives | since 7 Nov 2026 (Junid) a bank record carrying its **own transaction number** is judged on that number alone: no `sameUsed` warning, no refusal — the settle logs `EFT_TXN_OVER_MANUAL_TWIN` for Junid's review. When Junid hand-settles a REFUSED notice, `claim-settled-bank-fingerprint.mjs` / `claim-settled-reread-fingerprint.mjs` marks its number spent, so a resend is held. (A bank record with NO number still gets the warning and the refusal.) |
-| manual entry **waiting**, bank twin arrives | the search answers with the **bank** record (not "ambiguous"); no warning — the manual one stays unused and is refused once the bank's is spent. Junid reverses it or marks it used. |
+| manual entry **floated** (used or waiting), bank twin arrives | the poller **holds** the notice automatically (`held-possible-duplicate`, `linkedHold: "manual-twin"`) — see *Linked copies* below. A pair recorded before that: the search warns (`sameUsed`) and the settle refuses the notice once the entry is used (`twin-used`). The owner releases a hold only for a genuine second payment. |
+| manual entry **waiting**, bank twin arrives | the notice is **held** at ingest (manual-twin), so the hand entry stays the one spendable record and the cashier finds it as usual. (Recorded before this shipped: the search answers with the bank record and the hand entry is refused once the bank's is spent.) |
 | bank record already waiting when Junid types | refused at entry (`bank-twin-waiting`). |
 | bank twin arrives and is **used** while the manual entry still waits | the search warns on the manual row (`sameUsed`); the **settle refuses** the manual entry (`twin-used`; the log line says `bank-twin-used`). Junid marks it used or reverses the bank settlement. |
 
@@ -140,9 +140,23 @@ that day is not a business day — Saturday, Sunday or a South African public
 holiday (`functions/lib/eft-text.cjs`, local calendar: the Act's fixed days,
 Good Friday, Family Day, the Sunday→next-free-day rule, and
 `SA_DECLARED_HOLIDAYS` for declared days such as 2026-11-04) — or the EVE of a
-public holiday, and then only up to the next business day. The eve rule is
-what makes Junid's example work: Thu 24 Dec 2026 dated Mon 28 Dec is
-accepted. It is deliberately asymmetric: an ordinary Friday is a business day
-whose next day is not a holiday, so a Friday payment dated Monday refuses; a
-Friday before a Saturday holiday (24 Dec 2027) opens the window. A newly
+public holiday, and then only up to the next business day. Since the evening
+of 7 Nov 2026 the window also opens on the LAST business day before a
+non-business day: a Friday payment dated Monday is accepted like a Saturday
+one, and so is Thu 24 Dec 2026 dated Mon 28 Dec (the eve of Christmas).
+Monday to Thursday, with an ordinary business day after it, a payment dated
+tomorrow still refuses. A newly
 declared one-off holiday must be added to `SA_DECLARED_HOLIDAYS` by hand.
+
+## Linked copies of one payment — held automatically (7 Nov 2026 evening)
+
+`functions/lib/eft-linked-copies.cjs`, run by the poller at ingest and by
+`eftPoolSettle` at the settle. No hand-run script is needed; the
+`claim-settled-*.mjs` scripts are a backstop only.
+
+| case | what happens |
+|---|---|
+| a hand entry floated (used or waiting), then its bank notice arrives with the bank's own number (`isPaymentTwin`) | the notice is **held** `held-possible-duplicate`, `linkedHold: "manual-twin"`, `duplicateOf` the entry. The owner releases it from the EFT pool tab if the statement shows a second payment. |
+| an Absa notice with a blank number and a numbered copy of the same payment (payer, account, day, amount, reference), in either order, including a proof Junid approved | the second is **held**, `linkedHold: "blank-numbered-twin"`. |
+| a pair recorded before this shipped, or a race | the settle refuses the record whose linked copy was used (`twin-used`), unless the owner released it. |
+| a proof approved from ONE bank's document and a notice from ANOTHER bank, same amount, dated −1..+3 days | **not held**. The notice is recorded, carries `reviewFlag: { code: "possible-cross-bank-duplicate", approvedKey, sameReference, samePayer }`, and the poller logs `EFT_POSSIBLE_CROSS_BANK_DUPLICATE`. |

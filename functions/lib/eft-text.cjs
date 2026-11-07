@@ -194,26 +194,27 @@ function nextBusinessDay(sastDay) {
   return null;
 }
 
-// ─── WHEN A LATER-DATED PAYMENT IS ACCEPTED: WEEKENDS AND HOLIDAYS ONLY ──────
+// ─── WHEN A LATER-DATED PAYMENT IS ACCEPTED: WEEKENDS, HOLIDAYS, FRIDAYS ────
 // Junid, 7 Nov 2026 (narrowing the same day's first rule). A payment the bank
 // dates AFTER the day it was judged on is accepted ONLY when that day is not
 // a business day — Saturday, Sunday or a public holiday — and then only up to
 // the next business day. On an ordinary business day a payment dated
 // tomorrow is a scheduled payment and is refused.
 //
-// The eve of a public holiday counts with the holiday: a payment made on
-// Thursday 24 December, dated by the bank for Monday 28 December (Christmas
-// and the Day of Goodwill between), is accepted — Junid's own example. So
-// the window opens when TODAY is not a business day OR TOMORROW is a public
-// holiday. An ordinary Friday is an ordinary business day: a Friday payment
-// dated Monday is refused (the weekend alone does not open it).
+// FRIDAYS TOO (Junid, 7 Nov 2026 evening): the last business day before a
+// non-business day opens the window as well — a Friday payment dated Monday
+// is accepted like a Saturday or Sunday one, and so is the eve of a public
+// holiday (Thursday 24 December dated Monday 28 December). So the window
+// opens when TODAY is not a business day OR TOMORROW is not one. Monday to
+// Thursday with an ordinary business day after it: a payment dated tomorrow
+// is still refused.
 /** May a payment judged on `sastDay` be dated a later day? */
 function laterDatedAllowedOn(sastDay) {
   const d = parseDay(sastDay);
   if (!d) return false;
   if (isBusinessDay(sastDay) === false) return true;
   const tomorrow = isoDay(new Date(d.getTime() + 86400000));
-  return isSaPublicHoliday(tomorrow);
+  return isBusinessDay(tomorrow) === false;
 }
 /** The latest payment day accepted when judged on `sastDay`: the next
  *  business day when a later date is allowed, else that day itself. */
@@ -225,8 +226,9 @@ function latestSettledDay(sastDay) {
 /**
  * Is a payment the bank dates `bankTs` settled on date grounds, judged from
  * `todayMs` (the notification's arrival, or the server's now)? Dated today or
- * earlier: yes. Dated later: only when today is a weekend day or a public
- * holiday (or a holiday's eve), and no later than the next business day.
+ * earlier: yes. Dated later: only when today or tomorrow is not a business day (a
+ * weekend, a public holiday, a Friday, a holiday's eve), and no later than
+ * the next business day.
  * @returns {{ok:true} | {ok:false, reason:string}}
  */
 function settlementDateVerdict(bankTs, todayMs) {
