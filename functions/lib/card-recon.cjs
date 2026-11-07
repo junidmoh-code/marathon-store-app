@@ -547,7 +547,14 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   // is no reading to be confident or uncertain about. Everything it DOES carry
   // (the total, the window, the TID) is still checked below exactly as it is
   // for every other source; only the question OCR answers is not asked.
-  const gated = declaredTotal ? KEY_FIELDS.filter((f) => !DECLARED_EXEMPT_FIELDS.includes(f)) : KEY_FIELDS;
+  const gated = (declaredTotal ? KEY_FIELDS.filter((f) => !DECLARED_EXEMPT_FIELDS.includes(f)) : KEY_FIELDS)
+    // A STANDARD BANK TID PROVEN BY THE REGISTRY (7 Nov 2026): the PAX paper
+    // and the portal print "0000OF2Y" for "00000F2Y", and a model asked to
+    // read it is rightly unsure whether that is an O or a 0 — which is the one
+    // question canonicalTid makes irrelevant. Set server-side (handleExtract)
+    // only when the read TID is the picked Standard Bank till's own TID in
+    // canonical form; never on an FNB extraction, whose gate is unchanged.
+    .filter((f) => !(f === "tid" && ex.tidProven === "sb-canonical"));
   // A MANUAL ENTRY (Junid, from the POS report — lib/card-manual-entry.cjs)
   // has no reading at all, exactly like a typed capture.
   if (source !== "pdf" && source !== "typed" && source !== "manual") {

@@ -1453,6 +1453,7 @@ async function handleExtract(db, request, opts = {}) {
       : "The slip's Opened/Closed times could not be read, so the window is the 24 hours before this capture.");
   }
   if (!extraction.tid) return reject("No terminal ID could be read off the slip — retake the header photo.");
+  const readTid = extraction.tid;
   // An O read for a 0 (or I for 1) on the PICKED till's own TID is that TID.
   // From here on the record carries the registry's spelling, never the misread.
   if (extraction.tid !== picked && slipTidMatchesPicked(extraction.tid, picked, Object.keys(terminals))) {
@@ -1476,6 +1477,8 @@ async function handleExtract(db, request, opts = {}) {
   // (lib/card-sb-photo.cjs). The TID above proved which machine printed it —
   // the till is never chosen or checked by MID (card-terminal-identity.test).
   const photoPrimary = isPhotoPrimary(terminal);
+  // The TID's O-or-0 doubt is settled by the registry (validateExtraction).
+  if (photoPrimary && canonicalTid(readTid) && canonicalTid(readTid) === canonicalTid(picked)) extraction.tidProven = "sb-canonical";
 
   // THE TOTAL ONLY, and only now that the slip has proved which till it is.
   if (declared) extraction.totalCents = declared.cents;
