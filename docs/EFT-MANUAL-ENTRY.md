@@ -131,3 +131,18 @@ the button can be retired.
 ```
 firebase deploy --only functions:eftPoolManualEntry,functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse --project=marathon-club
 ```
+
+## Later-dated payments: weekends and public holidays only (7 Nov 2026)
+
+A payment the bank dates a LATER day than the day it is judged on (the
+notice's arrival; the server's clock for a keyed proof) is accepted only when
+that day is not a business day — Saturday, Sunday or a South African public
+holiday (`functions/lib/eft-text.cjs`, local calendar: the Act's fixed days,
+Good Friday, Family Day, the Sunday→next-free-day rule, and
+`SA_DECLARED_HOLIDAYS` for declared days such as 2026-11-04) — or the EVE of a
+public holiday, and then only up to the next business day. The eve rule is
+what makes Junid's example work: Thu 24 Dec 2026 dated Mon 28 Dec is
+accepted. It is deliberately asymmetric: an ordinary Friday is a business day
+whose next day is not a holiday, so a Friday payment dated Monday refuses; a
+Friday before a Saturday holiday (24 Dec 2027) opens the window. A newly
+declared one-off holiday must be added to `SA_DECLARED_HOLIDAYS` by hand.

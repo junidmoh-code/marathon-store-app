@@ -971,10 +971,14 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
     // written, so the exact entry takes a short create-only lock too.
     let lock = null;
     await db.ref(`${MANUAL_SUBMIT_LOCK_PATH}/${manualSubmitLockKeyOf(input)}`).transaction(manualSubmitLockStep(key, now, (d) => { lock = d; }));
-    if (lock?.holder && lock.holder !== key) {
-      const first = (await db.ref(`${EFT_POOL_PATH}/${lock.holder}`).once("value")).val();
+    const first = lock?.holder && lock.holder !== key
+      ? (await db.ref(`${EFT_POOL_PATH}/${lock.holder}`).once("value")).val() : null;
+    // Answered from the lock only when the first entry's record exists: a
+    // lock left by a submit whose write then failed names nothing to use
+    // (Fable spec review) — this entry is written as usual instead.
+    if (isManualEntry(first)) {
       console.log(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} answered with ${lock.holder} (submit lock)`);
-      return { ok: true, already: true, doubleSubmit: true, key: lock.holder, reference: first?.reference ?? input.reference, amountCents: first?.amountCents ?? input.amountCents, at: first?.manualEntry?.at ?? null, by: MANUAL_ENTRY_BY, status: first?.status ?? "unmatched" };
+      return { ok: true, already: true, doubleSubmit: true, key: lock.holder, reference: first.reference, amountCents: first.amountCents, at: first.manualEntry.at, by: MANUAL_ENTRY_BY, status: first.status };
     }
   }
   if (doubleTap) {

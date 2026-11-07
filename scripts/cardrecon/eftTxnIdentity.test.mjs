@@ -278,8 +278,11 @@ describe("a later-dated payment is accepted only when its notice arrives on a no
     expect(decide(nonImmediate({ day: "2026-12-28" }), { received: sast("2026-12-25T10:00:00") }).record.outcome).toBe("recorded");
   });
 
-  it("an ordinary Friday does not open the window", () => {
+  it("an ordinary Friday does not open the window; a Friday before a Saturday holiday does (holiday-eve rule)", () => {
     expect(settlementDateVerdict(sast("2026-11-09T00:00:00"), sast("2026-11-06T17:00:00")).ok).toBe(false);
+    // Fri 24 Dec 2027: Christmas Sat, Goodwill Sun → Mon 27 a holiday; next business day Tue 28.
+    expect(settlementDateVerdict(sast("2027-12-28T00:00:00"), sast("2027-12-24T17:00:00")).ok).toBe(true);
+    expect(settlementDateVerdict(sast("2027-12-29T00:00:00"), sast("2027-12-24T17:00:00")).ok).toBe(false);
   });
 
   it("Concrete's immediate-only account: a same-day NON-immediate payment still refuses, weekend or weekday", () => {

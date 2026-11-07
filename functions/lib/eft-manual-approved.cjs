@@ -425,14 +425,13 @@ function isApprovedTwin(record, approved) {
   // payments. Different readers (a proof from one bank's app, the notice from
   // another's mail) may print different ids for one payment — the identity
   // below decides.
-  if (idA && idB && (idA === idB || record.reader === approved.reader)) return idA === idB;
   // A PAYMENT WITH ITS OWN TRANSACTION NUMBER is judged on that number alone
   // (Junid, 7 Nov 2026): never refused because an approval shares its
   // reference and amount. The same number is the fingerprint claim's job —
   // the approval claimed it spent, so the bank's copy is held at ingest and
   // refused at the settle (duplicate-used). Only a record with NO number (a
   // manual entry, an Absa synthetic identity) falls to the identity below.
-  if (idA) return false;
+  if (idA) return idA === idB;
   const ref = normaliseText(record.reference);
   if (!ref || normaliseText(approved.reference) !== ref) return false;
   // The record dated from the day BEFORE the proof's to three days after:
