@@ -239,10 +239,10 @@ function Panel({ title, onClose, children }) {
 
 // ─── The module ──────────────────────────────────────────────────────────────
 
-// The card's hubs: the live cleanup hubs, plus every all-category count hub
-// (Hub 3 — Junid, 6 Nov 2026). Hub 3 is not "live" in the registry (its
-// Auto-refill is "solved"), so cleanupHubs alone never offered it, yet it is
-// the hub being recounted. It opens on the Count tab.
+// The card's hubs: every registry hub (cleanupHubs — Hub 3 included since
+// 7 Nov 2026), plus every all-category count hub, which today adds nothing
+// new (#858 added Hub 3 here before cleanupHubs offered it). Hub 3 opens on
+// the Count tab.
 const countCardHubs = () => [...new Set([...cleanupHubs(), ...ALL_CATEGORY_COUNT_HUBS])];
 const isCountCardHub = (h) => isCleanupHub(h) || countsAllCategories(h);
 

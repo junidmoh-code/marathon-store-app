@@ -29,11 +29,11 @@ const untrusted = (qty) => ({ qty, v: 1, mv: "m", lastType: "adjustment" });
 const CONFIG = { ...clone(FIXTURE.config), pausedLocations: { hub3: true } };
 const PAUSED = pl.pausedLocationSet(CONFIG);
 
-function scan(stock) {
+function scan(stock, { openIndex = {}, refillRequests = {} } = {}) {
   return pl.withoutPausedDestinations(computeRefillPlan({
     nowMs: Date.parse("2026-11-06T10:00:00.000Z"), config: clone(CONFIG), targets: clone(FIXTURE.targets),
-    stock, products: clone(FIXTURE.products), openIndex: {}, refillRequests: {}, orders: {}, movements: [],
-    network: reg.SEED_REGISTRY,
+    stock, products: clone(FIXTURE.products), openIndex: clone(openIndex), refillRequests: clone(refillRequests),
+    orders: {}, movements: [], network: reg.SEED_REGISTRY,
   }), PAUSED);
 }
 const sig = (plan) => JSON.stringify(Object.fromEntries(pl.DEST_LISTS.map((k) => [k, (plan[k] || []).map((e) => JSON.stringify(e)).sort()])));
@@ -65,6 +65,29 @@ test("1. a registration on an UNTRUSTED zeroed Hub 3 cell changes nothing in the
   for (const c of cells) assert.equal(sig(scan(register(stock, c))), before, `cell ${c}`);
   let all = stock; for (const c of cells) all = register(all, c);
   assert.equal(sig(scan(all)), before, "all of them at once");
+});
+
+test("1b. NOTHING UNPARKED: open and withdrawn Pine requests served by Hub 3 are judged the same after the registration", () => {
+  const { stock, cells } = world(untrusted);
+  const [pidA, kA] = cells[0];
+  const [pidB, kB] = cells[1];
+  const iso = "2026-11-05T08:00:00.000Z";
+  const state = {
+    // an OPEN Pine request Hub 3 serves (the zeroed hub cannot fill it)
+    openIndex: { "marathon-pine": { [pidA]: { [kA]: { refillId: "rOpen", qty: 1, source: "hub3", createdAt: iso } } } },
+    refillRequests: {
+      rOpen: { status: "open", productId: pidA, size: kA, requestingLocation: "marathon-pine", source: "hub3" },
+      // one the scan already WITHDREW as awaiting_upstream when Hub 3 went to 0
+      rParked: { status: "cancelled", cancelReason: "awaiting_upstream", productId: pidB, size: kB, requestingLocation: "marathon-pine", source: "hub3", cancelledAt: iso },
+    },
+  };
+  const before = scan(stock, state);
+  const touchesOpen = (p) => pl.DEST_LISTS.some((k) => (p[k] || []).some((e) => e.refillId === "rOpen"));
+  assert.ok(touchesOpen(before), "the scan must have an opinion on the open request, or this proves nothing");
+  let all = stock; for (const c of cells) all = register(all, c);
+  const after = scan(all, state);
+  assert.equal(sig(after), sig(before));
+  assert.equal(after.intents.filter((i) => i.dest === "marathon-pine").length, 0, "nothing re-raised for Pine");
 });
 
 test("2. Hub 3 as a destination stays held, whatever a registration puts there", () => {

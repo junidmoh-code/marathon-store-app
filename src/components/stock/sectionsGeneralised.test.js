@@ -217,8 +217,8 @@ describe("introduce existing — the run a location follows", () => {
   });
 });
 
-describe("cleanup hubs, display stores, arming pairs, the network total — held by the live flag", () => {
-  it("what switches on when Section 1 goes live", () => {
+describe("cleanup hubs, display stores, arming pairs, the network total — and what the live flag changes", () => {
+  it("when Section 1 goes live: cleanup hubs and display stores stay put, the network total widens", () => {
     // The cleanup hubs and display stores do not read the live flag at all.
     expect(cleanupHubs(S1_LIVE)).toEqual(cleanupHubs(SEED_REGISTRY));
     expect(displayStores(S1_LIVE)).toEqual(displayStores(SEED_REGISTRY));

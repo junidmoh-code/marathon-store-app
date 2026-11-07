@@ -213,10 +213,9 @@ export function openRowIndex(rows) {
  *
  * @param rows          the ledger
  * @param productsById  Map or object pid → product (for the name and the photo)
- * @param hubs          only rows booked at these hubs are considered. Hub 1 and
- *                      Hub 2 only, per GATED_SNEAKER_HUBS — a Pine display is
- *                      booked at hub3 and this screen has no business offering
- *                      an action on it. Rows with NO bookedHub are kept: a row
+ * @param hubs          only rows booked at these hubs are considered. Defaults
+ *                      to Hub 1 and Hub 2 (the gated hubs); a caller covering
+ *                      Pine or Concrete passes ["hub3"]. Rows with NO bookedHub are kept: a row
  *                      that cannot name its hub is exactly the kind a human
  *                      should look at, and hiding it would hide a duplicate.
  * → [{ store, productId, product, productName, photo, rows: [row] }]

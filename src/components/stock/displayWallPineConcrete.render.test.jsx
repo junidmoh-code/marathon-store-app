@@ -10,6 +10,7 @@ import TestRenderer, { act } from "react-test-renderer";
 
 let ROWS = {};
 let CELLS = {};
+let NETWORK_RAW = null;   // /network: no node (production today) unless a test sets one
 let PERMS = { permRecord: { stockRole: "admin" }, isSuperAdmin: false, hasPermission: () => true };
 const registerDisplayRow = vi.fn(async () => ({ ok: true }));
 const closeDisplayRow = vi.fn(async () => ({ ok: true, stockMoved: false }));
@@ -32,7 +33,7 @@ vi.mock("./useStock", () => ({
   useStockCellsState: (hub) => ({ cells: hub ? (CELLS[hub] || {}) : {}, settled: true, error: false }),
   // /network: no node, so the registry is its seed — the two live walls
   // (Marathon PE, Trophy) and their two gated hubs (Hub 1, Hub 2).
-  usePathState: () => ({ value: null, settled: true, error: false }),
+  usePathState: () => ({ value: NETWORK_RAW, settled: true, error: false }),
 }));
 
 const { default: View } = await import("./DisplayRegistrationView.jsx");
@@ -85,7 +86,8 @@ beforeEach(() => {
   registerDisplayRow.mockClear(); closeDisplayRow.mockClear(); raiseDisplayRequest.mockClear();
 });
 
-const wallTabs = (t) => t.root.findAll((n) => n.type === "button").map((b) => instText(b).trim()).slice(1, 5);
+const WALLS = /^(Marathon PE|Trophy|.*Pine|Concrete)$/;
+const wallTabs = (t) => t.root.findAll((n) => n.type === "button").map((b) => instText(b).trim()).filter((x) => WALLS.test(x));
 
 describe("every shop has a wall", () => {
   it("Marathon PE, Trophy, Pine, Concrete — Marathon first", () => {
@@ -111,7 +113,7 @@ describe("the Pine wall is walked against Hub 3", () => {
   it("On the wall records a Pine row booked at hub3 — no stock moves", async () => {
     const t = openPine();
     act(() => { btn(t, "On the wall").props.onClick(); });
-    act(() => { btn(t, "7").props.onClick(); });
+    act(() => { t.root.findAll((n) => n.type === "button").find((b) => instText(b).trim() === "7").props.onClick(); });
     await act(async () => { await btn(t, "Register").props.onClick(); });
     expect(registerDisplayRow).toHaveBeenCalledTimes(1);
     expect(registerDisplayRow.mock.calls[0][0]).toMatchObject({ store: "marathon-pine", productId: "p2", size: "7", bookedHub: "hub3" });
@@ -141,5 +143,29 @@ describe("Marathon PE is unchanged", () => {
     await act(async () => { await b.props.onClick(); });
     expect(raiseDisplayRequest).toHaveBeenCalledTimes(1);
     expect(raiseDisplayRequest.mock.calls[0][0].store).toBe("marathon-pe");
+  });
+});
+
+// ── THE LIVE FLAG IS JUNID'S SWITCH (architect review) ──────────────────────
+// The request button follows the registry's live flag, as Marathon's walls
+// always have. Hub 3 not live (production today) → off; the day Junid makes
+// Hub 3 live on the Network card → it requests from Hub 3, like Marathon PE.
+describe("Pine's request button follows Hub 3's live flag", () => {
+  it("Hub 3 live → Not on the wall is on, and the request names marathon-pine", async () => {
+    const { setCurrentNetworkFromRaw, __resetNetworkForTests } = await import("../../utils/networkStore");
+    setCurrentNetworkFromRaw({ locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } });
+    NETWORK_RAW = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } };
+    try {
+      const t = render();
+      act(() => { btn(t, "Pine").props.onClick(); });
+      const b = btn(t, "Not on the wall");
+      expect(b.props.disabled).toBe(false);
+      await act(async () => { await b.props.onClick(); });
+      expect(raiseDisplayRequest).toHaveBeenCalledTimes(1);
+      expect(raiseDisplayRequest.mock.calls[0][0].store).toBe("marathon-pine");
+    } finally {
+      NETWORK_RAW = null;
+      __resetNetworkForTests();
+    }
   });
 });

@@ -447,7 +447,11 @@ export function findUnregisteredDisplays({ slots, registerByHub, productsById, h
           store, productId, product: get(productId) || null,
           productName: get(productId)?.name || slot.productName || "(name not on file)",
           size: slot.size, sizeKey: slot.sizeKey, bookedHub: hub, source: slot.source, at: slot.at,
-          reason: `Booked at ${hub || "no hub"}, which keeps no display register.`,
+          // A hub this tab does not cover (the caller's `hubs`) is not a hub
+          // without a register — every hub keeps one since 7 Nov 2026.
+          reason: hub && !hubs.includes(hub)
+            ? `Booked at ${hub}, a hub this tab does not cover — open that hub's tab.`
+            : `Booked at ${hub || "no hub"}, which keeps no display register.`,
           registeredSizes: [], registerable: false,
         });
         continue;

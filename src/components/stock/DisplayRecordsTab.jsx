@@ -42,7 +42,7 @@ import { useDisplaySlots, useDisplayRegister } from "./useStock";
 import { labelFor } from "./locations";
 import { cleanupHubs } from "./hubCleanupCore";
 import { useNetwork } from "../../utils/useNetwork";
-import { wallAllows } from "../../utils/networkRegistry";
+import { wallAllows, locationOf } from "../../utils/networkRegistry";
 import { formatSize } from "../../utils/sizeLabel";
 import { rowSizeText } from "./displayRowCore";
 import { CARD, BORDER, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, FONT, bGray, bRed } from "./ui";
@@ -144,7 +144,10 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
     // registers of THIS side's hubs. Pine and Concrete's slots are Hub 3's, and
     // are listed on the Hub 3 tab — not as "keeps no display register" under
     // Hub 1 (Junid, 7 Nov 2026: Hub 3 keeps a register like the others).
-    const sideSlots = Object.fromEntries(Object.entries(slots || {}).filter(([store]) => wallAllows(network, hub, store)));
+    // A slot under a store the registry does not know (retired, misspelt) is
+    // kept: it was listed before and must not vanish from every tab.
+    const sideSlots = Object.fromEntries(Object.entries(slots || {})
+      .filter(([store]) => wallAllows(network, hub, store) || !locationOf(network, store)));
     return findUnregisteredDisplays({
       slots: sideSlots,
       registerByHub: { [hub]: register, ...(otherHub ? { [otherHub]: otherRegister } : {}) },

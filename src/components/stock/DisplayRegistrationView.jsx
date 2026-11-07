@@ -81,7 +81,10 @@ import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 // and Concrete, fed by Hub 3, which is not live — is walked against the hubs
 // that feed it (displayHubsForStore), and "Not on the wall" stays OFF there:
 // that button raises a display request, and no request path is opened for a
-// shop that had none (CLAUDE.md, Junid's rules).
+// shop that had none (CLAUDE.md, Junid's rules). It follows the registry's
+// live flag, exactly as Marathon's walls always have: the day Junid makes
+// Hub 3 live on the Network card, Pine and Concrete's walls request like
+// Marathon PE's (pinned by displayWallPineConcrete.render.test.jsx).
 const PAGE = 30;
 
 // "11:42", in the shops' own clock whatever the device's timezone says.

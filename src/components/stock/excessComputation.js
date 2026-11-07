@@ -90,9 +90,8 @@ import { isDeactivated } from "../../utils/deactivation";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 import { hubIds } from "./sectionRouting";
 
-// The only hubs this feature touches — same closed list as HubCleanup
-// (CLEANUP_HUBS, hubCleanupCore.js): hub3/Pine is out of scope everywhere in
-// this build, deliberately not derived from the location registry.
+// The live hubs this feature acts on by default (Hub 1, Hub 2 — the registry's
+// live hubs, pinned by test). Hub 3 is reached through excessHubLocations below.
 export const EXCESS_HUB_LOCATIONS = Object.freeze(["hub1", "hub2"]);
 
 // ── THE HUBS, FROM THE NETWORK REGISTRY ──────────────────────────────────────

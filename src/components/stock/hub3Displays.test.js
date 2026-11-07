@@ -56,7 +56,9 @@ const strip = (src) => src
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .split("\n").map((l) => l.replace(/(^|[^:"'`\\])\/\/.*$/, "$1")).join("\n");
 const REGISTER_PATH = ["HubCleanup.jsx", "HubCleanupCard.jsx", "hubCleanupCore.js", "hubCleanupStore.js", "displaySlots.js"];
-const STORE_LITERAL = /["'`](marathon-pe|trophy|marathon-pine|pine|concrete)["'`]/;
+// quoted ids AND unquoted object keys ({ trophy: … }, the shape of the old
+// DISPLAY_STORE_LABELS).
+const STORE_LITERAL = /["'`](marathon-pe|trophy|marathon-pine|pine|concrete)["'`]|[{,]\s*(trophy|concrete|pine)\s*:/;
 const HUB_LITERAL = /["'`](hub1|hub2|hub3)["'`]/;
 
 describe("no hub's shops are hardcoded in the register path", () => {
@@ -74,8 +76,8 @@ describe("no hub's shops are hardcoded in the register path", () => {
   });
   it("the shop step asks displayStoresForHub(hub) — no other list feeds it", () => {
     const src = strip(readFileSync(join(here, "HubCleanup.jsx"), "utf8"));
-    expect(src).toContain("{displayStoresForHub(hub).map((s) => (");
-    expect(src).not.toMatch(/displayStores\(\)/);
+    expect(src).toMatch(/\{\s*displayStoresForHub\(\s*hub\s*\)\s*\.map\(/);
+    expect(src).not.toMatch(/\bdisplayStores\(/);
     expect(src).not.toMatch(/DISPLAY_STORES|CLEANUP_HUBS/);
   });
 });
@@ -110,6 +112,11 @@ describe("a Pine slot booked at hub3 is judged against Hub 3's register", () => 
     const out = findUnregisteredDisplays({ slots, registerByHub: { hub3: {} }, hubs: ["hub3"], productsById: {} });
     expect(out).toHaveLength(1);
     expect(out[0].registerable).toBe(true);
+  });
+  it("a slot booked at a hub the tab does not cover says so — not 'keeps no register'", () => {
+    const out = findUnregisteredDisplays({ slots, registerByHub: { hub1: {} }, hubs: ["hub1", "hub2"], productsById: {} });
+    expect(out[0].reason).toMatch(/does not cover/);
+    expect(out[0].registerable).toBe(false);
   });
   it("and once registered at that size it is not listed", () => {
     const out = findUnregisteredDisplays({ slots, registerByHub: { hub3: { p9__7: { qty: 1 } } }, hubs: ["hub3"], productsById: {} });
