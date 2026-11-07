@@ -103,6 +103,26 @@ test("the TID confidence gate stands down only for a proven TID", () => {
   assert.equal(validateExtraction({ ...ex, tidProven: "sb-sequence" }, { summaryOnly: true }).ok, true);
 });
 
+test("ambiguous: another machine ALSO closed a #N-1 in those minutes — refused, naming it", () => {
+  const at = SAST("2026-11-06T17:05:55");
+  const trophy563 = { ...B563R2, batchKey: "563", revision: 1, supersedes: undefined, tid: Z4M6, storeId: "trophy" };
+  delete trophy563.supersedes;
+  const out = sequenceTidProof({ printedBatchNo: 564, openedAt: at, label: "Marathon Till 2",
+    candidates: [{ key: "563-r2", record: B563R2 }], rivals: [{ key: "563", record: trophy563, tid: Z4M6, label: "Trophy Till 2" }] });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /could follow on from Trophy Till 2 as well as Marathon Till 2/);
+  // A rival whose #563 closed hours away is no rival.
+  const far = { ...trophy563, slip: { ...trophy563.slip, closedAt: at - 3 * 3600e3 } };
+  assert.equal(sequenceTidProof({ printedBatchNo: 564, openedAt: at, candidates: [{ key: "563-r2", record: B563R2 }],
+    rivals: [{ key: "563", record: far, tid: Z4M6, label: "Trophy Till 2" }] }).ok, true);
+});
+
+test("a report itself proven by the chain never proves the next one", () => {
+  const chained = { ...B563R2, photoReport: { bank: "standard-bank", readerVersion: 2, filing: "normal", tidProven: "sb-sequence" } };
+  const out = sequenceTidProof({ printedBatchNo: 564, openedAt: SAST("2026-11-06T17:05:55"), candidates: [{ key: "563-r2", record: chained }] });
+  assert.equal(out.ok, false);
+});
+
 // ── the whole read ───────────────────────────────────────────────────────────
 
 test("PE Till 2's real #564: TID line blank, recorded under the till by its chain — one card, said on the record", async () => {
@@ -112,10 +132,20 @@ test("PE Till 2's real #564: TID line blank, recorded under the till by its chai
   const r = await node(db, `card_batches/pe/${HP1X}/564`);
   assert.equal(r.slip.totalCents, 7101500);
   assert.equal(r.tid, HP1X);
+  assert.equal(r.photoReport.tidProven, "sb-sequence", "marked, so it can never prove #565");
   assert.ok(r.warnings.some((w) => /too faintly to read.*follows that till's own #563 \(563-r2\)/.test(w)), r.warnings.join(" | "));
   // Junid's second photo of the same paper is a duplicate, never a second card.
   assert.equal((await sendAndRead(db, report564(), SAST("2026-11-07T21:54:20"))).final, "duplicate");
   assert.equal(await node(db, `card_batches/pe/${HP1X}/564-r2`), null);
+});
+
+test("the whole read: Trophy Till 2 closing its own #563 in the same minutes makes it ambiguous", async () => {
+  const trophy563 = rec(563, "2026-11-05T17:00:00", "2026-11-06T17:04:10", 120000, { tid: Z4M6, storeId: "trophy" });
+  const db = world({ 560: B560, 563: P563, "563-r2": B563R2 });
+  await db.ref(`card_batches/trophy/${Z4M6}/563`).set(trophy563);
+  const out = await sendAndRead(db, report564(), SAST("2026-11-07T16:41:46"));
+  assert.match(out.job.lastReason, /could follow on from Trophy Till 2 as well as Marathon Till 2/);
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/564`), null);
 });
 
 test("no read report before it: refused by name, not filed", async () => {

@@ -50,14 +50,21 @@ for (const [i, [id, j]] of todo.entries()) {
   if (!EXECUTE) continue;
   const due = nowMs + i * 90 * 1000;
   const key = dueKey(due, id);
+  // The queue entry FIRST (architect review, #869): if this dies before the
+  // job moves, the sweep drops an entry whose job is not waiting, and a
+  // re-run finds the job still Unread. The other order could strand a job in
+  // "retry" with no queue entry, invisible to the sweep and to a re-run.
+  await db.ref(`${DUE_PATH}/${key}`).set(id);
   const txn = await db.ref(`${JOBS_PATH}/${id}`).transaction((cur) => {
     if (cur === null) return null;
     if (cur.status !== "unread") return undefined;
     return { ...cur, status: "retry", attempts: 0, refusedReads: 0, dueAt: due, dueKey: key, rereadAt: nowMs, readerVersion: SB_READER_VERSION };
   });
   const after = txn.snapshot && txn.snapshot.val();
-  if (!txn.committed || !after || after.dueKey !== key) { console.log("  ✗ changed under us — left alone"); bad++; continue; }
-  await db.ref(`${DUE_PATH}/${key}`).set(id);
+  if (!txn.committed || !after || after.dueKey !== key) {
+    await db.ref(`${DUE_PATH}/${key}`).remove();
+    console.log("  ✗ changed under us — left alone"); bad++; continue;
+  }
   console.log(`  ✓ queued for ${new Date(due).toISOString()}; the cardBatchReadRetry sweep (every 5 min) reads it.`);
 }
 if (!EXECUTE) console.log("Dry run — re-run with --execute.");

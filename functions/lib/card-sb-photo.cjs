@@ -170,6 +170,10 @@ function planSbFiling({ printedBatchNo, openedAt = null, closedAt, windowRecords
 //     portal's day, a typed or manual figure, or a displaced record) whose printed
 //     number is exactly one below this one, and
 //   • that report closed within SEQUENCE_JOIN_MS of this one opening.
+// …and when NO OTHER registered machine (FNB included) also closed a #N-1
+// in those minutes (ambiguous — refused), and the #N-1 relied on was itself
+// read with its TID (a chain-proven report never proves the next one, so one
+// wrong acceptance can never pull in a run of them). Architect review, #869.
 // Anything less refuses by name. FNB is never asked: its TID gate is unchanged.
 const SEQUENCE_JOIN_MS = 5 * 60 * 1000;
 
@@ -177,25 +181,38 @@ const SEQUENCE_JOIN_MS = 5 * 60 * 1000;
  * Does the picked till's own chain prove an unprinted TID?
  * @param printedBatchNo the number the report prints
  * @param openedAt       the report's Opened time (epoch ms)
- * @param candidates     [{key, record}] — the picked TID's records that closed
- *                       within SEQUENCE_JOIN_MS of openedAt (one indexed read)
+ * @param candidates     [{key, record}] — the picked TID's record in force
+ *                       under #N-1 (read by key)
+ * @param rivals         [{key, record, tid, label}] — every OTHER registered
+ *                       machine's record in force under #N-1 (read by key)
  * @param label          the till's name, for the sentences
  * @returns {{ok: true, prevKey, note} | {ok: false, reason}}
  */
-function sequenceTidProof({ printedBatchNo, openedAt, candidates = [], label = "this till" }) {
+function sequenceTidProof({ printedBatchNo, openedAt, candidates = [], rivals = [], label = "this till" }) {
   const printed = Number(printedBatchNo);
   const faint = "The terminal-ID line on this slip is too faint to read";
   if (!Number.isInteger(printed) || printed < 1 || !Number.isFinite(openedAt)) {
     return { ok: false, reason: `${faint}, and its batch number or Opened time could not be read either, so the slip cannot be proven to be ${label}'s. Retake the photo; if the top lines are blank on the paper, the printer needs a clean or a new roll.` };
   }
-  const real = inForceByBatch(candidates).filter((r) => r.record && !r.record.displacedBy && !isSyntheticRecord(r.record)
+  const proves = (recs) => inForceByBatch(recs).filter((r) => r.record && !r.record.displacedBy && !isSyntheticRecord(r.record)
     // A typed or manual record's number is a filing number, never the machine's.
-    && !["typed", "manual"].includes(r.record.capturedVia));
-  const joined = real.find((r) => printedOf(r.record) === printed - 1
-    && Number.isFinite(Number(r.record.slip && r.record.slip.closedAt))
-    && Math.abs(openedAt - Number(r.record.slip.closedAt)) <= SEQUENCE_JOIN_MS);
+    && !["typed", "manual"].includes(r.record.capturedVia)
+    // Its own TID was read off its paper — never itself proven by a chain.
+    && !(r.record.photoReport && r.record.photoReport.tidProven === "sb-sequence"))
+    .filter((r) => printedOf(r.record) === printed - 1
+      && Number.isFinite(Number(r.record.slip && r.record.slip.closedAt))
+      && Math.abs(openedAt - Number(r.record.slip.closedAt)) <= SEQUENCE_JOIN_MS);
+  const joined = proves(candidates)[0];
   if (!joined) {
     return { ok: false, reason: `${faint}, and batch #${printed} does not follow on from a report already read for ${label} (no #${printed - 1} closing when this one opened), so it cannot be proven to be ${label}'s. Retake the photo in better light; if the top lines are blank on the paper, the printer needs a clean or a new roll.` };
+  }
+  const rivalTids = [...new Set((rivals || []).map((r) => r.tid))];
+  const clash = rivalTids.map((t) => {
+    const mine = rivals.filter((r) => r.tid === t);
+    return proves(mine).length ? mine[0].label || t : null;
+  }).filter(Boolean);
+  if (clash.length) {
+    return { ok: false, reason: `${faint}, and batch #${printed} could follow on from ${clash.join(" or ")} as well as ${label} (each closed a #${printed - 1} when this one opened), so it cannot be told which machine printed it. Retake the photo so the terminal-ID line shows.` };
   }
   const closedText = new Date(Number(joined.record.slip.closedAt) + SAST_OFFSET_MS).toISOString().slice(0, 19).replace("T", " ");
   return {
