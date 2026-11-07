@@ -298,7 +298,9 @@ test("Junid's entry lands in the pool: recorded, unmatched, stamped, fingerprint
   assert.equal(db.reads[`eft_manual_entries/${logKey}`].status, "unmatched");
   assert.equal(db.reads[`eft_manual_entries/${logKey}`].reference, "THABO 0821");
   // The bank's own unmatched record for the same money in the tail: refused.
-  db.tail = { bank1: { outcome: "recorded", status: "unmatched", amountCents: 60000, reference: "OTHER 1", reader: "fnb", bankRef: "ABCD9999", at: 3 } };
+  // (Dated today: since 7 Nov 2026 only a bank payment within a day of the
+  // entry is "the same money" — see the identity tests below.)
+  db.tail = { bank1: { outcome: "recorded", status: "unmatched", amountCents: 60000, reference: "OTHER 1", reader: "fnb", bankRef: "ABCD9999", at: Date.now(), receivedAt: Date.now(), bankTs: Date.now() } };
   const bt = await rejects(eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-twin00001", reference: "other 1", amountCents: 60000 } }), "failed-precondition");
   assert.equal(bt.details.code, "bank-twin-waiting");
   db.tail = {};

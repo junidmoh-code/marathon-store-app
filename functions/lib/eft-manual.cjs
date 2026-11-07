@@ -27,9 +27,9 @@
 //     re-derivation) all apply. One entry, one spend.
 //   · the KEY is derived from the client's entryId, so a retried tap lands
 //     on the same key and the create-if-absent write makes it idempotent;
-//     and a second entry with the SAME reference AND amount while one is
-//     already in the pool tail is refused — a double-entered payment would
-//     be two spendable records for one sum of money.
+//     and a second entry with the SAME reference AND amount TYPED THE SAME
+//     SAST DAY is refused — a double-entered payment would be two spendable
+//     records for one sum of money. (An earlier day's is another payment.)
 //
 // Every entry and every consumption is LOGGED (eft-manual log, commit 3) so
 // Junid can see how often the hatch is used and retire it when enforcement
@@ -170,18 +170,24 @@ function isManualEntry(record) {
 }
 
 /**
- * A second entry for money already entered: the same normalised reference
- * AND the same amount on a manual record in the tail (any status — a used
- * one has been spent, an unmatched one is waiting). The same entryId is the
- * idempotent retry, not a duplicate.
+ * A second entry for money already entered: the same normalised reference,
+ * the same amount, on a manual record TYPED THE SAME SAST DAY (any status — a
+ * used one has been spent, an unmatched one is waiting). The same entryId is
+ * the idempotent retry, not a duplicate. An earlier day's entry with the same
+ * reference and amount is a different payment (a repeat customer's repeat
+ * order) and never blocks — nobody has to rename a reference to "… 2".
+ * `at` is when this entry is being typed; without it every day matches (the
+ * old rule — kept only for a caller that cannot say).
  * @returns {{key:string, record:object}|null}
  */
-function manualDuplicateOf({ reference, amountCents, entryId }, siblings) {
+function manualDuplicateOf({ reference, amountCents, entryId, at = null }, siblings) {
   const want = normaliseText(reference);
   for (const [key, rec] of siblings ?? []) {
     if (!isManualEntry(rec)) continue;
     if (rec.manualEntry.entryId === entryId) continue;
-    if (rec.amountCents === amountCents && normaliseText(rec.reference) === want) return { key, record: rec };
+    if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
+    if (Number.isInteger(at) && Number.isInteger(rec.manualEntry.at) && !sameSastDay(at, rec.manualEntry.at)) continue;
+    return { key, record: rec };
   }
   return null;
 }
@@ -189,15 +195,20 @@ function manualDuplicateOf({ reference, amountCents, entryId }, siblings) {
 /**
  * THE BANK'S OWN RECORD OF THE SAME MONEY. A manual entry exists because the
  * notification has not arrived — if an UNMATCHED bank-confirmed payment with
- * this reference and amount is already in the tail, Junid should use that
- * one, not type a second spendable copy. (Spec review, this PR.)
+ * this reference and amount, dated within a day of now, is already in the
+ * tail, Junid should use that one, not type a second spendable copy. (Spec
+ * review, this PR.) An unused bank payment from last week with the same
+ * reference is somebody's other payment — not this one's twin.
  * @returns {{key:string, record:object}|null}
  */
-function bankTwinOfEntry({ reference, amountCents }, siblings) {
+function bankTwinOfEntry({ reference, amountCents, at = null }, siblings) {
   const want = normaliseText(reference);
   for (const [key, rec] of siblings ?? []) {
     if (!rec || rec.outcome !== "recorded" || isManualEntry(rec) || rec.status !== "unmatched") continue;
-    if (rec.amountCents === amountCents && normaliseText(rec.reference) === want) return { key, record: rec };
+    if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
+    const paidAt = paidAtOf(rec);
+    if (Number.isInteger(at) && Number.isInteger(paidAt) && Math.abs(Date.parse(sastDate(at)) - Date.parse(sastDate(paidAt))) > DAY_MS) continue;
+    return { key, record: rec };
   }
   return null;
 }
