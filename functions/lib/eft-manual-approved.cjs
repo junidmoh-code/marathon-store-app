@@ -382,19 +382,22 @@ function approvedClaimDecision({ approvedKey, claim, holderRecord, now = null })
  * match same amount + same reference with no end date, so one approval
  * blocked every later payment a repeat customer made under the same reference
  * and amount. Now:
- *   · BOTH carry a bank transaction id → twins only when it is the SAME id
- *     (normalised). Two different ids are two payments, whatever they share.
+ *   · BOTH carry a bank transaction id from the SAME reader → twins only
+ *     when it is the SAME id (normalised). Two different ids are two
+ *     payments, whatever they share. (Different readers: the identity below.)
  *     (A manual entry's MANUAL-… id is not a bank id: it never decides.)
  *   · otherwise (either has none) → the full identity: same amount, same
- *     reference, the payment dated within a SAST day of each other, and —
+ *     reference, the record dated from the day before the proof's to three
+ *     days after (transaction vs clearing date), and —
  *     where both documents print them — the same payer (however formatted:
  *     "S MAISTRY" is "MR S MAISTRY") and the same destination account.
  * Refused: the money was settled under the approval. One sentence, no
  * provenance, for the till (Junid, 20 Oct 2026).
  * @returns {{ok:true}|{ok:false, code:string, message:string}}
  */
-const normaliseRef = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const normaliseText = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 const DAY_MS = 24 * 60 * 60 * 1000;
+const PROOF_CLEARING_DAYS = 3;
 const paidDayOf = (r, fallback) => {
   const t = Number.isInteger(r?.bankTs) ? r.bankTs : fallback;
   return Number.isInteger(t) ? sastDate(t) : null;
@@ -413,15 +416,24 @@ function isApprovedTwin(record, approved) {
   if (approved.amountCents !== record.amountCents) return false;
   const idA = bankIdOf(record);
   const idB = bankIdOf(approved);
-  if (idA && idB) return idA === idB;
-  const ref = normaliseRef(record.reference);
-  if (!ref || normaliseRef(approved.reference) !== ref) return false;
-  // Within a SAST day either way: one document may print the transaction
-  // date, the other the processing date, or the payment fell near midnight.
+  // The same reader prints its ids one way: two different ids are two
+  // payments. Different readers (a proof from one bank's app, the notice from
+  // another's mail) may print different ids for one payment — the identity
+  // below decides.
+  if (idA && idB && (idA === idB || record.reader === approved.reader)) return idA === idB;
+  const ref = normaliseText(record.reference);
+  if (!ref || normaliseText(approved.reference) !== ref) return false;
+  // The record dated from the day BEFORE the proof's to three days after:
+  // one document may print the transaction date, the other the processing
+  // or clearing date (a weekend between them), or the payment fell near
+  // midnight. Reference, amount, payer and account still gate it.
   const dayA = paidDayOf(record, Number.isInteger(record.receivedAt) ? record.receivedAt : record.at);
   const dayB = paidDayOf(approved, approved.manualApproved?.at);
   // A day that cannot be read on either side stays conservative (a twin).
-  if (dayA && dayB && Math.abs(Date.parse(dayA) - Date.parse(dayB)) > DAY_MS) return false;
+  if (dayA && dayB) {
+    const gap = Math.round((Date.parse(dayA) - Date.parse(dayB)) / DAY_MS);
+    if (gap < -1 || gap > PROOF_CLEARING_DAYS) return false;
+  }
   if (!samePayer(record.payer, approved.payer)) return false;
   const tailA = String(record.accountTail ?? "").replace(/\D/g, "");
   const tailB = String(approved.accountTail ?? "").replace(/\D/g, "");

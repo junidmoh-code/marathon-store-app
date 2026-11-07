@@ -958,7 +958,7 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
   const dup = manualDuplicateOf({ ...input, at: now }, Object.entries(tail));
   if (dup) {
     const state = dup.record.status === "used" ? "has already been used" : "is already in the pool, waiting";
-    throw new HttpsError("failed-precondition", `A manual entry for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} ${state}. If this is a second, separate payment, give it a different reference.`, { code: "already-entered", key: dup.key });
+    throw new HttpsError("failed-precondition", `A manual entry for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} ${state}. If this is a second, separate payment made today, give it a different reference.`, { code: "already-entered", key: dup.key });
   }
 
   const record = manualEntryRecord({ ...input, key, actor, at: now });
