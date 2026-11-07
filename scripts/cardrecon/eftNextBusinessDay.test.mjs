@@ -69,6 +69,12 @@ function decide(lines, { received = SATURDAY, auth = authFor(), cutoff } = {}) {
 }
 
 describe("the next business day", () => {
+  it("refuses a date that is no date, and an unjudgeable payment fails closed", async () => {
+    expect(nextBusinessDay("2026-02-31")).toBe(null);
+    const { settlementDateVerdict } = await import("./eftCore.mjs");
+    expect(settlementDateVerdict(null, SATURDAY).ok).toBe(false);
+  });
+
   it("skips Saturday and Sunday", () => {
     expect(nextBusinessDay("2026-11-06")).toBe("2026-11-09"); // Friday → Monday
     expect(nextBusinessDay("2026-11-07")).toBe("2026-11-09"); // Saturday → Monday

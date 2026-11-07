@@ -281,3 +281,22 @@ test("a Saturday hand entry and the bank's Saturday notice dated MONDAY are one 
   assert.equal(isPaymentTwin(tuesday, typed), false);
   assert.equal(bankTwinOfEntry({ reference: "SOCCER T SHIRT", amountCents: 87000, at: sast("2026-11-07T14:43:00") }, [["t", { ...tuesday, status: "unmatched" }]]), null);
 });
+
+test("a later TIME the same day is a new payment, never the hand entry's twin (substitute review of #866)", () => {
+  const typed = manual({ entryId: "ME-time-0001", typed: "2026-11-07T10:00:00", status: "used", slip: "S-98" });
+  const later = { ...absa({ txn: "80QQQQQQQ1-1", arrived: "2026-11-07T15:00:30" }), reference: "SOCCER T SHIRT", bankTs: sast("2026-11-07T15:00:00") };
+  assert.equal(isPaymentTwin(later, typed), false);
+});
+
+test("a Saturday entry and a notice landing SUNDAY dated Monday are one payment; a weekday entry's next-day notice is not", () => {
+  const sat = manual({ entryId: "ME-sun-00001", typed: "2026-11-07T14:43:00", status: "used", slip: "S-99" });
+  const sunNotice = { ...absa({ txn: "80RRRRRRR1-1", day: "2026-11-09", arrived: "2026-11-08T09:00:00" }), reference: "SOCCER T SHIRT" };
+  assert.equal(isPaymentTwin(sunNotice, sat), true);
+  // A Monday notice is on the next business day itself: a payment of its own.
+  const monNotice = { ...absa({ txn: "80RRRRRRR1-2", day: "2026-11-09", arrived: "2026-11-09T09:00:00" }), reference: "SOCCER T SHIRT" };
+  assert.equal(isPaymentTwin(monNotice, sat), false);
+  // Weekday: typed Tuesday, the next payment's notice Wednesday dated Wednesday — separate.
+  const tue = manual({ entryId: "ME-tue-00001", typed: "2026-11-10T15:00:00", status: "used", slip: "S-100" });
+  const wed = { ...absa({ txn: "80RRRRRRR1-3", day: "2026-11-11", arrived: "2026-11-11T10:00:00" }), reference: "SOCCER T SHIRT" };
+  assert.equal(isPaymentTwin(wed, tue), false);
+});

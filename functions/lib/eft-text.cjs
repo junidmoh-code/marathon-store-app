@@ -116,6 +116,7 @@ function nextBusinessDay(sastDay) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(sastDay ?? ""));
   if (!m) return null;
   const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  if (d.toISOString().slice(0, 10) !== sastDay) return null; // 2026-02-31 is no date
   do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
   return d.toISOString().slice(0, 10);
 }
@@ -124,16 +125,17 @@ function nextBusinessDay(sastDay) {
  * Is a payment the bank dates `bankTs` settled on date grounds, judged from
  * `todayMs` (the notification's arrival, or the server's now)? Dated on or
  * before the next business day after today's SAST date: yes.
- * @returns {{ok:true, paidDay:string, nextBusinessDay:string, settlesLater:boolean} | {ok:false, paidDay:string, nextBusinessDay:string, reason:string}}
+ * @returns {{ok:true} | {ok:false, reason:string}}
  */
 function settlementDateVerdict(bankTs, todayMs) {
+  // Fails CLOSED on anything it cannot judge (substitute review of #866).
+  if (!Number.isInteger(bankTs) || !Number.isInteger(todayMs)) return { ok: false, reason: "No payment date to judge — not treated as settled." };
   const paidDay = sastDate(bankTs);
-  const today = sastDate(todayMs);
-  const nbd = nextBusinessDay(today);
-  if (paidDay > nbd) {
-    return { ok: false, paidDay, nextBusinessDay: nbd, reason: `Payment dated ${paidDay} — beyond the next business day, not treated as settled.` };
+  const nbd = nextBusinessDay(sastDate(todayMs));
+  if (!nbd || paidDay > nbd) {
+    return { ok: false, reason: `Payment dated ${paidDay} — beyond the next business day, not treated as settled.` };
   }
-  return { ok: true, paidDay, nextBusinessDay: nbd, settlesLater: paidDay > today };
+  return { ok: true };
 }
 
 module.exports = { clip, parseBankTimestamp, sastDate, redactAccountDigits, maskAccountValue, SAST_OFFSET_MS, nextBusinessDay, settlementDateVerdict };

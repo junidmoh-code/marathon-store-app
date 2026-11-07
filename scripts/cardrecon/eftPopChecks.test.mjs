@@ -108,7 +108,7 @@ describe("7b — immediate payments only", () => {
 
   it("a payment dated BEYOND the next business day of its own notification is scheduled — refused, whatever it says", () => {
     // base arrives Thu 1 Jan 1970 (SAST); the next business day is Fri 2 Jan.
-    const later = 1_000_000 + 3 * 24 * 60 * 60 * 1000; // Sun 4 Jan
+    const later = 1_000_000 + 2 * 24 * 60 * 60 * 1000; // Sat 3 Jan — the day after the next business day
     expect(iv({ ...base, reader: "capitec", immediate: true, bankTs: later }).ok).toBe(false);
     // Dated the next business day: settles then (7 Nov 2026).
     expect(iv({ ...base, reader: "capitec", immediate: true, bankTs: 1_000_000 + 24 * 60 * 60 * 1000 }).ok).toBe(true);
