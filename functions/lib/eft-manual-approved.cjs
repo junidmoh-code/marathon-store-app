@@ -176,7 +176,7 @@ function keyedDestinationOf(accountTail, allowedAccounts) {
  * reader would have produced — so proofIdentityOf builds the same identity.
  *   bank         one of the reader ids (standardbank, fnb, capitec, absa, nedbank)
  *   amountCents  positive integer
- *   paymentDate  "YYYY-MM-DD", the bank's payment day (SAST), not in the future
+ *   paymentDate  "YYYY-MM-DD", the bank's payment day (SAST), not beyond the next business day
  *   reference    the payer's reference, as the proof prints it (may be empty
  *                only on Absa without a transaction id: a payer who typed
  *                none still paid once, and the synthetic identity allows it)

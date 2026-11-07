@@ -716,8 +716,9 @@ const absa = {
 // THE DATE IS DAY-FIRST and carries no time: "27/10/2026" can only be 27 Oct.
 // capitecTimestamp already reads that shape exactly (and refuses 31/02); a
 // date-only bankTs is the start of that SAST day, which is what the cutoff
-// (fix 8) compares, and a payment dated after the day its notification arrived
-// still refuses as future-dated (immediacyVerdict).
+// (fix 8) compares, and a payment dated beyond the next business day after its
+// notification arrived refuses as scheduled (immediacyVerdict; a weekend
+// payment dated Monday settles then — 7 Nov 2026).
 const NEDBANK_CHANNELS = [
   { re: /^internet payment$/i, immediate: false },
   { re: /^immediate payment$/i, immediate: true },

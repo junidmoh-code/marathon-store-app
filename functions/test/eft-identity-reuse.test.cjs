@@ -247,8 +247,9 @@ test("a notice with no bank date that lands after the entry is still its twin (p
 // ─── SUBSTITUTE LINE REVIEW (CodeRabbit spending cap) ────────────────────────
 test("the bank-clock tolerance ends at one hour after the typing", () => {
   const typed = manual({ entryId: "ME-edge-0001", typed: "2026-11-07T10:00:00", status: "used", slip: "S-91" });
-  const at = (ms) => ({ ...absa({ txn: "80JJJJJJJ0-0", arrived: "2026-11-07T12:00:00" }), reference: "SOCCER T SHIRT", bankTs: typed.manualEntry.at + ms });
-  // Same day either way, so the clock rule is what decides here.
+  // The notice lands the NEXT day, so the next-business-day same-day-notice
+  // rule (#866) stays out of it and only the clock rule decides.
+  const at = (ms) => ({ ...absa({ txn: "80JJJJJJJ0-0", arrived: "2026-11-08T12:00:00" }), reference: "SOCCER T SHIRT", bankTs: typed.manualEntry.at + ms });
   assert.equal(isPaymentTwin(at(60 * 60 * 1000), typed), true);
   assert.equal(isPaymentTwin(at(60 * 60 * 1000 + 1), typed), false);
 });
@@ -262,4 +263,21 @@ test("an approved proof and a notice from DIFFERENT readers with different ids f
   assert.equal(approvedTwinSettleCheck({ poolKey: "m", record: monday, siblings: [["ap", approved]] }).code, "twin-used");
   const later = absa({ txn: "80KKKKKKK1-3", day: "2026-11-12" });
   assert.equal(approvedTwinSettleCheck({ poolKey: "l", record: later, siblings: [["ap", approved]] }).ok, true);
+});
+
+// ─── NEXT-BUSINESS-DAY SETTLEMENT (Fable review of #866) ─────────────────────
+test("a Saturday hand entry and the bank's Saturday notice dated MONDAY are one payment (settle and entry time)", () => {
+  // RICHARD CHETTY's shape: notice 14:22 Saturday dated Monday; Junid types it at 14:43.
+  const mKey = manualEntryKeyOf("ME-nbd-00001");
+  const typed = manual({ entryId: "ME-nbd-00001", typed: "2026-11-07T14:43:00", reference: "Soccer T shirt", status: "used", slip: "S-97" });
+  const notice = absa({ txn: "80PPPPPPP1-1", day: "2026-11-09", arrived: "2026-11-07T14:22:00" });
+  assert.equal(isPaymentTwin(notice, typed), true);
+  assert.equal(manualTwinSettleCheck({ poolKey: "n", record: notice, siblings: [[mKey, typed], ["n", notice]] }).code, "twin-used");
+  // …and if the notice was already waiting, the hand entry is redirected to it.
+  const waiting = { ...notice, status: "unmatched" };
+  assert.equal(bankTwinOfEntry({ reference: "SOCCER T SHIRT", amountCents: 87000, at: sast("2026-11-07T14:43:00") }, [["w", waiting]])?.key, "w");
+  // Dated beyond the next business day: not that entry's money.
+  const tuesday = absa({ txn: "80PPPPPPP1-2", day: "2026-11-10", arrived: "2026-11-07T14:22:00" });
+  assert.equal(isPaymentTwin(tuesday, typed), false);
+  assert.equal(bankTwinOfEntry({ reference: "SOCCER T SHIRT", amountCents: 87000, at: sast("2026-11-07T14:43:00") }, [["t", { ...tuesday, status: "unmatched" }]]), null);
 });
