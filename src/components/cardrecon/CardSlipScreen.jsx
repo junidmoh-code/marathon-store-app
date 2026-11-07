@@ -201,6 +201,13 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
     setError(null);
     setPhase("attaching");
     const room = photoFirst ? SB_MAX_PHOTOS - (add ? photos.length : 0) : 1;
+    // More photos than there is room for are REFUSED, never quietly cut: a
+    // dropped section is a report read short (CodeRabbit, #862).
+    if (photoFirst && files.length > room) {
+      setPhase("form");
+      setError(`At most ${SB_MAX_PHOTOS} photos of the report can be sent${add && photos.length ? ` — ${photos.length} are already attached` : ""}. Shoot the roll in fewer, wider frames.`);
+      return;
+    }
     const ready = [];
     let refusal = null;
     for (const f of files.slice(0, Math.max(1, room))) {

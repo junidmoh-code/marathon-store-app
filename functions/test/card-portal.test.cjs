@@ -315,6 +315,12 @@ test("PE Till 2's real #562 (3→5 Nov) and #563 (5→6 Nov): printed numbers ke
   assert.equal(b.slip.totalCents, 4650000);
   assert.equal(b.supersedes, "563");
   assert.equal(await node(db, `card_batches/pe/${HP1X}/564`), null, "nothing renumbered");
+  // A pull of 4 Nov with CHANGED figures: the portal's 4 Nov chain is now the
+  // photo's (562-r2, closed 5 Nov) — nothing is revised over it (CodeRabbit, #862).
+  const p4 = await pull(db, [row("2026-11-04T10:00:00", HP1X, 120)], { day: "2026-11-04", now: SAST("2026-11-07T18:00:00") });
+  assert.equal(p4.results[HP1X].outcome, "superseded");
+  assert.equal(p4.results[HP1X].key, "562-r2");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/562-r3`), null);
   // A pull of 5 Nov afterwards: the displaced portal record is not the day's.
   const pullAfter = await pull(db, [], { day: "2026-11-05", now: SAST("2026-11-07T18:00:00") });
   assert.equal(pullAfter.results[HP1X].outcome, "checked");

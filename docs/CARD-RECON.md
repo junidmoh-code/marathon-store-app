@@ -523,18 +523,13 @@ non-FNB terminals in the estate. Registered by
   the evidence (the TID each slip photo printed; each slip total against both
   tills' POS card legs) and gives a verdict. A swap is entered as a **Move**
   in Card machines → settings, from when it took effect.
-* **No Standard Bank report reader exists yet** — none has arrived. A
-  Standard Bank report (PDF, or an email body from standardbank.co.za) is
-  recognised and refused as *"Standard Bank report — reader not built yet"*
-  with its PDF/lines kept in `card_batch_intake_evidence`; parser v4. The
-  reader, when built from the first real report, bumps `PARSER_VERSION`,
-  which re-runs those refusals still inside the poller's 14-day window (older
-  ones: `scripts/cardrecon/retry-intake-message.mjs`).
-* **Until then, capture is `typed`**: the Card Slip screen takes a photo AND
-  the typed card total. The typed total is the record and reconciles against
-  the till's POS card legs (R5 tolerance, R20 over 7 days, per till); the
-  photo is read in the background with a Standard Bank prompt only to flag a
-  different total or TID. Switch the rows to "Both" once the reader ships.
+* **Superseded 7 Nov 2026 — see the next section.** Until then no Standard
+  Bank report reader existed and capture was `typed` (the typed total was the
+  record, the photo only a check). Now the photographed end-of-day report is
+  read and IS the record; the stored `capture: "typed"` on these rows is
+  ignored (the bank decides). An emailed Standard Bank PDF is still recognised
+  and refused as *"Standard Bank report — reader not built yet"* with evidence
+  kept — SimplyBLU does not email these reports, so none is expected.
 
 ## Standard Bank tills are photographed — the read report is the record (from 7 Nov 2026)
 

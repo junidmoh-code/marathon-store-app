@@ -182,6 +182,15 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
   }
 
   const existingKeys = await core().readBatchKeysFor(db, storeId, tid, plan.batchNo);
+  // THE WHOLE CHAIN DECIDES, not the day's slice of it (CodeRabbit, #862): a
+  // photographed report that took this portal record over may have closed on
+  // a LATER day (PE Till 2's #562, 3→5 Nov, over the portal's 4 Nov), so the
+  // day's records cannot see it. A revision over it would put the portal back
+  // in force. If anything has superseded the portal record, it stands, and the
+  // pull writes nothing (its cross-check belongs to that record's own day).
+  if (plan.action === "revise" && existingKeys.length && existingKeys.at(-1) !== plan.supersedes) {
+    return { outcome: "superseded", key: existingKeys.at(-1), totalCents: extraction.totalCents, txnCount: extraction.txnCount };
+  }
   const write = resolveBatchWrite({ existingKeys, batchNo: plan.batchNo, correction: plan.action === "revise" });
   if (!write.ok) return { outcome: "refused", reason: write.reason };
   const ex = { ...extraction, batchNo: String(plan.batchNo) };

@@ -370,3 +370,19 @@ describe("Amanda's screen: a Standard Bank till is photographed", () => {
     expect(t.root.findAll((n) => n.props["data-testid"] === "slip-sent")).toHaveLength(0);
   });
 });
+
+describe("more report photos than there is room for (CodeRabbit, #862)", () => {
+  beforeEach(() => {
+    ESTATE["00000F2Y"] = { label: "Concrete Till 1", storeId: "concrete", tillId: "till-1", bank: "standard-bank" };
+    perms.permRecord = { displayName: "amanda", stockRole: "pos", cardSlipTills: { concrete: { "till-1": true } } };
+  });
+  afterEach(() => { delete ESTATE["00000F2Y"]; });
+
+  it("is refused with a sentence — never quietly cut to six", async () => {
+    const t = render();
+    const seven = Array.from({ length: 7 }, (_, i) => ({ name: `r${i}.jpg` }));
+    await act(async () => { await fileInputs(t)[1].props.onChange({ target: { files: seven, value: "" } }); });
+    expect(everyString(t)).toMatch(/At most 6 photos of the report/);
+    expect(submitBtn(t).props.disabled).toBe(true);
+  });
+});
