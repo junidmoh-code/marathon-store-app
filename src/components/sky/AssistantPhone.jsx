@@ -94,7 +94,7 @@ export default function AssistantPhone({
             const dead = isDead ? isDead(p) : false;
             const n = photoCount ? photoCount(p) : 0;
             return (
-              <article key={p.id} className="sky-card sky-glass ap-card" tabIndex={0}
+              <article key={p.id} className="sky-card sky-glass sky-sheen ap-card" tabIndex={0}
                        aria-current={selectedId === p.id ? "true" : undefined}
                        onClick={() => onOpen(p)} onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) onOpen(p); }}>
                 {/* The photo (or its 👟 stand-in) is a picture, not text. */}
@@ -184,8 +184,14 @@ html[data-sky="on"] #root .ap-root .sky-brandchip--all{font:700 13.9px/1 var(--s
 .ap-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 12px;padding:12px 18.5px 0}
 @media (min-width:600px){.ap-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (min-width:820px){.ap-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
-html[data-sky="on"] #root .ap-root .ap-card{display:flex;flex-direction:column;border-radius:16px;color:#fff;background:rgba(255,255,255,.14)!important;border:1px solid rgba(255,255,255,.5)!important;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 8px 22px rgba(0,40,120,.12)!important;-webkit-backdrop-filter:blur(16px) saturate(1.3);backdrop-filter:blur(16px) saturate(1.3)}
+/* Product cards wear the Home tile's glass (Junid, 7 Nov — IMG_3894): lit top
+   hairline (sky-sheen), clear-to-frosted gradient, bright rim, inner glow
+   rising from the bottom edge, soft blue drop shadow. */
+html[data-sky="on"] #root .ap-root .ap-card{position:relative;display:flex;flex-direction:column;border-radius:24px;color:#fff;
+  background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.12) 70%,rgba(255,255,255,.2))!important;
+  border:1.5px solid rgba(255,255,255,.62)!important;
+  box-shadow:inset 0 0 16px 1px rgba(255,255,255,.42),inset 0 -16px 22px -10px rgba(255,255,255,.7),var(--sky-shadow)!important;
+  -webkit-backdrop-filter:blur(10px) saturate(130%);backdrop-filter:blur(10px) saturate(130%)}
 .ap-card[aria-current="true"]{outline:2px solid #fff;outline-offset:-1px}
 .ap-root .ap-card .sky-stage{height:114px!important;padding:0;flex:0 0 auto}
 .ap-root .ap-card .sky-frame{inset:13px 0 0;background:none;border-radius:0;align-items:flex-start}
