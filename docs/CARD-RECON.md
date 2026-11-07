@@ -533,7 +533,28 @@ non-FNB terminals in the estate. Registered by
 
 ## Standard Bank tills are photographed — the read report is the record (from 7 Nov 2026)
 
-> **Concrete stays on the SimplyBLU portal** (Junid, 7 Nov 2026: "Concrete is
+> **Concrete is photographed too — from the evening of 7 Nov 2026.** Junid:
+> "If SimplyBlu only offers a portal (no email) … make the in-app photo/typed
+> path the primary route for Concrete until an automated export exists." It
+> does: no Standard Bank/SimplyBLU batch report has ever reached marathon6631@,
+> SimplyBLU has no scheduled email of reports, and the portal's list holds only
+> payments started in the SimplyBLU app — on 7 Nov it showed **no transaction**
+> for Concrete while the POS took R19,890.00 by card on Concrete Till 1.
+> `scripts/cardrecon/apply-concrete-photo-primary-20261107.mjs` took
+> `record: "portal"` off both rows; the portal pull is a cross-check for them
+> now, as for Marathon and Trophy. The note below is history.
+>
+> **A TID line printed too faintly to read (7 Nov 2026, reader v2).** PE Till
+> 2's #564 (R71,015.00) was refused six times: the PAX left the MID/TID lines
+> almost blank. For a photo-primary Standard Bank till ONLY, and only when no
+> TID was read at all, the till is proven by its own chain
+> (`sequenceTidProof`, `lib/card-sb-photo.cjs`): a REAL report on that till
+> printed #N−1 and closed within 5 minutes of this one opening. The record
+> says so. Anything less refuses by name; a different TID is still the wrong
+> slip; FNB is never asked. Unread photos of the week were read again by
+> `scripts/cardrecon/reread-sb-unread-20261107.mjs`.
+>
+> *(History, morning of 7 Nov:)* **Concrete stays on the SimplyBLU portal** (Junid, 7 Nov 2026: "Concrete is
 > fine with SimplyBLU — only Marathon and Trophy"). A Standard Bank row with
 > `record: "portal"` (`isPortalRecordTerminal`) keeps the 3 Nov behaviour
 > exactly: the portal's day is the record, Amanda's slip (photo + typed total)

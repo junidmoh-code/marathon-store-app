@@ -72,7 +72,7 @@ const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK, isPhotoPrimary, isPortalRecordTerminal, registeredRowFor } = require("../lib/card-terminals.cjs");
 const { isPortalDay } = require("../lib/card-portal.cjs");
-const { SB_READER_VERSION, planSbFiling, typedCheck: sbTypedCheck } = require("../lib/card-sb-photo.cjs");
+const { SB_READER_VERSION, SEQUENCE_JOIN_MS, planSbFiling, sequenceTidProof, typedCheck: sbTypedCheck } = require("../lib/card-sb-photo.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { tillsFor } = require("../lib/network-registry.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
@@ -1259,6 +1259,20 @@ async function sbFilingFor(db, { terminal, tid, extraction }) {
 }
 
 /**
+ * The picked Standard Bank till's records that closed within SEQUENCE_JOIN_MS
+ * of this report opening (one indexed range read), judged by sequenceTidProof.
+ */
+async function sbSequenceProofFor(db, { terminal, tid, extraction }) {
+  const openedAt = Number(extraction.openedAt);
+  const label = terminal.label || `${terminal.storeId}/${terminal.tillId}`;
+  if (!Number.isFinite(openedAt)) return sequenceTidProof({ printedBatchNo: extraction.batchNo, openedAt: null, label });
+  const val = (await db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${tid}`).orderByChild("slip/closedAt")
+    .startAt(openedAt - SEQUENCE_JOIN_MS).endAt(openedAt + SEQUENCE_JOIN_MS).once("value")).val() || {};
+  const candidates = Object.entries(val).filter(([, r]) => r && typeof r === "object").map(([key, record]) => ({ key, record }));
+  return sequenceTidProof({ printedBatchNo: normaliseBatchNo(extraction.batchNo), openedAt, candidates, label });
+}
+
+/**
  * The synthetic records a recorded Standard Bank report covers are marked
  * `displacedBy` (lib/card-sb-photo.cjs): kept exactly as they were, no longer
  * drawn. Cold-null: a record deleted meanwhile stays deleted. A failure is
@@ -1453,6 +1467,15 @@ async function handleExtract(db, request, opts = {}) {
       ? "The slip printed its Opened/Closed times without dates; the close was placed on the capture day and the open on the day before it where needed."
       : "The slip's Opened/Closed times could not be read, so the window is the 24 hours before this capture.");
   }
+  // A STANDARD BANK REPORT WHOSE TID LINE PRINTED TOO FAINTLY (7 Nov 2026):
+  // proven by the picked till's own batch chain, or refused by name
+  // (lib/card-sb-photo.cjs sequenceTidProof). Never for an FNB till.
+  let sbSequence = null;
+  if (!declared && !extraction.tid && isPhotoPrimary(terminal)) {
+    sbSequence = await sbSequenceProofFor(db, { terminal, tid: picked, extraction });
+    if (!sbSequence.ok) return reject(sbSequence.reason);
+    extraction.tid = picked;
+  }
   if (!extraction.tid) return reject("No terminal ID could be read off the slip — retake the header photo.");
   const readTid = extraction.tid;
   // An O read for a 0 (or I for 1) on the PICKED till's own TID is that TID.
@@ -1480,6 +1503,7 @@ async function handleExtract(db, request, opts = {}) {
   const photoPrimary = isPhotoPrimary(terminal);
   // The TID's O-or-0 doubt is settled by the registry (validateExtraction).
   if (photoPrimary && canonicalTid(readTid) && canonicalTid(readTid) === canonicalTid(picked)) extraction.tidProven = "sb-canonical";
+  if (sbSequence && sbSequence.ok) extraction.tidProven = "sb-sequence";
 
   // THE TOTAL ONLY, and only now that the slip has proved which till it is.
   if (declared) extraction.totalCents = declared.cents;
@@ -1556,6 +1580,7 @@ async function handleExtract(db, request, opts = {}) {
   const straddle = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
   if (straddle) warnings.push(straddle);
   if (movedInWindow) warnings.push(movedWindowNote(terminal));
+  if (sbSequence && sbSequence.ok) warnings.push(sbSequence.note);
   if (sbFiling && sbFiling.note) warnings.push(sbFiling.note);
   if (staffTyped && staffTyped.differs) {
     warnings.push(`The total typed on the Card Slip (${formatCents(staffTyped.typedCents)}) is not what the photographed report reads (${formatCents(extraction.totalCents)}). The report's figure is the record.`);

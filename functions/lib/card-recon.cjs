@@ -554,7 +554,10 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
     // question canonicalTid makes irrelevant. Set server-side (handleExtract)
     // only when the read TID is the picked Standard Bank till's own TID in
     // canonical form; never on an FNB extraction, whose gate is unchanged.
-    .filter((f) => !(f === "tid" && ex.tidProven === "sb-canonical"));
+    // A STANDARD BANK TID PROVEN BY THE TILL'S OWN BATCH CHAIN (7 Nov 2026,
+    // lib/card-sb-photo.cjs sequenceTidProof): the TID line printed too faintly
+    // to read, so there is no reading to be confident in; the chain is the proof.
+    .filter((f) => !(f === "tid" && (ex.tidProven === "sb-canonical" || ex.tidProven === "sb-sequence")));
   // A MANUAL ENTRY (Junid, from the POS report — lib/card-manual-entry.cjs)
   // has no reading at all, exactly like a typed capture.
   if (source !== "pdf" && source !== "typed" && source !== "manual") {
