@@ -327,7 +327,7 @@ function samePortalFigures(rec, extraction) {
 // Nov) is still revised by a later pull of the same day — until the photo
 // takes the day over, after which its chain is the photo's and the pull is a
 // cross-check like any other.
-function planPortalWrite({ dayRecords, lastBatchNo: _lastBatchNo, extraction }) {
+function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord = false }) {
   // A record DISPLACED by a photographed report that covers its day
   // (lib/card-sb-photo.cjs) is not the day's any more: it is skipped.
   const recs = (dayRecords || []).filter((r) => r && r.record && Number.isFinite(Number(r.record.batchNo)) && !r.record.displacedBy);
@@ -340,7 +340,7 @@ function planPortalWrite({ dayRecords, lastBatchNo: _lastBatchNo, extraction }) 
     const chain = latestOf(recs.filter((r) => Number(r.record.batchNo) === Number(portalBatch.record.batchNo)));
     // Junid corrected the portal's figure ("Correct these figures"): his
     // correction stands — a later pull never writes over it.
-    if (!isPortalRecord(chain.record)) return { action: "check", key: chain.key, correctionStands: true };
+    if (!isPortalRecord(chain.record)) return { action: portalIsRecord ? "noop" : "check", key: chain.key, correctionStands: true };
     if (samePortalFigures(chain.record, extraction)) return { action: "noop", key: chain.key };
     return { action: "revise", batchNo: Number(chain.record.batchNo), supersedes: chain.key, replacing: "portal" };
   }
@@ -348,6 +348,14 @@ function planPortalWrite({ dayRecords, lastBatchNo: _lastBatchNo, extraction }) 
   // Junid's entry, a typed total) stands, and the portal figure goes beside
   // it. No record at all: nothing is written — the day waits for its photo.
   const inForce = latestOf(recs);
+  // A TILL WHOSE RECORD IS THE PORTAL (Concrete — card-terminals.cjs
+  // isPortalRecordTerminal): as on 3 Nov, another record in force that day is
+  // replaced as a revision of its batch, and a day with none is the next batch.
+  if (portalIsRecord) {
+    if (inForce) return { action: "revise", batchNo: Number(inForce.record.batchNo), supersedes: inForce.key, replacing: "other" };
+    const next = Number.isInteger(lastBatchNo) && lastBatchNo >= 0 ? lastBatchNo + 1 : 1;
+    return { action: "new", batchNo: next };
+  }
   return { action: "check", key: inForce ? inForce.key : null };
 }
 
