@@ -138,6 +138,8 @@ describe("the Carmel Delpaul R3950 (Absa payer's copy, immediate, into FNB …66
   it("the payer is read from the greeting ONLY on the payer's copy, and only when one greeting is printed", () => {
     const twoGreetings = absaPayerCopy().flatMap((l) => (l === "Dear MRS A PAYER" ? [l, "Dear MR B OTHER"] : [l]));
     expect(decide(twoGreetings).parsed.payer).toBe(null);
+    const generic = absaPayerCopy().map((l) => (l === "Dear MRS A PAYER" ? "Dear Customer" : l));
+    expect(decide(generic).parsed.payer).toBe(null);
   });
 
   it("a resend of the same notice is held as a duplicate, and a spent one never re-floats", () => {
@@ -297,7 +299,7 @@ describe("the South African public-holiday calendar", () => {
   it("has the Act's fixed days, Easter's two, and the Sunday-to-Monday rule", () => {
     expect([...saPublicHolidays(2026)].sort()).toEqual([
       "2026-01-01", "2026-03-21", "2026-04-03", "2026-04-06", "2026-04-27", "2026-05-01", "2026-06-16",
-      "2026-08-09", "2026-08-10", "2026-09-24", "2026-12-16", "2026-12-25", "2026-12-26",
+      "2026-08-09", "2026-08-10", "2026-09-24", "2026-11-04", "2026-12-16", "2026-12-25", "2026-12-26",
     ]);
     // 2027: Easter is 28 March; Human Rights Day falls on a Sunday → Monday 22 March.
     expect(saPublicHolidays(2027).has("2027-03-26")).toBe(true);
@@ -306,6 +308,10 @@ describe("the South African public-holiday calendar", () => {
     // A Saturday holiday is not moved: Day of Goodwill 2026 is a Saturday, Monday 28 Dec is a business day.
     expect(isBusinessDay("2026-12-28")).toBe(true);
     expect(isSaPublicHoliday("2024-05-29")).toBe(true); // a declared election day
+    expect(isSaPublicHoliday("2026-11-04")).toBe(true); // local government elections, declared
+    // Christmas on a Sunday, Goodwill on the Monday → Tuesday 27 Dec 2022 (architect review).
+    expect(isSaPublicHoliday("2022-12-27")).toBe(true);
+    expect(isSaPublicHoliday("2027-12-27")).toBe(true); // Goodwill on a Sunday 2027
   });
   it("the next business day skips weekends and holidays", () => {
     expect(nextBusinessDay("2026-12-24")).toBe("2026-12-28");

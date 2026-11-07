@@ -142,6 +142,7 @@ const {
 const {
   MANUAL_ENTRY_BY, MANUAL_LOG_PATH, MANUAL_LIST_LIMIT,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf, manualDoubleSubmitOf,
+  MANUAL_SUBMIT_LOCK_PATH, manualSubmitLockKeyOf, manualSubmitLockStep,
   bankTwinOfEntry, manualTwinSettleCheck,
   manualLogKeyOf, manualLogRecord, manualLogEventPatch, manualLogView,
 } = require("../lib/eft-manual.cjs");
@@ -964,7 +965,18 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
   if (bankTwin) {
     throw new HttpsError("failed-precondition", `The bank's own notification for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} is already in the pool, unused — the cashier can use that one. No manual entry is needed.`, { code: "bank-twin-waiting", key: bankTwin.key });
   }
-  const doubleTap = manualDoubleSubmitOf({ ...input, at: now }, Object.entries(tail));
+  let doubleTap = manualDoubleSubmitOf({ ...input, at: now }, Object.entries(tail));
+  if (!doubleTap) {
+    // Two taps in flight at once: the tail cannot show a record not yet
+    // written, so the exact entry takes a short create-only lock too.
+    let lock = null;
+    await db.ref(`${MANUAL_SUBMIT_LOCK_PATH}/${manualSubmitLockKeyOf(input)}`).transaction(manualSubmitLockStep(key, now, (d) => { lock = d; }));
+    if (lock?.holder && lock.holder !== key) {
+      const first = (await db.ref(`${EFT_POOL_PATH}/${lock.holder}`).once("value")).val();
+      console.log(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} answered with ${lock.holder} (submit lock)`);
+      return { ok: true, already: true, doubleSubmit: true, key: lock.holder, reference: first?.reference ?? input.reference, amountCents: first?.amountCents ?? input.amountCents, at: first?.manualEntry?.at ?? null, by: MANUAL_ENTRY_BY, status: first?.status ?? "unmatched" };
+    }
+  }
   if (doubleTap) {
     const first = doubleTap.record;
     console.log(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} answered with ${doubleTap.key} (the same entry ${now - first.manualEntry.at}ms earlier)`);

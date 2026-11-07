@@ -318,6 +318,8 @@ test("Junid's entry lands in the pool: recorded, unmatched, stamped, fingerprint
   // accepted, with a warning — its own record, its own fingerprint.
   const earlier = { ...rec, manualEntry: { ...rec.manualEntry, at: rec.manualEntry.at - 60 * 1000 } };
   db.tail = { [key]: earlier };
+  // (That first entry's short submit lock has long expired in this story.)
+  for (const k of Object.keys(db.reads)) if (k.startsWith("eft_manual_submit_locks/")) db.reads[k] = { ...db.reads[k], at: db.reads[k].at - 60 * 1000 };
   const second = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second002" } });
   assert.equal(second.ok, true);
   assert.equal(second.already, false);
@@ -334,7 +336,12 @@ test("Junid's entry lands in the pool: recorded, unmatched, stamped, fingerprint
   const noted = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second003", note: "second payment" } });
   assert.equal(noted.already, false);
   assert.equal(noted.warning.code, "similar-entry");
+  // TWO TAPS IN FLIGHT AT ONCE: the tail does not yet show the first, but its
+  // submit lock does — the second is answered with the first.
   db.tail = {};
+  const inFlight = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second004", note: "second payment" } });
+  assert.deepEqual({ already: inFlight.already, doubleSubmit: inFlight.doubleSubmit, key: inFlight.key }, { already: true, doubleSubmit: true, key: noted.key });
+  assert.equal(db.reads[`eft_pool/${manualEntryKeyOf("ME-second004")}`], undefined);
 });
 
 test("a cashier consumes it through the ORDINARY settle, once; the log says who, where, for whom", async () => {

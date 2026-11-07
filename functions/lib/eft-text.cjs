@@ -125,6 +125,7 @@ const SA_FIXED_HOLIDAYS = [
 // One-off declared public holidays (YYYY-MM-DD). Add a newly declared one here.
 const SA_DECLARED_HOLIDAYS = new Set([
   "2024-05-29", // national and provincial elections
+  "2026-11-04", // local government elections (declared under s 2A; The Presidency)
 ]);
 const utcDay = (y, m, d) => new Date(Date.UTC(y, m - 1, d));
 const isoDay = (d) => d.toISOString().slice(0, 10);
@@ -146,8 +147,15 @@ function saPublicHolidays(year) {
   const easter = easterSunday(year);
   days.push(new Date(easter.getTime() - 2 * 86400000), new Date(easter.getTime() + 86400000));
   const out = new Set(days.map(isoDay));
-  // A Sunday holiday gives the Monday after it (the Act, s 2(1)).
-  for (const d of days) if (d.getUTCDay() === 0) out.add(isoDay(new Date(d.getTime() + 86400000)));
+  // A Sunday holiday gives the Monday after it (the Act, s 2(1)) — and when
+  // that Monday is itself a holiday, the next day that is not (Christmas on a
+  // Sunday, Goodwill on the Monday: Tuesday 27 Dec 2022 was the holiday).
+  for (const d of [...days].sort((a, b) => a - b)) {
+    if (d.getUTCDay() !== 0) continue;
+    let next = new Date(d.getTime() + 86400000);
+    while (out.has(isoDay(next))) next = new Date(next.getTime() + 86400000);
+    out.add(isoDay(next));
+  }
   for (const d of SA_DECLARED_HOLIDAYS) if (d.startsWith(`${year}-`)) out.add(d);
   holidayCache.set(year, out);
   return out;

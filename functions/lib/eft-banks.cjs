@@ -656,7 +656,9 @@ const absa = {
     // addressee. Only when the document says it is that copy, and only when
     // exactly one greeting line is printed.
     if (payer.ok && !payer.value && lines.some((l) => ABSA_PAYER_COPY.test(l))) {
-      const greetings = lines.map((l) => /^Dear\s+(.{2,120})$/i.exec(l.trim())?.[1]?.trim()).filter(Boolean);
+      // A generic greeting names nobody (architect review): never a payer.
+      const greetings = lines.map((l) => /^Dear\s+(.{2,120})$/i.exec(l.trim())?.[1]?.trim())
+        .filter((g) => g && !/^(customer|client|sir|madam|sir\/madam|valued customer)\b/i.test(g));
       payer = { ok: true, value: new Set(greetings).size === 1 ? greetings[0] : null };
     }
 

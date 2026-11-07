@@ -565,7 +565,8 @@ export function immediacyRequiredFor(bankTs) {
  */
 export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = false }) {
   const id = reader ?? parsed?.reader ?? null;
-  // NEXT-BUSINESS-DAY SETTLEMENT (Junid, 7 Nov 2026). A payment dated after
+  // NEXT-BUSINESS-DAY SETTLEMENT (Junid, 7 Nov 2026; narrowed the same day
+  // — see the end of this paragraph). A payment dated after
   // its notification arrived used to refuse as scheduled — but a weekend
   // non-immediate EFT is dated for the day it SETTLES: RICHARD CHETTY's two
   // Nedbank "Internet payment"s of Saturday 7 Nov print Monday 09/11 and were

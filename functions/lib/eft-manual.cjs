@@ -223,7 +223,8 @@ function isManualEntry(record) {
 const MANUAL_DOUBLE_SUBMIT_MS = 10 * 1000;
 
 /**
- * A SIMILAR entry — a WARNING since 7 Nov 2026, never a refusal: the same normalised reference,
+ * A SIMILAR entry — eftPoolManualEntry's WARNING since 7 Nov 2026, never a
+ * refusal (the entry goes in as its own record): the same normalised reference,
  * the same amount, on a manual record TYPED THE SAME SAST DAY OR WITHIN 12
  * HOURS (any status — a
  * used one has been spent, an unmatched one is waiting). The same entryId is
@@ -272,10 +273,35 @@ function manualDoubleSubmitOf({ reference, amountCents, note = null, entryId, at
 }
 
 /**
+ * THE SAME GUARD FOR TWO TAPS IN FLIGHT AT ONCE (architect review): the tail
+ * read cannot see a record not yet written, so the exact entry also takes a
+ * short create-only lock at MANUAL_SUBMIT_LOCK_PATH/<this key>. Its key is the
+ * entry's fields (normalised reference, amount, note) — never its entryId.
+ */
+const MANUAL_SUBMIT_LOCK_PATH = "eft_manual_submit_locks";
+function manualSubmitLockKeyOf({ reference, amountCents, note = null }) {
+  return createHash("sha256").update(`eftmanuallock1|${normaliseText(reference)}|${amountCents}|${String(note ?? "").trim()}`).digest("hex").slice(0, 40);
+}
+/** Transaction step: take the lock for `poolKey`, unless another entry took it
+ *  within MANUAL_DOUBLE_SUBMIT_MS. `capture({holder})` names who holds it. */
+function manualSubmitLockStep(poolKey, at, capture = () => {}) {
+  return (cur) => {
+    if (cur && typeof cur === "object" && typeof cur.key === "string" && cur.key !== poolKey
+      && Number.isInteger(cur.at) && at - cur.at >= 0 && at - cur.at <= MANUAL_DOUBLE_SUBMIT_MS) {
+      capture({ holder: cur.key });
+      return undefined;
+    }
+    capture({ holder: poolKey });
+    return { key: poolKey, at };
+  };
+}
+
+/**
  * THE BANK'S OWN RECORD OF THE SAME MONEY. A manual entry exists because the
  * notification has not arrived — if an UNMATCHED bank-confirmed payment with
  * this reference and amount, dated within the last TWIN_LOOKBACK_DAYS (or
- * up to the next business day — a weekend payment dated Monday), is already in the
+ * forward to latestSettledDay — on a weekend or holiday, up to the next
+ * business day; on a business day, today only), is already in the
  * tail, Junid should use that one, not type a second spendable copy. (Spec
  * review, this PR.) An unused bank payment older than that with the same
  * reference is somebody's other payment — not this one's twin. (Blocking is
@@ -364,7 +390,7 @@ module.exports = {
   MANUAL_READER, MANUAL_ENTRY_BY, MANUAL_LOG_PATH,
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
-  manualDoubleSubmitOf, MANUAL_DOUBLE_SUBMIT_MS,
+  manualDoubleSubmitOf, MANUAL_DOUBLE_SUBMIT_MS, MANUAL_SUBMIT_LOCK_PATH, manualSubmitLockKeyOf, manualSubmitLockStep,
   bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin,
 };
 
