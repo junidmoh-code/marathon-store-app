@@ -215,3 +215,22 @@ test("an FNB till's staff slip is unchanged: one photo only, and its check reads
   await run(db, job.jobId, { ocr: async (_p, opts) => { asked = opts; return { parsed: { tid: "67000001", total: "R0.00", confidence: {} }, model: "t", attempts: 1 }; } });
   assert.deepEqual(asked, { bank: undefined });
 });
+
+test("Concrete's paper prints 0000OF2Y: a reader unsure of O-or-0 is not a refusal — the registry settles it (live, 7 Nov 2026)", async () => {
+  const db = world();
+  await send(db, C1);
+  const [job] = await jobs(db);
+  const out = await run(db, job.jobId, { ocr: reads(report({ confidence: { ...report().confidence, tid: 0.4 } })) });
+  assert.equal(out.final, "recorded");
+  assert.equal((await node(db, `card_batches/concrete/${C1}/12`)).slip.totalCents, 165000);
+});
+
+test("…but a low-confidence TID that is NOT this till's is still refused", async () => {
+  const db = world();
+  await send(db, C1);
+  const [job] = await jobs(db);
+  const out = await run(db, job.jobId, { ocr: reads(report({ tid: "0000ZZ9Q", confidence: { ...report().confidence, tid: 0.4 } })) });
+  assert.equal(out.final, null);
+  assert.equal(await node(db, `card_batches/concrete/${C1}`), null);
+});
+
