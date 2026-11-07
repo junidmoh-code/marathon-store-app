@@ -54,14 +54,15 @@ payment. Three rules do:
 | bank twin arrives and is **used** while the manual entry still waits | the search warns on the manual row (`sameUsed`); the **settle refuses** the manual entry (`twin-used`; the log line says `bank-twin-used`). Junid marks it used or reverses the bank settlement. |
 
 A "twin" is the same normalised reference and amount AND a bank payment the
-bank dates on the **same SAST day** the manual entry was typed, or whose
-notice landed **within 24 hours after** it (7 Nov 2026, PR #861 — the old
-"arrived at or after", with no end date, let one used entry block every later
-payment a repeat customer made under the same reference and amount). Another
-day's payment with the same reference and amount is a different payment.
-`bank-twin-waiting` looks at bank payments dated yesterday, today or tomorrow;
-a second manual entry is `already-entered` only when typed the same SAST day
-or within 12 hours of the first.
+bank dates **no later than the entry was typed** (an hour's clock tolerance)
+and **at most 7 days before it**, whose notice landed after the typing or the
+same SAST day (7 Nov 2026, PR #861 — the old "arrived at or after", with no
+end date, let one used entry block every later payment a repeat customer made
+under the same reference and amount). A payment the bank dates after the
+entry was typed is a new payment. `bank-twin-waiting` looks at unused bank
+payments dated from 7 days back to tomorrow; a second manual entry is
+`already-entered` only when typed the same SAST day or within 12 hours of the
+first.
 
 Limit: all three look at the pool tail (the newest 400), as every settle-time
 check does.

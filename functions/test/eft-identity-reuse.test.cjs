@@ -151,12 +151,33 @@ test("a manual entry and the bank notice of the SAME money (same day) are still 
   assert.equal(isPaymentTwin(earlierSameDay, typed), true);
 });
 
-test("a late notice across midnight (within 24 h after the entry) is still the entry's twin; two days later it is not", () => {
+test("a payment the bank dates just after the typing (clock skew) is still the twin; a payment made the next day is not", () => {
   const typed = manual({ entryId: "ME-late-0001", typed: "2026-11-07T23:50:00", status: "used", slip: "S-80" });
-  const late = { ...absa({ txn: "80EEEEEEE5-5", day: "2026-11-08", arrived: "2026-11-08T00:10:00" }), reference: "SOCCER T SHIRT" };
-  assert.equal(isPaymentTwin(late, typed), true);
+  const skew = { ...absa({ txn: "80EEEEEEE5-5", day: "2026-11-08", arrived: "2026-11-08T00:10:00" }), reference: "SOCCER T SHIRT" };
+  assert.equal(isPaymentTwin(skew, typed), true, "dated 00:00, ten minutes after the 23:50 entry");
   const later = { ...absa({ txn: "80FFFFFFF6-6", day: "2026-11-09", arrived: "2026-11-09T09:00:00" }), reference: "SOCCER T SHIRT" };
   assert.equal(isPaymentTwin(later, typed), false);
+});
+
+// ─── FABLE SPEC REVIEW: THE DOUBLE-PAY WINDOWS STAY SHUT ─────────────────────
+test("a Saturday payment typed by hand on Monday and its notice landing Tuesday are ONE payment", () => {
+  const mKey = manualEntryKeyOf("ME-wknd-0001");
+  const typed = manual({ entryId: "ME-wknd-0001", typed: "2026-11-09T09:00:00", reference: "Soccer T shirt", status: "used", slip: "S-95" });
+  const notice = absa({ txn: "80LLLLLLL2-2", day: "2026-11-07", arrived: "2026-11-10T10:00:00" });
+  const t = manualTwinSettleCheck({ poolKey: "n", record: notice, siblings: [[mKey, typed], ["n", notice]] });
+  assert.equal(t.code, "twin-used");
+  assert.equal(searchEftPool({ [mKey]: typed, n: notice }, "soccer t shirt").results.find((r) => r.key === "n").sameUsed.receiptNumber, "S-95");
+});
+
+test("a repeat customer's next-day payment is NOT blocked by yesterday's hand entry", () => {
+  const typed = manual({ entryId: "ME-rept-0001", typed: "2026-11-09T15:00:00", reference: "Soccer T shirt", status: "used", slip: "S-96" });
+  const tuesday = absa({ txn: "80MMMMMMM3-3", day: "2026-11-10", arrived: "2026-11-10T10:00:00" });
+  assert.equal(isPaymentTwin(tuesday, typed), false);
+});
+
+test("Friday's unused notice still redirects a Monday hand entry of the same money (entry time)", () => {
+  const friday = absa({ txn: "80NNNNNNN4-4", day: "2026-11-06", arrived: "2026-11-06T16:00:00", reference: "Soccer T shirt" });
+  assert.equal(bankTwinOfEntry({ reference: "SOCCER T SHIRT", amountCents: 87000, at: sast("2026-11-09T09:00:00") }, [["f", friday]])?.key, "f");
 });
 
 test("the same money typed twice the SAME day is still refused; the bank's notice already waiting today still redirects", () => {
@@ -167,8 +188,8 @@ test("the same money typed twice the SAME day is still refused; the bank's notic
   // The bank's own notice of today's payment is waiting: use that one.
   const waiting = absa({ txn: "80GGGGGGG7-7", arrived: "2026-11-07T09:45:00", reference: "Soccer T shirt" });
   assert.equal(bankTwinOfEntry({ reference: "SOCCER T SHIRT", amountCents: 87000, at: sast("2026-11-07T11:57:00") }, [["w", waiting]])?.key, "w");
-  // …but last week's unused payment with the same reference is somebody's other payment.
-  const lastWeek = absa({ txn: "80HHHHHHH8-8", day: "2026-10-31", arrived: "2026-10-31T09:00:00", reference: "Soccer T shirt" });
+  // …but an unused payment from more than a week ago with the same reference is somebody's other payment.
+  const lastWeek = absa({ txn: "80HHHHHHH8-8", day: "2026-10-29", arrived: "2026-10-29T09:00:00", reference: "Soccer T shirt" });
   assert.equal(bankTwinOfEntry({ reference: "SOCCER T SHIRT", amountCents: 87000, at: sast("2026-11-07T11:57:00") }, [["lw", lastWeek]]), null);
 });
 
@@ -224,12 +245,12 @@ test("a notice with no bank date that lands after the entry is still its twin (p
 });
 
 // ─── SUBSTITUTE LINE REVIEW (CodeRabbit spending cap) ────────────────────────
-test("the late-notice window ends at 24 hours exactly", () => {
+test("the bank-clock tolerance ends at one hour after the typing", () => {
   const typed = manual({ entryId: "ME-edge-0001", typed: "2026-11-07T10:00:00", status: "used", slip: "S-91" });
-  // Dated the next day (not the entry's day), so only the 24-hour rule can join them.
-  const at = (h) => ({ ...absa({ txn: "80JJJJJJJ0-0", day: "2026-11-08" }), reference: "SOCCER T SHIRT", receivedAt: typed.manualEntry.at + h, at: typed.manualEntry.at + h });
-  assert.equal(isPaymentTwin(at(24 * HOUR - 1), typed), true);
-  assert.equal(isPaymentTwin(at(24 * HOUR), typed), false);
+  const at = (ms) => ({ ...absa({ txn: "80JJJJJJJ0-0", arrived: "2026-11-07T12:00:00" }), reference: "SOCCER T SHIRT", bankTs: typed.manualEntry.at + ms });
+  // Same day either way, so the clock rule is what decides here.
+  assert.equal(isPaymentTwin(at(60 * 60 * 1000), typed), true);
+  assert.equal(isPaymentTwin(at(60 * 60 * 1000 + 1), typed), false);
 });
 
 test("an approved proof and a notice from DIFFERENT readers with different ids fall back to the identity", () => {

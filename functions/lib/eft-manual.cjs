@@ -55,40 +55,57 @@ const { normaliseBankRef } = require("./eft-fingerprint.cjs");
 // on slip S-50363". Junid then had to type it by hand as "SOCCER T SHIRT 2"
 // to get past the manual duplicate block.
 //
-// The identity of a manual entry is therefore reference + amount + DAY:
+// The identity of a manual entry is therefore reference + amount + WHEN:
 //   · a bank notice is a manual entry's twin only for a payment the bank
-//     dates on the SAME SAST day the entry was typed, or a notice that landed
-//     within 24 hours AFTER it was typed (the late notice the entry stood in
-//     for, across midnight included);
+//     dates no later than the entry was typed and at most a week before it,
+//     whose notice landed after the typing or the same day
+//     (withinManualTwinWindow);
 //   · a second manual entry is a duplicate when typed the same SAST day or
 //     within 12 hours (23:55 and 00:05 are the same money typed twice).
-// Two payments on different days that share a reference and an amount are two
+// A payment made after an entry was typed, or on another day, that shares a reference and an amount are two
 // payments. Bank against bank is never decided here: the bank's transaction id
 // (or Absa's full synthetic identity — payer, account, date, amount,
 // reference) is the fingerprint, and the fingerprint claim spends it once.
 const DAY_MS = 24 * 60 * 60 * 1000;
-const LATE_NOTICE_MS = DAY_MS;
+// The bank's clock and the server's may disagree a little; a payment the bank
+// timestamps up to an hour after the entry was typed is still the one typed.
+const BANK_CLOCK_TOLERANCE_MS = 60 * 60 * 1000;
+// How far back a hand entry may stand in for a payment: a weekend or a public
+// holiday between the payment and Junid typing it, with room to spare.
+const TWIN_LOOKBACK_DAYS = 7;
 const DUPLICATE_ROLLING_MS = 12 * 60 * 60 * 1000;
 const sameSastDay = (a, b) => Number.isInteger(a) && Number.isInteger(b) && sastDate(a) === sastDate(b);
-/** Whole SAST calendar days between two instants (0 = the same day). */
-const sastDayGap = (a, b) => Math.round(Math.abs(Date.parse(sastDate(a)) - Date.parse(sastDate(b))) / DAY_MS);
+/** Whole SAST calendar days from `from` to `to` (negative when `to` is earlier). */
+const sastDaysBetween = (from, to) => Math.round((Date.parse(sastDate(to)) - Date.parse(sastDate(from))) / DAY_MS);
 /** The bank's own date for the payment (bankTs), else when it arrived. */
 function paidAtOf(record) {
   if (Number.isInteger(record?.bankTs)) return record.bankTs;
   if (Number.isInteger(record?.receivedAt)) return record.receivedAt;
   return Number.isInteger(record?.at) ? record.at : null;
 }
-/** Is the bank record the manual entry typed at `typedAt` stood in for? */
+/**
+ * Is the bank record the payment the manual entry typed at `typedAt` stood in
+ * for? A hand entry records money ALREADY PAID, so its bank twin is a payment
+ * the bank dates NO LATER than the typing (an hour's clock tolerance) and no
+ * more than TWIN_LOOKBACK_DAYS earlier, whose notice either landed after the
+ * typing (the late notice the entry was for — however late: a Saturday
+ * payment typed on Monday, its notice on Tuesday) or on the same SAST day.
+ * A payment the bank dates AFTER the entry was typed is a new payment — a
+ * repeat customer's next order under the same reference — never the twin.
+ * (Fable spec review of #861: anchor on the payment date, not on how late
+ * the email was.)
+ */
 function withinManualTwinWindow(typedAt, bank) {
   // An entry with no readable time (never written so) stays conservative.
   if (!Number.isInteger(typedAt)) return true;
-  if (sameSastDay(typedAt, paidAtOf(bank))) return true;
   const arrived = Number.isInteger(bank?.receivedAt) ? bank.receivedAt : bank?.at;
-  if (!Number.isInteger(arrived) || arrived < typedAt) return false;
   // No bank date to place the payment by (never true of a record written
   // since fix 8): the old rule — a notice landing after the entry is its twin.
-  if (!Number.isInteger(bank?.bankTs)) return true;
-  return arrived - typedAt < LATE_NOTICE_MS;
+  if (!Number.isInteger(bank?.bankTs)) return !Number.isInteger(arrived) || arrived >= typedAt;
+  if (bank.bankTs > typedAt + BANK_CLOCK_TOLERANCE_MS) return false;
+  if (sastDaysBetween(bank.bankTs, typedAt) > TWIN_LOOKBACK_DAYS) return false;
+  if (sameSastDay(typedAt, bank.bankTs)) return true;
+  return !Number.isInteger(arrived) || arrived >= typedAt;
 }
 
 const MANUAL_READER = "manual";
@@ -205,11 +222,12 @@ function manualDuplicateOf({ reference, amountCents, entryId, at = null }, sibli
 /**
  * THE BANK'S OWN RECORD OF THE SAME MONEY. A manual entry exists because the
  * notification has not arrived — if an UNMATCHED bank-confirmed payment with
- * this reference and amount, dated yesterday, today or tomorrow (SAST), is
- * already in the
+ * this reference and amount, dated within the last TWIN_LOOKBACK_DAYS (or
+ * tomorrow, for a bank clock ahead of ours), is already in the
  * tail, Junid should use that one, not type a second spendable copy. (Spec
- * review, this PR.) An unused bank payment from last week with the same
- * reference is somebody's other payment — not this one's twin.
+ * review, this PR.) An unused bank payment older than that with the same
+ * reference is somebody's other payment — not this one's twin. (Blocking is
+ * the safe side of a money-out error: Junid uses the waiting one or looks.)
  * @returns {{key:string, record:object}|null}
  */
 function bankTwinOfEntry({ reference, amountCents, at = null }, siblings) {
@@ -218,7 +236,10 @@ function bankTwinOfEntry({ reference, amountCents, at = null }, siblings) {
     if (!rec || rec.outcome !== "recorded" || isManualEntry(rec) || rec.status !== "unmatched") continue;
     if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
     const paidAt = paidAtOf(rec);
-    if (Number.isInteger(at) && Number.isInteger(paidAt) && sastDayGap(at, paidAt) > 1) continue;
+    if (Number.isInteger(at) && Number.isInteger(paidAt)) {
+      const back = sastDaysBetween(paidAt, at); // days from the payment to now
+      if (back < -1 || back > TWIN_LOOKBACK_DAYS) continue;
+    }
     return { key, record: rec };
   }
   return null;
@@ -227,10 +248,9 @@ function bankTwinOfEntry({ reference, amountCents, at = null }, siblings) {
 /**
  * Two pool records that are ONE payment: a manual entry and the bank's own
  * notification of it — same normalised reference, same amount, and the bank
- * dates the payment the SAME SAST DAY the entry was typed, or its notice
- * landed within 24 hours after the entry (withinManualTwinWindow). A bank
- * payment on another day with the same reference and amount is a different
- * payment, not a twin — whichever came first. Either side may be `record`.
+ * dates the payment no later than the entry was typed and within a week of
+ * it (withinManualTwinWindow). A bank payment made after the typing, or more
+ * than a week before, is a different payment, not a twin. Either side may be `record`.
  * Two BANK records are never twins here: their fingerprints decide. Pure.
  */
 function isPaymentTwin(record, other) {
@@ -265,7 +285,7 @@ function manualTwinSettleCheck({ poolKey, record, siblings }) {
     return {
       ok: false, code: "twin-used",
       side: isManualEntry(record) ? "bank-twin-used" : "manual-twin-used",
-      message: `This payment — the same reference and amount — was already used${slip}. It cannot be used again. If the customer really paid twice, ask Junid.`,
+      message: `This payment was already used${slip}. It cannot be used again. If the customer really paid twice, ask Junid.`,
     };
   }
   return { ok: true };

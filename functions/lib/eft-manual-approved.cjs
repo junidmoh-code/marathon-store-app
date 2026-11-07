@@ -447,7 +447,7 @@ function approvedTwinSettleCheck({ poolKey, record, siblings }) {
     if (!isApprovedTwin(record, other)) continue;
     return {
       ok: false, code: "twin-used",
-      message: "This payment — the same reference and amount — was already used. It cannot be used again. If the customer really paid twice, ask Junid.",
+      message: "This payment was already used. It cannot be used again. If the customer really paid twice, ask Junid.",
     };
   }
   return { ok: true };
