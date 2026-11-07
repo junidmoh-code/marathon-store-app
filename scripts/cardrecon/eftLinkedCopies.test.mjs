@@ -215,6 +215,48 @@ describe("hole 2 — a blank-number copy and a numbered copy of the same Absa pa
   });
 });
 
+// ─── ARCHITECT REVIEW: A RELEASE NEVER STRANDS THE OTHER COPY ────────────────
+describe("an owner release is final both ways", () => {
+  it("numbered copy released and spent first: its blank twin is still spendable", () => {
+    const p = pool();
+    p.ingest("blank", decide(absaNotice({ txn: "" })));
+    const held = p.ingest("numbered", decide(absaNotice({ txn: "80000000J1-1" }))).record;
+    p.put("numbered", releaseHoldDecision(held, { at: 9000, by: "owner", reason: "two on the statement" }).value);
+    p.spend("numbered", "S-30");
+    expect(p.settleGuards("blank")).toEqual({ ok: true });
+  });
+
+  it("notice released and spent first: the waiting hand entry is still spendable, and the till is not warned", () => {
+    const p = pool();
+    const mKey = manualEntryKeyOf("ME-rel-0001");
+    p.put(mKey, handEntry({ entryId: "ME-rel-0001", typed: "2026-11-09T10:00:00" }));
+    p.claims[paymentFingerprint(p.records[mKey])] = { poolKey: mKey, at: 1 };
+    const held = p.ingest("notice", decide(absaNotice({ txn: "80000000J2-2" }))).record;
+    p.put("notice", releaseHoldDecision(held, { at: 9000, by: "owner", reason: "two on the statement" }).value);
+    p.spend("notice", "S-31");
+    expect(p.settleGuards(mKey)).toEqual({ ok: true });
+    expect(searchEftPool(p.records, "order 77").results.find((r) => r.key === mKey)?.sameUsed).toBeUndefined();
+  });
+
+  it("a released blank copy matching a blank-number APPROVED proof settles", () => {
+    const p = pool();
+    p.put("approved", { ...decide(absaNotice({ txn: "" })), status: "used", manualApproved: { by: "Junid", at: 1 } });
+    const held = p.ingest("blank", decide(absaNotice({ txn: "80000000J3-3" }))).record;
+    expect(held.linkedHold).toBe("blank-numbered-twin");
+    p.put("blank", releaseHoldDecision(held, { at: 9000, by: "owner", reason: "two on the statement" }).value);
+    expect(p.settleGuards("blank")).toEqual({ ok: true });
+  });
+
+  it("a blank Absa record whose hand-entry twin was used is warned about at the till (and refused at the settle)", () => {
+    const p = pool();
+    const mKey = manualEntryKeyOf("ME-rel-0002");
+    p.put(mKey, { ...handEntry({ entryId: "ME-rel-0002", typed: "2026-11-09T10:00:00" }), status: "used", used: { at: 1, sale: { receiptNumber: "S-32" } } });
+    p.put("blank", decide(absaNotice({ txn: "" })));
+    expect(searchEftPool(p.records, "order 77").results.find((r) => r.key === "blank").sameUsed.receiptNumber).toBe("S-32");
+    expect(manualTwinSettleCheck({ poolKey: "blank", record: p.records.blank, siblings: Object.entries(p.records) })).toMatchObject({ ok: false, code: "twin-used" });
+  });
+});
+
 // ─── HOLE 3 ──────────────────────────────────────────────────────────────────
 describe("hole 3 — cross-bank: monitored, never auto-blocked", () => {
   const approvedFromFnbDoc = { outcome: "recorded", status: "used", reader: "fnb", amountCents: 125000, reference: "ORDER 77", payer: "MR B OTHER", bankRef: "TRACE001", bankTs: sast("2026-11-09T09:00:00"), manualApproved: { by: "Junid", at: 1 } };

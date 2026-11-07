@@ -373,6 +373,9 @@ function manualTwinSettleCheck({ poolKey, record, siblings }) {
   }
   for (const [key, other] of siblings ?? []) {
     if (key === poolKey || other?.status !== "used" || !isPaymentTwin(record, other)) continue;
+    // A bank twin the OWNER released from a linked hold (eft-linked-copies.cjs)
+    // is money he vouched is a separate payment: it never blocks this entry.
+    if (other.releasedFromHold && other.linkedHold) continue;
     const slip = other.used?.sale?.receiptNumber ? ` on slip ${other.used.sale.receiptNumber}` : "";
     // ONE sentence and one code whichever side was typed by hand: the till
     // shows the message, and a cashier must not learn that from it (Junid,

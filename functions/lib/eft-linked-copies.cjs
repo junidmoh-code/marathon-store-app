@@ -126,6 +126,9 @@ function linkedCopySettleCheck({ poolKey, record, siblings }) {
   if (!isLivePayment(record) || record.releasedFromHold || isManualEntry(record)) return { ok: true };
   for (const [key, o] of siblings ?? []) {
     if (key === poolKey || !isLivePayment(o) || o.status !== "used") continue;
+    // A used copy the owner RELEASED from a linked hold is money he vouched
+    // is separate (architect review): it never blocks its twin.
+    if (o.releasedFromHold && o.linkedHold) continue;
     const manualTwin = bankTransactionIdOf(record) && isManualEntry(o) && isPaymentTwin(record, o);
     if (!manualTwin && !isBlankNumberedPair(record, o)) continue;
     const slip = o.used?.sale?.receiptNumber ? ` on slip ${o.used.sale.receiptNumber}` : "";

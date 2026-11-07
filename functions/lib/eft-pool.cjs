@@ -190,12 +190,17 @@ function manualTwinOf(record, payments) {
   if (bankTransactionIdOf(record) || isBlankNumberedCandidate(record)) {
     const keyOf = payments?.find?.(([, r]) => r === record)?.[0] ?? null;
     const check = linkedCopySettleCheck({ poolKey: keyOf, record, siblings: (payments ?? []).filter(([, r]) => r !== record) });
-    if (check.ok) return null;
-    const other = (payments ?? []).find(([, r]) => r !== record && r?.status === "used" && !linkedCopySettleCheck({ poolKey: keyOf, record, siblings: [["x", r]] }).ok)?.[1];
-    return other ? { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null } : null;
+    if (!check.ok) {
+      const other = (payments ?? []).find(([, r]) => r !== record && r?.status === "used" && !linkedCopySettleCheck({ poolKey: keyOf, record, siblings: [["x", r]] }).ok)?.[1];
+      return other ? { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null } : null;
+    }
+    // A numbered payment's only warning is a linked copy's (above). A
+    // BLANK-number Absa record also meets the hand-entry twin rule below.
+    if (bankTransactionIdOf(record)) return null;
   }
   for (const [, other] of payments ?? []) {
     if (other?.status !== "used" || !isPaymentTwin(record, other)) continue;
+    if (other.releasedFromHold && other.linkedHold) continue; // owner-vouched separate money
     return { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
   }
   return null;

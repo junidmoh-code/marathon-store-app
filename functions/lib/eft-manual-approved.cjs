@@ -453,6 +453,9 @@ function isApprovedTwin(record, approved) {
 }
 function approvedTwinSettleCheck({ poolKey, record, siblings }) {
   if (!record || record.outcome !== "recorded" || isManualApproved(record)) return { ok: true };
+  // Released by the owner from a LINKED hold (eft-linked-copies.cjs) — he
+  // checked the statement against the very copy this would match: separate money.
+  if (record.releasedFromHold && record.linkedHold) return { ok: true };
   for (const [key, other] of siblings ?? []) {
     if (key === poolKey || !isManualApproved(other)) continue;
     if (!isApprovedTwin(record, other)) continue;
