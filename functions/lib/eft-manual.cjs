@@ -41,6 +41,47 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
+const { sastDate } = require("./eft-text.cjs");
+const { normaliseBankRef } = require("./eft-fingerprint.cjs");
+
+// ─── ONE PAYMENT, NOT ONE REFERENCE (7 Nov 2026) ─────────────────────────────
+// A manual entry carries no bank identity — only what Junid typed: reference,
+// amount, and WHEN he typed it. The twin rules below used to match reference
+// + amount with no end date ("the bank record arrived at or after the entry"),
+// so ONE manual "SOCCER T SHIRT" R870 of 29 Oct (used on S-50363) blocked
+// every later R870 "Soccer T shirt" for ever: the customer reuses that
+// reference for repeat orders, and MR S MAISTRY's genuinely new Absa payment
+// of 7 Nov (its own transaction id) was refused at the till as "already used
+// on slip S-50363". Junid then had to type it by hand as "SOCCER T SHIRT 2"
+// to get past the manual duplicate block.
+//
+// The identity of a manual entry is therefore reference + amount + DAY:
+//   · a bank notice is a manual entry's twin only for a payment the bank
+//     dates on the SAME SAST day the entry was typed, or a notice that landed
+//     within 24 hours AFTER it was typed (the late notice the entry stood in
+//     for, across midnight included);
+//   · a second manual entry is a duplicate only on the same SAST day.
+// Two payments on different days that share a reference and an amount are two
+// payments. Bank against bank is never decided here: the bank's transaction id
+// (or Absa's full synthetic identity — payer, account, date, amount,
+// reference) is the fingerprint, and the fingerprint claim spends it once.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const LATE_NOTICE_MS = DAY_MS;
+const sameSastDay = (a, b) => Number.isInteger(a) && Number.isInteger(b) && sastDate(a) === sastDate(b);
+/** The bank's own date for the payment (bankTs), else when it arrived. */
+function paidAtOf(record) {
+  if (Number.isInteger(record?.bankTs)) return record.bankTs;
+  if (Number.isInteger(record?.receivedAt)) return record.receivedAt;
+  return Number.isInteger(record?.at) ? record.at : null;
+}
+/** Is the bank record the manual entry typed at `typedAt` stood in for? */
+function withinManualTwinWindow(typedAt, bank) {
+  // An entry with no readable time (never written so) stays conservative.
+  if (!Number.isInteger(typedAt)) return true;
+  if (sameSastDay(typedAt, paidAtOf(bank))) return true;
+  const arrived = Number.isInteger(bank?.receivedAt) ? bank.receivedAt : bank?.at;
+  return Number.isInteger(arrived) && arrived >= typedAt && arrived - typedAt < LATE_NOTICE_MS;
+}
 
 const MANUAL_READER = "manual";
 const MANUAL_ENTRY_BY = "Junid";
@@ -164,9 +205,11 @@ function bankTwinOfEntry({ reference, amountCents }, siblings) {
 /**
  * Two pool records that are ONE payment: a manual entry and the bank's own
  * notification of it — same normalised reference, same amount, and the bank
- * record ARRIVED AT OR AFTER the entry was typed (a bank payment from last
- * week with the same reference and amount is a different payment, not a
- * twin). Either side may be `record`. Pure.
+ * dates the payment the SAME SAST DAY the entry was typed, or its notice
+ * landed within 24 hours after the entry (withinManualTwinWindow). A bank
+ * payment on another day with the same reference and amount is a different
+ * payment, not a twin — whichever came first. Either side may be `record`.
+ * Two BANK records are never twins here: their fingerprints decide. Pure.
  */
 function isPaymentTwin(record, other) {
   if (!record || !other || record === other) return false;
@@ -177,8 +220,7 @@ function isPaymentTwin(record, other) {
   const ref = normaliseText(manual.reference);
   if (!ref || normaliseText(bank.reference) !== ref) return false;
   const typedAt = Number.isInteger(manual.manualEntry?.at) ? manual.manualEntry.at : null;
-  const arrived = Number.isInteger(bank.bankTs) ? bank.bankTs : Number.isInteger(bank.receivedAt) ? bank.receivedAt : bank.at;
-  return typedAt === null || !Number.isInteger(arrived) || arrived >= typedAt;
+  return withinManualTwinWindow(typedAt, bank);
 }
 
 /**
@@ -211,7 +253,7 @@ module.exports = {
   MANUAL_READER, MANUAL_ENTRY_BY, MANUAL_LOG_PATH,
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
-  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin,
+  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin, paidAtOf, sameSastDay,
 };
 
 // ─── THE LOG — how often the hatch is used, and where each entry went ───────

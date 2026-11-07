@@ -174,8 +174,11 @@ test("the same reference and amount twice is a duplicate; the same entryId is a 
   // ONE SENTENCE whichever side was typed by hand: the cashier cannot tell.
   assert.equal(rev.message.replace("S-10", "S-9"), settleTwin.message);
   for (const m of [rev.message, settleTwin.message]) assert.doesNotMatch(m, /by hand|manual|bank's/i);
-  // …but a bank payment that arrived BEFORE the entry is a different payment (last week's), never a twin.
-  const earlier = { ...bankUsed, at: 100, receivedAt: 100, bankTs: 100 };
+  // …but a bank payment from ANOTHER DAY (last week's) is a different payment, never a twin.
+  // (7 Nov 2026: the twin is the same SAST day, not merely "arrived before" —
+  // a same-day bank payment with the same reference and amount is the twin.)
+  const WEEK = 7 * 24 * 60 * 60 * 1000;
+  const earlier = { ...bankUsed, at: 1700 - WEEK, receivedAt: 1700 - WEEK, bankTs: 1700 - WEEK };
   assert.equal(manualTwinSettleCheck({ poolKey: key, record: r, siblings: [["b", earlier]] }).ok, true);
   assert.equal(searchEftPool({ [key]: r, b: earlier }, "thabo 0821").results[0].sameUsed, undefined);
   // ENTRY-TIME: the bank's own unmatched record is already there → no manual entry.

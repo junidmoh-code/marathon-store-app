@@ -53,7 +53,7 @@
 
 const { createHash } = require("node:crypto");
 const { clip, redactAccountDigits, parseBankTimestamp, sastDate } = require("./eft-text.cjs");
-const { paymentFingerprint, syntheticIdentityOf } = require("./eft-fingerprint.cjs");
+const { paymentFingerprint, syntheticIdentityOf, normaliseBankRef } = require("./eft-fingerprint.cjs");
 const { EFT_READERS } = require("./eft-banks.cjs");
 const { markUsedOutsidePosDecision } = require("./eft-settle.cjs");
 
@@ -373,29 +373,53 @@ function approvedClaimDecision({ approvedKey, claim, holderRecord, now = null })
 
 /**
  * SETTLE-TIME: the record about to be spent is the bank's record of money
- * Junid approved from its proof — matched NOT by identity (the proof and the
- * emailed notice can be different documents: one may print the transaction
- * number the other leaves blank, or format the payer differently, so their
- * fingerprints can differ) but the way the manual twin is matched: same
- * amount, same normalised reference, and the bank dates it on or after the
- * day of the approval's own bank date (a payment from last week with the
- * same reference and amount is a different payment). Refused: the money was
- * settled under the approval. One sentence, no provenance, for the till
- * (Junid, 20 Oct 2026).
+ * Junid approved from its proof. The fingerprint claim already shuts the door
+ * when both documents yield the same fingerprint; this catches the same money
+ * whose two documents fingerprint DIFFERENTLY (one prints the transaction
+ * number the other leaves blank, or formats it differently).
+ *
+ * KEYED ON THE PAYMENT'S IDENTITY, NOT ITS REFERENCE (7 Nov 2026). It used to
+ * match same amount + same reference with no end date, so one approval
+ * blocked every later payment a repeat customer made under the same reference
+ * and amount. Now:
+ *   · BOTH carry a bank transaction id → twins only when it is the SAME id
+ *     (normalised). Two different ids are two payments, whatever they share.
+ *   · otherwise (either has none) → the full identity: same amount, same
+ *     reference, the SAME SAST payment day, and — where both documents print
+ *     them — the same payer and the same destination account.
+ * Refused: the money was settled under the approval. One sentence, no
+ * provenance, for the till (Junid, 20 Oct 2026).
  * @returns {{ok:true}|{ok:false, code:string, message:string}}
  */
 const normaliseRef = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-const DAY_MS = 24 * 60 * 60 * 1000;
+const paidDayOf = (r, fallback) => {
+  const t = Number.isInteger(r?.bankTs) ? r.bankTs : fallback;
+  return Number.isInteger(t) ? sastDate(t) : null;
+};
+function isApprovedTwin(record, approved) {
+  if (approved.amountCents !== record.amountCents) return false;
+  const idA = normaliseBankRef(record.bankRef);
+  const idB = normaliseBankRef(approved.bankRef);
+  if (idA && idB) return idA === idB;
+  const ref = normaliseRef(record.reference);
+  if (!ref || normaliseRef(approved.reference) !== ref) return false;
+  const dayA = paidDayOf(record, Number.isInteger(record.receivedAt) ? record.receivedAt : record.at);
+  const dayB = paidDayOf(approved, approved.manualApproved?.at);
+  // A day that cannot be read on either side stays conservative (a twin).
+  if (dayA && dayB && dayA !== dayB) return false;
+  const payerA = normaliseRef(record.payer);
+  const payerB = normaliseRef(approved.payer);
+  if (payerA && payerB && payerA !== payerB) return false;
+  const tailA = String(record.accountTail ?? "").replace(/\D/g, "");
+  const tailB = String(approved.accountTail ?? "").replace(/\D/g, "");
+  if (tailA && tailB && tailA !== tailB) return false;
+  return true;
+}
 function approvedTwinSettleCheck({ poolKey, record, siblings }) {
   if (!record || record.outcome !== "recorded" || isManualApproved(record)) return { ok: true };
-  const ref = normaliseRef(record.reference);
-  if (!ref) return { ok: true };
-  const paidAt = Number.isInteger(record.bankTs) ? record.bankTs : Number.isInteger(record.receivedAt) ? record.receivedAt : record.at;
   for (const [key, other] of siblings ?? []) {
     if (key === poolKey || !isManualApproved(other)) continue;
-    if (other.amountCents !== record.amountCents || normaliseRef(other.reference) !== ref) continue;
-    const approvedPaidAt = Number.isInteger(other.bankTs) ? other.bankTs : other.manualApproved.at;
-    if (Number.isInteger(paidAt) && Number.isInteger(approvedPaidAt) && paidAt < approvedPaidAt - DAY_MS) continue;
+    if (!isApprovedTwin(record, other)) continue;
     return {
       ok: false, code: "twin-used",
       message: "This payment — the same reference and amount — was already used. It cannot be used again. If the customer really paid twice, ask Junid.",
