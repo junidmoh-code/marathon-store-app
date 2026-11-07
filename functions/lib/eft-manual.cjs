@@ -205,7 +205,8 @@ function manualDuplicateOf({ reference, amountCents, entryId, at = null }, sibli
 /**
  * THE BANK'S OWN RECORD OF THE SAME MONEY. A manual entry exists because the
  * notification has not arrived — if an UNMATCHED bank-confirmed payment with
- * this reference and amount, dated within a day of now, is already in the
+ * this reference and amount, dated yesterday, today or tomorrow (SAST), is
+ * already in the
  * tail, Junid should use that one, not type a second spendable copy. (Spec
  * review, this PR.) An unused bank payment from last week with the same
  * reference is somebody's other payment — not this one's twin.
@@ -274,7 +275,7 @@ module.exports = {
   MANUAL_READER, MANUAL_ENTRY_BY, MANUAL_LOG_PATH,
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
-  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin, paidAtOf, sameSastDay,
+  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin,
 };
 
 // ─── THE LOG — how often the hatch is used, and where each entry went ───────

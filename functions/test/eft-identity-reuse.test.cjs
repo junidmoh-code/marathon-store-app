@@ -76,8 +76,8 @@ test("two DIFFERENT confirmed payments sharing reference and amount (different t
   const a = absa({ txn: "80AAAAAAA1-1", day: "2026-11-07", arrived: "2026-11-07T09:45:00" });
   const b = absa({ txn: "80BBBBBBB2-2", day: "2026-11-07", arrived: "2026-11-07T14:10:00" });
   assert.notEqual(paymentFingerprint(a), paymentFingerprint(b));
-  // A is used; B is still usable.
-  const aUsed = { ...a, status: "used", used: { at: 1, sale: { receiptNumber: "S-1" } } };
+  // A is used — and was even approved from its proof — B is still usable.
+  const aUsed = { ...a, status: "used", used: { at: 1, sale: { receiptNumber: "S-1" } }, manualApproved: { by: "Junid", at: a.at } };
   const tail = { a: aUsed, b };
   assert.equal(consumeFingerprintCheck({ poolKey: "b", record: b, siblings: Object.entries(tail) }).ok, true);
   assert.equal(manualTwinSettleCheck({ poolKey: "b", record: b, siblings: Object.entries(tail) }).ok, true);
@@ -115,15 +115,19 @@ test("a no-txn-id Absa pair differing only by day are two payments, both usable;
     bankRef: null, syntheticRef: syntheticIdentityOf(parse(day), "absa"), bankTs: sast(`${day}T00:00:00`), receivedAt: sast(`${day}T09:00:00`), at: sast(`${day}T09:00:00`),
     ...(status === "used" ? { used: { at: 1, sale: { receiptNumber: "S-1" } } } : {}),
   });
-  const mon = rec("2026-11-02", "used");
+  // Monday's was used AND approved from its proof; Tuesday's is two days from
+  // nothing that matches — the guards below all see a real candidate.
+  const mon = { ...rec("2026-10-30", "used"), manualApproved: { by: "Junid", at: sast("2026-10-30T09:00:00") } };
   const tue = rec("2026-11-03");
+  // (30 Oct vs 3 Nov: outside the approved-proof clearing window too.)
   assert.ok(paymentFingerprint(mon) && paymentFingerprint(tue));
   assert.notEqual(paymentFingerprint(mon), paymentFingerprint(tue), "the day is part of the identity");
   assert.equal(consumeFingerprintCheck({ poolKey: "tue", record: tue, siblings: [["mon", mon], ["tue", tue]] }).ok, true);
-  assert.equal(manualTwinSettleCheck({ poolKey: "tue", record: tue, siblings: [["mon", mon], ["tue", tue]] }).ok, true);
+  const monTyped = { ...manual({ entryId: "ME-mon-00001", typed: "2026-10-30T09:30:00", reference: "Soccer T shirt", status: "used", slip: "S-2" }) };
+  assert.equal(manualTwinSettleCheck({ poolKey: "tue", record: tue, siblings: [["mon", mon], ["mt", monTyped], ["tue", tue]] }).ok, true);
   assert.equal(approvedTwinSettleCheck({ poolKey: "tue", record: tue, siblings: [["mon", mon], ["tue", tue]] }).ok, true);
   // The same day, payer, account, amount and reference: one payment, used once.
-  const monAgain = rec("2026-11-02");
+  const monAgain = rec("2026-10-30");
   assert.equal(paymentFingerprint(monAgain), paymentFingerprint(mon));
   assert.equal(consumeFingerprintCheck({ poolKey: "again", record: monAgain, siblings: [["mon", mon], ["again", monAgain]] }).code, "duplicate-used");
 });
@@ -177,14 +181,14 @@ test("an approved proof blocks only its OWN payment: same txn id refused, a diff
   assert.equal(approvedTwinSettleCheck({ poolKey: "y", record: otherTxn, siblings: [["ap", approved], ["y", otherTxn]] }).ok, true);
 });
 
-test("an approved proof with no txn id matches on the full identity: day (±1) + payer + account; two days apart or another payer is another payment", () => {
+test("an approved proof with no txn id matches on the full identity: day (−1..+3) + payer + account; further apart or another payer is another payment", () => {
   const approved = { ...absa({ txn: null, day: "2026-11-07", status: "used", slip: "S-1" }), manualApproved: { by: "Junid", at: sast("2026-11-07T10:00:00") } };
   const notice = absa({ txn: "80AAAAAAA1-1", day: "2026-11-07", arrived: "2026-11-07T10:30:00" });
   assert.equal(approvedTwinSettleCheck({ poolKey: "n", record: notice, siblings: [["ap", approved]] }).code, "twin-used", "the notice printed the id the proof left blank");
   // One document prints the transaction date, the other the processing date.
   const nextDay = absa({ txn: "80AAAAAAA1-2", day: "2026-11-08", arrived: "2026-11-08T10:30:00" });
   assert.equal(approvedTwinSettleCheck({ poolKey: "d", record: nextDay, siblings: [["ap", approved]] }).code, "twin-used");
-  const twoDays = absa({ txn: "80AAAAAAA1-4", day: "2026-11-09", arrived: "2026-11-09T10:30:00" });
+  const twoDays = absa({ txn: "80AAAAAAA1-4", day: "2026-11-11", arrived: "2026-11-11T10:30:00" });
   assert.equal(approvedTwinSettleCheck({ poolKey: "t", record: twoDays, siblings: [["ap", approved]] }).ok, true);
   // The same payer formatted differently is the same payer (architect review).
   const titled = absa({ txn: "80AAAAAAA1-5", day: "2026-11-07", payer: "A PAYER" });
@@ -200,8 +204,8 @@ test("a hand entry of money already approved from its proof is refused: MANUAL-�
   const key = manualEntryKeyOf("ME-appr-0001");
   assert.match(typed.bankRef, /^MANUAL-/);
   assert.equal(approvedTwinSettleCheck({ poolKey: key, record: typed, siblings: [["ap", approved], [key, typed]] }).code, "twin-used");
-  // …but a hand entry for a payment two days later is not that approval's money.
-  const later = manual({ entryId: "ME-appr-0002", typed: "2026-11-09T11:00:00" });
+  // …but a hand entry four days later is not that approval's money.
+  const later = manual({ entryId: "ME-appr-0002", typed: "2026-11-11T11:00:00" });
   assert.equal(approvedTwinSettleCheck({ poolKey: "l", record: later, siblings: [["ap", approved]] }).ok, true);
 });
 
@@ -217,4 +221,24 @@ test("a notice with no bank date that lands after the entry is still its twin (p
   const typed = manual({ entryId: "ME-nots-0001", typed: "2026-11-07T10:00:00", status: "used", slip: "S-90" });
   const undated = { ...absa({ txn: "80IIIIIII9-9", arrived: "2026-11-09T10:00:00" }), reference: "SOCCER T SHIRT", bankTs: null };
   assert.equal(isPaymentTwin(undated, typed), true);
+});
+
+// ─── SUBSTITUTE LINE REVIEW (CodeRabbit spending cap) ────────────────────────
+test("the late-notice window ends at 24 hours exactly", () => {
+  const typed = manual({ entryId: "ME-edge-0001", typed: "2026-11-07T10:00:00", status: "used", slip: "S-91" });
+  // Dated the next day (not the entry's day), so only the 24-hour rule can join them.
+  const at = (h) => ({ ...absa({ txn: "80JJJJJJJ0-0", day: "2026-11-08" }), reference: "SOCCER T SHIRT", receivedAt: typed.manualEntry.at + h, at: typed.manualEntry.at + h });
+  assert.equal(isPaymentTwin(at(24 * HOUR - 1), typed), true);
+  assert.equal(isPaymentTwin(at(24 * HOUR), typed), false);
+});
+
+test("an approved proof and a notice from DIFFERENT readers with different ids fall back to the identity", () => {
+  const approved = { ...absa({ txn: "PROOF-0001", day: "2026-11-07", status: "used", slip: "S-1" }), reader: "capitec", manualApproved: { by: "Junid", at: sast("2026-11-07T10:00:00") } };
+  const notice = absa({ txn: "80KKKKKKK1-1", day: "2026-11-07" });
+  assert.equal(approvedTwinSettleCheck({ poolKey: "n", record: notice, siblings: [["ap", approved]] }).code, "twin-used");
+  // A Monday clearing date for a Friday proof (weekend) is the same money; five days later is not.
+  const monday = absa({ txn: "80KKKKKKK1-2", day: "2026-11-10" });
+  assert.equal(approvedTwinSettleCheck({ poolKey: "m", record: monday, siblings: [["ap", approved]] }).code, "twin-used");
+  const later = absa({ txn: "80KKKKKKK1-3", day: "2026-11-12" });
+  assert.equal(approvedTwinSettleCheck({ poolKey: "l", record: later, siblings: [["ap", approved]] }).ok, true);
 });
