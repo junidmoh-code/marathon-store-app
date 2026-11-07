@@ -72,7 +72,7 @@ const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK, isPhotoPrimary, isPortalRecordTerminal, registeredRowFor } = require("../lib/card-terminals.cjs");
 const { isPortalDay } = require("../lib/card-portal.cjs");
-const { SB_READER_VERSION, planSbFiling, typedCheck: sbTypedCheck } = require("../lib/card-sb-photo.cjs");
+const { SB_READER_VERSION, planSbFiling, sequenceTidProof, typedCheck: sbTypedCheck } = require("../lib/card-sb-photo.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { tillsFor } = require("../lib/network-registry.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
@@ -1259,6 +1259,49 @@ async function sbFilingFor(db, { terminal, tid, extraction }) {
 }
 
 /**
+ * The record in force under batch #N on a machine, read BY KEY — card_batches
+ * has no .indexOn, so a range query would pull the till's whole history, and
+ * the rules are not touched (Fable spec review, #869). Only the leaves the
+ * proof needs are read; [] when the number is not on file.
+ */
+async function inForceUnder(db, storeId, tid, n) {
+  if (!Number.isInteger(n) || n < 0) return [];
+  const keys = await readBatchKeysFor(db, storeId, tid, n);
+  if (!keys.length) return [];
+  const key = keys.at(-1);
+  const base = `${CARD_BATCHES_PATH}/${storeId}/${tid}/${key}`;
+  const leaf = async (p) => (await db.ref(`${base}/${p}`).once("value")).val();
+  const [batchNo, printedBatchNo, revision, capturedVia, displacedBy, photoReport, closedAt, declaredTotal] = await Promise.all(
+    ["batchNo", "printedBatchNo", "revision", "capturedVia", "displacedBy", "photoReport", "slip/closedAt", "declaredTotal"].map(leaf));
+  return [{ key, record: { batchNo, printedBatchNo, revision, capturedVia, displacedBy, photoReport, declaredTotal, slip: { closedAt } } }];
+}
+
+/**
+ * The picked Standard Bank till's #N-1, and every other registered machine's
+ * #N-1, judged by sequenceTidProof (lib/card-sb-photo.cjs). Key reads only.
+ */
+async function sbSequenceProofFor(db, { terminal, tid, extraction, terminals = {} }) {
+  const openedAt = Number(extraction.openedAt);
+  const label = terminal.label || `${terminal.storeId}/${terminal.tillId}`;
+  const printed = Number(normaliseBatchNo(extraction.batchNo));
+  if (!Number.isFinite(openedAt) || !Number.isInteger(printed)) {
+    return sequenceTidProof({ printedBatchNo: Number.isInteger(printed) ? printed : null, openedAt: Number.isFinite(openedAt) ? openedAt : null, label });
+  }
+  const candidates = await inForceUnder(db, terminal.storeId, tid, printed - 1);
+  // EVERY OTHER registered machine, FNB included (about eight, a handful of
+  // key reads each): one that ALSO closed a #N-1 in those minutes makes the
+  // slip ambiguous.
+  const rivals = [];
+  if (candidates.length) {
+    for (const [otherTid, row] of Object.entries(terminals)) {
+      if (otherTid === tid || !row || !row.storeId) continue; // retired machines too: stricter
+      for (const r of await inForceUnder(db, row.storeId, otherTid, printed - 1)) rivals.push({ ...r, tid: otherTid, label: row.label || otherTid });
+    }
+  }
+  return sequenceTidProof({ printedBatchNo: printed, openedAt, candidates, rivals, label });
+}
+
+/**
  * The synthetic records a recorded Standard Bank report covers are marked
  * `displacedBy` (lib/card-sb-photo.cjs): kept exactly as they were, no longer
  * drawn. Cold-null: a record deleted meanwhile stays deleted. A failure is
@@ -1453,6 +1496,15 @@ async function handleExtract(db, request, opts = {}) {
       ? "The slip printed its Opened/Closed times without dates; the close was placed on the capture day and the open on the day before it where needed."
       : "The slip's Opened/Closed times could not be read, so the window is the 24 hours before this capture.");
   }
+  // A STANDARD BANK REPORT WHOSE TID LINE PRINTED TOO FAINTLY (7 Nov 2026):
+  // proven by the picked till's own batch chain, or refused by name
+  // (lib/card-sb-photo.cjs sequenceTidProof). Never for an FNB till.
+  let sbSequence = null;
+  if (!declared && !extraction.tid && isPhotoPrimary(terminal)) {
+    sbSequence = await sbSequenceProofFor(db, { terminal, tid: picked, extraction, terminals });
+    if (!sbSequence.ok) return reject(sbSequence.reason);
+    extraction.tid = picked;
+  }
   if (!extraction.tid) return reject("No terminal ID could be read off the slip — retake the header photo.");
   const readTid = extraction.tid;
   // An O read for a 0 (or I for 1) on the PICKED till's own TID is that TID.
@@ -1480,6 +1532,7 @@ async function handleExtract(db, request, opts = {}) {
   const photoPrimary = isPhotoPrimary(terminal);
   // The TID's O-or-0 doubt is settled by the registry (validateExtraction).
   if (photoPrimary && canonicalTid(readTid) && canonicalTid(readTid) === canonicalTid(picked)) extraction.tidProven = "sb-canonical";
+  if (sbSequence && sbSequence.ok) extraction.tidProven = "sb-sequence";
 
   // THE TOTAL ONLY, and only now that the slip has proved which till it is.
   if (declared) extraction.totalCents = declared.cents;
@@ -1556,6 +1609,7 @@ async function handleExtract(db, request, opts = {}) {
   const straddle = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
   if (straddle) warnings.push(straddle);
   if (movedInWindow) warnings.push(movedWindowNote(terminal));
+  if (sbSequence && sbSequence.ok) warnings.push(sbSequence.note);
   if (sbFiling && sbFiling.note) warnings.push(sbFiling.note);
   if (staffTyped && staffTyped.differs) {
     warnings.push(`The total typed on the Card Slip (${formatCents(staffTyped.typedCents)}) is not what the photographed report reads (${formatCents(extraction.totalCents)}). The report's figure is the record.`);
@@ -2217,6 +2271,9 @@ async function handleSubmit(db, request) {
   // the number it is filed under, and what staff typed beside it.
   if (draft.sbFiling && !typedOnly) {
     record.photoReport = { bank: STANDARD_BANK, readerVersion: SB_READER_VERSION, filing: draft.sbFiling.mode || "normal" };
+    // A TID proven by the till's chain, never read: such a record can never
+    // prove the NEXT report (sequenceTidProof) — every proof rests on paper.
+    if (draft.extraction && draft.extraction.tidProven === "sb-sequence") record.photoReport.tidProven = "sb-sequence";
     if (Number.isInteger(draft.sbFiling.printedBatchNo) && draft.sbFiling.printedBatchNo !== record.batchNo) {
       record.printedBatchNo = draft.sbFiling.printedBatchNo;
     }

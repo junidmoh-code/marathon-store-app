@@ -30,7 +30,7 @@
 
 // Bumped when the Standard Bank read changes in a way worth re-reading an
 // Unread photo for. Stamped on every job and record this path writes.
-const SB_READER_VERSION = 1;
+const SB_READER_VERSION = 2;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
@@ -150,6 +150,77 @@ function planSbFiling({ printedBatchNo, openedAt = null, closedAt, windowRecords
   return plan;
 }
 
+// ─── A FADED TID LINE, PROVEN BY THE TILL'S OWN SEQUENCE (7 Nov 2026) ───────
+// Marathon PE Till 2's 7 Nov report (#564, R71,015.00) was photographed twice
+// — by Yasmin at 16:41 and by Junid at 21:54 — and refused both times, three
+// reads each: "No terminal ID could be read off the slip". The PAX printer had
+// left the MID/TID/S/N lines under the shop name almost blank; the rest of the
+// paper (batch number, Opened/Closed, every total) printed crisply.
+//
+// The till is still proven, by the machine's own chain: a PAX batch opens the
+// moment the one before it closes, and its number is the next one up. #564
+// opened 2026/11/06 17:05:55; this till's #563 — read off its own paper, TID
+// and all — closed 2026/11/06 17:05:58 (the paper's seconds are the machine's
+// clock; the two lines are a few seconds apart, never minutes). No other
+// machine's report can carry that number AND open within minutes of that
+// close. So, for a Standard Bank photo-primary till ONLY, when NO TID was read
+// at all (a DIFFERENT TID still refuses — that is the wrong slip), the report
+// is filed under the picked till when:
+//   • the picked till holds a REAL report (read off paper or a PDF — never the
+//     portal's day, a typed or manual figure, or a displaced record) whose printed
+//     number is exactly one below this one, and
+//   • that report closed within SEQUENCE_JOIN_MS of this one opening.
+// …and when NO OTHER registered machine (FNB included) also closed a #N-1
+// in those minutes (ambiguous — refused), and the #N-1 relied on was itself
+// read with its TID (a chain-proven report never proves the next one, so one
+// wrong acceptance can never pull in a run of them). Architect review, #869.
+// Anything less refuses by name. FNB is never asked: its TID gate is unchanged.
+const SEQUENCE_JOIN_MS = 5 * 60 * 1000;
+
+/**
+ * Does the picked till's own chain prove an unprinted TID?
+ * @param printedBatchNo the number the report prints
+ * @param openedAt       the report's Opened time (epoch ms)
+ * @param candidates     [{key, record}] — the picked TID's record in force
+ *                       under #N-1 (read by key)
+ * @param rivals         [{key, record, tid, label}] — every OTHER registered
+ *                       machine's record in force under #N-1 (read by key)
+ * @param label          the till's name, for the sentences
+ * @returns {{ok: true, prevKey, note} | {ok: false, reason}}
+ */
+function sequenceTidProof({ printedBatchNo, openedAt, candidates = [], rivals = [], label = "this till" }) {
+  const printed = Number(printedBatchNo);
+  const faint = "The terminal-ID line on this slip is too faint to read";
+  if (!Number.isInteger(printed) || printed < 1 || !Number.isFinite(openedAt)) {
+    return { ok: false, reason: `${faint}, and its batch number or Opened time could not be read either, so the slip cannot be proven to be ${label}'s. Retake the photo; if the top lines are blank on the paper, the printer needs a clean or a new roll.` };
+  }
+  const proves = (recs) => inForceByBatch(recs).filter((r) => r.record && !r.record.displacedBy && !isSyntheticRecord(r.record)
+    // A typed or manual record's number is a filing number, never the machine's.
+    && !["typed", "manual"].includes(r.record.capturedVia)
+    // Its own TID was read off its paper — never itself proven by a chain.
+    && !(r.record.photoReport && r.record.photoReport.tidProven === "sb-sequence"))
+    .filter((r) => printedOf(r.record) === printed - 1
+      && Number.isFinite(Number(r.record.slip && r.record.slip.closedAt))
+      && Math.abs(openedAt - Number(r.record.slip.closedAt)) <= SEQUENCE_JOIN_MS);
+  const joined = proves(candidates)[0];
+  if (!joined) {
+    return { ok: false, reason: `${faint}, and batch #${printed} does not follow on from a report already read for ${label} (no #${printed - 1} closing when this one opened), so it cannot be proven to be ${label}'s. Retake the photo in better light; if the top lines are blank on the paper, the printer needs a clean or a new roll.` };
+  }
+  const rivalTids = [...new Set((rivals || []).map((r) => r.tid))];
+  const clash = rivalTids.map((t) => {
+    const mine = rivals.filter((r) => r.tid === t);
+    return proves(mine).length ? mine[0].label || t : null;
+  }).filter(Boolean);
+  if (clash.length) {
+    return { ok: false, reason: `${faint}, and batch #${printed} could follow on from ${clash.join(" or ")} as well as ${label} (each closed a #${printed - 1} when this one opened), so it cannot be told which machine printed it. Retake the photo so the terminal-ID line shows.` };
+  }
+  const closedText = new Date(Number(joined.record.slip.closedAt) + SAST_OFFSET_MS).toISOString().slice(0, 19).replace("T", " ");
+  return {
+    ok: true, prevKey: joined.key,
+    note: `The terminal-ID line on this slip printed too faintly to read. It is filed under ${label} because batch #${printed} follows that till's own #${printed - 1} (${joined.key}), which closed ${closedText} — the moment this batch opened. The printer's top lines are fading: clean the print head or change the roll.`,
+  };
+}
+
 /**
  * A staff member's typed total beside the photo, against what the photo read.
  * The read figure is the record; a difference is Junid's to see, never staff's.
@@ -161,5 +232,5 @@ function typedCheck(typedCents, readCents) {
 }
 
 module.exports = {
-  SB_READER_VERSION, DAY_MS, isSyntheticRecord, inForceByBatch, planSbFiling, typedCheck, sastYmd,
+  SB_READER_VERSION, DAY_MS, SEQUENCE_JOIN_MS, isSyntheticRecord, inForceByBatch, planSbFiling, sequenceTidProof, typedCheck, sastYmd,
 };
