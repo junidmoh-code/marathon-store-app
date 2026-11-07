@@ -52,7 +52,7 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
-const { clip, redactAccountDigits, parseBankTimestamp, sastDate } = require("./eft-text.cjs");
+const { clip, redactAccountDigits, parseBankTimestamp, sastDate, settlementDateVerdict } = require("./eft-text.cjs");
 const { paymentFingerprint, syntheticIdentityOf, normaliseBankRef } = require("./eft-fingerprint.cjs");
 const { EFT_READERS } = require("./eft-banks.cjs");
 const { markUsedOutsidePosDecision } = require("./eft-settle.cjs");
@@ -205,7 +205,10 @@ function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
   const bankTs = /^\d{4}-\d{2}-\d{2}$/.test(date) ? parseBankTimestamp(date) : null;
   if (!Number.isInteger(bankTs)) return { ok: false, code: "bad-date", message: "Type the payment date the proof shows, as YYYY-MM-DD." };
   if (!Number.isInteger(now)) return { ok: false, code: "no-clock", message: "The server clock is missing — not registered." };
-  if (date > sastDate(now)) return { ok: false, code: "bad-date", message: "The payment date is in the future — check the date on the proof." };
+  // Next-business-day settlement (7 Nov 2026), as the poller judges a bank
+  // notice: a weekend payment dated Monday is not "in the future".
+  const dated = settlementDateVerdict(bankTs, now);
+  if (!dated.ok) return { ok: false, code: "bad-date", message: `${dated.reason} Check the date on the proof.` };
   if (now - bankTs > KEYED_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) return { ok: false, code: "bad-date", message: "The payment date is more than a year ago — check the date on the proof." };
   const reference = typeof d.reference === "string" ? d.reference.trim() : d.reference == null ? "" : null;
   const absaNoTxn = bank === "absa" && (d.bankRef == null || (typeof d.bankRef === "string" && d.bankRef.trim() === ""));

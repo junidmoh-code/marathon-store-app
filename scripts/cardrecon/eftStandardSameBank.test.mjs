@@ -110,10 +110,12 @@ describe("a same-bank Standard-to-Standard payment into the immediate-only accou
     expect(sb({ heading: "Immediate Payment Confirmation" }).record.outcome).toBe("recorded");
   });
 
-  it("a same-bank payment dated AFTER its notice arrived is still refused (scheduled)", () => {
-    const r = sb({ date: "2026-11-07 09h00" }).record;
+  it("a same-bank payment dated BEYOND the next business day is still refused (scheduled)", () => {
+    // Notice of Fri 6 Nov: the next business day is Mon 9 Nov.
+    expect(sb({ date: "2026-11-09 09h00" }).record.outcome).toBe("recorded");
+    const r = sb({ date: "2026-11-10 09h00" }).record;
     expect(r.outcome).toBe("refused-not-immediate");
-    expect(r.reason).toMatch(/future-dated/);
+    expect(r.reason).toMatch(/beyond the next business day/);
   });
 
   it("a Standard Bank heading out of shape (two, split, below the sentence) still refuses", () => {

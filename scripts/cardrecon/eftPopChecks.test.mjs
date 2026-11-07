@@ -106,9 +106,12 @@ describe("7b — immediate payments only", () => {
     expect(out.needsSample).toBeUndefined();
   });
 
-  it("a payment dated in the FUTURE of its own notification is scheduled — refused, whatever it says", () => {
-    const later = 1_000_000 + 2 * 60 * 60 * 1000;
+  it("a payment dated BEYOND the next business day of its own notification is scheduled — refused, whatever it says", () => {
+    // base arrives Thu 1 Jan 1970 (SAST); the next business day is Fri 2 Jan.
+    const later = 1_000_000 + 3 * 24 * 60 * 60 * 1000; // Sun 4 Jan
     expect(iv({ ...base, reader: "capitec", immediate: true, bankTs: later }).ok).toBe(false);
+    // Dated the next business day: settles then (7 Nov 2026).
+    expect(iv({ ...base, reader: "capitec", immediate: true, bankTs: 1_000_000 + 24 * 60 * 60 * 1000 }).ok).toBe(true);
     // A clock wobble is not a schedule: inside the tolerance passes.
     expect(iv({ ...base, reader: "capitec", immediate: true, bankTs: 1_000_000 + 5 * 60 * 1000 }).ok).toBe(true);
   });
