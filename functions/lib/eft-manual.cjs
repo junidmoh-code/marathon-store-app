@@ -42,7 +42,7 @@
 
 const { createHash } = require("node:crypto");
 const { sastDate, nextBusinessDay } = require("./eft-text.cjs");
-const { normaliseBankRef } = require("./eft-fingerprint.cjs");
+const { normaliseBankRef, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
 
 // ─── ONE PAYMENT, NOT ONE REFERENCE (7 Nov 2026) ─────────────────────────────
 // A manual entry carries no bank identity — only what Junid typed: reference,
@@ -286,9 +286,10 @@ function isPaymentTwin(record, other) {
 }
 
 /**
- * SETTLE-TIME, BOTH DIRECTIONS: the record about to be spent has a twin that
- * was already USED — a bank record whose manual twin was spent, or a manual
- * entry whose bank notification arrived and was spent. The two carry
+ * SETTLE-TIME: the record about to be spent is a MANUAL ENTRY whose bank
+ * notification arrived and was spent. (The other direction — a bank record
+ * whose manual twin was spent — refused too until 7 Nov 2026; a bank record
+ * carrying its own transaction number is now judged on that number alone.) The two carry
  * different fingerprints, so the fingerprint check cannot see they are one
  * payment; this can. Refused — the money was paid out once already; Junid
  * reverses one of them if they really are two.
@@ -296,6 +297,18 @@ function isPaymentTwin(record, other) {
  */
 function manualTwinSettleCheck({ poolKey, record, siblings }) {
   if (!record || record.outcome !== "recorded") return { ok: true };
+  // A BANK PAYMENT WITH ITS OWN TRANSACTION NUMBER is never refused here
+  // (Junid, 7 Nov 2026): its number is its identity, and the fingerprint
+  // claim alone decides whether it was used. A used hand entry sharing its
+  // reference and amount is reported (`txnOverManualTwin`, for the server's
+  // log line) and never blocks. Only the record WITHOUT a number — the hand
+  // entry — is refused when its bank twin was spent.
+  if (bankTransactionIdOf(record)) {
+    for (const [key, other] of siblings ?? []) {
+      if (key !== poolKey && other?.status === "used" && isPaymentTwin(record, other)) return { ok: true, txnOverManualTwin: key };
+    }
+    return { ok: true };
+  }
   for (const [key, other] of siblings ?? []) {
     if (key === poolKey || other?.status !== "used" || !isPaymentTwin(record, other)) continue;
     const slip = other.used?.sale?.receiptNumber ? ` on slip ${other.used.sale.receiptNumber}` : "";

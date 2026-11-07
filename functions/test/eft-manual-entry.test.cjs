@@ -145,19 +145,19 @@ test("the same reference and amount twice is a duplicate; the same entryId is a 
   assert.equal(manualDuplicateOf({ reference: "Thabo 0821", amountCents: 56000, entryId: "ME-second001" }, [[key, r]]), null, "a different amount is a different payment");
   const bankRec = { outcome: "recorded", status: "unmatched", amountCents: 100, reference: "X", reader: "fnb", bankRef: "5TG59DVQ", at: 1 };
   assert.equal(manualDuplicateOf({ reference: "X", amountCents: 100, entryId: "ME-second001" }, [["b", bankRec]]), null, "a bank payment is never a manual duplicate");
-  // The real notification lands AFTER the manual entry was spent: the search
-  // answers with the bank payment, warning that a manual twin was used.
+  // The real notification lands AFTER the manual entry was spent. It carries
+  // its OWN bank transaction number, so since 7 Nov 2026 (Junid) it is judged
+  // on that number alone: no "already used" warning at the till and no
+  // refusal at the settle on the shared reference + amount — the settle only
+  // reports the used hand entry for the server's log line.
   const spent = { ...r, status: "used", used: { at: 2000, sale: { receiptNumber: "S-9" } } };
   const bankTwin = { outcome: "recorded", status: "unmatched", amountCents: 55000, reference: "THABO 0821", reader: "capitec", bankRef: "ABCD1234", at: 3000 };
   const out = searchEftPool({ [key]: spent, b: bankTwin }, "thabo 0821");
   assert.equal(out.results[0].key, "b");
-  assert.deepEqual(out.results[0].sameUsed, { at: 2000, receiptNumber: "S-9" });
-  // …and the SETTLE refuses it: one payment, two records, paid out once.
+  assert.equal(out.results[0].sameUsed, undefined);
   const settleTwin = manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, spent], ["b", bankTwin]] });
-  assert.equal(settleTwin.ok, false);
-  assert.equal(settleTwin.code, "twin-used");
-  assert.equal(settleTwin.side, "manual-twin-used", "the server's log line keeps the side");
-  assert.match(settleTwin.message, /slip S-9/);
+  assert.equal(settleTwin.ok, true);
+  assert.equal(settleTwin.txnOverManualTwin, key);
   assert.equal(manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, r]] }).ok, true, "a WAITING manual twin does not block");
   const both = searchEftPool({ [key]: r, b: bankTwin }, "thabo 0821").results[0];
   assert.equal(both.key, "b", "both waiting: the bank's record is the answer");
@@ -171,9 +171,9 @@ test("the same reference and amount twice is a duplicate; the same entryId is a 
   assert.equal(rev.side, "bank-twin-used");
   assert.match(rev.message, /slip S-10/);
   assert.deepEqual(searchEftPool({ [key]: r, b: bankUsed }, "thabo 0821").results[0].sameUsed, { at: 4000, receiptNumber: "S-10" });
-  // ONE SENTENCE whichever side was typed by hand: the cashier cannot tell.
-  assert.equal(rev.message.replace("S-10", "S-9"), settleTwin.message);
-  for (const m of [rev.message, settleTwin.message]) assert.doesNotMatch(m, /by hand|manual|bank's/i);
+  // The sentence never says a side was typed by hand: the cashier cannot tell.
+  assert.doesNotMatch(rev.message, /manual|hand|Junid typed/i);
+  assert.doesNotMatch(rev.message, /by hand|manual|bank's/i);
   // …but a bank payment from ANOTHER DAY (last week's) is a different payment, never a twin.
   // (7 Nov 2026: the twin is the same SAST day, not merely "arrived before" —
   // a same-day bank payment with the same reference and amount is the twin.)

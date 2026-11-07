@@ -146,11 +146,12 @@ describe("the R710 as it stands live: refused BEFORE this fix (no claim), settle
     expect(written).toMatchObject({ outcome: "recorded", status: "unmatched" });
     // …and the fingerprint dedupe would not catch it:
     expect(consumeFingerprintCheck({ poolKey: resend.poolKey, record: written, siblings: [[original.poolKey, original.record], [manualKey, manual]] }).ok).toBe(true);
-    // Since 7 Nov 2026 (#861) the twin rule anchors on the payment date: the
-    // bank dated it 11h15, BEFORE Junid typed it, and the resend landed after
-    // — the payment the hand entry stood in for. The settle now refuses it
-    // (it used to pass: "bank dated before the typing" read as last week's).
-    expect(manualTwinSettleCheck({ poolKey: resend.poolKey, record: written, siblings: [[manualKey, manual]] })).toMatchObject({ ok: false, code: "twin-used" });
+    // …nor the twin rule: the resend carries its OWN bank transaction number,
+    // and since 7 Nov 2026 (Junid) such a payment is judged on that number
+    // alone — the used hand entry sharing its reference and amount is only
+    // reported for the log. The number's settled claim (below) is what
+    // closes this hole: the SAME number can never be used twice.
+    expect(manualTwinSettleCheck({ poolKey: resend.poolKey, record: written, siblings: [[manualKey, manual]] })).toMatchObject({ ok: true, txnOverManualTwin: manualKey });
   });
 
   it("the manual entry's own fingerprint is MANUAL-…, not the bank's — invisible to the dedupe until claimed", () => {

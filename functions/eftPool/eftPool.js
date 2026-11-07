@@ -309,9 +309,15 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
     console.warn(`eftPoolSettle: ${check.code} on ${key} — refused before settle`);
     throw refusalToError(check);
   }
-  // A bank record whose MANUAL twin (Junid's hand entry of the same money)
-  // was already spent: a different fingerprint, the same payment. Refused.
+  // A MANUAL ENTRY whose bank twin (the bank's notification of the same
+  // money) was already spent: a different fingerprint, the same payment.
+  // Refused. A bank record with its own transaction number is judged on that
+  // number alone (7 Nov 2026) — a used hand entry with its reference and
+  // amount is only logged, for Junid's review.
   const twin = manualTwinSettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
+  if (twin.ok && twin.txnOverManualTwin) {
+    console.warn(`EFT_TXN_OVER_MANUAL_TWIN: ${key} (own bank transaction number) settles although used manual entry ${twin.txnOverManualTwin} shares its reference and amount — judged on its transaction number`);
+  }
   if (!twin.ok) {
     console.warn(`eftPoolSettle: ${twin.side} on ${key} — refused before settle`);
     throw refusalToError(twin);

@@ -110,6 +110,28 @@ function syntheticIdentityOf(parsed, reader) {
   });
 }
 
+/**
+ * A payment's OWN bank transaction number — FNB's Trace ID, Absa's
+ * Transaction number, Standard Bank's / Nedbank's Reference Number,
+ * Capitec's notification number — normalised; null for a payment that has
+ * none: a manual entry (its MANUAL-… id is the pool's, not a bank's), an Absa
+ * notice identified synthetically, or a notice that printed no id.
+ *
+ * THE TRANSACTION NUMBER IS THE IDENTITY (Junid, 7 Nov 2026). For a payment
+ * that carries one, "is this the same money / already used / cannot be used
+ * again" keys ONLY on it (the fingerprint claim). A reference + amount match
+ * with another record never blocks, holds or warns about it: a repeat
+ * customer reuses a reference ("Soccer T shirt", R870) and every payment has
+ * its own number. Reference + amount (with the time windows in
+ * eft-manual.cjs / eft-manual-approved.cjs) still judges the payments that
+ * have NO number — Junid's hand entries and Absa's synthetic identities.
+ */
+function bankTransactionIdOf(record) {
+  if (!record || typeof record !== "object") return null;
+  if (record.reader === "manual" || /^MANUAL-/i.test(String(record.bankRef ?? ""))) return null;
+  return normaliseBankRef(record.bankRef);
+}
+
 /** Does this record identify itself synthetically (no bank id, a syntheticRef)? */
 function isSyntheticIdentity({ bankRef, syntheticRef } = {}) {
   return !normaliseBankRef(bankRef) && typeof syntheticRef === "string" && SYNTHETIC_REF.test(syntheticRef);
@@ -244,6 +266,7 @@ module.exports = {
   EFT_FINGERPRINT_PATH,
   MIN_BANK_REF_CHARS,
   normaliseBankRef,
+  bankTransactionIdOf,
   paymentFingerprint,
   absaSyntheticRef,
   isSyntheticIdentity,

@@ -53,7 +53,7 @@
 
 const { createHash } = require("node:crypto");
 const { clip, redactAccountDigits, parseBankTimestamp, sastDate, settlementDateVerdict } = require("./eft-text.cjs");
-const { paymentFingerprint, syntheticIdentityOf, normaliseBankRef } = require("./eft-fingerprint.cjs");
+const { paymentFingerprint, syntheticIdentityOf, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
 const { EFT_READERS } = require("./eft-banks.cjs");
 const { markUsedOutsidePosDecision } = require("./eft-settle.cjs");
 
@@ -385,11 +385,13 @@ function approvedClaimDecision({ approvedKey, claim, holderRecord, now = null })
  * match same amount + same reference with no end date, so one approval
  * blocked every later payment a repeat customer made under the same reference
  * and amount. Now:
- *   · BOTH carry a bank transaction id from the SAME reader → twins only
- *     when it is the SAME id (normalised). Two different ids are two
- *     payments, whatever they share. (Different readers: the identity below.)
+ *   · the record being spent carries its OWN bank transaction id → a twin
+ *     only when the approval carries the SAME id (normalised). A different
+ *     id, or an approval with none, is another payment, whatever reference
+ *     and amount they share (Junid, 7 Nov 2026: the transaction number is
+ *     the identity; reference + amount never blocks a payment that has one).
  *     (A manual entry's MANUAL-… id is not a bank id: it never decides.)
- *   · otherwise (either has none) → the full identity: same amount, same
+ *   · otherwise (the record has none) → the full identity: same amount, same
  *     reference, the record dated from the day before the proof's to three
  *     days after (transaction vs clearing date), and —
  *     where both documents print them — the same payer (however formatted:
@@ -406,7 +408,7 @@ const paidDayOf = (r, fallback) => {
   return Number.isInteger(t) ? sastDate(t) : null;
 };
 /** A real bank transaction id — never a manual entry's synthetic MANUAL-… one. */
-const bankIdOf = (r) => (r?.reader === "manual" || /^MANUAL-/i.test(String(r?.bankRef ?? "")) ? null : normaliseBankRef(r?.bankRef));
+const bankIdOf = bankTransactionIdOf;
 /** The same payer however the two documents print it: "S MAISTRY" is "MR S MAISTRY". */
 function samePayer(a, b) {
   const wa = String(a ?? "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
@@ -424,6 +426,13 @@ function isApprovedTwin(record, approved) {
   // another's mail) may print different ids for one payment — the identity
   // below decides.
   if (idA && idB && (idA === idB || record.reader === approved.reader)) return idA === idB;
+  // A PAYMENT WITH ITS OWN TRANSACTION NUMBER is judged on that number alone
+  // (Junid, 7 Nov 2026): never refused because an approval shares its
+  // reference and amount. The same number is the fingerprint claim's job —
+  // the approval claimed it spent, so the bank's copy is held at ingest and
+  // refused at the settle (duplicate-used). Only a record with NO number (a
+  // manual entry, an Absa synthetic identity) falls to the identity below.
+  if (idA) return false;
   const ref = normaliseText(record.reference);
   if (!ref || normaliseText(approved.reference) !== ref) return false;
   // The record dated from the day BEFORE the proof's to three days after:
