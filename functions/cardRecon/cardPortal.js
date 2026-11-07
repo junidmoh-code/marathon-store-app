@@ -163,12 +163,34 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     .map(([key, record]) => ({ key, record: { ...record, batchKey: record.batchKey || key } }));
   const last = await core().readLastBatchFor(db, storeId, tid);
   const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction });
+  // A CROSS-CHECK (from 7 Nov 2026): the portal's figure beside the record in
+  // force, or — no record yet — only on the day's status; never a record.
+  if (plan.action === "check") {
+    if (!plan.key) return { outcome: "awaiting-photo", totalCents: extraction.totalCents, txnCount: extraction.txnCount };
+    // Two leaf reads and one child write — never the record's whole roll.
+    const base = `${tidPath}/${plan.key}`;
+    if (!(await db.ref(`${base}/batchKey`).once("value")).exists()) return { outcome: "awaiting-photo", totalCents: extraction.totalCents, txnCount: extraction.txnCount };
+    const recordTotal = (await db.ref(`${base}/slip/totalCents`).once("value")).val();
+    const check = P.portalCheckOf({ extraction, recordTotalCents: Number.isInteger(recordTotal) ? recordTotal : null, merchantNo, nowMs });
+    const differs = check.differsCents;
+    await db.ref(`${base}/portalCheck`).set(JSON.parse(JSON.stringify(check)));
+    return { outcome: "checked", key: plan.key, totalCents: extraction.totalCents, txnCount: extraction.txnCount, differsCents: differs };
+  }
   if (plan.action === "noop") {
     const swept = await sweepHeld(db, { storeId, tid, dayYmd, key: plan.key });
     return { outcome: "unchanged", key: plan.key, ...(plan.correctionStands ? { note: "Junid's correction stands" } : {}), ...(swept ? { sweptSlips: swept } : {}) };
   }
 
   const existingKeys = await core().readBatchKeysFor(db, storeId, tid, plan.batchNo);
+  // THE WHOLE CHAIN DECIDES, not the day's slice of it (CodeRabbit, #862): a
+  // photographed report that took this portal record over may have closed on
+  // a LATER day (PE Till 2's #562, 3→5 Nov, over the portal's 4 Nov), so the
+  // day's records cannot see it. A revision over it would put the portal back
+  // in force. If anything has superseded the portal record, it stands, and the
+  // pull writes nothing (its cross-check belongs to that record's own day).
+  if (plan.action === "revise" && existingKeys.length && existingKeys.at(-1) !== plan.supersedes) {
+    return { outcome: "superseded", key: existingKeys.at(-1), totalCents: extraction.totalCents, txnCount: extraction.txnCount };
+  }
   const write = resolveBatchWrite({ existingKeys, batchNo: plan.batchNo, correction: plan.action === "revise" });
   if (!write.ok) return { outcome: "refused", reason: write.reason };
   const ex = { ...extraction, batchNo: String(plan.batchNo) };

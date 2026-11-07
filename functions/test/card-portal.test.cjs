@@ -1,7 +1,11 @@
-// ─── THE SIMPLYBLU PORTAL IS THE RECORD FOR STANDARD BANK TILLS ──────────────
-// Junid, 2 Nov 2026 (lib/card-portal.cjs). The rows below have the portal's
-// REAL column layout (Monthly Card POS - Terminal Batch Report → Card POS
-// Transactions, read 2 Nov 2026); every value in them is invented.
+// ─── THE SIMPLYBLU PORTAL: A CROSS-CHECK FOR STANDARD BANK TILLS ─────────────
+// Junid, 2 Nov 2026 (lib/card-portal.cjs): the portal was the record from 3
+// Nov. From 7 Nov 2026 the photographed end-of-day report is the record
+// (lib/card-sb-photo.cjs) and a pull only writes its figure BESIDE the record
+// in force (`portalCheck`) — it never creates a record and never replaces one.
+// The rows below have the portal's REAL column layout (Monthly Card POS -
+// Terminal Batch Report → Card POS Transactions, read 2 Nov 2026); every value
+// in them is invented.
 "use strict";
 
 const { test } = require("node:test");
@@ -9,7 +13,8 @@ const assert = require("node:assert/strict");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
 const P = require("../lib/card-portal.cjs");
 const { handlePortalDay } = require("../cardRecon/cardPortal.js");
-const { handleSlip } = require("../cardRecon/cardRecon.js");
+const { handleSlip, processReadJob } = require("../cardRecon/cardRecon.js");
+const { buildBatchRecord } = require("../lib/card-recon.cjs");
 const { handleManualEntry } = require("../cardRecon/cardBatchManual.js");
 
 const SAST = (s) => Date.parse(`${s}+02:00`);
@@ -114,32 +119,69 @@ test("the window is the SAST calendar day; a transaction at 23:59 is in it, 00:0
   assert.equal(ex.windowSource, "portal-day");
 });
 
-// ── the ingest ───────────────────────────────────────────────────────────────
+// ── the ingest: a cross-check (7 Nov 2026) ───────────────────────────────────
 
-test("a day that agrees with the till: the terminal's next batch, clean; a re-pull writes nothing", async () => {
-  const db = world({ events: { a: card("pe", "till-2", "2026-11-03T10:01:30", 93000), b: card("pe", "till-2", "2026-11-03T11:15:40", 35000) } });
-  const rows = [row("2026-11-03T10:01:00", HP1X, 930), row("2026-11-03T11:15:00", HP1X, 350)];
-  const out = await pull(db, rows);
+// A portal record written by the 3–6 Nov ingest, before the photo took over.
+function legacyPortal(tid, storeId, tillId, key, rows, day = DAY) {
+  const txns = P.parsePortalRows({ cols: COLS, rows }).txns;
+  const ex = { ...P.portalExtraction({ tid, dayYmd: day, txns }), batchNo: String(parseInt(key, 10)) };
+  const rec = buildBatchRecord({
+    extraction: ex, terminal: { storeId, tillId, label: null }, tid, batchKey: key, revision: 1, supersedes: null,
+    photoPaths: null, summaryOnly: false, warnings: [], expected: { cardCents: 0, byKind: {} }, cashiers: [],
+    submittedBy: { uid: "poller", email: null }, submittedAt: NOW, draftId: null, ocr: null, capturedVia: P.PORTAL_SOURCE,
+  });
+  return JSON.parse(JSON.stringify({ ...rec, portal: { dayYmd: day, source: P.PORTAL_SOURCE } }));
+}
+// The photographed #561 of 3 Nov (Yasmin's real paper: R33,440.00, closed 17:08:38).
+const B561 = { batchKey: "561", batchNo: 561, revision: 1, capturedVia: "photo", tid: HP1X, storeId: "pe", tillId: "till-2",
+  slip: { openedAt: SAST("2026-11-02T17:01:40"), closedAt: SAST("2026-11-03T17:08:38"), totalCents: 3344000, format: "printed", windowSource: "printed" } };
+
+test("a pull never creates a record: with no record for the day it only says what the portal showed", async () => {
+  const db = world({ events: { a: card("pe", "till-2", "2026-11-03T10:01:30", 93000) } });
+  const out = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930), row("2026-11-03T11:15:00", HP1X, 350)]);
   assert.equal(out.ok, true, out.reason);
-  assert.equal(out.results[HP1X].outcome, "recorded");
-  assert.equal(out.results[HP1X].key, "561");
-  const rec = await node(db, `card_batches/pe/${HP1X}/561`);
-  assert.equal(rec.capturedVia, "simplyblu-portal");
-  assert.equal(rec.slip.totalCents, 128000);
-  assert.equal(rec.slip.windowSource, "portal-day");
-  assert.equal(rec.varianceCents, 0);
-  assert.equal(rec.reconciledBy, "totals");
-  assert.equal(rec.linesCaptured, true);
-  assert.equal(rec.portal.merchantNo, "0004977890");
-  // 18:20's catch-up: the same rows, nothing written.
-  const again = await pull(db, rows, { now: NOW + 20 * 60000 });
-  assert.equal(again.results[HP1X].outcome, "unchanged");
-  assert.equal(await node(db, `card_batches/pe/${HP1X}/561-r2`), null);
+  assert.equal(out.results[HP1X].outcome, "awaiting-photo");
+  assert.equal(out.results[HP1X].totalCents, 128000);
+  assert.deepEqual(Object.keys(await node(db, `card_batches/pe/${HP1X}`)), ["560"], "no portal record");
+  const day = await node(db, `card_batch_overrides/portal/days/${DAY}/${HP1X}`);
+  assert.equal(day.outcome, "awaiting-photo");
+  assert.equal(day.totalCents, 128000);
 });
 
-test("a transaction the portal showed late: a revision of the day, never a second card", async () => {
-  const db = world();
-  await pull(db, [row("2026-11-03T10:01:00", HP1X, 930)]);
+test("ZERO transactions (Marathon's merchant from 3 Nov) never becomes a R0.00 SHORT record", async () => {
+  const db = world({ events: { a: card("trophy", "till-2", "2026-11-03T12:00:00", 50000) } });
+  const out = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930)]);
+  assert.equal(out.results[Z4M6].outcome, "awaiting-photo");
+  assert.equal(await node(db, `card_batches/trophy/${Z4M6}`), null);
+});
+
+test("the photographed report on file for the day stands; the portal figure goes beside it", async () => {
+  const db = world({ batches: { pe: { [HP1X]: { 560: B560, 561: B561 } } } });
+  const out = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930)]);
+  assert.equal(out.results[HP1X].outcome, "checked");
+  assert.equal(out.results[HP1X].key, "561");
+  const rec = await node(db, `card_batches/pe/${HP1X}/561`);
+  assert.equal(rec.capturedVia, "photo");
+  assert.equal(rec.slip.totalCents, 3344000, "the photo's figure is untouched");
+  assert.equal(rec.portalCheck.totalCents, 93000);
+  assert.equal(rec.portalCheck.differsCents, 93000 - 3344000);
+  assert.deepEqual(Object.keys(await node(db, `card_batches/pe/${HP1X}`)).sort(), ["560", "561"]);
+});
+
+test("a staff-typed record for the day is not replaced by a pull either (it was, 3–6 Nov)", async () => {
+  const staff = { batchKey: "510", batchNo: 510, revision: 1, capturedVia: "typed", tid: Z4M6, storeId: "trophy", tillId: "till-2",
+    declaredTotal: { cents: 40000, via: "staff-slip", byUid: "u-amanda", byEmail: "amanda@marathon.internal", at: SAST("2026-11-03T16:00:00") },
+    photos: ["cardRecon/x/photo-0.jpg"],
+    slip: { openedAt: SAST("2026-11-02T18:50:00"), closedAt: SAST("2026-11-03T18:50:00"), totalCents: 40000, format: "typed", windowSource: "typed-span" } };
+  const db = world({ batches: { trophy: { [Z4M6]: { 510: staff } } } });
+  const out = await pull(db, [row("2026-11-03T15:00:00", Z4M6, 500)]);
+  assert.equal(out.results[Z4M6].outcome, "checked");
+  assert.deepEqual(Object.keys(await node(db, `card_batches/trophy/${Z4M6}`)), ["510"]);
+  assert.equal((await node(db, `card_batches/trophy/${Z4M6}/510`)).portalCheck.totalCents, 50000);
+});
+
+test("a legacy portal record (3–6 Nov) is still revised by a later pull — one card, never two", async () => {
+  const db = world({ batches: { pe: { [HP1X]: { 560: B560, 561: legacyPortal(HP1X, "pe", "till-2", "561", [row("2026-11-03T10:01:00", HP1X, 930)]) } } } });
   const out = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930, { id: "id-x" }), row("2026-11-03T16:40:00", HP1X, 200)], { now: NOW + 86400000 });
   assert.equal(out.results[HP1X].key, "561-r2");
   const r2 = await node(db, `card_batches/pe/${HP1X}/561-r2`);
@@ -147,19 +189,19 @@ test("a transaction the portal showed late: a revision of the day, never a secon
   assert.equal(r2.slip.totalCents, 113000);
 });
 
-test("ZERO transactions on a linked machine while the till took card: recorded R0.00 — a SHORT, never clean", async () => {
-  const db = world({ events: { a: card("trophy", "till-2", "2026-11-03T12:00:00", 50000) } });
-  const out = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930)]);
-  assert.equal(out.results[Z4M6].outcome, "recorded");
-  const rec = await node(db, `card_batches/trophy/${Z4M6}/${out.results[Z4M6].key}`);
-  assert.equal(rec.slip.totalCents, 0);
-  assert.equal(rec.slip.txnCount, 0);
-  assert.equal(rec.expected.cardCents, 50000);
-  assert.equal(rec.varianceCents, -50000);
-  assert.ok(rec.warnings.some((w) => /NO card transactions/.test(w)));
+test("when Concrete's merchant appears, its machines are picked up by their O/0 spelling — nothing registered", async () => {
+  const db = world();
+  const r = await handlePortalDay(db, { auth: POLLER, data: { dayYmd: DAY, sources: [
+    { business: { name: "THE MARATHON", merchantNo: "0004977890" }, tids: [HP1X, Z4M6], cols: COLS, rows: [] },
+    { business: { name: "MARATHON CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF2Y", "0000OF1Y"], cols: COLS, rows: [row("2026-11-03T09:00:00", "0000OF2Y", 500)] },
+  ] } }, { now: () => NOW });
+  assert.equal(r.results[F2Y].outcome, "awaiting-photo");
+  assert.equal(r.results[F2Y].totalCents, 50000);
+  assert.equal(r.results[F1Y].totalCents, 0);
+  assert.equal(await node(db, "card_batch_overrides/portal/unassigned"), null, "both spellings resolved");
 });
 
-test("a machine the portal does not list (Concrete, not linked yet) gets NO record — awaiting portal data", async () => {
+test("a machine the portal does not list (not linked yet) is awaiting, as before", async () => {
   const db = world({ events: { a: card("concrete", "till-1", "2026-11-03T12:00:00", 50000) } });
   const out = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930)]);
   assert.equal(out.results[F2Y].outcome, "awaiting");
@@ -167,20 +209,6 @@ test("a machine the portal does not list (Concrete, not linked yet) gets NO reco
   assert.equal(await node(db, "card_batches/concrete"), null);
   const st = await node(db, "card_batch_overrides/portal/status");
   assert.deepEqual(st.awaiting.sort(), [F1Y, F2Y].sort());
-});
-
-test("when Concrete's merchant appears, its machines are picked up by their O/0 spelling — nothing registered", async () => {
-  const db = world();
-  const out = handlePortalDay(db, { auth: POLLER, data: { dayYmd: DAY, sources: [
-    { business: { name: "THE MARATHON", merchantNo: "0004977890" }, tids: [HP1X, Z4M6], cols: COLS, rows: [] },
-    { business: { name: "MARATHON CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF2Y", "0000OF1Y"], cols: COLS, rows: [row("2026-11-03T09:00:00", "0000OF2Y", 500)] },
-  ] } }, { now: () => NOW });
-  const r = await out;
-  assert.equal(r.results[F2Y].outcome, "recorded");
-  const rec = await node(db, `card_batches/concrete/${F2Y}/1`);
-  assert.equal(rec.slip.totalCents, 50000);
-  assert.equal(rec.portal.merchantNo, "0005377331");
-  assert.equal((await node(db, `card_batches/concrete/${F1Y}/1`)).slip.totalCents, 0);
 });
 
 test("a TID in the portal that is not registered is kept as UNASSIGNED with its money — never dropped, never guessed", async () => {
@@ -194,7 +222,7 @@ test("a TID in the portal that is not registered is kept as UNASSIGNED with its 
   assert.equal(u.firstSeenAt, NOW);
 });
 
-test("a portal layout the parser cannot read: its machines are awaiting, never recorded as zero", async () => {
+test("a portal layout the parser cannot read: its machines are awaiting, nothing written", async () => {
   const db = world();
   const out = await pull(db, [], { cols: COLS.filter((c) => c !== "TransactionStatus") });
   assert.equal(out.results[HP1X].outcome, "awaiting");
@@ -204,7 +232,6 @@ test("a portal layout the parser cannot read: its machines are awaiting, never r
 
 test("nothing before the floor (30 Oct 2026); each machine from its OWN start (Junid, 2 Nov 2026)", async () => {
   assert.equal((await pull(world(), [], { day: "2026-10-29" })).ok, false);
-  // Concrete from 30 Oct (portalFrom), Marathon PE Till 2 from the default 3 Nov.
   const db = world();
   await db.ref(`config/cardTerminals/${F2Y}/portalFrom`).set("2026-10-30");
   await db.ref(`config/cardTerminals/${F1Y}/portalFrom`).set("2026-10-30");
@@ -213,68 +240,136 @@ test("nothing before the floor (30 Oct 2026); each machine from its OWN start (J
     { business: { name: "CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF2Y", "0000OF1Y"], cols: COLS, rows: [row("2026-10-31T11:00:00", "0000OF2Y", 7380), row("2026-10-31T12:00:00", "0000OF1Y", 750)] },
   ] } }, { now: () => SAST("2026-11-02T20:00:00") });
   assert.equal(out.ok, true, out.reason);
-  assert.equal(out.results[F2Y].outcome, "recorded");
-  assert.equal(out.results[F1Y].outcome, "recorded");
+  assert.equal(out.results[F2Y].totalCents, 738000);
   assert.equal(out.results[HP1X].outcome, "ignored", "PE Till 2 is not a portal till before 3 Nov");
-  assert.equal(await node(db, `card_batches/pe/${HP1X}/561`), null);
-  assert.equal((await node(db, `card_batches/concrete/${F2Y}/1`)).slip.totalCents, 738000);
   assert.equal(P.portalFromOf({ portalFrom: "2026-01-01" }), "2026-10-30", "never before the floor");
 });
 
-// ── the staff slip beside the portal ─────────────────────────────────────────
-
-test("a staff slip BEFORE the portal pull is held, and the portal record carries it", async () => {
-  const db = world({ extra: { network: { trophy: { tills: { "till-2": { label: "Till 2" } } } } } });
-  const sent = await handleSlip(db, { auth: AMANDA, data: { action: "slip", pickedTid: Z4M6, photos: [PHOTO], declaredTotal: "500.00" } },
-    { now: () => SAST("2026-11-03T16:55:00"), bucket: bucket() });
-  assert.equal(sent.ok, true, sent.reason);
-  assert.equal(await node(db, `card_batches/trophy/${Z4M6}`), null, "the slip is not the record");
-  const held = await node(db, `card_batch_overrides/portal/held/trophy/${Z4M6}/${DAY}`);
-  assert.equal(Object.values(held)[0].cents, 50000);
-  const out = await pull(db, [row("2026-11-03T15:00:00", Z4M6, 500)]);
-  const rec = await node(db, `card_batches/trophy/${Z4M6}/${out.results[Z4M6].key}`);
-  assert.equal(rec.slip.totalCents, 50000);
-  const sup = Object.values(rec.supportingSlips);
-  assert.equal(sup.length, 1);
-  assert.equal(sup[0].cents, 50000);
-  assert.equal(Object.values(await node(db, `card_batch_overrides/portal/held/trophy/${Z4M6}/${DAY}`))[0].takenInto, out.results[Z4M6].key);
-  const log = await node(db, `card_batch_overrides/staff_slips/trophy/${Z4M6}/${DAY}`);
-  assert.equal(Object.values(log)[0].kind, "held");
-});
-
-test("a staff slip AFTER the portal record is attached to it, never a second record", async () => {
-  const db = world({ extra: { network: { trophy: { tills: { "till-2": { label: "Till 2" } } } } } });
-  const out = await pull(db, [row("2026-11-03T15:00:00", Z4M6, 500)], { now: SAST("2026-11-03T18:00:00") });
-  const key = out.results[Z4M6].key;
-  const sent = await handleSlip(db, { auth: AMANDA, data: { action: "slip", pickedTid: Z4M6, photos: [PHOTO], declaredTotal: "500.00" } },
-    { now: () => SAST("2026-11-03T18:30:00"), bucket: bucket() });
-  assert.equal(sent.ok, true, sent.reason);
-  const recs = await node(db, `card_batches/trophy/${Z4M6}`);
-  assert.deepEqual(Object.keys(recs), [key]);
-  assert.equal(Object.values(recs[key].supportingSlips)[0].cents, 50000);
-});
-
-test("a record already on file for the day (a staff slip recorded before this shipped) is REPLACED as a revision of its batch", async () => {
-  const staff = { batchKey: "510", batchNo: 510, revision: 1, capturedVia: "typed", tid: Z4M6, storeId: "trophy", tillId: "till-2",
-    declaredTotal: { cents: 40000, via: "staff-slip", byUid: "u-amanda", byEmail: "amanda@marathon.internal", at: SAST("2026-11-03T16:00:00") },
-    photos: ["cardRecon/x/photo-0.jpg"],
-    slip: { openedAt: SAST("2026-11-02T18:50:00"), closedAt: SAST("2026-11-03T18:50:00"), totalCents: 40000, format: "typed", windowSource: "typed-span" } };
-  const db = world({ batches: { trophy: { [Z4M6]: { 510: staff } } } });
-  const out = await pull(db, [row("2026-11-03T15:00:00", Z4M6, 500)]);
-  assert.equal(out.results[Z4M6].key, "510-r2");
-  const rec = await node(db, `card_batches/trophy/${Z4M6}/510-r2`);
-  assert.equal(rec.supersedes, "510");
-  assert.equal(rec.capturedVia, "simplyblu-portal");
-  assert.equal(rec.supportingSlips["rec-510"].cents, 40000);
-  assert.equal((await node(db, `card_batches/trophy/${Z4M6}/510`)).slip.totalCents, 40000, "kept unchanged");
-});
-
-test("Junid's manual entry is refused for a day the portal already recorded (correction still allowed)", async () => {
+test("TODAY with no transaction on the merchant at all: awaiting; the day after, still no record", async () => {
   const db = world();
-  await pull(db, [row("2026-11-03T10:01:00", HP1X, 930)]);
+  assert.equal((await pull(db, [], { now: NOW })).results[HP1X].outcome, "awaiting");
+  assert.equal((await pull(db, [], { now: NOW + 86400000 })).results[HP1X].outcome, "awaiting-photo");
+  assert.deepEqual(Object.keys(await node(db, `card_batches/pe/${HP1X}`)), ["560"]);
+});
+
+// ── the photographed report takes the portal's day over ─────────────────────
+
+const YASMIN = { uid: "u-yasmin", token: { email: "yasmin@marathon.internal" } };
+const report = (over = {}) => ({
+  mid: "000000004977890", tid: "0000HP1X", batchNo: "561",
+  opened: "2026/11/02 17:01:40", closed: "2026/11/03 17:08:38", printed: "2026/11/03 17:08:40",
+  txnCount: 48, purchases: "R33,440.00", cash: "R0.00", refunds: "R0.00", total: "R33,440.00",
+  reconLine: "500 - Reconciled, in balance",
+  confidence: { mid: 0.99, tid: 0.99, batchNo: 0.99, opened: 0.99, closed: 0.99, txnCount: 0.99, purchases: 0.99, refunds: 0.99, total: 0.99 },
+  transactions: [], ...over,
+});
+async function sendAndRead(db, parsed, at) {
+  const sent = await handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: HP1X, photos: [PHOTO] } }, { now: () => at, bucket: bucket() });
+  assert.equal(sent.ok, true, sent.reason);
+  const jobs = Object.values(await node(db, "card_batch_jobs"));
+  const job = jobs.sort((a, b) => a.receivedAt - b.receivedAt).at(-1);
+  return processReadJob(db, job.jobId, { now: () => at + 60000, onArrival: true, loadPhotos: async () => [PHOTO],
+    ocr: async () => ({ parsed, model: "t", attempts: 1, tokensIn: 1, tokensOut: 1 }) });
+}
+const peWorld = (batches) => world({ batches: { pe: { [HP1X]: batches } }, extra: {
+  users: { [YASMIN.uid]: { cardSlipTills: { pe: { "till-2": true } } } },
+} });
+
+test("Yasmin's #561 of 3 Nov takes over the portal's R0.00 record of the same day — a revision, one card", async () => {
+  const db = peWorld({ 560: B560, 561: legacyPortal(HP1X, "pe", "till-2", "561", []) });
+  const out = await sendAndRead(db, report(), SAST("2026-11-07T09:00:00"));
+  assert.equal(out.final, "recorded");
+  const r2 = await node(db, `card_batches/pe/${HP1X}/561-r2`);
+  assert.equal(r2.capturedVia, "photo");
+  assert.equal(r2.supersedes, "561");
+  assert.equal(r2.slip.totalCents, 3344000);
+  assert.equal(r2.photoReport.filing, "over");
+  assert.ok(r2.warnings.some((w) => /replaces the SimplyBLU portal's record for 2026-11-03 \(561\)/.test(w)), r2.warnings.join(" | "));
+  assert.equal((await node(db, `card_batches/pe/${HP1X}/561`)).slip.totalCents, 0, "the portal record is kept unchanged");
+  // A second photo of the same paper is a duplicate.
+  assert.equal((await sendAndRead(db, report(), SAST("2026-11-07T09:10:00"))).final, "duplicate");
+  // …and the next pull leaves the photo standing, its figure beside it.
+  const again = await pull(db, [], { now: SAST("2026-11-07T18:00:00") });
+  assert.equal(again.results[HP1X].outcome, "checked");
+  assert.equal(again.results[HP1X].key, "561-r2");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/561-r3`), null);
+});
+
+test("PE Till 2's real #562 (3→5 Nov) and #563 (5→6 Nov): printed numbers kept, 5 Nov displaced, one card a day", async () => {
+  const db = peWorld({ 560: B560,
+    561: legacyPortal(HP1X, "pe", "till-2", "561", []),
+    562: legacyPortal(HP1X, "pe", "till-2", "562", [], "2026-11-04"),
+    563: legacyPortal(HP1X, "pe", "till-2", "563", [], "2026-11-05") });
+  const r562 = await sendAndRead(db, report({ batchNo: "562", opened: "2026/11/03 17:08:35", closed: "2026/11/05 16:53:43", printed: "2026/11/05 16:53:45",
+    txnCount: 59, purchases: "R38,890.00", total: "R38,890.00" }), SAST("2026-11-07T09:00:00"));
+  assert.equal(r562.final, "recorded");
+  const a = await node(db, `card_batches/pe/${HP1X}/562-r2`);
+  assert.equal(a.slip.totalCents, 3889000);
+  assert.equal(a.supersedes, "562");
+  assert.equal(a.printedBatchNo, undefined, "filed under the number it prints");
+  assert.equal((await node(db, `card_batches/pe/${HP1X}/563`)).displacedBy, "562-r2", "the portal's 5 Nov is displaced, kept");
+  const r563 = await sendAndRead(db, report({ batchNo: "563", opened: "2026/11/05 16:53:40", closed: "2026/11/06 17:05:58", printed: "2026/11/06 17:06:01",
+    txnCount: 62, purchases: "R46,500.00", total: "R46,500.00" }), SAST("2026-11-07T09:05:00"));
+  assert.equal(r563.final, "recorded");
+  const b = await node(db, `card_batches/pe/${HP1X}/563-r2`);
+  assert.equal(b.slip.totalCents, 4650000);
+  assert.equal(b.supersedes, "563");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/564`), null, "nothing renumbered");
+  // A pull of 4 Nov with CHANGED figures: the portal's 4 Nov chain is now the
+  // photo's (562-r2, closed 5 Nov) — nothing is revised over it (CodeRabbit, #862).
+  const p4 = await pull(db, [row("2026-11-04T10:00:00", HP1X, 120)], { day: "2026-11-04", now: SAST("2026-11-07T18:00:00") });
+  assert.equal(p4.results[HP1X].outcome, "superseded");
+  assert.equal(p4.results[HP1X].key, "562-r2");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/562-r3`), null);
+  // A pull of 5 Nov afterwards: the displaced portal record is not the day's.
+  const pullAfter = await pull(db, [], { day: "2026-11-05", now: SAST("2026-11-07T18:00:00") });
+  assert.equal(pullAfter.results[HP1X].outcome, "checked");
+  assert.equal(pullAfter.results[HP1X].key, "562-r2");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/563-r3`), null);
+});
+
+test("a printed number taken by ANOTHER day's portal record: filed under the next free number, saying so", async () => {
+  // The portal's #561 is 3 Nov; this machine's paper prints #561 for 7 Nov.
+  const db = peWorld({ 560: B560, 561: legacyPortal(HP1X, "pe", "till-2", "561", []), 562: legacyPortal(HP1X, "pe", "till-2", "562", [], "2026-11-04") });
+  const out = await sendAndRead(db, report({ opened: "2026/11/06 17:00:00", closed: "2026/11/07 17:05:00", printed: "2026/11/07 17:05:02" }), SAST("2026-11-07T17:20:00"));
+  assert.equal(out.final, "recorded");
+  const rec = await node(db, `card_batches/pe/${HP1X}/563`);
+  assert.equal(rec.capturedVia, "photo");
+  assert.equal(rec.printedBatchNo, 561);
+  assert.equal(rec.photoReport.filing, "renumbered");
+  assert.ok(rec.warnings.some((w) => /prints batch #561; that number is already used by the SimplyBLU portal's record for 2026-11-03, so this report is filed as #563/.test(w)));
+  assert.equal((await node(db, `card_batches/pe/${HP1X}/561`)).slip.totalCents, 0, "3 Nov untouched");
+  // The same paper again is still a duplicate, not a third number.
+  assert.equal((await sendAndRead(db, report({ opened: "2026/11/06 17:00:00", closed: "2026/11/07 17:05:00", printed: "2026/11/07 17:05:02" }), SAST("2026-11-07T17:30:00"))).final, "duplicate");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/564`), null);
+});
+
+test("a Standard Bank staff photo is never held for the portal any more — it is read", async () => {
+  const db = world({ extra: { network: { trophy: { tills: { "till-2": { label: "Till 2" } } } } } });
+  const sent = await handleSlip(db, { auth: AMANDA, data: { action: "slip", pickedTid: Z4M6, photos: [PHOTO], declaredTotal: "500.00" } },
+    { now: () => SAST("2026-11-07T16:55:00"), bucket: bucket() });
+  assert.equal(sent.ok, true, sent.reason);
+  assert.equal(await node(db, "card_batch_overrides/portal/held"), null);
+  const [job] = Object.values(await node(db, "card_batch_jobs"));
+  assert.equal(job.bank, "standard-bank");
+  assert.equal(job.typedCents, 50000);
+  assert.equal(job.mode, undefined);
+});
+
+test("Junid's manual entry is refused for a day a legacy portal record holds (correction still allowed)", async () => {
+  const db = world({ batches: { pe: { [HP1X]: { 560: B560, 561: legacyPortal(HP1X, "pe", "till-2", "561", [row("2026-11-03T10:01:00", HP1X, 930)]) } } } });
   const out = await handleManualEntry(db, { auth: JUNID, data: { tid: HP1X, dayYmd: DAY, total: "930.00", batchNo: "562" } }, { now: () => NOW + 3600000 });
   assert.equal(out.ok, false);
   assert.match(out.reason, /SimplyBLU portal is already the record/);
+});
+
+test("Junid's correction of a portal day stands — a later pull only checks beside it", async () => {
+  const db = world({ batches: { pe: { [HP1X]: { 560: B560, 561: legacyPortal(HP1X, "pe", "till-2", "561", [row("2026-11-03T10:01:00", HP1X, 930)]) } } } });
+  const fix = await handleManualEntry(db, { auth: JUNID, data: { tid: HP1X, dayYmd: DAY, total: "1000.00", replaces: "561", reason: "wrong" } }, { now: () => NOW + 3600000 });
+  assert.equal(fix.ok, true, fix.reason);
+  const again = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930), row("2026-11-03T11:00:00", HP1X, 70)], { now: NOW + 86400000 });
+  assert.equal(again.results[HP1X].outcome, "checked");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/561-r3`), null);
 });
 
 // ── review fixes (Sonnet architect, #837) ────────────────────────────────────
@@ -287,44 +382,20 @@ test("a status or type the parser does not know refuses the source — never a s
   assert.equal(P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status: "Declined" })] }).ok, true);
 });
 
-test("Junid's correction of a portal day stands — a later pull does not write over it", async () => {
-  const db = world();
-  await pull(db, [row("2026-11-03T10:01:00", HP1X, 930)]);
-  const fix = await handleManualEntry(db, { auth: JUNID, data: { tid: HP1X, dayYmd: DAY, total: "1000.00", replaces: "561", reason: "wrong" } }, { now: () => NOW + 3600000 });
-  assert.equal(fix.ok, true, fix.reason);
-  const again = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930), row("2026-11-03T11:00:00", HP1X, 70)], { now: NOW + 86400000 });
-  assert.equal(again.results[HP1X].outcome, "unchanged");
-  assert.equal(again.results[HP1X].note, "Junid's correction stands");
-  assert.equal(await node(db, `card_batches/pe/${HP1X}/561-r3`), null);
-});
-
-test("TODAY with no transaction on the merchant at all: awaiting, not a zero day; the day after, it is recorded", async () => {
-  const db = world();
-  const today = await pull(db, [], { now: NOW });
-  assert.equal(today.results[HP1X].outcome, "awaiting");
-  assert.equal(await node(db, `card_batches/pe/${HP1X}/561`), null);
-  const next = await pull(db, [], { now: NOW + 86400000 });
-  assert.equal(next.results[HP1X].outcome, "recorded");
-});
-
-test("a slip held after the record was read is swept onto it by the next (unchanged) pull", async () => {
-  const db = world({ extra: { network: { trophy: { tills: { "till-2": { label: "Till 2" } } } } } });
+test("a slip held before 7 Nov is swept onto its legacy portal record by an unchanged pull", async () => {
   const rows = [row("2026-11-03T15:00:00", Z4M6, 500)];
-  const first = await pull(db, rows);
-  const key = first.results[Z4M6].key;
-  // A slip that landed in "held" in the gap (simulated by writing it there).
+  const db = world({ batches: { trophy: { [Z4M6]: { 510: legacyPortal(Z4M6, "trophy", "till-2", "510", rows) } } } });
   await db.ref(`card_batch_overrides/portal/held/trophy/${Z4M6}/${DAY}/s1`).set({ slipId: "s1", cents: 50000, photos: ["p"], at: NOW, held: true });
   const again = await pull(db, rows, { now: NOW + 60000 });
   assert.equal(again.results[Z4M6].outcome, "unchanged");
-  assert.equal((await node(db, `card_batches/trophy/${Z4M6}/${key}/supportingSlips/s1`)).cents, 50000);
-  assert.equal(await node(db, `card_batch_overrides/portal/held/trophy/${Z4M6}/${DAY}/s1/takenInto`), key);
+  assert.equal((await node(db, `card_batches/trophy/${Z4M6}/510/supportingSlips/s1`)).cents, 50000);
+  assert.equal(await node(db, `card_batch_overrides/portal/held/trophy/${Z4M6}/${DAY}/s1/takenInto`), "510");
 });
 
 test("a TID printed with a hyphen or space keeps its transactions (CodeRabbit, #837)", async () => {
   const db = world({ events: { a: card("pe", "till-2", "2026-11-03T10:01:30", 93000) } });
   const out = await pull(db, [row("2026-11-03T10:01:00", "0000-HP1X", 930)], { tids: ["0000-HP1X", "0000 Z4M6"] });
-  assert.equal(out.results[HP1X].outcome, "recorded");
-  assert.equal((await node(db, `card_batches/pe/${HP1X}/561`)).slip.totalCents, 93000);
+  assert.equal(out.results[HP1X].totalCents, 93000);
 });
 
 test("a successful payment with an unreadable amount refuses the source (CodeRabbit, #837)", () => {

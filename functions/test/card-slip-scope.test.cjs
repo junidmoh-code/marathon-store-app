@@ -283,7 +283,7 @@ test("with Yasmin's live record (destShop marathon-pe, POS cashier) the photo-on
 test("slipTills: each person gets ONLY their own till — id, label, typed — and nothing else", async () => {
   const db = world();
   const y = await handleSlipTills(db, { auth: YASMIN, data: { action: "slipTills" } }, { now: () => NOW });
-  assert.deepEqual(y, { ok: true, dayYmd: "2026-10-16", tills: [{ tid: MT2, storeId: "pe", tillId: "till-2", label: "Marathon Till 2", typed: false, sent: null }] });
+  assert.deepEqual(y, { ok: true, dayYmd: "2026-10-16", tills: [{ tid: MT2, storeId: "pe", tillId: "till-2", label: "Marathon Till 2", typed: false, photoFirst: false, sent: null }] });
   const a = await handleSlipTills(db, { auth: AMANDA, data: { action: "slipTills" } }, { now: () => NOW });
   assert.deepEqual(a.tills.map((t) => [t.tid, t.typed]), [[TT2, true]]);
   const m = await handleSlipTills(db, { auth: MANAGER, data: { action: "slipTills" } }, { now: () => NOW });

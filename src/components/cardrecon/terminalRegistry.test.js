@@ -10,7 +10,7 @@
 // writes `retired: true` instead of a stamp.
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { captureCards, isRetiredTerminal, captureMode, takesPhoto, typesTotal, terminalBank, canonicalTid } from "./terminalRegistry";
+import { captureCards, isRetiredTerminal, captureMode, takesPhoto, typesTotal, terminalBank, canonicalTid, isPhotoPrimary, expectsEmail } from "./terminalRegistry";
 
 const require = createRequire(import.meta.url);
 const server = require("../../../functions/lib/card-terminals.cjs");
@@ -135,5 +135,27 @@ describe("the cards the capture screen draws", () => {
     // A node whose children were deleted comes back with nulls in it.
     expect(captureCards({ ...ESTATE, DEAD0001: null })).toHaveLength(6);
     expect(captureCards({ DEAD0001: "not an object" })).toEqual([]);
+  });
+
+  // A STANDARD BANK till is photographed (7 Nov 2026), whatever its stored
+  // capture says — decided by the bank alone, the same on both sides.
+  it("agree that a Standard Bank row is photographed, never typed-only, never awaited by email", () => {
+    for (const bank of [undefined, null, "", "fnb", "standard-bank", "Standard Bank", 1, {}]) {
+      for (const capture of [undefined, "email", "photo", "typed", "both", "nonsense"]) {
+        const row = { storeId: "concrete", tillId: "till-1", bank, capture };
+        const tag = JSON.stringify({ bank, capture });
+        expect(isPhotoPrimary(row), tag).toBe(server.isPhotoPrimary(row));
+        expect(expectsEmail(row), tag).toBe(server.expectsEmail(row));
+        expect(takesPhoto(row), tag).toBe(server.takesPhoto(row));
+        expect(typesTotal(row), tag).toBe(server.typesTotal(row));
+        if (bank === "standard-bank") {
+          expect(takesPhoto(row), tag).toBe(true);
+          expect(typesTotal(row), tag).toBe(false);
+          expect(expectsEmail(row), tag).toBe(false);
+        }
+      }
+    }
+    expect(isPhotoPrimary({ bank: "fnb", capture: "typed" })).toBe(false);
+    expect(typesTotal({ capture: "typed" })).toBe(true);
   });
 });

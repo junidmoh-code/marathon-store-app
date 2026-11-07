@@ -32,6 +32,13 @@
 // in, from the server's own log (cardBatchCapture "slipTills"), so a phone
 // that was closed mid-send, or reopened tomorrow, shows the truth.
 //
+// A STANDARD BANK TILL (Junid, 7 Nov 2026 — `photoFirst` from the server,
+// decided by the terminal's bank): the screen leads with "Photograph the
+// end-of-day report". A long report is several photos (up to six), read on the
+// server as one. The card total is OPTIONAL — the photo is read for it; a
+// figure typed here is only ever Junid's cross-check. Sent / Not sent works
+// exactly as above, and nothing about the read ever comes back to this screen.
+//
 // THE NUMBER BOX is the app's typed-total pattern (inputMode "decimal" — the
 // phone's own number pad), the same field Junid's typed total uses.
 
@@ -42,6 +49,7 @@ import { usePermissions } from "../PermissionsContext";
 import { serverNowMs } from "../../utils/serverTime";
 import { describeCallableError, receiptOf } from "./captureFailure";
 import { preparePhoto } from "./slipPhoto";
+import { payloadRefusal } from "./photoIntake";
 import { slipTills } from "./slipScope";
 import { peekSlipTerminals, subscribeSlipTerminals, isSlipTerminalsLive, peekServerTills, subscribeServerTills, fetchServerTills } from "./slipTerminals";
 import { FONT } from "./cardReconStyles";
@@ -169,8 +177,13 @@ export default function CardSlipScreen({ onExit }) {
 // can be filled in (photo, total) but not sent.
 // sent: the server's answer for today — { at } when today's slip is in, null
 // when it is not, undefined when not known.
+// The most photos a Standard Bank report is sent in (server: SB_SLIP_MAX_PHOTOS).
+const SB_MAX_PHOTOS = 6;
+
 function TillSlip({ till, live = true, sent, onSent = () => {} }) {
-  const [photo, setPhoto] = useState(null);          // { base64 } once attached
+  const photoFirst = till.photoFirst === true;
+  const [photos, setPhotos] = useState([]);          // [{ base64 }] once attached
+  const photo = photos[0] || null;
   const [text, setText] = useState("");
   const [phase, setPhase] = useState("form");         // form | attaching | sending | sent
   const [error, setError] = useState(null);           // why the last send was NOT sent
@@ -179,25 +192,45 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
   // replace the one picked after it.
   const attachSeq = useRef(0);
 
-  const onPhoto = async (e) => {
+  // add: a Standard Bank report's next piece; otherwise the photo is replaced.
+  const onPhoto = async (e, { add = false } = {}) => {
     const files = [...(e.target.files || [])];
     e.target.value = "";
     if (!files.length) return;
     const seq = ++attachSeq.current;
     setError(null);
     setPhase("attaching");
-    const { photo: ready, refusal } = await preparePhoto(files);
+    const room = photoFirst ? SB_MAX_PHOTOS - (add ? photos.length : 0) : 1;
+    // More photos than there is room for are REFUSED, never quietly cut: a
+    // dropped section is a report read short (CodeRabbit, #862).
+    if (photoFirst && files.length > room) {
+      setPhase("form");
+      setError(`At most ${SB_MAX_PHOTOS} photos of the report can be sent${add && photos.length ? ` — ${photos.length} are already attached` : ""}. Shoot the roll in fewer, wider frames.`);
+      return;
+    }
+    const ready = [];
+    let refusal = null;
+    for (const f of files.slice(0, Math.max(1, room))) {
+      const out = await preparePhoto([f]);
+      if (out.refusal) { refusal = out.refusal; break; }
+      ready.push(out.photo);
+    }
     if (seq !== attachSeq.current) return;
     setPhase("form");
     if (refusal) { setError(refusal); return; }
-    setPhoto(ready);
+    const next = add ? [...photos, ...ready] : ready;
+    const tooBig = payloadRefusal(next);
+    if (tooBig) { setError(tooBig); return; }
+    setPhotos(next);
   };
 
   const figure = text.trim();
   const busy = phase === "sending" || phase === "attaching";
   // A typed-total till (Trophy Till 2) needs the photo AND the figure; every
-  // other till needs the photo only — its total is read off it.
-  const needsFigure = till.typed === true;
+  // other till needs the photo only — its total is read off it. A Standard
+  // Bank till may add the figure (optional, Junid's cross-check).
+  const needsFigure = till.typed === true && !photoFirst;
+  const offersFigure = needsFigure || photoFirst;
   const canSend = !!photo && (!needsFigure || figure !== "") && !busy && live;
 
   const submit = async () => {
@@ -206,8 +239,8 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
     setPhase("sending");
     try {
       const { data } = await cardBatchCaptureFn({
-        action: "slip", pickedTid: till.tid, photos: [{ base64: photo.base64 }],
-        ...(needsFigure ? { declaredTotal: figure } : {}),
+        action: "slip", pickedTid: till.tid, photos: photos.map((p) => ({ base64: p.base64 })),
+        ...(needsFigure || (photoFirst && figure !== "") ? { declaredTotal: figure } : {}),
       });
       const kept = receiptOf(data);
       if (!kept) {
@@ -219,7 +252,7 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
         return;
       }
       setReceipt(kept);
-      setPhoto(null);
+      setPhotos([]);
       setText("");
       setPhase("sent");
       onSent();
@@ -251,8 +284,27 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
         </div>
       ) : (
         <div style={S.sheet} data-testid="slip-form">
-          <div style={S.step}>1 · Photo of the slip</div>
-          {photo ? (
+          <div style={S.step}>{photoFirst ? "1 · Photograph the end-of-day report" : "1 · Photo of the slip"}</div>
+          {photoFirst && !photo && phase !== "attaching" && (
+            <div style={S.hint}>Print the machine's end-of-day report and photograph all of it. A long report can be several photos.</div>
+          )}
+          {photo && photoFirst ? (
+            <div style={S.attached}>
+              <span>✓ {photos.length === 1 ? "Photo attached" : `${photos.length} photos attached`}</span>
+              <span>
+                {photos.length < SB_MAX_PHOTOS && (
+                  <label style={S.replace}>
+                    <input type="file" accept="image/*" capture="environment" style={S.input} disabled={busy} onChange={(e) => onPhoto(e, { add: true })} />
+                    Add photo
+                  </label>
+                )}
+                <label style={S.replace}>
+                  <input type="file" accept="image/*" multiple style={S.input} disabled={busy} onChange={onPhoto} />
+                  Start again
+                </label>
+              </span>
+            </div>
+          ) : photo ? (
             <div style={S.attached}>
               <span>✓ Photo attached</span>
               <label style={S.replace}>
@@ -269,17 +321,17 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
                 Take photo
               </label>
               <label style={S.option}>
-                <input type="file" accept="image/*" style={S.input} onChange={onPhoto} />
-                Choose photo
+                <input type="file" accept="image/*" multiple={photoFirst} style={S.input} onChange={onPhoto} />
+                {photoFirst ? "Choose photos" : "Choose photo"}
               </label>
             </div>
           )}
-          {needsFigure && (<>
-          <label style={S.step} htmlFor={`slip-total-${till.tid}`}>2 · Card total on the slip (R)</label>
+          {offersFigure && (<>
+          <label style={S.step} htmlFor={`slip-total-${till.tid}`}>{photoFirst ? "2 · Card total on the report (R) — optional" : "2 · Card total on the slip (R)"}</label>
           <input id={`slip-total-${till.tid}`} style={S.amount} inputMode="decimal" autoComplete="off" enterKeyHint="done"
                  placeholder="0.00" value={text} disabled={phase === "sending"}
                  onChange={(e) => setText(e.target.value)} />
-          <div style={S.hint}>Type 0 if there were no card sales.</div>
+          <div style={S.hint}>{photoFirst ? "Not needed — the photo is read for the total." : "Type 0 if there were no card sales."}</div>
           </>)}
           <button type="button" style={{ ...S.submit, ...(canSend ? null : S.submitOff) }} disabled={!canSend} onClick={submit}>
             {phase === "sending" ? "Sending…" : "Submit"}
@@ -287,7 +339,7 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
           {!busy && !canSend && (
             <div style={S.waiting} role="status">
               {!photo && needsFigure && figure === "" ? "Add the slip photo and type the card total to submit."
-                : !photo ? (needsFigure ? "Add the slip photo (step 1) to submit." : "Add the slip photo to submit.")
+                : !photo ? (needsFigure ? "Add the slip photo (step 1) to submit." : photoFirst ? "Photograph the end-of-day report to submit." : "Add the slip photo to submit.")
                 : needsFigure && figure === "" ? "Type the card total (step 2) to submit."
                 : "Checking your till… one moment."}
             </div>

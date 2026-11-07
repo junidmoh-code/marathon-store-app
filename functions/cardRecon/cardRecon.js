@@ -70,7 +70,8 @@ const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
-const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK } = require("../lib/card-terminals.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK, isPhotoPrimary, registeredRowFor } = require("../lib/card-terminals.cjs");
+const { SB_READER_VERSION, planSbFiling, typedCheck: sbTypedCheck } = require("../lib/card-sb-photo.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { tillsFor } = require("../lib/network-registry.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
@@ -81,11 +82,10 @@ const {
   JOBS_PATH, DUE_PATH, JOB_PHOTO_PREFIX, dueKey, dueCutoff, claimJob, classifyRun, nextStep, unreadReason,
 } = require("../lib/card-read-jobs.cjs");
 const {
-  NOTICES_PATH, NOTIFY_TO, sastDayYmd, unreadPath, noticeKey,
+  NOTICES_PATH, NOTIFY_TO, sastDayYmd, sastDayStartMs, unreadPath, noticeKey,
   addUnreadFailure, resolveUnreadMarker, noticeRecord,
 } = require("../lib/card-unread.cjs");
 const { slipTradingDay, batchCloseOf, staffSlipDayPath, staffSlipEntry, latestStaffSlip } = require("../lib/card-staff-slip-log.cjs");
-const { isPortalDay } = require("../lib/card-portal.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -211,41 +211,46 @@ const EXTRACTION_PROMPT = [
   "exactly as printed.",
 ].join("\n");
 
-// ── A STANDARD BANK SLIP (31 Oct 2026 — Concrete's PAX A8900 machines) ───────
-// The FNB prompt above tells the model the paper is an FNB Batch Report and
-// describes FNB's blocks, which a Standard Bank settlement slip does not have:
-// asked that way, a model can fairly answer "this is not that". So a Standard
-// Bank machine's photo is described as what it is, with the same output
-// schema and the same never-invent rule — and FNB's prompt is not touched.
-// On these tills the TYPED TOTAL is the record (capture "typed"); the read
-// only tells Junid when the paper says something else.
+// ── A STANDARD BANK REPORT (31 Oct 2026; rebuilt 7 Nov 2026 from real paper) ─
+// The FNB prompt above names FNB, and a model told the paper is an FNB report
+// can fairly answer "this is not that". A Standard Bank PAX A8900's printed
+// end-of-day report is described here AS WHAT IT IS — from Yasmin's real
+// photos of Marathon PE Till 2 (0000HP1X, batches #556–#561), which print the
+// same blocks an FNB report does: business name, MID, TID, S/N, "Batch Report
+// (#N)", Transactions:N, Opened/Closed/Printed, a "500 - Reconciled, in
+// balance" line, a Payment Type Summary block and a TOTALS block. Same output
+// schema, same never-invent rule — and FNB's prompt is not touched. On these
+// tills the READ total is the record (lib/card-sb-photo.cjs).
 const STANDARD_BANK_EXTRACTION_PROMPT = [
-  "These photographs show ONE printed card-terminal settlement or batch slip",
-  "from a Standard Bank (South Africa) payment terminal (a PAX machine). The",
-  "layout is NOT FNB's: headings and labels may differ, and some fields may not",
-  "be printed at all. Read ONLY what is literally printed. Never invent, infer",
-  "or complete a value — a field that is not printed, or cannot be read, is an",
-  "empty string with confidence 0.",
+  "These photographs show ONE printed end-of-day Batch Report from a",
+  "Standard Bank (South Africa) PAX card terminal. A long report may be",
+  "photographed in several overlapping pieces; together they are one report. Read ONLY what is",
+  "literally printed. Never invent, infer or complete a value — a field that is",
+  "not printed, or cannot be read, is an empty string with confidence 0.",
   "",
-  "HEADER fields: MID (merchant ID / merchant number, long digits), TID",
-  "(terminal ID — eight characters, usually a run of leading ZEROS then letters",
-  "and digits, e.g. 0000AB1C; a round character among the leading zeros is a",
-  "zero; return only the ID itself, without the label), the batch number (it may",
-  "be labelled Batch, Batch No or Settlement — return the digits), the opening",
-  "and closing (or settlement) timestamps and the print time, exactly as printed,",
-  "the transaction count, and any reconciliation or settlement-status line.",
+  "THE LAYOUT, top to bottom: the business name; 'MID:' (merchant ID — long",
+  "digits, often padded with zeros); 'TID:' (terminal ID — eight characters,",
+  "usually a run of leading ZEROS then letters and digits, e.g. 0000AB1C; a",
+  "round character among the leading zeros is a zero; return only the ID, not",
+  "the label); 'S/N:' (serial — ignore it); 'Batch Report (#N)' — the batch",
+  "number, return the digits only; 'Transactions:N' — the count; 'Opened:',",
+  "'Closed:' and 'Printed:' timestamps — return exactly as printed, e.g.",
+  "'2026/11/03 17:08:38'; a reconciliation line such as '500 - Reconciled, in",
+  "balance'. An empty batch may print 'EMPTY' instead of figures.",
   "",
-  "TOTALS: read the purchases / sales figure, any cash figure, the refunds figure",
-  "(its magnitude as printed — do not add a sign) and the TOTAL (net settled",
-  "amount). Return amounts exactly as printed, e.g. 'R1,250.00'. If a figure",
-  "prints in more than one place and they disagree, lower that field's",
-  "confidence below 0.5.",
+  "TOTALS: a 'Payment Type Summary' block (per card scheme, e.g. MasterCard/Visa)",
+  "and a 'TOTALS' block each print Purchases, Cash (cash-back), (Refunds) and",
+  "TOTAL. Read the TOTALS block's Purchases, Cash, Refunds (its magnitude as",
+  "printed, without the brackets or a sign) and TOTAL. Return amounts exactly as",
+  "printed, e.g. 'R33,440.00'. If the two blocks print different figures for the",
+  "same field, lower that field's confidence below 0.5.",
   "",
-  "TRANSACTIONS: if the slip lists transactions, list EVERY one printed across",
+  "TRANSACTIONS: if the report lists transactions, list EVERY one printed across",
   "ALL photos — date, time, RRN or reference, auth code, sequence / trace number",
-  "(as tsn), masked card number, amount (exactly as printed, keep any minus sign),",
-  "and whether it is a purchase or a refund. If it lists none, return an empty",
-  "list. Never fabricate a line.",
+  "(as tsn), masked card number (last four digits only), amount (exactly as",
+  "printed, keep any minus sign), and whether it is a purchase or a refund. If",
+  "two photos overlap and show the same line, output it once. If it lists none,",
+  "return an empty list. Never fabricate a line.",
   "",
   "Per-field confidence is 0..1: how certain you are the characters were read",
   "exactly as printed.",
@@ -1090,7 +1095,7 @@ async function readLastBatchFor(db, storeId, tid) {
  * be captured this way at all, and every such record says in its warnings that
  * no paper exists behind it.
  */
-async function handleTypedCapture(db, request, { picked, terminal, slip = null, nowMs = Date.now() }) {
+async function handleTypedCapture(db, request, { picked, terminal, slip = null, nowMs = Date.now(), extraWarnings = [] }) {
   let correction = !!request.data?.correction;
   const last = await readLastBatchFor(db, terminal.storeId, picked);
   // A STAFF SLIP IS FILED AGAINST ITS BATCH, not the minute it was sent
@@ -1174,6 +1179,7 @@ async function handleTypedCapture(db, request, { picked, terminal, slip = null, 
       photoPaths.push(path);
     }
   }
+  if (extraWarnings.length) warnings.unshift(...extraWarnings);
   await draftRef.set({
     by: request.auth.uid,
     byEmail: request.auth.token?.email || null,
@@ -1223,6 +1229,51 @@ async function handleTypedCapture(db, request, { picked, terminal, slip = null, 
 }
 
 // [typed-capture:end]
+
+/**
+ * The reads planSbFiling needs, all bounded: the terminal's records that closed
+ * on the report's SAST day (the indexed slip/closedAt range), the record in
+ * force under the printed number (its revision chain, probed key by key), and
+ * the terminal's highest batch number.
+ */
+async function sbFilingFor(db, { terminal, tid, extraction }) {
+  const printed = Number(normaliseBatchNo(extraction.batchNo));
+  const closedAt = Number(extraction.closedAt);
+  const openedAt = Number(extraction.openedAt);
+  const tidPath = `${CARD_BATCHES_PATH}/${terminal.storeId}/${tid}`;
+  // From the SAST day the batch opened to the end of the day it closed —
+  // validateExtraction caps a batch at seven days, so this is a bounded range.
+  const fromDay = Number.isFinite(openedAt) ? sastDayStartMs(sastDayYmd(openedAt)) : null;
+  const toDay = Number.isFinite(closedAt) ? sastDayStartMs(sastDayYmd(closedAt)) : null;
+  const start = fromDay !== null ? fromDay : toDay;
+  const winVal = toDay === null ? {} : (await db.ref(tidPath).orderByChild("slip/closedAt")
+    .startAt(start).endAt(toDay + 24 * 60 * 60 * 1000 - 1).once("value")).val() || {};
+  const windowRecords = Object.entries(winVal).filter(([, r]) => r && typeof r === "object").map(([key, record]) => ({ key, record }));
+  const keys = Number.isInteger(printed) ? await readBatchKeysFor(db, terminal.storeId, tid, printed) : [];
+  const printedInForce = keys.length
+    ? { key: keys.at(-1), record: (await db.ref(`${tidPath}/${keys.at(-1)}`).once("value")).val() }
+    : null;
+  const last = await readLastBatchFor(db, terminal.storeId, tid);
+  return planSbFiling({ printedBatchNo: printed, openedAt, closedAt, windowRecords, printedInForce, highestOnFile: last.batchNo });
+}
+
+/**
+ * The synthetic records a recorded Standard Bank report covers are marked
+ * `displacedBy` (lib/card-sb-photo.cjs): kept exactly as they were, no longer
+ * drawn. Cold-null: a record deleted meanwhile stays deleted. A failure is
+ * logged and never un-records the report.
+ */
+async function displaceCovered(db, tidPath, keys, byKey, nowMs) {
+  for (const k of keys || []) {
+    if (typeof k !== "string" || !/^[0-9]{1,8}(-r[0-9]{1,3})?$/.test(k)) continue;
+    try {
+      await db.ref(`${tidPath}/${k}`).transaction((cur) => (cur === null ? null
+        : cur.displacedBy ? undefined : { ...cur, displacedBy: byKey, displacedAt: nowMs }));
+    } catch (err) {
+      console.error(`cardBatchCapture: could not mark ${tidPath}/${k} displaced by ${byKey}: ${err && err.message}`);
+    }
+  }
+}
 
 async function handleExtract(db, request, opts = {}) {
   const { photos, pdf, pickedTid, channel } = request.data || {};
@@ -1302,7 +1353,8 @@ async function handleExtract(db, request, opts = {}) {
   // ── OCR ──
   let ocr;
   try {
-    ocr = await liveOcr(decoded, { bank: terminalBank(terminal) });
+    // opts.ocr: the background read's test seam (processReadJob deps.ocr).
+    ocr = opts.ocr ? await opts.ocr(decoded, { bank: terminalBank(terminal) }) : await liveOcr(decoded, { bank: terminalBank(terminal) });
   } catch (err) {
     // ── THE SENTENCE THE MANAGER GETS IS THE POINT OF ALL THIS ──────────────
     // "Could not read the photos right now — try again." was the answer to
@@ -1414,10 +1466,16 @@ async function handleExtract(db, request, opts = {}) {
     extraction.tid = picked;
   }
   if (extraction.tid !== picked) {
-    const mapped = terminals[extraction.tid];
+    // Named by the machine it belongs to — a Standard Bank TID read with an O
+    // for a 0 is still that machine (resolveRegisteredTid: exact first).
+    const mapped = terminals[extraction.tid] || registeredRowFor(extraction.tid, terminals);
     const where = mapped && mapped.label ? ` (that slip belongs to ${mapped.label})` : mapped ? ` (that slip belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
     return reject(`This slip prints TID ${extraction.tid}, not the till you picked${where}. Capture the slip on its own till.`);
   }
+  // A STANDARD BANK TILL: the photographed report is the record
+  // (lib/card-sb-photo.cjs). The TID above proved which machine printed it —
+  // the till is never chosen or checked by MID (card-terminal-identity.test).
+  const photoPrimary = isPhotoPrimary(terminal);
 
   // THE TOTAL ONLY, and only now that the slip has proved which till it is.
   if (declared) extraction.totalCents = declared.cents;
@@ -1434,13 +1492,31 @@ async function handleExtract(db, request, opts = {}) {
   const verdict = validateExtraction(extraction, { summaryOnly: !!summaryOnly, declaredTotal: declaring });
   if (!verdict.ok) return reject(verdict.reason);
 
+  // A STANDARD BANK TILL'S REPORT may print a batch number the SimplyBLU
+  // portal's day record (or a staff-typed total) already took — the portal
+  // numbered its days on from the last real batch. Where it is filed is
+  // decided once, here (lib/card-sb-photo.cjs), and carried on the draft.
+  let sbFiling = null;
+  let correction = !!request.data.correction;
+  if (photoPrimary && !declared) {
+    sbFiling = await sbFilingFor(db, { terminal, tid: extraction.tid, extraction });
+    if (String(sbFiling.batchNo) !== String(normaliseBatchNo(extraction.batchNo))) {
+      extraction.printedBatchNo = Number(normaliseBatchNo(extraction.batchNo));
+      extraction.batchNo = String(sbFiling.batchNo);
+    }
+    if (sbFiling.correction) correction = true;
+  }
+  // WHAT STAFF TYPED BESIDE THE PHOTO (Standard Bank tills): a cross-check for
+  // Junid only — the read figure is the record.
+  const staffTyped = photoPrimary ? sbTypedCheck(opts.typedCents, extraction.totalCents) : null;
+
   // Duplicate check at extract time so the operator hears it BEFORE reviewing.
   // The submit transaction re-checks — this one is for the message, that one
   // is the guarantee.
   const batchNo = normaliseBatchNo(extraction.batchNo);
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
-    correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
+    correction, lines: extraction.lines, totalCents: extraction.totalCents,
     incoming: extraction,
   });
   if (!write.ok) return reject(write.reason);
@@ -1476,6 +1552,10 @@ async function handleExtract(db, request, opts = {}) {
   const straddle = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
   if (straddle) warnings.push(straddle);
   if (movedInWindow) warnings.push(movedWindowNote(terminal));
+  if (sbFiling && sbFiling.note) warnings.push(sbFiling.note);
+  if (staffTyped && staffTyped.differs) {
+    warnings.push(`The total typed on the Card Slip (${formatCents(staffTyped.typedCents)}) is not what the photographed report reads (${formatCents(extraction.totalCents)}). The report's figure is the record.`);
+  }
   if (declared) {
     warnings.unshift(...declaredNotes);
     warnings.unshift(`The total (${formatCents(declared.cents)}) was typed by ${request.auth.token?.email || request.auth.uid}, not read off the slip — the slip did not print it. Nobody has verified it against paper.`);
@@ -1518,8 +1598,12 @@ async function handleExtract(db, request, opts = {}) {
     expiresAt: Date.now() + DRAFT_TTL_MS,
     pickedTid: picked,
     summaryOnly: !!summaryOnly,
-    correction: !!request.data.correction,
+    correction,
     warnings: warnings.length ? warnings : null,
+    // A Standard Bank report: where it was filed and why, and what staff typed.
+    sbFiling: sbFiling ? { mode: sbFiling.mode, supersedes: sbFiling.supersedes || null, displace: sbFiling.displace || [],
+      printedBatchNo: Number.isInteger(extraction.printedBatchNo) ? extraction.printedBatchNo : Number(batchNo) } : null,
+    typedCheck: staffTyped,
     photoPaths,
     // JSON round-trip strips the undefined values RTDB refuses.
     extraction: JSON.parse(JSON.stringify(extraction)),
@@ -1934,7 +2018,8 @@ async function handleSubmit(db, request) {
       && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
       && extraction.format === "typed"
       && (slipSubmit
-        ? draftPhotos.length === 1 && draftPhotos.every((p) => typeof p === "string" && p.startsWith(`${PHOTO_STORAGE_PREFIX}/${draftId}/`))
+        // A Standard Bank report may be a long roll, photographed in pieces.
+        ? (isPhotoPrimary(row) ? draftPhotos.length >= 1 && draftPhotos.length <= MAX_PHOTOS : draftPhotos.length === 1) && draftPhotos.every((p) => typeof p === "string" && p.startsWith(`${PHOTO_STORAGE_PREFIX}/${draftId}/`))
         : draftPhotos.length === 0);
     const allowed = !!row && (slipSubmit
       ? await slipScopeAllowsNow(db, request, row, Date.now())
@@ -2123,6 +2208,18 @@ async function handleSubmit(db, request) {
     record.placeStoreId = recon.storeId;
     record.placeTillId = recon.tillId;
   }
+  // A STANDARD BANK REPORT READ OFF ITS PHOTO (lib/card-sb-photo.cjs): which
+  // reader read it, how it was filed, the number it printed when that is not
+  // the number it is filed under, and what staff typed beside it.
+  if (draft.sbFiling && !typedOnly) {
+    record.photoReport = { bank: STANDARD_BANK, readerVersion: SB_READER_VERSION, filing: draft.sbFiling.mode || "normal" };
+    if (Number.isInteger(draft.sbFiling.printedBatchNo) && draft.sbFiling.printedBatchNo !== record.batchNo) {
+      record.printedBatchNo = draft.sbFiling.printedBatchNo;
+    }
+  }
+  if (draft.typedCheck && Number.isInteger(draft.typedCheck.typedCents) && !typedOnly) {
+    record.typedCheck = { ...sbTypedCheck(draft.typedCheck.typedCents, extraction.totalCents), via: "staff-slip" };
+  }
   const carried = await carriedSlipsFor(db, terminal.storeId, extraction.tid, write.supersedes, record);
   if (carried) record[SUPPORTING_FIELD] = carried;
 
@@ -2136,6 +2233,11 @@ async function handleSubmit(db, request) {
   // A slip attached to the superseded record between the read above and this
   // write is brought across now (attachSupportingSlip does the same from its side).
   if (write.supersedes) await syncCarried(db, `${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`, write.supersedes, write.key);
+  // A Standard Bank report's window covers other synthetic days: displaced.
+  if (draft.sbFiling && !typedOnly) {
+    const displace = Array.isArray(draft.sbFiling.displace) ? draft.sbFiling.displace : Object.values(draft.sbFiling.displace || {});
+    if (displace.length) await displaceCovered(db, `${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`, displace, write.key, Date.now());
+  }
   await draftRef.remove().catch(() => {});
 
   // CAPTURE ONLY — an acknowledgement, not a verdict. The manager learns that
@@ -2212,7 +2314,10 @@ async function handleSlipTills(db, request, deps = {}) {
     const storeId = here.storeId || row.storeId;
     const tillId = here.tillId || row.tillId;
     if (!slipScopeAllows(scope, { storeId, tillId })) continue;
-    tills.push({ tid, filedStoreId: row.storeId, storeId, tillId, label: here.label || row.label || `${storeId} · ${tillId}`, typed: typesTotal(row) });
+    // photoFirst: a Standard Bank till — the screen leads with "Photograph the
+    // end-of-day report" (several photos for a long roll) and the typed total
+    // is optional (lib/card-sb-photo.cjs).
+    tills.push({ tid, filedStoreId: row.storeId, storeId, tillId, label: here.label || row.label || `${storeId} · ${tillId}`, typed: typesTotal(row), photoFirst: isPhotoPrimary(row) });
   }
   // A GRANTED TILL NO MACHINE STANDS AT is said out loud, never dropped
   // quietly: the screen tells the person to call Junid, and the log carries
@@ -2243,14 +2348,20 @@ async function handleSlipTills(db, request, deps = {}) {
 
 const SLIP_TILLS_READ_MS = 4000;
 const SLIP_PHOTOS = 1;
+// A Standard Bank till's end-of-day report can be a long roll: up to this many
+// overlapping photos, read together as one report.
+const SB_SLIP_MAX_PHOTOS = 6;
 async function handleSlip(db, request, deps = {}) {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   const data = request.data || {};
   const picked = normaliseTid(data.pickedTid);
   if (!picked) throw new HttpsError("invalid-argument", "This account's till could not be found. Ask Junid.");
-  if (!Array.isArray(data.photos) || data.photos.length !== SLIP_PHOTOS) {
+  if (!Array.isArray(data.photos) || data.photos.length < 1) {
     throw new HttpsError("invalid-argument", "Take one photo of the slip.");
+  }
+  if (data.photos.length > SB_SLIP_MAX_PHOTOS) {
+    throw new HttpsError("invalid-argument", `At most ${SB_SLIP_MAX_PHOTOS} photos of the report can be sent — shoot the roll in fewer, wider frames.`);
   }
   // One registry row, never the registry.
   const terminal = (await db.ref(`${CARD_TERMINALS_PATH}/${picked}`).once("value")).val();
@@ -2272,11 +2383,13 @@ async function handleSlip(db, request, deps = {}) {
     console.error(`CARD_SLIP_ORPHAN_TILL uid=${uid} tid=${picked} till=${placeStore}/${placeTill}: not a POS till — slip refused`);
     return reject(`${here.label || terminal.label || picked} is not set up as a till in the POS, so its slip would not reach Card Recon — nothing was recorded. Tell Junid.`);
   }
-  // A PORTAL TILL (Standard Bank, from 3 Nov 2026 — lib/card-portal.cjs): the
-  // SimplyBLU portal is the record, so the slip is KEPT as evidence beside it
-  // (or held for it) and never becomes the day's figure. Photo, and the typed
-  // total when there is one.
-  if (isPortalDay(terminal, slipTradingDay(nowMs))) {
+  // A STANDARD BANK TILL (Junid, 7 Nov 2026 — lib/card-sb-photo.cjs): the
+  // photographed end-of-day report IS the record. The photos (one, or several
+  // for a long roll) are stored at once and read in the background, exactly as
+  // a manager's photo is; a typed total, when given, rides along as Junid's
+  // cross-check — it is the record only if the photo cannot be read at all.
+  // "Sent" means the photos are kept, never that they were read.
+  if (isPhotoPrimary(terminal)) {
     let cents = null;
     if (hasDeclaredTotal(data.declaredTotal)) {
       const declared = readDeclaredTotal(data.declaredTotal);
@@ -2285,9 +2398,13 @@ async function handleSlip(db, request, deps = {}) {
     }
     const decodedPhotos = data.photos.map(decodePhoto);
     if (!decodedPhotos.every((d) => d.buffer.length > 3 && d.buffer[0] === 0xff && d.buffer[1] === 0xd8 && d.buffer[2] === 0xff)) {
-      throw new HttpsError("invalid-argument", "That is not a photo. Take a photo of the slip.");
+      throw new HttpsError("invalid-argument", "That is not a photo. Photograph the end-of-day report.");
     }
-    return require("./cardPortal.js").keepPortalSlip(db, request, { terminal, picked, photos: decodedPhotos, cents, nowMs, bucket: deps.bucket || null });
+    const { declaredTotal: _typed, ...photoOnly } = data;
+    return handleReceive(db, { ...request, data: photoOnly }, { ...deps, staffSlip: true, typedCents: cents });
+  }
+  if (data.photos.length !== SLIP_PHOTOS) {
+    throw new HttpsError("invalid-argument", "Take one photo of the slip.");
   }
   // WHAT A SLIP CARRIES (Junid, 17 Oct 2026): a typed-total till (Trophy Till
   // 2 — its paper has no total) sends the photo AND the typed figure; every
@@ -2631,11 +2748,6 @@ async function handleReceive(db, request, deps = {}) {
   }
 
   const nowMs = (deps.now || Date.now)();
-  // A PORTAL TILL: the photo is evidence beside the portal record, never read
-  // into a figure (lib/card-portal.cjs).
-  if (isPortalDay(terminal, slipTradingDay(nowMs))) {
-    return require("./cardPortal.js").keepPortalSlip(db, request, { terminal, picked, photos: decoded, cents: null, nowMs, bucket: deps.bucket || null });
-  }
   // THE TRADING DAY. A slip photographed after midnight is the evening's batch
   // (no shop opens before 06:00 SAST), so it is filed on the day before.
   const dayYmd = slipTradingDay(nowMs);
@@ -2687,6 +2799,10 @@ async function handleReceive(db, request, deps = {}) {
     },
     photoPaths,
     summaryOnly: true,
+    // A Standard Bank till: which reader, and what staff typed beside the
+    // photo (the record only if the photo cannot be read — processReadJob).
+    ...(isPhotoPrimary(terminal) ? { bank: STANDARD_BANK, readerVersion: SB_READER_VERSION } : {}),
+    ...(isPhotoPrimary(terminal) && Number.isInteger(deps.typedCents) ? { typedCents: deps.typedCents } : {}),
     receivedAt: nowMs,
     dayYmd,
     status: "queued",
@@ -2703,7 +2819,7 @@ async function handleReceive(db, request, deps = {}) {
     [`${staffSlipDayPath({ storeId: terminal.storeId, tid: picked, dayYmd })}/${jobId}`]: staffSlipEntry({
       kind: "received", storeId: terminal.storeId, tid: picked, placeStoreId: job.placeStoreId, tillId: job.placeTillId,
       label: job.label, dayYmd, at: nowMs, byUid: request.auth.uid, byEmail: token.email || null,
-      photos: photoPaths, jobId,
+      photos: photoPaths, jobId, ...(Number.isInteger(job.typedCents) ? { cents: job.typedCents } : {}),
     }),
   } : {};
   await db.ref().update({
@@ -2741,12 +2857,16 @@ async function loadJobPhotos(paths) {
  * ONE READ OF A JOB through the phone's own pipeline: handleExtract, then
  * handleSubmit, as the person who submitted it. Throws what they throw.
  */
-async function readJobOnce(db, job, photos) {
+async function readJobOnce(db, job, photos, deps = {}) {
   const auth = { uid: job.by, token: { ...(job.token || {}) } };
   const extract = await handleExtract(db, {
     auth,
     data: { action: "extract", pickedTid: job.pickedTid, photos, summaryOnly: true, correction: false },
-  }, { storedPhotoPaths: Array.isArray(job.photoPaths) ? job.photoPaths : Object.values(job.photoPaths || {}) });
+  }, {
+    storedPhotoPaths: Array.isArray(job.photoPaths) ? job.photoPaths : Object.values(job.photoPaths || {}),
+    typedCents: Number.isInteger(job.typedCents) ? job.typedCents : null,
+    ...(deps.ocr ? { ocr: deps.ocr } : {}),
+  });
   if (!extract || extract.ok !== true) {
     if (extract && extract.ok === false) console.warn(refusalLogLine(job.pickedTid, extract.reason));
     return { extract };
@@ -2785,7 +2905,7 @@ async function processReadJob(db, jobId, deps = {}) {
     const photos = await (deps.loadPhotos || loadJobPhotos)(job.photoPaths);
     outcome = check
       ? await (deps.check || checkJobOnce)(db, job, photos, deps)
-      : classifyRun(await (deps.read || readJobOnce)(db, job, photos));
+      : classifyRun(await (deps.read || readJobOnce)(db, job, photos, deps));
   } catch (err) {
     console.error(`cardBatchReadJob: job ${jobId} run failed: ${err && err.message}`);
     outcome = classifyRun({ thrown: err });
@@ -2805,7 +2925,24 @@ async function processReadJob(db, jobId, deps = {}) {
   // takes it again when the lease lapses, and they are simply done again —
   // where the other order would leave a finished job and a day nobody hears
   // about. (Sonnet architect review, #707.)
-  if (!check && final === "unread") await markJobUnread(db, done, outcome, t);
+  // A STANDARD BANK PHOTO THAT COULD NOT BE READ, with a total typed beside
+  // it: the typed total stands as the day's record, flagged "photo not read"
+  // (Junid, 7 Nov 2026). With no typed total, the day is Unread — "photo
+  // received, total unreadable" — and Junid is told, as for any slip.
+  let fellBack = null;
+  if (!check && final === "unread" && job.bank === STANDARD_BANK && Number.isInteger(job.typedCents)) {
+    try {
+      fellBack = await (deps.typedFallback || recordTypedFallback)(db, done, outcome, t, deps);
+    } catch (err) {
+      console.error(`cardBatchReadJob: typed fallback failed for ${jobId}: ${err && err.message}`);
+    }
+  }
+  if (fellBack && fellBack.ok) {
+    try { await resolveJobDay(db, done, fellBack.batchKey, t); } catch (err) {
+      console.error(`cardBatchReadJob: resolving ${job.dayYmd} after the typed fallback failed: ${err && err.message}`);
+    }
+    console.warn(`CARD_RECON_PHOTO_NOT_READ ${job.label || job.pickedTid} ${job.dayYmd}: the typed total stands as ${fellBack.batchKey} — ${unreadReason(job, outcome)}`);
+  } else if (!check && final === "unread") await markJobUnread(db, done, outcome, t);
   if (!check && final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
   if (!check) await noteStaffSlipRead(db, done, outcome, final, t);
   const updates = { [`${DUE_PATH}/${job.dueKey}`]: null };
@@ -2847,14 +2984,72 @@ async function noteStaffSlipRead(db, job, outcome, final, nowMs) {
   }
 }
 
+/**
+ * THE TYPED TOTAL STANDS (a Standard Bank photo that could not be read): the
+ * staff member's typed figure is recorded exactly as a typed Card Slip is
+ * (handleTypedCapture → handleSubmit, as the person who sent it, under their
+ * till scope), with the photos on the record and the read's failure said on
+ * it. Returns { ok, batchKey } or { ok: false, reason }.
+ */
+async function recordTypedFallback(db, job, outcome, nowMs, deps = {}) {
+  const terminal = (await db.ref(`${CARD_TERMINALS_PATH}/${job.pickedTid}`).once("value")).val();
+  if (!terminal || !isPhotoPrimary(terminal) || isRetiredTerminal(terminal)) return { ok: false, reason: "not a Standard Bank till now" };
+  // THE DAY ALREADY HAS ITS FIGURE (an earlier photo of the same report was
+  // read, Junid entered it): the typed total must not become a second card.
+  // The Unread marker that follows is hidden by that record in Junid's report.
+  const dayStart = sastDayStartMs(job.dayYmd);
+  if (dayStart !== null) {
+    const onDay = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}`).orderByChild("slip/closedAt")
+      .startAt(dayStart).endAt(dayStart + 24 * 60 * 60 * 1000 - 1).once("value")).val() || {};
+    if (Object.values(onDay).some((r) => r && typeof r === "object" && !r.displacedBy)) {
+      return { ok: false, reason: `${job.dayYmd} already has a record — the typed total is not recorded a second time` };
+    }
+  }
+  const bufs = await (deps.loadPhotoBuffers || loadJobPhotoBuffers)(job.photoPaths);
+  const request = {
+    auth: { uid: job.by, token: { ...(job.token || {}) } },
+    data: { declaredTotal: (job.typedCents / 100).toFixed(2) },
+  };
+  const why = unreadReason(job, outcome);
+  const drafted = await handleTypedCapture(db, request, {
+    picked: job.pickedTid, terminal, nowMs: Number.isFinite(job.receivedAt) ? job.receivedAt : nowMs,
+    slip: { photos: bufs.map((buffer) => ({ buffer })), bucket: deps.bucket || null },
+    extraWarnings: [`PHOTO NOT READ — the end-of-day report photo could not be read, so the total typed on the Card Slip (${formatCents(job.typedCents)}) stands as this day's figure. Open the photo to check it. ${why}`],
+  });
+  if (!drafted || drafted.ok !== true) return { ok: false, reason: drafted && drafted.reason };
+  const done = await handleSubmit(db, { auth: request.auth, data: { action: "submit", draftId: drafted.draftId } });
+  if (!done || done.ok !== true) return { ok: false, reason: done && done.reason };
+  // The record is in: from here nothing may turn it back into an Unread day.
+  try {
+    await writePhotoRead(db, { storeId: job.storeId, pickedTid: job.pickedTid, batchKey: done.batchKey, typedCents: job.typedCents },
+      { status: "unread", reason: why }, nowMs);
+  } catch (err) {
+    console.error(`cardBatchReadJob: photoRead note on ${done.batchKey} failed: ${err && err.message}`);
+  }
+  return { ok: true, batchKey: done.batchKey };
+}
+
+/** A job's stored photos, as buffers (the typed fallback stores them again under its record). */
+async function loadJobPhotoBuffers(paths) {
+  const bucket = admin.storage().bucket(STORAGE_BUCKET);
+  const list = Array.isArray(paths) ? paths : Object.values(paths || {});
+  const out = [];
+  for (const p of list) { const [buf] = await bucket.file(p).download(); out.push(buf); }
+  return out;
+}
+
 /** The read gave up: that till/day is Unread in Junid's report, and he is emailed once. */
 async function markJobUnread(db, job, outcome, nowMs) {
   const where = { storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd };
   const path = unreadPath(where);
+  // A Standard Bank photo with no typed total: the photo is IN — Junid is told
+  // its total could not be read, never that a slip is awaited.
+  const sb = job.bank === STANDARD_BANK;
+  const reason = sb ? `Photo received — total unreadable. ${unreadReason(job, outcome)}` : unreadReason(job, outcome);
   const txn = await db.ref(path).transaction((cur) => addUnreadFailure(cur, {
     ...where, tillId: job.placeTillId || job.tillId, placeStoreId: job.placeStoreId || job.storeId,
-    label: job.label, reason: unreadReason(job, outcome), jobId: job.jobId, photos: job.photoPaths,
-    source: "photo-job", nowMs,
+    label: job.label, reason, jobId: job.jobId, photos: job.photoPaths,
+    source: "photo-job", nowMs, ...(sb ? { photoReceived: true } : {}),
   }).marker);
   // THE MARKER THAT WENT IN DECIDES, not a flag from inside the transaction: an
   // unread day with no notice on it gets one; a day already announced, or
@@ -2868,7 +3063,7 @@ async function markJobUnread(db, job, outcome, nowMs) {
     });
   }
   // The log keeps it too — the house alarm shape, greppable by marker.
-  console.warn(`CARD_RECON_UNREAD ${job.label || job.pickedTid} ${job.dayYmd}: ${unreadReason(job, outcome)}`);
+  console.warn(`CARD_RECON_UNREAD ${job.label || job.pickedTid} ${job.dayYmd}: ${reason}`);
 }
 
 /**
@@ -3131,6 +3326,8 @@ exports.handleSlipTills = handleSlipTills;
 exports.carriedSlipsFor = carriedSlipsFor;
 exports.syncCarried = syncCarried;
 exports.handleTypedCapture = handleTypedCapture;
+exports.recordTypedFallback = recordTypedFallback;
+exports.sbFilingFor = sbFilingFor;
 // The extract → submit pair, for the email-pipeline tests (fake RTDB + bucket).
 exports.handleExtract = handleExtract;
 exports.handleSubmit = handleSubmit;
