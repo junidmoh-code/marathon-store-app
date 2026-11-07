@@ -337,7 +337,7 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
           style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: "8px 14px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT }}>
           <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>← Publishing</span>
         </button>
-        <div style={{ textAlign: "center" }}>
+        <div data-legacy-header="" style={{ textAlign: "center" }}>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,.4)", letterSpacing: "0.5px" }}>Viewing as:</div>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#4A7FFF", letterSpacing: "0.5px" }}>SHOPIFY PRODUCT</div>
         </div>

@@ -1,0 +1,44 @@
+# Sky redesign contrast gate (scripts/sky-contrast.mjs). Renders every
+# top-level route of the sky harness at 1440x900 and 390x844 in Chromium and
+# WebKit and fails if any text on the page is under WCAG 4.5:1 against what is
+# actually behind it. Runs for the feat/sky-wall branch only (Junid, 2026-11-02).
+name: sky-contrast
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [feat/sky-wall]
+jobs:
+  contrast:
+    if: github.head_ref == 'feat/sky-wall' || github.ref == 'refs/heads/feat/sky-wall'
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install chromium webkit
+      - run: node scripts/sky-contrast.mjs --webkit --out contrast-report
+      # Junid 5 Nov: an unavailable size is marked and its tap opens the alternatives.
+      - run: node scripts/sky-availability.e2e.mjs --port 5197
+      - run: node scripts/sky-barcode-scroll.e2e.mjs --port 5199
+      # Junid 5 Nov: the app never zooms (the photo viewer does).
+      - run: node scripts/sky-zoom-lock.e2e.mjs --port 5201
+      # Junid 5 Nov: the phone Store Assistant layout is frozen (1% pixel drift fails).
+      - run: node scripts/sky-phone-visual.e2e.mjs --port 5203
+      - run: node scripts/sky-wall-v3.e2e.mjs --port 5205
+      - run: node scripts/sky-shell.e2e.mjs --port 5207
+      # Junid 6 Nov: admin screens — no overlapping text, content under the
+      # header, one-level back + long-press Home; and the contrast gate over
+      # every admin route (inputs, chips, disabled, destructive) on the real
+      # App with the offline synthetic database.
+      - run: node scripts/sky-admin.e2e.mjs --port 5209
+      - run: node scripts/sky-contrast.mjs --admin --webkit --port 5211 --out contrast-report/admin
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sky-contrast-report
+          path: contrast-report

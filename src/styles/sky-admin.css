@@ -1,0 +1,249 @@
+/* ─── THE ADMIN DESIGN SYSTEM — very minimal (Junid, 6 Nov) ─────────────────
+ *
+ * On while an admin screen is open (App.jsx sets html[data-sky-admin="on"] for
+ * Admin — every section and the product edit page —, Shopify publishing,
+ * Social, AI Studio, TV Ad and the #admin/… cards). Like sky-theme.css it
+ * changes how screens LOOK, never what they do: a stylesheet !important over
+ * the screens' inline styles.
+ *
+ *   ONE SURFACE LEVEL ... a page section is standard glass (0.40 white, blur,
+ *                         1px rim). A glass box INSIDE a section draws no
+ *                         second white layer: it keeps only its rim.
+ *   INPUTS .............. 0.18 white, 1px navy-tinted rim, navy text, 16px
+ *                         minimum (no iOS zoom), placeholder navy at 60%.
+ *   READ-ONLY ........... plain navy text with a small lock — not a faded field.
+ *   BUTTONS ............. primary = solid navy, white text (the old accent and
+ *                         green fills); secondary = navy outline on 0.18 white;
+ *                         destructive = navy outline, navy text, a RED ICON
+ *                         only — never red text on glass.
+ *   CHIPS ............... glass pills; the selected one solid navy.
+ *   STATUS CHIPS ........ [data-status]: live/approved navy outline,
+ *                         awaiting/draft neutral glass, blocked red outline +
+ *                         navy text.
+ *   NOTICES ............. a slim inline glass notice with an icon, inside the
+ *                         page gutters (.sky-notice).
+ *   EMPTY THUMBNAILS .... neutral glass with a line icon (.sky-thumb-empty).
+ * No accent colour anywhere; navy text on glass, never white.
+ */
+
+html[data-sky="on"][data-sky-admin="on"] #root {
+  --adm-ink: #000a1c;
+  --sky-legacy-ink: #000a1c;   /* the admin titles that sit on bare sky: #04122b measured 4.36:1 on the phone's mid-blue */
+  --adm-rim: rgba(255, 255, 255, 0.72);
+  --adm-navy-rim: rgba(11, 42, 82, 0.34);
+  --adm-outline: rgba(11, 42, 82, 0.55);
+  --adm-field: rgba(255, 255, 255, 0.18);
+  --adm-chip: rgba(255, 255, 255, 0.34);
+  --adm-red: #c4001d;
+}
+
+/* ── One surface level: glass inside glass keeps only its rim ── */
+html[data-sky="on"][data-sky-admin="on"] #root :is(
+  [style*="background: rgb(4, 5, 10)"], [style*="background: rgb(6, 9, 20)"], [style*="background: rgb(17, 17, 17)"],
+  [style*="background: rgb(20, 20, 20)"], [style*="background: rgb(26, 26, 26)"], [style*="background: rgb(28, 28, 30)"],
+  [style*="background: rgb(44, 44, 46)"], [style*="background: rgb(11, 14, 24)"], [style*="background: rgb(6, 8, 15)"],
+  [style*="background: rgb(12, 23, 48)"], [style*="background: rgb(10, 16, 32)"], [style*="background: rgb(13, 17, 23)"],
+  [style*="background: rgb(15, 15, 15)"], [style*="background: rgba(12, 16, 30"], [style*="background: rgba(4, 6, 14"],
+  [style*="background: rgba(10, 12, 22"], [style*="background: rgba(6, 9, 20"], [style*="background: rgba(255, 255, 255, 0.0"],
+  [style*="background: rgba(255, 255, 255, 0.1)"], [style*="background: rgba(60, 110, 255"], [style*="background: rgba(74, 127, 255"],
+  [style*="background: rgba(120, 150, 255"], [style*="background: rgba(100, 100, 100"], [style*="background: rgba(150, 160, 190"],
+  [style*="background: rgba(20, 40, 100"], .sky-glass
+) :is(
+  [style*="background: rgb(4, 5, 10)"], [style*="background: rgb(6, 9, 20)"], [style*="background: rgb(17, 17, 17)"],
+  [style*="background: rgb(20, 20, 20)"], [style*="background: rgb(26, 26, 26)"], [style*="background: rgb(28, 28, 30)"],
+  [style*="background: rgb(44, 44, 46)"], [style*="background: rgb(11, 14, 24)"], [style*="background: rgb(6, 8, 15)"],
+  [style*="background: rgb(12, 23, 48)"], [style*="background: rgb(10, 16, 32)"], [style*="background: rgb(13, 17, 23)"],
+  [style*="background: rgb(15, 15, 15)"], [style*="background: rgba(12, 16, 30"], [style*="background: rgba(4, 6, 14"],
+  [style*="background: rgba(10, 12, 22"], [style*="background: rgba(6, 9, 20"], [style*="background: rgba(255, 255, 255, 0.0"],
+  [style*="background: rgba(255, 255, 255, 0.1)"], [style*="background: rgba(120, 150, 255"], [style*="background: rgba(100, 100, 100"],
+  [style*="background: rgba(150, 160, 190"], [style*="background: rgba(20, 40, 100"]
+):not(button):not(a):not(input):not(select):not(textarea):not([role="button"]):not(.sky-thumb-empty) {
+  background: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+}
+
+/* ── Inputs ── */
+html[data-sky="on"][data-sky-admin="on"] #root :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), textarea, select):not([style*="background: transparent"]):not([style*="border: none"]) {
+  background: var(--adm-field) !important;
+  border: 1px solid var(--adm-navy-rim) !important;
+  color: var(--adm-ink) !important;
+  font-size: max(16px, 1em) !important;
+  border-radius: 12px;
+  box-shadow: none !important;
+}
+html[data-sky="on"][data-sky-admin="on"] #root :is(input, textarea)::placeholder { color: rgba(11, 42, 82, 0.6) !important; opacity: 1; }
+html[data-sky="on"][data-sky-admin="on"] #root :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select):focus {
+  outline: 2px solid rgba(11, 42, 82, 0.55) !important; outline-offset: 1px; }
+/* The search inside .sky-search stays bare (its pill is the field). */
+html[data-sky="on"][data-sky-admin="on"] #root .sky-search input { background: transparent !important; border: 0 !important; }
+
+/* ── Read-only values: plain navy text + a small lock ── */
+html[data-sky="on"][data-sky-admin="on"] #root :is(input[readonly], input:disabled, textarea[readonly], textarea:disabled):not([type="checkbox"]):not([type="radio"]) {
+  background: transparent url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230b2a52' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E") no-repeat left 1px center / 14px 14px !important;
+  border-color: transparent !important;
+  padding-left: 22px !important;
+  opacity: 1 !important;
+  color: var(--adm-ink) !important;
+  -webkit-text-fill-color: var(--adm-ink);
+}
+
+/* ── Buttons ── */
+/* Secondary (every plain button): navy outline on 0.18 white. */
+html[data-sky="on"][data-sky-admin="on"] #root button:is(
+  [style*="background: rgba(255, 255, 255"], [style*="background: rgba(74, 127, 255, 0.1"], [style*="background: rgba(60, 110, 255"],
+  [style*="background: rgba(120, 150, 255"], [style*="background: transparent"], [style*="background: none"]
+):not([style*="border-radius: 999px"]):not([style*="border: none"]):not([style*="border: 0"]) {
+  background: var(--adm-field) !important;
+  border: 1px solid var(--adm-outline) !important;
+  color: var(--adm-ink) !important;
+  box-shadow: none !important;
+}
+/* Primary: the old accent fills and the green "do it" fills → solid navy. */
+html[data-sky="on"][data-sky-admin="on"] #root button:is([style*="background: rgba(74, 222, 128"], [style*="background: rgba(74, 202, 122"], [style*="background: rgba(0, 150, 70"]) {
+  background: var(--sky-navy) !important; border: 1px solid var(--sky-navy) !important; color: #fff !important; box-shadow: none !important; }
+html[data-sky="on"][data-sky-admin="on"] #root button:is([style*="background: rgba(74, 222, 128"], [style*="background: rgba(74, 202, 122"], [style*="background: rgba(0, 150, 70"]) * { color: #fff !important; }
+/* Destructive: navy outline, navy text, a red icon (never red text). */
+html[data-sky="on"][data-sky-admin="on"] #root button:is([style*="color: rgb(248, 113, 113)"], [style*="color: rgb(255, 107, 107)"], [style*="color: rgb(255, 69, 58)"], [style*="background: rgba(248, 113, 113"], [style*="background: rgba(255, 80, 80"], [style*="color: rgb(255, 136, 136)"], [style*="background: rgba(220, 38, 38"], [style*="background: rgba(180, 40, 40"]),
+html[data-sky="on"][data-sky-admin="on"] #root button[data-destructive] {
+  background: var(--adm-field) !important;
+  border: 1px solid var(--adm-outline) !important;
+  color: var(--adm-ink) !important;
+  display: inline-flex !important; align-items: center; justify-content: center; gap: 7px;
+}
+html[data-sky="on"][data-sky-admin="on"] #root button:is([style*="color: rgb(248, 113, 113)"], [style*="color: rgb(255, 107, 107)"], [style*="color: rgb(255, 69, 58)"], [style*="background: rgba(248, 113, 113"], [style*="background: rgba(255, 80, 80"], [style*="color: rgb(255, 136, 136)"], [style*="background: rgba(220, 38, 38"], [style*="background: rgba(180, 40, 40"]) *,
+html[data-sky="on"][data-sky-admin="on"] #root button[data-destructive] * { color: var(--adm-ink) !important; }
+html[data-sky="on"][data-sky-admin="on"] #root button:is([style*="color: rgb(248, 113, 113)"], [style*="color: rgb(255, 107, 107)"], [style*="color: rgb(255, 69, 58)"], [style*="background: rgba(248, 113, 113"], [style*="background: rgba(255, 80, 80"], [style*="color: rgb(255, 136, 136)"], [style*="background: rgba(220, 38, 38"], [style*="background: rgba(180, 40, 40"]):not(:has(svg))::before,
+html[data-sky="on"][data-sky-admin="on"] #root button[data-destructive]:not(:has(svg))::before {
+  content: ""; width: 15px; height: 15px; flex: 0 0 auto; background: var(--adm-red);
+  -webkit-mask: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+html[data-sky="on"][data-sky-admin="on"] #root button:is([style*="color: rgb(248, 113, 113)"], [style*="color: rgb(255, 107, 107)"], [style*="color: rgb(255, 69, 58)"], [style*="background: rgba(248, 113, 113"], [style*="background: rgba(255, 80, 80"], [style*="color: rgb(255, 136, 136)"], [style*="background: rgba(220, 38, 38"], [style*="background: rgba(180, 40, 40"], [data-destructive]) svg { color: var(--adm-red) !important; stroke: var(--adm-red) !important; }
+/* Disabled: full-strength ink (it must still be read), a dashed rim says "not now". */
+html[data-sky="on"][data-sky-admin="on"] #root#root button:disabled { opacity: 1 !important; cursor: default; border-style: dashed !important; box-shadow: none !important; }
+html[data-sky="on"][data-sky-admin="on"] #root#root button:disabled:not([aria-pressed="true"]) { background: rgba(255, 255, 255, 0.24) !important; color: var(--adm-ink) !important; border-color: rgba(11, 42, 82, 0.5) !important; }
+html[data-sky="on"][data-sky-admin="on"] #root#root button:disabled:not([aria-pressed="true"]) * { color: var(--adm-ink) !important; }
+
+/* ── Chips: glass pills; selected = solid navy ── */
+html[data-sky="on"][data-sky-admin="on"] #root button[style*="border-radius: 999px"] {
+  background: var(--adm-chip) !important;
+  border: 1px solid var(--adm-rim) !important;
+  color: var(--adm-ink) !important;
+  white-space: nowrap; flex-shrink: 0;
+}
+html[data-sky="on"][data-sky-admin="on"] #root#root button[style*="border-radius: 999px"][style*="background: rgba(74, 127, 255, 0.16)"],
+html[data-sky="on"][data-sky-admin="on"] #root#root button[aria-pressed="true"]:not(.sky-backgrid),
+html[data-sky="on"][data-sky-admin="on"] #root#root button[aria-selected="true"],
+html[data-sky="on"][data-sky-admin="on"] #root#root button[data-on="true"] {
+  background: var(--sky-navy) !important; border-color: var(--sky-navy) !important; color: #fff !important;
+}
+html[data-sky="on"][data-sky-admin="on"] #root#root :is(button[style*="border-radius: 999px"][style*="background: rgba(74, 127, 255, 0.16)"], button[aria-pressed="true"]:not(.sky-backgrid), button[aria-selected="true"], button[data-on="true"]) * { color: #fff !important; opacity: 1 !important; }
+
+/* ONE scrolling row: a chip row never wraps onto a second line. */
+html[data-sky="on"][data-sky-admin="on"] #root .sky-row1 {
+  display: flex !important; flex-wrap: nowrap !important; overflow-x: auto !important; overflow-y: hidden;
+  gap: 6px; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding-bottom: 2px;
+}
+html[data-sky="on"][data-sky-admin="on"] #root .sky-row1::-webkit-scrollbar { display: none; }
+html[data-sky="on"][data-sky-admin="on"] #root .sky-row1 > * { flex: 0 0 auto !important; white-space: nowrap; }
+
+/* A segmented toggle (two or three states): one glass track, the selected
+   segment solid navy. */
+html[data-sky="on"][data-sky-admin="on"] #root .sky-seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px;
+  background: var(--adm-chip); border: 1px solid var(--adm-rim); }
+html[data-sky="on"][data-sky-admin="on"] #root .sky-seg > button { border: 0 !important; background: transparent !important; color: var(--adm-ink) !important;
+  border-radius: 999px; padding: 8px 16px; font: 700 14px/1 var(--sky-font); cursor: pointer; white-space: nowrap; }
+html[data-sky="on"][data-sky-admin="on"] #root .sky-seg > button[aria-pressed="true"] { background: var(--sky-navy) !important; color: #fff !important; }
+
+/* ── Status chips ── */
+html[data-sky="on"] #root [data-status] {
+  display: inline-flex; align-items: center; white-space: nowrap; flex-shrink: 0;
+  font: 800 10.5px/1 var(--sky-font) !important; letter-spacing: .04em; padding: 5px 8px !important; border-radius: 999px !important;
+  color: var(--adm-ink, #04122b) !important;
+}
+html[data-sky="on"] #root [data-status="live"], html[data-sky="on"] #root [data-status="approved"], html[data-sky="on"] #root [data-status="posted"] {
+  background: transparent !important; border: 1.5px solid var(--sky-navy) !important; }
+html[data-sky="on"] #root [data-status="awaiting"], html[data-sky="on"] #root [data-status="draft"], html[data-sky="on"] #root [data-status="neutral"] {
+  background: rgba(255, 255, 255, 0.45) !important; border: 1px solid rgba(255, 255, 255, 0.85) !important; }
+html[data-sky="on"] #root [data-status="blocked"], html[data-sky="on"] #root [data-status="failed"] {
+  background: rgba(255, 255, 255, 0.45) !important; border: 1.5px solid #c4001d !important; }
+
+/* ── Notices: slim, inline, inside the gutters ── */
+html[data-sky="on"] #root .sky-notice {
+  display: flex; align-items: center; gap: 10px; margin: 8px 0; padding: 8px 10px 8px 12px; min-height: 40px;
+  border-radius: 14px; background: rgba(255, 255, 255, 0.40); border: 1px solid rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4);
+  color: var(--adm-ink, #04122b); font: 600 13.5px/1.3 var(--sky-font); box-sizing: border-box;
+}
+html[data-sky="on"] #root .sky-notice__ic { flex: 0 0 auto; width: 18px; height: 18px; color: var(--sky-navy); }
+html[data-sky="on"] #root .sky-notice--bad .sky-notice__ic { color: #c4001d; }
+html[data-sky="on"] #root .sky-notice__t { flex: 1; min-width: 0; }
+html[data-sky="on"] #root .sky-notice button { flex: 0 0 auto; }
+
+/* ── Empty thumbnails: neutral glass + a line icon ── */
+html[data-sky="on"] #root .sky-thumb-empty {
+  display: grid !important; place-items: center; flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.34) !important; border: 1px solid rgba(255, 255, 255, 0.8) !important; color: rgba(11, 42, 82, 0.7) !important;
+  font-size: 0 !important;
+}
+html[data-sky="on"] #root .sky-thumb-empty svg { width: 42%; height: 42%; }
+
+/* ── Lists: thumb 56 rounded, a one-line bold title, one secondary line ── */
+html[data-sky="on"] #root .sky-li { display: flex; align-items: center; gap: 12px; min-width: 0; }
+html[data-sky="on"] #root .sky-li__thumb { width: 56px !important; height: 56px !important; border-radius: 12px !important; flex: 0 0 56px; object-fit: cover; overflow: hidden; }
+html[data-sky="on"] #root .sky-li__body { flex: 1; min-width: 0; }
+html[data-sky="on"] #root .sky-li__title { font: 700 15px/1.25 var(--sky-font) !important; color: var(--adm-ink, #04122b) !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html[data-sky="on"] #root .sky-li__sub { font: 500 12.5px/1.3 var(--sky-font) !important; color: var(--adm-ink, #04122b) !important; opacity: .82; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html[data-sky="on"] #root .sky-li__end { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+
+/* Labels: small navy caps above fields (the screens already write them in
+   caps; this only settles the ink). */
+html[data-sky="on"][data-sky-admin="on"] #root [style*="text-transform: uppercase"] { color: var(--adm-ink) !important; }
+/* The line icon exists only on the sky; the classic look keeps its emoji. */
+.sky-thumb-empty__ic { display: none; }
+html[data-sky="on"] #root .sky-thumb-empty .sky-thumb-empty__ic { display: block; }
+/* The Admin section row: pills, one line, scrolling; the selected one navy. */
+html[data-sky="on"][data-sky-admin="on"] #root .sky-row1--gutter > button { flex: 0 0 auto !important; min-width: 0 !important; border-radius: 999px !important;
+  padding: 9px 15px !important; background: var(--adm-chip) !important; border: 1px solid var(--adm-rim) !important; color: var(--adm-ink) !important; }
+html[data-sky="on"][data-sky-admin="on"] #root .sky-row1--gutter > button[aria-pressed="true"] { background: var(--sky-navy) !important; border-color: var(--sky-navy) !important; color: #fff !important; }
+html[data-sky="on"] #root .sky-notice .sky-notice__dot { display: none !important; }
+html[data-sky="on"] #root .sky-notice .sky-notice__t { color: var(--adm-ink, #04122b) !important; }
+
+/* A bare field (transparent, no border) sits in a section card that IS its
+   field: no second box, but the 16px floor and the ink still apply. */
+html[data-sky="on"][data-sky-admin="on"] #root :is(input, textarea)[style*="background: transparent"]:not([type="checkbox"]):not([type="radio"]) {
+  background: transparent !important; border-color: transparent !important; color: var(--adm-ink) !important; font-size: max(16px, 1em) !important; }
+/* A per-row action is secondary (one primary per screen): navy outline. */
+html[data-sky="on"][data-sky-admin="on"] #root button[data-secondary] { background: var(--adm-field) !important; border: 1px solid var(--adm-outline) !important; color: var(--adm-ink) !important; }
+html[data-sky="on"][data-sky-admin="on"] #root .sky-li__end--stack { flex-direction: column; align-items: flex-end; gap: 6px; }
+html[data-sky="on"][data-sky-admin="on"] #root .sky-li__end > [data-status] { margin: 0 !important; }
+/* A chip row that was a boxed segmented track loses the box: the chips are the row. */
+html[data-sky="on"][data-sky-admin="on"] #root .sky-row1.sky-row1--bare { background: transparent !important; border: 0 !important; padding: 0 0 2px !important; box-shadow: none !important;
+  -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+/* Light greys the theme map never listed (helper toggles, italics) → ink. */
+html[data-sky="on"][data-sky-admin="on"] #root :is([style^="color: rgb(187, 187, 187)"], [style*="; color: rgb(187, 187, 187)"], [style^="color: rgb(170, 170, 170)"], [style*="; color: rgb(170, 170, 170)"],
+  [style^="color: rgb(221, 221, 221)"], [style*="; color: rgb(221, 221, 221)"], [style^="color: rgb(224, 224, 224)"], [style*="; color: rgb(224, 224, 224)"],
+  [style^="color: rgb(238, 238, 238)"], [style*="; color: rgb(238, 238, 238)"], [style^="color: rgb(106, 159, 255)"], [style*="; color: rgb(106, 159, 255)"]) { color: var(--adm-ink) !important; }
+
+/* Counts inside chips read at full strength. */
+html[data-sky="on"][data-sky-admin="on"] #root button span { opacity: 1 !important; }
+html[data-sky="on"][data-sky-admin="on"] #root .sky-li__sub { opacity: 1 !important; }
+/* No accent colour in admin: the theme's deep green and deep red text become
+   navy ink (a refusal still reads as one — it says so, in words; BLOCKED wears
+   the red OUTLINE, destructive buttons the red ICON). */
+html[data-sky="on"][data-sky-admin="on"] #root :is(
+  [style^="color: rgb(74, 202, 122)"], [style*="; color: rgb(74, 202, 122)"], [style^="color: rgb(74, 222, 128)"], [style*="; color: rgb(74, 222, 128)"],
+  [style^="color: rgb(248, 113, 113)"], [style*="; color: rgb(248, 113, 113)"], [style^="color: rgb(255, 107, 107)"], [style*="; color: rgb(255, 107, 107)"],
+  [style^="color: rgb(255, 69, 58)"], [style*="; color: rgb(255, 69, 58)"], [style^="color: rgb(255, 136, 136)"], [style*="; color: rgb(255, 136, 136)"],
+  [style^="color: rgb(196, 167, 255)"], [style*="; color: rgb(196, 167, 255)"]
+):not(button) { color: var(--adm-ink) !important; font-weight: 700; }
+/* Phone: the status chip gives the title its room. */
+@media (max-width: 520px) {
+  html[data-sky="on"] #root [data-status] { font-size: 9px !important; letter-spacing: 0; padding: 4px 6px !important; }
+  html[data-sky="on"] #root .sky-li { gap: 10px; }
+  html[data-sky="on"] #root .sky-li__end { gap: 4px; }
+}
+/* The selected rail item: solid navy, its icon and count white. */
+html[data-sky="on"][data-sky-admin="on"] #root#root aside button[aria-pressed="true"] svg { stroke: #fff !important; color: #fff !important; }
+html[data-sky="on"][data-sky-admin="on"] #root#root aside button[aria-pressed="true"] span[style*="background"] { background: #fff !important; color: var(--sky-navy) !important; }

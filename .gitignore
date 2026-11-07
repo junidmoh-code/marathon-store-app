@@ -44,4 +44,16 @@ functions/test/fixtures/Till2FNB-Txn-Notification.expected.json
 functions/test/fixtures/Till2FNB-Txn-Notification.lines.json
 functions/test/fixtures/Till3-Batch81-Empty-FNB-Txn-Notification.expected.json
 functions/test/fixtures/Till3-Batch81-Empty-FNB-Txn-Notification.lines.json
+
+# Sky redesign harness (dev/sky-harness.html): real product fixtures carry
+# Storage download tokens and this repo is public — local only.
+dev/*.local.json
+dev/cutouts/
+
+# tools/cutouts test runs
+tools/**/__pycache__/
+tools/**/.pytest_cache/
+
+# sky contrast gate output
+contrast-report/
 scripts/out/
