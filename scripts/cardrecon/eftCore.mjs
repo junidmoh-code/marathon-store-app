@@ -59,6 +59,28 @@ export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, absaSyn
 // them from eftCore.
 const { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue, nextBusinessDay, settlementDateVerdict } = require("./lib/eft-text.cjs");
 export { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue, nextBusinessDay, settlementDateVerdict };
+// Linked copies of one payment (7 Nov 2026): functions/lib/eft-linked-copies.cjs.
+const { linkedHoldOf, applyLinkedHold, linkedCopySettleCheck, absaIdentityOf } = require("./lib/eft-linked-copies.cjs");
+export { linkedHoldOf, applyLinkedHold, linkedCopySettleCheck, absaIdentityOf };
+
+// How many of the pool's newest records the ingest compares a new payment
+// against — the settle's own window (eftPool.js EFT_SEARCH_WINDOW).
+export const EFT_LINK_WINDOW = 400;
+
+/**
+ * INGEST, after the fingerprint claim: a recorded payment whose money another
+ * record already holds under a different fingerprint is HELD automatically
+ * (a hand entry's later bank notice; a blank-number and a numbered copy of
+ * one Absa payment). Otherwise a notice resembling a proof approved from
+ * ANOTHER bank's document is recorded with a review flag — never held.
+ * @returns {{record:object, crossBank:object|null}}
+ */
+export function linkedIngestDecision(record, poolKey, siblings, at) {
+  if (!record || record.outcome !== "recorded") return { record, crossBank: null };
+  const hold = linkedHoldOf(record, poolKey, siblings);
+  if (hold) return { record: applyLinkedHold(record, hold), crossBank: null };
+  return { record, crossBank: null };
+}
 const {
   parseAllowedAccounts, parseAccountPolicies, accountPolicyProblems, destinationVerdict, destinationBankOf, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR,
 } = require("./lib/eft-destination.cjs");

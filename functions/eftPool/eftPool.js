@@ -151,6 +151,7 @@ const {
   approvedKeyOf, approvedInputCheck, keyedIdentityCheck, proofStoragePathOf, proofIdentityOf, manualApprovedRecord, isManualApproved,
   approvedClaimDecision, approvedClaimStep, approvedTwinSettleCheck, approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
 } = require("../lib/eft-manual-approved.cjs");
+const { linkedCopySettleCheck } = require("../lib/eft-linked-copies.cjs");
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
 const { parseAccountPolicies, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
 const { maskAccountValue } = require("../lib/eft-text.cjs");
@@ -318,12 +319,19 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
   // number alone (7 Nov 2026) — a used hand entry with its reference and
   // amount is only logged, for Junid's review.
   const twin = manualTwinSettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
-  if (twin.ok && twin.txnOverManualTwin) {
-    console.warn(`EFT_TXN_OVER_MANUAL_TWIN: ${key} (own bank transaction number) settles although used manual entry ${twin.txnOverManualTwin} shares its reference and amount — judged on its transaction number`);
-  }
   if (!twin.ok) {
     console.warn(`eftPoolSettle: ${twin.side} on ${key} — refused before settle`);
     throw refusalToError(twin);
+  }
+  // LINKED COPIES (7 Nov 2026, eft-linked-copies.cjs): the bank's notice of
+  // money a hand entry already spent, or one copy of an Absa payment whose
+  // blank-number / numbered twin was spent. The poller holds these at ingest;
+  // this catches a pair recorded before that, or a race. An owner-released
+  // record (he checked the statement) settles.
+  const linked = linkedCopySettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
+  if (!linked.ok) {
+    console.warn(`eftPoolSettle: ${linked.side} on ${key} — refused before settle`);
+    throw refusalToError(linked);
   }
   // …or whose PROOF Junid approved (29 Oct 2026): a different document can
   // carry a different fingerprint for the same money; the twin rule catches

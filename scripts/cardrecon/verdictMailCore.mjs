@@ -77,7 +77,7 @@ const CHECKS = {
   "refused-stale-date": "Payment dated before the cutoff",
   "held-duplicate": "Duplicate — bank transaction id already seen",
   "held-no-bankref": "No bank transaction id",
-  "held-possible-duplicate": "Possible duplicate — identical Absa notice already confirmed; held for your review",
+  "held-possible-duplicate": "Possible duplicate — the same money is already in the pool (identical Absa notice, a hand entry, or another copy); held for your review",
 };
 
 const BANK_NAMES = {

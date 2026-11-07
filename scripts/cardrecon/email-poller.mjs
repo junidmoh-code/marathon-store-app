@@ -76,7 +76,7 @@ import {
 // ordinary mail \Seen and would hide every notification from it. The decisions
 // live in eftCore.mjs; here is only the wiring. See handleEftMessage.
 import {
-  EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText,
+  EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText, linkedIngestDecision, EFT_LINK_WINDOW,
   eftMessageKey, createOnlyStep, eftPoolRecord,
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   refusalFingerprint, applyRefusalFingerprint,
@@ -1568,6 +1568,13 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // already written aborts its transaction — never doubled, never reset.
   const written = [];
   const writtenKeys = [];
+  // The pool's newest records, read ONCE per message and only when a payment
+  // is to be recorded — never the node (orderByChild "at", the settle's index).
+  let tail = null;
+  const siblingsNow = async () => {
+    if (!tail) tail = (await db.ref(EFT_POOL_PATH).orderByChild("at").limitToLast(EFT_LINK_WINDOW).once("value")).val() || {};
+    return [...Object.entries(tail), ...writtenKeys.map((k, i) => [k, written[i]])];
+  };
   for (const { poolKey, record: candidate } of outcomes) {
     // FIX 1 — THE BANK'S TRANSACTION ID, NOT THE EMAIL, DECIDES WHETHER THIS
     // IS NEW MONEY. Claim the fingerprint for this record (create-only) BEFORE
@@ -1586,6 +1593,17 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
           .transaction(fingerprintClaimStep(poolKey, serverNowMs(), (d) => { holder = d.holder; manualApproved = d.manualApproved === true; spentBy = d.spentBy ?? null; }));
       }
       record = applyFingerprintHold(candidate, { fingerprint, holder, poolKey, manualApproved, spentBy });
+      // LINKED COPIES (7 Nov 2026): the same money under another fingerprint
+      // — a hand entry already floated, or the blank-number copy of a numbered
+      // Absa payment — is held here, automatically, for the owner's review.
+      if (record.outcome === "recorded") {
+        const linked = linkedIngestDecision(record, poolKey, await siblingsNow(), serverNowMs());
+        record = linked.record;
+        if (record.linkedHold) console.log(`  · EFT_LINKED_HOLD: ${poolKey} held (${record.linkedHold}) — same money as ${record.duplicateOf}`);
+        if (linked.crossBank) {
+          console.warn(`  ⚠ EFT_POSSIBLE_CROSS_BANK_DUPLICATE: ${poolKey} (${record.reader}, R${(record.amountCents / 100).toFixed(2)}) resembles proof ${linked.crossBank.approvedKey} approved from a ${linked.crossBank.approvedReader} document (reference ${linked.crossBank.sameReference ? "same" : "different"}, payer ${linked.crossBank.samePayer ? "same" : "different"}) — recorded, flagged for review, not held`);
+        }
+      }
     } else {
       // A refusal claims its transaction id too (eftCore refusalFingerprint):
       // a copy resent once the reason no longer applies is held, not fresh.

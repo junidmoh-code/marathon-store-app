@@ -30,6 +30,7 @@ const {
 const { paymentFingerprint, consumeFingerprintCheck, claimHolderCheck, fingerprintClaimStep, syntheticIdentityOf } = require("../lib/eft-fingerprint.cjs");
 const { searchEftPool } = require("../lib/eft-pool.cjs");
 const { approvedTwinSettleCheck } = require("../lib/eft-manual-approved.cjs");
+const { linkedHoldOf, linkedCopySettleCheck } = require("../lib/eft-linked-copies.cjs");
 
 const SAST = 2 * 60 * 60 * 1000;
 const sast = (iso) => Date.parse(`${iso}Z`) - SAST; // "2026-11-07T09:45:00" read as SAST
@@ -168,14 +169,14 @@ test("a Saturday payment typed by hand on Monday and its notice landing Tuesday 
   const mKey = manualEntryKeyOf("ME-wknd-0001");
   const typed = manual({ entryId: "ME-wknd-0001", typed: "2026-11-09T09:00:00", reference: "Soccer T shirt", status: "used", slip: "S-95" });
   const notice = absa({ txn: "80LLLLLLL2-2", day: "2026-11-07", arrived: "2026-11-10T10:00:00" });
-  // Still ONE payment by the window (the hand entry would be refused if the
-  // notice were spent first) — but the notice carries its own transaction
-  // number, so it is neither refused nor warned about (Junid, 7 Nov 2026).
+  // ONE payment by the window. Since the evening of 7 Nov 2026 (Junid) the
+  // notice of money a hand entry already settled is HELD at ingest
+  // (eft-linked-copies.cjs) — and a pair recorded before that is refused at
+  // the settle, with the till's warning.
   assert.equal(isPaymentTwin(notice, typed), true);
-  const t = manualTwinSettleCheck({ poolKey: "n", record: notice, siblings: [[mKey, typed], ["n", notice]] });
-  assert.equal(t.ok, true);
-  assert.equal(t.txnOverManualTwin, mKey);
-  assert.equal(searchEftPool({ [mKey]: typed, n: notice }, "soccer t shirt").results.find((r) => r.key === "n").sameUsed, undefined);
+  assert.equal(linkedHoldOf(notice, "n", [[mKey, typed]]).kind, "manual-twin");
+  assert.equal(linkedCopySettleCheck({ poolKey: "n", record: notice, siblings: [[mKey, typed], ["n", notice]] }).code, "twin-used");
+  assert.equal(searchEftPool({ [mKey]: typed, n: notice }, "soccer t shirt").results.find((r) => r.key === "n").sameUsed.receiptNumber, "S-95");
 });
 
 test("a repeat customer's next-day payment is NOT blocked by yesterday's hand entry", () => {

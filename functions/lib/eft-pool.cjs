@@ -78,6 +78,9 @@
 
 const { paymentFingerprint, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
 const { isManualEntry, isPaymentTwin } = require("./eft-manual.cjs");
+const { linkedCopySettleCheck, absaIdentityOf } = require("./eft-linked-copies.cjs");
+/** An Absa record with a synthetic identity: its numbered twin may exist. */
+const isBlankNumberedCandidate = (r) => !!absaIdentityOf(r);
 
 const EFT_POOL_PATH = "eft_pool";
 
@@ -179,9 +182,18 @@ function publicEftView(key, record) {
  */
 function manualTwinOf(record, payments) {
   if (!record || record.status !== "unmatched") return null;
-  // A payment with its own bank transaction number carries no twin warning
-  // (Junid, 7 Nov 2026): reference + amount never stands against it.
-  if (bankTransactionIdOf(record)) return null;
+  // A payment with its own bank transaction number is warned about only when
+  // the settle would refuse it: a LINKED copy of the same money (the hand
+  // entry it is the notice of, or its blank-number Absa twin) was used —
+  // eft-linked-copies.cjs. Never on reference + amount alone, and never once
+  // the owner released it from a hold.
+  if (bankTransactionIdOf(record)) {
+    const keyOf = payments?.find?.(([, r]) => r === record)?.[0] ?? null;
+    const check = linkedCopySettleCheck({ poolKey: keyOf, record, siblings: (payments ?? []).filter(([, r]) => r !== record) });
+    if (check.ok) return null;
+    const other = (payments ?? []).find(([, r]) => r !== record && r?.status === "used" && !linkedCopySettleCheck({ poolKey: keyOf, record, siblings: [["x", r]] }).ok)?.[1];
+    return other ? { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null } : null;
+  }
   for (const [, other] of payments ?? []) {
     if (other?.status !== "used" || !isPaymentTwin(record, other)) continue;
     return { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
