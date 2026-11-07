@@ -47,8 +47,8 @@ import { formatSize } from "../../utils/sizeLabel";
 import { rowSizeText } from "./displayRowCore";
 import { CARD, BORDER, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, FONT, bGray, bRed } from "./ui";
 
-// The hubs come from the network registry (hubCleanupCore.cleanupHubs): the
-// LIVE hubs — Hub 1 and Hub 2 on the seed, the list this tab always had.
+// The hubs come from the network registry (hubCleanupCore.cleanupHubs): every
+// hub — Hub 1, Hub 2 and Hub 3 on the seed (Junid, 7 Nov 2026).
 
 const CLASS_META = {
   replaced: { title: "Replaced", tone: AMBER, blurb: "A shop floor shows this product on display at a DIFFERENT size. This row is the pair that was replaced." },
@@ -107,7 +107,7 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
   // The unregistered lane judges every floor at once, so it needs the OTHER
   // hub's register too — a slot booked at hub2 must not read as unregistered
   // just because this screen is looking at hub1.
-  // "The other hub" is another live hub IN THE SAME SECTION — a display is
+  // "The other hub" is another hub IN THE SAME SECTION — a display is
   // never booked across the section wall.
   const otherHub = HUBS.find((h) => h !== hub && wallAllows(network, hub, h)) || null;
   const otherRegister = useDisplayRegister(otherHub, mode === "unregistered");
@@ -140,12 +140,18 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
   // ── THE UNREGISTERED LANE ─────────────────────────────────────────────────
   const unregistered = useMemo(() => {
     if (mode !== "unregistered") return [];
+    // The floors on THIS hub's side of the section wall, judged against the
+    // registers of THIS side's hubs. Pine and Concrete's slots are Hub 3's, and
+    // are listed on the Hub 3 tab — not as "keeps no display register" under
+    // Hub 1 (Junid, 7 Nov 2026: Hub 3 keeps a register like the others).
+    const sideSlots = Object.fromEntries(Object.entries(slots || {}).filter(([store]) => wallAllows(network, hub, store)));
     return findUnregisteredDisplays({
-      slots,
+      slots: sideSlots,
       registerByHub: { [hub]: register, ...(otherHub ? { [otherHub]: otherRegister } : {}) },
+      hubs: [hub, otherHub].filter(Boolean),
       productsById,
     });
-  }, [mode, slots, register, otherRegister, hub, otherHub, productsById]);
+  }, [mode, slots, register, otherRegister, hub, otherHub, productsById, network]);
   const unregPending = unregistered.filter((r) => !done.has(registerKey(r)));
 
   const registerOne = async (row) => {

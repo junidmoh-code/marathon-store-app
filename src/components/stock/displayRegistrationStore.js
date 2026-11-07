@@ -83,7 +83,7 @@ const slotWarning = (res, what) => {
 // invented an off-shelf unit the counters would then adjust real stock by.
 export async function recordDisplayFact({ hub, product, size, store, slots = null }) {
   try {
-    if (!isCleanupHub(hub)) return { ok: false, message: `Displays are booked at hub1/hub2 — not ${hub}.` };
+    if (!isCleanupHub(hub)) return { ok: false, message: `Displays are booked at a hub — ${hub} is not one.` };
     const sizeKey = stockSizeKey(String(size));
     if (sizeKey === "_") return { ok: false, message: "Pick a real size — one-size products have no display size." };
     const path = regPath(hub, product.id, sizeKey);
@@ -171,7 +171,7 @@ export async function recordDisplayFact({ hub, product, size, store, slots = nul
 // this product at this hub; each is re-pointed to the new size.
 export async function editDisplaySize({ hub, product, fromSizeKey, toSize, slotStores = [] }) {
   try {
-    if (!isCleanupHub(hub)) return { ok: false, message: `Displays are booked at hub1/hub2 — not ${hub}.` };
+    if (!isCleanupHub(hub)) return { ok: false, message: `Displays are booked at a hub — ${hub} is not one.` };
     const toKey = stockSizeKey(String(toSize));
     if (toKey === "_") return { ok: false, message: "Pick a real size." };
     if (toKey === fromSizeKey) return { ok: false, message: "That is already the registered size." };
@@ -251,7 +251,7 @@ export async function editDisplaySize({ hub, product, fromSizeKey, toSize, slotS
 // that had not happened.
 export async function removeDisplayFact({ hub, product, sizeKey, slotStores = [], units = 1, expectQty = null }) {
   try {
-    if (!isCleanupHub(hub)) return { ok: false, message: `Displays are booked at hub1/hub2 — not ${hub}.` };
+    if (!isCleanupHub(hub)) return { ok: false, message: `Displays are booked at a hub — ${hub} is not one.` };
     const path = regPath(hub, product.id, sizeKey);
     const nowIso = serverNowIso();
     const take = Math.max(1, Number(units) || 1);
