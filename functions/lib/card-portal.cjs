@@ -328,7 +328,9 @@ function samePortalFigures(rec, extraction) {
 // takes the day over, after which its chain is the photo's and the pull is a
 // cross-check like any other.
 function planPortalWrite({ dayRecords, lastBatchNo: _lastBatchNo, extraction }) {
-  const recs = (dayRecords || []).filter((r) => r && r.record && Number.isFinite(Number(r.record.batchNo)));
+  // A record DISPLACED by a photographed report that covers its day
+  // (lib/card-sb-photo.cjs) is not the day's any more: it is skipped.
+  const recs = (dayRecords || []).filter((r) => r && r.record && Number.isFinite(Number(r.record.batchNo)) && !r.record.displacedBy);
   const latestOf = (list) => list.slice().sort((a, b) => Number(a.record.batchNo) - Number(b.record.batchNo)
     || (Number(a.record.revision) || 1) - (Number(b.record.revision) || 1)).at(-1) || null;
   // A PORTAL RECORD ALREADY ON FILE FOR THE DAY decides, whatever other batch

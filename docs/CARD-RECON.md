@@ -564,13 +564,20 @@ terminal's registry row says `bank: "standard-bank"`** (`isPhotoPrimary`,
   with `photoRead.status: "unread"` and a `PHOTO NOT READ` warning; with none,
   the day is Unread with `photoReceived: true` — "photo received — total
   unreadable", never "awaiting a slip".
-* **Filing (`lib/card-sb-photo.cjs planSbFiling`):** the portal numbered its
-  3–6 Nov days on from the last real batch, so a real report usually prints the
-  same number for the same day. A report whose day is held by the portal's
-  record (or a staff-typed one) **takes it over as a revision** (one card); a
-  printed number taken by **another** day's portal record is filed under the
-  next free number with `printedBatchNo`; a second photo of the same report is a
-  duplicate.
+* **Filing (`lib/card-sb-photo.cjs planSbFiling`) keeps the printed number.**
+  The portal numbered 3–6 Nov on from the last real batch, but PE Till 2 did
+  not settle on 4 Nov: its real #561 = 3 Nov, #562 = 3→5 Nov, #563 = 5→6 Nov,
+  against the portal's 561/562/563 = 3/4/5 Nov. A report takes over the
+  synthetic record (portal day, staff-typed total) holding **its own printed
+  number** when that day lies in its window (or the record is already
+  displaced), as a revision of that chain. Every **other** synthetic record of a
+  day the report covers (closed after the day the batch opened, up to the day
+  it closed) gets `displacedBy` — kept unchanged, skipped by every reader. A
+  printed number held by a synthetic record of a day **outside** the window is
+  never touched: the report is filed under the next free number with
+  `printedBatchNo`. A second photo of the same report is a duplicate.
+* **The typed fallback never doubles a day**: when the day already has a
+  record, the typed total is not recorded again.
 * **The portal becomes a cross-check** (`planPortalWrite` → `check`): a pull
   never creates a record and never replaces one; it writes `portalCheck
   { totalCents, txnCount, differsCents }` onto the record in force, and a day

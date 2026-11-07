@@ -1239,17 +1239,40 @@ async function handleTypedCapture(db, request, { picked, terminal, slip = null, 
 async function sbFilingFor(db, { terminal, tid, extraction }) {
   const printed = Number(normaliseBatchNo(extraction.batchNo));
   const closedAt = Number(extraction.closedAt);
+  const openedAt = Number(extraction.openedAt);
   const tidPath = `${CARD_BATCHES_PATH}/${terminal.storeId}/${tid}`;
-  const dayStart = Number.isFinite(closedAt) ? sastDayStartMs(sastDayYmd(closedAt)) : null;
-  const dayVal = dayStart === null ? {} : (await db.ref(tidPath).orderByChild("slip/closedAt")
-    .startAt(dayStart).endAt(dayStart + 24 * 60 * 60 * 1000 - 1).once("value")).val() || {};
-  const dayRecords = Object.entries(dayVal).filter(([, r]) => r && typeof r === "object").map(([key, record]) => ({ key, record }));
+  // From the SAST day the batch opened to the end of the day it closed —
+  // validateExtraction caps a batch at seven days, so this is a bounded range.
+  const fromDay = Number.isFinite(openedAt) ? sastDayStartMs(sastDayYmd(openedAt)) : null;
+  const toDay = Number.isFinite(closedAt) ? sastDayStartMs(sastDayYmd(closedAt)) : null;
+  const start = fromDay !== null ? fromDay : toDay;
+  const winVal = toDay === null ? {} : (await db.ref(tidPath).orderByChild("slip/closedAt")
+    .startAt(start).endAt(toDay + 24 * 60 * 60 * 1000 - 1).once("value")).val() || {};
+  const windowRecords = Object.entries(winVal).filter(([, r]) => r && typeof r === "object").map(([key, record]) => ({ key, record }));
   const keys = Number.isInteger(printed) ? await readBatchKeysFor(db, terminal.storeId, tid, printed) : [];
   const printedInForce = keys.length
     ? { key: keys.at(-1), record: (await db.ref(`${tidPath}/${keys.at(-1)}`).once("value")).val() }
     : null;
   const last = await readLastBatchFor(db, terminal.storeId, tid);
-  return planSbFiling({ printedBatchNo: printed, closedAt, dayRecords, printedInForce, highestOnFile: last.batchNo });
+  return planSbFiling({ printedBatchNo: printed, openedAt, closedAt, windowRecords, printedInForce, highestOnFile: last.batchNo });
+}
+
+/**
+ * The synthetic records a recorded Standard Bank report covers are marked
+ * `displacedBy` (lib/card-sb-photo.cjs): kept exactly as they were, no longer
+ * drawn. Cold-null: a record deleted meanwhile stays deleted. A failure is
+ * logged and never un-records the report.
+ */
+async function displaceCovered(db, tidPath, keys, byKey, nowMs) {
+  for (const k of keys || []) {
+    if (typeof k !== "string" || !/^[0-9]{1,8}(-r[0-9]{1,3})?$/.test(k)) continue;
+    try {
+      await db.ref(`${tidPath}/${k}`).transaction((cur) => (cur === null ? null
+        : cur.displacedBy ? undefined : { ...cur, displacedBy: byKey, displacedAt: nowMs }));
+    } catch (err) {
+      console.error(`cardBatchCapture: could not mark ${tidPath}/${k} displaced by ${byKey}: ${err && err.message}`);
+    }
+  }
 }
 
 async function handleExtract(db, request, opts = {}) {
@@ -1578,7 +1601,7 @@ async function handleExtract(db, request, opts = {}) {
     correction,
     warnings: warnings.length ? warnings : null,
     // A Standard Bank report: where it was filed and why, and what staff typed.
-    sbFiling: sbFiling ? { mode: sbFiling.mode, supersedes: sbFiling.supersedes || null,
+    sbFiling: sbFiling ? { mode: sbFiling.mode, supersedes: sbFiling.supersedes || null, displace: sbFiling.displace || [],
       printedBatchNo: Number.isInteger(extraction.printedBatchNo) ? extraction.printedBatchNo : Number(batchNo) } : null,
     typedCheck: staffTyped,
     photoPaths,
@@ -2210,6 +2233,11 @@ async function handleSubmit(db, request) {
   // A slip attached to the superseded record between the read above and this
   // write is brought across now (attachSupportingSlip does the same from its side).
   if (write.supersedes) await syncCarried(db, `${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`, write.supersedes, write.key);
+  // A Standard Bank report's window covers other synthetic days: displaced.
+  if (draft.sbFiling && !typedOnly) {
+    const displace = Array.isArray(draft.sbFiling.displace) ? draft.sbFiling.displace : Object.values(draft.sbFiling.displace || {});
+    if (displace.length) await displaceCovered(db, `${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`, displace, write.key, Date.now());
+  }
   await draftRef.remove().catch(() => {});
 
   // CAPTURE ONLY — an acknowledgement, not a verdict. The manager learns that
@@ -2907,7 +2935,9 @@ async function processReadJob(db, jobId, deps = {}) {
     }
   }
   if (fellBack && fellBack.ok) {
-    await resolveJobDay(db, done, fellBack.batchKey, t);
+    try { await resolveJobDay(db, done, fellBack.batchKey, t); } catch (err) {
+      console.error(`cardBatchReadJob: resolving ${job.dayYmd} after the typed fallback failed: ${err && err.message}`);
+    }
     console.warn(`CARD_RECON_PHOTO_NOT_READ ${job.label || job.pickedTid} ${job.dayYmd}: the typed total stands as ${fellBack.batchKey} — ${unreadReason(job, outcome)}`);
   } else if (!check && final === "unread") await markJobUnread(db, done, outcome, t);
   if (!check && final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
@@ -2961,6 +2991,17 @@ async function noteStaffSlipRead(db, job, outcome, final, nowMs) {
 async function recordTypedFallback(db, job, outcome, nowMs, deps = {}) {
   const terminal = (await db.ref(`${CARD_TERMINALS_PATH}/${job.pickedTid}`).once("value")).val();
   if (!terminal || !isPhotoPrimary(terminal) || isRetiredTerminal(terminal)) return { ok: false, reason: "not a Standard Bank till now" };
+  // THE DAY ALREADY HAS ITS FIGURE (an earlier photo of the same report was
+  // read, Junid entered it): the typed total must not become a second card.
+  // The Unread marker that follows is hidden by that record in Junid's report.
+  const dayStart = sastDayStartMs(job.dayYmd);
+  if (dayStart !== null) {
+    const onDay = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}`).orderByChild("slip/closedAt")
+      .startAt(dayStart).endAt(dayStart + 24 * 60 * 60 * 1000 - 1).once("value")).val() || {};
+    if (Object.values(onDay).some((r) => r && typeof r === "object" && !r.displacedBy)) {
+      return { ok: false, reason: `${job.dayYmd} already has a record — the typed total is not recorded a second time` };
+    }
+  }
   const bufs = await (deps.loadPhotoBuffers || loadJobPhotoBuffers)(job.photoPaths);
   const request = {
     auth: { uid: job.by, token: { ...(job.token || {}) } },
@@ -2975,8 +3016,13 @@ async function recordTypedFallback(db, job, outcome, nowMs, deps = {}) {
   if (!drafted || drafted.ok !== true) return { ok: false, reason: drafted && drafted.reason };
   const done = await handleSubmit(db, { auth: request.auth, data: { action: "submit", draftId: drafted.draftId } });
   if (!done || done.ok !== true) return { ok: false, reason: done && done.reason };
-  await writePhotoRead(db, { storeId: job.storeId, pickedTid: job.pickedTid, batchKey: done.batchKey, typedCents: job.typedCents },
-    { status: "unread", reason: why }, nowMs);
+  // The record is in: from here nothing may turn it back into an Unread day.
+  try {
+    await writePhotoRead(db, { storeId: job.storeId, pickedTid: job.pickedTid, batchKey: done.batchKey, typedCents: job.typedCents },
+      { status: "unread", reason: why }, nowMs);
+  } catch (err) {
+    console.error(`cardBatchReadJob: photoRead note on ${done.batchKey} failed: ${err && err.message}`);
+  }
   return { ok: true, batchKey: done.batchKey };
 }
 

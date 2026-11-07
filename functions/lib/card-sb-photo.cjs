@@ -61,64 +61,93 @@ function inForceByBatch(records) {
 }
 
 /**
- * Where a read Standard Bank report is filed.
+ * Where a read Standard Bank report is filed, and which synthetic records it
+ * displaces. Built against Marathon PE Till 2's real paper: the machine did not
+ * settle on 4 Nov, so its #561 is 3 Nov, #562 spans 3–5 Nov and #563 5–6 Nov —
+ * while the portal had numbered 3, 4 and 5 Nov as 561, 562 and 563.
+ *
+ * THE PRINTED NUMBER IS KEPT whenever it can be: the record is filed under the
+ * number on the paper, so the machine's count and the record's stay the same
+ * for every later batch. Where that number's chain holds a synthetic record of
+ * a day the report's window touches (from the day the batch opened to the day
+ * it closed), or one already displaced, the report takes it over as a
+ * revision of that chain. A synthetic record of a day outside the report's
+ * window is never touched — the report then gets the next free number.
+ *
+ * EVERY OTHER SYNTHETIC RECORD OF A DAY THE REPORT COVERS is DISPLACED
+ * (`displacedBy` written on it after the report is recorded): its day's money
+ * is in this report, so drawing it too would count the day twice. A displaced
+ * record is kept exactly as it was; readers skip it.
  *
  * @param printedBatchNo  the batch number the report prints (integer)
- * @param closedAt        when the report's batch closed (epoch ms)
- * @param dayRecords      [{key, record}] — every record of this terminal whose
- *                        slip closed on the same SAST day (an indexed range read)
+ * @param openedAt/closedAt the report's batch window (epoch ms)
+ * @param windowRecords   [{key, record}] — the terminal's records that closed
+ *                        from the SAST day the batch opened to the day it
+ *                        closed (one indexed range read, at most 7 days)
  * @param printedInForce  {key, record} | null — the record in force under the
  *                        printed number, whatever day it closed
  * @param highestOnFile   the terminal's highest batch number on file, or null
- * @returns {{ batchNo, correction, mode, supersedes?, note? }}
+ * @returns {{ batchNo, correction, mode, supersedes?, displace: string[], note? }}
  *   mode "normal"     — file under the printed number, as every report is
- *   mode "over"       — a revision of the same day's synthetic record (correction)
- *   mode "renumbered" — the printed number belongs to another day's synthetic
- *                       record; filed under the next free number
+ *   mode "over"       — a revision of the printed number's synthetic chain
+ *   mode "renumbered" — the printed number belongs to a synthetic record of a
+ *                       day outside this report; filed under the next free number
  */
-function planSbFiling({ printedBatchNo, closedAt, dayRecords = [], printedInForce = null, highestOnFile = null }) {
+function planSbFiling({ printedBatchNo, openedAt = null, closedAt, windowRecords = [], dayRecords = null, printedInForce = null, highestOnFile = null }) {
   const printed = Number(printedBatchNo);
-  if (!Number.isInteger(printed) || printed < 0) return { batchNo: printedBatchNo, correction: false, mode: "normal" };
+  if (!Number.isInteger(printed) || printed < 0) return { batchNo: printedBatchNo, correction: false, mode: "normal", displace: [] };
   const day = sastYmd(closedAt);
-  const sameDay = inForceByBatch(dayRecords).filter((r) => sastYmd(Number(r.record.slip && r.record.slip.closedAt)) === day);
+  const openDay = sastYmd(openedAt) || day;
+  const closeDayOf = (r) => sastYmd(Number(r.record.slip && r.record.slip.closedAt));
+  const live = inForceByBatch(windowRecords.length ? windowRecords : (dayRecords || [])).filter((r) => !r.record.displacedBy);
+  // A day this report's money covers: it closed after the day the batch
+  // opened, up to and including the day it closed.
+  const covers = (d) => !!d && d <= day && (d > openDay || d === day);
+  // A day the report's window touches at all (it opened that day): enough to
+  // take over the PRINTED number's own synthetic chain, so the machine's count
+  // and the record's stay aligned whatever order the photos are read in. Never
+  // enough to displace another record — that day's money may belong to the
+  // report before this one.
+  const overlaps = (d) => !!d && d >= openDay && d <= day;
+  const portalWord = (rec) => (rec.capturedVia === "simplyblu-portal" ? "the SimplyBLU portal's record" : "the total typed on the Card Slip");
 
-  // 1. THIS REPORT IS ALREADY ON FILE for the day — under its own number, or
-  //    under the number it was filed as. The ordinary duplicate / fuller-report
-  //    rules decide (resolveWriteFor): a second photo of the same slip is a
-  //    duplicate, never a second card.
-  const own = sameDay.find((r) => !isSyntheticRecord(r.record) && printedOf(r.record) === printed);
-  if (own) return { batchNo: batchOf(own.record), correction: false, mode: "normal" };
+  // 1. THIS REPORT IS ALREADY ON FILE for the day — the ordinary duplicate /
+  //    fuller-report rules decide (resolveWriteFor): a second photo of the
+  //    same slip is a duplicate, never a second card.
+  const own = live.find((r) => closeDayOf(r) === day && !isSyntheticRecord(r.record) && printedOf(r.record) === printed);
+  if (own) return { batchNo: batchOf(own.record), correction: false, mode: "normal", displace: [] };
 
-  // 2. THE DAY IS HELD BY A SYNTHETIC RECORD (the portal's day, a staff-typed
-  //    total): the machine's own report takes it over as a revision of that
-  //    record's batch, so the day stays one card. The old record is kept.
-  const synth = sameDay.filter((r) => isSyntheticRecord(r.record))
-    .sort((a, b) => (a.record.capturedVia === "simplyblu-portal" ? -1 : 1) - (b.record.capturedVia === "simplyblu-portal" ? -1 : 1))[0];
-  if (synth) {
-    const portal = synth.record.capturedVia === "simplyblu-portal";
-    const what = portal ? `the SimplyBLU portal's figure for ${day}` : `the total typed on the Card Slip for ${day}`;
-    const filed = batchOf(synth.record);
-    return {
-      batchNo: filed, correction: true, mode: "over", supersedes: synth.key,
-      note: `Recorded from the photographed Standard Bank report${filed === printed ? "" : ` (it prints batch #${printed})`}. It replaces ${what} (${synth.key}), which is kept unchanged.`,
-    };
-  }
-
-  // 3. THE PRINTED NUMBER IS TAKEN BY ANOTHER DAY'S SYNTHETIC RECORD — the
-  //    portal numbered its days on from the last real batch, so the machine's
-  //    own count can meet one. That record is never touched: this report gets
-  //    the next free number, and says what it printed.
-  if (printedInForce && printedInForce.record && isSyntheticRecord(printedInForce.record)) {
-    const otherDay = sastYmd(Number(printedInForce.record.slip && printedInForce.record.slip.closedAt));
-    if (otherDay !== day) {
+  const covered = live.filter((r) => isSyntheticRecord(r.record) && covers(closeDayOf(r)));
+  const chain = printedInForce && printedInForce.record ? printedInForce : null;
+  let plan;
+  if (!chain) {
+    plan = { batchNo: printed, correction: false, mode: "normal" };
+  } else {
+    const rec = chain.record;
+    const synthetic = isSyntheticRecord(rec) || !!rec.displacedBy;
+    if (!synthetic) {
+      // A real report already holds this number: the re-send / re-print rules decide.
+      plan = { batchNo: printed, correction: false, mode: "normal" };
+    } else if (rec.displacedBy || overlaps(closeDayOf(chain))) {
+      const what = rec.displacedBy ? `${chain.key} (already displaced)` : `${portalWord(rec)} for ${closeDayOf(chain)} (${chain.key})`;
+      plan = {
+        batchNo: printed, correction: true, mode: "over", supersedes: chain.key,
+        note: `Recorded from the photographed Standard Bank report #${printed}. It replaces ${what}, which is kept unchanged.`,
+      };
+    } else {
       const top = Math.max(Number.isInteger(highestOnFile) ? highestOnFile : 0, printed);
-      return {
+      plan = {
         batchNo: top + 1, correction: false, mode: "renumbered",
-        note: `The report prints batch #${printed}; that number is already used by ${printedInForce.record.capturedVia === "simplyblu-portal" ? "the SimplyBLU portal's record" : "a typed total"} for ${otherDay || "another day"}, so this report is filed as #${top + 1}.`,
+        note: `The report prints batch #${printed}; that number is already used by ${portalWord(rec)} for ${closeDayOf(chain) || "another day"}, so this report is filed as #${top + 1}.`,
       };
     }
   }
-  return { batchNo: printed, correction: false, mode: "normal" };
+  plan.displace = covered.filter((r) => !(plan.mode === "over" && r.key === plan.supersedes)).map((r) => r.key);
+  if (plan.displace.length) {
+    const days = covered.filter((r) => plan.displace.includes(r.key)).map((r) => `${closeDayOf(r)} (${r.key})`);
+    plan.note = `${plan.note ? `${plan.note} ` : ""}This report's window covers ${days.join(", ")}, so ${plan.displace.length === 1 ? "that synthetic record is" : "those synthetic records are"} displaced by it — kept unchanged, no longer drawn as a card.`;
+  }
+  return plan;
 }
 
 /**

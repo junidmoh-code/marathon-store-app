@@ -167,13 +167,13 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
   // force, or — no record yet — only on the day's status; never a record.
   if (plan.action === "check") {
     if (!plan.key) return { outcome: "awaiting-photo", totalCents: extraction.totalCents, txnCount: extraction.txnCount };
-    let differs = null;
-    await db.ref(`${tidPath}/${plan.key}`).transaction((cur) => {
-      if (cur === null) return null; // cold-null: a deleted record stays deleted
-      const check = P.portalCheckOf({ extraction, recordTotalCents: cur.slip && cur.slip.totalCents, merchantNo, nowMs });
-      differs = check.differsCents;
-      return { ...cur, portalCheck: check };
-    });
+    // Two leaf reads and one child write — never the record's whole roll.
+    const base = `${tidPath}/${plan.key}`;
+    if (!(await db.ref(`${base}/batchKey`).once("value")).exists()) return { outcome: "awaiting-photo", totalCents: extraction.totalCents, txnCount: extraction.txnCount };
+    const recordTotal = (await db.ref(`${base}/slip/totalCents`).once("value")).val();
+    const check = P.portalCheckOf({ extraction, recordTotalCents: Number.isInteger(recordTotal) ? recordTotal : null, merchantNo, nowMs });
+    const differs = check.differsCents;
+    await db.ref(`${base}/portalCheck`).set(JSON.parse(JSON.stringify(check)));
     return { outcome: "checked", key: plan.key, totalCents: extraction.totalCents, txnCount: extraction.txnCount, differsCents: differs };
   }
   if (plan.action === "noop") {

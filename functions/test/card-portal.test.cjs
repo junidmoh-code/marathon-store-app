@@ -284,7 +284,7 @@ test("Yasmin's #561 of 3 Nov takes over the portal's R0.00 record of the same da
   assert.equal(r2.supersedes, "561");
   assert.equal(r2.slip.totalCents, 3344000);
   assert.equal(r2.photoReport.filing, "over");
-  assert.ok(r2.warnings.some((w) => /replaces the SimplyBLU portal's figure for 2026-11-03 \(561\)/.test(w)));
+  assert.ok(r2.warnings.some((w) => /replaces the SimplyBLU portal's record for 2026-11-03 \(561\)/.test(w)), r2.warnings.join(" | "));
   assert.equal((await node(db, `card_batches/pe/${HP1X}/561`)).slip.totalCents, 0, "the portal record is kept unchanged");
   // A second photo of the same paper is a duplicate.
   assert.equal((await sendAndRead(db, report(), SAST("2026-11-07T09:10:00"))).final, "duplicate");
@@ -293,6 +293,33 @@ test("Yasmin's #561 of 3 Nov takes over the portal's R0.00 record of the same da
   assert.equal(again.results[HP1X].outcome, "checked");
   assert.equal(again.results[HP1X].key, "561-r2");
   assert.equal(await node(db, `card_batches/pe/${HP1X}/561-r3`), null);
+});
+
+test("PE Till 2's real #562 (3→5 Nov) and #563 (5→6 Nov): printed numbers kept, 5 Nov displaced, one card a day", async () => {
+  const db = peWorld({ 560: B560,
+    561: legacyPortal(HP1X, "pe", "till-2", "561", []),
+    562: legacyPortal(HP1X, "pe", "till-2", "562", [], "2026-11-04"),
+    563: legacyPortal(HP1X, "pe", "till-2", "563", [], "2026-11-05") });
+  const r562 = await sendAndRead(db, report({ batchNo: "562", opened: "2026/11/03 17:08:35", closed: "2026/11/05 16:53:43", printed: "2026/11/05 16:53:45",
+    txnCount: 59, purchases: "R38,890.00", total: "R38,890.00" }), SAST("2026-11-07T09:00:00"));
+  assert.equal(r562.final, "recorded");
+  const a = await node(db, `card_batches/pe/${HP1X}/562-r2`);
+  assert.equal(a.slip.totalCents, 3889000);
+  assert.equal(a.supersedes, "562");
+  assert.equal(a.printedBatchNo, undefined, "filed under the number it prints");
+  assert.equal((await node(db, `card_batches/pe/${HP1X}/563`)).displacedBy, "562-r2", "the portal's 5 Nov is displaced, kept");
+  const r563 = await sendAndRead(db, report({ batchNo: "563", opened: "2026/11/05 16:53:40", closed: "2026/11/06 17:05:58", printed: "2026/11/06 17:06:01",
+    txnCount: 62, purchases: "R46,500.00", total: "R46,500.00" }), SAST("2026-11-07T09:05:00"));
+  assert.equal(r563.final, "recorded");
+  const b = await node(db, `card_batches/pe/${HP1X}/563-r2`);
+  assert.equal(b.slip.totalCents, 4650000);
+  assert.equal(b.supersedes, "563");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/564`), null, "nothing renumbered");
+  // A pull of 5 Nov afterwards: the displaced portal record is not the day's.
+  const pullAfter = await pull(db, [], { day: "2026-11-05", now: SAST("2026-11-07T18:00:00") });
+  assert.equal(pullAfter.results[HP1X].outcome, "checked");
+  assert.equal(pullAfter.results[HP1X].key, "562-r2");
+  assert.equal(await node(db, `card_batches/pe/${HP1X}/563-r3`), null);
 });
 
 test("a printed number taken by ANOTHER day's portal record: filed under the next free number, saying so", async () => {
