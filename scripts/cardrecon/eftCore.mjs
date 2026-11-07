@@ -572,8 +572,11 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
   // refused, though DKIM-signed and paid into the shop's own accounts. Now a
   // payment the bank dates on or before the NEXT BUSINESS DAY after the
   // notice's SAST day is settled on date grounds (eft-text.cjs
-  // settlementDateVerdict; Saturday and Sunday skipped); dated later, it is a
-  // scheduled payment and refuses, saying so. Judged from the notice's own
+  // settlementDateVerdict; weekends and SA public holidays skipped); dated
+  // later, it is a scheduled payment and refuses, saying so. NARROWED the
+  // same day (Junid): only a notice that arrives on a non-business day —
+  // Saturday, Sunday, a public holiday (or a holiday's eve) — opens that
+  // window; on an ordinary business day a payment dated tomorrow refuses. Judged from the notice's own
   // arrival, so a replay decides exactly as the first read did.
   if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)) {
     if (sastDate(parsed.bankTs) > sastDate(receivedAt)) {

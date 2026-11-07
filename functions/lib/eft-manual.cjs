@@ -45,7 +45,7 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
-const { sastDate, nextBusinessDay } = require("./eft-text.cjs");
+const { sastDate, latestSettledDay } = require("./eft-text.cjs");
 const { normaliseBankRef, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
 
 // ─── ONE PAYMENT, NOT ONE REFERENCE (7 Nov 2026) ─────────────────────────────
@@ -118,8 +118,12 @@ function withinManualTwinWindow(typedAt, bank) {
     // business day — Saturday or Sunday for a weekend entry, the same day for
     // a weekday one — and the bank's date is no later than that next business
     // day. A repeat customer's next payment, whose notice lands on a later
-    // business day, stays a payment of its own.
-    const nbd = nextBusinessDay(sastDate(typedAt));
+    // business day, stays a payment of its own. Since 7 Nov 2026 the window
+    // is open only when the typing day is a weekend day or public holiday
+    // (or a holiday's eve) — latestSettledDay is that day itself otherwise,
+    // so a later-dated payment then is never the entry's twin (the poller
+    // refuses it anyway).
+    const nbd = latestSettledDay(sastDate(typedAt));
     return Number.isInteger(arrived) && arrived >= typedAt - DAY_MS
       && sastDate(arrived) >= sastDate(typedAt) && sastDate(arrived) < nbd
       && sastDate(bank.bankTs) <= nbd;
@@ -286,9 +290,10 @@ function bankTwinOfEntry({ reference, amountCents, at = null }, siblings) {
     const paidAt = paidAtOf(rec);
     if (Number.isInteger(at) && Number.isInteger(paidAt)) {
       const back = sastDaysBetween(paidAt, at); // days from the payment to now
-      // Forward: up to the next business day (a weekend payment dated Monday,
-      // 7 Nov 2026).
-      const ahead = sastDate(paidAt) > nextBusinessDay(sastDate(at));
+      // Forward: up to the next business day when typed on a weekend day or
+      // public holiday (a weekend payment dated Monday, 7 Nov 2026); never
+      // forward on an ordinary business day.
+      const ahead = sastDate(paidAt) > latestSettledDay(sastDate(at));
       if (ahead || back > TWIN_LOOKBACK_DAYS) continue;
     }
     return { key, record: rec };

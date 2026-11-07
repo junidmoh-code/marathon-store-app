@@ -102,40 +102,91 @@ function maskAccountValue(value) {
   return s.replace(/\d(?=(?:\D*\d){4})/g, "X");
 }
 
+const utcDay = (y, m, d) => new Date(Date.UTC(y, m - 1, d));
+const isoDay = (d) => d.toISOString().slice(0, 10);
+/** "YYYY-MM-DD" → a Date at UTC midnight, or null for anything not a real day. */
+function parseDay(sastDay) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(sastDay ?? ""));
+  if (!m) return null;
+  const d = utcDay(Number(m[1]), Number(m[2]), Number(m[3]));
+  return isoDay(d) === sastDay ? d : null; // 2026-02-31 is no date
+}
+// No public-holiday calendar yet (next commit).
+const isSaPublicHoliday = () => false;
+/** A business day: Monday to Friday. null for no date. */
+function isBusinessDay(sastDay) {
+  const d = parseDay(sastDay);
+  if (!d) return null;
+  return d.getUTCDay() !== 0 && d.getUTCDay() !== 6;
+}
+
 // ─── THE NEXT BUSINESS DAY (Junid, 7 Nov 2026) ───────────────────────────────
 // A non-immediate EFT made on a weekend is dated by the payer's bank for the
 // day it settles: a Saturday Nedbank "Internet payment" prints Monday's date.
-// Such a payment is accepted on date grounds; anything dated LATER than the
-// next business day is a scheduled payment and is not. Business days skip
-// Saturday and Sunday. There is no South African public-holiday list in this
-// repo (and no paid calendar service is to be added), so a payment dated the
-// day after a public holiday that falls on a Monday is refused as too far out
-// — the safe side; Junid floats it by hand.
-/** "2026-11-07" (a Saturday) → "2026-11-09"; "2026-11-04" → "2026-11-05". */
+// Business days skip Saturday and Sunday.
+/** "2026-11-07" (a Saturday) → "2026-11-09"; "2026-12-24" → "2026-12-28". */
 function nextBusinessDay(sastDay) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(sastDay ?? ""));
-  if (!m) return null;
-  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  if (d.toISOString().slice(0, 10) !== sastDay) return null; // 2026-02-31 is no date
-  do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
-  return d.toISOString().slice(0, 10);
+  const d = parseDay(sastDay);
+  if (!d) return null;
+  for (let i = 0; i < 31; i++) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    if (isBusinessDay(isoDay(d))) return isoDay(d);
+  }
+  return null;
+}
+
+// ─── WHEN A LATER-DATED PAYMENT IS ACCEPTED: WEEKENDS AND HOLIDAYS ONLY ──────
+// Junid, 7 Nov 2026 (narrowing the same day's first rule). A payment the bank
+// dates AFTER the day it was judged on is accepted ONLY when that day is not
+// a business day — Saturday, Sunday or a public holiday — and then only up to
+// the next business day. On an ordinary business day a payment dated
+// tomorrow is a scheduled payment and is refused.
+//
+// The eve of a public holiday counts with the holiday: a payment made on
+// Thursday 24 December, dated by the bank for Monday 28 December (Christmas
+// and the Day of Goodwill between), is accepted — Junid's own example. So
+// the window opens when TODAY is not a business day OR TOMORROW is a public
+// holiday. An ordinary Friday is an ordinary business day: a Friday payment
+// dated Monday is refused (the weekend alone does not open it).
+/** May a payment judged on `sastDay` be dated a later day? */
+function laterDatedAllowedOn(sastDay) {
+  const d = parseDay(sastDay);
+  if (!d) return false;
+  if (isBusinessDay(sastDay) === false) return true;
+  const tomorrow = isoDay(new Date(d.getTime() + 86400000));
+  return isSaPublicHoliday(tomorrow);
+}
+/** The latest payment day accepted when judged on `sastDay`: the next
+ *  business day when a later date is allowed, else that day itself. */
+function latestSettledDay(sastDay) {
+  if (!parseDay(sastDay)) return null;
+  return laterDatedAllowedOn(sastDay) ? nextBusinessDay(sastDay) : sastDay;
 }
 
 /**
  * Is a payment the bank dates `bankTs` settled on date grounds, judged from
- * `todayMs` (the notification's arrival, or the server's now)? Dated on or
- * before the next business day after today's SAST date: yes.
+ * `todayMs` (the notification's arrival, or the server's now)? Dated today or
+ * earlier: yes. Dated later: only when today is a weekend day or a public
+ * holiday (or a holiday's eve), and no later than the next business day.
  * @returns {{ok:true} | {ok:false, reason:string}}
  */
 function settlementDateVerdict(bankTs, todayMs) {
   // Fails CLOSED on anything it cannot judge (substitute review of #866).
   if (!Number.isInteger(bankTs) || !Number.isInteger(todayMs)) return { ok: false, reason: "No payment date to judge — not treated as settled." };
   const paidDay = sastDate(bankTs);
-  const nbd = nextBusinessDay(sastDate(todayMs));
+  const today = sastDate(todayMs);
+  if (paidDay <= today) return { ok: true };
+  if (!laterDatedAllowedOn(today)) {
+    return { ok: false, reason: `Payment dated ${paidDay} — a later day than ${today}, a business day: a scheduled payment, not treated as settled.` };
+  }
+  const nbd = nextBusinessDay(today);
   if (!nbd || paidDay > nbd) {
     return { ok: false, reason: `Payment dated ${paidDay} — beyond the next business day, not treated as settled.` };
   }
   return { ok: true };
 }
 
-module.exports = { clip, parseBankTimestamp, sastDate, redactAccountDigits, maskAccountValue, SAST_OFFSET_MS, nextBusinessDay, settlementDateVerdict };
+module.exports = {
+  clip, parseBankTimestamp, sastDate, redactAccountDigits, maskAccountValue, SAST_OFFSET_MS,
+  nextBusinessDay, settlementDateVerdict, isBusinessDay, laterDatedAllowedOn, latestSettledDay,
+};

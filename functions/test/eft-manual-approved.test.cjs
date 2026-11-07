@@ -709,11 +709,15 @@ test("imageKindOf and keyedIdentityCheck, as data", () => {
   assert.equal(imageKindOf(Buffer.from("%PDF-1.4 not an image")), null);
   assert.equal(imageKindOf(null), null);
   const ok = keyedIdentityCheck(ABSA_KEYED, { allowedAccounts: ["62900004321"], now: PINNED_NOW });
-  // 7 Nov 2026: the NEXT BUSINESS DAY (Fri 30 Oct, for a proof keyed Thu 29 Oct) settles on date grounds; the day after does not.
-  assert.equal(keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-10-30" }, { allowedAccounts: ["62900004321"], now: PINNED_NOW }).ok, true, "the next business day is not the future");
-  const beyond = keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-10-31" }, { allowedAccounts: ["62900004321"], now: PINNED_NOW });
-  assert.equal(beyond.code, "bad-date", "beyond the next business day");
-  assert.match(beyond.message, /^Payment dated 2026-10-31 — beyond the next business day, not treated as settled\./);
+  // 7 Nov 2026 (narrowed): keyed on Thu 29 Oct, a business day, a proof dated
+  // any later day is in the future; keyed on a Saturday, Monday's date is not.
+  const tomorrow = keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-10-30" }, { allowedAccounts: ["62900004321"], now: PINNED_NOW });
+  assert.equal(tomorrow.code, "bad-date", "dated tomorrow on a business day");
+  assert.match(tomorrow.message, /^Payment dated 2026-10-30 — a later day than 2026-10-29, a business day: a scheduled payment, not treated as settled\./);
+  const saturday = Date.UTC(2026, 9, 31, 10, 0, 0);
+  assert.equal(keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-11-02" }, { allowedAccounts: ["62900004321"], now: saturday }).ok, true, "a weekend proof dated Monday");
+  const beyond = keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-11-03" }, { allowedAccounts: ["62900004321"], now: saturday });
+  assert.match(beyond.message, /^Payment dated 2026-11-03 — beyond the next business day, not treated as settled\./);
   assert.equal(ok.ok, true);
   assert.equal(ok.readerId, "absa");
   assert.equal(ok.parse.bankTs, EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN).bankTs, "the date is the reader's own bank timestamp");

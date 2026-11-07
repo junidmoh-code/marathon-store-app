@@ -189,7 +189,7 @@ describe("what is NOT confirmed", () => {
   it("a payment dated BEYOND the next business day (scheduled) refuses even when the channel says immediate", () => {
     const later = swap("Date of Payment : 27/10/2026", "Date of Payment : 30/10/2026", IMMEDIATE);
     const { timing, record } = decide(later);
-    expect(timing.reason).toBe("Payment dated 2026-10-30 — beyond the next business day, not treated as settled.");
+    expect(timing.reason).toBe("Payment dated 2026-10-30 — a later day than 2026-10-27, a business day: a scheduled payment, not treated as settled.");
     expect(record.outcome).toBe("refused-not-immediate");
   });
   it("a payment into someone else's account refuses", () => {

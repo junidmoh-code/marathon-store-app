@@ -157,14 +157,14 @@ describe("every other check is unchanged on a 27+ payment", () => {
   it("future-dated (dated after its notification arrived) still refuses", () => {
     expect(cap("30/10/2026 10:15", "Regular Payment").outcome).toBe("refused-not-immediate");
   });
-  it("a date-only bank's day AFTER the next business day, arriving at 23:50 SAST, refuses — judged by the SAST day, not the 15-minute tolerance", () => {
-    // 7 Nov 2026: a payment dated the NEXT BUSINESS DAY (Wed 28 Oct for a
-    // Tuesday notice) now settles on date grounds; the day after does not.
+  it("a date-only bank's LATER day, arriving at 23:50 SAST on a business day, refuses — judged by the SAST day, not the 15-minute tolerance", () => {
+    // 7 Nov 2026 (narrowed): on a business day (Tue 27 Oct) a payment dated
+    // any later day is scheduled — the next-business-day window is for
+    // weekends and public holidays only.
     const reader = selectReader({ fromDomain: "nedbank.co.za", lines: nedbank("28/10/2026", "Internet payment") });
     const late = Date.parse("2026-10-27T23:50:00+02:00");
-    expect(immediacyVerdict({ parsed: reader.parse(nedbank("28/10/2026", "Internet payment")), reader: reader.id, receivedAt: late })).toEqual({ ok: true });
-    const parsed = reader.parse(nedbank("29/10/2026", "Internet payment"));
-    expect(immediacyVerdict({ parsed, reader: reader.id, receivedAt: late }).reason).toBe("Payment dated 2026-10-29 — beyond the next business day, not treated as settled.");
+    expect(immediacyVerdict({ parsed: reader.parse(nedbank("28/10/2026", "Internet payment")), reader: reader.id, receivedAt: late }).reason)
+      .toBe("Payment dated 2026-10-28 — a later day than 2026-10-27, a business day: a scheduled payment, not treated as settled.");
     // …while the same day, arriving the same evening, is fine.
     const today = reader.parse(nedbank("27/10/2026", "Internet payment"));
     expect(immediacyVerdict({ parsed: today, reader: reader.id, receivedAt: late })).toEqual({ ok: true });
