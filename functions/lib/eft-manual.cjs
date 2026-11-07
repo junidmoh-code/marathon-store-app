@@ -60,14 +60,18 @@ const { normaliseBankRef } = require("./eft-fingerprint.cjs");
 //     dates on the SAME SAST day the entry was typed, or a notice that landed
 //     within 24 hours AFTER it was typed (the late notice the entry stood in
 //     for, across midnight included);
-//   · a second manual entry is a duplicate only on the same SAST day.
+//   · a second manual entry is a duplicate when typed the same SAST day or
+//     within 12 hours (23:55 and 00:05 are the same money typed twice).
 // Two payments on different days that share a reference and an amount are two
 // payments. Bank against bank is never decided here: the bank's transaction id
 // (or Absa's full synthetic identity — payer, account, date, amount,
 // reference) is the fingerprint, and the fingerprint claim spends it once.
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LATE_NOTICE_MS = DAY_MS;
+const DUPLICATE_ROLLING_MS = 12 * 60 * 60 * 1000;
 const sameSastDay = (a, b) => Number.isInteger(a) && Number.isInteger(b) && sastDate(a) === sastDate(b);
+/** Whole SAST calendar days between two instants (0 = the same day). */
+const sastDayGap = (a, b) => Math.round(Math.abs(Date.parse(sastDate(a)) - Date.parse(sastDate(b))) / DAY_MS);
 /** The bank's own date for the payment (bankTs), else when it arrived. */
 function paidAtOf(record) {
   if (Number.isInteger(record?.bankTs)) return record.bankTs;
@@ -80,7 +84,11 @@ function withinManualTwinWindow(typedAt, bank) {
   if (!Number.isInteger(typedAt)) return true;
   if (sameSastDay(typedAt, paidAtOf(bank))) return true;
   const arrived = Number.isInteger(bank?.receivedAt) ? bank.receivedAt : bank?.at;
-  return Number.isInteger(arrived) && arrived >= typedAt && arrived - typedAt < LATE_NOTICE_MS;
+  if (!Number.isInteger(arrived) || arrived < typedAt) return false;
+  // No bank date to place the payment by (never true of a record written
+  // since fix 8): the old rule — a notice landing after the entry is its twin.
+  if (!Number.isInteger(bank?.bankTs)) return true;
+  return arrived - typedAt < LATE_NOTICE_MS;
 }
 
 const MANUAL_READER = "manual";
@@ -171,7 +179,8 @@ function isManualEntry(record) {
 
 /**
  * A second entry for money already entered: the same normalised reference,
- * the same amount, on a manual record TYPED THE SAME SAST DAY (any status — a
+ * the same amount, on a manual record TYPED THE SAME SAST DAY OR WITHIN 12
+ * HOURS (any status — a
  * used one has been spent, an unmatched one is waiting). The same entryId is
  * the idempotent retry, not a duplicate. An earlier day's entry with the same
  * reference and amount is a different payment (a repeat customer's repeat
@@ -186,7 +195,8 @@ function manualDuplicateOf({ reference, amountCents, entryId, at = null }, sibli
     if (!isManualEntry(rec)) continue;
     if (rec.manualEntry.entryId === entryId) continue;
     if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
-    if (Number.isInteger(at) && Number.isInteger(rec.manualEntry.at) && !sameSastDay(at, rec.manualEntry.at)) continue;
+    if (Number.isInteger(at) && Number.isInteger(rec.manualEntry.at)
+      && !sameSastDay(at, rec.manualEntry.at) && Math.abs(at - rec.manualEntry.at) >= DUPLICATE_ROLLING_MS) continue;
     return { key, record: rec };
   }
   return null;
@@ -207,7 +217,7 @@ function bankTwinOfEntry({ reference, amountCents, at = null }, siblings) {
     if (!rec || rec.outcome !== "recorded" || isManualEntry(rec) || rec.status !== "unmatched") continue;
     if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
     const paidAt = paidAtOf(rec);
-    if (Number.isInteger(at) && Number.isInteger(paidAt) && Math.abs(Date.parse(sastDate(at)) - Date.parse(sastDate(paidAt))) > DAY_MS) continue;
+    if (Number.isInteger(at) && Number.isInteger(paidAt) && sastDayGap(at, paidAt) > 1) continue;
     return { key, record: rec };
   }
   return null;

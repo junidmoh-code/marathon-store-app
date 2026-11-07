@@ -384,35 +384,48 @@ function approvedClaimDecision({ approvedKey, claim, holderRecord, now = null })
  * and amount. Now:
  *   · BOTH carry a bank transaction id → twins only when it is the SAME id
  *     (normalised). Two different ids are two payments, whatever they share.
+ *     (A manual entry's MANUAL-… id is not a bank id: it never decides.)
  *   · otherwise (either has none) → the full identity: same amount, same
- *     reference, the SAME SAST payment day, and — where both documents print
- *     them — the same payer and the same destination account.
+ *     reference, the payment dated within a SAST day of each other, and —
+ *     where both documents print them — the same payer (however formatted:
+ *     "S MAISTRY" is "MR S MAISTRY") and the same destination account.
  * Refused: the money was settled under the approval. One sentence, no
  * provenance, for the till (Junid, 20 Oct 2026).
  * @returns {{ok:true}|{ok:false, code:string, message:string}}
  */
 const normaliseRef = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const DAY_MS = 24 * 60 * 60 * 1000;
 const paidDayOf = (r, fallback) => {
   const t = Number.isInteger(r?.bankTs) ? r.bankTs : fallback;
   return Number.isInteger(t) ? sastDate(t) : null;
 };
+/** A real bank transaction id — never a manual entry's synthetic MANUAL-… one. */
+const bankIdOf = (r) => (r?.reader === "manual" || /^MANUAL-/i.test(String(r?.bankRef ?? "")) ? null : normaliseBankRef(r?.bankRef));
+/** The same payer however the two documents print it: "S MAISTRY" is "MR S MAISTRY". */
+function samePayer(a, b) {
+  const wa = String(a ?? "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  const wb = String(b ?? "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  if (!wa.length || !wb.length) return true; // one side prints none: not evidence of another payer
+  const [short, long] = wa.length <= wb.length ? [wa, wb] : [wb, wa];
+  return short.every((w) => long.includes(w));
+}
 function isApprovedTwin(record, approved) {
   if (approved.amountCents !== record.amountCents) return false;
-  const idA = normaliseBankRef(record.bankRef);
-  const idB = normaliseBankRef(approved.bankRef);
+  const idA = bankIdOf(record);
+  const idB = bankIdOf(approved);
   if (idA && idB) return idA === idB;
   const ref = normaliseRef(record.reference);
   if (!ref || normaliseRef(approved.reference) !== ref) return false;
+  // Within a SAST day either way: one document may print the transaction
+  // date, the other the processing date, or the payment fell near midnight.
   const dayA = paidDayOf(record, Number.isInteger(record.receivedAt) ? record.receivedAt : record.at);
   const dayB = paidDayOf(approved, approved.manualApproved?.at);
   // A day that cannot be read on either side stays conservative (a twin).
-  if (dayA && dayB && dayA !== dayB) return false;
-  const payerA = normaliseRef(record.payer);
-  const payerB = normaliseRef(approved.payer);
-  if (payerA && payerB && payerA !== payerB) return false;
+  if (dayA && dayB && Math.abs(Date.parse(dayA) - Date.parse(dayB)) > DAY_MS) return false;
+  if (!samePayer(record.payer, approved.payer)) return false;
   const tailA = String(record.accountTail ?? "").replace(/\D/g, "");
   const tailB = String(approved.accountTail ?? "").replace(/\D/g, "");
-  if (tailA && tailB && tailA !== tailB) return false;
+  if (tailA.length >= 4 && tailB.length >= 4 && tailA.slice(-4) !== tailB.slice(-4)) return false;
   return true;
 }
 function approvedTwinSettleCheck({ poolKey, record, siblings }) {

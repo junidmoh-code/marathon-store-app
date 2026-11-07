@@ -88,6 +88,13 @@ After the Sonnet architect review (PR #810):
   same amount and normalised reference as an approval, dated on or after the
   approval's bank day, is refused `twin-used` — the till learns nothing of
   the provenance.
+  *Superseded 7 Nov 2026 (PR #861):* that rule had no end date, so one
+  approval blocked every later payment under the same reference and amount.
+  The twin is now the payment's identity: when both carry a real bank
+  transaction id, only the SAME id is a twin (a manual entry's `MANUAL-…` id
+  never counts); otherwise the same amount, reference, a payment day within
+  one SAST day, and the same payer (however formatted) and account where
+  both print them.
 - **`claim-settling`**: a claim younger than five minutes with no pool
   record behind it is the poller mid-write, not a stale refusal — refused
   "try again", never stamped spent.

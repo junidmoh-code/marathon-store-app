@@ -177,12 +177,44 @@ test("an approved proof blocks only its OWN payment: same txn id refused, a diff
   assert.equal(approvedTwinSettleCheck({ poolKey: "y", record: otherTxn, siblings: [["ap", approved], ["y", otherTxn]] }).ok, true);
 });
 
-test("an approved proof with no txn id matches on the full identity: same day + payer + account; another day or payer is another payment", () => {
+test("an approved proof with no txn id matches on the full identity: day (±1) + payer + account; two days apart or another payer is another payment", () => {
   const approved = { ...absa({ txn: null, day: "2026-11-07", status: "used", slip: "S-1" }), manualApproved: { by: "Junid", at: sast("2026-11-07T10:00:00") } };
   const notice = absa({ txn: "80AAAAAAA1-1", day: "2026-11-07", arrived: "2026-11-07T10:30:00" });
   assert.equal(approvedTwinSettleCheck({ poolKey: "n", record: notice, siblings: [["ap", approved]] }).code, "twin-used", "the notice printed the id the proof left blank");
+  // One document prints the transaction date, the other the processing date.
   const nextDay = absa({ txn: "80AAAAAAA1-2", day: "2026-11-08", arrived: "2026-11-08T10:30:00" });
-  assert.equal(approvedTwinSettleCheck({ poolKey: "d", record: nextDay, siblings: [["ap", approved]] }).ok, true);
+  assert.equal(approvedTwinSettleCheck({ poolKey: "d", record: nextDay, siblings: [["ap", approved]] }).code, "twin-used");
+  const twoDays = absa({ txn: "80AAAAAAA1-4", day: "2026-11-09", arrived: "2026-11-09T10:30:00" });
+  assert.equal(approvedTwinSettleCheck({ poolKey: "t", record: twoDays, siblings: [["ap", approved]] }).ok, true);
+  // The same payer formatted differently is the same payer (architect review).
+  const titled = absa({ txn: "80AAAAAAA1-5", day: "2026-11-07", payer: "A PAYER" });
+  assert.equal(approvedTwinSettleCheck({ poolKey: "f", record: titled, siblings: [["ap", approved]] }).code, "twin-used");
   const otherPayer = absa({ txn: "80AAAAAAA1-3", day: "2026-11-07", payer: "MRS B OTHER" });
   assert.equal(approvedTwinSettleCheck({ poolKey: "p", record: otherPayer, siblings: [["ap", approved]] }).ok, true);
+});
+
+// ─── ARCHITECT REVIEW (Sonnet) ───────────────────────────────────────────────
+test("a hand entry of money already approved from its proof is refused: MANUAL-… is not a bank id", () => {
+  const approved = { ...absa({ txn: "80AAAAAAA1-1", day: "2026-11-07", status: "used", slip: "S-1" }), reference: "SOCCER T SHIRT", manualApproved: { by: "Junid", at: sast("2026-11-07T10:00:00") } };
+  const typed = manual({ entryId: "ME-appr-0001", typed: "2026-11-07T11:00:00" });
+  const key = manualEntryKeyOf("ME-appr-0001");
+  assert.match(typed.bankRef, /^MANUAL-/);
+  assert.equal(approvedTwinSettleCheck({ poolKey: key, record: typed, siblings: [["ap", approved], [key, typed]] }).code, "twin-used");
+  // …but a hand entry for a payment two days later is not that approval's money.
+  const later = manual({ entryId: "ME-appr-0002", typed: "2026-11-09T11:00:00" });
+  assert.equal(approvedTwinSettleCheck({ poolKey: "l", record: later, siblings: [["ap", approved]] }).ok, true);
+});
+
+test("the same money typed at 23:55 and again at 00:05 is still a duplicate (12-hour rolling window)", () => {
+  const firstKey = manualEntryKeyOf("ME-midn-0001");
+  const first = manual({ entryId: "ME-midn-0001", typed: "2026-11-07T23:55:00" });
+  assert.equal(manualDuplicateOf({ reference: "SOCCER T SHIRT", amountCents: 87000, entryId: "ME-midn-0002", at: sast("2026-11-08T00:05:00") }, [[firstKey, first]])?.key, firstKey);
+  // The next day's payment, typed more than 12 hours later, is a new payment.
+  assert.equal(manualDuplicateOf({ reference: "SOCCER T SHIRT", amountCents: 87000, entryId: "ME-midn-0003", at: sast("2026-11-08T14:00:00") }, [[firstKey, first]]), null);
+});
+
+test("a notice with no bank date that lands after the entry is still its twin (pre-fix-8 records)", () => {
+  const typed = manual({ entryId: "ME-nots-0001", typed: "2026-11-07T10:00:00", status: "used", slip: "S-90" });
+  const undated = { ...absa({ txn: "80IIIIIII9-9", arrived: "2026-11-09T10:00:00" }), reference: "SOCCER T SHIRT", bankTs: null };
+  assert.equal(isPaymentTwin(undated, typed), true);
 });
