@@ -98,6 +98,14 @@ function linkedHoldOf(record, poolKey, siblings) {
       };
     }
   }
+  // HOLE 2: a numbered and a blank-number copy of one Absa payment.
+  for (const [key, o] of others) {
+    if (!isBlankNumberedPair(record, o)) continue;
+    return {
+      kind: "blank-numbered-twin", duplicateOf: key,
+      reason: "Another copy of this Absa payment is already in the pool — same payer, account, day, amount and reference, one copy printing the transaction number and the other leaving it blank. HELD so the money is not floated twice. If the statement shows a genuine SECOND payment, release it.",
+    };
+  }
   return null;
 }
 
@@ -119,7 +127,7 @@ function linkedCopySettleCheck({ poolKey, record, siblings }) {
   for (const [key, o] of siblings ?? []) {
     if (key === poolKey || !isLivePayment(o) || o.status !== "used") continue;
     const manualTwin = bankTransactionIdOf(record) && isManualEntry(o) && isPaymentTwin(record, o);
-    if (!manualTwin) continue;
+    if (!manualTwin && !isBlankNumberedPair(record, o)) continue;
     const slip = o.used?.sale?.receiptNumber ? ` on slip ${o.used.sale.receiptNumber}` : "";
     return {
       ok: false, code: "twin-used", side: manualTwin ? "manual-twin-used" : "blank-numbered-twin-used",

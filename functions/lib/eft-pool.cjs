@@ -187,7 +187,7 @@ function manualTwinOf(record, payments) {
   // entry it is the notice of, or its blank-number Absa twin) was used —
   // eft-linked-copies.cjs. Never on reference + amount alone, and never once
   // the owner released it from a hold.
-  if (bankTransactionIdOf(record)) {
+  if (bankTransactionIdOf(record) || isBlankNumberedCandidate(record)) {
     const keyOf = payments?.find?.(([, r]) => r === record)?.[0] ?? null;
     const check = linkedCopySettleCheck({ poolKey: keyOf, record, siblings: (payments ?? []).filter(([, r]) => r !== record) });
     if (check.ok) return null;
