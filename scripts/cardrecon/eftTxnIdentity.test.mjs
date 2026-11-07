@@ -284,8 +284,9 @@ describe("a later-dated payment is accepted only when its notice arrives on a no
     expect(decide(nonImmediate({ day: "2026-12-28" }), { received: sast("2026-12-25T10:00:00") }).record.outcome).toBe("recorded");
   });
 
-  it("an ordinary Friday does not open the window; a Friday before a Saturday holiday does (holiday-eve rule)", () => {
-    expect(settlementDateVerdict(sast("2026-11-09T00:00:00"), sast("2026-11-06T17:00:00")).ok).toBe(false);
+  it("a Friday opens the window up to Monday (not Tuesday); so does a Friday before a Saturday holiday", () => {
+    expect(settlementDateVerdict(sast("2026-11-09T00:00:00"), sast("2026-11-06T17:00:00")).ok).toBe(true);
+    expect(settlementDateVerdict(sast("2026-11-10T00:00:00"), sast("2026-11-06T17:00:00")).ok).toBe(false);
     // Fri 24 Dec 2027: Christmas Sat, Goodwill Sun → Mon 27 a holiday; next business day Tue 28.
     expect(settlementDateVerdict(sast("2027-12-28T00:00:00"), sast("2027-12-24T17:00:00")).ok).toBe(true);
     expect(settlementDateVerdict(sast("2027-12-29T00:00:00"), sast("2027-12-24T17:00:00")).ok).toBe(false);

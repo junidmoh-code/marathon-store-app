@@ -97,11 +97,11 @@ describe("a Saturday notice dated the following Monday CONFIRMS", () => {
     expect(record).toMatchObject({ outcome: "recorded", status: "unmatched", amountCents: 245000 });
   });
 
-  it("a Sunday notice dated Monday confirms too; a FRIDAY notice dated Monday is refused (Friday is a business day)", () => {
+  it("a Sunday notice and a FRIDAY notice dated Monday confirm too (Fridays allowed, 7 Nov 2026 evening)", () => {
     expect(decide(nedbank(), { received: sast("2026-11-08T10:00:00") }).record.outcome).toBe("recorded");
-    const friday = decide(toConcrete(), { received: sast("2026-11-06T18:00:00") }).record;
-    expect(friday.outcome).toBe("refused-not-immediate");
-    expect(friday.reason).toMatch(/^Payment dated 2026-11-09 — a later day than 2026-11-06, a business day: a scheduled payment/);
+    expect(decide(toConcrete(), { received: sast("2026-11-06T18:00:00") }).record.outcome).toBe("recorded");
+    // …but a Friday notice dated Tuesday is beyond the next business day.
+    expect(decide(toConcrete({ date: "10/11/2026" }), { received: sast("2026-11-06T18:00:00") }).record.reason).toMatch(/beyond the next business day/);
   });
 });
 
