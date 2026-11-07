@@ -165,3 +165,22 @@ describe("everything else is unchanged", () => {
     expect(copy.status).toBeUndefined();
   });
 });
+
+// ─── SONNET ARCHITECT REVIEW OF #866 ─────────────────────────────────────────
+describe("the window is for a later DATE; a same-day later TIME is still scheduled", () => {
+  it("a timestamped payment dated hours after its notice the SAME day refuses", () => {
+    const parsed = { ok: true, bankTs: SATURDAY + 4 * 60 * 60 * 1000, destBankName: "FIRST NATIONAL BANK", immediate: true, paymentType: "Immediate Payment" };
+    const v = immediacyVerdict({ parsed, reader: "capitec", receivedAt: SATURDAY });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/scheduled for later today/);
+    // Inside the 15-minute clock tolerance it passes, as before.
+    expect(immediacyVerdict({ parsed: { ...parsed, bankTs: SATURDAY + 5 * 60 * 1000 }, reader: "capitec", receivedAt: SATURDAY }).ok).toBe(true);
+  });
+
+  it("documented as Junid asked: a WEEKDAY notice dated the next business day is accepted too (Tuesday → Wednesday)", () => {
+    const tuesday = sast("2026-11-10T10:00:00");
+    expect(decide(nedbank({ date: "11/11/2026" }), { received: tuesday }).record.outcome).toBe("recorded");
+    expect(decide(toConcrete({ date: "11/11/2026" }), { received: tuesday }).record.outcome).toBe("recorded");
+    expect(decide(nedbank({ date: "12/11/2026" }), { received: tuesday }).record.reason).toMatch(/^Payment dated 2026-11-12 — beyond the next business day/);
+  });
+});
