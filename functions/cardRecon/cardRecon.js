@@ -2357,8 +2357,11 @@ async function handleSlip(db, request, deps = {}) {
   const data = request.data || {};
   const picked = normaliseTid(data.pickedTid);
   if (!picked) throw new HttpsError("invalid-argument", "This account's till could not be found. Ask Junid.");
-  if (!Array.isArray(data.photos) || data.photos.length < 1 || data.photos.length > SB_SLIP_MAX_PHOTOS) {
+  if (!Array.isArray(data.photos) || data.photos.length < 1) {
     throw new HttpsError("invalid-argument", "Take one photo of the slip.");
+  }
+  if (data.photos.length > SB_SLIP_MAX_PHOTOS) {
+    throw new HttpsError("invalid-argument", `At most ${SB_SLIP_MAX_PHOTOS} photos of the report can be sent — shoot the roll in fewer, wider frames.`);
   }
   // One registry row, never the registry.
   const terminal = (await db.ref(`${CARD_TERMINALS_PATH}/${picked}`).once("value")).val();
