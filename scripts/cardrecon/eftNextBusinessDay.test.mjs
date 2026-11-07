@@ -97,9 +97,11 @@ describe("a Saturday notice dated the following Monday CONFIRMS", () => {
     expect(record).toMatchObject({ outcome: "recorded", status: "unmatched", amountCents: 245000 });
   });
 
-  it("a Sunday notice and a Friday notice dated Monday confirm too", () => {
+  it("a Sunday notice dated Monday confirms too; a FRIDAY notice dated Monday is refused (Friday is a business day)", () => {
     expect(decide(nedbank(), { received: sast("2026-11-08T10:00:00") }).record.outcome).toBe("recorded");
-    expect(decide(toConcrete(), { received: sast("2026-11-06T18:00:00") }).record.outcome).toBe("recorded");
+    const friday = decide(toConcrete(), { received: sast("2026-11-06T18:00:00") }).record;
+    expect(friday.outcome).toBe("refused-not-immediate");
+    expect(friday.reason).toMatch(/^Payment dated 2026-11-09 — a later day than 2026-11-06, a business day: a scheduled payment/);
   });
 });
 
@@ -183,10 +185,15 @@ describe("the window is for a later DATE; a same-day later TIME is still schedul
     expect(immediacyVerdict({ parsed: { ...parsed, bankTs: SATURDAY + 5 * 60 * 1000 }, reader: "capitec", receivedAt: SATURDAY }).ok).toBe(true);
   });
 
-  it("documented as Junid asked: a WEEKDAY notice dated the next business day is accepted too (Tuesday → Wednesday)", () => {
+  it("narrowed (Junid, 7 Nov 2026): a WEEKDAY notice dated tomorrow is REFUSED as scheduled (Tuesday → Wednesday)", () => {
     const tuesday = sast("2026-11-10T10:00:00");
-    expect(decide(nedbank({ date: "11/11/2026" }), { received: tuesday }).record.outcome).toBe("recorded");
-    expect(decide(toConcrete({ date: "11/11/2026" }), { received: tuesday }).record.outcome).toBe("recorded");
-    expect(decide(nedbank({ date: "12/11/2026" }), { received: tuesday }).record.reason).toMatch(/^Payment dated 2026-11-12 — beyond the next business day/);
+    for (const lines of [nedbank({ date: "11/11/2026" }), toConcrete({ date: "11/11/2026" }), nedbank({ date: "12/11/2026" })]) {
+      const r = decide(lines, { received: tuesday }).record;
+      expect(r.outcome).toBe("refused-not-immediate");
+      expect(r.reason).toMatch(/a later day than 2026-11-10, a business day: a scheduled payment, not treated as settled/);
+    }
+    // Same day and earlier are still accepted on a weekday.
+    expect(decide(nedbank({ date: "10/11/2026" }), { received: tuesday }).record.outcome).toBe("recorded");
+    expect(decide(nedbank({ date: "09/11/2026" }), { received: tuesday }).record.outcome).toBe("recorded");
   });
 });

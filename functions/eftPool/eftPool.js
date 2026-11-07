@@ -80,7 +80,9 @@
 //                   reaches it); the pool record, the log and Junid's review
 //                   carry the provenance. Idempotent per
 //                   entryId; a second entry of the same reference and amount
-//                   is refused.
+//                   is accepted with a WARNING (7 Nov 2026), and the exact
+//                   same entry within seconds is a double tap, answered with
+//                   the first record.
 //   eftPoolReverse  owner-only: unwind a completed settlement. Both records
 //                   survive — the settlement moves to `reversals` on the pool
 //                   record; the sale at /pos/sales is not touched. An issued
@@ -139,7 +141,8 @@ const {
 } = require("../lib/eft-enforce.cjs");
 const {
   MANUAL_ENTRY_BY, MANUAL_LOG_PATH, MANUAL_LIST_LIMIT,
-  manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
+  manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf, manualDoubleSubmitOf,
+  MANUAL_SUBMIT_LOCK_PATH, manualSubmitLockKeyOf, manualSubmitLockStep,
   bankTwinOfEntry, manualTwinSettleCheck,
   manualLogKeyOf, manualLogRecord, manualLogEventPatch, manualLogView,
 } = require("../lib/eft-manual.cjs");
@@ -309,9 +312,15 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
     console.warn(`eftPoolSettle: ${check.code} on ${key} — refused before settle`);
     throw refusalToError(check);
   }
-  // A bank record whose MANUAL twin (Junid's hand entry of the same money)
-  // was already spent: a different fingerprint, the same payment. Refused.
+  // A MANUAL ENTRY whose bank twin (the bank's notification of the same
+  // money) was already spent: a different fingerprint, the same payment.
+  // Refused. A bank record with its own transaction number is judged on that
+  // number alone (7 Nov 2026) — a used hand entry with its reference and
+  // amount is only logged, for Junid's review.
   const twin = manualTwinSettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
+  if (twin.ok && twin.txnOverManualTwin) {
+    console.warn(`EFT_TXN_OVER_MANUAL_TWIN: ${key} (own bank transaction number) settles although used manual entry ${twin.txnOverManualTwin} shares its reference and amount — judged on its transaction number`);
+  }
   if (!twin.ok) {
     console.warn(`eftPoolSettle: ${twin.side} on ${key} — refused before settle`);
     throw refusalToError(twin);
@@ -946,20 +955,54 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
     }
     throw new HttpsError("already-exists", "That entry id is taken by another record — reload and try again.", { code: "key-taken" });
   }
-  // The SAME money typed twice would be two spendable records: refused when
-  // the earlier entry was typed the same SAST day (used or waiting). An
-  // earlier day's entry with the same reference and amount is a repeat
-  // customer's next payment, not this one — no renaming to "… 2".
+  // The bank's own notification of this money already waiting: use it (a
+  // genuine double-pay guard, kept). A SIMILAR hand entry (same reference and
+  // amount, typed today) is only a WARNING since 7 Nov 2026 (Junid): each
+  // hand entry is its own record — no renaming to "… 2". The exact same
+  // entry seconds later is an accidental double tap: answered with the first.
   const tail = await readPoolTail();
   const bankTwin = bankTwinOfEntry({ ...input, at: now }, Object.entries(tail));
   if (bankTwin) {
     throw new HttpsError("failed-precondition", `The bank's own notification for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} is already in the pool, unused — the cashier can use that one. No manual entry is needed.`, { code: "bank-twin-waiting", key: bankTwin.key });
   }
-  const dup = manualDuplicateOf({ ...input, at: now }, Object.entries(tail));
-  if (dup) {
-    const state = dup.record.status === "used" ? "has already been used" : "is already in the pool, waiting";
-    throw new HttpsError("failed-precondition", `A manual entry for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} ${state}. If this is a second, separate payment made today, give it a different reference.`, { code: "already-entered", key: dup.key });
+  let doubleTap = manualDoubleSubmitOf({ ...input, at: now }, Object.entries(tail));
+  if (!doubleTap) {
+    // Two taps in flight at once: the tail cannot show a record not yet
+    // written, so the exact entry takes a short create-only lock too.
+    let lock = null;
+    await db.ref(`${MANUAL_SUBMIT_LOCK_PATH}/${manualSubmitLockKeyOf(input)}`).transaction(manualSubmitLockStep(key, now, (d) => { lock = d; }));
+    let first = null;
+    if (lock?.holder && lock.holder !== key) {
+      // The holder may still be WRITING its record (CodeRabbit): wait a
+      // moment for it. Still absent — in progress, or a write that failed —
+      // this tap is refused, never written beside it; the lock expires in
+      // MANUAL_DOUBLE_SUBMIT_MS, so a retry after that writes normally.
+      for (let i = 0; i < 6 && !isManualEntry(first); i++) {
+        if (i) await new Promise((r) => setTimeout(r, 500));
+        first = (await db.ref(`${EFT_POOL_PATH}/${lock.holder}`).once("value")).val();
+      }
+      if (!isManualEntry(first)) {
+        console.warn(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} refused — ${lock.holder} holds the submit lock with no record yet`);
+        throw new HttpsError("aborted", "The same entry is being put in the pool right now. Check the entries list, and try again in a few seconds if it is not there.", { code: "submit-in-progress", key: lock.holder });
+      }
+    }
+    if (isManualEntry(first)) {
+      console.log(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} answered with ${lock.holder} (submit lock)`);
+      return { ok: true, already: true, doubleSubmit: true, key: lock.holder, reference: first.reference, amountCents: first.amountCents, at: first.manualEntry.at, by: MANUAL_ENTRY_BY, status: first.status };
+    }
   }
+  if (doubleTap) {
+    const first = doubleTap.record;
+    console.log(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} answered with ${doubleTap.key} (the same entry ${now - first.manualEntry.at}ms earlier)`);
+    return { ok: true, already: true, doubleSubmit: true, key: doubleTap.key, reference: first.reference, amountCents: first.amountCents, at: first.manualEntry.at, by: MANUAL_ENTRY_BY, status: first.status };
+  }
+  const similar = manualDuplicateOf({ ...input, at: now }, Object.entries(tail));
+  const warning = similar ? {
+    code: "similar-entry",
+    key: similar.key,
+    status: similar.record.status ?? null,
+    message: `A manual entry for ${input.reference} of R${(input.amountCents / 100).toFixed(2)} was already made today (${similar.record.status === "used" ? "used" : "waiting in the pool"}). This one was put in the pool as a SEPARATE payment — each can be used once.`,
+  } : null;
 
   const record = manualEntryRecord({ ...input, key, actor, at: now });
   // The fingerprint claim FIRST, create-only — the same order the poller
@@ -985,8 +1028,8 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
     const winner = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
     if (winner?.manualEntry?.at !== now) await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(now, key)}`).remove();
   }
-  console.log(`EFT_MANUAL_ENTRY: ${key} ${input.reference} ${input.amountCents}c by ${MANUAL_ENTRY_BY} (${actor.uid})${input.note ? ` — ${input.note}` : ""}${already ? " [already]" : ""}`);
-  return { ok: true, already, key, reference: input.reference, amountCents: input.amountCents, at: now, by: MANUAL_ENTRY_BY, status: "unmatched" };
+  console.log(`EFT_MANUAL_ENTRY: ${key} ${input.reference} ${input.amountCents}c by ${MANUAL_ENTRY_BY} (${actor.uid})${input.note ? ` — ${input.note}` : ""}${already ? " [already]" : ""}${warning ? ` [similar to ${warning.key}]` : ""}`);
+  return { ok: true, already, key, reference: input.reference, amountCents: input.amountCents, at: now, by: MANUAL_ENTRY_BY, status: "unmatched", ...(warning && !already ? { warning } : {}) };
 });
 
 // ─── MANUAL APPROVAL FROM A PROOF OF PAYMENT — Junid alone ──────────────────

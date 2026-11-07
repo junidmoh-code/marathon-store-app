@@ -33,10 +33,16 @@ case:
 The key is `sha256("eftmanual1|" + entryId)[0:40]`: a retried submit lands on
 the same key (create-if-absent → `already: true`). Refused at entry:
 
-* the same normalised reference **and** amount already entered by hand while
-  that entry is in the pool tail (`already-entered`);
 * the **bank's own unmatched notification** for that reference and amount
   already in the tail (`bank-twin-waiting`) — the cashier uses that one.
+
+**Same reference, warned not blocked (Junid, 7 Nov 2026).** A second hand
+entry with the same normalised reference and amount typed the same SAST day
+(or within 12 hours) is ACCEPTED as its own record, and the answer carries
+`warning: { code: "similar-entry", key, status, message }` — no renaming to
+"… 2". Only the EXACT same entry (reference, amount and note) under another
+entryId within 10 seconds is an accidental double tap: it is answered with the
+first record (`already: true, doubleSubmit: true`) and nothing new is written.
 
 The fingerprint is claimed create-only at entry, in the poller's order.
 
@@ -48,7 +54,7 @@ payment. Three rules do:
 
 | situation | what happens |
 |---|---|
-| manual entry **used**, bank twin arrives | the search warns on the row (`sameUsed`); the **settle refuses** the bank record (`twin-used`; the log line says `manual-twin-used`). Junid reverses the manual entry if the customer really paid twice. |
+| manual entry **used**, bank twin arrives | since 7 Nov 2026 (Junid) a bank record carrying its **own transaction number** is judged on that number alone: no `sameUsed` warning, no refusal — the settle logs `EFT_TXN_OVER_MANUAL_TWIN` for Junid's review. When Junid hand-settles a REFUSED notice, `claim-settled-bank-fingerprint.mjs` / `claim-settled-reread-fingerprint.mjs` marks its number spent, so a resend is held. (A bank record with NO number still gets the warning and the refusal.) |
 | manual entry **waiting**, bank twin arrives | the search answers with the **bank** record (not "ambiguous"); no warning — the manual one stays unused and is refused once the bank's is spent. Junid reverses it or marks it used. |
 | bank record already waiting when Junid types | refused at entry (`bank-twin-waiting`). |
 | bank twin arrives and is **used** while the manual entry still waits | the search warns on the manual row (`sameUsed`); the **settle refuses** the manual entry (`twin-used`; the log line says `bank-twin-used`). Junid marks it used or reverses the bank settlement. |
@@ -61,8 +67,8 @@ end date, let one used entry block every later payment a repeat customer made
 under the same reference and amount). A payment the bank dates after the
 entry was typed is a new payment. `bank-twin-waiting` looks at unused bank
 payments dated from 7 days back to tomorrow; a second manual entry is
-`already-entered` only when typed the same SAST day or within 12 hours of the
-first.
+`similar-entry` (a warning) only when typed the same SAST day or within 12
+hours of the first.
 
 Limit: all three look at the pool tail (the newest 400), as every settle-time
 check does.
@@ -125,3 +131,18 @@ the button can be retired.
 ```
 firebase deploy --only functions:eftPoolManualEntry,functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse --project=marathon-club
 ```
+
+## Later-dated payments: weekends and public holidays only (7 Nov 2026)
+
+A payment the bank dates a LATER day than the day it is judged on (the
+notice's arrival; the server's clock for a keyed proof) is accepted only when
+that day is not a business day — Saturday, Sunday or a South African public
+holiday (`functions/lib/eft-text.cjs`, local calendar: the Act's fixed days,
+Good Friday, Family Day, the Sunday→next-free-day rule, and
+`SA_DECLARED_HOLIDAYS` for declared days such as 2026-11-04) — or the EVE of a
+public holiday, and then only up to the next business day. The eve rule is
+what makes Junid's example work: Thu 24 Dec 2026 dated Mon 28 Dec is
+accepted. It is deliberately asymmetric: an ordinary Friday is a business day
+whose next day is not a holiday, so a Friday payment dated Monday refuses; a
+Friday before a Saturday holiday (24 Dec 2027) opens the window. A newly
+declared one-off holiday must be added to `SA_DECLARED_HOLIDAYS` by hand.

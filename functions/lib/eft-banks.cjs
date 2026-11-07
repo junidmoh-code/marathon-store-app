@@ -564,6 +564,27 @@ const capitec = {
 // is printed space-grouped above a thousand ("1 600.00", "1 000.00" — real
 // 24 and 28 Oct notices), which parseRandsToCents reads exactly; the payment
 // date is a day only, no time of day, and there is no running balance.
+// THE PAYER'S OWN COPY (7 Nov 2026, the real R3950 of MRS CJ DELPAUL, txn
+// 80856A…, ibreply@absa.co.za, DKIM pass). Absa also sends the PAYER's
+// "Notice of Payment" — the one a payer has Absa e-mail to the shop. Same
+// labels, same values, two differences, verbatim (digits sanitised):
+//
+//   Dear MRS A PAYER                         ← the payer (no "Payment made by:")
+//   Subject: Notice Of Payment: SHOP NAME
+//   Please be advised that you made a payment to SHOP NAME as indicated below.
+//   Transaction number: 80000000A0-34
+//   Payment date:
+//   2026-11-07
+//   Payment made from: Ultimate Plus         ← the payer's account product
+//   Payment made to:
+//   SHOP NAME
+//   Beneficiary bank name: FIRSTRAND …
+//
+// It is read by the same reader: the destination account is still checked
+// digit for digit, the transaction number is still the identity, and the
+// payer is the "Dear …" line — read ONLY in this variant (the beneficiary's
+// copy greets the SHOP there).
+const ABSA_PAYER_COPY = /^Please be advised that you made a payment to .+ as indicated below\.?$/i;
 const ABSA_LABELISH = /.+:\s*$|.+:\s.+/;
 function absaLabelValue(lines, re, what) {
   const hits = [];
@@ -593,7 +614,7 @@ const absa = {
   detect(lines) {
     const has = (re) => lines.some((l) => re.test(l));
     return has(/^Notice of Payment$/i)
-      && has(/made a payment to your account/i)
+      && (has(/made a payment to your account/i) || has(ABSA_PAYER_COPY))
       && has(/^For the amount of:/i);
   },
   parse(lines) {
@@ -630,7 +651,16 @@ const absa = {
     if (!bankRef.ok) return { ok: false, reason: `Absa notification: ${bankRef.why}.` };
     const beneficiaryName = take(/^Payment made to:\s*(.*)$/i, "Payment made to");
     const destBankName = take(/^Beneficiary bank name:\s*(.*)$/i, "Beneficiary bank name");
-    const payer = take(/^Payment made by:\s*(.*)$/i, "Payment made by");
+    let payer = take(/^Payment made by:\s*(.*)$/i, "Payment made by");
+    // The payer's own copy names no "Payment made by:" — the payer is the
+    // addressee. Only when the document says it is that copy, and only when
+    // exactly one greeting line is printed.
+    if (payer.ok && !payer.value && lines.some((l) => ABSA_PAYER_COPY.test(l))) {
+      // A generic greeting names nobody (architect review): never a payer.
+      const greetings = lines.map((l) => /^Dear\s+(.{2,120})$/i.exec(l.trim())?.[1]?.trim())
+        .filter((g) => g && !/^(customer|client|sir|madam|sir\/madam|valued customer)\b/i.test(g));
+      payer = { ok: true, value: new Set(greetings).size === 1 ? greetings[0] : null };
+    }
 
     // "Payment date:" then "2026-09-01" — a shape parseBankTimestamp already
     // knows. The parse still succeeds if it will not read, but since fix 8

@@ -13,7 +13,10 @@
 //   · an Absa pair with no transaction id that differ only by day are two
 //     payments;
 //   · a manual entry's twin is the same day's payment — the anti-reuse block
-//     between a hand entry and the bank's notice of the SAME money stays.
+//     between a hand entry and the bank's notice of the SAME money stays on
+//     the HAND ENTRY (it has no number); since 7 Nov 2026 (Junid) a bank
+//     payment carrying its own transaction number is never refused by it —
+//     its number decides, and the settle only logs the shared reference.
 // Names, ids and numbers are stand-ins (public repo).
 "use strict";
 
@@ -133,15 +136,16 @@ test("a no-txn-id Absa pair differing only by day are two payments, both usable;
 });
 
 // ─── THE ANTI-REUSE BLOCK BETWEEN A HAND ENTRY AND ITS OWN BANK NOTICE STAYS ─
-test("a manual entry and the bank notice of the SAME money (same day) are still one payment, paid out once", () => {
+test("a manual entry and the bank notice of the SAME money (same day): the hand entry is refused once the notice is used; the txn'd notice is judged on its number", () => {
   const mKey = manualEntryKeyOf("ME-same-0001");
   // Junid types it at 10:00; the bank's notice lands at 10:20 the same day.
   const typed = manual({ entryId: "ME-same-0001", typed: "2026-11-07T10:00:00", reference: "Soccer T shirt", status: "used", slip: "S-77" });
   const notice = absa({ txn: "80CCCCCCC3-3", arrived: "2026-11-07T10:20:00" });
   const t = manualTwinSettleCheck({ poolKey: "n", record: notice, siblings: [[mKey, typed], ["n", notice]] });
-  assert.equal(t.ok, false);
-  assert.equal(t.code, "twin-used");
-  assert.match(t.message, /slip S-77/);
+  // Junid, 7 Nov 2026: a payment with its own transaction number is never
+  // refused on reference + amount. The shared reference is reported for the log.
+  assert.equal(t.ok, true);
+  assert.equal(t.txnOverManualTwin, mKey);
   // The reverse: the notice was used, the hand entry cannot be.
   const noticeUsed = { ...notice, status: "used", used: { at: 1, sale: { receiptNumber: "S-78" } } };
   const typedWaiting = manual({ entryId: "ME-same-0001", typed: "2026-11-07T10:00:00", reference: "Soccer T shirt" });
@@ -164,9 +168,14 @@ test("a Saturday payment typed by hand on Monday and its notice landing Tuesday 
   const mKey = manualEntryKeyOf("ME-wknd-0001");
   const typed = manual({ entryId: "ME-wknd-0001", typed: "2026-11-09T09:00:00", reference: "Soccer T shirt", status: "used", slip: "S-95" });
   const notice = absa({ txn: "80LLLLLLL2-2", day: "2026-11-07", arrived: "2026-11-10T10:00:00" });
+  // Still ONE payment by the window (the hand entry would be refused if the
+  // notice were spent first) — but the notice carries its own transaction
+  // number, so it is neither refused nor warned about (Junid, 7 Nov 2026).
+  assert.equal(isPaymentTwin(notice, typed), true);
   const t = manualTwinSettleCheck({ poolKey: "n", record: notice, siblings: [[mKey, typed], ["n", notice]] });
-  assert.equal(t.code, "twin-used");
-  assert.equal(searchEftPool({ [mKey]: typed, n: notice }, "soccer t shirt").results.find((r) => r.key === "n").sameUsed.receiptNumber, "S-95");
+  assert.equal(t.ok, true);
+  assert.equal(t.txnOverManualTwin, mKey);
+  assert.equal(searchEftPool({ [mKey]: typed, n: notice }, "soccer t shirt").results.find((r) => r.key === "n").sameUsed, undefined);
 });
 
 test("a repeat customer's next-day payment is NOT blocked by yesterday's hand entry", () => {
@@ -180,7 +189,7 @@ test("Friday's unused notice still redirects a Monday hand entry of the same mon
   assert.equal(bankTwinOfEntry({ reference: "SOCCER T SHIRT", amountCents: 87000, at: sast("2026-11-09T09:00:00") }, [["f", friday]])?.key, "f");
 });
 
-test("the same money typed twice the SAME day is still refused; the bank's notice already waiting today still redirects", () => {
+test("the same reference + amount typed twice the SAME day is still FOUND (a warning since 7 Nov 2026); the bank's notice already waiting today still redirects", () => {
   const firstKey = manualEntryKeyOf("ME-twice-001");
   const first = manual({ entryId: "ME-twice-001", typed: "2026-11-07T10:00:00" });
   const again = manualDuplicateOf({ reference: "soccer t-shirt", amountCents: 87000, entryId: "ME-twice-002", at: sast("2026-11-07T16:00:00") }, [[firstKey, first]]);
@@ -202,20 +211,21 @@ test("an approved proof blocks only its OWN payment: same txn id refused, a diff
   assert.equal(approvedTwinSettleCheck({ poolKey: "y", record: otherTxn, siblings: [["ap", approved], ["y", otherTxn]] }).ok, true);
 });
 
-test("an approved proof with no txn id matches on the full identity: day (−1..+3) + payer + account; further apart or another payer is another payment", () => {
+test("an approved proof with no txn id matches a record with NO number on the full identity: day (−1..+3) + payer + account; a txn'd notice is judged on its number", () => {
   const approved = { ...absa({ txn: null, day: "2026-11-07", status: "used", slip: "S-1" }), manualApproved: { by: "Junid", at: sast("2026-11-07T10:00:00") } };
+  // Junid, 7 Nov 2026: a notice carrying its own transaction number is never
+  // refused because a number-less approval shares its reference and amount.
   const notice = absa({ txn: "80AAAAAAA1-1", day: "2026-11-07", arrived: "2026-11-07T10:30:00" });
-  assert.equal(approvedTwinSettleCheck({ poolKey: "n", record: notice, siblings: [["ap", approved]] }).code, "twin-used", "the notice printed the id the proof left blank");
+  assert.equal(approvedTwinSettleCheck({ poolKey: "n", record: notice, siblings: [["ap", approved]] }).ok, true);
+  // A record with no number (a synthetic Absa identity) still meets the identity rule.
+  const synth = (o) => ({ ...absa({ txn: null, ...o }), syntheticRef: "ABSA|MRAPAYER|6625|X|87000|SOCCERTSHIRT" });
+  assert.equal(approvedTwinSettleCheck({ poolKey: "s", record: synth({ day: "2026-11-07" }), siblings: [["ap", approved]] }).code, "twin-used");
   // One document prints the transaction date, the other the processing date.
-  const nextDay = absa({ txn: "80AAAAAAA1-2", day: "2026-11-08", arrived: "2026-11-08T10:30:00" });
-  assert.equal(approvedTwinSettleCheck({ poolKey: "d", record: nextDay, siblings: [["ap", approved]] }).code, "twin-used");
-  const twoDays = absa({ txn: "80AAAAAAA1-4", day: "2026-11-11", arrived: "2026-11-11T10:30:00" });
-  assert.equal(approvedTwinSettleCheck({ poolKey: "t", record: twoDays, siblings: [["ap", approved]] }).ok, true);
+  assert.equal(approvedTwinSettleCheck({ poolKey: "d", record: synth({ day: "2026-11-08" }), siblings: [["ap", approved]] }).code, "twin-used");
+  assert.equal(approvedTwinSettleCheck({ poolKey: "t", record: synth({ day: "2026-11-11" }), siblings: [["ap", approved]] }).ok, true);
   // The same payer formatted differently is the same payer (architect review).
-  const titled = absa({ txn: "80AAAAAAA1-5", day: "2026-11-07", payer: "A PAYER" });
-  assert.equal(approvedTwinSettleCheck({ poolKey: "f", record: titled, siblings: [["ap", approved]] }).code, "twin-used");
-  const otherPayer = absa({ txn: "80AAAAAAA1-3", day: "2026-11-07", payer: "MRS B OTHER" });
-  assert.equal(approvedTwinSettleCheck({ poolKey: "p", record: otherPayer, siblings: [["ap", approved]] }).ok, true);
+  assert.equal(approvedTwinSettleCheck({ poolKey: "f", record: synth({ day: "2026-11-07", payer: "A PAYER" }), siblings: [["ap", approved]] }).code, "twin-used");
+  assert.equal(approvedTwinSettleCheck({ poolKey: "p", record: synth({ day: "2026-11-07", payer: "MRS B OTHER" }), siblings: [["ap", approved]] }).ok, true);
 });
 
 // ─── ARCHITECT REVIEW (Sonnet) ───────────────────────────────────────────────
@@ -230,7 +240,7 @@ test("a hand entry of money already approved from its proof is refused: MANUAL-�
   assert.equal(approvedTwinSettleCheck({ poolKey: "l", record: later, siblings: [["ap", approved]] }).ok, true);
 });
 
-test("the same money typed at 23:55 and again at 00:05 is still a duplicate (12-hour rolling window)", () => {
+test("the same reference + amount typed at 23:55 and again at 00:05 is still found as similar (12-hour rolling window)", () => {
   const firstKey = manualEntryKeyOf("ME-midn-0001");
   const first = manual({ entryId: "ME-midn-0001", typed: "2026-11-07T23:55:00" });
   assert.equal(manualDuplicateOf({ reference: "SOCCER T SHIRT", amountCents: 87000, entryId: "ME-midn-0002", at: sast("2026-11-08T00:05:00") }, [[firstKey, first]])?.key, firstKey);
@@ -254,15 +264,13 @@ test("the bank-clock tolerance ends at one hour after the typing", () => {
   assert.equal(isPaymentTwin(at(60 * 60 * 1000 + 1), typed), false);
 });
 
-test("an approved proof and a notice from DIFFERENT readers with different ids fall back to the identity", () => {
+test("an approved proof and a notice from DIFFERENT readers with different ids are two payments (the number decides)", () => {
   const approved = { ...absa({ txn: "PROOF-0001", day: "2026-11-07", status: "used", slip: "S-1" }), reader: "capitec", manualApproved: { by: "Junid", at: sast("2026-11-07T10:00:00") } };
   const notice = absa({ txn: "80KKKKKKK1-1", day: "2026-11-07" });
-  assert.equal(approvedTwinSettleCheck({ poolKey: "n", record: notice, siblings: [["ap", approved]] }).code, "twin-used");
-  // A Monday clearing date for a Friday proof (weekend) is the same money; five days later is not.
-  const monday = absa({ txn: "80KKKKKKK1-2", day: "2026-11-10" });
-  assert.equal(approvedTwinSettleCheck({ poolKey: "m", record: monday, siblings: [["ap", approved]] }).code, "twin-used");
-  const later = absa({ txn: "80KKKKKKK1-3", day: "2026-11-12" });
-  assert.equal(approvedTwinSettleCheck({ poolKey: "l", record: later, siblings: [["ap", approved]] }).ok, true);
+  assert.equal(approvedTwinSettleCheck({ poolKey: "n", record: notice, siblings: [["ap", approved]] }).ok, true);
+  // The SAME number from another reader is still the same money.
+  const same = { ...absa({ txn: "proof 0001", day: "2026-11-07" }) };
+  assert.equal(approvedTwinSettleCheck({ poolKey: "s", record: same, siblings: [["ap", approved]] }).code, "twin-used");
 });
 
 // ─── NEXT-BUSINESS-DAY SETTLEMENT (Fable review of #866) ─────────────────────
@@ -272,7 +280,13 @@ test("a Saturday hand entry and the bank's Saturday notice dated MONDAY are one 
   const typed = manual({ entryId: "ME-nbd-00001", typed: "2026-11-07T14:43:00", reference: "Soccer T shirt", status: "used", slip: "S-97" });
   const notice = absa({ txn: "80PPPPPPP1-1", day: "2026-11-09", arrived: "2026-11-07T14:22:00" });
   assert.equal(isPaymentTwin(notice, typed), true);
-  assert.equal(manualTwinSettleCheck({ poolKey: "n", record: notice, siblings: [[mKey, typed], ["n", notice]] }).code, "twin-used");
+  // The notice has its own transaction number: never refused on the shared
+  // reference (7 Nov 2026) — logged. The hand entry is the one refused when
+  // the notice is spent first:
+  assert.equal(manualTwinSettleCheck({ poolKey: "n", record: notice, siblings: [[mKey, typed], ["n", notice]] }).ok, true);
+  const typedWaiting = { ...typed, status: "unmatched" };
+  const noticeUsed = { ...notice, status: "used", used: { at: 1, sale: { receiptNumber: "S-99" } } };
+  assert.equal(manualTwinSettleCheck({ poolKey: mKey, record: typedWaiting, siblings: [["n", noticeUsed]] }).code, "twin-used");
   // …and if the notice was already waiting, the hand entry is redirected to it.
   const waiting = { ...notice, status: "unmatched" };
   assert.equal(bankTwinOfEntry({ reference: "SOCCER T SHIRT", amountCents: 87000, at: sast("2026-11-07T14:43:00") }, [["w", waiting]])?.key, "w");

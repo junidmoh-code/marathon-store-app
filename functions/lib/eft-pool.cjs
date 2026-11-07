@@ -76,7 +76,7 @@
 
 "use strict";
 
-const { paymentFingerprint } = require("./eft-fingerprint.cjs");
+const { paymentFingerprint, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
 const { isManualEntry, isPaymentTwin } = require("./eft-manual.cjs");
 
 const EFT_POOL_PATH = "eft_pool";
@@ -179,6 +179,9 @@ function publicEftView(key, record) {
  */
 function manualTwinOf(record, payments) {
   if (!record || record.status !== "unmatched") return null;
+  // A payment with its own bank transaction number carries no twin warning
+  // (Junid, 7 Nov 2026): reference + amount never stands against it.
+  if (bankTransactionIdOf(record)) return null;
   for (const [, other] of payments ?? []) {
     if (other?.status !== "used" || !isPaymentTwin(record, other)) continue;
     return { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
