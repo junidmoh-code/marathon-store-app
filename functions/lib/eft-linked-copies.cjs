@@ -124,7 +124,10 @@ function applyLinkedHold(record, hold) {
  * @returns {{ok:true}|{ok:false, code:string, side:string, message:string}}
  */
 function linkedCopySettleCheck({ poolKey, record, siblings }) {
-  if (!isLivePayment(record) || record.releasedFromHold || isManualEntry(record)) return { ok: true };
+  // Released from a LINKED hold: the owner checked it against its linked copy.
+  // (A release from another hold — no bank id, an Absa possible duplicate —
+  // vouched for something else, and is still checked here.)
+  if (!isLivePayment(record) || (record.releasedFromHold && record.linkedHold) || isManualEntry(record)) return { ok: true };
   for (const [key, o] of siblings ?? []) {
     if (key === poolKey || !isLivePayment(o) || o.status !== "used") continue;
     // A used copy the owner RELEASED from a linked hold is money he vouched
