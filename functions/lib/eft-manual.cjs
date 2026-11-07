@@ -41,7 +41,7 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
-const { sastDate } = require("./eft-text.cjs");
+const { sastDate, nextBusinessDay } = require("./eft-text.cjs");
 const { normaliseBankRef } = require("./eft-fingerprint.cjs");
 
 // ─── ONE PAYMENT, NOT ONE REFERENCE (7 Nov 2026) ─────────────────────────────
@@ -102,7 +102,17 @@ function withinManualTwinWindow(typedAt, bank) {
   // No bank date to place the payment by (never true of a record written
   // since fix 8): the old rule — a notice landing after the entry is its twin.
   if (!Number.isInteger(bank?.bankTs)) return !Number.isInteger(arrived) || arrived >= typedAt;
-  if (bank.bankTs > typedAt + BANK_CLOCK_TOLERANCE_MS) return false;
+  if (bank.bankTs > typedAt + BANK_CLOCK_TOLERANCE_MS) {
+    // NEXT-BUSINESS-DAY SETTLEMENT (7 Nov 2026, Fable review of #866): a
+    // weekend payment is dated for the day it settles. Junid typing it on
+    // Saturday and the bank's notice landing that same Saturday dated Monday
+    // are ONE payment. Twin only when the notice landed the SAME SAST day the
+    // entry was typed and the bank's date is no later than the next business
+    // day after the typing — a repeat customer's next payment, whose notice
+    // lands another day, stays a payment of its own.
+    return Number.isInteger(arrived) && sameSastDay(arrived, typedAt)
+      && sastDate(bank.bankTs) <= nextBusinessDay(sastDate(typedAt));
+  }
   if (sastDaysBetween(bank.bankTs, typedAt) > TWIN_LOOKBACK_DAYS) return false;
   if (sameSastDay(typedAt, bank.bankTs)) return true;
   return !Number.isInteger(arrived) || arrived >= typedAt;
@@ -238,7 +248,10 @@ function bankTwinOfEntry({ reference, amountCents, at = null }, siblings) {
     const paidAt = paidAtOf(rec);
     if (Number.isInteger(at) && Number.isInteger(paidAt)) {
       const back = sastDaysBetween(paidAt, at); // days from the payment to now
-      if (back < -1 || back > TWIN_LOOKBACK_DAYS) continue;
+      // Forward: up to the next business day (a weekend payment dated Monday,
+      // 7 Nov 2026), and never less than tomorrow.
+      const ahead = sastDate(paidAt) > nextBusinessDay(sastDate(at)) && back < -1;
+      if (ahead || back > TWIN_LOOKBACK_DAYS) continue;
     }
     return { key, record: rec };
   }
