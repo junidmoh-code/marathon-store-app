@@ -133,7 +133,10 @@ describe("the one-request guard cannot silently outgrow the feed it reads", () =
   });
 
   it("the wall walk still refuses what it cannot verify", () => {
-    expect(VIEW).toContain("const canRequest = !ordersScope || ordersScope === store;");
+    expect(VIEW).toContain("const canRequest = requestable && (!ordersScope || ordersScope === store);");
+    // `requestable` is "this wall has a gated hub" — the request path never
+    // opens for a wall fed only by a hub that is not live (Pine, Concrete).
+    expect(VIEW).toContain("const requestable = GATED_PAIR.length > 0;");
   });
 });
 

@@ -64,7 +64,7 @@ import { serverNowMs } from "../../utils/serverTime";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { gatedSneakerHubs, isFootwearProduct } from "./availabilityCore";
-import { displayStores } from "./hubCleanupCore";
+import { displayStores, displayHubsForStore } from "./hubCleanupCore";
 import { useNetwork } from "../../utils/useNetwork";
 import { wallAllows } from "../../utils/networkRegistry";
 import { isDeactivated } from "../../utils/deactivation";
@@ -74,11 +74,17 @@ import { SizePicker, HistoryToggle } from "./displayRowUi";
 import { FONT } from "./ui";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
-// THE WALLS COME FROM THE NETWORK REGISTRY: the LIVE shops (Marathon PE and
-// Trophy on the seed). Pine's displays are booked at Hub 3, which is not a
-// gated hub while it is not live, so Pine is not offered — and is, with its
-// own hubs, the day the owner makes them live. A wall's source hubs are the
-// gated hubs on ITS side of the section wall, never the other section's.
+// THE WALLS COME FROM THE NETWORK REGISTRY: every shop — Marathon PE, Trophy,
+// Marathon Pine and Concrete on the seed (Junid, 7 Nov 2026). A wall's hubs
+// are the gated hubs on ITS side of the section wall (Hub 1 and Hub 2 for
+// Marathon PE and Trophy, exactly as before). A wall with no gated hub — Pine
+// and Concrete, fed by Hub 3, which is not live — is walked against the hubs
+// that feed it (displayHubsForStore), and "Not on the wall" stays OFF there:
+// that button raises a display request, and no request path is opened for a
+// shop that had none (CLAUDE.md, Junid's rules). It follows the registry's
+// live flag, exactly as Marathon's walls always have: the day Junid makes
+// Hub 3 live on the Network card, Pine and Concrete's walls request like
+// Marathon PE's (pinned by displayWallPineConcrete.render.test.jsx).
 const PAGE = 30;
 
 // "11:42", in the shops' own clock whatever the device's timezone says.
@@ -169,8 +175,15 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   const [storePick, setStore] = useState(() => ordersScope || null);
   const store = storePick && STORES.includes(storePick) ? storePick : STORES[0];
   // The (at most two) gated hubs that can supply this wall. Two fixed hooks
-  // below read them; Hub 1 and Hub 2 for Marathon PE and Trophy.
-  const HUB_PAIR = useMemo(() => gatedSneakerHubs(network).filter((h) => wallAllows(network, store, h)).slice(0, 2), [network, store]);
+  // below read them; Hub 1 and Hub 2 for Marathon PE and Trophy. A wall with
+  // no gated hub is read against the hubs that feed it (Hub 3 for Pine and
+  // Concrete) — for looking and recording only: `requestable` is false.
+  const GATED_PAIR = useMemo(() => gatedSneakerHubs(network).filter((h) => wallAllows(network, store, h)).slice(0, 2), [network, store]);
+  const requestable = GATED_PAIR.length > 0;
+  const HUB_PAIR = useMemo(
+    () => (GATED_PAIR.length ? GATED_PAIR : displayHubsForStore(store, network).slice(0, 2)),
+    [GATED_PAIR, network, store]
+  );
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const [acting, setActing] = useState(null);      // productId whose picker is open
@@ -326,7 +339,8 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
 
   // /orders is store-scoped at the rule layer, so a shop-scoped device cannot
   // see another wall's open requests and must not raise one it cannot fence.
-  const canRequest = !ordersScope || ordersScope === store;
+  // A wall with no gated hub raises nothing at all (see the header).
+  const canRequest = requestable && (!ordersScope || ordersScope === store);
 
   const onWall = async (candidate, size, existingRow = null) => {
     setBusy(candidate.productId); setNote(null);
@@ -345,6 +359,9 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   };
 
   const notOnWall = async (candidate) => {
+    // The button is disabled when this is false; the handler refuses as well,
+    // so no path from this screen raises a request for a wall without one.
+    if (!canRequest) return;
     setBusy(candidate.productId); setNote(null);
     const key = `${store}::${candidate.productId}`;
     const res = await raiseDisplayRequest({
@@ -492,7 +509,9 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
               <div style={sheet.row}>
                 <button style={sheet.btn("primary")} disabled={!!busy} onClick={() => setActing(c.productId)}>On the wall</button>
                 <button style={sheet.btn()} disabled={!!busy || !canRequest || noneAnywhere(c)}
-                        title={canRequest ? "" : `Switch to ${labelFor(store)} on that device to request for this wall.`}
+                        title={canRequest ? "" : requestable
+                          ? `Switch to ${labelFor(store)} on that device to request for this wall.`
+                          : `Display requests are not switched on for ${labelFor(store)}.`}
                         onClick={() => notOnWall(c)}>Not on the wall</button>
               </div>
             )}

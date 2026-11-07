@@ -20,7 +20,7 @@ import { CENTRAL_FED_HUBS, centralFedHubs, centralFedRow, orderRowHub } from "./
 import { DISTRIBUTION_DESTS, distributionDests, suggestInitialDistribution, destLabel } from "./distributionSuggest";
 import { MIGRATION_DESTS, effectiveRun, isBufferLike, STANDARD_RUN, HUB2_RUN, destsFrom } from "./introduceExistingCore";
 import {
-  CLEANUP_HUBS, DISPLAY_STORES, cleanupHubs, isCleanupHub, displayStores, cleanupHubLabel, displayStoreLabel,
+  cleanupHubs, isCleanupHub, displayStores, cleanupHubLabel, displayStoreLabel,
 } from "./hubCleanupCore";
 import { ARMING_HUBS, armingHubsFor, armingSections, bucketTitles, BUCKET_TITLE } from "./armingCore";
 import { EXCLUDED_LOCATIONS, excludedLocations, countedLocations } from "./networkTotalsCore";
@@ -40,8 +40,10 @@ describe("on the seed, every registry answer is the list it replaced", () => {
     expect(reactiveRefillHubs(SEED_REGISTRY)).toEqual([...REACTIVE_REFILL_HUBS]);
     expect(gatedSneakerHubs(SEED_REGISTRY)).toEqual(GATED_SNEAKER_HUBS);
     expect(centralFedHubs(SEED_REGISTRY)).toEqual(CENTRAL_FED_HUBS);
-    expect(cleanupHubs(SEED_REGISTRY)).toEqual([...CLEANUP_HUBS]);
-    expect(displayStores(SEED_REGISTRY)).toEqual([...DISPLAY_STORES]);
+    // Hub Count & Displays covers every hub and shop (Junid, 7 Nov 2026) —
+    // Marathon's section first, so the card still opens on Hub 1.
+    expect(cleanupHubs(SEED_REGISTRY)).toEqual(["hub1", "hub2", "hub3"]);
+    expect(displayStores(SEED_REGISTRY)).toEqual(["marathon-pe", "trophy", "marathon-pine", "concrete"]);
     expect(armingHubsFor(SEED_REGISTRY, 2)).toEqual(ARMING_HUBS);
     expect(excessHubLocations(SEED_REGISTRY, { liveOnly: true })).toEqual([...EXCESS_HUB_LOCATIONS]);
     expect(distributionDests(SEED_REGISTRY).slice(0, DISTRIBUTION_DESTS.length)).toEqual(DISTRIBUTION_DESTS);
@@ -55,7 +57,8 @@ describe("on the seed, every registry answer is the list it replaced", () => {
     expect(reactiveRefillHubs()).toEqual(["hub2"]);
     expect(gatedSneakerHubs()).toEqual(["hub1", "hub2"]);
     expect(isCleanupHub("hub1")).toBe(true);
-    expect(isCleanupHub("hub3")).toBe(false);
+    expect(isCleanupHub("hub3")).toBe(true);          // not live, still registered and counted
+    expect(isCleanupHub("concrete-stockroom")).toBe(false);
     setCurrentNetworkFromRaw(S1_LIVE_RAW);
     expect(reactiveRefillHubs()).toEqual(["hub2", "hub3"]);
     expect(isCleanupHub("hub3")).toBe(true);
@@ -214,10 +217,11 @@ describe("introduce existing — the run a location follows", () => {
   });
 });
 
-describe("cleanup hubs, display stores, arming pairs, the network total — held by the live flag", () => {
-  it("what switches on when Section 1 goes live", () => {
-    expect(cleanupHubs(S1_LIVE)).toEqual(["hub3", "hub1", "hub2"]);
-    expect(displayStores(S1_LIVE)).toEqual(["marathon-pine", "concrete", "marathon-pe", "trophy"]);
+describe("cleanup hubs, display stores, arming pairs, the network total — and what the live flag changes", () => {
+  it("when Section 1 goes live: cleanup hubs and display stores stay put, the network total widens", () => {
+    // The cleanup hubs and display stores do not read the live flag at all.
+    expect(cleanupHubs(S1_LIVE)).toEqual(cleanupHubs(SEED_REGISTRY));
+    expect(displayStores(S1_LIVE)).toEqual(displayStores(SEED_REGISTRY));
     expect(excludedLocations(S1_LIVE)).toEqual([]);
     expect(cleanupHubLabel("hub3", SEED_REGISTRY)).toBe("Hub 3");
     expect(displayStoreLabel("marathon-pe", SEED_REGISTRY)).toBe("Marathon PE");
