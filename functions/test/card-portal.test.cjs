@@ -32,8 +32,8 @@ const sb = { bank: "standard-bank" };
 const TERMINALS = {
   [HP1X]: { storeId: "pe", tillId: "till-2", label: "Marathon Till 2", mid: "000000004977890", ...sb, activeFrom: SAST("2026-09-18T14:00:00") },
   [Z4M6]: { storeId: "trophy", tillId: "till-2", label: "Trophy Till 2", mid: "000000004977890", capture: "typed", ...sb, activeFrom: SAST("2026-09-18T14:00:00") },
-  [F2Y]: { storeId: "concrete", tillId: "till-1", label: "Concrete Till 1", mid: "0005377331", capture: "typed", ...sb, activeFrom: SAST("2026-10-30T00:00:00") },
-  [F1Y]: { storeId: "concrete", tillId: "till-2", label: "Concrete Till 2", mid: "0005377331", capture: "typed", ...sb, activeFrom: SAST("2026-10-30T00:00:00") },
+  [F2Y]: { storeId: "concrete", tillId: "till-1", label: "Concrete Till 1", mid: "0005377331", capture: "typed", ...sb, record: "portal", activeFrom: SAST("2026-10-30T00:00:00") },
+  [F1Y]: { storeId: "concrete", tillId: "till-2", label: "Concrete Till 2", mid: "0005377331", capture: "typed", ...sb, record: "portal", activeFrom: SAST("2026-10-30T00:00:00") },
   "67325636": { storeId: "pe", tillId: "till-1", label: "Trophy Till 1", mid: "100000002453164" },
 };
 const POLLER = { uid: "card-recon-email-poller", token: {} };
@@ -195,9 +195,10 @@ test("when Concrete's merchant appears, its machines are picked up by their O/0 
     { business: { name: "THE MARATHON", merchantNo: "0004977890" }, tids: [HP1X, Z4M6], cols: COLS, rows: [] },
     { business: { name: "MARATHON CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF2Y", "0000OF1Y"], cols: COLS, rows: [row("2026-11-03T09:00:00", "0000OF2Y", 500)] },
   ] } }, { now: () => NOW });
-  assert.equal(r.results[F2Y].outcome, "awaiting-photo");
-  assert.equal(r.results[F2Y].totalCents, 50000);
-  assert.equal(r.results[F1Y].totalCents, 0);
+  // Concrete's record IS the portal (record: "portal", Junid 7 Nov 2026).
+  assert.equal(r.results[F2Y].outcome, "recorded");
+  assert.equal((await node(db, `card_batches/concrete/${F2Y}/1`)).slip.totalCents, 50000);
+  assert.equal((await node(db, `card_batches/concrete/${F1Y}/1`)).slip.totalCents, 0);
   assert.equal(await node(db, "card_batch_overrides/portal/unassigned"), null, "both spellings resolved");
 });
 
@@ -240,7 +241,8 @@ test("nothing before the floor (30 Oct 2026); each machine from its OWN start (J
     { business: { name: "CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF2Y", "0000OF1Y"], cols: COLS, rows: [row("2026-10-31T11:00:00", "0000OF2Y", 7380), row("2026-10-31T12:00:00", "0000OF1Y", 750)] },
   ] } }, { now: () => SAST("2026-11-02T20:00:00") });
   assert.equal(out.ok, true, out.reason);
-  assert.equal(out.results[F2Y].totalCents, 738000);
+  assert.equal(out.results[F2Y].outcome, "recorded");
+  assert.equal((await node(db, `card_batches/concrete/${F2Y}/1`)).slip.totalCents, 738000);
   assert.equal(out.results[HP1X].outcome, "ignored", "PE Till 2 is not a portal till before 3 Nov");
   assert.equal(P.portalFromOf({ portalFrom: "2026-01-01" }), "2026-10-30", "never before the floor");
 });
@@ -402,3 +404,62 @@ test("a successful payment with an unreadable amount refuses the source (CodeRab
   const r = row("2026-11-03T10:00:00", HP1X, "abc");
   assert.equal(P.parsePortalRows({ cols: COLS, rows: [r] }).ok, false);
 });
+
+// ── Concrete stays on the portal (Junid, 7 Nov 2026: "Concrete is fine with SimplyBLU") ──
+const AMANDA_C = { uid: "u-amanda-c", token: { email: "amanda@marathon.internal" } };
+const concreteWorld = (batches = {}) => world({ batches: { concrete: batches }, extra: {
+  users: { [POLLER.uid]: { permFlags: { card_recon: true, card_recon_intake: true } }, [AMANDA_C.uid]: { cardSlipTills: { concrete: { "till-1": true, "till-2": true } } } },
+  network: { concrete: { tills: { "till-1": { label: "Till 1" }, "till-2": { label: "Till 2" } } } },
+} });
+const concretePull = (db, rows, { day = DAY, now = NOW } = {}) => handlePortalDay(db, {
+  auth: POLLER, data: { dayYmd: day, sources: [{ business: { name: "CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF2Y", "0000OF1Y"], cols: COLS, rows }] },
+}, { now: () => now });
+
+test("Concrete: the portal day is the record (a new batch); a re-pull with a late transaction revises it", async () => {
+  const db = concreteWorld();
+  const a = await concretePull(db, [row("2026-11-03T10:00:00", "0000OF2Y", 500)]);
+  assert.equal(a.results[F2Y].outcome, "recorded");
+  assert.equal(a.results[F2Y].key, "1");
+  const b = await concretePull(db, [row("2026-11-03T10:00:00", "0000OF2Y", 500, { id: "x" }), row("2026-11-03T15:00:00", "0000OF2Y", 200)], { now: NOW + 86400000 });
+  assert.equal(b.results[F2Y].key, "1-r2");
+  assert.equal((await node(db, `card_batches/concrete/${F2Y}/1-r2`)).slip.totalCents, 70000);
+});
+
+test("Concrete: Amanda's slip (photo + typed total) is HELD for the portal, never read into a figure, and the portal record carries it", async () => {
+  const db = concreteWorld();
+  const sent = await handleSlip(db, { auth: AMANDA_C, data: { action: "slip", pickedTid: F2Y, photos: [PHOTO], declaredTotal: "500.00" } },
+    { now: () => SAST("2026-11-03T16:55:00"), bucket: bucket() });
+  assert.equal(sent.ok, true, sent.reason);
+  assert.ok(sent.receipt, "Sent only with the server's receipt");
+  assert.equal(await node(db, "card_batch_jobs"), null, "no read job");
+  assert.equal(await node(db, `card_batches/concrete/${F2Y}`), null);
+  const held = await node(db, `card_batch_overrides/portal/held/concrete/${F2Y}/${DAY}`);
+  assert.equal(Object.values(held)[0].cents, 50000);
+  const out = await concretePull(db, [row("2026-11-03T15:00:00", "0000OF2Y", 500)]);
+  const rec = await node(db, `card_batches/concrete/${F2Y}/${out.results[F2Y].key}`);
+  assert.equal(rec.capturedVia, "simplyblu-portal");
+  assert.equal(Object.values(rec.supportingSlips)[0].cents, 50000);
+});
+
+test("Concrete: a staff-typed record for the day is replaced by the portal as before; Junid's correction stands", async () => {
+  const staff = { batchKey: "5", batchNo: 5, revision: 1, capturedVia: "typed", tid: F2Y, storeId: "concrete", tillId: "till-1",
+    declaredTotal: { cents: 40000, via: "staff-slip" }, photos: ["p"],
+    slip: { openedAt: SAST("2026-11-02T18:50:00"), closedAt: SAST("2026-11-03T18:50:00"), totalCents: 40000, format: "typed", windowSource: "typed-span" } };
+  const db = concreteWorld({ [F2Y]: { 5: staff } });
+  const out = await concretePull(db, [row("2026-11-03T15:00:00", "0000OF2Y", 500)]);
+  assert.equal(out.results[F2Y].key, "5-r2");
+  assert.equal((await node(db, `card_batches/concrete/${F2Y}/5-r2`)).capturedVia, "simplyblu-portal");
+  const fix = await handleManualEntry(db, { auth: JUNID, data: { tid: F2Y, dayYmd: DAY, total: "600.00", replaces: "5-r2", reason: "wrong" } }, { now: () => NOW + 3600000 });
+  assert.equal(fix.ok, true, fix.reason);
+  const again = await concretePull(db, [row("2026-11-03T15:00:00", "0000OF2Y", 500), row("2026-11-03T16:00:00", "0000OF2Y", 50)], { now: NOW + 86400000 });
+  assert.equal(again.results[F2Y].outcome, "unchanged");
+  assert.equal(again.results[F2Y].note, "Junid's correction stands");
+});
+
+test("…while Marathon PE Till 2 and Trophy Till 2 stay photographed: their pull is only a cross-check", async () => {
+  const db = world();
+  const out = await pull(db, [row("2026-11-03T10:01:00", HP1X, 930)]);
+  assert.equal(out.results[HP1X].outcome, "awaiting-photo");
+  assert.equal(out.results[Z4M6].outcome, "awaiting-photo");
+});
+

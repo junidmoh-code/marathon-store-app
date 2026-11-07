@@ -234,3 +234,13 @@ test("…but a low-confidence TID that is NOT this till's is still refused", asy
   assert.equal(await node(db, `card_batches/concrete/${C1}`), null);
 });
 
+// ── Concrete itself is back on the portal (Junid, 7 Nov 2026) ───────────────
+test("Concrete's real rows (record: \"portal\") are typed-total portal tills, not photo-first", async () => {
+  const db = makeFakeDb({
+    config: { cardTerminals: { [C1]: { ...TERMINALS[C1], record: "portal" }, [C2]: { ...TERMINALS[C2], record: "portal" } } },
+    users: { [STAFF.uid]: { cardSlipTills: { concrete: { "till-1": true, "till-2": true } } } },
+  });
+  const r = await handleSlipTills(db, { auth: STAFF }, { now: () => NOW });
+  assert.deepEqual(r.tills.map((t) => [t.tid, t.typed, t.photoFirst]), [[C1, true, false], [C2, true, false]]);
+});
+

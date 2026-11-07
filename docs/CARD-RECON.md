@@ -533,6 +533,14 @@ non-FNB terminals in the estate. Registered by
 
 ## Standard Bank tills are photographed — the read report is the record (from 7 Nov 2026)
 
+> **Concrete stays on the SimplyBLU portal** (Junid, 7 Nov 2026: "Concrete is
+> fine with SimplyBLU — only Marathon and Trophy"). A Standard Bank row with
+> `record: "portal"` (`isPortalRecordTerminal`) keeps the 3 Nov behaviour
+> exactly: the portal's day is the record, Amanda's slip (photo + typed total)
+> is held/kept beside it, and its stored `capture: "typed"` applies. Concrete
+> Till 1/2 carry it (`scripts/cardrecon/apply-concrete-portal-record-20261107.mjs`).
+> Everything below applies to Marathon PE Till 2 and Trophy Till 2.
+
 Junid, 7 Nov 2026: SimplyBLU does not email the Standard Bank machines' batch
 reports, and the portal's transaction list was not the till's money — merchant
 4977890 (Marathon PE Till 2, Trophy Till 2) showed **no rows at all** from 3

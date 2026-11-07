@@ -107,7 +107,17 @@ function typesTotal(row) {
 // a typed total is optional and only a cross-check, and nothing waits for an
 // email. FNB rows are untouched by this — `bank` absent is FNB.
 function isPhotoPrimary(row) {
-  return !!row && row.bank === STANDARD_BANK;
+  return !!row && row.bank === STANDARD_BANK && row.record !== PORTAL_RECORD;
+}
+
+// ─── …EXCEPT A TILL WHOSE RECORD IS THE SIMPLYBLU PORTAL (Junid, 7 Nov 2026) ─
+// "Concrete is fine with SimplyBLU — only Marathon and Trophy." A Standard
+// Bank row with `record: "portal"` keeps the 3 Nov behaviour exactly: the
+// portal's day is the record, the staff slip (photo + typed total) is kept
+// beside it, and its stored `capture` applies. Concrete Till 1/2 carry it.
+const PORTAL_RECORD = "portal";
+function isPortalRecordTerminal(row) {
+  return !!row && row.bank === STANDARD_BANK && row.record === PORTAL_RECORD;
 }
 
 /** Does this machine's report arrive by email (so a missing email is worth a word)? */
@@ -248,4 +258,4 @@ function registeredRowFor(readTid, registry) {
   return key ? registry[key] : null;
 }
 
-module.exports = { registeredRowFor, BANKS, STANDARD_BANK, terminalBank, isPhotoPrimary, expectsEmail, canonicalTid, resolveRegisteredTid, isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
+module.exports = { registeredRowFor, BANKS, STANDARD_BANK, terminalBank, isPhotoPrimary, isPortalRecordTerminal, PORTAL_RECORD, expectsEmail, canonicalTid, resolveRegisteredTid, isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };

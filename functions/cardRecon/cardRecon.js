@@ -70,7 +70,8 @@ const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
-const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK, isPhotoPrimary, registeredRowFor } = require("../lib/card-terminals.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK, isPhotoPrimary, isPortalRecordTerminal, registeredRowFor } = require("../lib/card-terminals.cjs");
+const { isPortalDay } = require("../lib/card-portal.cjs");
 const { SB_READER_VERSION, planSbFiling, typedCheck: sbTypedCheck } = require("../lib/card-sb-photo.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { tillsFor } = require("../lib/network-registry.cjs");
@@ -2409,6 +2410,22 @@ async function handleSlip(db, request, deps = {}) {
   if (data.photos.length !== SLIP_PHOTOS) {
     throw new HttpsError("invalid-argument", "Take one photo of the slip.");
   }
+  // A PORTAL TILL (Concrete — the SimplyBLU portal is its record, as from 3
+  // Nov; lib/card-portal.cjs): the slip is KEPT as evidence beside it (or held
+  // for it) and never becomes the day's figure. Photo, and the typed total.
+  if (isPortalRecordTerminal(terminal) && isPortalDay(terminal, slipTradingDay(nowMs))) {
+    let cents = null;
+    if (hasDeclaredTotal(data.declaredTotal)) {
+      const declared = readDeclaredTotal(data.declaredTotal);
+      if (declared.err) return reject(declared.err);
+      cents = declared.cents;
+    }
+    const decodedPhotos = data.photos.map(decodePhoto);
+    if (!decodedPhotos.every((d) => d.buffer.length > 3 && d.buffer[0] === 0xff && d.buffer[1] === 0xd8 && d.buffer[2] === 0xff)) {
+      throw new HttpsError("invalid-argument", "That is not a photo. Take a photo of the slip.");
+    }
+    return require("./cardPortal.js").keepPortalSlip(db, request, { terminal, picked, photos: decodedPhotos, cents, nowMs, bucket: deps.bucket || null });
+  }
   // WHAT A SLIP CARRIES (Junid, 17 Oct 2026): a typed-total till (Trophy Till
   // 2 — its paper has no total) sends the photo AND the typed figure; every
   // other till (Marathon PE Till 2) sends the PHOTO ONLY, and its total is read
@@ -2751,6 +2768,11 @@ async function handleReceive(db, request, deps = {}) {
   }
 
   const nowMs = (deps.now || Date.now)();
+  // A PORTAL TILL (Concrete): the photo is evidence beside the portal record,
+  // never read into a figure (lib/card-portal.cjs).
+  if (isPortalRecordTerminal(terminal) && isPortalDay(terminal, slipTradingDay(nowMs))) {
+    return require("./cardPortal.js").keepPortalSlip(db, request, { terminal, picked, photos: decoded, cents: null, nowMs, bucket: deps.bucket || null });
+  }
   // THE TRADING DAY. A slip photographed after midnight is the evening's batch
   // (no shop opens before 06:00 SAST), so it is filed on the day before.
   const dayYmd = slipTradingDay(nowMs);

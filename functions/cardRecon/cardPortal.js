@@ -29,6 +29,7 @@ const {
   SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, buildSupportingSlip, carriedSlips,
 } = require("../lib/card-supporting-slips.cjs");
 const P = require("../lib/card-portal.cjs");
+const { isPortalRecordTerminal } = require("../lib/card-terminals.cjs");
 
 const reject = (reason) => ({ ok: false, reason });
 const MAX_SOURCES = 10;
@@ -162,7 +163,7 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     .filter(([, r]) => r && typeof r === "object")
     .map(([key, record]) => ({ key, record: { ...record, batchKey: record.batchKey || key } }));
   const last = await core().readLastBatchFor(db, storeId, tid);
-  const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction });
+  const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction, portalIsRecord: isPortalRecordTerminal(row) });
   // A CROSS-CHECK (from 7 Nov 2026): the portal's figure beside the record in
   // force, or — no record yet — only on the day's status; never a record.
   if (plan.action === "check") {

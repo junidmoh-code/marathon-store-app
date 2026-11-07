@@ -10,7 +10,7 @@
 // writes `retired: true` instead of a stamp.
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { captureCards, isRetiredTerminal, captureMode, takesPhoto, typesTotal, terminalBank, canonicalTid, isPhotoPrimary, expectsEmail } from "./terminalRegistry";
+import { captureCards, isRetiredTerminal, captureMode, takesPhoto, typesTotal, terminalBank, canonicalTid, isPhotoPrimary, expectsEmail, isPortalRecordTerminal } from "./terminalRegistry";
 
 const require = createRequire(import.meta.url);
 const server = require("../../../functions/lib/card-terminals.cjs");
@@ -142,17 +142,22 @@ describe("the cards the capture screen draws", () => {
   it("agree that a Standard Bank row is photographed, never typed-only, never awaited by email", () => {
     for (const bank of [undefined, null, "", "fnb", "standard-bank", "Standard Bank", 1, {}]) {
       for (const capture of [undefined, "email", "photo", "typed", "both", "nonsense"]) {
-        const row = { storeId: "concrete", tillId: "till-1", bank, capture };
+       for (const record of [undefined, "portal", "photo", 1]) {
+        const row = { storeId: "concrete", tillId: "till-1", bank, capture, record };
         const tag = JSON.stringify({ bank, capture });
         expect(isPhotoPrimary(row), tag).toBe(server.isPhotoPrimary(row));
+        expect(isPortalRecordTerminal(row), tag).toBe(server.isPortalRecordTerminal(row));
         expect(expectsEmail(row), tag).toBe(server.expectsEmail(row));
         expect(takesPhoto(row), tag).toBe(server.takesPhoto(row));
         expect(typesTotal(row), tag).toBe(server.typesTotal(row));
-        if (bank === "standard-bank") {
+        if (bank === "standard-bank" && record !== "portal") {
           expect(takesPhoto(row), tag).toBe(true);
           expect(typesTotal(row), tag).toBe(false);
           expect(expectsEmail(row), tag).toBe(false);
         }
+        // Concrete (record "portal"): its stored capture applies, as before 7 Nov.
+        if (bank === "standard-bank" && record === "portal") expect(isPhotoPrimary(row), tag).toBe(false);
+       }
       }
     }
     expect(isPhotoPrimary({ bank: "fnb", capture: "typed" })).toBe(false);

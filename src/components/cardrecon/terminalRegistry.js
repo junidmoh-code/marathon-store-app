@@ -65,7 +65,12 @@ export function typesTotal(row) {
  * for an email. Decided by the row's bank, never by a list of tills.
  */
 export function isPhotoPrimary(row) {
-  return row?.bank === "standard-bank";
+  return row?.bank === "standard-bank" && row?.record !== "portal";
+}
+
+/** A Standard Bank till whose record is the SimplyBLU portal (Concrete) — server isPortalRecordTerminal. */
+export function isPortalRecordTerminal(row) {
+  return row?.bank === "standard-bank" && row?.record === "portal";
 }
 
 /** Does this machine's report arrive by email? Never a Standard Bank one. */
