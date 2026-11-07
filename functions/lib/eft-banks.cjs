@@ -265,9 +265,30 @@ const fnb = {
     // Required, exact, single: every line that is nothing but a currency
     // amount must agree, because a second different one is a layout this
     // reader does not understand.
-    const moneyLines = [...new Set(lines.map((l) => l.trim()).filter((l) => /^(?:ZAR|R)\s?\d[\d,\s]*(?:\.\d{1,2})?$/.test(l)))];
+    //
+    // PAYSHAP (real notice of 7 Nov 2026, R650 into Concrete's Standard Bank
+    // account): FNB's PayShap notification prints the label and the amount
+    // on ONE line — "Cur/Amount R650.00" — so there is no lone money line and
+    // the reader refused a genuine payment. The value on a "Cur/Amount" line
+    // counts as an amount line too; it must be money-only, and it joins the
+    // same must-all-agree set, so a second different figure still refuses.
+    const MONEY = /^(?:ZAR|R)\s?\d[\d,\s]*(?:\.\d{1,2})?$/;
+    const moneyLines = [];
+    for (const raw of lines) {
+      const l = raw.trim();
+      if (MONEY.test(l)) { moneyLines.push(l); continue; }
+      const inline = /^Cur\/Amount\s*:?\s*(.+)$/i.exec(l);
+      if (!inline) continue;
+      const value = inline[1].trim();
+      if (!MONEY.test(value)) {
+        return { ok: false, reason: `FNB amount line reads "${clip(l, 60)}", which does not parse exactly as a rand amount.` };
+      }
+      moneyLines.push(value);
+    }
+    // Distinct by VALUE, not spelling: "R650.00" and "ZAR650.00" are one amount.
+    const amounts = [...new Set(moneyLines.map((l) => parseRandsToCents(l)))];
     if (!moneyLines.length) return { ok: false, reason: "FNB notification carries no amount line (a lone ZAR figure)." };
-    if (moneyLines.length > 1) return { ok: false, reason: `FNB notification carries ${moneyLines.length} different amount lines — cannot tell which is the payment.` };
+    if (amounts.length > 1) return { ok: false, reason: `FNB notification carries ${amounts.length} different amount lines — cannot tell which is the payment.` };
     const amountCents = parseRandsToCents(moneyLines[0]);
     if (amountCents === null) {
       return { ok: false, reason: `FNB amount line reads "${clip(moneyLines[0], 60)}", which does not parse exactly as a rand amount.` };
@@ -309,9 +330,31 @@ const fnb = {
       beneficiaryName: (() => { const n = fnbLabelValue(lines, /^Name\s*:\s*(.*)$/i, "Name"); return n.ok && n.value ? clip(n.value, 120) : null; })(),
       destBankName: (() => { const b = fnbLabelValue(lines, /^Bank\s*:\s*(.*)$/i, "Bank"); return b.ok && b.value ? clip(b.value, 60) : null; })(),
       accountMask: clip(account.value, 40),
+      // Only a PayShap notice says anything about speed (fnbPayShap, below);
+      // an ordinary FNB notice leaves immediate unset, as it always has.
+      ...(fnbPayShap(lines) ? { paymentType: "PayShap", immediate: true } : {}),
     };
   },
 };
+
+// PAYSHAP IS REAL-TIME, AND FNB SAYS SO IN ITS OWN WORDS (7 Nov 2026). A
+// PayShap notification carries FNB's sentence "Please note that this PayShap
+// Payment Notification cannot be authenticated using our FNB “Verify
+// Payments” link, however, as PayShap payments are made in real time, …" —
+// where an ordinary notification says "To authenticate this Payment
+// Notification, please visit …". PayShap is the interbank rapid-payment
+// rail: it settles in seconds, so it is an IMMEDIATE payment whichever bank
+// it pays into (Junid: "it's an immediate payment, I did receive the money").
+//
+// Read ONLY below "END OF NOTIFICATION": everything the payer can type (their
+// name, the reference) is printed above that line, so a reference cannot
+// pose as FNB's sentence. The sentence must START the line, as FNB prints it.
+// No END line, no PayShap — never assumed.
+function fnbPayShap(lines) {
+  const end = lines.findIndex((l) => /^END OF NOTIFICATION\s*$/i.test(l.trim()));
+  if (end < 0) return false;
+  return lines.slice(end + 1).some((l) => /^Please note that this PayShap Payment Notification\b/i.test(l.trim()));
+}
 
 // ─── CAPITEC ─────────────────────────────────────────────────────────────────
 // Built from a REAL Capitec "Payment Notification" PDF (fixture in
