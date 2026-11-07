@@ -88,8 +88,9 @@ function isBlankNumberedPair(a, b) {
 function linkedHoldOf(record, poolKey, siblings) {
   if (!isLivePayment(record) || isManualEntry(record) || isManualApproved(record)) return null;
   const others = (siblings ?? []).filter(([key, o]) => key !== poolKey && isLivePayment(o));
-  // HOLE 1: the bank's notice of money a hand entry already floated.
-  if (bankTransactionIdOf(record)) {
+  // HOLE 1: the bank's notice of money a hand entry already floated — with
+  // its own number, or a blank-number Absa notice (Fable spec review).
+  {
     for (const [key, o] of others) {
       if (!isManualEntry(o) || !["used", "unmatched"].includes(o.status) || !isPaymentTwin(record, o)) continue;
       return {
@@ -140,6 +141,22 @@ function linkedCopySettleCheck({ poolKey, record, siblings }) {
   return { ok: true };
 }
 
+/**
+ * APPROVAL TIME (eftPoolManualApprove), the mirror of the ingest hold: the
+ * proof about to be approved is one copy of an Absa payment whose OTHER copy
+ * (blank-number vs numbered) is already in the pool. Waiting → the cashier
+ * should use that one; used → nothing to approve.
+ * @returns {{code:string, key:string, message:string}|null}
+ */
+function linkedApprovalRefusal(approved, approvedKey, siblings) {
+  for (const [key, o] of siblings ?? []) {
+    if (key === approvedKey || !isLivePayment(o) || isManualEntry(o) || isManualApproved(o) || !isBlankNumberedPair(approved, o)) continue;
+    if (o.status === "used") return { code: "already-used", key, message: "Another copy of this payment (with or without the transaction number) has already been used. Nothing to approve." };
+    return { code: "bank-record-waiting", key, message: "The bank's own notification for this payment is already in the pool, unused — the cashier can use that one at the till, or mark it used. No approval by proof is needed." };
+  }
+  return null;
+}
+
 const wordsOf = (s) => String(s ?? "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
 const norm = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
@@ -171,7 +188,22 @@ function crossBankSuspectOf(record, poolKey, siblings) {
   return null;
 }
 
+/**
+ * HOLE 3 at APPROVAL TIME (monitor only): a bank notice already in the pool,
+ * from ANOTHER bank than the proof, same amount, dated a day before to three
+ * days after it. The approval record carries the flag; nothing is refused.
+ */
+function crossBankNoticeOf(approved, approvedKey, siblings) {
+  for (const [key, o] of siblings ?? []) {
+    if (key === approvedKey || !isLivePayment(o) || isManualEntry(o) || isManualApproved(o) || !bankTransactionIdOf(o)) continue;
+    const hit = crossBankSuspectOf(o, key, [[approvedKey, { ...approved, outcome: "recorded", status: "used", manualApproved: approved.manualApproved ?? {} }]]);
+    if (hit) return { code: CROSS_BANK_FLAG, noticeKey: key, noticeReader: o.reader ?? null, sameReference: hit.sameReference, samePayer: hit.samePayer };
+  }
+  return null;
+}
+
 module.exports = {
   LINKED_HOLD_KINDS, CROSS_BANK_FLAG,
   absaIdentityOf, isBlankNumberedPair, linkedHoldOf, applyLinkedHold, linkedCopySettleCheck, crossBankSuspectOf,
+  linkedApprovalRefusal, crossBankNoticeOf,
 };

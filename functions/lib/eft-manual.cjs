@@ -119,8 +119,9 @@ function withinManualTwinWindow(typedAt, bank) {
     // a weekday one — and the bank's date is no later than that next business
     // day. A repeat customer's next payment, whose notice lands on a later
     // business day, stays a payment of its own. Since 7 Nov 2026 the window
-    // is open only when the typing day is a weekend day or public holiday
-    // (or a holiday's eve) — latestSettledDay is that day itself otherwise,
+    // is open only when the typing day, or the day after it, is not a
+    // business day (a weekend, a holiday, a Friday, a holiday's eve) —
+    // latestSettledDay is that day itself otherwise,
     // so a later-dated payment then is never the entry's twin (the poller
     // refuses it anyway).
     const nbd = latestSettledDay(sastDate(typedAt));
@@ -359,18 +360,20 @@ function isPaymentTwin(record, other) {
  */
 function manualTwinSettleCheck({ poolKey, record, siblings }) {
   if (!record || record.outcome !== "recorded") return { ok: true };
-  // A BANK PAYMENT WITH ITS OWN TRANSACTION NUMBER is never refused here
-  // (Junid, 7 Nov 2026): its number is its identity, and the fingerprint
-  // claim alone decides whether it was used. A used hand entry sharing its
-  // reference and amount is reported (`txnOverManualTwin`, for the server's
-  // log line) and never blocks. Only the record WITHOUT a number — the hand
-  // entry — is refused when its bank twin was spent.
+  // A BANK PAYMENT WITH ITS OWN TRANSACTION NUMBER is not judged here: its
+  // hand-entry twin is eft-linked-copies.cjs's (held at ingest, refused at
+  // the settle by linkedCopySettleCheck). `txnOverManualTwin` names the used
+  // twin for callers that want it. Only the record WITHOUT a number — a hand
+  // entry, a blank-number notice — is refused here when its twin was spent.
   if (bankTransactionIdOf(record)) {
     for (const [key, other] of siblings ?? []) {
       if (key !== poolKey && other?.status === "used" && isPaymentTwin(record, other)) return { ok: true, txnOverManualTwin: key };
     }
     return { ok: true };
   }
+  // A blank-number notice the OWNER released from a linked hold: he checked
+  // the statement against this very hand entry — separate money.
+  if (record.releasedFromHold && record.linkedHold) return { ok: true };
   for (const [key, other] of siblings ?? []) {
     if (key === poolKey || other?.status !== "used" || !isPaymentTwin(record, other)) continue;
     // A bank twin the OWNER released from a linked hold (eft-linked-copies.cjs)

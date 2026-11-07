@@ -151,7 +151,7 @@ const {
   approvedKeyOf, approvedInputCheck, keyedIdentityCheck, proofStoragePathOf, proofIdentityOf, manualApprovedRecord, isManualApproved,
   approvedClaimDecision, approvedClaimStep, approvedTwinSettleCheck, approvedLogKeyOf, approvedLogRecord, approvedListView, approvedResponse,
 } = require("../lib/eft-manual-approved.cjs");
-const { linkedCopySettleCheck } = require("../lib/eft-linked-copies.cjs");
+const { linkedCopySettleCheck, linkedApprovalRefusal, crossBankNoticeOf } = require("../lib/eft-linked-copies.cjs");
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
 const { parseAccountPolicies, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
 const { maskAccountValue } = require("../lib/eft-text.cjs");
@@ -315,9 +315,9 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
   }
   // A MANUAL ENTRY whose bank twin (the bank's notification of the same
   // money) was already spent: a different fingerprint, the same payment.
-  // Refused. A bank record with its own transaction number is judged on that
-  // number alone (7 Nov 2026) — a used hand entry with its reference and
-  // amount is only logged, for Junid's review.
+  // Refused. A bank record with its own transaction number is judged by the
+  // linked-copy check below (eft-linked-copies.cjs): held at ingest, refused
+  // here once its hand entry is used.
   const twin = manualTwinSettleCheck({ poolKey: key, record, siblings: Object.entries(tail) });
   if (!twin.ok) {
     console.warn(`eftPoolSettle: ${twin.side} on ${key} — refused before settle`);
@@ -1170,6 +1170,23 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
       throw new HttpsError("failed-precondition", also.decision.message, { code: also.decision.code, key: also.decision.key ?? null });
     }
   }
+  // LINKED COPIES at approval (7 Nov 2026, eft-linked-copies.cjs): the other
+  // copy of this Absa payment (blank-number vs numbered — a different
+  // fingerprint) already in the pool refuses, as the claim's own waiting/used
+  // answer does. A notice from ANOTHER bank that resembles this proof is only
+  // flagged on the approval record, for review — never refused.
+  const probe = manualApprovedRecord({
+    key, readerId: reader.id, parse, lines, identity, destination, actor, at: now,
+    note: input.note, filename: input.filename, entryId: input.entryId, proof: null,
+  });
+  let crossBank = null;
+  if (probe.ok) {
+    const tailNow = Object.entries(await readPoolTail());
+    const linked = linkedApprovalRefusal(probe.value, key, tailNow);
+    if (linked) throw new HttpsError("failed-precondition", linked.message, { code: linked.code, key: linked.key });
+    crossBank = crossBankNoticeOf(probe.value, key, tailNow);
+    if (crossBank) console.warn(`EFT_POSSIBLE_CROSS_BANK_DUPLICATE: approval ${key} (${reader.id}, ${probe.value.amountCents}c) resembles notice ${crossBank.noticeKey} from ${crossBank.noticeReader} (reference ${crossBank.sameReference ? "same" : "different"}, payer ${crossBank.samePayer ? "same" : "different"}) — approved, flagged for review`);
+  }
   // THE PHOTO IS THE EVIDENCE: stored before the claim and the record are
   // written (the slip photos' order), with the Admin SDK — no client writes
   // eftProofs/. A claim or record that does not land takes the file back out.
@@ -1226,7 +1243,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     note: input.note, filename: input.filename, entryId: input.entryId, proof,
   });
   if (!built.ok) { await dropProof(); throw new HttpsError("internal", built.message, { code: built.code }); }
-  const record = built.value;
+  const record = crossBank ? { ...built.value, reviewFlag: { ...crossBank, at: now } } : built.value;
   // THE LOG ROW FIRST, create-only, then the record create-if-absent — the
   // manual entry's order, for the manual entry's reasons.
   await db.ref(`${MANUAL_APPROVED_LOG_PATH}/${approvedLogKeyOf(now, key)}`).transaction((cur) => (cur === null ? approvedLogRecord(record, key) : undefined));

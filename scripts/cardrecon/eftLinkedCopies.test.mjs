@@ -90,7 +90,9 @@ function pool() {
         const v = check({ poolKey: key, record, siblings });
         if (!v.ok) return v;
       }
+      // eftPoolSettle claims the fingerprint create-only, then checks the holder.
       const fp = paymentFingerprint(record);
+      if (fp && claims[fp] == null) claims[fp] = { poolKey: key, at: 1 };
       const c = claims[fp];
       return claimHolderCheck({ poolKey: key, holder: c?.poolKey ?? null, spentBy: c?.spentBy ?? null });
     },
@@ -247,13 +249,42 @@ describe("an owner release is final both ways", () => {
     expect(p.settleGuards("blank")).toEqual({ ok: true });
   });
 
-  it("a blank Absa record whose hand-entry twin was used is warned about at the till (and refused at the settle)", () => {
+  it("a BLANK-number notice of a used hand entry is held at ingest too (Fable spec review); released, it settles", () => {
+    const p = pool();
+    const mKey = manualEntryKeyOf("ME-rel-0003");
+    p.put(mKey, { ...handEntry({ entryId: "ME-rel-0003", typed: "2026-11-09T10:00:00" }), status: "used", used: { at: 1 } });
+    const held = p.ingest("blank", decide(absaNotice({ txn: "" }))).record;
+    expect(held).toMatchObject({ outcome: "held-possible-duplicate", linkedHold: "manual-twin", duplicateOf: mKey });
+    const released = releaseHoldDecision(held, { at: 9000, by: "owner", reason: "two on the statement" });
+    expect(released.ok, released.message).toBe(true);
+    p.put("blank", released.value);
+    expect(p.settleGuards("blank")).toEqual({ ok: true });
+  });
+
+  it("a blank Absa record (recorded before) whose hand-entry twin was used is warned about at the till (and refused at the settle)", () => {
     const p = pool();
     const mKey = manualEntryKeyOf("ME-rel-0002");
     p.put(mKey, { ...handEntry({ entryId: "ME-rel-0002", typed: "2026-11-09T10:00:00" }), status: "used", used: { at: 1, sale: { receiptNumber: "S-32" } } });
     p.put("blank", decide(absaNotice({ txn: "" })));
     expect(searchEftPool(p.records, "order 77").results.find((r) => r.key === "blank").sameUsed.receiptNumber).toBe("S-32");
     expect(manualTwinSettleCheck({ poolKey: "blank", record: p.records.blank, siblings: Object.entries(p.records) })).toMatchObject({ ok: false, code: "twin-used" });
+  });
+});
+
+// ─── APPROVAL TIME (Fable spec review) ───────────────────────────────────────
+describe("approving a proof sees the other copy, and flags cross-bank lookalikes", () => {
+  const { linkedApprovalRefusal, crossBankNoticeOf } = require("./lib/eft-linked-copies.cjs");
+  const approvedProbe = (o) => ({ ...decide(absaNotice({ txn: "", ...o })), status: "used", manualApproved: { by: "Junid", at: 1 } });
+  it("a blank-number proof whose numbered notice is waiting is refused (use that one); used → nothing to approve", () => {
+    const notice = decide(absaNotice({ txn: "80000000K1-1" }));
+    expect(linkedApprovalRefusal(approvedProbe(), "ap", [["n", notice]])).toMatchObject({ code: "bank-record-waiting", key: "n" });
+    expect(linkedApprovalRefusal(approvedProbe(), "ap", [["n", { ...notice, status: "used" }]])).toMatchObject({ code: "already-used" });
+    expect(linkedApprovalRefusal(approvedProbe({ amount: "1 300.00" }), "ap", [["n", notice]])).toBe(null);
+  });
+  it("a proof resembling another bank's notice is approved and flagged, never refused", () => {
+    const fnbNotice = { outcome: "recorded", status: "unmatched", reader: "fnb", amountCents: 125000, reference: "OTHER", payer: "MR C THIRD", bankRef: "TRACE9", bankTs: sast("2026-11-09T08:00:00") };
+    const flag = crossBankNoticeOf({ ...approvedProbe(), bankRef: "80000000K2-2", syntheticRef: null }, "ap", [["f", fnbNotice]]);
+    expect(flag).toMatchObject({ code: "possible-cross-bank-duplicate", noticeKey: "f", noticeReader: "fnb", sameReference: false, samePayer: false });
   });
 });
 
