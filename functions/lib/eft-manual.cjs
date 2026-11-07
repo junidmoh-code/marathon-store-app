@@ -58,8 +58,9 @@ const { normaliseBankRef } = require("./eft-fingerprint.cjs");
 // The identity of a manual entry is therefore reference + amount + WHEN:
 //   · a bank notice is a manual entry's twin only for a payment the bank
 //     dates no later than the entry was typed and at most a week before it,
-//     whose notice landed after the typing or the same day
-//     (withinManualTwinWindow);
+//     whose notice landed after the typing or the same day — or, a weekend
+//     payment dated for the next business day whose notice landed before
+//     that day (withinManualTwinWindow);
 //   · a second manual entry is a duplicate when typed the same SAST day or
 //     within 12 hours (23:55 and 00:05 are the same money typed twice).
 // A payment made after an entry was typed, or on another day, that shares a reference and an amount are two
@@ -103,15 +104,21 @@ function withinManualTwinWindow(typedAt, bank) {
   // since fix 8): the old rule — a notice landing after the entry is its twin.
   if (!Number.isInteger(bank?.bankTs)) return !Number.isInteger(arrived) || arrived >= typedAt;
   if (bank.bankTs > typedAt + BANK_CLOCK_TOLERANCE_MS) {
+    // A later TIME the same day is a new payment, never the twin (it was
+    // made after the entry was typed). (Substitute review of #866.)
+    if (sastDate(bank.bankTs) <= sastDate(typedAt)) return false;
     // NEXT-BUSINESS-DAY SETTLEMENT (7 Nov 2026, Fable review of #866): a
     // weekend payment is dated for the day it settles. Junid typing it on
-    // Saturday and the bank's notice landing that same Saturday dated Monday
-    // are ONE payment. Twin only when the notice landed the SAME SAST day the
-    // entry was typed and the bank's date is no later than the next business
-    // day after the typing — a repeat customer's next payment, whose notice
-    // lands another day, stays a payment of its own.
-    return Number.isInteger(arrived) && sameSastDay(arrived, typedAt)
-      && sastDate(bank.bankTs) <= nextBusinessDay(sastDate(typedAt));
+    // Saturday and the bank's notice dated Monday are ONE payment when the
+    // notice landed from the typing day up to (not including) the next
+    // business day — Saturday or Sunday for a weekend entry, the same day for
+    // a weekday one — and the bank's date is no later than that next business
+    // day. A repeat customer's next payment, whose notice lands on a later
+    // business day, stays a payment of its own.
+    const nbd = nextBusinessDay(sastDate(typedAt));
+    return Number.isInteger(arrived) && arrived >= typedAt - DAY_MS
+      && sastDate(arrived) >= sastDate(typedAt) && sastDate(arrived) < nbd
+      && sastDate(bank.bankTs) <= nbd;
   }
   if (sastDaysBetween(bank.bankTs, typedAt) > TWIN_LOOKBACK_DAYS) return false;
   if (sameSastDay(typedAt, bank.bankTs)) return true;
@@ -233,7 +240,7 @@ function manualDuplicateOf({ reference, amountCents, entryId, at = null }, sibli
  * THE BANK'S OWN RECORD OF THE SAME MONEY. A manual entry exists because the
  * notification has not arrived — if an UNMATCHED bank-confirmed payment with
  * this reference and amount, dated within the last TWIN_LOOKBACK_DAYS (or
- * tomorrow, for a bank clock ahead of ours), is already in the
+ * up to the next business day — a weekend payment dated Monday), is already in the
  * tail, Junid should use that one, not type a second spendable copy. (Spec
  * review, this PR.) An unused bank payment older than that with the same
  * reference is somebody's other payment — not this one's twin. (Blocking is
@@ -249,8 +256,8 @@ function bankTwinOfEntry({ reference, amountCents, at = null }, siblings) {
     if (Number.isInteger(at) && Number.isInteger(paidAt)) {
       const back = sastDaysBetween(paidAt, at); // days from the payment to now
       // Forward: up to the next business day (a weekend payment dated Monday,
-      // 7 Nov 2026), and never less than tomorrow.
-      const ahead = sastDate(paidAt) > nextBusinessDay(sastDate(at)) && back < -1;
+      // 7 Nov 2026).
+      const ahead = sastDate(paidAt) > nextBusinessDay(sastDate(at));
       if (ahead || back > TWIN_LOOKBACK_DAYS) continue;
     }
     return { key, record: rec };
