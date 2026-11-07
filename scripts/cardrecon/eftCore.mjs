@@ -60,8 +60,8 @@ export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, absaSyn
 const { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue, nextBusinessDay, settlementDateVerdict } = require("./lib/eft-text.cjs");
 export { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue, nextBusinessDay, settlementDateVerdict };
 // Linked copies of one payment (7 Nov 2026): functions/lib/eft-linked-copies.cjs.
-const { linkedHoldOf, applyLinkedHold, linkedCopySettleCheck, absaIdentityOf } = require("./lib/eft-linked-copies.cjs");
-export { linkedHoldOf, applyLinkedHold, linkedCopySettleCheck, absaIdentityOf };
+const { linkedHoldOf, applyLinkedHold, crossBankSuspectOf, linkedCopySettleCheck, absaIdentityOf } = require("./lib/eft-linked-copies.cjs");
+export { linkedHoldOf, applyLinkedHold, crossBankSuspectOf, linkedCopySettleCheck, absaIdentityOf };
 
 // How many of the pool's newest records the ingest compares a new payment
 // against — the settle's own window (eftPool.js EFT_SEARCH_WINDOW).
@@ -79,7 +79,9 @@ export function linkedIngestDecision(record, poolKey, siblings, at) {
   if (!record || record.outcome !== "recorded") return { record, crossBank: null };
   const hold = linkedHoldOf(record, poolKey, siblings);
   if (hold) return { record: applyLinkedHold(record, hold), crossBank: null };
-  return { record, crossBank: null };
+  const crossBank = crossBankSuspectOf(record, poolKey, siblings);
+  if (!crossBank) return { record, crossBank: null };
+  return { record: { ...record, reviewFlag: { ...crossBank, at: Number.isInteger(at) ? at : null } }, crossBank };
 }
 const {
   parseAllowedAccounts, parseAccountPolicies, accountPolicyProblems, destinationVerdict, destinationBankOf, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR,

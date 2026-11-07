@@ -137,7 +137,38 @@ function linkedCopySettleCheck({ poolKey, record, siblings }) {
   return { ok: true };
 }
 
+const wordsOf = (s) => String(s ?? "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+const norm = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/**
+ * HOLE 3 (monitor only): a proof Junid approved from ANOTHER bank's document,
+ * same amount, the notice dated from a day before to three days after it.
+ * `sameReference` / `samePayer` say how strong the match is — the review
+ * screen shows them; nothing is held either way.
+ * @returns {{code:string, approvedKey:string, approvedReader:string|null, sameReference:boolean, samePayer:boolean}|null}
+ */
+function crossBankSuspectOf(record, poolKey, siblings) {
+  if (!isLivePayment(record) || isManualEntry(record) || isManualApproved(record) || !bankTransactionIdOf(record)) return null;
+  const day = Number.isInteger(record.bankTs) ? sastDate(record.bankTs) : null;
+  for (const [key, o] of siblings ?? []) {
+    if (key === poolKey || !isManualApproved(o) || o.reader === record.reader || o.amountCents !== record.amountCents) continue;
+    const oDay = Number.isInteger(o.bankTs) ? sastDate(o.bankTs) : null;
+    if (day && oDay) {
+      const gap = Math.round((Date.parse(day) - Date.parse(oDay)) / DAY_MS);
+      if (gap < -CROSS_BANK_DAYS_BEFORE || gap > CROSS_BANK_DAYS_AFTER) continue;
+    }
+    const wa = wordsOf(record.payer), wb = wordsOf(o.payer);
+    const [short, long] = wa.length <= wb.length ? [wa, wb] : [wb, wa];
+    return {
+      code: CROSS_BANK_FLAG, approvedKey: key, approvedReader: o.reader ?? null,
+      sameReference: !!norm(record.reference) && norm(record.reference) === norm(o.reference),
+      samePayer: short.length > 0 && short.every((w) => long.includes(w)),
+    };
+  }
+  return null;
+}
+
 module.exports = {
-  LINKED_HOLD_KINDS,
-  absaIdentityOf, isBlankNumberedPair, linkedHoldOf, applyLinkedHold, linkedCopySettleCheck,
+  LINKED_HOLD_KINDS, CROSS_BANK_FLAG,
+  absaIdentityOf, isBlankNumberedPair, linkedHoldOf, applyLinkedHold, linkedCopySettleCheck, crossBankSuspectOf,
 };
