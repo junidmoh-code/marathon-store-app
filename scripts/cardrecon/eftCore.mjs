@@ -575,7 +575,17 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     const dated = settlementDateVerdict(parsed.bankTs, receivedAt);
     if (!dated.ok) return { ok: false, reason: dated.reason };
   }
-  const onlyImmediate = immediateOnly === true;
+  // IMMEDIATE-ONLY ACCOUNTS RELAX FOR THAT WINDOW (Junid, 7 Nov 2026).
+  // Concrete's Standard Bank account takes immediate payments only. A payment
+  // the bank dates AFTER its notice's day and on or before the next business
+  // day is a weekend/next-day settlement — RICHARD CHETTY's R2450 Nedbank
+  // "Internet payment" of Saturday, dated Monday — and is accepted into it
+  // even though it is not immediate. A non-immediate payment dated the SAME
+  // day as its notice into that account still refuses (the 2 Nov rule), and
+  // one dated beyond the next business day refused above.
+  const settlesNextBusinessDay = Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)
+    && sastDate(parsed.bankTs) > sastDate(receivedAt);
+  const onlyImmediate = immediateOnly === true && !settlesNextBusinessDay;
   if (!onlyImmediate && !immediacyRequiredFor(parsed?.bankTs)) return { ok: true };
   // Why immediacy is required here — said in every refusal below.
   const because = onlyImmediate
