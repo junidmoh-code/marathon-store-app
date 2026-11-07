@@ -501,7 +501,8 @@ export function accountVerdict({ accountMask, allowedTails, configured }) {
 //                 footer: "may take up to three business days … check your
 //                 account"); "Channel Immediate payment" is (reader: immediate;
 //                 real samples 27 Oct 2026 — all "Internet payment")
-//   fnb           NO such field — see below.
+//   fnb           NO such field — see below; a PayShap notice says PayShap
+//                 (reader: paymentType "PayShap", immediate: true)
 // Whatever a bank prints, a payment dated in the FUTURE of its own
 // notification's arrival is scheduled and refuses.
 export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
@@ -510,6 +511,8 @@ export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
 // destination, so a recorded FNB payment is FNB -> FNB: an intra-bank transfer,
 // which clears in real time. Immediate by its nature, not a guess (Junid's
 // rule, 5 Oct 2026). Gated below on the destination bank being FNB.
+// Exception, 7 Nov 2026: an FNB PAYSHAP notice into another bank is immediate
+// too — PayShap is real-time interbank, and FNB prints that it is (below).
 // standardBankHeading's paymentType when the heading is out of shape — never
 // a payment type, so never same-bank evidence either.
 const SB_HEADING_ANOMALIES = ["contradictory headings", "heading split across lines", "heading below the confirmation"];
@@ -581,6 +584,13 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     // Intra-bank only: destination must be FNB (the same names 7a accepts).
     const bank = String(parsed?.destBankName ?? "").toUpperCase().replace(/[^A-Z]/g, "");
     if (FNB_BANK_NAMES.has(bank)) return { ok: true };
+    // PAYSHAP (7 Nov 2026): FNB's own notice says the payment went over
+    // PayShap, the real-time interbank rail — immediate into ANY bank,
+    // including the immediate-only Standard Bank account. The reader sets
+    // this only from FNB's sentence below END OF NOTIFICATION (eft-banks.cjs
+    // fnbPayShap); the destination account is still checked digit for digit
+    // by destinationVerdict (7a), and future-dated still refuses above.
+    if (parsed?.immediate === true && parsed?.paymentType === "PayShap") return { ok: true };
     return { ok: false, reason: parsed?.destBankName
       ? `This FNB notification pays "${clip(parsed.destBankName, 60)}", not an FNB account, so it is not an FNB-to-FNB immediate payment.`
       : "This FNB notification does not name an FNB destination account, so it cannot be confirmed as an FNB-to-FNB immediate payment." };
@@ -1104,8 +1114,14 @@ export const REREAD_ARRIVAL_TOLERANCE_MS = 5 * 60 * 1000;
 /** @returns {{ok:true, refused:object} | {ok:false, why:string}} */
 export function rereadRefusal({ record, readerId, parse, docText, fetched }) {
   if (!record) return { ok: false, why: "No refused record." };
-  if (record.outcome !== "refused-parse" || record.reader) {
-    return { ok: false, why: `Not a missing-reader refusal (outcome ${record.outcome}, reader ${record.reader ?? "none"}) — use claim-settled-bank-fingerprint.mjs.` };
+  // Also a refusal by a reader that EXISTED but could not read this layout
+  // (7 Nov 2026: FNB's PayShap notice, refused-parse with reader "fnb" and
+  // no bank id) — re-read by THAT SAME reader, now fixed. A refusal that did
+  // store a bank id goes to claim-settled-bank-fingerprint.mjs instead.
+  const readerFailed = record.outcome === "refused-parse" && record.reader
+    && record.reader === readerId && !record.bankRef && !Number.isInteger(record.amountCents);
+  if (record.outcome !== "refused-parse" || (record.reader && !readerFailed)) {
+    return { ok: false, why: `Not a missing-reader or failed-read refusal (outcome ${record.outcome}, reader ${record.reader ?? "none"}) — use claim-settled-bank-fingerprint.mjs.` };
   }
   if (record.auth?.verdict !== "pass") return { ok: false, why: "The record did not pass DKIM — a forgery's document never claims a bank id." };
   const sameFrom = clip(fetched?.from, 200) === clip(record.from, 200);
