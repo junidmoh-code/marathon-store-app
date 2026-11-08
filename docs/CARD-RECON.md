@@ -629,8 +629,8 @@ email; Standard Bank is photo unless `record: "portal"`). `source` never moves
 an FNB row. Set by `scripts/cardrecon/apply-terminal-source-20261108.mjs`, which
 supersedes `apply-concrete-photo-primary-20261107.mjs` for Concrete.
 
-**A portal till shows "awaiting portal data" until the 18:00 pull, then the
-figure.** If SimplyBLU lists nothing for a day the POS took card money, the
+**A portal till shows "awaiting portal data" until the 18:20 pull, then the
+figure.** It also leaves the manager's capture screen: nothing is waited for there. If SimplyBLU lists nothing for a day the POS took card money, the
 record is R0.00, SHORT, and says in its warnings how much the POS took and that
 SimplyBLU lists none of it. **The portal's list can be incomplete**: it held no
 Concrete rows on 7 Nov against POS card sales, and 3 Nov fell R3,850 short. A

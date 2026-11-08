@@ -44,8 +44,10 @@ const PORTAL_FORMAT = "portal";
 // which their portal held app-initiated payments only (29 ever). A Standard
 // Bank row WITHOUT `portalFrom` takes the default; nothing is ever taken from
 // the portal before the floor.
-// A portal till's day is final from the 18:00 SAST pull (stores close 17:00).
-const PORTAL_PULL_MINUTE = 18 * 60;
+// A portal till's empty day is final from the 18:20 SAST pull: until then it
+// reads "awaiting portal data", so a portal running late at 18:00 is not a
+// false SHORT (stores close 17:00; run.mjs always pulls again at 18:20).
+const PORTAL_PULL_MINUTE = 18 * 60 + 15;
 const PORTAL_FROM_YMD = "2026-11-03";       // the default
 const PORTAL_EARLIEST_YMD = "2026-10-30";   // the floor, for every terminal
 

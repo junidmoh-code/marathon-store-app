@@ -498,30 +498,30 @@ const concreteWithSales = (events) => world({ events, extra: {
 } });
 const SALE = { a: card("concrete", "till-1", "2026-11-03T12:00:00", 1989000) };
 
-test("Concrete, today, portal empty: 'awaiting' before the 18:00 pull", async () => {
+test("Concrete, today, portal empty: 'awaiting' through the 18:00 pull", async () => {
   const db = concreteWithSales(SALE);
-  const got = await concretePull(db, [], { now: SAST("2026-11-03T17:59:00") });
+  const got = await concretePull(db, [], { now: SAST("2026-11-03T18:00:30") });
   assert.equal(got.results[F2Y].outcome, "awaiting");
   assert.equal(await node(db, `card_batches/concrete/${F2Y}`), null);
 });
 
-test("Concrete, today, portal empty at the 18:00 pull: the figure with the specific error, and the POS amount in it", async () => {
+test("Concrete, today, portal empty at the 18:20 pull: the figure with the specific error, and the POS amount in it", async () => {
   const db = concreteWithSales(SALE);
-  const got = await concretePull(db, [], { now: SAST("2026-11-03T18:00:30") });
+  const got = await concretePull(db, [], { now: SAST("2026-11-03T18:20:05") });
   assert.equal(got.results[F2Y].outcome, "recorded");
   const rec = await node(db, `card_batches/concrete/${F2Y}/${got.results[F2Y].key}`);
   assert.equal(rec.slip.totalCents, 0);
   assert.ok(rec.warnings.some((w) => /SimplyBLU lists none of the R19890\.00/.test(w)), rec.warnings.join(" / "));
 });
 
-test("the 18:00 rule is only for portal tills: a photo till's empty day today still waits", async () => {
+test("the 18:20 rule is only for portal tills: a photo till's empty day today still waits", async () => {
   const db = world();
-  assert.equal((await pull(db, [], { now: SAST("2026-11-03T18:00:30") })).results[HP1X].outcome, "awaiting");
+  assert.equal((await pull(db, [], { now: SAST("2026-11-03T18:20:05") })).results[HP1X].outcome, "awaiting");
 });
 
 test("a zero portal day that took no POS card money carries no 'lists none of' error", async () => {
   const db = concreteWithSales({});
-  const got = await concretePull(db, [], { now: SAST("2026-11-03T18:00:30") });
+  const got = await concretePull(db, [], { now: SAST("2026-11-03T18:20:05") });
   const rec = await node(db, `card_batches/concrete/${F2Y}/${got.results[F2Y].key}`);
   assert.equal(rec.warnings.some((w) => /lists none of/.test(w)), false);
 });

@@ -124,6 +124,15 @@ export function captureCards(terminals) {
     .sort((a, b) => String(a.label || a.tid).localeCompare(String(b.label || b.tid)));
 }
 
+/**
+ * The cards a person captures a report for. A till whose day comes from
+ * SimplyBLU (`source: "portal"`) is not one: nothing is waited for from anyone
+ * here, so it never reads "Waiting" or "Type total" (Junid, 8 Nov 2026).
+ */
+export function captureableCards(terminals) {
+  return captureCards(terminals).filter((t) => !isPortalRecordTerminal(t));
+}
+
 // ── WHOSE TILLS, AND UNDER WHICH SECTION ─────────────────────────────────────
 // A terminal row names its store by the POS's short id ("pe", "concrete"), and
 // the network registry knows which section that store is in. Two things follow,

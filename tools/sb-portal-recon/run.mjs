@@ -296,8 +296,8 @@ async function main() {
   const nowMs = Date.now();
   const today = sastYmd(nowMs);
   // launchd fires --catchup at 18:00 AND 18:20. Before 18:15 SAST it is the
-  // 18:00 pull and always runs; from 18:15 it runs only if today's scheduled
-  // pull has not finished. A manual or --days run never counts as "today's".
+  // 18:00 pull and always runs; from 18:15 it runs unless an 18:20 pull has
+  // already finished today. A manual or --days run never counts as "today's".
   if (MODE === "catchup" && sastMinutes(nowMs) >= 18 * 60 + 15 && readState().lastOkDay === today) { log(`catch-up: today's pull already finished — nothing to do`); return EXIT.OK; }
   if (!takeLock()) { log("another pull is running — this one stops"); return EXIT.OK; }
 
@@ -394,7 +394,9 @@ async function main() {
     if (bad.length || storeErrors.length) {
       throw new Error(`${bad.length} day(s) not fully recorded${storeErrors.length ? `; ${storeErrors.join("; ")}` : ""} — the catch-up / next run tries again`);
     }
-    writeState({ lastOkAt: Date.now(), ...(MODE === "catchup" && !opt("--days") ? { lastOkDay: today } : {}) });
+    // Only the 18:20 run closes the day: the 18:00 run leaves 18:20 to pull
+    // again, which is what makes an empty day final (lib/card-portal.cjs).
+    writeState({ lastOkAt: Date.now(), ...(MODE === "catchup" && !opt("--days") && sastMinutes(nowMs) >= 18 * 60 + 15 ? { lastOkDay: today } : {}) });
     return EXIT.OK;
   } catch (err) {
     try {

@@ -164,3 +164,15 @@ describe("the cards the capture screen draws", () => {
     expect(typesTotal({ capture: "typed" })).toBe(true);
   });
 });
+
+describe("a till whose day comes from SimplyBLU is not captured by anyone", () => {
+  it("captureableCards drops a portal till and keeps photo and FNB tills", async () => {
+    const { captureableCards } = await import("./terminalRegistry");
+    const cards = captureableCards({
+      A: { label: "Concrete Till 1", bank: "standard-bank", source: "portal", storeId: "concrete", tillId: "till-1" },
+      B: { label: "Marathon Till 2", bank: "standard-bank", source: "photo", storeId: "pe", tillId: "till-2" },
+      C: { label: "Trophy Till 1", storeId: "trophy", tillId: "till-1" },
+    });
+    expect(cards.map((t) => t.tid)).toEqual(["B", "C"]);
+  });
+});
