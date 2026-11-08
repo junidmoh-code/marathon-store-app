@@ -1,3 +1,6 @@
+// NOTE (8 Nov 2026): Concrete's Standard Bank account no longer has its tag
+// enforced (eftConcreteNonImmediate.test.mjs). This file's chain passes the tag
+// straight in, so it pins immediacyVerdict for an account whose tag IS enforced.
 // ─── 7 NOV 2026 (Junid): THE TRANSACTION NUMBER IS THE IDENTITY; WEEKEND-ONLY
 // NEXT-BUSINESS-DAY; SA PUBLIC HOLIDAYS; SAME-REFERENCE HAND ENTRIES ──────────
 // Each case runs the poller's own chain (email-poller.mjs): reader → account
@@ -292,7 +295,7 @@ describe("a later-dated payment is accepted only when its notice arrives on a no
     expect(settlementDateVerdict(sast("2027-12-29T00:00:00"), sast("2027-12-24T17:00:00")).ok).toBe(false);
   });
 
-  it("Concrete's immediate-only account: a same-day NON-immediate payment still refuses, weekend or weekday", () => {
+  it("an enforced immediate-only account: a same-day NON-immediate payment still refuses, weekend or weekday", () => {
     const toConcrete = (o) => nonImmediate({ account: SB, bank: "STANDARD BANK OF SOUTH AFRICA", ...o });
     for (const [day, received] of [["2026-11-07", sast("2026-11-07T11:00:00")], ["2026-11-10", sast("2026-11-10T11:00:00")]]) {
       const { account, record } = decide(toConcrete({ day }), { received });

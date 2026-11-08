@@ -572,8 +572,8 @@ export function immediacyRequiredFor(bankTs) {
 // the bank dates a later day, up to the next business day, is accepted into
 // an immediate-only account; see immediacyVerdict.)
 // Junid, 2 Nov 2026: an account whose EFT_ALLOWED_ACCOUNTS entry is tagged
-// "immediate" (the Standard Bank ATUGAR account) takes IMMEDIATE payments
-// only. For a payment into it the date-phased relaxation above does not
+// "immediate" takes IMMEDIATE payments only, unless the tag is waived (below:
+// the Standard Bank ATUGAR account, since 8 Nov 2026). For a payment into it the date-phased relaxation above does not
 // apply: immediacy is required whatever the bank date, read by the same
 // per-bank signal (Standard Bank: the heading "Immediate Payment
 // Confirmation", never the footer). Every other account keeps the date-phased
@@ -582,6 +582,28 @@ export function immediacyRequiredFor(bankTs) {
 // A Standard-Bank-to-Standard-Bank payment is intra-bank and counts as
 // immediate by its nature, like FNB-to-FNB (Junid, 6 Nov 2026 — see below);
 // payments into the account from any other bank must still be immediate.
+
+// ─── CONCRETE'S STANDARD BANK ACCOUNT: THE TAG NO LONGER BINDS (8 Nov 2026) ──
+// Junid, 8 Nov 2026: the immediate-only rule was rejecting real customers.
+// Concrete's Standard Bank account now confirms a non-immediate EFT exactly as
+// Marathon's FNB account does: the date-phased rule, next-business-day
+// settlement, future-dated refusal, DKIM, dedupe holds and the cutoff all
+// still apply. Its EFT_ALLOWED_ACCOUNTS entry deliberately keeps its
+// ":immediate" tag (the list was not to change), so the waiver is here, keyed
+// on the account's bank and last four — never a full number in this repo. Any
+// OTHER account tagged "immediate" is still held to it.
+export const IMMEDIATE_TAG_WAIVED = Object.freeze([Object.freeze({ bank: "standardbank", tail: "8534" })]);
+
+/**
+ * Is this account really held to immediate-only? Takes a successful
+ * destinationVerdict ({bank, tail, immediateOnly}) or a parsed policy
+ * ({bank, account, immediateOnly}).
+ */
+export function enforcesImmediateOnly(entry) {
+  if (entry?.immediateOnly !== true) return false;
+  const tail = typeof entry.tail === "string" ? entry.tail : String(entry.account ?? "").slice(-4);
+  return !IMMEDIATE_TAG_WAIVED.some((w) => w.bank === entry.bank && w.tail === tail);
+}
 
 /**
  * @param {{parsed:object, reader?:string, receivedAt:number|null, immediateOnly?:boolean}} p
@@ -617,7 +639,8 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     }
   }
   // IMMEDIATE-ONLY ACCOUNTS RELAX FOR THAT WINDOW (Junid, 7 Nov 2026).
-  // Concrete's Standard Bank account takes immediate payments only. A payment
+  // (Concrete's Standard Bank account, whose case this was, has had its tag
+  // waived since 8 Nov — enforcesImmediateOnly. For an enforced account:) A payment
   // the bank dates AFTER its notice's day and on or before the next business
   // day is a weekend/next-day settlement — RICHARD CHETTY's R2450 Nedbank
   // "Internet payment" of Saturday, dated Monday — and is accepted into it
@@ -679,7 +702,8 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     // still refuses: that is a document out of shape, not a payment type.
     // This applies wherever immediacy is required — also a Standard Bank
     // account under the date-phased rule dated 20–26 Oct — which is inert:
-    // the only Standard Bank account was added on 2 Nov, immediate-only.
+    // the only Standard Bank account was added on 2 Nov, so no payment into
+    // it is dated before then.
     // A payment into the account FROM ANY OTHER BANK (Capitec, Absa, FNB,
     // Nedbank notices) still needs that bank's immediate signal.
     return { ok: true };
@@ -955,6 +979,14 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     syntheticRef,
     destination,
     accountTail: account.tail,
+    // Whether the bank called it immediate, kept as data on a payment into a
+    // tagged account now that it no longer decides anything there (8 Nov
+    // 2026): true, false, or null when the notice does not say. Untagged
+    // accounts' records carry no such field, exactly as before.
+    ...(account.immediateOnly === true ? {
+      immediate: typeof parsed.immediate === "boolean" ? parsed.immediate : null,
+      paymentType: clip(parsed.paymentType, 60) || null,
+    } : {}),
   };
 }
 

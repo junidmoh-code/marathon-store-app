@@ -1,3 +1,6 @@
+// NOTE (8 Nov 2026): Concrete's Standard Bank account no longer has its tag
+// enforced (eftConcreteNonImmediate.test.mjs). This file's chain passes the tag
+// straight in, so it pins immediacyVerdict for an account whose tag IS enforced.
 // ─── STANDARD BANK TO STANDARD BANK IS SAME-BANK, AND SAME-BANK IS IMMEDIATE ──
 // Junid, 6 Nov 2026. The ATUGAR Standard Bank account takes immediate payments
 // only (":standardbank:immediate"). A customer paid R400 into it from her own

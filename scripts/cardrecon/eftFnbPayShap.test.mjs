@@ -1,3 +1,6 @@
+// NOTE (8 Nov 2026): Concrete's Standard Bank account no longer has its tag
+// enforced (eftConcreteNonImmediate.test.mjs). This file's chain passes the tag
+// straight in, so it pins immediacyVerdict for an account whose tag IS enforced.
 // ─── FNB PAYSHAP: ONE-LINE AMOUNT, REAL-TIME INTO ANY BANK ───────────────────
 // Junid, 7 Nov 2026. A customer paid R650 by PayShap from FNB into Concrete's
 // immediate-only Standard Bank account. Junid received the money, but the
