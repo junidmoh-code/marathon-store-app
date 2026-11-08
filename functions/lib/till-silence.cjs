@@ -33,7 +33,7 @@
 "use strict";
 
 const { tillAt, terminalPlacements } = require("./card-terminal-placements.cjs");
-const { isRetiredTerminal, isInactiveTerminal } = require("./card-terminals.cjs");
+const { isRetiredTerminal } = require("./card-terminals.cjs");
 const { formatCents } = require("./card-recon.cjs");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -118,7 +118,7 @@ function assessTillSilence({ nowMs, terminals, events, recordsByTid, lookbackDay
   // RETIRED MACHINES COUNT UNTIL THEY RETIRED: a machine retired yesterday
   // and replaced today still stood on its till yesterday, and yesterday's card
   // money is judged against its records. (Sonnet architect review, #799.)
-  const reg = Object.entries(terminals || {}).filter(([, r]) => r && typeof r === "object" && !isInactiveTerminal(r));
+  const reg = Object.entries(terminals || {}).filter(([, r]) => r && typeof r === "object");
 
   // till key → per-day { tids, label }
   const tills = new Map();
@@ -245,7 +245,7 @@ async function readTillSilenceInputs(db, { nowMs, lookbackDays = LOOKBACK_DAYS }
   const events = (await db.ref("pos/paymentEvents").orderByChild("at").startAt(fromMs).endAt(toMs - 1).once("value")).val() || {};
   const recordsByTid = {};
   for (const [tid, row] of Object.entries(terminals)) {
-    if (!row || typeof row !== "object" || !row.storeId || isInactiveTerminal(row)) continue;
+    if (!row || typeof row !== "object" || !row.storeId) continue;
     if (isRetiredTerminal(row) && row.retiredAt < fromMs) continue;   // retired before the lookback
     recordsByTid[tid] = (await db.ref(`card_batches/${row.storeId}/${tid}`)
       .orderByChild("slip/closedAt").startAt(fromMs).once("value")).val() || {};

@@ -536,46 +536,6 @@ test("the backfill is one card a day: re-pulling a recorded day changes nothing"
   assert.deepEqual(Object.keys(await node(db, `card_batches/concrete/${F2Y}`)), [first.results[F2Y].key]);
 });
 
-// ─── A MACHINE NOT IN USE (Junid, 8 Nov 2026: Concrete Till 2) ───────────────
-const inactiveWorld = (events = {}) => {
-  const db = makeFakeDb({
-    config: { cardTerminals: { ...TERMINALS, [F1Y]: { ...TERMINALS[F1Y], source: "inactive", foldInto: F2Y } } },
-    users: { [POLLER.uid]: { permFlags: { card_recon: true, card_recon_intake: true } } },
-    card_batches: {},
-    pos: { paymentEvents: events },
-    network: { concrete: { tills: { "till-1": { label: "Till 1" }, "till-2": { label: "Till 2" } } } },
-  });
-  return db;
-};
-const concreteDay = (db, rows, now) => handlePortalDay(db, { auth: POLLER, data: { dayYmd: DAY, sources: [{ business: { name: "CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF1Y", "0000OF2Y"], cols: COLS, rows }] } }, { now: () => now });
-
-test("a machine not in use gets no card, and its payment counts on the machine in use", async () => {
-  const db = inactiveWorld({ a: card("concrete", "till-1", "2026-11-03T15:02:30", 75000) });
-  const got = await concreteDay(db, [row("2026-11-03T15:01:00", "0000OF1Y", 750)], SAST("2026-11-04T07:00:00"));
-  assert.equal(await node(db, `card_batches/concrete/${F1Y}`), null, "no record is ever written for it");
-  assert.equal(got.results[F1Y].outcome, "ignored");
-  const rec = await node(db, `card_batches/concrete/${F2Y}/${got.results[F2Y].key}`);
-  assert.equal(rec.slip.totalCents, 75000);
-  assert.deepEqual(rec.portal.foldedFrom, { tid: "0000OF1Y", txns: 1, cents: 75000 });
-  assert.ok(rec.warnings.some((w) => /not in use/.test(w)));
-});
-
-test("a machine not in use with no foldInto: its money is unattributed, never silently nothing", async () => {
-  const db = makeFakeDb({
-    config: { cardTerminals: { [F1Y]: { ...TERMINALS[F1Y], source: "inactive" }, [F2Y]: TERMINALS[F2Y] } },
-    users: { [POLLER.uid]: { permFlags: { card_recon: true, card_recon_intake: true } } },
-    card_batches: {}, pos: { paymentEvents: {} },
-  });
-  const got = await concreteDay(db, [row("2026-11-03T15:01:00", "0000OF1Y", 750)], SAST("2026-11-04T07:00:00"));
-  assert.deepEqual(got.unattributed, { txns: 1, cents: 75000 });
-});
-
-test("foldInto only ever reaches a portal machine in the same store", () => {
-  assert.equal(P.foldTargetOf(F2Y, { [F2Y]: { ...TERMINALS[F2Y], source: "portal" } }), F2Y);
-  const reg = { A: { source: "inactive", foldInto: HP1X, storeId: "concrete" }, [HP1X]: TERMINALS[HP1X] };
-  assert.equal(P.foldTargetOf("A", reg), null);
-});
-
 // ─── THE 07:00 RE-PULL: ONLY IF THE PORTAL HAS GROWN ─────────────────────────
 const oneDay = (db, rows, now, extra = {}) => handlePortalDay(db, { auth: POLLER, data: { dayYmd: DAY, ...extra, sources: [{ business: { name: "CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF2Y"], cols: COLS, rows }] } }, { now: () => now });
 const NEXT_MORNING = SAST("2026-11-04T07:00:10");
@@ -615,7 +575,7 @@ const leg = (at, cents, over = {}) => ({ ...card("concrete", "till-1", at, cents
 
 test("gap: every leg answered on amount and time means nothing missing", () => {
   const g = gapOf([L("2026-11-03T10:00:00", 50000)], [leg("2026-11-03T10:03:00", 50000)]);
-  assert.deepEqual(g, { missingCount: 0, missingCents: 0, missing: [] });
+  assert.deepEqual(g, { missingCount: 0, missingCents: 0, missing: [], elsewhere: [] });
 });
 
 test("gap: a leg of the right amount hours away is NOT answered — amount alone is no match", () => {
@@ -668,4 +628,21 @@ test("the record carries the gap; a re-pull with the same figures refreshes it w
   const after = await node(db, `card_batches/concrete/${F2Y}/${key}/portalGap`);
   assert.equal(after.missingCount, 0);
   assert.equal(after.missing, undefined, "the fake, like RTDB, drops an empty array");
+});
+
+test("gap: a leg answered on another machine in this store is not missing, and is named", () => {
+  const g = P.portalGapOf({ lines: [], legs: [leg("2026-10-31T15:01:58", 75000)], storeId: "concrete", tillId: "till-1", elsewhere: [{ at: SAST("2026-10-31T15:01:00"), amountCents: 75000, tid: F1Y }] });
+  assert.equal(g.missingCount, 0);
+  assert.equal(g.elsewhere[0].tid, F1Y);
+  const far = P.portalGapOf({ lines: [], legs: [leg("2026-10-31T15:01:58", 75000)], storeId: "concrete", tillId: "till-1", elsewhere: [{ at: SAST("2026-10-31T11:00:00"), amountCents: 75000, tid: F1Y }] });
+  assert.equal(far.missingCount, 1, "amount alone is no match");
+});
+
+test("both Concrete machines get their own card, and Till 1's leg on Till 2's machine is accounted for", async () => {
+  const db = concreteWithSales({ a: leg("2026-11-03T15:02:30", 75000) });
+  const got = await handlePortalDay(db, { auth: POLLER, data: { dayYmd: DAY, sources: [{ business: { name: "CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF1Y", "0000OF2Y"], cols: COLS, rows: [row("2026-11-03T15:01:00", "0000OF1Y", 750), row("2026-11-03T10:00:00", "0000OF2Y", 100)] }] } }, { now: () => NEXT_MORNING });
+  assert.equal(got.results[F1Y].outcome, "recorded");
+  const t1 = await node(db, `card_batches/concrete/${F2Y}/${got.results[F2Y].key}`);
+  assert.equal(t1.portalGap.missingCount, 0);
+  assert.equal(Object.values(t1.portalGap.elsewhere)[0].tid, F1Y);
 });

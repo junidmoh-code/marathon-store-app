@@ -70,7 +70,7 @@ const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
-const { isRetiredTerminal, isInactiveTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK, isPhotoPrimary, isPortalRecordTerminal, registeredRowFor } = require("../lib/card-terminals.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK, isPhotoPrimary, isPortalRecordTerminal, registeredRowFor } = require("../lib/card-terminals.cjs");
 const { isPortalDay } = require("../lib/card-portal.cjs");
 const { SB_READER_VERSION, planSbFiling, sequenceTidProof, typedCheck: sbTypedCheck } = require("../lib/card-sb-photo.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
@@ -2370,7 +2370,7 @@ async function handleSlipTills(db, request, deps = {}) {
   const dayYmd = slipTradingDay(nowMs);
   const tills = [];
   for (const [tid, row] of Object.entries(terminals)) {
-    if (!row || !row.storeId || !row.tillId || isRetiredTerminal(row) || isInactiveTerminal(row)) continue;
+    if (!row || !row.storeId || !row.tillId || isRetiredTerminal(row)) continue;
     const here = tillAt(row, nowMs);
     const storeId = here.storeId || row.storeId;
     const tillId = here.tillId || row.tillId;
@@ -2384,9 +2384,7 @@ async function handleSlipTills(db, request, deps = {}) {
   // quietly: the screen tells the person to call Junid, and the log carries
   // the alarm (18 Oct 2026 — one till must only ever have one identity).
   for (const key of scope) {
-    if (!tills.some((t) => `${t.storeId}/${t.tillId}` === key)
-      // A till whose machine is simply not in use is not an orphan.
-      && !Object.values(terminals).some((r) => isInactiveTerminal(r) && `${r.storeId}/${r.tillId}` === key)) {
+    if (!tills.some((t) => `${t.storeId}/${t.tillId}` === key)) {
       console.error(`CARD_SLIP_SCOPE_ORPHAN uid=${uid} till=${key}: no registered card machine stands at this till — the person cannot send its slip`);
     }
   }
