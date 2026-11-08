@@ -182,6 +182,10 @@ const SB_MAX_PHOTOS = 6;
 
 function TillSlip({ till, live = true, sent, onSent = () => {} }) {
   const photoFirst = till.photoFirst === true;
+  // A till whose day comes from SimplyBLU (Junid, 8 Nov 2026): nothing is
+  // asked of the person. The slip stays possible, only as an optional backup.
+  const portal = till.portal === true;
+  const [backup, setBackup] = useState(false);
   const [photos, setPhotos] = useState([]);          // [{ base64 }] once attached
   const photo = photos[0] || null;
   const [text, setText] = useState("");
@@ -229,8 +233,8 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
   // A typed-total till (Trophy Till 2) needs the photo AND the figure; every
   // other till needs the photo only — its total is read off it. A Standard
   // Bank till may add the figure (optional, Junid's cross-check).
-  const needsFigure = till.typed === true && !photoFirst;
-  const offersFigure = needsFigure || photoFirst;
+  const needsFigure = till.typed === true && !photoFirst && !portal;
+  const offersFigure = needsFigure || photoFirst || portal;
   const canSend = !!photo && (!needsFigure || figure !== "") && !busy && live;
 
   const submit = async () => {
@@ -240,7 +244,7 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
     try {
       const { data } = await cardBatchCaptureFn({
         action: "slip", pickedTid: till.tid, photos: photos.map((p) => ({ base64: p.base64 })),
-        ...(needsFigure || (photoFirst && figure !== "") ? { declaredTotal: figure } : {}),
+        ...(needsFigure || ((photoFirst || portal) && figure !== "") ? { declaredTotal: figure } : {}),
       });
       const kept = receiptOf(data);
       if (!kept) {
@@ -268,10 +272,22 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
     }
   };
 
+  if (portal && !backup) {
+    return (
+      <section aria-label={`Card slip for ${till.label}`}>
+        <div style={S.till}>{till.label}</div>
+        <div style={{ ...S.status, ...S.statusIn }} role="status" data-testid="slip-portal">
+          Nothing to send — this till's card total comes automatically from SimplyBLU.
+        </div>
+        <button type="button" style={S.again} data-testid="slip-backup" onClick={() => setBackup(true)}>Add a slip anyway (optional backup)</button>
+      </section>
+    );
+  }
+
   return (
     <section aria-label={`Card slip for ${till.label}`}>
       <div style={S.till}>{till.label}</div>
-      {phase !== "sent" && sent !== undefined && (
+      {!portal && phase !== "sent" && sent !== undefined && (
         <div style={{ ...S.status, ...(sent ? S.statusIn : S.statusOut) }} role="status" data-testid="slip-today">
           {sent ? `✓ Today's slip is in — sent at ${clockOf(sent.at)}.` : "No slip sent yet today."}
         </div>
@@ -327,11 +343,11 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
             </div>
           )}
           {offersFigure && (<>
-          <label style={S.step} htmlFor={`slip-total-${till.tid}`}>{photoFirst ? "2 · Card total on the report (R) — optional" : "2 · Card total on the slip (R)"}</label>
+          <label style={S.step} htmlFor={`slip-total-${till.tid}`}>{photoFirst ? "2 · Card total on the report (R) — optional" : portal ? "2 · Card total on the slip (R) — optional" : "2 · Card total on the slip (R)"}</label>
           <input id={`slip-total-${till.tid}`} style={S.amount} inputMode="decimal" autoComplete="off" enterKeyHint="done"
                  placeholder="0.00" value={text} disabled={phase === "sending"}
                  onChange={(e) => setText(e.target.value)} />
-          <div style={S.hint}>{photoFirst ? "Not needed — the photo is read for the total." : "Type 0 if there were no card sales."}</div>
+          <div style={S.hint}>{photoFirst ? "Not needed — the photo is read for the total." : portal ? "Not needed — SimplyBLU's figure is the record." : "Type 0 if there were no card sales."}</div>
           </>)}
           <button type="button" style={{ ...S.submit, ...(canSend ? null : S.submitOff) }} disabled={!canSend} onClick={submit}>
             {phase === "sending" ? "Sending…" : "Submit"}

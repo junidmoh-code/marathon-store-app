@@ -9,7 +9,7 @@
 // Kept in step with the server by a contract test (slipScope.test.js), which
 // runs both over the same inputs.
 
-import { captureCards, typesTotal, isPhotoPrimary } from "./terminalRegistry";
+import { captureCards, typesTotal, isPhotoPrimary, isPortalRecordTerminal } from "./terminalRegistry";
 
 export const SLIP_SCOPE_FIELD = "cardSlipTills";
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
@@ -58,7 +58,9 @@ export function slipTills(terminals, permRecord, nowMs) {
     // the total is read off it (Junid, 17 Oct 2026).
     // photoFirst: a Standard Bank till — the report is photographed (several
     // photos for a long roll) and the typed total is optional (7 Nov 2026).
-    .map((t) => ({ tid: t.tid, typed: typesTotal(t), photoFirst: isPhotoPrimary(t), ...tillNow(t, nowMs) }))
+    // portal: the SimplyBLU pull is this till's record — nothing is asked of
+    // the person; a slip is only ever an optional backup (Junid, 8 Nov 2026).
+    .map((t) => ({ tid: t.tid, typed: typesTotal(t), photoFirst: isPhotoPrimary(t), portal: isPortalRecordTerminal(t), ...tillNow(t, nowMs) }))
     .map((t) => ({ ...t, label: t.label || `${t.storeId} · ${t.tillId}` }))
     .filter((t) => scope.includes(`${t.storeId}/${t.tillId}`));
 }

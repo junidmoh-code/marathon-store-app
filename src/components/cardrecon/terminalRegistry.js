@@ -65,12 +65,20 @@ export function typesTotal(row) {
  * for an email. Decided by the row's bank, never by a list of tills.
  */
 export function isPhotoPrimary(row) {
-  return row?.bank === "standard-bank" && row?.record !== "portal";
+  return row?.bank === "standard-bank" && reportSource(row) === "photo";
+}
+
+/** Where this till's day comes from: "portal" | "photo" | "email" — server reportSource (lib/card-terminals.cjs). */
+export function reportSource(row) {
+  if (!row) return null;
+  if (row.source === "portal" || row.source === "photo" || row.source === "email") return row.source;
+  if (row.bank !== "standard-bank") return "email";
+  return row.record === "portal" ? "portal" : "photo";
 }
 
 /** A Standard Bank till whose record is the SimplyBLU portal (Concrete) — server isPortalRecordTerminal. */
 export function isPortalRecordTerminal(row) {
-  return row?.bank === "standard-bank" && row?.record === "portal";
+  return row?.bank === "standard-bank" && reportSource(row) === "portal";
 }
 
 /** Does this machine's report arrive by email? Never a Standard Bank one. */
@@ -114,6 +122,15 @@ export function captureCards(terminals) {
     // an existing row, so a stray `tid` is not hypothetical. (CodeRabbit, #611.)
     .map(([tid, row]) => ({ ...row, tid }))
     .sort((a, b) => String(a.label || a.tid).localeCompare(String(b.label || b.tid)));
+}
+
+/**
+ * The cards a person captures a report for. A till whose day comes from
+ * SimplyBLU (`source: "portal"`) is not one: nothing is waited for from anyone
+ * here, so it never reads "Waiting" or "Type total" (Junid, 8 Nov 2026).
+ */
+export function captureableCards(terminals) {
+  return captureCards(terminals).filter((t) => !isPortalRecordTerminal(t));
 }
 
 // ── WHOSE TILLS, AND UNDER WHICH SECTION ─────────────────────────────────────

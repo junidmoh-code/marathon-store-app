@@ -44,6 +44,10 @@ const PORTAL_FORMAT = "portal";
 // which their portal held app-initiated payments only (29 ever). A Standard
 // Bank row WITHOUT `portalFrom` takes the default; nothing is ever taken from
 // the portal before the floor.
+// A portal till's empty day is final from the 18:20 SAST pull: until then it
+// reads "awaiting portal data", so a portal running late at 18:00 is not a
+// false SHORT (stores close 17:00; run.mjs always pulls again at 18:20).
+const PORTAL_PULL_MINUTE = 18 * 60 + 15;
 const PORTAL_FROM_YMD = "2026-11-03";       // the default
 const PORTAL_EARLIEST_YMD = "2026-10-30";   // the floor, for every terminal
 
@@ -316,7 +320,10 @@ function samePortalFigures(rec, extraction) {
  *     beside it;
  *   • nothing that day → the terminal's next filing number.
  */
-// ─── FROM 7 NOV 2026 THE PORTAL IS A CROSS-CHECK, NEVER THE RECORD ──────────
+// ─── FOR A PHOTO TILL THE PORTAL IS A CROSS-CHECK, NEVER THE RECORD ─────────
+// (Which tills: the row's `source`, lib/card-terminals.cjs reportSource. Since
+// 8 Nov 2026 Concrete's is "portal"; only Marathon PE Till 2 and Trophy Till 2
+// are "photo".)
 // Junid, 7 Nov 2026: the photographed end-of-day report is the record for a
 // Standard Bank till (lib/card-sb-photo.cjs). The portal had recorded Marathon
 // PE Till 2 at R0.00 against R33,440 of card sales (its merchant shows no
@@ -373,11 +380,16 @@ function portalCheckOf({ extraction, recordTotalCents = null, merchantNo = null,
 }
 
 /** The sentence(s) a portal record carries. */
-function portalWarnings({ extraction, replacing = null, supersededKey = null, merchantNo = null }) {
+function portalWarnings({ extraction, replacing = null, supersededKey = null, merchantNo = null, expectedCents = null }) {
   const out = [
     `Recorded from the SimplyBLU portal (Standard Bank${merchantNo ? `, merchant ${merchantNo}` : ""}) for ${sastDayYmd(extraction.openedAt)}, 00:00–24:00 SAST — the portal's transaction list is the record for this till.`,
   ];
   if (extraction.txnCount === 0) out.push("The portal shows NO card transactions on this machine for the day.");
+  // THE SPECIFIC ERROR (Junid, 8 Nov 2026): a portal with nothing against a
+  // till that took card money is said in those words, with the amount.
+  if (extraction.txnCount === 0 && Number.isInteger(expectedCents) && expectedCents > 0) {
+    out.push(`SimplyBLU lists none of the R${(expectedCents / 100).toFixed(2)} the POS took by card on this till that day — this figure is the portal's, not proof the money is missing. Check the machine's printed report.`);
+  }
   if (replacing === "other" && supersededKey) out.push(`This replaces ${supersededKey}, which was on file for the day before the portal was read; it is kept unchanged.`);
   if (replacing === "portal" && supersededKey) out.push(`The portal's figures for the day changed after ${supersededKey} was recorded (a later pull); this revision replaces it.`);
   return out;
@@ -417,7 +429,7 @@ function daysToPull(todayYmd, back = 2) {
 module.exports = {
   PORTAL_SOURCE, PORTAL_WINDOW, PORTAL_FORMAT, PORTAL_FROM_YMD, PORTAL_EARLIEST_YMD, portalFromOf,
   PORTAL_PATH, PORTAL_HELD_PATH, PORTAL_UNASSIGNED_PATH, PORTAL_DAYS_PATH, PORTAL_STATUS_PATH,
-  METABASE_ROW_CAP, SAFE_KEY,
+  METABASE_ROW_CAP, SAFE_KEY, PORTAL_PULL_MINUTE,
   isPortalDay, portalDayWindow, columnIndex, parsePortalRows, randsToCents, isTidLike,
   mapPortalTids, unassignedKey, portalExtraction, isPortalRecord, samePortalFigures, lineSignature,
   planPortalWrite, portalCheckOf, portalWarnings, portalTerminalsOn, daysToPull,

@@ -322,6 +322,31 @@ describe("Amanda's screen, and an account with no till", () => {
 // Amanda's Concrete Till 1/2: the screen leads with "Photograph the end-of-day
 // report", takes several photos for a long roll, and the card total is
 // optional. Sent only on the server's receipt; she never sees a figure back.
+describe("Amanda's screen: a till whose day comes from SimplyBLU asks for nothing", () => {
+  beforeEach(() => {
+    ESTATE["00000F2Y"] = { label: "Concrete Till 1", storeId: "concrete", tillId: "till-1", capture: "typed", bank: "standard-bank", source: "portal" };
+    perms.permRecord = { displayName: "amanda", stockRole: "pos", cardSlipTills: { concrete: { "till-1": true } } };
+  });
+  afterEach(() => { delete ESTATE["00000F2Y"]; });
+
+  it("draws the till with no form, no camera, no reminder", () => {
+    const t = render();
+    const text = everyString(t);
+    expect(text).toMatch(/Concrete Till 1/);
+    expect(text).toMatch(/Nothing to send/);
+    expect(text).not.toMatch(/No slip sent|Photograph the end-of-day|Photo of the slip/);
+    expect(fileInputs(t)).toEqual([]);
+  });
+
+  it("a slip is still possible as a backup, with the total optional", async () => {
+    const t = render();
+    act(() => { t.root.findByProps({ "data-testid": "slip-backup" }).props.onClick(); });
+    expect(everyString(t)).toMatch(/optional/);
+    await pick(fileInputs(t)[0]);
+    expect(submitBtn(t).props.disabled).toBe(false);
+  });
+});
+
 describe("Amanda's screen: a Standard Bank till is photographed", () => {
   beforeEach(() => {
     ESTATE["00000F2Y"] = { label: "Concrete Till 1", storeId: "concrete", tillId: "till-1", capture: "typed", bank: "standard-bank" };
