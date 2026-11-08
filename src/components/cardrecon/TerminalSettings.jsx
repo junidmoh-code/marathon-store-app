@@ -41,7 +41,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT } from "./cardReconStyles";
-import { captureMode, isRetiredTerminal, terminalBank, isPhotoPrimary, isPortalRecordTerminal, isInactiveTerminal } from "./terminalRegistry";
+import { captureMode, isRetiredTerminal, terminalBank, isPhotoPrimary, isPortalRecordTerminal } from "./terminalRegistry";
 import { tillNow } from "./slipScope";
 import { useNetwork } from "../../utils/useNetwork";
 import { sectionOf, sectionName } from "../../utils/networkRegistry";
@@ -448,7 +448,7 @@ export default function TerminalSettings({ terminals, onClose, assignTid = null 
           <div key={r.tid} style={{ ...U.row, ...(retired ? U.rowRetired : null) }}>
             <div style={U.name}>{r.label || r.tid}</div>
             <div style={U.meta} data-testid={`ts-meta-${r.tid}`}>
-              {r.tid} · on {storeName(stores, here.storeId)} · {tillName(stores, here.storeId, here.tillId)} · {isInactiveTerminal(r) ? "not in use" : isPortalRecordTerminal(r) ? "SimplyBLU portal (automatic)" : isPhotoPrimary(r) ? "Photo of the end-of-day report" : CAPTURE_LABEL[captureMode(r)]}{terminalBank(r) === "fnb" ? "" : ` · ${BANK_LABEL[terminalBank(r)]}`}
+              {r.tid} · on {storeName(stores, here.storeId)} · {tillName(stores, here.storeId, here.tillId)} · {isPortalRecordTerminal(r) ? "SimplyBLU portal (automatic)" : isPhotoPrimary(r) ? "Photo of the end-of-day report" : CAPTURE_LABEL[captureMode(r)]}{terminalBank(r) === "fnb" ? "" : ` · ${BANK_LABEL[terminalBank(r)]}`}
               {filedElsewhere ? ` · batches filed under ${storeName(stores, r.storeId)} · ${tillName(stores, r.storeId, r.tillId)}` : ""}
               {r.mid ? ` · MID ${r.mid}` : ""}
               {retired ? ` · retired${r.replacedBy ? `, replaced by ${r.replacedBy}` : ""}` : ""}

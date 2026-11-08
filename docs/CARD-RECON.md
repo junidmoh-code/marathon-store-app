@@ -1820,27 +1820,31 @@ and how to add marathon6631@gmail.com as the "notify by email" address.
   `~/marathon-store-app/.env`; unset, `on`, `true` or `1` is on. Any other
   value turns it OFF with a warning. A dry run never sends.
 
-## Concrete Till 1: why SimplyBLU read short (8 Nov 2026)
+## Concrete Till 1: what SimplyBLU does not hold (8 Nov 2026)
 
 Every SimplyBLU payment on 0000OF2Y from 30 Oct to 8 Nov was matched against
-Concrete Till 1's POS card legs by amount and time. SimplyBLU's own
-Transactions page lists the same 90 payments as the Metabase report, numbered
-1 to 90 with no gap, so the pull loses nothing. One card machine batch per
-calendar day, so the window is right. A re-pull a day later found nothing new.
+Concrete Till 1's POS card legs by amount and time. Junid: the machine has only
+the SimplyBLU app, so a second payment app is not the explanation.
 
-The unmatched money is payments that never reached SimplyBLU: all of 7 Nov
-(the machine's batch 9 is absent from the portal; 8 Nov is batch 10), and the
-first sales of 1 and 3 Nov. The other differences are the till, not the portal:
-a card sale rung up as cash on POS, one R20 with no POS sale, one R3,300 sale
-where the portal shows R2,200.
+Searched on 8 Nov, on both stores on the login: the Transactions page at every
+status (Pending, Failure and Error are empty), Orders, and every report in the
+Reports Centre. The portal's own list and the report agree (90 payments,
+numbered without a gap). Batch 9 (7 Nov) is the only machine batch number absent.
 
-So the portal's list is not always the machine's money. A portal record carries
-`portalGap` (`portalGapOf`, lib/card-portal.cjs): each POS card leg with no
-portal line. The POS shows "portal missing N payments (R X) that the POS has"
-and lists them; only a day with every leg answered can read short or over.
+- Not settlement: a payment shows within about 36 seconds of being taken, in
+  a batch still open.
+- Not date basis: reports file by the day taken, and no payment of 6 to 8 Nov is
+  unanswered by a POS sale that day.
+- Not a later upload so far: no row has ever arrived more than 36 seconds late.
+- Not another view: no store, terminal or status holds them.
 
-`source: "inactive"` (Concrete Till 2) hides a machine from Card Recon; its
-`foldInto` names the machine in use its stray payments count on.
+So these payments were never recorded on SimplyBLU's servers, and why is not
+visible from the portal. The 07:00 pull re-reads ten days in case they arrive.
 
-The job also re-reads yesterday at 07:00 (only if the portal has grown), and
-compares each pull with the portal's own Transactions page.
+A portal record carries `portalGap` (`portalGapOf`, lib/card-portal.cjs): each
+POS card leg with no portal line on this machine or another in the store. The
+POS shows "portal missing N payments (R X) that the POS has" and lists them;
+only a day with every leg answered can read short.
+
+A day with no POS card sale and no portal transaction reads "No card sales —
+nothing to check".

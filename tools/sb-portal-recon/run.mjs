@@ -2,7 +2,7 @@
 // ─── SIMPLYBLU PORTAL → CARD RECON (Mac mini, launchd com.marathon.sbportalrecon)
 // Junid, 2 Nov 2026: from 3 Nov the Standard Bank tills take every card
 // payment through the SimplyBLU app, so the portal is their record. At 18:00
-// SAST (catch-up 18:20), and at 07:00 for yesterday alone (refreshed only if
+// SAST (catch-up 18:20), and at 07:00 for the last ten days (refreshed only if
 // the portal has grown), this:
 //   1. opens the portal in a PERSISTENT browser profile (the sign-in survives
 //      between runs; Firebase keeps it), headless;
@@ -39,7 +39,7 @@ import {
   daysToPull, dateFilter, embedTokenFromSrc, embedClaims, readDashboard, tidsFromValues, cardRows,
   parseStoreItems, classifyPage, shouldAlert, loginAlert, summaryLine, sastYmd,
   projectColumns, shouldAlertFailure, failureAlert,
-  TRANSACTIONS_URL, MORNING_END_MINUTE, morningDays, listMissingFromReport,
+  TRANSACTIONS_URL, MORNING_END_MINUTE, morningDays, listMissingFromReport, addListRows,
 } from "./core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -359,7 +359,7 @@ async function main() {
     let stores = await listStores(page).catch((err) => { log(`⚠ store switcher unreadable (${err.message.split("\n")[0]}) — reading the selected store only`); return []; });
     const morning = MODE === "catchup" && !opt("--days") && sastMinutes(nowMs) < MORNING_END_MINUTE;
     const days = opt("--days") ? opt("--days").split(",").filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)) : morning ? morningDays(nowMs) : daysToPull(nowMs);
-    if (morning) log(`morning re-pull of ${days.join(", ")}`);
+    if (morning) log(`morning re-pull of ${days[0]} to ${days.at(-1)}`);
     if (!days.length) { log("no day to pull yet (the portal is the record from 2026-11-03)"); return EXIT.OK; }
     const sources = {}; // day → [source]
     const raw = { at: new Date(nowMs).toISOString(), days, stores: [] };
@@ -389,9 +389,9 @@ async function main() {
         try {
           const lost = await portalListCheck(page, claims.businessId, got.byDay);
           if (lost.length) {
-            // Said, not failed: what the report held was recorded, and the day
-            // shows the POS legs it lacks by itself.
-            log(`⚠ ${store.name}: the portal's own list has ${lost.length} payment(s) the report lacks: ${JSON.stringify(lost).slice(0, 400)}`);
+            // Real sales the report lacks are recorded; said, not failed.
+            const added = addListRows(got.byDay, lost);
+            log(`⚠ ${store.name}: the portal's own list has ${lost.length} payment(s) the report lacks, ${added} added: ${JSON.stringify(lost.map(({ day, number, amount, terminalId }) => ({ day, number, amount, terminalId }))).slice(0, 400)}`);
           } else log(`${store.name}: every payment on the portal's own list is in the report`);
         } catch (err) { log(`⚠ ${store.name}: the portal's own list could not be read (${err.message.split("\n")[0]}) — not cross-checked`); }
       }

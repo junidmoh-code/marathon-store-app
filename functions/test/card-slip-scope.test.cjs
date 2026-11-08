@@ -291,17 +291,3 @@ test("slipTills: each person gets ONLY their own till — id, label, typed — a
   assert.doesNotMatch(JSON.stringify(y), /total|cents|batch|variance/i);
   await assert.rejects(() => handleSlipTills(db, { auth: null, data: {} }), (e) => e.code === "permission-denied");
 });
-
-test("a machine not in use is never offered on the Card Slip screen", async () => {
-  const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
-  const { handleSlipTills } = require("../cardRecon/cardRecon.js");
-  const db = makeFakeDb({
-    users: { amanda: { cardSlipTills: { concrete: { "till-1": true, "till-2": true } } } },
-    config: { cardTerminals: {
-      A: { storeId: "concrete", tillId: "till-1", label: "Concrete Till 1", bank: "standard-bank", source: "portal" },
-      B: { storeId: "concrete", tillId: "till-2", label: "Concrete Till 2", bank: "standard-bank", source: "inactive" },
-    } },
-  });
-  const out = await handleSlipTills(db, { auth: { uid: "amanda", token: {} } }, {});
-  assert.deepEqual(out.tills.map((t) => t.label), ["Concrete Till 1"]);
-});

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   readDashboard, tidsFromValues, cardRows, embedTokenFromSrc, embedClaims, parseStoreItems, classifyPage,
-  shouldAlert, loginAlert, daysToPull, dateFilter, sastYmd, portalLib, morningDays, listMissingFromReport,
+  shouldAlert, loginAlert, daysToPull, dateFilter, sastYmd, portalLib, morningDays, listMissingFromReport, addListRows,
 } from "../core.mjs";
 
 const fx = (n) => JSON.parse(readFileSync(new URL(`./fixtures/${n}`, import.meta.url), "utf8"));
@@ -85,8 +85,19 @@ test("the failure email goes once per outage", async () => {
   assert.equal(failureAlert("x").to, "gunidmoh@gmail.com");
 });
 
-test("the morning run re-reads yesterday alone", () => {
-  assert.deepEqual(morningDays(Date.parse("2026-11-09T05:00:00Z")), ["2026-11-08"]);
+test("the morning run re-reads the last ten days, not today", () => {
+  const d = morningDays(Date.parse("2026-11-20T05:00:00Z"));
+  assert.equal(d.length, 10);
+  assert.equal(d[0], "2026-11-10");
+  assert.equal(d.at(-1), "2026-11-19");
+});
+
+test("a purchase on the portal's own list goes into its day as a report row; another type does not", () => {
+  const byDay = { "2026-11-07": { cols: ["DateCreated: Minute", "ID", "TransactionNumber", "TransactionType", "TransactionStatus", "TerminalId", "Transaction Amount"], rows: [] } };
+  assert.equal(addListRows(byDay, [{ day: "2026-11-07", number: 91, amount: 340, terminalId: "0000OF2Y", id: "x", at: "2026-11-07T10:00:00.000Z", type: 3 }, { day: "2026-11-07", number: 92, amount: 1, type: 1 }]), 1);
+  const p = portalLib.parsePortalRows(byDay["2026-11-07"]);
+  assert.equal(p.ok, true);
+  assert.equal(p.txns[0].amountCents, 34000);
 });
 
 test("the portal's own list: a successful payment the report lacks is named; everything else is not", () => {
@@ -95,7 +106,8 @@ test("the portal's own list: a successful payment the report lacks is named; eve
   const now = Date.parse("2026-11-07T16:00:00Z");
   const rec = (over) => ({ transactionNumber: 91, transactionStatus: 2, terminalId: "0000OF2Y", amount: 50, dateCreated: "2026-11-07T10:00:00.000Z", ...over });
   const got = listMissingFromReport([rec(), rec({ transactionNumber: 90 })], byDay, now);
-  assert.deepEqual(got, [{ day: "2026-11-07", number: 91, amount: 50, terminalId: "0000OF2Y" }]);
+  assert.equal(got.length, 1);
+  assert.deepEqual([got[0].day, got[0].number, got[0].amount, got[0].terminalId], ["2026-11-07", 91, 50, "0000OF2Y"]);
   assert.deepEqual(listMissingFromReport([rec({ transactionStatus: 3 })], byDay, now), [], "not a success");
   assert.deepEqual(listMissingFromReport([rec({ terminalId: null })], byDay, now), [], "not a card-machine payment");
   assert.deepEqual(listMissingFromReport([rec({ dateCreated: "2026-11-06T10:00:00.000Z" })], byDay, now), [], "a day not pulled");

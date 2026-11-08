@@ -54,11 +54,13 @@ export function daysToPull(nowMs, back = 2) {
   return portalLib.daysToPull(sastYmd(nowMs), back);
 }
 
-// THE 07:00 RE-PULL (Junid, 8 Nov 2026): a run before 15:00 SAST re-reads
-// yesterday only; the server refreshes it only if the portal has grown.
+// THE 07:00 RE-PULL (Junid, 8 Nov 2026): a run before 15:00 SAST re-reads the
+// last ten days, not today; the server refreshes a day only if the portal has
+// grown. Payments SimplyBLU lacks may still arrive after their batch closes.
 export const MORNING_END_MINUTE = 15 * 60;
+const MORNING_LOOKBACK_DAYS = 10;
 export function morningDays(nowMs) {
-  return daysToPull(nowMs, 1).slice(0, 1);
+  return daysToPull(nowMs, MORNING_LOOKBACK_DAYS).slice(0, -1);
 }
 
 // THE PORTAL'S OWN TRANSACTIONS PAGE IS THE CROSS-CHECK (8 Nov 2026): it is
@@ -83,9 +85,29 @@ export function listMissingFromReport(list, byDay, readAtMs) {
     if (!Number.isFinite(at) || at > readAtMs - LIST_SETTLE_MS) continue;
     const day = sastYmd(at);
     if (!byDay?.[day] || known.has(Number(t.transactionNumber))) continue;
-    out.push({ day, number: t.transactionNumber, amount: t.amount, terminalId: t.terminalId });
+    out.push({ day, number: t.transactionNumber, amount: t.amount, terminalId: t.terminalId, id: t.id ?? null, at: t.dateCreated, type: t.transactionType, batchNo: t.batchNo ?? null, ref: t.traceId ?? null, authCode: t.authCode ?? null });
   }
   return out;
+}
+
+// A purchase on the portal's own list that the report lacks goes into the day
+// as a report row. Type 3 is a purchase; anything else is only said in the log.
+const LIST_PURCHASE_TYPE = 3;
+export function addListRows(byDay, lost) {
+  let added = 0;
+  for (const t of lost || []) {
+    if (t.type !== LIST_PURCHASE_TYPE || !byDay?.[t.day]) continue;
+    const { cols, rows } = byDay[t.day];
+    const ix = portalLib.columnIndex(cols);
+    if (["at", "type", "status", "tid", "amount"].some((f) => ix[f] < 0)) continue;
+    const row = cols.map(() => null);
+    const put = (f, v) => { if (ix[f] >= 0) row[ix[f]] = v; };
+    put("at", t.at); put("id", t.id); put("number", t.number); put("type", "Purchase"); put("status", "Success");
+    put("tid", t.terminalId); put("batchNo", t.batchNo); put("ref", t.ref); put("authCode", t.authCode); put("amount", t.amount);
+    rows.push(row);
+    added++;
+  }
+  return added;
 }
 
 /** Metabase's date filter for one day. */

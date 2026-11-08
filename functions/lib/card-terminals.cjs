@@ -132,19 +132,12 @@ function isPortalRecordTerminal(row) {
 const SOURCE_PORTAL = "portal";
 const SOURCE_PHOTO = "photo";
 const SOURCE_EMAIL = "email";
-// A MACHINE NOT IN USE (Junid, 8 Nov 2026: Concrete Till 2): never a card in
-// Card Recon, never "awaiting", never asked for a slip, never written. If its
-// merchant still lists a payment on it, `foldInto` names the machine in use
-// that the payment belongs to (card-portal.cjs foldTargetOf).
-const SOURCE_INACTIVE = "inactive";
 function reportSource(row) {
   if (!row) return null;
-  if (row.source === SOURCE_PORTAL || row.source === SOURCE_PHOTO || row.source === SOURCE_EMAIL || row.source === SOURCE_INACTIVE) return row.source;
+  if (row.source === SOURCE_PORTAL || row.source === SOURCE_PHOTO || row.source === SOURCE_EMAIL) return row.source;
   if (row.bank !== STANDARD_BANK) return SOURCE_EMAIL;
   return row.record === PORTAL_RECORD ? SOURCE_PORTAL : SOURCE_PHOTO;
 }
-
-const isInactiveTerminal = (row) => !!row && row.source === SOURCE_INACTIVE;
 
 /** Does this machine's report arrive by email (so a missing email is worth a word)? */
 function expectsEmail(row) {
@@ -284,4 +277,4 @@ function registeredRowFor(readTid, registry) {
   return key ? registry[key] : null;
 }
 
-module.exports = { registeredRowFor, BANKS, STANDARD_BANK, terminalBank, isPhotoPrimary, isPortalRecordTerminal, isInactiveTerminal, reportSource, PORTAL_RECORD, expectsEmail, canonicalTid, resolveRegisteredTid, isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
+module.exports = { registeredRowFor, BANKS, STANDARD_BANK, terminalBank, isPhotoPrimary, isPortalRecordTerminal, reportSource, PORTAL_RECORD, expectsEmail, canonicalTid, resolveRegisteredTid, isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
