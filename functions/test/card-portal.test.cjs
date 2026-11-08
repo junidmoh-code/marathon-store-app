@@ -646,3 +646,15 @@ test("both Concrete machines get their own card, and Till 1's leg on Till 2's ma
   assert.equal(t1.portalGap.missingCount, 0);
   assert.equal(Object.values(t1.portalGap.elsewhere)[0].tid, F1Y);
 });
+
+test("gap: a line its own till answers cannot be claimed by another till's leg", () => {
+  const legs = [leg("2026-10-31T15:01:58", 75000), { ...leg("2026-10-31T15:02:10", 75000), tillId: "till-2" }];
+  const g = P.portalGapOf({ lines: [], legs, storeId: "concrete", tillId: "till-1", elsewhere: [{ at: SAST("2026-10-31T15:01:00"), amountCents: 75000, tid: F1Y, tillId: "till-2" }] });
+  assert.equal(g.missingCount, 1);
+  assert.deepEqual(g.elsewhere, []);
+});
+
+test("growOnly: the morning pull never replaces a record that is not the portal's, and never re-judges it", () => {
+  const plan = P.planPortalWrite({ dayRecords: [{ key: "9", record: { batchNo: 9, capturedVia: "photo" } }], lastBatchNo: 9, extraction: { lines: [], txnCount: 0, totalCents: 0, refundsCents: 0 }, portalIsRecord: true, growOnly: true });
+  assert.deepEqual(plan, { action: "noop", key: "9", kept: true });
+});

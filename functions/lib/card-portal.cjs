@@ -368,6 +368,8 @@ function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord =
   // Junid's entry, a typed total) stands, and the portal figure goes beside
   // it. No record at all: nothing is written — the day waits for its photo.
   const inForce = latestOf(recs);
+  // The 07:00 pull never replaces a record that is not the portal's.
+  if (growOnly && inForce) return { action: "noop", key: inForce.key, kept: true };
   // A TILL WHOSE RECORD IS THE PORTAL (Concrete — card-terminals.cjs
   // isPortalRecordTerminal): as on 3 Nov, another record in force that day is
   // replaced as a revision of its batch, and a day with none is the next batch.
@@ -429,6 +431,13 @@ function portalGapOf({ lines, legs, storeId, tillId, elsewhere = [] }) {
   // machine, rung on Till 1): the portal has it, so it is not missing.
   const others = (Array.isArray(elsewhere) ? elsewhere : [])
     .filter((l) => l && Number.isInteger(l.amountCents) && Number.isFinite(Number(l.at))).map((l) => ({ ...l, taken: false }));
+  // A line its own machine's till already answers is not free to claim.
+  const answered = new Set();
+  for (const l of others) {
+    const own = (Array.isArray(legs) ? legs : []).find((x) => x && !answered.has(x) && x.method === "card" && x.storeId === storeId
+      && x.tillId === l.tillId && x.amount === l.amountCents && Math.abs(Number(x.at) - Number(l.at)) <= LEG_REACH_MS);
+    if (own) { answered.add(own); l.taken = true; }
+  }
   const onOther = [];
   for (const m of mine) {
     if (m.done || m.cents <= 0) continue;

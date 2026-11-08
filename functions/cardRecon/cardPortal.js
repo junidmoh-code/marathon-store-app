@@ -346,7 +346,7 @@ async function handlePortalDay(db, request, deps = {}) {
     const extraction = P.portalExtraction({ tid, mid: row.mid || null, dayYmd, txns: got.txns });
     // This store's other machines' payments that day: a POS leg answered by one is not missing.
     const elsewhere = [...byKey].filter(([k]) => k !== tid && registry[k]?.storeId === row.storeId)
-      .flatMap(([k, v]) => v.txns.map((t) => ({ at: t.at, amountCents: t.amountCents, tid: k })));
+      .flatMap(([k, v]) => v.txns.map((t) => ({ at: t.at, amountCents: t.amountCents, tid: k, tillId: registry[k].tillId })));
     try {
       results[tid] = await writePortalDay(db, request, {
         tid, row, dayYmd, extraction, merchantNo: got.merchantNo || row.mid || null, business: got.name || null, nowMs, deps, growOnly: data.growOnly === true, elsewhere,
