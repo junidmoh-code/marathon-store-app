@@ -1513,9 +1513,8 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
         const timing = group.parse.ok
           ? immediacyVerdict({
             parsed: group.parse, reader: group.readerId, receivedAt: message.receivedAt,
-            // An immediate-only account (its EFT_ALLOWED_ACCOUNTS tag) needs
-            // an immediate payment whatever the bank date — unless that tag
-            // is waived (Concrete's Standard Bank account, 8 Nov 2026).
+            // A tagged account needs an immediate payment whatever the date,
+            // unless its tag is waived (see enforcesImmediateOnly).
             immediateOnly: account?.ok === true && enforcesImmediateOnly(account),
           })
           : null;
