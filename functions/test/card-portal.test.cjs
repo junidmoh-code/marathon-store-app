@@ -526,7 +526,7 @@ test("a zero portal day that took no POS card money carries no 'lists none of' e
   assert.equal(rec.warnings.some((w) => /lists none of/.test(w)), false);
 });
 
-test("the backfill is one card a day: re-pulling a recorded day changes nothing, and a typed day is replaced with its slip kept", async () => {
+test("the backfill is one card a day: re-pulling a recorded day changes nothing", async () => {
   const db = concreteWorld();
   const day = [row("2026-11-03T10:00:00", "0000OF2Y", 500, { id: "fixed" })];
   const first = await concretePull(db, day, { now: NOW + 86400000 });
