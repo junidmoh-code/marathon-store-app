@@ -572,8 +572,8 @@ export function immediacyRequiredFor(bankTs) {
 // the bank dates a later day, up to the next business day, is accepted into
 // an immediate-only account; see immediacyVerdict.)
 // Junid, 2 Nov 2026: an account whose EFT_ALLOWED_ACCOUNTS entry is tagged
-// "immediate" (the Standard Bank ATUGAR account) takes IMMEDIATE payments
-// only. For a payment into it the date-phased relaxation above does not
+// "immediate" takes IMMEDIATE payments only, unless the tag is waived (below:
+// the Standard Bank ATUGAR account, since 8 Nov 2026). For a payment into it the date-phased relaxation above does not
 // apply: immediacy is required whatever the bank date, read by the same
 // per-bank signal (Standard Bank: the heading "Immediate Payment
 // Confirmation", never the footer). Every other account keeps the date-phased
@@ -639,7 +639,8 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     }
   }
   // IMMEDIATE-ONLY ACCOUNTS RELAX FOR THAT WINDOW (Junid, 7 Nov 2026).
-  // Concrete's Standard Bank account takes immediate payments only. A payment
+  // (Concrete's Standard Bank account, whose case this was, has had its tag
+  // waived since 8 Nov — enforcesImmediateOnly. For an enforced account:) A payment
   // the bank dates AFTER its notice's day and on or before the next business
   // day is a weekend/next-day settlement — RICHARD CHETTY's R2450 Nedbank
   // "Internet payment" of Saturday, dated Monday — and is accepted into it
@@ -701,7 +702,8 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     // still refuses: that is a document out of shape, not a payment type.
     // This applies wherever immediacy is required — also a Standard Bank
     // account under the date-phased rule dated 20–26 Oct — which is inert:
-    // the only Standard Bank account was added on 2 Nov, immediate-only.
+    // the only Standard Bank account was added on 2 Nov, so no payment into
+    // it is dated before then.
     // A payment into the account FROM ANY OTHER BANK (Capitec, Absa, FNB,
     // Nedbank notices) still needs that bank's immediate signal.
     return { ok: true };
