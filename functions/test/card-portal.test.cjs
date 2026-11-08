@@ -511,7 +511,7 @@ test("Concrete, today, portal empty at the 18:20 pull: the figure with the speci
   assert.equal(got.results[F2Y].outcome, "recorded");
   const rec = await node(db, `card_batches/concrete/${F2Y}/${got.results[F2Y].key}`);
   assert.equal(rec.slip.totalCents, 0);
-  assert.ok(rec.warnings.some((w) => /SimplyBLU lists none of the R19890\.00/.test(w)), rec.warnings.join(" / "));
+  assert.ok(rec.warnings.some((w) => /missing 1 payment \(R19890\.00\)/.test(w)), rec.warnings.join(" / "));
 });
 
 test("the 18:20 rule is only for portal tills: a photo till's empty day today still waits", async () => {
@@ -519,11 +519,11 @@ test("the 18:20 rule is only for portal tills: a photo till's empty day today st
   assert.equal((await pull(db, [], { now: SAST("2026-11-03T18:20:05") })).results[HP1X].outcome, "awaiting");
 });
 
-test("a zero portal day that took no POS card money carries no 'lists none of' error", async () => {
+test("a zero portal day that took no POS card money carries no 'missing' error", async () => {
   const db = concreteWithSales({});
   const got = await concretePull(db, [], { now: SAST("2026-11-03T18:20:05") });
   const rec = await node(db, `card_batches/concrete/${F2Y}/${got.results[F2Y].key}`);
-  assert.equal(rec.warnings.some((w) => /lists none of/.test(w)), false);
+  assert.equal(rec.warnings.some((w) => /is missing/.test(w)), false);
 });
 
 test("the backfill is one card a day: re-pulling a recorded day changes nothing", async () => {
@@ -605,4 +605,66 @@ test("every successful status counts as money; a pending one does not", () => {
   }
   const p = P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status: "Pending" })] });
   assert.equal(p.ok && p.txns.length, 0);
+});
+
+// ─── WHICH POS LEGS THE PORTAL DOES NOT HAVE ─────────────────────────────────
+const gapOf = (lines, legs) => P.portalGapOf({ lines, legs, storeId: "concrete", tillId: "till-1" });
+const L = (at, cents) => ({ at: SAST(at), amountCents: cents });
+const leg = (at, cents, over = {}) => ({ ...card("concrete", "till-1", at, cents), cashierName: "amanda", receiptNumber: "S-1", kind: "sale", ...over });
+
+test("gap: every leg answered on amount and time means nothing missing", () => {
+  const g = gapOf([L("2026-11-03T10:00:00", 50000)], [leg("2026-11-03T10:03:00", 50000)]);
+  assert.deepEqual(g, { missingCount: 0, missingCents: 0, missing: [] });
+});
+
+test("gap: a leg of the right amount hours away is NOT answered — amount alone is no match", () => {
+  const g = gapOf([L("2026-11-03T15:00:00", 75000)], [leg("2026-11-03T10:00:00", 75000)]);
+  assert.equal(g.missingCount, 1);
+  assert.deepEqual({ ...g.missing[0] }, { at: SAST("2026-11-03T10:00:00"), amountCents: 75000, portalCents: null, cashier: "amanda", receipt: "S-1", kind: "sale" });
+});
+
+test("gap: a tight pairing is not stolen by an earlier leg within the wider reach", () => {
+  const g = gapOf([L("2026-11-03T10:30:00", 75000)], [leg("2026-11-03T10:05:00", 75000), leg("2026-11-03T10:31:00", 75000)]);
+  assert.equal(g.missingCount, 1);
+  assert.equal(g.missing[0].at, SAST("2026-11-03T10:05:00"));
+});
+
+test("gap: a smaller line in the same minute is the part the portal has", () => {
+  const g = gapOf([L("2026-11-06T10:28:00", 220000)], [leg("2026-11-06T10:28:40", 330000)]);
+  assert.equal(g.missingCount, 1);
+  assert.equal(g.missingCents, 110000);
+  assert.equal(g.missing[0].portalCents, 220000);
+});
+
+test("gap: a sale voided on the till is not a payment the portal lacks", () => {
+  const g = gapOf([], [leg("2026-11-03T10:00:00", 50000), leg("2026-11-03T10:02:00", -50000, { kind: "void" })]);
+  assert.equal(g.missingCount, 0);
+});
+
+test("gap: an unanswered refund leg is never listed as a missing payment", () => {
+  assert.equal(gapOf([], [leg("2026-11-03T10:00:00", -50000, { kind: "refund" })]).missingCount, 0);
+});
+
+test("gap: another till's and other tenders' legs are not this till's", () => {
+  const g = gapOf([], [card("concrete", "till-2", "2026-11-03T10:00:00", 500), { ...leg("2026-11-03T10:00:00", 500), method: "cash" }]);
+  assert.equal(g.missingCount, 0);
+});
+
+test("the record carries the gap; a re-pull with the same figures refreshes it without a revision", async () => {
+  const sale = { a: leg("2026-11-03T10:01:00", 50000), b: leg("2026-11-03T12:00:00", 30000) };
+  const db = concreteWithSales(sale);
+  const r = row("2026-11-03T10:00:00", "0000OF2Y", 500);
+  const first = await oneDay(db, [r], NEXT_MORNING);
+  const key = first.results[F2Y].key;
+  const rec = await node(db, `card_batches/concrete/${F2Y}/${key}`);
+  assert.equal(rec.portalGap.missingCount, 1);
+  assert.equal(rec.portalGap.missingCents, 30000);
+  // the POS loses that sale later (a void): same portal figures, gap goes.
+  await db.ref("pos/paymentEvents/c").set(leg("2026-11-03T12:05:00", -30000, { kind: "void" }));
+  const again = await oneDay(db, [r], NEXT_MORNING + 60000);
+  assert.equal(again.results[F2Y].outcome, "unchanged");
+  assert.equal(again.results[F2Y].key, key);
+  const after = await node(db, `card_batches/concrete/${F2Y}/${key}/portalGap`);
+  assert.equal(after.missingCount, 0);
+  assert.equal(after.missing, undefined, "the fake, like RTDB, drops an empty array");
 });

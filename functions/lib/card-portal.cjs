@@ -393,6 +393,71 @@ function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord =
   return { action: "check", key: inForce ? inForce.key : null };
 }
 
+// ─── WHICH POS CARD LEGS THE PORTAL DOES NOT HAVE (Junid, 8 Nov 2026) ────────
+// One by one, on amount AND time. Measured on Concrete Till 1, 30 Oct to 8 Nov
+// 2026: a leg lands 0.4 to 7.5 minutes after the portal's minute-stamped line.
+// Two passes, nearest first, so a tight pairing is never stolen by a far one.
+const LEG_TIGHT_MS = 10 * 60000;
+const LEG_REACH_MS = 30 * 60000;
+// A leg with no line of its amount, beside a SMALLER line: part of it reached
+// the portal (6 Nov: POS R3,300, portal R2,200 in the same minute).
+const LEG_PARTIAL_MS = 5 * 60000;
+
+/**
+ * @returns {{missingCount:number, missingCents:number,
+ *            missing:Array<{at:number, amountCents:number, portalCents:(number|null), cashier:(string|null), receipt:(string|null), kind:(string|null)}>}}
+ *   `missingCents` is what the portal lacks: a leg's amount, less the part it has.
+ */
+function portalGapOf({ lines, legs, storeId, tillId }) {
+  const open = (Array.isArray(lines) ? lines : [])
+    .filter((l) => l && Number.isInteger(l.amountCents) && Number.isFinite(Number(l.at)))
+    .map((l) => ({ at: Number(l.at), cents: l.amountCents, taken: false }));
+  const mine = (Array.isArray(legs) ? legs : [])
+    .filter((l) => l && l.method === "card" && l.storeId === storeId && l.tillId === tillId && Number.isInteger(l.amount) && Number.isFinite(Number(l.at)))
+    .map((l) => ({ leg: l, at: Number(l.at), cents: l.amount, done: false, portalCents: null }))
+    .sort((a, b) => a.at - b.at);
+  const nearest = (leg, reach, fits) => {
+    let best = null;
+    for (const line of open) {
+      if (line.taken || !fits(line)) continue;
+      const d = Math.abs(leg.at - line.at);
+      if (d <= reach && (!best || d < Math.abs(leg.at - best.at))) best = line;
+    }
+    return best;
+  };
+  for (const reach of [LEG_TIGHT_MS, LEG_REACH_MS]) {
+    for (const m of mine) {
+      if (m.done) continue;
+      const line = nearest(m, reach, (l) => l.cents === m.cents);
+      if (line) { line.taken = true; m.done = true; }
+    }
+  }
+  // A sale voided on the till is not a payment the portal lacks: an unanswered
+  // refund/void leg cancels the unanswered sale of the same size.
+  for (const neg of mine) {
+    if (neg.done || neg.cents >= 0) continue;
+    const sale = mine.find((m) => !m.done && m.cents === -neg.cents);
+    if (sale) { sale.done = true; neg.done = true; }
+  }
+  const missing = [];
+  for (const m of mine) {
+    if (m.done || m.cents <= 0) continue;
+    const part = nearest(m, LEG_PARTIAL_MS, (l) => l.cents > 0 && l.cents < m.cents);
+    if (part) part.taken = true;
+    missing.push({
+      at: m.at, amountCents: m.cents, portalCents: part ? part.cents : null,
+      cashier: typeof m.leg.cashierName === "string" ? m.leg.cashierName : null,
+      receipt: typeof m.leg.receiptNumber === "string" ? m.leg.receiptNumber : null,
+      kind: typeof m.leg.kind === "string" ? m.leg.kind : null,
+    });
+  }
+  return {
+    missingCount: missing.length,
+    missingCents: missing.reduce((s, m) => s + m.amountCents - (m.portalCents || 0), 0),
+    missing,
+  };
+}
+
 /** The portal's figure for a day, as it sits beside the record in force (`portalCheck`). */
 function portalCheckOf({ extraction, recordTotalCents = null, merchantNo = null, nowMs }) {
   const total = Number.isInteger(extraction && extraction.totalCents) ? extraction.totalCents : null;
@@ -407,15 +472,15 @@ function portalCheckOf({ extraction, recordTotalCents = null, merchantNo = null,
 }
 
 /** The sentence(s) a portal record carries. */
-function portalWarnings({ extraction, replacing = null, supersededKey = null, merchantNo = null, expectedCents = null }) {
+function portalWarnings({ extraction, replacing = null, supersededKey = null, merchantNo = null, gap = null }) {
   const out = [
     `Recorded from the SimplyBLU portal (Standard Bank${merchantNo ? `, merchant ${merchantNo}` : ""}) for ${sastDayYmd(extraction.openedAt)}, 00:00–24:00 SAST — the portal's transaction list is the record for this till.`,
   ];
   if (extraction.txnCount === 0) out.push("The portal shows NO card transactions on this machine for the day.");
-  // THE SPECIFIC ERROR (Junid, 8 Nov 2026): a portal with nothing against a
-  // till that took card money is said in those words, with the amount.
-  if (extraction.txnCount === 0 && Number.isInteger(expectedCents) && expectedCents > 0) {
-    out.push(`SimplyBLU lists none of the R${(expectedCents / 100).toFixed(2)} the POS took by card on this till that day — this figure is the portal's, not proof the money is missing. Check the machine's printed report.`);
+  // THE SPECIFIC ERROR (Junid, 8 Nov 2026): card money the POS has and the
+  // portal does not is said in those words, with the amount; never "short".
+  if (gap && gap.missingCount > 0) {
+    out.push(`SimplyBLU is missing ${gap.missingCount} payment${gap.missingCount === 1 ? "" : "s"} (R${(gap.missingCents / 100).toFixed(2)}) that the POS has on this till that day — this is a gap in SimplyBLU's list, not proof the money is missing.`);
   }
   if (replacing === "other" && supersededKey) out.push(`This replaces ${supersededKey}, which was on file for the day before the portal was read; it is kept unchanged.`);
   if (replacing === "portal" && supersededKey) out.push(`The portal's figures for the day changed after ${supersededKey} was recorded (a later pull); this revision replaces it.`);
@@ -460,5 +525,5 @@ module.exports = {
   METABASE_ROW_CAP, SAFE_KEY, PORTAL_PULL_MINUTE,
   isPortalDay, portalDayWindow, columnIndex, parsePortalRows, randsToCents, isTidLike,
   mapPortalTids, foldTargetOf, unassignedKey, portalExtraction, isPortalRecord, samePortalFigures, lineSignature,
-  planPortalWrite, portalGrew, portalCheckOf, portalWarnings, portalTerminalsOn, daysToPull,
+  planPortalWrite, portalGrew, portalGapOf, portalCheckOf, portalWarnings, portalTerminalsOn, daysToPull,
 };

@@ -21,7 +21,7 @@
 
 const admin = require("firebase-admin");
 const { CARD_TERMINALS_PATH, CARD_BATCHES_PATH, PHOTO_STORAGE_PREFIX, resolveBatchWrite, buildBatchRecord } = require("../lib/card-recon.cjs");
-const { computeExpectedCard } = require("../lib/card-expected.cjs");
+const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { sastDayStartMs, sastDayYmd, isDayYmd } = require("../lib/card-unread.cjs");
 const { slipTradingDay } = require("../lib/card-staff-slip-log.cjs");
@@ -177,7 +177,17 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     await db.ref(`${base}/portalCheck`).set(JSON.parse(JSON.stringify(check)));
     return { outcome: "checked", key: plan.key, totalCents: extraction.totalCents, txnCount: extraction.txnCount, differsCents: differs };
   }
+  // Which POS card legs the portal does not have: one bounded read of the day.
+  const gapNow = async () => {
+    const { recon } = core().reconTerminalFor({ ...row, tid }, extraction.openedAt, extraction.closedAt);
+    const legs = await (deps.cardLegsInWindow || cardLegsInWindow)(db, { startMs: extraction.openedAt, endMs: extraction.closedAt });
+    return P.portalGapOf({ lines: extraction.lines, legs, storeId: recon.storeId, tillId: recon.tillId });
+  };
   if (plan.action === "noop") {
+    // The POS side can change after the portal's has settled (a sale rung up
+    // late), so the unchanged record's gap is refreshed: a derived note beside
+    // its figures, which are not touched. Junid's own correction is left alone.
+    if (!plan.correctionStands) await db.ref(`${tidPath}/${plan.key}/portalGap`).set(clean(await gapNow()));
     const swept = await sweepHeld(db, { storeId, tid, dayYmd, key: plan.key });
     return { outcome: "unchanged", key: plan.key, ...(plan.correctionStands ? { note: "Junid's correction stands" } : {}), ...(swept ? { sweptSlips: swept } : {}) };
   }
@@ -206,8 +216,9 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     ? (dayRecords.find((d) => d.key === write.supersedes)?.record
       || (await db.ref(`${tidPath}/${write.supersedes}`).once("value")).val())
     : null;
+  const gap = await gapNow();
   const warnings = P.portalWarnings({
-    extraction: ex, merchantNo, expectedCents: expected.cardCents,
+    extraction: ex, merchantNo, gap,
     replacing: write.supersedes ? (P.isPortalRecord(superseded) ? "portal" : "other") : null,
     supersededKey: write.supersedes,
   });
@@ -227,6 +238,7 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     submittedAt: nowMs, draftId: null, ocr: null,
     capturedVia: P.PORTAL_SOURCE,
   });
+  record.portalGap = gap;
   record.portal = { dayYmd, merchantNo: merchantNo || null, business: business || null, pulledAt: nowMs, source: P.PORTAL_SOURCE };
   if (folded.length) {
     record.portal.foldedFrom = {
