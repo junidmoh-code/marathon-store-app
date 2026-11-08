@@ -187,8 +187,16 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     // The POS side can change after the portal's has settled (a sale rung up
     // late), so the unchanged record's gap is refreshed: a derived note beside
     // its figures, which are not touched. Junid's own correction is left alone.
-    if (!plan.correctionStands) await db.ref(`${tidPath}/${plan.key}/portalGap`).set(clean(await gapNow()));
     const swept = await sweepHeld(db, { storeId, tid, dayYmd, key: plan.key });
+    // (`kept`: this pull's lines were not taken, so they say nothing about the record.)
+    if (!plan.correctionStands && !plan.kept) {
+      try {
+        const gap = await gapNow();
+        const ref = db.ref(`${tidPath}/${plan.key}/portalGap`);
+        const cur = (await ref.once("value")).val();
+        if (cur?.missingCount !== gap.missingCount || cur?.missingCents !== gap.missingCents) await ref.set(clean(gap));
+      } catch (err) { console.warn(`cardBatchCapture: portal gap not refreshed ${tid} ${dayYmd}: ${err && err.message}`); }
+    }
     return { outcome: "unchanged", key: plan.key, ...(plan.correctionStands ? { note: "Junid's correction stands" } : {}), ...(swept ? { sweptSlips: swept } : {}) };
   }
 

@@ -389,8 +389,9 @@ async function main() {
         try {
           const lost = await portalListCheck(page, claims.businessId, got.byDay);
           if (lost.length) {
+            // Said, not failed: what the report held was recorded, and the day
+            // shows the POS legs it lacks by itself.
             log(`⚠ ${store.name}: the portal's own list has ${lost.length} payment(s) the report lacks: ${JSON.stringify(lost).slice(0, 400)}`);
-            storeErrors.push(`${store.name}: the portal's own list has ${lost.length} payment(s) the report lacks`);
           } else log(`${store.name}: every payment on the portal's own list is in the report`);
         } catch (err) { log(`⚠ ${store.name}: the portal's own list could not be read (${err.message.split("\n")[0]}) — not cross-checked`); }
       }

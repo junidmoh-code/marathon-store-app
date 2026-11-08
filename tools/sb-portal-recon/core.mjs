@@ -72,7 +72,9 @@ export function listMissingFromReport(list, byDay, readAtMs) {
   const known = new Set();
   for (const d of Object.values(byDay || {})) {
     const i = numberCol(d);
-    if (i >= 0) for (const r of d.rows || []) known.add(Number(r[i]));
+    // A report without the number column cannot be compared: nothing is "lost".
+    if (i < 0) return [];
+    for (const r of d.rows || []) known.add(Number(r[i]));
   }
   const out = [];
   for (const t of Array.isArray(list) ? list : []) {

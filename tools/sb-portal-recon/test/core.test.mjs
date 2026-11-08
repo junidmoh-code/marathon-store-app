@@ -101,4 +101,5 @@ test("the portal's own list: a successful payment the report lacks is named; eve
   assert.deepEqual(listMissingFromReport([rec({ dateCreated: "2026-11-06T10:00:00.000Z" })], byDay, now), [], "a day not pulled");
   assert.deepEqual(listMissingFromReport([rec({ dateCreated: "2026-11-07T15:55:00.000Z" })], byDay, now), [], "too new to judge");
   assert.deepEqual(listMissingFromReport(null, byDay, now), []);
+  assert.deepEqual(listMissingFromReport([rec()], { "2026-11-07": { cols: ["x"], rows: [[1]] } }, now), [], "no number column: not comparable");
 });

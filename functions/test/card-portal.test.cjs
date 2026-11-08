@@ -590,12 +590,13 @@ test("growOnly: a portal that has grown revises the day", async () => {
 });
 
 test("growOnly: a portal that has shrunk changes nothing", async () => {
-  const db = concreteWorld();
+  const db = concreteWithSales({ a: leg("2026-11-03T10:01:00", 50000), b: leg("2026-11-03T11:01:00", 30000) });
   const a = row("2026-11-03T10:00:00", "0000OF2Y", 500), b = row("2026-11-03T11:00:00", "0000OF2Y", 300);
   const first = await oneDay(db, [a, b], NOW);
   const got = await oneDay(db, [a], NEXT_MORNING, { growOnly: true });
   assert.equal(got.results[F2Y].outcome, "unchanged");
   assert.equal(got.results[F2Y].key, first.results[F2Y].key);
+  assert.equal((await node(db, `card_batches/concrete/${F2Y}/${first.results[F2Y].key}/portalGap`)).missingCount, 0, "a kept record's gap is not re-judged on the shrunken list");
 });
 
 test("every successful status counts as money; a pending one does not", () => {

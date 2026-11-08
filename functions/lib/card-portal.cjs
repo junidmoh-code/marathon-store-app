@@ -375,7 +375,7 @@ function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord =
     if (samePortalFigures(chain.record, extraction)) return { action: "noop", key: chain.key };
     // THE 07:00 RE-PULL refreshes a day only if the portal has GROWN: it never
     // takes a line off a record (a portal having a bad morning is not news).
-    if (growOnly && !portalGrew(chain.record, extraction)) return { action: "noop", key: chain.key };
+    if (growOnly && !portalGrew(chain.record, extraction)) return { action: "noop", key: chain.key, kept: true };
     return { action: "revise", batchNo: Number(chain.record.batchNo), supersedes: chain.key, replacing: "portal" };
   }
   // No portal record: the record in force that day (a photographed report,
