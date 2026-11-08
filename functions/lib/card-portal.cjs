@@ -31,7 +31,7 @@
 
 "use strict";
 
-const { terminalBank, STANDARD_BANK, resolveRegisteredTid, canonicalTid, wasActiveAt, isRetiredTerminal } = require("./card-terminals.cjs");
+const { terminalBank, STANDARD_BANK, resolveRegisteredTid, canonicalTid, wasActiveAt, isRetiredTerminal, isInactiveTerminal, isPortalRecordTerminal } = require("./card-terminals.cjs");
 const { sastDayYmd, sastDayStartMs, isDayYmd, DAY_MS, OVERRIDES_PATH } = require("./card-unread.cjs");
 
 const PORTAL_SOURCE = "simplyblu-portal";
@@ -120,9 +120,11 @@ function txnKind(raw) {
   return null;
 }
 
-const isSuccess = (raw) => /^(success|successful|approved)$/i.test(String(raw || "").trim());
+// Every way this list may say the money went through (Junid, 8 Nov 2026: "every
+// successful transaction status"). A status it has never seen still refuses the source.
+const isSuccess = (raw) => /^(success|successful|approved|completed?|settled|captured|processed)$/i.test(String(raw || "").trim());
 // The statuses that are NOT money and are known to be so. Anything else — a
-// status renamed tomorrow ("Completed") — refuses the whole source: silently
+// status renamed tomorrow ("Paid out") — refuses the whole source: silently
 // skipping it would record every portal till as R0.00 and call it SHORT
 // (Sonnet architect review, #837).
 const isKnownNotMoney = (raw) => /^(failed|failure|declined|cancelled|canceled|reversed|voided|void|aborted|timeout|timed ?out|error|pending|in ?progress|incomplete|open)$/i.test(String(raw || "").trim());
@@ -232,6 +234,20 @@ function mapPortalTids(portalTids, registry) {
   return { mapped, unassigned };
 }
 
+/**
+ * WHERE A PAYMENT ON THIS MACHINE BELONGS. A machine in use: itself. A machine
+ * not in use: the portal machine its `foldInto` names, same store (31 Oct 2026:
+ * R750 was tapped on Concrete's spare machine and rung on Till 1) — or null,
+ * which the caller counts as unattributed money, never as nothing.
+ */
+function foldTargetOf(tid, registry) {
+  const row = registry && registry[tid];
+  if (!isInactiveTerminal(row)) return tid;
+  const into = typeof row.foldInto === "string" ? row.foldInto : null;
+  const target = into && registry[into];
+  return target && target.storeId === row.storeId && isPortalRecordTerminal(target) ? into : null;
+}
+
 /** The key an unassigned TID is stored under: its canonical form (O/0 folded). */
 function unassignedKey(rawTid) {
   const c = canonicalTid(rawTid);
@@ -301,6 +317,14 @@ function samePortalFigures(rec, extraction) {
     && lineSignature(rec.lines) === lineSignature(extraction.lines);
 }
 
+/** Does this extraction hold every line the record holds, and more? */
+function portalGrew(rec, extraction) {
+  const had = lineSignature(rec && rec.lines).split("|").filter(Boolean);
+  const now = lineSignature(extraction.lines).split("|").filter(Boolean);
+  const have = new Set(now);
+  return now.length > had.length && had.every((l) => have.has(l));
+}
+
 /**
  * WHERE THE DAY'S PORTAL RECORD GOES.
  *
@@ -334,7 +358,7 @@ function samePortalFigures(rec, extraction) {
 // Nov) is still revised by a later pull of the same day — until the photo
 // takes the day over, after which its chain is the photo's and the pull is a
 // cross-check like any other.
-function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord = false }) {
+function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord = false, growOnly = false }) {
   // A record DISPLACED by a photographed report that covers its day
   // (lib/card-sb-photo.cjs) is not the day's any more: it is skipped.
   const recs = (dayRecords || []).filter((r) => r && r.record && Number.isFinite(Number(r.record.batchNo)) && !r.record.displacedBy);
@@ -349,6 +373,9 @@ function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord =
     // correction stands — a later pull never writes over it.
     if (!isPortalRecord(chain.record)) return { action: portalIsRecord ? "noop" : "check", key: chain.key, correctionStands: true };
     if (samePortalFigures(chain.record, extraction)) return { action: "noop", key: chain.key };
+    // THE 07:00 RE-PULL refreshes a day only if the portal has GROWN: it never
+    // takes a line off a record (a portal having a bad morning is not news).
+    if (growOnly && !portalGrew(chain.record, extraction)) return { action: "noop", key: chain.key, kept: true };
     return { action: "revise", batchNo: Number(chain.record.batchNo), supersedes: chain.key, replacing: "portal" };
   }
   // No portal record: the record in force that day (a photographed report,
@@ -366,6 +393,71 @@ function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord =
   return { action: "check", key: inForce ? inForce.key : null };
 }
 
+// ─── WHICH POS CARD LEGS THE PORTAL DOES NOT HAVE (Junid, 8 Nov 2026) ────────
+// One by one, on amount AND time. Measured on Concrete Till 1, 30 Oct to 8 Nov
+// 2026: a leg lands 0.4 to 7.5 minutes after the portal's minute-stamped line.
+// Two passes, nearest first, so a tight pairing is never stolen by a far one.
+const LEG_TIGHT_MS = 10 * 60000;
+const LEG_REACH_MS = 30 * 60000;
+// A leg with no line of its amount, beside a SMALLER line: part of it reached
+// the portal (6 Nov: POS R3,300, portal R2,200 in the same minute).
+const LEG_PARTIAL_MS = 5 * 60000;
+
+/**
+ * @returns {{missingCount:number, missingCents:number,
+ *            missing:Array<{at:number, amountCents:number, portalCents:(number|null), cashier:(string|null), receipt:(string|null), kind:(string|null)}>}}
+ *   `missingCents` is what the portal lacks: a leg's amount, less the part it has.
+ */
+function portalGapOf({ lines, legs, storeId, tillId }) {
+  const open = (Array.isArray(lines) ? lines : [])
+    .filter((l) => l && Number.isInteger(l.amountCents) && Number.isFinite(Number(l.at)))
+    .map((l) => ({ at: Number(l.at), cents: l.amountCents, taken: false }));
+  const mine = (Array.isArray(legs) ? legs : [])
+    .filter((l) => l && l.method === "card" && l.storeId === storeId && l.tillId === tillId && Number.isInteger(l.amount) && Number.isFinite(Number(l.at)))
+    .map((l) => ({ leg: l, at: Number(l.at), cents: l.amount, done: false, portalCents: null }))
+    .sort((a, b) => a.at - b.at);
+  const nearest = (leg, reach, fits) => {
+    let best = null;
+    for (const line of open) {
+      if (line.taken || !fits(line)) continue;
+      const d = Math.abs(leg.at - line.at);
+      if (d <= reach && (!best || d < Math.abs(leg.at - best.at))) best = line;
+    }
+    return best;
+  };
+  for (const reach of [LEG_TIGHT_MS, LEG_REACH_MS]) {
+    for (const m of mine) {
+      if (m.done) continue;
+      const line = nearest(m, reach, (l) => l.cents === m.cents);
+      if (line) { line.taken = true; m.done = true; }
+    }
+  }
+  // A sale voided on the till is not a payment the portal lacks: an unanswered
+  // refund/void leg cancels the unanswered sale of the same size.
+  for (const neg of mine) {
+    if (neg.done || neg.cents >= 0) continue;
+    const sale = mine.find((m) => !m.done && m.cents === -neg.cents);
+    if (sale) { sale.done = true; neg.done = true; }
+  }
+  const missing = [];
+  for (const m of mine) {
+    if (m.done || m.cents <= 0) continue;
+    const part = nearest(m, LEG_PARTIAL_MS, (l) => l.cents > 0 && l.cents < m.cents);
+    if (part) part.taken = true;
+    missing.push({
+      at: m.at, amountCents: m.cents, portalCents: part ? part.cents : null,
+      cashier: typeof m.leg.cashierName === "string" ? m.leg.cashierName : null,
+      receipt: typeof m.leg.receiptNumber === "string" ? m.leg.receiptNumber : null,
+      kind: typeof m.leg.kind === "string" ? m.leg.kind : null,
+    });
+  }
+  return {
+    missingCount: missing.length,
+    missingCents: missing.reduce((s, m) => s + m.amountCents - (m.portalCents || 0), 0),
+    missing,
+  };
+}
+
 /** The portal's figure for a day, as it sits beside the record in force (`portalCheck`). */
 function portalCheckOf({ extraction, recordTotalCents = null, merchantNo = null, nowMs }) {
   const total = Number.isInteger(extraction && extraction.totalCents) ? extraction.totalCents : null;
@@ -380,15 +472,15 @@ function portalCheckOf({ extraction, recordTotalCents = null, merchantNo = null,
 }
 
 /** The sentence(s) a portal record carries. */
-function portalWarnings({ extraction, replacing = null, supersededKey = null, merchantNo = null, expectedCents = null }) {
+function portalWarnings({ extraction, replacing = null, supersededKey = null, merchantNo = null, gap = null }) {
   const out = [
     `Recorded from the SimplyBLU portal (Standard Bank${merchantNo ? `, merchant ${merchantNo}` : ""}) for ${sastDayYmd(extraction.openedAt)}, 00:00–24:00 SAST — the portal's transaction list is the record for this till.`,
   ];
   if (extraction.txnCount === 0) out.push("The portal shows NO card transactions on this machine for the day.");
-  // THE SPECIFIC ERROR (Junid, 8 Nov 2026): a portal with nothing against a
-  // till that took card money is said in those words, with the amount.
-  if (extraction.txnCount === 0 && Number.isInteger(expectedCents) && expectedCents > 0) {
-    out.push(`SimplyBLU lists none of the R${(expectedCents / 100).toFixed(2)} the POS took by card on this till that day — this figure is the portal's, not proof the money is missing. Check the machine's printed report.`);
+  // THE SPECIFIC ERROR (Junid, 8 Nov 2026): card money the POS has and the
+  // portal does not is said in those words, with the amount; never "short".
+  if (gap && gap.missingCount > 0) {
+    out.push(`SimplyBLU is missing ${gap.missingCount} payment${gap.missingCount === 1 ? "" : "s"} (R${(gap.missingCents / 100).toFixed(2)}) that the POS has on this till that day — this is a gap in SimplyBLU's list, not proof the money is missing.`);
   }
   if (replacing === "other" && supersededKey) out.push(`This replaces ${supersededKey}, which was on file for the day before the portal was read; it is kept unchanged.`);
   if (replacing === "portal" && supersededKey) out.push(`The portal's figures for the day changed after ${supersededKey} was recorded (a later pull); this revision replaces it.`);
@@ -401,6 +493,7 @@ function portalTerminalsOn(registry, dayYmd) {
   const out = {};
   for (const [tid, row] of Object.entries(registry || {})) {
     if (!row || !row.storeId || !row.tillId) continue;
+    if (isInactiveTerminal(row)) continue;
     if (!isPortalDay(row, dayYmd)) continue;
     if (isRetiredTerminal(row) && row.retiredAt < start) continue;
     // In the estate at some point that day.
@@ -431,6 +524,6 @@ module.exports = {
   PORTAL_PATH, PORTAL_HELD_PATH, PORTAL_UNASSIGNED_PATH, PORTAL_DAYS_PATH, PORTAL_STATUS_PATH,
   METABASE_ROW_CAP, SAFE_KEY, PORTAL_PULL_MINUTE,
   isPortalDay, portalDayWindow, columnIndex, parsePortalRows, randsToCents, isTidLike,
-  mapPortalTids, unassignedKey, portalExtraction, isPortalRecord, samePortalFigures, lineSignature,
-  planPortalWrite, portalCheckOf, portalWarnings, portalTerminalsOn, daysToPull,
+  mapPortalTids, foldTargetOf, unassignedKey, portalExtraction, isPortalRecord, samePortalFigures, lineSignature,
+  planPortalWrite, portalGrew, portalGapOf, portalCheckOf, portalWarnings, portalTerminalsOn, daysToPull,
 };

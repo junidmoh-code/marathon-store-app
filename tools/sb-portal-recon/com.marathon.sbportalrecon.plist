@@ -2,9 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   launchd agent: SimplyBLU portal → Card Recon (tools/sb-portal-recon/run.mjs).
-  18:00 and 18:20 SAST (the mini's clock is Africa/Johannesburg). Both fires
-  run with catch-up semantics: 18:00 pulls; 18:20 pulls again ONLY if 18:00
-  did not finish (state in ~/.marathon/sb-portal/state.json). A missed fire
+  07:00, 18:00 and 18:20 SAST (the mini's clock is Africa/Johannesburg). Both fires
+  run with catch-up semantics: 18:00 pulls; 18:20 pulls again, which is
+  what makes an empty day final (state in ~/.marathon/sb-portal/state.json). 07:00 re-reads
+  yesterday alone (run.mjs: any catch-up before 15:00). A missed fire
   (the mini asleep or off) runs when it wakes. RunAtLoad false: installing
   must not pull.
   Nothing secret here: the SimplyBLU sign-in lives in the browser profile
@@ -24,6 +25,7 @@
   <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
   <key>StartCalendarInterval</key>
   <array>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>20</integer></dict>
   </array>

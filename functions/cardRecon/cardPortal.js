@@ -21,7 +21,7 @@
 
 const admin = require("firebase-admin");
 const { CARD_TERMINALS_PATH, CARD_BATCHES_PATH, PHOTO_STORAGE_PREFIX, resolveBatchWrite, buildBatchRecord } = require("../lib/card-recon.cjs");
-const { computeExpectedCard } = require("../lib/card-expected.cjs");
+const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { sastDayStartMs, sastDayYmd, isDayYmd } = require("../lib/card-unread.cjs");
 const { slipTradingDay } = require("../lib/card-staff-slip-log.cjs");
@@ -154,7 +154,7 @@ async function sweepHeld(db, { storeId, tid, dayYmd, key }) {
 }
 
 // ─── ONE TERMINAL, ONE DAY ───────────────────────────────────────────────────
-async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merchantNo, business, nowMs, deps = {} }) {
+async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merchantNo, business, nowMs, deps = {}, folded = [], growOnly = false }) {
   const { storeId } = row;
   const tidPath = `${CARD_BATCHES_PATH}/${storeId}/${tid}`;
   const dayRecordsVal = (await db.ref(tidPath).orderByChild("slip/closedAt")
@@ -163,7 +163,7 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     .filter(([, r]) => r && typeof r === "object")
     .map(([key, record]) => ({ key, record: { ...record, batchKey: record.batchKey || key } }));
   const last = await core().readLastBatchFor(db, storeId, tid);
-  const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction, portalIsRecord: isPortalRecordTerminal(row) });
+  const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction, portalIsRecord: isPortalRecordTerminal(row), growOnly });
   // A CROSS-CHECK (from 7 Nov 2026): the portal's figure beside the record in
   // force, or — no record yet — only on the day's status; never a record.
   if (plan.action === "check") {
@@ -177,8 +177,26 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     await db.ref(`${base}/portalCheck`).set(JSON.parse(JSON.stringify(check)));
     return { outcome: "checked", key: plan.key, totalCents: extraction.totalCents, txnCount: extraction.txnCount, differsCents: differs };
   }
+  // Which POS card legs the portal does not have: one bounded read of the day.
+  const gapNow = async () => {
+    const { recon } = core().reconTerminalFor({ ...row, tid }, extraction.openedAt, extraction.closedAt);
+    const legs = await (deps.cardLegsInWindow || cardLegsInWindow)(db, { startMs: extraction.openedAt, endMs: extraction.closedAt });
+    return P.portalGapOf({ lines: extraction.lines, legs, storeId: recon.storeId, tillId: recon.tillId });
+  };
   if (plan.action === "noop") {
+    // The POS side can change after the portal's has settled (a sale rung up
+    // late), so the unchanged record's gap is refreshed: a derived note beside
+    // its figures, which are not touched. Junid's own correction is left alone.
     const swept = await sweepHeld(db, { storeId, tid, dayYmd, key: plan.key });
+    // (`kept`: this pull's lines were not taken, so they say nothing about the record.)
+    if (!plan.correctionStands && !plan.kept) {
+      try {
+        const gap = await gapNow();
+        const ref = db.ref(`${tidPath}/${plan.key}/portalGap`);
+        const cur = (await ref.once("value")).val();
+        if (cur?.missingCount !== gap.missingCount || cur?.missingCents !== gap.missingCents) await ref.set(clean(gap));
+      } catch (err) { console.warn(`cardBatchCapture: portal gap not refreshed ${tid} ${dayYmd}: ${err && err.message}`); }
+    }
     return { outcome: "unchanged", key: plan.key, ...(plan.correctionStands ? { note: "Junid's correction stands" } : {}), ...(swept ? { sweptSlips: swept } : {}) };
   }
 
@@ -206,11 +224,16 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     ? (dayRecords.find((d) => d.key === write.supersedes)?.record
       || (await db.ref(`${tidPath}/${write.supersedes}`).once("value")).val())
     : null;
+  const gap = await gapNow();
   const warnings = P.portalWarnings({
-    extraction: ex, merchantNo, expectedCents: expected.cardCents,
+    extraction: ex, merchantNo, gap,
     replacing: write.supersedes ? (P.isPortalRecord(superseded) ? "portal" : "other") : null,
     supersededKey: write.supersedes,
   });
+  if (folded.length) {
+    const cents = folded.reduce((s, t) => s + t.amountCents, 0);
+    warnings.push(`Includes ${folded.length} payment${folded.length === 1 ? "" : "s"} (R${(cents / 100).toFixed(2)}) SimplyBLU lists under machine ${folded[0].viaTid}, which is not in use, counted on this till.`);
+  }
   if (moved) warnings.push("The machine was moved to another till during this day; the expected figure uses its registered till. The owner's Card Recon splits the day by where the machine stood.");
   const token = request.auth?.token || {};
   const record = buildBatchRecord({
@@ -223,7 +246,13 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     submittedAt: nowMs, draftId: null, ocr: null,
     capturedVia: P.PORTAL_SOURCE,
   });
+  record.portalGap = gap;
   record.portal = { dayYmd, merchantNo: merchantNo || null, business: business || null, pulledAt: nowMs, source: P.PORTAL_SOURCE };
+  if (folded.length) {
+    record.portal.foldedFrom = {
+      tid: folded[0].viaTid, txns: folded.length, cents: folded.reduce((s, t) => s + t.amountCents, 0),
+    };
+  }
 
   // THE SLIPS: whatever the replaced record carried (and the replaced record
   // itself, when it was a staff slip), and every slip held for this day.
@@ -299,8 +328,12 @@ async function handlePortalDay(db, request, deps = {}) {
         if (!P.isTidLike(t.tid)) { unattributed = { txns: unattributed.txns + 1, cents: unattributed.cents + t.amountCents }; }
         continue;
       }
-      if (!byKey.has(k)) byKey.set(k, { txns: [], ...business });
-      byKey.get(k).txns.push(t);
+      // A MACHINE NOT IN USE: its payment counts on the machine in use.
+      const into = P.foldTargetOf(k, registry);
+      if (!into) { unattributed = { txns: unattributed.txns + 1, cents: unattributed.cents + t.amountCents }; continue; }
+      if (into !== k) linked.add(into);
+      if (!byKey.has(into)) byKey.set(into, { txns: [], ...business });
+      byKey.get(into).txns.push(into === k ? t : { ...t, viaTid: t.tid });
     }
     sourceSummaries.push({ ...business, ok: true, tids: Object.keys(mapped).concat(un), rows: Array.isArray(src.rows) ? src.rows.length : 0, kept: parsed.txns.length, skipped: parsed.skipped });
   }
@@ -323,9 +356,10 @@ async function handlePortalDay(db, request, deps = {}) {
       continue;
     }
     const extraction = P.portalExtraction({ tid, mid: row.mid || null, dayYmd, txns: got.txns });
+    const folded = got.txns.filter((t) => t.viaTid);
     try {
       results[tid] = await writePortalDay(db, request, {
-        tid, row, dayYmd, extraction, merchantNo: got.merchantNo || row.mid || null, business: got.name || null, nowMs, deps,
+        tid, row, dayYmd, extraction, merchantNo: got.merchantNo || row.mid || null, business: got.name || null, nowMs, deps, folded, growOnly: data.growOnly === true,
       });
     } catch (err) {
       console.error(`cardBatchCapture: portal write failed ${tid} ${dayYmd}: ${err && err.message}`);
