@@ -10,7 +10,7 @@
 // writes `retired: true` instead of a stamp.
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { captureCards, isRetiredTerminal, captureMode, takesPhoto, typesTotal, terminalBank, canonicalTid, isPhotoPrimary, expectsEmail, isPortalRecordTerminal } from "./terminalRegistry";
+import { captureCards, isRetiredTerminal, captureMode, takesPhoto, typesTotal, terminalBank, canonicalTid, isPhotoPrimary, expectsEmail, isPortalRecordTerminal, isInactiveTerminal, captureableCards, reportSource } from "./terminalRegistry";
 
 const require = createRequire(import.meta.url);
 const server = require("../../../functions/lib/card-terminals.cjs");
@@ -174,5 +174,17 @@ describe("a till whose day comes from SimplyBLU is not captured by anyone", () =
       C: { label: "Trophy Till 1", storeId: "trophy", tillId: "till-1" },
     });
     expect(cards.map((t) => t.tid)).toEqual(["B", "C"]);
+  });
+});
+
+describe("a machine not in use (source: inactive)", () => {
+  it("is not offered for capture and reads as its own source", () => {
+    const rows = {
+      A: { storeId: "concrete", tillId: "till-1", label: "Concrete Till 1", bank: "standard-bank", source: "photo" },
+      B: { storeId: "concrete", tillId: "till-2", label: "Concrete Till 2", bank: "standard-bank", source: "inactive" },
+    };
+    expect(captureableCards(rows).map((t) => t.tid)).toEqual(["A"]);
+    expect(reportSource(rows.B)).toBe("inactive");
+    expect(isInactiveTerminal(rows.B)).toBe(true);
   });
 });

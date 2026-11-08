@@ -68,10 +68,13 @@ export function isPhotoPrimary(row) {
   return row?.bank === "standard-bank" && reportSource(row) === "photo";
 }
 
-/** Where this till's day comes from: "portal" | "photo" | "email" — server reportSource (lib/card-terminals.cjs). */
+/** A machine not in use (Concrete Till 2): no card, no slip, no "awaiting" — server isInactiveTerminal. */
+export const isInactiveTerminal = (row) => row?.source === "inactive";
+
+/** Where this till's day comes from: "portal" | "photo" | "email" | "inactive" — server reportSource (lib/card-terminals.cjs). */
 export function reportSource(row) {
   if (!row) return null;
-  if (row.source === "portal" || row.source === "photo" || row.source === "email") return row.source;
+  if (row.source === "portal" || row.source === "photo" || row.source === "email" || row.source === "inactive") return row.source;
   if (row.bank !== "standard-bank") return "email";
   return row.record === "portal" ? "portal" : "photo";
 }
@@ -130,7 +133,7 @@ export function captureCards(terminals) {
  * here, so it never reads "Waiting" or "Type total" (Junid, 8 Nov 2026).
  */
 export function captureableCards(terminals) {
-  return captureCards(terminals).filter((t) => !isPortalRecordTerminal(t));
+  return captureCards(terminals).filter((t) => !isPortalRecordTerminal(t) && !isInactiveTerminal(t));
 }
 
 // ── WHOSE TILLS, AND UNDER WHICH SECTION ─────────────────────────────────────

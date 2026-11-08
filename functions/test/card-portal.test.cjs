@@ -377,7 +377,7 @@ test("Junid's correction of a portal day stands — a later pull only checks bes
 // ── review fixes (Sonnet architect, #837) ────────────────────────────────────
 
 test("a status or type the parser does not know refuses the source — never a silent R0.00", () => {
-  const p = P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status: "Completed" })] });
+  const p = P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status: "Paid out" })] });
   assert.equal(p.ok, false);
   assert.match(p.reason, /cannot read/);
   assert.equal(P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { type: "Cashback" })] }).ok, false);
@@ -534,4 +534,44 @@ test("the backfill is one card a day: re-pulling a recorded day changes nothing"
   assert.equal(first.results[F2Y].key, again.results[F2Y].key);
   assert.equal(again.results[F2Y].outcome, "unchanged");
   assert.deepEqual(Object.keys(await node(db, `card_batches/concrete/${F2Y}`)), [first.results[F2Y].key]);
+});
+
+// ─── A MACHINE NOT IN USE (Junid, 8 Nov 2026: Concrete Till 2) ───────────────
+const inactiveWorld = (events = {}) => {
+  const db = makeFakeDb({
+    config: { cardTerminals: { ...TERMINALS, [F1Y]: { ...TERMINALS[F1Y], source: "inactive", foldInto: F2Y } } },
+    users: { [POLLER.uid]: { permFlags: { card_recon: true, card_recon_intake: true } } },
+    card_batches: {},
+    pos: { paymentEvents: events },
+    network: { concrete: { tills: { "till-1": { label: "Till 1" }, "till-2": { label: "Till 2" } } } },
+  });
+  return db;
+};
+const concreteDay = (db, rows, now) => handlePortalDay(db, { auth: POLLER, data: { dayYmd: DAY, sources: [{ business: { name: "CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF1Y", "0000OF2Y"], cols: COLS, rows }] } }, { now: () => now });
+
+test("a machine not in use gets no card, and its payment counts on the machine in use", async () => {
+  const db = inactiveWorld({ a: card("concrete", "till-1", "2026-11-03T15:02:30", 75000) });
+  const got = await concreteDay(db, [row("2026-11-03T15:01:00", "0000OF1Y", 750)], SAST("2026-11-04T07:00:00"));
+  assert.equal(await node(db, `card_batches/concrete/${F1Y}`), null, "no record is ever written for it");
+  assert.equal(got.results[F1Y].outcome, "ignored");
+  const rec = await node(db, `card_batches/concrete/${F2Y}/${got.results[F2Y].key}`);
+  assert.equal(rec.slip.totalCents, 75000);
+  assert.deepEqual(rec.portal.foldedFrom, { tid: "0000OF1Y", txns: 1, cents: 75000 });
+  assert.ok(rec.warnings.some((w) => /not in use/.test(w)));
+});
+
+test("a machine not in use with no foldInto: its money is unattributed, never silently nothing", async () => {
+  const db = makeFakeDb({
+    config: { cardTerminals: { [F1Y]: { ...TERMINALS[F1Y], source: "inactive" }, [F2Y]: TERMINALS[F2Y] } },
+    users: { [POLLER.uid]: { permFlags: { card_recon: true, card_recon_intake: true } } },
+    card_batches: {}, pos: { paymentEvents: {} },
+  });
+  const got = await concreteDay(db, [row("2026-11-03T15:01:00", "0000OF1Y", 750)], SAST("2026-11-04T07:00:00"));
+  assert.deepEqual(got.unattributed, { txns: 1, cents: 75000 });
+});
+
+test("foldInto only ever reaches a portal machine in the same store", () => {
+  assert.equal(P.foldTargetOf(F2Y, { [F2Y]: { ...TERMINALS[F2Y], source: "portal" } }), F2Y);
+  const reg = { A: { source: "inactive", foldInto: HP1X, storeId: "concrete" }, [HP1X]: TERMINALS[HP1X] };
+  assert.equal(P.foldTargetOf("A", reg), null);
 });

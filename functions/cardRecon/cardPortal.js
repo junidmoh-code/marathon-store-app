@@ -154,7 +154,7 @@ async function sweepHeld(db, { storeId, tid, dayYmd, key }) {
 }
 
 // ─── ONE TERMINAL, ONE DAY ───────────────────────────────────────────────────
-async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merchantNo, business, nowMs, deps = {} }) {
+async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merchantNo, business, nowMs, deps = {}, folded = [] }) {
   const { storeId } = row;
   const tidPath = `${CARD_BATCHES_PATH}/${storeId}/${tid}`;
   const dayRecordsVal = (await db.ref(tidPath).orderByChild("slip/closedAt")
@@ -211,6 +211,10 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     replacing: write.supersedes ? (P.isPortalRecord(superseded) ? "portal" : "other") : null,
     supersededKey: write.supersedes,
   });
+  if (folded.length) {
+    const cents = folded.reduce((s, t) => s + t.amountCents, 0);
+    warnings.push(`Includes ${folded.length} payment${folded.length === 1 ? "" : "s"} (R${(cents / 100).toFixed(2)}) SimplyBLU lists under machine ${folded[0].viaTid}, which is not in use, counted on this till.`);
+  }
   if (moved) warnings.push("The machine was moved to another till during this day; the expected figure uses its registered till. The owner's Card Recon splits the day by where the machine stood.");
   const token = request.auth?.token || {};
   const record = buildBatchRecord({
@@ -224,6 +228,11 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     capturedVia: P.PORTAL_SOURCE,
   });
   record.portal = { dayYmd, merchantNo: merchantNo || null, business: business || null, pulledAt: nowMs, source: P.PORTAL_SOURCE };
+  if (folded.length) {
+    record.portal.foldedFrom = {
+      tid: folded[0].viaTid, txns: folded.length, cents: folded.reduce((s, t) => s + t.amountCents, 0),
+    };
+  }
 
   // THE SLIPS: whatever the replaced record carried (and the replaced record
   // itself, when it was a staff slip), and every slip held for this day.
@@ -299,8 +308,12 @@ async function handlePortalDay(db, request, deps = {}) {
         if (!P.isTidLike(t.tid)) { unattributed = { txns: unattributed.txns + 1, cents: unattributed.cents + t.amountCents }; }
         continue;
       }
-      if (!byKey.has(k)) byKey.set(k, { txns: [], ...business });
-      byKey.get(k).txns.push(t);
+      // A MACHINE NOT IN USE: its payment counts on the machine in use.
+      const into = P.foldTargetOf(k, registry);
+      if (!into) { unattributed = { txns: unattributed.txns + 1, cents: unattributed.cents + t.amountCents }; continue; }
+      if (into !== k) linked.add(into);
+      if (!byKey.has(into)) byKey.set(into, { txns: [], ...business });
+      byKey.get(into).txns.push(into === k ? t : { ...t, viaTid: t.tid });
     }
     sourceSummaries.push({ ...business, ok: true, tids: Object.keys(mapped).concat(un), rows: Array.isArray(src.rows) ? src.rows.length : 0, kept: parsed.txns.length, skipped: parsed.skipped });
   }
@@ -323,9 +336,10 @@ async function handlePortalDay(db, request, deps = {}) {
       continue;
     }
     const extraction = P.portalExtraction({ tid, mid: row.mid || null, dayYmd, txns: got.txns });
+    const folded = got.txns.filter((t) => t.viaTid);
     try {
       results[tid] = await writePortalDay(db, request, {
-        tid, row, dayYmd, extraction, merchantNo: got.merchantNo || row.mid || null, business: got.name || null, nowMs, deps,
+        tid, row, dayYmd, extraction, merchantNo: got.merchantNo || row.mid || null, business: got.name || null, nowMs, deps, folded,
       });
     } catch (err) {
       console.error(`cardBatchCapture: portal write failed ${tid} ${dayYmd}: ${err && err.message}`);

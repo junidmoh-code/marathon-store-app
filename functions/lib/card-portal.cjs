@@ -31,7 +31,7 @@
 
 "use strict";
 
-const { terminalBank, STANDARD_BANK, resolveRegisteredTid, canonicalTid, wasActiveAt, isRetiredTerminal } = require("./card-terminals.cjs");
+const { terminalBank, STANDARD_BANK, resolveRegisteredTid, canonicalTid, wasActiveAt, isRetiredTerminal, isInactiveTerminal, isPortalRecordTerminal } = require("./card-terminals.cjs");
 const { sastDayYmd, sastDayStartMs, isDayYmd, DAY_MS, OVERRIDES_PATH } = require("./card-unread.cjs");
 
 const PORTAL_SOURCE = "simplyblu-portal";
@@ -120,9 +120,11 @@ function txnKind(raw) {
   return null;
 }
 
-const isSuccess = (raw) => /^(success|successful|approved)$/i.test(String(raw || "").trim());
+// Every way this list may say the money went through (Junid, 8 Nov 2026: "every
+// successful transaction status"). A status it has never seen still refuses the source.
+const isSuccess = (raw) => /^(success|successful|approved|completed?|settled|captured|processed)$/i.test(String(raw || "").trim());
 // The statuses that are NOT money and are known to be so. Anything else — a
-// status renamed tomorrow ("Completed") — refuses the whole source: silently
+// status renamed tomorrow ("Paid out") — refuses the whole source: silently
 // skipping it would record every portal till as R0.00 and call it SHORT
 // (Sonnet architect review, #837).
 const isKnownNotMoney = (raw) => /^(failed|failure|declined|cancelled|canceled|reversed|voided|void|aborted|timeout|timed ?out|error|pending|in ?progress|incomplete|open)$/i.test(String(raw || "").trim());
@@ -230,6 +232,20 @@ function mapPortalTids(portalTids, registry) {
     if (key) mapped[raw] = key; else unassigned.push(raw);
   }
   return { mapped, unassigned };
+}
+
+/**
+ * WHERE A PAYMENT ON THIS MACHINE BELONGS. A machine in use: itself. A machine
+ * not in use: the portal machine its `foldInto` names, same store (31 Oct 2026:
+ * R750 was tapped on Concrete's spare machine and rung on Till 1) — or null,
+ * which the caller counts as unattributed money, never as nothing.
+ */
+function foldTargetOf(tid, registry) {
+  const row = registry && registry[tid];
+  if (!isInactiveTerminal(row)) return tid;
+  const into = typeof row.foldInto === "string" ? row.foldInto : null;
+  const target = into && registry[into];
+  return target && target.storeId === row.storeId && isPortalRecordTerminal(target) ? into : null;
 }
 
 /** The key an unassigned TID is stored under: its canonical form (O/0 folded). */
@@ -401,6 +417,7 @@ function portalTerminalsOn(registry, dayYmd) {
   const out = {};
   for (const [tid, row] of Object.entries(registry || {})) {
     if (!row || !row.storeId || !row.tillId) continue;
+    if (isInactiveTerminal(row)) continue;
     if (!isPortalDay(row, dayYmd)) continue;
     if (isRetiredTerminal(row) && row.retiredAt < start) continue;
     // In the estate at some point that day.
@@ -431,6 +448,6 @@ module.exports = {
   PORTAL_PATH, PORTAL_HELD_PATH, PORTAL_UNASSIGNED_PATH, PORTAL_DAYS_PATH, PORTAL_STATUS_PATH,
   METABASE_ROW_CAP, SAFE_KEY, PORTAL_PULL_MINUTE,
   isPortalDay, portalDayWindow, columnIndex, parsePortalRows, randsToCents, isTidLike,
-  mapPortalTids, unassignedKey, portalExtraction, isPortalRecord, samePortalFigures, lineSignature,
+  mapPortalTids, foldTargetOf, unassignedKey, portalExtraction, isPortalRecord, samePortalFigures, lineSignature,
   planPortalWrite, portalCheckOf, portalWarnings, portalTerminalsOn, daysToPull,
 };
