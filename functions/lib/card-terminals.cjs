@@ -107,7 +107,7 @@ function typesTotal(row) {
 // a typed total is optional and only a cross-check, and nothing waits for an
 // email. FNB rows are untouched by this — `bank` absent is FNB.
 function isPhotoPrimary(row) {
-  return !!row && row.bank === STANDARD_BANK && row.record !== PORTAL_RECORD;
+  return !!row && row.bank === STANDARD_BANK && reportSource(row) === SOURCE_PHOTO;
 }
 
 // ─── …EXCEPT A TILL WHOSE RECORD IS THE SIMPLYBLU PORTAL (Junid, 7 Nov 2026) ─
@@ -117,7 +117,26 @@ function isPhotoPrimary(row) {
 // beside it, and its stored `capture` applies. Concrete Till 1/2 carry it.
 const PORTAL_RECORD = "portal";
 function isPortalRecordTerminal(row) {
-  return !!row && row.bank === STANDARD_BANK && row.record === PORTAL_RECORD;
+  return !!row && row.bank === STANDARD_BANK && reportSource(row) === SOURCE_PORTAL;
+}
+
+// ─── WHERE A TILL'S DAY COMES FROM IS PER TERMINAL (Junid, 8 Nov 2026) ───────
+// `source` on the /config/cardTerminals row: "portal" (the SimplyBLU pull),
+// "photo" (the photographed end-of-day report) or "email" (FNB's emailed
+// report). Never decided by the bank: Concrete and Marathon PE Till 2 are both
+// Standard Bank and differ. When a till's merchant is linked in SimplyBLU its
+// row changes to "portal" and nothing else changes. A row without `source`
+// keeps what it always meant: FNB is email; Standard Bank is photo unless it
+// carries the 7 Nov `record: "portal"`. `source` never moves an FNB row off
+// its emailed path: the two checks above require a Standard Bank row.
+const SOURCE_PORTAL = "portal";
+const SOURCE_PHOTO = "photo";
+const SOURCE_EMAIL = "email";
+function reportSource(row) {
+  if (!row) return null;
+  if (row.source === SOURCE_PORTAL || row.source === SOURCE_PHOTO || row.source === SOURCE_EMAIL) return row.source;
+  if (row.bank !== STANDARD_BANK) return SOURCE_EMAIL;
+  return row.record === PORTAL_RECORD ? SOURCE_PORTAL : SOURCE_PHOTO;
 }
 
 /** Does this machine's report arrive by email (so a missing email is worth a word)? */
@@ -258,4 +277,4 @@ function registeredRowFor(readTid, registry) {
   return key ? registry[key] : null;
 }
 
-module.exports = { registeredRowFor, BANKS, STANDARD_BANK, terminalBank, isPhotoPrimary, isPortalRecordTerminal, PORTAL_RECORD, expectsEmail, canonicalTid, resolveRegisteredTid, isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
+module.exports = { registeredRowFor, BANKS, STANDARD_BANK, terminalBank, isPhotoPrimary, isPortalRecordTerminal, reportSource, PORTAL_RECORD, expectsEmail, canonicalTid, resolveRegisteredTid, isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };

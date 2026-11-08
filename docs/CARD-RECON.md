@@ -611,6 +611,32 @@ terminal's registry row says `bank: "standard-bank"`** (`isPhotoPrimary`,
 * **FNB is untouched:** FNB tills keep the emailed path and the FNB prompt; the
   real FNB corpus gives identical results.
 
+## Where a till's day comes from is per terminal (`source`, Junid, 8 Nov 2026)
+
+`source` on the `/config/cardTerminals` row decides, never the bank
+(`lib/card-terminals.cjs reportSource`; the POS and the store-app client mirror
+it):
+
+| `source` | Tills | Record | Asked of staff |
+|---|---|---|---|
+| `portal` | Concrete Till 1, Till 2 | The SimplyBLU pull (18:00 / 18:20 SAST) | Nothing. The slip screen says so and offers an optional backup. |
+| `photo` | Marathon PE Till 2, Trophy Till 2 | The photographed end-of-day report; the portal is only `portalCheck` | The report photo |
+| `email` (or absent on an FNB row) | FNB tills | The emailed report, unchanged | As before |
+
+A till's merchant being linked in SimplyBLU changes one field: `source` becomes
+`portal` on its row. A row with no `source` keeps its older meaning (FNB is
+email; Standard Bank is photo unless `record: "portal"`). `source` never moves
+an FNB row. Set by `scripts/cardrecon/apply-terminal-source-20261108.mjs`, which
+supersedes `apply-concrete-photo-primary-20261107.mjs` for Concrete.
+
+**A portal till shows "awaiting portal data" until the 18:00 pull, then the
+figure.** If SimplyBLU lists nothing for a day the POS took card money, the
+record is R0.00, SHORT, and says in its warnings how much the POS took and that
+SimplyBLU lists none of it. **The portal's list can be incomplete**: it held no
+Concrete rows on 7 Nov against POS card sales, and 3 Nov fell R3,850 short. A
+short on a portal till may be SimplyBLU's list and not missing money, so check
+the printed report.
+
 ## The SimplyBLU portal was the record for Standard Bank tills (3–6 Nov 2026; a cross-check from 7 Nov)
 
 Junid, 2 Nov 2026: from **3 Nov 2026** the Standard Bank tills take every card

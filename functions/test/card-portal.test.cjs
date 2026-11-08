@@ -463,3 +463,75 @@ test("…while Marathon PE Till 2 and Trophy Till 2 stay photographed: their pul
   assert.equal(out.results[Z4M6].outcome, "awaiting-photo");
 });
 
+
+// ── where a till's day comes from is per terminal (Junid, 8 Nov 2026) ──
+const { reportSource, isPhotoPrimary, isPortalRecordTerminal } = require("../lib/card-terminals.cjs");
+
+test("source: read from the row; without one FNB is email and Standard Bank is photo unless record says portal", () => {
+  assert.equal(reportSource({ bank: "standard-bank", source: "portal" }), "portal");
+  assert.equal(reportSource({ bank: "standard-bank", source: "photo", record: "portal" }), "photo", "source wins over the older field");
+  assert.equal(reportSource({ bank: "standard-bank", record: "portal" }), "portal");
+  assert.equal(reportSource({ bank: "standard-bank" }), "photo");
+  assert.equal(reportSource({ storeId: "pe" }), "email");
+  assert.equal(reportSource({ bank: "standard-bank", source: "nonsense" }), "photo", "a mangled source falls back");
+});
+
+test("source: an FNB row is never moved off its emailed path, whatever its row says", () => {
+  for (const source of ["portal", "photo"]) {
+    assert.equal(isPortalRecordTerminal({ source }), false);
+    assert.equal(isPhotoPrimary({ source }), false);
+  }
+});
+
+test("linking PE Till 2 is one field: source becomes portal and the pull records it, no code change", async () => {
+  const before = world();
+  assert.equal((await pull(before, [row("2026-11-03T10:00:00", HP1X, 500)])).results[HP1X].outcome, "awaiting-photo");
+  const after = world({ extra: { config: { cardTerminals: { ...TERMINALS, [HP1X]: { ...TERMINALS[HP1X], source: "portal" } } } } });
+  const got = await pull(after, [row("2026-11-03T10:00:00", HP1X, 500)]);
+  assert.equal(got.results[HP1X].outcome, "recorded");
+  assert.equal((await node(after, `card_batches/pe/${HP1X}/${got.results[HP1X].key}`)).capturedVia, P.PORTAL_SOURCE);
+});
+
+const concreteWithSales = (events) => world({ events, extra: {
+  users: { [POLLER.uid]: { permFlags: { card_recon: true, card_recon_intake: true } } },
+  network: { concrete: { tills: { "till-1": { label: "Till 1" }, "till-2": { label: "Till 2" } } } },
+} });
+const SALE = { a: card("concrete", "till-1", "2026-11-03T12:00:00", 1989000) };
+
+test("Concrete, today, portal empty: 'awaiting' before the 18:00 pull", async () => {
+  const db = concreteWithSales(SALE);
+  const got = await concretePull(db, [], { now: SAST("2026-11-03T17:59:00") });
+  assert.equal(got.results[F2Y].outcome, "awaiting");
+  assert.equal(await node(db, `card_batches/concrete/${F2Y}`), null);
+});
+
+test("Concrete, today, portal empty at the 18:00 pull: the figure with the specific error, and the POS amount in it", async () => {
+  const db = concreteWithSales(SALE);
+  const got = await concretePull(db, [], { now: SAST("2026-11-03T18:00:30") });
+  assert.equal(got.results[F2Y].outcome, "recorded");
+  const rec = await node(db, `card_batches/concrete/${F2Y}/${got.results[F2Y].key}`);
+  assert.equal(rec.slip.totalCents, 0);
+  assert.ok(rec.warnings.some((w) => /SimplyBLU lists none of the R19890\.00/.test(w)), rec.warnings.join(" / "));
+});
+
+test("the 18:00 rule is only for portal tills: a photo till's empty day today still waits", async () => {
+  const db = world();
+  assert.equal((await pull(db, [], { now: SAST("2026-11-03T18:00:30") })).results[HP1X].outcome, "awaiting");
+});
+
+test("a zero portal day that took no POS card money carries no 'lists none of' error", async () => {
+  const db = concreteWithSales({});
+  const got = await concretePull(db, [], { now: SAST("2026-11-03T18:00:30") });
+  const rec = await node(db, `card_batches/concrete/${F2Y}/${got.results[F2Y].key}`);
+  assert.equal(rec.warnings.some((w) => /lists none of/.test(w)), false);
+});
+
+test("the backfill is one card a day: re-pulling a recorded day changes nothing, and a typed day is replaced with its slip kept", async () => {
+  const db = concreteWorld();
+  const day = [row("2026-11-03T10:00:00", "0000OF2Y", 500, { id: "fixed" })];
+  const first = await concretePull(db, day, { now: NOW + 86400000 });
+  const again = await concretePull(db, day, { now: NOW + 2 * 86400000 });
+  assert.equal(first.results[F2Y].key, again.results[F2Y].key);
+  assert.equal(again.results[F2Y].outcome, "unchanged");
+  assert.deepEqual(Object.keys(await node(db, `card_batches/concrete/${F2Y}`)), [first.results[F2Y].key]);
+});

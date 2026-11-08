@@ -2378,7 +2378,7 @@ async function handleSlipTills(db, request, deps = {}) {
     // photoFirst: a Standard Bank till — the screen leads with "Photograph the
     // end-of-day report" (several photos for a long roll) and the typed total
     // is optional (lib/card-sb-photo.cjs).
-    tills.push({ tid, filedStoreId: row.storeId, storeId, tillId, label: here.label || row.label || `${storeId} · ${tillId}`, typed: typesTotal(row), photoFirst: isPhotoPrimary(row) });
+    tills.push({ tid, filedStoreId: row.storeId, storeId, tillId, label: here.label || row.label || `${storeId} · ${tillId}`, typed: typesTotal(row), photoFirst: isPhotoPrimary(row), portal: isPortalRecordTerminal(row) });
   }
   // A GRANTED TILL NO MACHINE STANDS AT is said out loud, never dropped
   // quietly: the screen tells the person to call Junid, and the log carries

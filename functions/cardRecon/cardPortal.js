@@ -207,7 +207,7 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
       || (await db.ref(`${tidPath}/${write.supersedes}`).once("value")).val())
     : null;
   const warnings = P.portalWarnings({
-    extraction: ex, merchantNo,
+    extraction: ex, merchantNo, expectedCents: expected.cardCents,
     replacing: write.supersedes ? (P.isPortalRecord(superseded) ? "portal" : "other") : null,
     supersededKey: write.supersedes,
   });
@@ -311,11 +311,15 @@ async function handlePortalDay(db, request, deps = {}) {
   // machine's merchant shows activity today. A portal that is merely behind
   // must not put a false SHORT on today (Sonnet architect review, #837).
   const isToday = dayYmd >= sastDayYmd(nowMs);
+  // A till whose record IS the portal is final from the 18:00 pull: the owner
+  // sees the figure or the specific error then, not "awaiting" until tomorrow
+  // (Junid, 8 Nov 2026). A later pull revises it if SimplyBLU catches up.
+  const pullTimePassed = Math.floor(((nowMs + 2 * 60 * 60 * 1000) % (24 * 60 * 60 * 1000)) / 60000) >= P.PORTAL_PULL_MINUTE;
   for (const [tid, row] of Object.entries(portalRows)) {
     if (!linked.has(tid)) { results[tid] = { outcome: "awaiting", reason: "not in the portal's terminal list (merchant not linked yet, or no transaction ever)" }; continue; }
     const got = byKey.get(tid) || { txns: [], merchantNo: null, name: null };
-    if (!got.txns.length && isToday && !(merchantActive.get(merchantOf.get(tid)) > 0)) {
-      results[tid] = { outcome: "awaiting", reason: "no transactions on the portal today for this merchant yet — a zero day is recorded once the day is over" };
+    if (!got.txns.length && isToday && !(merchantActive.get(merchantOf.get(tid)) > 0) && !(isPortalRecordTerminal(row) && pullTimePassed)) {
+      results[tid] = { outcome: "awaiting", reason: "no transactions on the portal today for this merchant yet — a zero day is recorded at the 18:00 pull (a portal till) or once the day is over" };
       continue;
     }
     const extraction = P.portalExtraction({ tid, mid: row.mid || null, dayYmd, txns: got.txns });
