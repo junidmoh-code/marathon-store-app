@@ -81,7 +81,7 @@ import {
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   refusalFingerprint, applyRefusalFingerprint,
   redactAccountDigits, domainOfAddress, parseAccountPolicies, accountPolicyProblems,
-  destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
+  destinationVerdict, immediacyVerdict, enforcesImmediateOnly, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
   IMMEDIATE_NOT_REQUIRED_FROM,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
@@ -621,7 +621,7 @@ async function run() {
   console.log(`· EFT: a payment the bank dates before ${IMMEDIATE_NOT_REQUIRED_FROM} must be immediate; from ${IMMEDIATE_NOT_REQUIRED_FROM} immediate or regular`);
   // Immediate-only accounts (2 Nov 2026) — by bank and last four, never the
   // full number; and any EFT_ALLOWED_ACCOUNTS entry that did not read.
-  const immediateOnly = cfg.eftAccounts.filter((p) => p.immediateOnly);
+  const immediateOnly = cfg.eftAccounts.filter((p) => enforcesImmediateOnly(p));
   if (immediateOnly.length) {
     console.log(`· EFT: immediate payments ONLY into ${immediateOnly.map((p) => `${p.bank} …${p.account.slice(-4)}`).join(", ")}, whatever the date`);
   }
@@ -846,7 +846,7 @@ async function run() {
       // payment refuses until EFT_ALLOWED_ACCOUNTS is set in .env.
       eftAccountTails: cfg.eftAccounts.length,
       // How many of them take immediate payments only (a count, never a value).
-      eftImmediateOnlyAccounts: cfg.eftAccounts.filter((p) => p.immediateOnly).length,
+      eftImmediateOnlyAccounts: cfg.eftAccounts.filter((p) => enforcesImmediateOnly(p)).length,
       // FIX 8: the cutoff this tick refused stale payments against — a date,
       // so the owner can see from the heartbeat which cutoff is live.
       eftPaymentDateCutoff: cfg.eftPaymentDateCutoff.ok ? cfg.eftPaymentDateCutoff.date : "INVALID",
@@ -1514,8 +1514,9 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
           ? immediacyVerdict({
             parsed: group.parse, reader: group.readerId, receivedAt: message.receivedAt,
             // An immediate-only account (its EFT_ALLOWED_ACCOUNTS tag) needs
-            // an immediate payment whatever the bank date.
-            immediateOnly: account?.ok === true && account.immediateOnly === true,
+            // an immediate payment whatever the bank date — unless that tag
+            // is waived (Concrete's Standard Bank account, 8 Nov 2026).
+            immediateOnly: account?.ok === true && enforcesImmediateOnly(account),
           })
           : null;
         // FIX 8 — dated on or after the cutoff BY THE BANK (group.parse.bankTs,

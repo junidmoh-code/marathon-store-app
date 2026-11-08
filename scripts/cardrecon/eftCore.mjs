@@ -583,6 +583,28 @@ export function immediacyRequiredFor(bankTs) {
 // immediate by its nature, like FNB-to-FNB (Junid, 6 Nov 2026 — see below);
 // payments into the account from any other bank must still be immediate.
 
+// ─── CONCRETE'S STANDARD BANK ACCOUNT: THE TAG NO LONGER BINDS (8 Nov 2026) ──
+// Junid, 8 Nov 2026: the immediate-only rule was rejecting real customers.
+// Concrete's Standard Bank account now confirms a non-immediate EFT exactly as
+// Marathon's FNB account does: the date-phased rule, next-business-day
+// settlement, future-dated refusal, DKIM, dedupe holds and the cutoff all
+// still apply. Its EFT_ALLOWED_ACCOUNTS entry deliberately keeps its
+// ":immediate" tag (the list was not to change), so the waiver is here, keyed
+// on the account's bank and last four — never a full number in this repo. Any
+// OTHER account tagged "immediate" is still held to it.
+export const IMMEDIATE_TAG_WAIVED = Object.freeze([Object.freeze({ bank: "standardbank", tail: "8534" })]);
+
+/**
+ * Is this account really held to immediate-only? Takes a successful
+ * destinationVerdict ({bank, tail, immediateOnly}) or a parsed policy
+ * ({bank, account, immediateOnly}).
+ */
+export function enforcesImmediateOnly(entry) {
+  if (entry?.immediateOnly !== true) return false;
+  const tail = typeof entry.tail === "string" ? entry.tail : String(entry.account ?? "").slice(-4);
+  return !IMMEDIATE_TAG_WAIVED.some((w) => w.bank === entry.bank && w.tail === tail);
+}
+
 /**
  * @param {{parsed:object, reader?:string, receivedAt:number|null, immediateOnly?:boolean}} p
  * @returns {{ok:true} | {ok:false, reason:string, needsSample?:true}}
@@ -955,6 +977,14 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     syntheticRef,
     destination,
     accountTail: account.tail,
+    // Whether the bank called it immediate, kept as data on a payment into a
+    // tagged account now that it no longer decides anything there (8 Nov
+    // 2026): true, false, or null when the notice does not say. Untagged
+    // accounts' records carry no such field, exactly as before.
+    ...(account.immediateOnly === true ? {
+      immediate: typeof parsed.immediate === "boolean" ? parsed.immediate : null,
+      paymentType: clip(parsed.paymentType, 60) || null,
+    } : {}),
   };
 }
 
