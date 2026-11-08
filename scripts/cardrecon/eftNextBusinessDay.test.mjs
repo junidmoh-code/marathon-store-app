@@ -1,3 +1,6 @@
+// NOTE (8 Nov 2026): Concrete's Standard Bank account no longer has its tag
+// enforced (eftConcreteNonImmediate.test.mjs). This file's chain passes the tag
+// straight in, so it pins immediacyVerdict for an account whose tag IS enforced.
 // ─── NEXT-BUSINESS-DAY SETTLEMENT (Junid, 7 Nov 2026) ────────────────────────
 // A non-immediate EFT made on a weekend is dated by the payer's bank for the
 // day it settles. RICHARD CHETTY's two Nedbank "Internet payment"s of Saturday
@@ -91,7 +94,7 @@ describe("a Saturday notice dated the following Monday CONFIRMS", () => {
     expect(sastDate(record.bankTs)).toBe("2026-11-09");
   });
 
-  it("Concrete Standard (…8534, immediate-only): R2450, Internet payment, dated 09/11", () => {
+  it("a tagged immediate-only Standard Bank account: R2450, Internet payment, dated 09/11", () => {
     const { account, record } = decide(toConcrete(), { received: sast("2026-11-07T15:32:21") });
     expect(account).toMatchObject({ ok: true, bank: "standardbank", immediateOnly: true });
     expect(record).toMatchObject({ outcome: "recorded", status: "unmatched", amountCents: 245000 });
@@ -116,7 +119,7 @@ describe("dated the same day or earlier", () => {
     expect(decide(toConcrete({ date: "07/11/2026", channel: "Immediate payment" })).record.outcome).toBe("recorded");
   });
 
-  it("into Concrete's immediate-only account a NON-immediate payment dated the same day still refuses (the relaxation is the next-business-day window only)", () => {
+  it("into an enforced immediate-only account a NON-immediate payment dated the same day still refuses (the relaxation is the next-business-day window only)", () => {
     const { record } = decide(toConcrete({ date: "07/11/2026" }));
     expect(record.outcome).toBe("refused-not-immediate");
     expect(record.reason).toMatch(/IMMEDIATE payments only/);

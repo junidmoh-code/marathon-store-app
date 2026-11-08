@@ -399,6 +399,17 @@ test("the review list is Junid's alone and reads one bounded page by key order",
 // cashier matches, parks, or asks Junid to enter the payment by hand. That
 // hand entry is still Junid's alone, and a cashier AT CONCRETE consumes it
 // through the ordinary consume-once settle like any matched payment.
+test("CONCRETE: its staff still cannot hand-enter an EFT — refused on the server before anything is read (8 Nov 2026)", async () => {
+  db.reads["eft_enforcement"] = { stores: { concrete: true, pe: true, trophy: true }, updatedAt: 1, updatedBy: "gunidmoh@gmail.com" };
+  const entry = { entryId: "ME-concrt02", reference: "Concrete 0832", amountCents: 41000, note: "typed at Concrete", storeId: "concrete" };
+  for (const who of [CASHIER, REVIEWER, SHARED]) {
+    db.readLog = [];
+    const e = await rejects(eftPoolManualEntry({ ...who, data: entry }), "permission-denied");
+    assert.equal(e.details.code, "owner-only");
+    assert.deepEqual(db.readLog, [], "no read, no transaction, nothing");
+  }
+});
+
 test("CONCRETE: Junid's hand entry is the escape hatch — owner-only, and spent once by a Concrete till", async () => {
   db.reads["eft_enforcement"] = { stores: { concrete: true, pe: true, trophy: true }, updatedAt: 1, updatedBy: "gunidmoh@gmail.com" };
   const entry = { entryId: "ME-concrt01", reference: "Concrete 0831", amountCents: 32000, note: "Concrete, no email yet" };
