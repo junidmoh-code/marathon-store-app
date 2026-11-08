@@ -14,7 +14,7 @@ const [cur, target] = await Promise.all([db.ref(path).once("value"), db.ref(`con
 if (!cur || cur.storeId !== "concrete" || target?.storeId !== "concrete" || target?.source !== "portal") { console.log("not the expected rows — nothing written"); process.exit(1); }
 console.log(`${tid} (${cur.label}): ${EXECUTE ? "SET" : "would set"} ${JSON.stringify(set)}`);
 if (EXECUTE) {
-  await db.ref(path).transaction((row) => (row && row.storeId === "concrete" ? { ...row, ...set } : undefined));
+  await db.ref(path).transaction((row) => (row === null ? null : row.storeId === "concrete" ? { ...row, ...set } : undefined));
   const back = (await db.ref(path).once("value")).val();
   const ok = Object.entries(set).every(([k, v]) => back?.[k] === v);
   console.log(`${ok ? "✓" : "✗"} read back: source=${back?.source} foldInto=${back?.foldInto}`);
