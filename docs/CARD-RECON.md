@@ -1819,3 +1819,28 @@ and how to add marathon6631@gmail.com as the "notify by email" address.
 - **Kill switch:** `EFT_GUIDE_REPLY=off` (or `false`/`0`) in
   `~/marathon-store-app/.env`; unset, `on`, `true` or `1` is on. Any other
   value turns it OFF with a warning. A dry run never sends.
+
+## Concrete Till 1: why SimplyBLU read short (8 Nov 2026)
+
+Every SimplyBLU payment on 0000OF2Y from 30 Oct to 8 Nov was matched against
+Concrete Till 1's POS card legs by amount and time. SimplyBLU's own
+Transactions page lists the same 90 payments as the Metabase report, numbered
+1 to 90 with no gap, so the pull loses nothing. One card machine batch per
+calendar day, so the window is right. A re-pull a day later found nothing new.
+
+The unmatched money is payments that never reached SimplyBLU: all of 7 Nov
+(the machine's batch 9 is absent from the portal; 8 Nov is batch 10), and the
+first sales of 1 and 3 Nov. The other differences are the till, not the portal:
+a card sale rung up as cash on POS, one R20 with no POS sale, one R3,300 sale
+where the portal shows R2,200.
+
+So the portal's list is not always the machine's money. A portal record carries
+`portalGap` (`portalGapOf`, lib/card-portal.cjs): each POS card leg with no
+portal line. The POS shows "portal missing N payments (R X) that the POS has"
+and lists them; only a day with every leg answered can read short or over.
+
+`source: "inactive"` (Concrete Till 2) hides a machine from Card Recon; its
+`foldInto` names the machine in use its stray payments count on.
+
+The job also re-reads yesterday at 07:00 (only if the portal has grown), and
+compares each pull with the portal's own Transactions page.
