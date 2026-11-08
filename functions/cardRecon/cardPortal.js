@@ -154,7 +154,7 @@ async function sweepHeld(db, { storeId, tid, dayYmd, key }) {
 }
 
 // ─── ONE TERMINAL, ONE DAY ───────────────────────────────────────────────────
-async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merchantNo, business, nowMs, deps = {}, folded = [] }) {
+async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merchantNo, business, nowMs, deps = {}, folded = [], growOnly = false }) {
   const { storeId } = row;
   const tidPath = `${CARD_BATCHES_PATH}/${storeId}/${tid}`;
   const dayRecordsVal = (await db.ref(tidPath).orderByChild("slip/closedAt")
@@ -163,7 +163,7 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     .filter(([, r]) => r && typeof r === "object")
     .map(([key, record]) => ({ key, record: { ...record, batchKey: record.batchKey || key } }));
   const last = await core().readLastBatchFor(db, storeId, tid);
-  const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction, portalIsRecord: isPortalRecordTerminal(row) });
+  const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction, portalIsRecord: isPortalRecordTerminal(row), growOnly });
   // A CROSS-CHECK (from 7 Nov 2026): the portal's figure beside the record in
   // force, or — no record yet — only on the day's status; never a record.
   if (plan.action === "check") {
@@ -339,7 +339,7 @@ async function handlePortalDay(db, request, deps = {}) {
     const folded = got.txns.filter((t) => t.viaTid);
     try {
       results[tid] = await writePortalDay(db, request, {
-        tid, row, dayYmd, extraction, merchantNo: got.merchantNo || row.mid || null, business: got.name || null, nowMs, deps, folded,
+        tid, row, dayYmd, extraction, merchantNo: got.merchantNo || row.mid || null, business: got.name || null, nowMs, deps, folded, growOnly: data.growOnly === true,
       });
     } catch (err) {
       console.error(`cardBatchCapture: portal write failed ${tid} ${dayYmd}: ${err && err.message}`);

@@ -317,6 +317,14 @@ function samePortalFigures(rec, extraction) {
     && lineSignature(rec.lines) === lineSignature(extraction.lines);
 }
 
+/** Does this extraction hold every line the record holds, and more? */
+function portalGrew(rec, extraction) {
+  const had = lineSignature(rec && rec.lines).split("|").filter(Boolean);
+  const now = lineSignature(extraction.lines).split("|").filter(Boolean);
+  const have = new Set(now);
+  return now.length > had.length && had.every((l) => have.has(l));
+}
+
 /**
  * WHERE THE DAY'S PORTAL RECORD GOES.
  *
@@ -350,7 +358,7 @@ function samePortalFigures(rec, extraction) {
 // Nov) is still revised by a later pull of the same day — until the photo
 // takes the day over, after which its chain is the photo's and the pull is a
 // cross-check like any other.
-function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord = false }) {
+function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord = false, growOnly = false }) {
   // A record DISPLACED by a photographed report that covers its day
   // (lib/card-sb-photo.cjs) is not the day's any more: it is skipped.
   const recs = (dayRecords || []).filter((r) => r && r.record && Number.isFinite(Number(r.record.batchNo)) && !r.record.displacedBy);
@@ -365,6 +373,9 @@ function planPortalWrite({ dayRecords, lastBatchNo, extraction, portalIsRecord =
     // correction stands — a later pull never writes over it.
     if (!isPortalRecord(chain.record)) return { action: portalIsRecord ? "noop" : "check", key: chain.key, correctionStands: true };
     if (samePortalFigures(chain.record, extraction)) return { action: "noop", key: chain.key };
+    // THE 07:00 RE-PULL refreshes a day only if the portal has GROWN: it never
+    // takes a line off a record (a portal having a bad morning is not news).
+    if (growOnly && !portalGrew(chain.record, extraction)) return { action: "noop", key: chain.key };
     return { action: "revise", batchNo: Number(chain.record.batchNo), supersedes: chain.key, replacing: "portal" };
   }
   // No portal record: the record in force that day (a photographed report,
@@ -449,5 +460,5 @@ module.exports = {
   METABASE_ROW_CAP, SAFE_KEY, PORTAL_PULL_MINUTE,
   isPortalDay, portalDayWindow, columnIndex, parsePortalRows, randsToCents, isTidLike,
   mapPortalTids, foldTargetOf, unassignedKey, portalExtraction, isPortalRecord, samePortalFigures, lineSignature,
-  planPortalWrite, portalCheckOf, portalWarnings, portalTerminalsOn, daysToPull,
+  planPortalWrite, portalGrew, portalCheckOf, portalWarnings, portalTerminalsOn, daysToPull,
 };

@@ -575,3 +575,34 @@ test("foldInto only ever reaches a portal machine in the same store", () => {
   const reg = { A: { source: "inactive", foldInto: HP1X, storeId: "concrete" }, [HP1X]: TERMINALS[HP1X] };
   assert.equal(P.foldTargetOf("A", reg), null);
 });
+
+// ─── THE 07:00 RE-PULL: ONLY IF THE PORTAL HAS GROWN ─────────────────────────
+const oneDay = (db, rows, now, extra = {}) => handlePortalDay(db, { auth: POLLER, data: { dayYmd: DAY, ...extra, sources: [{ business: { name: "CONCRETE", merchantNo: "0005377331" }, tids: ["0000OF2Y"], cols: COLS, rows }] } }, { now: () => now });
+const NEXT_MORNING = SAST("2026-11-04T07:00:10");
+
+test("growOnly: a portal that has grown revises the day", async () => {
+  const db = concreteWorld();
+  const a = row("2026-11-03T10:00:00", "0000OF2Y", 500);
+  await oneDay(db, [a], NOW);
+  const got = await oneDay(db, [a, row("2026-11-03T11:00:00", "0000OF2Y", 300)], NEXT_MORNING, { growOnly: true });
+  assert.equal(got.results[F2Y].outcome, "recorded");
+  assert.equal(got.results[F2Y].totalCents, 80000);
+});
+
+test("growOnly: a portal that has shrunk changes nothing", async () => {
+  const db = concreteWorld();
+  const a = row("2026-11-03T10:00:00", "0000OF2Y", 500), b = row("2026-11-03T11:00:00", "0000OF2Y", 300);
+  const first = await oneDay(db, [a, b], NOW);
+  const got = await oneDay(db, [a], NEXT_MORNING, { growOnly: true });
+  assert.equal(got.results[F2Y].outcome, "unchanged");
+  assert.equal(got.results[F2Y].key, first.results[F2Y].key);
+});
+
+test("every successful status counts as money; a pending one does not", () => {
+  for (const status of ["Success", "Approved", "Completed", "Settled", "Captured", "Processed"]) {
+    const p = P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status })] });
+    assert.equal(p.ok && p.txns.length, 1, status);
+  }
+  const p = P.parsePortalRows({ cols: COLS, rows: [row("2026-11-03T10:00:00", HP1X, 930, { status: "Pending" })] });
+  assert.equal(p.ok && p.txns.length, 0);
+});

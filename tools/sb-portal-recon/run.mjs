@@ -2,7 +2,8 @@
 // ─── SIMPLYBLU PORTAL → CARD RECON (Mac mini, launchd com.marathon.sbportalrecon)
 // Junid, 2 Nov 2026: from 3 Nov the Standard Bank tills take every card
 // payment through the SimplyBLU app, so the portal is their record. At 18:00
-// SAST (catch-up 18:20) this:
+// SAST (catch-up 18:20), and at 07:00 for yesterday alone (refreshed only if
+// the portal has grown), this:
 //   1. opens the portal in a PERSISTENT browser profile (the sign-in survives
 //      between runs; Firebase keeps it), headless;
 //   2. if signed out: signs in with the password saved in the macOS Keychain
@@ -38,6 +39,7 @@ import {
   daysToPull, dateFilter, embedTokenFromSrc, embedClaims, readDashboard, tidsFromValues, cardRows,
   parseStoreItems, classifyPage, shouldAlert, loginAlert, summaryLine, sastYmd,
   projectColumns, shouldAlertFailure, failureAlert,
+  TRANSACTIONS_URL, MORNING_END_MINUTE, morningDays, listMissingFromReport,
 } from "./core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -266,6 +268,17 @@ async function readStore(token, days) {
   return { tids, byDay };
 }
 
+/**
+ * The portal's own Transactions page, read whole, against what the report gave.
+ * A page that cannot be read is said in the log and blocks nothing.
+ */
+async function portalListCheck(page, businessId, byDay) {
+  const answered = page.waitForResponse((r) => r.url().includes("/Order/GetTransactions?") && r.url().includes(String(businessId)) && r.status() === 200, { timeout: 30000 });
+  answered.catch(() => {});
+  await page.goto(TRANSACTIONS_URL, { waitUntil: "domcontentloaded" });
+  return listMissingFromReport(await (await answered).json(), byDay, Date.now());
+}
+
 // ── the callable, as the mailbox poller's identity ───────────────────────────
 async function idToken() {
   const req = createRequire(join(REPO, "functions", "package.json"));
@@ -344,7 +357,9 @@ async function main() {
     if (kind !== "report") throw new Error(`the portal did not open the report (${page.url().replace(/\?.*/, "")})`);
 
     let stores = await listStores(page).catch((err) => { log(`⚠ store switcher unreadable (${err.message.split("\n")[0]}) — reading the selected store only`); return []; });
-    const days = opt("--days") ? opt("--days").split(",").filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)) : daysToPull(nowMs);
+    const morning = MODE === "catchup" && !opt("--days") && sastMinutes(nowMs) < MORNING_END_MINUTE;
+    const days = opt("--days") ? opt("--days").split(",").filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)) : morning ? morningDays(nowMs) : daysToPull(nowMs);
+    if (morning) log(`morning re-pull of ${days.join(", ")}`);
     if (!days.length) { log("no day to pull yet (the portal is the record from 2026-11-03)"); return EXIT.OK; }
     const sources = {}; // day → [source]
     const raw = { at: new Date(nowMs).toISOString(), days, stores: [] };
@@ -370,6 +385,15 @@ async function main() {
       for (const d of days) got.byDay[d] = projectColumns(got.byDay[d]);
       log(`${store.name || "(selected store)"} ${store.merchantNo || ""}: terminals ${got.tids.join(", ") || "none"}; ${days.map((d) => `${d} ${got.byDay[d].rows.length} rows`).join(", ")}`);
       raw.stores.push({ ...store, businessId: claims?.businessId ?? null, tids: got.tids, byDay: got.byDay });
+      if (claims?.businessId) {
+        try {
+          const lost = await portalListCheck(page, claims.businessId, got.byDay);
+          if (lost.length) {
+            log(`⚠ ${store.name}: the portal's own list has ${lost.length} payment(s) the report lacks: ${JSON.stringify(lost).slice(0, 400)}`);
+            storeErrors.push(`${store.name}: the portal's own list has ${lost.length} payment(s) the report lacks`);
+          } else log(`${store.name}: every payment on the portal's own list is in the report`);
+        } catch (err) { log(`⚠ ${store.name}: the portal's own list could not be read (${err.message.split("\n")[0]}) — not cross-checked`); }
+      }
       for (const d of days) {
         (sources[d] ||= []).push({ business: { name: store.name, merchantNo: store.merchantNo }, tids: got.tids, cols: got.byDay[d].cols, rows: got.byDay[d].rows });
       }
@@ -385,7 +409,7 @@ async function main() {
     const results = [];
     for (const d of days) {
       if (!sources[d]) continue;
-      const out = await portalDay(tok, { dayYmd: d, sources: sources[d] });
+      const out = await portalDay(tok, { dayYmd: d, sources: sources[d], ...(morning ? { growOnly: true } : {}) });
       results.push({ dayYmd: d, ...out });
     }
     log(`recorded: ${summaryLine(results)}`);

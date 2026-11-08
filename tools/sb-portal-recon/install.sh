@@ -24,4 +24,4 @@ launchctl bootout "gui/$(id -u)/com.marathon.sbportalrecon" 2>/dev/null || true
 for i in 1 2 3 4 5 6 7 8 9 10; do launchctl print "gui/$(id -u)/com.marathon.sbportalrecon" >/dev/null 2>&1 || break; sleep 1; done
 launchctl bootstrap "gui/$(id -u)" "$DEST"
 launchctl print "gui/$(id -u)/com.marathon.sbportalrecon" | grep -E "state =|path =" | head -3
-echo "✓ installed: 18:00 and 18:20 SAST → $REPO/logs/sb-portal-recon.log"
+echo "✓ installed: 07:00, 18:00 and 18:20 SAST → $REPO/logs/sb-portal-recon.log"
