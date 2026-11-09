@@ -828,3 +828,14 @@ test("keyedIdentityCheck reads policies or bare strings: the matched account's b
   assert.equal(keyedIdentityCheck({ ...keyed, accountTail: "4321" }, { allowedAccounts: sbPolicy, now }).parse.destBankName, "FIRST NATIONAL BANK");
   assert.equal(keyedIdentityCheck(keyed, { allowedAccounts: ["62900004321"], now }).parse.destBankName, "FIRST NATIONAL BANK");
 });
+
+// ─── CONCRETE (Junid, 9 Nov 2026): the manual float is the owner's alone ─────
+test("staff manual entry is refused on the server; a pool-matched float at Concrete is no enforcement breach, a plain EFT is", async () => {
+  reset();
+  await rejects(eftPoolManualEntry({ ...MANAGER, data: { entryId: "ME-staff-0001", reference: "Concrete sale", amountCents: 55000, storeId: "concrete" } }), "permission-denied", "owner-only");
+  assert.deepEqual(dbState.pool, {}, "nothing was written");
+  const { enforcementBreachOf } = require("../lib/eft-enforce.cjs");
+  const sale = (leg) => ({ type: "sale", storeId: "concrete", total: 55000, payments: { p1: { method: "eft", amount: 55000, ...leg } } });
+  assert.equal(enforcementBreachOf("S1", sale({ eftPoolKey: "a".repeat(40) }), ["concrete"]), null);
+  assert.ok(enforcementBreachOf("S2", sale({ eftReference: "typed" }), ["concrete"]));
+});

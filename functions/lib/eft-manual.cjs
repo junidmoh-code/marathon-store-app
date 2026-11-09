@@ -349,6 +349,42 @@ function isPaymentTwin(record, other) {
 }
 
 /**
+ * THE PROOF LEDGER IS NOT A SPEND (Junid, 9 Nov 2026). eftPoolManualApprove
+ * writes one record per proof, status "used" (used.outsidePos), so that the
+ * bank's later notice finds the identity already spent and is HELD. That record
+ * is a hold on the TWIN: it never paid for anything, and no sale can attach to
+ * it. A float carrying the same reference and amount must not read it as "this
+ * money was already used", or the proof blocks the very float it was attached
+ * to. That is what happened to the R150 float of 8 Nov: refused five times at
+ * the till, "already used 15:22" being the moment the proof was uploaded.
+ */
+function isProofLedger(record) {
+  return !!(record && typeof record === "object" && record.manualApproved
+    && typeof record.manualApproved === "object" && record.status === "used");
+}
+
+/**
+ * ONE PROOF, ONE FLOAT. A proof names one payment, so once a float has spent
+ * it a second hand entry of the same money must not spend it again. Each proof
+ * covers one float: N proofs of this reference and amount let N floats through
+ * (a customer who really paid twice, with a proof for each). A float that has
+ * no proof behind it at all is not judged here. `poolKey` is the float's own
+ * key, so a retried settle never counts itself.
+ * @returns {object|null} the float that spent the proof, or null
+ */
+function floatThatSpentItsProof(poolKey, record, siblings) {
+  if (!isManualEntry(record)) return null;
+  const others = (siblings ?? []).filter(([key, other]) => key !== poolKey && other !== record);
+  const proofs = others.filter(([, other]) => isProofLedger(other) && isPaymentTwin(record, other));
+  if (!proofs.length) return null;
+  const spent = others
+    .filter(([, other]) => isManualEntry(other) && other.status === "used"
+      && proofs.some(([, proof]) => isPaymentTwin(other, proof)))
+    .map(([, other]) => other);
+  return spent.length >= proofs.length ? spent[spent.length - 1] : null;
+}
+
+/**
  * SETTLE-TIME: the record about to be spent is a MANUAL ENTRY whose bank
  * notification arrived and was spent. (The other direction — a bank record
  * whose manual twin was spent — refused too until 7 Nov 2026; a bank record
@@ -379,6 +415,9 @@ function manualTwinSettleCheck({ poolKey, record, siblings }) {
     // A bank twin the OWNER released from a linked hold (eft-linked-copies.cjs)
     // is money he vouched is a separate payment: it never blocks this entry.
     if (other.releasedFromHold && other.linkedHold) continue;
+    // The proof attached to this float arms the hold on the bank's notice; it
+    // has spent nothing (isProofLedger).
+    if (isProofLedger(other)) continue;
     const slip = other.used?.sale?.receiptNumber ? ` on slip ${other.used.sale.receiptNumber}` : "";
     // ONE sentence and one code whichever side was typed by hand: the till
     // shows the message, and a cashier must not learn that from it (Junid,
@@ -386,6 +425,14 @@ function manualTwinSettleCheck({ poolKey, record, siblings }) {
     return {
       ok: false, code: "twin-used",
       side: isManualEntry(record) ? "bank-twin-used" : "manual-twin-used",
+      message: `This payment was already used${slip}. It cannot be used again. If the customer really paid twice, ask Junid.`,
+    };
+  }
+  const spentBy = floatThatSpentItsProof(poolKey, record, siblings);
+  if (spentBy) {
+    const slip = spentBy.used?.sale?.receiptNumber ? ` on slip ${spentBy.used.sale.receiptNumber}` : "";
+    return {
+      ok: false, code: "twin-used", side: "proof-already-floated",
       message: `This payment was already used${slip}. It cannot be used again. If the customer really paid twice, ask Junid.`,
     };
   }
@@ -397,7 +444,7 @@ module.exports = {
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
   manualDoubleSubmitOf, MANUAL_DOUBLE_SUBMIT_MS, MANUAL_SUBMIT_LOCK_PATH, manualSubmitLockKeyOf, manualSubmitLockStep,
-  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin,
+  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin, isProofLedger, floatThatSpentItsProof,
 };
 
 // ─── THE LOG — how often the hatch is used, and where each entry went ───────
