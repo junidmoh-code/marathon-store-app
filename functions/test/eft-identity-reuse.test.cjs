@@ -230,13 +230,13 @@ test("an approved proof with no txn id matches a record with NO number on the fu
 });
 
 // ─── ARCHITECT REVIEW (Sonnet) ───────────────────────────────────────────────
-test("a hand entry of money already approved from its proof is refused: MANUAL-… is not a bank id", () => {
+test("a hand entry of money approved from its proof stays usable (Junid, 9 Nov 2026): the proof holds the notice, it spends nothing", () => {
   const approved = { ...absa({ txn: "80AAAAAAA1-1", day: "2026-11-07", status: "used", slip: "S-1" }), reference: "SOCCER T SHIRT", manualApproved: { by: "Junid", at: sast("2026-11-07T10:00:00") } };
   const typed = manual({ entryId: "ME-appr-0001", typed: "2026-11-07T11:00:00" });
   const key = manualEntryKeyOf("ME-appr-0001");
   assert.match(typed.bankRef, /^MANUAL-/);
-  assert.equal(approvedTwinSettleCheck({ poolKey: key, record: typed, siblings: [["ap", approved], [key, typed]] }).code, "twin-used");
-  // …but a hand entry four days later is not that approval's money.
+  assert.equal(approvedTwinSettleCheck({ poolKey: key, record: typed, siblings: [["ap", approved], [key, typed]] }).ok, true);
+  // A hand entry four days later is not that approval's money either.
   const later = manual({ entryId: "ME-appr-0002", typed: "2026-11-11T11:00:00" });
   assert.equal(approvedTwinSettleCheck({ poolKey: "l", record: later, siblings: [["ap", approved]] }).ok, true);
 });

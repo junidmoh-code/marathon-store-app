@@ -233,10 +233,10 @@ describe("the genuine double-pay guards stay", () => {
     expect(consumeFingerprintCheck({ poolKey: "copy", record: copy, siblings: [["used", used], ["copy", copy]] })).toMatchObject({ ok: false, code: "duplicate-used" });
   });
 
-  it("a hand entry of money approved from its proof is refused at the settle", () => {
+  it("a hand entry of money approved from its proof stays usable at the settle (Junid, 9 Nov 2026)", () => {
     const approved = { outcome: "recorded", status: "used", reader: "absa", amountCents: 395000, reference: "A PAYER", payer: "MRS A PAYER", bankRef: "80000000C3-3", bankTs: sast("2026-11-07T00:00:00"), manualApproved: { by: "Junid", at: sast("2026-11-07T10:00:00") } };
     const typed = manualEntryRecord({ entryId: "ME-appr-0009", key: manualEntryKeyOf("ME-appr-0009"), reference: "A PAYER", amountCents: 395000, note: null, actor: {}, at: sast("2026-11-07T11:00:00") });
-    expect(approvedTwinSettleCheck({ poolKey: "t", record: typed, siblings: [["ap", approved]] })).toMatchObject({ ok: false, code: "twin-used" });
+    expect(approvedTwinSettleCheck({ poolKey: "t", record: typed, siblings: [["ap", approved]] })).toMatchObject({ ok: true });
   });
 });
 

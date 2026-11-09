@@ -77,7 +77,7 @@
 "use strict";
 
 const { paymentFingerprint, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
-const { isManualEntry, isPaymentTwin } = require("./eft-manual.cjs");
+const { isManualEntry, isPaymentTwin, isProofLedger, floatThatSpentItsProof } = require("./eft-manual.cjs");
 const { linkedCopySettleCheck, absaIdentityOf } = require("./eft-linked-copies.cjs");
 /** An Absa record with a synthetic identity: its numbered twin may exist. */
 const isBlankNumberedCandidate = (r) => !!absaIdentityOf(r);
@@ -201,8 +201,11 @@ function manualTwinOf(record, payments) {
   for (const [, other] of payments ?? []) {
     if (other?.status !== "used" || !isPaymentTwin(record, other)) continue;
     if (other.releasedFromHold && other.linkedHold) continue; // owner-vouched separate money
+    if (isProofLedger(other)) continue; // the proof holds the bank's notice; it spent nothing
     return { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
   }
+  const spent = floatThatSpentItsProof(null, record, payments);
+  if (spent) return { at: Number.isInteger(spent.used?.at) ? spent.used.at : null, receiptNumber: spent.used?.sale?.receiptNumber ?? null };
   return null;
 }
 

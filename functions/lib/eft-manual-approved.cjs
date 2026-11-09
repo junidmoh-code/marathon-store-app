@@ -28,6 +28,9 @@
 //   · nothing is floated. Registration never creates spendable money: Junid
 //     floats by hand as before, or the till uses the bank's record if it
 //     arrived first. The approval is a LEDGER entry, optional and separate.
+//     Its status "used" is the HOLD on the bank's notice, NOT a consumption
+//     (Junid, 9 Nov 2026): a float of the same money stays usable, and spends
+//     the payment exactly once (eft-manual.cjs isProofLedger).
 //
 // WHAT A PROOF MAY NOT DO: if the bank's own notification is already in the
 // pool unused, the proof is refused with the record's key ("use that one");
@@ -56,6 +59,7 @@ const { clip, redactAccountDigits, parseBankTimestamp, sastDate, settlementDateV
 const { paymentFingerprint, syntheticIdentityOf, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
 const { EFT_READERS } = require("./eft-banks.cjs");
 const { markUsedOutsidePosDecision } = require("./eft-settle.cjs");
+const { isManualEntry } = require("./eft-manual.cjs");
 
 const MANUAL_APPROVED_BY = "Junid";
 const MANUAL_APPROVED_LOG_PATH = "eft_manual_approvals";
@@ -453,6 +457,11 @@ function isApprovedTwin(record, approved) {
 }
 function approvedTwinSettleCheck({ poolKey, record, siblings }) {
   if (!record || record.outcome !== "recorded" || isManualApproved(record)) return { ok: true };
+  // A FLOAT IS THE MONEY THE PROOF VOUCHES FOR, not a copy of it (Junid, 9 Nov
+  // 2026): the approval holds the bank's notice back and leaves the float
+  // spendable. Whether the proof has been spent by ANOTHER float is judged in
+  // eft-manual.cjs (manualTwinSettleCheck). Bank records are still checked here.
+  if (isManualEntry(record)) return { ok: true };
   for (const [key, other] of siblings ?? []) {
     if (key === poolKey || !isManualApproved(other)) continue;
     // Released by the owner from a LINKED hold against THIS approval
