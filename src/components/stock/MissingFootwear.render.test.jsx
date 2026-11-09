@@ -165,7 +165,7 @@ describe("Hub 1 and Hub 2 never share a sneaker, across separate Solves", () => 
     expect(update).toHaveBeenCalledTimes(1);
   });
   it("ticking the other hub on a card is refused while that hub has it seated", async () => {
-    paths["stock"].hub1 = { shoeA: { 8: cell(0) } };
+    paths["stock"].hub1 = { shoeA: { 8: cell(2) } };
     const tree = mount();
     const concrete = buttonsOf(tree).find((b) => (b.children || []).join("") === "Missing from Concrete · Hub 3");
     await act(async () => { concrete.props.onClick(); });
@@ -173,5 +173,15 @@ describe("Hub 1 and Hub 2 never share a sneaker, across separate Solves", () => 
     const chip = buttonsOf(tree).find((b) => b.props.role === "checkbox" && (b.children || []).join("").startsWith("Hub 2"));
     await act(async () => { chip.props.onClick(); });
     expect(JSON.stringify(tree.toJSON())).toMatch(/seated at Hub 1, so it cannot be solved to Hub 2/);
+  });
+  it("a zero cell at the other hub does not refuse the chip: it may be switched off, and Confirm reads the rows", async () => {
+    paths["stock"].hub1 = { shoeA: { 8: cell(0) } };
+    const tree = mount();
+    const concrete = buttonsOf(tree).find((b) => (b.children || []).join("") === "Missing from Concrete · Hub 3");
+    await act(async () => { concrete.props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
+    const chip = buttonsOf(tree).find((b) => b.props.role === "checkbox" && (b.children || []).join("").startsWith("Hub 2"));
+    await act(async () => { chip.props.onClick(); });
+    expect(JSON.stringify(tree.toJSON())).not.toMatch(/seated at Hub 1/);
   });
 });

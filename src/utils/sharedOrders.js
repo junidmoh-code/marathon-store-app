@@ -54,7 +54,9 @@ export function tvSectionForShop(network, shop) {
 // (a website hub order, an old record) stays where it has always been.
 export function boardShowsOrder(network, section, order) {
   const n = Number(section);
-  if (n === 1) return sectionOfRecord(network, order) === 1;
-  if (n === 2) return sectionOfRecord(network, order) !== 1;
+  // An old record names only its hub: a Hub 3 order with no shop is Pine's.
+  const own = sectionOfRecord(network, order) ?? sectionOf(network, order?.placedAtHub);
+  if (n === 1) return own === 1;
+  if (n === 2) return own !== 1;
   return true;
 }

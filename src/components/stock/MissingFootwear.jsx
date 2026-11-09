@@ -281,7 +281,9 @@ export default function MissingFootwear({ products = [] }) {
       return;
     }
     const seatedOther = !cur.includes(hub) && otherMarathonHub(hub) && marathonHubSeated({
-      cells: allStock?.[otherMarathonHub(hub)]?.[card.pid],
+      // Only units, here: this screen has no target rows, so a zero cell (which
+      // may be switched off) is left for Confirm, which reads them.
+      cells: Object.fromEntries(Object.entries(allStock?.[otherMarathonHub(hub)]?.[card.pid] || {}).filter(([, c]) => Number(c?.qty) > 0)),
       openRequest: openAtHub(allRequests, otherMarathonHub(hub), card.pid),
     });
     if (seatedOther) {

@@ -661,10 +661,17 @@ exports.refillRequestSourceGuard = onValueCreated(
     if (source === rs.REQUEST_SOURCE.SOLVE) {
       // Hub 1 and Hub 2 never share a sneaker: only a Solve line at those two
       // reads anything here, and everything else returns without a read.
-      const res = await require("./lib/solve-seat.cjs").enforceMarathonSolveSeat({
-        db: admin.database(), id, rr: event.data.val(), nowIso: new Date().toISOString(),
-      });
-      if (res.refused) console.warn(`refillRequestSourceGuard: seat refused ${id}, cancelled=${res.cancelled}`);
+      const nowIso = new Date().toISOString();
+      try {
+        const res = await require("./lib/solve-seat.cjs").enforceMarathonSolveSeat({
+          db: admin.database(), id, rr: event.data.val(), nowIso,
+        });
+        if (res.refused) console.warn(`refillRequestSourceGuard: seat refused ${id}, cancelled=${res.cancelled}`);
+      } catch (e) {
+        // The line stands, unchecked: say so where Junid reads refusals.
+        console.error(`refillRequestSourceGuard: seat check failed for ${id}: ${e?.message || e}`);
+        await admin.database().ref(`${rs.REJECTED_LOG}/${id}`).set(rs.rejectionRecord(id, event.data.val(), { nowIso, cancelled: false, reason: "check_failed" })).catch(() => {});
+      }
       return;
     }
     if (source !== null) return;   // scan — the common case, no read

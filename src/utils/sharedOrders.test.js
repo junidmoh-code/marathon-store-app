@@ -87,6 +87,9 @@ describe("each TV board shows its own division's orders (Junid, 9 Nov 2026)", ()
     expect(boardShowsOrder(NET, 2, { section: 1 })).toBe(false);
     expect(boardShowsOrder(NET, 1, { section: 1 })).toBe(true);
     expect(boardShowsOrder(NET, 2, { placedStore: "pine" })).toBe(false);
+    expect(boardShowsOrder(NET, 2, { placedAtHub: "hub3" })).toBe(false);
+    expect(boardShowsOrder(NET, 1, { placedAtHub: "hub3" })).toBe(true);
+    expect(boardShowsOrder(NET, 2, { placedAtHub: "hub1" })).toBe(true);
   });
   it("a row naming no shop stays on Marathon's board, off Section 1's", () => {
     expect(boardShowsOrder(NET, 2, {})).toBe(true);

@@ -10,6 +10,15 @@ const rs = require("./request-source.cjs");
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
 
+// Does this claimed request no longer speak for the other hub? Cancelled or gone:
+// yes. Fulfilled: only once the hub has a cell, because the seat test above has
+// then read that cell and said "not seated" (it was switched off). A fulfilled
+// line with no cell yet is stock still on its way, parked or in transit.
+function claimRequestFinished(status, cells) {
+  if (status === null || status === undefined || status === "cancelled") return true;
+  return status === "fulfilled" && !!cells && Object.keys(cells).length > 0;
+}
+
 async function enforceMarathonSolveSeat({ db, id, rr, nowIso }) {
   const leg = rs.marathonSolveLeg(rr);
   if (!leg) return { checked: false };
@@ -24,7 +33,8 @@ async function enforceMarathonSolveSeat({ db, id, rr, nowIso }) {
     if (claim && claim.hub === other) {
       for (const r of Object.keys(claim.requests || {})) {
         // eslint-disable-next-line no-await-in-loop
-        if ((await val(db, `refill_requests/${r}/status`)) !== "open") staleIds.push(r);
+        const status = await val(db, `refill_requests/${r}/status`);
+        if (claimRequestFinished(status, cells)) staleIds.push(r);
       }
     }
     const res = await db.ref(path).transaction((cur) => rs.claimSolveSeat(cur, { hub, id, nowIso, staleIds }));
@@ -38,8 +48,10 @@ async function enforceMarathonSolveSeat({ db, id, rr, nowIso }) {
   });
   const after = res.snapshot.val();
   const cancelled = !!(after && after.cancelReason === rs.SEAT_REJECT_REASON);
+  // Redelivered after the line was worked or closed: nothing here to refuse.
+  if (!cancelled && after && after.status !== "open") return { checked: true, refused: false };
   await db.ref(`${rs.REJECTED_LOG}/${id}`).set(rs.rejectionRecord(id, after || seen || rr, { nowIso, cancelled, reason: rs.SEAT_REJECT_REASON }));
   return { checked: true, refused: true, cancelled };
 }
 
-module.exports = { enforceMarathonSolveSeat };
+module.exports = { enforceMarathonSolveSeat, claimRequestFinished };

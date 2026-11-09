@@ -4,7 +4,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { enforceMarathonSolveSeat } = require("../lib/solve-seat.cjs");
+const { enforceMarathonSolveSeat, claimRequestFinished } = require("../lib/solve-seat.cjs");
 const rs = require("../lib/request-source.cjs");
 const { marathonHubSeated, otherMarathonHub, marathonSolveRefusal } = require("../lib/concrete-division.cjs");
 
@@ -128,4 +128,27 @@ test("the guard runs the refusal for a Solve line, and a scan row returns with n
   const guard = src.slice(src.indexOf("exports.refillRequestSourceGuard"), src.indexOf("exports.seatDivisionSolve"));
   assert.match(guard, /if \(source === rs\.REQUEST_SOURCE\.SOLVE\) \{[\s\S]*enforceMarathonSolveSeat[\s\S]*return;\s*\}/);
   assert.match(guard, /if \(source !== null\) return;/);
+});
+
+test("when a claim stops speaking for the other hub", () => {
+  assert.equal(claimRequestFinished("cancelled", null), true);
+  assert.equal(claimRequestFinished(null, null), true);
+  assert.equal(claimRequestFinished("open", { 8: { qty: 1 } }), false);
+  // Fulfilled with no cell yet: units parked or in transit, so still a seat.
+  assert.equal(claimRequestFinished("fulfilled", null), false);
+  assert.equal(claimRequestFinished("fulfilled", {}), false);
+  assert.equal(claimRequestFinished("fulfilled", { 8: { qty: 0 } }), true);
+});
+
+test("a Hub 2 line fulfilled but still in transit keeps refusing Hub 1", async () => {
+  const h2 = row({ requestingLocation: "hub2" });
+  const db = makeDb({ refill_requests: { a: { ...h2, status: "fulfilled" }, b: row() }, refill_engine: { solveSeats: { p: { hub: "hub2", requests: { a: true } } } } });
+  assert.equal((await run(db, "b", row())).refused, true);
+});
+
+test("a redelivered line that was already worked is not logged as refused", async () => {
+  const rr = row();
+  const db = makeDb({ stock: { hub2: { p: { 8: { qty: 1 } } } }, refill_requests: { r1: { ...rr, status: "fulfilled" } } });
+  assert.equal((await run(db, "r1", rr)).refused, false);
+  assert.equal(db.root.refill_engine, undefined);
 });
