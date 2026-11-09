@@ -39,6 +39,10 @@ const MUTATIONS = [
   ["M23", "The release names the caller", RESOLVE, "releasedBy: actor ? actor.uid : \"system:resolveStyleCode\",", "releasedBy: \"system:resolveStyleCode\",", SERVER],
   ["M24", "An unsettled claim reads as a failed lookup", "src/components/admin/styleCodeGateLogic.js", "if (d.claimOrphaned) return STEP_UNAVAILABLE;", "if (d.claimOrphaned) return STEP_EXISTING;", GATE],
   ["M25", "The orphan screen must stay gone", "src/components/admin/StyleCodeGate.jsx", "      {step === \"unavailable\" && (", "      {step === \"orphan\" && <div />}\n      {step === \"unavailable\" && (", GATE],
+  ["M26", "Several owners are never settled on the first", "src/components/admin/styleCodeGateLogic.js", "    if (ownerIds.length > 1) {\n", "    if (ownerIds.length > 99) {\n", GATE],
+  ["M27", "An unsettled claim offers no save that would lose it", "src/components/admin/StyleCodeGate.jsx", "{!result?.claimOrphaned && (", "{(", { client: ["src/components/admin/StyleCodeGate.unblock.test.jsx"] }],
+  ["M28", "A live primary costs one read", LIB, "  if (primary.state === \"live\") return { kind: CLAIM_LIVE, owners: ids };\n", "  await Promise.all(ids.slice(1).map((id) => resolveOwner(db, id)));\n  if (primary.state === \"live\") return { kind: CLAIM_LIVE, owners: ids };\n", SERVER],
+  ["M29", "A released claim must not come back headless", "functions/styleCode/styleCodeSibling.js", "    if (cur === null) return null;\n    if (!cur.productId ||", "    if (cur === null) cur = {};\n    if (false ||", { server: ["test/style-code-siblings.test.cjs"] }],
 ];
 
 function runTests({ server, client }) {

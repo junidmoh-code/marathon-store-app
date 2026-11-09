@@ -29,7 +29,10 @@ a product record. The claim stays, naming a product that no longer exists.
 Evidence: every one of the 25 dead claims was written on or after 5 Aug 2026
 (earliest 2026-08-05), so the rule above held for each: **all 25 products existed
 when claimed and were removed afterwards.** CW3398-105's product id was minted
-2026-06-21 and claimed 2026-08-08, seven weeks later.
+2026-06-21 and claimed 2026-08-08, so that claim was stamped onto an existing
+product later rather than written by Add Product. The server-side claim writers
+(`processCapture`, the `styleCodeSibling` bootstrap) bypass the rule but read the
+product first, so they too only claim for a product that exists.
 
 ## Census, live, 2026-11-09 (read-only)
 

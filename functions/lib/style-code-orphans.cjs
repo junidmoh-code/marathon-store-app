@@ -61,13 +61,14 @@ async function resolveOwner(db, startId) {
  */
 async function inspectClaim(db, node) {
   const ids = claimOwnerIds(node);
-  const resolved = await Promise.all(ids.map((id) => resolveOwner(db, id)));
-  const primary = resolved[0];
-  if (!primary) return { kind: CLAIM_UNRESOLVED, owners: [], reason: "no-owners" };
+  if (!ids.length) return { kind: CLAIM_UNRESOLVED, owners: [], reason: "no-owners" };
 
+  const primary = await resolveOwner(db, ids[0]);
+  if (primary.state === "live") return { kind: CLAIM_LIVE, owners: ids };
+
+  const resolved = [primary, ...(await Promise.all(ids.slice(1).map((id) => resolveOwner(db, id))))];
   const answering = [...new Set(resolved.filter((r) => r.id).map((r) => r.id))];
 
-  if (primary.state === "live") return { kind: CLAIM_LIVE, owners: ids };
   if (primary.state === "merged") return { kind: CLAIM_REDIRECTED, owners: answering };
   if (primary.state === "unresolved") return { kind: CLAIM_UNRESOLVED, owners: [], reason: primary.reason };
 

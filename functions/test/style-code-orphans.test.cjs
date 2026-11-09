@@ -167,6 +167,12 @@ test("a dead primary whose only sibling cannot be followed is not released", asy
   assert.deepStrictEqual(verdict, { kind: CLAIM_UNRESOLVED, owners: [], reason: "merge-dangling" });
 });
 
+test("a live primary reads no sibling records", async () => {
+  const db = fakeDb({ products: { p1: { name: "no id child" }, s1: { id: "s1" } } });
+  await inspectClaim(db, { productId: "p1", siblings: { s1: { addedAt: 1 } } });
+  assert.deepStrictEqual(db.reads, ["products/p1"]);
+});
+
 // ── releaseDeadClaim ─────────────────────────────────────────────────────────
 
 const release = (db, node = DEAD) =>

@@ -480,3 +480,30 @@ describe("orderCandidatesByColourway", () => {
     expect(orderCandidatesByColourway([grey, blue], null).map((p) => p.id)).toEqual(["pGrey", "pBlue"]);
   });
 });
+
+describe("a code with several owners is the operator's choice", () => {
+  const products = [{ id: "s1" }, { id: "s2" }];
+  const claim = { productId: "s1" };
+
+  it("never settles on the first owner", () => {
+    expect(resolveAddStockTarget({ claim, owners: ["s1", "s2"], products })).toEqual({ kind: TARGET_CHOOSE, options: ["s1", "s2"] });
+  });
+
+  it("the operator's pick among the owners is the target", () => {
+    expect(resolveAddStockTarget({ claim, owners: ["s1", "s2"], products, selectedId: "s2" }))
+      .toEqual({ kind: TARGET_READY, productId: "s2", basis: "operator-selected" });
+  });
+
+  it("a pick that is not an owner does not count", () => {
+    const all = [...products, { id: "x" }];
+    expect(resolveAddStockTarget({ claim, owners: ["s1", "s2"], products: all, selectedId: "x" }).kind).toBe(TARGET_CHOOSE);
+  });
+
+  it("no owner loaded on this device is blocked", () => {
+    expect(resolveAddStockTarget({ claim, owners: ["s1", "s2"], products: [] }).kind).toBe(TARGET_BLOCKED);
+  });
+
+  it("one owner still settles it", () => {
+    expect(resolveAddStockTarget({ claim, owners: ["s1"], products }).kind).toBe(TARGET_READY);
+  });
+});

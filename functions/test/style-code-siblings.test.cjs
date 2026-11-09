@@ -535,3 +535,27 @@ test("RACE: a same-shoe answer landing between detection and the pair rewrite SU
   assert.strictEqual(row.answeredSameShoeAt, NOW - 10);
   assert.strictEqual(row.status, "open");
 });
+
+test("a claim released while the answer was in flight is not recreated without an owner", async () => {
+  const CODE = "HF5509002";
+  const db = fakeDb({
+    products: { pNEW: { id: "pNEW", name: "New" } },
+    style_code_index: { [CODE]: { productId: "pGONE", claimedAt: 1 } },
+  });
+  const realRef = db.ref.bind(db);
+  let reads = 0;
+  db.ref = (path) => {
+    const ref = realRef(path);
+    if (path !== `style_code_index/${CODE}`) return ref;
+    return { ...ref, get: async () => {
+      const snap = await ref.get();
+      if (++reads === 1) delete db.data.style_code_index[CODE]; // released right after the read
+      return snap;
+    } };
+  };
+  await assert.rejects(
+    runSibling(db, { action: "differentColourway", code: CODE, productId: "pNEW", otherId: "pGONE", actor: { uid: "u1" }, nowMs: 5 }),
+    /scan it again/,
+  );
+  assert.strictEqual((db.data.style_code_index || {})[CODE], undefined);
+});
