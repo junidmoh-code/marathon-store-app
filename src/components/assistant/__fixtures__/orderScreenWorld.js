@@ -116,6 +116,7 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
   const alternatives = (product, size) => {
     if (!product || !size) return null;
     if ((product.productType || "sneaker") === "clothing") return null;
+    if (shelfAnswers(product)) return null;
     const result = alternativesForSize({
       sourceProduct: product, neighbours: product.alternatives, requestedSize: size,
       candidates: products, limit: MAX_ALTERNATIVES_SHOWN,

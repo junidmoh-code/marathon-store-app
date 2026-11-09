@@ -53,6 +53,11 @@ describe("a Pine or Concrete item the shop holds", () => {
     expect(fn).toContain("if (shopShelfAnswers(item.product)) return true;");
     expect(APP).toContain("...(shopShelfAnswers(item.product) ? { hub: shopShelf } : {}),");
   });
+  it("gets no alternatives sheet", () => {
+    const fn = between("const computeAlternatives = (product, size) => {", "if (!ordersSettled) return null;");
+    expect(fn).toContain("if (shopShelfAnswers(product)) return null;");
+    expect(WORLD).toContain("if (shelfAnswers(product)) return null;");
+  });
   it("says Unavailable from the shelf, once the shelf has answered", () => {
     const fn = between("const unavailableIds = useMemo(() => {", "deadForOrder]);");
     expect(fn).toContain("return { sizes, known: hubReadState(shopShelfState).ready, sizeOut: (sz) => hubQty(p.id, sz) <= 0 };");
@@ -69,7 +74,12 @@ describe("Pine and Concrete's shared orders", () => {
     expect(APP).toContain("<TvWithAutoCollect orders={sharedOrders} section={tvSectionForShop(orderNetwork, myShop)}");
   });
   it("a disabled feed reads nothing", () => {
-    expect(APP).toContain("const authReady = useAuthReady() && enabled;");
+    const hook = between("function useOrders(scopeShop = null, enabled = true) {", "return orders;");
+    expect(hook).toContain("const authReady = useAuthReady() && enabled;");
+    // Both ways down the wire hang off that one value.
+    expect(hook).toContain('useMirroredPath("orders", authReady)');
+    expect(hook).toContain("if (!authReady || !liveOrders) return undefined;");
+    expect(hook).not.toMatch(/useAuthReady\(\)(?! && enabled)/);
   });
 });
 

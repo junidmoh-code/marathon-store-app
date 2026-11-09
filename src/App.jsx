@@ -10706,6 +10706,8 @@ function AssistantView({ products, onExit, orders = [] }) {
     // a clothing tile's grey-out reads its cell by a different rule
     // (availabilityCore's header, the deliberately-unmerged clothing lane).
     if ((product.productType || "sneaker") === "clothing") return null;
+    // A perfume or bag the shop holds has no similar shoes to offer.
+    if (shopShelfAnswers(product)) return null;
     if (!ordersSettled) return null;
     const result = alternativesForSize({
       sourceProduct: product,

@@ -153,6 +153,10 @@ describe.each(["concrete", "marathon-pine"])("a Concrete-division assistant (%s)
     expect(w.catalogue(false).map((p) => p.id)).not.toContain("m-only");   // ...and a cell there does not list it
   });
 
+  it("a shop-held item at zero offers no shoes as alternatives", () => {
+    expect(scentWorld(shop).alternatives(byId("c-scent0"), "Free Size")).toBe(null);
+  });
+
   it("alternatives never offer a shop-held item for a shoe", () => {
     const rows = scentWorld(shop).alternatives(byId("c-none"), "6").rows.map((r) => r.product.id);
     expect(rows).not.toContain("c-scent");
