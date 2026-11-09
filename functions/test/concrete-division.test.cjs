@@ -78,6 +78,11 @@ test("Hub 3 sneakers: keep 3, ask at 1, every declared size, seated only, counte
   assert.ok(p.intents.filter((i) => i.dest === "hub3").every((i) => i.seatedHub3 === true));
 });
 
+test("Hub 3 sneakers: a trusted cell with no seat arms nothing (a moved-out product keeps its cells)", () => {
+  const p = plan({ stock: { central, hub3: { s1: { 7: trusted(0), 8: trusted(0) } } } });
+  assert.deepEqual(lines(p, "hub3"), []);
+});
+
 test("Hub 3 sneakers never remove excess, and a size nobody holds anywhere stays quiet", () => {
   const stock = { central: {}, hub3: { s1: { 7: counted(9) } } };
   const p = plan({ stock, seats: { hub3: { s1: seat() } } });

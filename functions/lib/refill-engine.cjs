@@ -901,13 +901,15 @@ function computeRefillPlan(snapshot) {
     for (const pid of Object.keys(division.seats[DIVISION_HUB] || {})) {
       if (isDivisionFootwear(products?.[pid]) && rawStock[DIVISION_HUB]?.[pid]) seatedHub3Footwear.add(pid);
     }
-    if (seatedHub3Footwear.size) {
-      seatedStock = { ...stock, [DIVISION_HUB]: { ...(stock[DIVISION_HUB] || {}) } };
-      for (const pid of seatedHub3Footwear) seatedStock[DIVISION_HUB][pid] = rawStock[DIVISION_HUB][pid];
-    }
+    // ...and an UNSEATED sneaker is not carried at Hub 3, whatever trusted cell
+    // it left behind (a moved-out product keeps its cells; they are never deleted).
+    const hub3View = {};
+    for (const [pid, node] of Object.entries(stock[DIVISION_HUB] || {})) if (!isDivisionFootwear(products?.[pid])) hub3View[pid] = node;
+    for (const pid of seatedHub3Footwear) hub3View[pid] = rawStock[DIVISION_HUB][pid];
+    seatedStock = { ...stock, [DIVISION_HUB]: hub3View };
   }
   const isSeatedHub3 = (dest, pid) => dest === DIVISION_HUB && seatedHub3Footwear.has(pid);
-  const viewOf = (dest, pid) => (isSeatedHub3(dest, pid) ? seatedStock : stock);
+  const viewOf = (dest, pid) => (division && dest === DIVISION_HUB && isDivisionFootwear(products?.[pid]) ? seatedStock : stock);
   const trustedCell = (loc, pid, sizeKey) => isSeatedHub3(loc, pid) || maskTrustedCell(loc, pid, sizeKey);
   const routing = networkRouting(rawConfig, network, division);
   const { routes, withheld: routesWithheld, dests } = routing;
