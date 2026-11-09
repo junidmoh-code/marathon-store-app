@@ -122,3 +122,10 @@ test("the seat test itself", () => {
   assert.match(marathonSolveRefusal("hub1"), /seated at Hub 2.*solved to Hub 1/);
   assert.match(marathonSolveRefusal("hub2"), /seated at Hub 1.*solved to Hub 2/);
 });
+
+test("the guard runs the refusal for a Solve line, and a scan row returns with no read", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "../index.js"), "utf8");
+  const guard = src.slice(src.indexOf("exports.refillRequestSourceGuard"), src.indexOf("exports.seatDivisionSolve"));
+  assert.match(guard, /if \(source === rs\.REQUEST_SOURCE\.SOLVE\) \{[\s\S]*enforceMarathonSolveSeat[\s\S]*return;\s*\}/);
+  assert.match(guard, /if \(source !== null\) return;/);
+});

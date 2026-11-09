@@ -174,7 +174,7 @@ import { useExplicitTargetRows } from "./components/stock/useExplicitTargetRows"
 import { SALE_RAISED_REQUESTS } from "./config/saleRaisedRequests";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { sendDisplayRow, closeDisplayRow, closeDisplayRowForPartnerSale } from "./components/stock/displayRowStore";
-import { hasOpenDisplayRequest, otherOpenDisplayRequests, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
+import { hasOpenDisplayRequest, otherOpenDisplayRequests, requestStoreFor, openRowsFor, displayRowHubs } from "./components/stock/displayRowCore";
 import { shopUniverse, shopLabelOf, shopIdsOf } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -13553,9 +13553,10 @@ function WarehouseView({ products = [], orders, onExit }) {
     //     display record that nobody chose — the absolute rule, from the other
     //     direction — and those rows would then show up on the Duplicate
     //     Displays tab as shoe-wall work. (Spec-conformance review.)
-    //   • PINE, and anything else booked outside GATED_SNEAKER_HUBS. Hub 3 is
-    //     out of scope on every read surface here; writing rows it can never
-    //     show would be a ledger nobody maintains.
+    //   • A hub that is not in service. Junid's 24 Sep spec, applied to every
+    //     store on 9 Nov 2026: a send registers the display, so a Hub 3 send opens
+    //     the same row as Hub 1's and Hub 2's and closeDisplayRowOnSale can close
+    //     it when it sells.
     //
     // Both still write the display SLOT exactly as they always did, so the
     // count and the marker are unaffected for them.
@@ -13586,10 +13587,11 @@ function WarehouseView({ products = [], orders, onExit }) {
     // comment says and because the filter is not this line's to rely on, but
     // recorded as robustness, NOT as a live bug fixed.
     // (Adversarial review of the fix round.)
+    const rowHubs = displayRowHubs(whNet);
     const rowHub = [order.displayRefillHub, order.placedAtHub, order.hub]
-      .find((h) => GATED_SNEAKER_HUBS.includes(h)) || selectedHub || null;
+      .find((h) => rowHubs.includes(h)) || selectedHub || null;
     const rowEligible = productIsFootwear(resolveProductById(order.productId))
-      && GATED_SNEAKER_HUBS.includes(rowHub);
+      && rowHubs.includes(rowHub);
     if (status === "refilled" && refillSize && rowStore && order.productId && rowEligible) {
       // The ledger must have ANSWERED. See the subscription's own note.
       if (!displayRowsState.settled || displayRowsState.error) {
