@@ -175,9 +175,9 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   const [storePick, setStore] = useState(() => ordersScope || null);
   const store = storePick && STORES.includes(storePick) ? storePick : STORES[0];
   // The (at most two) gated hubs that can supply this wall. Two fixed hooks
-  // below read them; Hub 1 and Hub 2 for Marathon PE and Trophy. A wall with
-  // no gated hub is read against the hubs that feed it (Hub 3 for Pine and
-  // Concrete) — for looking and recording only: `requestable` is false.
+  // below read them; Hub 1 and Hub 2 for Marathon PE and Trophy, Hub 3 for Pine
+  // and Concrete. A wall with no gated hub (its hub out of service) is read
+  // against the hubs that feed it, for recording only: `requestable` is false.
   const GATED_PAIR = useMemo(() => gatedSneakerHubs(network).filter((h) => wallAllows(network, store, h)).slice(0, 2), [network, store]);
   const requestable = GATED_PAIR.length > 0;
   const HUB_PAIR = useMemo(
