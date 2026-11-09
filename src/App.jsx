@@ -167,6 +167,7 @@ import {
   insightsStoreOptions, insightsBucketKey, insightsStoreMatcher,
 } from "./utils/sectionRouting";
 import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey, orderKeyFromInput } from "./utils/orderNumbering";
+import { siblingOrderShop, mergeSharedOrders, withSharedRange, boardShowsOrder } from "./utils/sharedOrders";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests, useEngineConfig } from "./components/stock/useStock";
 import { policyKeepFor } from "./components/stock/saleRowPolicyCap";
 import { useExplicitTargetRows } from "./components/stock/useExplicitTargetRows";
@@ -1025,8 +1026,8 @@ function updateProductHubs(id, hubs) {
 // map is EMPTY, which is indistinguishable from "nothing is promised" — and a
 // recommendation made on that basis asserts availability nobody has checked
 // (independent review, 2026-09-06).
-function useOrders(scopeShop = null) {
-  const authReady = useAuthReady();
+function useOrders(scopeShop = null, enabled = true) {
+  const authReady = useAuthReady() && enabled;
   const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
 
   // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
@@ -1188,10 +1189,10 @@ function useSectionTvOrders(section) {
   // The LIVE registry (a kiosk mounts nothing else that reads it): a prefix
   // the owner changes, or a store added later, reaches this board.
   const { registry: tvNetwork } = useNetwork();
-  const ranges = useMemo(() => tvOrderKeyRanges(tvNetwork, section), [tvNetwork, section]);
+  const ranges = useMemo(() => withSharedRange(tvOrderKeyRanges(tvNetwork, section), section), [tvNetwork, section]);
   const shape = useCallback((data) => (
-    Object.values(data || {}).filter(Boolean).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
-  ), []);
+    Object.values(data || {}).filter(Boolean).filter((o) => boardShowsOrder(tvNetwork, section, o)).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
+  ), [tvNetwork, section]);
   const mirrored = useMirroredPath("orders", authReady);
   const live = mirrored.verdict === "fallback";
 
@@ -20970,7 +20971,7 @@ function AppInner() {
   // writer outside React (applyMovement, order placement) asks the same
   // registry the screens show. Section 2 runs on the built-in seed until it
   // answers, exactly as before.
-  useNetwork();
+  const { registry: orderNetwork } = useNetwork();
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
   // straight to /orders/{id} via writeOrder() / updateOrder().
@@ -20980,6 +20981,13 @@ function AppInner() {
   // no destShop → full read. This is the single feed for every authenticated view.
   const myShop = isSuperAdmin ? null : (permRecord?.destShop || null);
   const orders = useOrders(myShop);
+  // Pine and Concrete share their orders: the sibling's feed joins the three
+  // screens that show a customer's order (utils/sharedOrders.js). Everything
+  // else keeps the shop's own feed. Marathon PE / Trophy have no sibling, read
+  // nothing extra, and get `orders` itself back.
+  const siblingShop = siblingOrderShop(orderNetwork, myShop);
+  const siblingOrders = useOrders(siblingShop, !!siblingShop);
+  const sharedOrders = useMemo(() => mergeSharedOrders(orders, siblingShop ? siblingOrders : null), [orders, siblingOrders, siblingShop]);
   const returnsLog = useReturnsLog();
 
   // ── ORDER AUDIT — runs on every render; logs only when numbers mismatch ────
@@ -21254,7 +21262,7 @@ function AppInner() {
   else if (role === ROLES.DISPLAY) {
     // TV mode is chrome-free, but a hidden top-right DOUBLE-tap exits back to
     // the view picker (TvDisplayMockup renders the invisible zone from onExit).
-    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} onExit={() => setRole(null)} />);
+    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={sharedOrders} onExit={() => setRole(null)} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
   // AI Studio is route-guarded on the REAL isSuperAdmin flag (verified email),
@@ -21356,9 +21364,9 @@ function AppInner() {
   else if (role === ROLES.CARD_SLIP) view = hasSlipScope(permRecord) ? <CardSlipScreen onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} myShop={myShop} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} myShop={myShop} onExit={() => setRole(null)} />;
-  else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={sharedOrders} onExit={() => setRole(null)} />);
   else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
-  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={sharedOrders} onExit={() => setRole(null)} />);
   else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);
 
   // "This device's clock is wrong" — gated on ROLE, not on tree position. Being a
