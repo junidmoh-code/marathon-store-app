@@ -11,6 +11,8 @@
 //   the catalogue, each size's hub and ✕, the clothing grey-out, the cart
 //   allocation, where each line is placed, and the alternatives sheet.
 // Hub 3 is given stock in every product on purpose: none of it may show.
+// The snapshot speaks for the fixture's copy of the screen's wiring; the pins
+// in divisionAvailability.wiring.test.js hold that copy to App.jsx.
 import { describe, it, expect, afterEach } from "vitest";
 import { __resetNetworkForTests } from "../../utils/networkStore";
 import { orderScreenWorld } from "./__fixtures__/orderScreenWorld";

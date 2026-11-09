@@ -78,9 +78,9 @@ export function unavailableProductIds(products, judge) {
  *   known     has availability been ANSWERED for this product? (the hub that
  *             would supply it is read and not errored). Unknown is never
  *             "unavailable": a card must not say so before the hub answers.
- *   sizeOut   (size) => boolean, the screen's own per-size answer — the same
- *             one that draws the ✕ on the size chip, so a card and its sizes
- *             cannot disagree.
+ *   sizeOut   (size) => boolean: does the hub have none to give, leaving this
+ *             device's cart out of it? A size can show ✕ because the cart holds
+ *             the last pair while the card, truthfully, is not Unavailable.
  *
  * A product with no sizes is not "unavailable" (there is nothing to be out of).
  */

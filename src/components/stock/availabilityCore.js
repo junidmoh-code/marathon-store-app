@@ -194,8 +194,10 @@ export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 // The constant above stays for the Marathon callers that import it: it is the
 // gated hubs on Marathon PE's and Trophy's side of the wall (pinned by test).
 //
-// MARATHON'S HUBS STILL ASK `live`, so their gate answers exactly as it did
-// under every switch position (Junid: their screen unchanged).
+// THE RULE DIFFERS BY DIVISION, ON PURPOSE. Marathon's hubs still ask `live`,
+// so their gate answers exactly as it did under every switch position (Junid:
+// their screen unchanged). Hub 3 asks "in service", because it sits on
+// Auto-refill "solved" and `live` would leave it ungated.
 export function gatedSneakerHubs(network) {
   const N = net(network);
   return hubIds(N).filter((h) => (sectionOf(N, h) === 2 ? isLive(N, h) : solveOn(N, h) && autoRefillOn(N, h)));
