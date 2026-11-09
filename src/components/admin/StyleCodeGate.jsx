@@ -596,6 +596,7 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       {step === "existing" && (() => {
         const target = resolveAddStockTarget({
           claim: result.claim,
+          owners: result.owners,
           existingProducts: existing,
           products,
           selectedId: selectedProductId,
@@ -606,8 +607,13 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
         // one) puts the likely match first. Selection stays with the human and
         // with resolveAddStockTarget's fail-closed rules — ordering is cosmetic
         // by contract.
+        const unstampedOwners = mustChoose
+          ? target.options.filter((id) => !existing.some((p) => p.id === id)).map(productById).filter(Boolean)
+          : [];
         const cards = orderCandidatesByColourway(
-          existing.length ? existing : (claimedProduct ? [claimedProduct] : []),
+          existing.length || unstampedOwners.length
+            ? [...existing, ...unstampedOwners]
+            : (claimedProduct ? [claimedProduct] : []),
           labelExtras && photoMatchesCode ? labelExtras.colorway : null
         );
         const ownerCount = Array.isArray(result.owners) ? result.owners.length : 0;
@@ -641,7 +647,7 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
             {cards.map((p) => {
               const full = productById(p.id) || p;
               const chosen = ready ? target.productId === p.id : selectedProductId === p.id;
-              const selectable = mustChoose && !!productById(p.id);
+              const selectable = mustChoose && target.options.includes(p.id) && !!productById(p.id);
               return (
                 <div
                   key={p.id}
@@ -731,23 +737,6 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
           </>
         );
       })()}
-
-      {/* ── STEP: ORPHANED CLAIM ─────────────────────────────────────────── */}
-      {step === "orphan" && (
-        <>
-          <Note tone="bad">
-            <b>This style code is reserved, but the product it points at doesn't exist.</b><br />
-            That happens when a save failed halfway. It needs an admin to clear the reservation —
-            creating another product now would leave the same mess behind.
-          </Note>
-          <div style={{ ...meta, fontFamily: "ui-monospace, monospace" }}>
-            {result.displayCode} → {result.claim && result.claim.productId}
-          </div>
-          <button type="button" onClick={() => { setStep("enter"); setResult(null); }} style={btn(BLUE, "#fff")}>
-            ← Back
-          </button>
-        </>
-      )}
 
       {/* ── STEP: FOUND — confirm or reject, LARGE ───────────────────────── */}
       {step === "found" && (
@@ -847,10 +836,14 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
           <button type="button" disabled={!!busy} onClick={lookup} style={btn(BLUE, "#fff")}>
             {busy === "resolving" ? "Checking…" : "Try the lookup again"}
           </button>
-          <button type="button" onClick={rejectFetched}
-            style={btn("rgba(255,255,255,.06)", "rgba(233,238,255,.9)")}>
-            Add it anyway — enter the details
-          </button>
+          {/* A claim the server could not settle still holds the code, so a
+              save now would only lose the claim. A retry settles it. */}
+          {!result?.claimOrphaned && (
+            <button type="button" onClick={rejectFetched}
+              style={btn("rgba(255,255,255,.06)", "rgba(233,238,255,.9)")}>
+              Add it anyway — enter the details
+            </button>
+          )}
           <button type="button" onClick={() => { setStep("enter"); setResult(null); }}
             style={{ ...meta, background: "none", border: "none", cursor: "pointer", padding: 8 }}>
             ← Back
