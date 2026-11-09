@@ -687,16 +687,6 @@ test("THE CASE THE /products SCAN ALONE MISSES: a claim whose product is not sta
   assert.strictEqual(out.claimOrphaned, false, "and the product does exist");
 });
 
-test("an ORPHAN claim — product never created — is reported, not treated as taken", async () => {
-  const db = fakeDb({
-    products: PRODUCTS,
-    [STYLE_CODE_INDEX_PATH]: { CT8527700: { productId: "pGONE", claimedAt: 1, claimedBy: "u1" } },
-  });
-  const out = await runResolve(db, { code: "CT8527-700", providers: providersFor(db, fakeKicksDb({})), actor: ACTOR, nowMs: NOW });
-  assert.strictEqual(out.claim.productId, "pGONE");
-  assert.strictEqual(out.claimOrphaned, true);
-});
-
 test("readClaim ignores a malformed index row rather than trusting it", async () => {
   const db = fakeDb({ [STYLE_CODE_INDEX_PATH]: { A1: {}, A2: { productId: "" }, A3: { productId: 7 } } });
   for (const k of ["A1", "A2", "A3", "MISSING"]) {

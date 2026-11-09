@@ -732,23 +732,6 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
         );
       })()}
 
-      {/* ── STEP: ORPHANED CLAIM ─────────────────────────────────────────── */}
-      {step === "orphan" && (
-        <>
-          <Note tone="bad">
-            <b>This style code is reserved, but the product it points at doesn't exist.</b><br />
-            That happens when a save failed halfway. It needs an admin to clear the reservation —
-            creating another product now would leave the same mess behind.
-          </Note>
-          <div style={{ ...meta, fontFamily: "ui-monospace, monospace" }}>
-            {result.displayCode} → {result.claim && result.claim.productId}
-          </div>
-          <button type="button" onClick={() => { setStep("enter"); setResult(null); }} style={btn(BLUE, "#fff")}>
-            ← Back
-          </button>
-        </>
-      )}
-
       {/* ── STEP: FOUND — confirm or reject, LARGE ───────────────────────── */}
       {step === "found" && (
         <>

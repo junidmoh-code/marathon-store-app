@@ -122,7 +122,6 @@ export function orderCandidatesByColourway(candidates, colourway) {
 // retry. This mirrors the rule the resolver already enforces server-side: a
 // dead vendor is never reported as "no such shoe".
 
-export const STEP_ORPHAN = "orphan";
 export const STEP_EXISTING = "existing";
 export const STEP_FOUND = "found";
 export const STEP_UNAVAILABLE = "unavailable";
@@ -140,9 +139,13 @@ export function classifyLookupOutcome({ data, threw } = {}) {
   const d = data || {};
   const existing = Array.isArray(d.existingProducts) ? d.existingProducts : [];
 
+  // The server releases a dead claim itself, so a code that was held by one
+  // arrives here as free. claimOrphaned means it could not settle the claim on
+  // this call: we did not really find out, so we say so and offer the retry.
+  if (d.claimOrphaned) return STEP_UNAVAILABLE;
+
   // A local answer outranks a degraded remote one: if we already hold this
   // product, a broken vendor tier changes nothing about what to do next.
-  if (d.claimOrphaned) return STEP_ORPHAN;
   if (d.claim || existing.length) return STEP_EXISTING;
   if (d.found) return STEP_FOUND;
 
