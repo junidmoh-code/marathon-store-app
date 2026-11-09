@@ -839,3 +839,80 @@ test("staff manual entry is refused on the server; a pool-matched float at Concr
   assert.equal(enforcementBreachOf("S1", sale({ eftPoolKey: "a".repeat(40) }), ["concrete"]), null);
   assert.ok(enforcementBreachOf("S2", sale({ eftReference: "typed" }), ["concrete"]));
 });
+
+// ─── A FLOAT WITH A PROOF, THROUGH THE REAL CALLABLES (review of #875) ───────
+const CASHIER_FP = { auth: { uid: "cashier-uid", token: { email: "ahmed@marathon.internal" } } };
+const PAY_DAY_NOON = Date.parse("2026-10-27T12:00:00+02:00");
+function syncTail() {
+  dbState.tail = Object.fromEntries(Object.entries(dbState.pool).map(([p, r]) => [p.replace("eft_pool/", ""), r]));
+}
+async function floatWithProof(entryId = "ME-fp-000001") {
+  const float = await eftPoolManualEntry({ ...OWNER, data: { entryId, reference: "zanele", amountCents: 190000 } });
+  syncTail();
+  pdfLines = ABSA_NO_TXN;
+  const proof = await upload(OWNER);
+  syncTail();
+  return { float, proof };
+}
+const useFloat = (key, attemptId, storeId, extra = {}) => require("../eftPool/eftPool.js").eftPoolSettle({
+  ...CASHIER_FP, data: { action: "settle", poolKey: key, attemptId, appliedCents: 190000, storeId, tillId: "t1", matchQuery: "zanele", ...extra },
+});
+
+for (const storeId of ["concrete", "pe"]) {
+  test(`at ${storeId}: a float with a proof reads unused, settles once, and a second use is refused`, async (t) => {
+    t.mock.method(Date, "now", () => PAY_DAY_NOON);
+    reset();
+    dbState.reads["users/cashier-uid/posAccess/isActive"] = true;
+    dbState.reads["users/cashier-uid/posAccess/displayName"] = "Ahmed";
+    const { float, proof } = await floatWithProof();
+    assert.equal(dbState.pool[`eft_pool/${float.key}`].status, "unmatched", "the upload did not touch the float");
+    assert.equal(dbState.pool[`eft_pool/${proof.key}`].status, "used", "the approval is the hold on the notice");
+    const { searchEftPool } = require("../lib/eft-pool.cjs");
+    const row = searchEftPool(dbState.tail, "zanele").results.find((r) => r.key === float.key);
+    assert.equal(row.status, "unmatched");
+    assert.equal(row.sameUsed, undefined);
+    assert.equal((await useFloat(float.key, "att-1", storeId)).ok, true);
+    assert.equal(dbState.pool[`eft_pool/${float.key}`].status, "used");
+    syncTail();
+    // Blocked both ways the till can ask: with no customer the search no longer
+    // offers it; with one, the record itself answers already used.
+    await rejects(useFloat(float.key, "att-2", storeId), "failed-precondition", "not-matched");
+    dbState.reads["customers/cust-1"] = { name: "Customer" };
+    await rejects(useFloat(float.key, "att-3", storeId, { customerId: "cust-1" }), "failed-precondition", "already-used");
+  });
+}
+
+test("one proof, one float: a second float of the money, typed after the upload, is refused once the first has spent it", async (t) => {
+  t.mock.method(Date, "now", () => PAY_DAY_NOON);
+  reset();
+  dbState.reads["users/cashier-uid/posAccess/isActive"] = true;
+  dbState.reads["users/cashier-uid/posAccess/displayName"] = "Ahmed";
+  const { float } = await floatWithProof();
+  assert.equal((await useFloat(float.key, "att-1", "concrete")).ok, true);
+  t.mock.method(Date, "now", () => PAY_DAY_NOON + 60_000);
+  const second = await eftPoolManualEntry({ ...OWNER, data: { entryId: "ME-fp-000002", reference: "zanele", amountCents: 190000, note: "again" } });
+  syncTail();
+  await rejects(useFloat(second.key, "att-3", "concrete"), "failed-precondition", "twin-used");
+});
+
+test("two tills at once: the float that does not hold the proof's lock is refused, and the lock frees itself", async (t) => {
+  t.mock.method(Date, "now", () => PAY_DAY_NOON);
+  reset();
+  dbState.reads["users/cashier-uid/posAccess/isActive"] = true;
+  dbState.reads["users/cashier-uid/posAccess/displayName"] = "Ahmed";
+  const { float, proof } = await floatWithProof();
+  dbState.logs[`eft_manual_submit_locks/${proof.key}`] = { key: "f".repeat(40), at: PAY_DAY_NOON - 1000 };
+  await rejects(useFloat(float.key, "att-1", "concrete"), "failed-precondition", "proof-in-use");
+  assert.equal(dbState.pool[`eft_pool/${float.key}`].status, "unmatched", "nothing was spent");
+  t.mock.method(Date, "now", () => PAY_DAY_NOON + 11_000);
+  assert.equal((await useFloat(float.key, "att-2", "concrete")).ok, true);
+});
+
+test("a float typed on another day is another payment: the proof does not cover it", () => {
+  const { proofCoversFloat } = require("../lib/eft-manual.cjs");
+  const at = PAY_DAY_NOON;
+  const proof = { outcome: "recorded", status: "used", reader: "absa", amountCents: 190000, reference: "zanele", bankTs: Date.parse("2026-10-26T00:00:00+02:00"), receivedAt: at, manualApproved: { at } };
+  const float = (typed) => ({ reader: "manual", amountCents: 190000, reference: "ZANELE", manualEntry: { at: typed } });
+  assert.equal(proofCoversFloat(float(at + 60_000), proof), true, "typed after the upload, the same day");
+  assert.equal(proofCoversFloat(float(at + 26 * 3600_000), proof), false, "the next day");
+});

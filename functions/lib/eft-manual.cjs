@@ -364,6 +364,34 @@ function isProofLedger(record) {
 }
 
 /**
+ * Is this float the money this proof vouches for? The twin rule, or — for a
+ * proof uploaded BEFORE the float was typed, of a payment dated an earlier day,
+ * which the twin rule cannot see (architect review of #875) — the same
+ * reference and amount typed the same SAST day as the upload or within 12
+ * hours of it. Never wider: an entry typed on another day is another payment
+ * (Junid, 7 Nov 2026 — a repeat customer's next order under one reference).
+ */
+function proofCoversFloat(float, proof) {
+  if (isPaymentTwin(float, proof)) return true;
+  if (float.amountCents !== proof.amountCents) return false;
+  const ref = normaliseText(float.reference);
+  if (!ref || normaliseText(proof.reference) !== ref) return false;
+  const typed = float.manualEntry?.at;
+  const uploaded = proof.manualApproved?.at;
+  if (!Number.isInteger(typed) || !Number.isInteger(uploaded)) return false;
+  if (Number.isInteger(proof.bankTs) && sastDate(proof.bankTs) > sastDate(typed)) return false;
+  return sameSastDay(typed, uploaded) || Math.abs(typed - uploaded) < DUPLICATE_ROLLING_MS;
+}
+
+/** The proofs that cover this float, as [key, record] pairs, key order. */
+function proofsCovering(poolKey, record, siblings) {
+  if (!isManualEntry(record)) return [];
+  return (siblings ?? [])
+    .filter(([key, other]) => key !== poolKey && other !== record && isProofLedger(other) && proofCoversFloat(record, other))
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
+/**
  * ONE PROOF, ONE FLOAT. A proof names one payment, so once a float has spent
  * it a second hand entry of the same money must not spend it again. Each proof
  * covers one float: N proofs of this reference and amount let N floats through
@@ -373,15 +401,24 @@ function isProofLedger(record) {
  * @returns {object|null} the float that spent the proof, or null
  */
 function floatThatSpentItsProof(poolKey, record, siblings) {
-  if (!isManualEntry(record)) return null;
-  const others = (siblings ?? []).filter(([key, other]) => key !== poolKey && other !== record);
-  const proofs = others.filter(([, other]) => isProofLedger(other) && isPaymentTwin(record, other));
+  const proofs = proofsCovering(poolKey, record, siblings);
   if (!proofs.length) return null;
-  const spent = others
-    .filter(([, other]) => isManualEntry(other) && other.status === "used"
-      && proofs.some(([, proof]) => isPaymentTwin(other, proof)))
+  const spent = siblings
+    .filter(([key, other]) => key !== poolKey && other !== record && isManualEntry(other) && other.status === "used"
+      && proofs.some(([, proof]) => proofCoversFloat(other, proof)))
     .map(([, other]) => other);
   return spent.length >= proofs.length ? spent[spent.length - 1] : null;
+}
+
+/**
+ * Two floats of one proof at two tills in the same instant both pass the check
+ * above: each spends its own record, so no fingerprint arbitrates. The settle
+ * takes a short lock on this key (the manual entry's own lock step), which
+ * expires by itself, so a settle that fails strands nothing.
+ * @returns {string|null} the key to lock on, or null when no proof covers it
+ */
+function proofLockKeyOf(poolKey, record, siblings) {
+  return proofsCovering(poolKey, record, siblings)[0]?.[0] ?? null;
 }
 
 /**
@@ -444,7 +481,7 @@ module.exports = {
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
   manualDoubleSubmitOf, MANUAL_DOUBLE_SUBMIT_MS, MANUAL_SUBMIT_LOCK_PATH, manualSubmitLockKeyOf, manualSubmitLockStep,
-  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin, isProofLedger, floatThatSpentItsProof,
+  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin, isProofLedger, proofCoversFloat, floatThatSpentItsProof, proofLockKeyOf,
 };
 
 // ─── THE LOG — how often the hatch is used, and where each entry went ───────
