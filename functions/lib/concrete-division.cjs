@@ -169,6 +169,26 @@ function sneakerSolvePairAllowed(hubs) {
   if (!h.every((x) => SNEAKER_SOLVE_HUBS.includes(x))) return false;
   return !(h.includes("hub1") && h.includes("hub2"));
 }
+// ── HUB 1 AND HUB 2 NEVER SHARE A SNEAKER (Junid, 9 Nov 2026) ────────────────
+// Refused for one Solve naming both, above, and across separate Solves here: a
+// Solve may not seat a product at one of the two while the other has it seated.
+// Seated = a stock cell (the engine's own carriage test, sold out included), a
+// target row above zero, or a request already on its way; a cell whose row is
+// target 0 is switched off, so it does not count.
+function otherMarathonHub(hub) {
+  return hub === "hub1" ? "hub2" : hub === "hub2" ? "hub1" : null;
+}
+function marathonHubSeated({ cells, rows, openRequest = false } = {}) {
+  if (openRequest) return true;
+  const targetRows = divisionIsObj(rows) ? rows : {};
+  if (Object.values(targetRows).some((r) => divisionIsObj(r) && Number(r.target) > 0)) return true;
+  const off = (k) => divisionIsObj(targetRows[k]) && Number(targetRows[k].target) <= 0;
+  return divisionIsObj(cells) && Object.keys(cells).some((k) => cells[k] !== null && cells[k] !== undefined && !off(k));
+}
+function marathonSolveRefusal(hub) {
+  const name = (h) => (h === "hub1" ? "Hub 1" : "Hub 2");
+  return `This product is seated at ${name(otherMarathonHub(hub))}, so it cannot be solved to ${name(hub)}.`;
+}
 // ── END SHARED BODY ──────────────────────────────────────────────────────────
 
 // ── SERVER ONLY ──────────────────────────────────────────────────────────────
@@ -284,5 +304,5 @@ module.exports = {
   CONCRETE_DIVISION_KEY, DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, SEATS_PATH, DIVISION_MAX, DIVISION_FOOTWEAR_KEYS,
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
   divisionTargetShape, hub3PresenceIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
-  SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, divisionContext, planSeats,
+  SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats,
 };

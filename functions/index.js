@@ -657,7 +657,17 @@ exports.refillRequestSourceGuard = onValueCreated(
     // a pick claim or a shadow re-sync — Sonnet, #833).
     const rs = require("./lib/request-source.cjs");
     const id = event.params.requestId;
-    if (rs.classifyRequestSource(event.data.val()) !== null) return;   // scan / Solve — the common case, no read
+    const source = rs.classifyRequestSource(event.data.val());
+    if (source === rs.REQUEST_SOURCE.SOLVE) {
+      // Hub 1 and Hub 2 never share a sneaker: only a Solve line at those two
+      // reads anything here, and everything else returns without a read.
+      const res = await require("./lib/solve-seat.cjs").enforceMarathonSolveSeat({
+        db: admin.database(), id, rr: event.data.val(), nowIso: new Date().toISOString(),
+      });
+      if (res.refused) console.warn(`refillRequestSourceGuard: seat refused ${id}, cancelled=${res.cancelled}`);
+      return;
+    }
+    if (source !== null) return;   // scan — the common case, no read
     const db = admin.database();
     const nowIso = new Date().toISOString();
     let seen = null;
