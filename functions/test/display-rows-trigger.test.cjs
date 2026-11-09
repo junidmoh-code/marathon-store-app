@@ -312,7 +312,6 @@ test("and IS tombstoned, keeping its history, when nothing is left", async () =>
 // ── the cheap early returns ─────────────────────────────────────────────────
 test("an unrelated movement touches nothing at all", async () => {
   for (const m of [
-    soldAt("hub3"),                                   // Pine's hub — out of scope
     soldAt("central"),
     soldAt("trophy", { type: "received" }),
     soldAt("trophy", { type: "transfer_out", to: "hub1" }),   // never a display return
@@ -519,4 +518,39 @@ test("rowSizeText leaves letters and the one-size sentinel alone", () => {
   assert.equal(f({ sizeKey: "_" }), "_");
   assert.equal(f({ sizeKey: "ONE_SIZE" }), "ONE_SIZE");      // not a digit pair
   assert.equal(f({}), undefined);
+});
+
+// ── Pine and Concrete, end to end (9 Nov 2026) ──────────────────────────────
+for (const store of ["concrete", "marathon-pine"]) {
+  test(`a sale at ${store} closes that wall's open row for the size`, async () => {
+    const db = makeDb();
+    db._set(`${ROWS}/${store}/p1/a`, openRow({ rowId: "a", store, bookedHub: "hub3" }));
+    await run(db, soldAt(store));
+    assert.equal(db._get(`${ROWS}/${store}/p1/a`).status, "closed");
+    assert.equal(db._get(`${ROWS}/${store}/p1/a`).closedReason, "sold");
+  });
+}
+
+test("a Hub 3 sale that empties the cell closes the one wall claiming that size", async () => {
+  const db = makeDb();
+  db._set(`${ROWS}/concrete/p1/a`, openRow({ rowId: "a", store: "concrete", bookedHub: "hub3" }));
+  db._set("stock/hub3/p1/9/qty", 0);
+  await run(db, soldAt("hub3"));
+  assert.equal(db._get(`${ROWS}/concrete/p1/a`).status, "closed");
+});
+
+test("a Hub 3 sale never closes a Marathon wall", async () => {
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));
+  db._set("stock/hub3/p1/9/qty", 0);
+  await run(db, soldAt("hub3"));
+  assert.equal(db._get(`${ROWS}/trophy/p1/a`).status, "open");
+});
+
+test("two Hub 3 walls claiming the size: refused, nothing closes", async () => {
+  const db = makeDb();
+  for (const store of ["concrete", "marathon-pine"]) db._set(`${ROWS}/${store}/p1/a`, openRow({ rowId: "a", store, bookedHub: "hub3" }));
+  db._set("stock/hub3/p1/9/qty", 0);
+  await run(db, soldAt("hub3"));
+  for (const store of ["concrete", "marathon-pine"]) assert.equal(db._get(`${ROWS}/${store}/p1/a`).status, "open");
 });

@@ -59,9 +59,10 @@ describe("Section 2 keeps the old literal — every fallback, every shop", () =>
     expect(orderIsAtHub(NET, { hub: "hub1", placedAtHub: "hubC" }, TRIAL_HUB)).toBe(true);   // hubC by placedAtHub, as before
     expect(orderIsAtHub(NET, { hub: "hub1" }, TRIAL_HUB)).toBe(false);
   });
-  it("the dispatch hold is Hub 2's alone, six minutes", () => {
+  it("the dispatch hold is Hub 2's and Hub 3's, six minutes", () => {
     expect(dispatchHoldMs("hub2")).toBe(360000);
-    for (const h of ["hub1", "hub3", "hubC", undefined]) expect(dispatchHoldMs(h)).toBe(0);
+    expect(dispatchHoldMs("hub3")).toBe(360000);
+    for (const h of ["hub1", "hubC", undefined]) expect(dispatchHoldMs(h)).toBe(0);
   });
   it("Hub 2's CR pills are Marathon PE and Trophy, in that order", () => {
     expect(shopsOfHub(NET, "hub2")).toEqual(["marathon-pe", "trophy"]);

@@ -46,11 +46,11 @@
 // No missed-demand logging: a blocked size is just an X (owner decision).
 // Pure module — no firebase imports; callers feed it data they already hold.
 //
-// ONE HUB-2 FACT WORTH KNOWING (2026-09-05). The 20-minute window is measured
+// ONE HELD-HUB FACT WORTH KNOWING (2026-09-05). The 20-minute window is measured
 // from the RAW record's readyAt, which is stamped when the warehouse marks the
-// order Sent. Hub 2 alone holds the CUSTOMER-facing reveal for 6 minutes after
-// that (HUB2_DISPATCH_HOLD_MS — the parcel is on the van), so a Hub 2 customer
-// gets roughly 14 minutes of hold after being told, not 20. Deliberate, not
+// order Sent. Hub 2 and Hub 3 hold the CUSTOMER-facing reveal for 6 minutes after
+// that (HUB2_DISPATCH_HOLD_MS — the parcel is on the van), so their customers
+// get roughly 14 minutes of hold after being told, not 20. Deliberate, not
 // corrected here: the owner's directive is "don't reserve anything for anyone",
 // so erring SHORT frees the size sooner, which is the direction they asked for.
 // Reading notifyReadyAt instead would lengthen every Hub 2 ✕ — a behaviour
@@ -201,14 +201,6 @@ export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 export function gatedSneakerHubs(network) {
   const N = net(network);
   return hubIds(N).filter((h) => (sectionOf(N, h) === 2 ? isLive(N, h) : solveOn(N, h) && autoRefillOn(N, h)));
-}
-// THE FULLY LIVE HUBS — the old answer, kept for one reader: which hubs may a
-// "Not on the wall" display request be raised against. Pine and Concrete walls
-// record only; no request path is opened for them (Junid's rules, CLAUDE.md,
-// and the 7 Nov 2026 wall screen). Widening the assistant's ✕ must not widen
-// this. displayWallPineConcrete.render.test.jsx holds it.
-export function displayRequestHubs(network) {
-  return hubIds(net(network), { liveOnly: true });
 }
 // The hubs a gated sneaker may be rerouted to from `taggedHub`: the other
 // gated hubs on the SAME side of the section wall, in registry order. Never

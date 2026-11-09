@@ -1,9 +1,8 @@
 // ─── PINE AND CONCRETE ON THE WALL SCREEN (Junid, 7 Nov 2026) ────────────────
 // The per-store wall screen offers every shop in the registry. Pine and
-// Concrete are walked against Hub 3, the hub that feeds them, and their walls
-// RECORD what is standing there — but "Not on the wall" (which raises a display
-// request) stays off: no request path is opened for a shop that had none
-// (CLAUDE.md, Junid's rules). Marathon PE and Trophy are unchanged.
+// Concrete are walked against Hub 3, the hub that feeds them. "Not on the wall"
+// raises a display request to Hub 3 (Junid asked for this on 9 Nov 2026).
+// Marathon PE and Trophy are unchanged.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
@@ -138,18 +137,31 @@ describe("the Pine wall is walked against Hub 3", () => {
     expect(registerDisplayRow).toHaveBeenCalledTimes(1);
     expect(registerDisplayRow.mock.calls[0][0]).toMatchObject({ store: "marathon-pine", productId: "p2", size: "7", bookedHub: "hub3" });
   });
-  it("Not on the wall is OFF — a Pine wall raises no display request", async () => {
+  it("Not on the wall is ON — a Pine wall raises a display request against Hub 3", async () => {
     const t = openPine();
     const b = btn(t, "Not on the wall");
-    expect(b.props.disabled).toBe(true);
-    await act(async () => { await b.props.onClick(); });   // even a forced tap
-    expect(raiseDisplayRequest).not.toHaveBeenCalled();
+    expect(b.props.disabled).toBeFalsy();
+    await act(async () => { await b.props.onClick(); });
+    expect(raiseDisplayRequest).toHaveBeenCalledTimes(1);
+    const arg = raiseDisplayRequest.mock.calls[0][0];
+    expect(arg.store).toBe("marathon-pine");
+    expect(arg.product.id).toBe("p2");
+    expect(arg.hubData.hub3.ready).toBe(true);
+    expect(arg.hubData.hub1).toBeUndefined();
   });
   it("Concrete is the same", () => {
     const t = render();
     act(() => { btn(t, "Concrete").props.onClick(); });
     expect(text(t)).toMatch(/Air Max 95/);
-    expect(btn(t, "Not on the wall").props.disabled).toBe(true);
+    expect(btn(t, "Not on the wall").props.disabled).toBeFalsy();
+  });
+  it("Hub 3 out of service on the Network card: recording only, no request", () => {
+    NETWORK_RAW = { locations: { hub3: { solve: true, autoRefill: "off" } } };
+    const t = render();
+    act(() => { btn(t, "Pine").props.onClick(); });
+    const disabled = btn(t, "Not on the wall").props.disabled;
+    NETWORK_RAW = null;
+    expect(disabled).toBe(true);
   });
 });
 

@@ -2,7 +2,7 @@
 //
 // (Owner spec clause 3, 2026-09-08.)
 //
-// A display unit sells at Marathon PE or Trophy and the open display row for
+// A display unit sells at any shop in service and the open display row for
 // that product AND that captured size closes, server-side, from any till, with
 // NO change to marathon-pos-app and no POS deploy.
 //

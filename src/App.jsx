@@ -2370,14 +2370,13 @@ onValue(ref(database, ".info/serverTimeOffset"), (snap) => setServerTimeOffsetMs
 // constant lives in exactly one place. Change here to retune (no other edits).
 const HUB2_DISPATCH_HOLD_MS = 6 * 60 * 1000;
 // Hubs whose parcels physically travel to the shop → hold the customer reveal.
-// Add "hub3"/"hubC" here (one line) if Pine / clothing-customer parcels also ride
-// the van. The server sweep is hub-agnostic (it keys off notifyReadyAt), so this
-// set is the ONLY place that decides which hubs are held.
-// Sections: the per-hub answer now lives in utils/sectionRouting.js
-// (dispatchHoldMs) — Hub 2 only, exactly as this set was.
+// The server sweep is hub-agnostic (it keys off notifyReadyAt), so this set is
+// the ONLY place that decides which hubs are held.
+// Sections: the per-hub answer lives in utils/sectionRouting.js (dispatchHoldMs)
+// — Hub 2 and, since 9 Nov 2026, Hub 3. The constant's value is shared by both.
 const HELD_DISPATCH_HUBS = { has: (hub) => dispatchHoldMs(hub) > 0 };
 
-// Customer-facing view of an order under the Hub 2 dispatch hold. Only Hub 2
+// Customer-facing view of an order under the dispatch hold. Only a held hub's
 // "Ready" orders carry notifyReadyAt (written by updateStatus), so this no-ops for
 // everything else. While held it reads as INCOMING ("being prepared") — not
 // announced, not on the ready timer; at reveal it becomes READY with readyAt moved

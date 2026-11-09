@@ -60,6 +60,9 @@ describe("no Section-2-pointing hub fallback is left where a record's shop can a
     expect(APP).not.toContain('(e.hub || e.placedAtHub || "hub1") === h');
     expect(APP).not.toContain('(o.hub || "hub1") === h');
     expect(APP).not.toContain('HELD_DISPATCH_HUBS.has(order.placedAtHub || order.hub || "hub1")');
+    // A Ready is held by the registry's answer for its own hub: Hub 2 and Hub 3.
+    expect(APP).toContain('HELD_DISPATCH_HUBS.has(hubOfRecord(whNet, order, "hub1"))');
+    expect(APP).toContain("const HELD_DISPATCH_HUBS = { has: (hub) => dispatchHoldMs(hub) > 0 };");
   });
   it("exactly ONE copy of the old seven-fold default survives — inside the hash-pinned display-refill block", () => {
     // displayAutoRefillUnchanged.test.js pins setDisplayRefillStatus byte for

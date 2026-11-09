@@ -37,7 +37,8 @@
 //
 // PURE — no firebase, no react. displayRequestStore.js is the only writer.
 
-import { availableUnits, promisedKey, displayRequestHubs } from "./availabilityCore";
+import { availableUnits, promisedKey, gatedSneakerHubs } from "./availabilityCore";
+import { shopUniverse } from "../../utils/stores";
 import { wallAllows } from "../../utils/networkRegistry";
 import { net } from "./sectionRouting";
 import { isOpenDisplayRequest, requestStoreFor } from "./displayRowCore";
@@ -92,12 +93,12 @@ export function hubUnitsFor({ cells, promised, productId }) {
  * THE SECTION WALL. `store` is the shop the display is for: the pair may only
  * come from a hub on THAT shop's side of the wall, so the candidates are the
  * gated hubs the wall allows from it (Hub 1 and Hub 2 for Marathon PE and
- * Trophy — the list this always walked). A shoe held only across the wall is
+ * Trophy, Hub 3 for Pine and Concrete). A shoe held only across the wall is
  * "none in any warehouse" for this shop; it goes back to Central first.
  * Without `store` (an older caller) the list is not narrowed.
  */
 export function pickDisplaySourceHub({ product, hubData, hubs: hubsIn, store = null, network }) {
-  const gated = hubsIn || displayRequestHubs(network);
+  const gated = hubsIn || gatedSneakerHubs(network);
   const hubs = store ? gated.filter((h) => wallAllows(net(network), store, h)) : gated;
   const productId = product?.id;
   if (!productId) return { hub: null };
@@ -156,7 +157,7 @@ export function wallWalkOrder({ orderId, store, hub, product, nowIso, by }) {
     customerPending: false,
     hub,
     placedAtHub: hub,
-    placedStore: "central",
+    placedStore: shopUniverse(store) || "central",
     destShop: store,
     requestDisplay: false,
     requestDisplayPartner: true,
