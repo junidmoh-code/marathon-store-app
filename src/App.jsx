@@ -16887,7 +16887,7 @@ const SOURCE_TAB_ICON = {
 // the same RefillQueue, same Fulfil / Out of Stock, same partial tranches and
 // `rrf_` movement ids, destination the shop. No sale rows: a shop's POS sales
 // restock through its hub, never through Central.
-const SOURCE_SHOP_TABS = [["trophy","Trophy","trophy"],["marathonpe","Marathon","marathon-pe"]];
+const SOURCE_SHOP_TABS = [["marathonpe","Marathon","marathon-pe"],["trophy","Trophy","trophy"]];
 const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],...SOURCE_SHOP_TABS.map(([k, label]) => [k, label]),["refillhistory","Refill History"]];
 const SOURCE_SHOP_BY_TAB = Object.fromEntries(SOURCE_SHOP_TABS.map(([k, , loc]) => [k, loc]));
 const SOURCE_SHOP_LOCS = new Set(SOURCE_SHOP_TABS.map(([, , loc]) => loc));

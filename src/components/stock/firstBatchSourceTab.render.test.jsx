@@ -207,7 +207,7 @@ describe("the badge predicate — the number the tabs promise", () => {
 describe("SourceView wiring (source gate on App.jsx)", () => {
   const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
   it("the tab list carries Trophy and Marathon, mapped to the shop location ids", () => {
-    expect(APP).toMatch(/const SOURCE_SHOP_TABS = \[\["trophy","Trophy","trophy"\],\["marathonpe","Marathon","marathon-pe"\]\];/);
+    expect(APP).toMatch(/const SOURCE_SHOP_TABS = \[\["marathonpe","Marathon","marathon-pe"\],\["trophy","Trophy","trophy"\]\];/);
     expect(APP).toMatch(/const SOURCE_TABS = \[\["hub1refill","Hub 1 Refill"\],\["clothing","Hub 2 Refill"\],\.\.\.SOURCE_SHOP_TABS/);
   });
   it("a shop tab mounts the SAME RefillQueue with dest = the shop and no sale rows", () => {
