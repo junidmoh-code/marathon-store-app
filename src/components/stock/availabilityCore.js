@@ -170,17 +170,30 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
 export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 
 // ── THE GATED HUBS, FROM THE NETWORK REGISTRY ────────────────────────────────
-// "hub1 and hub2, and deliberately only two" was the network as it stood: the
-// two hubs that are LIVE. Pine's Hub 3 is NULL above because it has not been
-// counted in — which is exactly what the registry's live flag says. So the
-// gate asks the registry: every live hub is gated, and a hub that is not live
-// is "no gate, yesterday's behaviour", unchanged. On the seed this answers
-// the constant above (pinned by test), which stays for the callers that
-// import it. WHAT SWITCHES ON when the owner makes Hub 3 live: its sneaker
-// tiles are gated on its own cells, and a size it is out of can be rerouted
-// to another live hub IN ITS OWN SECTION (see resolveSneakerSourcing).
+// "hub1 and hub2, and deliberately only two" was the network as it stood while
+// Hub 3 had not been counted in. It has been (Junid, 9 Nov 2026: "Hub 3 is
+// treated exactly like Hub 1 and Hub 2 from now on"), so the gate asks the
+// registry which hubs are IN SERVICE: Solve on and Auto-refill not "off" —
+// Hub 1, Hub 2 and Hub 3 on the seed. Hub 3's sneaker tiles are gated on its
+// own cells for the shops it serves (Pine, Concrete), and nothing about Hub 1
+// or Hub 2 moves: a hub only ever answers for a shop on its own side of the
+// wall (sneakerAlternates, sectionSneakerHubs, pickDisplaySourceHub all narrow
+// this list by the wall before using it).
+//
+// NOT `live` (Solve on + Auto-refill "all"), which this used to ask. `live`
+// is about what the ENGINE may refill by itself; whether an assistant may
+// order a size the hub does not hold is a different question, and tying the
+// two together left Pine and Concrete ordering into nothing for as long as
+// Hub 3 sat on Auto-refill "solved".
+//
+// THE OFF SWITCH is the Network card: a hub with Solve off or Auto-refill
+// "off" is out of service, is not gated, and its shops order by hand as they
+// did before — the right answer for a hub nobody has counted yet.
+//
+// The constant above stays for the Marathon callers that import it: it is the
+// gated hubs on Marathon PE's and Trophy's side of the wall (pinned by test).
 export function gatedSneakerHubs(network) {
-  return hubIds(net(network), { liveOnly: true });
+  return hubIds(net(network), { solveOnly: true, autoRefillOnly: true });
 }
 // The hubs a gated sneaker may be rerouted to from `taggedHub`: the other
 // gated hubs on the SAME side of the section wall, in registry order. Never

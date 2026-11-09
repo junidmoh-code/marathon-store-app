@@ -85,6 +85,24 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
     stockedHere,
   });
 
+  // The cards that read "Unavailable" (unavailableIds).
+  const unavailable = (wantsClothing = false) => {
+    if (onSection2Hubs || !sectionHubIds.length) return new Set();
+    return division.unavailableProductIds(catalogue(wantsClothing), (p) => {
+      if (p.deactivated === true) return null;
+      const sizes = sizesOf(p);
+      if ((p.productType || "sneaker") === "clothing") {
+        const lane = sectionHubIds.includes(clothingHubOf(p)) ? hubData[clothingHubOf(p)] : null;
+        return {
+          sizes, known: !!lane && lane.ready === true,
+          sizeOut: (sz) => availableUnits(lane.cells?.[p.id]?.[decodedCellKey(sz)]?.qty) <= 0,
+        };
+      }
+      const hub = sneakerHubOf(p);
+      return { sizes, known: !!hub && gateReady(hub), sizeOut: (sz) => sneakerOut(p, sz) };
+    });
+  };
+
   // The alternatives sheet (computeAlternatives).
   const alternatives = (product, size) => {
     if (!product || !size) return null;
@@ -110,6 +128,6 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
   return {
     network, universe, onSection2Hubs, sectionHubIds, subscribed, sneakerHubsOfShop, hubData, servingHub,
     computeHub, taggedHubFor, sourcing, sneakerHubOf, sneakerOut, gateReady, hubQty, clothingHubOf,
-    catalogue, alternatives, allocation, placedHub, sizesOf,
+    catalogue, alternatives, allocation, placedHub, sizesOf, unavailable,
   };
 }

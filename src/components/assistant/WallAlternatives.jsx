@@ -50,7 +50,7 @@ export function quietBlockLine(size, w, stillOut = true) {
   const hub = w?.hubLabel || "Hub 1";
   if (!stillOut) return `Size ${sz} can be ordered again — pick it above, or one of these:`;
   if (!w || w.booked <= 0)
-    return w?.checkedBoth ? `Size ${sz} not at Hub 1 or Hub 2 — these have it:` : `Size ${sz} not at ${hub} — these have it:`;
+    return w?.checkedBoth ? `Size ${sz} not at ${w.checkedLabel || "Hub 1 or Hub 2"} — these have it:` : `Size ${sz} not at ${hub} — these have it:`;
   if (w.available <= 0)
     return w.pullOnly ? `Size ${sz} at ${hub} is held for a display-pair request — these have it:`
       : `Size ${sz} at ${hub} is held for another customer's order — these have it:`;

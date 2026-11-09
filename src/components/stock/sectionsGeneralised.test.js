@@ -38,7 +38,10 @@ beforeEach(() => __resetNetworkForTests());
 describe("on the seed, every registry answer is the list it replaced", () => {
   it("the constants and the registry agree", () => {
     expect(reactiveRefillHubs(SEED_REGISTRY)).toEqual([...REACTIVE_REFILL_HUBS]);
-    expect(gatedSneakerHubs(SEED_REGISTRY)).toEqual(GATED_SNEAKER_HUBS);
+    // The gate covers every hub IN SERVICE (Junid, 9 Nov 2026: Hub 3 is counted
+    // and is treated like Hub 1 and Hub 2). The constant is Marathon's side.
+    expect(gatedSneakerHubs(SEED_REGISTRY)).toEqual(["hub3", "hub1", "hub2"]);
+    expect(gatedSneakerHubs(SEED_REGISTRY).filter((h) => SEED_REGISTRY.locations[h].section === 2)).toEqual(GATED_SNEAKER_HUBS);
     expect(centralFedHubs(SEED_REGISTRY)).toEqual(CENTRAL_FED_HUBS);
     // Hub Count & Displays covers every hub and shop (Junid, 7 Nov 2026) —
     // Marathon's section first, so the card still opens on Hub 1.
@@ -55,7 +58,7 @@ describe("on the seed, every registry answer is the list it replaced", () => {
 
   it("with no argument they read the CURRENT registry, which is the seed until /network answers", () => {
     expect(reactiveRefillHubs()).toEqual(["hub2"]);
-    expect(gatedSneakerHubs()).toEqual(["hub1", "hub2"]);
+    expect(gatedSneakerHubs()).toEqual(["hub3", "hub1", "hub2"]);
     expect(isCleanupHub("hub1")).toBe(true);
     expect(isCleanupHub("hub3")).toBe(true);          // not live, still registered and counted
     expect(isCleanupHub("concrete-stockroom")).toBe(false);
@@ -117,8 +120,15 @@ describe("sneaker sourcing — 'the other hub' is another hub IN THE SAME SECTIO
     expect(sneakerAlternates("hub1", S1_LIVE, "marathon-pine")).toEqual([]);
   });
 
-  it("NOT LIVE: Hub 3 is ungated — no gate, no reroute, yesterday's behaviour", () => {
-    expect(gatedSneakerHub(shoe, "hub3", SEED_REGISTRY)).toBeNull();
+  it("IN SERVICE = GATED: Hub 3 is gated on the seed (9 Nov 2026); out of service it is ungated — no gate, no reroute", () => {
+    const off = normalizeNetwork({ locations: { hub3: { solve: true, autoRefill: "off" } } });
+    expect(gatedSneakerHub(shoe, "hub3", SEED_REGISTRY)).toBe("hub3");
+    expect(gatedSneakerHub(shoe, "hub3", off)).toBeNull();
+    expect(gatedSneakerHubs(off)).toEqual(["hub1", "hub2"]);
+    // Hub 1 ⇄ Hub 2 reroute exactly as before, and never to Hub 3
+    expect(sneakerAlternates("hub1", SEED_REGISTRY)).toEqual(["hub2"]);
+    expect(sneakerAlternates("hub2", SEED_REGISTRY)).toEqual(["hub1"]);
+    expect(sneakerAlternates("hub3", SEED_REGISTRY)).toEqual([]);
     expect(gatedSneakerHub(shoe, "hub2", SEED_REGISTRY)).toBe("hub2");
     expect(gatedSneakerHub(shoe, "hub3", S1_LIVE)).toBe("hub3");
     expect(gatedSneakerHub({ ...shoe, productType: "clothing" }, "hub2", SEED_REGISTRY)).toBeNull();
