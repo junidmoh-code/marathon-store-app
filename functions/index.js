@@ -471,7 +471,7 @@ exports.outboxInstantSend = onDocumentCreated(
   }
 );
 
-// Hub 2 dispatch-hold reveal sweep. A Hub 2 order marked READY holds its customer
+// Dispatch-hold reveal sweep. A Hub 2 or Hub 3 order marked READY holds its customer
 // "order_ready" WhatsApp until notifyReadyAt (= Sent + HUB2_DISPATCH_HOLD_MS, set
 // by the app) so the parcel has time to reach the shop. The warehouse tablet must
 // NOT be trusted to send it later — it sleeps / closes — so the SERVER owns the
