@@ -99,6 +99,26 @@ describe("every shop has a wall", () => {
   });
 });
 
+describe("a viewer is offered only the walls in their own division", () => {
+  it("a Concrete-division account: Pine and Concrete, and it opens on Pine", () => {
+    PERMS = { permRecord: { stockRole: "store", section: 1 }, isSuperAdmin: false, hasPermission: () => true };
+    const t = render();
+    const tabs = wallTabs(t);
+    expect(tabs).toHaveLength(2);
+    expect(tabs[0]).toMatch(/Pine/);
+    expect(tabs[1]).toMatch(/Concrete/);
+    expect(text(t)).toMatch(/Air Max 95/);            // Hub 3's stock, not Marathon's
+    expect(text(t)).not.toMatch(/Nike Dunk Low Panda/);
+  });
+  it("a Marathon-division account: Marathon PE and Trophy only", () => {
+    PERMS = { permRecord: { stockRole: "store", section: 2 }, isSuperAdmin: false, hasPermission: () => true };
+    const tabs = wallTabs(render());
+    expect(tabs).toHaveLength(2);
+    expect(tabs[0]).toMatch(/Marathon PE/);
+    expect(tabs[1]).toMatch(/Trophy/);
+  });
+});
+
 describe("the Pine wall is walked against Hub 3", () => {
   const openPine = () => {
     const t = render();
