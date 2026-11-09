@@ -61,10 +61,10 @@ const DUPLICATE_CANDIDATES_PATH = "duplicate_candidates";
 const STYLE_CODE_MISSES_PATH = "style_code_misses";
 
 // ── /style_code_index IS THE AUTHORITY ON WHO OWNS A CODE ────────────────────
-// Uniqueness is CLAIMED, not checked. Intake writes /style_code_index/{code}
-// create-once BEFORE it creates the product; the rules make the second writer
-// lose. So this node — not a /products scan — answers "does this code already
-// belong to something?".
+// Uniqueness is CLAIMED, not checked. Intake writes the product, then claims
+// /style_code_index/{code} create-once; the rules make the second writer lose.
+// So this node — not a /products scan — answers "does this code already belong
+// to something?".
 //
 // The /products scan below is still needed, but for a DIFFERENT question: it
 // finds catalogue rows that carry a code without ever having claimed it (rows
@@ -72,10 +72,9 @@ const STYLE_CODE_MISSES_PATH = "style_code_misses";
 // claim, so a two-product collision is invisible there and visible only in the
 // scan. Both are reported; only the index is authoritative.
 //
-// Reading the claim also catches the one failure the claim-first order can
-// leave behind: a claim whose productId names a product that does not exist
-// (the claim landed, the product write then failed). That is an ORPHAN, and
-// intake must be told — otherwise the code looks taken and nothing owns it.
+// Reading the claim also catches the one thing the index cannot keep true on its
+// own: a claim whose productId names a product that no longer exists, because
+// the product was deleted. See runResolve's ownership check.
 const STYLE_CODE_INDEX_PATH = "style_code_index";
 
 // A claim can now name SEVERAL owners: the primary claimant plus registered

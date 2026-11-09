@@ -1,4 +1,4 @@
-// ─── STYLE CODE — CLAIM-FIRST UNIQUENESS ─────────────────────────────────────
+// ─── STYLE CODE — CREATE-ONCE UNIQUENESS ─────────────────────────────────────
 // A style code may belong to exactly one product. This module is how that is
 // enforced, and the enforcement is a CLAIM, never a CHECK.
 //
@@ -15,18 +15,18 @@
 // the client, so there is no window at all.
 //
 // ── THE ORDER, AND WHY IT IS THIS ORDER ──────────────────────────────────────
-//   1. mint the product id            ("p" + serverNowMs())
-//   2. CLAIM /style_code_index/{code} create-once, with that id
-//   3. claim won  → create the product, stamped with the code
-//      claim lost → read the winner's productId and route to ADD STOCK on it
+//   1. mint the product id     ("p" + serverNowMs())
+//   2. write the product
+//   3. CLAIM /style_code_index/{code} create-once, with that id
 //
-// The id is minted before the product exists, which is what makes claiming
-// before creating possible. The claim is made as LATE as possible — immediately
-// before the product write — so the window in which a claim can outlive a failed
-// product write is as small as it can be. That window cannot be closed entirely
-// (there are two writes and no transaction across them), so the orphan it can
-// leave is detected and reported rather than pretended away — see
-// resolveStyleCode's `claimOrphaned`.
+// The live rule validates root.child('products').child(productId).exists(), and
+// `root` is the database BEFORE the write. So a claim for a product that does
+// not exist yet is refused, including inside one multi-location update with the
+// product. The product has to land first; writeProductThenClaim is that order.
+//
+// A failed save therefore cannot leave a claim behind. What does orphan one is
+// DELETING a product later, which leaves its claim naming an id that is gone.
+// resolveStyleCode releases those itself — see lib/style-code-orphans.cjs.
 //
 // ── WHAT THE RULES VALIDATE ──────────────────────────────────────────────────
 // /style_code_index/$normalisedCode
