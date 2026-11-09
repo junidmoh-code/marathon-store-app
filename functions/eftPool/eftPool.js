@@ -143,7 +143,7 @@ const {
   MANUAL_ENTRY_BY, MANUAL_LOG_PATH, MANUAL_LIST_LIMIT,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf, manualDoubleSubmitOf,
   MANUAL_SUBMIT_LOCK_PATH, manualSubmitLockKeyOf, manualSubmitLockStep,
-  bankTwinOfEntry, manualTwinSettleCheck,
+  bankTwinOfEntry, manualTwinSettleCheck, proofLockKeyOf,
   manualLogKeyOf, manualLogRecord, manualLogEventPatch, manualLogView,
 } = require("../lib/eft-manual.cjs");
 const {
@@ -340,6 +340,19 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
   if (!approvedTwin.ok) {
     console.warn(`eftPoolSettle: approved-twin-used on ${key} — refused before settle`);
     throw refusalToError(approvedTwin);
+  }
+  // ONE PROOF, ONE FLOAT, across two tills at once: a float a proof covers
+  // takes the proof's short lock before it spends (lib/eft-manual.cjs).
+  // Only a float still waiting: a used one's retry must reach the settle's
+  // own "already" answer, and spends nothing.
+  const proofKey = record.status === "unmatched" ? proofLockKeyOf(key, record, Object.entries(tail)) : null;
+  if (proofKey) {
+    let lock = null;
+    await db.ref(`${MANUAL_SUBMIT_LOCK_PATH}/${proofKey}`).transaction(manualSubmitLockStep(key, now, (d) => { lock = d; }));
+    if (lock?.holder !== key) {
+      console.warn(`eftPoolSettle: proof ${proofKey} is being spent by ${lock?.holder ?? "nothing usable"} — ${key} refused before settle`);
+      throw refusalToError({ code: "proof-in-use", message: "This payment is being used at another till right now. Search again in a few seconds." });
+    }
   }
   if (!check.fingerprint) return null; // owner-released no-bank-id payment
   let claim = null;
