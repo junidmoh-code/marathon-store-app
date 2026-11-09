@@ -288,7 +288,7 @@ function manualSubmitLockKeyOf({ reference, amountCents, note = null }) {
 function manualSubmitLockStep(poolKey, at, capture = () => {}) {
   return (cur) => {
     if (cur && typeof cur === "object" && typeof cur.key === "string" && cur.key !== poolKey
-      && Number.isInteger(cur.at) && at - cur.at >= 0 && at - cur.at <= MANUAL_DOUBLE_SUBMIT_MS) {
+      && Number.isInteger(cur.at) && Math.abs(at - cur.at) <= MANUAL_DOUBLE_SUBMIT_MS) {
       capture({ holder: cur.key });
       return undefined;
     }
@@ -367,9 +367,9 @@ function isProofLedger(record) {
  * Is this float the money this proof vouches for? The twin rule, or — for a
  * proof uploaded BEFORE the float was typed, of a payment dated an earlier day,
  * which the twin rule cannot see (architect review of #875) — the same
- * reference and amount typed the same SAST day as the upload or within 12
- * hours of it. Never wider: an entry typed on another day is another payment
- * (Junid, 7 Nov 2026 — a repeat customer's next order under one reference).
+ * reference and amount typed the same SAST day as the upload. Never wider: an
+ * entry typed on another day is another payment (Junid, 7 Nov 2026 — a repeat
+ * customer's next order under one reference).
  */
 function proofCoversFloat(float, proof) {
   if (isPaymentTwin(float, proof)) return true;
@@ -380,7 +380,7 @@ function proofCoversFloat(float, proof) {
   const uploaded = proof.manualApproved?.at;
   if (!Number.isInteger(typed) || !Number.isInteger(uploaded)) return false;
   if (Number.isInteger(proof.bankTs) && sastDate(proof.bankTs) > sastDate(typed)) return false;
-  return sameSastDay(typed, uploaded) || Math.abs(typed - uploaded) < DUPLICATE_ROLLING_MS;
+  return sameSastDay(typed, uploaded);
 }
 
 /** The proofs that cover this float, as [key, record] pairs, key order. */

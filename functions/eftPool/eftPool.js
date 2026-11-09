@@ -343,7 +343,9 @@ async function checkPaymentFingerprint(key, now, { record = undefined, tail = un
   }
   // ONE PROOF, ONE FLOAT, across two tills at once: a float a proof covers
   // takes the proof's short lock before it spends (lib/eft-manual.cjs).
-  const proofKey = proofLockKeyOf(key, record, Object.entries(tail));
+  // Only a float still waiting: a used one's retry must reach the settle's
+  // own "already" answer, and spends nothing.
+  const proofKey = record.status === "unmatched" ? proofLockKeyOf(key, record, Object.entries(tail)) : null;
   if (proofKey) {
     let lock = null;
     await db.ref(`${MANUAL_SUBMIT_LOCK_PATH}/${proofKey}`).transaction(manualSubmitLockStep(key, now, (d) => { lock = d; }));
