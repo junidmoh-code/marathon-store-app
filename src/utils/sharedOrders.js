@@ -9,6 +9,7 @@
 // Pure: no firebase, no clock, no React.
 import { locationOf, storesOf, sectionOf } from "./networkRegistry";
 import { TV_ORDER_KEY_START, TV_ORDER_KEY_END } from "./tvOrdersRange";
+import { sectionOfRecord } from "./sectionRouting";
 
 // The other Section 1 store, or null. One, because a hook count cannot follow
 // the registry and Section 1 has two stores (the same limit as
@@ -42,12 +43,20 @@ export function withSharedRange(ranges, section) {
   return Number(section) === 1 ? [...ranges, { start: TV_ORDER_KEY_START, end: TV_ORDER_KEY_END }] : ranges;
 }
 
-// The section a shop's in-app TV shows layby pulls for: Pine's and Concrete's
-// own division. null (every pull, as ever) for anyone else.
+// The board an in-app TV is: Pine's and Concrete's own division, else Marathon's
+// (Marathon PE, Trophy, and an account with no shop).
 export function tvSectionForShop(network, shop) {
-  return sectionOf(network, shop) === 1 ? 1 : null;
+  return sectionOf(network, shop) === 1 ? 1 : 2;
 }
 
+// A TV board shows its own division's orders (Junid, 9 Nov 2026). Marathon's
+// board drops only what is known to be Section 1's, so a row with no shop on it
+// (a website hub order, an old record) stays where it has always been.
 export function boardShowsOrder(network, section, order) {
-  return Number(section) === 1 ? sectionOf(network, order?.destShop) === 1 : true;
+  const n = Number(section);
+  // An old record names only its hub: a Hub 3 order with no shop is Pine's.
+  const own = sectionOfRecord(network, order) ?? sectionOf(network, order?.placedAtHub);
+  if (n === 1) return own === 1;
+  if (n === 2) return own !== 1;
+  return true;
 }

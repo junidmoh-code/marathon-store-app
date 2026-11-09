@@ -40,7 +40,7 @@ describe("a Pine or Concrete item the shop holds", () => {
   it("is read from the shop's own subtree, chosen by the registry", () => {
     expect(APP).toContain("const shopShelf = shopShelfFor(sectionNet, effectiveShop);");
     expect(APP).toContain("const shopShelfState = useStockCellsState(shopShelf);");
-    expect(APP).toContain("const clothingCellsOf = (pid) => (shopShelfAnswers(productsById[pid]) ? shopShelfState.cells");
+    expect(APP).toContain("const clothingCellsOf = (pid) => (shopShelfAnswers(productsById[pid]) ? shopHeld.cells");
     expect(WORLD).toContain("(shelfAnswers(p) ? hubData[shopShelf].cells : stock[clothingHubOf(p)])");
   });
   it("answers the size chips through the one resolver", () => {
@@ -51,7 +51,9 @@ describe("a Pine or Concrete item the shop holds", () => {
   it("is checked at submit on the shelf it was offered from", () => {
     const fn = between("const stockGuardedLine = (item) => {", "\n  };");
     expect(fn).toContain("if (shopShelfAnswers(item.product)) return true;");
-    expect(APP).toContain("...(shopShelfAnswers(item.product) ? { hub: shopShelf } : {}),");
+    expect(APP).toContain("hub: placedHubFor(item), productId: item.product.id");
+    expect(APP).not.toContain("? { hub: shopShelf } : {}");
+    expect(between("const placedHubFor = (item) =>", "computeHubForItem(item))));")).toContain("shopHeldBooking.get(item) ||");
   });
   it("gets no alternatives sheet", () => {
     const fn = between("const computeAlternatives = (product, size) => {", "if (!ordersSettled) return null;");
@@ -60,7 +62,15 @@ describe("a Pine or Concrete item the shop holds", () => {
   });
   it("says Unavailable from the shelf, once the shelf has answered", () => {
     const fn = between("const unavailableIds = useMemo(() => {", "deadForOrder]);");
-    expect(fn).toContain("return { sizes, known: hubReadState(shopShelfState).ready, sizeOut: (sz) => hubQty(p.id, sz) <= 0 };");
+    expect(fn).toContain("return { sizes, known: hubReadState(shopHeld).ready, sizeOut: (sz) => hubQty(p.id, sz) <= 0 };");
+  });
+});
+
+describe("each TV board reads its own division", () => {
+  it("TvWithAutoCollect filters every board, kiosk and in-app, through boardShowsOrder", () => {
+    expect(between("function TvWithAutoCollect(", "const orderKey =")).toContain("boardShowsOrder(boardNetwork, section, o)");
+    expect(APP).toContain('<TvWithAutoCollect orders={orders} section={2}');
+    expect(APP).toContain("section={tvSectionForShop(orderNetwork, myShop)}");
   });
 });
 

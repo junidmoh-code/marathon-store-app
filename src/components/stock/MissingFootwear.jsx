@@ -51,7 +51,7 @@ import { footwearSolveReason, footwearRequestReason, footwearConfirmReason, foot
 import { computeMissingFootwear, footwearSolvePlan, footwearPairPlan, footwearPickPlan, sizeKeyOf, decodedCellKeyOf } from "./missingFootwearCore";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
-import { DIVISION_HUB, SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed } from "./concreteDivision";
+import { DIVISION_HUB, SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal } from "./concreteDivision";
 import { trustStamp } from "./stockTrust";
 
 // The scan is the only requester (Junid, 1 Nov 2026): the typed-quantity
@@ -260,11 +260,34 @@ export default function MissingFootwear({ products = [] }) {
     return picked.length ? picked : REQUESTABLE_HUBS.slice(0, 1);
   };
   const hubFor = (card) => solveHubsOf(card)[0];
+  const openAtHub = (requests, hub, pid) => (requests || []).some((r) => r && r.status === "open" && !r.shadow && r.requestingLocation === hub && r.productId === pid);
+  // Hub 1 and Hub 2 never share a sneaker, across separate Solves too: the live
+  // cells and target rows of the OTHER hub, read when the Solve is tapped.
+  const seatRefusal = async (pid, hubs, requests) => {
+    for (const h of hubs) {
+      const other = otherMarathonHub(h);
+      if (!other) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const [cells, rows] = await Promise.all([get(ref(database, `stock/${other}/${pid}`)), get(ref(database, `stock_targets/${other}/${pid}`))]);
+      if (marathonHubSeated({ cells: cells.val(), rows: rows.val(), openRequest: openAtHub(requests, other, pid) })) return marathonSolveRefusal(h);
+    }
+    return null;
+  };
   const togglePick = (card, hub) => {
     const cur = solveHubsOf(card);
     const next = cur.includes(hub) ? cur.filter((h) => h !== hub) : [...cur, hub];
     if (next.length && !sneakerSolvePairAllowed(next)) {
       setPairRefused((d) => ({ ...d, [card.pid]: "Hub 1 and Hub 2 cannot be solved together." }));
+      return;
+    }
+    const seatedOther = !cur.includes(hub) && otherMarathonHub(hub) && marathonHubSeated({
+      // Only units, here: this screen has no target rows, so a zero cell (which
+      // may be switched off) is left for Confirm, which reads them.
+      cells: Object.fromEntries(Object.entries(allStock?.[otherMarathonHub(hub)]?.[card.pid] || {}).filter(([, c]) => Number(c?.qty) > 0)),
+      openRequest: openAtHub(allRequests, otherMarathonHub(hub), card.pid),
+    });
+    if (seatedOther) {
+      setPairRefused((d) => ({ ...d, [card.pid]: marathonSolveRefusal(hub) }));
       return;
     }
     setPairRefused((d) => ({ ...d, [card.pid]: null }));
@@ -338,6 +361,12 @@ export default function MissingFootwear({ products = [] }) {
       // not raised twice; the plan is recomputed against it rather than trusted.
       const liveRequests = Object.values((await readPathOnce("refill_requests",
         async () => (await get(ref(database, "refill_requests"))).val())) || {});
+      const refused = await seatRefusal(card.pid, [hub], liveRequests);
+      if (refused) {
+        setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: refused } }));
+        setSolveBusy(null);
+        return;
+      }
       const liveOpen = liveRequests
         .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === card.pid)
         .map((r) => r.size);
@@ -405,6 +434,12 @@ export default function MissingFootwear({ products = [] }) {
     try {
       const liveRequests = Object.values((await readPathOnce("refill_requests",
         async () => (await get(ref(database, "refill_requests"))).val())) || {});
+      const refused = await seatRefusal(card.pid, hubs, liveRequests);
+      if (refused) {
+        setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: refused } }));
+        setSolveBusy(null);
+        return;
+      }
       const plan = planOf(card, hubs, liveRequests);
       if (!hubs.some((h) => (plan[h] || []).length)) {
         setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Already queued, or Central has none free — nothing new to raise.` } }));

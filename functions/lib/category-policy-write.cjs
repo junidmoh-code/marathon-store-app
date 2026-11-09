@@ -61,11 +61,11 @@ const {
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
 const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
   FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
-const { encodeSizeKey, resolveTarget, policyCategoryKey } = require("./refill-engine.cjs");
+const { encodeSizeKey, resolveTarget, policyCategoryKey, maskUntrustedStock } = require("./refill-engine.cjs");
 const { loadNetwork } = require("./network-load.cjs");
 const { CENTRAL_FED_KEY, CENTRAL_FED_MAX, centralFedPerSize } = require("./central-fed.cjs");
 const CENTRAL_FED_PATH = `config/refillEngine/${CENTRAL_FED_KEY}`;
-const { CONCRETE_DIVISION_KEY, concreteDivisionPolicy } = require("./concrete-division.cjs");
+const { CONCRETE_DIVISION_KEY, concreteDivisionPolicy, divisionContext, divisionKeepCounts, DIVISION_LOCATIONS, SEATS_PATH } = require("./concrete-division.cjs");
 const CONCRETE_DIVISION_PATH = `config/refillEngine/${CONCRETE_DIVISION_KEY}`;
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
@@ -927,7 +927,22 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
       footwearDrift: gk === FOOTWEAR_GROUP_KEY ? footwearDrift : [],
     });
   }
-  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift };
+  // The Concrete division's keeps (Hub 3, Pine, Concrete): counted through the
+  // engine's own target questions, on the same trust-masked stock it reads.
+  // Keyed reads of those three locations only, added to what is already held.
+  let divisionKeeps = null;
+  if (concreteDivisionPolicy(config)) {
+    const seats = {};
+    for (const loc of DIVISION_LOCATIONS) {
+      if (!stock[loc]) stock[loc] = await readMapPaged(db, `stock/${loc}`);
+      seats[loc] = await readMapPaged(db, `${SEATS_PATH}/${loc}`);
+    }
+    if (!openIndex.hub3) openIndex.hub3 = await readMapPaged(db, "refill_engine/open/hub3");
+    const { stock: stockView } = maskUntrustedStock(stock, network);
+    const division = divisionContext({ config, rawStock: stock, seats, openIndex, heldLines: null, refillRequests: null });
+    divisionKeeps = divisionKeepCounts({ division, stockView, products });
+  }
+  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift, divisionKeeps };
 }
 
 // The audit trail, newest first, bounded. `.indexOn: ["at"]` is part of the
@@ -979,7 +994,8 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // …and the registry-routed destinations: a location going live must not be
     // served the list from before it did.
     const key = canonical({ policy: cfg.categoryPolicy ?? null, groups: cfg.policyGroups ?? null,
-      cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null, routed: policyRouting(cfg, network).added });
+      cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null, routed: policyRouting(cfg, network).added,
+      division: cfg[CONCRETE_DIVISION_KEY] ?? null });
     const fresh = !!censusCache && censusCache.key === key && (nowMs - censusCache.at) < CENSUS_TTL_MS;
     const census = fresh && d.refresh !== true
       ? censusCache.payload

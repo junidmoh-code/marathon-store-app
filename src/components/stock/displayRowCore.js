@@ -66,12 +66,20 @@
 // testable claim rather than a promise in a comment.
 
 import { stockSizeKey, decodeSizeKey } from "../../utils/sizeKey";
+import { GATED_SNEAKER_HUBS, gatedSneakerHubs } from "./availabilityCore";
 
 export const DISPLAY_ROWS_ROOT = "settings/displayRows";
 /** Where the sale-close function parks its idempotency leases. */
 export const DISPLAY_ROWS_META_ROOT = "settings/displayRows_meta";
 
 /** Every way a row can end. `replaced` is the ordinary one — a new pair went out. */
+// The hubs whose Display Refill send opens a row (Junid, 9 Nov 2026, his 24 Sep
+// spec): every hub in service, which is Hub 1, Hub 2 and Hub 3 today. Hub 1 and
+// Hub 2 are named so a registry read cannot take Marathon's sends off the ledger.
+export function displayRowHubs(network) {
+  return [...new Set([...GATED_SNEAKER_HUBS, ...gatedSneakerHubs(network)])];
+}
+
 export const CLOSE_REASONS = ["replaced", "sold", "returned", "corrected", "cancelled"];
 
 export const CLOSE_REASON_TEXT = {

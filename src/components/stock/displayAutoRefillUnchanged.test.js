@@ -56,11 +56,14 @@ describe("the automatic display refill, byte for byte", () => {
     expect(sha(TIMING)).toBe("7b55ebceac1f19b947a6ade7dbd9669cd787573c8cf186f191da274ac50e5361");
   });
 
-  it("SEND — the refill resolution (setDisplayRefillStatus) is exactly main@95a5284b's", () => {
+  // Re-derived for Junid's 9 Nov 2026 instruction: a send at any in-service hub
+  // registers the display. The TRIGGER and TIMING pins above, the 15-minute
+  // auto-raise, are untouched.
+  it("SEND — the refill resolution (setDisplayRefillStatus), with Junid's 9 Nov change", () => {
     const i = APP.indexOf("  const setDisplayRefillStatus = async");
     const S = APP.slice(i, APP.indexOf("  const undoDisplayRefill = async", i));
     expect(i).toBeGreaterThan(0);
-    expect(sha(S)).toBe("31fe08f2d7cee10310efc142fd4e1d7a31f6c5509d66943e9a646348789367ad");
+    expect(sha(S)).toBe("204bf1168c4a7ac4a6e4c0bc3572f6f10ef05744e69686cf61ad9b3085b61c24");
   });
 
   it("CHECKOUT — the partner order's creation literal is exactly main@95a5284b's", () => {

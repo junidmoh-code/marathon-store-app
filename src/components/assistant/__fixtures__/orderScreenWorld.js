@@ -20,7 +20,7 @@ import { setCurrentNetworkFromRaw } from "../../../utils/networkStore";
 import { shopUniverse } from "../../../utils/stores";
 import { decodedCellKey } from "../../../utils/sizeKey";
 import { usesSection2Hubs, servingHubFor, placementHub } from "../../../utils/sectionRouting";
-import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor, shopShelfFor, readsShopShelf } from "../../../utils/sectionSneakerHubs";
+import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor, shopShelfFor, readsShopShelf, shopHeldView, shopHeldBookings } from "../../../utils/sectionSneakerHubs";
 import {
   gatedSneakerHub, resolveSneakerSourcing, allocateSneakerCart, availableUnits, cellAvailability, GATED_SNEAKER_HUBS,
 } from "../../stock/availabilityCore";
@@ -53,6 +53,12 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
     ...Object.fromEntries(sectionHubIds.map((h) => [h, hubState(h)])),
     ...(shopShelf ? { [shopShelf]: hubState(shopShelf) } : {}),
   };
+  // App.jsx shopHeld: the shelf and the shop's hubs, one view.
+  const asState = (h) => ({ cells: h.cells, settled: h.ready, error: false });
+  if (shopShelf) {
+    const held = shopHeldView(asState(hubData[shopShelf]), sectionHubIds.map((h) => asState(hubData[h])));
+    hubData[shopShelf] = { cells: held.cells, promised: {}, ready: held.settled && !held.error };
+  }
   const sneakerHubsOfShop = onSection2Hubs ? GATED_SNEAKER_HUBS : sectionHubIds;
   const gateReady = (hub) => !!hub && hubData[hub]?.ready === true;
 
@@ -132,7 +138,12 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
   };
 
   // Where a cart line is placed (placedHubFor, sneaker branch).
-  const placedHub = (line) => sneakerPlacementHub(network, shop, line.product, allocation.hubOf.get(line),
+  const booking = shopHeldBookings(cart, {
+    shelf: shopShelf, shelfCells: stock[shopShelf] || {},
+    hubs: sectionHubIds.map((id) => ({ id, cells: stock[id] || {} })),
+    isShopHeld: (l) => shelfAnswers(l.product),
+  });
+  const placedHub = (line) => booking.get(line) || sneakerPlacementHub(network, shop, line.product, allocation.hubOf.get(line),
     () => (allocation.hubOf.get(line) || computeHub(line.product)));
 
   return {
