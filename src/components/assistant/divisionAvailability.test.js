@@ -12,7 +12,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { __resetNetworkForTests } from "../../utils/networkStore";
 import { orderScreenWorld } from "./__fixtures__/orderScreenWorld";
-import { stockedAtHubs, productUnavailable, unavailableProductIds, hubReadState, unavailableHint } from "./divisionAvailability";
+import { stockedAtHubs, heldProductKey, productUnavailable, unavailableProductIds, hubReadState, unavailableHint } from "./divisionAvailability";
 
 const shoe = (id, hubs, extra = {}) => ({
   id, name: `Shoe ${id}`, category: "Footwear", productType: "sneaker", categoryKey: "sneakers",
@@ -93,6 +93,20 @@ describe.each(["concrete", "marathon-pine"])("a Concrete-division assistant (%s)
     expect(w.sneakerOut(byId("c-full"), "7")).toBe(true);
     expect(w.sneakerOut(byId("c-full"), "6")).toBe(false);
     expect(w.placedHub(line)).toBe("hub3");
+  });
+
+  it("the last pair in this device's cart does not make the card say Unavailable: it is still at Hub 3", () => {
+    const line = { product: byId("c-display"), size: "7" };
+    const w = world(shop, { cart: [line] });
+    expect(w.sneakerOut(byId("c-display"), "7")).toBe(true);        // the chip: no more can be added
+    expect([...w.unavailable(false)]).toEqual(["c-none"]);          // the card: the hub still holds it
+  });
+
+  it("a shoe tagged for another hub stays listed after its last pair at Hub 3 sells, and reads Unavailable", () => {
+    const stock = { ...STOCK, hub3: { ...STOCK.hub3, "c-counted": q({ 6: 0, 7: 0, 8: 0 }) } };
+    const w = orderScreenWorld({ shop, products: PRODUCTS, stock });
+    expect(w.catalogue(false).map((p) => p.id)).toContain("c-counted");
+    expect([...w.unavailable(false)].sort()).toEqual(["c-counted", "c-none"]);
   });
 
   it("a product with every size at zero is unavailable; one with a size left is not", () => {
@@ -187,12 +201,12 @@ describe.each(["marathon-pe", "trophy"])("a Marathon-division assistant (%s)", (
 
 describe("the questions asked of the cells", () => {
   const ready = (cells) => ({ cells, ready: true });
-  it("stockedAtHubs: a unit in any size at a hub that has answered", () => {
-    const has = stockedAtHubs([ready({ a: q({ 6: 0, 7: 1 }), b: q({ 6: 0 }), c: { 7: 2 }, d: q({ 6: -3 }) })]);
+  it("stockedAtHubs: a cell at a hub that has answered, even at zero — a sold-out shoe stays listed", () => {
+    const has = stockedAtHubs([ready({ a: q({ 6: 0, 7: 1 }), b: q({ 6: 0 }), c: { 7: 2 }, e: {} })]);
     expect(has({ id: "a" })).toBe(true);
-    expect(has({ id: "b" })).toBe(false);
+    expect(has({ id: "b" })).toBe(true);
     expect(has({ id: "c" })).toBe(true);          // a bare number cell
-    expect(has({ id: "d" })).toBe(false);         // a negative is not stock
+    expect(has({ id: "e" })).toBe(false);         // no cell at all
     expect(has({ id: "zz" })).toBe(false);
     expect(has(null)).toBe(false);
   });
@@ -203,6 +217,11 @@ describe("the questions asked of the cells", () => {
     expect(stockedAtHubs()({ id: "a" })).toBe(false);
     // RTDB array holes inside a product's sizes
     expect(stockedAtHubs([ready({ a: [null, { qty: 0 }, { qty: 2 }], b: null })])({ id: "a" })).toBe(true);
+  });
+  it("heldProductKey is the same string when only a quantity changes", () => {
+    expect(heldProductKey([ready({ a: q({ 6: 1 }), b: q({ 7: 2 }) })])).toBe(heldProductKey([ready({ b: q({ 7: 0 }), a: q({ 6: 9 }) })]));
+    expect(heldProductKey([ready({ a: q({ 6: 1 }) })])).not.toBe(heldProductKey([ready({ a: q({ 6: 1 }), b: q({ 7: 2 }) })]));
+    expect(heldProductKey([])).toBe("");
   });
   it("hubReadState: ready only when settled and not errored", () => {
     expect(hubReadState({ cells: { a: 1 }, settled: true, error: null })).toEqual({ cells: { a: 1 }, ready: true });

@@ -8,7 +8,7 @@
 // of the wall that serve it, and nothing else). This file holds the
 // questions the screen asks of the cells it has already read:
 //
-//   • stockedAtHubs      does one of this shop's hubs hold a unit of a product?
+//   • heldProductKey     which products have a cell at this shop's hubs?
 //   • productUnavailable is every size of a product out, for this shop?
 //   • unavailableHint    what the size sheet says when it is
 //
@@ -26,32 +26,34 @@ export function hubReadState(state) {
 }
 
 /**
- * A predicate over products: true when one of the given hubs — each
- * `{ cells, ready }`, the screen's read state for one hub subtree — has been
- * READ and books at least one unit of the product in any size.
+ * The ids of every product with a cell at one of the given hubs — each
+ * `{ cells, ready }` — as one string, so the screen can tell "the list changed"
+ * from "a quantity changed". A hub that has not answered says nothing.
  *
- * A hub that has not answered says nothing: it never makes a product stocked.
- * Booked units, not available ones: this decides whether a product belongs in
- * the shop's catalogue at all, and a pair promised to an order is still the
- * shop's stock.
+ * A CELL, NOT A UNIT. This decides whether a product belongs in the shop's
+ * catalogue. Asking for a unit would drop a shoe from the grid the moment its
+ * last pair sold; with a cell it stays, and reads Unavailable.
  */
-export function stockedAtHubs(hubs) {
-  const stocked = new Set();
+export function heldProductKey(hubs) {
+  const held = new Set();
   for (const h of hubs || []) {
     if (!h || h.ready !== true || !h.cells) continue;
     for (const pid of Object.keys(h.cells)) {
-      if (stocked.has(pid)) continue;
       const sizes = h.cells[pid];
-      if (!sizes || typeof sizes !== "object") continue;
-      for (const k of Object.keys(sizes)) {
-        const cell = sizes[k];
-        const qty = cell && typeof cell === "object" ? cell.qty : cell;
-        if (Number(qty) > 0) { stocked.add(pid); break; }
-      }
+      if (sizes && typeof sizes === "object" && Object.values(sizes).some((c) => c !== null && c !== undefined)) held.add(pid);
     }
   }
-  return (product) => !!product && stocked.has(product.id);
+  return [...held].sort().join("\n");
 }
+
+/** A predicate over products, from heldProductKey's answer. */
+export function heldPredicate(key) {
+  const held = new Set(key ? key.split("\n") : []);
+  return (product) => !!product && held.has(product.id);
+}
+
+/** One step: does one of these hubs have a cell for the product? */
+export const stockedAtHubs = (hubs) => heldPredicate(heldProductKey(hubs));
 
 /**
  * The product ids, out of `products`, that are unavailable to this shop.

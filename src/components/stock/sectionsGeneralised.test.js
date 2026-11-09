@@ -134,6 +134,11 @@ describe("sneaker sourcing — 'the other hub' is another hub IN THE SAME SECTIO
     expect(gatedSneakerHub({ ...shoe, productType: "clothing" }, "hub2", SEED_REGISTRY)).toBeNull();
   });
 
+  it("Marathon's hubs still ask live: Auto-refill solved takes them out of the gate, as it always did", () => {
+    const solved = normalizeNetwork({ locations: { hub1: { solve: true, autoRefill: "solved" } } });
+    expect(gatedSneakerHubs(solved)).toEqual(["hub3", "hub2"]);
+  });
+
   it("the display-request hubs stay the fully LIVE ones: Hub 3 going in service opens no request path", () => {
     expect(displayRequestHubs(SEED_REGISTRY)).toEqual(["hub1", "hub2"]);
     expect(pickDisplaySourceHub({ product: { ...shoe, hubs: ["hub3"] }, hubData: { hub3: hub(5) }, store: "concrete", network: SEED_REGISTRY })).toEqual({ hub: null });

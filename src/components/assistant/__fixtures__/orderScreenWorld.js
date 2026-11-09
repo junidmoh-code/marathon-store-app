@@ -22,7 +22,7 @@ import { decodedCellKey } from "../../../utils/sizeKey";
 import { usesSection2Hubs, servingHubFor, placementHub } from "../../../utils/sectionRouting";
 import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor } from "../../../utils/sectionSneakerHubs";
 import {
-  gatedSneakerHub, resolveSneakerSourcing, allocateSneakerCart, availableUnits, GATED_SNEAKER_HUBS,
+  gatedSneakerHub, resolveSneakerSourcing, allocateSneakerCart, availableUnits, cellAvailability, GATED_SNEAKER_HUBS,
 } from "../../stock/availabilityCore";
 import { alternativesForSize, MAX_ALTERNATIVES_SHOWN } from "../../stock/alternativesCore";
 import { assistantCatalogue, productHubsOf } from "../assistantCatalogue";
@@ -95,11 +95,11 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
         const lane = sectionHubIds.includes(clothingHubOf(p)) ? hubData[clothingHubOf(p)] : null;
         return {
           sizes, known: !!lane && lane.ready === true,
-          sizeOut: (sz) => availableUnits(lane.cells?.[p.id]?.[decodedCellKey(sz)]?.qty) <= 0,
+          sizeOut: (sz) => hubQty(p, sz) <= 0,
         };
       }
       const hub = sneakerHubOf(p);
-      return { sizes, known: !!hub && gateReady(hub), sizeOut: (sz) => sneakerOut(p, sz) };
+      return { sizes, known: !!hub && gateReady(hub), sizeOut: (sz) => cellAvailability({ cells: hubData[hub].cells, promised: hubData[hub].promised, productId: p.id, size: sz }) <= 0 };
     });
   };
 

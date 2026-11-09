@@ -67,7 +67,7 @@
 import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
 import { serverNowMs } from "../../utils/serverTime";
 import { isFootwearProduct } from "./missingFootwearCore";
-import { wallAllows } from "../../utils/networkRegistry";
+import { wallAllows, sectionOf, isLive, solveOn, autoRefillOn } from "../../utils/networkRegistry";
 import { net, hubIds } from "./sectionRouting";
 export { isFootwearProduct };
 
@@ -167,6 +167,7 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
 // carries perfumes, bags and one-size accessories (no productType), whose
 // availability promises this gate does not model — they keep yesterday's
 // behaviour. (Adversarial review, PR #446.)
+// This constant is Marathon's side of that list only.
 export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 
 // ── THE GATED HUBS, FROM THE NETWORK REGISTRY ────────────────────────────────
@@ -192,8 +193,12 @@ export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 //
 // The constant above stays for the Marathon callers that import it: it is the
 // gated hubs on Marathon PE's and Trophy's side of the wall (pinned by test).
+//
+// MARATHON'S HUBS STILL ASK `live`, so their gate answers exactly as it did
+// under every switch position (Junid: their screen unchanged).
 export function gatedSneakerHubs(network) {
-  return hubIds(net(network), { solveOnly: true, autoRefillOnly: true });
+  const N = net(network);
+  return hubIds(N).filter((h) => (sectionOf(N, h) === 2 ? isLive(N, h) : solveOn(N, h) && autoRefillOn(N, h)));
 }
 // THE FULLY LIVE HUBS — the old answer, kept for one reader: which hubs may a
 // "Not on the wall" display request be raised against. Pine and Concrete walls

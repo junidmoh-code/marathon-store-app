@@ -12,7 +12,7 @@ import { ProductActionsButton, DeactivatedChip } from "./components/stock/Produc
 import { showsDeactivated } from "./config/assistantVisibility";
 import { useAssistantVisibility } from "./config/useAssistantVisibility";
 import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
-import { stockedAtHubs, hubReadState, unavailableProductIds, unavailableHint } from "./components/assistant/divisionAvailability";
+import { heldProductKey, heldPredicate, hubReadState, unavailableProductIds, unavailableHint } from "./components/assistant/divisionAvailability";
 import { reactiveRefillHubs, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
@@ -9928,9 +9928,8 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Marathon PE / Trophy use the Hub 1 / Hub 2 pair above and get an EMPTY
   // list here, so every hook below is handed null and reads nothing. Pine and
   // Concrete get the gated (live) hubs of their own section that serve them —
-  // Hub 3; plus the Concrete Stockroom for Concrete only
-  // (utils/sectionSneakerHubs.js). While those hubs are not live the list is
-  // empty for them too: no ✕, no extra stream, yesterday's behaviour.
+  // Hub 3 (utils/sectionSneakerHubs.js). A hub switched out of service on the
+  // Network card leaves the list empty: no ✕, no extra stream.
   // One hook per slot, because a hook count cannot follow the registry.
   // Ready orders only — the display-pair pull lane is Hub 1's (see above).
   const sectionHubIds = useMemo(() => sectionSneakerHubs(sectionNet, effectiveShop), [sectionNet, effectiveShop]);
@@ -9949,15 +9948,21 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Which products this shop's own hubs hold a unit of — read off the cells
   // already streamed above, no extra read. undefined for Marathon PE / Trophy
   // (no section hubs), which is "no such rule" to the catalogue.
-  const sectionStockedHere = useMemo(
-    () => (sectionHubA ? stockedAtHubs([sectionCellsA, sectionCellsB].map(hubReadState)) : undefined),
+  // Keyed on the id list, so a sale at Hub 3 does not rebuild the catalogue
+  // and its search index — only a product gaining its first cell there does.
+  const sectionHeldKey = useMemo(
+    () => (sectionHubA ? heldProductKey([sectionCellsA, sectionCellsB].map(hubReadState)) : null),
     [sectionHubA, sectionCellsA, sectionCellsB]
+  );
+  const sectionStockedHere = useMemo(
+    () => (sectionHeldKey === null ? undefined : heldPredicate(sectionHeldKey)),
+    [sectionHeldKey]
   );
   // ── DISPLAY-PAIR MARKER DATA (2026-08-26) ─────────────────────────────────
   // The live display slots — one ~60 KB listener (the marker cannot be
   // derived from stock cells; cost stated in useDisplaySlots). Skipped on
   // Pine, like the hub1 stock subscription above.
-  const displaySlotsState = useDisplaySlotsState(onSection2Hubs || sectionHubIds.length > 0);
+  const displaySlotsState = useDisplaySlotsState(onSection2Hubs);
   const displaySlots = displaySlotsState.value;
   // THE DISPLAY REGISTER USED TO JOIN HERE AS A SECOND SOURCE AND IT WAS THE
   // BUG. That node is write-only-upward history keyed pid__sizeKey (its one
@@ -10022,14 +10027,15 @@ function AssistantView({ products, onExit, orders = [] }) {
   // a real size (live census 2026-09-08). They are separate names now so that
   // widening one can never quietly widen the other.
   //
-  // ── ONE MAP PER HUB THIS SCREEN CAN ANSWER FOR ────────────────────────────
-  // The glyph asks the SERVING hub, so a map exists for each hub a size on this
-  // screen can resolve to: Hub 1 and Hub 2, plus this shop's own section hubs
-  // (Hub 3 for Pine and Concrete since 9 Nov 2026 — empty for Marathon PE and
-  // Trophy, whose maps are exactly the two they always had).
+  // ── ONE MAP PER MARATHON HUB, AND HUB 3 IS NOT ONE OF THEM ────────────────
+  // The glyph asks the SERVING hub. A Pine or Concrete device has no display
+  // slots feed (displaySlotsState above): the node is read whole, carries every
+  // division's walls, and arrives with a repair effect that writes it. So since
+  // Hub 3 joined the availability gate (9 Nov 2026) its sizes are gated but
+  // carry no glyph. Marking them needs a per-store read first.
   const displayUnitsByHub = useMemo(() => Object.fromEntries(
-    [...GATED_SNEAKER_HUBS, ...sectionHubIds].map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])
-  ), [displaySlotsLive, sectionHubIds]);
+    GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])
+  ), [displaySlotsLive]);
   // THE PULL LANE'S MAP. Hub 1, and it stays Hub 1 — the checkout pre-flight is
   // its only reader. If the pull lane is ever extended to another hub, that
   // change has to give pendingDisplayPullsByCell a real hub filter FIRST
@@ -10564,7 +10570,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   //
   // Still appearance-only. It nets nothing into availability and the caller
   // suppresses it on a ✕ tile, so an unresolved hub simply means no glyph —
-  // which is also what a shoe at a hub out of service gets, because gatedSneakerHub answers
+  // which is also what a Hub 3 shoe gets, because this screen maps slots
   // for hub1 and hub2 only and the glyph may not outrun the availability lane.
   const sneakerDisplayInfo = (p, s) => {
     if (!s) return null;
@@ -10577,10 +10583,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // division, the product card itself reads "Unavailable" — the assistant
   // should not have to open a shoe to learn Hub 3 has none of it.
   //
-  // THE SAME ANSWER AS THE SIZE CHIPS, asked once per size: sneakerOut for a
-  // shoe, the hub cell's own zero-test for clothing (availableUnits, the
-  // arithmetic hubQty runs). So a card and the sizes inside it cannot disagree,
-  // and nothing is "unavailable" before the hub has answered (`known`).
+  // THE HUB'S ANSWER, NOT THE CART'S: the size chips' own arithmetic (booked
+  // minus promised, per size; hubQty for clothing) without this device's cart.
+  // A pair in the cart is still at Hub 3, and "no size of this is at Hub 3"
+  // would be false. Nothing is "unavailable" before the hub answers (`known`).
   //
   // PINE AND CONCRETE ONLY. Marathon PE and Trophy get the empty set and their
   // cards render exactly as they did: Junid asked for their screen unchanged.
@@ -10598,15 +10604,15 @@ function AssistantView({ products, onExit, orders = [] }) {
         const lane = sectionSneaker[clothingHubOf(p.id)];
         return {
           sizes, known: !!lane && hubReadState(lane.state).ready,
-          sizeOut: (sz) => availableUnits(lane.state.cells?.[p.id]?.[decodedCellKey(sz)]?.qty) <= 0,
+          sizeOut: (sz) => hubQty(p.id, sz) <= 0,
         };
       }
       const hub = sneakerHubOf(p);
-      return { sizes, known: !!hub && sneakerGateReady(hub), sizeOut: (sz) => sneakerOut(p, sz) };
+      return { sizes, known: !!hub && sneakerGateReady(hub), sizeOut: (sz) => sneakerAvail(p.id, sz, hub) <= 0 };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, onSection2Hubs, sectionHubIds, sectionCellsA, sectionCellsB, sectionPromisedA, sectionPromisedB,
-      cartAllocation, sectionNet, effectiveShop, deadForOrder]);
+      servingHubCells, extraHubCells, sectionNet, effectiveShop, deadForOrder]);
   // The alternatives sheet is footwear's (computeAlternatives), so only a shoe
   // is promised "similar shoes"; clothing is told where it is not.
   const unavailableHintFor = (p) => unavailableHint(sectionHubIds.map((h) => HUB_LABELS[h] || h),

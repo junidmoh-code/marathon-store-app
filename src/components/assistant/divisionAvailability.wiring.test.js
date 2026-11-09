@@ -41,8 +41,8 @@ describe("the catalogue", () => {
     const cat = between("const base = useMemo(", "sectionStockedHere]);");
     expect(cat).toContain("servedHubs: onSection2Hubs ? null : backStockHubsOf(sectionNet, effectiveShop),");
     expect(cat).toContain("stockedHere: sectionStockedHere,");
-    const stocked = between("const sectionStockedHere = useMemo(", ");\n");
-    expect(stocked).toContain("sectionHubA ? stockedAtHubs([sectionCellsA, sectionCellsB].map(hubReadState)) : undefined");
+    expect(APP).toContain("sectionHubA ? heldProductKey([sectionCellsA, sectionCellsB].map(hubReadState)) : null");
+    expect(APP).toContain("sectionHeldKey === null ? undefined : heldPredicate(sectionHeldKey)");
     expect(WORLD).toContain("division.stockedAtHubs(sectionHubIds.map((h) => hubData[h]))");
   });
 });
@@ -79,10 +79,10 @@ describe("the card-level Unavailable state", () => {
     expect(memo).toContain("if (onSection2Hubs || !sectionHubIds.length) return NO_UNAVAILABLE;");
     expect(APP).toContain("const NO_UNAVAILABLE = new Set();");
   });
-  it("asks the size chips' own question, and only once the hub has answered", () => {
-    expect(memo).toContain("return { sizes, known: !!hub && sneakerGateReady(hub), sizeOut: (sz) => sneakerOut(p, sz) };");
+  it("asks the hub's question without the cart, and only once the hub has answered", () => {
+    expect(memo).toContain("return { sizes, known: !!hub && sneakerGateReady(hub), sizeOut: (sz) => sneakerAvail(p.id, sz, hub) <= 0 };");
     expect(memo).toContain("sizes, known: !!lane && hubReadState(lane.state).ready,");
-    expect(memo).toContain("sizeOut: (sz) => availableUnits(lane.state.cells?.[p.id]?.[decodedCellKey(sz)]?.qty) <= 0,");
+    expect(memo).toContain("sizeOut: (sz) => hubQty(p.id, sz) <= 0,");
     expect(memo).toContain("if (deadForOrder(p)) return null;");
   });
   it("is drawn on the phone card, the desktop card and both size sheets", () => {
@@ -109,9 +109,9 @@ describe("the alternatives sheet", () => {
 });
 
 describe("parity: features that follow the shop's division", () => {
-  it("the display marker reads this shop's own hubs, and the slots stream only when it has some", () => {
-    expect(APP).toContain("useDisplaySlotsState(onSection2Hubs || sectionHubIds.length > 0)");
-    expect(APP).toContain("[...GATED_SNEAKER_HUBS, ...sectionHubIds].map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])");
+  it("the display slots feed (a whole node, with repair writes) stays off Pine and Concrete devices", () => {
+    expect(APP).toContain("useDisplaySlotsState(onSection2Hubs)");
+    expect(APP).toContain("GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])");
   });
   it("each TV board shows its own division's layby pulls", () => {
     expect(APP).toContain("pullOnTvBoard(p, section)");

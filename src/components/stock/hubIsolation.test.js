@@ -400,7 +400,7 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
   // The maps are derived from that constant now, so the marker can never be
   // wider — or narrower — than the availability lane it hangs off.
   it("…and the maps are derived from the sneaker gate, not from a list beside it", () => {
-    expect(app()).toContain('[...GATED_SNEAKER_HUBS, ...sectionHubIds].map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
+    expect(app()).toContain('GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
     expect(app(), "a hardcoded hub map is back beside the derived one")
       .not.toMatch(/hub[123]: displayUnitsByCell\(displaySlotsLive/);
   });
@@ -410,9 +410,8 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
   // commit that widened the marker said Pine was fixed; it was not. If hub3
   // is ever admitted to the gate this test goes red and the claim can be made.
   // It was admitted on 9 Nov 2026, and this test went red as promised: a Hub 3
-  // size now resolves to hub3, so the marker reads Hub 3's own slots for Pine
-  // and Concrete. With Hub 3 out of service the old answer stands — no hub,
-  // no glyph.
+  // size now resolves to hub3. Pine and Concrete still get no glyph, because
+  // the screen builds no Hub 3 slot map and their devices have no slots feed.
   it("hub3 IS in the gate, so a Pine / Concrete size resolves to hub3 — and to nothing when Hub 3 is out of service", () => {
     expect(GATED_SNEAKER_HUBS).toEqual(["hub1", "hub2"]);
     const pineShoe = { id: "p3", category: "Footwear", productType: "sneaker" };

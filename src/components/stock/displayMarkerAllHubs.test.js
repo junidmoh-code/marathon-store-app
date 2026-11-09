@@ -78,7 +78,7 @@ describe("every hub's walls are readable, and each map holds only its own", () =
   // the ordering screen can key into it, because no size resolves to hub3. The
   // map builder is not the limit; the sneaker gate is.
   // Hub 3 joined the gate on 9 Nov 2026 (Junid: counted, treated like Hub 1 and
-  // Hub 2), so a Pine or Concrete size resolves to hub3 and reads hub3's own map.
+  // Hub 2), so a Pine or Concrete size resolves to hub3.
   it("hub3 slots are readable as data, and a Hub 3 size resolves to hub3", () => {
     expect(mapFor("hub3")[promisedKey("p3", "7")]).toEqual({ units: 1, stores: ["marathon-pine"], unverified: 0 });
     expect(GATED_SNEAKER_HUBS).toEqual(["hub1", "hub2"]);          // Marathon's side, unchanged
@@ -145,7 +145,7 @@ describe("the wiring keeps the two lanes apart", () => {
   // GATED_SNEAKER_HUBS makes the marker exactly as wide as the availability
   // lane it hangs off, in both directions and without anyone remembering.
   it("and there is one map per GATED hub, derived from the gate itself", () => {
-    expect(APP).toContain('[...GATED_SNEAKER_HUBS, ...sectionHubIds].map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
+    expect(APP).toContain('GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
     expect(APP, "a hardcoded per-hub map is back").not.toMatch(/hub[123]: displayUnitsByCell\(displaySlotsLive/);
   });
   // THE FENCE THE CLEANUP SESSION ASKED FOR. Widening the marker must not be
