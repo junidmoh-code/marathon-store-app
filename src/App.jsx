@@ -12,7 +12,7 @@ import { ProductActionsButton, DeactivatedChip } from "./components/stock/Produc
 import { showsDeactivated } from "./config/assistantVisibility";
 import { useAssistantVisibility } from "./config/useAssistantVisibility";
 import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
-import { heldProductKey, heldPredicate, hubReadState, unavailableProductIds, unavailableHint } from "./components/assistant/divisionAvailability";
+import { heldProductKey, heldPredicate, stockedHerePredicate, hubReadState, unavailableProductIds, unavailableHint } from "./components/assistant/divisionAvailability";
 import { reactiveRefillHubs, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
@@ -206,7 +206,7 @@ import { catByKey, isOneSize, legacyFor, needsAssignment, isAssignable } from ".
 import { sizesForCat, sizeRunsOf, runSizes, compareSizes, sizeFamily } from "./utils/sizeRuns";
 import { orderSizesForDisplay } from "./utils/sizeDisplayOrder";
 import { findSubmitShortfall, submitShortfallMessage } from "./components/stock/orderSubmitGuard";
-import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor, extraClothingHub } from "./utils/sectionSneakerHubs";
+import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor, extraClothingHub, shopShelfFor, readsShopShelf } from "./utils/sectionSneakerHubs";
 import { buildNewProduct, stampStyleCodeProvenance } from "./utils/newProductRecord";
 import { saveFailureMessage } from "./utils/saveFailureMessage";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
@@ -9808,6 +9808,14 @@ function AssistantView({ products, onExit, orders = [] }) {
   // empty `__off__` key, as the other optional hub reads in this file are).
   const extraHub = extraClothingHub(sectionNet, effectiveShop, servingHub);
   const extraHubCells = useStockCells(extraHub || "__off__");
+  // ── WHAT PINE AND CONCRETE HOLD THEMSELVES (Junid, 9 Nov 2026) ────────────
+  // A Pine or Concrete assistant reads Hub 3 for sneakers and the shop's OWN
+  // cell for everything else, the same split the till deducts by. null for
+  // Marathon PE / Trophy, so this subscribes to nothing and their screen reads
+  // exactly what it read before. One location's subtree.
+  const shopShelf = shopShelfFor(sectionNet, effectiveShop);
+  const shopShelfState = useStockCellsState(shopShelf);
+  const shopShelfAnswers = (p) => readsShopShelf(sectionNet, effectiveShop, p);
   // ONE DEFINITION OF "AVAILABLE" (2026-09-05). The zero-test below used to be
   // its own `Number(qty) || 0`; it now runs through availabilityCore's
   // availableUnits — the same arithmetic the sneaker lane uses at Hub 1 and
@@ -9838,8 +9846,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // streaming (a third one) falls back to the serving hub's cells — the
   // behaviour before this lookup existed.
   const clothingHubOf = (pid) => clothingHubFor(sectionNet, effectiveShop, productsById[pid], servingHub);
-  const clothingCellsOf = (pid) => (extraHub && clothingHubOf(pid) === extraHub ? extraHubCells : servingHubCells);
+  const clothingCellsOf = (pid) => (shopShelfAnswers(productsById[pid]) ? shopShelfState.cells
+    : extraHub && clothingHubOf(pid) === extraHub ? extraHubCells : servingHubCells);
   const clothingHubLabelOf = (pid) => {
+    if (shopShelfAnswers(productsById[pid])) return HUB_LABELS[shopShelf] || shopShelf;
     const h = extraHub && clothingHubOf(pid) === extraHub ? extraHub : servingHub;
     return HUB_LABELS[h] || h;
   };
@@ -9953,9 +9963,16 @@ function AssistantView({ products, onExit, orders = [] }) {
     () => (sectionHubA ? heldProductKey([sectionCellsA, sectionCellsB].map(hubReadState)) : null),
     [sectionHubA, sectionCellsA, sectionCellsB]
   );
+  // What the shop itself holds lists too, but only what it may answer for: a
+  // shoe's cell on a shop's own shelf says nothing (footwear sells from Hub 3).
+  const shopHeldKey = useMemo(
+    () => (shopShelf ? heldProductKey([hubReadState(shopShelfState)]) : ""),
+    [shopShelf, shopShelfState.cells, shopShelfState.settled, shopShelfState.error]
+  );
   const sectionStockedHere = useMemo(
-    () => (sectionHeldKey === null ? undefined : heldPredicate(sectionHeldKey)),
-    [sectionHeldKey]
+    () => (sectionHeldKey === null ? undefined : stockedHerePredicate(heldPredicate(sectionHeldKey), heldPredicate(shopHeldKey), shopShelfAnswers)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sectionHeldKey, shopHeldKey, sectionNet, effectiveShop]
   );
   // ── DISPLAY-PAIR MARKER DATA (2026-08-26) ─────────────────────────────────
   // The live display slots — one ~60 KB listener (the marker cannot be
@@ -10382,6 +10399,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   const sectionSneaker = {
     ...(sectionHubA ? { [sectionHubA]: { state: sectionCellsA, promised: sectionPromisedA } } : {}),
     ...(sectionHubB ? { [sectionHubB]: { state: sectionCellsB, promised: sectionPromisedB } } : {}),
+    // The shop's own shelf, so the gate can read it by name. No resolver ever
+    // chooses it: alternates come from the gated hubs only.
+    ...(shopShelf ? { [shopShelf]: { state: shopShelfState, promised: {} } } : {}),
   };
   const sneakerCellsOf = (hub) => sectionSneaker[hub]?.state || sneakerCellsState(hub);
   const sneakerPromisedOf = (hub) => sectionSneaker[hub]?.promised || sneakerPromisedMap(hub);
@@ -10462,7 +10482,16 @@ function AssistantView({ products, onExit, orders = [] }) {
   // held. Measured on live stock: 14 cells at cart depth 1, 46 at depth 2.
   // One call now returns both, and the cart goes IN rather than being applied
   // after the fact.
+  // A Pine or Concrete item its own shop holds answers from that shelf, cart
+  // taken off. With no size it says nothing, so the alternatives pool (which
+  // asks size-less "is this a gated sneaker?") never takes in a perfume.
+  const shopShelfLine = (p, s) => {
+    if (!s || !shopShelfAnswers(p)) return null;
+    const inCart = (p.productType || "sneaker") === "clothing" ? clothingInCart(p.id, s) : sneakerInCart(p.id, s);
+    return { hub: shopShelf, available: Math.max(hubQty(p.id, s) - inCart, 0) };
+  };
   const sneakerSourcing = (p, s) => resolveSneakerSourcing({
+    shelf: shopShelfLine(p, s),
     product: p, taggedHub: gatedSneakerHub(p, computeHubForItem({ product: p })),
     size: s, hubData: sneakerHubData(),
     // What the cart has already taken FROM EACH HUB — the allocation above,
@@ -10599,6 +10628,9 @@ function AssistantView({ products, onExit, orders = [] }) {
     return unavailableProductIds(base, (p) => {
       if (deadForOrder(p)) return null;                    // says "Deactivated" itself
       const sizes = sizesOf(p);
+      if (shopShelfAnswers(p)) {
+        return { sizes, known: hubReadState(shopShelfState).ready, sizeOut: (sz) => hubQty(p.id, sz) <= 0 };
+      }
       if ((p.productType || "sneaker") === "clothing") {
         const lane = sectionSneaker[clothingHubOf(p.id)];
         return {
@@ -10611,11 +10643,12 @@ function AssistantView({ products, onExit, orders = [] }) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, onSection2Hubs, sectionHubIds, sectionCellsA, sectionCellsB, sectionPromisedA, sectionPromisedB,
-      servingHubCells, extraHubCells, sectionNet, effectiveShop, deadForOrder]);
+      servingHubCells, extraHubCells, shopShelfState, sectionNet, effectiveShop, deadForOrder]);
   // The alternatives sheet is footwear's (computeAlternatives), so only a shoe
   // is promised "similar shoes"; clothing is told where it is not.
-  const unavailableHintFor = (p) => unavailableHint(sectionHubIds.map((h) => HUB_LABELS[h] || h),
-    { similar: (p?.productType || "sneaker") !== "clothing" });
+  const unavailableHintFor = (p) => unavailableHint(
+    shopShelfAnswers(p) ? [HUB_LABELS[shopShelf] || shopShelf] : sectionHubIds.map((h) => HUB_LABELS[h] || h),
+    { similar: !shopShelfAnswers(p) && (p?.productType || "sneaker") !== "clothing" });
 
   // ── "NOT AVAILABLE — BUT THESE ARE, RIGHT NOW" (2026-09-06) ───────────────
   // The greyed size chip used to be a dead end: a reason, and the sale walks
@@ -11047,6 +11080,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   //     guarded here and on the grid alike, on Hub 3's own cells.
   const stockGuardedLine = (item) => {
     if (item.requestDisplayPartner || item.displayPairRequest === true) return false;
+    if (shopShelfAnswers(item.product)) return true;
     if (item.productType === "clothing") return true;
     return !!gatedSneakerHub(item.product, placedHubFor(item));
   };
@@ -11158,6 +11192,8 @@ function AssistantView({ products, onExit, orders = [] }) {
         const refusal = await findSubmitShortfall({
           lines: cart.filter(isCustomerLine).filter(stockGuardedLine).map((item) => ({
             hub: placedHubFor(item), productId: item.product.id, size: item.size, label: item.product.name,
+            // The cell the screen gated on: a Pine or Concrete shop-held line.
+            ...(shopShelfAnswers(item.product) ? { hub: shopShelf } : {}),
           })),
           readCell: (hub, pid, size) => get(ref(database, stockCellPath(hub, pid, String(size)))).then((snap) => snap.val()),
           // Net the same promises the ✕ nets — footwear at a gated hub only

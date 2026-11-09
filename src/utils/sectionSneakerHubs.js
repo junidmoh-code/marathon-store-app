@@ -26,7 +26,7 @@
 // Pure: no firebase, no clock, no React.
 import { locationOf, sectionOf, backStockFor, backStockHubsOf } from "./networkRegistry";
 import { effectiveCategoryKey } from "./productTaxonomy";
-import { gatedSneakerHubs } from "../components/stock/availabilityCore";
+import { gatedSneakerHubs, isFootwearProduct } from "../components/stock/availabilityCore";
 
 // The order screen subscribes to each hub's cells with one hook apiece, and a
 // hook count cannot follow the registry. Two is every hub Section 1 has. A
@@ -60,6 +60,22 @@ export function sneakerPlacementHub(network, shop, product, allocatedHub, legacy
   if (sectionOf(network, shop) === 2) return legacyCompute();
   if (allocatedHub && sectionSneakerHubs(network, shop).includes(allocatedHub)) return allocatedHub;
   return backStockFor(network, shop, product ? effectiveCategoryKey(product) : null, product ? product.id : undefined);
+}
+
+// ─── WHAT A PINE OR CONCRETE SHOP HOLDS ITSELF (Junid, 9 Nov 2026) ───────────
+// Sneakers sit at Hub 3. Everything else sits on the shop's own shelf, and the
+// till deducts it there (POS saleRouting: footwear to a hub, the rest to the
+// shop), so that shelf is what the order screen reads for it.
+// The shop's own location id; null for Marathon PE / Trophy, an unknown shop, and
+// a shop whose hub is switched out of service on the Network card (the division
+// then has no gate at all, as before the count).
+export function shopShelfFor(network, shop) {
+  const s = locationOf(network, shop);
+  return s && s.type === "store" && sectionSneakerHubs(network, shop).length ? s.id : null;
+}
+
+export function readsShopShelf(network, shop, product) {
+  return !!product && shopShelfFor(network, shop) !== null && !isFootwearProduct(product);
 }
 
 // ─── CLOTHING: WHICH HUB'S CELL GREYS A SIZE OUT ─────────────────────────────

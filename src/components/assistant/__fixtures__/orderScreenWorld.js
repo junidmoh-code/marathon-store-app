@@ -20,7 +20,7 @@ import { setCurrentNetworkFromRaw } from "../../../utils/networkStore";
 import { shopUniverse } from "../../../utils/stores";
 import { decodedCellKey } from "../../../utils/sizeKey";
 import { usesSection2Hubs, servingHubFor, placementHub } from "../../../utils/sectionRouting";
-import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor } from "../../../utils/sectionSneakerHubs";
+import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor, shopShelfFor, readsShopShelf } from "../../../utils/sectionSneakerHubs";
 import {
   gatedSneakerHub, resolveSneakerSourcing, allocateSneakerCart, availableUnits, cellAvailability, GATED_SNEAKER_HUBS,
 } from "../../stock/availabilityCore";
@@ -42,13 +42,16 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
   const onSection2Hubs = usesSection2Hubs(network, shop);
   const sectionHubIds = sectionSneakerHubs(network, shop);
   // The hub subtrees this device SUBSCRIBES to — the only stock it can see.
-  const subscribed = onSection2Hubs ? ["hub1", "hub2"] : sectionHubIds;
+  const shopShelf = shopShelfFor(network, shop);
+  const shelfAnswers = (p) => readsShopShelf(network, shop, p);
+  const subscribed = onSection2Hubs ? ["hub1", "hub2"] : [...sectionHubIds, ...(shopShelf ? [shopShelf] : [])];
   const read = (h) => (hubsRead ? hubsRead.includes(h) : true);
   const hubState = (h) => (subscribed.includes(h) && read(h) ? { cells: stock[h] || {}, promised: {}, ready: true } : NOT_READ);
   const hubData = {
     hub1: hubState("hub1"),
     hub2: hubState("hub2"),
     ...Object.fromEntries(sectionHubIds.map((h) => [h, hubState(h)])),
+    ...(shopShelf ? { [shopShelf]: hubState(shopShelf) } : {}),
   };
   const sneakerHubsOfShop = onSection2Hubs ? GATED_SNEAKER_HUBS : sectionHubIds;
   const gateReady = (hub) => !!hub && hubData[hub]?.ready === true;
@@ -59,7 +62,11 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
     : (productHubsOf(p).find((h) => h === "hub1" || h === "hub2") || "hub1"));
   const taggedHubFor = (p) => gatedSneakerHub(p, computeHub(p));
   const allocation = allocateSneakerCart({ lines: cart, hubData, taggedHubFor });
+  const inCartAt = (p, s) => cart.filter((l) => l.product?.id === p.id && l.size === s).length;
+  const shopShelfLine = (p, s) => (!s || !shelfAnswers(p) ? null
+    : { hub: shopShelf, available: Math.max(hubQty(p, s) - inCartAt(p, s), 0) });
   const sourcing = (p, s) => resolveSneakerSourcing({
+    shelf: shopShelfLine(p, s),
     product: p, taggedHub: taggedHubFor(p), size: s, hubData,
     consumedByHub: allocation.consumed.get(`${p?.id}::${s}`) || null,
   });
@@ -73,11 +80,12 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
   // Clothing: the serving hub's cell, per product.
   const servingHub = servingHubFor(network, shop, CR_HUB_BY_UNIVERSE[universe] || "hub2") || "__off__";
   const clothingHubOf = (p) => clothingHubFor(network, shop, p, servingHub);
-  const hubQty = (p, size) => availableUnits(stock[clothingHubOf(p)]?.[p.id]?.[decodedCellKey(size)]?.qty);
+  const hubQty = (p, size) => availableUnits((shelfAnswers(p) ? hubData[shopShelf].cells : stock[clothingHubOf(p)])?.[p.id]?.[decodedCellKey(size)]?.qty);
 
   // The pool.
   const stockedHere = typeof division.stockedAtHubs === "function" && !onSection2Hubs
-    ? division.stockedAtHubs(sectionHubIds.map((h) => hubData[h])) : undefined;
+    ? division.stockedHerePredicate(division.stockedAtHubs(sectionHubIds.map((h) => hubData[h])),
+      division.stockedAtHubs(shopShelf ? [hubData[shopShelf]] : []), shelfAnswers) : undefined;
   const catalogue = (wantsClothing) => assistantCatalogue({
     products, wantsClothing, storeMode: universe, showDeactivated: false,
     isDeactivated: (p) => p.deactivated === true,
@@ -91,6 +99,7 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
     return division.unavailableProductIds(catalogue(wantsClothing), (p) => {
       if (p.deactivated === true) return null;
       const sizes = sizesOf(p);
+      if (shelfAnswers(p)) return { sizes, known: hubData[shopShelf].ready === true, sizeOut: (sz) => hubQty(p, sz) <= 0 };
       if ((p.productType || "sneaker") === "clothing") {
         const lane = sectionHubIds.includes(clothingHubOf(p)) ? hubData[clothingHubOf(p)] : null;
         return {
@@ -127,7 +136,7 @@ export function orderScreenWorld({ rawNetwork = null, shop, products = [], stock
 
   return {
     network, universe, onSection2Hubs, sectionHubIds, subscribed, sneakerHubsOfShop, hubData, servingHub,
-    computeHub, taggedHubFor, sourcing, sneakerHubOf, sneakerOut, gateReady, hubQty, clothingHubOf,
+    shopShelf, shelfAnswers, computeHub, taggedHubFor, sourcing, sneakerHubOf, sneakerOut, gateReady, hubQty, clothingHubOf,
     catalogue, alternatives, allocation, placedHub, sizesOf, unavailable,
   };
 }

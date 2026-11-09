@@ -42,7 +42,7 @@ describe("the catalogue", () => {
     expect(cat).toContain("servedHubs: onSection2Hubs ? null : backStockHubsOf(sectionNet, effectiveShop),");
     expect(cat).toContain("stockedHere: sectionStockedHere,");
     expect(APP).toContain("sectionHubA ? heldProductKey([sectionCellsA, sectionCellsB].map(hubReadState)) : null");
-    expect(APP).toContain("sectionHeldKey === null ? undefined : heldPredicate(sectionHeldKey)");
+    expect(APP).toContain("sectionHeldKey === null ? undefined : stockedHerePredicate(heldPredicate(sectionHeldKey), heldPredicate(shopHeldKey), shopShelfAnswers)");
     expect(WORLD).toContain("division.stockedAtHubs(sectionHubIds.map((h) => hubData[h]))");
   });
 });
