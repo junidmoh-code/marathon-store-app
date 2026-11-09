@@ -266,7 +266,7 @@ function divisionKeepCounts({ division, stockView, products }) {
     for (const pid of division ? divisionManagedPids(division, loc, stockView, products) : []) {
       for (const size of divisionSizes(products[pid])) {
         const t = divisionTarget(division, loc, pid, size, products, stockView);
-        if (!t || !(t.target > 0)) continue;
+        if (!t) continue;
         cells += 1;
         units += t.target;
         pids.add(pid);
