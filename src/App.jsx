@@ -12,7 +12,7 @@ import { ProductActionsButton, DeactivatedChip } from "./components/stock/Produc
 import { showsDeactivated } from "./config/assistantVisibility";
 import { useAssistantVisibility } from "./config/useAssistantVisibility";
 import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
-import { heldProductKey, heldPredicate, hubReadState, unavailableProductIds, unavailableHint } from "./components/assistant/divisionAvailability";
+import { heldProductKey, heldPredicate, stockedHerePredicate, hubReadState, unavailableProductIds, unavailableHint } from "./components/assistant/divisionAvailability";
 import { reactiveRefillHubs, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
@@ -167,6 +167,7 @@ import {
   insightsStoreOptions, insightsBucketKey, insightsStoreMatcher,
 } from "./utils/sectionRouting";
 import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey, orderKeyFromInput } from "./utils/orderNumbering";
+import { siblingOrderShop, mergeSharedOrders, withSharedRange, boardShowsOrder, tvSectionForShop } from "./utils/sharedOrders";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests, useEngineConfig } from "./components/stock/useStock";
 import { policyKeepFor } from "./components/stock/saleRowPolicyCap";
 import { useExplicitTargetRows } from "./components/stock/useExplicitTargetRows";
@@ -206,7 +207,7 @@ import { catByKey, isOneSize, legacyFor, needsAssignment, isAssignable } from ".
 import { sizesForCat, sizeRunsOf, runSizes, compareSizes, sizeFamily } from "./utils/sizeRuns";
 import { orderSizesForDisplay } from "./utils/sizeDisplayOrder";
 import { findSubmitShortfall, submitShortfallMessage } from "./components/stock/orderSubmitGuard";
-import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor, extraClothingHub } from "./utils/sectionSneakerHubs";
+import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor, extraClothingHub, shopShelfFor, readsShopShelf } from "./utils/sectionSneakerHubs";
 import { buildNewProduct, stampStyleCodeProvenance } from "./utils/newProductRecord";
 import { saveFailureMessage } from "./utils/saveFailureMessage";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
@@ -1025,8 +1026,8 @@ function updateProductHubs(id, hubs) {
 // map is EMPTY, which is indistinguishable from "nothing is promised" — and a
 // recommendation made on that basis asserts availability nobody has checked
 // (independent review, 2026-09-06).
-function useOrders(scopeShop = null) {
-  const authReady = useAuthReady();
+function useOrders(scopeShop = null, enabled = true) {
+  const authReady = useAuthReady() && enabled;
   const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
 
   // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
@@ -1188,10 +1189,10 @@ function useSectionTvOrders(section) {
   // The LIVE registry (a kiosk mounts nothing else that reads it): a prefix
   // the owner changes, or a store added later, reaches this board.
   const { registry: tvNetwork } = useNetwork();
-  const ranges = useMemo(() => tvOrderKeyRanges(tvNetwork, section), [tvNetwork, section]);
+  const ranges = useMemo(() => withSharedRange(tvOrderKeyRanges(tvNetwork, section), section), [tvNetwork, section]);
   const shape = useCallback((data) => (
-    Object.values(data || {}).filter(Boolean).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
-  ), []);
+    Object.values(data || {}).filter(Boolean).filter((o) => boardShowsOrder(tvNetwork, section, o)).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
+  ), [tvNetwork, section]);
   const mirrored = useMirroredPath("orders", authReady);
   const live = mirrored.verdict === "fallback";
 
@@ -9808,6 +9809,14 @@ function AssistantView({ products, onExit, orders = [] }) {
   // empty `__off__` key, as the other optional hub reads in this file are).
   const extraHub = extraClothingHub(sectionNet, effectiveShop, servingHub);
   const extraHubCells = useStockCells(extraHub || "__off__");
+  // ── WHAT PINE AND CONCRETE HOLD THEMSELVES (Junid, 9 Nov 2026) ────────────
+  // A Pine or Concrete assistant reads Hub 3 for sneakers and the shop's OWN
+  // cell for everything else, the same split the till deducts by. null for
+  // Marathon PE / Trophy, so this subscribes to nothing and their screen reads
+  // exactly what it read before. One location's subtree.
+  const shopShelf = shopShelfFor(sectionNet, effectiveShop);
+  const shopShelfState = useStockCellsState(shopShelf);
+  const shopShelfAnswers = (p) => readsShopShelf(sectionNet, effectiveShop, p);
   // ONE DEFINITION OF "AVAILABLE" (2026-09-05). The zero-test below used to be
   // its own `Number(qty) || 0`; it now runs through availabilityCore's
   // availableUnits — the same arithmetic the sneaker lane uses at Hub 1 and
@@ -9838,8 +9847,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // streaming (a third one) falls back to the serving hub's cells — the
   // behaviour before this lookup existed.
   const clothingHubOf = (pid) => clothingHubFor(sectionNet, effectiveShop, productsById[pid], servingHub);
-  const clothingCellsOf = (pid) => (extraHub && clothingHubOf(pid) === extraHub ? extraHubCells : servingHubCells);
+  const clothingCellsOf = (pid) => (shopShelfAnswers(productsById[pid]) ? shopShelfState.cells
+    : extraHub && clothingHubOf(pid) === extraHub ? extraHubCells : servingHubCells);
   const clothingHubLabelOf = (pid) => {
+    if (shopShelfAnswers(productsById[pid])) return HUB_LABELS[shopShelf] || shopShelf;
     const h = extraHub && clothingHubOf(pid) === extraHub ? extraHub : servingHub;
     return HUB_LABELS[h] || h;
   };
@@ -9953,9 +9964,16 @@ function AssistantView({ products, onExit, orders = [] }) {
     () => (sectionHubA ? heldProductKey([sectionCellsA, sectionCellsB].map(hubReadState)) : null),
     [sectionHubA, sectionCellsA, sectionCellsB]
   );
+  // What the shop itself holds lists too, but only what it may answer for: a
+  // shoe's cell on a shop's own shelf says nothing (footwear sells from Hub 3).
+  const shopHeldKey = useMemo(
+    () => (shopShelf ? heldProductKey([hubReadState(shopShelfState)]) : ""),
+    [shopShelf, shopShelfState.cells, shopShelfState.settled, shopShelfState.error]
+  );
   const sectionStockedHere = useMemo(
-    () => (sectionHeldKey === null ? undefined : heldPredicate(sectionHeldKey)),
-    [sectionHeldKey]
+    () => (sectionHeldKey === null ? undefined : stockedHerePredicate(heldPredicate(sectionHeldKey), heldPredicate(shopHeldKey), shopShelfAnswers)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sectionHeldKey, shopHeldKey, sectionNet, effectiveShop]
   );
   // ── DISPLAY-PAIR MARKER DATA (2026-08-26) ─────────────────────────────────
   // The live display slots — one ~60 KB listener (the marker cannot be
@@ -10382,6 +10400,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   const sectionSneaker = {
     ...(sectionHubA ? { [sectionHubA]: { state: sectionCellsA, promised: sectionPromisedA } } : {}),
     ...(sectionHubB ? { [sectionHubB]: { state: sectionCellsB, promised: sectionPromisedB } } : {}),
+    // The shop's own shelf, so the gate can read it by name. No resolver ever
+    // chooses it: alternates come from the gated hubs only.
+    ...(shopShelf ? { [shopShelf]: { state: shopShelfState, promised: {} } } : {}),
   };
   const sneakerCellsOf = (hub) => sectionSneaker[hub]?.state || sneakerCellsState(hub);
   const sneakerPromisedOf = (hub) => sectionSneaker[hub]?.promised || sneakerPromisedMap(hub);
@@ -10462,7 +10483,16 @@ function AssistantView({ products, onExit, orders = [] }) {
   // held. Measured on live stock: 14 cells at cart depth 1, 46 at depth 2.
   // One call now returns both, and the cart goes IN rather than being applied
   // after the fact.
+  // A Pine or Concrete item its own shop holds answers from that shelf, cart
+  // taken off. With no size it says nothing, so the alternatives pool (which
+  // asks size-less "is this a gated sneaker?") never takes in a perfume.
+  const shopShelfLine = (p, s) => {
+    if (!s || !shopShelfAnswers(p)) return null;
+    const inCart = (p.productType || "sneaker") === "clothing" ? clothingInCart(p.id, s) : sneakerInCart(p.id, s);
+    return { hub: shopShelf, available: Math.max(hubQty(p.id, s) - inCart, 0) };
+  };
   const sneakerSourcing = (p, s) => resolveSneakerSourcing({
+    shelf: shopShelfLine(p, s),
     product: p, taggedHub: gatedSneakerHub(p, computeHubForItem({ product: p })),
     size: s, hubData: sneakerHubData(),
     // What the cart has already taken FROM EACH HUB — the allocation above,
@@ -10599,6 +10629,9 @@ function AssistantView({ products, onExit, orders = [] }) {
     return unavailableProductIds(base, (p) => {
       if (deadForOrder(p)) return null;                    // says "Deactivated" itself
       const sizes = sizesOf(p);
+      if (shopShelfAnswers(p)) {
+        return { sizes, known: hubReadState(shopShelfState).ready, sizeOut: (sz) => hubQty(p.id, sz) <= 0 };
+      }
       if ((p.productType || "sneaker") === "clothing") {
         const lane = sectionSneaker[clothingHubOf(p.id)];
         return {
@@ -10611,11 +10644,12 @@ function AssistantView({ products, onExit, orders = [] }) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, onSection2Hubs, sectionHubIds, sectionCellsA, sectionCellsB, sectionPromisedA, sectionPromisedB,
-      servingHubCells, extraHubCells, sectionNet, effectiveShop, deadForOrder]);
+      servingHubCells, extraHubCells, shopShelfState, sectionNet, effectiveShop, deadForOrder]);
   // The alternatives sheet is footwear's (computeAlternatives), so only a shoe
   // is promised "similar shoes"; clothing is told where it is not.
-  const unavailableHintFor = (p) => unavailableHint(sectionHubIds.map((h) => HUB_LABELS[h] || h),
-    { similar: (p?.productType || "sneaker") !== "clothing" });
+  const unavailableHintFor = (p) => unavailableHint(
+    shopShelfAnswers(p) ? [HUB_LABELS[shopShelf] || shopShelf] : sectionHubIds.map((h) => HUB_LABELS[h] || h),
+    { similar: !shopShelfAnswers(p) && (p?.productType || "sneaker") !== "clothing" });
 
   // ── "NOT AVAILABLE — BUT THESE ARE, RIGHT NOW" (2026-09-06) ───────────────
   // The greyed size chip used to be a dead end: a reason, and the sale walks
@@ -10672,6 +10706,8 @@ function AssistantView({ products, onExit, orders = [] }) {
     // a clothing tile's grey-out reads its cell by a different rule
     // (availabilityCore's header, the deliberately-unmerged clothing lane).
     if ((product.productType || "sneaker") === "clothing") return null;
+    // A perfume or bag the shop holds has no similar shoes to offer.
+    if (shopShelfAnswers(product)) return null;
     if (!ordersSettled) return null;
     const result = alternativesForSize({
       sourceProduct: product,
@@ -11047,6 +11083,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   //     guarded here and on the grid alike, on Hub 3's own cells.
   const stockGuardedLine = (item) => {
     if (item.requestDisplayPartner || item.displayPairRequest === true) return false;
+    if (shopShelfAnswers(item.product)) return true;
     if (item.productType === "clothing") return true;
     return !!gatedSneakerHub(item.product, placedHubFor(item));
   };
@@ -11158,6 +11195,8 @@ function AssistantView({ products, onExit, orders = [] }) {
         const refusal = await findSubmitShortfall({
           lines: cart.filter(isCustomerLine).filter(stockGuardedLine).map((item) => ({
             hub: placedHubFor(item), productId: item.product.id, size: item.size, label: item.product.name,
+            // The cell the screen gated on: a Pine or Concrete shop-held line.
+            ...(shopShelfAnswers(item.product) ? { hub: shopShelf } : {}),
           })),
           readCell: (hub, pid, size) => get(ref(database, stockCellPath(hub, pid, String(size)))).then((snap) => snap.val()),
           // Net the same promises the ✕ nets — footwear at a gated hub only
@@ -20934,7 +20973,7 @@ function AppInner() {
   // writer outside React (applyMovement, order placement) asks the same
   // registry the screens show. Section 2 runs on the built-in seed until it
   // answers, exactly as before.
-  useNetwork();
+  const { registry: orderNetwork } = useNetwork();
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
   // straight to /orders/{id} via writeOrder() / updateOrder().
@@ -20944,6 +20983,13 @@ function AppInner() {
   // no destShop → full read. This is the single feed for every authenticated view.
   const myShop = isSuperAdmin ? null : (permRecord?.destShop || null);
   const orders = useOrders(myShop);
+  // Pine and Concrete share their orders: the sibling's feed joins the three
+  // screens that show a customer's order (utils/sharedOrders.js). Everything
+  // else keeps the shop's own feed. Marathon PE / Trophy have no sibling, read
+  // nothing extra, and get `orders` itself back.
+  const siblingShop = siblingOrderShop(orderNetwork, myShop);
+  const siblingOrders = useOrders(siblingShop, !!siblingShop);
+  const sharedOrders = useMemo(() => mergeSharedOrders(orders, siblingShop ? siblingOrders : null), [orders, siblingOrders, siblingShop]);
   const returnsLog = useReturnsLog();
 
   // ── ORDER AUDIT — runs on every render; logs only when numbers mismatch ────
@@ -21218,7 +21264,7 @@ function AppInner() {
   else if (role === ROLES.DISPLAY) {
     // TV mode is chrome-free, but a hidden top-right DOUBLE-tap exits back to
     // the view picker (TvDisplayMockup renders the invisible zone from onExit).
-    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} onExit={() => setRole(null)} />);
+    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={sharedOrders} section={tvSectionForShop(orderNetwork, myShop)} onExit={() => setRole(null)} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
   // AI Studio is route-guarded on the REAL isSuperAdmin flag (verified email),
@@ -21320,9 +21366,9 @@ function AppInner() {
   else if (role === ROLES.CARD_SLIP) view = hasSlipScope(permRecord) ? <CardSlipScreen onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} myShop={myShop} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} myShop={myShop} onExit={() => setRole(null)} />;
-  else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={sharedOrders} onExit={() => setRole(null)} />);
   else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
-  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={sharedOrders} onExit={() => setRole(null)} />);
   else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);
 
   // "This device's clock is wrong" — gated on ROLE, not on tree position. Being a

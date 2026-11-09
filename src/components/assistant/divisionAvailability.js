@@ -52,6 +52,15 @@ export function heldPredicate(key) {
   return (product) => !!product && held.has(product.id);
 }
 
+/**
+ * Does this product belong in the shop's catalogue? A cell at one of its hubs,
+ * or a cell on its own shelf for something the shelf answers for (`shelfAnswers`:
+ * a shoe's leftover shop cell is not a reason to list it).
+ */
+export function stockedHerePredicate(atHub, atShop, shelfAnswers) {
+  return (product) => atHub(product) || (atShop(product) && shelfAnswers(product) === true);
+}
+
 /** One step: does one of these hubs have a cell for the product? */
 export const stockedAtHubs = (hubs) => heldPredicate(heldProductKey(hubs));
 

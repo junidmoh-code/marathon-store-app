@@ -36,13 +36,60 @@ describe("which hubs a device reads", () => {
   });
 });
 
+describe("a Pine or Concrete item the shop holds", () => {
+  it("is read from the shop's own subtree, chosen by the registry", () => {
+    expect(APP).toContain("const shopShelf = shopShelfFor(sectionNet, effectiveShop);");
+    expect(APP).toContain("const shopShelfState = useStockCellsState(shopShelf);");
+    expect(APP).toContain("const clothingCellsOf = (pid) => (shopShelfAnswers(productsById[pid]) ? shopShelfState.cells");
+    expect(WORLD).toContain("(shelfAnswers(p) ? hubData[shopShelf].cells : stock[clothingHubOf(p)])");
+  });
+  it("answers the size chips through the one resolver", () => {
+    const fn = between("const sneakerSourcing = (p, s) => resolveSneakerSourcing({", "});");
+    expect(fn).toContain("shelf: shopShelfLine(p, s),");
+    expect(WORLD).toContain("shelf: shopShelfLine(p, s),");
+  });
+  it("is checked at submit on the shelf it was offered from", () => {
+    const fn = between("const stockGuardedLine = (item) => {", "\n  };");
+    expect(fn).toContain("if (shopShelfAnswers(item.product)) return true;");
+    expect(APP).toContain("...(shopShelfAnswers(item.product) ? { hub: shopShelf } : {}),");
+  });
+  it("gets no alternatives sheet", () => {
+    const fn = between("const computeAlternatives = (product, size) => {", "if (!ordersSettled) return null;");
+    expect(fn).toContain("if (shopShelfAnswers(product)) return null;");
+    expect(WORLD).toContain("if (shelfAnswers(product)) return null;");
+  });
+  it("says Unavailable from the shelf, once the shelf has answered", () => {
+    const fn = between("const unavailableIds = useMemo(() => {", "deadForOrder]);");
+    expect(fn).toContain("return { sizes, known: hubReadState(shopShelfState).ready, sizeOut: (sz) => hubQty(p.id, sz) <= 0 };");
+  });
+});
+
+describe("Pine and Concrete's shared orders", () => {
+  it("the sibling's feed joins three screens and nothing else", () => {
+    expect(APP).toContain("const siblingShop = siblingOrderShop(orderNetwork, myShop);");
+    expect(APP).toContain("const siblingOrders = useOrders(siblingShop, !!siblingShop);");
+    expect(APP.split("orders={sharedOrders}").length - 1).toBe(3);
+    expect(APP).toContain("<AssistantView products={products} orders={sharedOrders}");
+    expect(APP).toContain("<CustomerView  orders={sharedOrders}");
+    expect(APP).toContain("<TvWithAutoCollect orders={sharedOrders} section={tvSectionForShop(orderNetwork, myShop)}");
+  });
+  it("a disabled feed reads nothing", () => {
+    const hook = between("function useOrders(scopeShop = null, enabled = true) {", "return orders;");
+    expect(hook).toContain("const authReady = useAuthReady() && enabled;");
+    // Both ways down the wire hang off that one value.
+    expect(hook).toContain('useMirroredPath("orders", authReady)');
+    expect(hook).toContain("if (!authReady || !liveOrders) return undefined;");
+    expect(hook).not.toMatch(/useAuthReady\(\)(?! && enabled)/);
+  });
+});
+
 describe("the catalogue", () => {
   it("a shop with its own hubs also lists what those hubs hold", () => {
     const cat = between("const base = useMemo(", "sectionStockedHere]);");
     expect(cat).toContain("servedHubs: onSection2Hubs ? null : backStockHubsOf(sectionNet, effectiveShop),");
     expect(cat).toContain("stockedHere: sectionStockedHere,");
     expect(APP).toContain("sectionHubA ? heldProductKey([sectionCellsA, sectionCellsB].map(hubReadState)) : null");
-    expect(APP).toContain("sectionHeldKey === null ? undefined : heldPredicate(sectionHeldKey)");
+    expect(APP).toContain("sectionHeldKey === null ? undefined : stockedHerePredicate(heldPredicate(sectionHeldKey), heldPredicate(shopHeldKey), shopShelfAnswers)");
     expect(WORLD).toContain("division.stockedAtHubs(sectionHubIds.map((h) => hubData[h]))");
   });
 });

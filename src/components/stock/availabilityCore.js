@@ -372,7 +372,10 @@ export function cellBlockInfo({ cells, promised, productId, size }) {
 // tried in registry order, and the first one that has been READ and has the
 // size answers. For Hub 1 ⇄ Hub 2 that is the same single candidate and the
 // same answer in every branch. A hub across the wall is never a candidate.
-export function resolveSneakerSourcing({ product, taggedHub, size, hubData, consumedByHub = null, network, forStore = null }) {
+export function resolveSneakerSourcing({ product, taggedHub, size, hubData, consumedByHub = null, network, forStore = null, shelf = null }) {
+  // `shelf`: the caller already has the answer because the shop holds this
+  // item itself (sectionSneakerHubs.readsShopShelf). Pine and Concrete only.
+  if (shelf) return shelf;
   // `available: null` means "this rule does not answer for it" — NOT zero. A
   // caller must test it with Number.isFinite, because `null <= 0` is true in
   // JavaScript and would turn "not our business" into "out of stock".
