@@ -14,7 +14,7 @@ import { setCurrentNetworkFromRaw, __resetNetworkForTests } from "../../utils/ne
 import { REACTIVE_REFILL_HUBS, reactiveRefillHubs, isReactiveRefillHub } from "./reactiveRefillHubs";
 import { onHoldRefillPlan } from "./onHoldRefill";
 import {
-  GATED_SNEAKER_HUBS, gatedSneakerHubs, displayRequestHubs, gatedSneakerHub, sneakerAlternates, resolveSneakerSourcing,
+  GATED_SNEAKER_HUBS, gatedSneakerHubs, gatedSneakerHub, sneakerAlternates, resolveSneakerSourcing,
 } from "./availabilityCore";
 import { CENTRAL_FED_HUBS, centralFedHubs, centralFedRow, orderRowHub } from "./tomorrowGate";
 import { DISTRIBUTION_DESTS, distributionDests, suggestInitialDistribution, destLabel } from "./distributionSuggest";
@@ -139,9 +139,12 @@ describe("sneaker sourcing — 'the other hub' is another hub IN THE SAME SECTIO
     expect(gatedSneakerHubs(solved)).toEqual(["hub3", "hub2"]);
   });
 
-  it("the display-request hubs stay the fully LIVE ones: Hub 3 going in service opens no request path", () => {
-    expect(displayRequestHubs(SEED_REGISTRY)).toEqual(["hub1", "hub2"]);
-    expect(pickDisplaySourceHub({ product: { ...shoe, hubs: ["hub3"] }, hubData: { hub3: hub(5) }, store: "concrete", network: SEED_REGISTRY })).toEqual({ hub: null });
+  it("a Pine or Concrete display request goes to Hub 3 and never crosses the wall (9 Nov 2026)", () => {
+    for (const store of ["concrete", "marathon-pine"]) {
+      expect(pickDisplaySourceHub({ product: { ...shoe, hubs: ["hub3"] }, hubData: { hub3: hub(5), hub1: hub(9) }, store, network: SEED_REGISTRY })).toEqual({ hub: "hub3", units: 5, tagged: true });
+      expect(pickDisplaySourceHub({ product: { ...shoe, hubs: ["hub1"] }, hubData: { hub3: hub(0), hub1: hub(9) }, store, network: SEED_REGISTRY })).toEqual({ hub: null });
+    }
+    expect(pickDisplaySourceHub({ product: { ...shoe, hubs: ["hub3"] }, hubData: { hub3: hub(5), hub1: hub(0), hub2: hub(0) }, store: "trophy", network: SEED_REGISTRY })).toEqual({ hub: null });
   });
 
   it("a display request is sourced only from a hub on the shop's side of the wall", () => {

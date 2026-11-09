@@ -259,11 +259,10 @@ export function sectionOfRecord(network, rec) {
 
 // ─── THE 6-MINUTE DISPATCH HOLD ──────────────────────────────────────────────
 // Hub 2's parcels travel to the shop, so its "Ready" is revealed to the
-// customer six minutes after Sent. That is a fact about Hub 2's van, and the
-// registry has no field for it, so it is stated here per hub rather than
-// guessed for Hub 3 or the Concrete Stockroom (which is inside the shop).
-// To hold another hub: one line.
-const DISPATCH_HOLD_MS_BY_HUB = { hub2: 6 * 60 * 1000 };
+// customer six minutes after Sent, and Hub 3's the same (Junid, 9 Nov 2026).
+// That is a fact about each hub's run to its shops, and the registry has no
+// field for it, so it is stated here per hub. To hold another hub: one line.
+const DISPATCH_HOLD_MS_BY_HUB = { hub2: 6 * 60 * 1000, hub3: 6 * 60 * 1000 };
 
 export function dispatchHoldMs(hub) {
   return DISPATCH_HOLD_MS_BY_HUB[hub] || 0;

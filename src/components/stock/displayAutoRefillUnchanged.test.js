@@ -122,6 +122,15 @@ describe("the wall walk's request lands on the same card, in the same shape", ()
     expect(isOpenDisplayRequest(order)).toBe(true);
   });
 
+  it("a Pine or Concrete request is filed under its own universe, for Hub 3's card", () => {
+    const pine = wallWalkOrder({ orderId: "P1", store: "marathon-pine", hub: "hub3", product: { id: "p1", name: "Shoe" }, nowIso: "2026-11-09T10:00:00.000Z", by: "u1" });
+    const conc = wallWalkOrder({ orderId: "C1", store: "concrete", hub: "hub3", product: { id: "p1", name: "Shoe" }, nowIso: "2026-11-09T10:00:00.000Z", by: "u1" });
+    expect(pine.placedStore).toBe("pine");
+    expect(conc.placedStore).toBe("concrete");
+    expect(order.placedStore).toBe("central");
+    for (const o of [pine, conc]) { expect(o.displayRefillHub).toBe("hub3"); expect(o.placedAtHub).toBe("hub3"); }
+  });
+
   it("names no size — the picker chooses it at Send", () => {
     expect(order.size).toBeNull();
     expect(order.sentSize).toBeNull();

@@ -61,7 +61,8 @@ describe("Section 2 keeps the old literal — every fallback, every shop", () =>
   });
   it("the dispatch hold is Hub 2's alone, six minutes", () => {
     expect(dispatchHoldMs("hub2")).toBe(360000);
-    for (const h of ["hub1", "hub3", "hubC", undefined]) expect(dispatchHoldMs(h)).toBe(0);
+    expect(dispatchHoldMs("hub3")).toBe(360000);
+    for (const h of ["hub1", "hubC", undefined]) expect(dispatchHoldMs(h)).toBe(0);
   });
   it("Hub 2's CR pills are Marathon PE and Trophy, in that order", () => {
     expect(shopsOfHub(NET, "hub2")).toEqual(["marathon-pe", "trophy"]);

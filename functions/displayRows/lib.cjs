@@ -53,25 +53,26 @@
 
 "use strict";
 
-/** The stores whose walls this trigger watches. Hub 1 and Hub 2 serve these two;
- *  Pine's displays are booked at hub3 and are out of scope by owner constraint
- *  (GATED_SNEAKER_HUBS). A store not in this list returns immediately, which is
- *  also what makes the trigger cheap on every unrelated stock movement. */
+/** The stores whose walls this trigger watches. A store not in this list returns
+ *  immediately, which is also what makes the trigger cheap on every unrelated
+ *  stock movement. */
 const { storesOf, hubsOf, sectionOf, SEED_REGISTRY } = require("../lib/network-registry.cjs");
 
-/** SECTIONS (2026-10-02): both lists are read from the network registry — the
- *  LIVE stores and the LIVE hubs. Today that is Marathon PE + Trophy and
- *  Hub 1 + Hub 2, the same four as ever; Pine, Concrete, Hub 3 and the Concrete
- *  Stockroom stay out for as long as they are not live, and come in the day
- *  the owner marks them live. No registry handed in = the built-in seed. */
-const displayStores = (network) => storesOf(network || SEED_REGISTRY, { liveOnly: true }).map((l) => l.id);
-const displayHubs = (network) => hubsOf(network || SEED_REGISTRY, { liveOnly: true }).map((l) => l.id);
-/** The walls a HUB's sale could have come off: the live stores on the hub's
- *  own side of the section wall. A Hub 2 sale is never pinned on a Pine wall. */
+/** Both lists are read from the network registry (Junid, 9 Nov 2026: Pine,
+ *  Concrete and Hub 3 joined). The rule is the assistant screen's gate
+ *  (availabilityCore.gatedSneakerHubs) and differs by division on purpose:
+ *  Marathon's locations must be live, exactly as before; Pine, Concrete and Hub 3
+ *  must be in service (Solve on, Auto-refill not off), since they sit on "solved".
+ *  No registry handed in = the built-in seed. */
+const inService = (l) => (l.section === 2 ? l.live === true : l.solve === true && l.autoRefill !== "off");
+const displayStores = (network) => storesOf(network || SEED_REGISTRY).filter(inService).map((l) => l.id);
+const displayHubs = (network) => hubsOf(network || SEED_REGISTRY).filter(inService).map((l) => l.id);
+/** The walls a HUB's sale could have come off: the in-service stores on the
+ *  hub's own side of the section wall. A Hub 2 sale is never pinned on a Pine wall. */
 const displayStoresForHub = (network, hub) => {
   const reg = network || SEED_REGISTRY;
   const section = sectionOf(reg, hub);
-  return storesOf(reg, { liveOnly: true }).filter((l) => l.section === section).map((l) => l.id);
+  return storesOf(reg).filter(inService).filter((l) => l.section === section).map((l) => l.id);
 };
 const DISPLAY_STORES = displayStores(SEED_REGISTRY);
 
@@ -178,7 +179,7 @@ function classifyMovement(m, network) {
   //
   //     marathon-pe / sized 1539    hub1 / sized 761
   //     trophy      / sized  267    hub2 / sized 478
-  //     (hub3 / sized 273 — Pine, out of scope)
+  //     (hub3 / sized 273 — in scope since 9 Nov 2026)
   //
   // So the shop-sourced branch above catches 1,806 of the 3,045 in-scope sized
   // sales and MISSES 1,239 of them. A trigger that only watched `from` = a shop

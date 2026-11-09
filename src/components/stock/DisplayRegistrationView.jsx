@@ -63,7 +63,7 @@ import { readyPromisedByCell } from "./availabilityCore";
 import { serverNowMs } from "../../utils/serverTime";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
-import { displayRequestHubs, isFootwearProduct } from "./availabilityCore";
+import { gatedSneakerHubs, isFootwearProduct } from "./availabilityCore";
 import { displayStores, displayHubsForStore } from "./hubCleanupCore";
 import { useMySections } from "../../utils/useMySections";
 import { wallAllows } from "../../utils/networkRegistry";
@@ -77,14 +77,12 @@ import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 // THE WALLS COME FROM THE NETWORK REGISTRY: every shop — Marathon PE, Trophy,
 // Marathon Pine and Concrete on the seed (Junid, 7 Nov 2026). A wall's hubs
 // are the gated hubs on ITS side of the section wall (Hub 1 and Hub 2 for
-// Marathon PE and Trophy, exactly as before). A wall with no gated hub — Pine
-// and Concrete, fed by Hub 3, which is not live — is walked against the hubs
-// that feed it (displayHubsForStore), and "Not on the wall" stays OFF there:
-// that button raises a display request, and no request path is opened for a
-// shop that had none (CLAUDE.md, Junid's rules). It follows the registry's
-// live flag, exactly as Marathon's walls always have: the day Junid makes
-// Hub 3 live on the Network card, Pine and Concrete's walls request like
-// Marathon PE's (pinned by displayWallPineConcrete.render.test.jsx).
+// Marathon PE and Trophy, Hub 3 for Pine and Concrete). "Not on the wall" raises
+// a display request to that hub, onto the same Display Refill card (Junid asked
+// for this on 9 Nov 2026). A wall with no gated hub — its hub switched out of
+// service on the Network card — is walked against the hubs that feed it
+// (displayHubsForStore), for looking and recording only. Pinned by
+// displayWallPineConcrete.render.test.jsx.
 const PAGE = 30;
 
 // "11:42", in the shops' own clock whatever the device's timezone says.
@@ -180,7 +178,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   // below read them; Hub 1 and Hub 2 for Marathon PE and Trophy. A wall with
   // no gated hub is read against the hubs that feed it (Hub 3 for Pine and
   // Concrete) — for looking and recording only: `requestable` is false.
-  const GATED_PAIR = useMemo(() => displayRequestHubs(network).filter((h) => wallAllows(network, store, h)).slice(0, 2), [network, store]);
+  const GATED_PAIR = useMemo(() => gatedSneakerHubs(network).filter((h) => wallAllows(network, store, h)).slice(0, 2), [network, store]);
   const requestable = GATED_PAIR.length > 0;
   const HUB_PAIR = useMemo(
     () => (GATED_PAIR.length ? GATED_PAIR : displayHubsForStore(store, network).slice(0, 2)),

@@ -202,14 +202,6 @@ export function gatedSneakerHubs(network) {
   const N = net(network);
   return hubIds(N).filter((h) => (sectionOf(N, h) === 2 ? isLive(N, h) : solveOn(N, h) && autoRefillOn(N, h)));
 }
-// THE FULLY LIVE HUBS — the old answer, kept for one reader: which hubs may a
-// "Not on the wall" display request be raised against. Pine and Concrete walls
-// record only; no request path is opened for them (Junid's rules, CLAUDE.md,
-// and the 7 Nov 2026 wall screen). Widening the assistant's ✕ must not widen
-// this. displayWallPineConcrete.render.test.jsx holds it.
-export function displayRequestHubs(network) {
-  return hubIds(net(network), { liveOnly: true });
-}
 // The hubs a gated sneaker may be rerouted to from `taggedHub`: the other
 // gated hubs on the SAME side of the section wall, in registry order. Never
 // across it — a Section 1 shop's order cannot be picked at a Section 2 hub.

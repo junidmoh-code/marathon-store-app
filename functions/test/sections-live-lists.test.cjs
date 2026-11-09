@@ -25,14 +25,15 @@ test("TODAY: every list holds exactly what its literal held — with no registry
   assert.deepEqual(audit.AUDIT_STORES, ["marathon-pe", "trophy"]);
   assert.deepEqual(audit.AUDIT_HUBS, ["hub1", "hub2"]);
   assert.deepEqual([...writeoff.WRITEOFF_LOCATIONS], ["hub1", "hub2", "central"]);
-  assert.deepEqual(rows.DISPLAY_STORES, ["marathon-pe", "trophy"]);
-  assert.deepEqual(rows.DISPLAY_HUBS, ["hub1", "hub2"]);
+  assert.deepEqual(rows.DISPLAY_STORES, ["marathon-pine", "concrete", "marathon-pe", "trophy"], "in service since 9 Nov 2026");
+  assert.deepEqual(rows.DISPLAY_HUBS, ["hub3", "hub1", "hub2"]);
   for (const network of [...NO_REGISTRY, SEED]) {
     assert.deepEqual(audit.auditStores(network), ["marathon-pe", "trophy"]);
     assert.deepEqual(audit.auditHubs(network), ["hub1", "hub2"]);
     assert.deepEqual(writeoff.writeoffLocations(network), ["hub1", "hub2", "central"]);
-    assert.deepEqual(rows.displayStores(network), ["marathon-pe", "trophy"]);
-    assert.deepEqual(rows.displayHubs(network), ["hub1", "hub2"]);
+    assert.deepEqual(rows.displayStores(network), ["marathon-pine", "concrete", "marathon-pe", "trophy"]);
+    assert.deepEqual(rows.displayHubs(network), ["hub3", "hub1", "hub2"]);
+    assert.deepEqual(rows.displayStoresForHub(network, "hub3"), ["marathon-pine", "concrete"]);
     assert.deepEqual(rows.displayStoresForHub(network, "hub1"), ["marathon-pe", "trophy"]);
     assert.deepEqual(rows.displayStoresForHub(network, "hub2"), ["marathon-pe", "trophy"]);
     assert.deepEqual(checks.triggerStores(network), ["marathon-pe", "trophy"]);
@@ -80,8 +81,8 @@ test("NOT LIVE: a Section 2 location the owner switches off drops out of every l
   assert.deepEqual(audit.auditStores(off), ["marathon-pe"]);
   assert.deepEqual(audit.auditHubs(off), ["hub2"]);
   assert.deepEqual(writeoff.writeoffLocations(off), ["hub2", "central"]);
-  assert.deepEqual(rows.displayStores(off), ["marathon-pe"]);
-  assert.deepEqual(rows.displayHubs(off), ["hub2"]);
+  assert.deepEqual(rows.displayStores(off), ["marathon-pine", "concrete", "marathon-pe"]);
+  assert.deepEqual(rows.displayHubs(off), ["hub3", "hub2"]);
   assert.deepEqual(checks.triggerStores(off), ["marathon-pe"]);
   assert.ok(writeoff.excludedRequesters(off).includes("trophy"));
 });
@@ -93,16 +94,28 @@ test("DISPLAY ROWS: a hub sale is only ever attributed to a wall on the hub's ow
   assert.deepEqual(rows.displayStoresForHub(allLive, "hub1"), ["marathon-pe", "trophy"]);
   assert.deepEqual(rows.displayStoresForHub(allLive, "hub3"), ["marathon-pine", "concrete"]);
   assert.deepEqual(rows.displayStoresForHub(allLive, "concrete-stockroom"), [], "the Concrete Stockroom does not exist (8 Oct 2026)");
-  assert.deepEqual(rows.displayStoresForHub(live("hub3", "concrete"), "hub3"), ["concrete"], "Pine is not live");
+  const pineOff = reg.normalizeNetwork({ locations: { "marathon-pine": { solve: true, autoRefill: "off" } } });
+  assert.deepEqual(rows.displayStoresForHub(pineOff, "hub3"), ["concrete"], "Pine is out of service");
   assert.deepEqual(rows.displayStoresForHub(allLive, "nowhere"), []);
 });
 
-test("DISPLAY ROWS: classifyMovement follows the registry, and is unchanged without one", () => {
+test("DISPLAY ROWS: Marathon's hubs must be live; Hub 3 and its shops must be in service", () => {
+  const solved = reg.normalizeNetwork({ locations: { hub1: { solve: true, autoRefill: "solved" }, trophy: { solve: true, autoRefill: "solved" } } });
+  assert.deepEqual(rows.displayStores(solved), ["marathon-pine", "concrete", "marathon-pe"]);
+  assert.deepEqual(rows.displayHubs(solved), ["hub3", "hub2"]);
+  const off = reg.normalizeNetwork({ locations: { hub3: { solve: true, autoRefill: "off" }, concrete: { solve: false, autoRefill: "solved" } } });
+  assert.deepEqual(rows.displayStores(off), ["marathon-pine", "marathon-pe", "trophy"]);
+  assert.deepEqual(rows.displayHubs(off), ["hub1", "hub2"]);
+});
+
+test("DISPLAY ROWS: classifyMovement follows the registry", () => {
   const sold = (from) => ({ type: "sold", from, productId: "p1", size: "9", qty: 1 });
   for (const network of [...NO_REGISTRY, SEED]) {
     assert.equal(rows.classifyMovement(sold("marathon-pe"), network).kind, "sold");
     assert.equal(rows.classifyMovement(sold("hub2"), network).kind, "sold_hub");
-    for (const from of S1) assert.equal(rows.classifyMovement(sold(from), network), null, from);
+    assert.equal(rows.classifyMovement(sold("hub3"), network).kind, "sold_hub");
+    assert.equal(rows.classifyMovement(sold("concrete"), network).kind, "sold");
+    assert.equal(rows.classifyMovement(sold("marathon-pine"), network).kind, "sold");
   }
   assert.deepEqual(rows.classifyMovement(sold("marathon-pine"), allLive), { kind: "sold", store: "marathon-pine", productId: "p1", sizeKey: "9", qty: 1 });
   assert.deepEqual(rows.classifyMovement(sold("hub3"), allLive), { kind: "sold_hub", hub: "hub3", store: null, productId: "p1", sizeKey: "9", qty: 1 });
