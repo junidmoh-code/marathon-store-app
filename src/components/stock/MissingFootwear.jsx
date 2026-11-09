@@ -400,6 +400,8 @@ export default function MissingFootwear({ products = [] }) {
     }
     setSolveBusy(card.pid);
     const now = serverNowIso();
+    const solveId = `sn_${card.pid}_${Date.parse(now)}`;
+    let seat = null, seated = false;
     try {
       const liveRequests = Object.values((await readPathOnce("refill_requests",
         async () => (await get(ref(database, "refill_requests"))).val())) || {});
@@ -409,8 +411,8 @@ export default function MissingFootwear({ products = [] }) {
         setSolveBusy(null);
         return;
       }
-      const seat = httpsCallable(functions, "seatDivisionSolve");
-      if (hubs.includes(DIVISION_HUB)) await seat({ location: DIVISION_HUB, pid: card.pid, hubs });
+      seat = httpsCallable(functions, "seatDivisionSolve");
+      if (hubs.includes(DIVISION_HUB)) { await seat({ location: DIVISION_HUB, pid: card.pid, hubs, solveId }); seated = true; }
       const updates = {};
       const paired = hubs.length > 1 ? { solveHubs: hubs } : {};
       for (const h of hubs) {
@@ -435,6 +437,7 @@ export default function MissingFootwear({ products = [] }) {
       await update(ref(database), updates);
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, msg: `Raised ${hubs.map((h) => `${(plan[h] || []).reduce((t, l) => t + l.qty, 0)} for ${nameOf(h, network)}`).join(" and ")}. Central picks it as part of today's work.` } }));
     } catch (e) {
+      if (seated) seat({ location: DIVISION_HUB, pid: card.pid, clear: true, solveId }).catch(() => {});
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Couldn't raise the request — nothing changed, retry. (${e?.message || "error"})` } }));
     }
     setSolveBusy(null);

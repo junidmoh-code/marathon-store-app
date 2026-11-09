@@ -43,11 +43,30 @@ test("seats: units seat a product; a sell-out keeps it; only a transfer out rele
   const seats = { hub3: { t1: seat() } };
   const sold = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "customer", type: "sold", ts: ISO }], nowIso: ISO });
   assert.ok(sold.effective.hub3.t1, "a sale leaves it seated");
-  const moved = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "central", type: "transfer_out", ts: ISO }], nowIso: ISO });
+  const moved = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "central", type: "transfer_out", ts: "2026-11-09T13:00:00.000Z" }], nowIso: ISO });
   assert.equal(moved.effective.hub3.t1, undefined);
   assert.equal(moved.writes["hub3/t1"], null);
   const stillHeld = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(1) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "central", type: "transfer_out", ts: ISO }], nowIso: ISO });
   assert.ok(stillHeld.effective.hub3.t1);
+});
+
+test("seats: a refill leaving, or a Solve newer than the move, does not release a seat", () => {
+  const seats = { hub3: { t1: seat() } };
+  const refill = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "concrete", type: "transfer_out", ts: "2026-11-09T13:00:00.000Z", link: { refillId: "r" } }], nowIso: ISO });
+  assert.ok(refill.effective.hub3.t1, "a refill leaving is the hub doing its job");
+  const resolve = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats: { hub3: { t1: seat({ via: "solve", at: "2026-11-09T12:00:00.000Z" }) } }, movements: [{ productId: "t1", from: "hub3", to: "central", type: "transfer_out", ts: "2026-11-01T08:00:00.000Z" }], nowIso: ISO });
+  assert.ok(resolve.effective.hub3.t1, "the Solve came after the move");
+});
+
+test("seat: a second Solve cannot take a product from its owning shop; clear removes only its own Solve", async () => {
+  const db = makeFakeDb({ users: { u1: { stockRole: "store" } }, products: { t1: TEE } });
+  const ctx = { db, callerUid: "u1", nowIso: ISO };
+  await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", owner: "concrete", solveId: "a" } });
+  await assert.rejects(dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", owner: "marathon-pine", solveId: "b" } }), /already belongs/);
+  const other = await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", clear: true, solveId: "b" } });
+  assert.equal(other.cleared, false);
+  const mine = await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", clear: true, solveId: "a" } });
+  assert.equal(mine.cleared, true);
 });
 
 test("Hub 3 sneakers: keep 3, ask at 1, every declared size, seated only, counted through the trust mask", () => {

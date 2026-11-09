@@ -220,6 +220,10 @@ function planSeats({ rawStock, seats, movements, nowIso }) {
       if (held(node[pid])) continue;
       const m = lastMove.get(`${loc}|${pid}`);
       if (!m || m.from !== loc || !MOVED_OUT_TYPES.has(m.type)) continue;
+      // A refill or order leaving is the location doing its job, and a Solve
+      // newer than the move means it was brought back: neither releases it.
+      if (m.link && (m.link.refillId || m.link.orderId)) continue;
+      if (String(m.ts) <= String(here[pid]?.at || "")) continue;
       delete here[pid];
       writes[`${loc}/${pid}`] = null;
       released++;
@@ -242,14 +246,16 @@ async function applyDivisionSeat({ db, callerUid, data, nowIso }) {
   if (!callerUid) throw new DivisionSeatError("unauthenticated", "Sign in first.");
   const role = (await db.ref(`users/${callerUid}/stockRole`).once("value")).val();
   if (!role) throw new DivisionSeatError("permission-denied", "You need a stock role to Solve.");
-  const { location, pid, owner, hubs, clear } = d;
+  const { location, pid, owner, hubs, clear, solveId } = d;
   if (!DIVISION_LOCATIONS.includes(location)) throw new DivisionSeatError("invalid-argument", "Seats are kept for Hub 3, Pine and Concrete only.");
   if (typeof pid !== "string" || !pid || SEAT_KEY_BAD.test(pid)) throw new DivisionSeatError("invalid-argument", "Which product?");
   const path = `${SEATS_PATH}/${location}/${pid}`;
   if (clear === true) {
     const cur = (await db.ref(path).once("value")).val();
-    if (cur && cur.via === "solve") await db.ref(path).remove();
-    return { ok: true, cleared: !!(cur && cur.via === "solve") };
+    // Only the Solve being undone: never an older Solve's seat.
+    const ours = !!cur && cur.via === "solve" && (!solveId || cur.solveId === solveId);
+    if (ours) await db.ref(path).remove();
+    return { ok: true, cleared: ours };
   }
   const product = (await db.ref(`products/${pid}`).once("value")).val();
   if (!product) throw new DivisionSeatError("not-found", "That product does not exist.");
@@ -263,7 +269,12 @@ async function applyDivisionSeat({ db, callerUid, data, nowIso }) {
   if ((footwear || location !== DIVISION_HUB) && owner !== undefined && owner !== null) {
     throw new DivisionSeatError("invalid-argument", "Only a non-sneaker at Hub 3 has an owning shop.");
   }
-  const seat = { via: "solve", at: nowIso, by: callerUid, ...(location === DIVISION_HUB && !footwear ? { owner } : {}) };
+  // One owning shop: a second Solve may not take the product from the first.
+  const existing = (await db.ref(path).once("value")).val();
+  if (existing?.owner && owner && existing.owner !== owner) {
+    throw new DivisionSeatError("failed-precondition", `This product already belongs to ${existing.owner === "concrete" ? "Concrete" : "Pine"} at Hub 3.`);
+  }
+  const seat = { via: "solve", at: nowIso, by: callerUid, ...(typeof solveId === "string" && solveId ? { solveId } : {}), ...(location === DIVISION_HUB && !footwear ? { owner } : {}) };
   await db.ref(path).set(seat);
   return { ok: true, seat };
 }

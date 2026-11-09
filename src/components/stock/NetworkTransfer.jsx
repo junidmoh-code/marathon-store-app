@@ -276,7 +276,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // returning card offers Solve again, not last week's success message.
         setUndoables((l) => l.filter((x) => x.key !== u.key));
         setSolved((d) => { const n = { ...d }; delete n[u.pid]; return n; });
-        if (u.divisionSeat) httpsCallable(functions, "seatDivisionSolve")({ location: DIVISION_HUB, pid: u.pid, clear: true }).catch(() => {});
+        if (u.divisionSeat) httpsCallable(functions, "seatDivisionSolve")({ location: DIVISION_HUB, pid: u.pid, clear: true, solveId: u.firstBatch?.solveId }).catch(() => {});
       }
     } catch (e) {
       setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` } : x)));
@@ -940,12 +940,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     setSolveBusy(card.pid);
     const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
+    let seated = null;
     try {
       const openNow = await readOpenLocks(card.pid);
       const lines = hub3SolveLines(card, openNow);
       const raise = lines.filter((l) => l.qty > 0);
-      await httpsCallable(functions, "seatDivisionSolve")({ location: DIVISION_HUB, pid: card.pid, owner });
       const solveId = solveIdFor(card.pid, serverNowMs());
+      seated = solveId;
+      await httpsCallable(functions, "seatDivisionSolve")({ location: DIVISION_HUB, pid: card.pid, owner, solveId });
       const updates = {};
       const requestIds = [];
       for (const l of raise) {
@@ -980,6 +982,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         ? `${units} unit${units === 1 ? "" : "s"} requested from Central for Hub 3 — ${LOC_LABEL[owner] || owner} asks Hub 3 for its keep once Hub 3 has received them.`
         : `Seated at Hub 3 for ${LOC_LABEL[owner] || owner}, but Central has none free — nothing was requested.` } }));
     } catch (e) {
+      if (seated) httpsCallable(functions, "seatDivisionSolve")({ location: DIVISION_HUB, pid: card.pid, clear: true, solveId: seated }).catch(() => {});
       setSolvePid((cur) => (cur === card.pid ? null : cur));
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: DIVISION_HUB, sizes: [], msg: `Couldn't solve — nothing was requested, retry. (${e?.message || "error"})` } }));
     }

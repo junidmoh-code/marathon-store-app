@@ -1245,7 +1245,7 @@ function computeRefillPlan(snapshot) {
         // lock-less pass below (satisfiedClosures).
         const hubServes = shopCentralWithdrawal({
           dest, pid, entry, rr, inFlight, routes, locations, routing, product: products?.[pid],
-          snapshot: { stock, openIndex, heldLines, refillRequests }, nowMs,
+          snapshot: { stock: division && DIVISION_SHOPS.includes(dest) ? rawStock : stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
           closes.push({
@@ -1480,7 +1480,7 @@ function computeRefillPlan(snapshot) {
         const hubServes = shopCentralWithdrawal({
           dest, pid: r.productId, entry: { source: r.createdFrom?.source || r.source }, rr: r,
           inFlight: movedRefillIds.has(String(id)), routes, locations, routing, product: products?.[r.productId],
-          snapshot: { stock, openIndex, heldLines, refillRequests }, nowMs,
+          snapshot: { stock: division && DIVISION_SHOPS.includes(dest) ? rawStock : stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
           satisfiedClosures.push({
