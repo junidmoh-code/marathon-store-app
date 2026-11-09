@@ -145,7 +145,7 @@ describe("the wiring keeps the two lanes apart", () => {
   // GATED_SNEAKER_HUBS makes the marker exactly as wide as the availability
   // lane it hangs off, in both directions and without anyone remembering.
   it("and there is one map per GATED hub, derived from the gate itself", () => {
-    expect(APP).toContain('GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
+    expect(APP).toContain('[...GATED_SNEAKER_HUBS, ...sectionHubIds].map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
     expect(APP, "a hardcoded per-hub map is back").not.toMatch(/hub[123]: displayUnitsByCell\(displaySlotsLive/);
   });
   // THE FENCE THE CLEANUP SESSION ASKED FOR. Widening the marker must not be

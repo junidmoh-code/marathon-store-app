@@ -156,12 +156,12 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
 // itself will take); this returns the hub whose data should gate, or NULL for
 // "no gate, yesterday's behaviour".
 //
-// TWO HUBS, and deliberately only two:
+// THE HUBS IN SERVICE (gatedSneakerHubs below):
 //   • hub1 — the original build (2026-08-25)
 //   • hub2 — joined 2026-09-05, this file's whole reason for existing twice
-//   • hub3 (Pine) and everything else — NULL. Pine replenishes on its own
-//     terms and its grid has never been gated; the shops never run this gate
-//     at all (they are order DESTINATIONS, not the supplying hub).
+//   • hub3 — joined 2026-11-09, once counted
+//   • anything else, and a hub out of service — NULL. The shops never run this
+//     gate at all (they are order DESTINATIONS, not the supplying hub).
 //
 // isFootwearProduct, not merely "not clothing": the sneaker browse grid also
 // carries perfumes, bags and one-size accessories (no productType), whose
@@ -194,6 +194,14 @@ export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 // gated hubs on Marathon PE's and Trophy's side of the wall (pinned by test).
 export function gatedSneakerHubs(network) {
   return hubIds(net(network), { solveOnly: true, autoRefillOnly: true });
+}
+// THE FULLY LIVE HUBS — the old answer, kept for one reader: which hubs may a
+// "Not on the wall" display request be raised against. Pine and Concrete walls
+// record only; no request path is opened for them (Junid's rules, CLAUDE.md,
+// and the 7 Nov 2026 wall screen). Widening the assistant's ✕ must not widen
+// this. displayWallPineConcrete.render.test.jsx holds it.
+export function displayRequestHubs(network) {
+  return hubIds(net(network), { liveOnly: true });
 }
 // The hubs a gated sneaker may be rerouted to from `taggedHub`: the other
 // gated hubs on the SAME side of the section wall, in registry order. Never
@@ -313,11 +321,10 @@ export function cellBlockInfo({ cells, promised, productId, size }) {
 //     not move an order. `ready` false on the tagged hub means no reroute at
 //     all (the gate is already open in that state); `ready` false on the
 //     alternate means it cannot be chosen.
-//   • ONLY BETWEEN THE GATED HUBS (hub1 ⇄ hub2) AND ONLY FOR GATED SNEAKERS.
-//     Pine/hub3 is not a candidate and is never rerouted away from: Pine
-//     replenishes on its own terms, its grid has never been gated, and
-//     gatedSneakerHub already refuses it. Clothing, perfume, bags and one-size
-//     accessories keep exactly yesterday's routing.
+//   • ONLY BETWEEN GATED HUBS ON ONE SIDE OF THE WALL (hub1 ⇄ hub2), AND ONLY
+//     FOR GATED SNEAKERS. Hub 3 is gated but alone on its side, so it has no
+//     alternate. Clothing, perfume, bags and one-size accessories keep exactly
+//     yesterday's routing.
 //
 // PER SIZE, NOT PER PRODUCT. The 107 affected chips are not all whole products
 // — a shoe can hold 8s at Hub 1 and 9s at Hub 2. The gate has always been a

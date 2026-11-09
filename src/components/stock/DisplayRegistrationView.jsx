@@ -63,9 +63,9 @@ import { readyPromisedByCell } from "./availabilityCore";
 import { serverNowMs } from "../../utils/serverTime";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
-import { gatedSneakerHubs, isFootwearProduct } from "./availabilityCore";
+import { displayRequestHubs, isFootwearProduct } from "./availabilityCore";
 import { displayStores, displayHubsForStore } from "./hubCleanupCore";
-import { useNetwork } from "../../utils/useNetwork";
+import { useMySections } from "../../utils/useMySections";
 import { wallAllows } from "../../utils/networkRegistry";
 import { isDeactivated } from "../../utils/deactivation";
 import { labelFor } from "./locations";
@@ -170,15 +170,17 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   const { permRecord, isSuperAdmin } = usePermissions();
   const isAdmin = isSuperAdmin || permRecord?.stockRole === "admin";
 
-  const { registry: network } = useNetwork();
-  const STORES = useMemo(() => displayStores(network), [network]);
+  // The viewer's own sections only: a Pine account opens on Pine's wall, never
+  // on Marathon PE's. An owner or a two-section account sees every store.
+  const { registry: network, canSee } = useMySections();
+  const STORES = useMemo(() => displayStores(network).filter((s) => canSee(s)), [network, canSee]);
   const [storePick, setStore] = useState(() => ordersScope || null);
   const store = storePick && STORES.includes(storePick) ? storePick : STORES[0];
   // The (at most two) gated hubs that can supply this wall. Two fixed hooks
   // below read them; Hub 1 and Hub 2 for Marathon PE and Trophy. A wall with
   // no gated hub is read against the hubs that feed it (Hub 3 for Pine and
   // Concrete) — for looking and recording only: `requestable` is false.
-  const GATED_PAIR = useMemo(() => gatedSneakerHubs(network).filter((h) => wallAllows(network, store, h)).slice(0, 2), [network, store]);
+  const GATED_PAIR = useMemo(() => displayRequestHubs(network).filter((h) => wallAllows(network, store, h)).slice(0, 2), [network, store]);
   const requestable = GATED_PAIR.length > 0;
   const HUB_PAIR = useMemo(
     () => (GATED_PAIR.length ? GATED_PAIR : displayHubsForStore(store, network).slice(0, 2)),

@@ -14,7 +14,7 @@ import { setCurrentNetworkFromRaw, __resetNetworkForTests } from "../../utils/ne
 import { REACTIVE_REFILL_HUBS, reactiveRefillHubs, isReactiveRefillHub } from "./reactiveRefillHubs";
 import { onHoldRefillPlan } from "./onHoldRefill";
 import {
-  GATED_SNEAKER_HUBS, gatedSneakerHubs, gatedSneakerHub, sneakerAlternates, resolveSneakerSourcing,
+  GATED_SNEAKER_HUBS, gatedSneakerHubs, displayRequestHubs, gatedSneakerHub, sneakerAlternates, resolveSneakerSourcing,
 } from "./availabilityCore";
 import { CENTRAL_FED_HUBS, centralFedHubs, centralFedRow, orderRowHub } from "./tomorrowGate";
 import { DISTRIBUTION_DESTS, distributionDests, suggestInitialDistribution, destLabel } from "./distributionSuggest";
@@ -132,6 +132,11 @@ describe("sneaker sourcing — 'the other hub' is another hub IN THE SAME SECTIO
     expect(gatedSneakerHub(shoe, "hub2", SEED_REGISTRY)).toBe("hub2");
     expect(gatedSneakerHub(shoe, "hub3", S1_LIVE)).toBe("hub3");
     expect(gatedSneakerHub({ ...shoe, productType: "clothing" }, "hub2", SEED_REGISTRY)).toBeNull();
+  });
+
+  it("the display-request hubs stay the fully LIVE ones: Hub 3 going in service opens no request path", () => {
+    expect(displayRequestHubs(SEED_REGISTRY)).toEqual(["hub1", "hub2"]);
+    expect(pickDisplaySourceHub({ product: { ...shoe, hubs: ["hub3"] }, hubData: { hub3: hub(5) }, store: "concrete", network: SEED_REGISTRY })).toEqual({ hub: null });
   });
 
   it("a display request is sourced only from a hub on the shop's side of the wall", () => {

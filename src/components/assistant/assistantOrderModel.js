@@ -97,10 +97,8 @@ export function sneakerBlockNoteText(size, w) {
   // "this size doesn't exist" and stopped looking. Say what was actually
   // checked. Only when the resolver really did read both (w.checkedBoth);
   // an unsettled alternate keeps the single-hub wording verbatim.
-  // `checkedLabel` names the hubs for a shop whose two are not Hub 1 and Hub 2
-  // (a Section 1 shop); Marathon PE / Trophy pass none and keep the wording.
   if (!w || w.booked <= 0) return w?.checkedBoth
-    ? `Size ${sz} isn't at ${w.checkedLabel || "Hub 1 or Hub 2"} right now — it can't be ordered.`
+    ? `Size ${sz} isn't at Hub 1 or Hub 2 right now — it can't be ordered.`
     : `Size ${sz} isn't available at ${hub} right now — it can't be ordered.`;
   if (w.available <= 0) {
     if (w.pullOnly)

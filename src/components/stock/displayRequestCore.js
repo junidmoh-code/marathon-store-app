@@ -37,7 +37,7 @@
 //
 // PURE — no firebase, no react. displayRequestStore.js is the only writer.
 
-import { availableUnits, promisedKey, gatedSneakerHubs } from "./availabilityCore";
+import { availableUnits, promisedKey, displayRequestHubs } from "./availabilityCore";
 import { wallAllows } from "../../utils/networkRegistry";
 import { net } from "./sectionRouting";
 import { isOpenDisplayRequest, requestStoreFor } from "./displayRowCore";
@@ -97,7 +97,7 @@ export function hubUnitsFor({ cells, promised, productId }) {
  * Without `store` (an older caller) the list is not narrowed.
  */
 export function pickDisplaySourceHub({ product, hubData, hubs: hubsIn, store = null, network }) {
-  const gated = hubsIn || gatedSneakerHubs(network);
+  const gated = hubsIn || displayRequestHubs(network);
   const hubs = store ? gated.filter((h) => wallAllows(net(network), store, h)) : gated;
   const productId = product?.id;
   if (!productId) return { hub: null };

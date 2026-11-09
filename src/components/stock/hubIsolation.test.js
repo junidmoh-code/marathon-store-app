@@ -400,7 +400,7 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
   // The maps are derived from that constant now, so the marker can never be
   // wider — or narrower — than the availability lane it hangs off.
   it("…and the maps are derived from the sneaker gate, not from a list beside it", () => {
-    expect(app()).toContain('GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
+    expect(app()).toContain('[...GATED_SNEAKER_HUBS, ...sectionHubIds].map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
     expect(app(), "a hardcoded hub map is back beside the derived one")
       .not.toMatch(/hub[123]: displayUnitsByCell\(displaySlotsLive/);
   });

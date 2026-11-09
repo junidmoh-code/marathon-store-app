@@ -107,3 +107,18 @@ describe("the alternatives sheet", () => {
     expect(fn).toContain("if (!result.rows.length && (hubLoading || !sneakerHubsOfShop.length)) return null;");
   });
 });
+
+describe("parity: features that follow the shop's division", () => {
+  it("the display marker reads this shop's own hubs, and the slots stream only when it has some", () => {
+    expect(APP).toContain("useDisplaySlotsState(onSection2Hubs || sectionHubIds.length > 0)");
+    expect(APP).toContain("[...GATED_SNEAKER_HUBS, ...sectionHubIds].map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])");
+  });
+  it("each TV board shows its own division's layby pulls", () => {
+    expect(APP).toContain("pullOnTvBoard(p, section)");
+    expect(APP).toContain("<TvWithAutoCollect orders={orders} section={2}");
+    expect(APP).toContain("<TvWithAutoCollect orders={orders} section={section}");
+  });
+  it("the shop list fills a stale /locations copy from the seed", () => {
+    expect(APP).toContain("const allShops = sellableLocations(withSeedGaps(shopRegistry));");
+  });
+});

@@ -25,6 +25,7 @@ const CELLS = {
 const READ_PATHS = [];
 vi.mock("./useStock", () => ({
   useLocations: () => ({}),
+  usePathState: () => ({ value: null, settled: true, error: false }),   // /network: the seed
   useStockCells: (loc) => { READ_PATHS.push(loc || "ALL"); return loc ? (CELLS[loc]?.p1 ? { p1: CELLS[loc].p1 } : {}) : CELLS; },
 }));
 

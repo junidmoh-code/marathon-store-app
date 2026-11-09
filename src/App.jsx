@@ -190,7 +190,7 @@ import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { dispatchSkipsStock } from "./utils/dispatchStockPolicy";
-import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf, laybyQueueRow, QUEUE_INCOMING, QUEUE_READY } from "./components/layby/contract";
+import { storageHubOf, pullOnTvBoard, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf, laybyQueueRow, QUEUE_INCOMING, QUEUE_READY } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, computeRestockCounts, soldPairEntries, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { holdReleaseUpdate } from "./components/stock/onHoldRefill";
@@ -9957,7 +9957,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // The live display slots — one ~60 KB listener (the marker cannot be
   // derived from stock cells; cost stated in useDisplaySlots). Skipped on
   // Pine, like the hub1 stock subscription above.
-  const displaySlotsState = useDisplaySlotsState(onSection2Hubs);
+  const displaySlotsState = useDisplaySlotsState(onSection2Hubs || sectionHubIds.length > 0);
   const displaySlots = displaySlotsState.value;
   // THE DISPLAY REGISTER USED TO JOIN HERE AS A SECOND SOURCE AND IT WAS THE
   // BUG. That node is write-only-upward history keyed pid__sizeKey (its one
@@ -10022,33 +10022,14 @@ function AssistantView({ products, onExit, orders = [] }) {
   // a real size (live census 2026-09-08). They are separate names now so that
   // widening one can never quietly widen the other.
   //
-  // ── ONE MAP PER GATED HUB, AND PINE IS NOT ONE OF THEM ────────────────────
-  // The first cut of this built a hub3 map too and the commit said Pine's
-  // displays would now be marked. They are not, and the map was unreachable
-  // dead code that read as a delivered promise (independent review, 2026-09-08).
-  // The glyph asks the SERVING hub, the serving hub comes from sneakerHubOf,
-  // and that runs through gatedSneakerHub — which answers only from
-  // GATED_SNEAKER_HUBS, ["hub1", "hub2"]. A Pine sneaker resolves to no hub at
-  // all on this screen: availabilityKnown is false for it, sneakerOut declines
-  // to answer, and the alternatives sheet says so in as many words. The marker
-  // cannot be wider than the availability lane it hangs off, and making it so
-  // would mean widening the sneaker gate — a stock-routing change, not a glyph.
-  //
-  // So the maps are built FROM the gate rather than from a list written beside
-  // it. Pine's 18 hub3 slots stay unmarked, which is the truth and is now said
-  // out loud; and if hub3 is ever admitted to the sneaker gate, the marker
-  // follows it in the same commit instead of needing to be remembered.
-  //
-  // AND MARKING PINE WOULD TAKE MORE THAN A WIDER GATE, which is the other
-  // reason not to fake it here: a Pine device does not subscribe to the slots
-  // node at all (displaySlotsState above is passed `!== "pine"`), so
-  // displaySlotsLive is empty there whatever this map contains. Marking Pine
-  // means a new listener on a Pine device plus a hub source for the glyph that
-  // stops short of the availability gate — a data-cost decision and a
-  // stock-routing one. Neither is a glyph change, and neither is this PR.
+  // ── ONE MAP PER HUB THIS SCREEN CAN ANSWER FOR ────────────────────────────
+  // The glyph asks the SERVING hub, so a map exists for each hub a size on this
+  // screen can resolve to: Hub 1 and Hub 2, plus this shop's own section hubs
+  // (Hub 3 for Pine and Concrete since 9 Nov 2026 — empty for Marathon PE and
+  // Trophy, whose maps are exactly the two they always had).
   const displayUnitsByHub = useMemo(() => Object.fromEntries(
-    GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])
-  ), [displaySlotsLive]);
+    [...GATED_SNEAKER_HUBS, ...sectionHubIds].map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])
+  ), [displaySlotsLive, sectionHubIds]);
   // THE PULL LANE'S MAP. Hub 1, and it stays Hub 1 — the checkout pre-flight is
   // its only reader. If the pull lane is ever extended to another hub, that
   // change has to give pendingDisplayPullsByCell a real hub filter FIRST
@@ -10540,9 +10521,6 @@ function AssistantView({ products, onExit, orders = [] }) {
         : (sectionHubIds.length > 1 && sectionHubIds.includes(hub)
         && sectionHubIds.every(h => sneakerGateReady(h))
         && sectionHubIds.every(h => sneakerAvail(p.id, s, h) <= 0)),
-      // The hubs "both" names, for a shop whose two are not Hub 1 and Hub 2.
-      // Absent for Marathon PE / Trophy: the note keeps its own wording.
-      ...(onSection2Hubs ? {} : { checkedLabel: sectionHubIds.map(h => HUB_LABELS[h] || h).join(" or ") }),
     };
   };
   // ── THE MARKER, AND THE WHOLE OF WHAT IT DOES ────────────────────────────
@@ -10586,7 +10564,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   //
   // Still appearance-only. It nets nothing into availability and the caller
   // suppresses it on a ✕ tile, so an unresolved hub simply means no glyph —
-  // which is also what a Pine/hub3 shoe gets, because gatedSneakerHub answers
+  // which is also what a shoe at a hub out of service gets, because gatedSneakerHub answers
   // for hub1 and hub2 only and the glyph may not outrun the availability lane.
   const sneakerDisplayInfo = (p, s) => {
     if (!s) return null;
@@ -10654,7 +10632,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // EVERY GATE FAILS CLOSED. A suggestion an assistant reads out that turns out
   // not to exist is worse than the bare refusal it replaced — it costs the
   // customer twice and teaches the assistant not to trust the screen. So:
-  //   • availabilityKnown is FALSE for a Pine/hub3 shoe and for a hub whose
+  //   • availabilityKnown is FALSE for a shoe at a hub out of service and for a hub whose
   //     cells have not settled. sneakerOut returns false there meaning "no
   //     gate", NOT "in stock", and reading it the other way is exactly how an
   //     unverified shoe reaches a customer.
@@ -11059,10 +11037,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   //     cell check would refuse most of Pine's real sales. Which stock Pine
   //     orders should be judged against is Junid's open question
   //     (docs/ORDER-GRID-ZERO-STOCK.md), not something to guess here.
-  //     HOW THAT IS HELD NOW: gatedSneakerHub answers from the registry's LIVE
-  //     hubs, and Hub 3 is not live — so a Pine or Concrete sneaker is ungated
-  //     here and on the grid alike. The day the owner makes Hub 3 live (its
-  //     cells counted in) both switch on together, on Hub 3's own cells.
+  //     THAT QUESTION CLOSED ON 9 NOV 2026: Hub 3 is counted, gatedSneakerHub
+  //     answers for every hub in service, and a Pine or Concrete sneaker is
+  //     guarded here and on the grid alike, on Hub 3's own cells.
   const stockGuardedLine = (item) => {
     if (item.requestDisplayPartner || item.displayPairRequest === true) return false;
     if (item.productType === "clothing") return true;
@@ -21428,7 +21405,7 @@ const VOICE_VOCAB = {
   enabled:  "Pickup announcements on",
 };
 
-function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
+function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
   // The customer pickup board shows REAL customer orders only. "Shop Refill"
   // rows are internal clothing-refill (CR) requests that live in the SAME
   // /orders node — the warehouse Order Queue already excludes them (see the
@@ -21708,7 +21685,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // orders. Only "collect" pulls (return_to_stock are internal cancellations).
   const laybyPulls = useLaybyPulls();
   const laybyOrders = useMemo(() => (laybyPulls || [])
-    .filter(p => p && p.invoiceNo && dispositionOf(p) !== DISPOSITION.RETURN_TO_STOCK)
+    .filter(p => p && p.invoiceNo && dispositionOf(p) !== DISPOSITION.RETURN_TO_STOCK && pullOnTvBoard(p, section))
     .map(p => {
       const st = p.status || PULL_STATUS.PENDING;
       const num = laybyTvNumber(p.invoiceNo);
@@ -21722,7 +21699,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       }
       return null; // rejected / returnedToStock → not shown on the board
     })
-    .filter(Boolean), [laybyPulls]);
+    .filter(Boolean), [laybyPulls, section]);
   const allOrders = useMemo(() => [...(orders || []), ...laybyOrders], [orders, laybyOrders]);
 
   // Live specials for the advertising band (fail-open inside the hook: an
@@ -21836,13 +21813,13 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
 function TvOnlyShell() {
   const orders = useTvOrders(); // key-range scoped — see useTvOrders
   // Hidden top-right double-tap leaves the #tv kiosk URL → back to the normal app.
-  return <TvWithAutoCollect orders={orders} onExit={() => { window.location.hash = ""; }} />;
+  return <TvWithAutoCollect orders={orders} section={2} onExit={() => { window.location.hash = ""; }} />;
 }
 
 // The same shell for a Section 1 kiosk (?section=1#tv): its own stores' orders.
 function SectionTvShell({ section }) {
   const orders = useSectionTvOrders(section);
-  return <TvWithAutoCollect orders={orders} onExit={() => { window.location.hash = ""; }} />;
+  return <TvWithAutoCollect orders={orders} section={section} onExit={() => { window.location.hash = ""; }} />;
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
