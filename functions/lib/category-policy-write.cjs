@@ -65,6 +65,8 @@ const { encodeSizeKey, resolveTarget, policyCategoryKey } = require("./refill-en
 const { loadNetwork } = require("./network-load.cjs");
 const { CENTRAL_FED_KEY, CENTRAL_FED_MAX, centralFedPerSize } = require("./central-fed.cjs");
 const CENTRAL_FED_PATH = `config/refillEngine/${CENTRAL_FED_KEY}`;
+const { CONCRETE_DIVISION_KEY, concreteDivisionPolicy } = require("./concrete-division.cjs");
+const CONCRETE_DIVISION_PATH = `config/refillEngine/${CONCRETE_DIVISION_KEY}`;
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -997,6 +999,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       // stores it may be set for (registry stores config.routes does not name).
       centralFedClothing: isPlainObject(cfg[CENTRAL_FED_KEY]) ? cfg[CENTRAL_FED_KEY] : null,
       centralFedStores: centralFedCandidates(cfg, network),
+      concreteDivision: isPlainObject(cfg[CONCRETE_DIVISION_KEY]) ? cfg[CONCRETE_DIVISION_KEY] : null,
       history: await readHistory(db),
       serverNowMs: nowMs,
     };
@@ -1045,6 +1048,40 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       throw httpsError("internal", "The number was written but did not read back as expected.", { historyId: historyRef.key, written: written ?? null });
     }
     return { ok: true, action: "setCentralFed", location: loc, before, after, historyId: historyRef.key, history: await readHistory(db) };
+  }
+
+  // ── THE CONCRETE DIVISION — keeps and the Hub 3 switch (lib/concrete-division.cjs)
+  // One object at config/refillEngine/concreteDivision; null deletes it (the
+  // rollback). Same discipline as setCentralFed.
+  if (d.action === "setConcreteDivision") {
+    if (!("policy" in d)) throw httpsError("invalid-argument", "policy is required — send `policy: null` to remove it.");
+    const after = d.policy === null ? null : d.policy;
+    if (after !== null) {
+      const n = concreteDivisionPolicy({ [CONCRETE_DIVISION_KEY]: after });
+      if (!n || !n.shopOnly || !n.fromHub3 || !n.hub3Keep) {
+        throw httpsError("invalid-argument", "Every keep needs a whole number from 1 to 99 per size and per design.");
+      }
+    }
+    const before = isPlainObject(cfg[CONCRETE_DIVISION_KEY]) ? cfg[CONCRETE_DIVISION_KEY] : null;
+    if (dryRun) return { ok: true, dryRun: true, action: "setConcreteDivision", before, after };
+    if (sameValue(before, after)) return { ok: true, action: "setConcreteDivision", noChange: true, before, after };
+    if (d.expectedBefore !== undefined && !sameValue(before, d.expectedBefore)) {
+      throw httpsError("failed-precondition", "These numbers changed while this was open. Close and re-open it to see the current values.", { drift: true, live: before });
+    }
+    const historyRef = db.ref(HISTORY_PATH).push();
+    await historyRef.set({ kind: "concreteDivision", at: nowMs, by: callerEmail, byUid: callerUid || null, before, after, status: "pending" });
+    const liveNow = await val(db, CONCRETE_DIVISION_PATH);
+    if (!sameValue(liveNow ?? null, before)) {
+      await historyRef.update({ status: "aborted_on_drift", liveAtAbort: liveNow ?? null });
+      throw httpsError("failed-precondition", "These numbers changed while this was being saved. Nothing was written.", { drift: true, live: liveNow ?? null, historyId: historyRef.key });
+    }
+    await db.ref(CONCRETE_DIVISION_PATH).set(after);
+    invalidateCensusCache();
+    const written = await val(db, CONCRETE_DIVISION_PATH);
+    const verified = sameValue(written ?? null, after);
+    await historyRef.update({ status: verified ? "applied" : "unverified", verifiedAt: nowMs });
+    if (!verified) throw httpsError("internal", "The numbers were written but did not read back as expected.", { historyId: historyRef.key, written: written ?? null });
+    return { ok: true, action: "setConcreteDivision", before, after, historyId: historyRef.key, history: await readHistory(db) };
   }
 
   // ── THE EXPLICIT-ROW LIST — "N with their own rows", opened for editing ───

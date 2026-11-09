@@ -247,6 +247,37 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
     .map(({ size, qty, want, avail }) => ({ size, qty, want, avail }));
 }
 
+// ─── TWO HUBS, ONE SNEAKER SOLVE (Junid, 9 Nov 2026) ──────────────────────────
+// Allowed pairs are Hub 1 + Hub 3 and Hub 2 + Hub 3 (concreteDivision.js
+// sneakerSolvePairAllowed). When Central cannot cover both hubs' keeps for a
+// size, the size is split evenly and an odd leftover unit goes to the Marathon
+// hub. Neither hub is ever given more than its keep; what one cannot take goes
+// to the other. Returns { [hub]: [{ size, qty, want, avail }] }.
+export function footwearPairPlan({ catalogSizes = [], hubs = [], policies = {}, centralCells = {}, openSizes = {}, reserved = {}, marathonHub }) {
+  const [a, b] = marathonHub === hubs[1] ? [hubs[1], hubs[0]] : [hubs[0], hubs[1]];
+  const open = (h) => new Set((openSizes[h] || []).map((s) => sizeKeyOf(s)));
+  const openA = open(a), openB = open(b);
+  const out = { [a]: [], [b]: [] };
+  const sizes = (catalogSizes || []).map(String).filter((s) => s && s !== "_").sort((x, y) => footwearSizeRank(x) - footwearSizeRank(y));
+  for (const size of sizes) {
+    const key = sizeKeyOf(size);
+    const wantA = openA.has(key) ? 0 : Math.max(Number(policies[a]?.[key]) || 0, 0);
+    const wantB = openB.has(key) ? 0 : Math.max(Number(policies[b]?.[key]) || 0, 0);
+    const onHand = Math.max(Number(centralCells?.[decodedCellKeyOf(size)]?.qty) || 0, 0);
+    const avail = Math.max(onHand - Math.max(Number(reserved?.[key]) || 0, 0), 0);
+    let qa, qb;
+    if (avail >= wantA + wantB) { qa = wantA; qb = wantB; }
+    else {
+      qa = Math.min(Math.ceil(avail / 2), wantA);
+      qb = Math.min(avail - qa, wantB);
+      qa = Math.min(avail - qb, wantA);   // what B could not take comes back to A
+    }
+    if (wantA > 0 && qa > 0) out[a].push({ size, qty: qa, want: wantA, avail });
+    if (wantB > 0 && qb > 0) out[b].push({ size, qty: qb, want: wantB, avail });
+  }
+  return out;
+}
+
 // ─── PICK PLAN — the operator typed the sizes and quantities themselves ───────
 // Owner decision 2026-07-31: the "Move" button must RAISE A REQUEST like Solve
 // does, not transfer stock. Moving was the wrong default — it shifted inventory

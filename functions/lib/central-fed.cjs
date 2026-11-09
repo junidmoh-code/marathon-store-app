@@ -18,6 +18,8 @@
 // firebase, no clock, no registry import (the registry is handed in).
 "use strict";
 
+const { concreteDivisionPolicy, isDivisionFootwear, DIVISION_SHOPS } = require("./concrete-division.cjs");
+
 // ── BEGIN SHARED BODY ────────────────────────────────────────────────────────
 const CENTRAL_FED_KEY = "centralFedClothing";
 const CENTRAL_FED_MAX = 99;
@@ -49,6 +51,9 @@ function centralFedPerSize(config, network, store) {
 }
 
 function isCentralFedProduct(config, network, store, product) {
+  // The Concrete division (concrete-division.cjs) keeps every non-sneaker in
+  // the shop from Central, and its numbers come from that key.
+  if (concreteDivisionPolicy(config)) return DIVISION_SHOPS.includes(store) && !!product && !isDivisionFootwear(product);
   return centralFedPerSize(config, network, store) !== null && centralFedIsClothing(product);
 }
 

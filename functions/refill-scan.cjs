@@ -34,6 +34,7 @@ const networkRegistry = require("./lib/network-registry.cjs");
 const stockTrust = require("./lib/stock-trust.cjs");
 const { isCentralFedProduct } = require("./lib/central-fed.cjs");
 const { loadNetwork } = require("./lib/network-load.cjs");
+const concreteDivision = require("./lib/concrete-division.cjs");
 const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
 const { requestUntouched, pickInProgress } = require("./lib/shop-source-rule.cjs");
 const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
@@ -656,10 +657,24 @@ async function runScan() {
     // new request, close, resize or retry there. Nothing paused → the same
     // plan object, unchanged.
     const paused = pausedLocations.pausedLocationSet(config);
+    // SEATING (lib/concrete-division.cjs): a scoped read of the three division
+    // locations only, and only with the division's key on. Anything holding
+    // units there is seated; the plan reads this scan's seats, written below.
+    let seatPlan = null;
+    if (concreteDivision.concreteDivisionPolicy(config)) {
+      const seats = Object.fromEntries(await Promise.all(concreteDivision.DIVISION_LOCATIONS.map(
+        (l) => db.ref(`${concreteDivision.SEATS_PATH}/${l}`).once("value").then((s) => [l, s.val() || {}]))));
+      seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, nowIso: new Date(nowMs).toISOString() });
+    }
+    const seatArgs = seatPlan ? { seats: seatPlan.effective } : {};
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines, locations,
-      network,
+      network, ...seatArgs,
     }), paused);
+    if (seatPlan && Object.keys(seatPlan.writes).length) {
+      const seatUpd = Object.fromEntries(Object.entries(seatPlan.writes).map(([k, v]) => [`${concreteDivision.SEATS_PATH}/${k}`, v]));
+      if (await safeUpdate(db, seatUpd, "division seats")) counts.seats = { seated: seatPlan.seated, released: seatPlan.released };
+    }
     if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };
     counts.errors.push(...plan.errors);
 
@@ -951,7 +966,9 @@ async function runScan() {
           ? (Array.isArray(intent.forDests) && intent.forDests.length > 0
             && intent.forDests.every((d) => !networkRegistry.trustedCellsOnly(network, d) || stockTrust.cellTrusted(stock?.[d]?.[pid]?.[sizeKey])))
           : stockTrust.cellTrusted(stock?.[dest]?.[pid]?.[sizeKey]);
-        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk) {
+        // Hub 3's seated sneakers are counted stock (concrete-division.cjs): the
+        // plan flags exactly those, and only for Hub 3.
+        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk && !(intent.seatedHub3 === true && dest === concreteDivision.DIVISION_HUB)) {
           counts.errors.push(`untrusted cell: refused ${source}→${dest} for ${pid}/${sizeKey}`);
           continue;
         }

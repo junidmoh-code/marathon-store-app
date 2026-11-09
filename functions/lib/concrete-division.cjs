@@ -1,0 +1,288 @@
+// ─── THE CONCRETE DIVISION — seating + non-sneaker keeps (Junid, 9 Nov 2026) ──
+//
+// Hub 3 is a full warehouse feeding Pine and Concrete. Everything that is
+// specific to that division's non-sneaker stock and to SEATING lives here;
+// the refill engine asks this file and stays the only planner.
+//
+// THE SWITCH AND THE NUMBERS — one engine-config key, edited on the Engine
+// Policy card (setCategoryPolicy action "setConcreteDivision"):
+//   config/refillEngine/concreteDivision = {
+//     shopOnly: { perSize: 2, oneSize: 5 },           // kept in-store, from Central
+//     fromHub3: { perSize: 1, oneSize: 5, askAt: 0 }, // a shop's keep from Hub 3
+//     hub3Keep: { on: false, perSize: 2, oneSize: 10 },// Hub 3's own keep from Central
+//   }
+// Absent or garbled ⇒ this whole file answers "not mine" and the division runs
+// on the older routes (the seed's templates and central-fed clothing), so
+// deleting the key is the rollback. It never speaks for Section 2.
+//
+// SEATING. `refill_engine/seats/{loc}/{pid} = { via, at, owner? }`, written by
+// the server only (the scan, and the Solve callable). A cell holding units at
+// Pine, Concrete or Hub 3 seats the product there; a Solve seats it too. It
+// stays seated when it sells out; it leaves when the last units were moved out
+// by a transfer, or when the Seating tab switches it off (target 0 rows).
+//
+// TWO COPIES, ONE BODY: this file and src/components/stock/concreteDivision.js
+// carry the same text between the markers; a parity test pins them. Pure: no
+// firebase, no clock.
+"use strict";
+
+// ── BEGIN SHARED BODY ────────────────────────────────────────────────────────
+const CONCRETE_DIVISION_KEY = "concreteDivision";
+const DIVISION_HUB = "hub3";
+const DIVISION_SHOPS = Object.freeze(["concrete", "marathon-pine"]);
+const DIVISION_LOCATIONS = Object.freeze([DIVISION_HUB, ...DIVISION_SHOPS]);
+const SEATS_PATH = "refill_engine/seats";
+const DIVISION_MAX = 99;
+// The eight footwear categories (policy-resolve.cjs FOOTWEAR_CATEGORY_KEYS,
+// pinned equal by test): the sneaker side of the division's split.
+const DIVISION_FOOTWEAR_KEYS = Object.freeze(["boots", "designer-shoes", "kids-shoes", "loafers", "running-shoes", "slides", "sneakers", "soccer-boots"]);
+
+function divisionIsObj(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+function divisionCategoryKey(product) {
+  const key = typeof product?.categoryKey === "string" ? product.categoryKey.trim() : "";
+  if (key) return key;
+  if (product && product.category === "Footwear" && product.subcategory === "Sneakers") return "sneakers";
+  return null;
+}
+
+function isDivisionFootwear(product) {
+  if (!product) return false;
+  return product.category === "Footwear" || DIVISION_FOOTWEAR_KEYS.includes(divisionCategoryKey(product));
+}
+
+// The sizes a product is kept in: every size it declares; one that declares
+// none (or only the "_" sentinel) is the one-size cell "_".
+function divisionSizes(product) {
+  const declared = ((product && product.sizes) || []).map((s) => (s === null || s === undefined ? "" : String(s).trim())).filter((s) => s && s !== "_");
+  return declared.length ? [...new Set(declared)] : ["_"];
+}
+const isDivisionOneSize = (product) => divisionSizes(product)[0] === "_";
+
+const validN = (n) => Number.isInteger(n) && n >= 1 && n <= DIVISION_MAX;
+
+// The normalised policy, or null when the key is absent or unusable. A partly
+// garbled leg is read as absent (that leg arms nothing), never guessed.
+function concreteDivisionPolicy(config) {
+  const raw = divisionIsObj(config) ? config[CONCRETE_DIVISION_KEY] : null;
+  if (!divisionIsObj(raw)) return null;
+  const leg = (r) => (divisionIsObj(r) && validN(r.perSize) && validN(r.oneSize) ? { perSize: r.perSize, oneSize: r.oneSize } : null);
+  const shopOnly = leg(raw.shopOnly);
+  const fromHub3 = leg(raw.fromHub3);
+  const hub3Keep = leg(raw.hub3Keep);
+  if (!shopOnly && !fromHub3 && !hub3Keep) return null;
+  return {
+    shopOnly,
+    fromHub3: fromHub3 ? { ...fromHub3, askAt: Number.isInteger(raw.fromHub3.askAt) && raw.fromHub3.askAt >= 0 ? raw.fromHub3.askAt : 0 } : null,
+    hub3Keep: hub3Keep ? { ...hub3Keep, on: raw.hub3Keep.on === true } : null,
+  };
+}
+
+// May this config arm the division at all, for this location?
+function isDivisionLocation(loc) {
+  return DIVISION_LOCATIONS.includes(loc);
+}
+
+// A shop's numbers. { target, minQty, reorderPoint, source }.
+function divisionTargetShape(n, reorderPoint) {
+  return { target: n, minQty: Math.max(1, n - 1), reorderPoint: reorderPoint === undefined ? null : reorderPoint, source: "concrete_division" };
+}
+
+// Has Hub 3 EVER held this product? "By any means": a cell (cells are never
+// deleted, whatever its count or trust), an engine lock, units in a held box,
+// or an open request into Hub 3.
+function hub3PresenceIndex({ hub3Stock, hub3Locks, hub3Held, refillRequests } = {}) {
+  const present = new Set();
+  for (const pid of Object.keys(hub3Stock || {})) {
+    if (pid === "_meta") continue;
+    const n = hub3Stock[pid];
+    if (n && typeof n === "object" && Object.values(n).some((c) => c != null)) present.add(pid);
+  }
+  for (const pid of Object.keys(hub3Locks || {})) if (hub3Locks[pid]) present.add(pid);
+  for (const line of Object.values(hub3Held || {})) if (line && line.productId) present.add(line.productId);
+  for (const r of Object.values(refillRequests || {})) {
+    if (r && r.status === "open" && !r.shadow && r.requestingLocation === DIVISION_HUB && r.productId) present.add(r.productId);
+  }
+  return present;
+}
+
+// ── WHAT THE ENGINE ASKS, CELL BY CELL ───────────────────────────────────────
+// `division` is what divisionContext built for this scan. Returns undefined
+// ("not the division's business — carry on down the engine's own order"), null
+// ("the division answers: no target here"), or a target. `stockView` is the
+// engine's own stock view for this destination (trust mask applied).
+function divisionTarget(division, dest, pid, size, products, stockView) {
+  if (!division || !isDivisionLocation(dest)) return undefined;
+  const product = products?.[pid];
+  if (!product || isDivisionFootwear(product)) return undefined;
+  const { policy, seats, hub3Present } = division;
+  const key = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size);
+  if (!divisionSizes(product).includes(key)) return null;
+  const one = isDivisionOneSize(product);
+  if (dest === DIVISION_HUB) {
+    if (!policy.hub3Keep || !policy.hub3Keep.on) return null;
+    if (!seats?.[dest]?.[pid]) return null;
+    return divisionTargetShape(one ? policy.hub3Keep.oneSize : policy.hub3Keep.perSize);
+  }
+  // A shop arms only what it carries in the engine's own (trust-masked) view.
+  const node = stockView?.[dest]?.[pid];
+  if (!node || typeof node !== "object" || Object.keys(node).length === 0) return null;
+  if (hub3Present.has(pid)) {
+    const owner = seats?.[DIVISION_HUB]?.[pid]?.owner;
+    if (owner && owner !== dest) return null;
+    if (!policy.fromHub3) return null;
+    return divisionTargetShape(one ? policy.fromHub3.oneSize : policy.fromHub3.perSize, policy.fromHub3.askAt);
+  }
+  if (!policy.shopOnly) return null;
+  return divisionTargetShape(one ? policy.shopOnly.oneSize : policy.shopOnly.perSize);
+}
+
+// Where a shop's non-sneaker refill comes from: Hub 3 once Hub 3 has held it,
+// else Central. undefined for anything else.
+function divisionSourceFor(division, dest, pid, product, central) {
+  if (!division || !DIVISION_SHOPS.includes(dest) || !product || isDivisionFootwear(product)) return undefined;
+  return division.hub3Present.has(pid) ? DIVISION_HUB : central;
+}
+
+// The non-sneaker products the division manages at a destination this scan.
+function divisionManagedPids(division, dest, stockView, products) {
+  if (!division || !isDivisionLocation(dest)) return [];
+  if (dest === DIVISION_HUB) {
+    if (!division.policy.hub3Keep || !division.policy.hub3Keep.on) return [];
+    return Object.keys(division.seats?.[dest] || {}).filter((pid) => products?.[pid] && !isDivisionFootwear(products[pid]));
+  }
+  return Object.keys(stockView?.[dest] || {}).filter((pid) => {
+    if (pid === "_meta" || !products?.[pid] || isDivisionFootwear(products[pid])) return false;
+    const n = stockView[dest][pid];
+    return !!n && typeof n === "object" && Object.keys(n).length > 0;
+  });
+}
+
+// ── HUB + SHOP OF A SOLVE ────────────────────────────────────────────────────
+// The two pairs a sneaker Solve may take, and the one it never may.
+const SNEAKER_SOLVE_HUBS = Object.freeze(["hub1", "hub2", "hub3"]);
+function sneakerSolvePairAllowed(hubs) {
+  const h = [...new Set(hubs || [])];
+  if (h.length === 0 || h.length > 2) return false;
+  if (!h.every((x) => SNEAKER_SOLVE_HUBS.includes(x))) return false;
+  return !(h.includes("hub1") && h.includes("hub2"));
+}
+// ── END SHARED BODY ──────────────────────────────────────────────────────────
+
+// ── SERVER ONLY ──────────────────────────────────────────────────────────────
+
+// One scan's context, or null when the key is off.
+function divisionContext({ config, rawStock, seats, openIndex, heldLines, refillRequests }) {
+  const policy = concreteDivisionPolicy(config);
+  if (!policy) return null;
+  const hub3Present = hub3PresenceIndex({
+    hub3Stock: rawStock?.[DIVISION_HUB], hub3Locks: openIndex?.[DIVISION_HUB], hub3Held: heldLines?.[DIVISION_HUB], refillRequests,
+  });
+  return { policy, seats: seats || {}, hub3Present };
+}
+
+// Movement types that take units OUT of a location by a person's move. A sale,
+// a count or a write-off is not one: those leave the product seated.
+const MOVED_OUT_TYPES = new Set(["transfer_out", "transfer"]);
+
+// ── WHAT THE SCAN WRITES ABOUT SEATS ─────────────────────────────────────────
+// Pure. Returns { effective, writes, seated, released }:
+//   effective  the seats the plan should read (written ones plus this scan's)
+//   writes     { "<loc>/<pid>": seat | null } under SEATS_PATH
+function planSeats({ rawStock, seats, movements, nowIso }) {
+  const effective = {};
+  const writes = {};
+  let seated = 0, released = 0;
+  const lastMove = new Map();
+  for (const m of movements || []) {
+    if (!m || !m.productId || !m.ts) continue;
+    for (const loc of [m.from, m.to]) {
+      if (!DIVISION_LOCATIONS.includes(loc)) continue;
+      const k = `${loc}|${m.productId}`;
+      if (!lastMove.has(k) || String(m.ts) >= String(lastMove.get(k).ts)) lastMove.set(k, m);
+    }
+  }
+  const held = (node) => !!node && typeof node === "object" && Object.values(node).some((c) => c && typeof c === "object" && (Number(c.qty) || 0) > 0);
+  for (const loc of DIVISION_LOCATIONS) {
+    const here = { ...(divisionIsObj(seats?.[loc]) ? seats[loc] : {}) };
+    const node = rawStock?.[loc] || {};
+    for (const pid of Object.keys(node)) {
+      if (pid === "_meta" || here[pid] || !held(node[pid])) continue;
+      here[pid] = { via: "stock", at: nowIso };
+      writes[`${loc}/${pid}`] = here[pid];
+      seated++;
+    }
+    // Moved out: nothing left here, and the newest thing that happened to this
+    // product here was a person's transfer away.
+    for (const pid of Object.keys(here)) {
+      if (held(node[pid])) continue;
+      const m = lastMove.get(`${loc}|${pid}`);
+      if (!m || m.from !== loc || !MOVED_OUT_TYPES.has(m.type)) continue;
+      // A refill or order leaving is the location doing its job, and a Solve
+      // newer than the move means it was brought back: neither releases it.
+      if (m.link && (m.link.refillId || m.link.orderId)) continue;
+      if (String(m.ts) <= String(here[pid]?.at || "")) continue;
+      delete here[pid];
+      writes[`${loc}/${pid}`] = null;
+      released++;
+    }
+    effective[loc] = here;
+  }
+  return { effective, writes, seated, released };
+}
+
+// ── THE SOLVE'S SEAT — the seatDivisionSolve callable ────────────────────────
+// `refill_engine` is server-only, so a Solve records its seat through here. The
+// sneaker pair rule is enforced HERE as well as on the screen.
+class DivisionSeatError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+const SEAT_KEY_BAD = /[.#$/[\]\s]/;
+
+async function applyDivisionSeat({ db, callerUid, data, nowIso }) {
+  const d = divisionIsObj(data) ? data : {};
+  if (!callerUid) throw new DivisionSeatError("unauthenticated", "Sign in first.");
+  const role = (await db.ref(`users/${callerUid}/stockRole`).once("value")).val();
+  if (!role) throw new DivisionSeatError("permission-denied", "You need a stock role to Solve.");
+  const { location, pid, owner, hubs, clear, solveId } = d;
+  if (!DIVISION_LOCATIONS.includes(location)) throw new DivisionSeatError("invalid-argument", "Seats are kept for Hub 3, Pine and Concrete only.");
+  if (typeof pid !== "string" || !pid || SEAT_KEY_BAD.test(pid)) throw new DivisionSeatError("invalid-argument", "Which product?");
+  const path = `${SEATS_PATH}/${location}/${pid}`;
+  if (clear === true) {
+    const cur = (await db.ref(path).once("value")).val();
+    // Only the Solve being undone: never an older Solve's seat.
+    const ours = !!cur && cur.via === "solve" && (!solveId || cur.solveId === solveId);
+    if (ours) await db.ref(path).remove();
+    return { ok: true, cleared: ours };
+  }
+  const product = (await db.ref(`products/${pid}`).once("value")).val();
+  if (!product) throw new DivisionSeatError("not-found", "That product does not exist.");
+  if (hubs !== undefined && !sneakerSolvePairAllowed(Array.isArray(hubs) ? hubs : [])) {
+    throw new DivisionSeatError("failed-precondition", "Hub 1 and Hub 2 cannot be solved together.");
+  }
+  const footwear = isDivisionFootwear(product);
+  if (location === DIVISION_HUB && !footwear && !DIVISION_SHOPS.includes(owner)) {
+    throw new DivisionSeatError("invalid-argument", "Choose Pine or Concrete.");
+  }
+  if ((footwear || location !== DIVISION_HUB) && owner !== undefined && owner !== null) {
+    throw new DivisionSeatError("invalid-argument", "Only a non-sneaker at Hub 3 has an owning shop.");
+  }
+  // One owning shop: a second Solve may not take the product from the first.
+  const existing = (await db.ref(path).once("value")).val();
+  if (existing?.owner && owner && existing.owner !== owner) {
+    throw new DivisionSeatError("failed-precondition", `This product already belongs to ${existing.owner === "concrete" ? "Concrete" : "Pine"} at Hub 3.`);
+  }
+  const seat = { via: "solve", at: nowIso, by: callerUid, ...(typeof solveId === "string" && solveId ? { solveId } : {}), ...(location === DIVISION_HUB && !footwear ? { owner } : {}) };
+  await db.ref(path).set(seat);
+  return { ok: true, seat };
+}
+
+module.exports = {
+  applyDivisionSeat, DivisionSeatError,
+  CONCRETE_DIVISION_KEY, DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, SEATS_PATH, DIVISION_MAX, DIVISION_FOOTWEAR_KEYS,
+  isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
+  divisionTargetShape, hub3PresenceIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
+  SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, divisionContext, planSeats,
+};

@@ -686,6 +686,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // history with a revert button must never produce.
     if (h.kind === "targets") return revertTargets(h);
     if (h.kind === "centralFed") return revertCentralFed(h);
+    if (h.kind === "concreteDivision") return saveConcreteDivision(h.before ?? null, h.after ?? null);
     const what = h.kind === "group" ? h.groupKey : h.categoryKey;
     const ok = window.confirm(
       `Put ${what} back to how it was before this change?\n\n` +
@@ -721,6 +722,16 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // ── CENTRAL-FED CLOTHING (centralFed.js) — Concrete keeps its clothing in
   // the shop, N of every size, straight from Central. One number per store,
   // through the same callable, history and revert as every write here.
+  const saveConcreteDivision = async (policy, expectedBefore) => {
+    setBusy(true);
+    try {
+      await setCategoryPolicyFn()({ action: "setConcreteDivision", policy, expectedBefore });
+      await load(true);
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+    setBusy(false);
+  };
   const saveCentralFed = async (location, perSize) => {
     setBusy("centralFed");
     try {
@@ -939,7 +950,12 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
               </div>
             )}
 
-            {!loading && !error && (census?.centralFedStores || []).map((loc) => (
+            {!loading && !error && census?.concreteDivision && (
+              <ConcreteDivisionPanel policy={census.concreteDivision} busy={busy}
+                onSave={(next) => saveConcreteDivision(next, census.concreteDivision)} />
+            )}
+
+            {!loading && !error && !census?.concreteDivision && (census?.centralFedStores || []).map((loc) => (
               <CentralFedPanel key={loc} location={loc} perSize={census?.centralFedClothing?.[loc] ?? null}
                 busy={busy} onSave={(n) => saveCentralFed(loc, n)} />
             ))}
@@ -1697,7 +1713,7 @@ function History({ entries, onRevert, busy }) {
                   yields no label would otherwise print a bare separator with a
                   blank name after it. (CodeRabbit, PR #469.) */}
               {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
-                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : "no field changes")}
+                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : h.kind === "concreteDivision" ? `Hub 3 keep ${h.before?.hub3Keep?.on ? "on" : "off"} -> ${h.after?.hub3Keep?.on ? "on" : "off"}` : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>
           </div>
@@ -1712,6 +1728,36 @@ function History({ entries, onRevert, busy }) {
 }
 
 export { defaultMinQty };
+
+// ── THE CONCRETE DIVISION ────────────────────────────────────────────────────
+// Everything that is not a sneaker at Hub 3, Pine and Concrete. The one control
+// here is Hub 3's own keep, shipped off because Hub 3's clothing is not counted.
+export function ConcreteDivisionPanel({ policy, busy, onSave }) {
+  const keep = policy?.hub3Keep || {};
+  const on = keep.on === true;
+  const row = (label, leg, extra) => (
+    <div style={{ color: GRAY, fontSize: ".85rem", marginTop: ".25rem" }}>
+      <b style={{ color: "#fff" }}>{label}:</b> {leg?.perSize ?? "—"} per size, {leg?.oneSize ?? "—"} per design{extra}
+    </div>
+  );
+  return (
+    <div data-concrete-division-panel style={{ ...GLASS, padding: ".9rem 1rem", marginBottom: "1rem" }}>
+      <div style={{ fontWeight: 700, color: "#fff", marginBottom: ".3rem" }}>Concrete division — everything except sneakers</div>
+      {row("Kept in the shop, from Central", policy?.shopOnly)}
+      {row("Shop keep, from Hub 3", policy?.fromHub3, ", asks at 0")}
+      {row("Hub 3 keep, from Central", keep)}
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: ".6rem" }}>
+        <span data-hub3-keep-state style={{ color: on ? "#4ade80" : "#fbbf24", fontSize: ".85rem", fontWeight: 700 }}>
+          Hub 3 keep is {on ? "ON" : "OFF"}
+        </span>
+        <button disabled={!!busy} onClick={() => onSave({ ...policy, hub3Keep: { ...keep, on: !on } })} style={{ ...bGray, opacity: busy ? .5 : 1 }}>
+          {on ? "Switch Hub 3 keep off" : "Switch Hub 3 keep on"}
+        </button>
+      </div>
+      {!on && <div style={{ color: GRAY, fontSize: ".8rem", marginTop: ".4rem" }}>Switch on once Hub 3's clothing is counted. Until then Hub 3 asks Central only for what a Solve raises.</div>}
+    </div>
+  );
+}
 
 // ── CENTRAL-FED CLOTHING PANEL ───────────────────────────────────────────────
 // "Concrete — clothing kept in the shop": N of every size the product has,

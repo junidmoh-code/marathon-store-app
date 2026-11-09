@@ -24,7 +24,7 @@
 "use strict";
 
 const REQUEST_SOURCE = Object.freeze({ SCAN: "scan", SOLVE: "solve" });
-const SOLVE_VIAS = Object.freeze(["missing_products_solve", "first_batch_hub2_leg", "missing_sneakers"]);
+const SOLVE_VIAS = Object.freeze(["missing_products_solve", "first_batch_hub2_leg", "missing_sneakers", "hub3_solve"]);
 const REJECT_REASON = "not_scan_source";
 const REJECTED_LOG = "refill_engine/rejectedRequests";
 
@@ -32,6 +32,9 @@ const REJECTED_LOG = "refill_engine/rejectedRequests";
 function classifyRequestSource(rr) {
   if (!rr || typeof rr !== "object") return null;
   const cf = rr.createdFrom && typeof rr.createdFrom === "object" ? rr.createdFrom : {};
+  // Hub 1 + Hub 2 is never one sneaker Solve (Junid, 9 Nov 2026): the server's
+  // half of the refusal, whatever a screen let through.
+  if (Array.isArray(cf.solveHubs) && cf.solveHubs.includes("hub1") && cf.solveHubs.includes("hub2")) return null;
   if (rr.requestSource === REQUEST_SOURCE.SCAN) return cf.engine === true ? REQUEST_SOURCE.SCAN : null;
   if (rr.requestSource === REQUEST_SOURCE.SOLVE) return (cf.firstBatch === true || SOLVE_VIAS.includes(cf.via)) ? REQUEST_SOURCE.SOLVE : null;
   if (rr.requestSource != null) return null;   // an unknown tag is not a pass

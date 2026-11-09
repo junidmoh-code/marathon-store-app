@@ -1,0 +1,468 @@
+{
+ "categoryPolicy": {
+  "bags": {
+   "hub2": {
+    "minQty": 2,
+    "reorderPoint": 0,
+    "target": 4
+   },
+   "trophy": {
+    "minQty": 1,
+    "reorderPoint": 0,
+    "target": 2
+   }
+  },
+  "belts": {
+   "hub2": {
+    "minQty": 3,
+    "reorderPoint": 0,
+    "target": 5
+   },
+   "perSize": true,
+   "trophy": {
+    "minQty": 1,
+    "reorderPoint": 0,
+    "target": 1
+   }
+  },
+  "caps-beanies": {
+   "hub2": {
+    "minQty": 5,
+    "reorderPoint": 2,
+    "target": 10
+   },
+   "marathon-pe": {
+    "minQty": 3,
+    "reorderPoint": 2,
+    "target": 5
+   }
+  },
+  "fitted-caps": {
+   "hub2": {
+    "minQty": 3,
+    "reorderPoint": 0,
+    "target": 5
+   },
+   "marathon-pe": {
+    "minQty": 1,
+    "reorderPoint": 0,
+    "target": 2
+   },
+   "perSize": true
+  },
+  "gloves": {
+   "hub2": {
+    "minQty": 15,
+    "reorderPoint": 10,
+    "target": 50
+   },
+   "marathon-pe": {
+    "minQty": 5,
+    "reorderPoint": 5,
+    "target": 30
+   }
+  },
+  "perfumes": {
+   "hub2": {
+    "minQty": 5,
+    "reorderPoint": 5,
+    "target": 10
+   },
+   "marathon-pe": {
+    "minQty": 4,
+    "reorderPoint": 3,
+    "target": 8
+   }
+  },
+  "soccer-jerseys": {
+   "hub2": {
+    "sizes": {
+     "L": {
+      "minQty": 2,
+      "reorderPoint": 1,
+      "target": 4
+     },
+     "M": {
+      "minQty": 2,
+      "reorderPoint": 1,
+      "target": 4
+     },
+     "S": {
+      "minQty": 2,
+      "reorderPoint": 1,
+      "target": 4
+     },
+     "XL": {
+      "minQty": 2,
+      "reorderPoint": 1,
+      "target": 4
+     },
+     "XXL": {
+      "minQty": 2,
+      "reorderPoint": 1,
+      "target": 4
+     },
+     "XXXL": {
+      "minQty": 2,
+      "reorderPoint": 1,
+      "target": 4
+     }
+    }
+   },
+   "marathon-pe": {
+    "sizes": {
+     "L": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 2
+     },
+     "M": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 2
+     },
+     "S": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 2
+     },
+     "XL": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 2
+     },
+     "XXL": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 2
+     },
+     "XXXL": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 2
+     }
+    }
+   },
+   "perSize": true
+  },
+  "sunglasses": {
+   "hub2": {
+    "minQty": 1,
+    "reorderPoint": 1,
+    "target": 5
+   },
+   "trophy": {
+    "minQty": 3,
+    "reorderPoint": 3,
+    "target": 5
+   }
+  },
+  "underwear": {
+   "hub2": {
+    "sizes": {
+     "L": {
+      "minQty": 2,
+      "reorderPoint": 1,
+      "target": 5
+     },
+     "M": {
+      "minQty": 2,
+      "reorderPoint": 1,
+      "target": 5
+     },
+     "S": {
+      "minQty": 2,
+      "reorderPoint": 1,
+      "target": 5
+     },
+     "XL": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 5
+     },
+     "XXL": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 5
+     },
+     "XXXL": {
+      "minQty": 1,
+      "reorderPoint": 0,
+      "target": 5
+     }
+    }
+   },
+   "marathon-pe": {
+    "sizes": {
+     "L": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 3
+     },
+     "M": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 3
+     },
+     "S": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 3
+     },
+     "XL": {
+      "minQty": 1,
+      "reorderPoint": 1,
+      "target": 2
+     },
+     "XXL": {
+      "minQty": 1,
+      "reorderPoint": 0,
+      "target": 1
+     },
+     "XXXL": {
+      "minQty": 1,
+      "reorderPoint": 0,
+      "target": 1
+     }
+    }
+   },
+   "perSize": true
+  }
+ },
+ "defaultRunByStore": {
+  "hub2": {
+   "L": 3,
+   "M": 3,
+   "S": 2,
+   "XL": 2,
+   "XXL": 2,
+   "XXXL": 1
+  },
+  "marathon-pe": {
+   "L": 2,
+   "M": 2,
+   "S": 2,
+   "XL": 1,
+   "XXL": 1,
+   "XXXL": 1
+  },
+  "trophy": {
+   "L": 2,
+   "M": 2,
+   "S": 2,
+   "XL": 1,
+   "XXL": 1,
+   "XXXL": 1
+  }
+ },
+ "enabled": true,
+ "footwearReorderPoint": {
+  "hub1": 0,
+  "hub2": 0
+ },
+ "footwearRunByLocation": {
+  "hub1": {
+   "10": 2,
+   "11": 1,
+   "3": 2,
+   "4": 2,
+   "5": 2,
+   "5_5": 2,
+   "6": 3,
+   "7": 2,
+   "8": 2,
+   "9": 2
+  },
+  "hub2": {
+   "10": 2,
+   "11": 1,
+   "3": 2,
+   "4": 2,
+   "5": 2,
+   "5_5": 2,
+   "6": 3,
+   "7": 2,
+   "8": 2,
+   "9": 2
+  }
+ },
+ "maxFootwearIntentsPerRun": 25,
+ "maxIntentsPerRun": 75,
+ "maxUnitsPerIntent": 20,
+ "mode": {
+  "hub1": "live",
+  "hub2": "live",
+  "marathon-pe": "live",
+  "trophy": "live"
+ },
+ "policyGroups": {
+  "footwear-all": {
+   "armed": true,
+   "label": "Footwear",
+   "memberCategoryKeys": [
+    "boots",
+    "designer-shoes",
+    "kids-shoes",
+    "loafers",
+    "running-shoes",
+    "slides",
+    "sneakers",
+    "soccer-boots"
+   ],
+   "policy": {
+    "hub1": {
+     "carriedOnly": true,
+     "sizes": {
+      "10": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "11": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "12": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "13": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "3": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "4": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "5": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "5_5": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "6": {
+       "minQty": 2,
+       "reorderPoint": 1,
+       "target": 3
+      },
+      "7": {
+       "minQty": 2,
+       "reorderPoint": 1,
+       "target": 3
+      },
+      "8": {
+       "minQty": 2,
+       "reorderPoint": 1,
+       "target": 3
+      },
+      "9": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      }
+     }
+    },
+    "hub2": {
+     "carriedOnly": true,
+     "sizes": {
+      "10": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "11": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "12": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "13": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "3": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "4": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "5": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "5_5": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      },
+      "6": {
+       "minQty": 2,
+       "reorderPoint": 1,
+       "target": 3
+      },
+      "7": {
+       "minQty": 2,
+       "reorderPoint": 1,
+       "target": 3
+      },
+      "8": {
+       "minQty": 2,
+       "reorderPoint": 1,
+       "target": 3
+      },
+      "9": {
+       "minQty": 1,
+       "reorderPoint": 1,
+       "target": 2
+      }
+     }
+    },
+    "perSize": true
+   }
+  }
+ },
+ "recheckCooldownMinutes": 1440,
+ "rejectStreakLimit": 4,
+ "routes": {
+  "hub1": "central",
+  "hub2": "central",
+  "marathon-pe": "hub2",
+  "trophy": "hub2"
+ },
+ "ruleBasedTargets": true,
+ "staleIntentHours": 168,
+ "subcategoryRunByLocation": {
+  "hub2": {
+   "Watches": 2
+  },
+  "marathon-pe": {
+   "Watches": 2
+  },
+  "trophy": {
+   "Watches": 2
+  }
+ }
+}

@@ -16,6 +16,8 @@
 // TWO COPIES, ONE BODY: functions/lib/central-fed.cjs and this file carry
 // the same text between the markers; a parity test pins them. Pure: no
 // firebase, no clock, no registry import (the registry is handed in).
+import { concreteDivisionPolicy, isDivisionFootwear, DIVISION_SHOPS } from "./concreteDivision";
+
 // ── BEGIN SHARED BODY ────────────────────────────────────────────────────────
 const CENTRAL_FED_KEY = "centralFedClothing";
 const CENTRAL_FED_MAX = 99;
@@ -47,6 +49,9 @@ function centralFedPerSize(config, network, store) {
 }
 
 function isCentralFedProduct(config, network, store, product) {
+  // The Concrete division (concrete-division.cjs) keeps every non-sneaker in
+  // the shop from Central, and its numbers come from that key.
+  if (concreteDivisionPolicy(config)) return DIVISION_SHOPS.includes(store) && !!product && !isDivisionFootwear(product);
   return centralFedPerSize(config, network, store) !== null && centralFedIsClothing(product);
 }
 

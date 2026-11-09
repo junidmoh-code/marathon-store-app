@@ -676,6 +676,23 @@ exports.refillRequestSourceGuard = onValueCreated(
   }
 );
 
+// A Solve's seat at Hub 3, Pine or Concrete (lib/concrete-division.cjs): the
+// seats node is server-only. Refuses Hub 1 + Hub 2 on the server too.
+exports.seatDivisionSolve = onCall(
+  { region: "europe-west1", timeoutSeconds: 30, memory: "256MiB" },
+  async (request) => {
+    const { applyDivisionSeat, DivisionSeatError } = require("./lib/concrete-division.cjs");
+    try {
+      return await applyDivisionSeat({
+        db: admin.database(), callerUid: request.auth?.uid || null, data: request.data, nowIso: new Date().toISOString(),
+      });
+    } catch (e) {
+      if (e instanceof DivisionSeatError) throw new HttpsError(e.code, e.message);
+      throw e;
+    }
+  },
+);
+
 exports.firstBatchLeg = onValueWritten(
   {
     ref:            "/refill_requests/{requestId}",
