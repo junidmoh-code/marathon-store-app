@@ -356,7 +356,7 @@ test("an unreadable owner degrades without releasing anything", async () => {
   const db = fakeDb({ products: {}, [STYLE_CODE_INDEX_PATH]: { [CODE]: DEAD } });
   db.fail.read.add("products/pGONE");
   const out = await resolve(db);
-  assert.strictEqual(out.claimOrphaned, false);
+  assert.strictEqual(out.claimOrphaned, true, "the gate must offer a retry, not route to a product it cannot see");
   assert.strictEqual(out.claim.productId, "pGONE");
   assert.deepStrictEqual(claimOf(db), DEAD);
   assert.strictEqual(logOf(db), undefined);

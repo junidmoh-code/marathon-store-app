@@ -35,6 +35,7 @@ const MUTATIONS = [
   ["M19", "A released code must come back free", RESOLVE, "          claim = null;\n          owners = [];\n", "", SERVER],
   ["M20", "A failed release must be reported for a retry", RESOLVE, "could not release dead claim ${normalised}:`, err && err.message);\n        claimOrphaned = true;\n", "could not release dead claim ${normalised}:`, err && err.message);\n", SERVER],
   ["M21", "An unreadable owner must not be released", RESOLVE, "owner check failed for ${normalised}:`, err && err.message);\n", "owner check failed for ${normalised}:`, err && err.message);\n      verdict = { kind: CLAIM_DEAD, owners: [] };\n", SERVER],
+  ["M30", "An unreadable owner asks for a retry", RESOLVE, "      console.warn(`resolveStyleCode: owner check failed for ${normalised}:`, err && err.message);\n      claimOrphaned = true;\n", "      console.warn(`resolveStyleCode: owner check failed for ${normalised}:`, err && err.message);\n", SERVER],
   ["M22", "Survivors and live siblings must be what the client gets", RESOLVE, "      claim = { ...claim, productId: owners[0], siblingIds: owners.slice(1) };\n", "", SERVER],
   ["M23", "The release names the caller", RESOLVE, "releasedBy: actor ? actor.uid : \"system:resolveStyleCode\",", "releasedBy: \"system:resolveStyleCode\",", SERVER],
   ["M24", "An unsettled claim reads as a failed lookup", "src/components/admin/styleCodeGateLogic.js", "if (d.claimOrphaned) return STEP_UNAVAILABLE;", "if (d.claimOrphaned) return STEP_EXISTING;", GATE],

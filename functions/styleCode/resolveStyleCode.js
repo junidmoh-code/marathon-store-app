@@ -396,8 +396,10 @@ async function runResolve(db, {
       verdict = await inspectClaim(db, claim.node);
     } catch (err) {
       // Bookkeeping must never fail a lookup we already paid the vendor for, and
-      // "could not read the product" is not "the product does not exist".
+      // "could not read the product" is not "the product does not exist". The
+      // claim is left alone and the gate offers the retry.
       console.warn(`resolveStyleCode: owner check failed for ${normalised}:`, err && err.message);
+      claimOrphaned = true;
     }
     if (verdict && verdict.kind === CLAIM_DEAD) {
       try {
