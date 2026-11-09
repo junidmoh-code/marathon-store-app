@@ -207,7 +207,7 @@ import { catByKey, isOneSize, legacyFor, needsAssignment, isAssignable } from ".
 import { sizesForCat, sizeRunsOf, runSizes, compareSizes, sizeFamily } from "./utils/sizeRuns";
 import { orderSizesForDisplay } from "./utils/sizeDisplayOrder";
 import { findSubmitShortfall, submitShortfallMessage } from "./components/stock/orderSubmitGuard";
-import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor, extraClothingHub, shopShelfFor, readsShopShelf } from "./utils/sectionSneakerHubs";
+import { sectionSneakerHubs, sneakerPlacementHub, clothingHubFor, extraClothingHub, shopShelfFor, readsShopShelf, shopHeldView, shopHeldBookings } from "./utils/sectionSneakerHubs";
 import { buildNewProduct, stampStyleCodeProvenance } from "./utils/newProductRecord";
 import { saveFailureMessage } from "./utils/saveFailureMessage";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
@@ -9847,10 +9847,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // streaming (a third one) falls back to the serving hub's cells — the
   // behaviour before this lookup existed.
   const clothingHubOf = (pid) => clothingHubFor(sectionNet, effectiveShop, productsById[pid], servingHub);
-  const clothingCellsOf = (pid) => (shopShelfAnswers(productsById[pid]) ? shopShelfState.cells
+  const clothingCellsOf = (pid) => (shopShelfAnswers(productsById[pid]) ? shopHeld.cells
     : extraHub && clothingHubOf(pid) === extraHub ? extraHubCells : servingHubCells);
   const clothingHubLabelOf = (pid) => {
-    if (shopShelfAnswers(productsById[pid])) return HUB_LABELS[shopShelf] || shopShelf;
+    if (shopShelfAnswers(productsById[pid])) return shopHeldLabels().join(" or ");
     const h = extraHub && clothingHubOf(pid) === extraHub ? extraHub : servingHub;
     return HUB_LABELS[h] || h;
   };
@@ -9947,6 +9947,13 @@ function AssistantView({ products, onExit, orders = [] }) {
   const sectionHubB = sectionHubIds[1] || null;
   const sectionCellsA = useStockCellsState(sectionHubA);
   const sectionCellsB = useStockCellsState(sectionHubB);
+  // A shop-held item is offered from the shelf and the shop's hubs together;
+  // shopHeldBookings says which of them each line is booked against.
+  const shopHeld = useMemo(
+    () => shopHeldView(shopShelfState, [sectionHubA && sectionCellsA, sectionHubB && sectionCellsB].filter(Boolean)),
+    [shopShelfState, sectionHubA, sectionHubB, sectionCellsA, sectionCellsB]
+  );
+  const shopHeldLabels = () => [shopShelf, ...sectionHubIds].map((h) => HUB_LABELS[h] || h);
   const sectionPromisedA = useMemo(
     () => (sectionHubA ? readyPromisedByCell(orders, sectionHubA, productsById) : {}),
     [orders, productsById, promiseTick, sectionHubA]
@@ -10402,7 +10409,7 @@ function AssistantView({ products, onExit, orders = [] }) {
     ...(sectionHubB ? { [sectionHubB]: { state: sectionCellsB, promised: sectionPromisedB } } : {}),
     // The shop's own shelf, so the gate can read it by name. No resolver ever
     // chooses it: alternates come from the gated hubs only.
-    ...(shopShelf ? { [shopShelf]: { state: shopShelfState, promised: {} } } : {}),
+    ...(shopShelf ? { [shopShelf]: { state: shopHeld, promised: {} } } : {}),
   };
   const sneakerCellsOf = (hub) => sectionSneaker[hub]?.state || sneakerCellsState(hub);
   const sneakerPromisedOf = (hub) => sectionSneaker[hub]?.promised || sneakerPromisedMap(hub);
@@ -10630,7 +10637,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       if (deadForOrder(p)) return null;                    // says "Deactivated" itself
       const sizes = sizesOf(p);
       if (shopShelfAnswers(p)) {
-        return { sizes, known: hubReadState(shopShelfState).ready, sizeOut: (sz) => hubQty(p.id, sz) <= 0 };
+        return { sizes, known: hubReadState(shopHeld).ready, sizeOut: (sz) => hubQty(p.id, sz) <= 0 };
       }
       if ((p.productType || "sneaker") === "clothing") {
         const lane = sectionSneaker[clothingHubOf(p.id)];
@@ -10644,11 +10651,11 @@ function AssistantView({ products, onExit, orders = [] }) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, onSection2Hubs, sectionHubIds, sectionCellsA, sectionCellsB, sectionPromisedA, sectionPromisedB,
-      servingHubCells, extraHubCells, shopShelfState, sectionNet, effectiveShop, deadForOrder]);
+      servingHubCells, extraHubCells, shopHeld, sectionNet, effectiveShop, deadForOrder]);
   // The alternatives sheet is footwear's (computeAlternatives), so only a shoe
   // is promised "similar shoes"; clothing is told where it is not.
   const unavailableHintFor = (p) => unavailableHint(
-    shopShelfAnswers(p) ? [HUB_LABELS[shopShelf] || shopShelf] : sectionHubIds.map((h) => HUB_LABELS[h] || h),
+    shopShelfAnswers(p) ? shopHeldLabels() : sectionHubIds.map((h) => HUB_LABELS[h] || h),
     { similar: !shopShelfAnswers(p) && (p?.productType || "sneaker") !== "clothing" });
 
   // ── "NOT AVAILABLE — BUT THESE ARE, RIGHT NOW" (2026-09-06) ───────────────
@@ -11053,7 +11060,14 @@ function AssistantView({ products, onExit, orders = [] }) {
   // hubs, else to the back-stock hub (sneakerPlacementHub) — so the cell the
   // tile was gated on, the cell the submit guard re-reads and the hub the
   // order is booked against are one and the same there too.
-  const placedHubFor = (item) => (item.productType === "clothing"
+  // A shop-held line: the shop, or the hub once the shop is out (Junid, 9 Nov 2026).
+  // Marathon PE / Trophy have no shelf here, so every line falls through.
+  const shopHeldBooking = shopHeldBookings(cart, {
+    shelf: shopShelf, shelfCells: shopShelfState.cells,
+    hubs: [{ id: sectionHubA, cells: sectionCellsA.cells }, { id: sectionHubB, cells: sectionCellsB.cells }].filter((h) => h.id),
+    isShopHeld: (l) => isCustomerLine(l) && shopShelfAnswers(l.product),
+  });
+  const placedHubFor = (item) => shopHeldBooking.get(item) || (item.productType === "clothing"
     ? placementHub(sectionNet, effectiveShop, item.product, () => CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2")
     : sneakerPlacementHub(sectionNet, effectiveShop, item.product, cartAllocation.hubOf.get(item), () => (cartAllocation.hubOf.get(item) || computeHubForItem(item))));
   // Which customer lines draw a unit off a hub shelf, and so must pass the
@@ -11195,8 +11209,6 @@ function AssistantView({ products, onExit, orders = [] }) {
         const refusal = await findSubmitShortfall({
           lines: cart.filter(isCustomerLine).filter(stockGuardedLine).map((item) => ({
             hub: placedHubFor(item), productId: item.product.id, size: item.size, label: item.product.name,
-            // The cell the screen gated on: a Pine or Concrete shop-held line.
-            ...(shopShelfAnswers(item.product) ? { hub: shopShelf } : {}),
           })),
           readCell: (hub, pid, size) => get(ref(database, stockCellPath(hub, pid, String(size)))).then((snap) => snap.val()),
           // Net the same promises the ✕ nets — footwear at a gated hub only

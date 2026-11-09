@@ -123,13 +123,13 @@ describe.each(["concrete", "marathon-pine"])("a Concrete-division assistant (%s)
     expect([...out]).toEqual(["c-none"]);
   });
 
-  it("clothing: the shop's own cell — Hub 3's and the other shop's stock are not it", () => {
+  it("clothing: the shop's own cell, then Hub 3 when the shop is out — never the other shop", () => {
     const w = world(shop);
     expect(w.shelfAnswers(byId("c-tee"))).toBe(true);
-    expect(w.hubQty(byId("c-tee"), "S")).toBe(0);    // Hub 3 and the other shop hold none here either
-    expect(w.hubQty(byId("c-tee"), "M")).toBe(shop === "concrete" ? 4 : 2);
-    expect([...w.unavailable(true)]).toEqual(["c-tee0"]);   // Hub 3 has 5 of these; the shop has none
-    expect(w.hubQty(byId("c-tee0"), "M")).toBe(0);
+    expect(w.hubQty(byId("c-tee"), "S")).toBe(9);    // the shop is out; Hub 3 holds 9
+    expect(w.hubQty(byId("c-tee"), "M")).toBe((shop === "concrete" ? 4 : 2) + 9);   // shop's own + Hub 3
+    expect([...w.unavailable(true)]).toEqual([]);    // Hub 3 has 5 of these; the shop has none
+    expect(w.hubQty(byId("c-tee0"), "M")).toBe(5);
   });
 
   it("an untyped item (a perfume) answers from the shop too: zero is out, and the cart counts", () => {
@@ -138,14 +138,30 @@ describe.each(["concrete", "marathon-pine"])("a Concrete-division assistant (%s)
     expect(w.sourcing(byId("c-scent"), "Free Size")).toEqual({ hub: shop, available: 1 });
     const full = scentWorld(shop, { cart: [{ product: byId("c-scent"), size: "Free Size" }] });
     expect(full.sneakerOut(byId("c-scent"), "Free Size")).toBe(true);
-    expect(scentWorld(shop).sneakerOut(byId("c-scent0"), "Free Size")).toBe(true);
-    expect([...scentWorld(shop).unavailable(false)]).toContain("c-scent0");
+    // Shop out, Hub 3 holds it: offered. Out at both: out.
+    expect(scentWorld(shop).sneakerOut(byId("c-scent0"), "Free Size")).toBe(false);
+    const none = { ...STOCK, hub3: { ...STOCK.hub3, "c-scent0": q({ _: 0 }) } };
+    expect(scentWorld(shop, { stock: none }).sneakerOut(byId("c-scent0"), "Free Size")).toBe(true);
+    expect([...scentWorld(shop, { stock: none }).unavailable(false)]).toContain("c-scent0");
   });
 
   it("a shop-held item is listed from the shop's own cell, whatever hub it is tagged for", () => {
     expect(scentWorld(shop).catalogue(false).map((p) => p.id)).toContain("c-scent");
   });
 
+  it("a shop-held size the shop is out of but Hub 3 holds is offered, and books Hub 3", () => {
+    const stock = { ...STOCK, concrete: { "c-tee": { M: { qty: 0 } } }, hub3: { ...STOCK.hub3, "c-tee": { M: { qty: 2 } } } };
+    const line = { product: byId("c-tee"), size: "M" };
+    const w = orderScreenWorld({ shop: "concrete", products: PRODUCTS, stock, cart: [line] });
+    expect(w.hubQty(byId("c-tee"), "M")).toBe(2);
+    expect(w.placedHub(line)).toBe("hub3");
+  });
+  it("a shop-held size the shop still has books the shop, not Hub 3", () => {
+    const stock = { ...STOCK, concrete: { "c-tee": { M: { qty: 1 } } }, hub3: { ...STOCK.hub3, "c-tee": { M: { qty: 2 } } } };
+    const line = { product: byId("c-tee"), size: "M" };
+    const w = orderScreenWorld({ shop: "concrete", products: PRODUCTS, stock, cart: [line] });
+    expect(w.placedHub(line)).toBe("concrete");
+  });
   it("a shoe sitting on the shop's own shelf is not read from it: footwear is Hub 3's", () => {
     const w = world(shop);
     expect(w.shelfAnswers(byId("c-none"))).toBe(false);
