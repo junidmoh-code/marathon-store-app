@@ -951,7 +951,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
             )}
 
             {!loading && !error && census?.concreteDivision && (
-              <ConcreteDivisionPanel policy={census.concreteDivision} busy={busy}
+              <ConcreteDivisionPanel policy={census.concreteDivision} keeps={census.divisionKeeps} busy={busy}
                 onSave={(next) => saveConcreteDivision(next, census.concreteDivision)} />
             )}
 
@@ -1732,7 +1732,7 @@ export { defaultMinQty };
 // ── THE CONCRETE DIVISION ────────────────────────────────────────────────────
 // Everything that is not a sneaker at Hub 3, Pine and Concrete. The one control
 // here is Hub 3's own keep, shipped off because Hub 3's clothing is not counted.
-export function ConcreteDivisionPanel({ policy, busy, onSave }) {
+export function ConcreteDivisionPanel({ policy, busy, onSave, keeps = null }) {
   const keep = policy?.hub3Keep || {};
   const on = keep.on === true;
   const row = (label, leg, extra) => (
@@ -1746,6 +1746,13 @@ export function ConcreteDivisionPanel({ policy, busy, onSave }) {
       {row("Kept in the shop, from Central", policy?.shopOnly)}
       {row("Shop keep, from Hub 3", policy?.fromHub3, ", asks at 0")}
       {row("Hub 3 keep, from Central", keep)}
+      {keeps && (
+        <div data-division-keeps style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginTop: ".6rem" }}>
+          {[["hub3", "Hub 3 keeps"], ["concrete", "Concrete keeps"], ["marathon-pine", "Pine keeps"]].map(([loc, label]) => (
+            <Tile key={loc} label={label} value={`${keeps[loc]?.products ?? 0} product${keeps[loc]?.products === 1 ? "" : "s"} · ${keeps[loc]?.cells ?? 0} sizes`} />
+          ))}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: ".6rem" }}>
         <span data-hub3-keep-state style={{ color: on ? "#4ade80" : "#fbbf24", fontSize: ".85rem", fontWeight: 700 }}>
           Hub 3 keep is {on ? "ON" : "OFF"}

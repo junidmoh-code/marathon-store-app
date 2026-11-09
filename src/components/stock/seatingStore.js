@@ -51,6 +51,7 @@ import { switchOffDraft, clearDraft, targetPayload, isOurs, writableRow } from "
 import { applyMovement } from "./applyMovement";
 import { isTransitLane } from "./transitLanes";
 import { ADMIN_EMAIL } from "../../config/enginePolicy";
+import { DIVISION_HUB, SEATS_PATH } from "./concreteDivision";
 
 // RTDB path segments: a junk size key must fail loudly here rather than write
 // somewhere else. (Same guard as utils/sizeKey assertSafeSegment.)
@@ -457,9 +458,16 @@ export async function moveAndSwitchOff({ seat, ctx, viewer, dest, alsoSwitchOff 
 export async function readSeatingContext(locs, pid) {
   const stock = {};
   const targets = {};
-  await Promise.all((locs || []).flatMap((loc) => [
-    get(ref(database, `stock/${loc}/${pid}`)).then((s) => { if (s.exists()) stock[loc] = { [pid]: s.val() }; }),
-    get(ref(database, `stock_targets/${loc}/${pid}`)).then((s) => { if (s.exists()) targets[loc] = { [pid]: s.val() }; }),
-  ]));
-  return { stock, targets };
+  // Which shop a non-sneaker seated at Hub 3 belongs to. One small keyed read.
+  let hub3Owner = null;
+  await Promise.all([
+    ...(locs || []).flatMap((loc) => [
+      get(ref(database, `stock/${loc}/${pid}`)).then((s) => { if (s.exists()) stock[loc] = { [pid]: s.val() }; }),
+      get(ref(database, `stock_targets/${loc}/${pid}`)).then((s) => { if (s.exists()) targets[loc] = { [pid]: s.val() }; }),
+    ]),
+    (locs || []).includes(DIVISION_HUB)
+      ? get(ref(database, `${SEATS_PATH}/${DIVISION_HUB}/${pid}/owner`)).then((s) => { if (s.exists()) hub3Owner = s.val(); }).catch(() => {})
+      : null,
+  ]);
+  return { stock, targets, hub3Owner };
 }

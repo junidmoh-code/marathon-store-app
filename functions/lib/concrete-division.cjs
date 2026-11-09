@@ -253,6 +253,32 @@ function planSeats({ rawStock, seats, movements, nowIso }) {
   return { effective, writes, seated, released };
 }
 
+// ── WHAT THE DIVISION KEEPS — the Engine Policy card's count ─────────────────
+// Per location: how many products and cells the division holds a keep for, and
+// the units it asks for. Reads what the scan reads (the same targets, the same
+// managed list); the Hub 3 keep is counted only while it is on. `stockView` is
+// the engine's own trust-masked stock; `seats` the seated products per location.
+function divisionKeepCounts({ division, stockView, products }) {
+  const out = {};
+  for (const loc of DIVISION_LOCATIONS) {
+    let cells = 0, units = 0;
+    const pids = new Set();
+    for (const pid of division ? divisionManagedPids(division, loc, stockView, products) : []) {
+      for (const size of divisionSizes(products[pid])) {
+        const t = divisionTarget(division, loc, pid, size, products, stockView);
+        if (!t || !(t.target > 0)) continue;
+        cells += 1;
+        units += t.target;
+        pids.add(pid);
+      }
+    }
+    out[loc] = { products: pids.size, cells, units };
+  }
+  const seatedNonSneakers = division ? Object.keys(division.seats?.[DIVISION_HUB] || {}).filter((pid) => products?.[pid] && !isDivisionFootwear(products[pid])).length : 0;
+  out[DIVISION_HUB] = { ...out[DIVISION_HUB], on: !!division?.policy?.hub3Keep?.on, seatedNonSneakers };
+  return out;
+}
+
 // ── THE SOLVE'S SEAT — the seatDivisionSolve callable ────────────────────────
 // `refill_engine` is server-only, so a Solve records its seat through here. The
 // sneaker pair rule is enforced HERE as well as on the screen.
@@ -304,5 +330,5 @@ module.exports = {
   CONCRETE_DIVISION_KEY, DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, SEATS_PATH, DIVISION_MAX, DIVISION_FOOTWEAR_KEYS,
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
   divisionTargetShape, hub3PresenceIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
-  SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats,
+  SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
 };
