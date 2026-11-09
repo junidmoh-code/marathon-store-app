@@ -45,7 +45,7 @@ describe("tvSectionForShop", () => {
   it("Pine and Concrete's in-app TV is Section 1's; everyone else's has no section, as before", () => {
     expect(tvSectionForShop(NET, "concrete")).toBe(1);
     expect(tvSectionForShop(NET, "marathon-pine")).toBe(1);
-    for (const s of ["marathon-pe", "trophy", null, undefined]) expect(tvSectionForShop(NET, s)).toBe(null);
+    for (const s of ["marathon-pe", "trophy", null, undefined]) expect(tvSectionForShop(NET, s)).toBe(2);
   });
 });
 
@@ -66,7 +66,34 @@ describe("the Section 1 kiosk", () => {
     for (const s of [2, null]) {
       const r = tvOrderKeyRanges(NET, s);
       expect(withSharedRange(r, s)).toBe(r);
-      expect(boardShowsOrder(NET, s, { destShop: "concrete" })).toBe(true);
     }
+    expect(boardShowsOrder(NET, null, { destShop: "concrete" })).toBe(true);
+  });
+});
+
+describe("each TV board shows its own division's orders (Junid, 9 Nov 2026)", () => {
+  it("Marathon's board: Marathon PE and Trophy only, Pine and Concrete gone", () => {
+    expect(boardShowsOrder(NET, 2, { destShop: "marathon-pe" })).toBe(true);
+    expect(boardShowsOrder(NET, 2, { destShop: "trophy" })).toBe(true);
+    expect(boardShowsOrder(NET, 2, { destShop: "marathon-pine" })).toBe(false);
+    expect(boardShowsOrder(NET, 2, { destShop: "concrete" })).toBe(false);
+  });
+  it("Pine and Concrete's board: their own only, Marathon's gone", () => {
+    expect(boardShowsOrder(NET, 1, { destShop: "concrete" })).toBe(true);
+    expect(boardShowsOrder(NET, 1, { destShop: "marathon-pe" })).toBe(false);
+    expect(boardShowsOrder(NET, 1, { destShop: "trophy" })).toBe(false);
+  });
+  it("an order's section stamp decides when it has one, and the legacy Pine record reads as Pine", () => {
+    expect(boardShowsOrder(NET, 2, { section: 1 })).toBe(false);
+    expect(boardShowsOrder(NET, 1, { section: 1 })).toBe(true);
+    expect(boardShowsOrder(NET, 2, { placedStore: "pine" })).toBe(false);
+  });
+  it("a row naming no shop stays on Marathon's board, off Section 1's", () => {
+    expect(boardShowsOrder(NET, 2, {})).toBe(true);
+    expect(boardShowsOrder(NET, 2, { destShop: "unknown-shop" })).toBe(true);
+    expect(boardShowsOrder(NET, 1, {})).toBe(false);
+  });
+  it("a board naming no section is unfiltered", () => {
+    expect(boardShowsOrder(NET, null, { destShop: "concrete" })).toBe(true);
   });
 });

@@ -66,6 +66,14 @@ describe("a Pine or Concrete item the shop holds", () => {
   });
 });
 
+describe("each TV board reads its own division", () => {
+  it("TvWithAutoCollect filters every board, kiosk and in-app, through boardShowsOrder", () => {
+    expect(between("function TvWithAutoCollect(", "const orderKey =")).toContain("boardShowsOrder(boardNetwork, section, o)");
+    expect(APP).toContain('<TvWithAutoCollect orders={orders} section={2}');
+    expect(APP).toContain("section={tvSectionForShop(orderNetwork, myShop)}");
+  });
+});
+
 describe("Pine and Concrete's shared orders", () => {
   it("the sibling's feed joins three screens and nothing else", () => {
     expect(APP).toContain("const siblingShop = siblingOrderShop(orderNetwork, myShop);");

@@ -21483,11 +21483,13 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
     const id = setInterval(() => setRevealClock(serverNowMs()), 10 * 1000);
     return () => clearInterval(id);
   }, []);
+  // Each board shows its own division's orders only (Junid, 9 Nov 2026).
+  const { registry: boardNetwork } = useNetwork();
   const orders = useMemo(
     () => (ordersRaw || [])
-      .filter(o => o && o.customerName !== "Shop Refill")
+      .filter(o => o && o.customerName !== "Shop Refill" && boardShowsOrder(boardNetwork, section, o))
       .map(o => holdHub2Ready(o, revealClock)),      // hold Hub 2 "Ready" until its reveal instant
-    [ordersRaw, revealClock]
+    [ordersRaw, revealClock, boardNetwork, section]
   );
   // Dedupe markers are keyed by a composite of order.id + createdAt rather
   // than id alone. order.id is daily-scoped (it's the orderNumber, which
