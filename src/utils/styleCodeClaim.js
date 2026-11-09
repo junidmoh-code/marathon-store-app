@@ -59,6 +59,26 @@ export function buildClaim({ productId, uid, nowMs }) {
 }
 
 /**
+ * The save order, as one unit so it can be proven. The product is written first
+ * and a failure there propagates with no claim attempted. Pass `claim: null` for
+ * a product with no style code.
+ *
+ * A claim that fails afterwards is reported, not thrown: the product is saved by
+ * then, and failing the save would send staff off to create it a second time.
+ *
+ * @returns {Promise<{outcome: object|null, claimError: Error|null}>}
+ */
+export async function writeProductThenClaim({ writeProduct, claim }) {
+  await writeProduct();
+  if (!claim) return { outcome: null, claimError: null };
+  try {
+    return { outcome: await claim(), claimError: null };
+  } catch (claimError) {
+    return { outcome: null, claimError };
+  }
+}
+
+/**
  * Attempt the create-once claim.
  *
  * @returns {Promise<

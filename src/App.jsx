@@ -238,7 +238,7 @@ import CategoryFirstStep from "./components/admin/CategoryFirstStep";
 import { useStyleCodeConfig } from "./components/admin/useStyleCodeConfig";
 import { isCategoryEnforced } from "./components/admin/styleCodeGateLogic";
 import { styleCodeProgress } from "./utils/styleCodeCapture";
-import { claimStyleCode, claimFailureMessage, CLAIM_OK, CLAIM_TAKEN } from "./utils/styleCodeClaim";
+import { claimStyleCode, claimFailureMessage, writeProductThenClaim, CLAIM_OK, CLAIM_TAKEN } from "./utils/styleCodeClaim";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -6607,97 +6607,85 @@ function AdminView({ products, orders, onExit }) {
       // ── THE PRODUCT MUST EXIST BEFORE THE CODE CAN BE CLAIMED ─────────────
       // The live rule on /style_code_index/$code validates:
       //     root.child('products').child(newData.child('productId').val()).exists()
-      // so a claim for a product that has not been written yet is REJECTED. The
-      // original order claimed first, which meant EVERY save carrying a style
-      // code was denied and staff could not add products at all.
+      // `root` is the database before the write, so a claim for a product that
+      // has not landed yet is REJECTED, even inside one multi-location update
+      // with the product. Product first, claim second: writeProductThenClaim.
+      // A failed product write propagates with nothing reserved.
       //
-      // Claim-first was the safer shape — the database arbitrated the race — but
-      // the deployed rule makes it impossible, and the rule wins. Product first,
-      // claim second.
-      // A failed write propagates as-is: the claim runs AFTER this, so at this
-      // point nothing has been reserved and there is nothing to clean up. (The
-      // old catch here told staff a reservation had landed — a leftover from
-      // the claim-first ordering, and false ever since it flipped. CodeRabbit,
-      // PR #327.)
-      await addProductToFirebase(newProduct);
-
-      // ── CLAIM THE STYLE CODE — after the product, and NEVER fatal ──────────
-      // The product is already saved by this point, so a failed claim must not
-      // be reported as a failed save: the operator's work is done and telling
-      // them otherwise sends them to create it a second time.
-      //
-      // A lost claim means two products can carry one code. That is the
-      // duplicate this guard exists to prevent — but it is now DETECTED rather
-      // than prevented, surfaced by resolveStyleCode's collision scan and
-      // /duplicate_candidates. With the lookup switched off and no product yet
-      // carrying a code, the practical risk is nil; when enforcement is turned
-      // back on this ordering needs revisiting alongside it.
-      if (newProduct.styleCodeNormalised) {
-        try {
-          const outcome = await claimStyleCode(newProduct.styleCodeNormalised, {
-            productId: id,
-            uid: auth.currentUser?.uid ?? null,
-            nowMs: serverNowMs(),
-          });
-          if (outcome.kind === CLAIM_TAKEN) {
-            // ── THE SIBLING PATH (owner spec 2026-08-07) ─────────────────────
-            // The gate showed the claiming product(s) LARGE and the operator
-            // answered "none of these — new colourway". Same code + different
-            // colourway is NOT a duplicate: register this product as a SIBLING
-            // owner. Both keep the code, neither is flagged, nothing lands in
-            // /duplicate_candidates. The answer is recorded server-side.
-            if (intake && intake.sibling) {
-              try {
-                const sib = await answerStyleCodeSibling({
-                  action: "differentColourway",
-                  code: newProduct.styleCodeNormalised,
-                  productId: id,
-                  otherId: intake.sibling.primaryId || outcome.productId || null,
-                });
-                console.log(`addProduct: ${newProduct.styleCodeNormalised} registered as colourway sibling`, sib);
-              } catch (sibErr) {
-                console.warn("addProduct: sibling registration failed (product already saved):", sibErr);
-                alert(
-                  `Saved.\n\nBut recording it as a colourway of ${newProduct.styleCode} failed ` +
-                  `(${sibErr?.message || sibErr}). Scan it again from Hub Cleanup to answer the ` +
-                  `colourway question, or ask an admin.`
-                );
-              }
-            } else {
-              console.warn(`addProduct: style code ${newProduct.styleCodeNormalised} already claimed by ` +
-                `${outcome.productId || "another product"}; ${id} saved but does not own it`);
-              alert(
-                `Saved.\n\nNote: style code ${newProduct.styleCode} is already on another product` +
-                (outcome.productId ? ` (${outcome.productId})` : "") +
-                `. Both now carry it — an admin should look at whether it's the same shoe (merge) ` +
-                `or a different colourway (keep both).`
-              );
-            }
-          } else if (outcome.kind !== CLAIM_OK) {
-            console.warn(`addProduct: style code claim failed for ${id}:`, claimFailureMessage(outcome));
-          }
-        } catch (claimErr) {
-          console.warn("addProduct: style code claim threw (product already saved):", claimErr);
-          // The operator answered "new colourway" in the gate. A thrown claim
-          // (network, permission) must not silently discard that answer — try
-          // the sibling registration anyway (the callable handles both a
-          // claimed and an unclaimed code), and say so if it also fails.
+      // A failed claim must not be reported as a failed save: the product is
+      // saved by then, and telling the operator otherwise sends them to create
+      // it a second time. A lost claim means two products can carry one code,
+      // which resolveStyleCode's collision scan and /duplicate_candidates surface.
+      const { outcome: claimOutcome, claimError: claimErr } = await writeProductThenClaim({
+        writeProduct: () => addProductToFirebase(newProduct),
+        claim: newProduct.styleCodeNormalised
+          ? () => claimStyleCode(newProduct.styleCodeNormalised, {
+              productId: id,
+              uid: auth.currentUser?.uid ?? null,
+              nowMs: serverNowMs(),
+            })
+          : null,
+      });
+      if (claimOutcome) {
+        const outcome = claimOutcome;
+        if (outcome.kind === CLAIM_TAKEN) {
+          // ── THE SIBLING PATH (owner spec 2026-08-07) ─────────────────────
+          // The gate showed the claiming product(s) LARGE and the operator
+          // answered "none of these — new colourway". Same code + different
+          // colourway is NOT a duplicate: register this product as a SIBLING
+          // owner. Both keep the code, neither is flagged, nothing lands in
+          // /duplicate_candidates. The answer is recorded server-side.
           if (intake && intake.sibling) {
             try {
-              await answerStyleCodeSibling({
+              const sib = await answerStyleCodeSibling({
                 action: "differentColourway",
                 code: newProduct.styleCodeNormalised,
                 productId: id,
-                otherId: intake.sibling.primaryId || null,
+                otherId: intake.sibling.primaryId || outcome.productId || null,
               });
+              console.log(`addProduct: ${newProduct.styleCodeNormalised} registered as colourway sibling`, sib);
             } catch (sibErr) {
-              console.warn("addProduct: sibling registration after claim failure also failed:", sibErr);
+              console.warn("addProduct: sibling registration failed (product already saved):", sibErr);
               alert(
                 `Saved.\n\nBut recording it as a colourway of ${newProduct.styleCode} failed ` +
                 `(${sibErr?.message || sibErr}). Scan it again from Hub Cleanup to answer the ` +
                 `colourway question, or ask an admin.`
               );
             }
+          } else {
+            console.warn(`addProduct: style code ${newProduct.styleCodeNormalised} already claimed by ` +
+              `${outcome.productId || "another product"}; ${id} saved but does not own it`);
+            alert(
+              `Saved.\n\nNote: style code ${newProduct.styleCode} is already on another product` +
+              (outcome.productId ? ` (${outcome.productId})` : "") +
+              `. Both now carry it — an admin should look at whether it's the same shoe (merge) ` +
+              `or a different colourway (keep both).`
+            );
+          }
+        } else if (outcome.kind !== CLAIM_OK) {
+          console.warn(`addProduct: style code claim failed for ${id}:`, claimFailureMessage(outcome));
+        }
+      } else if (claimErr) {
+        console.warn("addProduct: style code claim threw (product already saved):", claimErr);
+        // The operator answered "new colourway" in the gate. A thrown claim
+        // (network, permission) must not silently discard that answer — try
+        // the sibling registration anyway (the callable handles both a
+        // claimed and an unclaimed code), and say so if it also fails.
+        if (intake && intake.sibling) {
+          try {
+            await answerStyleCodeSibling({
+              action: "differentColourway",
+              code: newProduct.styleCodeNormalised,
+              productId: id,
+              otherId: intake.sibling.primaryId || null,
+            });
+          } catch (sibErr) {
+            console.warn("addProduct: sibling registration after claim failure also failed:", sibErr);
+            alert(
+              `Saved.\n\nBut recording it as a colourway of ${newProduct.styleCode} failed ` +
+              `(${sibErr?.message || sibErr}). Scan it again from Hub Cleanup to answer the ` +
+              `colourway question, or ask an admin.`
+            );
           }
         }
       }
