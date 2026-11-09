@@ -10,15 +10,14 @@
 // from the registry:
 //
 //   • WHICH HUBS may supply this shop's sneakers?  The gated sneaker hubs
-//     (availabilityCore.gatedSneakerHubs — the LIVE hubs) that are in the
+//     (availabilityCore.gatedSneakerHubs — the hubs IN SERVICE) that are in the
 //     shop's own section AND serve it. Hub 3 for Pine; Hub 3 and the Concrete
 //     Stockroom for Concrete. Never a hub across the wall, and never a hub
 //     whose `serves` list leaves the shop out (the Stockroom is Concrete's
 //     alone — the section wall by itself would have let Pine draw on it).
-//   • NOT LIVE = NOT GATED. A hub that has not been counted in is not in the
-//     list, so its shop's sneaker tiles carry no ✕ and the order goes to the
-//     back-stock hub exactly as it did before this module existed. A person
-//     can still order by hand; nothing is refused on cells nobody has counted.
+//   • OUT OF SERVICE = NOT GATED. A hub switched off on the Network card
+//     (Solve off, or Auto-refill off) is not in the list, so its shop's sneaker
+//     tiles carry no ✕ and the order goes to the back-stock hub by hand.
 //   • WHICH HUB IS THE LINE BOOKED AGAINST?  The one the cart allocation chose
 //     — but only when it is one of the hubs above. Anything else (no
 //     allocation, an ungated shoe, a hub that is not this shop's) is the
@@ -39,7 +38,7 @@ export const SECTION_SNEAKER_HUB_SLOTS = 2;
 const servesShop = (hubLoc, shopId) => !hubLoc.serves || !hubLoc.serves.length || hubLoc.serves.includes(shopId);
 
 // [] for Marathon PE / Trophy (they keep the screen's own pair), for a shop
-// the registry does not know, and for a shop none of whose hubs is live.
+// the registry does not know, and for a shop none of whose hubs is in service.
 export function sectionSneakerHubs(network, shop) {
   const s = locationOf(network, shop);
   if (!s || s.type !== "store" || s.section === 2) return [];

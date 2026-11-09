@@ -77,10 +77,12 @@ describe("every hub's walls are readable, and each map holds only its own", () =
   // happily build a hub3 map — the data is there and correct — but nothing on
   // the ordering screen can key into it, because no size resolves to hub3. The
   // map builder is not the limit; the sneaker gate is.
-  it("hub3 slots are readable as data, but no size can ever resolve to hub3", () => {
+  // Hub 3 joined the gate on 9 Nov 2026 (Junid: counted, treated like Hub 1 and
+  // Hub 2), so a Pine or Concrete size resolves to hub3.
+  it("hub3 slots are readable as data, and a Hub 3 size resolves to hub3", () => {
     expect(mapFor("hub3")[promisedKey("p3", "7")]).toEqual({ units: 1, stores: ["marathon-pine"], unverified: 0 });
-    expect(GATED_SNEAKER_HUBS).toEqual(["hub1", "hub2"]);
-    expect(gatedSneakerHub({ id: "p3", category: "Footwear", productType: "sneaker" }, "hub3")).toBe(null);
+    expect(GATED_SNEAKER_HUBS).toEqual(["hub1", "hub2"]);          // Marathon's side, unchanged
+    expect(gatedSneakerHub({ id: "p3", category: "Footwear", productType: "sneaker" }, "hub3")).toBe("hub3");
   });
 
   // NO CROSS-CONTAMINATION, and this is the half that matters most. A size Hub 2

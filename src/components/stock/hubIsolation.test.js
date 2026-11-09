@@ -41,6 +41,7 @@ import { gatedSneakerHub, GATED_SNEAKER_HUBS, readyPromisedByCell, cellAvailabil
 import { centralFedRow, CENTRAL_FED_HUBS, tomorrowTapOutcome } from "./tomorrowGate";
 import { orderSizeOut } from "../../utils/deactivation";
 import { decodeSizeKey } from "../../utils/sizeKey";
+import { normalizeNetwork } from "../../utils/networkRegistry";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const src = (p) => readFileSync(join(HERE, p), "utf8");
@@ -59,8 +60,13 @@ describe("Hub 3 and the shops are untouched by the sneaker availability gate", (
   it("the gate covers hub1 and hub2 — and nothing else, ever", () => {
     expect(GATED_SNEAKER_HUBS).toEqual(["hub1", "hub2"]);
   });
-  it("a Pine-routed sneaker gets NO gate — the tile behaves as it did yesterday", () => {
-    expect(gatedSneakerHub(SNEAKER, "hub3")).toBe(null);
+  // 9 Nov 2026 (Junid): Hub 3 is counted and is gated like Hub 1 and Hub 2.
+  // Switched out of service on the Network card it is ungated again.
+  it("a Hub 3-routed sneaker is gated on Hub 3 — and ungated when Hub 3 is out of service", () => {
+    expect(gatedSneakerHub(SNEAKER, "hub3")).toBe("hub3");
+    const off = normalizeNetwork({ locations: { hub3: { solve: true, autoRefill: "off" } } });
+    expect(gatedSneakerHub(SNEAKER, "hub3", off)).toBe(null);
+    expect(gatedSneakerHub(SNEAKER, "hub1", off)).toBe("hub1");
   });
   it("a shop is never the supplying hub — no shop id can arm the gate", () => {
     for (const shop of SHOPS) expect(gatedSneakerHub(SNEAKER, shop)).toBe(null);
@@ -403,14 +409,20 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
   // hub3 is not in the sneaker gate, so no size ever resolves to it. The
   // commit that widened the marker said Pine was fixed; it was not. If hub3
   // is ever admitted to the gate this test goes red and the claim can be made.
-  it("but hub3 is NOT in the gate, so Pine draws nothing — stated, not implied", () => {
+  // It was admitted on 9 Nov 2026, and this test went red as promised: a Hub 3
+  // size now resolves to hub3. Pine and Concrete still get no glyph, because
+  // the screen builds no Hub 3 slot map and their devices have no slots feed.
+  it("hub3 IS in the gate, so a Pine / Concrete size resolves to hub3 — and to nothing when Hub 3 is out of service", () => {
     expect(GATED_SNEAKER_HUBS).toEqual(["hub1", "hub2"]);
     const pineShoe = { id: "p3", category: "Footwear", productType: "sneaker" };
-    expect(gatedSneakerHub(pineShoe, "hub3")).toBe(null);
-    // …and a null tagged hub yields no serving hub at all, which is the input
-    // sneakerDisplayInfo turns into "no glyph".
+    expect(gatedSneakerHub(pineShoe, "hub3")).toBe("hub3");
     expect(resolveSneakerSourcing({
       product: pineShoe, taggedHub: gatedSneakerHub(pineShoe, "hub3"), size: "7",
+      hubData: { hub3: { cells: { p3: { 7: { qty: 1 } } }, promised: {}, ready: true } },
+    })).toEqual({ hub: "hub3", available: 1 });
+    const off = normalizeNetwork({ locations: { hub3: { solve: true, autoRefill: "off" } } });
+    expect(resolveSneakerSourcing({
+      product: pineShoe, taggedHub: gatedSneakerHub(pineShoe, "hub3", off), size: "7", network: off,
       hubData: { hub1: { cells: {}, promised: {}, ready: true }, hub2: { cells: {}, promised: {}, ready: true } },
     }).hub).toBe(null);
   });

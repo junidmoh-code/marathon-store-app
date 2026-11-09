@@ -23,6 +23,8 @@ const CELLS = {
   hub1: { p1: { "8": { qty: 7 } } },
 };
 const READ_PATHS = [];
+let CAN_SEE = () => true;
+vi.mock("../../utils/useMySections", () => ({ useMySections: () => ({ canSee: (id) => CAN_SEE(id), registry: null }) }));
 vi.mock("./useStock", () => ({
   useLocations: () => ({}),
   useStockCells: (loc) => { READ_PATHS.push(loc || "ALL"); return loc ? (CELLS[loc]?.p1 ? { p1: CELLS[loc].p1 } : {}) : CELLS; },
@@ -86,6 +88,16 @@ describe("Print Labels for a one-shop account", () => {
     expect(s).toContain("Marathon PE");
     expect(s).toContain("Trophy");
     expect(s).toContain("All stores");
+  });
+
+  it("an unassigned Concrete-division account is offered that division's shops only", () => {
+    CAN_SEE = (id) => ["marathon-pine", "concrete"].includes(id);
+    const t = mount(<LabelPrintView products={PRODUCTS} onExit={() => {}} />);
+    CAN_SEE = () => true;
+    const s = json(t);
+    expect(s).toContain("Concrete");
+    expect(s).not.toContain("Marathon PE");
+    expect(s).not.toContain("Trophy");
   });
 
   it("a PE pick made before a Trophy grant lands is dropped, never read again", () => {

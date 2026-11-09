@@ -67,7 +67,7 @@
 import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
 import { serverNowMs } from "../../utils/serverTime";
 import { isFootwearProduct } from "./missingFootwearCore";
-import { wallAllows } from "../../utils/networkRegistry";
+import { wallAllows, sectionOf, isLive, solveOn, autoRefillOn } from "../../utils/networkRegistry";
 import { net, hubIds } from "./sectionRouting";
 export { isFootwearProduct };
 
@@ -156,30 +156,58 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
 // itself will take); this returns the hub whose data should gate, or NULL for
 // "no gate, yesterday's behaviour".
 //
-// TWO HUBS, and deliberately only two:
+// THE HUBS IN SERVICE (gatedSneakerHubs below):
 //   • hub1 — the original build (2026-08-25)
 //   • hub2 — joined 2026-09-05, this file's whole reason for existing twice
-//   • hub3 (Pine) and everything else — NULL. Pine replenishes on its own
-//     terms and its grid has never been gated; the shops never run this gate
-//     at all (they are order DESTINATIONS, not the supplying hub).
+//   • hub3 — joined 2026-11-09, once counted
+//   • anything else, and a hub out of service — NULL. The shops never run this
+//     gate at all (they are order DESTINATIONS, not the supplying hub).
 //
 // isFootwearProduct, not merely "not clothing": the sneaker browse grid also
 // carries perfumes, bags and one-size accessories (no productType), whose
 // availability promises this gate does not model — they keep yesterday's
 // behaviour. (Adversarial review, PR #446.)
+// This constant is Marathon's side of that list only.
 export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 
 // ── THE GATED HUBS, FROM THE NETWORK REGISTRY ────────────────────────────────
-// "hub1 and hub2, and deliberately only two" was the network as it stood: the
-// two hubs that are LIVE. Pine's Hub 3 is NULL above because it has not been
-// counted in — which is exactly what the registry's live flag says. So the
-// gate asks the registry: every live hub is gated, and a hub that is not live
-// is "no gate, yesterday's behaviour", unchanged. On the seed this answers
-// the constant above (pinned by test), which stays for the callers that
-// import it. WHAT SWITCHES ON when the owner makes Hub 3 live: its sneaker
-// tiles are gated on its own cells, and a size it is out of can be rerouted
-// to another live hub IN ITS OWN SECTION (see resolveSneakerSourcing).
+// "hub1 and hub2, and deliberately only two" was the network as it stood while
+// Hub 3 had not been counted in. It has been (Junid, 9 Nov 2026: "Hub 3 is
+// treated exactly like Hub 1 and Hub 2 from now on"), so the gate asks the
+// registry which hubs are IN SERVICE: Solve on and Auto-refill not "off" —
+// Hub 1, Hub 2 and Hub 3 on the seed. Hub 3's sneaker tiles are gated on its
+// own cells for the shops it serves (Pine, Concrete), and nothing about Hub 1
+// or Hub 2 moves: a hub only ever answers for a shop on its own side of the
+// wall (sneakerAlternates, sectionSneakerHubs, pickDisplaySourceHub all narrow
+// this list by the wall before using it).
+//
+// NOT `live` (Solve on + Auto-refill "all"), which this used to ask. `live`
+// is about what the ENGINE may refill by itself; whether an assistant may
+// order a size the hub does not hold is a different question, and tying the
+// two together left Pine and Concrete ordering into nothing for as long as
+// Hub 3 sat on Auto-refill "solved".
+//
+// THE OFF SWITCH is the Network card: a hub with Solve off or Auto-refill
+// "off" is out of service, is not gated, and its shops order by hand as they
+// did before — the right answer for a hub nobody has counted yet.
+//
+// The constant above stays for the Marathon callers that import it: it is the
+// gated hubs on Marathon PE's and Trophy's side of the wall (pinned by test).
+//
+// THE RULE DIFFERS BY DIVISION, ON PURPOSE. Marathon's hubs still ask `live`,
+// so their gate answers exactly as it did under every switch position (Junid:
+// their screen unchanged). Hub 3 asks "in service", because it sits on
+// Auto-refill "solved" and `live` would leave it ungated.
 export function gatedSneakerHubs(network) {
+  const N = net(network);
+  return hubIds(N).filter((h) => (sectionOf(N, h) === 2 ? isLive(N, h) : solveOn(N, h) && autoRefillOn(N, h)));
+}
+// THE FULLY LIVE HUBS — the old answer, kept for one reader: which hubs may a
+// "Not on the wall" display request be raised against. Pine and Concrete walls
+// record only; no request path is opened for them (Junid's rules, CLAUDE.md,
+// and the 7 Nov 2026 wall screen). Widening the assistant's ✕ must not widen
+// this. displayWallPineConcrete.render.test.jsx holds it.
+export function displayRequestHubs(network) {
   return hubIds(net(network), { liveOnly: true });
 }
 // The hubs a gated sneaker may be rerouted to from `taggedHub`: the other
@@ -300,11 +328,10 @@ export function cellBlockInfo({ cells, promised, productId, size }) {
 //     not move an order. `ready` false on the tagged hub means no reroute at
 //     all (the gate is already open in that state); `ready` false on the
 //     alternate means it cannot be chosen.
-//   • ONLY BETWEEN THE GATED HUBS (hub1 ⇄ hub2) AND ONLY FOR GATED SNEAKERS.
-//     Pine/hub3 is not a candidate and is never rerouted away from: Pine
-//     replenishes on its own terms, its grid has never been gated, and
-//     gatedSneakerHub already refuses it. Clothing, perfume, bags and one-size
-//     accessories keep exactly yesterday's routing.
+//   • ONLY BETWEEN GATED HUBS ON ONE SIDE OF THE WALL (hub1 ⇄ hub2), AND ONLY
+//     FOR GATED SNEAKERS. Hub 3 is gated but alone on its side, so it has no
+//     alternate. Clothing, perfume, bags and one-size accessories keep exactly
+//     yesterday's routing.
 //
 // PER SIZE, NOT PER PRODUCT. The 107 affected chips are not all whole products
 // — a shoe can hold 8s at Hub 1 and 9s at Hub 2. The gate has always been a

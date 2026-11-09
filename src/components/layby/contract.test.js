@@ -66,3 +66,24 @@ describe("storageHubOf — where a layby with no storageHub belongs", () => {
     expect(storageHubOf({ storeId: "somewhere-new" }, NET)).toBe(null);
   });
 });
+
+// ─── THE TV BOARDS: each division's layby pulls on its own board ─────────────
+import { pullOnTvBoard } from "./contract";
+describe("pullOnTvBoard", () => {
+  it("a pull goes by the hub storing the parcel", () => {
+    expect(pullOnTvBoard({ storageHub: "hub3" }, 1, NET)).toBe(true);
+    expect(pullOnTvBoard({ storageHub: "hub3" }, 2, NET)).toBe(false);
+    expect(pullOnTvBoard({ storageHub: "hub1" }, 2, NET)).toBe(true);
+    expect(pullOnTvBoard({ storageHub: "hub1" }, 1, NET)).toBe(false);
+  });
+  it("a board with no section shows every pull", () => {
+    expect(pullOnTvBoard({ storageHub: "hub3" }, null, NET)).toBe(true);
+    expect(pullOnTvBoard({ storageHub: "hub1" }, undefined, NET)).toBe(true);
+  });
+  it("a legacy pull with no hub or shop stays on the Marathon board; a hub nobody knows too", () => {
+    expect(pullOnTvBoard({}, 2, NET)).toBe(true);
+    expect(pullOnTvBoard({}, 1, NET)).toBe(false);
+    expect(pullOnTvBoard({ storageHub: "hubX" }, 2, NET)).toBe(true);
+    expect(pullOnTvBoard({ storageHub: "hubX" }, 1, NET)).toBe(false);
+  });
+});

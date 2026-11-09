@@ -12,6 +12,7 @@ import { ProductActionsButton, DeactivatedChip } from "./components/stock/Produc
 import { showsDeactivated } from "./config/assistantVisibility";
 import { useAssistantVisibility } from "./config/useAssistantVisibility";
 import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
+import { heldProductKey, heldPredicate, hubReadState, unavailableProductIds, unavailableHint } from "./components/assistant/divisionAvailability";
 import { reactiveRefillHubs, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
@@ -153,7 +154,7 @@ import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } fr
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { shownEntry, pickedEntry, ALTERNATIVES_LOG_PATH } from "./components/stock/alternativesTelemetry";
 import { input as stockInput } from "./components/stock/ui";
-import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
+import { sellableLocations, labelFor, transferTargets, warehouseLocations, withSeedGaps } from "./components/stock/locations";
 import { useNetwork } from "./utils/useNetwork";
 import { TV_ORDER_KEY_START, TV_ORDER_KEY_END, TV_ONLINE_ORDER_KEY_RANGES, keyInTvOnlineOrdersRange, tvRowsOf } from "./utils/tvOrdersRange";
 import { currentNetwork } from "./utils/networkStore";
@@ -189,7 +190,7 @@ import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { dispatchSkipsStock } from "./utils/dispatchStockPolicy";
-import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf, laybyQueueRow, QUEUE_INCOMING, QUEUE_READY } from "./components/layby/contract";
+import { storageHubOf, pullOnTvBoard, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf, laybyQueueRow, QUEUE_INCOMING, QUEUE_READY } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, computeRestockCounts, soldPairEntries, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { holdReleaseUpdate } from "./components/stock/onHoldRefill";
@@ -932,6 +933,9 @@ const SHOP_LABELS = new Proxy({}, {
 // fulfilling from its OWN stock. Adding a future store/hub is one line here
 // (shopUniverse(shop) → universe → hub); everything downstream derives from it.
 const CR_HUB_BY_UNIVERSE = { central: "hub2", pine: "hub3" };
+// "No product is unavailable" — one shared empty set, so the Marathon PE /
+// Trophy screen hands its cards the same object on every render.
+const NO_UNAVAILABLE = new Set();
 
 // The submit-time stock guard's refusal on the checkout sheet — the same red
 // family as the sheet's other blocking notes.
@@ -8764,6 +8768,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
                             hubQty, servingHubLabel, clothingHubLabelOf = null, sneakerOut, sneakerOutWhy, sneakerDisplayInfo,
                             alternativesFor, onAlternativesShown, onAlternativePicked,
+                            unavailableIds = null, unavailableHintFor = null,
                             deadForOrder = isDeactivated, wallPreview = false }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // The hub a clothing note names: the product's own back-stock hub when the
@@ -9199,6 +9204,15 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                           Renders nothing for a non-admin. */}
                       <ProductActionsButton product={p} products={products}
                                             style={{ position: "absolute", top: 8, left: 8, zIndex: 3 }} />
+                      {/* Every size out at this shop's own hub — Pine and
+                          Concrete only (the set is empty for Marathon PE and
+                          Trophy). The card still opens: the sizes inside say
+                          why, and a tap on one lists what IS there. */}
+                      {unavailableIds?.has(p.id) && (
+                        <span data-testid="card-unavailable" style={{ position: "absolute", bottom: 8, right: 8, zIndex: 3, background: "rgba(20,14,4,.82)", border: "1px solid rgba(255,170,40,.5)", color: "#FFC46B", fontSize: 11, fontWeight: 800, letterSpacing: ".04em", padding: "3px 8px", borderRadius: 999 }}>
+                          UNAVAILABLE
+                        </span>
+                      )}
                     </div>
                     <div className="ad-body">
                       <div className="ad-name">{p.name}
@@ -9425,6 +9439,11 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                         </div>
                       );
                     })()}
+                    {!qvNa && !qvDP && unavailableIds?.has(qv.id) && (
+                      <div data-testid="qv-unavailable" style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
+                        {unavailableHintFor?.(qv)}
+                      </div>
+                    )}
                     <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                       {sizesOf(qv).map(sz => {
                         // Clothing (and a deactivated line, #445) keeps its
@@ -9713,7 +9732,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // filter, computeHubForItem, placedHub/placedStore) is unchanged. Persists per
   // device so the Pine iPad stays Pine across reloads.
   const shopRegistry = useLocations();
-  const allShops = sellableLocations(shopRegistry);  // marathon-pe, trophy, marathon-pine
+  // withSeedGaps: a device whose stored copy of /locations predates a shop's
+  // record (Concrete, 30 Oct 2026 — the Transfer screen's bug) would otherwise
+  // offer that shop's assistants no shop at all. Stored records always win.
+  const allShops = sellableLocations(withSeedGaps(shopRegistry));  // marathon-pe, trophy, marathon-pine, concrete
   const [selectedShop, setSelectedShop] = useState(() => {
     const saved = localStorage.getItem("storeAssistantShop");
     if (saved) return saved;
@@ -9906,9 +9928,8 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Marathon PE / Trophy use the Hub 1 / Hub 2 pair above and get an EMPTY
   // list here, so every hook below is handed null and reads nothing. Pine and
   // Concrete get the gated (live) hubs of their own section that serve them —
-  // Hub 3; plus the Concrete Stockroom for Concrete only
-  // (utils/sectionSneakerHubs.js). While those hubs are not live the list is
-  // empty for them too: no ✕, no extra stream, yesterday's behaviour.
+  // Hub 3 (utils/sectionSneakerHubs.js). A hub switched out of service on the
+  // Network card leaves the list empty: no ✕, no extra stream.
   // One hook per slot, because a hook count cannot follow the registry.
   // Ready orders only — the display-pair pull lane is Hub 1's (see above).
   const sectionHubIds = useMemo(() => sectionSneakerHubs(sectionNet, effectiveShop), [sectionNet, effectiveShop]);
@@ -9923,6 +9944,19 @@ function AssistantView({ products, onExit, orders = [] }) {
   const sectionPromisedB = useMemo(
     () => (sectionHubB ? readyPromisedByCell(orders, sectionHubB, productsById) : {}),
     [orders, productsById, promiseTick, sectionHubB]
+  );
+  // Which products this shop's own hubs hold a unit of — read off the cells
+  // already streamed above, no extra read. undefined for Marathon PE / Trophy
+  // (no section hubs), which is "no such rule" to the catalogue.
+  // Keyed on the id list, so a sale at Hub 3 does not rebuild the catalogue
+  // and its search index — only a product gaining its first cell there does.
+  const sectionHeldKey = useMemo(
+    () => (sectionHubA ? heldProductKey([sectionCellsA, sectionCellsB].map(hubReadState)) : null),
+    [sectionHubA, sectionCellsA, sectionCellsB]
+  );
+  const sectionStockedHere = useMemo(
+    () => (sectionHeldKey === null ? undefined : heldPredicate(sectionHeldKey)),
+    [sectionHeldKey]
   );
   // ── DISPLAY-PAIR MARKER DATA (2026-08-26) ─────────────────────────────────
   // The live display slots — one ~60 KB listener (the marker cannot be
@@ -9993,30 +10027,12 @@ function AssistantView({ products, onExit, orders = [] }) {
   // a real size (live census 2026-09-08). They are separate names now so that
   // widening one can never quietly widen the other.
   //
-  // ── ONE MAP PER GATED HUB, AND PINE IS NOT ONE OF THEM ────────────────────
-  // The first cut of this built a hub3 map too and the commit said Pine's
-  // displays would now be marked. They are not, and the map was unreachable
-  // dead code that read as a delivered promise (independent review, 2026-09-08).
-  // The glyph asks the SERVING hub, the serving hub comes from sneakerHubOf,
-  // and that runs through gatedSneakerHub — which answers only from
-  // GATED_SNEAKER_HUBS, ["hub1", "hub2"]. A Pine sneaker resolves to no hub at
-  // all on this screen: availabilityKnown is false for it, sneakerOut declines
-  // to answer, and the alternatives sheet says so in as many words. The marker
-  // cannot be wider than the availability lane it hangs off, and making it so
-  // would mean widening the sneaker gate — a stock-routing change, not a glyph.
-  //
-  // So the maps are built FROM the gate rather than from a list written beside
-  // it. Pine's 18 hub3 slots stay unmarked, which is the truth and is now said
-  // out loud; and if hub3 is ever admitted to the sneaker gate, the marker
-  // follows it in the same commit instead of needing to be remembered.
-  //
-  // AND MARKING PINE WOULD TAKE MORE THAN A WIDER GATE, which is the other
-  // reason not to fake it here: a Pine device does not subscribe to the slots
-  // node at all (displaySlotsState above is passed `!== "pine"`), so
-  // displaySlotsLive is empty there whatever this map contains. Marking Pine
-  // means a new listener on a Pine device plus a hub source for the glyph that
-  // stops short of the availability gate — a data-cost decision and a
-  // stock-routing one. Neither is a glyph change, and neither is this PR.
+  // ── ONE MAP PER MARATHON HUB, AND HUB 3 IS NOT ONE OF THEM ────────────────
+  // The glyph asks the SERVING hub. A Pine or Concrete device has no display
+  // slots feed (displaySlotsState above): the node is read whole, carries every
+  // division's walls, and arrives with a repair effect that writes it. So since
+  // Hub 3 joined the availability gate (9 Nov 2026) its sizes are gated but
+  // carry no glyph. Marking them needs a per-store read first.
   const displayUnitsByHub = useMemo(() => Object.fromEntries(
     GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])
   ), [displaySlotsLive]);
@@ -10227,8 +10243,14 @@ function AssistantView({ products, onExit, orders = [] }) {
       // Marathon PE / Trophy: null → the hub1/hub2 tag rule, unchanged. Any
       // other shop: the hubs the registry says hold ITS back stock.
       servedHubs: onSection2Hubs ? null : backStockHubsOf(sectionNet, effectiveShop),
+      // A TAG IS AN INTENTION; A CELL IS A FACT (availabilityCore). A shoe one
+      // of this shop's own hubs holds is this shop's to sell whatever its tag
+      // says — 9 Nov 2026: nine shoes, 109 units, counted at Hub 3 and tagged
+      // Hub 1 / Hub 2, were on no Pine or Concrete grid. Marathon PE / Trophy
+      // pass nothing and keep the tag rule exactly.
+      stockedHere: sectionStockedHere,
     }),
-    [products, wantsClothing, effectiveStoreMode, showDeactivated, onSection2Hubs, sectionNet, effectiveShop]);
+    [products, wantsClothing, effectiveStoreMode, showDeactivated, onSection2Hubs, sectionNet, effectiveShop, sectionStockedHere]);
 
   // `browse` is what the GRID renders with no query. For every strict store it
   // is already identical to `base` (the gate above removed them); for an EXEMPT
@@ -10485,7 +10507,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // hub2ReadyPromised), so it can never be true there.
   const sneakerHubsOfShop = onSection2Hubs ? GATED_SNEAKER_HUBS : sectionHubIds;
   const sneakerOutWhy = (p, s) => {
-    const hub = sneakerHubOf(p, s) || "hub1";
+    const hub = sneakerHubOf(p, s) || (onSection2Hubs ? "hub1" : (sectionHubIds[0] || "hub1"));
     return {
       ...cellBlockInfo({ cells: sneakerCellsOf(hub).cells, promised: sneakerPromisedOf(hub), productId: p.id, size: s }),
       pullOnly: hub === "hub1"
@@ -10548,13 +10570,53 @@ function AssistantView({ products, onExit, orders = [] }) {
   //
   // Still appearance-only. It nets nothing into availability and the caller
   // suppresses it on a ✕ tile, so an unresolved hub simply means no glyph —
-  // which is also what a Pine/hub3 shoe gets, because gatedSneakerHub answers
+  // which is also what a Hub 3 shoe gets, because this screen maps slots
   // for hub1 and hub2 only and the glyph may not outrun the availability lane.
   const sneakerDisplayInfo = (p, s) => {
     if (!s) return null;
     const hub = sneakerHubOf(p, s);
     return hub ? (displayUnitsByHub[hub]?.[promisedKey(p.id, s)] || null) : null;
   };
+
+  // ── THE CARD SAYS SO TOO, FOR A SHOP READING ITS OWN HUB (9 Nov 2026) ─────
+  // Junid: when every size of a product is at zero in the assistant's own
+  // division, the product card itself reads "Unavailable" — the assistant
+  // should not have to open a shoe to learn Hub 3 has none of it.
+  //
+  // THE HUB'S ANSWER, NOT THE CART'S: the size chips' own arithmetic (booked
+  // minus promised, per size; hubQty for clothing) without this device's cart.
+  // A pair in the cart is still at Hub 3, and "no size of this is at Hub 3"
+  // would be false. Nothing is "unavailable" before the hub answers (`known`).
+  //
+  // PINE AND CONCRETE ONLY. Marathon PE and Trophy get the empty set and their
+  // cards render exactly as they did: Junid asked for their screen unchanged.
+  // Giving them the same card state is one line (drop the first test) and is
+  // his call, not this change's.
+  //
+  // ONE WALK PER CHANGE, NOT PER RENDER: the answer depends only on the inputs
+  // listed, and typing in the search box changes none of them.
+  const unavailableIds = useMemo(() => {
+    if (onSection2Hubs || !sectionHubIds.length) return NO_UNAVAILABLE;
+    return unavailableProductIds(base, (p) => {
+      if (deadForOrder(p)) return null;                    // says "Deactivated" itself
+      const sizes = sizesOf(p);
+      if ((p.productType || "sneaker") === "clothing") {
+        const lane = sectionSneaker[clothingHubOf(p.id)];
+        return {
+          sizes, known: !!lane && hubReadState(lane.state).ready,
+          sizeOut: (sz) => hubQty(p.id, sz) <= 0,
+        };
+      }
+      const hub = sneakerHubOf(p);
+      return { sizes, known: !!hub && sneakerGateReady(hub), sizeOut: (sz) => sneakerAvail(p.id, sz, hub) <= 0 };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base, onSection2Hubs, sectionHubIds, sectionCellsA, sectionCellsB, sectionPromisedA, sectionPromisedB,
+      servingHubCells, extraHubCells, sectionNet, effectiveShop, deadForOrder]);
+  // The alternatives sheet is footwear's (computeAlternatives), so only a shoe
+  // is promised "similar shoes"; clothing is told where it is not.
+  const unavailableHintFor = (p) => unavailableHint(sectionHubIds.map((h) => HUB_LABELS[h] || h),
+    { similar: (p?.productType || "sneaker") !== "clothing" });
 
   // ── "NOT AVAILABLE — BUT THESE ARE, RIGHT NOW" (2026-09-06) ───────────────
   // The greyed size chip used to be a dead end: a reason, and the sale walks
@@ -10576,7 +10638,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // EVERY GATE FAILS CLOSED. A suggestion an assistant reads out that turns out
   // not to exist is worse than the bare refusal it replaced — it costs the
   // customer twice and teaches the assistant not to trust the screen. So:
-  //   • availabilityKnown is FALSE for a Pine/hub3 shoe and for a hub whose
+  //   • availabilityKnown is FALSE for a shoe at a hub out of service and for a hub whose
   //     cells have not settled. sneakerOut returns false there meaning "no
   //     gate", NOT "in stock", and reading it the other way is exactly how an
   //     unverified shoe reaches a customer.
@@ -10981,10 +11043,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   //     cell check would refuse most of Pine's real sales. Which stock Pine
   //     orders should be judged against is Junid's open question
   //     (docs/ORDER-GRID-ZERO-STOCK.md), not something to guess here.
-  //     HOW THAT IS HELD NOW: gatedSneakerHub answers from the registry's LIVE
-  //     hubs, and Hub 3 is not live — so a Pine or Concrete sneaker is ungated
-  //     here and on the grid alike. The day the owner makes Hub 3 live (its
-  //     cells counted in) both switch on together, on Hub 3's own cells.
+  //     THAT QUESTION CLOSED ON 9 NOV 2026: Hub 3 is counted, gatedSneakerHub
+  //     answers for every hub in service, and a Pine or Concrete sneaker is
+  //     guarded here and on the grid alike, on Hub 3's own cells.
   const stockGuardedLine = (item) => {
     if (item.requestDisplayPartner || item.displayPairRequest === true) return false;
     if (item.productType === "clothing") return true;
@@ -11598,6 +11659,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
           hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} clothingHubLabelOf={clothingHubLabelOf} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayInfo={sneakerDisplayInfo}
           alternativesFor={alternativesFor}
+          unavailableIds={unavailableIds} unavailableHintFor={unavailableHintFor}
           onAlternativesShown={logAlternativesShown} onAlternativePicked={logAlternativePicked} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
@@ -11893,6 +11955,9 @@ function AssistantView({ products, onExit, orders = [] }) {
         <div className="mc-grid-photo" style={{ display:"grid", gap:10 }}>
           {filtered.map(p => {
             const isSel = selected && selected.id === p.id;
+            // Every size out at this shop's own hub (Pine / Concrete only —
+            // always false for Marathon PE / Trophy; see unavailableIds).
+            const unavail = unavailableIds.has(p.id);
             return (
               <div key={p.id} onClick={() => { resetSheet(); setSelected(p); }}
                    style={{ background: isSel ? "rgba(20,40,100,.25)" : "rgba(255,255,255,.03)",
@@ -11904,8 +11969,13 @@ function AssistantView({ products, onExit, orders = [] }) {
                       cropped ~45% of the shoe in this 140px-tall box on phone
                       and tablet too, not just the desktop grid. */}
                   {p.photoUrl
-                    ? <PrimaryPhoto product={p} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
+                    ? <PrimaryPhoto product={p} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain", ...(unavail ? { opacity:.38 } : null) }}/>
                     : <span>{p.photo}</span>}
+                  {unavail && (
+                    <span data-testid="card-unavailable" style={{ position:"absolute", bottom:8, right:8, background:"rgba(20,14,4,.82)", border:"1px solid rgba(255,170,40,.5)", color:"#FFC46B", fontSize:11, fontWeight:800, letterSpacing:".04em", padding:"3px 8px", borderRadius:999 }}>
+                      UNAVAILABLE
+                    </span>
+                  )}
                   {/* View full photo(s) — opens the gallery viewer (primary + extra
                       angles) without triggering the card's add-to-cart tap. */}
                   {p.photoUrl && (
@@ -11939,8 +12009,8 @@ function AssistantView({ products, onExit, orders = [] }) {
                   ) : (
                     <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>
                   )}
-                  <div style={{ fontSize:13, fontWeight:500, color: deadForOrder(p) ? "#B9C0D4" : "#4A7FFF" }}>
-                    {deadForOrder(p) ? "Deactivated — no sizes on offer" : "Tap to add →"}
+                  <div style={{ fontSize:13, fontWeight:500, color: deadForOrder(p) ? "#B9C0D4" : unavail ? "#FFC46B" : "#4A7FFF" }}>
+                    {deadForOrder(p) ? "Deactivated — no sizes on offer" : unavail ? ((p.productType || "sneaker") === "clothing" ? "No sizes right now" : "Tap for similar →") : "Tap to add →"}
                   </div>
                 </div>
                 <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
@@ -12038,6 +12108,13 @@ function AssistantView({ products, onExit, orders = [] }) {
                 </div>
               );
             })()}
+            {/* An unavailable product (every size out at this shop's own hub):
+                say so before a size is tapped, and say what a tap will do. */}
+            {!naNote && !pendingDisplayPartner && unavailableIds.has(selected.id) && (
+              <div data-testid="sheet-unavailable" style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
+                {unavailableHintFor(selected)}
+              </div>
+            )}
             <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
               {selectedSizes.map(s => {
                 // Clothing sizes the serving hub has ZERO of are greyed out and
@@ -21334,7 +21411,7 @@ const VOICE_VOCAB = {
   enabled:  "Pickup announcements on",
 };
 
-function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
+function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
   // The customer pickup board shows REAL customer orders only. "Shop Refill"
   // rows are internal clothing-refill (CR) requests that live in the SAME
   // /orders node — the warehouse Order Queue already excludes them (see the
@@ -21614,7 +21691,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // orders. Only "collect" pulls (return_to_stock are internal cancellations).
   const laybyPulls = useLaybyPulls();
   const laybyOrders = useMemo(() => (laybyPulls || [])
-    .filter(p => p && p.invoiceNo && dispositionOf(p) !== DISPOSITION.RETURN_TO_STOCK)
+    .filter(p => p && p.invoiceNo && dispositionOf(p) !== DISPOSITION.RETURN_TO_STOCK && pullOnTvBoard(p, section))
     .map(p => {
       const st = p.status || PULL_STATUS.PENDING;
       const num = laybyTvNumber(p.invoiceNo);
@@ -21628,7 +21705,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       }
       return null; // rejected / returnedToStock → not shown on the board
     })
-    .filter(Boolean), [laybyPulls]);
+    .filter(Boolean), [laybyPulls, section]);
   const allOrders = useMemo(() => [...(orders || []), ...laybyOrders], [orders, laybyOrders]);
 
   // Live specials for the advertising band (fail-open inside the hook: an
@@ -21742,13 +21819,13 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
 function TvOnlyShell() {
   const orders = useTvOrders(); // key-range scoped — see useTvOrders
   // Hidden top-right double-tap leaves the #tv kiosk URL → back to the normal app.
-  return <TvWithAutoCollect orders={orders} onExit={() => { window.location.hash = ""; }} />;
+  return <TvWithAutoCollect orders={orders} section={2} onExit={() => { window.location.hash = ""; }} />;
 }
 
 // The same shell for a Section 1 kiosk (?section=1#tv): its own stores' orders.
 function SectionTvShell({ section }) {
   const orders = useSectionTvOrders(section);
-  return <TvWithAutoCollect orders={orders} onExit={() => { window.location.hash = ""; }} />;
+  return <TvWithAutoCollect orders={orders} section={section} onExit={() => { window.location.hash = ""; }} />;
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
