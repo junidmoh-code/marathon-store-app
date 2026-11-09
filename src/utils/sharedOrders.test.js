@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { normalizeNetwork } from "./networkRegistry";
 import { keyInOrderRanges, tvOrderKeyRanges } from "./orderNumbering";
-import { siblingOrderShop, mergeSharedOrders, withSharedRange, boardShowsOrder } from "./sharedOrders";
+import { siblingOrderShop, mergeSharedOrders, withSharedRange, boardShowsOrder, tvSectionForShop } from "./sharedOrders";
 
 const NET = normalizeNetwork(null);
 const feed = (rows, extra = {}) => Object.assign(rows, { settled: true }, extra);
@@ -38,6 +38,14 @@ describe("mergeSharedOrders", () => {
     expect(mergeSharedOrders(feed([{ id: "001" }]), sib).settled).toBe(true);
     expect(mergeSharedOrders(feed([{ id: "001" }]), sib).error).toBe(undefined);
     expect(mergeSharedOrders(Object.assign([{ id: "001" }], { settled: false, error: true }), feed([{ id: "002" }]))).toMatchObject({ settled: false, error: true });
+  });
+});
+
+describe("tvSectionForShop", () => {
+  it("Pine and Concrete's in-app TV is Section 1's; everyone else's has no section, as before", () => {
+    expect(tvSectionForShop(NET, "concrete")).toBe(1);
+    expect(tvSectionForShop(NET, "marathon-pine")).toBe(1);
+    for (const s of ["marathon-pe", "trophy", null, undefined]) expect(tvSectionForShop(NET, s)).toBe(null);
   });
 });
 

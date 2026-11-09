@@ -167,7 +167,7 @@ import {
   insightsStoreOptions, insightsBucketKey, insightsStoreMatcher,
 } from "./utils/sectionRouting";
 import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey, orderKeyFromInput } from "./utils/orderNumbering";
-import { siblingOrderShop, mergeSharedOrders, withSharedRange, boardShowsOrder } from "./utils/sharedOrders";
+import { siblingOrderShop, mergeSharedOrders, withSharedRange, boardShowsOrder, tvSectionForShop } from "./utils/sharedOrders";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests, useEngineConfig } from "./components/stock/useStock";
 import { policyKeepFor } from "./components/stock/saleRowPolicyCap";
 import { useExplicitTargetRows } from "./components/stock/useExplicitTargetRows";
@@ -21262,7 +21262,7 @@ function AppInner() {
   else if (role === ROLES.DISPLAY) {
     // TV mode is chrome-free, but a hidden top-right DOUBLE-tap exits back to
     // the view picker (TvDisplayMockup renders the invisible zone from onExit).
-    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={sharedOrders} onExit={() => setRole(null)} />);
+    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={sharedOrders} section={tvSectionForShop(orderNetwork, myShop)} onExit={() => setRole(null)} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
   // AI Studio is route-guarded on the REAL isSuperAdmin flag (verified email),

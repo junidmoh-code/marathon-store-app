@@ -42,6 +42,12 @@ export function withSharedRange(ranges, section) {
   return Number(section) === 1 ? [...ranges, { start: TV_ORDER_KEY_START, end: TV_ORDER_KEY_END }] : ranges;
 }
 
+// The section a shop's in-app TV shows layby pulls for: Pine's and Concrete's
+// own division. null (every pull, as ever) for anyone else.
+export function tvSectionForShop(network, shop) {
+  return sectionOf(network, shop) === 1 ? 1 : null;
+}
+
 export function boardShowsOrder(network, section, order) {
   return Number(section) === 1 ? sectionOf(network, order?.destShop) === 1 : true;
 }
