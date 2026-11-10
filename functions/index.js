@@ -5769,7 +5769,8 @@ exports.socialAutopilotRetry = onSchedule(
       // 402/429 is the expected "still refused". Anything else means the probe
       // itself is broken (model renamed, key revoked): recorded so the Mac mini
       // mailer emails it, never silently retrying nothing.
-      const broken = !(probe.status === 402 || probe.status === 429);
+      // A 5xx or a network blip is the provider still down, not a broken probe.
+      const broken = Number.isInteger(probe.status) && probe.status >= 400 && probe.status < 500 && probe.status !== 402 && probe.status !== 429;
       await db.ref(`social_health/retry/${saDate}/probeBroken`).set(broken ? String(probe.status) : null);
       console.log(`socialAutopilotRetry ${saDate}: ${due.join("+")} still refused today; Gemini answers ${probe.status}, so not retrying yet`);
       return;

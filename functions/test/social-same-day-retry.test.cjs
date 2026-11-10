@@ -76,7 +76,9 @@ test("402 and 429 give the budget unit back; only 5xx falls back to Flash", () =
 test("a run that spent money is never retried (no paying twice)", () => {
   const o = { nowMs: NOW, cutoffMs: CUT };
   assert.equal(r.sameDayRetryClaim({ ...still9NovLookbook, costUSD: 0.31 }, { ...o, kind: "still" }), undefined);
-  assert.equal(r.sameDayRetryClaim({ ...daily10Nov, estCostUSD: 0.15 }, { ...o, kind: "daily" }), undefined);
+  // Pennies of cached tag/stylist cost do not block; the daily refusal billed no image.
+  assert.ok(r.sameDayRetryClaim({ ...still10Nov, costUSD: 0.004 }, { ...o, kind: "still" }));
+  assert.ok(r.sameDayRetryClaim({ ...daily10Nov, estCostUSD: 0.01 }, { ...o, kind: "daily" }));
 });
 
 test("inFlight: claimed and unfinished, until stale", () => {

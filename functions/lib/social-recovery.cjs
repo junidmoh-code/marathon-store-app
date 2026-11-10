@@ -143,6 +143,7 @@ function releaseGeneration(cur) {
 // shows the provider answering again, so a retry is not attempted into a 402.
 const PROVIDER_REFUSAL_RE = /AI credits depleted|rate-limited|over quota|AI service error \(5xx\)/i;
 const SAME_DAY_RETRY_LIMIT = 6;
+const PAID_IMAGE_USD = 0.05;
 
 /** The provider's part of a reason: the still records "<lookbook gate> — the current style also failed: <why>". */
 function refusalPart(reason) {
@@ -158,10 +159,14 @@ function isProviderRefusal(reason) {
 /** Did this run record make nothing, and why? Reads both run logs' shapes. */
 function refusedRun(cur, kind) {
   if (!cur || !cur.finishedAt || cur.error) return null;
-  // A run that SPENT anything (a lookbook hero paid for, then a gate failed)
-  // is never retried: the retry would pay for it again (architect review, S2).
-  const spent = Number(kind === "daily" ? cur.estCostUSD : cur.costUSD) || 0;
-  if (spent > 0) return null;
+  // NO PAYING TWICE (architect review). The daily run's refusals come from the
+  // image call itself, which bills nothing when refused; what it did spend
+  // (style tags, the stylist) is cached and not bought again. The still is
+  // different: a lookbook day may pay for hero images and THEN fail a gate,
+  // and a retry would pay for them again. A hero costs ~$0.13+, tags and the
+  // stylist cost pennies, so a still that spent PAID_IMAGE_USD or more is
+  // never retried.
+  if (kind === "still" && (Number(cur.costUSD) || 0) >= PAID_IMAGE_USD) return null;
   if (kind === "daily") {
     if (Number(cur.created) !== 0) return null;
     const reasons = Array.isArray(cur.skipReasons) ? cur.skipReasons : Object.values(cur.skipReasons || {});
