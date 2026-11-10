@@ -31,7 +31,7 @@ import "../shopify/env.mjs";
 import { adminRequire } from "../adminRequire.mjs";
 import { readSecret } from "./secrets.mjs";
 import {
-  MAIL_TO, SHOP_MAILBOX, dedupe, healthAlert, healthStaleAlert, mailFor, publisherAlerts, runErrorAlert, saDate, tokenAlerts,
+  MAIL_TO, SHOP_MAILBOX, dedupe, healthAlert, healthStaleAlert, mailFor, publisherAlerts, retryAlert, runErrorAlert, saDate, tokenAlerts,
 } from "./socialAlarmCore.mjs";
 
 if (process.env.SOCIAL_ALARM_MAIL === "0") process.exit(0);
@@ -63,8 +63,8 @@ try {
   const nowMs = Date.now();
   const date = saDate(nowMs);
   const val = async (path) => (await db.ref(path).once("value")).val();
-  const [day, daily, still] = await Promise.all([
-    val(`social_health/days/${date}`), val(`social_autopilot_log/${date}`), val(`social_still_log/${date}`),
+  const [day, daily, still, retry] = await Promise.all([
+    val(`social_health/days/${date}`), val(`social_autopilot_log/${date}`), val(`social_still_log/${date}`), val(`social_health/retry/${date}`),
   ]);
 
   const alerts = [
@@ -72,6 +72,7 @@ try {
     healthStaleAlert(day, nowMs),
     runErrorAlert(daily, "06:00 reel run", date),
     runErrorAlert(still, "07:00 still run", date),
+    retryAlert(retry, date),
     ...publisherAlerts(readText(join(LOGS, "social-publish.log")), readJson(join(LOGS, "social-publish.state.json"), {}), date),
   ];
 

@@ -93,3 +93,27 @@ test("fix lines", () => {
   assert.match(fixFor("AI credits depleted (402) — top up Gemini prepaid credits"), /auto-reload/);
   assert.equal(fixFor("something else"), null);
 });
+
+test("moving numbers do not make a new email every scan", async () => {
+  const { healthAlert: h } = await import("./socialAlarmCore.mjs");
+  const at = (mins, n) => ({ ok: false, severity: "silent", reasons: [`the publisher has not ticked for ${mins} minutes`, `${n} approved post(s) are past due`] });
+  assert.equal(h(at(17, 1), "d").key, h(at(62, 3), "d").key);
+});
+
+test("a publisher post failing every tick mails once that day", () => {
+  const run = (t) => [`2026/11/10, ${t}  ── run start ──`, `2026/11/10, ${t}       instagram: errored mid-send: socket hang up`, `2026/11/10, ${t}     done: 0 posted, 1 failed, 0 skipped`].join("\n");
+  const out = publisherAlerts([run("15:30:17"), run("15:32:17"), run("15:34:17")].join("\n"), {}, "2026-11-10");
+  assert.equal(new Set(out.map((a) => a.key)).size, 1);
+});
+
+test("retry alerts: broken probe or a refused re-fire", async () => {
+  const { retryAlert } = await import("./socialAlarmCore.mjs");
+  assert.equal(retryAlert({ probe: 402 }, "d"), null);
+  assert.match(retryAlert({ probeBroken: "404" }, "d").body, /404/);
+  assert.match(retryAlert({ fireError: "scheduler x: HTTP 403" }, "d").key, /fire/);
+});
+
+test("fix lines do not misfire on stray numbers or words", () => {
+  assert.equal(fixFor("maxOutputTokens exceeded"), null);
+  assert.equal(fixFor("order 14029 failed"), null);
+});

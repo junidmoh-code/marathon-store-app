@@ -346,7 +346,11 @@ if /usr/bin/plutil -lint "$ALARM_PLIST" >/dev/null 2>&1; then
   fi
   [ -d "$CLONE/scripts/cardrecon/node_modules/nodemailer" ] || (cd "$CLONE/scripts/cardrecon" && npm ci --silent >/dev/null 2>&1) || bad "alarm mailer: npm ci in scripts/cardrecon failed (nodemailer)"
   launchctl bootout "gui/$UID/$ALARM_LABEL" 2>/dev/null || true
-  launchctl bootstrap "gui/$UID" "$ALARM_PLIST" && launchctl enable "gui/$UID/$ALARM_LABEL" && ok "alarm mailer installed: $ALARM_LABEL (every 5 min)"
+  if launchctl bootstrap "gui/$UID" "$ALARM_PLIST" && launchctl enable "gui/$UID/$ALARM_LABEL"; then
+    ok "alarm mailer installed: $ALARM_LABEL (every 5 min)"
+  else
+    bad "alarm mailer: launchctl bootstrap failed"
+  fi
 else
   bad "alarm mailer plist is not valid; not installed"
 fi

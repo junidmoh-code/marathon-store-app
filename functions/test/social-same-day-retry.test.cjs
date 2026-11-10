@@ -72,3 +72,16 @@ test("402 and 429 give the budget unit back; only 5xx falls back to Flash", () =
   assert.equal(r.isUnbilledRefusal("timed out"), false);
   assert.equal(r.isUnbilledProviderError("gemini HTTP 402: x"), false);
 });
+
+test("a run that spent money is never retried (no paying twice)", () => {
+  const o = { nowMs: NOW, cutoffMs: CUT };
+  assert.equal(r.sameDayRetryClaim({ ...still9NovLookbook, costUSD: 0.31 }, { ...o, kind: "still" }), undefined);
+  assert.equal(r.sameDayRetryClaim({ ...daily10Nov, estCostUSD: 0.15 }, { ...o, kind: "daily" }), undefined);
+});
+
+test("inFlight: claimed and unfinished, until stale", () => {
+  assert.equal(r.inFlight({ startedAt: NOW - 60000 }, NOW), true);
+  assert.equal(r.inFlight({ startedAt: NOW - 41 * 60000 }, NOW), false);
+  assert.equal(r.inFlight({ startedAt: NOW - 60000, finishedAt: NOW }, NOW), false);
+  assert.equal(r.inFlight(null, NOW), false);
+});

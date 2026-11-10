@@ -5686,8 +5686,10 @@ function dailyRetryCutoffMs(policy, nowMs) {
   const times = [...(policy.reels || []), ...(policy.photos || []), ...(policy.stories || [])];
   let earliest = Infinity;
   for (const t of times) {
+    // Strict here: parseHHMM turns a typo into noon, which would set an 11:00 cutoff.
+    if (!/^\d{1,2}:\d{2}$/.test(String(t || "").trim())) continue;
     const hm = parseHHMM(t);
-    if (hm) earliest = Math.min(earliest, hm.hour * 60 + hm.minute);
+    earliest = Math.min(earliest, hm.hour * 60 + hm.minute);
   }
   if (!Number.isFinite(earliest)) return -Infinity;    // no slots: nothing to retry for
   return sastMidnightUtc(nowMs, 0) + earliest * 60000 - RETRY_LEAD_MS;
@@ -5751,6 +5753,9 @@ exports.socialAutopilotRetry = onSchedule(
       db.ref(`social_still_log/${saDate}`).once("value").then((s) => s.val()),
       loadSocialPolicy(db),
     ]);
+    // Nothing while either run is generating: the still must start AFTER the
+    // reel is written, or its "used" scan misses the reel's product (architect review, S3).
+    if (socialRecovery.inFlight(daily, nowMs) || socialRecovery.inFlight(still, nowMs)) return;
     // The same test the claim will make, so the probe only runs on a day that needs it.
     const due = [];
     if (socialRecovery.sameDayRetryClaim(daily, { kind: "daily", nowMs, cutoffMs: dailyRetryCutoffMs(policy, nowMs) })) due.push("daily");
@@ -5761,6 +5766,11 @@ exports.socialAutopilotRetry = onSchedule(
     try { probe = await geminiAnswers(geminiApiKey.value()); } catch (err) { probe = { ok: false, status: String(err && err.message).slice(0, 60) }; }
     await db.ref(`social_health/retry/${saDate}`).update({ checkedAt: nowMs, due, probe: probe.status });
     if (!probe.ok) {
+      // 402/429 is the expected "still refused". Anything else means the probe
+      // itself is broken (model renamed, key revoked): recorded so the Mac mini
+      // mailer emails it, never silently retrying nothing.
+      const broken = !(probe.status === 402 || probe.status === 429);
+      await db.ref(`social_health/retry/${saDate}/probeBroken`).set(broken ? String(probe.status) : null);
       console.log(`socialAutopilotRetry ${saDate}: ${due.join("+")} still refused today; Gemini answers ${probe.status}, so not retrying yet`);
       return;
     }
@@ -5771,9 +5781,10 @@ exports.socialAutopilotRetry = onSchedule(
       try {
         await runSchedulerJob(SOCIAL_RETRY_JOBS[kind]);
         console.warn(`socialAutopilotRetry ${saDate}: Gemini answers again — fired the ${kind} run`);
-        await db.ref(`social_health/retry/${saDate}/fired/${kind}`).set(nowMs);
+        await db.ref(`social_health/retry/${saDate}`).update({ [`fired/${kind}`]: nowMs, fireError: null, probeBroken: null });
       } catch (err) {
         console.error(`socialAutopilotRetry ${saDate}: could not fire the ${kind} run: ${err && err.message}`);
+        await db.ref(`social_health/retry/${saDate}/fireError`).set(String(err && err.message).slice(0, 300));
       }
     }
   }

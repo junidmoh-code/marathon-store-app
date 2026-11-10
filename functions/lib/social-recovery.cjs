@@ -158,6 +158,10 @@ function isProviderRefusal(reason) {
 /** Did this run record make nothing, and why? Reads both run logs' shapes. */
 function refusedRun(cur, kind) {
   if (!cur || !cur.finishedAt || cur.error) return null;
+  // A run that SPENT anything (a lookbook hero paid for, then a gate failed)
+  // is never retried: the retry would pay for it again (architect review, S2).
+  const spent = Number(kind === "daily" ? cur.estCostUSD : cur.costUSD) || 0;
+  if (spent > 0) return null;
   if (kind === "daily") {
     if (Number(cur.created) !== 0) return null;
     const reasons = Array.isArray(cur.skipReasons) ? cur.skipReasons : Object.values(cur.skipReasons || {});
@@ -183,7 +187,13 @@ function sameDayRetryClaim(cur, { kind, nowMs, cutoffMs, maxRetries = SAME_DAY_R
   };
 }
 
+/** A run claimed and not yet finished (and not yet stale): something is generating right now. */
+function inFlight(cur, nowMs, staleMs = 40 * 60 * 1000) {
+  return Boolean(cur && cur.startedAt && !cur.finishedAt && nowMs - Number(cur.startedAt) < staleMs);
+}
+
 module.exports = {
+  inFlight,
   RETRY_BACKOFF_MS, WORST_ATTEMPT_MS, isTransientSkip, isUnbilledProviderError, isUnbilledRefusal, isNoStockSkip,
   kindsToTry, generateWithRecovery, releaseGeneration,
   SAME_DAY_RETRY_LIMIT, isProviderRefusal, refusalPart, sameDayRetryClaim,

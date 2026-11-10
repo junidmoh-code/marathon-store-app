@@ -34,11 +34,23 @@ const CONSEQUENCE = /has not landed|have not landed/i;
 /** The fix line for a cause, so the email says what to do, not only what broke. */
 export function fixFor(text) {
   const t = String(text || "");
-  if (/credits depleted|prepaid|402/i.test(t)) return "Top up the Gemini prepaid balance (and turn on auto-reload): https://aistudio.google.com/app/billing (project marathon-club). Posting resumes by itself the same day once it answers.";
-  if (/rate-limited|quota|429/i.test(t)) return "Gemini is rate-limiting or over quota. Check https://aistudio.google.com/app/billing; retries run by themselves.";
+  if (/credits depleted|prepaid|HTTP 402|\(402\)/i.test(t)) return "Top up the Gemini prepaid balance (and turn on auto-reload): https://aistudio.google.com/app/billing (project marathon-club). Posting resumes by itself the same day once it answers.";
+  if (/rate-limited|over quota|HTTP 429|\(429\)/i.test(t)) return "Gemini is rate-limiting or over quota. Check https://aistudio.google.com/app/billing; retries run by themselves.";
   if (/publisher|ticking|heartbeat/i.test(t)) return "The Mac mini publisher has stopped. The watchdog restarts it every 15 minutes; if this repeats, check the mini is on and awake.";
-  if (/token|OAuth|code 190|session has expired/i.test(t)) return "The Meta token needs re-authorising: run node scripts/social/meta-token.mjs (see scripts/social/SOCIAL-SETUP.md).";
+  if (/\b(page|access|meta) token\b|^token$|OAuth|code 190|session has expired/i.test(t)) return "The Meta token needs re-authorising: run node scripts/social/meta-token.mjs (see scripts/social/SOCIAL-SETUP.md).";
   return null;
+}
+
+// A reason line with its moving numbers taken out, so the same problem keeps
+// the same key across the day's 15-minute scans ("not ticked for 17 minutes",
+// "3 post(s) are in failed"). Slot times (HH:MM) are kept: a new slot missed is
+// a new email (architect review, S4).
+export function stableReason(r) {
+  return String(r)
+    .replace(/\b\d+ (minutes?|mins?)\b/gi, "# min")
+    .replace(/\b\d+(?= (approved )?post\(s\))/gi, "#")
+    .replace(/\ball \d+ skipped/gi, "all # skipped")
+    .replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -51,7 +63,7 @@ export function healthAlert(day, date) {
   if (!reasons.length) return null;
   const causes = reasons.filter((r) => !CONSEQUENCE.test(r));
   const keyed = (causes.length ? causes : reasons)
-    .map((r) => r.replace(/\d+ min past the slot/g, "").replace(/\s+/g, " ").trim())
+    .map(stableReason)
     .sort();
   const fixes = [...new Set(reasons.map(fixFor).filter(Boolean))];
   return {
@@ -113,8 +125,11 @@ export function publisherAlerts(logText, state, date) {
     const m = /done: (\d+) posted, (\d+) failed/.exec(line);
     if (m && Number(m[2]) > 0 && runStart) {
       const detail = runLines.filter((l) => /fail|error|✗|refused/i.test(l)).slice(0, 8).map((l) => `  ${l.trim()}`);
+      const firstFail = (detail[0] || "").replace(/^\s*\d{4}\/\d{2}\/\d{2}, \d{2}:\d{2}:\d{2}\s*/, "").trim();
       out.push({
-        key: `publish-failed:${runStart}`,
+        // Per day and failure, not per run: a post that errors mid-send goes
+        // back to approved and fails again on every 2-minute tick (S6).
+        key: `publish-failed:${date}:${firstFail || m[2]}`,
         subject: `${SUBJECT_PREFIX} ${m[2]} post(s) failed to publish (${runStart.slice(12, 17)})`,
         body: [`The publisher run at ${runStart} posted ${m[1]} and failed ${m[2]}.`, "", ...detail].join("\n"),
       });
@@ -164,6 +179,18 @@ export function tokenAlerts(data, nowMs) {
     });
   }
   return out;
+}
+
+/** The same-day retry could not run: its probe is broken or the scheduler refused. */
+export function retryAlert(retry, date) {
+  if (!retry) return null;
+  const why = retry.fireError ? `re-firing the run failed: ${retry.fireError}` : retry.probeBroken ? `the Gemini probe answers ${retry.probeBroken} (expected 200, or 402/429 while credits are out)` : null;
+  if (!why) return null;
+  return {
+    key: `retry-broken:${date}:${retry.fireError ? "fire" : "probe"}`,
+    subject: `${SUBJECT_PREFIX} The automatic same-day retry cannot run (${date})`,
+    body: [`socialAutopilotRetry could not win today back: ${why}.`, "Today's reel and photo will not be remade automatically. See the socialAutopilotRetry logs (Cloud Functions, europe-west1)."].join("\n"),
+  };
 }
 
 /** Drop alerts already sent; prune old keys. → { toSend, sent } */
