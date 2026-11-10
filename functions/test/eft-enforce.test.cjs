@@ -262,3 +262,57 @@ test("CONCRETE: the scan flags a plain-EFT sale at Concrete beside Trophy and PE
   assert.equal(db.tx["eft_enforcement_breaches/S-pine"], undefined);
   assert.equal(db.tx["eft_enforcement_breaches/S-concrete-matched"], undefined);
 });
+
+// ─── PINE JOINS TROPHY, MARATHON PE AND CONCRETE (Junid, 10 Nov 2026) ────────
+// The live node after scripts/cardrecon/apply-eft-enforcement-pine-20261110.mjs.
+const LIVE_AFTER_PINE = { stores: { concrete: true, pe: true, pine: true, trophy: true }, updatedAt: 1794300000000, updatedBy: "gunidmoh@gmail.com" };
+
+test("PINE: with the live node, Pine enforces beside Trophy, Marathon PE and Concrete — and they are unchanged", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  assert.deepEqual(enforcedStoresOf(LIVE_AFTER_PINE), ["concrete", "pe", "pine", "trophy"]);
+  for (const storeId of ["pine", "trophy", "pe", "concrete"]) {
+    const out = await eftEnforcementStatus({ ...CASHIER, data: { storeId } });
+    assert.deepEqual(out, { ok: true, enforcedStores: ["concrete", "pe", "pine", "trophy"], enforced: true, source: "config", updatedAt: 1794300000000 }, storeId);
+  }
+  // Stores that are not on the list keep their old path.
+  for (const storeId of ["hub1", "hub2", "central"]) {
+    assert.equal((await eftEnforcementStatus({ ...CASHIER, data: { storeId } })).enforced, false, storeId);
+  }
+  // Exactly one flag differs from the Concrete-era node: Pine.
+  const changed = Object.keys(LIVE_AFTER_PINE.stores).filter((id) => LIVE_AFTER_PINE.stores[id] !== (LIVE_AFTER_CONCRETE.stores[id] ?? false));
+  assert.deepEqual(changed, ["pine"]);
+  const enforced = enforcedStoresOf(LIVE_AFTER_PINE);
+  assert.ok(enforcementBreachOf("S-p", sale({ storeId: "pine" }), enforced), "a plain EFT at Pine is a breach");
+  assert.equal(enforcementBreachOf("S-p2", sale({ storeId: "pine", payments: { p: { method: "eft", amount: 50000, eftPoolKey: K } } }), enforced), null, "a matched (or owner-floated) pool payment is not");
+  assert.equal(enforcementBreachOf("S-p3", sale({ storeId: "pine", type: "layby" }), enforced), null, "layby deposits are still not enforced");
+});
+
+test("PINE: staff cannot take Pine off the list — only the owner changes the set", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  db.sets = {};
+  for (const who of [CASHIER, MANAGER]) {
+    await rejects(eftEnforcementStatus({ ...who, data: { action: "set", stores: { pine: false } } }), "permission-denied");
+  }
+  assert.equal(db.sets["eft_enforcement"], undefined, "nothing written");
+  assert.equal((await eftEnforcementStatus({ ...CASHIER, data: { storeId: "pine" } })).enforced, true);
+});
+
+test("PINE: the scan flags a plain-EFT sale at Pine beside Trophy, PE and Concrete; Pine's matched sale is fine", async () => {
+  db.sets = {}; db.queries = []; db.tx = {};
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  db.reads["eft_enforcement_scan"] = null;
+  for (const k of Object.keys(db.reads)) if (k.startsWith("eft_enforcement_breaches/")) delete db.reads[k];
+  db.reads["pos/sales"] = {
+    "S-pine": sale({ storeId: "pine", createdAt: 9500 }),
+    "S-trophy": sale({ storeId: "trophy", createdAt: 9600 }),
+    "S-pe": sale({ storeId: "pe", createdAt: 9700 }),
+    "S-concrete": sale({ storeId: "concrete", createdAt: 9800 }),
+    "S-pine-matched": sale({ storeId: "pine", createdAt: 9900, payments: { p: { method: "eft", amount: 50000, eftPoolKey: K } } }),
+    "S-pine-card": sale({ storeId: "pine", createdAt: 9950, payments: { p: { method: "card", amount: 50000, cardAuthCode: "1234" } } }),
+  };
+  await eftRemainderScan();
+  assert.equal(db.tx["eft_enforcement_breaches/S-pine"]?.storeId, "pine", "a plain EFT at Pine is a breach");
+  for (const id of ["S-trophy", "S-pe", "S-concrete"]) assert.ok(db.tx[`eft_enforcement_breaches/${id}`], `${id} still flagged`);
+  assert.equal(db.tx["eft_enforcement_breaches/S-pine-matched"], undefined);
+  assert.equal(db.tx["eft_enforcement_breaches/S-pine-card"], undefined);
+});
