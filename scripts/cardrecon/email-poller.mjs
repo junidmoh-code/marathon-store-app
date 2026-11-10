@@ -1424,9 +1424,11 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       // — a customer's screenshot, a WhatsApp file, a second bank's slip — is
       // never a confirmation source and is not rendered at all.
       if (!isSendersOwnDocument(verdict.sender, att.filename)) {
-        // `skipped`: no red row beside a payment the bank's own PDF carries,
-        // but if NOTHING was read it still forces a visible refusal (a bank
-        // renaming its PDF must never vanish silently).
+        // A placeholder like an unreadable PDF: it raises its own visible row
+        // even beside a recorded payment — every genuine notification in the
+        // history carries exactly ONE system-named PDF, so a second one (or a
+        // renamed one) is either a person's addition or a payment that must
+        // not vanish silently. (Substitute review, #887.)
         documents.push({ lines: null, skipped: true, text: `[attachment "${clip(att.filename, 80)}" not read: it is not ${verdict.sender?.address ?? "the bank"}'s own notification document, so it is never a confirmation source]` });
         continue;
       }
@@ -1550,7 +1552,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       // alongside its readable siblings: the payment may be inside it, and a
       // red row a person can chase beats a silence nobody can.
       // (CodeRabbit, this PR.)
-      for (const d of documents.filter((x) => x.lines === null && !x.skipped)) {
+      for (const d of documents.filter((x) => x.lines === null)) {
         parsedDocs.push({
           d, r: null,
           p: { ok: false, reason: `An attachment on this message could not be read — a payment may be inside it. ${clip(d.text, 200)}` },
@@ -1754,7 +1756,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
 // by no one.
 let unknownBankThisRun = 0;
 // Authenticated bank-domain mail that is NOT a trusted automated sender (or is
-// a forward) — counted where the verdict is made (10 Nov 2026).
+// a forward) — counted where its record is written (10 Nov 2026).
 let untrustedSenderThisRun = 0;
 
 async function noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity, size, fromDomain }) {

@@ -238,7 +238,9 @@ export function senderTrustVerdict({ verdict, fromAddress, fromAddressCount = 1,
   const hdrs = Array.isArray(headerLines) ? headerLines : [];
   const fromHeaders = hdrs.filter((h) => String(h?.key ?? "").toLowerCase() === "from").length;
   if (fromHeaders > 1 || fromAddressCount !== 1) {
-    return untrusted(`from ${sender.address}, but the message names more than one author (${fromHeaders} From header(s), ${fromAddressCount} address(es)) — a bank's notification has exactly one`);
+    return untrusted(fromAddressCount === 0 && fromHeaders <= 1
+      ? `from ${sender.address}, but its From header could not be read as one plain address — a bank's notification names exactly one`
+      : `from ${sender.address}, but the message names more than one author (${fromHeaders} From header(s), ${fromAddressCount} address(es)) — a bank's notification has exactly one`);
   }
   if (hdrs.some((h) => String(h?.key ?? "").toLowerCase() === "sender")) {
     return untrusted(`from ${sender.address}, but it carries a Sender header — sent on someone's behalf, which a bank's notification system never does`);

@@ -187,9 +187,11 @@ describe("GENUINE automated notifications from the real addresses still confirm"
     const { records } = poller({ from: "noreply@standardbank.co.za", subject: "Payment confirmation 8690", attachments: [{ filename: "PaymentConfirmation.pdf", lines: SB_DOC }] });
     expect(records.map((r) => r.outcome)).toEqual(["recorded"]);
   });
-  it("an extra, non-system attachment beside the bank's own PDF is not opened and raises no refusal row", () => {
-    const { records, opened } = poller({ from: "notification@nedbank.co.za", subject: "Payment Notification", attachments: [{ filename: "Proof_Of_Payment.pdf", lines: NEDBANK_DOC }, { filename: "Terms.pdf", lines: ["Terms"] }] });
-    expect(opened).toEqual(["Proof_Of_Payment.pdf"]);
+  it("an extra or renamed PDF beside the bank's own is NOT opened — the real payment records, and the stranger gets its own visible row (never silent)", () => {
+    const src = readFileSync(new URL("./email-poller.mjs", import.meta.url), "utf8");
+    expect(src).toMatch(/for \(const d of documents\.filter\(\(x\) => x\.lines === null\)\) \{/); // every placeholder, skipped ones included, gets a row
+    const { records, opened } = poller({ from: "noreply@standardbank.co.za", subject: "Payment confirmation 8690", attachments: [{ filename: "PaymentConfirmation.pdf", lines: SB_DOC }, { filename: "PaymentConfirmation (2).pdf", lines: SB_DOC }] });
+    expect(opened).toEqual(["PaymentConfirmation.pdf"]);
     expect(records.map((r) => r.outcome)).toEqual(["recorded"]);
   });
   it("the trusted list is exactly the five senders the history proved, each with its own reader", () => {
@@ -313,8 +315,8 @@ describe("the poller wires it in", () => {
   it("the card-report bypass needs a DKIM pass — a forgery claiming that address still raises the alarm", () => {
     expect(src).toMatch(/CARD_REPORT_SENDERS\.includes\([^\n]*\n\s*&& authenticationVerdict\(\{ headerLines: parsed\.headerLines, fromAddress \}\)\.pass === true\) return null;/);
   });
-  it("a skipped (non-system) attachment raises no sibling refusal row, but still forces visibility when nothing was read", () => {
-    expect(src).toMatch(/documents\.filter\(\(x\) => x\.lines === null && !x\.skipped\)/);
+  it("a skipped (non-system) attachment is never silent: a sibling row beside a payment, and it forces visibility when nothing was read", () => {
+    expect(src).not.toMatch(/!x\.skipped/);
     expect(src).toMatch(/const unreadable = documents\.some\(\(d\) => d\.lines === null\)/);
   });
 });
