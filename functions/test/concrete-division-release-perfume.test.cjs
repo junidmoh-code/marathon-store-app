@@ -236,6 +236,11 @@ test("the one-shot flag: claimed once, by one run, and never re-armed by the cla
   assert.ok(SCAN_SRC.indexOf("claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true") < SCAN_SRC.indexOf("if (!divisionOnly) try {\n      const woSnap"));
 });
 
+test("a flag-claimed division run records under a -division key", () => {
+  assert.ok(SCAN_SRC.includes('const recordId = divisionOnly && !runId.endsWith("-division") ? `${runId}-division` : runId;'));
+  assert.ok(SCAN_SRC.includes("await safeSet(db, `refill_engine/runs/${recordId}`, {"));
+});
+
 test("the scan runs with 1 GiB (it was killed for memory at 512 MiB)", () => {
   assert.ok(SCAN_SRC.includes('memory: "1GiB",'));
   assert.ok(!SCAN_SRC.includes('memory: "512MiB"'));

@@ -1132,7 +1132,10 @@ async function runScan(opts) {
     }
 
     // ── run record + prune old runs (keys are time-sortable) ─────────────────
-    await safeSet(db, `refill_engine/runs/${runId}`, {
+    // A flag-claimed division run keeps its lock id but records under a
+    // "-division" key, so an hourly run in the same minute never overwrites it.
+    const recordId = divisionOnly && !runId.endsWith("-division") ? `${runId}-division` : runId;
+    await safeSet(db, `refill_engine/runs/${recordId}`, {
       startedAt, finishedAt: new Date().toISOString(),
       mode: config.mode || {}, counts: { ...counts, errors: counts.errors.length ? counts.errors : null },
       policy: plan.policy || null,   // which switch/throttle state this run used
