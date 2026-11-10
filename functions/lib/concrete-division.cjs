@@ -108,6 +108,18 @@ function hub3PresenceIndex({ hub3Stock, hub3Locks, hub3Held, refillRequests } = 
   return present;
 }
 
+// Is this product SEATED at a division shop? (A seat is the arming act there.)
+function isSeatedAtShop(division, dest, pid) {
+  return !!division && DIVISION_SHOPS.includes(dest) && divisionIsObj(division.seats?.[dest]?.[pid]);
+}
+
+// Does a division shop carry this product: seated, or a cell in the view?
+function divisionShopCarries(division, dest, pid, stockView) {
+  if (isSeatedAtShop(division, dest, pid)) return true;
+  const node = stockView?.[dest]?.[pid];
+  return !!node && typeof node === "object" && Object.keys(node).length > 0;
+}
+
 // ── WHAT THE ENGINE ASKS, CELL BY CELL ───────────────────────────────────────
 // `division` is what divisionContext built for this scan. Returns undefined
 // ("not the division's business — carry on down the engine's own order"), null
@@ -126,9 +138,10 @@ function divisionTarget(division, dest, pid, size, products, stockView) {
     if (!seats?.[dest]?.[pid]) return null;
     return divisionTargetShape(one ? policy.hub3Keep.oneSize : policy.hub3Keep.perSize);
   }
-  // A shop arms only what it carries in the engine's own (trust-masked) view.
-  const node = stockView?.[dest]?.[pid];
-  if (!node || typeof node !== "object" || Object.keys(node).length === 0) return null;
+  // A shop arms what is SEATED there (Junid, 10 Nov 2026: seating, not the
+  // trust mask, decides — a till-deducted shop shelf is counted stock), or,
+  // with no seat, what it carries in the engine's own (trust-masked) view.
+  if (!divisionShopCarries(division, dest, pid, stockView)) return null;
   if (hub3Present.has(pid)) {
     const owner = seats?.[DIVISION_HUB]?.[pid]?.owner;
     if (owner && owner !== dest) return null;
@@ -153,11 +166,9 @@ function divisionManagedPids(division, dest, stockView, products) {
     if (!division.policy.hub3Keep || !division.policy.hub3Keep.on) return [];
     return Object.keys(division.seats?.[dest] || {}).filter((pid) => products?.[pid] && !isDivisionFootwear(products[pid]));
   }
-  return Object.keys(stockView?.[dest] || {}).filter((pid) => {
-    if (pid === "_meta" || !products?.[pid] || isDivisionFootwear(products[pid])) return false;
-    const n = stockView[dest][pid];
-    return !!n && typeof n === "object" && Object.keys(n).length > 0;
-  });
+  const pids = new Set([...Object.keys(stockView?.[dest] || {}), ...Object.keys(division.seats?.[dest] || {})]);
+  return [...pids].filter((pid) => pid !== "_meta" && !!products?.[pid] && !isDivisionFootwear(products[pid])
+    && divisionShopCarries(division, dest, pid, stockView));
 }
 
 // ── HUB + SHOP OF A SOLVE ────────────────────────────────────────────────────
@@ -329,6 +340,6 @@ module.exports = {
   applyDivisionSeat, DivisionSeatError,
   CONCRETE_DIVISION_KEY, DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, SEATS_PATH, DIVISION_MAX, DIVISION_FOOTWEAR_KEYS,
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
-  divisionTargetShape, hub3PresenceIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
+  divisionTargetShape, hub3PresenceIndex, isSeatedAtShop, divisionShopCarries, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
 };

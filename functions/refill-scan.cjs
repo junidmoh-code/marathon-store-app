@@ -966,9 +966,12 @@ async function runScan() {
           ? (Array.isArray(intent.forDests) && intent.forDests.length > 0
             && intent.forDests.every((d) => !networkRegistry.trustedCellsOnly(network, d) || stockTrust.cellTrusted(stock?.[d]?.[pid]?.[sizeKey])))
           : stockTrust.cellTrusted(stock?.[dest]?.[pid]?.[sizeKey]);
-        // Hub 3's seated sneakers are counted stock (concrete-division.cjs): the
-        // plan flags exactly those, and only for Hub 3.
-        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk && !(intent.seatedHub3 === true && dest === concreteDivision.DIVISION_HUB)) {
+        // Hub 3's seated sneakers, and a seated non-sneaker on a Pine or
+        // Concrete shelf, are counted stock (concrete-division.cjs): the plan
+        // flags exactly those, and only for that destination.
+        const seatedOk = (intent.seatedHub3 === true && dest === concreteDivision.DIVISION_HUB)
+          || (intent.seatedShop === true && concreteDivision.DIVISION_SHOPS.includes(dest));
+        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk && !seatedOk) {
           counts.errors.push(`untrusted cell: refused ${source}→${dest} for ${pid}/${sizeKey}`);
           continue;
         }

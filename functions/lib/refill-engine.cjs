@@ -34,7 +34,7 @@ const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_C
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
 const { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } = require("./central-fed.cjs");
-const { DIVISION_HUB, DIVISION_SHOPS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear } = require("./concrete-division.cjs");
+const { DIVISION_HUB, DIVISION_SHOPS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop } = require("./concrete-division.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -907,10 +907,23 @@ function computeRefillPlan(snapshot) {
     for (const [pid, node] of Object.entries(stock[DIVISION_HUB] || {})) if (!isDivisionFootwear(products?.[pid])) hub3View[pid] = node;
     for (const pid of seatedHub3Footwear) hub3View[pid] = rawStock[DIVISION_HUB][pid];
     seatedStock = { ...stock, [DIVISION_HUB]: hub3View };
+    // SEATED SHOP SHELVES ARE COUNTED STOCK TOO (Junid, 10 Nov 2026). At Pine
+    // and Concrete a seated non-sneaker reads its whole shelf (the till deducts
+    // every sale there), for that shop as a destination ONLY — the masked
+    // `stock` every other reader holds is untouched.
+    for (const shop of DIVISION_SHOPS) {
+      const view = { ...(stock[shop] || {}) };
+      for (const pid of Object.keys(division.seats[shop] || {})) {
+        if (isDivisionFootwear(products?.[pid])) continue;
+        if (rawStock[shop]?.[pid]) view[pid] = rawStock[shop][pid]; else delete view[pid];
+      }
+      seatedStock[shop] = view;
+    }
   }
   const isSeatedHub3 = (dest, pid) => dest === DIVISION_HUB && seatedHub3Footwear.has(pid);
-  const viewOf = (dest, pid) => (division && dest === DIVISION_HUB && isDivisionFootwear(products?.[pid]) ? seatedStock : stock);
-  const trustedCell = (loc, pid, sizeKey) => isSeatedHub3(loc, pid) || maskTrustedCell(loc, pid, sizeKey);
+  const isSeatedShop = (dest, pid) => !!division && isSeatedAtShop(division, dest, pid) && !isDivisionFootwear(products?.[pid]);
+  const viewOf = (dest, pid) => (division && ((dest === DIVISION_HUB && isDivisionFootwear(products?.[pid])) || isSeatedShop(dest, pid)) ? seatedStock : stock);
+  const trustedCell = (loc, pid, sizeKey) => isSeatedHub3(loc, pid) || isSeatedShop(loc, pid) || maskTrustedCell(loc, pid, sizeKey);
   const routing = networkRouting(rawConfig, network, division);
   const { routes, withheld: routesWithheld, dests } = routing;
   const srcOf = (dest, pid) => routing.sourceFor(dest, products?.[pid], pid);
@@ -2305,6 +2318,7 @@ function computeRefillPlan(snapshot) {
           dest, source: src, productId: pid, size, sizeKey,
           qty, priority: have < t.minQty ? "high" : "normal", mode,
           ...(isSeatedHub3(dest, pid) ? { seatedHub3: true } : {}),
+          ...(isSeatedShop(dest, pid) ? { seatedShop: true } : {}),
         });
         // Record the retry in history and update the retry state.
         // The "retry" op REPLACES the whole retryState node (the scan writes an
