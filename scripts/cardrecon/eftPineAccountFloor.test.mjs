@@ -11,6 +11,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { selectReader } from "./eftBanks.mjs";
+import { decidingReason, failedCheck } from "./verdictMailCore.mjs";
 import {
   authenticationVerdict, destinationVerdict, enforcesImmediateOnly, immediacyVerdict,
   parsePaymentDateCutoff, parseAccountPolicies, eftPoolRecord,
@@ -79,16 +80,31 @@ describe("the floor is Pine's FNB account only, found by its 63 prefix", () => {
     expect(FLOORS.floors.some((f) => f.tail === "4321" || f.tail === "8534")).toBe(false);
   });
 
-  it("a 63-prefixed account at another bank is not Pine's FNB account", () => {
+  it("a 63-prefixed account at another bank is not Pine's FNB account (and the unresolved floor fails closed)", () => {
     const r = resolveAccountFloors(parseAccountPolicies(`${MARATHON_FNB}, 63000001111:standardbank`));
-    expect(r.floors).toEqual([]);
+    expect(r.floors.filter((f) => f.tail !== null)).toEqual([]);
     expect(r.problems[0]).toMatch(/no allowed FNB account starts 63/);
   });
 
-  it("a Pine entry given as last four only cannot be identified — said, never guessed", () => {
-    const r = resolveAccountFloors(parseAccountPolicies(`${MARATHON_FNB}, 5678`));
-    expect(r.floors).toEqual([]);
-    expect(r.problems).toHaveLength(1);
+  it("FAIL CLOSED: a Pine entry given as last four only cannot be named, so the floor covers EVERY FNB account until fixed", () => {
+    const policies = parseAccountPolicies(`${MARATHON_FNB}, 5678, ${CONCRETE_SB}:standardbank:immediate`);
+    const r = resolveAccountFloors(policies);
+    expect(r.floors).toEqual([{ bank: "fnb", tail: null, from: "2026-11-10", startMs: sast("2026-11-10T00:00:00"), label: "Marathon Pine's FNB account", unresolved: true }]);
+    expect(r.problems[0]).toMatch(/applied to EVERY FNB account/);
+    // Pre-floor money into any FNB account refuses; Standard Bank is untouched; from the 10th all confirms.
+    expect(decide(toMarathon({ date: "09/11/2026 15:10" }), { floors: r.floors, policies }).outcome).toBe("refused-stale-date");
+    expect(decide(toMarathon({ date: "10/11/2026 09:30" }), { floors: r.floors, policies }).outcome).toBe("recorded");
+    expect(decide(toConcrete({ date: "09/11/2026 15:10" }), { floors: r.floors, policies }).outcome).toBe("recorded");
+  });
+
+  it("another FNB account sharing Pine's last four is flagged — a masked notice cannot tell them apart", () => {
+    const r = resolveAccountFloors(parseAccountPolicies(`62900005678, ${PINE_FNB}`));
+    expect(r.floors).toHaveLength(1);
+    expect(r.problems[0]).toMatch(/also ends …5678/);
+  });
+
+  it("the live shape — three accounts, distinct last fours — has no problems", () => {
+    expect(FLOORS.problems).toEqual([]);
   });
 });
 
@@ -100,7 +116,16 @@ describe("into Pine's FNB account (63…)", () => {
     expect(r.status).toBeUndefined();
     expect(r.reason).toContain("the bank dates this payment 2026-11-09");
     expect(r.reason).toContain("Marathon Pine's FNB account only confirms payments dated 2026-11-10 or later");
+    expect(r.reason).toMatch(/^Payment dated before the cutoff/); // the verdict email does not repeat its check name
     expect(r.reason).not.toContain(PINE_FNB);
+  });
+
+  it("Junid's verdict email names the check once and the account's own date", () => {
+    const r = decide(toPine({ date: "09/11/2026 15:10" }));
+    expect(failedCheck(r)).toBe("Payment dated before the cutoff");
+    const line = decidingReason(r);
+    expect(line.match(/Payment dated before the cutoff/g)).toHaveLength(1);
+    expect(line).toContain("2026-11-10");
   });
 
   it("the last minute of 9 Nov SAST refuses; the first instant of 10 Nov confirms", () => {

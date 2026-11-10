@@ -799,8 +799,16 @@ export function paymentDateVerdict({ parsed, cutoff }) {
 // repo: resolveAccountFloors finds the matching EFT_ALLOWED_ACCOUNTS entry at
 // start-up and keeps only its bank and last four (what destinationVerdict
 // answers with). An allowed account that only ends like the floored one but
-// does not start with its prefix is a different account and is not floored;
-// a prefix matching NO configured entry is reported, not guessed.
+// does not start with its prefix is a different account and is not floored.
+//
+// FAIL CLOSED (Sonnet architect review, #886). A floor whose prefix matches NO
+// configured entry (a typo, an entry re-keyed to last four only) cannot name
+// its account — and silently dropping it would let exactly the pre-floor money
+// it exists to stop confirm. So an unresolved floor applies to EVERY account
+// at its bank (tail null) until EFT_ALLOWED_ACCOUNTS is fixed, and the
+// start-up line and heartbeat say so. Another account at the same bank that
+// shares the floored account's last four is flagged too: a masked notice
+// cannot tell the two apart, so the floor (strictest) applies to both.
 export const ACCOUNT_EFFECTIVE_FROM = Object.freeze([
   Object.freeze({ bank: "fnb", prefix: "63", from: "2026-11-10", label: "Marathon Pine's FNB account" }),
 ]);
@@ -817,8 +825,17 @@ export function resolveAccountFloors(policies, floors = ACCOUNT_EFFECTIVE_FROM) 
     const startMs = parseBankTimestamp(f.from);
     if (!Number.isInteger(startMs) || !/^\d{4}-\d{2}-\d{2}$/.test(f.from)) { problems.push(`${f.label}: effective-from "${f.from}" is not a date`); continue; }
     const hits = list.filter((p) => p && p.bank === f.bank && typeof p.account === "string" && p.account.startsWith(f.prefix) && p.account.length > f.prefix.length + 3);
-    if (!hits.length) { problems.push(`${f.label}: no allowed ${f.bank.toUpperCase()} account starts ${f.prefix}, so its ${f.from} floor applies to nothing`); continue; }
-    for (const h of hits) out.push({ bank: f.bank, tail: h.account.slice(-4), from: f.from, startMs, label: f.label });
+    if (!hits.length) {
+      problems.push(`${f.label}: no allowed ${f.bank.toUpperCase()} account starts ${f.prefix}, so its ${f.from} floor cannot name its account — applied to EVERY ${f.bank.toUpperCase()} account until EFT_ALLOWED_ACCOUNTS is fixed`);
+      out.push({ bank: f.bank, tail: null, from: f.from, startMs, label: f.label, unresolved: true });
+      continue;
+    }
+    for (const h of hits) {
+      const tail = h.account.slice(-4);
+      out.push({ bank: f.bank, tail, from: f.from, startMs, label: f.label });
+      const twins = list.filter((p) => p && p !== h && p.bank === f.bank && typeof p.account === "string" && p.account.endsWith(tail));
+      if (twins.length) problems.push(`${f.label}: another allowed ${f.bank.toUpperCase()} account also ends …${tail}; a masked notice cannot tell them apart, so the ${f.from} floor applies to both`);
+    }
   }
   return { floors: out, problems };
 }
@@ -834,7 +851,7 @@ export function resolveAccountFloors(policies, floors = ACCOUNT_EFFECTIVE_FROM) 
 export function accountFloorVerdict({ parsed, account, floors }) {
   if (!account || account.ok !== true) return { ok: true };
   const hit = (Array.isArray(floors) ? floors : [])
-    .filter((f) => f.bank === account.bank && f.tail === account.tail)
+    .filter((f) => f.bank === account.bank && (f.tail === account.tail || f.tail === null))
     .sort((a, b) => b.startMs - a.startMs)[0];
   if (!hit) return { ok: true };
   const bankTs = parsed?.bankTs;
@@ -844,7 +861,7 @@ export function accountFloorVerdict({ parsed, account, floors }) {
   if (bankTs < hit.startMs) {
     return {
       ok: false, cutoff: hit.from,
-      reason: `Payment dated before this account's start date: the bank dates this payment ${sastDate(bankTs)}, and ${hit.label} only confirms payments dated ${hit.from} or later — earlier payments into it were settled by hand. Check it on the bank statement; do not confirm it again.`,
+      reason: `Payment dated before the cutoff for this account: the bank dates this payment ${sastDate(bankTs)}, and ${hit.label} only confirms payments dated ${hit.from} or later — earlier payments into it were settled by hand. Check it on the bank statement; do not confirm it again.`,
     };
   }
   return { ok: true };

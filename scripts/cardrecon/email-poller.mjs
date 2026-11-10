@@ -862,6 +862,9 @@ async function run() {
       // Per-account effective-from floors in force (a count, never a value);
       // 0 while ACCOUNT_EFFECTIVE_FROM names an account means it did not resolve.
       eftAccountFloors: cfg.eftAccountFloors.floors.length,
+      // Floors that did not resolve (applied bank-wide, fail-closed) or that
+      // share a last four with another account — 0 is the healthy value.
+      eftAccountFloorProblems: cfg.eftAccountFloors.problems.length,
       // Messages the EFT reader THREW on this tick (left unread, retried) — a
       // persistent environment failure must not hide behind a healthy beat.
       eftErrors,
