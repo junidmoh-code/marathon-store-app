@@ -15,7 +15,7 @@ import { decidingReason, failedCheck } from "./verdictMailCore.mjs";
 import {
   authenticationVerdict, destinationVerdict, enforcesImmediateOnly, immediacyVerdict,
   parsePaymentDateCutoff, parseAccountPolicies, eftPoolRecord,
-  ACCOUNT_EFFECTIVE_FROM, resolveAccountFloors, accountFloorVerdict, datedVerdict, paymentDateVerdict,
+  ACCOUNT_EFFECTIVE_FROM, resolveAccountFloors, accountFloorVerdict, datedVerdict, paymentDateVerdict, parseBankTimestamp,
 } from "./eftCore.mjs";
 
 const MARATHON_FNB = "62900004321";
@@ -200,6 +200,13 @@ describe("every other account is unchanged", () => {
 
   it("a refused destination is not the floor's business (the account check refuses it)", () => {
     expect(accountFloorVerdict({ parsed: { bankTs: 1 }, account: { ok: false, reason: "x" }, floors: FLOORS.floors })).toEqual({ ok: true });
+  });
+
+  it("FNB's and Absa's date-only shapes meet the same 9/10 Nov boundary", () => {
+    const pine = { ok: true, bank: "fnb", tail: "5678" };
+    for (const [str, ok] of [["2026/11/09", false], ["2026/11/09 23:59:59", false], ["2026/11/10", true], ["2026-11-09", false], ["2026-11-10", true]]) {
+      expect(accountFloorVerdict({ parsed: { bankTs: parseBankTimestamp(str) }, account: pine, floors: FLOORS.floors }).ok, str).toBe(ok);
+    }
   });
 
   it("an unreadable bank date into Pine refuses rather than assumes", () => {

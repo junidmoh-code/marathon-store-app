@@ -798,8 +798,10 @@ export function paymentDateVerdict({ parsed, cutoff }) {
 // Keyed on bank + the account's leading digits, never a full number in this
 // repo: resolveAccountFloors finds the matching EFT_ALLOWED_ACCOUNTS entry at
 // start-up and keeps only its bank and last four (what destinationVerdict
-// answers with). An allowed account that only ends like the floored one but
-// does not start with its prefix is a different account and is not floored.
+// answers with). Only an entry STARTING with the prefix names the floored
+// account; but a notice usually prints just the last four, so any other
+// allowed account at the same bank that shares those four is floored too
+// (strictest wins) and resolveAccountFloors flags it as a problem.
 //
 // FAIL CLOSED (Sonnet architect review, #886). A floor whose prefix matches NO
 // configured entry (a typo, an entry re-keyed to last four only) cannot name
