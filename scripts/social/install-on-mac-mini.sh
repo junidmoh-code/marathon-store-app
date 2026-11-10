@@ -331,6 +331,26 @@ else:
     print('no schedule declared')
 " 2>/dev/null || echo "see $PLIST")
 
+# ── THE ALARM MAILER (10 Nov 2026) ───────────────────────────────────────────
+# Emails Junid (gunidmoh@gmail.com) when a slot does not publish, a run
+# errors, or the Meta token nears an expiry. Same path/interpreter rewrite as
+# the publisher. Its sender credentials are CARD_RECON_IMAP_* in $CLONE/.env.
+ALARM_LABEL="com.marathon.socialalarmmail"
+ALARM_PLIST="$HOME/Library/LaunchAgents/$ALARM_LABEL.plist"
+sed -e "s#/Users/marathonclub/marathon-store-app#$CLONE#g" \
+    -e "s#<string>/opt/homebrew/bin/node</string>#<string>$NODE_BIN</string>#" \
+    "$CLONE/scripts/social/$ALARM_LABEL.plist" > "$ALARM_PLIST"
+if /usr/bin/plutil -lint "$ALARM_PLIST" >/dev/null 2>&1; then
+  if ! grep -qE '^(export )?CARD_RECON_IMAP_PASSWORD=' "$CLONE/.env" 2>/dev/null; then
+    bad "alarm mailer: CARD_RECON_IMAP_USER / _PASSWORD missing from $CLONE/.env, so it cannot send"
+  fi
+  [ -d "$CLONE/scripts/cardrecon/node_modules/nodemailer" ] || (cd "$CLONE/scripts/cardrecon" && npm ci --silent >/dev/null 2>&1) || bad "alarm mailer: npm ci in scripts/cardrecon failed (nodemailer)"
+  launchctl bootout "gui/$UID/$ALARM_LABEL" 2>/dev/null || true
+  launchctl bootstrap "gui/$UID" "$ALARM_PLIST" && launchctl enable "gui/$UID/$ALARM_LABEL" && ok "alarm mailer installed: $ALARM_LABEL (every 5 min)"
+else
+  bad "alarm mailer plist is not valid; not installed"
+fi
+
 cat <<EOF
 
 ═══════════════════════════════════════════════════════════════════════════
