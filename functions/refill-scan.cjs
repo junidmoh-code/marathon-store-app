@@ -330,7 +330,9 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
     // The status transaction still guards against a request resolved meanwhile.
     // A hub-present withdrawal is not about the destination's cell (its reason
     // is the hub's presence; it asks for qty 0): no stock read to prove it.
-    if (!s.deactivated && !s.hubPresent) {
+    // A never-kept withdrawal (Concrete perfume) is about the category, not the
+    // cell: no stock proof either.
+    if (!s.deactivated && !s.hubPresent && !s.neverKept) {
       const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
       const already = consumed.get(cellKey) || 0;
       try {
@@ -363,7 +365,8 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
           // for a finished line, the fact that deactivation is the reason.
           ...(s.deactivated
             ? { deactivatedProduct: true }
-            : { satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty } }),
+            : s.neverKept ? { neverKeptAt: s.dest }
+              : { satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty } }),
         };
       });
       if (res?.committed && res.snapshot?.val()?.status === s.rrStatus) satisfied++;

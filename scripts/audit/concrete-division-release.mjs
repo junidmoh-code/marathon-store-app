@@ -40,9 +40,17 @@ const avail = (loc, pid, size) => Math.max(0, Number(d.stock?.[loc]?.[pid]?.[eng
 // 1. Eligible population.
 const ex = Object.fromEntries(Object.entries(live.exceptions).map(([k, v]) => [k, (v && v.items) || []]));
 const raisedKeys = new Set(live.intents.map((i) => `${i.dest}|${i.productId}|${i.sizeKey}`));
+// Central units promised to an OPEN request (a lock or a request row from
+// Central, any destination) — as opposed to units claimed earlier in this same
+// scan by a line the per-run caps may then drop.
+const promisedCentral = new Set();
+for (const [, byPid] of Object.entries(d.open || {})) for (const [pid, bySize] of Object.entries(byPid || {})) for (const [k, l] of Object.entries(bySize || {})) if (l && l.source === "central") promisedCentral.add(`${pid}|${k}`);
+for (const r of Object.values(d.recentRequests || {})) if (r && r.status === "open" && !r.shadow && (r.source || r.createdFrom?.source) === "central") promisedCentral.add(`${r.productId}|${engine.encodeSizeKey(r.size)}`);
 const parkOf = (loc, pid, size) => {
-  for (const [k, label] of [["waitingForStock", "refused recently (cooldown)"], ["recountNeeded", "recount needed"], ["missingSizes", "reorder list"], ["awaitingSupplier", "Central's units already promised to another open request"], ["awaitingUpstream", "awaiting upstream"]]) {
-    if (ex[k].some((r) => r.loc === loc && r.pid === pid && String(r.size) === String(size))) return label;
+  for (const [k, label] of [["waitingForStock", "refused recently (cooldown)"], ["recountNeeded", "recount needed"], ["missingSizes", "reorder list"], ["awaitingSupplier", null], ["awaitingUpstream", "awaiting upstream"]]) {
+    if (!ex[k].some((r) => r.loc === loc && r.pid === pid && String(r.size) === String(size))) continue;
+    if (label) return label;
+    return promisedCentral.has(`${pid}|${engine.encodeSizeKey(size)}`) ? "Central's units promised to an open request" : "Central's units claimed by another line planned this scan";
   }
   return "other";
 };
@@ -97,9 +105,13 @@ for (const pid of seatedOrHeld) {
     const t = engine.resolveTarget(ctx, "concrete", pid, size);
     const src = t && t.target > 0 ? (routing.sourceFor("concrete", p, pid, size) || "none") : "—";
     const key = `${cat(pid)}|${path}`;
-    const r = rows.get(key) || { cat: cat(pid), path, products: new Set(), perSize: new Set(), oneSize: new Set(), askAt: new Set(), src: new Set() };
+    const r = rows.get(key) || { cat: cat(pid), path, products: new Set(), perSize: new Set(), oneSize: new Set(), askAt: new Set(), src: new Set(), unexplainedZero: 0, switchedOff: 0 };
     r.products.add(pid);
     const val = t && t.target > 0 ? t.target : 0;
+    if (val === 0 && (path === "shop-only" || path === "Hub 3-owned")) {
+      const row = d.targets?.concrete?.[pid]?.[engine.encodeSizeKey(size)];
+      if (row && typeof row.target === "number" && row.target <= 0) r.switchedOff++; else r.unexplainedZero++;
+    }
     (one ? r.oneSize : r.perSize).add(val);
     r.askAt.add(t && t.target > 0 ? (t.reorderPoint == null ? "–" : t.reorderPoint) : "–");
     r.src.add(src);
@@ -115,8 +127,10 @@ for (const r of [...rows.values()].sort((a, b) => a.cat.localeCompare(b.cat) || 
   const bad = [];
   if (r.perSize.size && ![...r.perSize].every((v) => v === w.perSize || v === 0)) bad.push("keep/size");
   if (r.oneSize.size && ![...r.oneSize].every((v) => v === w.oneSize || v === 0)) bad.push("keep/no-size");
+  // (a 0 in these sets is judged per size below: a Seating switch-off, or flagged)
   if (w.src && [...r.src].some((s) => s !== w.src && s !== "—")) bad.push("source");
   if (r.path === "Hub 3-owned" && [...r.askAt].some((a) => a !== 0 && a !== "–")) bad.push("ask-at");
-  const zeros = [...r.perSize, ...r.oneSize].includes(0) && w.perSize ? " (some sizes 0)" : "";
+  if (r.unexplainedZero) bad.push(`${r.unexplainedZero} sizes keep 0 with no switch-off`);
+  const zeros = r.switchedOff ? ` (${r.switchedOff} sizes switched off in Seating)` : "";
   console.log(`   ${r.cat.padEnd(18)} ${r.path.padEnd(13)} ${String(r.products.size).padStart(8)}  ${fmt(r.perSize).padStart(9)}  ${fmt(r.oneSize).padStart(12)}  ${fmt(r.askAt).padStart(6)}  ${fmt(r.src).padEnd(9)} ${bad.length ? "⚠ " + bad.join(",") : "ok"}${zeros}`);
 }

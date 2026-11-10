@@ -1497,6 +1497,20 @@ function computeRefillPlan(snapshot) {
         });
         continue;
       }
+      // A category the destination NEVER keeps (Concrete: perfume — Junid,
+      // 10 Nov 2026): every open lock-less row there (a Solve, a manual row) is
+      // withdrawn too, untouched only — a row a picker has claimed or a pick
+      // has moved is left to finish (requireUntouched; in flight skipped).
+      if (divisionNeverKeeps(dest, products?.[r.productId])) {
+        if (!movedRefillIds.has(String(id))) {
+          satisfiedClosures.push({
+            refillId: id, dest, pid: r.productId, sizeKey, size: r.size,
+            qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "never_kept_here",
+            neverKept: true, requireUntouched: true,
+          });
+        }
+        continue;
+      }
       // A LOCK-LESS shop ← Central row whose shop's hub holds the product is
       // withdrawn exactly as a locked one is (shop-source-rule.cjs). qty 0:
       // the apply's destination-stock proof asks for nothing (the reason is
@@ -2488,11 +2502,15 @@ function computeRefillPlan(snapshot) {
   const maxDivisionIntents = Math.max(1, num(rawConfig?.maxDivisionIntentsPerRun) || 500);
   const divisionClothing = hasRegistry && division ? clothingIntents.filter((i) => isSolvedDest(i) && DIVISION_LOCATIONS.includes(i.dest)) : [];
   const divisionSet = new Set(divisionClothing);
+  const plannedDivisionClothing = divisionSet.size ? dealFairly(divisionClothing, maxDivisionIntents) : [];
   const plannedClothing = divisionSet.size
-    ? [...dealMarathonFirst(clothingIntents.filter((i) => !divisionSet.has(i)), maxIntents), ...dealFairly(divisionClothing, maxDivisionIntents)]
+    ? dealMarathonFirst(clothingIntents.filter((i) => !divisionSet.has(i)), maxIntents)
     : dealMarathonFirst(clothingIntents, maxIntents);
   const plannedFootwear = dealMarathonFirst(footwearIntents, maxFootwearIntents);
-  const plannedIntents = [...plannedClothing, ...plannedFootwear];
+  // The division's released clothing goes LAST: the scan applies destinations
+  // in first-appearance order under a time budget, so every Marathon line (a
+  // footwear-only Marathon destination included) is written before any of it.
+  const plannedIntents = [...plannedClothing, ...plannedFootwear, ...plannedDivisionClothing];
   // ═══ A ROUTED-ROUND COUNT DISPUTE STAYS ON RECOUNT NEEDED (2026-09-23) ═════
   // A DISPUTED pass-through lands at the hub, and that arrival is — correctly
   // — what lifts the shop's reject streak so the shop can ask again. But the

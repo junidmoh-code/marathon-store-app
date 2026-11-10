@@ -145,3 +145,79 @@ test("division-only: only the one-off entry point can switch it on, and it skips
   // Its run record never overwrites the hourly one.
   assert.ok(SCAN_SRC.includes('+ (divisionOnly ? "-division" : "")'));
 });
+
+// ── review fixes (PR #888) ───────────────────────────────────────────────────
+test("a lock-less open Concrete perfume row (a Solve, a manual row) is withdrawn too; a moved one is left", () => {
+  const w = bigWorld(0);
+  const refillRequests = {
+    s1: { status: "open", productId: "pf", size: "", qty: 2, requestingLocation: "concrete", createdAt: ISO, createdFrom: { source: "central", via: "missing_products_solve" } },
+    s2: { status: "open", productId: "pf", size: "", qty: 1, requestingLocation: "concrete", createdAt: ISO, createdFrom: { source: "central", via: "missing_products_solve" } },
+    p1: { status: "open", productId: "pf", size: "", qty: 2, requestingLocation: "marathon-pine", createdAt: ISO, createdFrom: { source: "central", via: "missing_products_solve" } },
+  };
+  const movements = [{ type: "transfer_out", from: "central", to: "concrete", productId: "pf", size: "", qty: 1, ts: ISO, link: { refillId: "s2" } }];
+  const p = plan(w, cfg(), { refillRequests, movements });
+  const got = p.satisfiedClosures.filter((s) => s.cancelReason === "never_kept_here").map((s) => s.refillId);
+  assert.deepEqual(got, ["s1"], "s2 has a pick on the ledger; Pine's row is not touched");
+  assert.ok(p.satisfiedClosures.find((s) => s.refillId === "s1").requireUntouched);
+});
+
+function fakeApplyDb(requests) {
+  return { ref(path) { return {
+    once: async () => ({ val: () => null }),
+    transaction: async (fn) => { const id = path.split("/")[1]; let out = fn(null); if (out === undefined) return { committed: false, snapshot: { val: () => requests[id] ?? null } };
+      const cur = requests[id] ?? null; out = fn(cur); if (out === undefined) return { committed: false, snapshot: { val: () => cur } };
+      if (out !== null) requests[id] = out; return { committed: true, snapshot: { val: () => requests[id] ?? null } }; },
+  }; } };
+}
+test("apply: a never-kept withdrawal cancels without a stock proof, stamps why, and never touches a claimed row", async () => {
+  const requests = {
+    s1: { status: "open", productId: "pf", size: "", qty: 2, requestingLocation: "concrete" },
+    s3: { status: "open", productId: "pf", size: "", qty: 2, requestingLocation: "concrete", picking: { at: Date.now(), by: "u" } },
+  };
+  const mk = (id) => ({ refillId: id, dest: "concrete", pid: "pf", sizeKey: "_", size: "", qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "never_kept_here", neverKept: true, requireUntouched: true });
+  const r = await scan._applySatisfied({ db: fakeApplyDb(requests), startedAt: ISO, closures: [mk("s1"), mk("s3")] });
+  assert.equal(r.satisfied, 1);
+  assert.equal(requests.s1.status, "cancelled");
+  assert.equal(requests.s1.cancelReason, "never_kept_here");
+  assert.equal(requests.s1.neverKeptAt, "concrete");
+  assert.equal(requests.s1.deactivatedProduct, undefined);
+  assert.equal(requests.s3.status, "open", "claimed by a picker: left alone");
+});
+
+test("a hand-made Seat for a perfume at Concrete is refused; Pine accepts it", async () => {
+  const store = { users: { u: { stockRole: "admin" } }, products: { pf: PERF } };
+  const db = { ref: (p) => ({ once: async () => ({ val: () => p.split("/").reduce((n, k) => (n == null ? null : n[k]), store) ?? null }), set: async () => {}, remove: async () => {} }) };
+  await assert.rejects(dv.applyDivisionSeat({ db, callerUid: "u", data: { location: "concrete", pid: "pf" }, nowIso: ISO }), /never keeps/);
+  const ok = await dv.applyDivisionSeat({ db, callerUid: "u", data: { location: "marathon-pine", pid: "pf" }, nowIso: ISO });
+  assert.equal(ok.ok, true);
+});
+
+test("the division's released lines come AFTER every Marathon line, footwear included (apply order)", () => {
+  const w = bigWorld(120);
+  w.products.sh = { id: "sh", name: "Shoe", category: "Footwear", subcategory: "Sneakers", categoryKey: "sneakers", productType: "sneaker", sizes: ["8"] };
+  w.stock.central.sh = { 8: counted(9) };
+  w.stock.hub1.sh = { 8: counted(0) };
+  const c = cfg(); c.policyGroups["footwear-all"].policy.hub1 = { target: 2, minQty: 1, reorderPoint: 0 };
+  const p = plan(w, c);
+  const firstDivision = p.intents.findIndex((i) => ["concrete", "marathon-pine", "hub3"].includes(i.dest));
+  const lastMarathon = p.intents.map((i) => ["hub1", "hub2", "marathon-pe", "trophy"].includes(i.dest)).lastIndexOf(true);
+  assert.ok(lastMarathon > -1, "the world must raise a Marathon line");
+  assert.ok(firstDivision > lastMarathon, `division at ${firstDivision}, Marathon last at ${lastMarathon}`);
+});
+
+test("Marathon over its 75-line lever: its dealt slice is the same with and without a 300-line division release", () => {
+  const w = bigWorld(300);
+  for (let i = 0; i < 90; i++) {
+    const id = `m${i}`;
+    w.products[id] = { id, name: `Hoodie ${i}`, category: "Clothing", categoryKey: "hoodies", productType: "clothing", sizes: ["M"] };
+    w.stock.central[id] = { M: counted(9) };
+    w.stock.hub2[id] = { M: counted(0) };
+  }
+  const targets = { hub2: Object.fromEntries(Array.from({ length: 90 }, (_, i) => [`m${i}`, { M: { target: 2, minQty: 1 } }])) };
+  const slice = (p) => p.intents.filter((i) => ["hub1", "hub2", "marathon-pe", "trophy"].includes(i.dest)).map((i) => JSON.stringify(i));
+  const with_ = plan(w, cfg(), { targets });
+  const without = plan({ ...w, stock: { ...w.stock, concrete: {}, "marathon-pine": {} }, seats: {} }, cfg(), { targets });
+  assert.equal(slice(without).length, 75, "Marathon is capped at its lever");
+  assert.deepEqual(slice(with_), slice(without), "same lines, same order");
+  assert.equal(with_.intents.filter((i) => ["concrete", "marathon-pine"].includes(i.dest)).length, 300);
+});

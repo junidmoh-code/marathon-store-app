@@ -551,6 +551,9 @@ async function applyDivisionSeat({ db, callerUid, data, nowIso }) {
   if (hubs !== undefined && !sneakerSolvePairAllowed(Array.isArray(hubs) ? hubs : [])) {
     throw new DivisionSeatError("failed-precondition", "Hub 1 and Hub 2 cannot be solved together.");
   }
+  if (divisionNeverKeeps(location, product)) {
+    throw new DivisionSeatError("failed-precondition", "Concrete never keeps this category.");
+  }
   const footwear = isDivisionFootwear(product);
   if (location === DIVISION_HUB && !footwear && !DIVISION_SHOPS.includes(owner)) {
     throw new DivisionSeatError("invalid-argument", "Choose Pine or Concrete.");
