@@ -531,6 +531,21 @@ function closeRequestTxn(cur, c, startedAt) {
 // no refusal write-off, no Marathon intent/close/resize/retry/streak, no shadow
 // sync, no exceptions snapshot, stock audit or confidence write. Marathon's
 // lines are raised by the next scheduled run, at their normal time.
+// The one-shot flag's claim. Null-tolerant (the #199 lesson): the cold-cache
+// first pass sees null and probes; the real pass stamps this run. Claimed only
+// when the committed node carries THIS run's id.
+function divisionOnceTxn(cur, runId, startedAt) {
+  if (cur === null) return null;
+  if (!cur || cur.requested !== true || cur.consumedAt) return;
+  return { ...cur, consumedAt: startedAt, consumedBy: runId };
+}
+async function claimDivisionReleaseOnce(db, runId, startedAt) {
+  try {
+    const res = await db.ref("config/refillEngine/divisionReleaseOnce").transaction((cur) => divisionOnceTxn(cur, runId, startedAt));
+    return !!(res && res.committed && res.snapshot && res.snapshot.val() && res.snapshot.val().consumedBy === runId);
+  } catch { return false; }
+}
+
 // Every list of work the scan applies, cut to Hub 3 / Pine / Concrete
 // destinations. Mutates and returns the plan (pure otherwise).
 const PLAN_WORK_LISTS = Object.freeze(["intents", "closes", "resizes", "retryOps", "streakOps", "satisfiedClosures"]);
@@ -541,7 +556,7 @@ function scopePlanToDivision(plan) {
 }
 
 async function runScan(opts) {
-  const divisionOnly = !!(opts && opts.divisionOnly === true && opts.__oneOff === "division-release");
+  let divisionOnly = !!(opts && opts.divisionOnly === true && opts.__oneOff === "division-release");
   const db = admin.database();
   const nowMs = Date.now();
   const runId = new Date(nowMs).toISOString().slice(0, 16).replace(/:/g, "-") + (divisionOnly ? "-division" : ""); // 2026-07-12T10-15
@@ -595,6 +610,14 @@ async function runScan(opts) {
         startedAt, skipped: `paused — receiving session open since ${session.openedAt || "?"}`,
       });
       return;
+    }
+    // ONE-SHOT DIVISION RELEASE (Junid, 10 Nov 2026): a person writes
+    // config/refillEngine/divisionReleaseOnce = { requested: true } and runs the
+    // scheduler job once; THIS run claims the flag (transaction — two runs can
+    // never both claim it) and goes division-only. The flag is spent. Claimed only past the
+    // early exits (engine off, receiving session), so a skipped run never burns it.
+    if (!divisionOnly && config?.divisionReleaseOnce?.requested === true && !config.divisionReleaseOnce.consumedAt) {
+      if (await claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true;
     }
     // The network registry: sections, and which locations are LIVE. Only the
     // legs it allows are read at all — a location that is not live costs no
@@ -1109,10 +1132,14 @@ async function runScan(opts) {
     }
 
     // ── run record + prune old runs (keys are time-sortable) ─────────────────
-    await safeSet(db, `refill_engine/runs/${runId}`, {
+    // A flag-claimed division run keeps its lock id but records under a
+    // "-division" key, so an hourly run in the same minute never overwrites it.
+    const recordId = divisionOnly && !runId.endsWith("-division") ? `${runId}-division` : runId;
+    await safeSet(db, `refill_engine/runs/${recordId}`, {
       startedAt, finishedAt: new Date().toISOString(),
       mode: config.mode || {}, counts: { ...counts, errors: counts.errors.length ? counts.errors : null },
       policy: plan.policy || null,   // which switch/throttle state this run used
+      ...(divisionOnly ? { divisionOnly: true } : {}),
     }, "run record");
     const cutoffKey = new Date(nowMs - RUNS_KEEP_DAYS * 864e5).toISOString().slice(0, 16).replace(/:/g, "-");
     const oldRuns = await db.ref("refill_engine/runs").orderByKey().endAt(cutoffKey).limitToFirst(200).once("value");
@@ -1246,7 +1273,10 @@ exports.refillHealthScan = onSchedule(
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
     timeoutSeconds: 300,
-    memory: "512MiB",
+    // 1 GiB (10 Nov 2026): at 512 MiB the run was killed for memory at 09:00,
+    // 10:00 and 12:00 UTC that day (Cloud Run "Memory limit of 512 MiB
+    // exceeded"), leaving no run record and raising nothing.
+    memory: "1GiB",
   },
   runScan
 );
@@ -1254,6 +1284,7 @@ exports._runScan = runScan; // exported for one-off manual invocation in tests/s
 // One-off: plan as the hourly scan does, apply only Hub 3 / Pine / Concrete work.
 exports._runDivisionRelease = () => runScan({ divisionOnly: true, __oneOff: "division-release" });
 exports._scopePlanToDivision = scopePlanToDivision;
+exports._divisionOnceTxn = divisionOnceTxn;
 exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/resize-drop-observability.test.cjs
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
 exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
