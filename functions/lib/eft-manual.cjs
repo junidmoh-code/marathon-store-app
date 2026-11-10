@@ -1,5 +1,5 @@
 // ─── MANUAL EFT ENTRY — Junid's escape hatch while enforcement settles in ───
-// With EFT matching ENFORCED at Trophy and Marathon PE (lib/eft-enforce.cjs)
+// With EFT matching ENFORCED at Trophy, Marathon PE, Concrete and Pine (lib/eft-enforce.cjs)
 // a sale whose bank notification never arrives — a bank the pool has no
 // reader for, a delayed email, a payment Junid has seen on the statement —
 // would have no way through. So JUNID, AND JUNID ALONE, can type a customer

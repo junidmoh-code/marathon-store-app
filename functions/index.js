@@ -4305,7 +4305,7 @@ exports.shopifyInventoryHealthScan = onSchedule(
 // visible /eft_unallocated hold); eftRemainderScan is the 5-minute sweep that
 // finishes any remainder whose follow-up IO crashed — pending never means lost.
 // eftEnforcementStatus is the till's read of /eft_enforcement — which stores
-// must match every EFT sale (Trophy + Marathon PE by default; lib/eft-enforce.cjs)
+// must match every EFT sale (Trophy + Marathon PE + Pine by default, Concrete by the node; lib/eft-enforce.cjs)
 // — and the owner's edit of it; the scan also flags breaches.
 // eftPoolManualEntry is JUNID'S escape hatch (owner account alone, checked
 // server-side): a typed reference + amount becomes a spendable pool record,

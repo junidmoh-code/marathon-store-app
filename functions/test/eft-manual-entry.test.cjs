@@ -429,6 +429,10 @@ test("CONCRETE: Junid's hand entry is the escape hatch — owner-only, and spent
 });
 
 // ─── PINE ENFORCED (10 Nov 2026): SAME AS CONCRETE — STAFF REFUSED, OWNER FLOAT SPENDS ONCE ─
+// REGRESSION PINS, not proof of the enforcement change: hand entry is
+// owner-only at every store and settle has no per-store gate, so these hold
+// with or without Pine on the list. They pin what Junid asked to keep true at
+// Pine. The enforcement itself is proven in eft-enforce.test.cjs (PINE: …).
 const LIVE_AFTER_PINE = { stores: { concrete: true, pe: true, pine: true, trophy: true }, updatedAt: 1, updatedBy: "gunidmoh@gmail.com" };
 
 test("PINE: a STAFF hand entry at Pine is refused on the server before anything is read", async () => {

@@ -7,9 +7,9 @@
 // (scripts/cardrecon/apply-eft-enforcement-concrete-20261102.mjs), not the
 // default. Pine joined on 10 Nov 2026 (Junid: Pine is on the POS and is a
 // system-approval-only EFT store) — in the DEFAULT below AND in the live node
-// (scripts/cardrecon/apply-eft-enforcement-pine-20261110.mjs), so no store
-// relaxes to the looser path any more except Concrete's default fallback
-// (Concrete is enforced by the node; its default was not asked to change).
+// (scripts/cardrecon/apply-eft-enforcement-pine-20261110.mjs). Concrete stays
+// out of the default (enforced by the node; its default was not asked to
+// change). Stores on neither list keep the looser path.
 //
 // THE OWNER'S FLOAT IS NOT AFFECTED. Enforcement only removes the till's
 // "EFT without matching" path. Junid's own hand entry (eftPoolManualEntry —
@@ -22,8 +22,8 @@
 // "set", or `firebase database:set`), so a store is added or removed without
 // a deploy:
 //
-//   /eft_enforcement = { stores: { trophy: true, pe: true, pine: false,
-//                                  concrete: false }, updatedAt, updatedBy }
+//   /eft_enforcement = { stores: { trophy: true, pe: true, concrete: true,
+//                                  pine: true }, updatedAt, updatedBy }
 //
 // A MISSING node means the DEFAULT (Trophy + Marathon PE + Pine). A present `stores`
 // map is honoured exactly — including an empty one, which is the owner

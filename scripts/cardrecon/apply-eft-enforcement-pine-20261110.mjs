@@ -57,8 +57,10 @@ if (!res.committed) fail("the transaction did not commit — nothing changed.");
 const after = (await ref.once("value")).val();
 const enforced = enforcedStoresOf(after);
 console.log(`after:  ${JSON.stringify(after.stores)} → enforced ${JSON.stringify(enforced)} (updatedAt ${new Date(after.updatedAt).toISOString()})`);
-for (const id of ["trophy", "pe", "concrete", STORE]) if (!enforced.includes(id)) fail(`${id} is not enforced after the write.`);
+// Only Pine is this script's to assert; the other stores are whatever they
+// were (checked flag by flag below), never a hard-coded list.
+if (!enforced.includes(STORE)) fail(`${STORE} is not enforced after the write.`);
 // Nothing else moved: every flag but Pine's is what it was before.
 for (const [id, on] of Object.entries(before?.stores ?? {})) if (id !== STORE && after.stores[id] !== on) fail(`${id} changed (${on} → ${after.stores[id]}).`);
-console.log("✓ Trophy, Marathon PE, Concrete and Pine enforce EFT matching; nothing else changed.");
+console.log(`✓ Pine enforces EFT matching; nothing else changed. Enforced: ${JSON.stringify(enforced)}`);
 await admin.app().delete();
