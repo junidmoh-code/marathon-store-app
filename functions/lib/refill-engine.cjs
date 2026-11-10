@@ -34,7 +34,7 @@ const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_C
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
 const { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } = require("./central-fed.cjs");
-const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict } = require("./concrete-division.cjs");
+const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict, divisionNeverKeeps } = require("./concrete-division.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -557,6 +557,9 @@ function resolveTarget({ targets, config, products, stock: baseStock, network, d
   // Deactivated products resolve NOTHING — before the explicit row, so no
   // stored policy of any kind can raise a request for a finished line.
   if (isDeactivated(products?.[pid])) return null;
+  // A category a location NEVER keeps (Concrete: perfume — Junid, 10 Nov 2026)
+  // resolves nothing there, above every row, policy and rule.
+  if (divisionNeverKeeps(dest, products?.[pid])) return null;
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     const rp = explicit.reorderPoint;
@@ -2476,7 +2479,18 @@ function computeRefillPlan(snapshot) {
     const first = dealFairly(list.filter((i) => !isSolvedDest(i)), cap);
     return [...first, ...dealFairly(list.filter(isSolvedDest), Math.max(0, cap - first.length))];
   };
-  const plannedClothing = dealMarathonFirst(clothingIntents, maxIntents);
+  // THE CONCRETE DIVISION'S NON-SNEAKERS ARE NOT CAPPED BY MARATHON'S LEVER
+  // (Junid, 10 Nov 2026): every Pine/Concrete/Hub 3 non-sneaker line the plan
+  // raises is released, on its own ceiling (maxDivisionIntentsPerRun, default
+  // 500 — paced only past that). Marathon's clothing is dealt the whole
+  // maxIntentsPerRun exactly as before (it was always dealt first), and the
+  // division's sneakers stay under the footwear lever.
+  const maxDivisionIntents = Math.max(1, num(rawConfig?.maxDivisionIntentsPerRun) || 500);
+  const divisionClothing = hasRegistry && division ? clothingIntents.filter((i) => isSolvedDest(i) && DIVISION_LOCATIONS.includes(i.dest)) : [];
+  const divisionSet = new Set(divisionClothing);
+  const plannedClothing = divisionSet.size
+    ? [...dealMarathonFirst(clothingIntents.filter((i) => !divisionSet.has(i)), maxIntents), ...dealFairly(divisionClothing, maxDivisionIntents)]
+    : dealMarathonFirst(clothingIntents, maxIntents);
   const plannedFootwear = dealMarathonFirst(footwearIntents, maxFootwearIntents);
   const plannedIntents = [...plannedClothing, ...plannedFootwear];
   // ═══ A ROUTED-ROUND COUNT DISPUTE STAYS ON RECOUNT NEEDED (2026-09-23) ═════
@@ -2584,8 +2598,12 @@ function computeRefillPlan(snapshot) {
   }
   const tallyBy = (list, f) => list.reduce((m, r) => { const k = f(r); m[k] = (m[k] || 0) + 1; return m; }, {});
 
-  if (clothingIntents.length > maxIntents) {
-    errors.push(`circuit breaker: ${clothingIntents.length} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
+  const cappedClothing = clothingIntents.length - divisionClothing.length;
+  if (cappedClothing > maxIntents) {
+    errors.push(`circuit breaker: ${cappedClothing} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
+  }
+  if (divisionClothing.length > maxDivisionIntents) {
+    errors.push(`circuit breaker (Concrete division): ${divisionClothing.length} intents computed, paced to ${maxDivisionIntents}`);
   }
   if (footwearIntents.length > maxFootwearIntents) {
     errors.push(`circuit breaker (footwear): ${footwearIntents.length} intents computed, capped to ${maxFootwearIntents}`);
@@ -3136,7 +3154,10 @@ function computeRefillPlan(snapshot) {
       // Split so a capped run shows WHICH class was throttled.
       footwearIntentsComputed: footwearIntents.length,
       footwearIntentsPlanned: plannedFootwear.length,
-      throttled: clothingIntents.length > maxIntents,
+      throttled: cappedClothing > maxIntents,
+      // The Concrete division's non-sneakers, released on their own ceiling
+      // (present only with the division key on: the Marathon-only plan is unchanged).
+      ...(division ? { divisionIntentsComputed: divisionClothing.length, maxDivisionIntentsPerRun: maxDivisionIntents } : {}),
       footwearThrottled: footwearIntents.length > maxFootwearIntents,
     },
     stats: { managedCells, footwearManagedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },

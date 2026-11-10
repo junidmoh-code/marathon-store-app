@@ -37,6 +37,17 @@ function divisionSizes(product) {
 }
 const isDivisionOneSize = (product) => divisionSizes(product)[0] === "_";
 
+// WHAT A LOCATION NEVER KEEPS (Junid, 10 Nov 2026): Concrete never keeps
+// perfume. Never seated there, never a keep, whatever any other rule says.
+const DIVISION_NEVER_KEEPS = Object.freeze({ concrete: Object.freeze(["perfumes"]) });
+function divisionNeverKeeps(loc, product) {
+  const keys = DIVISION_NEVER_KEEPS[loc];
+  if (!keys || !product) return false;
+  const key = divisionCategoryKey(product);
+  if (key && keys.includes(key)) return true;
+  return keys.includes("perfumes") && String(product.category || "").trim().toLowerCase() === "perfume";
+}
+
 const validN = (n) => Number.isInteger(n) && n >= 1 && n <= DIVISION_MAX;
 
 // The normalised policy, or null when the key is absent or unusable. A partly
@@ -90,8 +101,13 @@ function isSeatedAtShop(division, dest, pid) {
 }
 
 // Does a division shop carry this product: seated, or a cell in the view?
+// When the caller hands in the shop's seats (the scan, the census), the SEAT
+// alone decides: a product moved out and tombstoned must not arm off a counted
+// cell it left behind. A caller with no seats for the shop (the Seating-tab
+// preview) falls back to the cell.
 function divisionShopCarries(division, dest, pid, stockView) {
   if (isSeatedAtShop(division, dest, pid)) return true;
+  if (division && divisionIsObj(division.seats?.[dest])) return false;
   const node = stockView?.[dest]?.[pid];
   return !!node && typeof node === "object" && Object.keys(node).length > 0;
 }
@@ -105,6 +121,7 @@ function divisionTarget(division, dest, pid, size, products, stockView) {
   if (!division || !isDivisionLocation(dest)) return undefined;
   const product = products?.[pid];
   if (!product || isDivisionFootwear(product)) return undefined;
+  if (divisionNeverKeeps(dest, product)) return null;
   const { policy, seats, hub3Present } = division;
   const key = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size);
   if (!divisionSizes(product).includes(key)) return null;
@@ -200,7 +217,7 @@ function divisionManagedPids(division, dest, stockView, products) {
     return Object.keys(division.seats?.[dest] || {}).filter((pid) => products?.[pid] && !isDivisionFootwear(products[pid]));
   }
   const pids = new Set([...Object.keys(stockView?.[dest] || {}), ...Object.keys(division.seats?.[dest] || {})]);
-  return [...pids].filter((pid) => pid !== "_meta" && !!products?.[pid] && !isDivisionFootwear(products[pid])
+  return [...pids].filter((pid) => pid !== "_meta" && !!products?.[pid] && !isDivisionFootwear(products[pid]) && !divisionNeverKeeps(dest, products[pid])
     && divisionShopCarries(division, dest, pid, stockView));
 }
 
@@ -238,6 +255,6 @@ function marathonSolveRefusal(hub) {
 export {
   CONCRETE_DIVISION_KEY, DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, SEATS_PATH, DIVISION_MAX, DIVISION_FOOTWEAR_KEYS,
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
-  divisionTargetShape, hub3PresenceIndex, isSeatedAtShop, divisionShopCarries, hub3HoldsSize, hub3ServesSize, hub3InboundIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
+  DIVISION_NEVER_KEEPS, divisionNeverKeeps, divisionTargetShape, hub3PresenceIndex, isSeatedAtShop, divisionShopCarries, hub3HoldsSize, hub3ServesSize, hub3InboundIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal,
 };

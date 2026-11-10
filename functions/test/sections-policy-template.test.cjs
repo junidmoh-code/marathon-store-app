@@ -250,7 +250,9 @@ test("ENGINE: a category policy that names Hub 2 and Marathon PE governs Hub 3 a
   const tpl = withPolicyTemplates(snap.config, allLive);
   const ctx = { targets: snap.targets, config: tpl, products: snap.products, stock: snap.stock };
   for (const [loc, like] of Object.entries(LIKE)) {
-    assert.deepEqual(resolveTarget(ctx, loc, perfume, ""), entry[like] ? resolveTarget({ ...ctx, targets: {} }, like, perfume, "") : null, `${loc} as ${like}`);
+    // Concrete never keeps perfume (Junid, 10 Nov 2026), whatever its template says.
+    const want = loc === "concrete" ? null : entry[like] ? resolveTarget({ ...ctx, targets: {} }, like, perfume, "") : null;
+    assert.deepEqual(resolveTarget(ctx, loc, perfume, ""), want, `${loc} as ${like}`);
   }
   assert.equal(resolveTarget({ ...ctx, config: snap.config }, "hub3", perfume, ""), null, "without the template Hub 3 has no perfume policy");
 });
