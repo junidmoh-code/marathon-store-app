@@ -48,6 +48,18 @@ function isUnbilledProviderError(message) {
   return /gemini HTTP 5\d\d/i.test(String(message || ""));
 }
 
+/**
+ * A provider refusal that made no image and billed nothing: a 5xx, a 402
+ * (prepaid credits depleted) or a 429 (rate limit). Used to give the day's
+ * budget unit back. 5–10 Nov 2026: every 402 kept its unit, so a day the
+ * provider refused outright still counted two of the four as spent.
+ * Deliberately separate from isUnbilledProviderError, which also decides the
+ * Pro→Flash fallback, and that fallback is for overload (5xx) only.
+ */
+function isUnbilledRefusal(message) {
+  return /gemini HTTP (5\d\d|402|429)/i.test(String(message || ""));
+}
+
 /** A skip from pickForKind: nothing was picked, so nothing was spent. generateOnePost marks it. */
 function isNoStockSkip(skipped) {
   return Boolean(skipped) && skipped.noStock === true;
@@ -115,7 +127,64 @@ function releaseGeneration(cur) {
   return cur - 1;
 }
 
+// ─── A DAY THE PROVIDER REFUSED IS WON BACK THE SAME DAY (10 Nov 2026) ───────
+// 5–10 Nov: Gemini's prepaid credits ran out. The 06:00 and 07:00 runs each
+// recorded "made nothing" and finished, and a finished run is never run again
+// that day. A top-up at 10:00 would therefore still have cost the day's reel
+// and photo, and nobody should have to re-run a job by hand after paying a
+// bill. So a FINISHED run that made nothing, and failed ONLY because the
+// provider refused (credits, quota, 5xx), may be claimed again, but only:
+//   · before its cutoff (an hour before the first slot it fills), so a retry
+//     can never push a slot into tomorrow and change the posting rhythm;
+//   · a bounded number of times;
+//   · never after a run that threw, made something, or failed for any other
+//     reason (the daily cap, no stock, no style refs).
+// socialAutopilotRetry fires the real scheduled job only once a free probe
+// shows the provider answering again, so a retry is not attempted into a 402.
+const PROVIDER_REFUSAL_RE = /AI credits depleted|rate-limited|over quota|AI service error \(5xx\)/i;
+const SAME_DAY_RETRY_LIMIT = 6;
+
+/** The provider's part of a reason: the still records "<lookbook gate> — the current style also failed: <why>". */
+function refusalPart(reason) {
+  const s = String(reason || "");
+  const i = s.lastIndexOf("also failed: ");
+  return i >= 0 ? s.slice(i + "also failed: ".length) : s;
+}
+
+function isProviderRefusal(reason) {
+  return PROVIDER_REFUSAL_RE.test(refusalPart(reason));
+}
+
+/** Did this run record make nothing, and why? Reads both run logs' shapes. */
+function refusedRun(cur, kind) {
+  if (!cur || !cur.finishedAt || cur.error) return null;
+  if (kind === "daily") {
+    if (Number(cur.created) !== 0) return null;
+    const reasons = Array.isArray(cur.skipReasons) ? cur.skipReasons : Object.values(cur.skipReasons || {});
+    return reasons.length ? reasons : null;
+  }
+  if (cur.posted || cur.postId || cur.off) return null;
+  return cur.reason ? [cur.reason] : null;
+}
+
+/**
+ * The claim-transaction branch for a same-day retry. Returns the new claim, or
+ * undefined (no retry). kind: "daily" | "still".
+ */
+function sameDayRetryClaim(cur, { kind, nowMs, cutoffMs, maxRetries = SAME_DAY_RETRY_LIMIT }) {
+  const reasons = refusedRun(cur, kind);
+  if (!reasons || !reasons.every(isProviderRefusal)) return undefined;
+  if (!(Number.isFinite(cutoffMs) && nowMs < cutoffMs)) return undefined;
+  const retries = Number(cur.retries || 0);
+  if (retries >= maxRetries) return undefined;
+  return {
+    startedAt: nowMs, retries: retries + 1, retryOf: cur.finishedAt,
+    refusedWith: refusalPart(reasons[0]).slice(0, 200),
+  };
+}
+
 module.exports = {
-  RETRY_BACKOFF_MS, WORST_ATTEMPT_MS, isTransientSkip, isUnbilledProviderError, isNoStockSkip,
+  RETRY_BACKOFF_MS, WORST_ATTEMPT_MS, isTransientSkip, isUnbilledProviderError, isUnbilledRefusal, isNoStockSkip,
   kindsToTry, generateWithRecovery, releaseGeneration,
+  SAME_DAY_RETRY_LIMIT, isProviderRefusal, refusalPart, sameDayRetryClaim,
 };
