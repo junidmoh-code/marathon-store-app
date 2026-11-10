@@ -82,7 +82,7 @@ import {
   refusalFingerprint, applyRefusalFingerprint,
   redactAccountDigits, domainOfAddress, parseAccountPolicies, accountPolicyProblems,
   destinationVerdict, immediacyVerdict, enforcesImmediateOnly, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
-  resolveAccountFloors, accountFloorVerdict,
+  resolveAccountFloors, datedVerdict,
   IMMEDIATE_NOT_REQUIRED_FROM,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
@@ -1535,12 +1535,9 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
         // Then the matched account's own effective-from floor, if it has one
         // (Pine's FNB account, 2026-11-10): a LATER floor on top of the
         // global one, never instead of it.
-        const globalDated = group.parse.ok
-          ? paymentDateVerdict({ parsed: group.parse, cutoff: cfg.eftPaymentDateCutoff })
+        const dated = group.parse.ok
+          ? datedVerdict({ parsed: group.parse, cutoff: cfg.eftPaymentDateCutoff, account, floors: cfg.eftAccountFloors.floors })
           : null;
-        const dated = globalDated?.ok === true
-          ? accountFloorVerdict({ parsed: group.parse, account, floors: cfg.eftAccountFloors.floors })
-          : globalDated;
         outcomes.push({
           poolKey: eftPaymentKey(key, group, groups.length),
           record: eftPoolRecord({

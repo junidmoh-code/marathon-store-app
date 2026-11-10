@@ -850,6 +850,17 @@ export function accountFloorVerdict({ parsed, account, floors }) {
   return { ok: true };
 }
 
+/**
+ * The whole date gate the poller applies to one payment: the global cutoff
+ * first (every account), then the matched account's own floor, if any.
+ * @returns {{ok:true} | {ok:false, reason:string, cutoff?:string}}
+ */
+export function datedVerdict({ parsed, cutoff, account, floors }) {
+  const global = paymentDateVerdict({ parsed, cutoff });
+  if (global.ok !== true) return global;
+  return accountFloorVerdict({ parsed, account, floors });
+}
+
 // ─── IDENTITY AND IDEMPOTENCY ────────────────────────────────────────────────
 /**
  * The pool key for a message — ALSO the record's node name, which is what makes
