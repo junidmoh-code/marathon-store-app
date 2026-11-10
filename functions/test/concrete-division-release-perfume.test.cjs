@@ -230,6 +230,8 @@ test("the one-shot flag: claimed once, by one run, and never re-armed by the cla
   assert.equal(T({ requested: false }, "r1", ISO), undefined);
   assert.ok(SCAN_SRC.includes("if (await claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true;"));
   assert.ok(SCAN_SRC.includes("res.snapshot.val().consumedBy === runId"), "claimed only when the committed node names THIS run");
+  // Claimed past the early exits (engine off, receiving session), before the write-off.
+  assert.ok(SCAN_SRC.indexOf("if (session?.active)") < SCAN_SRC.indexOf("claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true"));
   // The flag is read before the refusal write-off, so a flagged run skips it.
   assert.ok(SCAN_SRC.indexOf("claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true") < SCAN_SRC.indexOf("if (!divisionOnly) try {\n      const woSnap"));
 });

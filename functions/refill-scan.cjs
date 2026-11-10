@@ -573,13 +573,6 @@ async function runScan(opts) {
   const counts = { intents: 0, shadow: 0, closes: 0, exceptions: 0, errors: [] };
   try {
     const config = (await db.ref("config/refillEngine").once("value")).val();
-    // ONE-SHOT DIVISION RELEASE (Junid, 10 Nov 2026): a person writes
-    // config/refillEngine/divisionReleaseOnce = { requested: true } and runs the
-    // scheduler job once; THIS run claims the flag (transaction — two runs can
-    // never both claim it) and goes division-only. The flag is spent.
-    if (!divisionOnly && config?.divisionReleaseOnce?.requested === true && !config.divisionReleaseOnce.consumedAt) {
-      if (await claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true;
-    }
     // ── scanIntervalMinutes IS NOT A DIAL ────────────────────────────────────
     // It has never been read by any code — cadence is owned by the schedule on
     // the exported function, which Cloud Scheduler enforces. Left in the
@@ -617,6 +610,14 @@ async function runScan(opts) {
         startedAt, skipped: `paused — receiving session open since ${session.openedAt || "?"}`,
       });
       return;
+    }
+    // ONE-SHOT DIVISION RELEASE (Junid, 10 Nov 2026): a person writes
+    // config/refillEngine/divisionReleaseOnce = { requested: true } and runs the
+    // scheduler job once; THIS run claims the flag (transaction — two runs can
+    // never both claim it) and goes division-only. The flag is spent. Claimed only past the
+    // early exits (engine off, receiving session), so a skipped run never burns it.
+    if (!divisionOnly && config?.divisionReleaseOnce?.requested === true && !config.divisionReleaseOnce.consumedAt) {
+      if (await claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true;
     }
     // The network registry: sections, and which locations are LIVE. Only the
     // legs it allows are read at all — a location that is not live costs no
@@ -1135,6 +1136,7 @@ async function runScan(opts) {
       startedAt, finishedAt: new Date().toISOString(),
       mode: config.mode || {}, counts: { ...counts, errors: counts.errors.length ? counts.errors : null },
       policy: plan.policy || null,   // which switch/throttle state this run used
+      ...(divisionOnly ? { divisionOnly: true } : {}),
     }, "run record");
     const cutoffKey = new Date(nowMs - RUNS_KEEP_DAYS * 864e5).toISOString().slice(0, 16).replace(/:/g, "-");
     const oldRuns = await db.ref("refill_engine/runs").orderByKey().endAt(cutoffKey).limitToFirst(200).once("value");
