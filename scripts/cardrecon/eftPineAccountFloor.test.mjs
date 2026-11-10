@@ -103,6 +103,13 @@ describe("the floor is Pine's FNB account only, found by its 63 prefix", () => {
     expect(r.problems[0]).toMatch(/also ends …5678/);
   });
 
+  it("a floor whose date does not read fails closed at its bank, never open", () => {
+    const r = resolveAccountFloors(POLICIES, [{ bank: "fnb", prefix: "63", from: "10/11/2026", label: "x" }]);
+    expect(r.problems[0]).toMatch(/is not a date/);
+    expect(accountFloorVerdict({ parsed: { bankTs: sast("2027-01-01T10:00:00") }, account: { ok: true, bank: "fnb", tail: "4321" }, floors: r.floors }).ok).toBe(false);
+    expect(accountFloorVerdict({ parsed: { bankTs: sast("2027-01-01T10:00:00") }, account: { ok: true, bank: "standardbank", tail: "8534" }, floors: r.floors }).ok).toBe(true);
+  });
+
   it("the live shape — three accounts, distinct last fours — has no problems", () => {
     expect(FLOORS.problems).toEqual([]);
   });

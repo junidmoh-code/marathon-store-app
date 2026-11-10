@@ -81,7 +81,7 @@ import {
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   refusalFingerprint, applyRefusalFingerprint,
   redactAccountDigits, domainOfAddress, parseAccountPolicies, accountPolicyProblems,
-  destinationVerdict, immediacyVerdict, enforcesImmediateOnly, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
+  destinationVerdict, immediacyVerdict, enforcesImmediateOnly, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
   resolveAccountFloors, datedVerdict,
   IMMEDIATE_NOT_REQUIRED_FROM,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
@@ -639,7 +639,7 @@ async function run() {
     console.warn(`⚠ ${cfg.eftPaymentDateCutoff.reason} It is set in ${cfg.eftPaymentDateCutoffSource}; fix it or remove it to use the default (${DEFAULT_EFT_PAYMENT_DATE_CUTOFF}). Until then every bank notification waits UNREAD — nothing is confirmed, nothing is refused; slips are unaffected.`);
   }
   // Per-account floors (10 Nov 2026) — bank, last four and date, never a full number.
-  for (const f of cfg.eftAccountFloors.floors) console.log(`· EFT: ${f.label} (${f.bank} …${f.tail}) confirms only payments the bank dates ${f.from} or later`);
+  for (const f of cfg.eftAccountFloors.floors) console.log(`· EFT: ${f.label} (${f.unresolved ? `UNRESOLVED — every ${f.bank} account` : `${f.bank} …${f.tail}`}) confirms only payments the bank dates ${f.from} or later`);
   for (const problem of cfg.eftAccountFloors.problems) console.warn(`⚠ EFT account floor: ${problem}`);
 
   // ── RE-RUN WHAT AN OLDER PARSER REFUSED — before the scan, so the scan
@@ -859,11 +859,12 @@ async function run() {
       // so the owner can see from the heartbeat which cutoff is live.
       eftPaymentDateCutoff: cfg.eftPaymentDateCutoff.ok ? cfg.eftPaymentDateCutoff.date : "INVALID",
       eftImmediateNotRequiredFrom: IMMEDIATE_NOT_REQUIRED_FROM,
-      // Per-account effective-from floors in force (a count, never a value);
-      // 0 while ACCOUNT_EFFECTIVE_FROM names an account means it did not resolve.
+      // Per-account effective-from floors in force (a count, never a value).
+      // An unresolved floor still counts here (it applies bank-wide, fail
+      // closed); eftAccountFloorProblems is the health signal.
       eftAccountFloors: cfg.eftAccountFloors.floors.length,
-      // Floors that did not resolve (applied bank-wide, fail-closed) or that
-      // share a last four with another account — 0 is the healthy value.
+      // Floors that did not resolve (applied bank-wide, fail closed) or that
+      // share a last four with another account — 0 is the ONLY healthy value.
       eftAccountFloorProblems: cfg.eftAccountFloors.problems.length,
       // Messages the EFT reader THREW on this tick (left unread, retried) — a
       // persistent environment failure must not hide behind a healthy beat.

@@ -825,7 +825,13 @@ export function resolveAccountFloors(policies, floors = ACCOUNT_EFFECTIVE_FROM) 
   const list = Array.isArray(policies) ? policies : [];
   for (const f of floors) {
     const startMs = parseBankTimestamp(f.from);
-    if (!Number.isInteger(startMs) || !/^\d{4}-\d{2}-\d{2}$/.test(f.from)) { problems.push(`${f.label}: effective-from "${f.from}" is not a date`); continue; }
+    if (!Number.isInteger(startMs) || !/^\d{4}-\d{2}-\d{2}$/.test(f.from)) {
+      // A floor whose date does not read must not vanish (fail open): it
+      // refuses everything at its bank until the constant is fixed.
+      problems.push(`${f.label}: effective-from "${f.from}" is not a date — every ${f.bank.toUpperCase()} payment refuses until it is fixed`);
+      out.push({ bank: f.bank, tail: null, from: String(f.from), startMs: Number.MAX_SAFE_INTEGER, label: f.label, unresolved: true });
+      continue;
+    }
     const hits = list.filter((p) => p && p.bank === f.bank && typeof p.account === "string" && p.account.startsWith(f.prefix) && p.account.length > f.prefix.length + 3);
     if (!hits.length) {
       problems.push(`${f.label}: no allowed ${f.bank.toUpperCase()} account starts ${f.prefix}, so its ${f.from} floor cannot name its account — applied to EVERY ${f.bank.toUpperCase()} account until EFT_ALLOWED_ACCOUNTS is fixed`);
