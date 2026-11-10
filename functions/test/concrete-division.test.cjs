@@ -35,11 +35,13 @@ const lines = (p, dest) => p.intents.filter((i) => i.dest === dest).map((i) => `
 const central = { s1: { 7: counted(9), 8: counted(9), 9: counted(9) }, t1: { S: counted(9), M: counted(9) }, c1: { _: counted(20) } };
 
 test("seats: units seat a product; a sell-out keeps it; only a transfer out releases it", () => {
+  // Since 10 Nov 2026 a cell at zero seats too (t1 at Hub 3).
   const stock = { hub3: { s1: { 7: counted(2) }, t1: { S: counted(0) } }, concrete: { c1: { _: counted(1) } } };
   const r = dv.planSeats({ rawStock: stock, seats: {}, movements: [], nowIso: ISO });
-  assert.deepEqual(Object.keys(r.effective.hub3), ["s1"]);
+  assert.deepEqual(Object.keys(r.effective.hub3).sort(), ["s1", "t1"]);
   assert.deepEqual(Object.keys(r.effective.concrete), ["c1"]);
-  assert.equal(r.seated, 2);
+  assert.equal(r.seated, 3);
+  assert.equal(r.effective.hub3.t1.via, "cell");
   const seats = { hub3: { t1: seat() } };
   const sold = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "customer", type: "sold", ts: ISO }], nowIso: ISO });
   assert.ok(sold.effective.hub3.t1, "a sale leaves it seated");

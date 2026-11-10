@@ -662,9 +662,12 @@ async function runScan() {
     // units there is seated; the plan reads this scan's seats, written below.
     let seatPlan = null;
     if (concreteDivision.concreteDivisionPolicy(config)) {
-      const seats = Object.fromEntries(await Promise.all(concreteDivision.DIVISION_LOCATIONS.map(
-        (l) => db.ref(`${concreteDivision.SEATS_PATH}/${l}`).once("value").then((s) => [l, s.val() || {}]))));
-      seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, nowIso: new Date(nowMs).toISOString() });
+      const scoped = (path) => Promise.all(concreteDivision.DIVISION_LOCATIONS.map(
+        (l) => db.ref(`${path}/${l}`).once("value").then((s) => [l, s.val() || {}]))).then(Object.fromEntries);
+      // Seats, and the tombstones a release leaves (so a moved-out product's
+      // leftover zero cells do not seat it again) — three small nodes each.
+      const [seats, releases] = await Promise.all([scoped(concreteDivision.SEATS_PATH), scoped(concreteDivision.SEAT_RELEASES_PATH)]);
+      seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, releases, nowIso: new Date(nowMs).toISOString() });
     }
     const seatArgs = seatPlan ? { seats: seatPlan.effective } : {};
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
@@ -672,7 +675,10 @@ async function runScan() {
       network, ...seatArgs,
     }), paused);
     if (seatPlan && Object.keys(seatPlan.writes).length) {
-      const seatUpd = Object.fromEntries(Object.entries(seatPlan.writes).map(([k, v]) => [`${concreteDivision.SEATS_PATH}/${k}`, v]));
+      const seatUpd = Object.fromEntries([
+        ...Object.entries(seatPlan.writes).map(([k, v]) => [`${concreteDivision.SEATS_PATH}/${k}`, v]),
+        ...Object.entries(seatPlan.releaseWrites || {}).map(([k, v]) => [`${concreteDivision.SEAT_RELEASES_PATH}/${k}`, v]),
+      ]);
       if (await safeUpdate(db, seatUpd, "division seats")) counts.seats = { seated: seatPlan.seated, released: seatPlan.released };
     }
     if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };

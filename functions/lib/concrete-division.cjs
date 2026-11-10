@@ -218,50 +218,93 @@ function divisionContext({ config, rawStock, seats, openIndex, heldLines, refill
 // a count or a write-off is not one: those leave the product seated.
 const MOVED_OUT_TYPES = new Set(["transfer_out", "transfer"]);
 
+// SEATING COVERS SOLD-OUT PRODUCTS (Junid, 10 Nov 2026). Besides a cell holding
+// units, a product is seated by an existing cell at zero, or by any sale,
+// arrival, return or transfer at the location since this date.
+const SEAT_HISTORY_SINCE = "2026-10-30T00:00:00.000Z";
+const SEAT_RELEASES_PATH = "refill_engine/seatReleases";
+// Did this movement happen AT this location, in a way that seats a product?
+function seatsBy(m, loc) {
+  if (!m || String(m.ts) < SEAT_HISTORY_SINCE) return false;
+  if (m.type === "sold") return m.from === loc;
+  if (m.type === "received" || m.type === "return") return m.to === loc;
+  if (MOVED_OUT_TYPES.has(m.type)) return m.to === loc || m.from === loc;
+  return false;
+}
+
 // ── WHAT THE SCAN WRITES ABOUT SEATS ─────────────────────────────────────────
-// Pure. Returns { effective, writes, seated, released }:
-//   effective  the seats the plan should read (written ones plus this scan's)
-//   writes     { "<loc>/<pid>": seat | null } under SEATS_PATH
-function planSeats({ rawStock, seats, movements, nowIso }) {
+// Pure. Returns { effective, writes, releaseWrites, seated, released }:
+//   effective      the seats the plan should read (written ones plus this scan's)
+//   writes         { "<loc>/<pid>": seat | null } under SEATS_PATH
+//   releaseWrites  { "<loc>/<pid>": tombstone | null } under SEAT_RELEASES_PATH
+// A RELEASE LEAVES A TOMBSTONE. A product moved out keeps its zero cells (cells
+// are never deleted), and a zero cell now seats — so without a record of the
+// release it would be re-seated the moment the transfer aged out of the ledger
+// window. The tombstone holds until something NEW happens to the product there
+// (units arrive, a sale, a movement newer than the release); then it is seated
+// again and the tombstone goes. `releases` is what SEAT_RELEASES_PATH holds.
+function planSeats({ rawStock, seats, movements, nowIso, releases = {} }) {
   const effective = {};
   const writes = {};
+  const releaseWrites = {};
   let seated = 0, released = 0;
   const lastMove = new Map();
+  const lastSeating = new Map();
   for (const m of movements || []) {
     if (!m || !m.productId || !m.ts) continue;
     for (const loc of [m.from, m.to]) {
       if (!DIVISION_LOCATIONS.includes(loc)) continue;
       const k = `${loc}|${m.productId}`;
       if (!lastMove.has(k) || String(m.ts) >= String(lastMove.get(k).ts)) lastMove.set(k, m);
+      if (seatsBy(m, loc) && (!lastSeating.has(k) || String(m.ts) > lastSeating.get(k))) lastSeating.set(k, String(m.ts));
     }
   }
   const held = (node) => !!node && typeof node === "object" && Object.values(node).some((c) => c && typeof c === "object" && (Number(c.qty) || 0) > 0);
+  const hasCell = (node) => !!node && typeof node === "object" && Object.values(node).some((c) => c && typeof c === "object");
+  // Nothing left here, and the newest thing that happened to this product here
+  // was a person's transfer away (not a refill or order leaving).
+  const movedOut = (loc, pid, node) => {
+    if (held(node)) return null;
+    const m = lastMove.get(`${loc}|${pid}`);
+    if (!m || m.from !== loc || !MOVED_OUT_TYPES.has(m.type)) return null;
+    if (m.link && (m.link.refillId || m.link.orderId)) return null;
+    return m;
+  };
   for (const loc of DIVISION_LOCATIONS) {
     const here = { ...(divisionIsObj(seats?.[loc]) ? seats[loc] : {}) };
     const node = rawStock?.[loc] || {};
-    for (const pid of Object.keys(node)) {
-      if (pid === "_meta" || here[pid] || !held(node[pid])) continue;
-      here[pid] = { via: "stock", at: nowIso };
+    const gone = divisionIsObj(releases?.[loc]) ? releases[loc] : {};
+    const candidates = new Set(Object.keys(node));
+    for (const k of lastSeating.keys()) if (k.startsWith(`${loc}|`)) candidates.add(k.slice(loc.length + 1));
+    for (const pid of candidates) {
+      if (pid === "_meta" || here[pid]) continue;
+      const units = held(node[pid]);
+      const activity = lastSeating.get(`${loc}|${pid}`) || null;
+      if (!units && !hasCell(node[pid]) && !activity) continue;
+      if (!units) {
+        if (movedOut(loc, pid, node[pid])) continue;
+        // Released before, and nothing has happened here since.
+        const tomb = gone[pid];
+        if (divisionIsObj(tomb) && !(activity && activity > String(tomb.at || ""))) continue;
+      }
+      here[pid] = { via: units ? "stock" : hasCell(node[pid]) ? "cell" : "history", at: nowIso };
       writes[`${loc}/${pid}`] = here[pid];
+      if (gone[pid]) releaseWrites[`${loc}/${pid}`] = null;
       seated++;
     }
-    // Moved out: nothing left here, and the newest thing that happened to this
-    // product here was a person's transfer away.
     for (const pid of Object.keys(here)) {
-      if (held(node[pid])) continue;
-      const m = lastMove.get(`${loc}|${pid}`);
-      if (!m || m.from !== loc || !MOVED_OUT_TYPES.has(m.type)) continue;
-      // A refill or order leaving is the location doing its job, and a Solve
-      // newer than the move means it was brought back: neither releases it.
-      if (m.link && (m.link.refillId || m.link.orderId)) continue;
+      const m = movedOut(loc, pid, node[pid]);
+      if (!m) continue;
+      // A Solve newer than the move means it was brought back.
       if (String(m.ts) <= String(here[pid]?.at || "")) continue;
       delete here[pid];
       writes[`${loc}/${pid}`] = null;
+      releaseWrites[`${loc}/${pid}`] = { at: nowIso, moveTs: String(m.ts) };
       released++;
     }
     effective[loc] = here;
   }
-  return { effective, writes, seated, released };
+  return { effective, writes, releaseWrites, seated, released };
 }
 
 // ── WHAT THE DIVISION KEEPS — the Engine Policy card's count ─────────────────
@@ -342,4 +385,5 @@ module.exports = {
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
   divisionTargetShape, hub3PresenceIndex, isSeatedAtShop, divisionShopCarries, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
+  SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy,
 };

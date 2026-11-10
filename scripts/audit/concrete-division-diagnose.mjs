@@ -31,7 +31,7 @@ const network = reg.normalizeNetwork(d.network);
 const nowMs = Date.parse(d.readAt);
 const movements = Object.values(d.movements || {});
 const config = { ...d.config, maxIntentsPerRun: 100000, maxFootwearIntentsPerRun: 100000 };
-const seatPlan = dv.planSeats({ rawStock: d.stock, seats: d.seats || {}, movements, nowIso: d.readAt });
+const seatPlan = dv.planSeats({ rawStock: d.stock, seats: d.seats || {}, movements, releases: d.seatReleases || {}, nowIso: d.readAt });
 const seatAdds = Object.fromEntries(LOCS_ALL.map((l) => [l, Object.keys(seatPlan.writes).filter((k) => k.startsWith(`${l}/`) && seatPlan.writes[k]).length]));
 const plan = engine.computeRefillPlan({
   nowMs, config, targets: d.targets, stock: d.stock, products: d.products, openIndex: d.open,
