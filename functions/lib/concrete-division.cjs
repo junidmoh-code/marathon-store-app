@@ -385,6 +385,64 @@ function divisionKeepCounts({ division, stockView, products }) {
   return out;
 }
 
+// ── THE POLICY AUDIT — "Concrete division policy" on Health (Junid, 10 Nov 2026)
+// What Junid's policy says a seated product should keep, per size, at Pine,
+// Concrete and Hub 3 — computed from the policy key alone, never from the
+// engine's answer, so the audit can catch the engine disagreeing:
+//   shop, non-sneaker, size Hub 3 serves (hub3ServesSize) → fromHub3 (1 / 5, ask at 0)
+//   shop, non-sneaker, otherwise                          → shopOnly (2 / 5)
+//   shop, non-sneaker owned at Hub 3 by the OTHER shop    → nothing
+//   shop, footwear                                        → nothing (Hub 3 keeps it)
+//   Hub 3, footwear                                       → 3 per size, ask at 1
+//   Hub 3, non-sneaker                                    → hub3Keep (2 / 10) while ON, else nothing
+// Returns { target, reorderPoint } or null (no keep).
+const HUB3_SNEAKER_KEEP = Object.freeze({ target: 3, reorderPoint: 1 });
+function divisionExpectedTarget(division, loc, pid, size, product) {
+  if (!division || !isDivisionLocation(loc) || !product || product.deactivated) return null;
+  const footwear = isDivisionFootwear(product);
+  const one = isDivisionOneSize(product);
+  const { policy } = division;
+  if (loc === DIVISION_HUB) {
+    if (footwear) return { ...HUB3_SNEAKER_KEEP };
+    if (!policy.hub3Keep || !policy.hub3Keep.on) return null;
+    return { target: one ? policy.hub3Keep.oneSize : policy.hub3Keep.perSize, reorderPoint: null };
+  }
+  if (footwear) return null;
+  if (division.hub3Present.has(pid)) {
+    const owner = division.seats?.[DIVISION_HUB]?.[pid]?.owner;
+    if (owner && owner !== loc) return null;
+    if (hub3ServesSize(division, pid, size)) {
+      return policy.fromHub3 ? { target: one ? policy.fromHub3.oneSize : policy.fromHub3.perSize, reorderPoint: policy.fromHub3.askAt } : null;
+    }
+  }
+  return policy.shopOnly ? { target: one ? policy.shopOnly.oneSize : policy.shopOnly.perSize, reorderPoint: null } : null;
+}
+
+// One size's verdict. `effective` is the engine's own armed answer for the cell
+// (resolveTarget behind the trust check, null when nothing arms it); `deadSize`
+// = no units of this size anywhere (the footwear policy's dead-size rule
+// answers 0 there on purpose). Returns { ok, reason }.
+//   switched_off  every explicit row is 0 — a Seating-tab switch-off; it wins
+//   dead_size     footwear size with no units anywhere — the policy's own 0
+//   missing       the policy keeps it, nothing arms it
+//   unexpected    the policy keeps nothing, something arms it
+//   explicit_row  an explicit /stock_targets row overrides the policy
+//   wrong_number  armed, but not with the policy's numbers
+function divisionAuditVerdict({ expected, effective, explicitZero = false, deadSize = false }) {
+  if (explicitZero) return { ok: true, reason: "switched_off" };
+  const eff = effective && Number(effective.target) > 0 ? effective : null;
+  if (!expected) return eff ? { ok: false, reason: eff.source === "explicit" ? "explicit_row" : "unexpected" } : { ok: true, reason: "none" };
+  if (!eff) {
+    if (deadSize && effective && Number(effective.target) === 0) return { ok: true, reason: "dead_size" };
+    return { ok: false, reason: "missing" };
+  }
+  if (eff.source === "explicit" && (eff.target !== expected.target)) return { ok: false, reason: "explicit_row" };
+  const rpE = expected.reorderPoint == null ? null : expected.reorderPoint;
+  const rpA = eff.reorderPoint == null ? null : eff.reorderPoint;
+  if (eff.target !== expected.target || rpE !== rpA) return { ok: false, reason: "wrong_number" };
+  return { ok: true, reason: "kept" };
+}
+
 // ── THE SOLVE'S SEAT — the seatDivisionSolve callable ────────────────────────
 // `refill_engine` is server-only, so a Solve records its seat through here. The
 // sneaker pair rule is enforced HERE as well as on the screen.
@@ -437,5 +495,5 @@ module.exports = {
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
   divisionTargetShape, hub3PresenceIndex, isSeatedAtShop, divisionShopCarries, hub3HoldsSize, hub3ServesSize, hub3InboundIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
-  SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy,
+  SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy, HUB3_SNEAKER_KEEP, divisionExpectedTarget, divisionAuditVerdict,
 };

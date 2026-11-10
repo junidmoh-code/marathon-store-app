@@ -34,7 +34,7 @@ const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_C
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
 const { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } = require("./central-fed.cjs");
-const { DIVISION_HUB, DIVISION_SHOPS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop } = require("./concrete-division.cjs");
+const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict } = require("./concrete-division.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -3052,6 +3052,54 @@ function computeRefillPlan(snapshot) {
   // through its template carries no leg of its own to compare.
   const footwearDrift = footwearPolicyDrift(rawConfig, network);
 
+  // ── CONCRETE DIVISION POLICY AUDIT (Junid, 10 Nov 2026) ─────────────────────
+  // Every product SEATED at Pine, Concrete or Hub 3, every size it is kept in:
+  // what Junid's policy says it should keep (divisionExpectedTarget, from the
+  // policy key alone) against what the engine actually arms (resolveTarget
+  // behind the same trust check the deficit loop applies). Read-only, from
+  // inputs this plan already holds — no read of its own. Null when the
+  // division key is off. Marathon is never looked at.
+  const divisionPolicy = (() => {
+    if (!division) return null;
+    const mismatches = [];
+    const byReason = {};
+    const perLoc = {};
+    for (const loc of DIVISION_LOCATIONS) {
+      const tally = (perLoc[loc] = { products: 0, correct: 0, mismatched: 0, cells: 0, switchedOff: 0 });
+      for (const pid of Object.keys(division.seats[loc] || {})) {
+        const p = products?.[pid];
+        if (!p) continue;
+        const fw = isDivisionFootwear(p);
+        const sizes = fw ? productSizes(products, pid) : divisionSizes(p);
+        if (!sizes.length) continue;
+        tally.products += 1;
+        let bad = 0;
+        for (const s of sizes) {
+          const size = s === "_" ? "" : s;
+          const sk = encodeSizeKey(size);
+          const rows = targets?.[loc]?.[pid];
+          const row = rows?.[sk];
+          const explicitZero = !!(row && typeof row.target === "number" && row.target <= 0);
+          const expected = divisionExpectedTarget(division, loc, pid, size, p);
+          const effective = trustedCell(loc, pid, sk) ? resolveTarget(ctx, loc, pid, size) : null;
+          const deadSize = fw && sizeUnitsAnywhere(viewOf(loc, pid), pid, size) <= 0;
+          const v = divisionAuditVerdict({ expected, effective, explicitZero, deadSize });
+          tally.cells += 1;
+          if (v.reason === "switched_off") tally.switchedOff += 1;
+          if (v.ok) continue;
+          bad += 1;
+          byReason[v.reason] = (byReason[v.reason] || 0) + 1;
+          mismatches.push({ loc, pid, size, reason: v.reason,
+            expected: expected ? { target: expected.target, reorderPoint: expected.reorderPoint ?? null } : null,
+            effective: effective ? { target: effective.target, reorderPoint: effective.reorderPoint ?? null, source: effective.source || null } : null });
+        }
+        if (bad) tally.mismatched += 1; else tally.correct += 1;
+      }
+    }
+    mismatches.sort((a, b) => a.reason.localeCompare(b.reason) || a.loc.localeCompare(b.loc) || String(a.pid).localeCompare(String(b.pid)) || String(a.size).localeCompare(String(b.size)));
+    return { mismatches, byReason, perLoc };
+  })();
+
   const cap = (arr, n = 300) => ({ count: arr.length, items: uncapped ? arr : arr.slice(0, n) });
   return {
     intents: plannedIntents,
@@ -3104,6 +3152,9 @@ function computeRefillPlan(snapshot) {
       unarmedFootwear: cap(unarmedFootwear, 900),
       unorderableFootwear: cap(unorderableFootwear, 900),
       footwearPolicyDrift: cap(footwearDrift),
+      // The Concrete division policy audit — mismatched cells, capped like
+      // every list; the per-location product tallies ride beside them.
+      ...(divisionPolicy ? { divisionPolicy: { ...cap(divisionPolicy.mismatches), byReason: divisionPolicy.byReason, perLoc: divisionPolicy.perLoc } } : {}),
       shortNotRequested: {
         ...cap(shortNotRequested, 900),
         byReason: tallyBy(shortNotRequested, (r) => r.reason),
