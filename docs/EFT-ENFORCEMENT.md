@@ -13,7 +13,10 @@ Concrete keep the looser path for now.
 |---|---|---|
 | `/eft_enforcement` | Admin SDK only (owner via the POS, or `firebase database:set`) | `{ stores: { trophy: true, pe: true, pine: false, concrete: false }, updatedAt, updatedBy }` |
 
-* **Missing node → the default**: `trophy` + `pe` (Marathon PE's POS id) enforced.
+* **Missing node → the default**: `trophy` + `pe` (Marathon PE's POS id) + `pine` (since 10 Nov 2026) enforced. Concrete is enforced by the node only (2 Nov 2026).
+* **Live node, 10 Nov 2026**: `{ concrete, pe, pine, trophy }` all `true`, written by `scripts/cardrecon/apply-eft-enforcement-pine-20261110.mjs` (merge, Pine only).
+* **Pine (10 Nov 2026)**: a system-approval-only EFT store like Trophy, Marathon PE and Concrete. Staff hand entry is refused on the server (`eftPoolManualEntry` is owner-only at every store). Junid's own hand entry floats as an ordinary pool payment, and a Pine till spends it once through `eftPoolSettle`.
+* **POS default not changed**: marathon-pos-app `src/sale/eftEnforcement.js` still defaults to `["trophy","pe"]`. A Pine till that has never loaded the server's answer and is offline uses that default. The 5-minute breach scan flags any plain-EFT sale at Pine whichever default the till used.
 * A present `stores` map is honoured exactly, an empty one included.
 * Store ids are the POS short ids — what `/pos/sales/{id}.storeId` carries.
 

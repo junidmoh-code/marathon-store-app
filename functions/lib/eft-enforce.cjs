@@ -5,7 +5,17 @@
 // reference/bank id matched, customer attached and confirmed, consume-once).
 // Concrete joined them on 2 Nov 2026 (Junid) — by the CONFIG node below
 // (scripts/cardrecon/apply-eft-enforcement-concrete-20261102.mjs), not the
-// default; Pine keeps the looser path for now.
+// default. Pine joined on 10 Nov 2026 (Junid: Pine is on the POS and is a
+// system-approval-only EFT store) — in the DEFAULT below AND in the live node
+// (scripts/cardrecon/apply-eft-enforcement-pine-20261110.mjs), so no store
+// relaxes to the looser path any more except Concrete's default fallback
+// (Concrete is enforced by the node; its default was not asked to change).
+//
+// THE OWNER'S FLOAT IS NOT AFFECTED. Enforcement only removes the till's
+// "EFT without matching" path. Junid's own hand entry (eftPoolManualEntry —
+// owner-only at EVERY store, refused for staff before anything is read)
+// becomes an ordinary pool payment, and a till at an enforced store spends it
+// once through the consume-once settle exactly like an auto-confirmed one.
 //
 // THE SET IS CONFIG, NOT CODE. /eft_enforcement is a top-level node (no client
 // rule → Admin SDK only; the owner edits it through eftEnforcementStatus
@@ -15,7 +25,7 @@
 //   /eft_enforcement = { stores: { trophy: true, pe: true, pine: false,
 //                                  concrete: false }, updatedAt, updatedBy }
 //
-// A MISSING node means the DEFAULT (Trophy + Marathon PE). A present `stores`
+// A MISSING node means the DEFAULT (Trophy + Marathon PE + Pine). A present `stores`
 // map is honoured exactly — including an empty one, which is the owner
 // switching enforcement off everywhere.
 //
@@ -37,8 +47,9 @@ const EFT_ENFORCEMENT_PATH = "eft_enforcement";
 const EFT_BREACH_PATH = "eft_enforcement_breaches";
 const EFT_ENFORCEMENT_SCAN_PATH = "eft_enforcement_scan";
 
-// Marathon PE is "pe" at the POS (the sale record's storeId), Trophy is "trophy".
-const DEFAULT_ENFORCED_STORES = Object.freeze(["trophy", "pe"]);
+// Marathon PE is "pe" at the POS (the sale record's storeId), Trophy is
+// "trophy", Marathon Pine is "pine" (10 Nov 2026).
+const DEFAULT_ENFORCED_STORES = Object.freeze(["trophy", "pe", "pine"]);
 
 // A POS store id: short, lower-case, becomes a path segment and a sale field.
 const STORE_ID = /^[a-z][a-z0-9-]{0,30}$/;
