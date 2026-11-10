@@ -849,12 +849,12 @@ export default function HealthView({ products = [], onExit }) {
           wrong_number: "armed with the wrong numbers",
         };
         const keep = (t) => (t ? `keep ${t.target}${t.reorderPoint != null ? `, ask at ${t.reorderPoint}` : ""}` : "no keep");
-        const byPid = new Map();
-        for (const r of items("divisionPolicy")) {
+        // Grouped per location + product (a plain fold: this screen writes nothing).
+        const byPid = items("divisionPolicy").reduce((o, r) => {
           const k = `${r.loc}|${r.pid}`;
-          if (!byPid.has(k)) byPid.set(k, { loc: r.loc, pid: r.pid, rows: [] });
-          byPid.get(k).rows.push(r);
-        }
+          const g = o[k] || { loc: r.loc, pid: r.pid, rows: [] };
+          return { ...o, [k]: { ...g, rows: [...g.rows, r] } };
+        }, {});
         return (
           <DetailShell title="Concrete Division Policy" sub={`Every product seated at Pine, Concrete and Hub 3, every size, checked by the hourly scan against Junid's policy: Pine/Concrete shop-only items keep 2 per size (5 per design with no size) from Central; items owned through Hub 3 keep 1 per size (5 per design) from Hub 3 — while the Hub 3 clothing keep is off, only for a size Hub 3 holds; Hub 3 sneakers keep 3 per size, ask at 1; Hub 3 clothing 2 per size / 10 per design only while its switch is on. Seating-tab switch-offs count as correct. Read-only — fix a line on the Engine Policy card or the Seating tab; the next scan clears it.${count("divisionPolicy") > items("divisionPolicy").length ? ` Showing ${items("divisionPolicy").length} of ${count("divisionPolicy")} cells.` : ""}`} count={count("divisionPolicy")} onBack={back}>
             {!dp && (
@@ -870,7 +870,7 @@ export default function HealthView({ products = [], onExit }) {
             {dp && count("divisionPolicy") === 0 && (
               <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every seated product keeps exactly what the policy says 🎉</div>
             )}
-            {[...byPid.values()].map((g) => (
+            {Object.values(byPid).map((g) => (
               <ProductCard key={`${g.loc}|${g.pid}`} photo={byId.get(g.pid)?.photoUrl} name={nameOf(g.pid)}
                 badges={<Badge tone={RED}>{locLabel(g.loc).toUpperCase()}</Badge>}>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
