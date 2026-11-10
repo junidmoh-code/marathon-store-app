@@ -427,3 +427,36 @@ test("CONCRETE: Junid's hand entry is the escape hatch — owner-only, and spent
   assert.equal(db.reads[`eft_pool/${key}`].used.storeId, "concrete");
   assert.equal((await rejects(settle("C-2"), "failed-precondition")).details.code, "already-used");
 });
+
+// ─── PINE ENFORCED (10 Nov 2026): SAME AS CONCRETE — STAFF REFUSED, OWNER FLOAT SPENDS ONCE ─
+// REGRESSION PINS, not proof of the enforcement change: hand entry is
+// owner-only at every store and settle has no per-store gate, so these hold
+// with or without Pine on the list. They pin what Junid asked to keep true at
+// Pine. The enforcement itself is proven in eft-enforce.test.cjs (PINE: …).
+const LIVE_AFTER_PINE = { stores: { concrete: true, pe: true, pine: true, trophy: true }, updatedAt: 1, updatedBy: "gunidmoh@gmail.com" };
+
+test("PINE: a STAFF hand entry at Pine is refused on the server before anything is read", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  const entry = { entryId: "ME-pine0002", reference: "Pine 0412", amountCents: 27500, note: "typed at Pine", storeId: "pine" };
+  for (const who of [CASHIER, REVIEWER, SHARED]) {
+    db.readLog = [];
+    const e = await rejects(eftPoolManualEntry({ ...who, data: entry }), "permission-denied");
+    assert.equal(e.details.code, "owner-only");
+    assert.deepEqual(db.readLog, [], "no read, no transaction, nothing");
+  }
+});
+
+test("PINE: Junid's own hand-entered float is usable at a Pine till — completes the sale once", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  const entry = { entryId: "ME-pine0001", reference: "Pine 0411", amountCents: 18500, note: "Pine, no email yet" };
+  db.tail = {};
+  const out = await eftPoolManualEntry({ ...OWNER, data: entry });
+  assert.equal(out.ok, true);
+  const key = out.key;
+  db.tail = { [key]: db.reads[`eft_pool/${key}`] };
+  const settle = (attemptId) => eftPoolSettle({ ...CASHIER, data: { action: "settle", poolKey: key, attemptId, appliedCents: 18500, storeId: "pine", tillId: "till-1", customerId: "0821234567", confirmedCustomerId: "0821234567" } });
+  assert.equal((await settle("P-1")).ok, true);
+  assert.equal(db.reads[`eft_pool/${key}`].status, "used");
+  assert.equal(db.reads[`eft_pool/${key}`].used.storeId, "pine");
+  assert.equal((await rejects(settle("P-2"), "failed-precondition")).details.code, "already-used", "one float, one slip");
+});

@@ -1,5 +1,5 @@
-// ─── EFT ENFORCEMENT — Trophy + Marathon PE must match every EFT sale ────────
-// Pinned: the default set (trophy + pe, never pine or concrete) and that the
+// ─── EFT ENFORCEMENT — Trophy + Marathon PE (+ Pine, 10 Nov) match every EFT ─
+// Pinned: the default set (trophy + pe + pine, never concrete) and that the
 // /eft_enforcement node overrides it exactly; a regular sale at an enforced
 // store with an EFT leg naming no pool payment is a BREACH, at a non-enforced
 // store it is not; the callable answers any active POS identity and lets ONLY
@@ -19,14 +19,14 @@ const K = "a".repeat(40);
 const sale = (over = {}) => ({ type: "sale", storeId: "trophy", tillId: "till-1", cashierName: "Ahmed", receiptNumber: "S-1", createdAt: 5000, total: 50000,
   payments: { p1: { method: "eft", amount: 50000 } }, ...over });
 
-test("DEFAULT: Trophy and Marathon PE are enforced; Pine and Concrete are not", () => {
-  assert.deepEqual([...DEFAULT_ENFORCED_STORES].sort(), ["pe", "trophy"]);
+test("DEFAULT: Trophy, Marathon PE and Pine are enforced; Concrete only by the node", () => {
+  assert.deepEqual([...DEFAULT_ENFORCED_STORES].sort(), ["pe", "pine", "trophy"]);
   for (const node of [null, undefined, {}, { updatedAt: 1 }, { stores: "trophy" }]) {
-    assert.deepEqual(enforcedStoresOf(node), ["pe", "trophy"], JSON.stringify(node));
+    assert.deepEqual(enforcedStoresOf(node), ["pe", "pine", "trophy"], JSON.stringify(node));
   }
   assert.equal(isEftEnforcedAt("trophy", null), true);
   assert.equal(isEftEnforcedAt("pe", null), true);
-  assert.equal(isEftEnforcedAt("pine", null), false);
+  assert.equal(isEftEnforcedAt("pine", null), true);
   assert.equal(isEftEnforcedAt("concrete", null), false);
   assert.equal(isEftEnforcedAt("../users", null), false);
 });
@@ -49,8 +49,8 @@ test("the owner's update is validated, never coerced", () => {
 });
 
 test("the status the till reads says enforced/not for its store and where the set came from", () => {
-  assert.deepEqual(enforcementStatusOf(null, "trophy"), { enforcedStores: ["pe", "trophy"], enforced: true, source: "default", updatedAt: null });
-  assert.deepEqual(enforcementStatusOf(null, "pine"), { enforcedStores: ["pe", "trophy"], enforced: false, source: "default", updatedAt: null });
+  assert.deepEqual(enforcementStatusOf(null, "trophy"), { enforcedStores: ["pe", "pine", "trophy"], enforced: true, source: "default", updatedAt: null });
+  assert.deepEqual(enforcementStatusOf(null, "concrete"), { enforcedStores: ["pe", "pine", "trophy"], enforced: false, source: "default", updatedAt: null });
   assert.deepEqual(enforcementStatusOf({ stores: { pine: true }, updatedAt: 7 }, "trophy"), { enforcedStores: ["pine"], enforced: false, source: "config", updatedAt: 7 });
   assert.equal(enforcementStatusOf(null, null).enforced, null);
 });
@@ -69,8 +69,8 @@ test("BREACH: an EFT sale at Trophy or Marathon with no pool payment is flagged"
 test("NOT a breach: a matched payment, a non-enforced store, card/cash/split/layby/refund", () => {
   const enforced = enforcedStoresOf(null);
   assert.equal(enforcementBreachOf("S", sale({ payments: { p1: { method: "eft", amount: 50000, eftPoolKey: K } } }), enforced), null, "matched");
-  assert.equal(enforcementBreachOf("S", sale({ storeId: "pine" }), enforced), null, "Pine keeps the old way");
-  assert.equal(enforcementBreachOf("S", sale({ storeId: "concrete" }), enforced), null, "Concrete keeps the old way");
+  assert.equal(enforcementBreachOf("S", sale({ storeId: "concrete" }), enforced), null, "Concrete is enforced by the node, not the default");
+  assert.equal(enforcementBreachOf("S", sale({ storeId: "hub2" }), enforced), null, "a store not on the list keeps the old way");
   assert.equal(enforcementBreachOf("S", sale({ payments: { p1: { method: "card", amount: 50000, cardAuthCode: "1234" } } }), enforced), null, "card");
   assert.equal(enforcementBreachOf("S", sale({ payments: { p1: { method: "cash", amount: 20000 }, p2: { method: "eft", amount: 30000, eftPoolKey: K } } }), enforced), null, "split with a matched EFT leg");
   assert.equal(enforcementBreachOf("S", sale({ type: "layby" }), enforced), null, "layby deposits keep plain EFT");
@@ -147,8 +147,9 @@ async function rejects(promise, code) {
 
 test("the till reads enforcement for its store — the default when nothing is configured", async () => {
   delete db.reads["eft_enforcement"];
-  assert.deepEqual(await eftEnforcementStatus({ ...CASHIER, data: { storeId: "trophy" } }), { ok: true, enforcedStores: ["pe", "trophy"], enforced: true, source: "default", updatedAt: null });
-  assert.equal((await eftEnforcementStatus({ ...CASHIER, data: { storeId: "pine" } })).enforced, false);
+  assert.deepEqual(await eftEnforcementStatus({ ...CASHIER, data: { storeId: "trophy" } }), { ok: true, enforcedStores: ["pe", "pine", "trophy"], enforced: true, source: "default", updatedAt: null });
+  assert.equal((await eftEnforcementStatus({ ...CASHIER, data: { storeId: "pine" } })).enforced, true);
+  assert.equal((await eftEnforcementStatus({ ...CASHIER, data: { storeId: "concrete" } })).enforced, false);
   await rejects(eftEnforcementStatus({ auth: { uid: "stranger", token: {} }, data: { storeId: "trophy" } }), "permission-denied");
 });
 
@@ -159,17 +160,17 @@ test("ONLY the owner changes the set — a manager with EFT review is refused an
     assert.match(e.message, /Only Junid/);
   }
   assert.equal(db.sets["eft_enforcement"], undefined);
-  // MERGE semantics: switching Pine on from no node starts from the default,
-  // so Trophy and Marathon PE stay enforced.
+  // MERGE semantics: switching Concrete on from no node starts from the
+  // default, so Trophy, Marathon PE and Pine stay enforced.
   delete db.reads["eft_enforcement"];
-  const out = await eftEnforcementStatus({ ...OWNER, data: { action: "set", stores: { pine: true } } });
-  assert.deepEqual(out.enforcedStores, ["pe", "pine", "trophy"]);
-  assert.deepEqual(db.sets["eft_enforcement"].stores, { trophy: true, pe: true, pine: true });
+  const out = await eftEnforcementStatus({ ...OWNER, data: { action: "set", stores: { concrete: true } } });
+  assert.deepEqual(out.enforcedStores, ["concrete", "pe", "pine", "trophy"]);
+  assert.deepEqual(db.sets["eft_enforcement"].stores, { trophy: true, pe: true, pine: true, concrete: true });
   assert.equal(db.sets["eft_enforcement"].updatedBy, "gunidmoh@gmail.com");
   // …and switching one OFF later keeps the rest.
   db.reads["eft_enforcement"] = db.sets["eft_enforcement"];
-  const off = await eftEnforcementStatus({ ...OWNER, data: { action: "set", stores: { pine: false } } });
-  assert.deepEqual(off.enforcedStores, ["pe", "trophy"]);
+  const off = await eftEnforcementStatus({ ...OWNER, data: { action: "set", stores: { concrete: false } } });
+  assert.deepEqual(off.enforcedStores, ["pe", "pine", "trophy"]);
   // The breach list is Junid's alone, one bounded page by key order.
   db.queries = [];
   await rejects(eftEnforcementStatus({ ...MANAGER, data: { action: "listBreaches" } }), "permission-denied");
@@ -180,13 +181,13 @@ test("ONLY the owner changes the set — a manager with EFT review is refused an
   assert.equal(bad.details.code, "bad-flag");
 });
 
-test("the scan flags a plain-EFT sale at Trophy, leaves Pine's alone, reads one bounded page", async () => {
+test("the scan flags a plain-EFT sale at Trophy, leaves Concrete's alone under the default, reads one bounded page", async () => {
   db.sets = {}; db.queries = [];
   delete db.reads["eft_enforcement"];
   db.reads["_migrations/eftFingerprintBackfill"] = { done: true };
   db.reads["pos/sales"] = {
     "S-trophy": sale({ createdAt: 8000 }),
-    "S-pine": sale({ storeId: "pine", createdAt: 8100 }),
+    "S-concrete": sale({ storeId: "concrete", createdAt: 8100 }),
     "S-matched": sale({ storeId: "pe", createdAt: 8200, payments: { p: { method: "eft", amount: 50000, eftPoolKey: K } } }),
   };
   await eftRemainderScan();
@@ -197,7 +198,7 @@ test("the scan flags a plain-EFT sale at Trophy, leaves Pine's alone, reads one 
   assert.equal(salesQuery.cs[2][1], BREACH_SCAN_PAGE);
   assert.ok(db.tx["eft_enforcement_breaches/S-trophy"], "the Trophy sale is a breach");
   assert.equal(db.tx["eft_enforcement_breaches/S-trophy"].eftCents, 50000);
-  assert.equal(db.tx["eft_enforcement_breaches/S-pine"], undefined, "Pine keeps the old way");
+  assert.equal(db.tx["eft_enforcement_breaches/S-concrete"], undefined, "Concrete is not in the default — the node enforces it");
   assert.equal(db.tx["eft_enforcement_breaches/S-matched"], undefined, "a matched payment is fine");
   assert.ok(Number.isInteger(db.sets["eft_enforcement_scan"].sinceMs), "the cursor is kept");
   // The window slides, so the sale is read again — the record is CREATE-ONLY:
@@ -228,8 +229,9 @@ test("CONCRETE: with the live node, Trophy, Marathon PE and Concrete all enforce
   const enforced = enforcedStoresOf(LIVE_AFTER_CONCRETE);
   assert.ok(enforcementBreachOf("S-c", sale({ storeId: "concrete" }), enforced));
   assert.equal(enforcementBreachOf("S-c2", sale({ storeId: "concrete", payments: { p: { method: "eft", amount: 50000, eftPoolKey: K } } }), enforced), null);
-  // The code default is unchanged: the node, not the default, enforces Concrete.
-  assert.deepEqual([...DEFAULT_ENFORCED_STORES].sort(), ["pe", "trophy"]);
+  // The node, not the default, enforces Concrete (the default names Pine
+  // since 10 Nov 2026, never Concrete).
+  assert.ok(!DEFAULT_ENFORCED_STORES.includes("concrete"));
 });
 
 test("CONCRETE: staff cannot take it off the list — only the owner changes the set", async () => {
@@ -259,4 +261,58 @@ test("CONCRETE: the scan flags a plain-EFT sale at Concrete beside Trophy and PE
   assert.ok(db.tx["eft_enforcement_breaches/S-pe"]);
   assert.equal(db.tx["eft_enforcement_breaches/S-pine"], undefined);
   assert.equal(db.tx["eft_enforcement_breaches/S-concrete-matched"], undefined);
+});
+
+// ─── PINE JOINS TROPHY, MARATHON PE AND CONCRETE (Junid, 10 Nov 2026) ────────
+// The live node after scripts/cardrecon/apply-eft-enforcement-pine-20261110.mjs.
+const LIVE_AFTER_PINE = { stores: { concrete: true, pe: true, pine: true, trophy: true }, updatedAt: 1794300000000, updatedBy: "gunidmoh@gmail.com" };
+
+test("PINE: with the live node, Pine enforces beside Trophy, Marathon PE and Concrete — and they are unchanged", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  assert.deepEqual(enforcedStoresOf(LIVE_AFTER_PINE), ["concrete", "pe", "pine", "trophy"]);
+  for (const storeId of ["pine", "trophy", "pe", "concrete"]) {
+    const out = await eftEnforcementStatus({ ...CASHIER, data: { storeId } });
+    assert.deepEqual(out, { ok: true, enforcedStores: ["concrete", "pe", "pine", "trophy"], enforced: true, source: "config", updatedAt: 1794300000000 }, storeId);
+  }
+  // Stores that are not on the list keep their old path.
+  for (const storeId of ["hub1", "hub2", "central"]) {
+    assert.equal((await eftEnforcementStatus({ ...CASHIER, data: { storeId } })).enforced, false, storeId);
+  }
+  // Exactly one flag differs from the Concrete-era node: Pine.
+  const changed = Object.keys(LIVE_AFTER_PINE.stores).filter((id) => LIVE_AFTER_PINE.stores[id] !== (LIVE_AFTER_CONCRETE.stores[id] ?? false));
+  assert.deepEqual(changed, ["pine"]);
+  const enforced = enforcedStoresOf(LIVE_AFTER_PINE);
+  assert.ok(enforcementBreachOf("S-p", sale({ storeId: "pine" }), enforced), "a plain EFT at Pine is a breach");
+  assert.equal(enforcementBreachOf("S-p2", sale({ storeId: "pine", payments: { p: { method: "eft", amount: 50000, eftPoolKey: K } } }), enforced), null, "a matched (or owner-floated) pool payment is not");
+  assert.equal(enforcementBreachOf("S-p3", sale({ storeId: "pine", type: "layby" }), enforced), null, "layby deposits are still not enforced");
+});
+
+test("PINE: staff cannot take Pine off the list — only the owner changes the set", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  db.sets = {};
+  for (const who of [CASHIER, MANAGER]) {
+    await rejects(eftEnforcementStatus({ ...who, data: { action: "set", stores: { pine: false } } }), "permission-denied");
+  }
+  assert.equal(db.sets["eft_enforcement"], undefined, "nothing written");
+  assert.equal((await eftEnforcementStatus({ ...CASHIER, data: { storeId: "pine" } })).enforced, true);
+});
+
+test("PINE: the scan flags a plain-EFT sale at Pine beside Trophy, PE and Concrete; Pine's matched sale is fine", async () => {
+  db.sets = {}; db.queries = []; db.tx = {};
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  db.reads["eft_enforcement_scan"] = null;
+  for (const k of Object.keys(db.reads)) if (k.startsWith("eft_enforcement_breaches/")) delete db.reads[k];
+  db.reads["pos/sales"] = {
+    "S-pine": sale({ storeId: "pine", createdAt: 9500 }),
+    "S-trophy": sale({ storeId: "trophy", createdAt: 9600 }),
+    "S-pe": sale({ storeId: "pe", createdAt: 9700 }),
+    "S-concrete": sale({ storeId: "concrete", createdAt: 9800 }),
+    "S-pine-matched": sale({ storeId: "pine", createdAt: 9900, payments: { p: { method: "eft", amount: 50000, eftPoolKey: K } } }),
+    "S-pine-card": sale({ storeId: "pine", createdAt: 9950, payments: { p: { method: "card", amount: 50000, cardAuthCode: "1234" } } }),
+  };
+  await eftRemainderScan();
+  assert.equal(db.tx["eft_enforcement_breaches/S-pine"]?.storeId, "pine", "a plain EFT at Pine is a breach");
+  for (const id of ["S-trophy", "S-pe", "S-concrete"]) assert.ok(db.tx[`eft_enforcement_breaches/${id}`], `${id} still flagged`);
+  assert.equal(db.tx["eft_enforcement_breaches/S-pine-matched"], undefined);
+  assert.equal(db.tx["eft_enforcement_breaches/S-pine-card"], undefined);
 });
