@@ -784,6 +784,72 @@ export function paymentDateVerdict({ parsed, cutoff }) {
   return { ok: true };
 }
 
+// ─── PER-ACCOUNT EFFECTIVE-FROM FLOOR (Junid, 10 Nov 2026) ───────────────────
+// Marathon Pine's FNB account (the allowed account whose number starts 63 —
+// Marathon's own FNB account starts 62) was settled BY HAND until auto-confirm
+// went on for Pine. A payment into it that the bank dates before 2026-11-10
+// has already been handled, so confirming it now would confirm the same money
+// twice: it refuses as refused-stale-date, exactly like the global cutoff
+// (same date — the BANK's printed payment date, never the email's arrival —
+// same outcome, same quarantine). From 2026-11-10 it confirms under every
+// normal rule. The global EFT_PAYMENT_DATE_CUTOFF is untouched and still
+// applies first, to every account; this only ever ADDS a later floor.
+//
+// Keyed on bank + the account's leading digits, never a full number in this
+// repo: resolveAccountFloors finds the matching EFT_ALLOWED_ACCOUNTS entry at
+// start-up and keeps only its bank and last four (what destinationVerdict
+// answers with). An allowed account that only ends like the floored one but
+// does not start with its prefix is a different account and is not floored;
+// a prefix matching NO configured entry is reported, not guessed.
+export const ACCOUNT_EFFECTIVE_FROM = Object.freeze([
+  Object.freeze({ bank: "fnb", prefix: "63", from: "2026-11-10", label: "Marathon Pine's FNB account" }),
+]);
+
+/**
+ * The floors that apply, resolved against the configured accounts
+ * (parseAccountPolicies). Full numbers stay inside; out come bank + last four.
+ * @returns {{floors: Array<{bank:string, tail:string, from:string, startMs:number, label:string}>, problems: string[]}}
+ */
+export function resolveAccountFloors(policies, floors = ACCOUNT_EFFECTIVE_FROM) {
+  const out = []; const problems = [];
+  const list = Array.isArray(policies) ? policies : [];
+  for (const f of floors) {
+    const startMs = parseBankTimestamp(f.from);
+    if (!Number.isInteger(startMs) || !/^\d{4}-\d{2}-\d{2}$/.test(f.from)) { problems.push(`${f.label}: effective-from "${f.from}" is not a date`); continue; }
+    const hits = list.filter((p) => p && p.bank === f.bank && typeof p.account === "string" && p.account.startsWith(f.prefix) && p.account.length > f.prefix.length + 3);
+    if (!hits.length) { problems.push(`${f.label}: no allowed ${f.bank.toUpperCase()} account starts ${f.prefix}, so its ${f.from} floor applies to nothing`); continue; }
+    for (const h of hits) out.push({ bank: f.bank, tail: h.account.slice(-4), from: f.from, startMs, label: f.label });
+  }
+  return { floors: out, problems };
+}
+
+/**
+ * A payment into a floored account must be dated (by the bank) on or after
+ * that account's effective-from day. `account` is destinationVerdict's answer
+ * ({ok, bank, tail}); a refused destination is not this check's business.
+ * Two allowed accounts at one bank sharing a last four: the floor applies
+ * (the strictest policy wins, as for immediate-only).
+ * @returns {{ok:true} | {ok:false, reason:string, cutoff:string}}
+ */
+export function accountFloorVerdict({ parsed, account, floors }) {
+  if (!account || account.ok !== true) return { ok: true };
+  const hit = (Array.isArray(floors) ? floors : [])
+    .filter((f) => f.bank === account.bank && f.tail === account.tail)
+    .sort((a, b) => b.startMs - a.startMs)[0];
+  if (!hit) return { ok: true };
+  const bankTs = parsed?.bankTs;
+  if (!Number.isInteger(bankTs)) {
+    return { ok: false, cutoff: hit.from, reason: `The bank's own payment date could not be read, so it cannot be checked against the ${hit.from} start date for ${hit.label} — refused rather than assumed.` };
+  }
+  if (bankTs < hit.startMs) {
+    return {
+      ok: false, cutoff: hit.from,
+      reason: `Payment dated before this account's start date: the bank dates this payment ${sastDate(bankTs)}, and ${hit.label} only confirms payments dated ${hit.from} or later — earlier payments into it were settled by hand. Check it on the bank statement; do not confirm it again.`,
+    };
+  }
+  return { ok: true };
+}
+
 // ─── IDENTITY AND IDEMPOTENCY ────────────────────────────────────────────────
 /**
  * The pool key for a message — ALSO the record's node name, which is what makes
