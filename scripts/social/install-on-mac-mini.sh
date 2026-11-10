@@ -344,9 +344,11 @@ if /usr/bin/plutil -lint "$ALARM_PLIST" >/dev/null 2>&1; then
   if ! grep -qE '^(export )?CARD_RECON_IMAP_PASSWORD=' "$CLONE/.env" 2>/dev/null; then
     bad "alarm mailer: CARD_RECON_IMAP_USER / _PASSWORD missing from $CLONE/.env, so it cannot send"
   fi
-  [ -d "$CLONE/scripts/cardrecon/node_modules/nodemailer" ] || (cd "$CLONE/scripts/cardrecon" && npm ci --silent >/dev/null 2>&1) || bad "alarm mailer: npm ci in scripts/cardrecon failed (nodemailer)"
+  [ -d "$CLONE/scripts/cardrecon/node_modules/nodemailer" ] || (cd "$CLONE/scripts/cardrecon" && npm ci --silent >/dev/null 2>&1) || true
   launchctl bootout "gui/$UID/$ALARM_LABEL" 2>/dev/null || true
-  if launchctl bootstrap "gui/$UID" "$ALARM_PLIST" && launchctl enable "gui/$UID/$ALARM_LABEL"; then
+  if [ ! -d "$CLONE/scripts/cardrecon/node_modules/nodemailer" ]; then
+    bad "alarm mailer: nodemailer is missing (npm ci in scripts/cardrecon failed); NOT installed"
+  elif launchctl bootstrap "gui/$UID" "$ALARM_PLIST" && launchctl enable "gui/$UID/$ALARM_LABEL"; then
     ok "alarm mailer installed: $ALARM_LABEL (every 5 min)"
   else
     bad "alarm mailer: launchctl bootstrap failed"

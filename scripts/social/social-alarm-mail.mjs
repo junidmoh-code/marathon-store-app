@@ -86,9 +86,13 @@ try {
         const body = await res.json().catch(() => ({}));
         const data = body.data || (body.error ? { is_valid: false, error: body.error } : null);
         alerts.push(...tokenAlerts(data, nowMs));
-        state.token = data ? { is_valid: data.is_valid, expires_at: data.expires_at ?? null, data_access_expires_at: data.data_access_expires_at ?? null } : null;
+        // Counted as checked only when Meta actually answered; otherwise the
+        // next tick asks again rather than waiting six hours (CodeRabbit).
+        if (data) {
+          state.token = { is_valid: data.is_valid, expires_at: data.expires_at ?? null, data_access_expires_at: data.data_access_expires_at ?? null };
+          state.lastTokenCheckAt = nowMs;
+        } else log(`token check: Meta answered HTTP ${res.status} with no data; will ask again`);
       }
-      state.lastTokenCheckAt = nowMs;
     } catch (e) { log(`token check could not run: ${String(e?.message || e).slice(0, 160)}`); }
   }
 
