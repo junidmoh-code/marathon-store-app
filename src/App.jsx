@@ -16929,6 +16929,12 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // Hub 2's SNEAKERS / CLOTHING toggle. "Clothing" = everything that is not
   // footwear per the isFootwearLine classifier — never a category-name match.
   const [hub2Line, setHub2Line] = useState("sneakers");
+  // Hub 3's own SNEAKERS / CLOTHING toggle (Junid, 10 Nov 2026): Hub 3 gets
+  // Hub 2's refill screen with the location passed in. Its own state, so the
+  // Hub 2 screen is exactly what it was.
+  const [hub3Line, setHub3Line] = useState("sneakers");
+  const lineOf = (h) => (h === "hub2" ? hub2Line : h === "hub3" ? hub3Line : null);
+  const setLineOf = (h) => (h === "hub3" ? setHub3Line : setHub2Line);
   const todayDate   = getSADateString();
   // Desktop workspace gate (>=1024px). Mobile keeps the single-column layout.
   const isWide = !useIsNarrow(1024);
@@ -17338,7 +17344,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // lists request rows only, as it has since it was added.
   const sectionReactiveHub = sectionTabLoc[tab] && REACTIVE_REFILL_HUBS.includes(sectionTabLoc[tab]) ? sectionTabLoc[tab] : null;
   const activeHub = tab === "hub1refill" ? "hub1" : tab === "clothing" ? "hub2" : sectionReactiveHub;
-  const activeMode = activeHub === "hub2" ? hub2Line : null;   // hub1 is footwear by construction
+  const activeMode = lineOf(activeHub);   // hub1 is footwear by construction
   const activeCellFilter = useMemo(
     () => activeMode ? (key, product, size) => lineMatches(productForKey(key, product), size, activeMode) : null,
     [activeMode, lineMatches, productForKey]);
@@ -17350,17 +17356,20 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const activeCompletedSale = useMemo(
     () => activeHub && isReactiveRefillHub(activeHub) ? completedSaleFor(activeHub, activeCellFilter) : [],
     [activeHub, activeCellFilter, completedSaleFor]);
+  // ONE hub refill screen: Hub 1 (footwear only), and Hub 2 / Hub 3 split by
+  // the SNEAKERS / CLOTHING toggle. Sale-driven rows only for a reactive hub
+  // (activeSaleRows is empty for any other — Hub 3 lists request rows).
   const hubTabContent = (h) => {
-    const mode = h === "hub2" ? hub2Line : null;
+    const mode = lineOf(h);
     const lineFilter = mode ? (product, size) => lineMatches(product, size, mode) : null;
     return (
       <>
-        {h === "hub2" && (
+        {mode && (
           <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
             {[["sneakers", "Sneakers"], ["clothing", "Clothing"]].map(([val, label]) => {
-              const active = hub2Line === val;
+              const active = mode === val;
               return (
-                <button key={val} onClick={() => setHub2Line(val)} aria-pressed={active}
+                <button key={val} onClick={() => setLineOf(h)(val)} aria-pressed={active}
                         style={{ flex: 1, minHeight: 44, padding: "10px 12px", borderRadius: 14, cursor: "pointer",
                                  border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
                                  background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
@@ -17390,7 +17399,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         {/* Section tabs from the registry (Hub 3, Pine, Concrete) — request rows only. */}
         {sectionTabLoc[tab] && (sectionReactiveHub
           ? hubTabContent(sectionReactiveHub)
-          : <RefillQueue products={products} dest={sectionTabLoc[tab]} fulfilCtx={fulfilCtx} />)}
+          : sectionTabLoc[tab] === "hub3"
+            ? hubTabContent("hub3")
+            : <RefillQueue products={products} dest={sectionTabLoc[tab]} fulfilCtx={fulfilCtx} />)}
         {/* Refill History (2026-08-07, redone 2026-08-08). Every outcome, both
             hubs and the shops, over a chosen date range. */}
         {tab==="refillhistory" && <RefillHistory products={products} />}

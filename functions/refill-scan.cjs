@@ -662,9 +662,12 @@ async function runScan() {
     // units there is seated; the plan reads this scan's seats, written below.
     let seatPlan = null;
     if (concreteDivision.concreteDivisionPolicy(config)) {
-      const seats = Object.fromEntries(await Promise.all(concreteDivision.DIVISION_LOCATIONS.map(
-        (l) => db.ref(`${concreteDivision.SEATS_PATH}/${l}`).once("value").then((s) => [l, s.val() || {}]))));
-      seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, nowIso: new Date(nowMs).toISOString() });
+      const scoped = (path) => Promise.all(concreteDivision.DIVISION_LOCATIONS.map(
+        (l) => db.ref(`${path}/${l}`).once("value").then((s) => [l, s.val() || {}]))).then(Object.fromEntries);
+      // Seats, and the tombstones a release leaves (so a moved-out product's
+      // leftover zero cells do not seat it again) — three small nodes each.
+      const [seats, releases] = await Promise.all([scoped(concreteDivision.SEATS_PATH), scoped(concreteDivision.SEAT_RELEASES_PATH)]);
+      seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, releases, products, nowIso: new Date(nowMs).toISOString() });
     }
     const seatArgs = seatPlan ? { seats: seatPlan.effective } : {};
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
@@ -672,7 +675,10 @@ async function runScan() {
       network, ...seatArgs,
     }), paused);
     if (seatPlan && Object.keys(seatPlan.writes).length) {
-      const seatUpd = Object.fromEntries(Object.entries(seatPlan.writes).map(([k, v]) => [`${concreteDivision.SEATS_PATH}/${k}`, v]));
+      const seatUpd = Object.fromEntries([
+        ...Object.entries(seatPlan.writes).map(([k, v]) => [`${concreteDivision.SEATS_PATH}/${k}`, v]),
+        ...Object.entries(seatPlan.releaseWrites || {}).map(([k, v]) => [`${concreteDivision.SEAT_RELEASES_PATH}/${k}`, v]),
+      ]);
       if (await safeUpdate(db, seatUpd, "division seats")) counts.seats = { seated: seatPlan.seated, released: seatPlan.released };
     }
     if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };
@@ -966,9 +972,10 @@ async function runScan() {
           ? (Array.isArray(intent.forDests) && intent.forDests.length > 0
             && intent.forDests.every((d) => !networkRegistry.trustedCellsOnly(network, d) || stockTrust.cellTrusted(stock?.[d]?.[pid]?.[sizeKey])))
           : stockTrust.cellTrusted(stock?.[dest]?.[pid]?.[sizeKey]);
-        // Hub 3's seated sneakers are counted stock (concrete-division.cjs): the
-        // plan flags exactly those, and only for Hub 3.
-        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk && !(intent.seatedHub3 === true && dest === concreteDivision.DIVISION_HUB)) {
+        // Hub 3's seated sneakers, and a seated non-sneaker on a Pine or
+        // Concrete shelf, are counted stock (concrete-division.cjs): the plan
+        // flags exactly those, and only for that destination.
+        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk && !concreteDivision.seatedIntentTrusted(intent, dest)) {
           counts.errors.push(`untrusted cell: refused ${source}→${dest} for ${pid}/${sizeKey}`);
           continue;
         }
@@ -1043,7 +1050,9 @@ async function runScan() {
     }
 
     // ── exceptions snapshot + hourly confidence ──────────────────────────────
-    counts.exceptions = Object.values(plan.exceptions).reduce((t, e) => t + e.count, 0);
+    // The division policy audit is a check, not an exception queue: left out
+    // so this run-record number means what it always meant.
+    counts.exceptions = Object.entries(plan.exceptions).reduce((t, [k, e]) => (k === "divisionPolicy" ? t : t + e.count), 0);
     // Plan-side resize suppression (engine stats) — surfaced through the SAME
     // counts object as resizeDropped so both halves of the resize pipeline are
     // visible on one run record, present only when non-zero.

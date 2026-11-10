@@ -79,7 +79,7 @@ function shopHubFor(loc, ctx = {}) {
   const hub = (ctx.routes || {})[loc];
   if (hub) return hub !== CENTRAL ? hub : null;
   if (!registryShop(loc, ctx.routing) || typeof ctx.routing.sourceFor !== "function") return null;
-  const regHub = ctx.routing.sourceFor(loc, ctx.product, ctx.pid);
+  const regHub = ctx.routing.sourceFor(loc, ctx.product, ctx.pid, ctx.size);
   return regHub && regHub !== CENTRAL ? regHub : null;
 }
 
@@ -92,11 +92,13 @@ function shopHubFor(loc, ctx = {}) {
 // with `product`/`pid`, a Central source is allowed exactly when the engine's
 // own routing answers Central for that product; asked without them, the
 // predicate keeps its old meaning ("a shop ← Central row").
-function forbiddenShopSource({ dest, source, routes, locations, routing, product, pid } = {}) {
+// `size` (optional): the Concrete division answers Central per size while the
+// Hub 3 keep is off (concrete-division.cjs hub3ServesSize).
+function forbiddenShopSource({ dest, source, routes, locations, routing, product, pid, size } = {}) {
   if (source !== CENTRAL) return false;
   if ((product !== undefined || pid !== undefined) && routing && typeof routing.sourceFor === "function"
       && routing.centralFed instanceof Set && routing.centralFed.has(dest)
-      && routing.sourceFor(dest, product, pid) === CENTRAL) return false;
+      && routing.sourceFor(dest, product, pid, size) === CENTRAL) return false;
   return isShopLoc(dest, { routes, locations, routing });
 }
 
@@ -184,7 +186,7 @@ function requestUntouched(rr, nowMs = Date.now()) {
 // `snapshot` is the engine's: { stock, openIndex, heldLines, refillRequests }.
 // `routing` + `product` (optional): the engine's routing and the product
 // record, for a shop the registry routes — see the header.
-function shopCentralWithdrawal({ dest, pid, entry, rr, inFlight, routes, locations, routing, product, snapshot = {}, nowMs = Date.now() } = {}) {
+function shopCentralWithdrawal({ dest, pid, entry, rr, inFlight, routes, locations, routing, product, size, snapshot = {}, nowMs = Date.now() } = {}) {
   if (!entry || !rr) return null;
   // No createdAt → "prior" cannot be judged: every seed and lock would read as
   // before the request and a legitimate first batch would be withdrawn. Leave
@@ -193,7 +195,7 @@ function shopCentralWithdrawal({ dest, pid, entry, rr, inFlight, routes, locatio
   const source = entry.source || (routes || {})[dest];
   if (!forbiddenShopSource({ dest, source, routes, locations, routing })) return null;
   if (rr.status !== "open" || !requestUntouched(rr, nowMs) || inFlight) return null;
-  const hub = shopHubFor(dest, { routes, locations, routing, product, pid });
+  const hub = shopHubFor(dest, { routes, locations, routing, product, pid, size });
   if (!hub) return null;   // a shop with no hub has nowhere else to go — the route itself is refused at intent time
   const { stock = {}, openIndex = {}, heldLines = {}, refillRequests = {} } = snapshot;
   const hubOpenRequests = [];

@@ -108,6 +108,18 @@ function hub3PresenceIndex({ hub3Stock, hub3Locks, hub3Held, refillRequests } = 
   return present;
 }
 
+// Is this product SEATED at a division shop? (A seat is the arming act there.)
+function isSeatedAtShop(division, dest, pid) {
+  return !!division && DIVISION_SHOPS.includes(dest) && divisionIsObj(division.seats?.[dest]?.[pid]);
+}
+
+// Does a division shop carry this product: seated, or a cell in the view?
+function divisionShopCarries(division, dest, pid, stockView) {
+  if (isSeatedAtShop(division, dest, pid)) return true;
+  const node = stockView?.[dest]?.[pid];
+  return !!node && typeof node === "object" && Object.keys(node).length > 0;
+}
+
 // ── WHAT THE ENGINE ASKS, CELL BY CELL ───────────────────────────────────────
 // `division` is what divisionContext built for this scan. Returns undefined
 // ("not the division's business — carry on down the engine's own order"), null
@@ -126,24 +138,82 @@ function divisionTarget(division, dest, pid, size, products, stockView) {
     if (!seats?.[dest]?.[pid]) return null;
     return divisionTargetShape(one ? policy.hub3Keep.oneSize : policy.hub3Keep.perSize);
   }
-  // A shop arms only what it carries in the engine's own (trust-masked) view.
-  const node = stockView?.[dest]?.[pid];
-  if (!node || typeof node !== "object" || Object.keys(node).length === 0) return null;
+  // A shop arms what is SEATED there (Junid, 10 Nov 2026: seating, not the
+  // trust mask, decides — a till-deducted shop shelf is counted stock), or,
+  // with no seat, what it carries in the engine's own (trust-masked) view.
+  if (!divisionShopCarries(division, dest, pid, stockView)) return null;
   if (hub3Present.has(pid)) {
     const owner = seats?.[DIVISION_HUB]?.[pid]?.owner;
     if (owner && owner !== dest) return null;
-    if (!policy.fromHub3) return null;
-    return divisionTargetShape(one ? policy.fromHub3.oneSize : policy.fromHub3.perSize, policy.fromHub3.askAt);
+    if (hub3ServesSize(division, pid, key)) {
+      if (!policy.fromHub3) return null;
+      return divisionTargetShape(one ? policy.fromHub3.oneSize : policy.fromHub3.perSize, policy.fromHub3.askAt);
+    }
   }
   if (!policy.shopOnly) return null;
   return divisionTargetShape(one ? policy.shopOnly.oneSize : policy.shopOnly.perSize);
 }
 
-// Where a shop's non-sneaker refill comes from: Hub 3 once Hub 3 has held it,
-// else Central. undefined for anything else.
-function divisionSourceFor(division, dest, pid, product, central) {
+// ── NO DEADLOCK WHILE HUB 3 CLOTHING IS OFF (Junid, 10 Nov 2026) ─────────────
+// With the Hub 3 non-sneaker keep OFF nothing ever refills Hub 3's clothing, so
+// "Hub 3 has held it, so the shop asks Hub 3" would starve a size Hub 3 has run
+// out of. While the keep is off the exists-at-Hub-3 rule applies only to a size
+// Hub 3 actually holds (a cell with qty > 0 that Hub 3 can supply from — its
+// COUNTED view: an uncounted Hub 3 cell is no source the engine will ever pick
+// from, so routing a shop to it would park the shop until someone counts it);
+// every other size the owning shop asks Central for, under its own keep. With the keep ON it is Hub 3 for every
+// size, as before. `division.hub3Stock` is Hub 3's raw stock node; absent, the
+// answer is "Hub 3 serves" (the older rule — never a guess the other way).
+// A size with units already ON THEIR WAY into Hub 3 (`division.hub3Inbound`:
+// a Solve's first batch, an engine lock, a held box) counts as held: the shop
+// waits for that box rather than pulling a second one from Central.
+const divisionSizeKey = (size) => {
+  const raw = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size).trim();
+  return raw.replace(/[.#$/[\]\s]/g, "_");
+};
+function hub3HoldsSize(division, pid, size) {
+  const enc = divisionSizeKey(size);
+  if (division?.hub3Inbound && typeof division.hub3Inbound.has === "function" && division.hub3Inbound.has(`${pid}|${enc}`)) return true;
+  const node = division?.hub3Stock?.[pid];
+  if (!divisionIsObj(node)) return false;
+  const raw = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size).trim();
+  return [raw, enc].some((k) => divisionIsObj(node[k]) && (Number(node[k].qty) || 0) > 0);
+}
+
+// Units on their way into Hub 3, per "<pid>|<sizeKey>": open engine locks, open
+// requests into Hub 3, and held boxes (the hold lane). A lock or request older
+// than `maxAgeMs` (the engine's staleIntentHours) no longer counts: a box that
+// never came must not hold the shop's size forever. Held boxes are physically
+// on the way and always count. No `nowMs` → no age bound.
+function hub3InboundIndex({ hub3Locks, hub3Held, refillRequests, nowMs = null, maxAgeMs = 48 * 3600e3 } = {}) {
+  const out = new Set();
+  const fresh = (iso) => nowMs == null || (Number.isFinite(Date.parse(iso)) && nowMs - Date.parse(iso) <= maxAgeMs);
+  for (const [pid, bySize] of Object.entries(hub3Locks || {})) {
+    for (const [k, lock] of Object.entries(divisionIsObj(bySize) ? bySize : {})) if (lock && fresh(lock.createdAt)) out.add(`${pid}|${k}`);
+  }
+  for (const line of Object.values(hub3Held || {})) {
+    if (line && line.productId) out.add(`${line.productId}|${line.sizeKey != null ? String(line.sizeKey) : divisionSizeKey(line.size)}`);
+  }
+  for (const r of Object.values(refillRequests || {})) {
+    if (r && r.status === "open" && !r.shadow && r.requestingLocation === DIVISION_HUB && r.productId && fresh(r.createdAt)) out.add(`${r.productId}|${divisionSizeKey(r.size)}`);
+  }
+  return out;
+}
+function hub3ServesSize(division, pid, size) {
+  if (!division || !division.hub3Present.has(pid)) return false;
+  if (division.policy?.hub3Keep?.on) return true;
+  if (!division.hub3Stock) return true;
+  return hub3HoldsSize(division, pid, size);
+}
+
+// Where a shop's non-sneaker refill comes from: Hub 3 once Hub 3 has held it
+// (per size while the Hub 3 keep is off — hub3ServesSize), else Central.
+// undefined for anything else. Asked with no size, the product-level answer.
+function divisionSourceFor(division, dest, pid, product, central, size) {
   if (!division || !DIVISION_SHOPS.includes(dest) || !product || isDivisionFootwear(product)) return undefined;
-  return division.hub3Present.has(pid) ? DIVISION_HUB : central;
+  if (!division.hub3Present.has(pid)) return central;
+  if (size === undefined) return DIVISION_HUB;
+  return hub3ServesSize(division, pid, size) ? DIVISION_HUB : central;
 }
 
 // The non-sneaker products the division manages at a destination this scan.
@@ -153,11 +223,9 @@ function divisionManagedPids(division, dest, stockView, products) {
     if (!division.policy.hub3Keep || !division.policy.hub3Keep.on) return [];
     return Object.keys(division.seats?.[dest] || {}).filter((pid) => products?.[pid] && !isDivisionFootwear(products[pid]));
   }
-  return Object.keys(stockView?.[dest] || {}).filter((pid) => {
-    if (pid === "_meta" || !products?.[pid] || isDivisionFootwear(products[pid])) return false;
-    const n = stockView[dest][pid];
-    return !!n && typeof n === "object" && Object.keys(n).length > 0;
-  });
+  const pids = new Set([...Object.keys(stockView?.[dest] || {}), ...Object.keys(division.seats?.[dest] || {})]);
+  return [...pids].filter((pid) => pid !== "_meta" && !!products?.[pid] && !isDivisionFootwear(products[pid])
+    && divisionShopCarries(division, dest, pid, stockView));
 }
 
 // ── HUB + SHOP OF A SOLVE ────────────────────────────────────────────────────
@@ -194,63 +262,134 @@ function marathonSolveRefusal(hub) {
 // ── SERVER ONLY ──────────────────────────────────────────────────────────────
 
 // One scan's context, or null when the key is off.
-function divisionContext({ config, rawStock, seats, openIndex, heldLines, refillRequests }) {
+// `hub3View` (optional): Hub 3's COUNTED stock (the trust-masked node) — what
+// "Hub 3 holds this size" is judged on; absent, the raw node. `nowMs` +
+// `staleIntentHours` bound how long an inbound box holds a size.
+function divisionContext({ config, rawStock, seats, openIndex, heldLines, refillRequests, hub3View, nowMs = null }) {
   const policy = concreteDivisionPolicy(config);
   if (!policy) return null;
   const hub3Present = hub3PresenceIndex({
     hub3Stock: rawStock?.[DIVISION_HUB], hub3Locks: openIndex?.[DIVISION_HUB], hub3Held: heldLines?.[DIVISION_HUB], refillRequests,
   });
-  return { policy, seats: seats || {}, hub3Present };
+  const staleH = Number(config?.staleIntentHours);
+  const hub3Inbound = hub3InboundIndex({ hub3Locks: openIndex?.[DIVISION_HUB], hub3Held: heldLines?.[DIVISION_HUB], refillRequests, nowMs, maxAgeMs: (Number.isFinite(staleH) && staleH > 0 ? staleH : 48) * 3600e3 });
+  return { policy, seats: seats || {}, hub3Present, hub3Stock: (hub3View !== undefined ? hub3View : rawStock?.[DIVISION_HUB]) || {}, hub3Inbound };
 }
 
 // Movement types that take units OUT of a location by a person's move. A sale,
 // a count or a write-off is not one: those leave the product seated.
 const MOVED_OUT_TYPES = new Set(["transfer_out", "transfer"]);
 
+// SEATING COVERS SOLD-OUT PRODUCTS (Junid, 10 Nov 2026). Besides a cell holding
+// units, a product is seated by an existing cell at zero, or by any sale,
+// arrival, return or transfer at the location since this date.
+const SEAT_HISTORY_SINCE = "2026-10-30T00:00:00.000Z";
+const SEAT_RELEASES_PATH = "refill_engine/seatReleases";
+const SEAT_PID_BAD = /[.#$/[\]\s]/;
+// Did this movement happen AT this location, in a way that seats a product?
+function seatsBy(m, loc) {
+  if (!m || String(m.ts) < SEAT_HISTORY_SINCE) return false;
+  if (m.type === "sold") return m.from === loc;
+  if (m.type === "received" || m.type === "return") return m.to === loc;
+  if (MOVED_OUT_TYPES.has(m.type)) return m.to === loc || m.from === loc;
+  return false;
+}
+
 // ── WHAT THE SCAN WRITES ABOUT SEATS ─────────────────────────────────────────
-// Pure. Returns { effective, writes, seated, released }:
-//   effective  the seats the plan should read (written ones plus this scan's)
-//   writes     { "<loc>/<pid>": seat | null } under SEATS_PATH
-function planSeats({ rawStock, seats, movements, nowIso }) {
+// Pure. Returns { effective, writes, releaseWrites, seated, released }:
+//   effective      the seats the plan should read (written ones plus this scan's)
+//   writes         { "<loc>/<pid>": seat | null } under SEATS_PATH
+//   releaseWrites  { "<loc>/<pid>": tombstone | null } under SEAT_RELEASES_PATH
+// A RELEASE LEAVES A TOMBSTONE. A product moved out keeps its zero cells (cells
+// are never deleted), and a zero cell now seats — so without a record of the
+// release it would be re-seated the moment the transfer aged out of the ledger
+// window. The tombstone holds until something NEW happens to the product there
+// (units arrive, a sale, a movement newer than the release); then it is seated
+// again and the tombstone goes. `releases` is what SEAT_RELEASES_PATH holds.
+// `products` (optional): a movement naming a product that no longer exists
+// seats nothing. A product id that is not a valid RTDB key is never written
+// (one bad key would fail the whole multi-path update, every scan).
+//
+// MOVED OUT BEFORE ANY TOMBSTONE EXISTED. A product moved out before this code
+// (or more than the ledger window ago) has no tombstone. While its transfer is
+// in the window movedOut() says so; once it ages out the cell itself still does:
+// every cell left is empty and stamped by a person's transfer out (lastType
+// "transfer_out", not a refill "rrf_" movement). Either way the scan writes the
+// tombstone then, so the answer never depends on the ledger window again.
+function planSeats({ rawStock, seats, movements, nowIso, releases = {}, products = null }) {
   const effective = {};
   const writes = {};
+  const releaseWrites = {};
   let seated = 0, released = 0;
   const lastMove = new Map();
+  const lastSeating = new Map();
   for (const m of movements || []) {
     if (!m || !m.productId || !m.ts) continue;
     for (const loc of [m.from, m.to]) {
       if (!DIVISION_LOCATIONS.includes(loc)) continue;
       const k = `${loc}|${m.productId}`;
       if (!lastMove.has(k) || String(m.ts) >= String(lastMove.get(k).ts)) lastMove.set(k, m);
+      if (seatsBy(m, loc) && (!lastSeating.has(k) || String(m.ts) > lastSeating.get(k))) lastSeating.set(k, String(m.ts));
     }
   }
   const held = (node) => !!node && typeof node === "object" && Object.values(node).some((c) => c && typeof c === "object" && (Number(c.qty) || 0) > 0);
+  const hasCell = (node) => !!node && typeof node === "object" && Object.values(node).some((c) => c && typeof c === "object");
+  // Nothing left here, and the newest thing that happened to this product here
+  // was a person's transfer away (not a refill or order leaving).
+  const movedOut = (loc, pid, node) => {
+    if (held(node)) return null;
+    const m = lastMove.get(`${loc}|${pid}`);
+    if (!m || m.from !== loc || !MOVED_OUT_TYPES.has(m.type)) return null;
+    if (m.link && (m.link.refillId || m.link.orderId)) return null;
+    return m;
+  };
+  // The cells' own stamp, when the ledger no longer covers the move.
+  const cellsSayMovedOut = (node) => {
+    if (held(node)) return false;
+    const cells = Object.values(node || {}).filter((c) => c && typeof c === "object");
+    return cells.length > 0 && cells.every((c) => MOVED_OUT_TYPES.has(c.lastType) && !String(c.mv || "").startsWith("rrf_"));
+  };
   for (const loc of DIVISION_LOCATIONS) {
     const here = { ...(divisionIsObj(seats?.[loc]) ? seats[loc] : {}) };
     const node = rawStock?.[loc] || {};
-    for (const pid of Object.keys(node)) {
-      if (pid === "_meta" || here[pid] || !held(node[pid])) continue;
-      here[pid] = { via: "stock", at: nowIso };
+    const gone = divisionIsObj(releases?.[loc]) ? releases[loc] : {};
+    const candidates = new Set(Object.keys(node));
+    for (const k of lastSeating.keys()) if (k.startsWith(`${loc}|`)) candidates.add(k.slice(loc.length + 1));
+    for (const pid of candidates) {
+      if (pid === "_meta" || here[pid] || SEAT_PID_BAD.test(pid)) continue;
+      if (products && !products[pid]) continue;
+      const units = held(node[pid]);
+      const activity = lastSeating.get(`${loc}|${pid}`) || null;
+      if (!units && !hasCell(node[pid]) && !activity) continue;
+      if (!units) {
+        const out = movedOut(loc, pid, node[pid]);
+        const stamped = !out && !activity && cellsSayMovedOut(node[pid]);
+        if (out || stamped) {
+          if (!divisionIsObj(gone[pid])) releaseWrites[`${loc}/${pid}`] = { at: nowIso, moveTs: out ? String(out.ts) : null };
+          continue;
+        }
+        // Released before, and nothing has happened here since.
+        const tomb = gone[pid];
+        if (divisionIsObj(tomb) && !(activity && activity > String(tomb.at || ""))) continue;
+      }
+      here[pid] = { via: units ? "stock" : hasCell(node[pid]) ? "cell" : "history", at: nowIso };
       writes[`${loc}/${pid}`] = here[pid];
+      if (gone[pid]) releaseWrites[`${loc}/${pid}`] = null;
       seated++;
     }
-    // Moved out: nothing left here, and the newest thing that happened to this
-    // product here was a person's transfer away.
     for (const pid of Object.keys(here)) {
-      if (held(node[pid])) continue;
-      const m = lastMove.get(`${loc}|${pid}`);
-      if (!m || m.from !== loc || !MOVED_OUT_TYPES.has(m.type)) continue;
-      // A refill or order leaving is the location doing its job, and a Solve
-      // newer than the move means it was brought back: neither releases it.
-      if (m.link && (m.link.refillId || m.link.orderId)) continue;
+      const m = movedOut(loc, pid, node[pid]);
+      if (!m) continue;
+      // A Solve newer than the move means it was brought back.
       if (String(m.ts) <= String(here[pid]?.at || "")) continue;
       delete here[pid];
       writes[`${loc}/${pid}`] = null;
+      releaseWrites[`${loc}/${pid}`] = { at: nowIso, moveTs: String(m.ts) };
       released++;
     }
     effective[loc] = here;
   }
-  return { effective, writes, seated, released };
+  return { effective, writes, releaseWrites, seated, released };
 }
 
 // ── WHAT THE DIVISION KEEPS — the Engine Policy card's count ─────────────────
@@ -277,6 +416,83 @@ function divisionKeepCounts({ division, stockView, products }) {
   const seatedNonSneakers = division ? Object.keys(division.seats?.[DIVISION_HUB] || {}).filter((pid) => products?.[pid] && !isDivisionFootwear(products[pid])).length : 0;
   out[DIVISION_HUB] = { ...out[DIVISION_HUB], on: !!division?.policy?.hub3Keep?.on, seatedNonSneakers };
   return out;
+}
+
+// ── THE SCAN'S WRITE-TIME TRUST CHECK ────────────────────────────────────────
+// At a "solved products only" destination the scan refuses an intent for an
+// untrusted cell. A seated cell is counted stock in the division: Hub 3's seated
+// sneakers, and a seated non-sneaker on a Pine or Concrete shelf. The plan flags
+// exactly those (seatedHub3 / seatedShop), and only for that destination.
+function seatedIntentTrusted(intent, dest) {
+  if (!intent) return false;
+  if (intent.seatedHub3 === true && dest === DIVISION_HUB) return true;
+  return intent.seatedShop === true && DIVISION_SHOPS.includes(dest);
+}
+
+// ── THE POLICY AUDIT — "Concrete division policy" on Health (Junid, 10 Nov 2026)
+// What Junid's policy says a seated product should keep, per size, at Pine,
+// Concrete and Hub 3 — computed from the policy key alone, never from the
+// engine's answer, so the audit can catch the engine disagreeing:
+//   shop, non-sneaker, size Hub 3 serves (hub3ServesSize) → fromHub3 (1 / 5, ask at 0)
+//   shop, non-sneaker, otherwise                          → shopOnly (2 / 5)
+//   shop, non-sneaker owned at Hub 3 by the OTHER shop    → nothing
+//   shop, footwear                                        → nothing (Hub 3 keeps it)
+//   Hub 3, footwear                                       → 3 per size, ask at 1
+//   Hub 3, non-sneaker                                    → hub3Keep (2 / 10) while ON, else nothing
+// Returns { target, reorderPoint } or null (no keep).
+// JUNID'S NUMBERS, pinned here and NOT read from the config key: a key edited
+// away from them shows as wrong_number (config drift), never as "correct".
+// Only the Hub 3 clothing switch (on/off) is read from the key — that is the
+// live decision, and it is his to flip.
+const HUB3_SNEAKER_KEEP = Object.freeze({ target: 3, reorderPoint: 1 });
+const JUNID_DIVISION_KEEPS = Object.freeze({
+  shopOnly: Object.freeze({ perSize: 2, oneSize: 5, askAt: null }),
+  fromHub3: Object.freeze({ perSize: 1, oneSize: 5, askAt: 0 }),
+  hub3Keep: Object.freeze({ perSize: 2, oneSize: 10, askAt: null }),
+});
+function divisionExpectedTarget(division, loc, pid, size, product) {
+  if (!division || !isDivisionLocation(loc) || !product || product.deactivated) return null;
+  const footwear = isDivisionFootwear(product);
+  const one = isDivisionOneSize(product);
+  const keep = (k) => ({ target: one ? JUNID_DIVISION_KEEPS[k].oneSize : JUNID_DIVISION_KEEPS[k].perSize, reorderPoint: JUNID_DIVISION_KEEPS[k].askAt });
+  if (loc === DIVISION_HUB) {
+    if (footwear) return { ...HUB3_SNEAKER_KEEP };
+    return division.policy?.hub3Keep?.on ? keep("hub3Keep") : null;
+  }
+  if (footwear) return null;
+  if (division.hub3Present.has(pid)) {
+    const owner = division.seats?.[DIVISION_HUB]?.[pid]?.owner;
+    if (owner && owner !== loc) return null;
+    if (hub3ServesSize(division, pid, size)) return keep("fromHub3");
+  }
+  return keep("shopOnly");
+}
+
+// One size's verdict. `effective` is the engine's own armed answer for the cell
+// (resolveTarget behind the trust check, null when nothing arms it); `deadSize`
+// = no units of this size anywhere (the footwear policy's dead-size rule
+// answers 0 there on purpose). Returns { ok, reason }.
+//   switched_off  every explicit row is 0 — a Seating-tab switch-off; it wins
+//   dead_size     footwear size with no units anywhere — the policy's own 0
+//   missing       the policy keeps it, nothing arms it
+//   unexpected    the policy keeps nothing, something arms it
+//   explicit_row  an explicit /stock_targets row overrides the policy
+//   wrong_number  armed, but not with the policy's numbers
+//   unrouted      (set by the engine) the policy keeps it, but no live source serves the size
+function divisionAuditVerdict({ expected, effective, explicitZero = false, deadSize = false }) {
+  if (explicitZero) return { ok: true, reason: "switched_off" };
+  const eff = effective && Number(effective.target) > 0 ? effective : null;
+  if (!expected) return eff ? { ok: false, reason: eff.source === "explicit" ? "explicit_row" : "unexpected" } : { ok: true, reason: "none" };
+  if (!eff) {
+    if (deadSize && effective && Number(effective.target) === 0) return { ok: true, reason: "dead_size" };
+    return { ok: false, reason: "missing" };
+  }
+  const rpE = expected.reorderPoint == null ? null : expected.reorderPoint;
+  const rpA = eff.reorderPoint == null ? null : eff.reorderPoint;
+  const differs = eff.target !== expected.target || rpE !== rpA;
+  // An explicit row is always named as the override it is, never "wrong numbers".
+  if (differs) return { ok: false, reason: eff.source === "explicit" ? "explicit_row" : "wrong_number" };
+  return { ok: true, reason: "kept" };
 }
 
 // ── THE SOLVE'S SEAT — the seatDivisionSolve callable ────────────────────────
@@ -329,6 +545,7 @@ module.exports = {
   applyDivisionSeat, DivisionSeatError,
   CONCRETE_DIVISION_KEY, DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, SEATS_PATH, DIVISION_MAX, DIVISION_FOOTWEAR_KEYS,
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
-  divisionTargetShape, hub3PresenceIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
+  divisionTargetShape, hub3PresenceIndex, isSeatedAtShop, divisionShopCarries, hub3HoldsSize, hub3ServesSize, hub3InboundIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
+  SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy, seatedIntentTrusted, HUB3_SNEAKER_KEEP, JUNID_DIVISION_KEEPS, divisionExpectedTarget, divisionAuditVerdict,
 };

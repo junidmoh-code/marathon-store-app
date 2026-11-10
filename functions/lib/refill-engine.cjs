@@ -34,7 +34,7 @@ const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_C
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
 const { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } = require("./central-fed.cjs");
-const { DIVISION_HUB, DIVISION_SHOPS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear } = require("./concrete-division.cjs");
+const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict } = require("./concrete-division.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -782,12 +782,17 @@ function networkRouting(config, network, division = null) {
     registryRouted.add(s.id);
   }
   const memo = new Map();
-  const sourceFor = (dest, product, pid) => {
+  // `size` (optional): the Concrete division routes a shop's non-sneaker per
+  // SIZE while the Hub 3 keep is off (concrete-division.cjs hub3ServesSize).
+  // Every other answer is per product, whatever size is asked.
+  const sourceFor = (dest, product, pid, size) => {
     const fixed = routes[dest];
     if (fixed !== undefined || !stores.has(dest)) return fixed;
-    const k = `${dest}|${pid}`;
+    // undefined (the product-level answer) and "" (a one-size cell) are
+    // different questions: never one memo key.
+    const k = `${dest}|${pid}|${size === undefined ? "\u0000" : `=${size}`}`;
     if (memo.has(k)) return memo.get(k);
-    const dvSrc = divisionSourceFor(division, dest, pid, product, central);
+    const dvSrc = divisionSourceFor(division, dest, pid, product, central, size);
     if (dvSrc !== undefined) {
       const answer = dvSrc === central ? (centralFed.has(dest) ? central : undefined) : (storeHubs.get(dest).includes(dvSrc) ? dvSrc : undefined);
       memo.set(k, answer);
@@ -894,7 +899,9 @@ function computeRefillPlan(snapshot) {
   // SNEAKERS ARE COUNTED STOCK, so they read through the trust mask, for Hub 3
   // as a destination ONLY. The masked `stock` every other reader holds is
   // untouched: Marathon's dead-size test and pools must never see these cells.
-  const division = divisionContext({ config: rawConfig, rawStock, seats: snapshot.seats, openIndex: snapshot.openIndex, heldLines: snapshot.heldLines, refillRequests: snapshot.refillRequests });
+  // "Hub 3 holds this size" is judged on Hub 3's COUNTED view (`stock`, masked),
+  // the same view the source gate supplies from (concrete-division.cjs).
+  const division = divisionContext({ config: rawConfig, rawStock, seats: snapshot.seats, openIndex: snapshot.openIndex, heldLines: snapshot.heldLines, refillRequests: snapshot.refillRequests, hub3View: stock[DIVISION_HUB], nowMs });
   const seatedHub3Footwear = new Set();
   let seatedStock = stock;
   if (division) {
@@ -907,13 +914,26 @@ function computeRefillPlan(snapshot) {
     for (const [pid, node] of Object.entries(stock[DIVISION_HUB] || {})) if (!isDivisionFootwear(products?.[pid])) hub3View[pid] = node;
     for (const pid of seatedHub3Footwear) hub3View[pid] = rawStock[DIVISION_HUB][pid];
     seatedStock = { ...stock, [DIVISION_HUB]: hub3View };
+    // SEATED SHOP SHELVES ARE COUNTED STOCK TOO (Junid, 10 Nov 2026). At Pine
+    // and Concrete a seated non-sneaker reads its whole shelf (the till deducts
+    // every sale there), for that shop as a destination ONLY — the masked
+    // `stock` every other reader holds is untouched.
+    for (const shop of DIVISION_SHOPS) {
+      const view = { ...(stock[shop] || {}) };
+      for (const pid of Object.keys(division.seats[shop] || {})) {
+        if (isDivisionFootwear(products?.[pid])) continue;
+        if (rawStock[shop]?.[pid]) view[pid] = rawStock[shop][pid]; else delete view[pid];
+      }
+      seatedStock[shop] = view;
+    }
   }
   const isSeatedHub3 = (dest, pid) => dest === DIVISION_HUB && seatedHub3Footwear.has(pid);
-  const viewOf = (dest, pid) => (division && dest === DIVISION_HUB && isDivisionFootwear(products?.[pid]) ? seatedStock : stock);
-  const trustedCell = (loc, pid, sizeKey) => isSeatedHub3(loc, pid) || maskTrustedCell(loc, pid, sizeKey);
+  const isSeatedShop = (dest, pid) => !!division && isSeatedAtShop(division, dest, pid) && !isDivisionFootwear(products?.[pid]);
+  const viewOf = (dest, pid) => (division && ((dest === DIVISION_HUB && isDivisionFootwear(products?.[pid])) || isSeatedShop(dest, pid)) ? seatedStock : stock);
+  const trustedCell = (loc, pid, sizeKey) => isSeatedHub3(loc, pid) || isSeatedShop(loc, pid) || maskTrustedCell(loc, pid, sizeKey);
   const routing = networkRouting(rawConfig, network, division);
   const { routes, withheld: routesWithheld, dests } = routing;
-  const srcOf = (dest, pid) => routing.sourceFor(dest, products?.[pid], pid);
+  const srcOf = (dest, pid, size) => routing.sourceFor(dest, products?.[pid], pid, size);
   const modeOf = routing.modeOf;
   // POLICY TEMPLATES: a location with no numbers of its own follows the
   // location the registry says it is like (lib/policy-template.cjs). Applied
@@ -1131,14 +1151,14 @@ function computeRefillPlan(snapshot) {
   const passThroughNeed = (hub, pid, sizeKey, size, entry) => {
     const shops = Array.isArray(entry.forDests) && entry.forDests.length
       ? entry.forDests
-      : dests.filter((d) => srcOf(d, pid) === hub);
+      : dests.filter((d) => srcOf(d, pid, size) === hub);
     let need = 0;
     for (const shop of shops) {
-      if (srcOf(shop, pid) !== hub) continue;
+      if (srcOf(shop, pid, size) !== hub) continue;
       if (!trustedCell(shop, pid, sizeKey)) continue;   // an untrusted shop cell is owed nothing
       const ts = resolveTarget(ctx, shop, pid, size);
       if (!ts || ts.target <= 0) continue;
-      need += Math.max(ts.target - avail(cellQty(stock, shop, pid, size)) - (inbound.get(`${shop}|${pid}|${sizeKey}`) || 0), 0);
+      need += Math.max(ts.target - avail(cellQty(viewOf(shop, pid), shop, pid, size)) - (inbound.get(`${shop}|${pid}|${sizeKey}`) || 0), 0);
     }
     if (entry.passThrough !== "disputed") {
       need -= Math.max(avail(cellQty(stock, hub, pid, size)) - (sourceReserved.get(`${hub}|${pid}|${sizeKey}`) || 0), 0);
@@ -1246,7 +1266,7 @@ function computeRefillPlan(snapshot) {
         // A lock-less shop ← Central row gets the same judgement in the
         // lock-less pass below (satisfiedClosures).
         const hubServes = shopCentralWithdrawal({
-          dest, pid, entry, rr, inFlight, routes, locations, routing, product: products?.[pid],
+          dest, pid, entry, rr, inFlight, routes, locations, routing, product: products?.[pid], size: order?.size ?? rr?.size ?? (sizeKey === "_" ? "" : sizeKey),
           snapshot: { stock: division && DIVISION_SHOPS.includes(dest) ? rawStock : stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
@@ -1481,7 +1501,7 @@ function computeRefillPlan(snapshot) {
       if (locklessIds.has(id)) {
         const hubServes = shopCentralWithdrawal({
           dest, pid: r.productId, entry: { source: r.createdFrom?.source || r.source }, rr: r,
-          inFlight: movedRefillIds.has(String(id)), routes, locations, routing, product: products?.[r.productId],
+          inFlight: movedRefillIds.has(String(id)), routes, locations, routing, product: products?.[r.productId], size: r.size,
           snapshot: { stock: division && DIVISION_SHOPS.includes(dest) ? rawStock : stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
@@ -1507,13 +1527,13 @@ function computeRefillPlan(snapshot) {
       // a future route change can never turn "not loaded" into "not needed".
       if (!Object.prototype.hasOwnProperty.call(stock, dest)) continue;
       const k = `${dest}|${r.productId}|${sizeKey}`;
-      const free = avail(cellQty(stock, dest, r.productId, r.size)) - (claimed.get(k) || 0);
+      const free = avail(cellQty(viewOf(dest, r.productId), dest, r.productId, r.size)) - (claimed.get(k) || 0);
       const want = Math.max(num(r.qty) || 1, 1);
       if (free < want) continue;
       claimed.set(k, (claimed.get(k) || 0) + want);
       satisfiedClosures.push({
         refillId: id, dest, pid: r.productId, sizeKey, size: r.size,
-        qty: want, have: avail(cellQty(stock, dest, r.productId, r.size)),
+        qty: want, have: avail(cellQty(viewOf(dest, r.productId), dest, r.productId, r.size)),
         rrStatus: "cancelled", cancelReason: "already_in_stock",
       });
     }
@@ -1984,7 +2004,7 @@ function computeRefillPlan(snapshot) {
   // existing label).
   const raisePassThrough = ({ shop, hub, pid, size, sizeKey, want, kind, high }) => {
     const upstream = routes[hub];
-    if (!upstream || !srcOf(shop, pid) || srcOf(shop, pid) !== hub) return null;
+    if (!upstream || !srcOf(shop, pid, size) || srcOf(shop, pid, size) !== hub) return null;
     // SNEAKERS ARE SALES-ONLY at the hubs (owner rule): no automatic
     // Central→hub footwear leg, ever, whatever a shop row says. The shop's
     // existing labels stand.
@@ -2030,8 +2050,10 @@ function computeRefillPlan(snapshot) {
       // The source is per product for a registry-routed store. A product whose
       // back-stock hub is not live (or is not mapped at all) has no leg: the
       // engine neither asks for it nor reports on it.
-      const src = srcOf(dest, pid);
-      if (!src) continue;
+      // A Concrete-division shop's source is a per-SIZE question (below): its
+      // product-level answer must not drop the product before that is asked.
+      const srcAny = srcOf(dest, pid);
+      if (!srcAny && !(division && DIVISION_SHOPS.includes(dest))) continue;
       // Defensive class filter (managedPids already admitted this pid). Footwear
       // is added here for the same reason it is added there: without it a shoe
       // with no explicit row is dropped before resolveTarget is consulted. Still
@@ -2047,6 +2069,10 @@ function computeRefillPlan(snapshot) {
         // A "solved" location arms TRUSTED cells only (maskUntrustedStock).
         if (!trustedCell(dest, pid, sizeKey)) continue;
         const size = rawSize(pid, sizeKey);
+        // Per size: a Concrete-division shop asks Hub 3 only for a size Hub 3
+        // holds while the Hub 3 keep is off. Everyone else: srcAny.
+        const src = srcOf(dest, pid, size);
+        if (!src) continue;
         const t = resolveTarget(ctx, dest, pid, size);
         if (!t || t.target <= 0) continue;
         if (isFootwear(products?.[pid])) footwearManagedCells++; else managedCells++;
@@ -2305,6 +2331,7 @@ function computeRefillPlan(snapshot) {
           dest, source: src, productId: pid, size, sizeKey,
           qty, priority: have < t.minQty ? "high" : "normal", mode,
           ...(isSeatedHub3(dest, pid) ? { seatedHub3: true } : {}),
+          ...(isSeatedShop(dest, pid) ? { seatedShop: true } : {}),
         });
         // Record the retry in history and update the retry state.
         // The "retry" op REPLACES the whole retryState node (the scan writes an
@@ -2428,7 +2455,7 @@ function computeRefillPlan(snapshot) {
   const pausedDests = pausedLocationSet(rawConfig);
   const routedIntents = intents.filter((i) => {
     if (pausedDests.size && pausedDests.has(i.dest)) return false;
-    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations, routing, product: products?.[i.productId], pid: i.productId })) return true;
+    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations, routing, product: products?.[i.productId], pid: i.productId, size: i.size })) return true;
     errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
     return false;
   });
@@ -2536,7 +2563,7 @@ function computeRefillPlan(snapshot) {
     const plannedKeys = keysOf(plannedIntents);
     const computedKeys = keysOf(routedIntents);
     for (const b of belowTarget) {
-      const hub = srcOf(b.loc, b.pid);
+      const hub = srcOf(b.loc, b.pid, b.size);
       const up = hub ? routes[hub] : null;
       if (!up) continue;                                   // a hub, not a shop
       const sk = encodeSizeKey(b.size);
@@ -3029,6 +3056,57 @@ function computeRefillPlan(snapshot) {
   // through its template carries no leg of its own to compare.
   const footwearDrift = footwearPolicyDrift(rawConfig, network);
 
+  // ── CONCRETE DIVISION POLICY AUDIT (Junid, 10 Nov 2026) ─────────────────────
+  // Every product SEATED at Pine, Concrete or Hub 3, every size it is kept in:
+  // what Junid's policy says it should keep (divisionExpectedTarget, from the
+  // policy key alone) against what the engine actually arms (resolveTarget
+  // behind the same trust check the deficit loop applies). Read-only, from
+  // inputs this plan already holds — no read of its own. Null when the
+  // division key is off. Marathon is never looked at.
+  const divisionPolicy = (() => {
+    if (!division) return null;
+    const mismatches = [];
+    const byReason = {};
+    const perLoc = {};
+    for (const loc of DIVISION_LOCATIONS) {
+      const tally = (perLoc[loc] = { products: 0, correct: 0, mismatched: 0, cells: 0, switchedOff: 0 });
+      for (const pid of Object.keys(division.seats[loc] || {})) {
+        const p = products?.[pid];
+        if (!p) continue;
+        const fw = isDivisionFootwear(p);
+        const sizes = fw ? productSizes(products, pid) : divisionSizes(p);
+        if (!sizes.length) continue;
+        tally.products += 1;
+        let bad = 0;
+        for (const s of sizes) {
+          const size = s === "_" ? "" : s;
+          const sk = encodeSizeKey(size);
+          const rows = targets?.[loc]?.[pid];
+          const row = rows?.[sk];
+          const explicitZero = !!(row && typeof row.target === "number" && row.target <= 0);
+          const expected = divisionExpectedTarget(division, loc, pid, size, p);
+          const effective = trustedCell(loc, pid, sk) ? resolveTarget(ctx, loc, pid, size) : null;
+          const deadSize = fw && sizeUnitsAnywhere(viewOf(loc, pid), pid, size) <= 0;
+          // A keep with no route at all (no live source for this size) raises
+          // nothing, whatever it says: that is a mismatch, not "kept".
+          const unrouted = loc !== DIVISION_HUB && !!expected && !explicitZero && !srcOf(loc, pid, size);
+          const v = unrouted ? { ok: false, reason: "unrouted" } : divisionAuditVerdict({ expected, effective, explicitZero, deadSize });
+          tally.cells += 1;
+          if (v.reason === "switched_off") tally.switchedOff += 1;
+          if (v.ok) continue;
+          bad += 1;
+          byReason[v.reason] = (byReason[v.reason] || 0) + 1;
+          mismatches.push({ loc, pid, size, reason: v.reason,
+            expected: expected ? { target: expected.target, reorderPoint: expected.reorderPoint ?? null } : null,
+            effective: effective ? { target: effective.target, reorderPoint: effective.reorderPoint ?? null, source: effective.source || null } : null });
+        }
+        if (bad) tally.mismatched += 1; else tally.correct += 1;
+      }
+    }
+    mismatches.sort((a, b) => a.reason.localeCompare(b.reason) || a.loc.localeCompare(b.loc) || String(a.pid).localeCompare(String(b.pid)) || String(a.size).localeCompare(String(b.size)));
+    return { mismatches, byReason, perLoc };
+  })();
+
   const cap = (arr, n = 300) => ({ count: arr.length, items: uncapped ? arr : arr.slice(0, n) });
   return {
     intents: plannedIntents,
@@ -3081,6 +3159,9 @@ function computeRefillPlan(snapshot) {
       unarmedFootwear: cap(unarmedFootwear, 900),
       unorderableFootwear: cap(unorderableFootwear, 900),
       footwearPolicyDrift: cap(footwearDrift),
+      // The Concrete division policy audit — mismatched cells, capped like
+      // every list; the per-location product tallies ride beside them.
+      ...(divisionPolicy ? { divisionPolicy: { ...cap(divisionPolicy.mismatches), byReason: divisionPolicy.byReason, perLoc: divisionPolicy.perLoc } } : {}),
       shortNotRequested: {
         ...cap(shortNotRequested, 900),
         byReason: tallyBy(shortNotRequested, (r) => r.reason),

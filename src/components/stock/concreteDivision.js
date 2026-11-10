@@ -84,6 +84,18 @@ function hub3PresenceIndex({ hub3Stock, hub3Locks, hub3Held, refillRequests } = 
   return present;
 }
 
+// Is this product SEATED at a division shop? (A seat is the arming act there.)
+function isSeatedAtShop(division, dest, pid) {
+  return !!division && DIVISION_SHOPS.includes(dest) && divisionIsObj(division.seats?.[dest]?.[pid]);
+}
+
+// Does a division shop carry this product: seated, or a cell in the view?
+function divisionShopCarries(division, dest, pid, stockView) {
+  if (isSeatedAtShop(division, dest, pid)) return true;
+  const node = stockView?.[dest]?.[pid];
+  return !!node && typeof node === "object" && Object.keys(node).length > 0;
+}
+
 // ── WHAT THE ENGINE ASKS, CELL BY CELL ───────────────────────────────────────
 // `division` is what divisionContext built for this scan. Returns undefined
 // ("not the division's business — carry on down the engine's own order"), null
@@ -102,24 +114,82 @@ function divisionTarget(division, dest, pid, size, products, stockView) {
     if (!seats?.[dest]?.[pid]) return null;
     return divisionTargetShape(one ? policy.hub3Keep.oneSize : policy.hub3Keep.perSize);
   }
-  // A shop arms only what it carries in the engine's own (trust-masked) view.
-  const node = stockView?.[dest]?.[pid];
-  if (!node || typeof node !== "object" || Object.keys(node).length === 0) return null;
+  // A shop arms what is SEATED there (Junid, 10 Nov 2026: seating, not the
+  // trust mask, decides — a till-deducted shop shelf is counted stock), or,
+  // with no seat, what it carries in the engine's own (trust-masked) view.
+  if (!divisionShopCarries(division, dest, pid, stockView)) return null;
   if (hub3Present.has(pid)) {
     const owner = seats?.[DIVISION_HUB]?.[pid]?.owner;
     if (owner && owner !== dest) return null;
-    if (!policy.fromHub3) return null;
-    return divisionTargetShape(one ? policy.fromHub3.oneSize : policy.fromHub3.perSize, policy.fromHub3.askAt);
+    if (hub3ServesSize(division, pid, key)) {
+      if (!policy.fromHub3) return null;
+      return divisionTargetShape(one ? policy.fromHub3.oneSize : policy.fromHub3.perSize, policy.fromHub3.askAt);
+    }
   }
   if (!policy.shopOnly) return null;
   return divisionTargetShape(one ? policy.shopOnly.oneSize : policy.shopOnly.perSize);
 }
 
-// Where a shop's non-sneaker refill comes from: Hub 3 once Hub 3 has held it,
-// else Central. undefined for anything else.
-function divisionSourceFor(division, dest, pid, product, central) {
+// ── NO DEADLOCK WHILE HUB 3 CLOTHING IS OFF (Junid, 10 Nov 2026) ─────────────
+// With the Hub 3 non-sneaker keep OFF nothing ever refills Hub 3's clothing, so
+// "Hub 3 has held it, so the shop asks Hub 3" would starve a size Hub 3 has run
+// out of. While the keep is off the exists-at-Hub-3 rule applies only to a size
+// Hub 3 actually holds (a cell with qty > 0 that Hub 3 can supply from — its
+// COUNTED view: an uncounted Hub 3 cell is no source the engine will ever pick
+// from, so routing a shop to it would park the shop until someone counts it);
+// every other size the owning shop asks Central for, under its own keep. With the keep ON it is Hub 3 for every
+// size, as before. `division.hub3Stock` is Hub 3's raw stock node; absent, the
+// answer is "Hub 3 serves" (the older rule — never a guess the other way).
+// A size with units already ON THEIR WAY into Hub 3 (`division.hub3Inbound`:
+// a Solve's first batch, an engine lock, a held box) counts as held: the shop
+// waits for that box rather than pulling a second one from Central.
+const divisionSizeKey = (size) => {
+  const raw = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size).trim();
+  return raw.replace(/[.#$/[\]\s]/g, "_");
+};
+function hub3HoldsSize(division, pid, size) {
+  const enc = divisionSizeKey(size);
+  if (division?.hub3Inbound && typeof division.hub3Inbound.has === "function" && division.hub3Inbound.has(`${pid}|${enc}`)) return true;
+  const node = division?.hub3Stock?.[pid];
+  if (!divisionIsObj(node)) return false;
+  const raw = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size).trim();
+  return [raw, enc].some((k) => divisionIsObj(node[k]) && (Number(node[k].qty) || 0) > 0);
+}
+
+// Units on their way into Hub 3, per "<pid>|<sizeKey>": open engine locks, open
+// requests into Hub 3, and held boxes (the hold lane). A lock or request older
+// than `maxAgeMs` (the engine's staleIntentHours) no longer counts: a box that
+// never came must not hold the shop's size forever. Held boxes are physically
+// on the way and always count. No `nowMs` → no age bound.
+function hub3InboundIndex({ hub3Locks, hub3Held, refillRequests, nowMs = null, maxAgeMs = 48 * 3600e3 } = {}) {
+  const out = new Set();
+  const fresh = (iso) => nowMs == null || (Number.isFinite(Date.parse(iso)) && nowMs - Date.parse(iso) <= maxAgeMs);
+  for (const [pid, bySize] of Object.entries(hub3Locks || {})) {
+    for (const [k, lock] of Object.entries(divisionIsObj(bySize) ? bySize : {})) if (lock && fresh(lock.createdAt)) out.add(`${pid}|${k}`);
+  }
+  for (const line of Object.values(hub3Held || {})) {
+    if (line && line.productId) out.add(`${line.productId}|${line.sizeKey != null ? String(line.sizeKey) : divisionSizeKey(line.size)}`);
+  }
+  for (const r of Object.values(refillRequests || {})) {
+    if (r && r.status === "open" && !r.shadow && r.requestingLocation === DIVISION_HUB && r.productId && fresh(r.createdAt)) out.add(`${r.productId}|${divisionSizeKey(r.size)}`);
+  }
+  return out;
+}
+function hub3ServesSize(division, pid, size) {
+  if (!division || !division.hub3Present.has(pid)) return false;
+  if (division.policy?.hub3Keep?.on) return true;
+  if (!division.hub3Stock) return true;
+  return hub3HoldsSize(division, pid, size);
+}
+
+// Where a shop's non-sneaker refill comes from: Hub 3 once Hub 3 has held it
+// (per size while the Hub 3 keep is off — hub3ServesSize), else Central.
+// undefined for anything else. Asked with no size, the product-level answer.
+function divisionSourceFor(division, dest, pid, product, central, size) {
   if (!division || !DIVISION_SHOPS.includes(dest) || !product || isDivisionFootwear(product)) return undefined;
-  return division.hub3Present.has(pid) ? DIVISION_HUB : central;
+  if (!division.hub3Present.has(pid)) return central;
+  if (size === undefined) return DIVISION_HUB;
+  return hub3ServesSize(division, pid, size) ? DIVISION_HUB : central;
 }
 
 // The non-sneaker products the division manages at a destination this scan.
@@ -129,11 +199,9 @@ function divisionManagedPids(division, dest, stockView, products) {
     if (!division.policy.hub3Keep || !division.policy.hub3Keep.on) return [];
     return Object.keys(division.seats?.[dest] || {}).filter((pid) => products?.[pid] && !isDivisionFootwear(products[pid]));
   }
-  return Object.keys(stockView?.[dest] || {}).filter((pid) => {
-    if (pid === "_meta" || !products?.[pid] || isDivisionFootwear(products[pid])) return false;
-    const n = stockView[dest][pid];
-    return !!n && typeof n === "object" && Object.keys(n).length > 0;
-  });
+  const pids = new Set([...Object.keys(stockView?.[dest] || {}), ...Object.keys(division.seats?.[dest] || {})]);
+  return [...pids].filter((pid) => pid !== "_meta" && !!products?.[pid] && !isDivisionFootwear(products[pid])
+    && divisionShopCarries(division, dest, pid, stockView));
 }
 
 // ── HUB + SHOP OF A SOLVE ────────────────────────────────────────────────────
@@ -170,6 +238,6 @@ function marathonSolveRefusal(hub) {
 export {
   CONCRETE_DIVISION_KEY, DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, SEATS_PATH, DIVISION_MAX, DIVISION_FOOTWEAR_KEYS,
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
-  divisionTargetShape, hub3PresenceIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
+  divisionTargetShape, hub3PresenceIndex, isSeatedAtShop, divisionShopCarries, hub3HoldsSize, hub3ServesSize, hub3InboundIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal,
 };

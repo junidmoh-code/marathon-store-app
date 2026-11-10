@@ -121,6 +121,47 @@ for (const seed of [11, 42, 2026]) {
   });
 }
 
+// THE LIVE SHAPE (10 Nov 2026): uncounted shop shelves, sold-out seats, the
+// Hub 3 clothing keep OFF. The seated-shelf lift, the sold-out seats and the
+// per-size Hub 3 rule all fire here; Marathon's slice must still not move.
+function liveShapeDivision(w, seed) {
+  const r = rng(seed + 13);
+  const stock = { ...w.stock, hub3: {}, "marathon-pine": {}, concrete: {} };
+  const seats = { hub3: {}, "marathon-pine": {}, concrete: {} };
+  const u = (qty) => ({ qty, v: 1, mv: "m", lastType: "transfer_in", updatedAt: "2026-11-01T08:00:00.000Z" });
+  const enc = (s) => String(s).replace(/\./g, "_");
+  for (const [pid, p] of Object.entries(w.products)) {
+    if (r() < 0.3) { stock.hub3[pid] = Object.fromEntries(p.sizes.filter(() => r() < 0.5).map((s) => [enc(s), u(Math.floor(r() * 3))])); seats.hub3[pid] = { via: "stock", at: "2026-11-09T10:00:00.000Z" }; }
+    for (const shop of ["marathon-pine", "concrete"]) {
+      if (r() < 0.35) {
+        stock[shop][pid] = Object.fromEntries(p.sizes.filter(() => r() < 0.6).map((s) => [enc(s), u(Math.floor(r() * 3))]));
+        seats[shop][pid] = { via: "stock", at: "2026-11-09T10:00:00.000Z" };
+      } else if (r() < 0.1) seats[shop][pid] = { via: "history", at: "2026-11-09T10:00:00.000Z" };
+    }
+  }
+  return { stock, seats };
+}
+
+for (const seed of [11, 42, 2026]) {
+  test(`the live division shape (uncounted shelves, Hub 3 keep off) leaves the Marathon plan untouched (world ${seed})`, () => {
+    const w = world(seed);
+    // Uncapped on both sides, so the division's lines are actually planned (the
+    // live cap is dealt to Marathon first and can leave Section 1 nothing here).
+    const uncap = (c) => ({ ...c, maxIntentsPerRun: 100000, maxFootwearIntentsPerRun: 100000 });
+    const before = marathonSlice(plan({ config: uncap(clone(CONFIG)), stock: w.stock, products: w.products }));
+    const d = liveShapeDivision(w, seed);
+    const cfg = uncap(DIVISION_CONFIG(CONFIG));
+    cfg.concreteDivision.hub3Keep.on = false;
+    const p = plan({ config: cfg, stock: d.stock, products: w.products, seats: d.seats });
+    assert.ok(p.intents.some((i) => i.dest === "concrete"), "the division must actually raise Concrete work, or the pin proves nothing");
+    assert.deepEqual(marathonSlice(p), before);
+    // …and under the live caps (Marathon dealt first).
+    const liveCfg = DIVISION_CONFIG(CONFIG); liveCfg.concreteDivision.hub3Keep.on = false;
+    const capped = plan({ config: liveCfg, stock: d.stock, products: w.products, seats: d.seats });
+    assert.deepEqual(marathonSlice(capped), marathonSlice(plan({ config: clone(CONFIG), stock: w.stock, products: w.products })));
+  });
+}
+
 test("the Marathon destinations are exactly the config routes, and Section 1 is not among them", () => {
   assert.deepEqual(Object.keys(CONFIG.routes).sort(), [...MARATHON].sort());
   for (const loc of S1) assert.equal(CONFIG.routes[loc], undefined);

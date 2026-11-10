@@ -35,11 +35,13 @@ const lines = (p, dest) => p.intents.filter((i) => i.dest === dest).map((i) => `
 const central = { s1: { 7: counted(9), 8: counted(9), 9: counted(9) }, t1: { S: counted(9), M: counted(9) }, c1: { _: counted(20) } };
 
 test("seats: units seat a product; a sell-out keeps it; only a transfer out releases it", () => {
+  // Since 10 Nov 2026 a cell at zero seats too (t1 at Hub 3).
   const stock = { hub3: { s1: { 7: counted(2) }, t1: { S: counted(0) } }, concrete: { c1: { _: counted(1) } } };
   const r = dv.planSeats({ rawStock: stock, seats: {}, movements: [], nowIso: ISO });
-  assert.deepEqual(Object.keys(r.effective.hub3), ["s1"]);
+  assert.deepEqual(Object.keys(r.effective.hub3).sort(), ["s1", "t1"]);
   assert.deepEqual(Object.keys(r.effective.concrete), ["c1"]);
-  assert.equal(r.seated, 2);
+  assert.equal(r.seated, 3);
+  assert.equal(r.effective.hub3.t1.via, "cell");
   const seats = { hub3: { t1: seat() } };
   const sold = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "customer", type: "sold", ts: ISO }], nowIso: ISO });
   assert.ok(sold.effective.hub3.t1, "a sale leaves it seated");
@@ -104,13 +106,18 @@ test("with the Hub 3 keep on, an uncounted Hub 3 clothing cell still raises noth
   assert.deepEqual(lines(p, "hub3"), []);
 });
 
-test("Solved to Hub 3: no shop request until Hub 3 has received; then the owner asks Hub 3, one per size, at 0", () => {
+test("Solved to Hub 3: no shop request while the Solve's box is on its way; then the owner asks Hub 3, one per size, at 0", () => {
   const seats = { hub3: { t1: seat({ via: "solve", owner: "concrete" }) } };
-  const before = plan({ stock: { central, hub3: { t1: { S: trusted(0), M: trusted(0) } }, concrete: { t1: { S: trusted(0), M: trusted(0) } } }, seats });
+  // The Solve's first batch into Hub 3, S and M (since 10 Nov a size with
+  // nothing at Hub 3 and nothing coming goes to Central while the keep is off).
+  const solve = (size) => ({ status: "open", productId: "t1", size, qty: 2, requestingLocation: "hub3", createdAt: ISO, createdFrom: { source: "central", divisionSolve: true } });
+  const refillRequests = { rS: solve("S"), rM: solve("M") };
+  const before = plan({ stock: { central, hub3: { t1: { S: trusted(0), M: trusted(0) } }, concrete: { t1: { S: trusted(0), M: trusted(0) } } }, seats, refillRequests });
   assert.deepEqual(lines(before, "concrete"), [], "receipt-gated");
   assert.deepEqual(lines(before, "hub3"), [], "and no pass-through leg either");
+  // Hub 3 received S; M's box never came (no stock, nothing on the way): M from Central under the shop's own keep.
   const after = plan({ stock: { central, hub3: { t1: { S: trusted(2), M: trusted(0) } }, concrete: { t1: { S: trusted(0), M: trusted(0) } } }, seats });
-  assert.deepEqual(lines(after, "concrete"), ["hub3:S:1"]);
+  assert.deepEqual(lines(after, "concrete"), ["central:M:2", "hub3:S:1"]);
   assert.deepEqual(lines(after, "marathon-pine"), []);
   const holding = plan({ stock: { central, hub3: { t1: { S: trusted(2) } }, concrete: { t1: { S: trusted(1) } } }, seats });
   assert.deepEqual(lines(holding, "concrete"), [], "ask at 0");
@@ -131,13 +138,20 @@ test("shop-only: straight from Central, 2 per size and 5 per design, any shortfa
   assert.deepEqual(lines(p, "marathon-pine"), ["central:_:1"]);
 });
 
-test("HARD RULE: a product at Hub 3 by any means is never requested from Central by a shop", () => {
+test("HARD RULE (Hub 3 keep ON): a product at Hub 3 by any means is never requested from Central by a shop", () => {
+  const on = base(); on.concreteDivision.hub3Keep.on = true;
   for (const hub3 of [{ t1: { S: counted(0) } }, { t1: { S: trusted(0) } }]) {
-    const p = plan({ stock: { central, hub3, concrete: { t1: { S: trusted(0), M: trusted(0) } } } });
+    const p = plan({ stock: { central, hub3, concrete: { t1: { S: trusted(0), M: trusted(0) } } }, config: on });
     assert.ok(!p.intents.some((i) => i.dest === "concrete" && i.source === "central"), JSON.stringify(hub3));
   }
-  const locked = plan({ stock: { central, concrete: { t1: { S: trusted(0) } } }, openIndex: { hub3: { t1: { S: { qty: 1, source: "central", refillId: "x", createdAt: ISO } } } }, refillRequests: { x: { status: "open", productId: "t1", size: "S", requestingLocation: "hub3", createdAt: ISO } } });
+  const locked = plan({ config: on, stock: { central, concrete: { t1: { S: trusted(0) } } }, openIndex: { hub3: { t1: { S: { qty: 1, source: "central", refillId: "x", createdAt: ISO } } } }, refillRequests: { x: { status: "open", productId: "t1", size: "S", requestingLocation: "hub3", createdAt: ISO } } });
   assert.ok(!locked.intents.some((i) => i.dest === "concrete" && i.source === "central"));
+});
+
+test("Hub 3 keep OFF (10 Nov 2026): the rule holds only for a size Hub 3 holds or has coming", () => {
+  // S is on its way into Hub 3 (a lock): the shop waits for it. M: nothing at Hub 3, nothing coming → Central.
+  const locked = plan({ stock: { central, concrete: { t1: { S: trusted(0) } } }, seats: { concrete: { t1: seat() } }, openIndex: { hub3: { t1: { S: { qty: 1, source: "central", refillId: "x", createdAt: ISO } } } }, refillRequests: { x: { status: "open", productId: "t1", size: "S", requestingLocation: "hub3", createdAt: ISO } } });
+  assert.deepEqual(lines(locked, "concrete"), ["central:M:2"]);
 });
 
 test("an explicit row of 0 (the Seating switch-off) still wins at every division location", () => {
