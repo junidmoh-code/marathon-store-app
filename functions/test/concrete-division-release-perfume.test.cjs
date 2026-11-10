@@ -130,7 +130,7 @@ test("division-only: every list of work is cut to Hub 3 / Pine / Concrete — no
 });
 
 test("division-only: only the one-off entry point can switch it on, and it skips every Marathon-touching step", () => {
-  assert.ok(SCAN_SRC.includes('const divisionOnly = !!(opts && opts.divisionOnly === true && opts.__oneOff === "division-release");'));
+  assert.ok(SCAN_SRC.includes('let divisionOnly = !!(opts && opts.divisionOnly === true && opts.__oneOff === "division-release");'));
   assert.ok(SCAN_SRC.includes('exports._runDivisionRelease = () => runScan({ divisionOnly: true, __oneOff: "division-release" });'));
   assert.ok(SCAN_SRC.includes("  runScan\n);"), "the schedule calls runScan with its own event");
   for (const step of [
@@ -220,4 +220,21 @@ test("Marathon over its 75-line lever: its dealt slice is the same with and with
   assert.equal(slice(without).length, 75, "Marathon is capped at its lever");
   assert.deepEqual(slice(with_), slice(without), "same lines, same order");
   assert.equal(with_.intents.filter((i) => ["concrete", "marathon-pine"].includes(i.dest)).length, 300);
+});
+
+test("the one-shot flag: claimed once, by one run, and never re-armed by the claim", () => {
+  const T = scan._divisionOnceTxn;
+  assert.equal(T(null, "r1", ISO), null, "cold cache: probe");
+  assert.deepEqual(T({ requested: true, by: "Junid" }, "r1", ISO), { requested: true, by: "Junid", consumedAt: ISO, consumedBy: "r1" });
+  assert.equal(T({ requested: true, consumedAt: ISO, consumedBy: "r0" }, "r1", ISO), undefined, "already spent");
+  assert.equal(T({ requested: false }, "r1", ISO), undefined);
+  assert.ok(SCAN_SRC.includes("if (await claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true;"));
+  assert.ok(SCAN_SRC.includes("res.snapshot.val().consumedBy === runId"), "claimed only when the committed node names THIS run");
+  // The flag is read before the refusal write-off, so a flagged run skips it.
+  assert.ok(SCAN_SRC.indexOf("claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true") < SCAN_SRC.indexOf("if (!divisionOnly) try {\n      const woSnap"));
+});
+
+test("the scan runs with 1 GiB (it was killed for memory at 512 MiB)", () => {
+  assert.ok(SCAN_SRC.includes('memory: "1GiB",'));
+  assert.ok(!SCAN_SRC.includes('memory: "512MiB"'));
 });
