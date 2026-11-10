@@ -139,7 +139,7 @@ describe("the poller runs both checks on every parsed payment (source scan)", ()
     expect(src).toMatch(/eftAccounts: parseAccountPolicies\(env\.EFT_ALLOWED_ACCOUNTS\)/);
     expect(src).toMatch(/message, verdict, parsed: group\.parse, account, timing, dated,/);
     // Fix 8 rides beside them, on the bank's date — never the arrival time.
-    expect(src).toMatch(/paymentDateVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff \}\)/);
+    expect(src).toMatch(/datedVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff, account, floors: cfg\.eftAccountFloors\.floors \}\)/); // the global cutoff, then the account floor (10 Nov 2026)
     expect(src).not.toMatch(/accountVerdict\(/);
   });
 });
