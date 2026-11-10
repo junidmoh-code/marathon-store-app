@@ -330,7 +330,9 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
     // The status transaction still guards against a request resolved meanwhile.
     // A hub-present withdrawal is not about the destination's cell (its reason
     // is the hub's presence; it asks for qty 0): no stock read to prove it.
-    if (!s.deactivated && !s.hubPresent) {
+    // A never-kept withdrawal (Concrete perfume) is about the category, not the
+    // cell: no stock proof either.
+    if (!s.deactivated && !s.hubPresent && !s.neverKept) {
       const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
       const already = consumed.get(cellKey) || 0;
       try {
@@ -363,7 +365,8 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
           // for a finished line, the fact that deactivation is the reason.
           ...(s.deactivated
             ? { deactivatedProduct: true }
-            : { satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty } }),
+            : s.neverKept ? { neverKeptAt: s.dest }
+              : { satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty } }),
         };
       });
       if (res?.committed && res.snapshot?.val()?.status === s.rrStatus) satisfied++;
@@ -521,10 +524,27 @@ function closeRequestTxn(cur, c, startedAt) {
   };
 }
 
-async function runScan() {
+// DIVISION-ONLY RUN (Junid, 10 Nov 2026): `runScan({ divisionOnly: true })` —
+// reachable only through _runDivisionRelease, never from the schedule (the
+// scheduler hands in its own event object). It plans exactly as the hourly scan
+// does, then applies ONLY work whose destination is Hub 3, Pine or Concrete:
+// no refusal write-off, no Marathon intent/close/resize/retry/streak, no shadow
+// sync, no exceptions snapshot, stock audit or confidence write. Marathon's
+// lines are raised by the next scheduled run, at their normal time.
+// Every list of work the scan applies, cut to Hub 3 / Pine / Concrete
+// destinations. Mutates and returns the plan (pure otherwise).
+const PLAN_WORK_LISTS = Object.freeze(["intents", "closes", "resizes", "retryOps", "streakOps", "satisfiedClosures"]);
+function scopePlanToDivision(plan) {
+  const mine = (x) => !!x && concreteDivision.DIVISION_LOCATIONS.includes(x.dest);
+  for (const k of PLAN_WORK_LISTS) if (Array.isArray(plan[k])) plan[k] = plan[k].filter(mine);
+  return plan;
+}
+
+async function runScan(opts) {
+  const divisionOnly = !!(opts && opts.divisionOnly === true && opts.__oneOff === "division-release");
   const db = admin.database();
   const nowMs = Date.now();
-  const runId = new Date(nowMs).toISOString().slice(0, 16).replace(/:/g, "-"); // 2026-07-12T10-15
+  const runId = new Date(nowMs).toISOString().slice(0, 16).replace(/:/g, "-") + (divisionOnly ? "-division" : ""); // 2026-07-12T10-15
   const startedAt = new Date(nowMs).toISOString();
 
   // ── claim (null-tolerant: cold-cache first pass sees null) ─────────────────
@@ -629,7 +649,7 @@ async function runScan() {
     // the scan has already read; the only extra reads are a user's name per
     // refuser and the ledger row per write-off. A failure here is logged and
     // the scan carries on (the next run re-plans from the same records).
-    try {
+    if (!divisionOnly) try {
       const woSnap = { nowMs, config, stock, products, refillRequests, movements, rejectStreak, cursors: writeoffCursors, windowStartMs: Date.parse(windowStart), network };
       const wo = refusalWriteoff.planRefusalWriteoffs(woSnap);
       // A paused location (Hub 3 being counted) takes no write-off: the count
@@ -682,6 +702,10 @@ async function runScan() {
       if (await safeUpdate(db, seatUpd, "division seats")) counts.seats = { seated: seatPlan.seated, released: seatPlan.released };
     }
     if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };
+    if (divisionOnly) {
+      scopePlanToDivision(plan);
+      counts.scope = "division";
+    }
     counts.errors.push(...plan.errors);
 
     // ── apply closes ──────────────────────────────────────────────────────────
@@ -906,7 +930,8 @@ async function runScan() {
       }
     }
     // Shadow is a full replace each run, so satisfied plans disappear on their own.
-    await safeSet(db, "refill_engine/shadow", Object.keys(shadowNode).length ? shadowNode : null, "shadow");
+    // (A division-only run leaves the shadow and its queue copies to the schedule.)
+    if (!divisionOnly) await safeSet(db, "refill_engine/shadow", Object.keys(shadowNode).length ? shadowNode : null, "shadow");
 
     // ── SHADOW COPIES in the REAL queues (owner decision 2026-07-12 v4) ───────
     // While a destination runs in shadow, its planned requests appear in the
@@ -921,7 +946,7 @@ async function runScan() {
     // the refill counter, and the engine's inbound math ignores them
     // (autoRefill orders are excluded there). UI renders them read-only;
     // fulfillCRBatch refuses them outright as a second line of defence.
-    {
+    if (!divisionOnly) {
       const upd = shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt, network, config });
       if (Object.keys(upd).length) await safeUpdate(db, upd, "shadow sweep");
     }
@@ -1057,7 +1082,7 @@ async function runScan() {
     // counts object as resizeDropped so both halves of the resize pipeline are
     // visible on one run record, present only when non-zero.
     if (plan.stats?.resizeSuppressed) counts.resizeSuppressed = plan.stats.resizeSuppressed;
-    await safeSet(db, "stock_exceptions/latest", { computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions }, "exceptions snapshot");
+    if (!divisionOnly) await safeSet(db, "stock_exceptions/latest", { computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions }, "exceptions snapshot");
 
     // ── STOCK AUDIT — the once-a-day shelf-walk lists ────────────────────────
     // Rides on the snapshot this run already holds (orders, stock, products,
@@ -1068,7 +1093,7 @@ async function runScan() {
     // WRAPPED, and deliberately not rethrown: these lists are a render cache
     // recomputed from live state on the next pass, so a failure here must never
     // stop the thing that restocks the shops. Same contract as safeUpdate.
-    try {
+    if (!divisionOnly) try {
       const auditRes = await runStockAuditPass({
         db, app: admin.app(), nowMs,
         stock, products, orders, movements,
@@ -1078,7 +1103,7 @@ async function runScan() {
     } catch (e) {
       console.error("[refill-scan] stock audit pass failed:", e && e.message ? e.message : e);
     }
-    if (new Date(nowMs).getUTCMinutes() < 15) {
+    if (!divisionOnly && new Date(nowMs).getUTCMinutes() < 15) {
       const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex, products });
       await safeSet(db, "stock_confidence", { computedAt: startedAt, byLocation: confidence }, "confidence");
     }
@@ -1226,6 +1251,9 @@ exports.refillHealthScan = onSchedule(
   runScan
 );
 exports._runScan = runScan; // exported for one-off manual invocation in tests/smoke
+// One-off: plan as the hourly scan does, apply only Hub 3 / Pine / Concrete work.
+exports._runDivisionRelease = () => runScan({ divisionOnly: true, __oneOff: "division-release" });
+exports._scopePlanToDivision = scopePlanToDivision;
 exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/resize-drop-observability.test.cjs
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
 exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin

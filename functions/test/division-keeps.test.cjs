@@ -70,7 +70,8 @@ function fakeDb(tree) {
 }
 
 test("buildCensus carries the counts, read from the three locations, when the key is on", async () => {
-  const db = fakeDb({ products: PRODUCTS, stock: STOCK, stock_targets: {}, refill_engine: { open: {}, seats: { hub3: { tee: { via: "solve" } } } } });
+  // Seats handed in: the seat decides at a shop (Pine's cap is seated), as the scan does.
+  const db = fakeDb({ products: PRODUCTS, stock: STOCK, stock_targets: {}, refill_engine: { open: {}, seats: { hub3: { tee: { via: "solve" } }, "marathon-pine": { cap: { via: "stock" } } } } });
   const census = await buildCensus(db, { config: POLICY(true), taxonomy: { cats: {} }, knownLocations: [], network: SEED_REGISTRY });
   assert.equal(census.divisionKeeps.hub3.on, true);
   assert.equal(census.divisionKeeps.hub3.products, 1);
