@@ -26,8 +26,11 @@ const counts = (on, stock = STOCK, seats = {}) => divisionKeepCounts({
 
 test("each shop's keeps: its products, every declared size, the units the policy asks", () => {
   const c = counts(false);
-  // Concrete's tee is held at Hub 3 too, so it is the from-Hub-3 keep: 1 per size.
-  assert.deepEqual(c.concrete, { products: 1, cells: 2, units: 2 });
+  // Concrete's tee: Hub 3 holds S, so S is the from-Hub-3 keep (1); Hub 3 holds
+  // no M and its keep is off, so M is the shop's own keep from Central (2).
+  assert.deepEqual(c.concrete, { products: 1, cells: 2, units: 3 });
+  // With the Hub 3 keep on, Hub 3 serves every size: 1 + 1.
+  assert.deepEqual(counts(true).concrete, { products: 1, cells: 2, units: 2 });
   // Pine's cap, one size, shop-only: 5.
   assert.deepEqual(c["marathon-pine"], { products: 1, cells: 1, units: 5 });
 });

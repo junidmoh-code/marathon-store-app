@@ -782,12 +782,17 @@ function networkRouting(config, network, division = null) {
     registryRouted.add(s.id);
   }
   const memo = new Map();
-  const sourceFor = (dest, product, pid) => {
+  // `size` (optional): the Concrete division routes a shop's non-sneaker per
+  // SIZE while the Hub 3 keep is off (concrete-division.cjs hub3ServesSize).
+  // Every other answer is per product, whatever size is asked.
+  const sourceFor = (dest, product, pid, size) => {
     const fixed = routes[dest];
     if (fixed !== undefined || !stores.has(dest)) return fixed;
-    const k = `${dest}|${pid}`;
+    // undefined (the product-level answer) and "" (a one-size cell) are
+    // different questions: never one memo key.
+    const k = `${dest}|${pid}|${size === undefined ? "\u0000" : `=${size}`}`;
     if (memo.has(k)) return memo.get(k);
-    const dvSrc = divisionSourceFor(division, dest, pid, product, central);
+    const dvSrc = divisionSourceFor(division, dest, pid, product, central, size);
     if (dvSrc !== undefined) {
       const answer = dvSrc === central ? (centralFed.has(dest) ? central : undefined) : (storeHubs.get(dest).includes(dvSrc) ? dvSrc : undefined);
       memo.set(k, answer);
@@ -926,7 +931,7 @@ function computeRefillPlan(snapshot) {
   const trustedCell = (loc, pid, sizeKey) => isSeatedHub3(loc, pid) || isSeatedShop(loc, pid) || maskTrustedCell(loc, pid, sizeKey);
   const routing = networkRouting(rawConfig, network, division);
   const { routes, withheld: routesWithheld, dests } = routing;
-  const srcOf = (dest, pid) => routing.sourceFor(dest, products?.[pid], pid);
+  const srcOf = (dest, pid, size) => routing.sourceFor(dest, products?.[pid], pid, size);
   const modeOf = routing.modeOf;
   // POLICY TEMPLATES: a location with no numbers of its own follows the
   // location the registry says it is like (lib/policy-template.cjs). Applied
@@ -1259,7 +1264,7 @@ function computeRefillPlan(snapshot) {
         // A lock-less shop ← Central row gets the same judgement in the
         // lock-less pass below (satisfiedClosures).
         const hubServes = shopCentralWithdrawal({
-          dest, pid, entry, rr, inFlight, routes, locations, routing, product: products?.[pid],
+          dest, pid, entry, rr, inFlight, routes, locations, routing, product: products?.[pid], size: order?.size ?? rr?.size ?? (sizeKey === "_" ? "" : sizeKey),
           snapshot: { stock: division && DIVISION_SHOPS.includes(dest) ? rawStock : stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
@@ -1494,7 +1499,7 @@ function computeRefillPlan(snapshot) {
       if (locklessIds.has(id)) {
         const hubServes = shopCentralWithdrawal({
           dest, pid: r.productId, entry: { source: r.createdFrom?.source || r.source }, rr: r,
-          inFlight: movedRefillIds.has(String(id)), routes, locations, routing, product: products?.[r.productId],
+          inFlight: movedRefillIds.has(String(id)), routes, locations, routing, product: products?.[r.productId], size: r.size,
           snapshot: { stock: division && DIVISION_SHOPS.includes(dest) ? rawStock : stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
@@ -1997,7 +2002,7 @@ function computeRefillPlan(snapshot) {
   // existing label).
   const raisePassThrough = ({ shop, hub, pid, size, sizeKey, want, kind, high }) => {
     const upstream = routes[hub];
-    if (!upstream || !srcOf(shop, pid) || srcOf(shop, pid) !== hub) return null;
+    if (!upstream || !srcOf(shop, pid, size) || srcOf(shop, pid, size) !== hub) return null;
     // SNEAKERS ARE SALES-ONLY at the hubs (owner rule): no automatic
     // Central→hub footwear leg, ever, whatever a shop row says. The shop's
     // existing labels stand.
@@ -2043,8 +2048,8 @@ function computeRefillPlan(snapshot) {
       // The source is per product for a registry-routed store. A product whose
       // back-stock hub is not live (or is not mapped at all) has no leg: the
       // engine neither asks for it nor reports on it.
-      const src = srcOf(dest, pid);
-      if (!src) continue;
+      const srcAny = srcOf(dest, pid);
+      if (!srcAny) continue;
       // Defensive class filter (managedPids already admitted this pid). Footwear
       // is added here for the same reason it is added there: without it a shoe
       // with no explicit row is dropped before resolveTarget is consulted. Still
@@ -2060,6 +2065,10 @@ function computeRefillPlan(snapshot) {
         // A "solved" location arms TRUSTED cells only (maskUntrustedStock).
         if (!trustedCell(dest, pid, sizeKey)) continue;
         const size = rawSize(pid, sizeKey);
+        // Per size: a Concrete-division shop asks Hub 3 only for a size Hub 3
+        // holds while the Hub 3 keep is off. Everyone else: srcAny.
+        const src = srcOf(dest, pid, size);
+        if (!src) continue;
         const t = resolveTarget(ctx, dest, pid, size);
         if (!t || t.target <= 0) continue;
         if (isFootwear(products?.[pid])) footwearManagedCells++; else managedCells++;
@@ -2442,7 +2451,7 @@ function computeRefillPlan(snapshot) {
   const pausedDests = pausedLocationSet(rawConfig);
   const routedIntents = intents.filter((i) => {
     if (pausedDests.size && pausedDests.has(i.dest)) return false;
-    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations, routing, product: products?.[i.productId], pid: i.productId })) return true;
+    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations, routing, product: products?.[i.productId], pid: i.productId, size: i.size })) return true;
     errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
     return false;
   });
@@ -2550,7 +2559,7 @@ function computeRefillPlan(snapshot) {
     const plannedKeys = keysOf(plannedIntents);
     const computedKeys = keysOf(routedIntents);
     for (const b of belowTarget) {
-      const hub = srcOf(b.loc, b.pid);
+      const hub = srcOf(b.loc, b.pid, b.size);
       const up = hub ? routes[hub] : null;
       if (!up) continue;                                   // a hub, not a shop
       const sk = encodeSizeKey(b.size);

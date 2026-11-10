@@ -322,7 +322,8 @@ export function resolveTarget({ targets, config, products, stock, network }, des
     // does. This screen has no seats node: a Hub 3 cell stands in for the seat.
     const dvPolicy = isDivisionLocation(dest) && products?.[pid] && !isDivisionFootwear(products[pid]) ? concreteDivisionPolicy(config) : null;
     if (dvPolicy) {
-      const dv = divisionTarget({ policy: dvPolicy, seats: { hub3: stock?.hub3 || {} }, hub3Present: hub3PresenceIndex({ hub3Stock: stock?.hub3 }) }, dest, pid, size, products, stock);
+      // hub3Stock: while the Hub 3 keep is off, a shop asks Hub 3 only for a size Hub 3 holds.
+      const dv = divisionTarget({ policy: dvPolicy, seats: { hub3: stock?.hub3 || {} }, hub3Present: hub3PresenceIndex({ hub3Stock: stock?.hub3 }), hub3Stock: stock?.hub3 || {} }, dest, pid, size, products, stock);
       if (dv !== undefined) return dv;
     }
     const cfNet = network || SEED_REGISTRY;
