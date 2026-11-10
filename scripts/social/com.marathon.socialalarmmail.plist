@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Social alarm mailer (10 Nov 2026): emails Junid at gunidmoh@gmail.com, once
+  per cause per day, when a slot does not publish, a run errors, the cloud
+  health check stops, or the Meta token is within 7 days of an expiry. See
+  scripts/social/social-alarm-mail.mjs and SOCIAL-OUTAGE-2026-11-05.md.
+
+  KeepAlive + ThrottleInterval, NOT StartInterval: launchd once silently
+  stopped firing every StartInterval agent (31 Aug 2026). The script runs once
+  and exits; launchd respawns it no sooner than every 300 seconds. RunAtLoad
+  so it is back the moment the mini logs in after a reboot.
+
+  Installed by scripts/social/install-on-mac-mini.sh, which rewrites the
+  checkout path and the node path for the machine. Nothing secret here.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.socialalarmmail</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/social/social-alarm-mail.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/social-alarm-mail.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/social-alarm-mail.err.log</string>
+</dict>
+</plist>

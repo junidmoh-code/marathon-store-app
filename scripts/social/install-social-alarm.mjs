@@ -66,7 +66,11 @@ const PROJECT = "marathon-club";
 export const MARKER = "SOCIAL_ENGINE_ALARM";
 const METRIC = "social_engine_alarm";
 const POLICY_NAME = "Social engine alarm";
-const RECIPIENT = "junidmoh@gmail.com";
+// gunidmoh, with a G: the inbox Junid reads. junidmoh was the only recipient
+// until 10 Nov 2026 and five days of alarms went unseen (SOCIAL-OUTAGE-2026-11-05.md).
+// The Mac mini mailer (social-alarm-mail.mjs) is the primary route; this is
+// the Google-operated copy for when the mini itself is down.
+const RECIPIENT = "gunidmoh@gmail.com";
 
 const args = process.argv.slice(2);
 const VERIFY = args.includes("--verify");
