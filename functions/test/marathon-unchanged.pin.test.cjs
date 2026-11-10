@@ -155,6 +155,10 @@ for (const seed of [11, 42, 2026]) {
     const p = plan({ config: cfg, stock: d.stock, products: w.products, seats: d.seats });
     assert.ok(p.intents.some((i) => i.dest === "concrete"), "the division must actually raise Concrete work, or the pin proves nothing");
     assert.deepEqual(marathonSlice(p), before);
+    // …and under the live caps (Marathon dealt first).
+    const liveCfg = DIVISION_CONFIG(CONFIG); liveCfg.concreteDivision.hub3Keep.on = false;
+    const capped = plan({ config: liveCfg, stock: d.stock, products: w.products, seats: d.seats });
+    assert.deepEqual(marathonSlice(capped), marathonSlice(plan({ config: clone(CONFIG), stock: w.stock, products: w.products })));
   });
 }
 

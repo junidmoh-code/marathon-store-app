@@ -87,3 +87,33 @@ test("the predicate itself: qty > 0, raw or encoded key, inbound counts, keep ON
   assert.equal(dv.hub3ServesSize({ ...division, policy: { hub3Keep: { on: true } } }, "t1", "M"), true);
   assert.equal(dv.hub3ServesSize({ ...division, hub3Stock: undefined, hub3Inbound: undefined }, "t1", "M"), true, "no stock handed in: the older rule");
 });
+
+// ── Review fixes (Sonnet architect + Fable, PR #884) ─────────────────────────
+test("OFF: an UNCOUNTED Hub 3 cell is no source — the shop asks Central for that size (no park on 'count that cell')", () => {
+  const uncounted = (qty) => ({ qty, v: 1, mv: "m", lastType: "transfer_in" });
+  const p = run(false, { hub3: { t1: { S: uncounted(3), M: c(2) } }, concrete: { t1: { S: shelf(0), M: shelf(0), L: shelf(1) } } });
+  assert.deepEqual(lines(p), ["central:L:1", "central:S:2", "hub3:M:1"]);
+});
+
+test("OFF: a box into Hub 3 older than the stale window no longer holds the shop's size", () => {
+  const old = "2026-11-01T08:00:00.000Z";
+  const openIndex = { hub3: { t1: { M: { qty: 2, source: "central", refillId: "x", createdAt: old } } } };
+  const refillRequests = { x: { status: "open", productId: "t1", size: "M", qty: 2, requestingLocation: "hub3", createdAt: old } };
+  const p = run(false, { hub3: { t1: { S: c(0) } }, concrete: { t1: { S: shelf(2), M: shelf(0), L: shelf(2) } }, openIndex, refillRequests });
+  assert.deepEqual(lines(p), ["central:M:2"]);
+  const fresh = new Date(NOW - 3600e3).toISOString();
+  const q = run(false, { hub3: { t1: { S: c(0) } }, concrete: { t1: { S: shelf(2), M: shelf(0), L: shelf(2) } },
+    openIndex: { hub3: { t1: { M: { ...openIndex.hub3.t1.M, createdAt: fresh } } } }, refillRequests: { x: { ...refillRequests.x, createdAt: fresh } } });
+  assert.deepEqual(lines(q), [], "a fresh box: the shop waits for it");
+});
+
+test("OFF: with Hub 3 not auto-routable to the shops, a size it does not hold still goes to Central (no product-level drop)", () => {
+  const net = JSON.parse(JSON.stringify(reg.SEED_REGISTRY));
+  net.locations.hub3.autoRefill = "off";
+  const p = computeRefillPlan({
+    nowMs: NOW, config: cfg(false), targets: {}, products, openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+    stock: { central, hub3: { t1: { S: c(0) } }, concrete: { t1: { S: shelf(0), M: shelf(0), L: shelf(0) } }, "marathon-pine": {} },
+    network: net, seats: { concrete: { t1: seat } },
+  });
+  assert.deepEqual(lines(p), ["central:L:2", "central:M:2", "central:S:2"]);
+});

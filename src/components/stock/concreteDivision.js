@@ -134,8 +134,10 @@ function divisionTarget(division, dest, pid, size, products, stockView) {
 // With the Hub 3 non-sneaker keep OFF nothing ever refills Hub 3's clothing, so
 // "Hub 3 has held it, so the shop asks Hub 3" would starve a size Hub 3 has run
 // out of. While the keep is off the exists-at-Hub-3 rule applies only to a size
-// Hub 3 actually holds (a cell with qty > 0); every other size the owning shop
-// asks Central for, under its own keep. With the keep ON it is Hub 3 for every
+// Hub 3 actually holds (a cell with qty > 0 that Hub 3 can supply from — its
+// COUNTED view: an uncounted Hub 3 cell is no source the engine will ever pick
+// from, so routing a shop to it would park the shop until someone counts it);
+// every other size the owning shop asks Central for, under its own keep. With the keep ON it is Hub 3 for every
 // size, as before. `division.hub3Stock` is Hub 3's raw stock node; absent, the
 // answer is "Hub 3 serves" (the older rule — never a guess the other way).
 // A size with units already ON THEIR WAY into Hub 3 (`division.hub3Inbound`:
@@ -155,17 +157,21 @@ function hub3HoldsSize(division, pid, size) {
 }
 
 // Units on their way into Hub 3, per "<pid>|<sizeKey>": open engine locks, open
-// requests into Hub 3, and held boxes (the hold lane).
-function hub3InboundIndex({ hub3Locks, hub3Held, refillRequests } = {}) {
+// requests into Hub 3, and held boxes (the hold lane). A lock or request older
+// than `maxAgeMs` (the engine's staleIntentHours) no longer counts: a box that
+// never came must not hold the shop's size forever. Held boxes are physically
+// on the way and always count. No `nowMs` → no age bound.
+function hub3InboundIndex({ hub3Locks, hub3Held, refillRequests, nowMs = null, maxAgeMs = 48 * 3600e3 } = {}) {
   const out = new Set();
+  const fresh = (iso) => nowMs == null || (Number.isFinite(Date.parse(iso)) && nowMs - Date.parse(iso) <= maxAgeMs);
   for (const [pid, bySize] of Object.entries(hub3Locks || {})) {
-    for (const [k, lock] of Object.entries(divisionIsObj(bySize) ? bySize : {})) if (lock) out.add(`${pid}|${k}`);
+    for (const [k, lock] of Object.entries(divisionIsObj(bySize) ? bySize : {})) if (lock && fresh(lock.createdAt)) out.add(`${pid}|${k}`);
   }
   for (const line of Object.values(hub3Held || {})) {
     if (line && line.productId) out.add(`${line.productId}|${line.sizeKey != null ? String(line.sizeKey) : divisionSizeKey(line.size)}`);
   }
   for (const r of Object.values(refillRequests || {})) {
-    if (r && r.status === "open" && !r.shadow && r.requestingLocation === DIVISION_HUB && r.productId) out.add(`${r.productId}|${divisionSizeKey(r.size)}`);
+    if (r && r.status === "open" && !r.shadow && r.requestingLocation === DIVISION_HUB && r.productId && fresh(r.createdAt)) out.add(`${r.productId}|${divisionSizeKey(r.size)}`);
   }
   return out;
 }

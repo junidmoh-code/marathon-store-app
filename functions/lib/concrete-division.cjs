@@ -158,8 +158,10 @@ function divisionTarget(division, dest, pid, size, products, stockView) {
 // With the Hub 3 non-sneaker keep OFF nothing ever refills Hub 3's clothing, so
 // "Hub 3 has held it, so the shop asks Hub 3" would starve a size Hub 3 has run
 // out of. While the keep is off the exists-at-Hub-3 rule applies only to a size
-// Hub 3 actually holds (a cell with qty > 0); every other size the owning shop
-// asks Central for, under its own keep. With the keep ON it is Hub 3 for every
+// Hub 3 actually holds (a cell with qty > 0 that Hub 3 can supply from — its
+// COUNTED view: an uncounted Hub 3 cell is no source the engine will ever pick
+// from, so routing a shop to it would park the shop until someone counts it);
+// every other size the owning shop asks Central for, under its own keep. With the keep ON it is Hub 3 for every
 // size, as before. `division.hub3Stock` is Hub 3's raw stock node; absent, the
 // answer is "Hub 3 serves" (the older rule — never a guess the other way).
 // A size with units already ON THEIR WAY into Hub 3 (`division.hub3Inbound`:
@@ -179,17 +181,21 @@ function hub3HoldsSize(division, pid, size) {
 }
 
 // Units on their way into Hub 3, per "<pid>|<sizeKey>": open engine locks, open
-// requests into Hub 3, and held boxes (the hold lane).
-function hub3InboundIndex({ hub3Locks, hub3Held, refillRequests } = {}) {
+// requests into Hub 3, and held boxes (the hold lane). A lock or request older
+// than `maxAgeMs` (the engine's staleIntentHours) no longer counts: a box that
+// never came must not hold the shop's size forever. Held boxes are physically
+// on the way and always count. No `nowMs` → no age bound.
+function hub3InboundIndex({ hub3Locks, hub3Held, refillRequests, nowMs = null, maxAgeMs = 48 * 3600e3 } = {}) {
   const out = new Set();
+  const fresh = (iso) => nowMs == null || (Number.isFinite(Date.parse(iso)) && nowMs - Date.parse(iso) <= maxAgeMs);
   for (const [pid, bySize] of Object.entries(hub3Locks || {})) {
-    for (const [k, lock] of Object.entries(divisionIsObj(bySize) ? bySize : {})) if (lock) out.add(`${pid}|${k}`);
+    for (const [k, lock] of Object.entries(divisionIsObj(bySize) ? bySize : {})) if (lock && fresh(lock.createdAt)) out.add(`${pid}|${k}`);
   }
   for (const line of Object.values(hub3Held || {})) {
     if (line && line.productId) out.add(`${line.productId}|${line.sizeKey != null ? String(line.sizeKey) : divisionSizeKey(line.size)}`);
   }
   for (const r of Object.values(refillRequests || {})) {
-    if (r && r.status === "open" && !r.shadow && r.requestingLocation === DIVISION_HUB && r.productId) out.add(`${r.productId}|${divisionSizeKey(r.size)}`);
+    if (r && r.status === "open" && !r.shadow && r.requestingLocation === DIVISION_HUB && r.productId && fresh(r.createdAt)) out.add(`${r.productId}|${divisionSizeKey(r.size)}`);
   }
   return out;
 }
@@ -256,14 +262,18 @@ function marathonSolveRefusal(hub) {
 // ── SERVER ONLY ──────────────────────────────────────────────────────────────
 
 // One scan's context, or null when the key is off.
-function divisionContext({ config, rawStock, seats, openIndex, heldLines, refillRequests }) {
+// `hub3View` (optional): Hub 3's COUNTED stock (the trust-masked node) — what
+// "Hub 3 holds this size" is judged on; absent, the raw node. `nowMs` +
+// `staleIntentHours` bound how long an inbound box holds a size.
+function divisionContext({ config, rawStock, seats, openIndex, heldLines, refillRequests, hub3View, nowMs = null }) {
   const policy = concreteDivisionPolicy(config);
   if (!policy) return null;
   const hub3Present = hub3PresenceIndex({
     hub3Stock: rawStock?.[DIVISION_HUB], hub3Locks: openIndex?.[DIVISION_HUB], hub3Held: heldLines?.[DIVISION_HUB], refillRequests,
   });
-  const hub3Inbound = hub3InboundIndex({ hub3Locks: openIndex?.[DIVISION_HUB], hub3Held: heldLines?.[DIVISION_HUB], refillRequests });
-  return { policy, seats: seats || {}, hub3Present, hub3Stock: rawStock?.[DIVISION_HUB] || {}, hub3Inbound };
+  const staleH = Number(config?.staleIntentHours);
+  const hub3Inbound = hub3InboundIndex({ hub3Locks: openIndex?.[DIVISION_HUB], hub3Held: heldLines?.[DIVISION_HUB], refillRequests, nowMs, maxAgeMs: (Number.isFinite(staleH) && staleH > 0 ? staleH : 48) * 3600e3 });
+  return { policy, seats: seats || {}, hub3Present, hub3Stock: (hub3View !== undefined ? hub3View : rawStock?.[DIVISION_HUB]) || {}, hub3Inbound };
 }
 
 // Movement types that take units OUT of a location by a person's move. A sale,
@@ -275,6 +285,7 @@ const MOVED_OUT_TYPES = new Set(["transfer_out", "transfer"]);
 // arrival, return or transfer at the location since this date.
 const SEAT_HISTORY_SINCE = "2026-10-30T00:00:00.000Z";
 const SEAT_RELEASES_PATH = "refill_engine/seatReleases";
+const SEAT_PID_BAD = /[.#$/[\]\s]/;
 // Did this movement happen AT this location, in a way that seats a product?
 function seatsBy(m, loc) {
   if (!m || String(m.ts) < SEAT_HISTORY_SINCE) return false;
@@ -295,7 +306,17 @@ function seatsBy(m, loc) {
 // window. The tombstone holds until something NEW happens to the product there
 // (units arrive, a sale, a movement newer than the release); then it is seated
 // again and the tombstone goes. `releases` is what SEAT_RELEASES_PATH holds.
-function planSeats({ rawStock, seats, movements, nowIso, releases = {} }) {
+// `products` (optional): a movement naming a product that no longer exists
+// seats nothing. A product id that is not a valid RTDB key is never written
+// (one bad key would fail the whole multi-path update, every scan).
+//
+// MOVED OUT BEFORE ANY TOMBSTONE EXISTED. A product moved out before this code
+// (or more than the ledger window ago) has no tombstone. While its transfer is
+// in the window movedOut() says so; once it ages out the cell itself still does:
+// every cell left is empty and stamped by a person's transfer out (lastType
+// "transfer_out", not a refill "rrf_" movement). Either way the scan writes the
+// tombstone then, so the answer never depends on the ledger window again.
+function planSeats({ rawStock, seats, movements, nowIso, releases = {}, products = null }) {
   const effective = {};
   const writes = {};
   const releaseWrites = {};
@@ -322,6 +343,12 @@ function planSeats({ rawStock, seats, movements, nowIso, releases = {} }) {
     if (m.link && (m.link.refillId || m.link.orderId)) return null;
     return m;
   };
+  // The cells' own stamp, when the ledger no longer covers the move.
+  const cellsSayMovedOut = (node) => {
+    if (held(node)) return false;
+    const cells = Object.values(node || {}).filter((c) => c && typeof c === "object");
+    return cells.length > 0 && cells.every((c) => MOVED_OUT_TYPES.has(c.lastType) && !String(c.mv || "").startsWith("rrf_"));
+  };
   for (const loc of DIVISION_LOCATIONS) {
     const here = { ...(divisionIsObj(seats?.[loc]) ? seats[loc] : {}) };
     const node = rawStock?.[loc] || {};
@@ -329,12 +356,18 @@ function planSeats({ rawStock, seats, movements, nowIso, releases = {} }) {
     const candidates = new Set(Object.keys(node));
     for (const k of lastSeating.keys()) if (k.startsWith(`${loc}|`)) candidates.add(k.slice(loc.length + 1));
     for (const pid of candidates) {
-      if (pid === "_meta" || here[pid]) continue;
+      if (pid === "_meta" || here[pid] || SEAT_PID_BAD.test(pid)) continue;
+      if (products && !products[pid]) continue;
       const units = held(node[pid]);
       const activity = lastSeating.get(`${loc}|${pid}`) || null;
       if (!units && !hasCell(node[pid]) && !activity) continue;
       if (!units) {
-        if (movedOut(loc, pid, node[pid])) continue;
+        const out = movedOut(loc, pid, node[pid]);
+        const stamped = !out && !activity && cellsSayMovedOut(node[pid]);
+        if (out || stamped) {
+          if (!divisionIsObj(gone[pid])) releaseWrites[`${loc}/${pid}`] = { at: nowIso, moveTs: out ? String(out.ts) : null };
+          continue;
+        }
         // Released before, and nothing has happened here since.
         const tomb = gone[pid];
         if (divisionIsObj(tomb) && !(activity && activity > String(tomb.at || ""))) continue;
@@ -407,26 +440,32 @@ function seatedIntentTrusted(intent, dest) {
 //   Hub 3, footwear                                       → 3 per size, ask at 1
 //   Hub 3, non-sneaker                                    → hub3Keep (2 / 10) while ON, else nothing
 // Returns { target, reorderPoint } or null (no keep).
+// JUNID'S NUMBERS, pinned here and NOT read from the config key: a key edited
+// away from them shows as wrong_number (config drift), never as "correct".
+// Only the Hub 3 clothing switch (on/off) is read from the key — that is the
+// live decision, and it is his to flip.
 const HUB3_SNEAKER_KEEP = Object.freeze({ target: 3, reorderPoint: 1 });
+const JUNID_DIVISION_KEEPS = Object.freeze({
+  shopOnly: Object.freeze({ perSize: 2, oneSize: 5, askAt: null }),
+  fromHub3: Object.freeze({ perSize: 1, oneSize: 5, askAt: 0 }),
+  hub3Keep: Object.freeze({ perSize: 2, oneSize: 10, askAt: null }),
+});
 function divisionExpectedTarget(division, loc, pid, size, product) {
   if (!division || !isDivisionLocation(loc) || !product || product.deactivated) return null;
   const footwear = isDivisionFootwear(product);
   const one = isDivisionOneSize(product);
-  const { policy } = division;
+  const keep = (k) => ({ target: one ? JUNID_DIVISION_KEEPS[k].oneSize : JUNID_DIVISION_KEEPS[k].perSize, reorderPoint: JUNID_DIVISION_KEEPS[k].askAt });
   if (loc === DIVISION_HUB) {
     if (footwear) return { ...HUB3_SNEAKER_KEEP };
-    if (!policy.hub3Keep || !policy.hub3Keep.on) return null;
-    return { target: one ? policy.hub3Keep.oneSize : policy.hub3Keep.perSize, reorderPoint: null };
+    return division.policy?.hub3Keep?.on ? keep("hub3Keep") : null;
   }
   if (footwear) return null;
   if (division.hub3Present.has(pid)) {
     const owner = division.seats?.[DIVISION_HUB]?.[pid]?.owner;
     if (owner && owner !== loc) return null;
-    if (hub3ServesSize(division, pid, size)) {
-      return policy.fromHub3 ? { target: one ? policy.fromHub3.oneSize : policy.fromHub3.perSize, reorderPoint: policy.fromHub3.askAt } : null;
-    }
+    if (hub3ServesSize(division, pid, size)) return keep("fromHub3");
   }
-  return policy.shopOnly ? { target: one ? policy.shopOnly.oneSize : policy.shopOnly.perSize, reorderPoint: null } : null;
+  return keep("shopOnly");
 }
 
 // One size's verdict. `effective` is the engine's own armed answer for the cell
@@ -439,6 +478,7 @@ function divisionExpectedTarget(division, loc, pid, size, product) {
 //   unexpected    the policy keeps nothing, something arms it
 //   explicit_row  an explicit /stock_targets row overrides the policy
 //   wrong_number  armed, but not with the policy's numbers
+//   unrouted      (set by the engine) the policy keeps it, but no live source serves the size
 function divisionAuditVerdict({ expected, effective, explicitZero = false, deadSize = false }) {
   if (explicitZero) return { ok: true, reason: "switched_off" };
   const eff = effective && Number(effective.target) > 0 ? effective : null;
@@ -447,10 +487,11 @@ function divisionAuditVerdict({ expected, effective, explicitZero = false, deadS
     if (deadSize && effective && Number(effective.target) === 0) return { ok: true, reason: "dead_size" };
     return { ok: false, reason: "missing" };
   }
-  if (eff.source === "explicit" && (eff.target !== expected.target)) return { ok: false, reason: "explicit_row" };
   const rpE = expected.reorderPoint == null ? null : expected.reorderPoint;
   const rpA = eff.reorderPoint == null ? null : eff.reorderPoint;
-  if (eff.target !== expected.target || rpE !== rpA) return { ok: false, reason: "wrong_number" };
+  const differs = eff.target !== expected.target || rpE !== rpA;
+  // An explicit row is always named as the override it is, never "wrong numbers".
+  if (differs) return { ok: false, reason: eff.source === "explicit" ? "explicit_row" : "wrong_number" };
   return { ok: true, reason: "kept" };
 }
 
@@ -506,5 +547,5 @@ module.exports = {
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
   divisionTargetShape, hub3PresenceIndex, isSeatedAtShop, divisionShopCarries, hub3HoldsSize, hub3ServesSize, hub3InboundIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
-  SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy, seatedIntentTrusted, HUB3_SNEAKER_KEEP, divisionExpectedTarget, divisionAuditVerdict,
+  SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy, seatedIntentTrusted, HUB3_SNEAKER_KEEP, JUNID_DIVISION_KEEPS, divisionExpectedTarget, divisionAuditVerdict,
 };

@@ -15,6 +15,7 @@ const SSR = "functions/lib/shop-source-rule.cjs";
 const SCAN = "functions/refill-scan.cjs";
 const HEALTH = "src/components/stock/HealthView.jsx";
 const APP = "src/App.jsx";
+const TWIN = "src/components/stock/concreteDivision.js";   // shared-body twin: mutated alongside, so the parity test is not what fails
 const T = (f) => `functions/test/${f}`;
 const SHELF = [T("concrete-division-seated-shelf.test.cjs")];
 const SEATS = [T("concrete-division-seats-history.test.cjs"), T("concrete-division.test.cjs")];
@@ -23,7 +24,7 @@ const AUDIT = [T("concrete-division-policy-audit.test.cjs")];
 const PIN = [T("marathon-unchanged.pin.test.cjs")];
 
 const MUTATIONS = [
-  { id: "M-SEAT-ARMS", guard: "a seat arms a shop keep past the trust mask", file: CD,
+  { id: "M-SEAT-ARMS", twin: true, guard: "a seat arms a shop keep past the trust mask", file: CD,
     from: "  if (isSeatedAtShop(division, dest, pid)) return true;\n", to: "", node: SHELF },
   { id: "M-RAW-SHELF", guard: "a seated shop product reads its whole (uncounted) shelf", file: ENG,
     from: "        if (rawStock[shop]?.[pid]) view[pid] = rawStock[shop][pid]; else delete view[pid];", to: "", node: SHELF },
@@ -43,11 +44,11 @@ const MUTATIONS = [
     from: "        if (movedOut(loc, pid, node[pid])) continue;\n", to: "", node: SEATS },
   { id: "M-TOMBSTONE", guard: "a release tombstone holds after the move ages out", file: CD,
     from: "        if (divisionIsObj(tomb) && !(activity && activity > String(tomb.at || \"\"))) continue;\n", to: "", node: SEATS },
-  { id: "M-KEEP-ON", guard: "keep ON: Hub 3 serves every size", file: CD,
+  { id: "M-KEEP-ON", twin: true, guard: "keep ON: Hub 3 serves every size", file: CD,
     from: "  if (division.policy?.hub3Keep?.on) return true;\n", to: "", node: OFF },
-  { id: "M-PER-SIZE", guard: "keep OFF: Hub 3 serves only a size it holds", file: CD,
+  { id: "M-PER-SIZE", twin: true, guard: "keep OFF: Hub 3 serves only a size it holds", file: CD,
     from: "  return hub3HoldsSize(division, pid, size);\n}", to: "  return true;\n}", node: OFF },
-  { id: "M-INBOUND", guard: "a size on its way into Hub 3 waits for it", file: CD,
+  { id: "M-INBOUND", twin: true, guard: "a size on its way into Hub 3 waits for it", file: CD,
     from: "  if (division?.hub3Inbound && typeof division.hub3Inbound.has === \"function\" && division.hub3Inbound.has(`${pid}|${enc}`)) return true;\n", to: "", node: OFF },
   { id: "M-MEMO", guard: "the route memo keeps product-level and one-size apart", file: ENG,
     from: "size === undefined ? \"\\u0000\" : `=${size}`", to: "size === undefined ? \"\" : String(size)", node: OFF },
@@ -60,6 +61,23 @@ const MUTATIONS = [
   { id: "M-MARATHON-FIRST", guard: "Marathon is dealt the run's cap before the division", file: ENG,
     from: "    const first = dealFairly(list.filter((i) => !isSolvedDest(i)), cap);\n    return [...first, ...dealFairly(list.filter(isSolvedDest), Math.max(0, cap - first.length))];",
     to: "    return dealFairly(list, cap);", node: PIN },
+  // ── review fixes (PR #884) ──
+  { id: "M-SHOP-GATE", guard: "a division shop is not dropped on its product-level route", file: ENG,
+    from: "      if (!srcAny && !(division && DIVISION_SHOPS.includes(dest))) continue;", to: "      if (!srcAny) continue;", node: OFF },
+  { id: "M-TOMB-LEDGER", guard: "a product moved out before tombstones existed gets one", file: CD,
+    from: "          if (!divisionIsObj(gone[pid])) releaseWrites[`${loc}/${pid}`] = { at: nowIso, moveTs: out ? String(out.ts) : null };\n", to: "", node: SEATS },
+  { id: "M-CELL-STAMP", guard: "a cell stamped by a transfer out (ledger aged out) is not re-seated", file: CD,
+    from: "        const stamped = !out && !activity && cellsSayMovedOut(node[pid]);", to: "        const stamped = false;", node: SEATS },
+  { id: "M-COUNTED-HUB3", guard: "Hub 3 'holds' a size only in its counted view", file: ENG,
+    from: "refillRequests: snapshot.refillRequests, hub3View: stock[DIVISION_HUB], nowMs });", to: "refillRequests: snapshot.refillRequests, nowMs });", node: OFF },
+  { id: "M-STALE-INBOUND", guard: "a box into Hub 3 older than the stale window stops holding the size", file: CD, twin: true,
+    from: "  const fresh = (iso) => nowMs == null || (Number.isFinite(Date.parse(iso)) && nowMs - Date.parse(iso) <= maxAgeMs);", to: "  const fresh = () => true;", node: OFF },
+  { id: "M-JUNID-NUMBERS", guard: "the audit's expected keeps are Junid's, not the key's", file: CD,
+    from: "  shopOnly: Object.freeze({ perSize: 2, oneSize: 5, askAt: null }),", to: "  shopOnly: Object.freeze({ perSize: 3, oneSize: 5, askAt: null }),", node: AUDIT },
+  { id: "M-UNROUTED", guard: "an unrouted keep is a mismatch, not 'kept'", file: ENG,
+    from: "          const unrouted = loc !== DIVISION_HUB && !!expected && !explicitZero && !srcOf(loc, pid, size);", to: "          const unrouted = false;", node: AUDIT },
+  { id: "M-EXPLICIT-VERDICT", guard: "an explicit row is always named explicit_row", file: CD,
+    from: 'reason: eff.source === "explicit" ? "explicit_row" : "wrong_number" };', to: 'reason: "wrong_number" };', node: AUDIT },
   { id: "M-HEALTH-CARD", guard: "Health draws the division audit the scan writes", file: HEALTH,
     from: "      case \"divisionPolicy\": {", to: "      case \"divisionPolicyX\": {", vitest: ["src/components/stock/healthDivisionPolicy.test.js"] },
   { id: "M-HUB3-SCREEN", guard: "Source → Hub 3 mounts the hub refill screen", file: APP,
@@ -89,7 +107,7 @@ function runVitest(files) {
 const run = (m) => (m.vitest ? runVitest(m.vitest) : runNode(m.node));
 
 {
-  const dirty = execFileSync("git", ["status", "--porcelain", "--", ...new Set(MUTATIONS.map((m) => m.file))]).toString().trim();
+  const dirty = execFileSync("git", ["status", "--porcelain", "--", TWIN, ...new Set(MUTATIONS.map((m) => m.file))]).toString().trim();
   if (dirty) { console.error("Working tree is not clean for the files this harness mutates:\n" + dirty); process.exit(2); }
 }
 
@@ -104,14 +122,19 @@ for (const m of MUTATIONS) {
   }
   let mutated = "?";
   const restore = () => { try { writeFileSync(m.file, original); } catch { /* nothing better */ } };
-  const onSignal = () => { restore(); process.exit(130); };
+  const twinOriginal = m.twin ? readFileSync(TWIN, "utf8") : null;
+  if (m.twin && twinOriginal.split(m.from).length - 1 !== 1) { console.log(`${m.id.padEnd(17)} TWIN ANCHOR not unique`); results.push({ id: m.id, mutated: "TWIN-ANCHOR", restored: "-" }); continue; }
+  const restoreTwin = () => { if (m.twin) try { writeFileSync(TWIN, twinOriginal); } catch { /* nothing better */ } };
+  const onSignal = () => { restore(); restoreTwin(); process.exit(130); };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
   try {
     writeFileSync(m.file, original.replace(m.from, m.to));
+    if (m.twin) writeFileSync(TWIN, twinOriginal.replace(m.from, m.to));
     mutated = run(m);
   } finally {
     restore();
+    restoreTwin();
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
   }

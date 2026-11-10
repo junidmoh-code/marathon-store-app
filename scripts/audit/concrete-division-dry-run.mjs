@@ -13,6 +13,7 @@ import { createRequire } from "module";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const require = createRequire(import.meta.url);
 const argv = process.argv.slice(2);
+if (!argv.includes("--old") || !argv[argv.indexOf("--old") + 1]) { console.error("usage: concrete-division-dry-run.mjs <snapshot.json> --old <dir holding functions/lib>"); process.exit(2); }
 const OLD = argv[argv.indexOf("--old") + 1];
 const load = (root) => ({ engine: require(join(root, "functions/lib/refill-engine.cjs")), reg: require(join(root, "functions/lib/network-registry.cjs")), dv: require(join(root, "functions/lib/concrete-division.cjs")) });
 const NEW = load(ROOT), OLDL = load(OLD);
@@ -48,3 +49,4 @@ console.log("First scan, this branch :", JSON.stringify(tally(after.intents)));
 console.log("Backlog uncapped, branch:", JSON.stringify(tally(run(NEW, uncap).intents)));
 console.log("Section 1 closes (branch):", (after.closes || []).filter((c) => S1.includes(c.dest)).length, "satisfied:", (after.satisfiedClosures || []).filter((c) => S1.includes(c.dest)).length);
 console.log("Errors (branch):", after.errors.slice(0, 5));
+console.log("Note: the dump holds the newest 6,000 /refill_requests by key; the scan reads them all, so an older open request may be missing here.");

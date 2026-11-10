@@ -939,7 +939,8 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
     }
     if (!openIndex.hub3) openIndex.hub3 = await readMapPaged(db, "refill_engine/open/hub3");
     const { stock: stockView } = maskUntrustedStock(stock, network);
-    const division = divisionContext({ config, rawStock: stock, seats, openIndex, heldLines: null, refillRequests: null });
+    // Hub 3's counted view decides which sizes it serves — as the scan does.
+    const division = divisionContext({ config, rawStock: stock, seats, openIndex, heldLines: null, refillRequests: null, hub3View: stockView.hub3, nowMs: Date.now() });
     divisionKeeps = divisionKeepCounts({ division, stockView, products });
   }
   return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift, divisionKeeps };

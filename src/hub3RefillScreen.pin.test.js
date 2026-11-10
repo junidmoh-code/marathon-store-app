@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { sourceTabsFor } from "./utils/sectionRouting";
 import { SEED_REGISTRY } from "./utils/networkRegistry";
+import { REACTIVE_REFILL_HUBS } from "./components/stock/reactiveRefillHubs";
 
 const APP = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
 const between = (a, b) => { const i = APP.indexOf(a); const j = APP.indexOf(b, i); return i > -1 && j > -1 ? APP.slice(i, j) : null; };
@@ -38,6 +39,7 @@ describe("Source → Hub 3 refill screen", () => {
 
   it("Hub 3 lists request rows only: no sale-driven rows unless it is a reactive hub", () => {
     expect(APP).toContain("activeHub && isReactiveRefillHub(activeHub) ? saleRowsFor(activeHub, activeCellFilter) : []");
+    expect(REACTIVE_REFILL_HUBS).not.toContain("hub3");
   });
 
   it("the registry gives Hub 3 a Source tab keyed loc:hub3", () => {

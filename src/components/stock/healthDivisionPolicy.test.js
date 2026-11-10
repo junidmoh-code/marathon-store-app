@@ -47,6 +47,10 @@ describe("Concrete division policy: scan → /stock_exceptions → Health", () =
     const body = src.slice(src.indexOf("function divisionAuditVerdict"), src.indexOf("// ── THE SOLVE'S SEAT"));
     const reasons = [...new Set([...body.matchAll(/"([a-z]+(?:_[a-z]+)*)"/g)].map((m) => m[1]))].filter((r) => !["switched_off", "dead_size", "none", "kept", "explicit"].includes(r));
     expect(new Set(reasons)).toEqual(new Set(["missing", "unexpected", "explicit_row", "wrong_number"]));
-    for (const r of reasons) expect(health).toContain(`${r}:`);
+    const eng = readFileSync(fileURLToPath(new URL("../../../functions/lib/refill-engine.cjs", import.meta.url)), "utf8");
+    expect(eng).toContain('reason: "unrouted"');
+    const block = health.slice(health.indexOf('case "divisionPolicy"'), health.indexOf('case "unorderableFootwear"'));
+    const reasonMap = block.slice(block.indexOf("const REASON = {"), block.indexOf("};", block.indexOf("const REASON = {")));
+    for (const r of [...reasons, "unrouted"]) expect(reasonMap).toContain(`${r}:`);
   });
 });

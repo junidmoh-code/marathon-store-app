@@ -98,3 +98,26 @@ test("the audit reads nothing: same plan intents with or without it (pure, no si
   assert.ok(Array.isArray(p.exceptions.divisionPolicy.items));
   assert.ok(p.intents.some((i) => i.dest === "concrete"));
 });
+
+test("the expected keeps are Junid's numbers, not the key's: a key drifted to 3 per size is wrong_number", () => {
+  const c = cfg(); c.concreteDivision.shopOnly.perSize = 3;
+  const a = run({ config: c });
+  assert.ok(a.count > 0);
+  assert.ok(a.items.every((m) => m.reason === "wrong_number" && m.expected.target === 2 && m.effective.target === 3), JSON.stringify(a.items));
+  assert.deepEqual(dv.JUNID_DIVISION_KEEPS.shopOnly, { perSize: 2, oneSize: 5, askAt: null });
+  assert.deepEqual(dv.JUNID_DIVISION_KEEPS.fromHub3, { perSize: 1, oneSize: 5, askAt: 0 });
+  assert.deepEqual(dv.JUNID_DIVISION_KEEPS.hub3Keep, { perSize: 2, oneSize: 10, askAt: null });
+});
+
+test("an explicit row is always named explicit_row, even with the policy's target (ask-at differs)", () => {
+  assert.deepEqual(dv.divisionAuditVerdict({ expected: { target: 1, reorderPoint: 0 }, effective: { target: 1, reorderPoint: null, source: "explicit" } }), { ok: false, reason: "explicit_row" });
+  assert.deepEqual(dv.divisionAuditVerdict({ expected: { target: 2, reorderPoint: null }, effective: { target: 2, reorderPoint: null, source: "explicit" } }), { ok: true, reason: "kept" });
+});
+
+test("a keep with no live source for the size is 'unrouted', not 'kept'", () => {
+  const net = JSON.parse(JSON.stringify(reg.SEED_REGISTRY));
+  net.locations.hub3.autoRefill = "off";
+  // h1 is held at Hub 3 (L): the policy says from Hub 3, but Hub 3 is not routable to Concrete.
+  const a = computeRefillPlan({ nowMs: Date.parse(ISO), config: cfg(), targets: {}, stock: world(), products, openIndex: {}, refillRequests: {}, orders: {}, movements: [], network: net, seats }).exceptions.divisionPolicy;
+  assert.ok(a.items.some((m) => m.loc === "concrete" && m.pid === "h1" && m.reason === "unrouted"), JSON.stringify(a.items));
+});

@@ -667,7 +667,7 @@ async function runScan() {
       // Seats, and the tombstones a release leaves (so a moved-out product's
       // leftover zero cells do not seat it again) — three small nodes each.
       const [seats, releases] = await Promise.all([scoped(concreteDivision.SEATS_PATH), scoped(concreteDivision.SEAT_RELEASES_PATH)]);
-      seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, releases, nowIso: new Date(nowMs).toISOString() });
+      seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, releases, products, nowIso: new Date(nowMs).toISOString() });
     }
     const seatArgs = seatPlan ? { seats: seatPlan.effective } : {};
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
@@ -1050,7 +1050,9 @@ async function runScan() {
     }
 
     // ── exceptions snapshot + hourly confidence ──────────────────────────────
-    counts.exceptions = Object.values(plan.exceptions).reduce((t, e) => t + e.count, 0);
+    // The division policy audit is a check, not an exception queue: left out
+    // so this run-record number means what it always meant.
+    counts.exceptions = Object.entries(plan.exceptions).reduce((t, [k, e]) => (k === "divisionPolicy" ? t : t + e.count), 0);
     // Plan-side resize suppression (engine stats) — surfaced through the SAME
     // counts object as resizeDropped so both halves of the resize pipeline are
     // visible on one run record, present only when non-zero.

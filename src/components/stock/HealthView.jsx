@@ -847,6 +847,7 @@ export default function HealthView({ products = [], onExit }) {
           unexpected: "policy keeps nothing — something arms it",
           explicit_row: "an explicit row overrides the policy",
           wrong_number: "armed with the wrong numbers",
+          unrouted: "policy keeps it — no live source serves this size",
         };
         const keep = (t) => (t ? `keep ${t.target}${t.reorderPoint != null ? `, ask at ${t.reorderPoint}` : ""}` : "no keep");
         // Grouped per location + product (a plain fold: this screen writes nothing).
@@ -858,7 +859,7 @@ export default function HealthView({ products = [], onExit }) {
         return (
           <DetailShell title="Concrete Division Policy" sub={`Every product seated at Pine, Concrete and Hub 3, every size, checked by the hourly scan against Junid's policy: Pine/Concrete shop-only items keep 2 per size (5 per design with no size) from Central; items owned through Hub 3 keep 1 per size (5 per design) from Hub 3 — while the Hub 3 clothing keep is off, only for a size Hub 3 holds; Hub 3 sneakers keep 3 per size, ask at 1; Hub 3 clothing 2 per size / 10 per design only while its switch is on. Seating-tab switch-offs count as correct. Read-only — fix a line on the Engine Policy card or the Seating tab; the next scan clears it.${count("divisionPolicy") > items("divisionPolicy").length ? ` Showing ${items("divisionPolicy").length} of ${count("divisionPolicy")} cells.` : ""}`} count={count("divisionPolicy")} onBack={back}>
             {!dp && (
-              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GRAY, fontWeight: 700, fontSize: 14 }}>The Concrete division policy is switched off — nothing to check.</div>
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GRAY, fontWeight: 700, fontSize: 14 }}>No division audit in the latest scan — the Concrete division key is off, or the scan has not run since this card was added.</div>
             )}
             {dp && (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>

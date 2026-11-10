@@ -899,7 +899,9 @@ function computeRefillPlan(snapshot) {
   // SNEAKERS ARE COUNTED STOCK, so they read through the trust mask, for Hub 3
   // as a destination ONLY. The masked `stock` every other reader holds is
   // untouched: Marathon's dead-size test and pools must never see these cells.
-  const division = divisionContext({ config: rawConfig, rawStock, seats: snapshot.seats, openIndex: snapshot.openIndex, heldLines: snapshot.heldLines, refillRequests: snapshot.refillRequests });
+  // "Hub 3 holds this size" is judged on Hub 3's COUNTED view (`stock`, masked),
+  // the same view the source gate supplies from (concrete-division.cjs).
+  const division = divisionContext({ config: rawConfig, rawStock, seats: snapshot.seats, openIndex: snapshot.openIndex, heldLines: snapshot.heldLines, refillRequests: snapshot.refillRequests, hub3View: stock[DIVISION_HUB], nowMs });
   const seatedHub3Footwear = new Set();
   let seatedStock = stock;
   if (division) {
@@ -1149,14 +1151,14 @@ function computeRefillPlan(snapshot) {
   const passThroughNeed = (hub, pid, sizeKey, size, entry) => {
     const shops = Array.isArray(entry.forDests) && entry.forDests.length
       ? entry.forDests
-      : dests.filter((d) => srcOf(d, pid) === hub);
+      : dests.filter((d) => srcOf(d, pid, size) === hub);
     let need = 0;
     for (const shop of shops) {
-      if (srcOf(shop, pid) !== hub) continue;
+      if (srcOf(shop, pid, size) !== hub) continue;
       if (!trustedCell(shop, pid, sizeKey)) continue;   // an untrusted shop cell is owed nothing
       const ts = resolveTarget(ctx, shop, pid, size);
       if (!ts || ts.target <= 0) continue;
-      need += Math.max(ts.target - avail(cellQty(stock, shop, pid, size)) - (inbound.get(`${shop}|${pid}|${sizeKey}`) || 0), 0);
+      need += Math.max(ts.target - avail(cellQty(viewOf(shop, pid), shop, pid, size)) - (inbound.get(`${shop}|${pid}|${sizeKey}`) || 0), 0);
     }
     if (entry.passThrough !== "disputed") {
       need -= Math.max(avail(cellQty(stock, hub, pid, size)) - (sourceReserved.get(`${hub}|${pid}|${sizeKey}`) || 0), 0);
@@ -1525,13 +1527,13 @@ function computeRefillPlan(snapshot) {
       // a future route change can never turn "not loaded" into "not needed".
       if (!Object.prototype.hasOwnProperty.call(stock, dest)) continue;
       const k = `${dest}|${r.productId}|${sizeKey}`;
-      const free = avail(cellQty(stock, dest, r.productId, r.size)) - (claimed.get(k) || 0);
+      const free = avail(cellQty(viewOf(dest, r.productId), dest, r.productId, r.size)) - (claimed.get(k) || 0);
       const want = Math.max(num(r.qty) || 1, 1);
       if (free < want) continue;
       claimed.set(k, (claimed.get(k) || 0) + want);
       satisfiedClosures.push({
         refillId: id, dest, pid: r.productId, sizeKey, size: r.size,
-        qty: want, have: avail(cellQty(stock, dest, r.productId, r.size)),
+        qty: want, have: avail(cellQty(viewOf(dest, r.productId), dest, r.productId, r.size)),
         rrStatus: "cancelled", cancelReason: "already_in_stock",
       });
     }
@@ -2048,8 +2050,10 @@ function computeRefillPlan(snapshot) {
       // The source is per product for a registry-routed store. A product whose
       // back-stock hub is not live (or is not mapped at all) has no leg: the
       // engine neither asks for it nor reports on it.
+      // A Concrete-division shop's source is a per-SIZE question (below): its
+      // product-level answer must not drop the product before that is asked.
       const srcAny = srcOf(dest, pid);
-      if (!srcAny) continue;
+      if (!srcAny && !(division && DIVISION_SHOPS.includes(dest))) continue;
       // Defensive class filter (managedPids already admitted this pid). Footwear
       // is added here for the same reason it is added there: without it a shoe
       // with no explicit row is dropped before resolveTarget is consulted. Still
@@ -3083,7 +3087,10 @@ function computeRefillPlan(snapshot) {
           const expected = divisionExpectedTarget(division, loc, pid, size, p);
           const effective = trustedCell(loc, pid, sk) ? resolveTarget(ctx, loc, pid, size) : null;
           const deadSize = fw && sizeUnitsAnywhere(viewOf(loc, pid), pid, size) <= 0;
-          const v = divisionAuditVerdict({ expected, effective, explicitZero, deadSize });
+          // A keep with no route at all (no live source for this size) raises
+          // nothing, whatever it says: that is a mismatch, not "kept".
+          const unrouted = loc !== DIVISION_HUB && !!expected && !explicitZero && !srcOf(loc, pid, size);
+          const v = unrouted ? { ok: false, reason: "unrouted" } : divisionAuditVerdict({ expected, effective, explicitZero, deadSize });
           tally.cells += 1;
           if (v.reason === "switched_off") tally.switchedOff += 1;
           if (v.ok) continue;
