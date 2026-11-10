@@ -975,9 +975,7 @@ async function runScan() {
         // Hub 3's seated sneakers, and a seated non-sneaker on a Pine or
         // Concrete shelf, are counted stock (concrete-division.cjs): the plan
         // flags exactly those, and only for that destination.
-        const seatedOk = (intent.seatedHub3 === true && dest === concreteDivision.DIVISION_HUB)
-          || (intent.seatedShop === true && concreteDivision.DIVISION_SHOPS.includes(dest));
-        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk && !seatedOk) {
+        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk && !concreteDivision.seatedIntentTrusted(intent, dest)) {
           counts.errors.push(`untrusted cell: refused ${source}→${dest} for ${pid}/${sizeKey}`);
           continue;
         }

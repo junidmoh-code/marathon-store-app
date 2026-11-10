@@ -385,6 +385,17 @@ function divisionKeepCounts({ division, stockView, products }) {
   return out;
 }
 
+// ── THE SCAN'S WRITE-TIME TRUST CHECK ────────────────────────────────────────
+// At a "solved products only" destination the scan refuses an intent for an
+// untrusted cell. A seated cell is counted stock in the division: Hub 3's seated
+// sneakers, and a seated non-sneaker on a Pine or Concrete shelf. The plan flags
+// exactly those (seatedHub3 / seatedShop), and only for that destination.
+function seatedIntentTrusted(intent, dest) {
+  if (!intent) return false;
+  if (intent.seatedHub3 === true && dest === DIVISION_HUB) return true;
+  return intent.seatedShop === true && DIVISION_SHOPS.includes(dest);
+}
+
 // ── THE POLICY AUDIT — "Concrete division policy" on Health (Junid, 10 Nov 2026)
 // What Junid's policy says a seated product should keep, per size, at Pine,
 // Concrete and Hub 3 — computed from the policy key alone, never from the
@@ -495,5 +506,5 @@ module.exports = {
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
   divisionTargetShape, hub3PresenceIndex, isSeatedAtShop, divisionShopCarries, hub3HoldsSize, hub3ServesSize, hub3InboundIndex, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
-  SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy, HUB3_SNEAKER_KEEP, divisionExpectedTarget, divisionAuditVerdict,
+  SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy, seatedIntentTrusted, HUB3_SNEAKER_KEEP, divisionExpectedTarget, divisionAuditVerdict,
 };

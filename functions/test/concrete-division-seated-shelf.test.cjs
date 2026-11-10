@@ -97,3 +97,15 @@ test("the shared predicates: seated at a shop, or a cell in the view", () => {
   assert.equal(dv.divisionShopCarries(division, "marathon-pine", "t1", {}), false);
   assert.deepEqual(dv.divisionManagedPids(division, "concrete", {}, products), ["t1"]);
 });
+
+test("the scan's write-time trust check lets a seated shop intent through, for that shop only", () => {
+  assert.equal(dv.seatedIntentTrusted({ seatedShop: true }, "concrete"), true);
+  assert.equal(dv.seatedIntentTrusted({ seatedShop: true }, "marathon-pine"), true);
+  assert.equal(dv.seatedIntentTrusted({ seatedShop: true }, "hub3"), false);
+  assert.equal(dv.seatedIntentTrusted({ seatedShop: true }, "trophy"), false);
+  assert.equal(dv.seatedIntentTrusted({ seatedHub3: true }, "hub3"), true);
+  assert.equal(dv.seatedIntentTrusted({ seatedHub3: true }, "concrete"), false);
+  assert.equal(dv.seatedIntentTrusted({}, "concrete"), false);
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "refill-scan.cjs"), "utf8");
+  assert.ok(src.includes("!cellOk && !concreteDivision.seatedIntentTrusted(intent, dest)"), "the scan asks the shared predicate");
+});
