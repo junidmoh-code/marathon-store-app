@@ -82,7 +82,7 @@ const MUTATIONS = [
   { id: "M-DIVISION-CAP", guard: "division non-sneakers are released past the 75 lever", file: ENG,
     from: "  const plannedClothing = divisionSet.size\n", to: "  const plannedClothing = false\n", node: [T("concrete-division-release-perfume.test.cjs")] },
   { id: "M-DIVISION-CEILING", guard: "past 500 the division is paced", file: ENG,
-    from: "...dealFairly(divisionClothing, maxDivisionIntents)]", to: "...divisionClothing]", node: [T("concrete-division-release-perfume.test.cjs")] },
+    from: "const plannedDivisionClothing = divisionSet.size ? dealFairly(divisionClothing, maxDivisionIntents) : [];", to: "const plannedDivisionClothing = divisionSet.size ? divisionClothing : [];", node: [T("concrete-division-release-perfume.test.cjs")] },
   { id: "M-NEVER-KEEPS", guard: "Concrete resolves no perfume target from any branch", file: ENG,
     from: "  if (divisionNeverKeeps(dest, products?.[pid])) return null;\n", to: "", node: [T("concrete-division-release-perfume.test.cjs")] },
   { id: "M-NEVER-SEAT", guard: "Concrete never seats perfume, and unseats it", file: CD,
