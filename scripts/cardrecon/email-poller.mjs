@@ -81,7 +81,8 @@ import {
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   refusalFingerprint, applyRefusalFingerprint,
   redactAccountDigits, domainOfAddress, parseAccountPolicies, accountPolicyProblems,
-  destinationVerdict, immediacyVerdict, enforcesImmediateOnly, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
+  destinationVerdict, immediacyVerdict, enforcesImmediateOnly, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
+  resolveAccountFloors, datedVerdict,
   IMMEDIATE_NOT_REQUIRED_FROM,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
@@ -266,6 +267,10 @@ function config() {
     // (Sonnet architect review, #765.)
     eftPaymentDateCutoff: parsePaymentDateCutoff(env.EFT_PAYMENT_DATE_CUTOFF),
     eftPaymentDateCutoffSource: sourceOf(EFT_CUTOFF_ENV_VAR),
+    // Per-account effective-from floors (eftCore ACCOUNT_EFFECTIVE_FROM — Pine's
+    // FNB account from 2026-11-10), resolved against the allowlist: bank +
+    // last four out, full numbers never.
+    eftAccountFloors: resolveAccountFloors(parseAccountPolicies(env.EFT_ALLOWED_ACCOUNTS)),
     dryRun: process.argv.includes("--dry-run"),
   };
 }
@@ -633,6 +638,9 @@ async function run() {
   } else {
     console.warn(`⚠ ${cfg.eftPaymentDateCutoff.reason} It is set in ${cfg.eftPaymentDateCutoffSource}; fix it or remove it to use the default (${DEFAULT_EFT_PAYMENT_DATE_CUTOFF}). Until then every bank notification waits UNREAD — nothing is confirmed, nothing is refused; slips are unaffected.`);
   }
+  // Per-account floors (10 Nov 2026) — bank, last four and date, never a full number.
+  for (const f of cfg.eftAccountFloors.floors) console.log(`· EFT: ${f.label} (${f.unresolved ? `UNRESOLVED — every ${f.bank} account` : `${f.bank} …${f.tail}`}) confirms only payments the bank dates ${f.from} or later`);
+  for (const problem of cfg.eftAccountFloors.problems) console.warn(`⚠ EFT account floor: ${problem}`);
 
   // ── RE-RUN WHAT AN OLDER PARSER REFUSED — before the scan, so the scan
   // finds the released messages in this same tick. Never the tick's failure.
@@ -851,6 +859,13 @@ async function run() {
       // so the owner can see from the heartbeat which cutoff is live.
       eftPaymentDateCutoff: cfg.eftPaymentDateCutoff.ok ? cfg.eftPaymentDateCutoff.date : "INVALID",
       eftImmediateNotRequiredFrom: IMMEDIATE_NOT_REQUIRED_FROM,
+      // Per-account effective-from floors in force (a count, never a value).
+      // An unresolved floor still counts here (it applies bank-wide, fail
+      // closed); eftAccountFloorProblems is the health signal.
+      eftAccountFloors: cfg.eftAccountFloors.floors.length,
+      // Floors that did not resolve (applied bank-wide, fail closed) or that
+      // share a last four with another account — 0 is the ONLY healthy value.
+      eftAccountFloorProblems: cfg.eftAccountFloors.problems.length,
       // Messages the EFT reader THREW on this tick (left unread, retried) — a
       // persistent environment failure must not hide behind a healthy beat.
       eftErrors,
@@ -1521,8 +1536,11 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
         // FIX 8 — dated on or after the cutoff BY THE BANK (group.parse.bankTs,
         // the bank's own printed payment date). message.receivedAt is
         // deliberately not passed: the mailbox's clock is never the payment's.
+        // Then the matched account's own effective-from floor, if it has one
+        // (Pine's FNB account, 2026-11-10): a LATER floor on top of the
+        // global one, never instead of it.
         const dated = group.parse.ok
-          ? paymentDateVerdict({ parsed: group.parse, cutoff: cfg.eftPaymentDateCutoff })
+          ? datedVerdict({ parsed: group.parse, cutoff: cfg.eftPaymentDateCutoff, account, floors: cfg.eftAccountFloors.floors })
           : null;
         outcomes.push({
           poolKey: eftPaymentKey(key, group, groups.length),

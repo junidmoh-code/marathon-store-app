@@ -292,8 +292,9 @@ describe("the poller wires the gate on the bank's date (source scan)", () => {
     expect(guard).toBeLessThan(firstDecision);
     expect(src).toMatch(/eftPaymentDateCutoff: cfg\.eftPaymentDateCutoff\.ok \? cfg\.eftPaymentDateCutoff\.date : "INVALID"/);
     expect(src).not.toMatch(/fail\(`\$\{c\.reason\}/);
-    expect(src).toMatch(/paymentDateVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff \}\)/);
+    expect(src).toMatch(/datedVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff, account, floors: cfg\.eftAccountFloors\.floors \}\)/); // the global cutoff, then the account floor (10 Nov 2026)
     expect(src).not.toMatch(/paymentDateVerdict\([^)]*receivedAt/);
+    expect(src).not.toMatch(/datedVerdict\([^)]*receivedAt/);
     expect(src).toMatch(/message, verdict, parsed: group\.parse, account, timing, dated,/);
     expect(src).toMatch(/eftRefusedStale: count\("refused-stale-date"\)/);
   });

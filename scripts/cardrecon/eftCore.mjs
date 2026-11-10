@@ -784,6 +784,108 @@ export function paymentDateVerdict({ parsed, cutoff }) {
   return { ok: true };
 }
 
+// ─── PER-ACCOUNT EFFECTIVE-FROM FLOOR (Junid, 10 Nov 2026) ───────────────────
+// Marathon Pine's FNB account (the allowed account whose number starts 63 —
+// Marathon's own FNB account starts 62) was settled BY HAND until auto-confirm
+// went on for Pine. A payment into it that the bank dates before 2026-11-10
+// has already been handled, so confirming it now would confirm the same money
+// twice: it refuses as refused-stale-date, exactly like the global cutoff
+// (same date — the BANK's printed payment date, never the email's arrival —
+// same outcome, same quarantine). From 2026-11-10 it confirms under every
+// normal rule. The global EFT_PAYMENT_DATE_CUTOFF is untouched and still
+// applies first, to every account; this only ever ADDS a later floor.
+//
+// Keyed on bank + the account's leading digits, never a full number in this
+// repo: resolveAccountFloors finds the matching EFT_ALLOWED_ACCOUNTS entry at
+// start-up and keeps only its bank and last four (what destinationVerdict
+// answers with). Only an entry STARTING with the prefix names the floored
+// account; but a notice usually prints just the last four, so any other
+// allowed account at the same bank that shares those four is floored too
+// (strictest wins) and resolveAccountFloors flags it as a problem.
+//
+// FAIL CLOSED (Sonnet architect review, #886). A floor whose prefix matches NO
+// configured entry (a typo, an entry re-keyed to last four only) cannot name
+// its account — and silently dropping it would let exactly the pre-floor money
+// it exists to stop confirm. So an unresolved floor applies to EVERY account
+// at its bank (tail null) until EFT_ALLOWED_ACCOUNTS is fixed, and the
+// start-up line and heartbeat say so. Another account at the same bank that
+// shares the floored account's last four is flagged too: a masked notice
+// cannot tell the two apart, so the floor (strictest) applies to both.
+export const ACCOUNT_EFFECTIVE_FROM = Object.freeze([
+  Object.freeze({ bank: "fnb", prefix: "63", from: "2026-11-10", label: "Marathon Pine's FNB account" }),
+]);
+
+/**
+ * The floors that apply, resolved against the configured accounts
+ * (parseAccountPolicies). Full numbers stay inside; out come bank + last four.
+ * @returns {{floors: Array<{bank:string, tail:string, from:string, startMs:number, label:string}>, problems: string[]}}
+ */
+export function resolveAccountFloors(policies, floors = ACCOUNT_EFFECTIVE_FROM) {
+  const out = []; const problems = [];
+  const list = Array.isArray(policies) ? policies : [];
+  for (const f of floors) {
+    const startMs = parseBankTimestamp(f.from);
+    if (!Number.isInteger(startMs) || !/^\d{4}-\d{2}-\d{2}$/.test(f.from)) {
+      // A floor whose date does not read must not vanish (fail open): it
+      // refuses everything at its bank until the constant is fixed.
+      problems.push(`${f.label}: effective-from "${f.from}" is not a date — every ${f.bank.toUpperCase()} payment refuses until it is fixed`);
+      out.push({ bank: f.bank, tail: null, from: String(f.from), startMs: Number.MAX_SAFE_INTEGER, label: f.label, unresolved: true });
+      continue;
+    }
+    const hits = list.filter((p) => p && p.bank === f.bank && typeof p.account === "string" && p.account.startsWith(f.prefix) && p.account.length > f.prefix.length + 3);
+    if (!hits.length) {
+      problems.push(`${f.label}: no allowed ${f.bank.toUpperCase()} account starts ${f.prefix}, so its ${f.from} floor cannot name its account — applied to EVERY ${f.bank.toUpperCase()} account until EFT_ALLOWED_ACCOUNTS is fixed`);
+      out.push({ bank: f.bank, tail: null, from: f.from, startMs, label: f.label, unresolved: true });
+      continue;
+    }
+    for (const h of hits) {
+      const tail = h.account.slice(-4);
+      out.push({ bank: f.bank, tail, from: f.from, startMs, label: f.label });
+      const twins = list.filter((p) => p && p !== h && p.bank === f.bank && typeof p.account === "string" && p.account.endsWith(tail));
+      if (twins.length) problems.push(`${f.label}: another allowed ${f.bank.toUpperCase()} account also ends …${tail}; a masked notice cannot tell them apart, so the ${f.from} floor applies to both`);
+    }
+  }
+  return { floors: out, problems };
+}
+
+/**
+ * A payment into a floored account must be dated (by the bank) on or after
+ * that account's effective-from day. `account` is destinationVerdict's answer
+ * ({ok, bank, tail}); a refused destination is not this check's business.
+ * Two allowed accounts at one bank sharing a last four: the floor applies
+ * (the strictest policy wins, as for immediate-only).
+ * @returns {{ok:true} | {ok:false, reason:string, cutoff:string}}
+ */
+export function accountFloorVerdict({ parsed, account, floors }) {
+  if (!account || account.ok !== true) return { ok: true };
+  const hit = (Array.isArray(floors) ? floors : [])
+    .filter((f) => f.bank === account.bank && (f.tail === account.tail || f.tail === null))
+    .sort((a, b) => b.startMs - a.startMs)[0];
+  if (!hit) return { ok: true };
+  const bankTs = parsed?.bankTs;
+  if (!Number.isInteger(bankTs)) {
+    return { ok: false, cutoff: hit.from, reason: `The bank's own payment date could not be read, so it cannot be checked against the ${hit.from} start date for ${hit.label} — refused rather than assumed.` };
+  }
+  if (bankTs < hit.startMs) {
+    return {
+      ok: false, cutoff: hit.from,
+      reason: `Payment dated before the cutoff for this account: the bank dates this payment ${sastDate(bankTs)}, and ${hit.label} only confirms payments dated ${hit.from} or later — earlier payments into it were settled by hand. Check it on the bank statement; do not confirm it again.`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * The whole date gate the poller applies to one payment: the global cutoff
+ * first (every account), then the matched account's own floor, if any.
+ * @returns {{ok:true} | {ok:false, reason:string, cutoff?:string}}
+ */
+export function datedVerdict({ parsed, cutoff, account, floors }) {
+  const global = paymentDateVerdict({ parsed, cutoff });
+  if (global.ok !== true) return global;
+  return accountFloorVerdict({ parsed, account, floors });
+}
+
 // ─── IDENTITY AND IDEMPOTENCY ────────────────────────────────────────────────
 /**
  * The pool key for a message — ALSO the record's node name, which is what makes
