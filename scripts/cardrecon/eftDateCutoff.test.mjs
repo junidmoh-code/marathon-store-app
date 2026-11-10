@@ -286,7 +286,7 @@ describe("the poller wires the gate on the bank's date (source scan)", () => {
     // claim (the message stays unread, retried), the heartbeat says INVALID,
     // and the slip path keeps running — config() itself never fails on it.
     const guard = src.search(/if \(!cfg\.eftPaymentDateCutoff\.ok\) \{\s*throw new Error\(/);
-    const firstDecision = src.indexOf("authenticationVerdict({ headerLines: parsed.headerLines, fromAddress })", src.indexOf("async function handleEftMessage")); // inside the sender gate since 10 Nov 2026
+    const firstDecision = src.indexOf("verdict: authenticationVerdict({ headerLines: parsed.headerLines, fromAddress })", src.indexOf("async function handleEftMessage")); // inside the sender gate since 10 Nov 2026
     expect(guard).toBeGreaterThan(-1);
     expect(firstDecision).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(firstDecision);

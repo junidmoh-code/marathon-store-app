@@ -680,6 +680,7 @@ async function run() {
   // The EFT reader's own tallies — separable on purpose: a refused slip means a
   // terminal is not reconciling; a refused-auth notification means somebody
   // tried to forge a payment. Different alarms for different people.
+  let eftRefusedMismatch = 0;
   let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftRefusedTiming = 0, eftRefusedStale = 0, eftHeld = 0, eftErrors = 0;
   let scannedSoFar = 0;
   let windowCount = 0;
@@ -817,6 +818,8 @@ async function run() {
             eftRefusedAccount += result.eftRefusedAccount || 0;
             eftRefusedTiming += result.eftRefusedTiming || 0;
             eftRefusedStale += result.eftRefusedStale || 0;
+            eftRefusedMismatch += result.eftRefusedMismatch || 0;
+            untrustedSenderThisRun += result.eftUntrusted || 0;
             eftHeld += result.eftHeld || 0;
             eftErrors += result.eftErrors || 0;
           } catch (err) {
@@ -853,6 +856,7 @@ async function run() {
       // Bank-domain mail refused as an untrusted sender this tick (a person's
       // mailbox at a bank, or a forward) — Junid reviews each in /eft_pool.
       eftUntrustedSender: untrustedSenderThisRun,
+      eftRefusedMismatch,
       // How many account tails the allowlist held this tick — a COUNT, never
       // a value. Zero is the loudest number on this line: it means every
       // payment refuses until EFT_ALLOWED_ACCOUNTS is set in .env.
@@ -881,8 +885,8 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
-  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftRefusedTiming || eftRefusedStale || eftHeld || unknownBankThisRun || untrustedSenderThisRun) {
-    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftRefusedTiming} NOT IMMEDIATE, ${eftRefusedStale} DATED BEFORE THE CUTOFF, ${eftHeld} HELD (resent copy, possible duplicate for review, or no bank transaction id), ${unknownBankThisRun} from a bank not set up, ${untrustedSenderThisRun} UNTRUSTED SENDER — see /eft_pool`);
+  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftRefusedTiming || eftRefusedStale || eftHeld || unknownBankThisRun || untrustedSenderThisRun || eftRefusedMismatch) {
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftRefusedTiming} NOT IMMEDIATE, ${eftRefusedStale} DATED BEFORE THE CUTOFF, ${eftHeld} HELD (resent copy, possible duplicate for review, or no bank transaction id), ${unknownBankThisRun} from a bank not set up, ${untrustedSenderThisRun} UNTRUSTED SENDER, ${eftRefusedMismatch} BANK/SENDER MISMATCH — see /eft_pool`);
   }
   return 0;
 }
@@ -1309,8 +1313,10 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // A batch report is the slip path's, always. A stranger gets the
   // visibility-only path below — never a reader, never an opened attachment.
   if (route === "card") return null;
-  // FNB's batch-report address sends slips only: the card path's, always.
-  if (CARD_REPORT_SENDERS.includes(String(fromAddress ?? "").trim().toLowerCase())) return null;
+  // FNB's batch-report address sends slips only: the card path's — but only
+  // when DKIM proves it (a forgery claiming it still raises the alarm below).
+  if (CARD_REPORT_SENDERS.includes(String(fromAddress ?? "").trim().toLowerCase())
+    && authenticationVerdict({ headerLines: parsed.headerLines, fromAddress }).pass === true) return null;
   const fromDomain = domainOfAddress(fromAddress);
   if (route === "stranger") {
     // NOTE it, then HAND IT BACK. Returning a result here would consume the
@@ -1351,9 +1357,9 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // a failed verdict, and everything below treats it as one. (10 Nov 2026.)
   const verdict = senderTrustVerdict({
     verdict: authenticationVerdict({ headerLines: parsed.headerLines, fromAddress }),
-    fromAddress, subject: message.subject, headerLines: parsed.headerLines, bodyText,
+    fromAddress, fromAddressCount: Array.isArray(parsed.from?.value) ? parsed.from.value.filter((v) => v?.address).length : 0,
+    subject: message.subject, headerLines: parsed.headerLines, bodyText,
   });
-  if (verdict.untrustedSender) untrustedSenderThisRun += 1;
   // The auth verdict is part of the key so a forgery carrying a guessed genuine
   // Message-ID cannot occupy the key the genuine notification will need.
   const key = eftMessageKey({
@@ -1389,6 +1395,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       if (d?.write) {
         console.log(`  · EFT: ${forgery.outcome} recorded (message also carries attachments — handed to the slip path)`);
         emailVerdict(forgery, key);
+        if (forgery.outcome === "refused-untrusted-sender") untrustedSenderThisRun += 1;
       }
     }
     return null;
@@ -1417,7 +1424,10 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       // — a customer's screenshot, a WhatsApp file, a second bank's slip — is
       // never a confirmation source and is not rendered at all.
       if (!isSendersOwnDocument(verdict.sender, att.filename)) {
-        documents.push({ lines: null, text: `[attachment "${clip(att.filename, 80)}" not read: it is not ${verdict.sender?.address ?? "the bank"}'s own notification document, so it is never a confirmation source]` });
+        // `skipped`: no red row beside a payment the bank's own PDF carries,
+        // but if NOTHING was read it still forces a visible refusal (a bank
+        // renaming its PDF must never vanish silently).
+        documents.push({ lines: null, skipped: true, text: `[attachment "${clip(att.filename, 80)}" not read: it is not ${verdict.sender?.address ?? "the bank"}'s own notification document, so it is never a confirmation source]` });
         continue;
       }
       if (++extracted > MAX_EFT_PDFS) {
@@ -1540,7 +1550,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       // alongside its readable siblings: the payment may be inside it, and a
       // red row a person can chase beats a silence nobody can.
       // (CodeRabbit, this PR.)
-      for (const d of documents.filter((x) => x.lines === null)) {
+      for (const d of documents.filter((x) => x.lines === null && !x.skipped)) {
         parsedDocs.push({
           d, r: null,
           p: { ok: false, reason: `An attachment on this message could not be read — a payment may be inside it. ${clip(d.text, 200)}` },
@@ -1710,6 +1720,8 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     eftRefusedAccount: count("refused-account"),
     eftRefusedTiming: count("refused-not-immediate"),
     eftRefusedStale: count("refused-stale-date"),
+    eftRefusedMismatch: count("refused-bank-mismatch"),
+    eftUntrusted: count("refused-untrusted-sender"),
     eftHeld: written.filter((r) => HELD_OUTCOMES.includes(r.outcome)).length,
   };
 }

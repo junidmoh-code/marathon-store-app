@@ -164,12 +164,16 @@ export function domainAllowlisted(domain) {
 // sender's mail; `attachments` are the system filenames its PDFs carry — the
 // bank's notification IS that PDF (every body says "open the attached PDF"),
 // so it is read, and nothing else attached is.
+// `dkimDomain` is the EXACT domain Gmail recorded the passing signature for on
+// every genuine message (audit: no subdomain, no other signer). The history
+// also shows exactly one From header with one address and never a Sender
+// header on any of them — senderTrustVerdict refuses anything else.
 export const TRUSTED_NOTIFICATION_SENDERS = Object.freeze([
-  Object.freeze({ address: "paymentsemail@fnb.co.za", reader: "fnb", attachments: Object.freeze([/^Payment Notification\.pdf$/i]) }),
-  Object.freeze({ address: "noreply@capitecbank.co.za", reader: "capitec", attachments: Object.freeze([/^ImmediatePaymentNotification\.pdf$/i, /^PaymentNotification\.pdf$/i, /^Payment\.pdf$/i]) }),
-  Object.freeze({ address: "notification@nedbank.co.za", reader: "nedbank", attachments: Object.freeze([/^Proof_Of_Payment\.pdf$/i]) }),
-  Object.freeze({ address: "noreply@standardbank.co.za", reader: "standardbank", attachments: Object.freeze([/^PaymentConfirmation\.pdf$/i]) }),
-  Object.freeze({ address: "ibreply@absa.co.za", reader: "absa", attachments: Object.freeze([/^Absa\.pdf$/i]) }),
+  Object.freeze({ address: "paymentsemail@fnb.co.za", dkimDomain: "fnb.co.za", reader: "fnb", attachments: Object.freeze([/^Payment Notification\.pdf$/i]) }),
+  Object.freeze({ address: "noreply@capitecbank.co.za", dkimDomain: "capitecbank.co.za", reader: "capitec", attachments: Object.freeze([/^ImmediatePaymentNotification\.pdf$/i, /^PaymentNotification\.pdf$/i, /^Payment\.pdf$/i]) }),
+  Object.freeze({ address: "notification@nedbank.co.za", dkimDomain: "nedbank.co.za", reader: "nedbank", attachments: Object.freeze([/^Proof_Of_Payment\.pdf$/i]) }),
+  Object.freeze({ address: "noreply@standardbank.co.za", dkimDomain: "standardbank.co.za", reader: "standardbank", attachments: Object.freeze([/^PaymentConfirmation\.pdf$/i]) }),
+  Object.freeze({ address: "ibreply@absa.co.za", dkimDomain: "absa.co.za", reader: "absa", attachments: Object.freeze([/^Absa\.pdf$/i]) }),
 ]);
 
 // FNB's terminal batch-report sender: card slips, never payments. Its mail is
@@ -221,18 +225,31 @@ export function forwardSignOf({ subject, headerLines, bodyText }) {
  * never opened, the attempt recorded and emailed to Junid as
  * refused-untrusted-sender). A failed DKIM verdict passes through unchanged.
  */
-export function senderTrustVerdict({ verdict, fromAddress, subject, headerLines, bodyText }) {
+export function senderTrustVerdict({ verdict, fromAddress, fromAddressCount = 1, subject, headerLines, bodyText }) {
   if (!verdict || verdict.pass !== true) return verdict;
+  const untrusted = (detail) => ({ ...verdict, pass: false, untrustedSender: true, sender: null, detail });
   const sender = trustedSenderOf(fromAddress);
   if (!sender) {
-    return { ...verdict, pass: false, untrustedSender: true, sender: null,
-      detail: `DKIM passed for ${verdict.fromDomain}, but ${clip(String(fromAddress ?? "").toLowerCase(), 120)} is not that bank's automated payment-notification address — a person's mailbox at a bank is not a notification source` };
+    return untrusted(`DKIM passed for ${verdict.fromDomain}, but ${clip(String(fromAddress ?? "").toLowerCase(), 120)} is not that bank's automated payment-notification address — a person's mailbox at a bank is not a notification source`);
+  }
+  // ONE author, and it is the trusted address: two From headers, two From
+  // addresses, or a Sender header (send-on-behalf) mean someone else may be
+  // the real author. No genuine notification in the history has any of them.
+  const hdrs = Array.isArray(headerLines) ? headerLines : [];
+  const fromHeaders = hdrs.filter((h) => String(h?.key ?? "").toLowerCase() === "from").length;
+  if (fromHeaders > 1 || fromAddressCount !== 1) {
+    return untrusted(`from ${sender.address}, but the message names more than one author (${fromHeaders} From header(s), ${fromAddressCount} address(es)) — a bank's notification has exactly one`);
+  }
+  if (hdrs.some((h) => String(h?.key ?? "").toLowerCase() === "sender")) {
+    return untrusted(`from ${sender.address}, but it carries a Sender header — sent on someone's behalf, which a bank's notification system never does`);
+  }
+  // The signature must be the bank's own domain EXACTLY, as on every genuine
+  // notification — not merely aligned (a subdomain mailer would align).
+  if (String(verdict.dkimDomain ?? "").toLowerCase() !== sender.dkimDomain) {
+    return untrusted(`from ${sender.address}, but its DKIM signature is for ${verdict.dkimDomain ?? "no domain"}, not ${sender.dkimDomain} — every genuine notification from this address is signed by ${sender.dkimDomain}`);
   }
   const fwd = forwardSignOf({ subject, headerLines, bodyText });
-  if (fwd) {
-    return { ...verdict, pass: false, untrustedSender: true, sender: null,
-      detail: `from ${sender.address}, but ${fwd} — a bank's notification system never forwards or replies` };
-  }
+  if (fwd) return untrusted(`from ${sender.address}, but ${fwd} — a bank's notification system never forwards or replies`);
   return { ...verdict, sender };
 }
 

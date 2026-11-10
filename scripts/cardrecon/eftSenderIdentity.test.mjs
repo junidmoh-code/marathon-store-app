@@ -72,6 +72,14 @@ const FNB_DOC = [
   "To authenticate this Payment Notification, please visit the First National Bank website at fnb.co.za, select the “Verify Payments” link and follow the on-screen",
   "instructions.",
 ];
+const SB_DOC = [
+  "Internet Banking", "Standard Bank Centre", "Website: www.standardbank.co.za", "Dear Marathon",
+  "We confirm that the following payment has been made into your account from J SOAP:", "Reference number 4149999999",
+  "Beneficiary name MARATHON", "Bank name FIRST NATIONAL BANK", "Beneficiary account number XXXXXXXXXXXX4321",
+  "Beneficiary branch number 25065500", "Beneficiary reference OM82", "Amount R100.00", "Payment date and time 2026-11-10 09h48",
+  "If you need more information or have any questions about this payment, please contact:", "J SOAP",
+  "Payments to Standard Bank accounts may take up to one business day to reflect.", "Yours sincerely,", "The Internet Banking Team",
+];
 const ATTACHED_BODY = "A payment has been made to your account.\nTo view the details of the payment, please open the attached PDF file.";
 const SIPHELELE_BODY = "Good day.\nPlease find the attached proof of payment for Mr S. Mtetwa.\nWarm regards.\nSiphelele Mkwanazi\nClient Advisor | Nedbank";
 
@@ -79,11 +87,12 @@ const SIPHELELE_BODY = "Good day.\nPlease find the attached proof of payment for
  * The poller's EFT decision for one message (handleEftMessage, minus IO).
  * attachments: [{ filename, lines }]
  */
-function poller({ from, subject, extraHeaders = [], body = ATTACHED_BODY, attachments = [], receivedAt = sast("2026-11-10T10:00:00") }) {
-  const domain = from.split("@")[1];
+function poller({ from, subject, extraHeaders = [], body = ATTACHED_BODY, attachments = [], receivedAt = sast("2026-11-10T10:00:00"), signedBy, fromAddressCount = 1 }) {
+  const domain = signedBy ?? from.split("@")[1];
+  const headers = dkimPass(domain, from, extraHeaders);
   const verdict = senderTrustVerdict({
-    verdict: authenticationVerdict({ headerLines: dkimPass(domain, from, extraHeaders), fromAddress: from }),
-    fromAddress: from, subject, headerLines: dkimPass(domain, from, extraHeaders), bodyText: body,
+    verdict: authenticationVerdict({ headerLines: headers, fromAddress: from }),
+    fromAddress: from, fromAddressCount, subject, headerLines: headers, bodyText: body,
   });
   const message = { messageId: "<m@x>", from, subject, receivedAt };
   if (!verdict.pass) {
@@ -174,15 +183,49 @@ describe("GENUINE automated notifications from the real addresses still confirm"
     const { records } = poller({ from: "noreply@capitecbank.co.za", subject: "Immediate Payment Notification", attachments: [{ filename: "ImmediatePaymentNotification.pdf", lines: CAPITEC_DOC() }] });
     expect(records.map((r) => r.outcome)).toEqual(["recorded"]);
   });
+  it("Standard Bank — noreply@standardbank.co.za with PaymentConfirmation.pdf → recorded", () => {
+    const { records } = poller({ from: "noreply@standardbank.co.za", subject: "Payment confirmation 8690", attachments: [{ filename: "PaymentConfirmation.pdf", lines: SB_DOC }] });
+    expect(records.map((r) => r.outcome)).toEqual(["recorded"]);
+  });
+  it("an extra, non-system attachment beside the bank's own PDF is not opened and raises no refusal row", () => {
+    const { records, opened } = poller({ from: "notification@nedbank.co.za", subject: "Payment Notification", attachments: [{ filename: "Proof_Of_Payment.pdf", lines: NEDBANK_DOC }, { filename: "Terms.pdf", lines: ["Terms"] }] });
+    expect(opened).toEqual(["Proof_Of_Payment.pdf"]);
+    expect(records.map((r) => r.outcome)).toEqual(["recorded"]);
+  });
   it("the trusted list is exactly the five senders the history proved, each with its own reader", () => {
-    expect(TRUSTED_NOTIFICATION_SENDERS.map((t) => `${t.address}:${t.reader}`)).toEqual([
-      "paymentsemail@fnb.co.za:fnb", "noreply@capitecbank.co.za:capitec", "notification@nedbank.co.za:nedbank",
-      "noreply@standardbank.co.za:standardbank", "ibreply@absa.co.za:absa",
+    expect(TRUSTED_NOTIFICATION_SENDERS.map((t) => `${t.address}:${t.dkimDomain}:${t.reader}`)).toEqual([
+      "paymentsemail@fnb.co.za:fnb.co.za:fnb", "noreply@capitecbank.co.za:capitecbank.co.za:capitec", "notification@nedbank.co.za:nedbank.co.za:nedbank",
+      "noreply@standardbank.co.za:standardbank.co.za:standardbank", "ibreply@absa.co.za:absa.co.za:absa",
     ]);
     for (const t of TRUSTED_NOTIFICATION_SENDERS) expect(EFT_READERS.some((r) => r.id === t.reader), t.address).toBe(true);
     expect(EFT_ALLOWED_DOMAINS).toContain("tymebank.co.za"); // authenticated, but no proven sender yet
     expect(trustedSenderOf("noreply@tymebank.co.za")).toBe(null);
     expect(CARD_REPORT_SENDERS).toEqual(["noreplytransreport@fnb.co.za"]);
+  });
+});
+
+describe("one author, signed by the bank's own domain exactly", () => {
+  const att = [{ filename: "Proof_Of_Payment.pdf", lines: NEDBANK_DOC }];
+  it("two From addresses (the trusted one first) → REFUSED", () => {
+    expect(poller({ from: "notification@nedbank.co.za", subject: "Payment Notification", attachments: att, fromAddressCount: 2 }).records[0].outcome).toBe("refused-untrusted-sender");
+  });
+  it("a second From header → REFUSED", () => {
+    const { records } = poller({ from: "notification@nedbank.co.za", subject: "Payment Notification", attachments: att, extraHeaders: [{ key: "from", line: "From: <staff@nedbank.co.za>" }] });
+    expect(records[0].outcome).toBe("refused-untrusted-sender");
+  });
+  it("a Sender header (sent on someone's behalf) → REFUSED", () => {
+    const { records } = poller({ from: "notification@nedbank.co.za", subject: "Payment Notification", attachments: att, extraHeaders: [{ key: "sender", line: "Sender: staff@nedbank.co.za" }] });
+    expect(records[0].outcome).toBe("refused-untrusted-sender");
+    expect(records[0].reason).toMatch(/Sender header/);
+  });
+  it("a signature from a bank SUBDOMAIN (aligned, but not the domain every genuine one used) → REFUSED", () => {
+    const { records } = poller({ from: "notification@nedbank.co.za", subject: "Payment Notification", attachments: att, signedBy: "mailer.nedbank.co.za" });
+    expect(records[0].outcome).toBe("refused-untrusted-sender");
+    expect(records[0].reason).toMatch(/signature is for mailer\.nedbank\.co\.za, not nedbank\.co\.za/);
+  });
+  it("a Reply-To is NOT a refusal — genuine Absa / Standard Bank / Nedbank mail carries one", () => {
+    const { records } = poller({ from: "ibreply@absa.co.za", subject: "Notice of payment: Marathon club", attachments: [{ filename: "Absa.pdf", lines: ABSA_DOC }], extraHeaders: [{ key: "reply-to", line: "Reply-To: direct@absa.co.za" }] });
+    expect(records.map((r) => r.outcome)).toEqual(["recorded"]);
   });
 });
 
@@ -266,5 +309,12 @@ describe("the poller wires it in", () => {
     expect(handler).toMatch(/if \(!isSendersOwnDocument\(verdict\.sender, att\.filename\)\)/);
     expect(handler).toMatch(/noticeReadPlan\(\{ sender: verdict\.sender, offered, readers: EFT_READERS \}\)/);
     expect(src).not.toMatch(/selectReader\(\{ fromDomain/);
+  });
+  it("the card-report bypass needs a DKIM pass — a forgery claiming that address still raises the alarm", () => {
+    expect(src).toMatch(/CARD_REPORT_SENDERS\.includes\([^\n]*\n\s*&& authenticationVerdict\(\{ headerLines: parsed\.headerLines, fromAddress \}\)\.pass === true\) return null;/);
+  });
+  it("a skipped (non-system) attachment raises no sibling refusal row, but still forces visibility when nothing was read", () => {
+    expect(src).toMatch(/documents\.filter\(\(x\) => x\.lines === null && !x\.skipped\)/);
+    expect(src).toMatch(/const unreadable = documents\.some\(\(d\) => d\.lines === null\)/);
   });
 });
