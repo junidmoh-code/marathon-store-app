@@ -75,6 +75,8 @@ const CHECKS = {
   "refused-account": "Wrong destination account",
   "refused-not-immediate": "Not an immediate (real-time) payment",
   "refused-stale-date": "Payment dated before the cutoff",
+  "refused-untrusted-sender": "Untrusted sender",
+  "refused-bank-mismatch": "Bank/sender mismatch",
   "held-duplicate": "Duplicate — bank transaction id already seen",
   "held-no-bankref": "No bank transaction id",
   "held-possible-duplicate": "Possible duplicate — the same money is already in the pool (identical Absa notice, a hand entry, or another copy); held for your review",
@@ -242,7 +244,9 @@ export function verdictMail(record, { poolKey } = {}) {
 //     tick's go as ONE roll-up email naming each one's check and sender.
 //     Real payments (every other outcome) are never rolled up.
 export const STRANGER_EMAILS_PER_TICK = 3;
-export const STRANGER_OUTCOMES = ["unknown-bank", "refused-auth"];
+// refused-untrusted-sender (10 Nov 2026) is stranger-triggered too: anyone
+// with a mailbox at a bank can send it.
+export const STRANGER_OUTCOMES = ["unknown-bank", "refused-auth", "refused-untrusted-sender"];
 
 /** One roll-up email for the stranger-triggered verdicts past the per-tick cap. */
 export function strangerRollupMail(items) {

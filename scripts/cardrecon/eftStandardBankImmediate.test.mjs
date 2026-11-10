@@ -181,7 +181,9 @@ describe("trusted only from DKIM-verified Standard Bank mail", () => {
 
   it("the poller offers documents to a reader only after DKIM passed", () => {
     const src = readFileSync(resolve(HERE, "email-poller.mjs"), "utf8");
-    const calls = [...src.matchAll(/selectReader\(/g)];
+    // Since 10 Nov 2026 the sender's own reader is offered the documents
+    // through noticeReadPlan (which also names a mismatch) — after DKIM.
+    const calls = [...src.matchAll(/noticeReadPlan\(/g)];
     expect(calls).toHaveLength(1);
     const gate = src.lastIndexOf("if (!verdict.pass) {", calls[0].index);
     const elseAt = src.indexOf("} else {", gate);

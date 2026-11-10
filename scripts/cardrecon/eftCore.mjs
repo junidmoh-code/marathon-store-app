@@ -147,6 +147,126 @@ export function domainAllowlisted(domain) {
   return !!d && EFT_ALLOWED_DOMAINS.some((a) => d === a || d.endsWith(`.${a}`));
 }
 
+// ─── TRUSTED NOTIFICATION SENDERS — EXACT ADDRESSES, NOT DOMAINS ─────────────
+// Junid, 10 Nov 2026. A DKIM pass for nedbank.co.za proves only that a message
+// left a Nedbank mailbox — a client advisor's own mailbox passes it too. On
+// 10 Nov one did: SipheleleMkwa@nedbank.co.za forwarded a CAPITEC proof of
+// payment (a WhatsApp-named PDF) and it was refused only by accident (no
+// reader recognised the layout). The domain allowlist above still decides who
+// may be AUTHENTICATED; this list decides who may be a PAYMENT NOTIFICATION.
+//
+// Derived from the mailbox's whole history (read-only audit, 10 Nov 2026: 657
+// bank-domain messages since 30 Aug, 398 pool records): every payment ever
+// recorded came from exactly these five automated senders, each attaching its
+// own system-named PDF, none a reply or forward. A bank with no proven sender
+// (TymeBank) has none, so its mail refuses until a genuine notification is
+// seen and its address added here. `reader` is the one reader that may read a
+// sender's mail; `attachments` are the system filenames its PDFs carry — the
+// bank's notification IS that PDF (every body says "open the attached PDF"),
+// so it is read, and nothing else attached is.
+export const TRUSTED_NOTIFICATION_SENDERS = Object.freeze([
+  Object.freeze({ address: "paymentsemail@fnb.co.za", reader: "fnb", attachments: Object.freeze([/^Payment Notification\.pdf$/i]) }),
+  Object.freeze({ address: "noreply@capitecbank.co.za", reader: "capitec", attachments: Object.freeze([/^ImmediatePaymentNotification\.pdf$/i, /^PaymentNotification\.pdf$/i, /^Payment\.pdf$/i]) }),
+  Object.freeze({ address: "notification@nedbank.co.za", reader: "nedbank", attachments: Object.freeze([/^Proof_Of_Payment\.pdf$/i]) }),
+  Object.freeze({ address: "noreply@standardbank.co.za", reader: "standardbank", attachments: Object.freeze([/^PaymentConfirmation\.pdf$/i]) }),
+  Object.freeze({ address: "ibreply@absa.co.za", reader: "absa", attachments: Object.freeze([/^Absa\.pdf$/i]) }),
+]);
+
+// FNB's terminal batch-report sender: card slips, never payments. Its mail is
+// the card path's whatever the subject, so it is handed there untouched rather
+// than refused as an untrusted payment sender.
+export const CARD_REPORT_SENDERS = Object.freeze(["noreplytransreport@fnb.co.za"]);
+
+/** The trusted sender entry for an exact From address (case-insensitive), or null. */
+export function trustedSenderOf(address) {
+  const a = String(address ?? "").trim().toLowerCase();
+  if (!a) return null;
+  return TRUSTED_NOTIFICATION_SENDERS.find((t) => t.address === a) ?? null;
+}
+
+/** Is this attachment the trusted sender's own system document? */
+export function isSendersOwnDocument(sender, filename) {
+  const f = String(filename ?? "").trim();
+  return !!sender && !!f && sender.attachments.some((re) => re.test(f));
+}
+
+// A forward or a reply is a person handling a message, never the bank's system
+// sending one: no genuine notification in the history carries any of these.
+const FORWARD_SUBJECT = /^\s*(?:re|fw|fwd|aw|tr|wg)\s*(?:\[\d+\])?\s*:/i;
+const FORWARD_BODY = [
+  /-{2,}\s*forwarded message\s*-{2,}/i,
+  /begin forwarded message/i,
+  /-{2,}\s*original message\s*-{2,}/i,
+  /^\s*from:\s.+\n\s*(?:sent|date):\s/im,
+];
+
+/** Why this message reads as forwarded / replied to by a person — or null. */
+export function forwardSignOf({ subject, headerLines, bodyText }) {
+  if (FORWARD_SUBJECT.test(String(subject ?? ""))) return `its subject ("${clip(subject, 60)}") marks it as a reply or forward`;
+  for (const h of Array.isArray(headerLines) ? headerLines : []) {
+    const k = String(h?.key ?? "").toLowerCase();
+    if (k === "in-reply-to" || k === "references") return `it carries a ${k} header — it answers or continues another message`;
+    if (k === "resent-from" || k === "resent-sender") return `it carries a ${k} header — it was re-sent by someone`;
+  }
+  const body = String(bodyText ?? "");
+  if (FORWARD_BODY.some((re) => re.test(body))) return "its body carries a forwarded or quoted message";
+  return null;
+}
+
+/**
+ * The sender gate, applied AFTER the DKIM verdict. A message that passed DKIM
+ * but is not from a trusted automated sender — or is a forward/reply even from
+ * one — is NOT a payment notification: the verdict comes back failed with
+ * `untrustedSender: true`, so the whole auth-fail path applies (attachments
+ * never opened, the attempt recorded and emailed to Junid as
+ * refused-untrusted-sender). A failed DKIM verdict passes through unchanged.
+ */
+export function senderTrustVerdict({ verdict, fromAddress, subject, headerLines, bodyText }) {
+  if (!verdict || verdict.pass !== true) return verdict;
+  const sender = trustedSenderOf(fromAddress);
+  if (!sender) {
+    return { ...verdict, pass: false, untrustedSender: true, sender: null,
+      detail: `DKIM passed for ${verdict.fromDomain}, but ${clip(String(fromAddress ?? "").toLowerCase(), 120)} is not that bank's automated payment-notification address — a person's mailbox at a bank is not a notification source` };
+  }
+  const fwd = forwardSignOf({ subject, headerLines, bodyText });
+  if (fwd) {
+    return { ...verdict, pass: false, untrustedSender: true, sender: null,
+      detail: `from ${sender.address}, but ${fwd} — a bank's notification system never forwards or replies` };
+  }
+  return { ...verdict, sender };
+}
+
+/**
+ * BANK/SENDER MATCH: the reader that must read a trusted sender's document is
+ * that sender's own. A document another bank's reader recognises, and the
+ * sender's reader does not — a Capitec slip routed through a Nedbank address —
+ * is a mismatch, refused for what it is. Returns the foreign reader's id or null.
+ */
+export function foreignBankOf({ sender, lines, readers }) {
+  if (!sender || !Array.isArray(lines) || !Array.isArray(readers)) return null;
+  const own = readers.find((r) => r.id === sender.reader);
+  if (own && own.detect(lines)) return null;
+  const foreign = readers.find((r) => r.id !== sender.reader && r.detect(lines));
+  return foreign ? foreign.id : null;
+}
+
+/**
+ * Which documents a trusted sender's message offers to WHICH reader: its own
+ * bank's reader claims what it recognises; anything another bank's reader
+ * recognises instead is a mismatch. The poller acts on exactly this plan.
+ * @returns {{claimed: Array<{d:object, r:object}>, mismatched: Array<{d:object, foreign:string}>}}
+ */
+export function noticeReadPlan({ sender, offered, readers }) {
+  const docs = Array.isArray(offered) ? offered : [];
+  const own = (Array.isArray(readers) ? readers : []).find((r) => r.id === sender?.reader) ?? null;
+  const claimed = docs.map((d) => ({ d, r: own && own.detect(d.lines) ? own : null })).filter((x) => x.r);
+  const mismatched = docs
+    .filter((d) => !claimed.some((x) => x.d === d))
+    .map((d) => ({ d, foreign: foreignBankOf({ sender, lines: d.lines, readers }) }))
+    .filter((x) => x.foreign);
+  return { claimed, mismatched };
+}
+
 // ─── THE AUTHENTICATION VERDICT ──────────────────────────────────────────────
 /** A folded RFC 5322 header rejoined into one line. */
 export function unfoldHeader(line) {
@@ -970,6 +1090,8 @@ export function createOnlyStep(record, capture = () => {}) {
  *   outcome   "recorded" | "refused-auth" | "refused-parse" | "refused-account"
  *             | "refused-not-immediate" (fix 7b)
  *             | "refused-stale-date" (fix 8 — the bank dates it before the cutoff)
+ *             | "refused-untrusted-sender" (10 Nov 2026 — not the bank's automated sender, or a forward)
+ *             | "refused-bank-mismatch" (10 Nov 2026 — another bank's document from this sender)
  *             — separable on purpose: a forgery attempt, a format change and a
  *             payment into somebody else's account are different problems for
  *             different people.
@@ -1004,12 +1126,17 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     reader: reader || null,
   };
   if (!verdict.pass) {
+    // An authenticated message from a bank mailbox that is not its automated
+    // notification sender (or a forward) — a person, not the bank's system.
+    if (verdict.untrustedSender === true) {
+      return { ...base, outcome: "refused-untrusted-sender", reason: clip(`Untrusted sender: ${verdict.detail}. Not read as a payment; recorded for your review.`, 400) };
+    }
     return { ...base, outcome: "refused-auth", reason: `Failed authentication: ${verdict.detail}. Treat as a forgery attempt until shown otherwise.` };
   }
   if (!parsed.ok) {
     // The reason can QUOTE the body ('The Amount line reads "…"'), so it
     // gets the account sweep too. (Delta review.)
-    return { ...base, outcome: "refused-parse", reason: clip(redactAccountDigits(parsed.reason), 400) };
+    return { ...base, outcome: parsed.bankMismatch === true ? "refused-bank-mismatch" : "refused-parse", reason: clip(redactAccountDigits(parsed.reason), 400) };
   }
   // The reader's destination fields travel on BOTH the account refusal and
   // the recorded payment — a refusal must show which account the money
