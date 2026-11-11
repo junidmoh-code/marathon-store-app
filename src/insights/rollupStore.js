@@ -293,8 +293,8 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
   // next time in case the sweep has rewritten it.
   if (corruptDays.length > 0) {
     if (readers.dropCached) for (const d of corruptDays) readers.dropCached(d);
-    if (readers.forget) Promise.resolve().then(() => readers.forget(corruptDays)).catch(() => {});
   }
+  let deviceWork = Promise.resolve();
   // Keep what was just fetched, finished days only. Not awaited: the screen
   // does not wait on a disk write, and a failed write only means the next
   // page load fetches the day again.
@@ -303,11 +303,15 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
       .filter((d) => d < volatileFrom && !corruptDays.includes(d))
       .map((d) => [d, readers.getCached(d)])
       .filter(([, node]) => node !== undefined);
+    // One sequence, so the drop below can never be overtaken by the write.
     if (fresh.length > 0) {
-      Promise.resolve()
+      deviceWork = deviceWork
         .then(() => readers.keep(fresh, index, { pruneBefore: shiftSaDate(plan.todaySA, -KEEP_DAYS) }))
         .catch(() => {});
     }
+  }
+  if (corruptDays.length > 0 && readers.forget) {
+    deviceWork = deviceWork.then(() => readers.forget(corruptDays)).catch(() => {});
   }
 
 
