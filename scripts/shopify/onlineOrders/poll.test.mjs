@@ -5,6 +5,21 @@ import { candidateCode } from "./orderRefs.mjs";
 const C = (i, u = 0, g = 0, k = 0, id = "9001") => candidateCode(`${id}:${i}:${u}:${g}`, k);
 import { hubOrderRecord } from "./orderModel.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
+
+// Every escalateOrder call the poller makes, with the order it was handed —
+// the real function still runs. ("what a tick downloads" needs to see WHICH
+// copy of an order the escalation check was given.)
+const escalateCalls = vi.hoisted(() => []);
+vi.mock("./escalate.mjs", async (importOriginal) => {
+  const real = await importOriginal();
+  return {
+    ...real,
+    escalateOrder: (ctx, id, order, helpers) => {
+      escalateCalls.push([id, JSON.parse(JSON.stringify(order))]);
+      return real.escalateOrder(ctx, id, order, helpers);
+    },
+  };
+});
 import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
 import lockerRates from "../../shipping/fixtures/rates-locker-capetown.json";
 
@@ -963,6 +978,22 @@ describe("what a tick downloads", () => {
     expect(order(f)).toMatchObject({ status: "needs_attention", attentionOpen: true });
     expect(d.mails).toHaveLength(1); // raised by this tick, mailed by this tick — no sweep needed
     expect(c.of("query", "online_orders?attentionOpen=true")).toBe(0);
+  });
+
+  it("the escalation check is handed the order as the keep pass LEFT it (the no_stock line), with no second download", async () => {
+    const f = fakeDb(world(ON));
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref(`orders/${lineAt(f, 0).source.orderKeys[0]}`).update({ status: "out_of_stock" });
+    escalateCalls.length = 0;
+    const c = counting(f);
+    await runOrdersPoll({ ...deps(f, shopify()).deps, db: c.db, ...at(NOW + TICK) });
+    const handed = escalateCalls.filter(([id]) => id === "9001").map(([, o]) => o.lines[0].source.status);
+    // Before the keep pass: still on the hub's list. After it: the line this
+    // very tick turned no_stock — the copy the old code re-read to obtain.
+    // (The order then turns needs_attention and that status's own query finds
+    // it again later in the same tick — as it always has — hence the slice.)
+    expect(handed.slice(0, 2)).toEqual(["pick", "no_stock"]);
+    expect(c.of("get", "online_orders/9001")).toBe(0);
   });
 
   it("the all-orders attention query runs on the first tick, is stamped, and is not run again inside the cadence", async () => {
