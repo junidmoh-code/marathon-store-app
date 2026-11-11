@@ -80,16 +80,18 @@ describe("the download ledger", () => {
     expect(l.consume("products")).toBe(true);
   });
 
-  test("a start stamped in the future (a clock that was wrong) does not hold its slot for ever", () => {
+  test("a start stamped in the future (a clock that was wrong) ages out a day after it is first SEEN", () => {
     const storage = storageOf(new Map([[DOWNLOAD_LEDGER_KEY, JSON.stringify({ products: [T0 + 400 * 86400_000] })]]));
     let t = T0;
     const l = createDownloadLedger({ storage, now: () => t });
     expect(l.remaining("products")).toBe(LEG_DOWNLOADS_PER_DAY - 1);
+    // The clamp is WRITTEN BACK on that first read — not recomputed as "now"
+    // on every read, which would hold the slot for ever.
+    expect(JSON.parse(storage.m.get(DOWNLOAD_LEDGER_KEY)).products).toEqual([T0]);
+    t = T0 + DOWNLOAD_WINDOW_MS - 1;
+    expect(l.remaining("products")).toBe(LEG_DOWNLOADS_PER_DAY - 1);
     t = T0 + DOWNLOAD_WINDOW_MS;
-    expect(l.remaining("products")).toBe(LEG_DOWNLOADS_PER_DAY - 1);   // counted from when it was first SEEN as now…
-    l.consume("products");
-    t = T0 + 2 * DOWNLOAD_WINDOW_MS + 1;
-    expect(l.remaining("products")).toBe(LEG_DOWNLOADS_PER_DAY);       // …and gone a day after it was rewritten
+    expect(l.remaining("products")).toBe(LEG_DOWNLOADS_PER_DAY);
   });
 
   test("the ledger does not grow: old starts are pruned on every write", () => {

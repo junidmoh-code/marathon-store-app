@@ -256,13 +256,38 @@ export async function runChangeFeedPage({
       throw err;
     }));
 
-  // WHAT THIS PAGE TOUCHED, FILED BEFORE IT COMMITS. The census check widens
-  // its allowance by the rows the feed has carried since the census was taken
-  // (censusJournal.js). Written first on purpose: a page that fails after this
-  // is read again and counted twice, which widens an allowance; written after,
-  // a crash in between would lose the count and the census would call ordinary
-  // churn a drift.
-  await noteTouched(db, { cursor, lastKey, rows, now });
+  // WHAT THIS PAGE ADDED AND REMOVED, FILED BEFORE IT COMMITS. The census
+  // check widens its allowance by the rows the feed has added to or removed
+  // from a leg since the census was taken (censusJournal.js) — and ONLY those.
+  // An edit to a row the device already holds does not change how many rows
+  // there are, and counting it would let a busy day's edits hide a leg that
+  // had really lost rows. So each row is asked: was it held before this page?
+  //
+  // Written first on purpose: a page that fails after this is read again and
+  // counted twice, which widens an allowance; written after, a crash in
+  // between would lose the count and the census would call real churn a drift.
+  const membership = [];
+  {
+    const byStoreKeys = new Map();
+    for (let i = 0; i < rows.length; i += 1) {
+      if (values[i] === NOT_PERMITTED) continue;
+      const { leg, key } = rows[i];
+      const list = byStoreKeys.get(leg.store) ?? [];
+      list.push(storeKey(leg, key));
+      byStoreKeys.set(leg.store, list);
+    }
+    const heldBy = new Map();
+    for (const [store, keys] of byStoreKeys) heldBy.set(store, await db.heldKeys(store, keys));
+    for (let i = 0; i < rows.length; i += 1) {
+      const value = values[i];
+      if (value === NOT_PERMITTED) continue;
+      const { leg, key } = rows[i];
+      const wasHeld = heldBy.get(leg.store).has(storeKey(leg, key));
+      const isHeld = !(value === null || value === undefined);
+      if (wasHeld !== isHeld) membership.push(rows[i]);
+    }
+  }
+  await noteTouched(db, { cursor, lastKey, rows: membership, now });
 
   // Group by object store so each store commits its rows and the shared cursor
   // in one transaction.

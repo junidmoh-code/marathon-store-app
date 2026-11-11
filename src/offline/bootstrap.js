@@ -276,8 +276,14 @@ export async function startOfflineMirror({
   let consented = !!(await db.getMeta(CONSENT_META));
   let wanted = false;
 
+  // Was the pass about to run asked for by the live signal? Set by the signal,
+  // cleared by the pass that answers it: the engine walks the two histories
+  // on a signal pass only every few minutes (sync.js SIGNAL_RANGE_EVERY_MS).
+  let signalled = false;
   async function runOnePass() {
-    const report = await engine.runPass();
+    const signal = signalled;
+    signalled = false;
+    const report = await engine.runPass({ signal });
     state.lastPass = { at: now(), ...report };
     // The feed is CURRENT only if this pass actually read it. Skipped (backing
     // off, benched) or failed is not current, however recent the pass.
@@ -400,7 +406,7 @@ export async function startOfflineMirror({
       // Debounced: a refill run writes hundreds of records and they should
       // cost one pass, not hundreds.
       clearTimeoutFn(signalTimer);
-      signalTimer = setTimeoutFn(() => schedule(0), SIGNAL_DEBOUNCE_MS);
+      signalTimer = setTimeoutFn(() => { signalled = true; schedule(0); }, SIGNAL_DEBOUNCE_MS);
     });
   }
 

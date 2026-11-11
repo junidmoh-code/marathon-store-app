@@ -16,6 +16,7 @@ import { freshMirrorDb } from "./helpers";
 import { createFakeRtdb, pushKeyForMs } from "./fakeAdapter";
 import {
   createSyncEngine, SETUP_DONE_META, SETUP_META_PREFIX, CENSUS_CHECK_MS, FEED_PAGES_PER_PASS,
+  KEYDIFF_SAMPLE, KEYDIFF_MAX_LOCAL_KEYS, SIGNAL_RANGE_EVERY_MS, PARKED_CENSUS_EVERY_MS,
 } from "../sync";
 import { LEG_BY_NAME, MIRROR_LEGS, isAppendOnly } from "../nodes";
 import { getLegHealth, isLegUsable } from "../health";
@@ -95,22 +96,27 @@ describe("the stale census — a day-old count against a live one", () => {
     await e.runSetup();
     census(w, CENSUS_AT, { displaySlots: 1000 });
 
-    // The trading day: 300 NEW slots, every one with its change record.
+    // The trading day: 100 NEW slots, every one with its change record — four
+    // times the 25-row tolerance — and 400 edits of slots already there.
     c.set(CENSUS_AT + 5 * HOUR);
-    for (let i = 0; i < 300; i += 1) {
+    for (let i = 0; i < 100; i += 1) {
       change(w, SLOTS, `marathon-pe|n${String(i).padStart(4, "0")}`, { slot: 2000 + i }, CENSUS_AT + 4 * HOUR + i * 1000);
+    }
+    for (let i = 0; i < 400; i += 1) {
+      change(w, SLOTS, `marathon-pe|p${String(i).padStart(5, "0")}`, { slot: i, edited: true }, CENSUS_AT + 4 * HOUR + (100 + i) * 1000);
     }
     const walksAfterSetup = wholeWalks(w, SLOTS);
     const report = await e.runPass();
 
-    expect(report.feed.applied).toBe(300);
-    expect(await db.count("displaySlots")).toBe(1300);         // 300 over a census of 1,000
+    expect(report.feed.applied).toBe(500);
+    expect(await db.count("displaySlots")).toBe(1100);         // 100 over a census of 1,000
     // The allowance came from the journal the FEED kept as it applied the
     // page — the change log was read once, to apply it, and not a second time
     // to work out what had changed.
     const journal = await db.getMeta(TOUCHED_META);
-    expect(Object.values(journal.legs.displaySlots).reduce((a, b) => a + b, 0)).toBe(300);
-    expect(w.calls.readKeyPage.filter((x) => x.path === CHANGES_ROOT).length).toBe(1);
+    // Only the 100 rows that are NEW: an edit does not change the count.
+    expect(Object.values(journal.legs.displaySlots).reduce((a, b) => a + b, 0)).toBe(100);
+    expect(w.calls.readKeyPage.filter((x) => x.path === CHANGES_ROOT).length).toBe(2);
     expect(report.census.checked).toContain("displaySlots");
     expect(report.census.drifted).toEqual([]);                 // …and it is not a drift
     expect(report.repaired).toBeNull();
@@ -126,11 +132,11 @@ describe("the stale census — a day-old count against a live one", () => {
     await e.runSetup();
     census(w, CENSUS_AT, { displaySlots: 1000 });
     c.set(CENSUS_AT + 5 * HOUR);
-    for (let i = 0; i < 200; i += 1) {
+    for (let i = 0; i < 100; i += 1) {
       change(w, SLOTS, `marathon-pe|p${String(i).padStart(5, "0")}`, null, CENSUS_AT + 4 * HOUR + i * 1000);
     }
     const report = await e.runPass();
-    expect(await db.count("displaySlots")).toBe(800);
+    expect(await db.count("displaySlots")).toBe(900);
     expect(report.census.drifted).toEqual([]);
     expect(await isLegUsable(db, "displaySlots")).toBe(true);
   });
@@ -167,7 +173,7 @@ describe("the stale census — a day-old count against a live one", () => {
     const c = clock(CENSUS_AT - 30 * HOUR);
     const w = world({ settings: { displaySlots: { "marathon-pe": slots(1000) } } });
     census(w, CENSUS_AT, { displaySlots: 1000 });
-    for (let i = 0; i < 300; i += 1) {
+    for (let i = 0; i < 100; i += 1) {
       change(w, SLOTS, `marathon-pe|n${String(i).padStart(4, "0")}`, { slot: 2000 + i }, CENSUS_AT + 2 * HOUR + i * 1000);
     }
     c.set(CENSUS_AT + 6 * HOUR);
@@ -188,6 +194,7 @@ describe("the stale census — a day-old count against a live one", () => {
     const db = await freshMirrorDb();
     const e = engine(db, w, c);
     await e.runSetup();
+    c.advance(2 * HOUR);                                       // not a copy that has JUST been downloaded
     census(w, CENSUS_AT, { displaySlots: 5000 });
     const real = w.adapter.readKeyPage;
     await db.setMeta(FEED_CURSOR_META, pushKeyForMs(c.now(), "zzzzzzzzzzzz"));
@@ -199,6 +206,80 @@ describe("the stale census — a day-old count against a live one", () => {
     expect(res.unjudged).toContain("displaySlots");
     expect(res.drifted).toEqual([]);
     expect(await e.legIsSetUp(LEG_BY_NAME.displaySlots)).toBe(true);
+  });
+});
+
+describe("the allowance cannot grow until it hides a leg that has LOST rows", () => {
+  // The census exists to catch lost rows. An allowance that counted every row
+  // the feed touched reached 40% of /settings/displaySlots on a busy day.
+  test("edits — however many — leave the tolerance exactly where it was", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 6 * HOUR);
+    const w = world({ settings: { displaySlots: { "marathon-pe": slots(1000) } } });
+    const e = engine(db, w, c);
+    await e.runSetup();
+    // Every slot edited, half of them twice: 1,500 records, not one row added or removed.
+    for (let i = 0; i < 1500; i += 1) {
+      change(w, SLOTS, `marathon-pe|p${String(i % 1000).padStart(5, "0")}`, { slot: i, edited: i }, CENSUS_AT + HOUR + i * 1000);
+    }
+    // …and 60 rows the server holds that no record ever announced.
+    for (let i = 0; i < 60; i += 1) w.write(`${SLOTS}/marathon-pe/hole${i}`, { slot: 9000 + i });
+    census(w, CENSUS_AT, { displaySlots: 1060 });
+    c.set(CENSUS_AT + 5 * HOUR);
+    const report = await e.runPass();
+    expect(report.feed.applied).toBe(1500);
+    expect((await db.getMeta(TOUCHED_META)).legs.displaySlots).toBeUndefined();
+    expect(report.census.drifted).toEqual([{ leg: "displaySlots", held: 1000, census: 1060, allowed: 25 }]);
+  });
+
+  test("a 15% truncation on the busiest of days is still caught: the churn allowance stops at a tenth of the leg", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 6 * HOUR);
+    const w = world({ settings: { displaySlots: { "marathon-pe": slots(2000) } } });
+    const e = engine(db, w, c);
+    await e.runSetup();
+    census(w, CENSUS_AT, { displaySlots: 2000 });
+    // A day that swaps out a third of the node: 700 added, 700 removed.
+    for (let i = 0; i < 700; i += 1) {
+      change(w, SLOTS, `marathon-pe|n${String(i).padStart(4, "0")}`, { slot: 5000 + i }, CENSUS_AT + HOUR + i * 1000);
+      change(w, SLOTS, `marathon-pe|p${String(i).padStart(5, "0")}`, null, CENSUS_AT + HOUR + i * 1000 + 1);
+    }
+    c.set(CENSUS_AT + 5 * HOUR);
+    await e.runPass();
+    expect(await db.count("displaySlots")).toBe(2000);
+    // Now this device's copy loses 15% of its rows underneath it.
+    const gone = (await db.getAllKeys("displaySlots")).slice(0, 300);
+    await db.putPage("displaySlots", [], { deleteKeys: gone });
+    const res = await e.checkCensus({ force: true, feedCaughtUp: true });
+    // 2% (40) + a capped 10% (200), not 2% + 1,400.
+    expect(res.drifted).toEqual([{ leg: "displaySlots", held: 1700, census: 2000, allowed: 240 }]);
+  });
+
+  test("a truncated FIRST download on a day too busy to journal is still caught", async () => {
+    // More than 15,000 change records since the census: the journal cannot be
+    // rebuilt inside its page budget. "Not judged" would serve this copy.
+    const c = clock(CENSUS_AT + 6 * HOUR);
+    const products = Object.fromEntries(Array.from({ length: 4654 }, (_, i) => [`p${String(i).padStart(5, "0")}`, { id: i }]));
+    const w = world({ products });
+    for (let i = 0; i < 15200; i += 1) {
+      const at = CENSUS_AT + HOUR + i * 1000;
+      w.write(`${CHANGES_ROOT}/${pushKeyForMs(at, String(i).padStart(12, "0"))}`, { n: "stock", k: `hub1|x${i}`, t: at });
+    }
+    census(w, CENSUS_AT, { products: 4654 });
+    // The pager stops short: this device reads 799 of them.
+    const real = w.adapter.readKeyPage;
+    w.adapter.readKeyPage = async (path, opts) => {
+      if (path !== "products") return real(path, opts);
+      const page = await real(path, { ...opts, limit: 799 });
+      return opts.after === null ? page : null;
+    };
+    const db = await freshMirrorDb();
+    const e = engine(db, w, c);
+    await e.runSetup();
+    expect(await db.count("products")).toBe(799);
+    const res = await e.checkCensus({ force: true });
+    expect(res.drifted).toEqual([{ leg: "products", held: 799, census: 4654, allowed: 93 }]);
+    expect(await isLegUsable(db, "products")).toBe(false);
   });
 });
 
@@ -255,7 +336,7 @@ describe("the two histories: rows newer than the census are counted, not guessed
     expect(report.census.drifted).toEqual([{ leg: "insights", held: 1000, census: 1300, allowed: 65 }]);
   });
 
-  test("a hole in a history is filled by its KEYS — the 35 MB walk is not started again", async () => {
+  test("a history is NEVER key-diffed: its key list alone is megabytes, and it keeps its own forward walk", async () => {
     const db = await freshMirrorDb();
     const c = clock(CENSUS_AT - 6 * HOUR);
     const all = histories(1000, CENSUS_AT - 7 * HOUR).insights_log;
@@ -270,8 +351,9 @@ describe("the two histories: rows newer than the census are counted, not guessed
     w.calls.readKeyPage.length = 0;
     const report = await e.runPass();
     expect(report.census.drifted.map((d) => d.leg)).toEqual(["insights"]);
-    expect(report.repaired).toEqual({ leg: "insights", rows: 1000, via: "key-diff", added: 80, removed: 0 });
-    expect(await db.get("insights", lost[7])).toEqual(all[lost[7]]);
+    expect(report.repaired).toEqual({ leg: "insights", rows: 920 });      // the forward walk, from its cursor
+    // Not one keys-only read of the history — /insights_log is ~160,000 keys.
+    expect(w.calls.shallowKeys).toEqual([]);
     // The only pages of the history read are the forward walk's, from its cursor.
     expect(w.calls.readKeyPage.filter((x) => x.path === "insights_log" && x.after === null)).toEqual([]);
     expect(await isLegUsable(db, "insights")).toBe(true);
@@ -348,15 +430,15 @@ describe("a FORCED census on a device with a backlog allows for what it has not 
     const w = world({ settings: { displaySlots: { "marathon-pe": slots(1000) } } });
     const e = engine(db, w, c);
     await e.runSetup();
-    for (let i = 0; i < 300; i += 1) {
+    for (let i = 0; i < 100; i += 1) {
       change(w, SLOTS, `marathon-pe|n${String(i).padStart(4, "0")}`, { slot: 2000 + i }, CENSUS_AT - 10 * HOUR + i * 1000);
     }
-    census(w, CENSUS_AT, { displaySlots: 1300 });
+    census(w, CENSUS_AT, { displaySlots: 1100 });
     c.set(CENSUS_AT + 4 * HOUR);
 
     const rowReads = w.calls.readPath.length;
     const res = await e.checkCensus({ force: true });          // before any pass has run
-    expect(await db.count("displaySlots")).toBe(1000);         // 300 behind the census…
+    expect(await db.count("displaySlots")).toBe(1000);         // 100 behind the census…
     expect(res.checked).toContain("displaySlots");
     expect(res.drifted).toEqual([]);                           // …and every one of them is in the backlog
     // It read the backlog's pointer records, never a row.
@@ -535,7 +617,8 @@ describe("a count is repaired by its keys, not by reading the leg", () => {
     expect(report.repaired).toMatchObject({ leg: "displaySlots", rows: 960, via: "key-diff", removed: 40 });
     expect(await db.get("displaySlots", "marathon-pe|p00003")).toBeUndefined();
     // Each of the forty was READ before it was deleted.
-    expect(w.calls.readPath.filter((p) => p.startsWith(`${SLOTS}/marathon-pe/p000`)).length).toBe(40);
+    const deleted = new Set(Array.from({ length: 40 }, (_, i) => `${SLOTS}/marathon-pe/p${String(i).padStart(5, "0")}`));
+    expect(new Set(w.calls.readPath.filter((p) => deleted.has(p)))).toEqual(deleted);
   });
 
   test("a key list that comes back SHORT costs reads, never rows", async () => {
@@ -608,6 +691,208 @@ describe("a count is repaired by its keys, not by reading the leg", () => {
     expect(later.census.checked).not.toContain("displaySlots");
     expect(await isLegUsable(db, "displaySlots")).toBe(true);
     expect(wholeWalks(w, SLOTS)).toBe(1);                      // setup, and never again
+  });
+});
+
+describe("a key comparison cannot see a stale VALUE — so it samples some", () => {
+  async function driftedWithStale(staleCount) {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 6 * HOUR);
+    const w = world({ settings: { displaySlots: { "marathon-pe": slots(30) } } });
+    // Every row both sides hold is in a sample of 20 from 30 with this `random`
+    // only by luck, so the sample is made the whole leg: 20 rows.
+    w.write(`${SLOTS}/marathon-pe`, slots(20));
+    const e = engine(db, w, c);
+    await e.runSetup();
+    // Edits whose change records were lost: the server moved on, the device did not.
+    for (let i = 0; i < staleCount; i += 1) w.write(`${SLOTS}/marathon-pe/p${String(i).padStart(5, "0")}/slot`, 7000 + i);
+    for (let i = 0; i < 40; i += 1) w.write(`${SLOTS}/marathon-pe/hole${i}`, { slot: 9000 + i });
+    census(w, CENSUS_AT, { displaySlots: 60 });
+    c.set(CENSUS_AT + 5 * HOUR);
+    return { db, c, w, e };
+  }
+
+  test("a couple of stale rows are put right by the repair itself", async () => {
+    const { db, w, e } = await driftedWithStale(2);
+    const before = wholeWalks(w, SLOTS);
+    const report = await e.runPass();
+    expect(report.repaired).toMatchObject({ leg: "displaySlots", via: "key-diff", added: 40, rows: 60 });
+    expect((await db.get("displaySlots", "marathon-pe|p00001")).slot).toBe(7001);
+    expect(wholeWalks(w, SLOTS)).toBe(before);
+  });
+
+  test("more than a couple means the VALUES cannot be trusted: the leg takes the (budgeted) walk", async () => {
+    const { db, w, e } = await driftedWithStale(6);
+    const before = wholeWalks(w, SLOTS);
+    const report = await e.runPass();
+    expect(report.repaired).toEqual({ leg: "displaySlots", rows: 60 });
+    expect(wholeWalks(w, SLOTS) - before).toBe(1);
+    expect((await db.get("displaySlots", "marathon-pe|p00005")).slot).toBe(7005);
+  });
+
+  test("the sample is bounded: never more than KEYDIFF_SAMPLE rows, whatever the leg's size", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 6 * HOUR);
+    const w = world({ settings: { displaySlots: { "marathon-pe": slots(3000) } } });
+    const e = engine(db, w, c);
+    await e.runSetup();
+    for (let i = 0; i < 100; i += 1) w.write(`${SLOTS}/marathon-pe/hole${i}`, { slot: 9000 + i });
+    census(w, CENSUS_AT, { displaySlots: 3100 });
+    c.set(CENSUS_AT + 5 * HOUR);
+    w.calls.readPath.length = 0;
+    await e.runPass();
+    const rowReads = w.calls.readPath.filter((p) => p.startsWith(`${SLOTS}/`));
+    expect(rowReads.length).toBe(100 + KEYDIFF_SAMPLE);
+  });
+});
+
+describe("a leg too big for its key list to be cheap is not diffed", () => {
+  test("more than KEYDIFF_MAX_LOCAL_KEYS rows held: no key read at all, the walk", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 6 * HOUR);
+    const customers = Object.fromEntries(Array.from({ length: KEYDIFF_MAX_LOCAL_KEYS + 500 }, (_, i) => [`c${i}`, { n: i }]));
+    const w = world({ customers });
+    const e = engine(db, w, c);
+    await e.runSetup();
+    for (let i = 0; i < 600; i += 1) w.write(`customers/hole${i}`, { n: i });
+    census(w, CENSUS_AT, { customers: KEYDIFF_MAX_LOCAL_KEYS + 1100 });
+    c.set(CENSUS_AT + 5 * HOUR);
+    const report = await e.runPass();
+    expect(report.repaired).toEqual({ leg: "customers", rows: KEYDIFF_MAX_LOCAL_KEYS + 1100 });
+    expect(w.calls.shallowKeys).toEqual([]);
+  }, 60_000);
+});
+
+describe("an expired cursor and a leg already waiting for a count repair", () => {
+  test("the leg takes the WALK — a key repair would leave every value changed in the gap stale", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 6 * HOUR);
+    const w = world({ settings: { displaySlots: { "marathon-pe": slots(1000) } } });
+    const e = engine(db, w, c);
+    await e.runSetup();
+    for (let i = 0; i < 60; i += 1) w.write(`${SLOTS}/marathon-pe/hole${i}`, { slot: 9000 + i });
+    census(w, CENSUS_AT, { displaySlots: 1060 });
+    c.set(CENSUS_AT + 5 * HOUR);
+    await e.checkCensus({ force: true, feedCaughtUp: true });   // count-drift: marker dropped, repair pending
+    expect((await getLegHealth(db, "displaySlots")).reason).toBe("count-drift");
+    expect(await db.getMeta(`${SETUP_META_PREFIX}displaySlots`)).toBeUndefined();
+
+    // Before the repair runs, the cursor turns out to be past retention — and
+    // an edit was made in the gap that no record this device will read names.
+    w.write(`${SLOTS}/marathon-pe/p00500/slot`, 4242);
+    await db.setMeta(FEED_CURSOR_META, pushKeyForMs(c.now() - CHANGE_RETENTION_MS - DAY, "A"));
+    const before = wholeWalks(w, SLOTS);
+    const first = await e.runPass();
+    expect(first.errors).toEqual([{ where: "feed", reason: "cursor-expired" }]);
+    expect((await getLegHealth(db, "displaySlots"))?.reason ?? "repaired").not.toBe("count-drift");
+    for (let i = 0; i < 25; i += 1) { c.advance(60_000); await e.runPass(); }
+    expect(wholeWalks(w, SLOTS) - before).toBe(1);
+    expect(w.calls.shallowKeys).toEqual([]);
+    expect((await db.get("displaySlots", "marathon-pe|p00500")).slot).toBe(4242);
+    expect((await e.setupState()).done).toBe(true);
+  });
+});
+
+describe("a signal pass is for the change feed", () => {
+  function sale(w, i, at) {
+    w.write(`insights_log/${pushKeyForMs(at, String(i).padStart(12, "0"))}`, { n: i });
+    w.write(`stock_movements/s${String(i).padStart(6, "0")}`, { ts: new Date(at).toISOString(), n: i });
+  }
+  async function ready() {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT);
+    const w = world();
+    sale(w, 0, CENSUS_AT - HOUR);
+    const e = engine(db, w, c);
+    await e.runSetup();
+    await e.runPass();                                         // a floor pass: histories walked
+    w.calls.readKeyPage.length = 0;
+    w.calls.readChildPage.length = 0;
+    return { db, c, w, e };
+  }
+  const historyReads = (w) => w.calls.readKeyPage.filter((x) => x.path === "insights_log").length + w.calls.readChildPage.length;
+
+  test("a burst of signal passes does not walk the two histories each time", async () => {
+    const { c, w, e } = await ready();
+    for (let i = 0; i < 200; i += 1) {
+      c.advance(1000);
+      change(w, "products", "p1", { id: "p1", price: 1000 + i }, c.now() - 1);
+      const report = await e.runPass({ signal: true });
+      expect(report.feed.applied).toBe(1);                     // the feed is read on every one
+    }
+    expect(historyReads(w)).toBe(0);                           // 200 seconds: not yet five minutes
+  });
+
+  test("…but they ARE walked once five minutes have gone by, and on every floor pass", async () => {
+    const { db, c, w, e } = await ready();
+    sale(w, 1, c.now() + 1000);
+    c.advance(SIGNAL_RANGE_EVERY_MS - 1000);
+    expect((await e.runPass({ signal: true })).rangeSkipped).toBe("signal");
+    expect(await db.count("insights")).toBe(1);
+    c.advance(1000);
+    const due = await e.runPass({ signal: true });
+    expect(due.rangeSkipped).toBeUndefined();
+    expect(due.range.map((r) => r.leg).sort()).toEqual(["insights", "movements"]);
+    expect(await db.count("insights")).toBe(2);
+    expect(await db.count("movements")).toBe(2);
+
+    sale(w, 2, c.now() + 1);
+    c.advance(1000);
+    await e.runPass();                                         // the 60-second floor: always
+    expect(await db.count("insights")).toBe(3);
+  });
+});
+
+describe("a parked leg: un-parked by its keys, and not censused on every open", () => {
+  async function parked() {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT + 5 * HOUR);
+    const w = world({ settings: { displaySlots: { "marathon-pe": slots(800) } } });
+    const keyRead = w.adapter.shallowKeys;
+    delete w.adapter.shallowKeys;                              // the key read is refused, for now
+    const e = engine(db, w, c);
+    await e.runSetup();
+    census(w, CENSUS_AT, { displaySlots: 1000 });              // the census is simply wrong
+    await e.checkCensus({ force: true });
+    for (let i = 0; i < 5; i += 1) { c.advance(60_000); await e.runPass(); }
+    expect(await e.parkedLegs()).toEqual(["displaySlots"]);
+    return { db, c, w, e, keyRead };
+  }
+
+  test("a successful key comparison is stricter than the census, and serves the leg again", async () => {
+    const { db, c, w, e, keyRead } = await parked();
+    expect(await isLegUsable(db, "displaySlots")).toBe(false);
+    w.adapter.shallowKeys = keyRead;                           // the key read works on the next open
+    const again = engine(db, w, c);
+    c.advance(60_000);
+    const report = await again.runPass();
+    expect(report.repaired).toMatchObject({ leg: "displaySlots", via: "key-diff", rows: 800, added: 0, removed: 0 });
+    expect(await again.parkedLegs()).toEqual([]);
+    expect(await isLegUsable(db, "displaySlots")).toBe(true);
+    expect((await again.setupState()).done).toBe(true);
+    void e;
+  });
+
+  test("a parked leg that cannot be diffed is asked for its keys ONCE, not on every pass", async () => {
+    const { c, w, e } = await parked();
+    let asked = 0;
+    w.adapter.shallowKeys = async () => { asked += 1; throw new Error("403"); };
+    for (let i = 0; i < 20; i += 1) { c.advance(60_000); await e.runPass(); }
+    expect(asked).toBe(1);
+    expect(await e.parkedLegs()).toEqual(["displaySlots"]);
+  });
+
+  test("the forced census of every app open is asked at most once in 30 minutes", async () => {
+    const { db, c, w } = await parked();
+    w.calls.readPath.length = 0;
+    for (let open = 0; open < 10; open += 1) {
+      c.advance(60_000);
+      await engine(db, w, c).checkCensus({ force: true });     // what every open of a not-complete device does
+    }
+    expect(w.calls.readPath.filter((p) => p === COUNTS_ROOT).length).toBe(0);
+    c.advance(PARKED_CENSUS_EVERY_MS);
+    await engine(db, w, c).checkCensus({ force: true });
+    expect(w.calls.readPath.filter((p) => p === COUNTS_ROOT).length).toBe(1);
   });
 });
 

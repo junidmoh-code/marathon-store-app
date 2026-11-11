@@ -199,6 +199,45 @@ const isPagedSnapshot = (leg) => !isAppendOnly(leg) && leg.depth > 0;
 export const KEYDIFF_MAX_REQUESTS = 60;
 export const KEYDIFF_MAX_ROW_READS = 2000;
 export const KEYDIFF_MAX_FRACTION = 0.25;
+// A leg holding more keys than this is not diffed: its key list alone is a
+// megabyte or more, read by every device that asks. It keeps the walk.
+export const KEYDIFF_MAX_LOCAL_KEYS = 20000;
+// A KEY comparison cannot see a row whose VALUE is stale (a lost change record
+// for an edit). So each one also re-reads a few rows both sides hold, picked
+// at random, and compares them. More than KEYDIFF_SAMPLE_TOLERATED stale in
+// the sample says the leg's values cannot be trusted, and it is downloaded.
+export const KEYDIFF_SAMPLE = 20;
+export const KEYDIFF_SAMPLE_TOLERATED = 2;
+
+// However much the feed says a leg has churned, the census allowance is never
+// widened by more than this share of the census's own count. The census is
+// there to catch LOST rows; an allowance that can grow to half a leg catches
+// nothing.
+export const CENSUS_CHURN_CAP = 0.10;
+// A copy downloaded this recently is "just downloaded" for a forced census.
+export const JUST_DOWNLOADED_MS = 30 * 60 * 1000;
+// A device with a census-parked leg forces a census on every open. Not more
+// often than this.
+export const PARKED_CENSUS_EVERY_MS = 30 * 60 * 1000;
+// On a pass asked for by the live signal, the two histories are walked only
+// if this long has passed since they last were. See runPass.
+export const SIGNAL_RANGE_EVERY_MS = 5 * 60 * 1000;
+
+// Structural equality over what RTDB stores, blind to key order.
+function sameValue(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return (a ?? null) === (b ?? null);
+  if (typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (!sameValue(a[k], b[k])) return false;
+  }
+  return true;
+}
 
 class KeyDiffNotPossible extends Error {}
 
@@ -301,6 +340,8 @@ export function createSyncEngine({
   // How many times a leg may be downloaded whole in a day, counted where a
   // reload cannot reset it. See downloadLedger.js.
   downloadLedger = createDownloadLedger({ now }),
+  // Picks the rows a key-diff re-reads to check VALUES. Injected for tests.
+  random = Math.random,
 } = {}) {
   let setupRunning = null;
 
@@ -315,6 +356,8 @@ export function createSyncEngine({
   const inFlight = new Map();
   // append-only leg -> when its forward walk last reached the end of the node.
   const rangeEndAt = new Map();
+  // When the two histories were last walked by a pass (SIGNAL_RANGE_EVERY_MS).
+  let rangeWalkedAt = null;
 
   function legGate(legName) {
     const f = failures.get(legName);
@@ -894,7 +937,16 @@ export function createSyncEngine({
   }
 
   // ── THE STEADY-STATE PASS ─────────────────────────────────────────────────
-  async function runPass() {
+  //
+  // `signal` — was this pass asked for by the live change signal? Then it is
+  // here for the CHANGE FEED: something was just written to a mutable node.
+  // The two histories have their own forward cursors and nothing in a signal
+  // says they moved, so on a signal pass they are walked only if they have
+  // not been for SIGNAL_RANGE_EVERY_MS. A busy afternoon is thousands of
+  // signal passes, and each used to pay two range reads that came back with
+  // the one row the cursor already named. The floor-cadence pass (no signal)
+  // walks them every time, as before.
+  async function runPass({ signal = false } = {}) {
     const report = { feed: null, range: [], census: null, errors: [] };
 
     // 1. The change feed, which is what keeps eighteen legs true — unless it
@@ -969,7 +1021,10 @@ export function createSyncEngine({
     }
 
     // 2. The two forward walks.
-    for (const leg of MIRROR_LEGS.filter(isAppendOnly)) {
+    const walkRanges = !signal || rangeWalkedAt === null || now() - rangeWalkedAt >= SIGNAL_RANGE_EVERY_MS;
+    if (walkRanges) rangeWalkedAt = now();
+    else report.rangeSkipped = "signal";
+    for (const leg of (walkRanges ? MIRROR_LEGS.filter(isAppendOnly) : [])) {
       if (await notPermitted(leg)) continue;
       try {
         const res = await attemptLeg(leg, () => runRangeLeg(leg, { maxPages: RANGE_PAGES_PER_PASS }));
@@ -1017,8 +1072,23 @@ export function createSyncEngine({
       // A leg that is backing off or benched is passed over, so one broken leg
       // cannot hold every other repair behind it.
       if (!legGate(leg.name).ok) continue;
-      // Already repaired once for the census it disagrees with: not again.
-      if (censusParked(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))) continue;
+      // Already repaired once for the census it disagrees with: not again —
+      // EXCEPT by its keys, once. A key comparison is stricter than a count:
+      // if the copy's keys match the server's, the census is what is wrong,
+      // and the leg is served again (reconcileLegKeys stamps `keysAt` and the
+      // parking goes with the old marker). Tried once per parking, so a leg
+      // that cannot be diffed does not cost a key list on every pass.
+      const parkedMarker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
+      if (censusParked(parkedMarker)) {
+        if (parkedMarker.keysTried === parkedMarker.censusRefused || inFlight.has(leg.name)) continue;
+        // No key read on this device at all: nothing was tried, nothing is spent.
+        if (typeof adapter.shallowKeys !== "function") continue;
+        await db.setMeta(`${SETUP_META_PREFIX}${leg.name}`, { ...parkedMarker, keysTried: parkedMarker.censusRefused });
+        const unparked = await reconcileLegKeys(leg).catch(() => null);
+        if (unparked === null) continue;
+        await stampDeviceCompleteIfWhole(fresh);
+        return { leg: leg.name, rows: unparked.rows, via: unparked.via, added: unparked.added, removed: unparked.removed };
+      }
       // A COUNT THAT DISAGREES IS REPAIRED BY ITS KEYS FIRST. The census said
       // "you hold the wrong NUMBER of rows", and the cheap answer to that is
       // to compare key sets and fetch the rows that differ. Only when the leg
@@ -1083,8 +1153,15 @@ export function createSyncEngine({
   async function reconcileLegKeys(leg) {
     if (typeof adapter.shallowKeys !== "function") return null;
     if (leg.store === "docs" || leg.depth < 1) return null;      // small shared-store legs: the walk is a few KB
+    // NOT THE TWO HISTORIES, and not any leg too big for its key list to be
+    // cheap. /insights_log is ~160,000 keys — 4–5 MB of keys alone, a
+    // whole-node read in all but name — and a history is repaired by its own
+    // forward walk anyway. Decided BEFORE anything is read.
+    if (isAppendOnly(leg)) return null;
+    const heldCount = (await heldRows(db, leg.name)) ?? 0;
+    if (heldCount === 0) return null;                            // nothing to repair: that is a download
+    if (heldCount > KEYDIFF_MAX_LOCAL_KEYS) return null;
     const localKeys = await db.getAllKeys(leg.store);
-    if (localKeys.length === 0) return null;                     // nothing to repair: that is a download
 
     let requests = 0;
     const serverKeys = [];
@@ -1118,14 +1195,39 @@ export function createSyncEngine({
     if (differing > most) return null;                           // too different: the walk is cheaper
 
     const NOT_READABLE = Symbol("not-readable");
+    const readRow = (key) => adapter.readPath(rowPath(leg, key)).catch((err) => {
+      if (isPermissionDenied(err)) return NOT_READABLE;
+      throw err;
+    });
+
+    // ── ARE THE VALUES STILL TRUE? ──────────────────────────────────────────
+    // A few rows both sides hold, picked at random, re-read and compared. See
+    // KEYDIFF_SAMPLE: this is the only thing left that can notice a lost EDIT.
+    const both = serverKeys.filter((k) => held.has(k));
+    const sample = [];
+    for (let i = 0; i < KEYDIFF_SAMPLE && both.length > 0; i += 1) {
+      const at = Math.min(both.length - 1, Math.floor(random() * both.length));
+      sample.push(both.splice(at, 1)[0]);
+    }
+    const sampleValues = await mapWithLimit(sample, ROW_CONCURRENCY, readRow);
+    const stale = [];
+    for (let i = 0; i < sample.length; i += 1) {
+      if (sampleValues[i] === NOT_READABLE) continue;
+      const local = await db.get(leg.store, storeKey(leg, sample[i]));
+      if (!sameValue(local ?? null, sampleValues[i] ?? null)) stale.push({ key: sample[i], value: sampleValues[i] });
+    }
+    // Too many: the copy's VALUES are in doubt, and no key list can fix that.
+    if (stale.length > KEYDIFF_SAMPLE_TOLERATED) return null;
+
     const keys = [...missing, ...extra];
-    const values = await mapWithLimit(keys, ROW_CONCURRENCY, (key) =>
-      adapter.readPath(rowPath(leg, key)).catch((err) => {
-        if (isPermissionDenied(err)) return NOT_READABLE;
-        throw err;
-      }));
+    const values = await mapWithLimit(keys, ROW_CONCURRENCY, readRow);
     const records = [];
     const deleteKeys = [];
+    // The stale rows the sample did find are put right while we are here.
+    for (const { key, value } of stale) {
+      if (value === null || value === undefined) deleteKeys.push(storeKey(leg, key));
+      else records.push({ key: storeKey(leg, key), value });
+    }
     for (let i = 0; i < keys.length; i += 1) {
       const value = values[i];
       if (value === NOT_READABLE) continue;
@@ -1154,7 +1256,12 @@ export function createSyncEngine({
     if (landed !== rowsAfter) {
       await db.setMetaMany(healthyMeta(leg.name, { path: leg.node, rows: landed, at }));
     }
-    return { rows: landed, via: "key-diff", added: records.length, removed: deleteKeys.length };
+    return {
+      rows: landed, via: "key-diff",
+      added: records.filter((r) => !held.has(r.key)).length,
+      removed: deleteKeys.length,
+      ...(stale.length ? { refreshed: stale.length } : {}),
+    };
   }
 
   // A benched feed: the change-fed legs keep their rows and their setup
@@ -1235,8 +1342,15 @@ export function createSyncEngine({
     const marked = [];
     for (const leg of MIRROR_LEGS.filter((l) => !isAppendOnly(l))) {
       const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
-      // Not held, or decided (not readable by this account): nothing to redo.
-      if (!marker || marker.notPermitted) continue;
+      // Decided (not readable by this account): nothing to redo.
+      if (marker?.notPermitted) continue;
+      // EVERY LEG THAT HOLDS ROWS, marker or not. A leg waiting for a
+      // count-drift repair has already lost its marker, and if it were passed
+      // over here it would keep that reason and be repaired by its KEYS — which
+      // puts back missing rows and leaves every value that changed in the gap
+      // stale, then stamps the leg healthy. With its reason replaced it takes
+      // the walk like the rest.
+      if (!marker && ((await heldRows(db, leg.name)) ?? 0) === 0) continue;
       await recordLegFailed(db, leg.name, {
         path: leg.node, reason, at: now(), state: "failed",
         retryable: false, keepVouched: false, detail,
@@ -1302,6 +1416,11 @@ export function createSyncEngine({
     const at = now();
     if (!force && at - lastChecked < CENSUS_CHECK_MS) return { skipped: "not-due" };
     if (!force && !feedCaughtUp) return { skipped: "feed-behind" };
+    // A device with a parked leg is never "complete", so every open forces a
+    // census. The census is written once a day; it is not asked more than
+    // twice an hour on that account.
+    if (force && at - lastChecked >= 0 && at - lastChecked < PARKED_CENSUS_EVERY_MS
+      && (await parkedLegs()).length > 0) return { skipped: "parked-checked-recently" };
 
     const counts = await adapter.readPath(COUNTS_ROOT);
     // NO CENSUS IS NOT A VERDICT. Before the functions are deployed, or if the
@@ -1374,8 +1493,24 @@ export function createSyncEngine({
       let band = 0;
       if (!isAppendOnly(leg)) {
         const j = await journalFor();
-        if (!j) { unjudged.push(leg.name); continue; }
-        churn = touchedSince(j, leg.name, entry.at) + (pending[leg.name] ?? 0);
+        if (j) {
+          // Never more than a tenth of the leg, whatever the feed says.
+          churn = Math.min(
+            touchedSince(j, leg.name, entry.at) + (pending[leg.name] ?? 0),
+            Math.floor(entry.rows * CENSUS_CHURN_CAP),
+          );
+        } else if (!(force && Number.isFinite(marker.at) && at - marker.at >= 0 && at - marker.at <= JUST_DOWNLOADED_MS)) {
+          // No journal, and not a copy that has just been downloaded: the
+          // census is not evidence about it.
+          unjudged.push(leg.name);
+          continue;
+        }
+        // …but A COPY JUST DOWNLOADED IS ALWAYS CHECKED, journal or no. On a
+        // day too busy to rebuild a journal for, "not judged" would serve a
+        // first download nobody had verified — the one moment the census is
+        // the only guard there is. It is held to the plain tolerance: a false
+        // alarm costs one repair (by keys, where the leg allows), and a
+        // truncated catalogue is not served.
       } else {
         // A history still walking forward is behind by construction — unless
         // its walk has already passed the moment the census was taken.

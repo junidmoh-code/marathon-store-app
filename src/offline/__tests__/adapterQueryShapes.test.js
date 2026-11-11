@@ -148,6 +148,27 @@ describe("shallowKeys — a node's keys without its values", () => {
     await expect(adapter.shallowKeys("orders")).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
   });
 
+  test("a key read that is refused is ABORTED, not left downloading a body nobody will read", async () => {
+    let signal = null;
+    const adapter = createRtdbAdapter({
+      db, getIdToken: async () => "t",
+      fetchFn: async (url, init) => { signal = init?.signal ?? null; return { ok: false, status: 500, text: async () => "" }; },
+    });
+    await expect(adapter.shallowKeys("products")).rejects.toThrow(/refused \(500\)/);
+    expect(signal).not.toBeNull();
+    expect(signal.aborted).toBe(true);
+  });
+
+  test("…and a read that succeeds is not aborted", async () => {
+    let signal = null;
+    const adapter = createRtdbAdapter({
+      db, getIdToken: async () => "t",
+      fetchFn: async (url, init) => { signal = init?.signal ?? null; return ok({ a: true }); },
+    });
+    await adapter.shallowKeys("products");
+    expect(signal.aborted).toBe(false);
+  });
+
   test("with nobody signed in, or no fetch, it fails — it never reads without a user", async () => {
     let called = 0;
     const fetchFn = async () => { called += 1; return ok({}); };

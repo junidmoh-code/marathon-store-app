@@ -751,12 +751,13 @@ across the whole month (14,272 on 3 Nov), retention never close.
 
 | | what | where |
 | --- | --- | --- |
-| a fair comparison | the allowance is widened by the rows the feed has carried since the census was taken, filed by the hour each change was *recorded*; a device with no journal that far back rebuilds it from the change log's keys (pointer records only); the two histories subtract the rows they hold that are newer than the census, exactly | `censusJournal.js`, `sync.js checkCensus` |
+| a fair comparison | the allowance is widened by the rows the feed has **added to or removed from** the leg since the census was taken (an edit of a row already held changes no count and widens nothing), filed by the hour each change was *recorded*, and **never by more than 10% of the census's own count**; a device with no journal that far back rebuilds it from the change log's keys (pointer records only); a copy *just downloaded* with no journal to be had is still checked, at the plain tolerance; the two histories subtract the rows they hold that are newer than the census, exactly | `censusJournal.js`, `changeFeed.js`, `sync.js checkCensus` |
 | not before it has caught up | a scheduled census waits for a pass that read the feed (and each history) to its end | `sync.js runPass` |
 | one repair per leg per census | the census taken at 04:15 can send a leg for repair once; a copy that still disagrees with *that* census is not sent again — served if it holds more than the census, parked unserved if it holds fewer (the truncated-download shape) until a census agrees | `setup.censusActed`, `censusRefused` on the leg's marker |
-| repaired by its keys | a count that disagrees is repaired by a keys-only REST read (`?shallow=true`, same rules, the signed-in user's token) and a fetch of the rows that differ; a row is deleted only when its own read answers null. Falls back to the walk when the leg is too deep (more than 60 key reads), too different (more than 25% / 2,000 rows) or the key read is unavailable | `sync.js reconcileLegKeys`, `rtdbAdapter.shallowKeys` |
+| repaired by its keys | a count that disagrees is repaired by a keys-only REST read (`?shallow=true`, same rules, the signed-in user's token) and a fetch of the rows that differ; a row is deleted only when its own read answers null; 20 rows both sides hold are re-read at random and compared, and more than 2 stale sends the leg to the walk. **Never** used for the two histories or for a leg holding more than 20,000 rows (their key lists are megabytes); falls back to the walk when the leg is too deep (more than 60 key reads), too different (more than 25% / 2,000 rows) or the key read is unavailable | `sync.js reconcileLegKeys`, `rtdbAdapter.shallowKeys` |
 | a daily bound that survives a reload | a leg may start from its first page 3 times in any 24 hours per device, whatever asks; kept in localStorage, which survived the IndexedDB wipes we have seen. A refused leg is reported as `download-budget` and its screens read live | `downloadLedger.js` |
-| the cursor is never dropped | an expired or missing cursor is replaced by the head of the log in the same step that marks the legs | `sync.js resetFeedCursor` |
+| the cursor is never dropped | an expired or missing cursor is replaced by the head of the log in the same step that marks every change-fed leg holding rows — including one already waiting for a count repair, which then takes the walk and not a key repair | `sync.js resetFeedCursor` |
+| a signal pass is for the change feed | a pass the live signal asked for walks the two histories only if five minutes have passed since they were last walked; the 60-second floor pass walks them every time | `sync.js runPass`, `SIGNAL_RANGE_EVERY_MS` |
 | the signal is one record wide | `limitToLast(1)` | `rtdbAdapter.changeSignalConstraints` |
 | a delete lowers the claim | in the delete's own transaction, and only for a leg that was backed by its rows | `health.claimLoweredBy`, `changeFeed.js` |
 
@@ -765,19 +766,39 @@ across the whole month (14,272 on 3 Nov), retention never close.
 at the live node sizes, a pass a minute 08:00–18:00, one reload; run with
 `MIRROR_SIM_FULL=1`). These are simulated, not measured:
 
-| day | bytes | whole-leg walks |
-| --- | ---: | --- |
-| 8 Nov's traffic (2,730 changes) | 2.99 MB | none |
-| 10 Nov's traffic (6,188 changes) + 200 products the feed never reported | 5.45 MB | none — the products are repaired by keys (0.09 MB of keys + 200 rows) |
-| the same, with the change cursor expiring at 15:00 | 64.5 MB | each held leg once (58.7 MB — one copy of the change-fed legs) |
+| day | passes | bytes | whole-leg walks |
+| --- | ---: | ---: | --- |
+| 8 Nov's traffic (2,730 changes) | 600 | 2.99 MB | none |
+| 10 Nov's traffic (6,188 changes) + 200 products the feed never reported | 600 | 5.51 MB | none — the products, and the mass-edited `displaySlots` (once), are repaired by keys: 0.12 MB of key lists |
+| the same day, signal-driven | 4,972 | 5.61 MB | none |
+| *the same 4,972 passes with both histories walked on every one (as before)* | 4,972 | *8.07 MB* | none |
+| the 10 Nov day with the change cursor expiring at 15:00 | 600 | 64.5 MB | each held leg once (58.7 MB — one copy of the change-fed legs) |
 
 A day's bytes are now the day's traffic: every changed row fetched once
 (≈ 0.5 KB a change), every new history row once, the change record itself
-twice (the signal, then the page), and about 0.5 KB a pass of cursor rows. The
+twice (the signal, then the page), and the cursor's own row on each read —
+≈ 85 bytes a signal pass, ≈ 0.6 KB a floor pass. The
 build before this one, given the same 10 Nov day in the same simulation at
 full size, read **1,295 MB**: from its 14:00 census check to 18:00 it walked
 `displaySlots`, `displayRows`, `displayRegister` and the refill-request leg 60
 times each — the same four legs, and the same shape, the fleet showed.
+
+**What is caught, and what is not.**
+
+| fault | caught by |
+| --- | --- |
+| rows missing or extra beyond 2% / 25 rows (plus at most 10% for adds and deletes the feed itself reported) | the census, within a day; repaired by keys or, failing that, one budgeted walk |
+| a first download that stopped short | the forced census after the download, journal or no; a copy still short after one repair is not served |
+| a few rows missing, inside the tolerance | **not caught** by the census (it never was). A key repair of that leg for any other reason puts them back |
+| a lost *edit* (the row is there, its value is stale) | **only by sampling**: each key repair re-reads 20 random rows. A leg with widespread stale values (more than 2 of 20) is downloaded; an isolated stale row in a leg nothing else is wrong with is **not caught** until that row is next written. Before this change the only thing that fixed it was the re-download storm itself |
+| stale values in the two histories or a leg over 20,000 rows | not sampled (no key repair); append-only rows are never edited, and the big legs keep the walk |
+
+**What the five-minute rule costs.** `/insights_log` and `/stock_movements` are
+read by the Insights screens, the customer index and the clothing-sold window —
+reports, not counters or anything a sale or an order waits on. On a quiet device
+they are as fresh as before (the 60-second floor). While the live signal is
+firing continuously they can be up to five minutes behind, where they used to
+follow each signal.
 
 **What a rule could add, and is not needed.** Nothing here needs a rules or
 index change. `shallow=true` reads are authorised by the same `.read` rules as

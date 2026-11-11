@@ -90,7 +90,7 @@ export function createDownloadLedger({
     } catch { return {}; }
   };
 
-  function read() {
+  function readRaw() {
     if (!storageBroken) {
       try {
         const raw = storage.getItem(key);
@@ -99,6 +99,25 @@ export function createDownloadLedger({
       } catch { storageBroken = true; }
     }
     return parse(fallback.getItem(key));
+  }
+
+  // A start stamped in the FUTURE (the device clock was wrong and has been put
+  // right) is rewritten as "now" the first time it is seen, and written back —
+  // so it ages out a day later like any other, rather than being re-read as
+  // "now" on every read and holding its slot for ever.
+  function read() {
+    const ledger = readRaw();
+    const at = now();
+    let clamped = false;
+    for (const leg of Object.keys(ledger)) {
+      if (!Array.isArray(ledger[leg])) continue;
+      ledger[leg] = ledger[leg].map((t) => {
+        if (Number.isFinite(t) && t > at) { clamped = true; return at; }
+        return t;
+      });
+    }
+    if (clamped) write(ledger);
+    return ledger;
   }
 
   function write(ledger) {

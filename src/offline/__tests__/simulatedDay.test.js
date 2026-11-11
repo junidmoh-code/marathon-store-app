@@ -31,11 +31,9 @@
 // are the day's traffic); only the setup download and the expired-cursor
 // re-download scale.
 //
-// WHAT RUNS WHEN. A simulated day is 600 passes and takes about twenty
-// seconds, so the everyday suite runs ONE — the 10 Nov storm day, which is the
-// regression this file exists for — and the ordinary day and the expired
-// cursor day run with MIRROR_SIM_FULL=1. Each behaviour they exercise has its
-// own fast test in redownloadStorms.test.js.
+// WHAT RUNS WHEN. The three 600-pass days run in the everyday suite (about
+// ten seconds each). The ~5,000-pass signal-driven day, run twice, takes a
+// minute and runs with MIRROR_SIM_FULL=1.
 //
 // ON THE BUILD BEFORE THIS ONE the "10 Nov" day below, run from this same file
 // at full size, read 1,295 MB: from its 14:00 census check to 18:00 it walked
@@ -43,7 +41,9 @@
 // times each. The fleet's measured figures for the real day are in
 // docs/store-offline-mirror.md §12a.
 import { describe, test, expect } from "vitest";
-import { freshMirrorDb } from "./helpers";
+import "./helpers";                      // installs the IDBKeyRange global
+import { IDBFactory } from "fake-indexeddb";
+import { openMirrorDb } from "../db";
 import { createFakeRtdb, pushKeyForMs } from "./fakeAdapter";
 import { createSyncEngine } from "../sync";
 import { LEG_BY_NAME, MIRROR_LEGS, isAppendOnly } from "../nodes";
@@ -208,10 +208,28 @@ const NEW_PARENT = {
   displayRegister: [STORES[0]], restockLog: ["2026-11-10"],
 };
 
-async function runDay({ profile, hole = 0, expireCursorAt = null }) {
+// `signalPasses` — how many passes a minute the live signal asks for, at most
+// (one per group of that minute's change records). 0 is the floor cadence
+// alone: one pass a minute. `signalFlag: false` runs the very same passes
+// WITHOUT telling the engine they were signal passes — what every pass cost
+// before a signal pass stopped walking the two histories.
+let simDbs = 0;
+async function runDay({ profile, hole = 0, expireCursorAt = null, signalPasses = 0, signalFlag = true }) {
   const w = createFakeRtdb(buildTree());
   const m = meter(w);
-  const db = await freshMirrorDb();
+  // Its own factory, so the test can reach the fake's transaction list: the
+  // fake keeps every FINISHED transaction for ever and scans the whole list to
+  // schedule each new one, which makes a 5,000-pass day quadratic (a pass went
+  // from 25 ms to 700 ms). Nothing to do with the engine; pruned as we go.
+  simDbs += 1;
+  const factory = new IDBFactory();
+  const dbName = `mirror-sim-${simDbs}`;
+  const db = await openMirrorDb({ indexedDBFactory: factory, dbName });
+  await db.ensureSchema({ buildVersion: "test" });
+  const pruneFake = () => {
+    const raw = factory._databases?.get(dbName);
+    if (raw?.transactions) raw.transactions = raw.transactions.filter((tx) => tx._state !== "finished");
+  };
   let t = SETUP_AT;
   const now = () => t;
   // The per-device download bound, shared across the reload exactly as
@@ -249,37 +267,59 @@ async function runDay({ profile, hole = 0, expireCursorAt = null }) {
   const repairs = [];
   let expired = false;
 
-  for (let minute = 0; minute < events.length; minute += 1) {
-    t = OPEN_AT + minute * MIN;
-    for (const ev of events[minute]) {
-      const at = t - MIN + 1 + (seq % 50_000);
-      if (ev.op === "append") {
-        if (ev.leg === "insights") w.write(`${N("insights")}/${pushKeyForMs(at, id("", seq, 12))}`, row(seq, 225));
-        else w.write(`${N("movements")}/${id("n", seq, 7)}`, { ...row(seq, 250), ts: new Date(at).toISOString() });
-        seq += 1;
-        continue;
-      }
-      const pool = keys[ev.leg];
-      let segs;
-      if (ev.op === "add") segs = [...(NEW_PARENT[ev.leg] ?? []), id("new", ev.i)];
-      else if (ev.op === "delete") segs = pool[(ev.i * 7) % pool.length];
-      else segs = pool[pool.length - 1 - ((ev.i * 13) % Math.floor(pool.length / 2))];
-      const value = ev.op === "delete" ? null : row(`${ev.op}${ev.i}`, SIZE[ev.leg]);
-      w.write(`${N(ev.leg)}/${segs.join("/")}`, value);
-      const record = { n: N(ev.leg), k: segs.join("|"), t: at };
-      w.write(`${CHANGES_ROOT}/${pushKeyForMs(at, id("", seq, 12))}`, record);
-      m.signal({ [pushKeyForMs(at, id("", seq, 12))]: record });
+  let passes = 0;
+  const apply = (ev) => {
+    const at = t - MIN + 1 + (seq % 50_000);
+    if (ev.op === "append") {
+      if (ev.leg === "insights") w.write(`${N("insights")}/${pushKeyForMs(at, id("", seq, 12))}`, row(seq, 225));
+      else w.write(`${N("movements")}/${id("n", seq, 7)}`, { ...row(seq, 250), ts: new Date(at).toISOString() });
       seq += 1;
+      return;
     }
+    const pool = keys[ev.leg];
+    let segs;
+    if (ev.op === "add") segs = [...(NEW_PARENT[ev.leg] ?? []), id("new", ev.i)];
+    else if (ev.op === "delete") segs = pool[(ev.i * 7) % pool.length];
+    else segs = pool[pool.length - 1 - ((ev.i * 13) % Math.floor(pool.length / 2))];
+    const value = ev.op === "delete" ? null : row(`${ev.op}${ev.i}`, SIZE[ev.leg]);
+    w.write(`${N(ev.leg)}/${segs.join("/")}`, value);
+    const record = { n: N(ev.leg), k: segs.join("|"), t: at };
+    w.write(`${CHANGES_ROOT}/${pushKeyForMs(at, id("", seq, 12))}`, record);
+    m.signal({ [pushKeyForMs(at, id("", seq, 12))]: record });
+    seq += 1;
+  };
+  const pass = async (signal) => {
+    passes += 1;
+    if (passes % 50 === 0) pruneFake();
+    const report = await engine.runPass(signal && signalFlag ? { signal: true } : undefined);
+    for (const d of report.census?.drifted ?? []) drifts.push(`${new Date(t + 2 * HOUR).toISOString().slice(11, 16)} ${d.leg}`);
+    if (report.repaired) repairs.push(`${report.repaired.leg}${report.repaired.via ? ` (${report.repaired.via})` : " (walk)"}`);
+    if (report.errors.some((e) => e.reason === "cursor-expired")) expired = true;
+  };
+
+  for (let minute = 0; minute < events.length; minute += 1) {
+    const minuteAt = OPEN_AT + minute * MIN;
+    t = minuteAt;
     if (t === RELOAD_AT) engine = open();                                  // the app is reloaded
     if (expireCursorAt !== null && t === expireCursorAt) {
       // This device's cursor has fallen off the back of the 30 days kept.
       await db.setMeta(FEED_CURSOR_META, pushKeyForMs(t - CHANGE_RETENTION_MS - HOUR, "AAAAAAAAAAAA"));
     }
-    const report = await engine.runPass();
-    for (const d of report.census?.drifted ?? []) drifts.push(`${new Date(t + 2 * HOUR).toISOString().slice(11, 16)} ${d.leg}`);
-    if (report.repaired) repairs.push(`${report.repaired.leg}${report.repaired.via ? ` (${report.repaired.via})` : " (walk)"}`);
-    if (report.errors.some((e) => e.reason === "cursor-expired")) expired = true;
+    const changes = events[minute].filter((ev) => ev.op !== "append");
+    const appends = events[minute].filter((ev) => ev.op === "append");
+    const groups = signalPasses > 0 ? Math.min(signalPasses, changes.length) : 0;
+    if (groups === 0) {
+      // The floor cadence: everything this minute brought, then one pass.
+      for (const ev of events[minute]) apply(ev);
+      await pass(false);
+      continue;
+    }
+    for (let g = 0; g < groups; g += 1) {
+      t = minuteAt + Math.floor((g * MIN) / groups);
+      if (g === 0) for (const ev of appends) apply(ev);
+      for (let i = g; i < changes.length; i += groups) apply(changes[i]);
+      await pass(true);                                                    // the signal asked for this one
+    }
   }
   for (const c of w.calls.readKeyPage.slice(walksBefore)) {
     if (c.after !== null || c.path === CHANGES_ROOT) continue;
@@ -293,7 +333,7 @@ async function runDay({ profile, hole = 0, expireCursorAt = null }) {
   }
   return {
     setupMB: setupBytes / MB, dayMB: m.total() / MB, bytes: { ...m.bytes }, reads: { ...m.reads },
-    walks, drifts, repairs, expired, mismatched, state: await engine.setupState(), changes: seq,
+    walks, drifts, repairs, expired, mismatched, state: await engine.setupState(), changes: seq, passes,
   };
 }
 
@@ -302,13 +342,13 @@ const table = (label, r) => {
     .map(([k, b]) => `    ${k.padEnd(18)} ${(b / MB).toFixed(2).padStart(7)} MB  ${String(r.reads[k]).padStart(6)} reads`);
   // eslint-disable-next-line no-console
   console.log(`\nSIMULATED DAY — ${label}\n  setup download (the evening before, not counted): ${r.setupMB.toFixed(1)} MB\n`
-    + `  THE DAY: ${r.dayMB.toFixed(2)} MB\n${lines.join("\n")}\n`
+    + `  THE DAY: ${r.dayMB.toFixed(2)} MB in ${r.passes} passes\n${lines.join("\n")}\n`
     + `  whole-leg walks started: ${JSON.stringify(r.walks)}\n  census drifts: ${JSON.stringify(r.drifts)}\n`
     + `  repairs: ${JSON.stringify(r.repairs)}\n`);
 };
 
 describe("one device, one simulated trading day", () => {
-  test.skipIf(!FULL)("an ordinary day (8 Nov's traffic) stays under 5 MB, and no leg is read whole", async () => {
+  test("an ordinary day (8 Nov's traffic) stays under 5 MB, and no leg is read whole", async () => {
     const r = await runDay({ profile: ORDINARY });
     table("ordinary day: 8 Nov 2026 traffic, open 08:00–18:00, one reload", r);
     expect(r.walks).toEqual({});
@@ -327,11 +367,19 @@ describe("one device, one simulated trading day", () => {
     // about.
     const r = await runDay({ profile: MASS_EDIT, hole: 200 });
     table("10 Nov 2026 traffic (the storm day) + 200 products missed by the feed", r);
-    // The ONE real disagreement is found, once, and repaired by its keys.
-    expect(r.drifts).toEqual(["08:00 products"]);
-    expect(r.repairs).toEqual(["products (key-diff)"]);
-    // The three settings legs and the refills leg are never called a drift…
-    expect(r.drifts.filter((d) => /display|refills/.test(d))).toEqual([]);
+    // The ONE real disagreement is found, once, and repaired by its keys. And
+    // so is the mass edit, ONCE: the allowance for churn stops at a tenth of a
+    // leg (so that it can never hide a leg that has lost rows), and 300 new
+    // display slots on 1,757 is more than that. It costs a key list and twenty
+    // sample rows — the copy turns out to match the server exactly — and that
+    // census never asks about the leg again. (At a tenth of its live size the
+    // refill leg crosses the same line; at its live size it does not, and it
+    // is too big to diff in any case.)
+    expect(r.drifts).toEqual(FULL
+      ? ["08:00 products", "14:00 displaySlots"]
+      : ["08:00 products", "14:00 displaySlots", "14:00 refills"]);
+    expect(r.repairs.every((x) => x.endsWith("(key-diff)"))).toBe(true);
+    expect(r.repairs.length).toBe(r.drifts.length);
     // …and nothing — nothing — is downloaded whole.
     expect(r.walks).toEqual({});
     expect(r.bytes["WHOLE LEG"] ?? 0).toBe(0);
@@ -342,7 +390,29 @@ describe("one device, one simulated trading day", () => {
     expect(r.dayMB).toBeLessThan(8);
   }, 240_000);
 
-  test.skipIf(!FULL)("…and with the change cursor expiring at 15:00, every held leg is downloaded exactly ONCE", async () => {
+  // PRODUCTION PASSES ARE MOSTLY SIGNAL PASSES. The 600-pass days above are the
+  // floor cadence alone; on a real afternoon the live signal asks for a pass
+  // after every burst of writes. Here it asks up to nine times a minute.
+  test.skipIf(!FULL)("the same 10 Nov day in ~5,000 signal-driven passes costs the traffic, not the passes", async () => {
+    const r = await runDay({ profile: MASS_EDIT, hole: 200, signalPasses: 9 });
+    table("10 Nov traffic, signal-driven passes", r);
+    expect(r.passes).toBeGreaterThan(4500);
+    expect(r.walks).toEqual({});
+    expect(r.mismatched).toEqual([]);
+    expect(r.state.done).toBe(true);
+    // Eight times the passes of the 600-pass day, and no more megabytes: a
+    // signal pass reads one page of the change log and the rows it names.
+    expect(r.dayMB).toBeLessThan(8);
+    // The two histories were walked about every five minutes, not on every pass.
+    expect(r.reads["history pages"]).toBeLessThan(600);
+
+    const before = await runDay({ profile: MASS_EDIT, hole: 200, signalPasses: 9, signalFlag: false });
+    table("…and the same passes with BOTH histories walked on every one (as before)", before);
+    expect(before.reads["history pages"]).toBeGreaterThan(9000);
+    expect(before.bytes["history pages"]).toBeGreaterThan(r.bytes["history pages"] + 1.5 * MB);
+  }, 900_000);
+
+  test("…and with the change cursor expiring at 15:00, every held leg is downloaded exactly ONCE", async () => {
     const r = await runDay({ profile: MASS_EDIT, hole: 200, expireCursorAt: sast(15) });
     table("10 Nov traffic + missed products + the cursor expiring at 15:00", r);
     expect(r.expired).toBe(true);

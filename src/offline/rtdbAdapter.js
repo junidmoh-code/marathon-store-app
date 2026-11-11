@@ -293,18 +293,29 @@ export function createRtdbAdapter({
       });
       if (!token) throw new Error("offline mirror: no signed-in user for a shallow read");
       const where = String(path).split("/").filter(Boolean).map(encodeURIComponent).join("/");
-      const res = await withTimeout(
-        fetchFn(`${base}/${where}.json?shallow=true&auth=${encodeURIComponent(token)}`),
-        { ms: BIG_READ_TIMEOUT_MS, label: `/${path} (keys)`, sleepAware: true },
-      );
-      if (!res.ok) {
-        const err = new Error(`offline mirror: the key read of /${path} was refused (${res.status})`);
-        if (res.status === 401 || res.status === 403) err.code = "PERMISSION_DENIED";
+      // ABORTED, not merely abandoned, when it times out or fails: a fetch
+      // nobody is waiting for would go on downloading its body, and those are
+      // bytes this device pays for and never counts.
+      const aborter = typeof AbortController === "function" ? new AbortController() : null;
+      let text;
+      try {
+        const res = await withTimeout(
+          fetchFn(`${base}/${where}.json?shallow=true&auth=${encodeURIComponent(token)}`,
+            aborter ? { signal: aborter.signal } : undefined),
+          { ms: BIG_READ_TIMEOUT_MS, label: `/${path} (keys)`, sleepAware: true },
+        );
+        if (!res.ok) {
+          const err = new Error(`offline mirror: the key read of /${path} was refused (${res.status})`);
+          if (res.status === 401 || res.status === 403) err.code = "PERMISSION_DENIED";
+          throw err;
+        }
+        text = await withTimeout(res.text(), {
+          ms: BIG_READ_TIMEOUT_MS, label: `/${path} (keys body)`, sleepAware: true,
+        });
+      } catch (err) {
+        try { aborter?.abort(); } catch { /* nothing left to stop */ }
         throw err;
       }
-      const text = await withTimeout(res.text(), {
-        ms: BIG_READ_TIMEOUT_MS, label: `/${path} (keys body)`, sleepAware: true,
-      });
       if (onBytes) { try { onBytes(text.length); } catch { /* never breaks a read */ } }
       const body = JSON.parse(text);
       // A leaf (a number, a string, `true`) has no children; neither has null.

@@ -268,6 +268,21 @@ function wrap(initial, reopen = null) {
         req.onerror = () => rej(asError(req, "getAllEntries cursor failed"));
       }));
     },
+    // Which of `keys` the store already holds, asked in ONE transaction. The
+    // change feed needs it to tell a row ADDED from a row edited: only the
+    // first changes how many rows a leg holds (censusJournal.js).
+    heldKeys(storeName, keys) {
+      if (!keys.length) return Promise.resolve(new Set());
+      return txn(storeName, "readonly", (s) => new Promise((res, rej) => {
+        const held = new Set();
+        let left = keys.length;
+        for (const key of keys) {
+          const req = s[storeName].count(key);
+          req.onsuccess = () => { if (req.result > 0) held.add(key); left -= 1; if (left === 0) res(held); };
+          req.onerror = () => rej(asError(req, "heldKeys count failed"));
+        }
+      }));
+    },
     // How many rows sit at or after `lower` — by key, or by an index. The
     // census check asks it of the two append-only legs: "how many of my rows
     // are NEWER than the census?" is a count over the tail, answered without
