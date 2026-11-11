@@ -12,7 +12,7 @@ import React, { useEffect, useState } from "react";
 import { CARD, BORDER, GRAY, GREEN, BLUE_L, tabOn, tabOff } from "./ui";
 import { cleanupHubs, cleanupHubLabel } from "./hubCleanupCore";
 import { loadCardSummary, rememberHub } from "./hubCountStore";
-import { loadRegister } from "./hubCleanupStore";
+import { loadRegisterForCard } from "./hubCleanupStore";
 
 export default function HubCleanupCard({ onOpen }) {
   const [hub, setHub] = useState(() => cleanupHubs()[0]);
@@ -23,7 +23,7 @@ export default function HubCleanupCard({ onOpen }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([loadCardSummary(hub), loadRegister(hub)])
+    Promise.all([loadCardSummary(hub), loadRegisterForCard(hub)])
       .then(([s, reg]) => {
         if (cancelled) return;
         setSummary(s);

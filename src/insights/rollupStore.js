@@ -47,6 +47,7 @@ import {
 } from "firebase/database";
 import { database } from "../firebase";
 import { expandDay, storeBucketOf } from "./rollupCodec";
+import { loadKeptDays, keepDays } from "./rollupDayCache";
 import {
   planWindow, rowsInRange, mergeNewestFirst, liveRangeFor, UNDATED_BUCKET, shiftSaDate,
 } from "./rollupWindow";
@@ -71,6 +72,9 @@ const dayCache = new Map();
 
 /** Days this recent may still be rebuilt by the sweep, so they are re-read. */
 const VOLATILE_DAYS = 2;
+
+/** How far back a day is kept on the device. Two years of nodes is ~50 MB. */
+const KEEP_DAYS = 730;
 
 export function _clearRollupCacheForTests() { dayCache.clear(); }
 export function _cachedDayCountForTests() { return dayCache.size; }
@@ -107,18 +111,37 @@ export async function readDayNodes(dates) {
   // Contiguous runs are fetched as ONE key range; a scattered set falls back to
   // per-day reads. Windows are contiguous by construction, so the first branch
   // is the normal one.
-  const sorted = dates.slice().sort();
-  let i = 0;
-  while (i < sorted.length) {
-    const slice = sorted.slice(i, i + DAYS_PAGE);
-    const snap = await get(query(
-      ref(database, DAYS_PATH),
-      orderByKey(), startAt(slice[0]), endAt(slice[slice.length - 1]),
-      limitToFirst(DAYS_PAGE),
-    ));
-    snap.forEach((child) => { dayCache.set(child.key, child.val()); });
-    i += DAYS_PAGE;
+  //
+  // ONE RANGE PER RUN OF ADJACENT DAYS — never one range across a gap. With
+  // finished days kept on the device, the set asked for is often "one old day
+  // the sweep rebuilt, plus the last three": a single startAt/endAt across
+  // those would download every finished day in between (the 60-day limit then
+  // cutting it off BEFORE the recent days it was sent for).
+  for (const run of contiguousRuns(dates)) {
+    let i = 0;
+    while (i < run.length) {
+      const slice = run.slice(i, i + DAYS_PAGE);
+      const snap = await get(query(
+        ref(database, DAYS_PATH),
+        orderByKey(), startAt(slice[0]), endAt(slice[slice.length - 1]),
+        limitToFirst(DAYS_PAGE),
+      ));
+      snap.forEach((child) => { dayCache.set(child.key, child.val()); });
+      i += DAYS_PAGE;
+    }
   }
+}
+
+/** Sorted, de-duplicated dates split into runs of calendar-adjacent days. */
+export function contiguousRuns(dates) {
+  const sorted = [...new Set(dates)].sort();
+  const runs = [];
+  for (const d of sorted) {
+    const run = runs[runs.length - 1];
+    if (run && shiftSaDate(run[run.length - 1], 1) === d) run.push(d);
+    else runs.push([d]);
+  }
+  return runs;
 }
 
 /** Returns {key, value} pairs: the KEYS are what the caller's live tail needs
@@ -197,6 +220,10 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
   const readers = io || {
     readDayIndex, readDayNodes, readLogRange, readUndated, readLate, readLogTotals,
     getCached: (d) => dayCache.get(d),
+    // The finished days this DEVICE already holds (rollupDayCache.js): a
+    // reload no longer downloads them again.
+    loadKept: loadKeptDays, keep: keepDays,
+    setCached: (d, node) => { dayCache.set(d, node); },
   };
 
   let index = {};
@@ -214,6 +241,20 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
 
   // A day the sweep may still rebuild is never served from the cache.
   const volatileFrom = shiftSaDate(plan.todaySA, -VOLATILE_DAYS);
+  // Finished days kept on this device from an earlier page load go into the
+  // session cache first — but only those whose index entry is still exactly
+  // the one they were saved under, so a day the sweep has rebuilt is fetched.
+  if (readers.loadKept && readers.setCached) {
+    const absent = plan.days.filter((d) => d < volatileFrom && readers.getCached(d) === undefined);
+    if (absent.length > 0) {
+      try {
+        const kept = await readers.loadKept(absent, index);
+        for (const [d, node] of kept) readers.setCached(d, node);
+      } catch (err) {
+        console.warn("insights rollup: kept days unreadable, fetching them instead —", err);
+      }
+    }
+  }
   const needed = plan.days.filter((d) => d >= volatileFrom || readers.getCached(d) === undefined);
   try {
     await readers.readDayNodes(needed);
@@ -221,6 +262,20 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
     // Same reasoning as the index: the days simply become live ranges.
     console.warn("insights rollup: day nodes unreadable, falling back to the log —", err);
     degraded = degraded || "days";
+  }
+  // Keep what was just fetched, finished days only. Not awaited: the screen
+  // does not wait on a disk write, and a failed write only means the next
+  // page load fetches the day again.
+  if (readers.keep) {
+    const fresh = needed
+      .filter((d) => d < volatileFrom)
+      .map((d) => [d, readers.getCached(d)])
+      .filter(([, node]) => node !== undefined);
+    if (fresh.length > 0) {
+      Promise.resolve()
+        .then(() => readers.keep(fresh, index, { pruneBefore: shiftSaDate(plan.todaySA, -KEEP_DAYS) }))
+        .catch(() => {});
+    }
   }
 
   const parts = [];

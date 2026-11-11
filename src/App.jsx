@@ -35,6 +35,7 @@ import { notePendingUpdate } from "./offline/pendingWrites";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
 import { useInsightsWindow } from "./insights/useInsightsWindow";
+import { subscribeLivePath, subscribeLiveQuery } from "./utils/sharedLiveRead";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
@@ -688,8 +689,10 @@ function useProducts() {
 
   useEffect(() => {
     if (!authReady || !live) return undefined;
-    const productsRef = ref(database, "products");
-    const unsub = onValue(productsRef, (snap) => {
+    // Shared and kept across a screen switch (utils/sharedLiveRead.js): the
+    // owner dashboard, the warehouse view and the shop view each call this
+    // hook, and moving between them used to download the catalogue again.
+    const unsub = subscribeLivePath("products", (snap) => {
       // The legacy {items:[...]} migration WRITES, so it only ever runs on the
       // live path — a mirrored read must never write to the database it is a
       // copy of, and a device holding a stale mirror could otherwise re-post a
@@ -1062,7 +1065,12 @@ function useOrders(scopeShop = null, enabled = true) {
     const readRef = scopeShop
       ? query(ordersRef, orderByChild("destShop"), equalTo(scopeShop))
       : ordersRef;
-    const unsub = onValue(readRef, (snap) => {
+    // Shared per query and kept across a screen switch
+    // (utils/sharedLiveRead.js). The key names the query completely, so a
+    // shop-scoped read never shares a listener with the whole node or with
+    // another shop's.
+    const readKey = scopeShop ? `orders?orderByChild=destShop&equalTo=${scopeShop}` : "orders";
+    const unsub = subscribeLiveQuery(readKey, () => readRef, (snap) => {
       const data = snap.val();
       if (!data) {
         setOrders(Object.assign([], { settled: true }));
@@ -2125,9 +2133,11 @@ function useReturnsLog() {
   }, [live, mirrored.settled, mirrored.value, shape]);
   useEffect(() => {
     if (!authReady || !live) return undefined;
-    const unsub = onValue(ref(database, "returns_log"), snap => {
+    // Shared and kept across a screen switch (utils/sharedLiveRead.js).
+    // The error callback is as quiet as the bare onValue it replaces.
+    const unsub = subscribeLivePath("returns_log", snap => {
       setLog(shape(snap.val()));
-    });
+    }, () => {});
     return () => unsub();
     // `live` is LOAD-BEARING in this list. Without it the effect only re-runs
     // when authReady moves, so a device whose mirror goes unusable mid-session
@@ -2173,9 +2183,10 @@ function useCustomersDb() {
   }, [live, mirrored.settled, mirrored.value]);
   useEffect(() => {
     if (!authReady || !live) return undefined;
-    const unsub = onValue(ref(database, "customers"), snap => {
+    // Shared and kept across a screen switch (utils/sharedLiveRead.js).
+    const unsub = subscribeLivePath("customers", snap => {
       setCustomers(snap.val() || {});
-    });
+    }, () => {});
     return () => unsub();
   }, [authReady, live]);
   return customers;

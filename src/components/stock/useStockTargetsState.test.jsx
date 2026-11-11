@@ -27,6 +27,11 @@ vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 
 const { useStockTargetsState } = await import("./useStock.js");
+// The live read is ONE shared listener per path now (utils/sharedLiveRead.js),
+// and these tests never unmount their probe — so the listener a previous test
+// opened is dropped here, the way the per-hook onValue used to be forgotten
+// when `subs` was cleared.
+const { _resetSharedLiveReadsForTests } = await import("../../utils/sharedLiveRead.js");
 
 let seen;
 function Probe() {
@@ -35,7 +40,7 @@ function Probe() {
 }
 const mount = () => { let t; act(() => { t = TestRenderer.create(<Probe />); }); return t; };
 
-beforeEach(() => { for (const k of Object.keys(subs)) delete subs[k]; seen = undefined; });
+beforeEach(() => { _resetSharedLiveReadsForTests(); for (const k of Object.keys(subs)) delete subs[k]; seen = undefined; });
 
 describe("useStockTargetsState", () => {
   it("starts NOT settled — the listener has not answered", () => {

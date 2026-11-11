@@ -36,6 +36,7 @@ import {
   STYLE_SKIP_REASONS,
 } from "./hubCleanupCore";
 import { setDisplaySlot } from "./displaySlots";
+import { readPathOnce } from "../../offline/localReads";
 
 const one = async (path) => (await get(child(ref(database), path))).val();
 
@@ -122,7 +123,36 @@ export async function recordColourwayAnswer({ code, productId, palette }) {
 
 /** Everything registered at this hub so far → { "pid__sizeKey": record }. */
 export async function loadRegister(hub) {
-  return (await one(registerPath(hub))) || {};
+  const value = (await one(registerPath(hub))) || {};
+  cardRegister.set(hub, { at: Date.now(), value });
+  return value;
+}
+
+// ── THE HOME CARD'S COPY ────────────────────────────────────────────────────
+// The Home card shows ONE number from this node (units registered), and it is
+// mounted every time anybody lands on Home. It used to fetch the whole hub
+// register for that — 180 KB at Hub 1 — on every one of those mounts: 274
+// reads from 37 devices in 21 hours (profiler, 10–11 Nov 2026).
+//
+// For the card only:
+//   - what this device read in the last CARD_REGISTER_TTL_MS is reused (every
+//     loadRegister above refreshes it, so the count is current the moment
+//     somebody comes back from registering on this device);
+//   - otherwise the device's local copy answers when it holds this node
+//     (offline mirror, `displayRegister` leg) and nothing is downloaded;
+//   - otherwise it is the same one-shot read as before.
+// The registration and count screens do NOT use this — they read the node
+// itself, every time, exactly as they did.
+export const CARD_REGISTER_TTL_MS = 2 * 60 * 1000;
+const cardRegister = new Map();   // hub -> { at, value }
+export function _clearCardRegisterForTests() { cardRegister.clear(); }
+export async function loadRegisterForCard(hub, { now = Date.now, readOnce = readPathOnce } = {}) {
+  const hit = cardRegister.get(hub);
+  if (hit && now() - hit.at >= 0 && now() - hit.at < CARD_REGISTER_TTL_MS) return hit.value;
+  const path = registerPath(hub);
+  const value = (await readOnce(path, () => one(path))) || {};
+  cardRegister.set(hub, { at: now(), value });
+  return value;
 }
 
 export async function loadUnresolved(hub) {
