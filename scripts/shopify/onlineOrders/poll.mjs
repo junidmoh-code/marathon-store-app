@@ -1018,6 +1018,14 @@ async function mailAttention(ctx) {
     if (!send) { log(`  ⚠ ${unmailed.length} attention email(s) not sent — no mail sender on this machine; retried next tick`); return; }
     clean = (await sendAttentionMails(ctx, unmailed)) === 0;
   } finally {
+    // An email owed on an order this tick handled, on a tick that did not
+    // sweep (CodeRabbit, PR #891): the next tick may not handle that order, so
+    // the sweep is made due now and the retry comes next tick, not in ten
+    // minutes. 0 = never swept.
+    if (!swept && !clean && unmailed.length) {
+      try { await db.ref(`${META_PATH}/attentionSweepAt`).set(0); }
+      catch (err) { log(`  ⚠ attentionSweepAt not cleared (${err?.message || err})`); }
+    }
     if (swept && clean) {
       // A lost stamp costs one extra sweep. It must never replace an error in
       // flight or stop the rest of the tick.

@@ -164,6 +164,10 @@ export async function drainAutoPublish(db, { now, max = MAX_PER_RUN, maxAttempts
   const queue = (await db.ref(AUTOPUBLISH_QUEUE_PATH).get()).val() || {};
   out.queued = Object.keys(queue).length;
   if (!out.queued) return out;
+  // The switch again, AFTER the queue read (CodeRabbit, PR #891): that read
+  // takes a moment, and a switch turned off during it must stop this run as it
+  // did when the switch was read second. One boolean.
+  if ((await db.ref(SWITCH_PATH).get()).val() !== true) { out.enabled = false; return out; }
 
   const t = await now();
   const due = Object.entries(queue)
