@@ -114,7 +114,9 @@ function createPoolTailCache({ readTail, readNewest, now = Date.now, ttlMs = EFT
       // let THAT read's outcome be the call's outcome, as before this cache.
       return load();
     }
-    if (held === mine && stillNewest(mine.tail, newest)) {
+    // The TTL is checked again AFTER the probe (CodeRabbit, PR #890): a slow
+    // probe that began inside the TTL must not carry the copy past it.
+    if (held === mine && now() - mine.at < ttlMs && now() >= mine.at && stillNewest(mine.tail, newest)) {
       counts.hits++;
       return mine.tail;
     }

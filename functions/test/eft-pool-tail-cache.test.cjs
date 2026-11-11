@@ -315,3 +315,16 @@ test("a released hold on an OLDER record is found on the next search once the co
   t = 4000;
   assert.deepEqual((await ask()).results, [{ key: "old", status: "unmatched" }]);
 });
+
+test("a probe that returns after the TTL has passed does not bless the old copy (CodeRabbit)", async () => {
+  let t = 1000; let reads = 0;
+  const cache = createPoolTailCache({
+    readTail: async () => { reads += 1; return { a: { at: 1 } }; },
+    readNewest: async () => { t += EFT_SEARCH_TAIL_TTL_MS; return { a: { at: 1 } }; },   // the probe itself outlives the TTL
+    now: () => t,
+  });
+  await cache.get();
+  t += 1000;
+  await cache.get();
+  assert.equal(reads, 2);
+});
