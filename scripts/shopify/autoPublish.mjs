@@ -151,11 +151,19 @@ export async function autoPublishOne(db, pid, { now, locNames }) {
 /** Drain the queue. `now` = async server-time ms (publishNode.serverNowMs). */
 export async function drainAutoPublish(db, { now, max = MAX_PER_RUN, maxAttempts = MAX_ATTEMPTS_PER_RUN, log = () => {} } = {}) {
   const out = { enabled: false, queued: 0, published: 0, done: 0, waiting: 0, failed: 0, results: [] };
+  // THE SWITCH FIRST, THE QUEUE ONLY WHEN IT IS ON (cost watch, 11 Nov 2026).
+  // The order used to be the other way round: the whole queue was downloaded on
+  // every two-minute tick and only then was the switch read — so with the
+  // switch OFF (as it has been since the queue reached 2,955 products, ~125 KB)
+  // each tick paid for the queue purely to print its length: 270 reads, 33 MB,
+  // in 21 measured hours. The switch is one boolean. Off = the agent does
+  // nothing, so nothing about the queue is needed; `queued` is null ("not
+  // counted"), never a guess.
+  out.enabled = (await db.ref(SWITCH_PATH).get()).val() === true;
+  if (!out.enabled) { out.queued = null; return out; }
   const queue = (await db.ref(AUTOPUBLISH_QUEUE_PATH).get()).val() || {};
   out.queued = Object.keys(queue).length;
   if (!out.queued) return out;
-  out.enabled = (await db.ref(SWITCH_PATH).get()).val() === true;
-  if (!out.enabled) return out;
 
   const t = await now();
   const due = Object.entries(queue)

@@ -1704,8 +1704,10 @@ if (!ONLY) try {
   if (ap.queued && ap.enabled) {
     console.log(`\nauto-publish: ${ap.queued} queued · ${ap.published} sent to publish · ${ap.done} closed · ${ap.waiting} waiting` +
       (ap.failed ? ` · ${ap.failed} failed (kept)` : ""));
-  } else if (ap.queued) {
-    console.log(`\nauto-publish: OFF (/config/shopifyAutoPublish/enabled) — ${ap.queued} queued`);
+  } else if (!ap.enabled) {
+    // The queue is not read while the switch is off (autoPublish.mjs), so there
+    // is no count to print. It keeps filling; nothing is lost.
+    console.log(`\nauto-publish: OFF (/config/shopifyAutoPublish/enabled) — queue not read`);
   }
 } catch (e) {
   console.error(`  ⚠ auto-publish failed (${String(e?.message || e)}) — the queue is kept, the next tick retries`);
