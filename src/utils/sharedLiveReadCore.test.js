@@ -4,7 +4,7 @@
 // is what downloads the node. So these tests count opens (and closes) against
 // a fake `listen`, and drive time by hand.
 import { describe, it, expect, beforeEach } from "vitest";
-import { createSharedLiveReads, LINGER_MS, MAX_IDLE_HEAVY, MAX_IDLE_BYTES, HEAVY_BYTES } from "./sharedLiveReadCore";
+import { createSharedLiveReads, LINGER_MS, MAX_IDLE_BYTES } from "./sharedLiveReadCore";
 
 /** A fake onValue: records every open and close, and lets a test push data. */
 function makeServer() {
@@ -311,8 +311,8 @@ describe("listen() itself throwing", () => {
   });
 });
 
-describe("the connection dropping", () => {
-  it("releases idle entries and stops a held value being replayed until the server answers again", () => {
+describe("the connection dropping — left to the SDK, exactly as a bare onValue is", () => {
+  it("releases idle entries, and nothing else", () => {
     const offIdle = sub("customers", []);
     server.push("customers", { c: 1 });
     offIdle();
@@ -321,57 +321,35 @@ describe("the connection dropping", () => {
     server.push("refills", { r: 1 });
     shared.connectionLost();
     expect(server.log.closes).toEqual(["customers"]);
-    // A new subscriber is not handed the held snapshot: the listener is reopened.
+    expect(server.log.opens.filter((t) => t === "refills")).toHaveLength(1);
+  });
+
+  it("a second subscriber joining while offline is replayed the held value at once — the listener is NOT restarted", () => {
+    const onScreen = [];
+    sub("refills", onScreen);
+    server.push("refills", { r: 1 });
+    shared.connectionLost();
     const late = [];
     sub("refills", late);
-    expect(late).toEqual([]);
-    expect(server.log.opens.filter((t) => t === "refills")).toHaveLength(2);
-    server.push("refills", { r: 2 });
-    expect(late).toEqual([{ r: 2 }]);
+    expect(late).toEqual([{ r: 1 }]);          // what a bare onValue would have been handed from the SDK cache
+    expect(server.log.opens).toHaveLength(1);  // not stopped, not reopened: nothing to re-download on reconnect
+    expect(server.log.closes).toEqual([]);
+    server.push("refills", { r: 2 });          // the SDK's own re-sync after the line returns
+    expect(late).toEqual([{ r: 1 }, { r: 2 }]);
     expect(onScreen).toEqual([{ r: 1 }, { r: 2 }]);
   });
 
-  it("a fresh snapshot vouches for the entry again — the next subscriber is replayed to, nothing reopened", () => {
-    sub("refills", []);
-    server.push("refills", { r: 1 });
-    shared.connectionLost();
-    server.push("refills", { r: 2 });          // the server's answer after the reconnect
-    const late = [];
-    sub("refills", late);
-    expect(late).toEqual([{ r: 2 }]);
-    expect(server.log.opens).toHaveLength(1);
-  });
-
-  it("connectionRestored vouches for what is held — but never for an identity change", () => {
-    sub("refills", []); sub("customers", []);
-    server.push("refills", 1); server.push("customers", 2);
-    shared.connectionLost();
-    shared.identityChanged();
-    shared.connectionRestored();
-    const late = [];
-    sub("customers", late);
-    expect(late).toEqual([]);                  // still not replayed: the identity changed
-    expect(server.log.opens.filter((t) => t === "customers")).toHaveLength(2);
-  });
-
-  it("connectionRestored after a plain loss: replayed, nothing reopened", () => {
-    sub("refills", []);
-    server.push("refills", 1);
-    shared.connectionLost();
-    shared.connectionRestored();
-    const late = [];
-    sub("refills", late);
-    expect(late).toEqual([1]);
-    expect(server.log.opens).toHaveLength(1);
-  });
-
-  it("an entry that may not be replayed is not held once its last subscriber leaves", () => {
+  it("an in-use entry still lingers normally after a connection loss", () => {
     const off = sub("refills", []);
     server.push("refills", 1);
     shared.connectionLost();
     off();
-    expect(server.log.closes).toEqual(["refills"]);
-    expect(clock.pending()).toBe(0);
+    expect(server.log.closes).toEqual([]);
+    expect(clock.pending()).toBe(1);
+  });
+
+  it("there is no reconnect probe and no offline state to clear", () => {
+    expect(shared.connectionRestored).toBeUndefined();
   });
 });
 
@@ -427,80 +405,122 @@ describe("the per-path policy", () => {
   });
 });
 
-describe("the cap on what is held for nobody", () => {
+describe("the cap on what is held for nobody — a byte budget, cheapest to refetch goes first", () => {
   const MBs = 1024 * 1024;
-  const sizes = { refills: 16, products: 8, orders: 4, customers: 2.5, rows: 1.3, targets: 3, small1: 0.25, small2: 0.25 };
+  const sizes = { refills: 16, products: 8, orders: 4, customers: 2.5, rows: 1.3, targets: 3, stock: 7,
+                  "stock/a": 1.5, "stock/b": 1.5, "stock/c": 1.5, "stock/d": 1.5, small1: 0.25, small2: 0.25 };
+  // `defer` runs the cap when the test says the screen switch is over.
+  let deferred;
+  const settleSwitch = () => { const d = deferred; deferred = []; for (const fn of d) fn(); };
   const capped = (extra = {}) => createSharedLiveReads({
     listen: server.listen, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+    defer: (fn) => deferred.push(fn),
     policy: (k) => ({ lingerMs: 600000, bytes: (sizes[k] ?? 0.25) * MBs }), ...extra,
   });
-  const visit = (s2, key) => { const off = s2.subscribe(key, () => key, () => {}); server.push(key, key); off(); };
+  const mount = (s2, keys) => {
+    const offs = keys.map((k) => { const off = s2.subscribe(k, () => k, () => {}); if (!server.open.has(k)) return off; server.push(k, k); return off; });
+    return () => offs.forEach((off) => off());
+  };
+  const visit = (s2, key) => { mount(s2, [key])(); settleSwitch(); };
+  const opensOf = (k) => server.log.opens.filter((t) => t === k).length;
+  beforeEach(() => { deferred = []; });
 
-  it("the defaults: three big nodes, 32 MB", () => {
-    expect(MAX_IDLE_HEAVY).toBe(3);
-    expect(MAX_IDLE_BYTES).toBe(32 * MBs);
-    expect(HEAVY_BYTES).toBe(MBs);
+  it("the default budget is 16 MB of hints, and there is no count cap", () => {
+    expect(MAX_IDLE_BYTES).toBe(16 * MBs);
   });
 
-  it("keeps the three most recently left big nodes and releases the OLDEST first", () => {
+  it("HOME → SHOP → HOME: the shop's stock locations never push the request node out — ONE open", () => {
     const s2 = capped();
-    visit(s2, "orders"); visit(s2, "customers"); visit(s2, "rows");
+    let leave = mount(s2, ["refills"]);                                   // Home (the badge)
+    leave(); leave = mount(s2, ["stock/a", "stock/b", "stock/c", "stock/d"]); settleSwitch();   // → shop
+    leave(); leave = mount(s2, ["refills"]); settleSwitch();              // → Home
+    leave(); leave = mount(s2, ["stock/a", "stock/b", "stock/c", "stock/d"]); settleSwitch();   // → shop again
+    leave(); mount(s2, ["refills"]); settleSwitch();                      // → Home again
+    expect(opensOf("refills")).toBe(1);
+  });
+
+  it("HEALTH → REFILL → HEALTH: whole stock is opened ONCE", () => {
+    const s2 = capped();
+    const health = ["stock", "refills", "targets"]; const refill = ["refills", "stock/a"];
+    let leave = mount(s2, health);
+    leave(); leave = mount(s2, refill); settleSwitch();
+    leave(); leave = mount(s2, health); settleSwitch();
+    leave(); leave = mount(s2, refill); settleSwitch();
+    leave(); mount(s2, health); settleSwitch();
+    expect(opensOf("stock")).toBe(1);
+    expect(opensOf("refills")).toBe(1);
+    expect(opensOf("targets")).toBe(1);
+  });
+
+  it("the cap waits for the screen switch to finish: a node the next screen reads is never evicted in between", () => {
+    const s2 = capped();
+    const leave = mount(s2, ["refills", "stock", "targets"]);      // 26 MB in use
+    leave();                                                       // all idle for an instant
+    expect(server.log.closes).toEqual([]);                         // nothing evicted yet
+    mount(s2, ["refills"]);                                        // the next screen takes the big one
+    settleSwitch();
+    expect(server.log.closes).toEqual([]);                         // 10 MB idle: fits
+  });
+
+  it("over the budget, the SMALLEST goes first and the biggest last", () => {
+    const s2 = capped();
+    visit(s2, "refills");                      // 16: fits exactly
     expect(server.log.closes).toEqual([]);
-    visit(s2, "targets");
-    expect(server.log.closes).toEqual(["orders"]);
-    visit(s2, "products");
-    expect(server.log.closes).toEqual(["orders", "customers"]);
-    expect(s2.stats().keys.sort()).toEqual(["products", "rows", "targets"]);
+    visit(s2, "stock/a"); visit(s2, "stock/b");
+    expect(server.log.closes).toEqual(["stock/a", "stock/b"]);   // each one released rather than the 16 MB node
+    expect(s2.stats().keys).toEqual(["refills"]);
   });
 
-  it("coming back to a held node makes it the most recent again", () => {
+  it("middling nodes: the cheapest are released until the rest fit", () => {
     const s2 = capped();
-    visit(s2, "orders"); visit(s2, "customers"); visit(s2, "rows");
-    visit(s2, "orders");                       // back on Orders, and away again
-    visit(s2, "targets");
-    expect(server.log.closes).toEqual(["customers"]);
+    const leave = mount(s2, ["products", "orders", "customers", "rows", "targets"]);   // 18.8 MB
+    leave(); settleSwitch();
+    expect(server.log.closes).toEqual(["rows", "customers"]);    // 15 MB left: fits
+    expect(s2.stats().keys.sort()).toEqual(["orders", "products", "targets"]);
   });
 
-  it("small nodes do not count against the three, and do not push a big one out", () => {
-    const s2 = capped();
-    visit(s2, "orders"); visit(s2, "customers"); visit(s2, "rows");
-    visit(s2, "small1"); visit(s2, "small2");
-    expect(server.log.closes).toEqual([]);
+  it("equal sizes: the one left longest ago goes first", () => {
+    const s2 = capped({ maxIdleBytes: 3 * MBs });
+    visit(s2, "stock/a"); visit(s2, "stock/b"); visit(s2, "stock/c");
+    expect(server.log.closes).toEqual(["stock/a"]);
   });
 
-  it("the byte budget: the oldest goes when the hints add up past it, even under three", () => {
-    const s2 = capped({ maxIdleBytes: 20 * MBs });
-    visit(s2, "products");                     // 8
-    visit(s2, "refills");                      // 16 — 24 in all: products is released
-    expect(server.log.closes).toEqual(["products"]);
-    visit(s2, "orders");                       // 4 + 16 = 20: fits
-    expect(server.log.closes).toEqual(["products"]);
-  });
-
-  it("the newest is always kept, however big — or the biggest node could never be held", () => {
+  it("the largest is always kept, however big — or the biggest node could never be held", () => {
     const s2 = capped({ maxIdleBytes: 10 * MBs });
     visit(s2, "refills");
     expect(server.log.closes).toEqual([]);
+    visit(s2, "small1");
+    expect(server.log.closes).toEqual(["small1"]);
     const again = [];
     s2.subscribe("refills", () => "refills", (s) => again.push(s.val()));
     expect(again).toEqual(["refills"]);
-    expect(server.log.opens).toHaveLength(1);
+    expect(opensOf("refills")).toBe(1);
   });
 
-  it("a node in use is never evicted, and does not count as idle", () => {
+  it("a node in use is never evicted and does not count against the budget", () => {
     const s2 = capped();
     s2.subscribe("refills", () => "refills", () => {});
-    visit(s2, "orders"); visit(s2, "customers"); visit(s2, "rows"); visit(s2, "targets");
-    expect(server.log.closes).toEqual(["orders"]);
-    expect(s2.stats().keys).toContain("refills");
+    visit(s2, "products"); visit(s2, "orders"); visit(s2, "targets");   // 15 MB idle
+    expect(server.log.closes).toEqual([]);
   });
 
-  it("a visit to every big screen in ten minutes holds at most the budget", () => {
+  it("what is held for nobody never exceeds the budget once a switch has settled", () => {
     const s2 = capped();
-    for (const k of ["refills", "products", "orders", "customers", "rows", "targets"]) visit(s2, k);
-    const held = s2.stats().keys;
-    expect(held.sort()).toEqual(["customers", "rows", "targets"]);
-    expect(held.reduce((n, k) => n + sizes[k], 0)).toBeLessThanOrEqual(32);
+    for (const k of Object.keys(sizes)) visit(s2, k);
+    const idle = s2.stats().keys;
+    expect(idle.reduce((n, k) => n + sizes[k], 0)).toBeLessThanOrEqual(16);
+    expect(idle).toContain("refills");
+  });
+
+  it("by default the cap runs on a microtask — after the commit that switched screens", async () => {
+    const s2 = createSharedLiveReads({
+      listen: server.listen, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+      policy: (k) => ({ lingerMs: 600000, bytes: (sizes[k] ?? 0.25) * MBs }),
+    });
+    mount(s2, ["refills", "stock"])();
+    expect(server.log.closes).toEqual([]);
+    await Promise.resolve();
+    expect(server.log.closes).toEqual(["stock"]);
   });
 });
 

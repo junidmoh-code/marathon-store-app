@@ -30,14 +30,18 @@
 //     It is marked dead here and the next subscriber opens a fresh one, which
 //     is what remounting a hook did before.
 //
-//   - It never holds more than a phone can afford. Only the MAX_IDLE_HEAVY
-//     most recently left big nodes are kept, within MAX_IDLE_BYTES in all; the
-//     oldest is released first. Sizes are per-path HINTS from the policy —
-//     nothing is serialised to be measured.
-//   - It never replays a held value it cannot vouch for. After the connection
-//     drops, or the signed-in identity changes, an entry still in use is
-//     marked no-replay: a NEW subscriber is not handed the held snapshot, the
-//     listener is reopened and everybody gets the server's fresh answer.
+//   - It never holds more than a phone can afford. What is held for nobody is
+//     kept within MAX_IDLE_BYTES, and when that is exceeded the CHEAPEST to
+//     fetch again goes first — the biggest node, the one holding pays most
+//     for, goes last. Sizes are per-path HINTS from the policy — nothing is
+//     serialised to be measured.
+//   - It never replays a held value read under another identity. After the
+//     signed-in identity changes, an entry still in use is marked no-replay:
+//     a NEW subscriber is not handed the held snapshot, the listener is
+//     reopened and everybody gets the server's fresh answer.
+//   - A dropped connection is left to the SDK, exactly as with a bare
+//     onValue: the listener stays, a joiner is replayed the held value, and
+//     the SDK re-syncs it on reconnect. Only idle entries are released.
 //   - A subscriber that throws does not stop the others being told, and does
 //     not stay subscribed.
 //
@@ -53,23 +57,22 @@
 export const LINGER_MS = 10 * 60 * 1000;
 /** The short hold: a tab toggle, a strict-mode remount. The default. */
 export const SHORT_LINGER_MS = 25 * 1000;
-/** A held node at least this big counts against MAX_IDLE_HEAVY. */
-export const HEAVY_BYTES = 1024 * 1024;
-/** Big nodes kept after their last subscriber left: the most recent three. */
-export const MAX_IDLE_HEAVY = 3;
-/** …and never more than this in all, by the policy's size hints. The newest
- *  idle entry is always kept, whatever its size, or the biggest node — the one
- *  holding pays most for — could never be held at all. */
-export const MAX_IDLE_BYTES = 32 * 1024 * 1024;
+/** What may be held for nobody, by the policy's size hints. Conservative on
+ *  purpose: a hint is the node's JSON size, and the SDK's in-memory tree is
+ *  several times that. In practice: the one big node, or a few middling ones.
+ *  The largest idle entry is always kept, whatever its size. */
+export const MAX_IDLE_BYTES = 16 * 1024 * 1024;
 
 export function createSharedLiveReads({
   listen,
   // (key) => { lingerMs, bytes } — or a number / () => number for one hold for all.
   policy = null,
   lingerMs = LINGER_MS,
-  maxIdleHeavy = MAX_IDLE_HEAVY,
   maxIdleBytes = MAX_IDLE_BYTES,
-  heavyBytes = HEAVY_BYTES,
+  // Runs the idle cap AFTER the current screen switch has finished: the
+  // screen being left releases its nodes a moment before the screen being
+  // opened subscribes to (some of) the same ones.
+  defer = (fn) => { Promise.resolve().then(fn); },
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (t) => clearTimeout(t),
   warn = (...a) => console.warn(...a),
@@ -86,9 +89,9 @@ export function createSharedLiveReads({
     return { lingerMs: Number(p && p.lingerMs) || 0, bytes: Math.max(0, Number(p && p.bytes) || 0) };
   };
 
-  // Held, but not to be handed to anyone new: fed by a connection that has
-  // since dropped, or read under an identity that has since changed.
-  const noReplay = (e) => e.offline || e.foreign;
+  // Held, but not to be handed to anyone new: read under an identity that has
+  // since changed.
+  const noReplay = (e) => e.foreign;
 
   const stopListening = (e) => {
     if (e.linger != null) { clearTimer(e.linger); e.linger = null; }
@@ -122,8 +125,7 @@ export function createSharedLiveReads({
           if (e.gen !== gen || entries.get(e.key) !== e) return;
           e.has = true;
           e.snap = snap;
-          e.offline = false;        // the server's own answer: vouched for again
-          e.foreign = false;
+          e.foreign = false;        // the server's own answer, under whoever is signed in now
           for (const s of [...e.subs]) { if (e.subs.has(s)) tell(e, s, s.onData, snap); }
         },
         (err) => {
@@ -152,19 +154,25 @@ export function createSharedLiveReads({
   };
 
   // ── THE CAP ON WHAT IS HELD FOR NOBODY ────────────────────────────────────
-  // Oldest-released first, until at most `maxIdleHeavy` big nodes and
-  // `maxIdleBytes` in all remain. The newest idle entry always survives.
+  // By the size hints alone, and by COST TO FETCH AGAIN: while the idle
+  // entries add up past the budget, the smallest goes (ties: the one left
+  // longest ago). The 16 MB node is the last to go, never the first — evicting
+  // it to keep three 1.5 MB ones would re-download ten times what it saved.
+  // The largest is always kept.
   const enforceIdleCap = () => {
     const idle = [...entries.values()].filter((e) => e.subs.size === 0 && e.linger != null)
-      .sort((a, b) => b.idleSeq - a.idleSeq);          // newest first
-    let heavy = 0; let bytes = 0;
-    idle.forEach((e, i) => {
-      const isHeavy = e.bytes >= heavyBytes;
-      const over = i > 0 && ((isHeavy && heavy >= maxIdleHeavy) || bytes + e.bytes > maxIdleBytes);
-      if (over) { drop(e); return; }
-      if (isHeavy) heavy += 1;
-      bytes += e.bytes;
-    });
+      .sort((a, b) => (a.bytes - b.bytes) || (a.idleSeq - b.idleSeq));   // cheapest, then oldest, first
+    let total = idle.reduce((n, e) => n + e.bytes, 0);
+    for (let i = 0; i < idle.length - 1 && total > maxIdleBytes; i += 1) {
+      total -= idle[i].bytes;
+      drop(idle[i]);
+    }
+  };
+  let capPending = false;
+  const scheduleIdleCap = () => {
+    if (capPending) return;
+    capPending = true;
+    defer(() => { capPending = false; enforceIdleCap(); });
   };
 
   const release = (e, { linger = true } = {}) => {
@@ -175,7 +183,7 @@ export function createSharedLiveReads({
     e.bytes = p.bytes;
     e.idleSeq = (idleSeq += 1);
     e.linger = setTimer(() => { e.linger = null; if (e.subs.size === 0) drop(e); }, p.lingerMs);
-    enforceIdleCap();
+    scheduleIdleCap();
   };
 
   /**
@@ -194,7 +202,7 @@ export function createSharedLiveReads({
     let e = entries.get(key);
     if (!e) {
       e = { key, makeTarget, subs: new Set(), stop: null, has: false, snap: null,
-            dead: false, linger: null, noLinger: false, offline: false, foreign: false, gen: 0,
+            dead: false, linger: null, noLinger: false, foreign: false, gen: 0,
             bytes: 0, idleSeq: 0 };
       entries.set(key, e);
     }
@@ -206,12 +214,11 @@ export function createSharedLiveReads({
     // and the caller sees its own error exactly as it would from a bare onValue.
     const undo = (err) => { e.subs.delete(sub); release(e); throw err; };
     if (e.dead || (!e.stop && !e.has) || noReplay(e)) {
-      // Dead, new, or holding a value that can no longer be vouched for: (re)open
+      // Dead, new, or holding a value read under another identity: (re)open
       // it. Everybody subscribed gets the server's fresh answer.
       if (e.stop) stopListening(e);
       e.has = false;
       e.snap = null;
-      e.offline = false;
       e.foreign = false;
       e.noLinger = false;          // a fresh listener, opened under whoever is signed in now
       e.makeTarget = makeTarget;
@@ -233,23 +240,11 @@ export function createSharedLiveReads({
     for (const e of [...entries.values()]) if (e.subs.size === 0) drop(e);
   }
 
-  /** The connection dropped. Idle listeners go now; a value still on a screen
-   *  stays there (as with a bare onValue) but is not replayed to anyone new
-   *  until the server has answered again. */
-  function connectionLost() {
-    for (const e of [...entries.values()]) {
-      if (e.subs.size === 0) drop(e);
-      else e.offline = true;
-    }
-  }
-
-  /** The connection is back AND the server has answered everything the SDK
-   *  re-sent for the listeners it holds (the caller proves that — see
-   *  sharedLiveRead.js). What is held is current again. This never clears an
-   *  identity change: only a fresh snapshot does. */
-  function connectionRestored() {
-    for (const e of entries.values()) e.offline = false;
-  }
+  /** The connection dropped. Idle listeners go now — a held listener is
+   *  re-sent on every reconnect of a sleeping device. Everything in use is
+   *  left exactly as the SDK leaves a bare onValue: it keeps its value, a
+   *  joiner is replayed it, and the SDK re-syncs it when the line returns. */
+  function connectionLost() { releaseIdle(); }
 
   /** The signed-in identity changed. Idle listeners go now; the ones still in
    *  use carry on exactly as a plain onValue would, but their held value is
@@ -272,5 +267,5 @@ export function createSharedLiveReads({
     keys: [...entries.keys()],
   });
 
-  return { subscribe, releaseIdle, connectionLost, connectionRestored, identityChanged, reset, stats };
+  return { subscribe, releaseIdle, connectionLost, identityChanged, reset, stats };
 }

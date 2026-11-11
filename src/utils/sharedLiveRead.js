@@ -7,7 +7,7 @@
 // path with every other hook, and that listener survives a screen switch.
 // See sharedLiveReadCore.js for why, with the measurements.
 
-import { ref, onValue, get } from "firebase/database";
+import { ref, onValue } from "firebase/database";
 import { database } from "../firebase";
 import { createSharedLiveReads, LINGER_MS, SHORT_LINGER_MS } from "./sharedLiveReadCore";
 import { onIdentityChange } from "./identityChange";
@@ -26,21 +26,35 @@ import { isLegServing } from "../offline/serving";
 // from the profiler on 10–11 Nov 2026. It is never measured at run time: a
 // 15 MB snapshot is not serialised to find out it is 15 MB.
 const MB = 1024 * 1024;
+// [node, bytes for the node itself, bytes for one direct child (null = small)]
+// A SUB-PATH of a long-hold node gets the long hold too: /stock_targets/hub1
+// is the same slow data as /stock_targets, read one location at a time.
 const LONG = [
-  // [test, bytes]
-  [(k) => k === "refill_requests", 16 * MB],
-  [(k) => k === "products", 8 * MB],
-  [(k) => k === "orders" || k.startsWith("orders?"), 4 * MB],
-  [(k) => k === "customers", 2.5 * MB],
-  [(k) => k === "settings/displayRows", 1.3 * MB],
-  [(k) => k === "settings/displaySlots", 0.4 * MB],
-  [(k) => k === "stock_targets", 3 * MB],
-  [(k) => k === "stock", 7 * MB],
-  [(k) => /^stock\/[^/]+$/.test(k), 1.5 * MB],
+  ["refill_requests", 16 * MB, null],
+  ["products", 8 * MB, null],
+  ["orders", 4 * MB, null],
+  ["customers", 2.5 * MB, null],
+  ["settings/displayRows", 1.3 * MB, 0.5 * MB],
+  ["settings/displaySlots", 0.4 * MB, null],
+  ["stock_targets", 3 * MB, 0.5 * MB],
+  ["stock", 7 * MB, 1.5 * MB],
 ];
 const SMALL_BYTES = 0.25 * MB;
+// A PLACEHOLDER is a path a hook is handed when it has nothing to read
+// ("stock/__off__", "stock/__no_source__") so that it never subscribes to a
+// whole parent by accident. Nothing is stored there; it is never held.
+export const isPlaceholderKey = (key) => String(key).split("?")[0].split("/").some((seg) => /^__.+__$/.test(seg));
 export function lingerPolicyFor(key) {
-  for (const [test, bytes] of LONG) if (test(String(key))) return { lingerMs: LINGER_MS, bytes };
+  if (isPlaceholderKey(key)) return { lingerMs: 0, bytes: 0 };
+  const path = String(key).split("?")[0];
+  const isQuery = String(key).includes("?");
+  for (const [node, bytes, childBytes] of LONG) {
+    if (path === node) return { lingerMs: LINGER_MS, bytes };
+    if (path.startsWith(`${node}/`)) {
+      const depth = path.slice(node.length + 1).split("/").length;
+      return { lingerMs: LINGER_MS, bytes: !isQuery && depth === 1 && childBytes ? childBytes : SMALL_BYTES };
+    }
+  }
   return { lingerMs: SHORT_LINGER_MS, bytes: SMALL_BYTES };
 }
 
@@ -62,10 +76,6 @@ const shared = createSharedLiveReads({
   listen: (target, onSnap, onErr) => onValue(target, onSnap, onErr),
   policy: (key) => (holding ? lingerPolicyFor(key) : { lingerMs: 0, bytes: 0 }),
 });
-
-// A path nothing listens to and nothing is stored at: the reconnect probe.
-// Readable by any signed-in user (/settings .read).
-export const SYNC_PROBE_PATH = "settings/liveReadSyncProbe";
 
 // ── WHEN A HELD LISTENER IS LET GO EARLY ────────────────────────────────────
 // Wired once, on first use, so importing this module in a test or a worker
@@ -92,42 +102,24 @@ function wire() {
 
 // Opened with the hold, so not under the test runner: the hook tests that
 // predate this count every onValue call a mount makes, and with nothing held
-// there is nothing a dropped connection could leave stale beyond what the SDK
-// itself replays.
+// there is nothing idle for a dropped connection to release.
 let connectionWired = false;
 function wireConnection() {
   if (connectionWired || !holding) return;
   connectionWired = true;
   try {
-    // ONE tiny listener. A held snapshot is only as current as the connection
-    // that fed it: when the line drops, idle entries go and the ones on screen
-    // are not replayed to anyone new until the server has answered again.
+    // ONE tiny listener. When the line drops, what is held for nobody goes:
+    // a held listener is re-sent on every reconnect of a sleeping device.
+    // Everything in use is left to the SDK, exactly as a bare onValue is.
     // (.info/connected starts false before the first connect — only a TRUE
     // that turns false is a loss.)
-    //
-    // AND WHEN IT COMES BACK. The SDK re-sends every listener it holds, with a
-    // hash, and the server answers each one — with data if the node moved,
-    // with nothing if it did not. "Nothing" is invisible from here, so on its
-    // own a held entry would stay unvouched for until its node next changed,
-    // and the next screen to read it would have to reopen it (the whole node
-    // again). One few-byte get() sent after the reconnect is answered AFTER
-    // those re-sent listeners, on the same ordered connection — so when it
-    // resolves, everything held is current, and says so. If it fails, nothing
-    // is cleared and the reopen above is what happens.
     let was = false;
-    let losses = 0;
     onValue(ref(database, ".info/connected"), (snap) => {
       const now = snap.val() === true;
-      if (was && !now) { losses += 1; shared.connectionLost(); }
-      if (!was && now && losses > 0) {
-        const at = losses;
-        Promise.resolve().then(() => get(ref(database, SYNC_PROBE_PATH)))
-          .then(() => { if (losses === at) shared.connectionRestored(); })
-          .catch(() => {});
-      }
+      if (was && !now) shared.connectionLost();
       was = now;
     }, () => {});
-  } catch { /* no connection state — nothing is replayed that the SDK would not replay itself */ }
+  } catch { /* no connection state — idle entries still go on hide and by their hold */ }
 }
 
 // Has the offline mirror taken this path over? Then the caller unsubscribed

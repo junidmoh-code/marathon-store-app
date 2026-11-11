@@ -28,14 +28,11 @@ vi.mock("firebase/database", () => ({
   },
   query: (r) => r,
   orderByKey: () => ({}), orderByChild: () => ({}), limitToLast: () => ({}), equalTo: () => ({}),
-  update: vi.fn(), get: (r) => probe(r), runTransaction: vi.fn(),
+  update: vi.fn(), get: (r) => { gets.push(r.path); return Promise.resolve({ val: () => null }); }, runTransaction: vi.fn(),
 }));
-// The reconnect probe: resolves by default; a test can make it fail.
-let probeFails = false;
-const probed = [];
-const probe = async (r) => { probed.push(r.path); if (probeFails) throw new Error("offline"); return { val: () => null }; };
 // The mirror "takes a path over" when a test says its leg is serving.
 const servingLegs = new Set();
+const gets = [];
 vi.mock("../offline/serving", async (original) => ({
   ...(await original()),
   isLegServing: (leg) => servingLegs.has(leg),
@@ -50,10 +47,10 @@ vi.mock("firebase/auth", () => ({
 vi.mock("../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 
 const {
-  holdsInMode, lingerPolicyFor, childQueryKey, SYNC_PROBE_PATH,
+  holdsInMode, lingerPolicyFor, childQueryKey, isPlaceholderKey,
   _setHoldingForTests, _resetSharedLiveReadsForTests, releaseIdleLiveReads,
 } = await import("./sharedLiveRead.js");
-const { LINGER_MS, SHORT_LINGER_MS, HEAVY_BYTES } = await import("./sharedLiveReadCore.js");
+const { LINGER_MS, SHORT_LINGER_MS, MAX_IDLE_BYTES } = await import("./sharedLiveReadCore.js");
 const stock = await import("../components/stock/useStock.js");
 const layby = await import("../components/layby/useLayby.js");
 const checks = await import("../pages/DisplayChecks/useDisplayChecks.js");
@@ -78,7 +75,7 @@ beforeEach(() => {
   const conn = handlers.get(".info/connected");
   opens.length = 0; closes.length = 0; handlers.clear();
   if (conn) handlers.set(".info/connected", conn);
-  probed.length = 0; probeFails = false; servingLegs.clear();
+  gets.length = 0; servingLegs.clear();
 });
 afterEach(() => {
   _resetSharedLiveReadsForTests();
@@ -96,36 +93,103 @@ describe("the hold setting", () => {
 });
 
 describe("the per-path policy table", () => {
+  const MB = 1024 * 1024;
   const long = (k) => lingerPolicyFor(k).lingerMs === LINGER_MS;
-  it("ten minutes for the big, slow-changing nodes — and only those", () => {
+  it("ten minutes for the big, slow-changing nodes", () => {
     for (const k of [
       "refill_requests", "products", "orders", childQueryKey("orders", "destShop", "marathon-pe"),
-      "customers", "settings/displayRows", "settings/displaySlots", "stock_targets",
-      "stock", "stock/hub2", "stock/marathon-pe",
+      "customers", "settings/displayRows", "settings/displaySlots", "stock_targets", "stock",
     ]) expect([k, long(k)]).toEqual([k, true]);
   });
-  it("the short hold for small hot nodes and for anything not listed", () => {
+  it("…and for their sub-paths: one location of stock or targets is the same slow data", () => {
+    for (const k of [
+      "stock/hub2", "stock/marathon-pe", "stock_targets/hub1", "stock_targets/hub2/p1",
+      "stock/hub2/p1", "settings/displayRows/trophy", "settings/displaySlots/marathon-pe/p1",
+      "refill_requests/abc", "products/p1", "customers/0821234567",
+    ]) expect([k, long(k)]).toEqual([k, true]);
+  });
+  it("the short hold for small hot nodes, for look-alikes, and for anything not listed", () => {
     for (const k of [
       "laybys", "laybyPulls", "refill_engine/open", "displayChecks_active/marathon-pe",
       "displayChecks/marathon-pe/2026-11-11", "returns_log", "config/refillEngine",
-      "settings/hubSneakerCount/register/hub1", "stock/hub2/p1", "stock_targets/hub1",
-      "refill_requests/abc", "productsX", "something/new",
+      "settings/hubSneakerCount/register/hub1", "settings/stockHold/config",
+      "productsX", "stock_movements", "stock_targets_decisions", "something/new",
     ]) expect([k, lingerPolicyFor(k).lingerMs]).toEqual([k, SHORT_LINGER_MS]);
     expect(SHORT_LINGER_MS).toBeGreaterThanOrEqual(20000);
     expect(SHORT_LINGER_MS).toBeLessThanOrEqual(30000);
   });
-  it("every long-held node carries a size hint that counts as heavy, except the one that is not", () => {
-    expect(lingerPolicyFor("refill_requests").bytes).toBeGreaterThan(lingerPolicyFor("products").bytes);
-    for (const k of ["refill_requests", "products", "orders", "customers", "settings/displayRows", "stock_targets", "stock/hub2"]) {
-      expect(lingerPolicyFor(k).bytes).toBeGreaterThanOrEqual(HEAVY_BYTES);
+  it("a placeholder path is never held", () => {
+    for (const k of ["stock/__off__", "stock/__no_source__", "stock_targets/__off__"]) {
+      expect(isPlaceholderKey(k)).toBe(true);
+      expect(lingerPolicyFor(k)).toEqual({ lingerMs: 0, bytes: 0 });
     }
-    expect(lingerPolicyFor("settings/displaySlots").bytes).toBeLessThan(HEAVY_BYTES);
-    expect(lingerPolicyFor("laybys").bytes).toBeLessThan(HEAVY_BYTES);
+    expect(isPlaceholderKey("stock/hub2")).toBe(false);
+    expect(isPlaceholderKey("stock/hub2/p1/_")).toBe(false);
+  });
+  it("size hints: the request node is the biggest and fits the budget alone; a sub-path is smaller than its node", () => {
+    expect(lingerPolicyFor("refill_requests").bytes).toBe(16 * MB);
+    expect(lingerPolicyFor("refill_requests").bytes).toBeLessThanOrEqual(MAX_IDLE_BYTES);
+    expect(lingerPolicyFor("stock").bytes).toBe(7 * MB);
+    expect(lingerPolicyFor("stock/hub2").bytes).toBe(1.5 * MB);
+    expect(lingerPolicyFor("stock_targets/hub1").bytes).toBe(0.5 * MB);
+    expect(lingerPolicyFor("stock/hub2/p1").bytes).toBe(0.25 * MB);
+    expect(lingerPolicyFor("refill_requests/abc").bytes).toBe(0.25 * MB);
+    expect(lingerPolicyFor(childQueryKey("orders", "destShop", "x")).bytes).toBe(4 * MB);
   });
   it("a query key escapes its value, so no shop name can collide with another key", () => {
     expect(childQueryKey("orders", "destShop", "marathon-pe")).toBe("orders?orderByChild=destShop&equalTo=marathon-pe");
     expect(childQueryKey("orders", "destShop", "a&equalTo=b")).toBe("orders?orderByChild=destShop&equalTo=a%26equalTo%3Db");
     expect(childQueryKey("orders", "destShop", "x")).not.toBe(childQueryKey("orders", "destShop", "x?"));
+  });
+});
+
+describe("the two commonest loops, through the real hooks and the real table", () => {
+  // The shop view reads several stock locations, one of them the placeholder
+  // it is handed when a second hub is not in play.
+  const useShop = () => [
+    stock.useStockCells("hub1"), stock.useStockCells("hub2"), stock.useStockCells("marathon-pe"),
+    stock.useStockCells("hub3"), stock.useStockCells("__off__"),
+  ];
+  const useHome = () => stock.useRefillRequests("open");
+  const useHealth = () => [stock.useStockCells(), stock.useRefillRequests("open"), stock.useStockTargets()];
+  const useRefill = () => [stock.useRefillRequests(), stock.useStockCells("hub2"), stock.useEngineOpen()];
+  const answer = () => { for (const p of [...handlers.keys()]) if (p !== ".info/connected") push(p, {}); };
+  const switchTo = async (from, useNext) => {
+    from.unmount();
+    const next = mountHook(useNext);
+    answer();
+    await act(async () => { await Promise.resolve(); });   // the idle cap runs after the switch
+    return next;
+  };
+
+  it("HOME → SHOP → HOME → SHOP → HOME: the request node is opened ONCE", async () => {
+    let screen = mountHook(useHome); answer();
+    screen = await switchTo(screen, useShop);
+    screen = await switchTo(screen, useHome);
+    screen = await switchTo(screen, useShop);
+    screen = await switchTo(screen, useHome);
+    expect(countOf("refill_requests")).toBe(1);
+    expect(closes).not.toContain("refill_requests");
+    screen.unmount();
+  });
+
+  it("the placeholder location is closed the moment the shop view is left, never held", async () => {
+    let screen = mountHook(useShop); answer();
+    screen = await switchTo(screen, useHome);
+    expect(closes).toContain("stock/__off__");
+    screen.unmount();
+  });
+
+  it("HEALTH → REFILL → HEALTH → REFILL → HEALTH: whole stock, the request node and the targets are each opened ONCE", async () => {
+    let screen = mountHook(useHealth); answer();
+    screen = await switchTo(screen, useRefill);
+    screen = await switchTo(screen, useHealth);
+    screen = await switchTo(screen, useRefill);
+    screen = await switchTo(screen, useHealth);
+    expect(countOf("stock")).toBe(1);
+    expect(countOf("refill_requests")).toBe(1);
+    expect(countOf("stock_targets")).toBe(1);
+    screen.unmount();
   });
 });
 
@@ -194,41 +258,26 @@ describe("the stock chokepoint (usePathState) — the Refill queue's read", () =
     expect(closes).toEqual(["refill_requests"]);
   });
 
-  it("the connection dropping: idle listeners go, and a held value is not replayed to a new screen", () => {
+  it("the connection dropping: idle listeners go; a screen opening while offline is handed the held rows and nothing is reopened", () => {
     const idle = mountHook(() => stock.useStockTargets());
     push("stock_targets", { hub1: {} });
     idle.unmount();
     const home = mountHook(() => stock.useRefillRequests("open"));
     push("refill_requests", { a: { status: "open" } });
-    probeFails = true;                        // …and the line stays unproven after it returns
     act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
     act(() => { handlers.get(".info/connected").cb({ val: () => false }); });
     expect(closes).toEqual(["stock_targets"]);
-    // The screen that was showing it keeps showing it, as with a bare onValue…
-    expect(home.out.value.map((r) => r.id)).toEqual(["a"]);
-    // …but a screen that opens now is not handed it: the listener is reopened.
-    const refill = mountHook(() => stock.useRefillRequests());
-    expect(refill.out.value).toEqual([]);
-    expect(countOf("refill_requests")).toBe(2);
-    push("refill_requests", { a: { status: "open" }, b: { status: "open" } });
-    expect(refill.out.value.map((r) => r.id)).toEqual(["a", "b"]);
-    expect(home.out.value.map((r) => r.id)).toEqual(["a", "b"]);
-  });
-
-  it("the connection returning, proven by the probe: what is held is current again and nothing is re-downloaded", async () => {
-    const home = mountHook(() => stock.useRefillRequests("open"));
-    push("refill_requests", { a: { status: "open" } });
-    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
-    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });
-    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    // One few-byte read per reconnect, of the probe path and nothing else.
-    expect(probed.length).toBeGreaterThanOrEqual(1);
-    expect([...new Set(probed)]).toEqual([SYNC_PROBE_PATH]);
+    // Exactly what a bare onValue does: the SDK's held value, at once.
     const refill = mountHook(() => stock.useRefillRequests());
     expect(refill.out.value.map((r) => r.id)).toEqual(["a"]);
     expect(countOf("refill_requests")).toBe(1);
-    home.unmount();
+    // The line returns: no probe read, no reopen — the SDK re-syncs the listener itself.
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    expect(gets).toEqual([]);
+    expect(countOf("refill_requests")).toBe(1);
+    push("refill_requests", { a: { status: "open" }, b: { status: "open" } });
+    expect(refill.out.value.map((r) => r.id)).toEqual(["a", "b"]);
+    expect(home.out.value.map((r) => r.id)).toEqual(["a", "b"]);
   });
 
   it("a hidden page lets go of what no screen is using", () => {
