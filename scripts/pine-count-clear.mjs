@@ -94,8 +94,16 @@ async function restore(file) {
   if (saved.hub !== LOC || !saved.plan || saved.plan.scope?.loc !== LOC) throw new Error(`${file} is not a Pine clear backup — refusing.`);
   const offset = (await val(".info/serverTimeOffset")) || 0;
   const nowIso = new Date(Date.now() + offset).toISOString();
-  // Add back exactly what each cell lost to the clear (applied, else the planned before).
-  const rows = saved.plan.cells.map((c) => ({ ...c, give: c.applied ?? c.before })).filter((c) => c.give !== 0);
+  // Add back exactly what each cell lost to the clear — taken from the clear's
+  // OWN ledger row (read by id), never from the plan, so an interrupted run
+  // gives back only the cells it really zeroed.
+  const rows = [];
+  for (const c of saved.plan.cells) {
+    const row = (await db.ref(`stock_movements/${c.movementId}`).once("value")).val();
+    if (!row || row.reason !== PINE_SCOPE.reason) continue;
+    const give = row.from === LOC ? Number(row.qty) : row.to === LOC ? -Number(row.qty) : 0;
+    if (give) rows.push({ ...c, give });
+  }
   const units = rows.reduce((t, c) => t + c.give, 0);
   console.log(JSON.stringify({ restoreFrom: file, resetId: saved.resetId, cells: rows.length, netUnitsBack: units, apply: APPLY }, null, 2));
   if (!APPLY) { console.log("Dry run only. Re-run with --restore <file> --apply to write."); return; }
