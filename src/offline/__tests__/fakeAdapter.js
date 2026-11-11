@@ -56,7 +56,7 @@ export function createFakeRtdb(initial = {}) {
 
   const calls = {
     readPath: [], readPathOpts: [], readKeyPage: [], readChildPage: [],
-    subscribeNewChanges: [], writePath: [],
+    subscribeNewChanges: [], writePath: [], shallowKeys: [],
   };
   const signalListeners = new Set();
 
@@ -135,6 +135,15 @@ export function createFakeRtdb(initial = {}) {
       calls.writePath.push({ path, value });
       write(path, value);
       return true;
+    },
+    // The REST `?shallow=true` read: a node's child KEYS and nothing else. A
+    // leaf or an absent node has none.
+    async shallowKeys(path) {
+      calls.shallowKeys.push(path);
+      const node = at(path);
+      if (!node || typeof node !== "object") return [];
+      return Object.keys(node).filter((k) => node[k] !== null && node[k] !== undefined
+        && !(typeof node[k] === "object" && Object.keys(node[k]).length === 0));
     },
   };
 

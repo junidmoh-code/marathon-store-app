@@ -45,6 +45,8 @@
 import { LEG_BY_NODE, rowPath, storeKey, rowKeySegments } from "./nodes";
 import { isCanonicalLocationId } from "./locationIds";
 import { pageEntries, maxKey, compareKeys } from "./rtdbOrder";
+import { noteTouched } from "./censusJournal";
+import { getLegHealth, healthKey, heldRows, claimLoweredBy } from "./health";
 
 export const CHANGES_ROOT = "mirror_changes";
 export const COUNTS_ROOT = "mirror_counts";
@@ -186,7 +188,7 @@ export function rowsFromChangePage(page) {
 // Run `fn` over `items` with at most `limit` in flight. Order of results
 // matches order of items; the first rejection rejects the whole batch, which
 // is what "a failed row read abandons the page" rests on.
-async function mapWithLimit(items, limit, fn) {
+export async function mapWithLimit(items, limit, fn) {
   const out = new Array(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -254,6 +256,14 @@ export async function runChangeFeedPage({
       throw err;
     }));
 
+  // WHAT THIS PAGE TOUCHED, FILED BEFORE IT COMMITS. The census check widens
+  // its allowance by the rows the feed has carried since the census was taken
+  // (censusJournal.js). Written first on purpose: a page that fails after this
+  // is read again and counted twice, which widens an allowance; written after,
+  // a crash in between would lose the count and the census would call ordinary
+  // churn a drift.
+  await noteTouched(db, { cursor, lastKey, rows, now });
+
   // Group by object store so each store commits its rows and the shared cursor
   // in one transaction.
   const byStore = new Map();
@@ -266,11 +276,26 @@ export async function runChangeFeedPage({
       continue;
     }
     appliedRows.push(rows[i]);
-    const bucket = byStore.get(leg.store) ?? { records: [], deleteKeys: [] };
+    const bucket = byStore.get(leg.store) ?? { records: [], deleteKeys: [], deletesByLeg: new Map() };
     const k = storeKey(leg, key);
-    if (value === null || value === undefined) bucket.deleteKeys.push(k);
-    else bucket.records.push({ key: k, value });
+    if (value === null || value === undefined) {
+      bucket.deleteKeys.push(k);
+      bucket.deletesByLeg.set(leg.name, (bucket.deletesByLeg.get(leg.name) ?? 0) + 1);
+    } else bucket.records.push({ key: k, value });
     byStore.set(leg.store, bucket);
+  }
+
+  // A DELETE THE FEED APPLIES LOWERS WHAT THE LEG CLAIMS TO HOLD, in the same
+  // transaction as the delete — see health.claimLoweredBy for the leg that
+  // stopped being served without it.
+  for (const bucket of byStore.values()) {
+    bucket.healthEntries = {};
+    for (const [legName, deletes] of bucket.deletesByLeg) {
+      const lowered = claimLoweredBy(await getLegHealth(db, legName), {
+        held: await heldRows(db, legName), deletes,
+      });
+      if (lowered) bucket.healthEntries[healthKey(legName)] = lowered;
+    }
   }
 
   let applied = 0;
@@ -285,6 +310,7 @@ export async function runChangeFeedPage({
     const isLast = i === stores.length - 1;
     await db.putPage(store, bucket.records, {
       deleteKeys: bucket.deleteKeys,
+      metaEntries: bucket.healthEntries,
       ...(isLast ? {
         cursorKey: FEED_CURSOR_META, cursorValue: lastKey,
         isAfter: (next, prev) => prev === null || prev === undefined || compareKeys(next, prev) > 0,

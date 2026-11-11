@@ -149,6 +149,14 @@ export async function startOfflineMirror({
   // fire-and-forget.
   const adapter = makeAdapter({
     onBytes: (n) => { addBytes(db, n, { now }).catch(() => {}); },
+    // For the keys-only read a count repair uses (rtdbAdapter.shallowKeys).
+    // Asked at the moment of the read, so it is always the account signed in
+    // then; with nobody signed in it answers nothing and the repair falls
+    // back to the walk.
+    getIdToken: async () => {
+      const u = auth?.currentUser ?? null;
+      return u && typeof u.getIdToken === "function" ? u.getIdToken() : null;
+    },
   });
   const connection = createConnectionTracker({ subscribeConnected: adapter.subscribeConnected, now });
   connection.start();
@@ -504,6 +512,10 @@ export async function startOfflineMirror({
           try { missing = (await engine.setupState()).legs.filter((l) => !l.ready).map((l) => l.leg); }
           catch { /* treat as "unknown": keep the backoff, never a tight loop */ }
           const benched = new Set(engine.legFailures().filter((f) => f.benched).map((f) => f.leg));
+          // A leg the census has parked is not going to be downloaded by a
+          // retry either (sync.js censusParked): for this loop it is the same
+          // as benched — nothing left to try.
+          try { for (const leg of await engine.parkedLegs()) benched.add(leg); } catch { /* keep the backoff */ }
           if (missing.length > 0 && missing.every((l) => benched.has(l))) {
             state.setupError = { ...state.setupError, gaveUp: [...benched] };
             console.warn("offline mirror: the download gave up on", [...benched].join(", "),

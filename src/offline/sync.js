@@ -53,6 +53,33 @@
 // the reason the census is computed from the database rather than from the
 // trigger stream it is checking.
 
+//
+// ── …AND NOTHING MAY DOWNLOAD A LEG AGAIN AND AGAIN ─────────────────────────
+//
+// The paragraph above used to end the story, and it is how the fleet read
+// 23 GB on 30 Oct 2026 and 7 GB on 10 Nov. The census is a day old; the device
+// is not. On a day when a node legitimately moves further than the tolerance,
+// EVERY device was told its healthy copy was wrong, downloaded it again, was
+// told again by the same census, and downloaded it again — every few minutes,
+// until the next census at 04:15. Nothing bounded it, because every bound in
+// this file counted FAILURES and each of those downloads SUCCEEDED.
+//
+// Four things now stand between a disagreement and a download, in this order:
+//
+//   1. The comparison is made FAIR. The allowance is widened by the rows the
+//      change feed has carried since the census was taken (censusJournal.js),
+//      and nothing is compared until the feed has caught up.
+//   2. A census is acted on ONCE per leg. The census taken at 04:15 can send a
+//      leg for repair one time; a copy that still disagrees with THAT census
+//      afterwards is not sent again.
+//   3. A disagreement is repaired by comparing KEYS and fetching the rows that
+//      differ (reconcileLegKeys), where the leg's shape allows — not by
+//      reading the leg.
+//   4. And whatever the reason, a leg starts from its first page at most
+//      LEG_DOWNLOADS_PER_DAY times in 24 hours on one device, counted where a
+//      reload — and a browser deleting the database — cannot reset it
+//      (downloadLedger.js).
+
 import {
   MIRROR_LEGS, LEG_BY_NAME, isAppendOnly, rowKey, storeKey, rowPath, DOC_ROW_KEY,
 } from "./nodes";
@@ -65,9 +92,13 @@ import {
 } from "./staging";
 import {
   runChangeFeedPage, changeCursorAtSetupStart, CursorExpiredError, FeedCursorStuckError,
-  isPermissionDenied,
+  isPermissionDenied, mapWithLimit, ROW_CONCURRENCY,
   FEED_CURSOR_META, COUNTS_ROOT, CHANGES_ROOT,
 } from "./changeFeed";
+import {
+  coverSince, touchedSince, TOUCHED_META, CENSUS_ACTED_META,
+} from "./censusJournal";
+import { createDownloadLedger, MirrorDownloadBudgetError } from "./downloadLedger";
 import { isCanonicalLocationId } from "./locationIds";
 import {
   pageEntries, maxKey, compareKeys, compareChildOrder, compareChildValues,
@@ -157,6 +188,18 @@ export const FEED_LEDGER = "changeFeed";
 // downloaded again and stops being served until it is.
 export const PAGER_VERSION = 2;
 const isPagedSnapshot = (leg) => !isAppendOnly(leg) && leg.depth > 0;
+
+// ─── REPAIRING A COUNT BY ITS KEYS ──────────────────────────────────────────
+//
+// How many key reads one repair may make (a depth-2 leg costs one per
+// top-level child, plus one), and how many ROWS it may then fetch. Past either
+// the leg is too wide or too different for a diff to be the cheap way, and the
+// repair falls back to the walk — which is budgeted like any other.
+export const KEYDIFF_MAX_REQUESTS = 60;
+export const KEYDIFF_MAX_ROW_READS = 2000;
+export const KEYDIFF_MAX_FRACTION = 0.25;
+
+class KeyDiffNotPossible extends Error {}
 
 export class MirrorCursorStuckError extends Error {
   constructor(leg, at) {
@@ -254,6 +297,9 @@ export function createSyncEngine({
   // therefore a complete, unasked, unverified download of the whole shop.
   // (Fable-vs-spec review, PR #624.)
   mayRepair = () => true,
+  // How many times a leg may be downloaded whole in a day, counted where a
+  // reload cannot reset it. See downloadLedger.js.
+  downloadLedger = createDownloadLedger({ now }),
 } = {}) {
   let setupRunning = null;
 
@@ -270,6 +316,13 @@ export function createSyncEngine({
   function legGate(legName) {
     const f = failures.get(legName);
     if (!f) return { ok: true };
+    // Out of whole downloads for today: benched until the ledger frees a slot.
+    // Asked of the ledger each time (it is a synchronous read), so the leg
+    // comes back by itself when the window moves on — no reload needed.
+    if (f.budget) {
+      if (downloadLedger.remaining(legName) > 0) { failures.delete(legName); return { ok: true }; }
+      return { ok: false, benched: true, reason: f.reason };
+    }
     if (f.attempts >= LEG_MAX_ATTEMPTS) return { ok: false, benched: true, reason: f.reason };
     if (now() < f.nextAt) return { ok: false, benched: false, reason: f.reason, nextAt: f.nextAt };
     return { ok: true };
@@ -312,6 +365,20 @@ export function createSyncEngine({
           await markNotPermitted(leg, err);
           return { rows: 0, added: 0, caughtUp: true, notPermitted: true };
         }
+        // NOT A FAILURE EITHER, and not retried on a timer: the leg has had
+        // its whole downloads for today. Named in its health record (and so on
+        // the fleet screen); whatever it still vouches for, it keeps.
+        if (err instanceof MirrorDownloadBudgetError) {
+          failures.set(leg.name, {
+            attempts: LEG_MAX_ATTEMPTS, nextAt: err.nextAt, reason: err.name,
+            message: err.message, budget: true,
+          });
+          await recordLegFailed(db, leg.name, {
+            path: leg.node, reason: "download-budget", at: now(), state: "failed",
+            retryable: false, detail: err.message,
+          }).catch(() => {});
+          throw err;
+        }
         await noteLegFailure(leg, err);
         throw err;
       }
@@ -341,6 +408,21 @@ export function createSyncEngine({
   }
   const notPermitted = async (leg) =>
     !!(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))?.notPermitted;
+
+  // ── A LEG THE CENSUS STILL REFUSES AFTER ITS ONE REPAIR ─────────────────
+  // It keeps its marker — with `censusRefused` on it, naming the census — so
+  // that NOTHING downloads it again for that census: not the pass's repair
+  // step, not the setup download on the next open. It is not "set up" (the
+  // device is not complete, and the leg is not served); it simply waits for a
+  // census that agrees with it or a newer one that sends it for repair again.
+  const censusParked = (marker) => Number.isFinite(marker?.censusRefused);
+  async function parkedLegs() {
+    const out = [];
+    for (const leg of MIRROR_LEGS) {
+      if (censusParked(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))) out.push(leg.name);
+    }
+    return out;
+  }
 
   // ── WHO IS SIGNED IN DECIDES WHAT MAY BE SERVED ─────────────────────────
   // A tablet is shared. If an admin's account downloaded /orders whole and a
@@ -389,12 +471,35 @@ export function createSyncEngine({
     }));
   }
 
+  // ── THE DAILY BOUND ON WHOLE DOWNLOADS (downloadLedger.js) ────────────────
+  //
+  // Asked in two halves around a leg's FIRST page. Before it: is there a slot
+  // at all? If not, nothing is read. After it has arrived: take the slot. The
+  // slot is taken only once bytes have actually come back, so a read the rules
+  // refuse (a shop account asking for /orders, on every start) or a line that
+  // is down never spends one.
+  function refuseIfOutOfDownloads(leg) {
+    if (downloadLedger.remaining(leg.name) > 0) return;
+    throw new MirrorDownloadBudgetError(leg.name, {
+      max: downloadLedger.max, windowMs: downloadLedger.windowMs, nextAt: downloadLedger.nextAt(leg.name),
+    });
+  }
+  function takeDownloadSlot(leg) {
+    if (downloadLedger.consume(leg.name)) return;
+    refuseIfOutOfDownloads(leg);
+  }
+
   // ── one leg's snapshot download ───────────────────────────────────────────
   async function downloadSnapshotLeg(leg, { onPage = () => {} } = {}) {
     const at = now();
     let manifest = await readStaging(db, leg.name, {
       scope: leg.node, buildVersion, now,
     });
+    // A walk with nothing staged starts from page one: that is a whole
+    // download. A walk with pages staged is the same download carrying on.
+    let fromPageOne = (manifest.chunks ?? 0) === 0
+      && (manifest.afterKey === null || manifest.afterKey === undefined);
+    if (fromPageOne) refuseIfOutOfDownloads(leg);
 
     // Resume from the last page that actually landed, not from page one.
     for (;;) {
@@ -403,6 +508,7 @@ export function createSyncEngine({
         : await adapter.readKeyPage(leg.node, {
           after: manifest.afterKey, limit: leg.pageSize, big: true,
         });
+      if (fromPageOne) { takeDownloadSlot(leg); fromPageOne = false; }
 
       if (leg.depth === 0) {
         const { rows } = flattenPage(leg, page);
@@ -517,6 +623,10 @@ export function createSyncEngine({
     // before maxPages": a short final page on the last allowed read is the
     // end too. (CodeRabbit, PR #631.)
     let reachedEnd = false;
+    let startsFromNothing = cursor === null
+      || (leg.feed === "tsRange" && (cursor.ts === null || cursor.ts === undefined) && !cursor.key);
+    // Out of whole downloads for today: nothing is read at all.
+    if (startsFromNothing) refuseIfOutOfDownloads(leg);
 
     for (; pages < maxPages; pages += 1) {
       const page = leg.feed === "keyRange"
@@ -527,6 +637,11 @@ export function createSyncEngine({
         });
       const entries = pageEntries(page);
       if (entries.length === 0) { reachedEnd = true; break; }
+      // A history read from NO cursor is this leg's whole download (35 MB of
+      // it), and it is counted like one — once rows have actually come back,
+      // so an empty node asked every pass spends nothing. A walk from a stored
+      // cursor is the same download carrying on.
+      if (startsFromNothing) { takeDownloadSlot(leg); startsFromNothing = false; }
 
       const records = entries.map(([key, value]) => ({ key, value }));
       // THE NEXT CURSOR IS THE PAGE'S MAXIMUM IN THE QUERY'S OWN ORDER, found by
@@ -652,9 +767,17 @@ export function createSyncEngine({
     setupRunning = (async () => {
       const startedAt = now();
       const todo = [];
+      // Parked by the census (censusParked): not complete, and not downloaded
+      // again by a setup run either — that would be the storm with a reload in
+      // the loop instead of a pass.
+      const parked = force ? [] : await parkedLegs();
       for (const leg of MIRROR_LEGS) {
+        if (parked.includes(leg.name)) continue;
         if (!force && await legIsSetUp(leg)) continue;
         todo.push(leg);
+      }
+      if (todo.length === 0 && parked.length) {
+        throw new MirrorSetupIncompleteError(parked.map((leg) => ({ leg, reason: "count-drift" })));
       }
       if (todo.length === 0) {
         await db.setMeta(SETUP_DONE_META, { at: startedAt, legs: MIRROR_LEGS.length });
@@ -703,6 +826,7 @@ export function createSyncEngine({
       }
       // The FIRST real error is what is thrown — it is the one a caller (and
       // a test) can act on — carrying the full list of every leg that failed.
+      for (const leg of parked) failed.push({ leg, reason: "count-drift" });
       if (failed.length) {
         const first = failed.find((f) => f.err)?.err ?? new MirrorSetupIncompleteError(failed);
         try { first.failedLegs = failed.map(({ err, ...f }) => f); } catch { /* frozen */ }
@@ -744,6 +868,9 @@ export function createSyncEngine({
     if (!marker) return false;
     // Decided, not missing: see markNotPermitted.
     if (marker.notPermitted) return true;
+    // Held, repaired once, and still short of the census: not set up, and not
+    // to be downloaded again for it either. See censusParked.
+    if (censusParked(marker)) return false;
     if (isPagedSnapshot(leg) && marker.pager !== PAGER_VERSION) return false;
     const health = await getLegHealth(db, leg.name);
     if (!health) return false;
@@ -766,10 +893,24 @@ export function createSyncEngine({
 
     // 1. The change feed, which is what keeps eighteen legs true — unless it
     // is backing off or benched after stuck pages (FEED_LEDGER).
+    // Has the feed read to the END of the log in this pass? The census is only
+    // comparable with a copy that has (checkCensus).
+    let feedCaughtUp = false;
     const feedGate = legGate(FEED_LEDGER);
     if (!feedGate.ok) {
       report.feed = { applied: 0, deleted: 0, paths: [], skipped: feedGate.benched ? "benched" : "backing-off" };
     } else try {
+      // NO CURSOR AT ALL is not "start from the beginning". It means the
+      // cursor was lost (an older build dropped it on expiry; a browser emptied
+      // the database under a running tab), and reading the log from its first
+      // record would replay thirty days of changes row by row — and then find
+      // that first page's own cursor already past retention. See
+      // resetFeedCursor.
+      if ((await db.getMeta(FEED_CURSOR_META)) === undefined) {
+        const marked = await resetFeedCursor("cursor-lost",
+          "this device had no change cursor, so changes may have been missed.");
+        if (marked.length) report.errors.push({ where: "feed", reason: "cursor-lost" });
+      }
       let applied = 0;
       let deleted = 0;
       let caughtUp = false;
@@ -796,12 +937,20 @@ export function createSyncEngine({
       // it had to stop serving are current again and are vouched for again —
       // once it has read to the END, not after four pages of a longer backlog.
       if (caughtUp) await reserveChangeFedLegs();
+      feedCaughtUp = caughtUp;
     } catch (err) {
       if (err instanceof CursorExpiredError) {
-        // The honest wall. Every change-fed leg is marked for a fresh download
-        // and the cursor is dropped, so the next setup run takes a new one.
-        await markChangeFedLegsForResetup(err);
-        report.errors.push({ where: "feed", reason: "cursor-expired" });
+        // The honest wall. Every change-fed leg this device holds is marked
+        // for a fresh download, and the feed starts again from the head of the
+        // log — taken NOW, before any of those legs is read.
+        try {
+          await resetFeedCursor("cursor-expired", err.message);
+          report.errors.push({ where: "feed", reason: "cursor-expired" });
+        } catch (resetErr) {
+          // Could not reach the log to take a new cursor: nothing has been
+          // changed, and the next pass meets the same wall and tries again.
+          report.errors.push({ where: "feed", reason: resetErr.name, message: resetErr.message });
+        }
       } else if (err instanceof FeedCursorStuckError) {
         // Counted like a leg; a timeout is not (it costs no page, and the
         // pass backoff already spaces it).
@@ -826,7 +975,7 @@ export function createSyncEngine({
     }
 
     // 3. The outside opinion.
-    try { report.census = await checkCensus(); }
+    try { report.census = await checkCensus({ feedCaughtUp }); }
     catch (err) { report.errors.push({ where: "census", reason: err.name, message: err.message }); }
 
     // 4. ANYTHING THAT NEEDS DOWNLOADING AGAIN, DOWNLOADED AGAIN.
@@ -861,9 +1010,23 @@ export function createSyncEngine({
       // A leg that is backing off or benched is passed over, so one broken leg
       // cannot hold every other repair behind it.
       if (!legGate(leg.name).ok) continue;
-      const res = await attemptLeg(leg, () => (isAppendOnly(leg)
-        ? runRangeLeg(leg)
-        : downloadSnapshotLeg(leg)));
+      // Already repaired once for the census it disagrees with: not again.
+      if (censusParked(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))) continue;
+      // A COUNT THAT DISAGREES IS REPAIRED BY ITS KEYS FIRST. The census said
+      // "you hold the wrong NUMBER of rows", and the cheap answer to that is
+      // to compare key sets and fetch the rows that differ. Only when the leg
+      // cannot be repaired that way (too deep, too different, no key read on
+      // this device) is it downloaded — and that is the budgeted path.
+      let res = null;
+      if (!isAppendOnly(leg) && !inFlight.has(leg.name)
+        && (await getLegHealth(db, leg.name))?.reason === "count-drift") {
+        res = await reconcileLegKeys(leg).catch(() => null);
+      }
+      if (res === null) {
+        res = await attemptLeg(leg, () => (isAppendOnly(leg)
+          ? runRangeLeg(leg)
+          : downloadSnapshotLeg(leg)));
+      }
       if (res === null) continue;
       // NOT censused here, one leg at a time, and deliberately so. A repaired
       // leg is served on its own vouch (and the shrink guard, which compares
@@ -883,9 +1046,99 @@ export function createSyncEngine({
           await db.setMeta(SETUP_DONE_META, { at: now(), legs: MIRROR_LEGS.length });
         }
       }
-      return { leg: leg.name, rows: res.rows };
+      return {
+        leg: leg.name, rows: res.rows,
+        ...(res.via ? { via: res.via, added: res.added, removed: res.removed } : {}),
+      };
     }
     return null;
+  }
+
+  // ── A COUNT REPAIRED BY ITS KEYS ──────────────────────────────────────────
+  //
+  // Returns what it did, or null when this leg cannot be repaired this way —
+  // never a half-repair: the one write is a single transaction at the end.
+  //
+  // WHAT MAKES IT SAFE TO DELETE A ROW HERE. Nothing is deleted because a key
+  // list came back without it. A row the server's key list does not name is
+  // READ, by its own path, and deleted only if that read answers null — the
+  // same rule, and the same evidence, the change feed deletes on. A key list
+  // that was somehow short would cost reads, never rows.
+  async function reconcileLegKeys(leg) {
+    if (typeof adapter.shallowKeys !== "function") return null;
+    if (leg.store === "docs" || leg.depth < 1) return null;      // small shared-store legs: the walk is a few KB
+    const localKeys = await db.getAllKeys(leg.store);
+    if (localKeys.length === 0) return null;                     // nothing to repair: that is a download
+
+    let requests = 0;
+    const serverKeys = [];
+    const walk = async (path, segments, remaining) => {
+      requests += 1;
+      if (requests > KEYDIFF_MAX_REQUESTS) throw new KeyDiffNotPossible();
+      const keys = await adapter.shallowKeys(path);
+      for (const k of keys) {
+        // The same refusals flattenPage makes, so the two agree on what a row is.
+        if (leg.name === "stock" && segments.length === 0 && !isCanonicalLocationId(k)) continue;
+        if (remaining === 1) {
+          try { serverKeys.push(rowKey([...segments, k])); } catch { /* unrepresentable: not a row here either */ }
+        } else {
+          await walk(`${path}/${k}`, [...segments, k], remaining - 1);
+        }
+      }
+    };
+    try { await walk(leg.node, [], leg.depth); }
+    catch (err) {
+      if (err instanceof KeyDiffNotPossible) return null;
+      throw err;
+    }
+
+    const onServer = new Set(serverKeys);
+    const held = new Set(localKeys.map(String));
+    const missing = serverKeys.filter((k) => !held.has(k));
+    const extra = [...held].filter((k) => !onServer.has(k));
+    const differing = missing.length + extra.length;
+    const most = Math.min(KEYDIFF_MAX_ROW_READS,
+      Math.max(50, Math.floor(serverKeys.length * KEYDIFF_MAX_FRACTION)));
+    if (differing > most) return null;                           // too different: the walk is cheaper
+
+    const NOT_READABLE = Symbol("not-readable");
+    const keys = [...missing, ...extra];
+    const values = await mapWithLimit(keys, ROW_CONCURRENCY, (key) =>
+      adapter.readPath(rowPath(leg, key)).catch((err) => {
+        if (isPermissionDenied(err)) return NOT_READABLE;
+        throw err;
+      }));
+    const records = [];
+    const deleteKeys = [];
+    for (let i = 0; i < keys.length; i += 1) {
+      const value = values[i];
+      if (value === NOT_READABLE) continue;
+      if (value === null || value === undefined) deleteKeys.push(storeKey(leg, keys[i]));
+      else records.push({ key: storeKey(leg, keys[i]), value });
+    }
+
+    const at = now();
+    const rowsAfter = held.size
+      + records.filter((r) => !held.has(r.key)).length
+      - deleteKeys.filter((k) => held.has(k)).length;
+    // An empty result for a node that cannot be empty is a broken read, here
+    // as everywhere else. Nothing has been written; the walk decides.
+    if (rowsAfter === 0 && !CAN_BE_EMPTY.has(leg.name)) return null;
+    await db.putPage(leg.store, records, {
+      deleteKeys,
+      metaEntries: {
+        ...healthyMeta(leg.name, { path: leg.node, rows: rowsAfter, at }),
+        [LAST_SYNC_META(leg.name)]: at,
+        // `keysAt`: this copy's key set was compared with the server's at this
+        // moment. A census taken BEFORE it has nothing to add (checkCensus).
+        [`${SETUP_META_PREFIX}${leg.name}`]: { at, rows: rowsAfter, pager: PAGER_VERSION, keysAt: at },
+      },
+    });
+    const landed = (await heldRows(db, leg.name)) ?? 0;
+    if (landed !== rowsAfter) {
+      await db.setMetaMany(healthyMeta(leg.name, { path: leg.node, rows: landed, at }));
+    }
+    return { rows: landed, via: "key-diff", added: records.length, removed: deleteKeys.length };
   }
 
   // A benched feed: the change-fed legs keep their rows and their setup
@@ -940,26 +1193,70 @@ export function createSyncEngine({
     }
   }
 
-  async function markChangeFedLegsForResetup(err) {
-    const keys = [FEED_CURSOR_META];
+  // ── THE FEED STARTS AGAIN FROM THE HEAD OF THE LOG ────────────────────────
+  //
+  // A cursor that has fallen off the back of retention, or is simply not
+  // there, cannot be resumed: changes may have been swept that this device
+  // never saw. Every change-fed leg it holds is marked for a fresh download.
+  //
+  // AND THE NEW CURSOR IS TAKEN HERE, FIRST — not left for "the next setup
+  // run". It used to be dropped, and that was a trap with no way out (fleet,
+  // 19 Oct – 11 Nov 2026, one handset for two weeks): the pass loop repairs
+  // legs itself and never runs the setup that would have taken a cursor, so
+  // the next pass read the log from its FIRST record, stored that page's last
+  // key as the cursor — a key thirty days old, inside the one-day safety
+  // margin by construction — and the pass after that found the cursor
+  // "expired" again and marked every leg again. Each lap re-read the same 500
+  // records and their rows and repaired one leg (always the first), for ever;
+  // and with no cursor the live signal subscribed to the whole log.
+  //
+  // Taken BEFORE the legs are re-read, for the reason runSetup takes it first:
+  // whatever is written while they download is replayed afterwards rather
+  // than skipped. If the log cannot be reached, this throws having changed
+  // nothing, and the next pass meets the same wall.
+  async function resetFeedCursor(reason, detail) {
+    const head = await changeCursorAtSetupStart({ adapter });
+    const marked = [];
     for (const leg of MIRROR_LEGS.filter((l) => !isAppendOnly(l))) {
-      keys.push(`${SETUP_META_PREFIX}${leg.name}`);
+      const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
+      // Not held, or decided (not readable by this account): nothing to redo.
+      if (!marker || marker.notPermitted) continue;
       await recordLegFailed(db, leg.name, {
-        path: leg.node, reason: "cursor-expired", at: now(), state: "failed",
-        retryable: false, keepVouched: false, detail: err.message,
+        path: leg.node, reason, at: now(), state: "failed",
+        retryable: false, keepVouched: false, detail,
       });
+      marked.push(leg.name);
     }
-    keys.push(SETUP_DONE_META);
-    await db.deleteMetaMany(keys);
+    // One transaction: the new cursor, and the markers it invalidates. The
+    // journal of what the feed has carried describes the old cursor's run and
+    // goes with it (censusJournal.js starts a new one from the new cursor).
+    await db.setMetaMany({ [FEED_CURSOR_META]: head }, {
+      deleteKeys: [
+        ...marked.map((name) => `${SETUP_META_PREFIX}${name}`),
+        ...(marked.length ? [SETUP_DONE_META] : []),
+        TOUCHED_META,
+      ],
+    });
+    return marked;
   }
 
   // ── THE CENSUS CHECK ──────────────────────────────────────────────────────
   //
-  // The only check in this file that is not local. See the header.
-  async function checkCensus({ force = false } = {}) {
+  // The only check in this file that is not local. See the header — both
+  // halves of it: what the census is for, and what it did to the fleet when a
+  // day-old count was compared with a live one.
+  //
+  // `feedCaughtUp` — did this pass read the change feed to its end? A device
+  // opened after a night has a backlog, and until it has applied it the copy
+  // is YESTERDAY's being compared with this morning's count. A scheduled check
+  // waits for a pass that has caught up (it costs nothing to wait: nothing is
+  // read). A forced check — straight after a download, whose rows are minutes
+  // old — does not.
+  async function checkCensus({ force = false, feedCaughtUp = true } = {}) {
     const lastChecked = (await db.getMeta(CENSUS_CHECKED_META)) ?? 0;
     const at = now();
     if (!force && at - lastChecked < CENSUS_CHECK_MS) return { skipped: "not-due" };
+    if (!force && !feedCaughtUp) return { skipped: "feed-behind" };
 
     const counts = await adapter.readPath(COUNTS_ROOT);
     // NO CENSUS IS NOT A VERDICT. Before the functions are deployed, or if the
@@ -968,12 +1265,42 @@ export function createSyncEngine({
     // download at once, which is the opposite of the point.
     if (!counts || typeof counts !== "object") return { skipped: "no-census" };
 
+    const usable = (leg) => {
+      const entry = counts[leg.name];
+      if (!entry || !Number.isFinite(entry.rows) || !Number.isFinite(entry.at)) return null;
+      if (at - entry.at > CENSUS_MAX_AGE_MS) return null;      // stale: not evidence
+      return entry;
+    };
+
+    // What the change feed has carried since the census — asked for once, and
+    // only if a change-fed leg is actually going to be judged.
+    let journal;
+    const journalFor = async () => {
+      if (journal !== undefined) return journal;
+      const ats = MIRROR_LEGS.filter((l) => !isAppendOnly(l)).map((l) => usable(l)?.at)
+        .filter((t) => Number.isFinite(t));
+      journal = null;
+      if (ats.length) {
+        journal = await coverSince(db, adapter, {
+          censusAt: Math.min(...ats), feedCursor: await db.getMeta(FEED_CURSOR_META),
+          changesRoot: CHANGES_ROOT, now,
+        }).catch(() => null);
+      }
+      return journal;
+    };
+
+    const acted = { ...((await db.getMeta(CENSUS_ACTED_META)) ?? {}) };
     const drifted = [];
     const checked = [];
+    // Disagrees with a census this leg has ALREADY been repaired for.
+    const unresolved = [];
+    // A change-fed leg with no journal behind it: the census is not evidence.
+    const unjudged = [];
+    const agreed = [];
+    const censusAtOf = new Map();
     for (const leg of MIRROR_LEGS) {
-      const entry = counts[leg.name];
-      if (!entry || !Number.isFinite(entry.rows) || !Number.isFinite(entry.at)) continue;
-      if (at - entry.at > CENSUS_MAX_AGE_MS) continue;    // stale: not evidence
+      const entry = usable(leg);
+      if (!entry) continue;
       // A benched leg is already failed and named; a census verdict over the
       // top would hide WHY (it is short because it was benched).
       if (legGate(leg.name).benched) continue;
@@ -983,12 +1310,33 @@ export function createSyncEngine({
       // to census every leg, found 0 rows where the server has 38 users, and
       // painted "does not match the server's count" on legs it had simply not
       // reached. Only a leg this device claims to hold is judged.
-      if (!(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))) continue;
+      const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
+      if (!marker) continue;
+      // A COPY WHOSE KEYS WERE COMPARED WITH THE SERVER'S AFTER THIS CENSUS
+      // WAS TAKEN has been checked against something newer and stricter than
+      // the census. An older count has nothing to add about it.
+      if (Number.isFinite(marker.keysAt) && marker.keysAt > entry.at) continue;
+
+      let churn = 0;
+      if (!isAppendOnly(leg)) {
+        const j = await journalFor();
+        if (!j) { unjudged.push(leg.name); continue; }
+        churn = touchedSince(j, leg.name, entry.at);
+      }
       const held = (await heldRows(db, leg.name)) ?? 0;
       checked.push(leg.name);
-      const allowed = Math.max(25, Math.floor(entry.rows * leg.censusTolerance));
-      if (Math.abs(held - entry.rows) <= allowed) continue;
-      drifted.push({ leg: leg.name, held, census: entry.rows, allowed });
+      // The leg's own tolerance, PLUS every row the feed has carried since the
+      // census was taken: the most the count can honestly have moved.
+      const allowed = Math.max(25, Math.floor(entry.rows * leg.censusTolerance)) + churn;
+      if (Math.abs(held - entry.rows) <= allowed) { agreed.push({ leg: leg.name, marker }); continue; }
+      if (Math.abs(held - entry.rows) > allowed) censusAtOf.set(leg.name, { censusAt: entry.at, marker });
+      const verdict = { leg: leg.name, held, census: entry.rows, allowed };
+      // ONE REPAIR PER LEG PER CENSUS. This census has already sent this leg
+      // for repair once. A copy that still disagrees with the SAME census will
+      // disagree after a third download too, and a fourth — that is the storm.
+      if (acted[leg.name] === entry.at) { unresolved.push(verdict); continue; }
+      acted[leg.name] = entry.at;
+      drifted.push(verdict);
     }
 
     for (const d of drifted) {
@@ -997,20 +1345,61 @@ export function createSyncEngine({
         path: leg.node, reason: "count-drift", at, state: "failed",
         retryable: false, keepVouched: false,
         detail: `this device holds ${d.held} rows where the server counted ${d.census} `
-          + `(tolerance ${d.allowed}). A change record was probably never written. `
-          + "Downloading this leg again.",
+          + `(allowance ${d.allowed}). A change record was probably never written. `
+          + "Repairing this leg.",
       });
-      // Dropping the setup marker is what makes the next runSetup() re-download
-      // just this leg. The rows stay on disk until the replacement lands.
+      // Dropping the setup marker is what makes the pass repair just this leg.
+      // The rows stay on disk until the repair lands.
       await db.deleteMetaMany([`${SETUP_META_PREFIX}${d.leg}`, SETUP_DONE_META]);
     }
-    await db.setMeta(CENSUS_CHECKED_META, at);
-    return { checked, drifted };
+
+    // STILL DISAGREEING AFTER ITS ONE REPAIR. Not downloaded again. What it
+    // may still do depends on which way it disagrees:
+    //   · it holds MORE than the census counted — it cannot be a truncated
+    //     copy, and it is what the server sent: it goes on being served;
+    //   · it holds FEWER — that is the shape of a download that stopped short
+    //     (the POS mirror's 799 of 4,665), so it is NOT served: the screens
+    //     read live until the next census can judge it again. Its marker
+    //     stays, so nothing re-downloads it meanwhile.
+    for (const u of unresolved) {
+      if (u.held >= u.census) continue;
+      const { censusAt, marker } = censusAtOf.get(u.leg);
+      if (marker.censusRefused === censusAt) continue;         // already parked for this census
+      await recordLegFailed(db, u.leg, {
+        path: LEG_BY_NAME[u.leg].node, reason: "count-drift", at, state: "failed",
+        retryable: false, keepVouched: false,
+        detail: `still ${u.held} rows where the server counted ${u.census} after one repair `
+          + "for this census. Not downloaded again; read live until the next census.",
+      });
+      await db.setMetaMany(
+        { [`${SETUP_META_PREFIX}${u.leg}`]: { ...marker, censusRefused: censusAt } },
+        { deleteKeys: [SETUP_DONE_META] },
+      );
+    }
+    // …and a leg parked that way comes back the moment a census agrees.
+    let unparked = 0;
+    for (const { leg: name, marker } of agreed) {
+      if (!censusParked(marker)) continue;
+      unparked += 1;
+      const { censusRefused, ...rest } = marker;
+      const rows = (await heldRows(db, name)) ?? 0;
+      await db.setMetaMany({
+        ...healthyMeta(name, { path: LEG_BY_NAME[name].node, rows, at }),
+        [`${SETUP_META_PREFIX}${name}`]: rest,
+      });
+    }
+
+    await db.setMetaMany({ [CENSUS_CHECKED_META]: at, [CENSUS_ACTED_META]: acted });
+    // The leg that was holding the device back from "complete" is back.
+    if (unparked && (await setupState()).ready) {
+      await db.setMeta(SETUP_DONE_META, { at, legs: MIRROR_LEGS.length });
+    }
+    return { checked, drifted, unresolved, unjudged };
   }
 
   return {
     runSetup, setupState, legIsSetUp, runPass, runRangeLeg,
     downloadSnapshotLeg, checkCensus, repairOneLeg, legFailures, retireOldPagerCopies,
-    clearNotPermitted, checkAccess,
+    clearNotPermitted, checkAccess, reconcileLegKeys, resetFeedCursor, parkedLegs,
   };
 }

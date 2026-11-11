@@ -330,6 +330,37 @@ export async function claimIsBackedByRows(db, leg, health) {
   return held >= claimed;
 }
 
+// ─── A ROW THE CHANGE FEED DELETED IS NOT A ROW THAT WENT MISSING ────────────
+//
+// The check above compares the store with the count stamped at the last
+// accepted swap, and nothing moved that count afterwards. So the first time
+// the change feed carried more DELETES than writes for a leg — a display
+// re-check clearing slots, a day's orders being recycled — the store held
+// fewer rows than the record claimed, `legVerdict` answered "no", and a
+// complete, current leg stopped being served: its screens went back to
+// whole-node live reads, which is the cost this mirror exists to remove. It
+// stayed that way until something re-stamped the leg, and until Nov 2026 the
+// thing that did was the census re-downloading it (see sync.js's header) —
+// one fault quietly repairing the other.
+//
+// So a delete the feed applies lowers the claim, in the SAME transaction as
+// the delete (changeFeed.runChangeFeedPage). It lowers and never raises, and
+// only for a leg that WAS backed by its rows when the page was read: a store
+// that had already lost rows underneath its record stays refused, exactly as
+// before.
+export function claimLoweredBy(health, { held, deletes }) {
+  if (!health || !(deletes > 0) || !Number.isFinite(held)) return null;
+  const claimed = vouchedRows(health);
+  if (!Number.isFinite(claimed) || held < claimed) return null;
+  const to = Math.max(0, held - deletes);
+  if (to >= claimed) return null;
+  if (health.ok === true) return { ...health, rows: to };
+  const next = { ...health };
+  if (Number.isFinite(next.heldRows)) next.heldRows = Math.min(next.heldRows, to);
+  if (Number.isFinite(next.vouched?.rows)) next.vouched = { ...next.vouched, rows: Math.min(next.vouched.rows, to) };
+  return next;
+}
+
 export function getLegHealth(db, leg) {
   return db.getMeta(healthKey(leg));
 }
