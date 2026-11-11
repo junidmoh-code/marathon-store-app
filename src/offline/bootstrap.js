@@ -149,6 +149,14 @@ export async function startOfflineMirror({
   // fire-and-forget.
   const adapter = makeAdapter({
     onBytes: (n) => { addBytes(db, n, { now }).catch(() => {}); },
+    // For the keys-only read a count repair uses (rtdbAdapter.shallowKeys).
+    // Asked at the moment of the read, so it is always the account signed in
+    // then; with nobody signed in it answers nothing and the repair falls
+    // back to the walk.
+    getIdToken: async () => {
+      const u = auth?.currentUser ?? null;
+      return u && typeof u.getIdToken === "function" ? u.getIdToken() : null;
+    },
   });
   const connection = createConnectionTracker({ subscribeConnected: adapter.subscribeConnected, now });
   connection.start();
@@ -268,8 +276,14 @@ export async function startOfflineMirror({
   let consented = !!(await db.getMeta(CONSENT_META));
   let wanted = false;
 
+  // Was the pass about to run asked for by the live signal? Set by the signal,
+  // cleared by the pass that answers it: the engine walks the two histories
+  // on a signal pass only every few minutes (sync.js SIGNAL_RANGE_EVERY_MS).
+  let signalled = false;
   async function runOnePass() {
-    const report = await engine.runPass();
+    const signal = signalled;
+    signalled = false;
+    const report = await engine.runPass({ signal });
     state.lastPass = { at: now(), ...report };
     // The feed is CURRENT only if this pass actually read it. Skipped (backing
     // off, benched) or failed is not current, however recent the pass.
@@ -392,7 +406,7 @@ export async function startOfflineMirror({
       // Debounced: a refill run writes hundreds of records and they should
       // cost one pass, not hundreds.
       clearTimeoutFn(signalTimer);
-      signalTimer = setTimeoutFn(() => schedule(0), SIGNAL_DEBOUNCE_MS);
+      signalTimer = setTimeoutFn(() => { signalled = true; schedule(0); }, SIGNAL_DEBOUNCE_MS);
     });
   }
 
@@ -422,9 +436,12 @@ export async function startOfflineMirror({
   // The legs that DID land are worth keeping current: the same forced census
   // the success path runs, then serving from what is verified, then the pass
   // loop — which keeps them current and repairs whatever is missing.
-  async function handOverToPassLoop() {
+  // `afterDownload` — this run downloaded at least one leg, so the census is
+  // the one that verifies a download: it always runs, whatever else on the
+  // device is parked (sync.js checkCensus).
+  async function handOverToPassLoop({ afterDownload = false } = {}) {
     state.downloading = false;
-    try { state.setupCensus = await engine.checkCensus({ force: true }); }
+    try { state.setupCensus = await engine.checkCensus({ force: true, afterDownload }); }
     catch (e) { state.setupCensus = { error: e.message }; }
     await refreshServing();
     await reportHealth();
@@ -471,7 +488,7 @@ export async function startOfflineMirror({
           // setup marker dropped, so it is not served and the ordinary pass
           // loop downloads it again. Nothing is deleted, and nothing short is
           // ever vouched for.
-          try { state.setupCensus = await engine.checkCensus({ force: true }); }
+          try { state.setupCensus = await engine.checkCensus({ force: true, afterDownload: true }); }
           catch (err) { state.setupCensus = { error: err.message }; }
 
           await refreshServing();
@@ -504,11 +521,15 @@ export async function startOfflineMirror({
           try { missing = (await engine.setupState()).legs.filter((l) => !l.ready).map((l) => l.leg); }
           catch { /* treat as "unknown": keep the backoff, never a tight loop */ }
           const benched = new Set(engine.legFailures().filter((f) => f.benched).map((f) => f.leg));
+          // A leg the census has parked is not going to be downloaded by a
+          // retry either (sync.js censusParked): for this loop it is the same
+          // as benched — nothing left to try.
+          try { for (const leg of await engine.parkedLegs()) benched.add(leg); } catch { /* keep the backoff */ }
           if (missing.length > 0 && missing.every((l) => benched.has(l))) {
             state.setupError = { ...state.setupError, gaveUp: [...benched] };
             console.warn("offline mirror: the download gave up on", [...benched].join(", "),
               "for this session — it will try again the next time the app is opened.");
-            await handOverToPassLoop();
+            await handOverToPassLoop({ afterDownload: (err.downloadedLegs ?? []).length > 0 });
             return null;
           }
           // ── A DEVICE ALREADY SERVING MUST NOT WAIT FROZEN ────────────────
@@ -521,7 +542,7 @@ export async function startOfflineMirror({
           // missing leg itself (one per pass, with the same per-leg backoff),
           // so the download is handed to it rather than retried beside it.
           if (servingAnything()) {
-            await handOverToPassLoop();
+            await handOverToPassLoop({ afterDownload: (err.downloadedLegs ?? []).length > 0 });
             return null;
           }
           const wait = Math.min(SETUP_RETRY_MAX_MS, SETUP_RETRY_MS * 2 ** (failedAttempts - 1));

@@ -452,7 +452,10 @@ describe("the steady-state pass", () => {
     expect(await e.legIsSetUp(LEG_BY_NAME.products)).toBe(false);
     // The append-only legs are untouched: their cursors cannot expire.
     expect(await e.legIsSetUp(LEG_BY_NAME.insights)).toBe(true);
-    expect(await db.getMeta(FEED_CURSOR_META)).toBeUndefined();
+    // The feed starts again from the HEAD of the log, taken at once — here an
+    // empty log, whose head is null. It is never left undefined: see
+    // redownloadStorms.test.js, "the expired-cursor trap".
+    expect(await db.getMeta(FEED_CURSOR_META)).toBe(null);
   });
 
   test("one leg failing does not stop the others", async () => {

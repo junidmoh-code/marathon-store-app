@@ -173,6 +173,10 @@ function expectNoEmptyFlash(renders) {
 beforeEach(() => {
   onValue.mockClear();
   liveUnsubs = 0;
+  // Each test is a DIFFERENT device with a fresh database; the per-device
+  // bound on whole downloads lives in localStorage (downloadLedger.js) and
+  // must not carry from one test's device to the next.
+  localStorage.removeItem("marathon-store.offlineMirror.downloadLedger");
   _resetServingForTests();
   _resetMirrorSignalForTests();
   _resetMirrorDbHandleForTests();
