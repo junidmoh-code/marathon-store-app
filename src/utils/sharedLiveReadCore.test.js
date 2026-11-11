@@ -219,6 +219,19 @@ describe("what is never kept", () => {
     expect(a).toEqual([5]); expect(b).toEqual([5]);
   });
 
+  it("after a refusal and a retry, nobody is handed anything until the NEW listener answers", () => {
+    const a = []; const b = []; const c = [];
+    sub("laybys", a, []);
+    server.push("laybys", { before: 1 });
+    server.cancel("laybys");
+    sub("laybys", b, []);          // reopens it
+    sub("laybys", c, []);          // arrives before the reopened listener has answered
+    expect(b).toEqual([]);
+    expect(c).toEqual([]);         // not the pre-refusal value, and not a null snapshot
+    server.push("laybys", { after: 1 });
+    expect(c).toEqual([{ after: 1 }]);
+  });
+
   it("an error with no error handler does not throw", () => {
     sub("laybys", []);
     expect(() => server.cancel("laybys")).not.toThrow();
