@@ -30,21 +30,48 @@
 // the rollup gets nothing from here either: with the index unreadable the plan
 // holds no days to ask for.
 
+import { ROLLUP_SHAPE } from "./rollupCodec";
+import { onIdentityChange } from "../utils/identityChange";
+
+/** Bump to throw away every day kept by an earlier build — for a change in
+ *  what is kept or how it is validated that the index entry cannot show. */
+export const KEEP_EPOCH = 1;
+
 export const ROLLUP_DB_NAME = "marathon-store.insightsRollup";
 export const ROLLUP_DB_VERSION = 1;
 const STORE = "days";
 
-/** What a day was saved under: its index entry, exactly. `undefined` (a day
- *  the index does not list) is never a signature — such a day is not kept. */
+/** What a day was saved under: this build's keep epoch, the node shape this
+ *  build reads, and the day's index entry, exactly. `undefined` (a day the
+ *  index does not list) is never a signature — such a day is not kept. */
 export function daySignature(indexEntry) {
   if (indexEntry === undefined || indexEntry === null) return null;
-  try { return JSON.stringify(indexEntry); } catch { return null; }
+  try { return `${KEEP_EPOCH}|${ROLLUP_SHAPE}|${JSON.stringify(indexEntry)}`; } catch { return null; }
 }
+
+/** A node this build can read: the current shape version, nothing else. A
+ *  node of another shape would not expand, and a day that will not expand is
+ *  read live — keeping it would only make that permanent. */
+export const isCurrentShape = (node) => !!node && typeof node === "object" && node.v === ROLLUP_SHAPE;
 
 const idb = () => (typeof indexedDB !== "undefined" ? indexedDB : null);
 
 let dbPromise = null;
+// A handle that failed mid-use (closed by the browser, a transaction aborted)
+// is not reused: the next call opens a new one, with no reload needed.
+function forgetDb() {
+  const p = dbPromise;
+  dbPromise = null;
+  if (p) p.then((db) => { try { db.close(); } catch { /* closed */ } }, () => {});
+}
+let identityWired = false;
 function openDb() {
+  if (!identityWired) {
+    identityWired = true;
+    // What one signed-in person's Insights fetched is not left on the device
+    // for the next (rollupStore clears its session copy the same way).
+    try { onIdentityChange(() => { clearKeptDays(); }); } catch { /* no auth */ }
+  }
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const factory = idb();
@@ -63,8 +90,9 @@ function openDb() {
     req.onerror = () => reject(req.error || new Error("indexedDB open failed"));
     req.onblocked = () => reject(new Error("indexedDB open blocked"));
   });
-  dbPromise.catch(() => { dbPromise = null; });
-  return dbPromise;
+  const mine = dbPromise;
+  mine.catch(() => { if (dbPromise === mine) dbPromise = null; });
+  return mine;
 }
 
 const done = (tx) => new Promise((resolve, reject) => {
@@ -91,12 +119,13 @@ export async function loadKeptDays(dates, index) {
       req.onerror = () => reject(req.error);
     });
     for (const row of rows) {
-      if (!row || !want.has(row.date) || row.node === undefined || row.node === null) continue;
+      if (!row || !want.has(row.date) || !isCurrentShape(row.node)) continue;
       const sig = daySignature(index ? index[row.date] : undefined);
       if (sig !== null && row.sig === sig) out.set(row.date, row.node);
     }
   } catch (err) {
     console.warn("insights rollup: kept days unreadable, fetching them instead —", err);
+    forgetDb();
     return new Map();
   }
   return out;
@@ -112,7 +141,7 @@ export async function keepDays(entries, index, { pruneBefore = null } = {}) {
   const rows = [];
   for (const [date, node] of entries || []) {
     const sig = daySignature(index ? index[date] : undefined);
-    if (sig === null || node === undefined || node === null) continue;
+    if (sig === null || !isCurrentShape(node)) continue;
     rows.push({ date, sig, node });
   }
   if (rows.length === 0 && !pruneBefore) return 0;
@@ -126,18 +155,35 @@ export async function keepDays(entries, index, { pruneBefore = null } = {}) {
     return rows.length;
   } catch (err) {
     console.warn("insights rollup: could not keep day nodes on this device —", err);
+    forgetDb();
     return 0;
   }
 }
 
-export async function _clearKeptDaysForTests() {
+/** Stop serving these days from the device (a kept node that would not expand). */
+export async function forgetDays(dates) {
+  if (!dates || dates.length === 0) return;
+  try {
+    const db = await openDb();
+    const tx = db.transaction(STORE, "readwrite");
+    for (const d of dates) tx.objectStore(STORE).delete(d);
+    await done(tx);
+  } catch (err) {
+    console.warn("insights rollup: could not drop kept days —", err);
+    forgetDb();
+  }
+}
+
+/** Drop every kept day (the signed-in identity changed). */
+export async function clearKeptDays() {
   try {
     const db = await openDb();
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).clear();
     await done(tx);
-  } catch { /* nothing kept */ }
+  } catch { forgetDb(); }
 }
+export const _clearKeptDaysForTests = clearKeptDays;
 export function _closeKeptDaysDbForTests() {
   const p = dbPromise;
   dbPromise = null;

@@ -17,7 +17,11 @@ vi.mock("firebase/database", () => ({
   get: async (node) => { reads.push(String(node.path)); return { val: () => registerNow[node.path] ?? null }; },
   update: vi.fn(), runTransaction: vi.fn(),
 }));
-vi.mock("firebase/auth", () => ({ onAuthStateChanged: () => () => {} }));
+const authCbs = new Set();
+const signIn = (user) => { for (const cb of [...authCbs]) cb(user); };
+vi.mock("firebase/auth", () => ({
+  onAuthStateChanged: (_a, cb) => { authCbs.add(cb); cb({ uid: "u1" }); return () => { authCbs.delete(cb); }; },
+}));
 vi.mock("firebase/functions", () => ({ httpsCallable: () => async () => ({ data: {} }) }));
 vi.mock("../../firebase", () => ({ database: {}, functions: {}, auth: { currentUser: { uid: "u1" } } }));
 vi.mock("../../device/deviceId", () => ({ getDeviceId: () => "dev-1" }));
@@ -92,6 +96,18 @@ describe("loadRegisterForCard", () => {
     expect(await loadRegisterForCard("hub1", opts)).toEqual({});
     expect(await loadRegisterForCard("hub1", opts)).toEqual({});
     expect(reads).toEqual([HUB1]);
+  });
+
+  it("a different person signing in, or signing out, is not shown the last person's copy", async () => {
+    const opts = { now: () => 5, readOnce: noMirror };
+    await loadRegisterForCard("hub1", opts);
+    signIn({ uid: "someone-else" });
+    registerNow[HUB1] = { p1__7: { qty: 9 } };
+    expect(await loadRegisterForCard("hub1", opts)).toEqual({ p1__7: { qty: 9 } });
+    signIn(null);
+    await loadRegisterForCard("hub1", opts);
+    expect(reads).toEqual([HUB1, HUB1, HUB1]);
+    signIn({ uid: "u1" });
   });
 
   it("a clock that went backwards does not serve the old copy for ever", async () => {

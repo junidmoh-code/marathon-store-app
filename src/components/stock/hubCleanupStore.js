@@ -37,6 +37,7 @@ import {
 } from "./hubCleanupCore";
 import { setDisplaySlot } from "./displaySlots";
 import { readPathOnce } from "../../offline/localReads";
+import { onIdentityChange } from "../../utils/identityChange";
 
 const one = async (path) => (await get(child(ref(database), path))).val();
 
@@ -123,6 +124,7 @@ export async function recordColourwayAnswer({ code, productId, palette }) {
 
 /** Everything registered at this hub so far → { "pid__sizeKey": record }. */
 export async function loadRegister(hub) {
+  wireCardIdentity();
   const value = (await one(registerPath(hub))) || {};
   cardRegister.set(hub, { at: Date.now(), value });
   return value;
@@ -145,8 +147,17 @@ export async function loadRegister(hub) {
 // itself, every time, exactly as they did.
 export const CARD_REGISTER_TTL_MS = 2 * 60 * 1000;
 const cardRegister = new Map();   // hub -> { at, value }
-export function _clearCardRegisterForTests() { cardRegister.clear(); }
+export function clearCardRegister() { cardRegister.clear(); }
+export const _clearCardRegisterForTests = clearCardRegister;
+// One person's copy is not shown to the next: gone on sign-out or a switch.
+let cardIdentityWired = false;
+function wireCardIdentity() {
+  if (cardIdentityWired) return;
+  cardIdentityWired = true;
+  try { onIdentityChange(clearCardRegister); } catch { /* no auth */ }
+}
 export async function loadRegisterForCard(hub, { now = Date.now, readOnce = readPathOnce } = {}) {
+  wireCardIdentity();
   const hit = cardRegister.get(hub);
   if (hit && now() - hit.at >= 0 && now() - hit.at < CARD_REGISTER_TTL_MS) return hit.value;
   const path = registerPath(hub);

@@ -35,7 +35,7 @@ import { notePendingUpdate } from "./offline/pendingWrites";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
 import { useInsightsWindow } from "./insights/useInsightsWindow";
-import { subscribeLivePath, subscribeLiveQuery } from "./utils/sharedLiveRead";
+import { subscribeLivePath, subscribeLiveQuery, childQueryKey } from "./utils/sharedLiveRead";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
@@ -1069,7 +1069,7 @@ function useOrders(scopeShop = null, enabled = true) {
     // (utils/sharedLiveRead.js). The key names the query completely, so a
     // shop-scoped read never shares a listener with the whole node or with
     // another shop's.
-    const readKey = scopeShop ? `orders?orderByChild=destShop&equalTo=${scopeShop}` : "orders";
+    const readKey = scopeShop ? childQueryKey("orders", "destShop", scopeShop) : "orders";
     const unsub = subscribeLiveQuery(readKey, () => readRef, (snap) => {
       const data = snap.val();
       if (!data) {

@@ -28,7 +28,17 @@ vi.mock("firebase/database", () => ({
   },
   query: (r) => r,
   orderByKey: () => ({}), orderByChild: () => ({}), limitToLast: () => ({}), equalTo: () => ({}),
-  update: vi.fn(), get: vi.fn(), runTransaction: vi.fn(),
+  update: vi.fn(), get: (r) => probe(r), runTransaction: vi.fn(),
+}));
+// The reconnect probe: resolves by default; a test can make it fail.
+let probeFails = false;
+const probed = [];
+const probe = async (r) => { probed.push(r.path); if (probeFails) throw new Error("offline"); return { val: () => null }; };
+// The mirror "takes a path over" when a test says its leg is serving.
+const servingLegs = new Set();
+vi.mock("../offline/serving", async (original) => ({
+  ...(await original()),
+  isLegServing: (leg) => servingLegs.has(leg),
 }));
 // Every auth listener the app registers — the hooks' own and the shared
 // layer's — so a test can change who is signed in for all of them at once.
@@ -40,10 +50,10 @@ vi.mock("firebase/auth", () => ({
 vi.mock("../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 
 const {
-  lingerMsForMode, _setLingerMsForTests, _resetSharedLiveReadsForTests,
-  releaseIdleLiveReads,
+  holdsInMode, lingerPolicyFor, childQueryKey, SYNC_PROBE_PATH,
+  _setHoldingForTests, _resetSharedLiveReadsForTests, releaseIdleLiveReads,
 } = await import("./sharedLiveRead.js");
-const { LINGER_MS } = await import("./sharedLiveReadCore.js");
+const { LINGER_MS, SHORT_LINGER_MS, HEAVY_BYTES } = await import("./sharedLiveReadCore.js");
 const stock = await import("../components/stock/useStock.js");
 const layby = await import("../components/layby/useLayby.js");
 const checks = await import("../pages/DisplayChecks/useDisplayChecks.js");
@@ -62,21 +72,60 @@ function mountHook(useIt) {
 beforeEach(() => {
   vi.useFakeTimers();
   _resetSharedLiveReadsForTests();
-  _setLingerMsForTests(LINGER_MS);     // the app's setting, not the test default
+  _setHoldingForTests(true);           // the app's setting, not the test default
+  // The one `.info/connected` listener is opened once per module, on first
+  // use, and survives a reset — keep its handler across tests.
+  const conn = handlers.get(".info/connected");
   opens.length = 0; closes.length = 0; handlers.clear();
+  if (conn) handlers.set(".info/connected", conn);
+  probed.length = 0; probeFails = false; servingLegs.clear();
 });
 afterEach(() => {
   _resetSharedLiveReadsForTests();
-  _setLingerMsForTests(lingerMsForMode("test"));
+  _setHoldingForTests(holdsInMode("test"));
   vi.useRealTimers();
 });
 
-describe("the linger setting", () => {
-  it("is ten minutes in every mode the app ships or runs in, and off only under the test runner", () => {
-    expect(lingerMsForMode("production")).toBe(LINGER_MS);
-    expect(lingerMsForMode("development")).toBe(LINGER_MS);
-    expect(lingerMsForMode(undefined)).toBe(LINGER_MS);
-    expect(lingerMsForMode("test")).toBe(0);
+describe("the hold setting", () => {
+  it("is on in every mode the app ships or runs in, and off only under the test runner", () => {
+    expect(holdsInMode("production")).toBe(true);
+    expect(holdsInMode("development")).toBe(true);
+    expect(holdsInMode(undefined)).toBe(true);
+    expect(holdsInMode("test")).toBe(false);
+  });
+});
+
+describe("the per-path policy table", () => {
+  const long = (k) => lingerPolicyFor(k).lingerMs === LINGER_MS;
+  it("ten minutes for the big, slow-changing nodes — and only those", () => {
+    for (const k of [
+      "refill_requests", "products", "orders", childQueryKey("orders", "destShop", "marathon-pe"),
+      "customers", "settings/displayRows", "settings/displaySlots", "stock_targets",
+      "stock", "stock/hub2", "stock/marathon-pe",
+    ]) expect([k, long(k)]).toEqual([k, true]);
+  });
+  it("the short hold for small hot nodes and for anything not listed", () => {
+    for (const k of [
+      "laybys", "laybyPulls", "refill_engine/open", "displayChecks_active/marathon-pe",
+      "displayChecks/marathon-pe/2026-11-11", "returns_log", "config/refillEngine",
+      "settings/hubSneakerCount/register/hub1", "stock/hub2/p1", "stock_targets/hub1",
+      "refill_requests/abc", "productsX", "something/new",
+    ]) expect([k, lingerPolicyFor(k).lingerMs]).toEqual([k, SHORT_LINGER_MS]);
+    expect(SHORT_LINGER_MS).toBeGreaterThanOrEqual(20000);
+    expect(SHORT_LINGER_MS).toBeLessThanOrEqual(30000);
+  });
+  it("every long-held node carries a size hint that counts as heavy, except the one that is not", () => {
+    expect(lingerPolicyFor("refill_requests").bytes).toBeGreaterThan(lingerPolicyFor("products").bytes);
+    for (const k of ["refill_requests", "products", "orders", "customers", "settings/displayRows", "stock_targets", "stock/hub2"]) {
+      expect(lingerPolicyFor(k).bytes).toBeGreaterThanOrEqual(HEAVY_BYTES);
+    }
+    expect(lingerPolicyFor("settings/displaySlots").bytes).toBeLessThan(HEAVY_BYTES);
+    expect(lingerPolicyFor("laybys").bytes).toBeLessThan(HEAVY_BYTES);
+  });
+  it("a query key escapes its value, so no shop name can collide with another key", () => {
+    expect(childQueryKey("orders", "destShop", "marathon-pe")).toBe("orders?orderByChild=destShop&equalTo=marathon-pe");
+    expect(childQueryKey("orders", "destShop", "a&equalTo=b")).toBe("orders?orderByChild=destShop&equalTo=a%26equalTo%3Db");
+    expect(childQueryKey("orders", "destShop", "x")).not.toBe(childQueryKey("orders", "destShop", "x?"));
   });
 });
 
@@ -119,14 +168,67 @@ describe("the stock chokepoint (usePathState) — the Refill queue's read", () =
     expect(countOf("stock_targets")).toBe(1);
   });
 
-  it("after the linger the listener is closed — an abandoned node stops streaming", () => {
-    const h = mountHook(() => stock.useEngineOpen());
+  it("after its hold the listener is closed — a small hot node after seconds, a big one after ten minutes", () => {
+    const small = mountHook(() => stock.useEngineOpen());
+    const big = mountHook(() => stock.useStockTargets());
     push("refill_engine/open", {});
-    h.unmount();
-    vi.advanceTimersByTime(LINGER_MS + 1);
+    push("stock_targets", {});
+    small.unmount(); big.unmount();
+    vi.advanceTimersByTime(SHORT_LINGER_MS - 1);
+    expect(closes).toEqual([]);               // a tab toggle is covered
+    vi.advanceTimersByTime(2);
     expect(closes).toEqual(["refill_engine/open"]);
+    vi.advanceTimersByTime(LINGER_MS - SHORT_LINGER_MS - 2);
+    expect(closes).toEqual(["refill_engine/open"]);
+    vi.advanceTimersByTime(2);
+    expect(closes).toEqual(["refill_engine/open", "stock_targets"]);
     mountHook(() => stock.useEngineOpen());
     expect(countOf("refill_engine/open")).toBe(2);
+  });
+
+  it("when the offline mirror takes the path over, the listener is closed at once — not held for nobody", () => {
+    const h = mountHook(() => stock.useRefillRequests());
+    push("refill_requests", { a: { status: "open" } });
+    servingLegs.add("refills");               // the device's own copy now answers
+    h.unmount();
+    expect(closes).toEqual(["refill_requests"]);
+  });
+
+  it("the connection dropping: idle listeners go, and a held value is not replayed to a new screen", () => {
+    const idle = mountHook(() => stock.useStockTargets());
+    push("stock_targets", { hub1: {} });
+    idle.unmount();
+    const home = mountHook(() => stock.useRefillRequests("open"));
+    push("refill_requests", { a: { status: "open" } });
+    probeFails = true;                        // …and the line stays unproven after it returns
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });
+    expect(closes).toEqual(["stock_targets"]);
+    // The screen that was showing it keeps showing it, as with a bare onValue…
+    expect(home.out.value.map((r) => r.id)).toEqual(["a"]);
+    // …but a screen that opens now is not handed it: the listener is reopened.
+    const refill = mountHook(() => stock.useRefillRequests());
+    expect(refill.out.value).toEqual([]);
+    expect(countOf("refill_requests")).toBe(2);
+    push("refill_requests", { a: { status: "open" }, b: { status: "open" } });
+    expect(refill.out.value.map((r) => r.id)).toEqual(["a", "b"]);
+    expect(home.out.value.map((r) => r.id)).toEqual(["a", "b"]);
+  });
+
+  it("the connection returning, proven by the probe: what is held is current again and nothing is re-downloaded", async () => {
+    const home = mountHook(() => stock.useRefillRequests("open"));
+    push("refill_requests", { a: { status: "open" } });
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    // One few-byte read per reconnect, of the probe path and nothing else.
+    expect(probed.length).toBeGreaterThanOrEqual(1);
+    expect([...new Set(probed)]).toEqual([SYNC_PROBE_PATH]);
+    const refill = mountHook(() => stock.useRefillRequests());
+    expect(refill.out.value.map((r) => r.id)).toEqual(["a"]);
+    expect(countOf("refill_requests")).toBe(1);
+    home.unmount();
   });
 
   it("a hidden page lets go of what no screen is using", () => {
@@ -158,6 +260,22 @@ describe("the stock chokepoint (usePathState) — the Refill queue's read", () =
     expect(countOf("refill_requests")).toBe(2);
     act(() => { authCb({ uid: "u1" }); });
   });
+
+  it("a DIRECT switch from person A to person B with the screen still mounted: B's new screen is never handed A's rows", () => {
+    // A's Home is mounted and holds the list. The identity changes with no
+    // sign-out in between, so nothing unmounts.
+    const homeA = mountHook(() => stock.useRefillRequests("open"));
+    push("refill_requests", { a: { status: "open", who: "A" } });
+    act(() => { authCb({ uid: "person-b" }); });
+    expect(closes).toEqual([]);               // in use: not torn down under the screen
+    const screenB = mountHook(() => stock.useRefillRequests());
+    expect(screenB.out.value).toEqual([]);    // NOT A's rows
+    expect(countOf("refill_requests")).toBe(2);   // a fresh listener, under B
+    push("refill_requests", { b: { status: "open", who: "B" } });
+    expect(screenB.out.value).toEqual([{ id: "b", status: "open", who: "B" }]);
+    homeA.unmount(); screenB.unmount();
+    act(() => { authCb({ uid: "u1" }); });
+  });
 });
 
 describe("laybys and layby pulls", () => {
@@ -168,12 +286,15 @@ describe("laybys and layby pulls", () => {
     push("laybyPulls", { P1: { status: "pending" } });
     expect(a.out.value.laybys).toEqual([{ key: "L1", status: "stored", invoiceNo: "100" }]);
     a.unmount();
-    vi.advanceTimersByTime(2 * 60 * 1000);
+    vi.advanceTimersByTime(SHORT_LINGER_MS - 5000);   // a tab toggle, not a ten-minute hold
     const b = mountHook(useBoth);
     expect(b.out.value.laybys).toEqual([{ key: "L1", status: "stored", invoiceNo: "100" }]);
     expect(b.out.value.pulls).toEqual([{ key: "P1", status: "pending" }]);
     expect(countOf("laybys")).toBe(1);
     expect(countOf("laybyPulls")).toBe(1);
+    b.unmount();
+    vi.advanceTimersByTime(SHORT_LINGER_MS + 1);
+    expect(closes.sort()).toEqual(["laybyPulls", "laybys"]);   // small hot nodes are not held for minutes
   });
 
   it("the TV board and the warehouse view mounted together share the pulls listener", () => {
@@ -226,7 +347,7 @@ describe("App.jsx's own fallback reads go through the shared listener", () => {
     expect(app).not.toContain("onValue(productsRef");
   });
   it("orders, keyed by its complete query so a shop's scoped read shares with nothing else", () => {
-    expect(app).toContain('const readKey = scopeShop ? `orders?orderByChild=destShop&equalTo=${scopeShop}` : "orders";');
+    expect(app).toContain('const readKey = scopeShop ? childQueryKey("orders", "destShop", scopeShop) : "orders";');
     expect(app).toContain("subscribeLiveQuery(readKey, () => readRef, (snap) => {");
     expect(app).not.toContain("onValue(readRef");
   });

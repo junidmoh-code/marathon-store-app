@@ -9,12 +9,22 @@
 // cache is cleared and the IndexedDB connection is closed and reopened. What
 // is counted is the days handed to readDayNodes — the network read.
 import "fake-indexeddb/auto";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// Every auth listener the app registers, so a test can change who is signed in.
+const authCbs = new Set();
+const signIn = (user) => { for (const cb of [...authCbs]) cb(user); };
+vi.mock("firebase/auth", async (original) => ({
+  ...(await original()),
+  onAuthStateChanged: (_a, cb) => { authCbs.add(cb); cb({ uid: "u1" }); return () => { authCbs.delete(cb); }; },
+}));
+
 import { readWindow, contiguousRuns, _clearRollupCacheForTests } from "./rollupStore";
 import {
-  loadKeptDays, keepDays, daySignature, _clearKeptDaysForTests, _closeKeptDaysDbForTests,
+  loadKeptDays, keepDays, forgetDays, daySignature, isCurrentShape, KEEP_EPOCH, ROLLUP_DB_NAME,
+  _clearKeptDaysForTests, _closeKeptDaysDbForTests,
 } from "./rollupDayCache";
-import { compactDay } from "./rollupCodec";
+import { compactDay, ROLLUP_SHAPE } from "./rollupCodec";
 import { saDayStartMs, shiftSaDate } from "./rollupWindow";
 
 const TODAY = "2026-09-20";
@@ -50,6 +60,8 @@ function makePage(server) {
       setCached: (d, node) => { session.set(d, node); },
       loadKept: loadKeptDays,
       keep: keepDays,
+      forget: forgetDays,
+      dropCached: (d) => { session.delete(d); },
       readLogRange: async () => [],
       readUndated: async () => [],
       readLate: async () => [],
@@ -159,10 +171,60 @@ describe("finished rollup days are kept on the device", () => {
   });
 });
 
+describe("a day that will not expand", () => {
+  it("is read live, is NOT kept, and a kept copy of it is dropped so it is fetched afresh next time", async () => {
+    const days = tenDays();
+    const bad = FINISHED[1];
+    const server = makeServer(days);
+    await readWindow({ ...windowOf(FROM), io: makePage(server).io });
+    await settle();
+    expect((await loadKeptDays([bad], server.index())).size).toBe(1);
+
+    // The same day, same index entry, but the node on the device no longer
+    // expands (a dangling dictionary index — the shape version is right).
+    await reload();
+    const broken = { ...days[bad], rows: [[9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999]] };
+    await keepDays([[bad, broken]], server.index());
+    server.asked.length = 0;
+    const page = makePage(server);
+    const ranges = [];
+    page.io.readLogRange = async (r) => { ranges.push(r); return []; };
+    const res = await readWindow({ ...windowOf(FROM), io: page.io });
+    await settle();
+    if (res.corruptDays.includes(bad)) {
+      // Named, read live, and gone from both caches.
+      expect(ranges.length).toBeGreaterThan(0);
+      expect(page.session.has(bad)).toBe(false);
+      expect((await loadKeptDays([bad], server.index())).size).toBe(0);
+      // Next load: fetched from the server again, where the good node is.
+      await reload();
+      server.asked.length = 0;
+      const again = await readWindow({ ...windowOf(FROM), io: makePage(server).io });
+      expect(server.asked.flat()).toContain(bad);
+      expect(again.corruptDays).toEqual([]);
+    } else {
+      throw new Error("fixture did not produce a non-expanding node");
+    }
+  });
+
+  it("a fetched day that will not expand is never written to the device", async () => {
+    const days = tenDays();
+    const bad = FINISHED[3];
+    days[bad] = { ...days[bad], rows: [[9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999]] };
+    const server = makeServer(days);
+    const res = await readWindow({ ...windowOf(FROM), io: makePage(server).io });
+    await settle();
+    expect(res.corruptDays).toEqual([bad]);
+    const kept = await loadKeptDays(FINISHED, server.index());
+    expect(kept.has(bad)).toBe(false);
+    expect(kept.size).toBe(FINISHED.length - 1);
+  });
+});
+
 describe("the kept-day store itself", () => {
   it("serves a day only under the exact index entry it was saved under", async () => {
     const index = { "2026-09-01": { n: 3, pe: 3 }, "2026-09-02": { n: 1 } };
-    await keepDays([["2026-09-01", { a: 1 }], ["2026-09-02", { b: 2 }]], index);
+    await keepDays([["2026-09-01", { v: ROLLUP_SHAPE, a: 1 }], ["2026-09-02", { v: ROLLUP_SHAPE, b: 2 }]], index);
     expect([...(await loadKeptDays(["2026-09-01", "2026-09-02"], index)).keys()]).toEqual(["2026-09-01", "2026-09-02"]);
     const moved = { ...index, "2026-09-01": { n: 4, pe: 4 } };
     expect([...(await loadKeptDays(["2026-09-01", "2026-09-02"], moved)).keys()]).toEqual(["2026-09-02"]);
@@ -172,7 +234,7 @@ describe("the kept-day store itself", () => {
 
   it("does not keep a day the index does not list, and only returns the days asked for", async () => {
     const index = { "2026-09-01": { n: 1 }, "2026-09-03": { n: 1 } };
-    expect(await keepDays([["2026-09-01", { a: 1 }], ["2026-09-02", { x: 1 }], ["2026-09-03", { c: 1 }]], index)).toBe(2);
+    expect(await keepDays([["2026-09-01", { v: ROLLUP_SHAPE, a: 1 }], ["2026-09-02", { v: ROLLUP_SHAPE, x: 1 }], ["2026-09-03", { v: ROLLUP_SHAPE, c: 1 }]], index)).toBe(2);
     const got = await loadKeptDays(["2026-09-01", "2026-09-03"], index);
     expect([...got.keys()]).toEqual(["2026-09-01", "2026-09-03"]);
     expect((await loadKeptDays(["2026-09-03"], index)).size).toBe(1);
@@ -180,15 +242,74 @@ describe("the kept-day store itself", () => {
 
   it("prunes days older than the bound in the same write", async () => {
     const index = { "2024-01-01": { n: 1 }, "2026-09-01": { n: 1 } };
-    await keepDays([["2024-01-01", { old: 1 }], ["2026-09-01", { a: 1 }]], index);
-    await keepDays([["2026-09-01", { a: 1 }]], index, { pruneBefore: "2025-01-01" });
+    await keepDays([["2024-01-01", { v: ROLLUP_SHAPE, old: 1 }], ["2026-09-01", { v: ROLLUP_SHAPE, a: 1 }]], index);
+    await keepDays([["2026-09-01", { v: ROLLUP_SHAPE, a: 1 }]], index, { pruneBefore: "2025-01-01" });
     expect([...(await loadKeptDays(["2024-01-01", "2026-09-01"], index)).keys()]).toEqual(["2026-09-01"]);
   });
 
   it("daySignature is null for an absent entry — absent is never a match", () => {
     expect(daySignature(undefined)).toBe(null);
     expect(daySignature(null)).toBe(null);
-    expect(daySignature({ n: 1 })).toBe('{"n":1}');
+  });
+
+  it("the signature carries the keep epoch and the shape version, so changing either invalidates every kept day", () => {
+    expect(daySignature({ n: 1 })).toBe(`${KEEP_EPOCH}|${ROLLUP_SHAPE}|{"n":1}`);
+    expect(KEEP_EPOCH).toBe(1);
+  });
+
+  it("a day saved under another keep epoch or another shape version is not served", async () => {
+    const index = { "2026-09-01": { n: 1 }, "2026-09-02": { n: 1 }, "2026-09-03": { n: 1 } };
+    await keepDays([["2026-09-01", { v: ROLLUP_SHAPE, a: 1 }]], index);
+    // Written by an earlier build, straight into the store: an old epoch, and an old shape.
+    const db = await new Promise((res, rej) => { const r = indexedDB.open(ROLLUP_DB_NAME); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    await new Promise((res, rej) => {
+      const tx = db.transaction("days", "readwrite");
+      tx.objectStore("days").put({ date: "2026-09-02", sig: `${KEEP_EPOCH - 1}|${ROLLUP_SHAPE}|{"n":1}`, node: { v: ROLLUP_SHAPE } });
+      // The right signature text but a node of the previous shape (belt and braces).
+      tx.objectStore("days").put({ date: "2026-09-03", sig: daySignature({ n: 1 }), node: { v: ROLLUP_SHAPE - 1 } });
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+    db.close();
+    const got = await loadKeptDays(["2026-09-01", "2026-09-02", "2026-09-03"], index);
+    expect([...got.keys()]).toEqual(["2026-09-01"]);
+  });
+
+  it("a node of another shape is never kept in the first place", async () => {
+    const index = { "2026-09-01": { n: 1 }, "2026-09-02": { n: 1 } };
+    expect(isCurrentShape({ v: ROLLUP_SHAPE })).toBe(true);
+    expect(isCurrentShape({ v: ROLLUP_SHAPE + 1 })).toBe(false);
+    expect(isCurrentShape({})).toBe(false);
+    expect(await keepDays([["2026-09-01", { v: ROLLUP_SHAPE + 1 }], ["2026-09-02", { rows: [] }]], index)).toBe(0);
+    expect((await loadKeptDays(["2026-09-01", "2026-09-02"], index)).size).toBe(0);
+  });
+
+  it("recovers without a reload after its database handle fails", async () => {
+    const index = { "2026-09-01": { n: 1 } };
+    await keepDays([["2026-09-01", { v: ROLLUP_SHAPE, a: 1 }]], index);
+    // The browser closes the connection under the page (a frozen tab).
+    const realOpen = indexedDB.open.bind(indexedDB);
+    await _closeKeptDaysDbForTests();
+    let failures = 1;
+    indexedDB.open = (...a) => { if (failures > 0) { failures -= 1; throw new Error("InvalidStateError"); } return realOpen(...a); };
+    try {
+      expect((await loadKeptDays(["2026-09-01"], index)).size).toBe(0);   // failed: "nothing kept"
+      expect((await loadKeptDays(["2026-09-01"], index)).size).toBe(1);   // the next call opens a new handle
+    } finally { indexedDB.open = realOpen; }
+  });
+
+  it("a different person signing in — or signing out — empties what is kept on the device", async () => {
+    const index = { "2026-09-01": { n: 1 } };
+    await keepDays([["2026-09-01", { v: ROLLUP_SHAPE, a: 1 }]], index);
+    expect((await loadKeptDays(["2026-09-01"], index)).size).toBe(1);
+    signIn({ uid: "someone-else" });
+    await settle();
+    expect((await loadKeptDays(["2026-09-01"], index)).size).toBe(0);
+    await keepDays([["2026-09-01", { v: ROLLUP_SHAPE, a: 1 }]], index);
+    signIn(null);
+    await settle();
+    expect((await loadKeptDays(["2026-09-01"], index)).size).toBe(0);
+    signIn({ uid: "u1" });
+    await settle();
   });
 });
 
