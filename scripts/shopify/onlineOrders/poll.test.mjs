@@ -993,7 +993,11 @@ describe("what a tick downloads", () => {
     // (The order then turns needs_attention and that status's own query finds
     // it again later in the same tick — as it always has — hence the slice.)
     expect(handed.slice(0, 2)).toEqual(["pick", "no_stock"]);
-    expect(c.of("get", "online_orders/9001")).toBe(0);
+    // The ONE exact read of the order this tick is the mailer's, and it comes
+    // after everything else: the order it is about to email Junid about.
+    const whole = c.reads.map(([op, p], n) => (op === "get" && p === "online_orders/9001" ? n : -1)).filter((n) => n >= 0);
+    expect(whole).toHaveLength(1);
+    expect(c.reads[whole[0] - 1]).toEqual(["get", "online_orders/9001/attention"]);
   });
 
   it("the all-orders attention query runs on the first tick, is stamped, and is not run again inside the cadence", async () => {
