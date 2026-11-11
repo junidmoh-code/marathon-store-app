@@ -30,7 +30,7 @@
 //   • never another location, never in_transit, never settings/stockHold;
 //   • never a whole-node read: /locations is read SHALLOW (keys only) to prove
 //     the Pine key is unique, and the only stock read is /stock/marathon-pine.
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "fs";
+import { mkdirSync, readFileSync, existsSync, openSync, writeSync, fsyncSync, closeSync, renameSync } from "fs";
 import { dirname, join } from "path";
 import { homedir, hostname } from "os";
 import { createHash } from "crypto";
@@ -86,6 +86,14 @@ async function resolvePine() {
   return { ok, reg, live, stockKeys };
 }
 
+// Durable + atomic: write a temp file, fsync it, rename over the target — a
+// failed or interrupted write never truncates a backup already on disk.
+function writeDurable(file, body) {
+  const tmp = `${file}.tmp`;
+  const fd = openSync(tmp, "w");
+  try { writeSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(tmp, file);
+}
 const sha = (s) => createHash("sha256").update(s).digest("hex");
 const sastDate = (ms) => new Date(ms + 2 * 3600e3).toISOString().slice(0, 10);
 
@@ -97,22 +105,25 @@ async function restore(file) {
   // Add back exactly what each cell lost to the clear — taken from the clear's
   // OWN ledger row (read by id), never from the plan, so an interrupted run
   // gives back only the cells it really zeroed.
-  const rows = [];
+  const rows = [], negativesNotRestored = [];
   for (const c of saved.plan.cells) {
     const row = (await db.ref(`stock_movements/${c.movementId}`).once("value")).val();
     if (!row || row.reason !== PINE_SCOPE.reason) continue;
     const give = row.from === LOC ? Number(row.qty) : row.to === LOC ? -Number(row.qty) : 0;
-    if (give) rows.push({ ...c, give });
+    if (give > 0) rows.push({ ...c, give });
+    // A cell the clear raised from below zero is NOT pushed back negative:
+    // Pine never goes below zero. Listed for a person to judge.
+    else if (give < 0) negativesNotRestored.push(`${c.path} (was ${give})`);
   }
   const units = rows.reduce((t, c) => t + c.give, 0);
-  console.log(JSON.stringify({ restoreFrom: file, resetId: saved.resetId, cells: rows.length, netUnitsBack: units, apply: APPLY }, null, 2));
+  console.log(JSON.stringify({ restoreFrom: file, resetId: saved.resetId, cells: rows.length, unitsBack: units, negativesNotRestored, apply: APPLY }, null, 2));
   if (!APPLY) { console.log("Dry run only. Re-run with --restore <file> --apply to write."); return; }
   let done = 0; const refused = [];
   for (const c of rows) {
     if (!c.path.startsWith(`stock/${LOC}/`)) { refused.push([c.path, "outside_pine"]); continue; }
     const r = await applyMovementAdmin(db, {
       type: "adjustment", productId: c.pid, size: decodeSizeKey(c.sizeKey), sizeKey: c.sizeKey,
-      qty: Math.abs(c.give), from: c.give < 0 ? LOC : null, to: c.give > 0 ? LOC : null,
+      qty: c.give, from: null, to: LOC,
       reason: "pine-count-clear-reversal", movementId: `pineundo_${saved.resetId}_${c.pid}_${c.sizeKey}`,
       actor: "system:pine-count-clear", actorRole: "admin", ts: nowIso,
       link: { deviceId: null, countResetId: saved.resetId, countLocation: LOC, reversalOf: c.movementId },
@@ -178,7 +189,7 @@ async function main() {
   const saved = { resetId, at: nowIso, hub: LOC, summary: plan.summary, cells: cellsFlat, stock: pineStock, plan };
   const body = JSON.stringify(saved);
   try {
-    writeFileSync(file, body);
+    writeDurable(file, body);
     const back = readFileSync(file, "utf8");
     if (!existsSync(file) || sha(back) !== sha(body) || JSON.parse(back).cells.length !== cellsFlat.length) throw new Error("read-back mismatch");
   } catch (e) {
@@ -195,7 +206,7 @@ async function main() {
   const applied = new Map(r.done.map((d) => [d.movementId, d.applied]));
   for (const c of plan.cells) if (applied.has(c.movementId)) c.applied = applied.get(c.movementId);
   saved.plan = plan; saved.result = { removed: r.removed, added: r.added, done: r.done.length, refused: r.refused };
-  writeFileSync(file, JSON.stringify(saved));
+  writeDurable(file, JSON.stringify(saved));
   await db.ref(`${COUNT_ROOT}/resets/${LOC}/${resetId}/applied`).set({
     at: new Date(serverNowMs()).toISOString(), zeroed: r.done.length, unitsRemoved: r.removed, negativeUnitsCleared: r.added,
     refused: r.refused.length ? r.refused.map((x) => ({ path: x.path, reason: x.reason })) : null,
