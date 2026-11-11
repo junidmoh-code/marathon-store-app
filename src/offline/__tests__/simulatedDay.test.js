@@ -37,10 +37,11 @@
 // cursor day run with MIRROR_SIM_FULL=1. Each behaviour they exercise has its
 // own fast test in redownloadStorms.test.js.
 //
-// On the build before this one, the "10 Nov" day below does not finish in
-// megabytes: the same file run against that build re-downloads the three
-// settings legs on every lap from the 14:00 census check to the end of the
-// day. The measured figures for that are in docs/store-offline-mirror.md §12a.
+// ON THE BUILD BEFORE THIS ONE the "10 Nov" day below, run from this same file
+// at full size, read 1,295 MB: from its 14:00 census check to 18:00 it walked
+// displaySlots, displayRows, displayRegister and the refill-request leg 60
+// times each. The fleet's measured figures for the real day are in
+// docs/store-offline-mirror.md §12a.
 import { describe, test, expect } from "vitest";
 import { freshMirrorDb } from "./helpers";
 import { createFakeRtdb, pushKeyForMs } from "./fakeAdapter";

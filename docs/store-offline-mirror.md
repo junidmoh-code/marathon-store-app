@@ -297,7 +297,10 @@ timestamp cursor could never do.
 **cannot** catch up, and must not pretend to: it records the leg failed with
 reason `cursor-expired` and runs that leg's setup download again. This is the
 only path back to a full read after setup, it is deliberate, and it is visible
-on the status dot.
+on the status dot. **The new cursor — the head of the log — is taken in the
+same step, before any leg is re-read** (`sync.js resetFeedCursor`); a device
+with no cursor at all is treated the same way. See §12a for the trap that
+leaving it "for the next setup run" was.
 
 **Cost of the feed itself.** One small RTDB write and one function invocation
 per mutation. Measured mutation volume over the 7 days to 2026-09-19:
@@ -310,8 +313,12 @@ A `/mirror_changes` record is about 60 bytes.
 A cadence alone makes every screen as stale as the cadence, and a minute
 between one device's write and another's screen is not "what it displays
 today". So the 60-second pass is a **floor**, and on top of it sits an
-`onChildAdded` over `/mirror_changes` **from the cursor** — it streams the
-records themselves, about 60 bytes each, never a node.
+`onChildAdded` over `/mirror_changes` that is **one record wide**
+(`orderByKey().limitToLast(1)`) — it streams each new record as it is written,
+about 85 bytes, never a node and never a backlog. (It used to be opened *from
+the cursor*: a device with an old cursor was sent the whole backlog by the
+listener and then read it again as pages, and a device with no cursor
+subscribed to the whole 30-day log — §12a.)
 
 It is a **signal, not a source**: the callback does not carry the record into
 the mirror, it asks the engine to run a pass, which reads the page properly and
@@ -407,7 +414,8 @@ download as well as the reads. Between legs, so a leg is never half-swapped.
 The shrink guard protects a copy that already exists; on a fresh device `held`
 is 0, so a catalogue truncated to a fifth of itself reads as "more than I had".
 So `/mirror_counts` is asked, FORCED, at the end of the download and before
-anything is served.
+anything is served. A copy that is still SHORT of the census after its one
+repair is not served and not downloaded again for that census (§12a).
 
 ### 5.2 Photos — background, non-blocking
 
@@ -684,6 +692,96 @@ Each of these happened on the POS mirror. Each has a named guard here.
 | `pe` vs `marathon-pe` | one explicit map, strict, returns null rather than guessing |
 | a price change never reached a mirrored till | price is a field like any other, it arrives on the `changes` feed, and the end-to-end test asserts a price edit lands in the local store |
 | a user saw a stale number right after their own action | every local read is `store ⊕ outbox` |
+| a day-old census told every device its healthy legs were wrong, and the repair could never satisfy it | §12a: journal-widened allowance, one repair per leg per census, key-diff repair, 3 whole downloads per leg per day |
+| an expired cursor expired again on every pass | §12a: the cursor is replaced by the log head, never dropped |
+
+## 12a. The re-download storms of Oct–Nov 2026, and what bounds a download now
+
+**What was measured.** The devices' own byte counters (`/mirror_devices`),
+fleet total per day: ordinary days 0.1–0.7 GB; **28 Oct 1.5 GB, 29 Oct 3.2 GB,
+30 Oct 21.4 GB, 5 Nov 2.9 GB, 9 Nov 1.7 GB, 10 Nov 6.5 GB.** One phone
+(`015a0b02`, a healthy device on a healthy line) read 2.0–4.3 MB on ordinary
+days, 2,003 MB on 30 Oct and 698 MB on 10 Nov. The profiler capture of 10 Nov
+shows that phone starting the walk of `/settings/displaySlots`,
+`/settings/displayRows` and `/settings/hubSneakerCount/register` 76–77 times
+each between 13:50 and 22:30 — 313 MB — with a `/mirror_counts` read between
+every lap.
+
+**The mechanism, in order.**
+
+1. **The census is a day old and the device is not.** `mirrorCensus` counts
+   each node once, at 04:15. A device's own count follows the database all day
+   through the change feed. They were compared with a tolerance of
+   max(25 rows, 2%). On 10 Nov a display re-check wrote 700 `displaySlots`
+   rows, 448 `displayRows` and 272 register rows (`/mirror_changes`, counted by
+   node) against tolerances of 35, 43 and 31; on 30 Oct it was 616 `/products`
+   rows and 808 `/stock` rows. Every device was told healthy legs were wrong.
+   None of them had drifted.
+2. **The repair could not satisfy the census.** A re-downloaded leg matches the
+   *database*, so it still disagrees with the morning's count — and the pass
+   forced a census the moment the device was whole again, which dropped the
+   same legs again. One lap per repair, every 1–4 minutes, until the next
+   census at 04:15 (the phone's 9 Nov storm ended at 04:16 on the 10th).
+3. **Nothing counted it.** Every bound in the engine counted *failures*
+   (`LEG_MAX_ATTEMPTS`, the backoff), in memory. These downloads *succeeded*.
+4. **An unserved leg is read live.** A leg waiting for its repair is not
+   served (`servingDecision.js`), so any screen that needs it opens its
+   whole-node listener for as long as that lasts.
+
+Two smaller leaks rode along, both found in the 11 Nov captures:
+
+- **The expired-cursor trap.** An expired cursor was *dropped*, to be re-taken
+  "by the next setup run" — but the pass loop repairs legs itself and never
+  runs that setup. So the next pass read the log from its first record, stored
+  that page's last key as the cursor (thirty days old, inside the one-day
+  safety margin by construction), found it "expired" again on the pass after,
+  and marked every leg again. One handset (`57070bab`) did this for two weeks
+  at 60–140 MB a day, never whole; and with no cursor its live signal
+  subscribed to the entire log, 9.7 MB a subscribe.
+- **Deletes the feed applied made a leg look emptied.** `legVerdict` refuses a
+  leg holding fewer rows than its record claims, and nothing lowered the claim
+  when the *feed* deleted a row. A day with more deletes than writes took a
+  current leg out of service; the census storm re-stamping it was what hid
+  this.
+
+`/mirror_changes` volume was **not** the cause: 2,000–6,300 records a day
+across the whole month (14,272 on 3 Nov), retention never close.
+
+**What stands in the way now** (all in `src/offline/`, no function redeploy):
+
+| | what | where |
+| --- | --- | --- |
+| a fair comparison | the allowance is widened by the rows the feed has carried since the census was taken, filed by the hour each change was *recorded*; a device with no journal that far back rebuilds it from the change log's keys (pointer records only); the two histories subtract the rows they hold that are newer than the census, exactly | `censusJournal.js`, `sync.js checkCensus` |
+| not before it has caught up | a scheduled census waits for a pass that read the feed (and each history) to its end | `sync.js runPass` |
+| one repair per leg per census | the census taken at 04:15 can send a leg for repair once; a copy that still disagrees with *that* census is not sent again — served if it holds more than the census, parked unserved if it holds fewer (the truncated-download shape) until a census agrees | `setup.censusActed`, `censusRefused` on the leg's marker |
+| repaired by its keys | a count that disagrees is repaired by a keys-only REST read (`?shallow=true`, same rules, the signed-in user's token) and a fetch of the rows that differ; a row is deleted only when its own read answers null. Falls back to the walk when the leg is too deep (more than 60 key reads), too different (more than 25% / 2,000 rows) or the key read is unavailable | `sync.js reconcileLegKeys`, `rtdbAdapter.shallowKeys` |
+| a daily bound that survives a reload | a leg may start from its first page 3 times in any 24 hours per device, whatever asks; kept in localStorage, which survived the IndexedDB wipes we have seen. A refused leg is reported as `download-budget` and its screens read live | `downloadLedger.js` |
+| the cursor is never dropped | an expired or missing cursor is replaced by the head of the log in the same step that marks the legs | `sync.js resetFeedCursor` |
+| the signal is one record wide | `limitToLast(1)` | `rtdbAdapter.changeSignalConstraints` |
+| a delete lowers the claim | in the delete's own transaction, and only for a leg that was backed by its rows | `health.claimLoweredBy`, `changeFeed.js` |
+
+**The same days, simulated on this build**
+(`src/offline/__tests__/simulatedDay.test.js`: the real engine, a fake database
+at the live node sizes, a pass a minute 08:00–18:00, one reload; run with
+`MIRROR_SIM_FULL=1`). These are simulated, not measured:
+
+| day | bytes | whole-leg walks |
+| --- | ---: | --- |
+| 8 Nov's traffic (2,730 changes) | 2.99 MB | none |
+| 10 Nov's traffic (6,188 changes) + 200 products the feed never reported | 5.45 MB | none — the products are repaired by keys (0.09 MB of keys + 200 rows) |
+| the same, with the change cursor expiring at 15:00 | 64.5 MB | each held leg once (58.7 MB — one copy of the change-fed legs) |
+
+A day's bytes are now the day's traffic: every changed row fetched once
+(≈ 0.5 KB a change), every new history row once, the change record itself
+twice (the signal, then the page), and about 0.5 KB a pass of cursor rows. The
+build before this one, given the same 10 Nov day in the same simulation at
+full size, read **1,295 MB**: from its 14:00 census check to 18:00 it walked
+`displaySlots`, `displayRows`, `displayRegister` and the refill-request leg 60
+times each — the same four legs, and the same shape, the fleet showed.
+
+**What a rule could add, and is not needed.** Nothing here needs a rules or
+index change. `shallow=true` reads are authorised by the same `.read` rules as
+the SDK reads of the same paths.
 
 ## Device quarantine and storage health (PR #640)
 

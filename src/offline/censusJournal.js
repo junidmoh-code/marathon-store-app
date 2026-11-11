@@ -234,3 +234,43 @@ export async function coverSince(db, adapter, {
   });
   return merged.from <= needFrom ? merged : null;
 }
+
+/**
+ * Rows named by change records the feed has NOT applied yet — everything in
+ * the log after `feedCursor` — per leg, or null when that cannot be counted
+ * inside the page budget.
+ *
+ * A census asked for straight after a download (it is forced, so that a first
+ * copy is verified before it is served) cannot wait for the feed to catch up.
+ * But a device opened after a night holds legs that are missing every change
+ * still in its backlog, and each of those is a row its count may be off by.
+ * They are read here as pointer records only — the same pages the next pass
+ * will read to apply them — and added to the allowance. Nothing is journaled:
+ * the feed files them itself when it applies them.
+ */
+export async function pendingTouched(adapter, {
+  feedCursor, changesRoot, pageSize = BACKFILL_PAGE_SIZE, maxPages = BACKFILL_MAX_PAGES,
+}) {
+  if (feedCursor === undefined) return null;
+  const perLeg = {};
+  const seen = new Set();
+  let after = feedCursor;
+  for (let page = 0; page < maxPages; page += 1) {
+    const entries = pageEntries(await adapter.readKeyPage(changesRoot, { after, limit: pageSize }), { keepNull: true });
+    if (entries.length === 0) return perLeg;
+    let last = after;
+    for (const [changeKey, rec] of entries) {
+      if (last === null || compareKeys(changeKey, last) > 0) last = changeKey;
+      const leg = rec && typeof rec === "object" ? LEG_BY_NODE[rec.n] : null;
+      if (!leg || typeof rec.k !== "string") continue;
+      const id = `${leg.name}\u0000${rec.k}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      perLeg[leg.name] = (perLeg[leg.name] ?? 0) + 1;
+    }
+    if (entries.length < pageSize) return perLeg;
+    if (after !== null && compareKeys(last, after) <= 0) return null;
+    after = last;
+  }
+  return null;
+}
