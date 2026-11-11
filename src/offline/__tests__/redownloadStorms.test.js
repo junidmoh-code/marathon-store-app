@@ -330,6 +330,60 @@ describe("a copy still catching up is not compared", () => {
   });
 });
 
+describe("a FORCED census on a device with a backlog allows for what it has not applied", () => {
+  // Every open that has to finish a download forces a census before anything
+  // is served — it cannot wait for the feed. A tablet opened in the morning
+  // holds legs that are missing a night of changes, all of them IN the 04:15
+  // census.
+  test("yesterday evening's writes, still in the backlog, are not a drift", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 20 * HOUR);
+    const w = world({ settings: { displaySlots: { "marathon-pe": slots(1000) } } });
+    const e = engine(db, w, c);
+    await e.runSetup();
+    for (let i = 0; i < 300; i += 1) {
+      change(w, SLOTS, `marathon-pe|n${String(i).padStart(4, "0")}`, { slot: 2000 + i }, CENSUS_AT - 10 * HOUR + i * 1000);
+    }
+    census(w, CENSUS_AT, { displaySlots: 1300 });
+    c.set(CENSUS_AT + 4 * HOUR);
+
+    const rowReads = w.calls.readPath.length;
+    const res = await e.checkCensus({ force: true });          // before any pass has run
+    expect(await db.count("displaySlots")).toBe(1000);         // 300 behind the census…
+    expect(res.checked).toContain("displaySlots");
+    expect(res.drifted).toEqual([]);                           // …and every one of them is in the backlog
+    // It read the backlog's pointer records, never a row.
+    expect(w.calls.readPath.slice(rowReads)).toEqual([COUNTS_ROOT]);
+    expect(await e.legIsSetUp(LEG_BY_NAME.displaySlots)).toBe(true);
+  });
+
+  test("a hole the backlog does NOT explain is still found", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 20 * HOUR);
+    const w = world({ settings: { displaySlots: { "marathon-pe": slots(1000) } } });
+    const e = engine(db, w, c);
+    await e.runSetup();
+    for (let i = 0; i < 20; i += 1) {
+      change(w, SLOTS, `marathon-pe|n${String(i).padStart(4, "0")}`, { slot: 2000 + i }, CENSUS_AT - 10 * HOUR + i * 1000);
+    }
+    census(w, CENSUS_AT, { displaySlots: 1300 });              // 280 nobody recorded
+    c.set(CENSUS_AT + 4 * HOUR);
+    const res = await e.checkCensus({ force: true });
+    expect(res.drifted).toEqual([{ leg: "displaySlots", held: 1000, census: 1300, allowed: 46 }]);
+  });
+
+  test("a backlog too long to count means the copy is too far behind to judge", async () => {
+    const { pendingTouched } = await import("../censusJournal");
+    const w = world();
+    for (let i = 0; i < 700; i += 1) change(w, "products", `p${i}`, { id: `p${i}` }, CENSUS_AT + i * 1000);
+    const opts = { feedCursor: null, changesRoot: CHANGES_ROOT, pageSize: 100 };
+    expect(await pendingTouched(w.adapter, { ...opts, maxPages: 3 })).toBeNull();
+    expect(await pendingTouched(w.adapter, { ...opts, maxPages: 10 })).toEqual({ products: 700 });
+    // No cursor at all: there is no "since" to count from.
+    expect(await pendingTouched(w.adapter, { ...opts, feedCursor: undefined })).toBeNull();
+  });
+});
+
 describe("one repair per leg per census", () => {
   test("a census that still disagrees after the repair does NOT send the leg again", async () => {
     // The exact storm: the census says 1,000, the server really holds 1,400

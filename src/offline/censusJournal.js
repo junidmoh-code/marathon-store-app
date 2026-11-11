@@ -91,6 +91,11 @@ export function pushKeyPrefixForMs(ms) {
 }
 
 const hourOf = (ms) => Math.floor(ms / HOUR_MS);
+// { leg: { hour: n } }, copied two levels deep. Not structuredClone: some of
+// the tablets this runs on predate it.
+const copyLegs = (legs) => Object.fromEntries(
+  Object.entries(legs ?? {}).map(([leg, hours]) => [leg, { ...hours }]),
+);
 const emptyJournal = (from) => ({ from, throughKey: null, legs: {} });
 const isJournal = (j) => !!j && typeof j === "object" && Number.isFinite(j.from)
   && j.legs && typeof j.legs === "object";
@@ -131,7 +136,7 @@ export async function noteTouched(db, { cursor, lastKey, rows, now = Date.now })
   const cursorMs = cursor === null || cursor === undefined ? 0 : (keyMs(cursor) ?? nowMs);
   const lastMs = keyMs(lastKey) ?? nowMs;
   await db.updateMeta(TOUCHED_META, (prev) => {
-    let journal = isJournal(prev) ? { ...prev, legs: structuredClone(prev.legs) } : null;
+    let journal = isJournal(prev) ? { ...prev, legs: copyLegs(prev.legs) } : null;
     const jumped = journal && journal.throughKey !== null && journal.throughKey !== undefined
       && cursor !== null && cursor !== undefined && compareKeys(cursor, journal.throughKey) > 0;
     if (!journal || jumped) journal = emptyJournal(cursorMs);
@@ -222,7 +227,7 @@ export async function coverSince(db, adapter, {
   if (!reachedEnd) return null;
 
   const merged = await db.updateMeta(TOUCHED_META, (prev) => {
-    const base = isJournal(prev) ? { ...prev, legs: structuredClone(prev.legs) } : emptyJournal(untilMs);
+    const base = isJournal(prev) ? { ...prev, legs: copyLegs(prev.legs) } : emptyJournal(untilMs);
     for (const [name, hours] of Object.entries(found.legs)) {
       for (const [h, n] of Object.entries(hours)) {
         const into = base.legs[name] ?? (base.legs[name] = {});
