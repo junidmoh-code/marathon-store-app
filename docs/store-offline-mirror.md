@@ -757,7 +757,7 @@ across the whole month (14,272 on 3 Nov), retention never close.
 | repaired by its keys | a count that disagrees is repaired by a keys-only REST read (`?shallow=true`, same rules, the signed-in user's token) and a fetch of the rows that differ; a row is deleted only when its own read answers null; 20 rows both sides hold are re-read at random and compared, and more than 2 stale sends the leg to the walk. **Never** used for the two histories or for a leg holding more than 20,000 rows (their key lists are megabytes); falls back to the walk when the leg is too deep (more than 60 key reads), too different (more than 25% / 2,000 rows) or the key read is unavailable | `sync.js reconcileLegKeys`, `rtdbAdapter.shallowKeys` |
 | a daily bound that survives a reload | a leg may start from its first page 3 times in any 24 hours per device, whatever asks; kept in localStorage, which survived the IndexedDB wipes we have seen. A refused leg is reported as `download-budget` and its screens read live | `downloadLedger.js` |
 | the cursor is never dropped | an expired or missing cursor is replaced by the head of the log in the same step that marks every change-fed leg holding rows — including one already waiting for a count repair, which then takes the walk and not a key repair | `sync.js resetFeedCursor` |
-| a signal pass is for the change feed | a pass the live signal asked for walks the two histories only if five minutes have passed since they were last walked; the 60-second floor pass walks them every time | `sync.js runPass`, `SIGNAL_RANGE_EVERY_MS` |
+| a signal pass is for the change feed | a pass the live signal asked for walks the two histories at once if its feed applied a `/stock` row (a sale or a transfer: its movement and insights row are waiting), within 60 s if the feed has applied anything since the last walk, and every five minutes regardless; the 60-second floor pass walks them every time | `sync.js runPass`, `SIGNAL_RANGE_FLOOR_MS`, `SIGNAL_RANGE_EVERY_MS` |
 | the signal is one record wide | `limitToLast(1)` | `rtdbAdapter.changeSignalConstraints` |
 | a delete lowers the claim | in the delete's own transaction, and only for a leg that was backed by its rows | `health.claimLoweredBy`, `changeFeed.js` |
 
@@ -793,12 +793,17 @@ times each — the same four legs, and the same shape, the fleet showed.
 | a lost *edit* (the row is there, its value is stale) | **only by sampling**: each key repair re-reads 20 random rows. A leg with widespread stale values (more than 2 of 20) is downloaded; an isolated stale row in a leg nothing else is wrong with is **not caught** until that row is next written. Before this change the only thing that fixed it was the re-download storm itself |
 | stale values in the two histories or a leg over 20,000 rows | not sampled (no key repair); append-only rows are never edited, and the big legs keep the walk |
 
-**What the five-minute rule costs.** `/insights_log` and `/stock_movements` are
-read by the Insights screens, the customer index and the clothing-sold window —
-reports, not counters or anything a sale or an order waits on. On a quiet device
-they are as fresh as before (the 60-second floor). While the live signal is
-firing continuously they can be up to five minutes behind, where they used to
-follow each signal.
+**What a screen sees.** Clothing Sold ("sold, refill it"), Movement History
+and Insights read the two histories. A sale's own change record (its `/stock`
+row) makes the pass that carries it walk both, so a sale reaches those screens
+as fast as it did. A history row written with no `/stock` change beside it
+arrives within 60 seconds, as on the floor cadence. Only a signal pass whose
+feed applied nothing at all leaves the histories for the five-minute rule.
+
+A key repair is made only on a pass whose feed has caught up, and a key read
+that *throws* is asked again on the next pass (three times, then the walk);
+only "not possible" — too deep, too big, too different, refused by the rules —
+goes straight to the budgeted walk.
 
 **What a rule could add, and is not needed.** Nothing here needs a rules or
 index change. `shallow=true` reads are authorised by the same `.read` rules as

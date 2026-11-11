@@ -650,12 +650,63 @@ describe("a count is repaired by its keys, not by reading the leg", () => {
     expect(wholeWalks(w, SLOTS) - before).toBe(1);
   });
 
-  test("a key read that FAILS falls back to the walk — it is never the only way", async () => {
+  test("a key read the RULES refuse is an answer: the leg takes the walk in the same pass", async () => {
     const { w, e } = await drifted({ extraOnServer: 60 });
-    w.adapter.shallowKeys = async () => { throw new Error("401"); };
+    w.adapter.shallowKeys = async () => { throw Object.assign(new Error("refused (401)"), { code: "PERMISSION_DENIED" }); };
     const report = await e.runPass();
     expect(report.repaired).toEqual({ leg: "displaySlots", rows: 1060 });
     expect(report.errors).toEqual([]);
+  });
+
+  test("a key read that THROWS (a timeout, a dropped line) is asked again next pass — it does not become a 6 MB walk", async () => {
+    const { c, w, e } = await drifted({ extraOnServer: 60 });
+    const real = w.adapter.shallowKeys;
+    let fail = 2;
+    w.adapter.shallowKeys = async (path) => {
+      if (fail > 0) { fail -= 1; throw new Error("/settings (keys) did not answer within 90000 ms"); }
+      return real(path);
+    };
+    const before = wholeWalks(w, SLOTS);
+    expect((await e.runPass()).repaired).toBeNull();
+    c.advance(60_000);
+    expect((await e.runPass()).repaired).toBeNull();
+    expect(wholeWalks(w, SLOTS)).toBe(before);                 // two failures, and not one page of the leg
+    c.advance(60_000);
+    expect((await e.runPass()).repaired).toMatchObject({ leg: "displaySlots", via: "key-diff", added: 60 });
+    expect(wholeWalks(w, SLOTS)).toBe(before);
+  });
+
+  test("…but a key read that NEVER answers is not asked for ever: after three tries the leg takes the walk", async () => {
+    const { c, w, e } = await drifted({ extraOnServer: 60 });
+    let asked = 0;
+    w.adapter.shallowKeys = async () => { asked += 1; throw new Error("did not answer"); };
+    const repaired = [];
+    for (let i = 0; i < 6; i += 1) { repaired.push((await e.runPass()).repaired); c.advance(60_000); }
+    expect(asked).toBe(3);
+    expect(repaired.filter(Boolean)).toEqual([{ leg: "displaySlots", rows: 1060 }]);
+  });
+
+  test("a census that lands in the middle of a burst: the repair WAITS for the feed, it does not sample a backlog or walk", async () => {
+    // The feed is a page behind when the census is forced (as after a
+    // download). Rows still in the backlog would look "missing" to a key
+    // comparison and "stale" to its sample — and they are neither.
+    const { db, c, w, e } = await drifted({ extraOnServer: 60 });
+    const backlog = FEED_PAGES_PER_PASS * CHANGE_PAGE_SIZE + 200;
+    for (let i = 0; i < backlog; i += 1) {
+      change(w, SLOTS, `marathon-pe|p${String(i % 500).padStart(5, "0")}`, { slot: i, edited: i }, c.now() - backlog * 1000 + i * 1000);
+    }
+    await e.checkCensus({ force: true, feedCaughtUp: true });  // the 60-row hole was flagged before the burst
+    expect((await getLegHealth(db, "displaySlots")).reason).toBe("count-drift");
+    const before = wholeWalks(w, SLOTS);
+    const first = await e.runPass();                           // four pages applied; one still to come
+    expect(first.repaired).toBeNull();
+    expect(w.calls.shallowKeys).toEqual([]);
+    expect(wholeWalks(w, SLOTS)).toBe(before);
+    c.advance(1000);
+    const second = await e.runPass();                          // caught up: now it is repaired, by keys
+    expect(second.repaired).toMatchObject({ leg: "displaySlots", via: "key-diff", added: 60 });
+    expect(second.repaired.refreshed).toBeUndefined();         // nothing in the sample was stale
+    expect(wholeWalks(w, SLOTS)).toBe(before);
   });
 
   test("a leg with too many parents to list is not diffed (one request per date is not cheap)", async () => {
@@ -812,7 +863,7 @@ describe("a signal pass is for the change feed", () => {
   }
   const historyReads = (w) => w.calls.readKeyPage.filter((x) => x.path === "insights_log").length + w.calls.readChildPage.length;
 
-  test("a burst of signal passes does not walk the two histories each time", async () => {
+  test("a burst of signal passes for OTHER nodes walks the histories once a minute, not once a pass", async () => {
     const { c, w, e } = await ready();
     for (let i = 0; i < 200; i += 1) {
       c.advance(1000);
@@ -820,7 +871,36 @@ describe("a signal pass is for the change feed", () => {
       const report = await e.runPass({ signal: true });
       expect(report.feed.applied).toBe(1);                     // the feed is read on every one
     }
-    expect(historyReads(w)).toBe(0);                           // 200 seconds: not yet five minutes
+    // 200 seconds of continuous signals: the 60-second floor these signals
+    // would have starved is kept for them — three walks of two legs, not 200.
+    expect(historyReads(w)).toBe(6);
+  });
+
+  test("a SALE is on screen at once: a signal pass whose feed applied a /stock row walks both histories", async () => {
+    // Clothing Sold ("sold, refill it"), Movement History and Insights read
+    // the histories. A sale writes its stock row, its movement and its
+    // insights row together; the stock row's change record is the signal.
+    const { db, c, w, e } = await ready();
+    for (let i = 1; i <= 5; i += 1) {
+      c.advance(2000);                                         // two seconds apart: a busy till
+      sale(w, i, c.now() - 500);
+      change(w, "stock", "hub1|p1", { 9: { qty: 10 - i } }, c.now() - 400);
+      const report = await e.runPass({ signal: true });
+      expect(report.rangeSkipped).toBeUndefined();
+      expect(await db.count("insights")).toBe(1 + i);
+      expect(await db.count("movements")).toBe(1 + i);
+    }
+  });
+
+  test("a signal pass whose feed applied NOTHING leaves them for the five-minute rule", async () => {
+    const { c, w, e } = await ready();
+    for (let i = 0; i < 4; i += 1) {
+      c.advance(70_000);                                       // past the 60 s floor each time
+      expect((await e.runPass({ signal: true })).rangeSkipped).toBe("signal");
+    }
+    expect(historyReads(w)).toBe(0);
+    c.advance(70_000);                                         // 350 s: five minutes have gone by
+    expect((await e.runPass({ signal: true })).rangeSkipped).toBeUndefined();
   });
 
   test("…but they ARE walked once five minutes have gone by, and on every floor pass", async () => {
@@ -876,10 +956,19 @@ describe("a parked leg: un-parked by its keys, and not censused on every open", 
   test("a parked leg that cannot be diffed is asked for its keys ONCE, not on every pass", async () => {
     const { c, w, e } = await parked();
     let asked = 0;
-    w.adapter.shallowKeys = async () => { asked += 1; throw new Error("403"); };
+    w.adapter.shallowKeys = async () => { asked += 1; throw Object.assign(new Error("refused (403)"), { code: "PERMISSION_DENIED" }); };
     for (let i = 0; i < 20; i += 1) { c.advance(60_000); await e.runPass(); }
     expect(asked).toBe(1);
     expect(await e.parkedLegs()).toEqual(["displaySlots"]);
+  });
+
+  test("…but the census that verifies a download that has JUST finished always runs", async () => {
+    const { db, c, w } = await parked();
+    w.calls.readPath.length = 0;
+    c.advance(60_000);
+    const res = await engine(db, w, c).checkCensus({ force: true, afterDownload: true });
+    expect(res.skipped).toBeUndefined();
+    expect(w.calls.readPath.filter((p) => p === COUNTS_ROOT).length).toBe(1);
   });
 
   test("the forced census of every app open is asked at most once in 30 minutes", async () => {

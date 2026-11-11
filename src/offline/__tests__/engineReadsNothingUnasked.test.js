@@ -152,6 +152,9 @@ describe("a device that HAS tapped Download", () => {
     const db = await freshMirrorDb();
     const w = world({ [COUNTS_ROOT]: { products: { rows: 1, at: T0 } } });
     const { rt } = await startOn(w, db);
+    const censusCalls = [];
+    const realCensus = rt.engine.checkCensus;
+    rt.engine.checkCensus = (opts) => { censusCalls.push(opts); return realCensus(opts); };
 
     await rt.consentAndDownload();
     // The download is a background loop; let it settle.
@@ -161,8 +164,10 @@ describe("a device that HAS tapped Download", () => {
 
     expect((await rt.setupState()).done).toBe(true);
     expect(await db.count("products")).toBe(1);
-    // The census was asked, FORCED, before the serving hint was written.
+    // The census was asked, FORCED, before the serving hint was written — as
+    // the one that verifies a download, which no rate limit may swallow.
     expect(w.calls.readPath).toContain(COUNTS_ROOT);
+    expect(censusCalls).toContainEqual({ force: true, afterDownload: true });
     expect(isLegServing("products")).toBe(true);
     rt.stop();
   });

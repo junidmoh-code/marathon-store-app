@@ -485,7 +485,7 @@ export async function startOfflineMirror({
           // setup marker dropped, so it is not served and the ordinary pass
           // loop downloads it again. Nothing is deleted, and nothing short is
           // ever vouched for.
-          try { state.setupCensus = await engine.checkCensus({ force: true }); }
+          try { state.setupCensus = await engine.checkCensus({ force: true, afterDownload: true }); }
           catch (err) { state.setupCensus = { error: err.message }; }
 
           await refreshServing();

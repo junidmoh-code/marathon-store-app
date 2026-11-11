@@ -134,6 +134,24 @@ describe("shallowKeys — a node's keys without its values", () => {
     expect(bytes).toBe(JSON.stringify({ p1: true, p2: true }).length);
   });
 
+  test("an ARRAY body (dense integer keys) names its indices — and a hole is not a key", async () => {
+    const adapter = createRtdbAdapter({ db, getIdToken: async () => "t", fetchFn: async () => ok([null, true, null, true, true]) });
+    expect(await adapter.shallowKeys("x")).toEqual(["1", "3", "4"]);
+  });
+
+  test("a null value in an object body is not a key either", async () => {
+    const adapter = createRtdbAdapter({ db, getIdToken: async () => "t", fetchFn: async () => ok({ a: true, b: null, c: true }) });
+    expect(await adapter.shallowKeys("x")).toEqual(["a", "c"]);
+  });
+
+  test("the fake answers both shapes the same way", async () => {
+    const { createFakeRtdb } = await import("./fakeAdapter");
+    const w = createFakeRtdb({ dense: [null, { n: 1 }, null, { n: 3 }], sparse: { a: { n: 1 }, c: { n: 3 } } });
+    expect(await w.adapter.shallowKeys("dense")).toEqual(["1", "3"]);
+    expect(await w.adapter.shallowKeys("sparse")).toEqual(["a", "c"]);
+    expect(await w.adapter.shallowKeys("nowhere")).toEqual([]);
+  });
+
   test("a leaf, and an absent node, have no keys", async () => {
     for (const body of [null, true, 7, "x"]) {
       const adapter = createRtdbAdapter({ db, getIdToken: async () => "t", fetchFn: async () => ok(body) });

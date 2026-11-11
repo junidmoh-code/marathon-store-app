@@ -320,7 +320,15 @@ export function createRtdbAdapter({
       const body = JSON.parse(text);
       // A leaf (a number, a string, `true`) has no children; neither has null.
       if (!body || typeof body !== "object") return [];
-      return Object.keys(body);
+      // A node whose keys are dense integers comes back as an ARRAY, with
+      // `null` in every hole. A hole is not a child: named as a key, it would
+      // be read as a row the device is "missing" on every repair.
+      if (Array.isArray(body)) {
+        const keys = [];
+        for (let i = 0; i < body.length; i += 1) if (body[i] !== null && body[i] !== undefined) keys.push(String(i));
+        return keys;
+      }
+      return Object.keys(body).filter((k) => body[k] !== null && body[k] !== undefined);
     },
 
     // THE ONE WRITE THIS ADAPTER DOES: the device's own health record. Bounded

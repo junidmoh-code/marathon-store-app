@@ -222,6 +222,11 @@ export const PARKED_CENSUS_EVERY_MS = 30 * 60 * 1000;
 // On a pass asked for by the live signal, the two histories are walked only
 // if this long has passed since they last were. See runPass.
 export const SIGNAL_RANGE_EVERY_MS = 5 * 60 * 1000;
+// …but never this long, on a signal pass, once the feed has applied ANYTHING
+// since they were last walked. While signals keep arriving the 60-second
+// floor pass never gets its turn (each signal reschedules it), so this is the
+// floor's promise kept on its behalf.
+export const SIGNAL_RANGE_FLOOR_MS = 60 * 1000;
 
 // Structural equality over what RTDB stores, blind to key order.
 function sameValue(a, b) {
@@ -358,6 +363,10 @@ export function createSyncEngine({
   const rangeEndAt = new Map();
   // When the two histories were last walked by a pass (SIGNAL_RANGE_EVERY_MS).
   let rangeWalkedAt = null;
+  // Has the feed applied a row since then? (SIGNAL_RANGE_FLOOR_MS)
+  let appliedSinceRangeWalk = false;
+  // leg -> key reads that THREW in a row this session. See repairByKeys.
+  const keyReadFailures = new Map();
 
   function legGate(legName) {
     const f = failures.get(legName);
@@ -941,11 +950,21 @@ export function createSyncEngine({
   // `signal` — was this pass asked for by the live change signal? Then it is
   // here for the CHANGE FEED: something was just written to a mutable node.
   // The two histories have their own forward cursors and nothing in a signal
-  // says they moved, so on a signal pass they are walked only if they have
-  // not been for SIGNAL_RANGE_EVERY_MS. A busy afternoon is thousands of
-  // signal passes, and each used to pay two range reads that came back with
-  // the one row the cursor already named. The floor-cadence pass (no signal)
-  // walks them every time, as before.
+  // says they moved — EXCEPT WHEN IT DOES. A sale writes a /stock row, an
+  // /insights_log row and a /stock_movements row together, and the screens
+  // that show it ("sold, refill it", Movement History, Insights) read the
+  // histories. So a signal pass walks them:
+  //   · at once, if this pass's feed applied a /stock row — that is a sale, or
+  //     a transfer, and its movement is waiting;
+  //   · within SIGNAL_RANGE_FLOOR_MS, if the feed has applied anything at all
+  //     since they were last walked (the 60-second floor, which signals would
+  //     otherwise starve);
+  //   · and every SIGNAL_RANGE_EVERY_MS regardless.
+  // What is left to skip is the signal pass whose records were other nodes'
+  // edits — a display re-check, a refill run, an order status — thousands of
+  // them on a busy afternoon, each of which used to pay two range reads that
+  // came back with the one row the cursor already named. The floor-cadence
+  // pass (no signal) walks them every time, as before.
   async function runPass({ signal = false } = {}) {
     const report = { feed: null, range: [], census: null, errors: [] };
 
@@ -1021,8 +1040,15 @@ export function createSyncEngine({
     }
 
     // 2. The two forward walks.
-    const walkRanges = !signal || rangeWalkedAt === null || now() - rangeWalkedAt >= SIGNAL_RANGE_EVERY_MS;
-    if (walkRanges) rangeWalkedAt = now();
+    const feedPaths = report.feed?.paths ?? [];
+    if ((report.feed?.applied ?? 0) + (report.feed?.deleted ?? 0) > 0) appliedSinceRangeWalk = true;
+    const stockPrefix = `${LEG_BY_NAME.stock.node}/`;
+    const sinceWalk = rangeWalkedAt === null ? Infinity : now() - rangeWalkedAt;
+    const walkRanges = !signal
+      || feedPaths.some((path) => path.startsWith(stockPrefix))
+      || (appliedSinceRangeWalk && sinceWalk >= SIGNAL_RANGE_FLOOR_MS)
+      || sinceWalk >= SIGNAL_RANGE_EVERY_MS;
+    if (walkRanges) { rangeWalkedAt = now(); appliedSinceRangeWalk = false; }
     else report.rangeSkipped = "signal";
     for (const leg of (walkRanges ? MIRROR_LEGS.filter(isAppendOnly) : [])) {
       if (await notPermitted(leg)) continue;
@@ -1083,9 +1109,14 @@ export function createSyncEngine({
         if (parkedMarker.keysTried === parkedMarker.censusRefused || inFlight.has(leg.name)) continue;
         // No key read on this device at all: nothing was tried, nothing is spent.
         if (typeof adapter.shallowKeys !== "function") continue;
-        await db.setMeta(`${SETUP_META_PREFIX}${leg.name}`, { ...parkedMarker, keysTried: parkedMarker.censusRefused });
-        const unparked = await reconcileLegKeys(leg).catch(() => null);
-        if (unparked === null) continue;
+        const attempt = await repairByKeys(leg, fresh);
+        if (attempt.deferred) continue;                        // not asked yet: asked on a later pass
+        const unparked = attempt.res;
+        if (unparked === null) {
+          // Asked, and not possible: that was this parking's one try.
+          await db.setMeta(`${SETUP_META_PREFIX}${leg.name}`, { ...parkedMarker, keysTried: parkedMarker.censusRefused });
+          continue;
+        }
         await stampDeviceCompleteIfWhole(fresh);
         return { leg: leg.name, rows: unparked.rows, via: unparked.via, added: unparked.added, removed: unparked.removed };
       }
@@ -1097,7 +1128,12 @@ export function createSyncEngine({
       let res = null;
       if (!inFlight.has(leg.name)
         && (await getLegHealth(db, leg.name))?.reason === "count-drift") {
-        res = await reconcileLegKeys(leg).catch(() => null);
+        const attempt = await repairByKeys(leg, fresh);
+        // Deferred — the feed is still catching up, or the key read failed and
+        // will be asked again. The leg waits for the next pass; it does NOT
+        // fall through to the walk.
+        if (attempt.deferred) continue;
+        res = attempt.res;
       }
       if (res === null) {
         res = await attemptLeg(leg, () => (isAppendOnly(leg)
@@ -1130,6 +1166,39 @@ export function createSyncEngine({
     // every leg in place.
     if ((await db.getMeta(SETUP_DONE_META)) === undefined) await stampDeviceCompleteIfWhole(fresh);
     return null;
+  }
+
+  // Can this leg be repaired by its keys AT ALL? Asked without reading
+  // anything, so that a leg which cannot is never made to wait for one.
+  const keyDiffShape = (leg) => typeof adapter.shallowKeys === "function"
+    && leg.store !== "docs" && leg.depth >= 1 && !isAppendOnly(leg);
+
+  // One attempt at a key repair, and what the caller should do about it:
+  //   { res }             repaired — or, with res null, NOT POSSIBLE for this
+  //                       leg (too deep, too big, too different, refused by
+  //                       the rules): the budgeted walk is next.
+  //   { deferred: true }  not now. Either the feed has not caught up — a row
+  //                       still in the backlog would read as "stale" in the
+  //                       value sample, or as "missing", and neither is true —
+  //                       or the key read THREW (a timeout, a dropped line).
+  //                       A fault on the line is a reason to ask again, not a
+  //                       reason to download 6 MB over the same line.
+  // A read that keeps throwing is not asked for ever: after LEG_MAX_ATTEMPTS
+  // in a row this session the leg goes to the walk, which has its own bound.
+  async function repairByKeys(leg, fresh = {}) {
+    if (!keyDiffShape(leg)) return { res: null };
+    if (!fresh.feedCaughtUp) return { deferred: true };
+    try {
+      const res = await reconcileLegKeys(leg);
+      keyReadFailures.delete(leg.name);
+      return { res };
+    } catch (err) {
+      if (isPermissionDenied(err)) return { res: null };       // refused: that is an answer
+      const failures = (keyReadFailures.get(leg.name) ?? 0) + 1;
+      keyReadFailures.set(leg.name, failures);
+      if (failures >= LEG_MAX_ATTEMPTS) { keyReadFailures.delete(leg.name); return { res: null }; }
+      return { deferred: true };
+    }
   }
 
   async function stampDeviceCompleteIfWhole(fresh = {}) {
@@ -1411,7 +1480,10 @@ export function createSyncEngine({
   // has not reached the end in the last few minutes (`rangeEndAt`), and has
   // not yet walked past the moment the census was taken, is behind by
   // construction and is not judged.
-  async function checkCensus({ force = false, feedCaughtUp = false } = {}) {
+  //
+  // `afterDownload` — this is THE forced census that verifies a download that
+  // has just finished. It always runs; no rate limit applies to it.
+  async function checkCensus({ force = false, feedCaughtUp = false, afterDownload = false } = {}) {
     const lastChecked = (await db.getMeta(CENSUS_CHECKED_META)) ?? 0;
     const at = now();
     if (!force && at - lastChecked < CENSUS_CHECK_MS) return { skipped: "not-due" };
@@ -1419,7 +1491,7 @@ export function createSyncEngine({
     // A device with a parked leg is never "complete", so every open forces a
     // census. The census is written once a day; it is not asked more than
     // twice an hour on that account.
-    if (force && at - lastChecked >= 0 && at - lastChecked < PARKED_CENSUS_EVERY_MS
+    if (force && !afterDownload && at - lastChecked >= 0 && at - lastChecked < PARKED_CENSUS_EVERY_MS
       && (await parkedLegs()).length > 0) return { skipped: "parked-checked-recently" };
 
     const counts = await adapter.readPath(COUNTS_ROOT);
