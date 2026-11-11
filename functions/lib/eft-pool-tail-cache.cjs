@@ -39,6 +39,24 @@ const { isDeepStrictEqual } = require("node:util");
 // till stops being offered almost at once.
 const EFT_SEARCH_TAIL_TTL_MS = 15 * 1000;
 
+// A HELD COPY MAY ONLY SAY "HERE IS YOUR PAYMENT" (architect review, 11 Nov).
+// The probe sees a NEW record; it cannot see an OLDER one changing — a held
+// payment released by the owner, a used one reversed back to waiting. From a
+// held copy those read as "not found" / "already used" for up to the TTL, and
+// "your payment has not arrived" is the one wrong answer a cashier must never
+// give. So any answer that is not a clean waiting payment is given from a
+// held copy only if that copy is younger than this; otherwise the tail is read
+// again and the answer comes from that. Two seconds still folds the letters of
+// one typed word into a few reads instead of one each.
+const EFT_SEARCH_NEGATIVE_MAX_AGE_MS = 2 * 1000;
+
+/** Is this search answer one a held copy may give: a payment, waiting, not held back? */
+function isCleanWaitingAnswer(answer) {
+  const results = answer && Array.isArray(answer.results) ? answer.results : [];
+  return results.length > 0 && !answer.ambiguous
+    && results.every((r) => r && r.status === "unmatched" && !r.needsOwner);
+}
+
 /**
  * @param {object} deps
  * @param {() => Promise<object|null>} deps.readTail    the bounded tail read (key → record)
@@ -105,11 +123,32 @@ function createPoolTailCache({ readTail, readNewest, now = Date.now, ttlMs = EFT
     return load();
   }
 
+  /**
+   * The tail for a search, with how old the copy is. `ageMs` is 0 for a tail
+   * read by THIS call.
+   */
+  async function getWithAge() {
+    const tail = await get();
+    return { tail, ageMs: held && held.tail === tail ? Math.max(0, now() - held.at) : 0 };
+  }
+
+  /**
+   * A tail read that STARTED after this call: a read already in flight began
+   * before the caller arrived and may predate what the caller needs to see, so
+   * it is waited out, not shared.
+   */
+  async function fresh() {
+    if (loading) await loading.catch(() => {});
+    return load();
+  }
+
   return {
     get,
+    getWithAge,
+    fresh,
     clear() { held = null; },
     stats: () => ({ ...counts }),
   };
 }
 
-module.exports = { EFT_SEARCH_TAIL_TTL_MS, createPoolTailCache };
+module.exports = { EFT_SEARCH_TAIL_TTL_MS, EFT_SEARCH_NEGATIVE_MAX_AGE_MS, isCleanWaitingAnswer, createPoolTailCache };

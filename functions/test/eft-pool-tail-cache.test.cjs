@@ -263,3 +263,55 @@ test("eftPoolSettle never rides the search's held tail: it reads the full tail i
   await eftPoolSettle(req).catch(() => {});
   assert.deepEqual(wire.limits, [EFT_SEARCH_WINDOW, EFT_SEARCH_WINDOW]);
 });
+
+// ─── architect review, 11 Nov: a held copy may only say "here is your payment" ─
+const { isCleanWaitingAnswer, EFT_SEARCH_NEGATIVE_MAX_AGE_MS } = require("../lib/eft-pool-tail-cache.cjs");
+
+test("only a waiting, usable payment is a clean answer", () => {
+  assert.equal(isCleanWaitingAnswer({ results: [{ status: "unmatched", needsOwner: false }] }), true);
+  assert.equal(isCleanWaitingAnswer({ results: [] }), false, "not found");
+  assert.equal(isCleanWaitingAnswer({ results: [], ambiguous: true }), false);
+  assert.equal(isCleanWaitingAnswer({ results: [{ status: "used" }] }), false, "already used");
+  assert.equal(isCleanWaitingAnswer({ results: [{ status: "unmatched", needsOwner: true }] }), false, "held for the owner");
+  assert.equal(isCleanWaitingAnswer(null), false);
+  assert.ok(EFT_SEARCH_NEGATIVE_MAX_AGE_MS <= 2000);
+});
+
+test("getWithAge reports 0 for a tail this call read and the copy's age otherwise", async () => {
+  let t = 1000;
+  const cache = createPoolTailCache({ readTail: async () => ({ a: { at: 1 } }), readNewest: async () => ({ a: { at: 1 } }), now: () => t });
+  assert.equal((await cache.getWithAge()).ageMs, 0);
+  t = 4000;
+  assert.equal((await cache.getWithAge()).ageMs, 3000);
+});
+
+test("fresh() never shares a read that began before it was asked", async () => {
+  let reads = 0; let release;
+  const gate = new Promise((r) => { release = r; });
+  const cache = createPoolTailCache({
+    readTail: async () => { reads += 1; if (reads === 1) await gate; return { n: { at: reads } }; },
+    readNewest: async () => ({}), now: () => 1000,
+  });
+  const first = cache.get();            // read 1 in flight
+  const mine = cache.fresh();           // must not be answered by read 1
+  release();
+  await first;
+  assert.deepEqual(await mine, { n: { at: 2 } });
+  assert.equal(reads, 2);
+});
+
+test("a released hold on an OLDER record is found on the next search once the copy is over two seconds old", async () => {
+  let t = 1000;
+  let pool = { old: { at: 1, status: "held" }, newest: { at: 2, status: "used" } };
+  const cache = createPoolTailCache({ readTail: async () => ({ ...pool }), readNewest: async () => ({ newest: pool.newest }), now: () => t });
+  const search = (tail) => ({ results: Object.entries(tail).filter(([, r]) => r.status === "unmatched").map(([key, r]) => ({ key, status: r.status })) });
+  const ask = async () => {
+    const { tail, ageMs } = await cache.getWithAge();
+    const a = search(tail);
+    return ageMs > EFT_SEARCH_NEGATIVE_MAX_AGE_MS && !isCleanWaitingAnswer(a) ? search(await cache.fresh()) : a;
+  };
+  assert.equal((await ask()).results.length, 0);
+  pool = { ...pool, old: { at: 1, status: "unmatched" } };   // owner releases the hold; newest unchanged
+  t = 4000;
+  assert.deepEqual((await ask()).results, [{ key: "old", status: "unmatched" }]);
+});

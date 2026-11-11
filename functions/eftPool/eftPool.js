@@ -121,7 +121,7 @@ const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 
 const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, EFT_MIN_QUERY, normaliseText, searchEftPool } = require("../lib/eft-pool.cjs");
-const { createPoolTailCache } = require("../lib/eft-pool-tail-cache.cjs");
+const { createPoolTailCache, isCleanWaitingAnswer, EFT_SEARCH_NEGATIVE_MAX_AGE_MS } = require("../lib/eft-pool-tail-cache.cjs");
 const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
@@ -612,7 +612,17 @@ exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   // typing burst (lib/eft-pool-tail-cache.cjs): the tail was ~1 MB of download
   // per KEYSTROKE; now a keystroke costs the one-record probe that proves no
   // payment has landed since, and the tail is re-read the moment one has.
-  return searchEftPool(await searchTail.get(), query);
+  const { tail, ageMs } = await searchTail.getWithAge();
+  const answer = searchEftPool(tail, query);
+  // "Not found", "already used", "needs the owner" and "ambiguous" are never
+  // given from a copy older than two seconds: an older record changing (a
+  // hold released, a payment reversed back to waiting) is invisible to the
+  // probe, and a cashier must not tell a customer their money has not come
+  // when it has. Read again and answer from that.
+  if (ageMs > EFT_SEARCH_NEGATIVE_MAX_AGE_MS && !isCleanWaitingAnswer(answer)) {
+    return searchEftPool(await searchTail.fresh(), query);
+  }
+  return answer;
 });
 
 // ─── SETTLE / ATTACH / RELEASE ───────────────────────────────────────────────
