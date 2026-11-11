@@ -1,10 +1,25 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { runOrdersPoll, attentionMail } from "./poll.mjs";
+import { runOrdersPoll, attentionMail, ATTENTION_SWEEP_MS } from "./poll.mjs";
 import { candidateCode } from "./orderRefs.mjs";
 // The hub-unit code poll.mjs mints for order 9001 line i, unit u, routeGen g (attempt k).
 const C = (i, u = 0, g = 0, k = 0, id = "9001") => candidateCode(`${id}:${i}:${u}:${g}`, k);
 import { hubOrderRecord } from "./orderModel.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
+
+// Every escalateOrder call the poller makes, with the order it was handed —
+// the real function still runs. ("what a tick downloads" needs to see WHICH
+// copy of an order the escalation check was given.)
+const escalateCalls = vi.hoisted(() => []);
+vi.mock("./escalate.mjs", async (importOriginal) => {
+  const real = await importOriginal();
+  return {
+    ...real,
+    escalateOrder: (ctx, id, order, helpers) => {
+      escalateCalls.push([id, JSON.parse(JSON.stringify(order))]);
+      return real.escalateOrder(ctx, id, order, helpers);
+    },
+  };
+});
 import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
 import lockerRates from "../../shipping/fixtures/rates-locker-capetown.json";
 
@@ -901,6 +916,225 @@ describe("invariants", () => {
     await runOrdersPoll({ ...deps(f, shopify()).deps, db });
     expect(packedMidway).toBe(true);
     expect(f.read("online_reservations")).toBeNull();
+  });
+});
+
+// ── Cost watch, 11 Nov 2026: what a tick downloads ───────────────────────────
+// The profiler put this poller at ~150 MB a day for ~20 open orders. These pin
+// the two cuts: an open order is not downloaded again after the keep pass's
+// own transaction has just handed it back, and the attention mailer runs its
+// all-orders query on a cadence instead of every tick — WITHOUT an attention
+// on an order the tick handled ever waiting for that cadence.
+describe("what a tick downloads", () => {
+  // Every read the poller makes, as [op, path]; `over` wraps single refs.
+  function counting(f) {
+    const reads = [];
+    const db = { ref: (path) => {
+      const r = f.db.ref(path);
+      return {
+        ...r,
+        get: () => { reads.push(["get", path]); return r.get(); },
+        transaction: (fn) => { reads.push(["txn", path]); return r.transaction(fn); },
+        orderByChild: (c) => ({ equalTo: (v) => ({ get: () => { reads.push(["query", `${path}?${c}=${v}`]); return r.orderByChild(c).equalTo(v).get(); } }) }),
+      };
+    } };
+    return { db, reads, of: (op, path) => reads.filter(([o, p]) => o === op && p === path).length };
+  }
+  const ON = { config: { onlineOrders: { enabled: true } } };
+  const TICK = 2 * 60 * 1000;
+  const at = (ms) => ({ nowMs: async () => ms });
+  // What the display-check Function writes when a shop answers Not found.
+  const notFound = (f, id = "9001", when = NOW + 1) => f.db.ref(`online_orders/${id}`).update({
+    status: "needs_attention", attentionOpen: true, attention: { kind: "not_found", reason: "Not found at Marathon PE", at: when },
+  });
+
+  it("a quiet open order is never read again by exact path: the status query and one transaction are the whole cost", async () => {
+    const f = fakeDb(world(ON));
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    const before = JSON.stringify(order(f));
+    const c = counting(f);
+    const out = await runOrdersPoll({ ...deps(f, shopify()).deps, db: c.db, ...at(NOW + TICK) });
+    expect(out.kept).toBe(1);
+    expect(out.errors).toEqual([]);
+    // Escalation is on here (enabled, no kill switch), so both re-reads the
+    // old pass made — after the declined transaction, and "fresh" for the
+    // escalation check — would have shown up as two exact gets.
+    expect(c.of("get", "online_orders/9001")).toBe(0);
+    expect(c.of("txn", "online_orders/9001")).toBe(1);
+    expect(JSON.stringify(order(f))).toBe(before); // and the quiet order is untouched
+  });
+
+  it("a line the hub marks Out of Stock is still seen in the SAME tick from the transaction's own result", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref("config/onlineOrders").set({ enabled: true, escalationOff: true });
+    await runOrdersPoll({ ...deps(f, shopify()).deps, ...at(NOW + TICK) });
+    const key = lineAt(f, 0).source.orderKeys[0];
+    await f.db.ref(`orders/${key}`).update({ status: "out_of_stock" });
+    const c = counting(f);
+    const d = deps(f, shopify(), at(NOW + 2 * TICK));
+    await runOrdersPoll({ ...d.deps, db: c.db });
+    expect(lineAt(f, 0).source.status).toBe("no_stock");
+    expect(order(f)).toMatchObject({ status: "needs_attention", attentionOpen: true });
+    expect(d.mails).toHaveLength(1); // raised by this tick, mailed by this tick — no sweep needed
+    expect(c.of("query", "online_orders?attentionOpen=true")).toBe(0);
+  });
+
+  it("the escalation check is handed the order as the keep pass LEFT it (the no_stock line), with no second download", async () => {
+    const f = fakeDb(world(ON));
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref(`orders/${lineAt(f, 0).source.orderKeys[0]}`).update({ status: "out_of_stock" });
+    escalateCalls.length = 0;
+    const c = counting(f);
+    await runOrdersPoll({ ...deps(f, shopify()).deps, db: c.db, ...at(NOW + TICK) });
+    const handed = escalateCalls.filter(([id]) => id === "9001").map(([, o]) => o.lines[0].source.status);
+    // Before the keep pass: still on the hub's list. After it: the line this
+    // very tick turned no_stock — the copy the old code re-read to obtain.
+    // The order then turns needs_attention, and that status's own query finds
+    // it again later in the same tick — as it always has — so the pair of
+    // checks runs twice: [before, after] for "picking", then for
+    // "needs_attention". A stale copy handed back would drop the second entry.
+    expect(handed).toEqual(["pick", "no_stock", "no_stock", "no_stock"]);
+    // The ONE exact read of the order this tick is the mailer's, and it comes
+    // after everything else: the order it is about to email Junid about.
+    const whole = c.reads.map(([op, p], n) => (op === "get" && p === "online_orders/9001" ? n : -1)).filter((n) => n >= 0);
+    expect(whole).toHaveLength(1);
+    expect(c.reads[whole[0] - 1]).toEqual(["get", "online_orders/9001/attention"]);
+  });
+
+  it("the all-orders attention query runs on the first tick, is stamped, and is not run again inside the cadence", async () => {
+    const f = fakeDb(world());
+    const c1 = counting(f);
+    await runOrdersPoll({ ...deps(f, shopify({ orders: [shopifyOrder()] })).deps, db: c1.db });
+    expect(c1.of("query", "online_orders?attentionOpen=true")).toBe(1);
+    expect(f.read("online_orders_meta/attentionSweepAt")).toBe(NOW);
+    const c2 = counting(f);
+    await runOrdersPoll({ ...deps(f, shopify()).deps, db: c2.db, ...at(NOW + TICK) });
+    expect(c2.of("query", "online_orders?attentionOpen=true")).toBe(0);
+    // The open order is still looked at: one exact, tiny read of its attention.
+    expect(c2.of("get", "online_orders/9001/attention")).toBe(1);
+    expect(f.read("online_orders_meta/attentionSweepAt")).toBe(NOW);
+    const c3 = counting(f);
+    await runOrdersPoll({ ...deps(f, shopify()).deps, db: c3.db, ...at(NOW + ATTENTION_SWEEP_MS) });
+    expect(c3.of("query", "online_orders?attentionOpen=true")).toBe(1);
+    expect(f.read("online_orders_meta/attentionSweepAt")).toBe(NOW + ATTENTION_SWEEP_MS);
+  });
+
+  it("an attention ANOTHER writer raises on an open order is emailed on the very next tick, sweep or no sweep", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await notFound(f);
+    const c = counting(f);
+    const d = deps(f, shopify(), at(NOW + TICK));
+    await runOrdersPoll({ ...d.deps, db: c.db });
+    expect(c.of("query", "online_orders?attentionOpen=true")).toBe(0);
+    expect(d.mails).toHaveLength(1);
+    expect(d.mails[0].text).toContain("Not found at Marathon PE");
+    expect(order(f).attention.mailedAt).toBe(NOW + TICK);
+    // …and once only.
+    const d2 = deps(f, shopify(), at(NOW + 2 * TICK));
+    await runOrdersPoll(d2.deps);
+    expect(d2.mails).toHaveLength(0);
+  });
+
+  it("an attention on a CLOSED order no tick handles waits for the sweep — at most ATTENTION_SWEEP_MS — and is then emailed", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref("online_orders/9001").update({ status: "packed", pack: { saleId: "S1" }, fulfilState: "done" });
+    await f.db.ref("online_reservations").set(null);
+    await f.db.ref("online_orders/9001").update({ attentionOpen: true, attention: { kind: "walkin_override", reason: "Sold to a walk-in", at: NOW + 1 } });
+    const d = deps(f, shopify(), at(NOW + TICK));
+    await runOrdersPoll(d.deps);
+    expect(d.mails).toHaveLength(0);
+    const last = deps(f, shopify(), at(NOW + ATTENTION_SWEEP_MS - 1));
+    await runOrdersPoll(last.deps);
+    expect(last.mails).toHaveLength(0);
+    const due = deps(f, shopify(), at(NOW + ATTENTION_SWEEP_MS));
+    await runOrdersPoll(due.deps);
+    expect(due.mails).toHaveLength(1);
+    expect(order(f).attention.mailedAt).toBe(NOW + ATTENTION_SWEEP_MS);
+  });
+
+  it("an email that could not be sent keeps the sweep due: it is retried on the NEXT tick, not ten minutes later", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref("online_orders/9001").update({ status: "packed", pack: { saleId: "S1" }, fulfilState: "done" });
+    await f.db.ref("online_reservations").set(null);
+    await f.db.ref("online_orders/9001").update({ attentionOpen: true, attention: { kind: "walkin_override", reason: "Sold to a walk-in", at: NOW + 1 } });
+    const down = deps(f, shopify(), { ...at(NOW + ATTENTION_SWEEP_MS), send: async () => { throw new Error("smtp down"); } });
+    await runOrdersPoll(down.deps);
+    expect(f.read("online_orders_meta/attentionSweepAt")).toBe(NOW); // not stamped: something is still unsent
+    const none = deps(f, shopify(), { ...at(NOW + ATTENTION_SWEEP_MS + TICK), send: null });
+    await runOrdersPoll(none.deps);
+    expect(f.read("online_orders_meta/attentionSweepAt")).toBe(NOW); // no sender on the machine: still due
+    const up = deps(f, shopify(), at(NOW + ATTENTION_SWEEP_MS + 2 * TICK));
+    await runOrdersPoll(up.deps);
+    expect(up.mails).toHaveLength(1);
+    expect(f.read("online_orders_meta/attentionSweepAt")).toBe(NOW + ATTENTION_SWEEP_MS + 2 * TICK);
+  });
+
+  // The poller's OWN attentions on orders that are already closed (so not in
+  // the keep pass): each must be emailed in the tick that raised it, with the
+  // sweep not due. `swept` = a sweep ran one tick ago.
+  const swept = { goLiveAtMs: GO_LIVE, attentionSweepAt: NOW - TICK };
+
+  it("a Shopify fulfilment that fails after the pack is emailed in the same tick with no sweep", async () => {
+    const f = fakeDb(world({
+      online_orders_meta: swept,
+      online_orders: { 9001: { ref: "KQZ", shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0 }, lines: [{ pid: "TEE", sizeKey: "M", qty: 1, source: { status: "handed" } }] } },
+    }));
+    const fos = [{ id: "gid://shopify/FulfillmentOrder/7", status: "OPEN", lineItems: { nodes: [{ remainingQuantity: 1 }] } }];
+    const c = counting(f);
+    const d = deps(f, shopify({ fos, fulfilErrors: ["Fulfillment order is closed"] }));
+    const out = await runOrdersPoll({ ...d.deps, db: c.db });
+    expect(out.fulfilFailed).toBe(1);
+    expect(c.of("query", "online_orders?attentionOpen=true")).toBe(0);
+    expect(d.mails).toHaveLength(1);
+    expect(order(f).attention).toMatchObject({ kind: "fulfil_failed", mailedAt: NOW });
+  });
+
+  it("a cancellation after the pack is emailed in the same tick with no sweep", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref("online_orders/9001").update({ status: "packed", pack: { saleId: "S1" }, fulfilState: "done" });
+    const c = counting(f);
+    const d = deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z" })] }), at(NOW + TICK));
+    const out = await runOrdersPoll({ ...d.deps, db: c.db });
+    expect(out.flagged).toBe(1);
+    expect(c.of("query", "online_orders?attentionOpen=true")).toBe(0);
+    expect(d.mails).toHaveLength(1);
+    expect(order(f).attention).toMatchObject({ kind: "cancelled_after_pack", mailedAt: NOW + TICK });
+  });
+
+  it("a cancelled order whose pair the hub already sent is emailed in the same tick with no sweep", async () => {
+    const f = fakeDb(world(ON));
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref(`orders/${C(0)}`).update({ status: "ready" });
+    const c = counting(f);
+    const d = deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z", updatedAt: "2026-10-21T09:50:00Z" })] }), at(NOW + TICK));
+    await runOrdersPoll({ ...d.deps, db: c.db });
+    expect(order(f)).toMatchObject({ status: "cancelled", attentionOpen: true });
+    expect(c.of("query", "online_orders?attentionOpen=true")).toBe(0);
+    expect(d.mails).toHaveLength(1);
+    expect(order(f).attention.mailedAt).toBe(NOW + TICK);
+  });
+
+  it("a sweep stamp from the future is not believed: the query runs", async () => {
+    const f = fakeDb(world({ online_orders_meta: { goLiveAtMs: GO_LIVE, attentionSweepAt: NOW + 86_400_000 } }));
+    const c = counting(f);
+    await runOrdersPoll({ ...deps(f, shopify({ orders: [shopifyOrder()] })).deps, db: c.db });
+    expect(c.of("query", "online_orders?attentionOpen=true")).toBe(1);
+    expect(f.read("online_orders_meta/attentionSweepAt")).toBe(NOW);
+  });
+
+  it("with no attentionOpen index the handled orders are still emailed (the query alone used to be the only way in)", async () => {
+    const f = fakeDb(world(), { missingIndexes: ["attentionOpen"] });
+    const stray = { id: "gid://shopify/LineItem/9", title: "Mystery", variantTitle: "XL", quantity: 1, currentQuantity: 1, variant: { id: V(999), product: { id: P(999) } } };
+    const d = deps(f, shopify({ orders: [shopifyOrder({ lineItems: { nodes: [shopifyOrder().lineItems.nodes[1], stray] } })] }));
+    const out = await runOrdersPoll(d.deps);
+    expect([...out.missingIndex]).toEqual(["attentionOpen"]);
+    expect(d.mails).toHaveLength(1);
+    expect(f.read("online_orders_meta/attentionSweepAt")).toBeNull(); // a refused query is not a sweep
   });
 });
 

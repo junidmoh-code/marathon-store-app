@@ -164,6 +164,27 @@ describe("drainAutoPublish", () => {
     expect(f.store[AUTOPUBLISH_QUEUE_PATH].p1).toBeDefined();
   });
 
+  // Cost watch, 11 Nov 2026: with the switch off the queue (2,955 products,
+  // ~125 KB) was still downloaded every tick. Off must cost one boolean.
+  it("with the switch OFF the queue is never read — only the switch is", async () => {
+    const f = fakeDb(world({ node: undefined, enabled: false }));
+    const read = [];
+    const db = { ref: (path) => { const r = f.db.ref(path); return { ...r, get: async () => { read.push(path); return r.get(); } }; } };
+    const r = await drainAutoPublish(db, { now });
+    expect(read).toEqual([SWITCH_PATH]);
+    expect(r).toMatchObject({ enabled: false, queued: null, published: 0 });
+    expect(f.writes).toEqual([]);
+  });
+
+  it("with the switch ON the queue is read and drained as before", async () => {
+    const f = fakeDb(world({ node: undefined }));
+    const read = [];
+    const db = { ref: (path) => { const r = f.db.ref(path); return { ...r, get: async () => { read.push(path); return r.get(); } }; } };
+    const r = await drainAutoPublish(db, { now });
+    expect(read.slice(0, 2)).toEqual([SWITCH_PATH, AUTOPUBLISH_QUEUE_PATH]);
+    expect(r).toMatchObject({ enabled: true, queued: 1, published: 1 });
+  });
+
   it("publishes and empties the queue (the empty queue node disappears)", async () => {
     const f = fakeDb(world({ node: undefined }));
     const r = await drainAutoPublish(f.db, { now });
