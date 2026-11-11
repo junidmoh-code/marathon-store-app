@@ -1036,6 +1036,52 @@ describe("what a tick downloads", () => {
     expect(f.read("online_orders_meta/attentionSweepAt")).toBe(NOW + ATTENTION_SWEEP_MS + 2 * TICK);
   });
 
+  // The poller's OWN attentions on orders that are already closed (so not in
+  // the keep pass): each must be emailed in the tick that raised it, with the
+  // sweep not due. `swept` = a sweep ran one tick ago.
+  const swept = { goLiveAtMs: GO_LIVE, attentionSweepAt: NOW - TICK };
+
+  it("a Shopify fulfilment that fails after the pack is emailed in the same tick with no sweep", async () => {
+    const f = fakeDb(world({
+      online_orders_meta: swept,
+      online_orders: { 9001: { ref: "KQZ", shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0 }, lines: [{ pid: "TEE", sizeKey: "M", qty: 1, source: { status: "handed" } }] } },
+    }));
+    const fos = [{ id: "gid://shopify/FulfillmentOrder/7", status: "OPEN", lineItems: { nodes: [{ remainingQuantity: 1 }] } }];
+    const c = counting(f);
+    const d = deps(f, shopify({ fos, fulfilErrors: ["Fulfillment order is closed"] }));
+    const out = await runOrdersPoll({ ...d.deps, db: c.db });
+    expect(out.fulfilFailed).toBe(1);
+    expect(c.of("query", "online_orders?attentionOpen=true")).toBe(0);
+    expect(d.mails).toHaveLength(1);
+    expect(order(f).attention).toMatchObject({ kind: "fulfil_failed", mailedAt: NOW });
+  });
+
+  it("a cancellation after the pack is emailed in the same tick with no sweep", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref("online_orders/9001").update({ status: "packed", pack: { saleId: "S1" }, fulfilState: "done" });
+    const c = counting(f);
+    const d = deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z" })] }), at(NOW + TICK));
+    const out = await runOrdersPoll({ ...d.deps, db: c.db });
+    expect(out.flagged).toBe(1);
+    expect(c.of("query", "online_orders?attentionOpen=true")).toBe(0);
+    expect(d.mails).toHaveLength(1);
+    expect(order(f).attention).toMatchObject({ kind: "cancelled_after_pack", mailedAt: NOW + TICK });
+  });
+
+  it("a cancelled order whose pair the hub already sent is emailed in the same tick with no sweep", async () => {
+    const f = fakeDb(world(ON));
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref(`orders/${C(0)}`).update({ status: "ready" });
+    const c = counting(f);
+    const d = deps(f, shopify({ orders: [shopifyOrder({ cancelledAt: "2026-10-21T09:50:00Z", updatedAt: "2026-10-21T09:50:00Z" })] }), at(NOW + TICK));
+    await runOrdersPoll({ ...d.deps, db: c.db });
+    expect(order(f)).toMatchObject({ status: "cancelled", attentionOpen: true });
+    expect(c.of("query", "online_orders?attentionOpen=true")).toBe(0);
+    expect(d.mails).toHaveLength(1);
+    expect(order(f).attention.mailedAt).toBe(NOW + TICK);
+  });
+
   it("a sweep stamp from the future is not believed: the query runs", async () => {
     const f = fakeDb(world({ online_orders_meta: { goLiveAtMs: GO_LIVE, attentionSweepAt: NOW + 86_400_000 } }));
     const c = counting(f);
