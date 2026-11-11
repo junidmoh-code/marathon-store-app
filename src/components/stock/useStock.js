@@ -9,6 +9,7 @@ import { ref, onValue, query, orderByKey, limitToLast } from "firebase/database"
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
 import { useMirroredPath } from "../../offline/useMirroredPath";
+import { subscribeLivePath } from "../../utils/sharedLiveRead";
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { STOCK_HOLD_ROOT } from "../../config/stockHold";
 import { DISPLAY_SLOTS_ROOT } from "./displaySlots";
@@ -83,8 +84,11 @@ export function usePathState(path, enabled = true) {
       setState({ path, answer: UNSETTLED });
       return;
     }
-    const unsub = onValue(
-      ref(database, path),
+    // ONE listener per path for the whole app, kept across a screen switch
+    // (utils/sharedLiveRead.js): leaving a screen and opening the next one
+    // that reads this node no longer downloads the node again.
+    const unsub = subscribeLivePath(
+      path,
       (snap) => setState({ path, answer: { value: snap.val(), settled: true, error: false } }),
       (err) => {
         console.warn(`Stock read error on /${path}:`, err);

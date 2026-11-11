@@ -9,9 +9,10 @@
 // empty lists so the warehouse UI never crashes or blanks the whole view.
 
 import { useEffect, useState } from "react";
-import { ref, onValue, update, runTransaction } from "firebase/database";
+import { ref, update, runTransaction } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
+import { subscribeLivePath } from "../../utils/sharedLiveRead";
 import { LAYBY_STATUS, PULL_STATUS, pullStatusOf } from "./contract";
 import { serverNowIso } from "../../utils/serverTime";
 
@@ -34,9 +35,11 @@ function useKeyedNode(path) {
   const [items, setItems] = useState([]);
   useEffect(() => {
     if (!authReady) return;
-    const node = ref(database, path);
-    const unsub = onValue(
-      node,
+    // Shared and kept across a screen switch (utils/sharedLiveRead.js): the
+    // warehouse view, the TV board and the layby tab all read these two nodes,
+    // and each used to download them again on every mount.
+    const unsub = subscribeLivePath(
+      path,
       (snap) => {
         const data = snap.val();
         if (!data || typeof data !== "object") { setItems([]); return; }
