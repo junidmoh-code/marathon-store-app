@@ -23,6 +23,7 @@ import {
   COUNTS_ROOT, CHANGES_ROOT, FEED_CURSOR_META, CHANGE_PAGE_SIZE, CHANGE_RETENTION_MS,
 } from "../changeFeed";
 import { createDownloadLedger, LEG_DOWNLOADS_PER_DAY, DOWNLOAD_WINDOW_MS } from "../downloadLedger";
+import { TOUCHED_META } from "../censusJournal";
 
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
@@ -104,6 +105,12 @@ describe("the stale census — a day-old count against a live one", () => {
 
     expect(report.feed.applied).toBe(300);
     expect(await db.count("displaySlots")).toBe(1300);         // 300 over a census of 1,000
+    // The allowance came from the journal the FEED kept as it applied the
+    // page — the change log was read once, to apply it, and not a second time
+    // to work out what had changed.
+    const journal = await db.getMeta(TOUCHED_META);
+    expect(Object.values(journal.legs.displaySlots).reduce((a, b) => a + b, 0)).toBe(300);
+    expect(w.calls.readKeyPage.filter((x) => x.path === CHANGES_ROOT).length).toBe(1);
     expect(report.census.checked).toContain("displaySlots");
     expect(report.census.drifted).toEqual([]);                 // …and it is not a drift
     expect(report.repaired).toBeNull();
