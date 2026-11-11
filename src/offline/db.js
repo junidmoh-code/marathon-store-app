@@ -268,6 +268,16 @@ function wrap(initial, reopen = null) {
         req.onerror = () => rej(asError(req, "getAllEntries cursor failed"));
       }));
     },
+    // How many rows sit at or after `lower` — by key, or by an index. The
+    // census check asks it of the two append-only legs: "how many of my rows
+    // are NEWER than the census?" is a count over the tail, answered without
+    // loading a row (sync.js checkCensus).
+    countFrom(storeName, lower, { index = null } = {}) {
+      return txn(storeName, "readonly", (s) => {
+        const source = index ? s[storeName].index(index) : s[storeName];
+        return reqValue(source.count(IDBKeyRange.lowerBound(lower)));
+      });
+    },
     // Entries whose KEY falls in [lower, upper]. The insights leg's local
     // window uses it: push keys sort as time, so a key range is a time range,
     // exactly as it is on the server (insightsLogRange.js).

@@ -14,7 +14,8 @@
 // It is the same job changeLegsMatch.test.js does for the two leg tables.
 import { describe, test, expect } from "vitest";
 import {
-  keyPageConstraints, childPageConstraints, constraintNames,
+  keyPageConstraints, childPageConstraints, constraintNames, changeSignalConstraints,
+  createRtdbAdapter,
 } from "../rtdbAdapter";
 
 describe("the key-page query", () => {
@@ -90,4 +91,69 @@ describe("the compound ts cursor", () => {
   // 2026-09-15T07:35:13.608Z and two shared 2026-09-15T07:21:12.205Z — a
   // single sale writing several lines at one instant. An exclusive bound would
   // have lost two of the first three. The hazard is measured, not imagined.
+});
+
+// ─── THE CHANGE SIGNAL ──────────────────────────────────────────────────────
+//
+// Measured on the fleet, 11 Nov 2026 08:00–11:00: one handset whose cursor had
+// been dropped subscribed to the WHOLE change log six times (9.7 MB each), and
+// 306 cursor-bounded subscribes delivered 20 MB of backlog that the pass then
+// read again as pages. The signal only has to say "something was written".
+describe("the change signal", () => {
+  test("is exactly ONE record wide — the newest — whatever the cursor is", () => {
+    const parts = changeSignalConstraints();
+    expect(constraintNames(parts)).toEqual(["orderByKey", "limitToLast"]);
+    expect(parts[1]._limit).toBe(1);
+  });
+
+  test("never carries a start bound: it cannot be opened over a backlog, or over the whole log", () => {
+    const names = constraintNames(changeSignalConstraints());
+    expect(names).not.toContain("startAfter");
+    expect(names).not.toContain("startAt");
+    expect(names).not.toContain("limitToFirst");
+  });
+});
+
+// ─── THE KEYS-ONLY READ ─────────────────────────────────────────────────────
+describe("shallowKeys — a node's keys without its values", () => {
+  const db = { app: { options: { databaseURL: "https://example-rtdb.firebasedatabase.app/" } } };
+  const ok = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+
+  test("asks the REST API for shallow=true as the signed-in user, and weighs what came back", async () => {
+    const urls = [];
+    let bytes = 0;
+    const adapter = createRtdbAdapter({
+      db, onBytes: (n) => { bytes += n; },
+      getIdToken: async () => "tok en",
+      fetchFn: async (url) => { urls.push(url); return ok({ p1: true, p2: true }); },
+    });
+    expect(await adapter.shallowKeys("settings/displaySlots/marathon-pe")).toEqual(["p1", "p2"]);
+    expect(urls).toEqual([
+      "https://example-rtdb.firebasedatabase.app/settings/displaySlots/marathon-pe.json?shallow=true&auth=tok%20en",
+    ]);
+    expect(bytes).toBe(JSON.stringify({ p1: true, p2: true }).length);
+  });
+
+  test("a leaf, and an absent node, have no keys", async () => {
+    for (const body of [null, true, 7, "x"]) {
+      const adapter = createRtdbAdapter({ db, getIdToken: async () => "t", fetchFn: async () => ok(body) });
+      expect(await adapter.shallowKeys("x")).toEqual([]);
+    }
+  });
+
+  test("a refusal is a permission error, named so the caller can tell it from a fault", async () => {
+    const adapter = createRtdbAdapter({
+      db, getIdToken: async () => "t", fetchFn: async () => ({ ok: false, status: 401, text: async () => "" }),
+    });
+    await expect(adapter.shallowKeys("orders")).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+  });
+
+  test("with nobody signed in, or no fetch, it fails — it never reads without a user", async () => {
+    let called = 0;
+    const fetchFn = async () => { called += 1; return ok({}); };
+    await expect(createRtdbAdapter({ db, getIdToken: async () => null, fetchFn }).shallowKeys("x")).rejects.toThrow(/signed-in/);
+    await expect(createRtdbAdapter({ db, fetchFn }).shallowKeys("x")).rejects.toThrow(/no shallow read/);
+    await expect(createRtdbAdapter({ db, getIdToken: async () => "t", fetchFn: null }).shallowKeys("x")).rejects.toThrow(/no shallow read/);
+    expect(called).toBe(0);
+  });
 });

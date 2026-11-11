@@ -195,6 +195,114 @@ describe("the stale census — a day-old count against a live one", () => {
   });
 });
 
+describe("the two histories: rows newer than the census are counted, not guessed", () => {
+  // /insights_log gains a row per sale and /stock_movements several. A device
+  // that has kept up holds every row written since 04:15 — more than the 5%
+  // tolerance on a small or a busy shop — and that was "count-drift" too.
+  function histories(n, endAt) {
+    const insights = {};
+    const movements = {};
+    for (let i = 0; i < n; i += 1) {
+      const at = endAt - (n - i) * 1000;
+      insights[pushKeyForMs(at, String(i).padStart(12, "0"))] = { n: i };
+      movements[`m${String(i).padStart(6, "0")}`] = { ts: new Date(at).toISOString(), n: i };
+    }
+    return { insights_log: insights, stock_movements: movements };
+  }
+
+  test("a day's new sales are not a drift, however many there are", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 6 * HOUR);
+    const w = world(histories(1000, CENSUS_AT - 7 * HOUR));
+    const e = engine(db, w, c);
+    await e.runSetup();
+    census(w, CENSUS_AT, { insights: 1000, movements: 1000 });
+    // 400 of each during the day: 40% over, against a tolerance of 5%.
+    for (let i = 0; i < 400; i += 1) {
+      const at = CENSUS_AT + HOUR + i * 1000;
+      w.write(`insights_log/${pushKeyForMs(at, String(i).padStart(12, "0"))}`, { n: i });
+      w.write(`stock_movements/n${String(i).padStart(6, "0")}`, { ts: new Date(at).toISOString(), n: i });
+    }
+    c.set(CENSUS_AT + 5 * HOUR);
+    const report = await e.runPass();
+    expect(await db.count("insights")).toBe(1400);
+    expect(await db.count("movements")).toBe(1400);
+    expect(report.census.checked).toEqual(expect.arrayContaining(["insights", "movements"]));
+    expect(report.census.drifted).toEqual([]);
+  });
+
+  test("rows missing from BEFORE the census are still a drift — the allowance is only the new ones", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 6 * HOUR);
+    const w = world(histories(1000, CENSUS_AT - 7 * HOUR));
+    const e = engine(db, w, c);
+    await e.runSetup();
+    census(w, CENSUS_AT, { insights: 1300 });                  // the server holds 300 this device never read
+    for (let i = 0; i < 400; i += 1) {
+      w.write(`insights_log/${pushKeyForMs(CENSUS_AT + HOUR + i * 1000, String(i).padStart(12, "0"))}`, { n: i });
+    }
+    c.set(CENSUS_AT + 5 * HOUR);
+    const report = await e.runPass();
+    // Held 1,400 against 1,300 looks CLOSER than it is; with the 400 new rows
+    // taken off, this device has 1,000 of the census's 1,300.
+    expect(report.census.drifted).toEqual([{ leg: "insights", held: 1000, census: 1300, allowed: 65 }]);
+  });
+
+  test("a hole in a history is filled by its KEYS — the 35 MB walk is not started again", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 6 * HOUR);
+    const all = histories(1000, CENSUS_AT - 7 * HOUR).insights_log;
+    const w = world({ insights_log: all });
+    const e = engine(db, w, c);
+    await e.runSetup();
+    // This device somehow lacks 80 rows from the middle of the history.
+    const lost = Object.keys(all).slice(400, 480);
+    await db.putPage("insights", [], { deleteKeys: lost });
+    census(w, CENSUS_AT, { insights: 1000 });
+    c.set(CENSUS_AT + 5 * HOUR);
+    w.calls.readKeyPage.length = 0;
+    const report = await e.runPass();
+    expect(report.census.drifted.map((d) => d.leg)).toEqual(["insights"]);
+    expect(report.repaired).toEqual({ leg: "insights", rows: 1000, via: "key-diff", added: 80, removed: 0 });
+    expect(await db.get("insights", lost[7])).toEqual(all[lost[7]]);
+    // The only pages of the history read are the forward walk's, from its cursor.
+    expect(w.calls.readKeyPage.filter((x) => x.path === "insights_log" && x.after === null)).toEqual([]);
+    expect(await isLegUsable(db, "insights")).toBe(true);
+  });
+
+  test("a history the census still disagrees with stays SERVED — its repair never re-reads it", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT + 5 * HOUR);
+    const w = withoutKeyRead(world(histories(1000, CENSUS_AT - 7 * HOUR)));
+    const e = engine(db, w, c);
+    await e.runSetup();
+    census(w, CENSUS_AT, { insights: 1300 });                  // nothing this device can do about it
+    await e.checkCensus({ force: true });
+    w.calls.readKeyPage.length = 0;
+    for (let i = 0; i < 10; i += 1) { c.advance(60_000); await e.runPass(); }
+    expect(await isLegUsable(db, "insights")).toBe(true);
+    expect((await e.setupState()).done).toBe(true);
+    expect(w.calls.readKeyPage.filter((x) => x.path === "insights_log" && x.after === null)).toEqual([]);
+  });
+
+  test("a history still walking forward is not judged until its walk reaches the end", async () => {
+    const db = await freshMirrorDb();
+    const c = clock(CENSUS_AT - 30 * HOUR);
+    const w = world(histories(100, CENSUS_AT - 31 * HOUR));
+    const e = engine(db, w, c);
+    await e.runSetup();
+    // 5,000 sales while the device was shut — more than a pass walks.
+    for (let i = 0; i < 5000; i += 1) {
+      w.write(`insights_log/${pushKeyForMs(CENSUS_AT - 20 * HOUR + i * 1000, String(i).padStart(12, "0"))}`, { n: i });
+    }
+    census(w, CENSUS_AT, { insights: 5100 });
+    c.set(CENSUS_AT + 4 * HOUR);
+    const first = await e.runPass();
+    expect(first.census.unjudged).toContain("insights");
+    expect(await e.legIsSetUp(LEG_BY_NAME.insights)).toBe(true);
+  });
+});
+
 describe("a copy still catching up is not compared", () => {
   test("a scheduled census waits for the pass that reaches the end of the feed", async () => {
     const db = await freshMirrorDb();

@@ -96,7 +96,8 @@ import {
   FEED_CURSOR_META, COUNTS_ROOT, CHANGES_ROOT,
 } from "./changeFeed";
 import {
-  coverSince, touchedSince, TOUCHED_META, CENSUS_ACTED_META,
+  coverSince, touchedSince, pushKeyPrefixForMs, TOUCHED_META, CENSUS_ACTED_META,
+  CENSUS_CLOCK_MARGIN_MS,
 } from "./censusJournal";
 import { createDownloadLedger, MirrorDownloadBudgetError } from "./downloadLedger";
 import { isCanonicalLocationId } from "./locationIds";
@@ -963,19 +964,22 @@ export function createSyncEngine({
     }
 
     // 2. The two forward walks.
+    const rangeBehind = [];
     for (const leg of MIRROR_LEGS.filter(isAppendOnly)) {
       if (await notPermitted(leg)) continue;
       try {
         const res = await attemptLeg(leg, () => runRangeLeg(leg, { maxPages: RANGE_PAGES_PER_PASS }));
-        if (res === null) continue;            // backing off, or benched this session
+        if (res === null) { rangeBehind.push(leg.name); continue; }   // backing off, or benched this session
+        if (!res.caughtUp) rangeBehind.push(leg.name);
         report.range.push({ leg: leg.name, added: res.added });
       } catch (err) {
+        rangeBehind.push(leg.name);
         report.errors.push({ where: leg.name, reason: err.name, message: err.message });
       }
     }
 
     // 3. The outside opinion.
-    try { report.census = await checkCensus({ feedCaughtUp }); }
+    try { report.census = await checkCensus({ feedCaughtUp, rangeBehind }); }
     catch (err) { report.errors.push({ where: "census", reason: err.name, message: err.message }); }
 
     // 4. ANYTHING THAT NEEDS DOWNLOADING AGAIN, DOWNLOADED AGAIN.
@@ -1018,7 +1022,7 @@ export function createSyncEngine({
       // cannot be repaired that way (too deep, too different, no key read on
       // this device) is it downloaded — and that is the budgeted path.
       let res = null;
-      if (!isAppendOnly(leg) && !inFlight.has(leg.name)
+      if (!inFlight.has(leg.name)
         && (await getLegHealth(db, leg.name))?.reason === "count-drift") {
         res = await reconcileLegKeys(leg).catch(() => null);
       }
@@ -1040,18 +1044,27 @@ export function createSyncEngine({
       // ask the census FIRST. A device that becomes complete through repairs
       // reaches exactly the state the download path forces a census for, and
       // it would otherwise not be asked again for six hours.
-      if ((await setupState()).ready) {
-        await checkCensus({ force: true }).catch(() => {});
-        if ((await setupState()).ready) {
-          await db.setMeta(SETUP_DONE_META, { at: now(), legs: MIRROR_LEGS.length });
-        }
-      }
+      await stampDeviceCompleteIfWhole();
       return {
         leg: leg.name, rows: res.rows,
         ...(res.via ? { via: res.via, added: res.added, removed: res.removed } : {}),
       };
     }
+    // NOTHING LEFT TO REPAIR, AND THE DEVICE MARKER STILL MISSING. A history
+    // leg that lost its marker is put back by its own forward walk (step 2 of
+    // the pass), not by this step — so this step found nothing to do, never
+    // re-stamped the device, and it reported "not complete" for ever with
+    // every leg in place.
+    if ((await db.getMeta(SETUP_DONE_META)) === undefined) await stampDeviceCompleteIfWhole();
     return null;
+  }
+
+  async function stampDeviceCompleteIfWhole() {
+    if (!(await setupState()).ready) return;
+    await checkCensus({ force: true }).catch(() => {});
+    if ((await setupState()).ready) {
+      await db.setMeta(SETUP_DONE_META, { at: now(), legs: MIRROR_LEGS.length });
+    }
   }
 
   // ── A COUNT REPAIRED BY ITS KEYS ──────────────────────────────────────────
@@ -1240,6 +1253,17 @@ export function createSyncEngine({
     return marked;
   }
 
+  // How many of an append-only leg's rows were written at or after `ms`. The
+  // key (a push key) or the indexed `ts` IS the write time, so this is a count
+  // over the tail of the store. Zero when it cannot be asked: the allowance is
+  // then the leg's plain tolerance, as it was before.
+  async function rowsNewerThan(leg, ms) {
+    try {
+      if (leg.feed === "keyRange") return await db.countFrom(leg.store, pushKeyPrefixForMs(ms));
+      return await db.countFrom(leg.store, new Date(ms).toISOString(), { index: leg.tsField });
+    } catch { return 0; }
+  }
+
   // ── THE CENSUS CHECK ──────────────────────────────────────────────────────
   //
   // The only check in this file that is not local. See the header — both
@@ -1252,7 +1276,10 @@ export function createSyncEngine({
   // waits for a pass that has caught up (it costs nothing to wait: nothing is
   // read). A forced check — straight after a download, whose rows are minutes
   // old — does not.
-  async function checkCensus({ force = false, feedCaughtUp = true } = {}) {
+  //
+  // `rangeBehind` — the append-only legs whose walk did NOT reach the end in
+  // this pass: the same thing, for the two histories.
+  async function checkCensus({ force = false, feedCaughtUp = true, rangeBehind = [] } = {}) {
     const lastChecked = (await db.getMeta(CENSUS_CHECKED_META)) ?? 0;
     const at = now();
     if (!force && at - lastChecked < CENSUS_CHECK_MS) return { skipped: "not-due" };
@@ -1318,18 +1345,37 @@ export function createSyncEngine({
       if (Number.isFinite(marker.keysAt) && marker.keysAt > entry.at) continue;
 
       let churn = 0;
+      let newer = 0;
+      let band = 0;
       if (!isAppendOnly(leg)) {
         const j = await journalFor();
         if (!j) { unjudged.push(leg.name); continue; }
         churn = touchedSince(j, leg.name, entry.at);
+      } else {
+        // A history still walking forward is behind by construction.
+        if (rangeBehind.includes(leg.name)) { unjudged.push(leg.name); continue; }
+        // An append-only leg needs no journal: every row it holds that is
+        // NEWER than the census is, exactly, what has been added since. It is
+        // counted off the tail of the store without loading a row — and TAKEN
+        // OFF what is held, not added to the allowance: 1,400 held against a
+        // census of 1,300 looks close, and is 300 short if 400 of them are
+        // today's.
+        //
+        // A row's time here is the clock of the till that wrote it, so rows
+        // stamped within the margin either side of the census may or may not
+        // have been counted. Those SURELY newer are taken off; the ones in
+        // the band are allowed for, in the one direction they can err.
+        newer = await rowsNewerThan(leg, entry.at + CENSUS_CLOCK_MARGIN_MS);
+        band = Math.max(0, (await rowsNewerThan(leg, entry.at - CENSUS_CLOCK_MARGIN_MS)) - newer);
       }
-      const held = (await heldRows(db, leg.name)) ?? 0;
+      const held = ((await heldRows(db, leg.name)) ?? 0) - newer;
       checked.push(leg.name);
       // The leg's own tolerance, PLUS every row the feed has carried since the
       // census was taken: the most the count can honestly have moved.
-      const allowed = Math.max(25, Math.floor(entry.rows * leg.censusTolerance)) + churn;
+      const base = Math.max(25, Math.floor(entry.rows * leg.censusTolerance)) + churn;
+      const allowed = held > entry.rows ? base + band : base;
       if (Math.abs(held - entry.rows) <= allowed) { agreed.push({ leg: leg.name, marker }); continue; }
-      if (Math.abs(held - entry.rows) > allowed) censusAtOf.set(leg.name, { censusAt: entry.at, marker });
+      censusAtOf.set(leg.name, { censusAt: entry.at, marker });
       const verdict = { leg: leg.name, held, census: entry.rows, allowed };
       // ONE REPAIR PER LEG PER CENSUS. This census has already sent this leg
       // for repair once. A copy that still disagrees with the SAME census will
@@ -1363,6 +1409,10 @@ export function createSyncEngine({
     //     stays, so nothing re-downloads it meanwhile.
     for (const u of unresolved) {
       if (u.held >= u.census) continue;
+      // A history is never downloaded again by its repair (the walk carries
+      // on from its cursor), so there is no storm to park it against; it is
+      // served as it was, and named in `unresolved`.
+      if (isAppendOnly(LEG_BY_NAME[u.leg])) continue;
       const { censusAt, marker } = censusAtOf.get(u.leg);
       if (marker.censusRefused === censusAt) continue;         // already parked for this census
       await recordLegFailed(db, u.leg, {
