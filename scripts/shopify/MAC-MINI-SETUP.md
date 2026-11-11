@@ -295,22 +295,6 @@ ssh marathonclub@100.64.186.78 'cd ~/marathon-store-app && git pull && npm ci --
 ```
 
 No launchd reload is needed — each tick spawns a fresh node process, so the
-next tick picks the new code up. (The exception is `com.marathon.shippingquotes`,
-which stays up between ticks and keeps the code it started with until it is
-restarted.)
-
-**The automatic way (11 Nov 2026) — `scripts/launchd/live-update.mjs`.** Every
-five minutes it fetches `origin/main` and, when the checkout is a plain
-fast-forward behind it and nobody has edited a tracked file here, takes the
-reconciler's own run lock, checks out `origin/main`, runs `npm ci` only where a
-lockfile changed, parses every changed script, and rolls back to where it was
-if any of that fails. It restarts the shipping-quotes service when code it
-loads changed. Log: `logs/live-update.log`. It is **not installed by merging**;
-install it once with the two commands at the top of
-`scripts/launchd/com.marathon.liveupdate.plist`, and try
-`node scripts/launchd/live-update.mjs --dry-run` first. Until it is installed,
-the manual command above is still the only way code reaches this machine.
-
-**Without it there is no auto-pull**: on 3 Sep 2026 the
+next tick picks the new code up. **There is no auto-pull**: on 3 Sep 2026 the
 mini was found sitting on `main` at #540 while `main` was at #549, nine merged
 PRs behind. If a fix is not visible on the mini, this command is why.

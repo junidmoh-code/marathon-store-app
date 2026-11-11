@@ -1008,13 +1008,22 @@ async function mailAttention(ctx) {
   const swept = open !== null;
   if (!swept) open = await attentionOnTouched(ctx);
   const unmailed = Object.entries(open).filter(([, o]) => o?.attention && !o.attention.mailedAt);
-  let unsent = 0;
+  // `clean` is set only when every mail that was due has gone. A throw part-way
+  // through the sends (architect review, 11 Nov) used to leave `unsent` at 0
+  // and stamp the sweep as done, hiding an unmailed closed order for ten
+  // minutes; now anything but a normal, complete return leaves the sweep due.
+  let clean = false;
   try {
-    if (!unmailed.length) return;
-    if (!send) { unsent = unmailed.length; log(`  ⚠ ${unmailed.length} attention email(s) not sent — no mail sender on this machine; retried next tick`); return; }
-    unsent = await sendAttentionMails(ctx, unmailed);
+    if (!unmailed.length) { clean = true; return; }
+    if (!send) { log(`  ⚠ ${unmailed.length} attention email(s) not sent — no mail sender on this machine; retried next tick`); return; }
+    clean = (await sendAttentionMails(ctx, unmailed)) === 0;
   } finally {
-    if (swept && !unsent) await db.ref(`${META_PATH}/attentionSweepAt`).set(ctx.now);
+    if (swept && clean) {
+      // A lost stamp costs one extra sweep. It must never replace an error in
+      // flight or stop the rest of the tick.
+      try { await db.ref(`${META_PATH}/attentionSweepAt`).set(ctx.now); }
+      catch (err) { log(`  ⚠ attentionSweepAt not written (${err?.message || err}); the sweep runs again next tick`); }
+    }
   }
 }
 

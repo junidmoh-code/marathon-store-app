@@ -188,7 +188,9 @@ over it. Use it for orders pulled in while staff still rang web sales by hand.
 `goLiveAtMs` (set once, first run — older orders are never pulled in),
 `cursorMs` (updated_at window, re-read 10 min behind), `retry/{orderId}` (an
 order that failed is parked and fetched by id every tick; the cursor never
-waits for it), `lastRunAt`.
+waits for it), `lastRunAt`, `attentionSweepAt` (when the all-orders attention
+query last ran clean; it runs about every 10 to 12 minutes and stays due while
+any attention email is unsent. Orders a tick handles are checked every tick).
 
 ## Feeds (only while the switch is on)
 
