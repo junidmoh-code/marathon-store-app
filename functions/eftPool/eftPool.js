@@ -121,6 +121,7 @@ const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 
 const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, EFT_MIN_QUERY, normaliseText, searchEftPool } = require("../lib/eft-pool.cjs");
+const { createPoolTailCache } = require("../lib/eft-pool-tail-cache.cjs");
 const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
@@ -574,6 +575,19 @@ const SALE_CHECK_PATH = "eft_pending_sale_checks";
 const SALE_CHECK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // ─── SEARCH ──────────────────────────────────────────────────────────────────
+// The search's own held copy of the tail — this function instance's, and the
+// SEARCH's alone: the settle and the manual paths call readPoolTail() fresh.
+const searchTail = createPoolTailCache({
+  readTail: readPoolTail,
+  readNewest: async () => (await admin.database()
+    .ref(EFT_POOL_PATH)
+    .orderByChild("at")
+    .limitToLast(1)
+    .once("value")).val(),
+});
+/** Tests only: forget the held tail, so one test's pool is never another's. */
+exports._resetSearchTail = () => searchTail.clear();
+
 exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   await assertPosIdentity(request);
   const data = request.data ?? {};
@@ -594,13 +608,11 @@ exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   // floor after normalisation, so a query of punctuation is refused too.)
   if (normaliseText(query).length < EFT_MIN_QUERY) return { results: [], searched: 0, needQuery: true };
   // The TAIL, never the node — the pool grows by a record per payment for
-  // ever, and a till search is about this week's customers.
-  const snap = await admin.database()
-    .ref(EFT_POOL_PATH)
-    .orderByChild("at")
-    .limitToLast(EFT_SEARCH_WINDOW)
-    .once("value");
-  return searchEftPool(snap.val(), query);
+  // ever, and a till search is about this week's customers. Held for one
+  // typing burst (lib/eft-pool-tail-cache.cjs): the tail was ~1 MB of download
+  // per KEYSTROKE; now a keystroke costs the one-record probe that proves no
+  // payment has landed since, and the tail is re-read the moment one has.
+  return searchEftPool(await searchTail.get(), query);
 });
 
 // ─── SETTLE / ATTACH / RELEASE ───────────────────────────────────────────────
