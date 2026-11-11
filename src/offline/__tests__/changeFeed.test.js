@@ -392,6 +392,34 @@ describe("the feed's own deletes lower what the leg claims to hold", () => {
     expect((await getLegHealth(db, "products")).rows).toBe(8);
   });
 
+  test("the claim follows the NET change: adds in the same page count, and it never falls below what the store holds", async () => {
+    const { legVerdict, getLegHealth } = await import("../health");
+    const { db, products } = await held(10);
+    delete products.p3; delete products.p4; delete products.p5;
+    products.n1 = { id: "n1" }; products.n2 = { id: "n2" };
+    const w = world([
+      change(0, "products", "p3"), change(1, "products", "p4"), change(2, "products", "p5"),
+      change(3, "products", "n1"), change(4, "products", "n2"),
+    ], { products });
+    await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 60_000 });
+    expect(await db.count("products")).toBe(9);
+    expect((await getLegHealth(db, "products")).rows).toBe(9);    // 10 − 3 + 2, not 10 − 3
+    // …so losing even ONE row underneath the record is still seen.
+    await db.putPage("products", [], { deleteKeys: ["p0"] });
+    expect(await legVerdict(db, "products")).toBe("no");
+  });
+
+  test("a delete of a row the device never HELD lowers nothing", async () => {
+    const { getLegHealth, legVerdict } = await import("../health");
+    const { db, products } = await held(10);
+    const w = world([change(0, "products", "ghost1"), change(1, "products", "ghost2")], { products });
+    const res = await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 60_000 });
+    expect(res.deleted).toBe(2);
+    expect((await getLegHealth(db, "products")).rows).toBe(10);
+    await db.putPage("products", [], { deleteKeys: ["p0"] });
+    expect(await legVerdict(db, "products")).toBe("no");
+  });
+
   test("the claim is lowered, never raised: adds leave it alone", async () => {
     const { getLegHealth } = await import("../health");
     const { db, products } = await held(10);

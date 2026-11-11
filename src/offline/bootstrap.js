@@ -436,9 +436,12 @@ export async function startOfflineMirror({
   // The legs that DID land are worth keeping current: the same forced census
   // the success path runs, then serving from what is verified, then the pass
   // loop — which keeps them current and repairs whatever is missing.
-  async function handOverToPassLoop() {
+  // `afterDownload` — this run downloaded at least one leg, so the census is
+  // the one that verifies a download: it always runs, whatever else on the
+  // device is parked (sync.js checkCensus).
+  async function handOverToPassLoop({ afterDownload = false } = {}) {
     state.downloading = false;
-    try { state.setupCensus = await engine.checkCensus({ force: true }); }
+    try { state.setupCensus = await engine.checkCensus({ force: true, afterDownload }); }
     catch (e) { state.setupCensus = { error: e.message }; }
     await refreshServing();
     await reportHealth();
@@ -526,7 +529,7 @@ export async function startOfflineMirror({
             state.setupError = { ...state.setupError, gaveUp: [...benched] };
             console.warn("offline mirror: the download gave up on", [...benched].join(", "),
               "for this session — it will try again the next time the app is opened.");
-            await handOverToPassLoop();
+            await handOverToPassLoop({ afterDownload: (err.downloadedLegs ?? []).length > 0 });
             return null;
           }
           // ── A DEVICE ALREADY SERVING MUST NOT WAIT FROZEN ────────────────
@@ -539,7 +542,7 @@ export async function startOfflineMirror({
           // missing leg itself (one per pass, with the same per-leg backoff),
           // so the download is handed to it rather than retried beside it.
           if (servingAnything()) {
-            await handOverToPassLoop();
+            await handOverToPassLoop({ afterDownload: (err.downloadedLegs ?? []).length > 0 });
             return null;
           }
           const wait = Math.min(SETUP_RETRY_MAX_MS, SETUP_RETRY_MS * 2 ** (failedAttempts - 1));

@@ -132,7 +132,7 @@ const GUARD_WORDS = Object.freeze({
   "re-paging": "was taken by the old downloader — downloading it again",
   "feed-stuck": "stopped receiving changes, so it is read live until the app is reopened",
   "cursor-lost": "lost its place in the change list — downloading it again",
-  "download-budget": "has been downloaded three times today, so it is read live until tomorrow",
+  "download-budget": "has been downloaded three times in 24 hours — the copy already here is still used, and it is not downloaded again until its 24-hour limit frees up",
 });
 export function guardWords(guard) {
   if (!guard) return null;

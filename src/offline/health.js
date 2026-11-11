@@ -348,11 +348,18 @@ export async function claimIsBackedByRows(db, leg, health) {
 // only for a leg that WAS backed by its rows when the page was read: a store
 // that had already lost rows underneath its record stays refused, exactly as
 // before.
-export function claimLoweredBy(health, { held, deletes }) {
-  if (!health || !(deletes > 0) || !Number.isFinite(held)) return null;
+//
+// BY THE NET CHANGE, and to exactly the count the page leaves behind: `removed`
+// is the deletes of rows the device actually HELD (a delete of a row it never
+// had removes nothing), and `added` the new rows the same page brings. A claim
+// lowered by every delete record, ignoring the adds, would end up BELOW what
+// the store holds — and a claim below the truth lets a later loss of that many
+// rows pass unnoticed.
+export function claimLoweredBy(health, { held, removed, added = 0 }) {
+  if (!health || !(removed > 0) || !Number.isFinite(held)) return null;
   const claimed = vouchedRows(health);
   if (!Number.isFinite(claimed) || held < claimed) return null;
-  const to = Math.max(0, held - deletes);
+  const to = Math.max(0, held - removed + added);
   if (to >= claimed) return null;
   if (health.ok === true) return { ...health, rows: to };
   const next = { ...health };

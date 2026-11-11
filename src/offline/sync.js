@@ -888,6 +888,8 @@ export function createSyncEngine({
       if (failed.length) {
         const first = failed.find((f) => f.err)?.err ?? new MirrorSetupIncompleteError(failed);
         try { first.failedLegs = failed.map(({ err, ...f }) => f); } catch { /* frozen */ }
+        // What this run DID download, for a caller that must verify it.
+        try { first.downloadedLegs = done.map((d) => d.leg); } catch { /* frozen */ }
         throw first;
       }
 

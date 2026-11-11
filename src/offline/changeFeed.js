@@ -267,6 +267,8 @@ export async function runChangeFeedPage({
   // counted twice, which widens an allowance; written after, a crash in
   // between would lose the count and the census would call real churn a drift.
   const membership = [];
+  // leg -> rows this page removes from, and adds to, what the device holds.
+  const netByLeg = new Map();
   {
     const byStoreKeys = new Map();
     for (let i = 0; i < rows.length; i += 1) {
@@ -284,7 +286,12 @@ export async function runChangeFeedPage({
       const { leg, key } = rows[i];
       const wasHeld = heldBy.get(leg.store).has(storeKey(leg, key));
       const isHeld = !(value === null || value === undefined);
-      if (wasHeld !== isHeld) membership.push(rows[i]);
+      if (wasHeld !== isHeld) {
+        membership.push(rows[i]);
+        const net = netByLeg.get(leg.name) ?? { removed: 0, added: 0 };
+        if (wasHeld) net.removed += 1; else net.added += 1;
+        netByLeg.set(leg.name, net);
+      }
     }
   }
   await noteTouched(db, { cursor, lastKey, rows: membership, now });
@@ -301,11 +308,11 @@ export async function runChangeFeedPage({
       continue;
     }
     appliedRows.push(rows[i]);
-    const bucket = byStore.get(leg.store) ?? { records: [], deleteKeys: [], deletesByLeg: new Map() };
+    const bucket = byStore.get(leg.store) ?? { records: [], deleteKeys: [], legs: new Set() };
+    bucket.legs.add(leg.name);
     const k = storeKey(leg, key);
     if (value === null || value === undefined) {
       bucket.deleteKeys.push(k);
-      bucket.deletesByLeg.set(leg.name, (bucket.deletesByLeg.get(leg.name) ?? 0) + 1);
     } else bucket.records.push({ key: k, value });
     byStore.set(leg.store, bucket);
   }
@@ -315,9 +322,11 @@ export async function runChangeFeedPage({
   // stopped being served without it.
   for (const bucket of byStore.values()) {
     bucket.healthEntries = {};
-    for (const [legName, deletes] of bucket.deletesByLeg) {
+    for (const legName of bucket.legs) {
+      const net = netByLeg.get(legName);
+      if (!net || net.removed === 0) continue;
       const lowered = claimLoweredBy(await getLegHealth(db, legName), {
-        held: await heldRows(db, legName), deletes,
+        held: await heldRows(db, legName), removed: net.removed, added: net.added,
       });
       if (lowered) bucket.healthEntries[healthKey(legName)] = lowered;
     }

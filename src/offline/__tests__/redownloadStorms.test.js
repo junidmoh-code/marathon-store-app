@@ -971,6 +971,15 @@ describe("a parked leg: un-parked by its keys, and not censused on every open", 
     expect(w.calls.readPath.filter((p) => p === COUNTS_ROOT).length).toBe(1);
   });
 
+  test("a setup run that downloaded ANOTHER leg beside the parked one says so, so its census is not throttled", async () => {
+    const { db, c, w } = await parked();
+    await db.deleteMetaMany([`${SETUP_META_PREFIX}customers`, SETUP_DONE_META]);   // a second leg needs downloading
+    c.advance(60_000);
+    const err = await engine(db, w, c).runSetup().then(() => null, (e) => e);
+    expect(err.name).toBe("MirrorSetupIncompleteError");                         // the parked leg keeps it incomplete
+    expect(err.downloadedLegs).toEqual(["customers"]);                           // …and bootstrap forces the census for this
+  });
+
   test("the forced census of every app open is asked at most once in 30 minutes", async () => {
     const { db, c, w } = await parked();
     w.calls.readPath.length = 0;
