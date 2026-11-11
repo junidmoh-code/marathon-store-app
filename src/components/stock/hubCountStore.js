@@ -556,3 +556,41 @@ export async function setHubCountMode(hub, on) {
     ? { ok: true, state: after }
     : { ok: false, state: after, message: "The switch did not read back as written — check again." };
 }
+
+// ── PINE SHOP COUNT — engine pause ONLY (Junid, 11 Nov 2026) ─────────────────
+// Junid: "pause refill-request creation for the Pine shop only during the
+// count, behind one toggle he can flip back on". This is the Hub 3 pause flag
+// (functions/lib/paused-locations.cjs reads it for ANY location) and nothing
+// else: NO countMode — Pine's never-below-zero sale rule stays exactly as it
+// is — and no policy, target or other location is read or written.
+//   /config/refillEngine/pausedLocations/marathon-pine = true   (paused)
+//   absent                                                       (engine on)
+// enginePauseMeta/{loc} records who flipped it and when (History, not a gate).
+export const ENGINE_PAUSE_LOCATIONS = Object.freeze(["marathon-pine"]);
+export const enginePausePaths = (loc) => ({
+  paused: `config/refillEngine/pausedLocations/${loc}`,
+  meta: `${HUB_COUNT_ROOT}/enginePauseMeta/${loc}`,
+});
+
+/** { paused } — one-shot; only `true` reads as paused. */
+export async function loadEnginePause(loc) {
+  return { paused: (await one(enginePausePaths(loc).paused)) === true };
+}
+
+export function enginePauseUpdate(loc, paused, { uid = null, at } = {}) {
+  const p = enginePausePaths(loc);
+  return { [p.paused]: paused ? true : null, [p.meta]: { paused: !!paused, at, by: uid } };
+}
+
+export async function setEnginePause(loc, paused) {
+  if (!ENGINE_PAUSE_LOCATIONS.includes(loc)) return { ok: false, message: "This pause is for the Pine shop only." };
+  const user = auth.currentUser;
+  try {
+    await update(ref(database), enginePauseUpdate(loc, paused, { uid: user ? user.uid : null, at: serverNowIso() }));
+  } catch (err) {
+    return { ok: false, message: `Could not switch: ${String(err?.message || err)} — this needs an admin stock account.` };
+  }
+  const after = await loadEnginePause(loc).catch(() => null);
+  if (!after) return { ok: true, unverified: true };
+  return after.paused === !!paused ? { ok: true, state: after } : { ok: false, state: after, message: "The switch did not read back as written — check again." };
+}

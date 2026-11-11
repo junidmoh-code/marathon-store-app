@@ -27,10 +27,18 @@ const UNSAFE = /[.#$/\[\]\s]/;
 const qtyOf = (cell) => (cell && typeof cell === "object" && typeof cell.qty === "number" ? cell.qty : null);
 import { decodeSizeKey } from "../../src/utils/sizeKey.js";
 export { decodeSizeKey };
-export const movementIdFor = (resetId, pid, sizeKey) => `h3reset_${resetId}_${pid}_${sizeKey}`;
+
+// SCOPE (Pine shop count, Junid 11 Nov 2026): the same reset for ONE other
+// location. A scope names the location, the ledger reason, the actor and the
+// movement-id prefix; with no scope everything is exactly the Hub 3 reset.
+export const HUB3_SCOPE = Object.freeze({ loc: HUB, reason: REASON, actor: ACTOR, idPrefix: "h3reset" });
+export const PINE_SCOPE = Object.freeze({ loc: "marathon-pine", reason: "pine-count-clear", actor: "system:pine-count-clear", idPrefix: "pineclear" });
+// A plan saved before scopes existed (the 6 Nov Hub 3 file) carries none → Hub 3.
+const scopeOf = (p) => (p && p.scope && p.scope.loc ? p.scope : p && typeof p.loc === "string" && p.idPrefix ? p : HUB3_SCOPE);
+export const movementIdFor = (resetId, pid, sizeKey, scope = HUB3_SCOPE) => `${scope.idPrefix}_${resetId}_${pid}_${sizeKey}`;
 
 /** The before-state + the per-cell plan, from ONE read of /stock/hub3. */
-export function planReset(hubStock, { resetId }) {
+export function planReset(hubStock, { resetId, scope = HUB3_SCOPE }) {
   const cells = [], skipped = [];
   let cellCount = 0, units = 0, positiveUnits = 0, negativeUnits = 0, positives = 0, negatives = 0;
   const nonZero = {};
@@ -48,39 +56,42 @@ export function planReset(hubStock, { resetId }) {
       (nonZero[pid] ||= {})[sizeKey] = q;
       cells.push({
         pid, sizeKey, before: q,
-        path: `stock/${HUB}/${pid}/${sizeKey}`,
-        movementId: movementIdFor(resetId, pid, sizeKey),
+        path: `stock/${scope.loc}/${pid}/${sizeKey}`,
+        movementId: movementIdFor(resetId, pid, sizeKey, scope),
       });
     }
   }
   return {
-    resetId, hub: HUB, cells, skipped, nonZero,
+    resetId, hub: scope.loc, scope, cells, skipped, nonZero,
     summary: { cells: cellCount, units, nonZeroCells: cells.length, positives, negatives, positiveUnits, negativeUnits },
   };
 }
 
-/** Refuse a plan that would write anywhere but stock/hub3/. */
-export function assertOnlyHub3(plan) {
-  const bad = plan.cells.filter((c) => !c.path.startsWith(`stock/${HUB}/`) || c.path.split("/").length !== 4);
-  if (bad.length) throw new Error(`REFUSED: ${bad.length} planned write(s) outside stock/${HUB}/ — e.g. ${bad[0].path}`);
+/** Refuse a plan that would write anywhere but stock/<its one location>/. */
+export function assertOnlyLocation(plan) {
+  const loc = scopeOf(plan).loc;
+  const bad = plan.cells.filter((c) => !c.path.startsWith(`stock/${loc}/`) || c.path.split("/").length !== 4);
+  if (bad.length) throw new Error(`REFUSED: ${bad.length} planned write(s) outside stock/${loc}/ — e.g. ${bad[0].path}`);
 }
+export const assertOnlyHub3 = assertOnlyLocation;
 
-export function movementFor(c, { resetId, nowIso, before = c.before }) {
+export function movementFor(c, { resetId, nowIso, before = c.before, scope = HUB3_SCOPE }) {
+  const { loc, reason, actor } = scope;
   return {
     type: "adjustment",
     productId: c.pid,
     size: decodeSizeKey(c.sizeKey),
     sizeKey: c.sizeKey,
     qty: Math.abs(before),
-    from: before > 0 ? HUB : null,
-    to: before < 0 ? HUB : null,
-    reason: REASON,
+    from: before > 0 ? loc : null,
+    to: before < 0 ? loc : null,
+    reason,
     movementId: c.movementId,
-    actor: ACTOR,
+    actor,
     actorRole: "admin",
     expectQty: before,
     ts: nowIso,
-    link: { deviceId: null, countResetId: resetId, countLocation: HUB, countResetBefore: before, countSize: decodeSizeKey(c.sizeKey) },
+    link: { deviceId: null, countResetId: resetId, countLocation: loc, countResetBefore: before, countSize: decodeSizeKey(c.sizeKey) },
   };
 }
 
@@ -90,7 +101,8 @@ export function movementFor(c, { resetId, nowIso, before = c.before }) {
  * against its new qty (twice at most) — never a whole-node re-read.
  */
 export async function applyReset({ db, plan, applyMovementAdmin, nowMs, concurrency = 8, log = () => {} }) {
-  assertOnlyHub3(plan);
+  assertOnlyLocation(plan);
+  const scope = scopeOf(plan);
   const nowIso = new Date(nowMs).toISOString();
   const done = [], refused = [];
   let removed = 0, added = 0;
@@ -99,7 +111,7 @@ export async function applyReset({ db, plan, applyMovementAdmin, nowMs, concurre
     let before = c.before;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (before === 0) { done.push({ ...c, applied: 0, note: "already_zero" }); return; }
-      const r = await applyMovementAdmin(db, movementFor(c, { resetId: plan.resetId, nowIso, before }), { nowIso });
+      const r = await applyMovementAdmin(db, movementFor(c, { resetId: plan.resetId, nowIso, before, scope }), { nowIso });
       if (r.ok) {
         if (before > 0) removed += before; else added += -before;
         done.push({ ...c, applied: before, idempotent: !!r.idempotent });
@@ -140,7 +152,8 @@ export function markerClearUpdate({ nowIso, by = ACTOR }) {
  * landed afterwards), AND the reset rows sum to the snapshot's non-zero total.
  */
 export async function verifyReset({ db, plan }) {
-  const stock = (await db.ref(`stock/${HUB}`).once("value")).val() || {};
+  const loc = scopeOf(plan).loc;
+  const stock = (await db.ref(`stock/${loc}`).once("value")).val() || {};
   const problems = [];
   let ledgerNet = 0, rows = 0, laterMoved = 0, otherNonZero = 0;
   for (const c of plan.cells) {
@@ -152,7 +165,7 @@ export async function verifyReset({ db, plan }) {
     if (!row && c.applied === 0 && q === 0) continue;
     if (!row) { problems.push(`${c.path}: no reset movement ${c.movementId}`); continue; }
     rows++;
-    const signed = row.to === HUB ? Number(row.qty) : -Number(row.qty);
+    const signed = row.to === loc ? Number(row.qty) : -Number(row.qty);
     ledgerNet += signed;
     if (q === 0) continue;
     if (cell && cell.mv && cell.mv !== c.movementId) { laterMoved++; continue; }

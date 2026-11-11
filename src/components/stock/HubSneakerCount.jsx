@@ -42,6 +42,7 @@ import {
   COUNT_MODE_HUBS,
 } from "./hubCountStore";
 import { CountModeToggle } from "./CountModeToggle.jsx";
+import { EnginePauseToggle } from "./EnginePauseToggle.jsx";
 import { loadOffShelfSources, offShelfForCell, expectedOnShelf } from "./offShelf";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
@@ -446,6 +447,8 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
         {COUNT_MODE_HUBS.includes(hub) && canAdjust && (
           <CountModeToggle hub={hub} />
         )}
+        {/* Pine shop count (Junid, 11 Nov 2026): engine pause only, any hub tab. */}
+        {canAdjust && <EnginePauseToggle loc="marathon-pine" label="Pine shop" />}
       </Card>
 
       {/* For non-admin counters this is a supported flow, not a failure — say
