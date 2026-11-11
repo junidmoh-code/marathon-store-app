@@ -990,9 +990,11 @@ describe("what a tick downloads", () => {
     const handed = escalateCalls.filter(([id]) => id === "9001").map(([, o]) => o.lines[0].source.status);
     // Before the keep pass: still on the hub's list. After it: the line this
     // very tick turned no_stock — the copy the old code re-read to obtain.
-    // (The order then turns needs_attention and that status's own query finds
-    // it again later in the same tick — as it always has — hence the slice.)
-    expect(handed.slice(0, 2)).toEqual(["pick", "no_stock"]);
+    // The order then turns needs_attention, and that status's own query finds
+    // it again later in the same tick — as it always has — so the pair of
+    // checks runs twice: [before, after] for "picking", then for
+    // "needs_attention". A stale copy handed back would drop the second entry.
+    expect(handed).toEqual(["pick", "no_stock", "no_stock", "no_stock"]);
     // The ONE exact read of the order this tick is the mailer's, and it comes
     // after everything else: the order it is about to email Junid about.
     const whole = c.reads.map(([op, p], n) => (op === "get" && p === "online_orders/9001" ? n : -1)).filter((n) => n >= 0);
