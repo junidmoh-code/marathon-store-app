@@ -68,7 +68,7 @@ describe("one super-admin list, no literal email checks", () => {
     const ALLOW_LINE = {
       "functions/lib/writeoff-digest.cjs": [/^const MAIL_TO = require\(".\/super-admins\.cjs"\)\.JUNID_EMAIL;/],
       "functions/index.js": [
-        /^const \{ JUNID_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdmin \} = require\(".\/lib\/super-admins\.cjs"\);$/,
+        /^const \{ JUNID_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdmin, isSuperAdminToken \} = require\(".\/lib\/super-admins\.cjs"\);$/,
         /db\.ref\(`aiAssistant\/memory\/\$\{JUNID_EMAIL\.split\("@"\)\[0\]\}\/businessContext`\)/,
       ],
     };

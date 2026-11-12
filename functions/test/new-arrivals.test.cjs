@@ -204,7 +204,10 @@ test("listTab rejects an unknown tab; access gate fails closed", async () => {
   await assert.rejects(na.assertNewArrivalsAccess({}, db), /Sign in required/);
   const broken = { ref: () => ({ once: async () => { throw new Error("offline"); } }) };
   await assert.rejects(na.assertNewArrivalsAccess({ auth: { uid: "u1", token: {} } }, broken), /Could not check/);
-  await na.assertNewArrivalsAccess({ auth: { uid: "x", token: { email: "gunidmoh@gmail.com" } } }, broken);
+  await na.assertNewArrivalsAccess({ auth: { uid: "x", token: { email: "gunidmoh@gmail.com", email_verified: true } } }, broken);
+  await na.assertNewArrivalsAccess({ auth: { uid: "j", token: { email: "jafermohammed340@gmail.com", email_verified: true } } }, broken);
+  // An UNVERIFIED super-admin email is nobody special: it falls to the grant read. (CodeRabbit, PR #896.)
+  await assert.rejects(na.assertNewArrivalsAccess({ auth: { uid: "x", token: { email: "gunidmoh@gmail.com" } } }, broken), /Could not check/);
 });
 
 test("productSummary tolerates RTDB-sparse sizes (index-keyed object)", () => {
@@ -1048,7 +1051,9 @@ test("the list carries the pause switches and who may flip them; setPause flips 
   await assert.rejects(na.setPause(db, { which: "posting", paused: "yes" }, "u", 1), /paused: true or false/);
   assert.equal((await db.ref("new_arrivals/pause/generation/by").once()).val(), "uid-junid");
   // Only Junid's account may flip a switch (the same email gate as the rest of the admin functions).
-  assert.equal(na.isJunid({ auth: { token: { email: "gunidmoh@gmail.com" } } }), true);
+  assert.equal(na.isJunid({ auth: { token: { email: "gunidmoh@gmail.com", email_verified: true } } }), true);
+  assert.equal(na.isJunid({ auth: { token: { email: "jafermohammed340@gmail.com", email_verified: true } } }), true);
+  assert.equal(na.isJunid({ auth: { token: { email: "jafermohammed340@gmail.com" } } }), false, "unverified is refused");
   assert.equal(na.isJunid({ auth: { token: { email: "someone@else.com" } } }), false);
   assert.equal(na.isJunid({}), false);
 });

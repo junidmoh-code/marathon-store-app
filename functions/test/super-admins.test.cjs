@@ -134,11 +134,16 @@ test("index.js gates all ask the super-admin helper", () => {
     assert.ok(at >= 0, `${name} missing`);
     return src.slice(at, src.indexOf("\n}\n", at));
   };
-  assert.match(body("assertAdmin"), /isSuperAdmin\(request\.auth\?\.token\?\.email\)/);
-  assert.match(body("assertPhotoGeneration"), /isSuperAdmin\(request\.auth\?\.token\?\.email\)/);
-  assert.match(body("assertEnginePolicy"), /isSuperAdmin\(request\.auth\?\.token\?\.email\)/);
-  assert.match(src, /const callerIsSuperAdmin = isSuperAdmin\(callerEmail\);/); // reorder-planner force
-  assert.match(src, /if \(!isSuperAdmin\(decoded\.email\)\) \{/);                               // chatStream
+  // Every CALLER gate asks the verified-token helper (email_verified === true),
+  // never the bare email. (CodeRabbit, PR #896.)
+  assert.match(body("assertAdmin"), /isSuperAdminToken\(request\.auth\?\.token\)/);
+  assert.match(body("assertPhotoGeneration"), /isSuperAdminToken\(request\.auth\?\.token\)/);
+  assert.match(body("assertEnginePolicy"), /isSuperAdminToken\(request\.auth\?\.token\)/);
+  assert.match(src, /const callerIsSuperAdmin = isSuperAdminToken\(request\.auth\.token\);/); // reorder-planner force
+  assert.match(src, /if \(!isSuperAdminToken\(decoded\)\) \{/);                               // chatStream
+  for (const g of ["assertAdmin", "assertPhotoGeneration", "assertEnginePolicy"]) {
+    assert.doesNotMatch(body(g), /isSuperAdmin\(/, `${g} must not accept an unverified email`);
+  }
   assert.match(src, /if \(isSuperAdmin\(target\.email\)\) \{/);                               // never delete either admin
   assert.match(src, /adminEmail: SUPER_ADMIN_EMAILS,/);
 });

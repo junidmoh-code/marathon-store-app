@@ -862,10 +862,10 @@ exports.primaryPhotoMetaReady = onValueWritten(
 
 const broadcastToken   = defineSecret("broadcast-service-token");
 const BROADCAST_VM_URL = "http://34.59.92.37";
-const { JUNID_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdmin } = require("./lib/super-admins.cjs");
+const { JUNID_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdmin, isSuperAdminToken } = require("./lib/super-admins.cjs");
 
 function assertAdmin(request) {
-  if (!isSuperAdmin(request.auth?.token?.email)) {
+  if (!isSuperAdminToken(request.auth?.token)) {
     throw new HttpsError("permission-denied", "Admin only.");
   }
 }
@@ -893,7 +893,7 @@ function assertAdmin(request) {
 // FAIL CLOSED: an RTDB read error refuses. A gate that opens when the database
 // is unreachable is not a gate.
 async function assertPhotoGeneration(request) {
-  if (isSuperAdmin(request.auth?.token?.email)) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
@@ -930,7 +930,7 @@ async function assertPhotoGeneration(request) {
 // FAIL CLOSED: an RTDB read error refuses. A gate that opens when the database
 // is unreachable is not a gate.
 async function assertEnginePolicy(request) {
-  if (isSuperAdmin(request.auth?.token?.email)) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
@@ -1817,7 +1817,7 @@ exports.analyzeReorderNeeds = onCall(
     const startedAt = Date.now();
     const callerEmail = request.auth.token.email;
     const callerUid   = request.auth.uid;
-    const callerIsSuperAdmin = isSuperAdmin(callerEmail);
+    const callerIsSuperAdmin = isSuperAdminToken(request.auth.token); // verified email only
     // payload.force is honoured only for the super-admin. Any other caller
     // that passes force: true falls back to the normal rate-limit path.
     const requestedForce = !!(request.data && request.data.force);
@@ -3181,7 +3181,7 @@ exports.chatStream = onRequest(
       console.warn("chatStream: token verification failed:", err.code || err.message);
       return res.status(401).json({ error: "Invalid or expired token." });
     }
-    if (!isSuperAdmin(decoded.email)) {
+    if (!isSuperAdminToken(decoded)) { // verified email only (CodeRabbit, PR #896)
       console.warn(`chatStream: forbidden caller ${decoded.email}`);
       return res.status(403).json({ error: "Forbidden." });
     }
