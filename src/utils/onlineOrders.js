@@ -40,6 +40,8 @@ export function randomOrderRef(rand = Math.random) {
 export function orderLabel(order) {
   const n = order?.orderNumber;
   const base = n != null && String(n) !== "" ? `#${n}` : (order?.shopifyName || order?.ref || "#?");
+  // A second parcel of items an earlier parcel was short (every line `reship`; docs/ONLINE-ORDERS.md "Second parcel").
+  if (order?.reship && typeof order.reship === "object") return `${base} (second parcel)`;
   return order?.followUpOf != null ? `${base} (follow-up)` : base;
 }
 

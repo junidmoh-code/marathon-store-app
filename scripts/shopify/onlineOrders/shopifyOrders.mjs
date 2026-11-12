@@ -216,3 +216,56 @@ export async function fulfilLinesOnShopify(graphql, { orderGid, packed, baseline
   }
   return { ok: true, fulfillmentIds };
 }
+
+// ── A SECOND PARCEL: its waybill joins the order's tracking ─────────────────
+// Items an earlier parcel was short ship again (docs/ONLINE-ORDERS.md "Second
+// parcel") under the SAME Shopify order, whose line items are already
+// fulfilled — there is nothing left to fulfil. The new waybill is added to the
+// order's latest live fulfilment as a further tracking number (its existing
+// numbers kept, in order), each with its tracking link. The customer agent
+// tells the customer on WhatsApp, so Shopify sends no email (notifyCustomer false).
+// Idempotent: a retry that finds the number already there is done.
+
+const TRACKING_FIELDS = `
+  id cancelledAt
+  fulfillments(first: 20) { id status createdAt trackingInfo(first: 10) { company number url } }`;
+const DEAD_FULFILMENT = new Set(["CANCELLED", "ERROR", "FAILURE"]);
+const sameNumber = (a, b) => String(a ?? "").trim().toUpperCase() === String(b ?? "").trim().toUpperCase();
+
+/** Pure: the tracking input that adds `number` to `fulfillment`'s numbers, or null when it is already there. */
+export function addedTrackingInput(fulfillment, { number, url, company }) {
+  const info = (fulfillment?.trackingInfo ?? []).filter((t) => t?.number);
+  if (info.some((t) => sameNumber(t.number, number))) return null;
+  const all = [...info.map((t) => ({ number: String(t.number), url: t.url ? String(t.url) : null })), { number: String(number), url: url ? String(url) : null }];
+  return {
+    company: String(info.find((t) => t.company)?.company || company),
+    numbers: all.map((t) => t.number),
+    // Only when every number has its link (Shopify pairs them by position).
+    ...(all.every((t) => t.url) ? { urls: all.map((t) => t.url) } : {}),
+  };
+}
+
+/** → { ok: true, fulfillmentId, alreadyDone? } | { ok: false, error } */
+export async function addTrackingToOrder(graphql, { orderGid, number, url = null, company }) {
+  const data = await graphql(`query ($id: ID!) { order(id: $id) { ${TRACKING_FIELDS} } }`, { id: orderGid });
+  const order = data.order ?? null;
+  if (!order) return { ok: false, error: "Shopify no longer has this order" };
+  const live = (order.fulfillments ?? []).filter((f) => f && !DEAD_FULFILMENT.has(String(f.status || "").toUpperCase()));
+  if (!live.length) return { ok: false, error: "the order has no fulfilment on Shopify to add the second parcel's tracking to" };
+  if (live.some((f) => (f.trackingInfo ?? []).some((t) => sameNumber(t.number, number)))) return { ok: true, fulfillmentId: null, alreadyDone: true };
+  const latest = [...live].sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))[0];
+  const input = addedTrackingInput(latest, { number, url, company });
+  const res = await graphql(
+    `mutation ($id: ID!, $t: FulfillmentTrackingInput!) {
+      fulfillmentTrackingInfoUpdate(fulfillmentId: $id, trackingInfoInput: $t, notifyCustomer: false) {
+        fulfillment { id }
+        userErrors { field message }
+      }
+    }`,
+    { id: latest.id, t: input },
+    { mutation: true },
+  );
+  const errs = res.fulfillmentTrackingInfoUpdate?.userErrors ?? [];
+  if (errs.length) return { ok: false, error: errs.map((e) => e.message).join("; ") };
+  return { ok: true, fulfillmentId: latest.id };
+}

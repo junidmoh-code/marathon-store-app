@@ -49,7 +49,7 @@ import {
   isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
-import { fetchOrdersUpdatedSince, fetchOrderById } from "./shopifyOrders.mjs";
+import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey } from "./shipping.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
@@ -791,6 +791,9 @@ async function syncHolds(ctx, id, order) {
   ctx.summary.holds += touched.size;
 }
 
+// The Courier Guy's public tracking page for a waybill (the link the customer agent sends too).
+export const courierTrackUrl = (waybill) => `https://portal.thecourierguy.co.za/track?ref=${encodeURIComponent(String(waybill))}`;
+
 // ── 3. Shopify fulfilment after the pack ─────────────────────────────────────
 async function shipOrder(ctx, id, order) {
   const { db, now, log } = ctx;
@@ -916,6 +919,18 @@ async function shipOrder(ctx, id, order) {
   let out;
   if (noShopify) {
     out = exchange ? { ok: true, noShopify: true } : { ok: false, error: "the order carries no shopifyGid" };
+  } else if (order.reship && typeof order.reship === "object") {
+    // A SECOND PARCEL (docs/ONLINE-ORDERS.md "Second parcel"): its items are already fulfilled on Shopify with the
+    // first parcel, so nothing is fulfilled — the new waybill is added to the order's tracking (no Shopify email;
+    // the customer agent tells the customer). With live off there is no waybill: the dry run is recorded, as for any order.
+    try {
+      out = waybill
+        ? await addTrackingToOrder(ctx.graphql, { orderGid: order.shopifyGid, number: waybill, url: courierTrackUrl(waybill), company: COURIER_COMPANY })
+        : { ok: true, reshipNote: "no waybill (the live switch was off) — Shopify not changed" };
+      if (out.ok) out = { ...out, reship: true };
+    } catch (e) {
+      out = { ok: false, error: String(e?.message || e) };
+    }
   } else {
     try {
       // The Courier Guy waybill is the tracking number Shopify sends the
@@ -941,6 +956,7 @@ async function shipOrder(ctx, id, order) {
       "fulfil/error": null,
       ...(out.alreadyDone ? { "fulfil/alreadyDone": true } : {}),
       ...(out.noShopify ? { "fulfil/note": "No Shopify order (online exchange) — finished without Shopify" } : {}),
+      ...(out.reship ? { "fulfil/note": out.reshipNote || (out.alreadyDone ? `Second parcel: waybill ${waybill} was already on the Shopify order's tracking` : `Second parcel: waybill ${waybill} added to the Shopify order's tracking (no Shopify email)`) } : {}),
       // A fulfilment that failed before and has now landed takes its
       // attention with it, or it would sit in Settings for ever.
       ...([ATTENTION_KIND.FULFIL_FAILED, ATTENTION_KIND.COURIER_FAILED].includes(order.attention?.kind) ? { attention: null, attentionOpen: null } : {}),
@@ -955,6 +971,8 @@ async function shipOrder(ctx, id, order) {
     for (const pid of new Set(swapped.filter(Boolean))) await db.ref(`${DIRTY_PATH}/${pid}`).set(ctx.increment(1));
     log(out.noShopify
       ? `  ✓ ${orderLabel(order)}: exchange shipped${waybill ? ` (waybill ${waybill})` : ""} — no Shopify order, finished without Shopify`
+      : out.reship
+      ? `  ✓ ${orderLabel(order)}: second parcel shipped${waybill ? ` (waybill ${waybill}, added to the Shopify order's tracking)` : " (no waybill: live off)"}`
       : `  ✓ ${orderLabel(order)}: fulfilled on Shopify${out.alreadyDone ? " (it already was)" : ", customer notified"}`);
     return;
   }
