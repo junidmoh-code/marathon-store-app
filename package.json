@@ -19,7 +19,8 @@
     "e2e:sky-wall-v3": "node scripts/sky-wall-v3.e2e.mjs",
     "e2e:sky-shell": "node scripts/sky-shell.e2e.mjs",
     "e2e:sky-admin": "node scripts/sky-admin.e2e.mjs",
-    "contrast:admin": "node scripts/sky-contrast.mjs --admin --webkit --port 5211"
+    "contrast:admin": "node scripts/sky-contrast.mjs --admin --webkit --port 5211",
+    "e2e:chip-rows": "node scripts/sky-chip-rows.e2e.mjs"
   },
   "dependencies": {
     "firebase": "^10.13.2",

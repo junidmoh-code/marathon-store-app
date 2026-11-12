@@ -829,7 +829,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
             })}
           </div>
         )}
-        <div role="tablist" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <div role="tablist" data-chip-row="" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           {TABS.map((t) => (
             <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)} style={{ ...(tab === t.key ? tabOn : tabOff), flex: 1, minHeight: 40, padding: "0 14px" }}>
               {t.label}{Number.isFinite(data.tabCounts[t.key]) ? ` ${data.tabCounts[t.key]}` : ""}

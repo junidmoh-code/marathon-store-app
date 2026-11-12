@@ -1,0 +1,63 @@
+/* ─── ONE LINE PER CHIP ROW (Junid 12 Nov) ────────────────────────────────────
+ *
+ * "Any chip or tab group anywhere in the app is a single horizontally
+ * scrolling row and never wraps or overlaps."
+ *
+ * Two ways a row qualifies:
+ *   1. It says so: [data-chip-row] (new and redesigned screens tag their rows),
+ *      [role="tablist"], or the admin design system's .sky-row1.
+ *   2. It looks like one: a legacy inline-styled flex row that WRAPS and whose
+ *      children are all pill buttons (border-radius 999px / 20px+ written
+ *      inline, the stock console's tabOn/tabOff included). Matched with :has()
+ *      so the ~60 legacy screens — several of them guarded files no reskin may
+ *      edit (CLAUDE.md) — get the rule without a line of their code changing.
+ *
+ * Presentation only: same buttons, same handlers, same order. A row that no
+ * longer fits scrolls sideways; its edges fade to say so (mask on the row's own
+ * box — nothing is drawn over the photo).
+ *
+ * scripts/sky-chip-rows.e2e.mjs proves it per route at 390x844 and 1440x900:
+ * every such container lays its children on one line.
+ */
+
+html[data-sky="on"] :is(
+  [data-chip-row],
+  [role="tablist"]:not(.wht-tiles),
+  #root [style*="flex-wrap: wrap"]:has(> button[style*="border-radius: 999px"], > button[style*="border-radius: 20px"], > button[style*="border-radius: 99px"], > button[style*="border-radius: 100px"]):not(:has(> :not(button, [data-chip-count])))
+) {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: 24px;
+  touch-action: pan-x pan-y;
+  /* Edge fade: the row's own pixels fade out at both ends, so a chip running
+     off the edge reads as "more this way". */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  padding-inline: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+html[data-sky="on"] :is(
+  [data-chip-row],
+  [role="tablist"]:not(.wht-tiles),
+  #root [style*="flex-wrap: wrap"]:has(> button[style*="border-radius: 999px"], > button[style*="border-radius: 20px"], > button[style*="border-radius: 99px"], > button[style*="border-radius: 100px"]):not(:has(> :not(button, [data-chip-count])))
+)::-webkit-scrollbar { display: none; }
+html[data-sky="on"] :is(
+  [data-chip-row],
+  [role="tablist"]:not(.wht-tiles),
+  #root [style*="flex-wrap: wrap"]:has(> button[style*="border-radius: 999px"], > button[style*="border-radius: 20px"], > button[style*="border-radius: 99px"], > button[style*="border-radius: 100px"]):not(:has(> :not(button, [data-chip-count])))
+) > * {
+  /* Never shrinks below its label; a row that asked its chips to share the
+     width equally (flex: 1) still does when there is room. */
+  flex-shrink: 0 !important;
+  min-width: max-content !important;
+  white-space: nowrap !important;
+  max-width: none !important;
+}
+/* The Warehouse status tiles (WarehouseTop.jsx, role=tablist) are a fixed
+   one-row segmented grid by design and keep their grid. */

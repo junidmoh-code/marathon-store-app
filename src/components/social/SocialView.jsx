@@ -627,7 +627,7 @@ export default function SocialView({ products = [], onExit }) {
       </div>
 
       <div style={{ position: "sticky", top: 0, zIndex: 20, background: "#000", padding: "10px 14px 12px", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
-        <div className="sky-row1" role="tablist" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <div className="sky-row1" role="tablist" data-chip-row="" style={{ display: "flex", gap: 6, flexWrap: "nowrap" }}>
           {TABS.map(({ key, label }) => (
             <button key={key} onClick={() => setTab(key)} aria-pressed={tab === key} data-testid={`social-tab-${key}`}
                     style={{ ...(tab === key ? tabOn : tabOff), padding: "7px 14px", fontSize: "0.78rem" }}>
