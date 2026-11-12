@@ -29,10 +29,19 @@ export const WAITING_ON_REFILL = "refill";
 
 const clean = (v) => JSON.parse(JSON.stringify(v ?? null));
 
-/** Is this line waiting on refill — nowhere on the route had it? PURE. */
+/**
+ * Is this line waiting on refill — nowhere on the route had it? PURE.
+ * Also the same wait after Jamie (marathon-dm-agent lineStatus.js park) offered
+ * the customer alternatives: Jamie rewrites the line to `unavailable` with
+ * `source.by: "jamie", was: "no_stock"`. While the customer is still choosing
+ * (awaitingCustomer) it is left alone (waitingBlocker); once they said "wait"
+ * Jamie drops its mark and the line waits on refill like any other.
+ */
 export function isWaitingOnRefill(line) {
   const src = line?.source;
-  return !!line?.pid && src?.status === LINE_STATUS.NO_STOCK && !src.locationId;
+  if (!line?.pid || !src || src.locationId) return false;
+  if (src.status === LINE_STATUS.NO_STOCK) return true;
+  return src.status === LINE_STATUS.UNAVAILABLE && src.by === "jamie" && src.was === LINE_STATUS.NO_STOCK;
 }
 
 /** Why the line must be left alone this tick, or null. PURE. */

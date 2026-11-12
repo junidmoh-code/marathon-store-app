@@ -367,8 +367,9 @@ export async function afterSwap({ db, orderKey, i, order, swappedFrom, to, newPi
       qty: Number(swappedFrom.qty) || 1, locationId: loc, hubOrders: back.hubOrders.length ? back.hubOrders : null,
       swappedTo: to, at: now, by: whoName(by), via, state: "open",
     });
-    // Trophy sees it on its own Website orders strip (Yasmin is at the packing store).
-    if (loc === "trophy" && !back.hubOrders.length) {
+    // Trophy, Concrete and Pine see it on their own Website orders strip (the
+    // packer is at Marathon PE, the packing store, so PE needs no entry).
+    if (["trophy", "concrete", "marathon-pine"].includes(loc) && !back.hubOrders.length) {
       const key = `${displayKey(orderKey, i, gen)}__return`;
       returnRec.entryKey = `displayChecks_active/${loc}/${key}`;
       await db.ref(returnRec.entryKey).transaction((cur) => (cur == null ? clean({

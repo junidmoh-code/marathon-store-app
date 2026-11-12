@@ -145,6 +145,21 @@ describe("waiting on refill — Central is listed but never picked, and nothing 
     expect(f.read("orders") ?? null).toBeNull();
   });
 
+  it("a line Jamie parked (offered alternatives) routes itself once the customer said wait and stock lands", async () => {
+    const parked = tee({ source: { status: "unavailable", by: "jamie", at: NOW - 60e3, was: "no_stock" } });
+    const f = fakeDb(world({ lines: [parked], stock: { concrete: { TEE: { M: { qty: 1 } } } } }));
+    await tick(f);
+    expect(line(f, 0).source).toMatchObject({ status: "display", locationId: "concrete" });
+  });
+
+  it("…but not while the customer is still choosing", async () => {
+    const parked = tee({ source: { status: "unavailable", by: "jamie", was: "no_stock" }, awaitingCustomer: { since: NOW - 60e3, by: "jamie" } });
+    const f = fakeDb(world({ lines: [parked], stock: { concrete: { TEE: { M: { qty: 1 } } } } }));
+    await tick(f);
+    expect(line(f, 0).source.status).toBe("unavailable");
+    expect(f.read("displayChecks_active") ?? null).toBeNull();
+  });
+
   it("feeds switched off: nothing is routed or stamped", async () => {
     const f = fakeDb(world({ lines: [tee()], stock: { concrete: { TEE: { M: { qty: 1 } } } }, enabled: false }));
     await tick(f);
@@ -157,6 +172,8 @@ describe("the pure parts", () => {
     expect(isWaitingOnRefill(tee())).toBe(true);
     expect(isWaitingOnRefill(tee({ source: { status: "no_stock", locationId: "hub2" } }))).toBe(false);
     expect(isWaitingOnRefill(tee({ source: { status: "not_found" } }))).toBe(false);
+    expect(isWaitingOnRefill(tee({ source: { status: "unavailable", by: "jamie", was: "no_stock" } }))).toBe(true);
+    expect(isWaitingOnRefill(tee({ source: { status: "unavailable" } }))).toBe(false);   // an escalation's give-up
   });
   it("waitingBlocker leaves busy lines alone", () => {
     expect(waitingBlocker({ line: tee(), order: {}, enabled: true })).toBeNull();
