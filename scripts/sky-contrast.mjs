@@ -188,8 +188,10 @@ async function textElements(page, strict = false) {
       // reaches into a faded edge zone (22px) of its own row.
       // Likewise text cut by the edge of a sideways-scrolling row (part of it
       // scrolled out of view): the eye reads it when it is scrolled in.
+      // Only inside a chip / tab row — any other clipped text is still judged.
       let cut = false;
-      for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      const chipRow = el.closest("[data-chip-row], [role='tablist'], [data-fade], .wh-chips");
+      if (chipRow) for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
         const ox = getComputedStyle(p).overflowX;
         if (ox === "auto" || ox === "scroll") {
           const rb = p.getBoundingClientRect();

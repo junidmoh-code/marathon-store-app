@@ -3,8 +3,8 @@
 // Its edge fades ONLY on a side where there is more to see: this keeps
 // data-fade = "l" | "r" | "lr" (or nothing) on each row. Presentation only.
 // One passive capture-phase scroll listener, a resize listener, and a
-// MutationObserver debounced to 200ms for rows that mount later (a busy list
-// re-rendering does not re-query the page every frame).
+// MutationObserver on #root (element additions only, 400ms trailing debounce)
+// for rows that mount later; nothing runs while the sky is off (the TV board).
 
 export const CHIP_ROW_SELECTOR = [
   "[data-chip-row]",
@@ -28,19 +28,24 @@ let started = false;
 export function startChipRowFade(doc = typeof document !== "undefined" ? document : null) {
   if (started || !doc || typeof window === "undefined") return;
   started = true;
-  let queued = false;
   const all = () => {
-    queued = false;
+    if (doc.documentElement.getAttribute("data-sky") !== "on") return;
     let rows;
     try { rows = doc.querySelectorAll(CHIP_ROW_SELECTOR); } catch { rows = doc.querySelectorAll("[data-chip-row], [role=tablist]"); }   // no :has()
     rows.forEach(apply);
   };
-  const queue = () => { if (!queued) { queued = true; setTimeout(all, 200); } };
+  let timer = 0;
+  const queue = () => { clearTimeout(timer); timer = setTimeout(all, 400); };
   doc.addEventListener("scroll", (e) => {
     const t = e.target;
     if (t && t.nodeType === 1 && t.matches) { try { if (t.matches(CHIP_ROW_SELECTOR)) apply(t); } catch { /* old engine */ } }
   }, { capture: true, passive: true });
   window.addEventListener("resize", queue, { passive: true });
-  if (typeof MutationObserver === "function") new MutationObserver(queue).observe(doc.body, { childList: true, subtree: true });
+  if (typeof MutationObserver === "function") {
+    const root = doc.getElementById("root") || doc.body;
+    new MutationObserver((muts) => {
+      for (const m of muts) for (const n of m.addedNodes) if (n.nodeType === 1) { queue(); return; }
+    }).observe(root, { childList: true, subtree: true });
+  }
   queue();
 }

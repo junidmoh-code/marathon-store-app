@@ -3422,6 +3422,9 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
 // entirely, don't delete the code". Their builders stay below; true brings
 // all three back (the phone still leaves out the first two).
 const SHOW_HUB_LIVE_CARDS = false;
+// The Shipment Release card's delegate check: /settings/stockHold/config read
+// once per session per account (RoleSelector remounts on every Home visit).
+let stockHoldConfigOnce = null;
 
 function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push, mute }) {
   // "Up" from an Admin card lands on the Admin panel (skyNav.js).
@@ -3514,7 +3517,9 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
     if (canReleaseStockHold(viewer, null)) { setStockHoldAllowed(true); return undefined; }
     if (!STOCK_HOLD_ENABLED || !viewer.uid) { setStockHoldAllowed(false); return undefined; }
     let alive = true;
-    loadHoldConfig().then((cfg) => { if (alive) setStockHoldAllowed(canReleaseStockHold(viewer, cfg)); }).catch(() => { if (alive) setStockHoldAllowed(false); });
+    // Once per session per account (not on every Home visit).
+    if (!stockHoldConfigOnce || stockHoldConfigOnce.uid !== viewer.uid) stockHoldConfigOnce = { uid: viewer.uid, p: loadHoldConfig().catch(() => null) };
+    stockHoldConfigOnce.p.then((cfg) => { if (alive) setStockHoldAllowed(canReleaseStockHold(viewer, cfg)); });
     return () => { alive = false; };
   }, [homeUser?.email, homeUser?.uid]);
   const stockHoldCard = STOCK_HOLD_ENABLED
