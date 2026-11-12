@@ -4,6 +4,7 @@ import "./styles/sky.css";
 import "./styles/sky-theme.css";
 import "./styles/sky-admin.css";
 import "./styles/sky-stock.css";
+import "./styles/sky-chips.css";
 import App from "./App.jsx";
 import { startUpdateChecker } from "./update/updateChecker.js";
 import { applyPushDeepLink } from "./push/deepLink.js";
