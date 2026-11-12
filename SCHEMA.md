@@ -275,35 +275,44 @@ label cannot distinguish colourways, and printed codes on this stock are
   listed twice (a primary that merges into its own sibling promotes the
   survivor to primary and drops its sibling entry).
 
-### Why claim-first, and never check-then-write
+### Why the claim is create-once, and why it follows the product
 
 A check ("does any product have this code?") followed by a write is a race with
 a window: two staff scanning the same shoe on two tablets both read "no", both
 create a product, and the catalogue now has two records for one shoe with stock
-split across them. The rules close that window — the **second** create-once
+split across them. The create-once rule closes that window — the **second**
 write loses, deterministically.
 
-So intake does this, in this order:
-
-1. Mint the product id (`"p" + serverNowMs()`).
-2. **Claim** `/style_code_index/{code}` create-once with that id.
-3. Claim succeeded ⇒ create the product and stamp `styleCodeNormalised`.
-4. Claim **failed** (key exists) ⇒ read its `productId`. A *different* product
-   owns this code: write `/duplicate_candidates`, and route the operator to
-   **add stock on the existing product**. Never create a second product.
-
-The claim is made as late as possible — immediately before the product write —
-so the window in which a claim can outlive a failed product write is as small as
-it can be.
+The claim rule also requires `root.child('products').child(productId).exists()`.
+`root` is the database before the write, so intake must write the **product
+first** and claim second (`writeProductThenClaim`, `src/utils/styleCodeClaim.js`);
+a single multi-location update of both is refused for a new product. If the
+product write fails, no claim is attempted.
 
 ### The orphan case
 
-Because the claim precedes the product write, a claim can survive a product
-write that failed: `/style_code_index/{code}` names a `productId` that does not
-exist. `resolveStyleCode` detects this and returns `claimOrphaned: true`. Intake
-must **show** it rather than treat the code as taken — otherwise the code looks
-owned and nothing owns it, and no one can proceed. Clearing an orphan requires
-an admin (the node is create-once for staff).
+Deleting a product leaves its claim naming an id that no longer exists.
+`resolveStyleCode` heals this itself: when **every** owner of the claim is absent
+from `/products` it releases the claim, records it at `/style_code_orphans`, and
+answers as if the code were free. Staff see nothing about it. A merged-away
+primary answers with its survivor; a dead primary with a live colourway sibling
+keeps the claim and answers with the live owners. See
+`docs/STYLE-CODE-ORPHAN-CLAIMS.md`.
+
+### `/style_code_orphans/{NORMALISED_STYLE_CODE}` — released dead claims
+
+Admin-SDK only; no client rule, so no client can read it. Written **before** the
+claim is removed, so a release is never silent. A later release of the same code
+keeps the earlier one in `previous`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `productId` | string | The dead product the claim named. |
+| `releasedAt` | number (epoch ms) | Server clock. |
+| `releasedBy` | string | Caller's uid, or `script:sweep-style-code-orphans`. |
+| `source` | string | `resolveStyleCode` or `sweep`. |
+| `claimedAt`, `claimedBy`, `siblings` | | Copied from the released claim, when present. |
+| `previous` | object | `{productId, releasedAt, releasedBy}` of an earlier release. |
 
 `/products.styleCodeNormalised` is a *stamp*, not the authority. A scan of
 `/products` still matters — it is how a collision between rows that never

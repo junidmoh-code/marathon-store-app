@@ -8,14 +8,15 @@
 // onlinePool.test.js — if they ever disagree, that test fails.
 //
 // The rule:
-//   · locations: every one EXCEPT In Transit (not pickable) and Hub 3, Pine and
-//     Concrete (counts not trusted online — owner decision 2026-09-08)
+//   · locations: every one EXCEPT In Transit (not pickable) and the dead
+//     concrete-stockroom id. Hub 3, Pine and Concrete count again since
+//     12 Nov 2026 (Junid: "stock anywhere is our stock").
 //   · sizes: only the sizes the product record lists (a stray cell does not ship)
 //   · a negative cell counts 0
 import { stockSizeKey } from "./sizeKey.js";
 
 export const ONLINE_EXCLUDED_LOCATIONS = Object.freeze([
-  "in_transit", "hub3", "marathon-pine", "concrete", "concrete-stockroom",
+  "in_transit", "concrete-stockroom",
 ]);
 
 /**

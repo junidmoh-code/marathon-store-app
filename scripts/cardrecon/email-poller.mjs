@@ -76,16 +76,18 @@ import {
 // ordinary mail \Seen and would hide every notification from it. The decisions
 // live in eftCore.mjs; here is only the wiring. See handleEftMessage.
 import {
-  EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText,
+  EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText, linkedIngestDecision, EFT_LINK_WINDOW,
   eftMessageKey, createOnlyStep, eftPoolRecord,
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   refusalFingerprint, applyRefusalFingerprint,
   redactAccountDigits, domainOfAddress, parseAccountPolicies, accountPolicyProblems,
-  destinationVerdict, immediacyVerdict, paymentDateVerdict, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
+  destinationVerdict, immediacyVerdict, enforcesImmediateOnly, parsePaymentDateCutoff, EFT_CUTOFF_ENV_VAR, DEFAULT_EFT_PAYMENT_DATE_CUTOFF,
+  resolveAccountFloors, datedVerdict,
+  senderTrustVerdict, isSendersOwnDocument, noticeReadPlan, CARD_REPORT_SENDERS,
   IMMEDIATE_NOT_REQUIRED_FROM,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
-import { selectReader, noReaderReason } from "./eftBanks.mjs";
+import { EFT_READERS, noReaderReason } from "./eftBanks.mjs";
 import { envelopeCandidateKeys, groupEftPayments, eftPaymentKey, applyEvictions } from "./eftCore.mjs";
 
 // firebase-admin is BORROWED from functions/, the way every other script on the
@@ -266,6 +268,10 @@ function config() {
     // (Sonnet architect review, #765.)
     eftPaymentDateCutoff: parsePaymentDateCutoff(env.EFT_PAYMENT_DATE_CUTOFF),
     eftPaymentDateCutoffSource: sourceOf(EFT_CUTOFF_ENV_VAR),
+    // Per-account effective-from floors (eftCore ACCOUNT_EFFECTIVE_FROM — Pine's
+    // FNB account from 2026-11-10), resolved against the allowlist: bank +
+    // last four out, full numbers never.
+    eftAccountFloors: resolveAccountFloors(parseAccountPolicies(env.EFT_ALLOWED_ACCOUNTS)),
     dryRun: process.argv.includes("--dry-run"),
   };
 }
@@ -621,7 +627,7 @@ async function run() {
   console.log(`· EFT: a payment the bank dates before ${IMMEDIATE_NOT_REQUIRED_FROM} must be immediate; from ${IMMEDIATE_NOT_REQUIRED_FROM} immediate or regular`);
   // Immediate-only accounts (2 Nov 2026) — by bank and last four, never the
   // full number; and any EFT_ALLOWED_ACCOUNTS entry that did not read.
-  const immediateOnly = cfg.eftAccounts.filter((p) => p.immediateOnly);
+  const immediateOnly = cfg.eftAccounts.filter((p) => enforcesImmediateOnly(p));
   if (immediateOnly.length) {
     console.log(`· EFT: immediate payments ONLY into ${immediateOnly.map((p) => `${p.bank} …${p.account.slice(-4)}`).join(", ")}, whatever the date`);
   }
@@ -633,6 +639,9 @@ async function run() {
   } else {
     console.warn(`⚠ ${cfg.eftPaymentDateCutoff.reason} It is set in ${cfg.eftPaymentDateCutoffSource}; fix it or remove it to use the default (${DEFAULT_EFT_PAYMENT_DATE_CUTOFF}). Until then every bank notification waits UNREAD — nothing is confirmed, nothing is refused; slips are unaffected.`);
   }
+  // Per-account floors (10 Nov 2026) — bank, last four and date, never a full number.
+  for (const f of cfg.eftAccountFloors.floors) console.log(`· EFT: ${f.label} (${f.unresolved ? `UNRESOLVED — every ${f.bank} account` : `${f.bank} …${f.tail}`}) confirms only payments the bank dates ${f.from} or later`);
+  for (const problem of cfg.eftAccountFloors.problems) console.warn(`⚠ EFT account floor: ${problem}`);
 
   // ── RE-RUN WHAT AN OLDER PARSER REFUSED — before the scan, so the scan
   // finds the released messages in this same tick. Never the tick's failure.
@@ -671,6 +680,7 @@ async function run() {
   // The EFT reader's own tallies — separable on purpose: a refused slip means a
   // terminal is not reconciling; a refused-auth notification means somebody
   // tried to forge a payment. Different alarms for different people.
+  let eftRefusedMismatch = 0;
   let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftRefusedTiming = 0, eftRefusedStale = 0, eftHeld = 0, eftErrors = 0;
   let scannedSoFar = 0;
   let windowCount = 0;
@@ -808,6 +818,8 @@ async function run() {
             eftRefusedAccount += result.eftRefusedAccount || 0;
             eftRefusedTiming += result.eftRefusedTiming || 0;
             eftRefusedStale += result.eftRefusedStale || 0;
+            eftRefusedMismatch += result.eftRefusedMismatch || 0;
+            untrustedSenderThisRun += result.eftUntrusted || 0;
             eftHeld += result.eftHeld || 0;
             eftErrors += result.eftErrors || 0;
           } catch (err) {
@@ -841,16 +853,27 @@ async function run() {
       // must not consume the message), so the tally is a run counter rather
       // than a value threaded through six return points.
       eftUnknownBank: unknownBankThisRun,
+      // Bank-domain mail refused as an untrusted sender this tick (a person's
+      // mailbox at a bank, or a forward) — Junid reviews each in /eft_pool.
+      eftUntrustedSender: untrustedSenderThisRun,
+      eftRefusedMismatch,
       // How many account tails the allowlist held this tick — a COUNT, never
       // a value. Zero is the loudest number on this line: it means every
       // payment refuses until EFT_ALLOWED_ACCOUNTS is set in .env.
       eftAccountTails: cfg.eftAccounts.length,
       // How many of them take immediate payments only (a count, never a value).
-      eftImmediateOnlyAccounts: cfg.eftAccounts.filter((p) => p.immediateOnly).length,
+      eftImmediateOnlyAccounts: cfg.eftAccounts.filter((p) => enforcesImmediateOnly(p)).length,
       // FIX 8: the cutoff this tick refused stale payments against — a date,
       // so the owner can see from the heartbeat which cutoff is live.
       eftPaymentDateCutoff: cfg.eftPaymentDateCutoff.ok ? cfg.eftPaymentDateCutoff.date : "INVALID",
       eftImmediateNotRequiredFrom: IMMEDIATE_NOT_REQUIRED_FROM,
+      // Per-account effective-from floors in force (a count, never a value).
+      // An unresolved floor still counts here (it applies bank-wide, fail
+      // closed); eftAccountFloorProblems is the health signal.
+      eftAccountFloors: cfg.eftAccountFloors.floors.length,
+      // Floors that did not resolve (applied bank-wide, fail closed) or that
+      // share a last four with another account — 0 is the ONLY healthy value.
+      eftAccountFloorProblems: cfg.eftAccountFloors.problems.length,
       // Messages the EFT reader THREW on this tick (left unread, retried) — a
       // persistent environment failure must not hide behind a healthy beat.
       eftErrors,
@@ -862,8 +885,8 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
-  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftRefusedTiming || eftRefusedStale || eftHeld || unknownBankThisRun) {
-    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftRefusedTiming} NOT IMMEDIATE, ${eftRefusedStale} DATED BEFORE THE CUTOFF, ${eftHeld} HELD (resent copy, possible duplicate for review, or no bank transaction id), ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
+  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftRefusedTiming || eftRefusedStale || eftHeld || unknownBankThisRun || untrustedSenderThisRun || eftRefusedMismatch) {
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftRefusedTiming} NOT IMMEDIATE, ${eftRefusedStale} DATED BEFORE THE CUTOFF, ${eftHeld} HELD (resent copy, possible duplicate for review, or no bank transaction id), ${unknownBankThisRun} from a bank not set up, ${untrustedSenderThisRun} UNTRUSTED SENDER, ${eftRefusedMismatch} BANK/SENDER MISMATCH — see /eft_pool`);
   }
   return 0;
 }
@@ -1290,6 +1313,10 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // A batch report is the slip path's, always. A stranger gets the
   // visibility-only path below — never a reader, never an opened attachment.
   if (route === "card") return null;
+  // FNB's batch-report address sends slips only: the card path's — but only
+  // when DKIM proves it (a forgery claiming it still raises the alarm below).
+  if (CARD_REPORT_SENDERS.includes(String(fromAddress ?? "").trim().toLowerCase())
+    && authenticationVerdict({ headerLines: parsed.headerLines, fromAddress }).pass === true) return null;
   const fromDomain = domainOfAddress(fromAddress);
   if (route === "stranger") {
     // NOTE it, then HAND IT BACK. Returning a result here would consume the
@@ -1321,7 +1348,18 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   if (!cfg.eftPaymentDateCutoff.ok) {
     throw new Error(`${cfg.eftPaymentDateCutoff.reason} Fix ${EFT_CUTOFF_ENV_VAR} in ${cfg.eftPaymentDateCutoffSource}`);
   }
-  const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
+  // The body, read once: the sender gate looks for forward markers in it, and
+  // the readers / refusal records below use the same text.
+  const bodyText = (parsed.text || "").trim() || htmlToText(parsed.html || "");
+  // DKIM first (is this really from that bank's domain?), then the SENDER
+  // GATE (is it that bank's automated notification system, sending directly —
+  // not a person's mailbox at the bank, not a forward?). Either failing makes
+  // a failed verdict, and everything below treats it as one. (10 Nov 2026.)
+  const verdict = senderTrustVerdict({
+    verdict: authenticationVerdict({ headerLines: parsed.headerLines, fromAddress }),
+    fromAddress, fromAddressCount: Array.isArray(parsed.from?.value) ? parsed.from.value.filter((v) => v?.address).length : 0,
+    subject: message.subject, headerLines: parsed.headerLines, bodyText,
+  });
   // The auth verdict is part of the key so a forgery carrying a guessed genuine
   // Message-ID cannot occupy the key the genuine notification will need.
   const key = eftMessageKey({
@@ -1334,7 +1372,6 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // Only an AUTHENTICATED message earns PDF rendering — a forgery's
   // attachments are attacker files and are not opened; its refusal record
   // carries the body text.
-  const bodyText = (parsed.text || "").trim() || htmlToText(parsed.html || "");
   const documents = []; // { lines: string[]|null, text: string }
   let slipPdfs = 0;
   // ── AN AUTH-FAILED MESSAGE WITH ATTACHMENTS IS NOT CONSUMED ────────────────
@@ -1356,8 +1393,9 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       let d = null;
       await db.ref(`${EFT_POOL_PATH}/${key}`).transaction(createOnlyStep(forgery, (x) => { d = x; }));
       if (d?.write) {
-        console.log(`  · EFT: refused-auth recorded (message also carries attachments — handed to the slip path)`);
+        console.log(`  · EFT: ${forgery.outcome} recorded (message also carries attachments — handed to the slip path)`);
         emailVerdict(forgery, key);
+        if (forgery.outcome === "refused-untrusted-sender") untrustedSenderThisRun += 1;
       }
     }
     return null;
@@ -1379,6 +1417,19 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     for (const { att, cls } of verdicts) {
       if (!cls.ok) {
         documents.push({ lines: null, text: `[attachment "${clip(att.filename, 80)}" not read: ${cls.why}]` });
+        continue;
+      }
+      // ONLY THE BANK'S OWN DOCUMENT IS OPENED (10 Nov 2026). A trusted
+      // sender's notification is its system-named PDF; any other attachment
+      // — a customer's screenshot, a WhatsApp file, a second bank's slip — is
+      // never a confirmation source and is not rendered at all.
+      if (!isSendersOwnDocument(verdict.sender, att.filename)) {
+        // A placeholder like an unreadable PDF: it raises its own visible row
+        // even beside a recorded payment — every genuine notification in the
+        // history carries exactly ONE system-named PDF, so a second one (or a
+        // renamed one) is either a person's addition or a payment that must
+        // not vanish silently. (Substitute review, #887.)
+        documents.push({ lines: null, skipped: true, text: `[attachment "${clip(att.filename, 80)}" not read: it is not ${verdict.sender?.address ?? "the bank"}'s own notification document, so it is never a confirmation source]` });
         continue;
       }
       if (++extracted > MAX_EFT_PDFS) {
@@ -1478,11 +1529,19 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   } else {
     const bodyLines = bodyText ? bodyText.split("\n") : [];
     const offered = [...documents.filter((d) => d.lines), { lines: bodyLines, text: bodyText }];
-    const claimed = offered
-      .map((d) => ({ d, r: selectReader({ fromDomain, lines: d.lines }) }))
-      .filter((x) => x.r);
-    if (claimed.length >= 1) {
+    // THE SENDER'S OWN READER, AND ONLY IT (10 Nov 2026): a trusted sender's
+    // mail is read by its bank's reader. A document ANOTHER bank's reader
+    // recognises instead — a Capitec slip arriving from a Nedbank address —
+    // is a bank/sender mismatch, refused for what it is, never read.
+    const { claimed, mismatched } = noticeReadPlan({ sender: verdict.sender, offered, readers: EFT_READERS });
+    if (claimed.length + mismatched.length >= 1) {
       const parsedDocs = claimed.map((x) => ({ ...x, p: x.r.parse(x.d.lines) }));
+      for (const { d, foreign } of mismatched) {
+        parsedDocs.push({
+          d, r: null,
+          p: { ok: false, bankMismatch: true, reason: `Bank/sender mismatch: this is a ${foreign} document, but it came from ${verdict.sender.address} — a ${foreign} payment is confirmed only by ${foreign}'s own notification. Not read.` },
+        });
+      }
       // ── AN UNREADABLE SIBLING IS A REFUSAL ROW, NEVER SILENCE ──────────────
       // Placeholder documents (lines: null — a corrupt or password-protected
       // PDF, or one past MAX_EFT_PDFS) cannot be offered to a reader, and
@@ -1513,16 +1572,19 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
         const timing = group.parse.ok
           ? immediacyVerdict({
             parsed: group.parse, reader: group.readerId, receivedAt: message.receivedAt,
-            // An immediate-only account (its EFT_ALLOWED_ACCOUNTS tag) needs
-            // an immediate payment whatever the bank date.
-            immediateOnly: account?.ok === true && account.immediateOnly === true,
+            // A tagged account needs an immediate payment whatever the date,
+            // unless its tag is waived (see enforcesImmediateOnly).
+            immediateOnly: account?.ok === true && enforcesImmediateOnly(account),
           })
           : null;
         // FIX 8 — dated on or after the cutoff BY THE BANK (group.parse.bankTs,
         // the bank's own printed payment date). message.receivedAt is
         // deliberately not passed: the mailbox's clock is never the payment's.
+        // Then the matched account's own effective-from floor, if it has one
+        // (Pine's FNB account, 2026-11-10): a LATER floor on top of the
+        // global one, never instead of it.
         const dated = group.parse.ok
-          ? paymentDateVerdict({ parsed: group.parse, cutoff: cfg.eftPaymentDateCutoff })
+          ? datedVerdict({ parsed: group.parse, cutoff: cfg.eftPaymentDateCutoff, account, floors: cfg.eftAccountFloors.floors })
           : null;
         outcomes.push({
           poolKey: eftPaymentKey(key, group, groups.length),
@@ -1568,6 +1630,13 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // already written aborts its transaction — never doubled, never reset.
   const written = [];
   const writtenKeys = [];
+  // The pool's newest records, read ONCE per message and only when a payment
+  // is to be recorded — never the node (orderByChild "at", the settle's index).
+  let tail = null;
+  const siblingsNow = async () => {
+    if (!tail) tail = (await db.ref(EFT_POOL_PATH).orderByChild("at").limitToLast(EFT_LINK_WINDOW).once("value")).val() || {};
+    return [...Object.entries(tail), ...writtenKeys.map((k, i) => [k, written[i]])];
+  };
   for (const { poolKey, record: candidate } of outcomes) {
     // FIX 1 — THE BANK'S TRANSACTION ID, NOT THE EMAIL, DECIDES WHETHER THIS
     // IS NEW MONEY. Claim the fingerprint for this record (create-only) BEFORE
@@ -1586,6 +1655,17 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
           .transaction(fingerprintClaimStep(poolKey, serverNowMs(), (d) => { holder = d.holder; manualApproved = d.manualApproved === true; spentBy = d.spentBy ?? null; }));
       }
       record = applyFingerprintHold(candidate, { fingerprint, holder, poolKey, manualApproved, spentBy });
+      // LINKED COPIES (7 Nov 2026): the same money under another fingerprint
+      // — a hand entry already floated, or the blank-number copy of a numbered
+      // Absa payment — is held here, automatically, for the owner's review.
+      if (record.outcome === "recorded") {
+        const linked = linkedIngestDecision(record, poolKey, await siblingsNow(), serverNowMs());
+        record = linked.record;
+        if (record.linkedHold) console.log(`  · EFT_LINKED_HOLD: ${poolKey} held (${record.linkedHold}) — same money as ${record.duplicateOf}`);
+        if (linked.crossBank) {
+          console.warn(`  ⚠ EFT_POSSIBLE_CROSS_BANK_DUPLICATE: ${poolKey} (${record.reader}, R${(record.amountCents / 100).toFixed(2)}) resembles proof ${linked.crossBank.approvedKey} approved from a ${linked.crossBank.approvedReader} document (reference ${linked.crossBank.sameReference ? "same" : "different"}, payer ${linked.crossBank.samePayer ? "same" : "different"}) — recorded, flagged for review, not held`);
+        }
+      }
     } else {
       // A refusal claims its transaction id too (eftCore refusalFingerprint):
       // a copy resent once the reason no longer applies is held, not fresh.
@@ -1642,6 +1722,8 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     eftRefusedAccount: count("refused-account"),
     eftRefusedTiming: count("refused-not-immediate"),
     eftRefusedStale: count("refused-stale-date"),
+    eftRefusedMismatch: count("refused-bank-mismatch"),
+    eftUntrusted: count("refused-untrusted-sender"),
     eftHeld: written.filter((r) => HELD_OUTCOMES.includes(r.outcome)).length,
   };
 }
@@ -1673,6 +1755,9 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
 // a bank paying the shop that nobody has set up used to be ordinary mail, seen
 // by no one.
 let unknownBankThisRun = 0;
+// Authenticated bank-domain mail that is NOT a trusted automated sender (or is
+// a forward) — counted where its record is written (10 Nov 2026).
+let untrustedSenderThisRun = 0;
 
 async function noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity, size, fromDomain }) {
   const bodyText = (parsed.text || "").trim() || htmlToText(parsed.html || "");

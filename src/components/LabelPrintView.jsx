@@ -20,6 +20,7 @@ import { useLocations, useStockCells } from "./stock/useStock";
 import { sellableLocations, labelFor } from "./stock/locations";
 import { useWide } from "./stock/hooks";
 import { withinScope } from "../utils/shopScope";
+import { useMySections } from "../utils/useMySections";
 import { PrimaryPhoto } from "./shared/PrimaryPhoto.jsx";
 import "../styles/sky-barcode.css";
 
@@ -58,7 +59,8 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
   // Store picker — the sellable shops. A chosen store limits the grid to products
   // with stock recorded at that store. useStockCells("all") → {} (no such node).
   const registry = useLocations();
-  const stores = useMemo(() => withinScope(sellableLocations(registry), myShop), [registry, myShop]);
+  const { canSee } = useMySections();
+  const stores = useMemo(() => withinScope(sellableLocations(registry), myShop).filter((s) => canSee(s.id)), [registry, myShop, canSee]);
   // A shop outside the viewer's scope is never read, whatever was picked.
   const storeId = store === "all" || stores.some((s) => s.id === store) ? store : "all";
   const storeCells = useStockCells(storeId);

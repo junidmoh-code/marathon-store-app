@@ -156,8 +156,8 @@ describe("Order it now", () => {
     await tick(f);
     const r = req(f);
     expect(r.state).toBe(ORDER_NOW.NOT_IN_STOCK);
-    expect(r.checked).toEqual({ free: [{ loc: "hub1", free: 0 }, { loc: "hub2", free: 0 }], central: 2 });
-    expect(describeChecked(r.checked)).toBe("Hub 1: 0 free, Hub 2: 0 free · Central has 2 (Central sends by refill, not a pick)");
+    expect(r.checked).toEqual({ free: [{ loc: "hub1", free: 0 }, { loc: "hub2", free: 0 }, { loc: "hub3", free: 0 }], central: 2 });
+    expect(describeChecked(r.checked)).toBe("Hub 1: 0 free, Hub 2: 0 free, Hub 3: 0 free · Central has 2 (Central sends by refill, not a pick)");
     expect(line0(f)).toMatchObject({ source: { status: "unavailable" }, escalation: { phase: "unavailable" } });
   });
 

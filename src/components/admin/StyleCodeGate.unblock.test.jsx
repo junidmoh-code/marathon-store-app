@@ -83,6 +83,15 @@ describe("a failed lookup must still let staff add the product", () => {
     expect(btn(r.root, /Add it anyway/)).toBeDefined();
   });
 
+  it("a claim the server could not settle offers the retry and no save that would lose it", async () => {
+    resolveMock.mockResolvedValue({ data: { ...VENDOR_403.data, claimOrphaned: true, claim: { productId: "pX" }, errors: [] } });
+    const { r } = await mount();
+    await typeAndContinue(r);
+
+    expect(btn(r.root, /Try the lookup again/)).toBeDefined();
+    expect(JSON.stringify(r.toJSON())).not.toMatch(/Add it anyway/);
+  });
+
   it("'Add it anyway' proceeds to the form with the style code RETAINED", async () => {
     resolveMock.mockResolvedValue(VENDOR_403);
     const { r, onProceed } = await mount();

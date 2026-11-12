@@ -852,6 +852,10 @@ describe("the census judges only what the device holds", () => {
     const e = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => T0, buildVersion: "b1" });
     await e.downloadSnapshotLeg(MIRROR_LEGS.find((l) => l.name === "users"));
     await db.setMeta(`${SETUP_META_PREFIX}users`, { at: T0, rows: 1, pager: 2 });
+    // The feed cursor a real device always holds by the time it is censused
+    // (runSetup and runPass both take one first). Without one the census is
+    // not evidence about a change-fed leg at all — see censusJournal.js.
+    await db.setMeta(FEED_CURSOR_META, null);
     const res = await e.checkCensus({ force: true });
     expect(res.drifted).toEqual([]);
     expect(res.checked).toEqual(["users"]);
@@ -1175,12 +1179,18 @@ describe("idle suspend and resume (bootstrap suspendLive / resumeLive)", () => {
     while (await t.fireNext()) { /* drain */ }
     expect(sdk.state.reads.length).toBe(readsAtSuspend);
 
-    // Resume: the signal reopens FROM THE STORED CURSOR, and a pass runs now.
+    // Resume: the signal reopens ONE RECORD WIDE — never from a cursor, and
+    // never unbounded — and a pass runs now. The pass is what reads the
+    // backlog, from the cursor STORED in IndexedDB; a signal opened from the
+    // cursor used to deliver the same backlog a second time (and, with no
+    // cursor, the whole 30-day log: 9.7 MB a subscribe, fleet 11 Nov 2026).
     expect(rt.resumeLive()).toBe(true);
     await new Promise((r) => setTimeout(r, 20));
     const reopened = sdk.state.childSubs.filter((q) => q.path === "mirror_changes" && !q.closed);
     expect(reopened.length).toBe(1);
-    expect(reopened[0].cons.find((c) => c.type === "startAfter")?.value).toBe(cursorBefore);
+    expect(reopened[0].cons.map((c) => c.type)).toEqual(["orderByKey", "limitToLast"]);
+    expect(reopened[0].cons.find((c) => c.type === "limitToLast")._limit).toBe(1);
+    expect(await db.getMeta(FEED_CURSOR_META)).toBe(cursorBefore);
     await settle(new Promise((r) => setTimeout(r, 400)), t);
 
     expect((await readMirroredPath(db, "products/p0001")).name).toBe("shoe 1 — renamed");

@@ -917,7 +917,7 @@ describe("the stranger path stays a bystander", () => {
 
   it("counts what it noted, so a run says so out loud", () => {
     expect(POLLER).toMatch(/eftUnknownBank: unknownBankThisRun/);
-    expect(POLLER).toMatch(/from a bank not set up — see \/eft_pool/);
+    expect(POLLER).toMatch(/from a bank not set up, .* UNTRUSTED SENDER, .* BANK\/SENDER MISMATCH — see \/eft_pool/);
   });
 });
 

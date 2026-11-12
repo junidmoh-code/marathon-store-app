@@ -19,9 +19,10 @@
 // ── WHAT THIS FUNCTION WILL NOT DO ───────────────────────────────────────────
 // It does not write to /products. It does not rename, re-photo or re-categorise
 // anything. Its only writes are the /sneaker_models cache entry (new knowledge,
-// never a product) and a /duplicate_candidates flag (a note for a human, never a
-// merge). Confirming suggested data onto a product is a separate, human-gated
-// step — see captureStyleCode.
+// never a product), a /duplicate_candidates flag (a note for a human, never a
+// merge) and the release of a claim whose every owner is gone, logged at
+// /style_code_orphans. Confirming suggested data onto a product is a separate,
+// human-gated step — see captureStyleCode.
 //
 // DEPLOY (scoped, when the owner chooses to):
 //   firebase deploy --only functions:resolveStyleCode
@@ -47,6 +48,14 @@ const {
 } = require("../lib/style-code.cjs");
 const { confusableVariants } = require("../lib/style-code-ocr.cjs");
 const { claimOwnerIds, partitionPairs } = require("../lib/style-code-siblings.cjs");
+const {
+  CLAIM_DEAD,
+  CLAIM_REDIRECTED,
+  CLAIM_SIBLINGS_ONLY,
+  CLAIM_UNRESOLVED,
+  inspectClaim,
+  releaseDeadClaim,
+} = require("../lib/style-code-orphans.cjs");
 const { assertStyleCodeAccess } = require("./access.cjs");
 
 if (!admin.apps.length) {
@@ -61,10 +70,10 @@ const DUPLICATE_CANDIDATES_PATH = "duplicate_candidates";
 const STYLE_CODE_MISSES_PATH = "style_code_misses";
 
 // ── /style_code_index IS THE AUTHORITY ON WHO OWNS A CODE ────────────────────
-// Uniqueness is CLAIMED, not checked. Intake writes /style_code_index/{code}
-// create-once BEFORE it creates the product; the rules make the second writer
-// lose. So this node — not a /products scan — answers "does this code already
-// belong to something?".
+// Uniqueness is CLAIMED, not checked. Intake writes the product, then claims
+// /style_code_index/{code} create-once; the rules make the second writer lose.
+// So this node — not a /products scan — answers "does this code already belong
+// to something?".
 //
 // The /products scan below is still needed, but for a DIFFERENT question: it
 // finds catalogue rows that carry a code without ever having claimed it (rows
@@ -72,10 +81,9 @@ const STYLE_CODE_MISSES_PATH = "style_code_misses";
 // claim, so a two-product collision is invisible there and visible only in the
 // scan. Both are reported; only the index is authoritative.
 //
-// Reading the claim also catches the one failure the claim-first order can
-// leave behind: a claim whose productId names a product that does not exist
-// (the claim landed, the product write then failed). That is an ORPHAN, and
-// intake must be told — otherwise the code looks taken and nothing owns it.
+// Reading the claim also catches the one thing the index cannot keep true on its
+// own: a claim whose productId names a product that no longer exists, because
+// the product was deleted. See runResolve's ownership check.
 const STYLE_CODE_INDEX_PATH = "style_code_index";
 
 // A claim can now name SEVERAL owners: the primary claimant plus registered
@@ -145,6 +153,7 @@ async function findProductsByStyleCode(db, normalised) {
       category: val[id].category || null,
       productType: val[id].productType || null,
       styleCode: val[id].styleCode || null,
+      ...(val[id].mergedInto ? { mergedInto: val[id].mergedInto } : {}),
     }));
 }
 
@@ -372,20 +381,51 @@ async function runResolve(db, {
     }
   }
 
-  // ORPHAN CHECK — a claim whose product does not exist. Only asked when the
-  // claimed id is not already in the scan results, so the common path costs no
-  // extra read.
+  // ── DOES ANYTHING STILL ANSWER FOR THIS CLAIM? ─────────────────────────────
+  // A claim's product can be deleted after the claim was made. A primary found
+  // live in the scan needs no further read, so the common path costs nothing.
+  //
+  // `claimOrphaned` stays true only when the claim could not be settled here;
+  // the gate reads that as "try again", never as something for a person to fix.
   let claimOrphaned = false;
-  if (claim && !existingProducts.some((p) => p.id === claim.productId)) {
+  let owners = claim ? claimOwnerIds(claim.node) : [];
+  const scanHit = claim ? existingProducts.find((p) => p.id === claim.productId) : null;
+  if (claim && (!scanHit || scanHit.mergedInto)) {
+    let verdict = null;
     try {
-      claimOrphaned = !(await db.ref(`products/${claim.productId}/id`).get()).exists();
+      verdict = await inspectClaim(db, claim.node);
     } catch (err) {
-      // Advisory flag only, and the ONE unguarded await left after the tier
-      // walk. Every other post-resolve write here states the same policy —
-      // bookkeeping must never fail the lookup — and this read was the
-      // exception: a rejection would discard an answer we had already obtained
-      // and paid the vendor for. Degrade to "not orphaned". (CodeRabbit #312.)
-      console.warn(`resolveStyleCode: orphan probe failed for ${claim.productId}:`, err && err.message);
+      // Bookkeeping must never fail a lookup we already paid the vendor for, and
+      // "could not read the product" is not "the product does not exist". The
+      // claim is left alone and the gate offers the retry.
+      console.warn(`resolveStyleCode: owner check failed for ${normalised}:`, err && err.message);
+      claimOrphaned = true;
+    }
+    if (verdict && verdict.kind === CLAIM_DEAD) {
+      try {
+        const { released } = await releaseDeadClaim(db, {
+          code: normalised,
+          node: claim.node,
+          releasedBy: actor ? actor.uid : "system:resolveStyleCode",
+          nowMs,
+          source: "resolveStyleCode",
+        });
+        if (released) {
+          claim = null;
+          owners = [];
+        } else {
+          claimOrphaned = true; // the claim changed under us; the retry re-reads it
+        }
+      } catch (err) {
+        console.warn(`resolveStyleCode: could not release dead claim ${normalised}:`, err && err.message);
+        claimOrphaned = true;
+      }
+    } else if (verdict && (verdict.kind === CLAIM_REDIRECTED || verdict.kind === CLAIM_SIBLINGS_ONLY)) {
+      owners = verdict.owners;
+      claim = { ...claim, productId: owners[0], siblingIds: owners.slice(1) };
+    } else if (verdict && verdict.kind === CLAIM_UNRESOLVED) {
+      console.warn(`resolveStyleCode: claim ${normalised} → ${claim.productId} unresolved: ${verdict.reason}`);
+      claimOrphaned = true;
     }
   }
 
@@ -440,10 +480,10 @@ async function runResolve(db, {
     // Every registered owner of this code, primary first. Length > 1 means
     // colourway siblings — the UI must show them side by side and ask, never
     // resolve silently. See lib/style-code-siblings.cjs.
-    owners: claim ? claimOwnerIds(claim.node) : [],
-    // A claim pointing at a product that does not exist. The claim landed and
-    // the product write then failed. Intake must show this rather than treat
-    // the code as taken by something it can route to.
+    owners,
+    // True only when a claim's owners could not be settled on this call (a
+    // failed release, a merge redirect that dangles). A dead claim that was
+    // released reads as claim:null, the same as a code nobody ever claimed.
     claimOrphaned,
     existingProducts,
     duplicate,

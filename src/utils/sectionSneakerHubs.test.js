@@ -20,6 +20,10 @@ const LIVE_RAW = {
   },
 };
 const LIVE = normalizeNetwork(LIVE_RAW);
+// Hub 3 switched out of service on the Network card (Auto-refill off): the
+// one position in which Pine and Concrete are not gated.
+const OFF_RAW = { locations: { hub3: { solve: true, autoRefill: "off" } } };
+const OFF = normalizeNetwork(OFF_RAW);
 // Pine, Concrete and Hub 3 live (the same as LIVE since the Stockroom was removed, 8 Oct 2026).
 const HUB3_ONLY = normalizeNetwork({ locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } });
 // A stored node still mapping Concrete's sneakers and tees to the removed
@@ -55,9 +59,15 @@ describe("sectionSneakerHubs", () => {
     }
     expect(GATED_SNEAKER_HUBS).toEqual(["hub1", "hub2"]);
   });
-  it("on the built-in registry Section 1 is not live, so Pine and Concrete have no gated hub", () => {
-    expect(sectionSneakerHubs(SEED_REGISTRY, "marathon-pine")).toEqual([]);
-    expect(sectionSneakerHubs(SEED_REGISTRY, "concrete")).toEqual([]);
+  it("on the built-in registry Hub 3 is in service, so Pine and Concrete read Hub 3 (Junid, 9 Nov 2026)", () => {
+    expect(sectionSneakerHubs(SEED_REGISTRY, "marathon-pine")).toEqual(["hub3"]);
+    expect(sectionSneakerHubs(SEED_REGISTRY, "concrete")).toEqual(["hub3"]);
+  });
+  it("Hub 3 out of service (Auto-refill off, or Solve off): Pine and Concrete have no gated hub", () => {
+    expect(sectionSneakerHubs(OFF, "marathon-pine")).toEqual([]);
+    expect(sectionSneakerHubs(OFF, "concrete")).toEqual([]);
+    const solveOff = normalizeNetwork({ locations: { hub3: { solve: false, autoRefill: "all" } } });
+    expect(sectionSneakerHubs(solveOff, "concrete")).toEqual([]);
   });
   it("live: Pine → Hub 3; Concrete → Hub 3 (there is no Stockroom)", () => {
     expect(sectionSneakerHubs(LIVE, "marathon-pine")).toEqual(["hub3"]);
@@ -122,11 +132,21 @@ describe("sneakerPlacementHub", () => {
 describe("the order screen's sneaker lane for a Section 1 shop (real resolver, real allocation)", () => {
   const tagged = (net, shop, p) => gatedSneakerHub(p, sneakerPlacementHub(net, shop, p, undefined, () => null), net);
 
-  it("not live: no gate at all — the rule does not answer, so no ✕ and no reroute", () => {
-    setCurrentNetworkFromRaw(null);
-    expect(tagged(SEED_REGISTRY, "marathon-pine", SHOE)).toBe(null);
-    const r = resolveSneakerSourcing({ product: SHOE, taggedHub: null, size: "8", hubData: screenHubData(SEED_REGISTRY, "marathon-pine", {}) });
+  it("Hub 3 out of service: no gate at all — the rule does not answer, so no ✕ and no reroute", () => {
+    setCurrentNetworkFromRaw(OFF_RAW);
+    expect(tagged(OFF, "marathon-pine", SHOE)).toBe(null);
+    const r = resolveSneakerSourcing({ product: SHOE, taggedHub: null, size: "8", hubData: screenHubData(OFF, "marathon-pine", {}) });
     expect(r.available).toBe(null);
+  });
+
+  it("the built-in registry: Pine and Concrete are gated on Hub 3's own cell, with no switch flipped", () => {
+    setCurrentNetworkFromRaw(null);
+    for (const shop of ["marathon-pine", "concrete"]) {
+      expect(tagged(SEED_REGISTRY, shop, SHOE)).toBe("hub3");
+      const data = screenHubData(SEED_REGISTRY, shop, { hub3: hub({ 8: 2, 9: 0 }) });
+      expect(resolveSneakerSourcing({ product: SHOE, taggedHub: "hub3", size: "8", hubData: data })).toEqual({ hub: "hub3", available: 2 });
+      expect(resolveSneakerSourcing({ product: SHOE, taggedHub: "hub3", size: "9", hubData: data })).toEqual({ hub: "hub3", available: 0 });
+    }
   });
 
   it("live, Pine: gated on Hub 3's own cell", () => {

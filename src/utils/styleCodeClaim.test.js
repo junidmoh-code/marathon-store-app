@@ -10,6 +10,8 @@
 // back to reading-then-writing, the concurrency test here fails.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 
 // ── An in-memory RTDB enforcing create-once on /style_code_index ─────────────
 let store = {};
@@ -54,7 +56,7 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("../firebase", () => ({ database: { fake: true } }));
 
-const { claimStyleCode, readStyleCodeClaim, buildClaim, claimFailureMessage, CLAIM_OK, CLAIM_TAKEN, CLAIM_FAILED } =
+const { claimStyleCode, readStyleCodeClaim, buildClaim, claimFailureMessage, writeProductThenClaim, CLAIM_OK, CLAIM_TAKEN, CLAIM_FAILED } =
   await import("./styleCodeClaim.js");
 
 beforeEach(() => {
@@ -229,5 +231,66 @@ describe("the claim requires an EXISTING product (live rule)", () => {
     expect(typeof c.claimedAt).toBe("number");
     expect(c.claimedAt).toBeGreaterThan(0);
     expect(c.claimedAt).toBeLessThanOrEqual(Date.now() + 86400000);
+  });
+});
+
+// ── THE SAVE ORDER ───────────────────────────────────────────────────────────
+// The fake above enforces the live rule: a claim for a product that is not in
+// /products is refused. Each test injects the failure at a different point in
+// the save and then looks at what is actually left in the index.
+describe("writeProductThenClaim — a failed save leaves no claim behind", () => {
+  const CODE = "CW3398105";
+  const claimOpts = { productId: "pNEW", uid: "u1", nowMs: 1000 };
+  const landProduct = async () => { store.products = { ...(store.products || {}), pNEW: { id: "pNEW" } }; };
+  const claimOf = (code) => (store.style_code_index || {})[code];
+
+  it("a product write that fails attempts no claim and leaves the index empty", async () => {
+    const claim = vi.fn(() => claimStyleCode(CODE, claimOpts));
+    await expect(writeProductThenClaim({
+      writeProduct: async () => { throw new Error("network dropped"); },
+      claim,
+    })).rejects.toThrow("network dropped");
+    expect(claim).not.toHaveBeenCalled();
+    expect(claimOf(CODE)).toBeUndefined();
+  });
+
+  it("the product has landed before the claim is attempted", async () => {
+    const order = [];
+    await writeProductThenClaim({
+      writeProduct: async () => { order.push("product"); await landProduct(); },
+      claim: async () => { order.push("claim"); return claimStyleCode(CODE, claimOpts); },
+    });
+    expect(order).toEqual(["product", "claim"]);
+    expect(claimOf(CODE).productId).toBe("pNEW");
+  });
+
+  it("a claim attempted with no product is refused by the rule, so claim-first cannot orphan", async () => {
+    const outcome = await claimStyleCode(CODE, claimOpts);
+    expect(outcome.kind).not.toBe(CLAIM_OK);
+    expect(claimOf(CODE)).toBeUndefined();
+  });
+
+  it("a claim that throws after the product landed is reported and does not fail the save", async () => {
+    const boom = new Error("claim socket closed");
+    const out = await writeProductThenClaim({
+      writeProduct: landProduct,
+      claim: async () => { throw boom; },
+    });
+    expect(out).toEqual({ outcome: null, claimError: boom });
+    expect(store.products.pNEW).toBeTruthy();
+    expect(claimOf(CODE)).toBeUndefined();
+  });
+
+  it("a product with no style code writes the product and claims nothing", async () => {
+    const out = await writeProductThenClaim({ writeProduct: landProduct, claim: null });
+    expect(out).toEqual({ outcome: null, claimError: null });
+    expect(store.products.pNEW).toBeTruthy();
+  });
+
+  it("Add Product goes through this order: App.jsx has no second route to either write", () => {
+    const app = fs.readFileSync(path.join(process.cwd(), "src/App.jsx"), "utf8");
+    expect(app.match(/\baddProductToFirebase\(/g)).toHaveLength(2);       // definition + the one call
+    expect(app.match(/\bclaimStyleCode\(/g)).toHaveLength(1);
+    expect(app).toMatch(/writeProductThenClaim\(\{\s*writeProduct: \(\) => addProductToFirebase\(newProduct\)/);
   });
 });

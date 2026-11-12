@@ -34,6 +34,7 @@ const networkRegistry = require("./lib/network-registry.cjs");
 const stockTrust = require("./lib/stock-trust.cjs");
 const { isCentralFedProduct } = require("./lib/central-fed.cjs");
 const { loadNetwork } = require("./lib/network-load.cjs");
+const concreteDivision = require("./lib/concrete-division.cjs");
 const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
 const { requestUntouched, pickInProgress } = require("./lib/shop-source-rule.cjs");
 const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
@@ -329,7 +330,9 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
     // The status transaction still guards against a request resolved meanwhile.
     // A hub-present withdrawal is not about the destination's cell (its reason
     // is the hub's presence; it asks for qty 0): no stock read to prove it.
-    if (!s.deactivated && !s.hubPresent) {
+    // A never-kept withdrawal (Concrete perfume) is about the category, not the
+    // cell: no stock proof either.
+    if (!s.deactivated && !s.hubPresent && !s.neverKept) {
       const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
       const already = consumed.get(cellKey) || 0;
       try {
@@ -362,7 +365,8 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
           // for a finished line, the fact that deactivation is the reason.
           ...(s.deactivated
             ? { deactivatedProduct: true }
-            : { satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty } }),
+            : s.neverKept ? { neverKeptAt: s.dest }
+              : { satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty } }),
         };
       });
       if (res?.committed && res.snapshot?.val()?.status === s.rrStatus) satisfied++;
@@ -520,10 +524,42 @@ function closeRequestTxn(cur, c, startedAt) {
   };
 }
 
-async function runScan() {
+// DIVISION-ONLY RUN (Junid, 10 Nov 2026): `runScan({ divisionOnly: true })` —
+// reachable only through _runDivisionRelease, never from the schedule (the
+// scheduler hands in its own event object). It plans exactly as the hourly scan
+// does, then applies ONLY work whose destination is Hub 3, Pine or Concrete:
+// no refusal write-off, no Marathon intent/close/resize/retry/streak, no shadow
+// sync, no exceptions snapshot, stock audit or confidence write. Marathon's
+// lines are raised by the next scheduled run, at their normal time.
+// The one-shot flag's claim. Null-tolerant (the #199 lesson): the cold-cache
+// first pass sees null and probes; the real pass stamps this run. Claimed only
+// when the committed node carries THIS run's id.
+function divisionOnceTxn(cur, runId, startedAt) {
+  if (cur === null) return null;
+  if (!cur || cur.requested !== true || cur.consumedAt) return;
+  return { ...cur, consumedAt: startedAt, consumedBy: runId };
+}
+async function claimDivisionReleaseOnce(db, runId, startedAt) {
+  try {
+    const res = await db.ref("config/refillEngine/divisionReleaseOnce").transaction((cur) => divisionOnceTxn(cur, runId, startedAt));
+    return !!(res && res.committed && res.snapshot && res.snapshot.val() && res.snapshot.val().consumedBy === runId);
+  } catch { return false; }
+}
+
+// Every list of work the scan applies, cut to Hub 3 / Pine / Concrete
+// destinations. Mutates and returns the plan (pure otherwise).
+const PLAN_WORK_LISTS = Object.freeze(["intents", "closes", "resizes", "retryOps", "streakOps", "satisfiedClosures"]);
+function scopePlanToDivision(plan) {
+  const mine = (x) => !!x && concreteDivision.DIVISION_LOCATIONS.includes(x.dest);
+  for (const k of PLAN_WORK_LISTS) if (Array.isArray(plan[k])) plan[k] = plan[k].filter(mine);
+  return plan;
+}
+
+async function runScan(opts) {
+  let divisionOnly = !!(opts && opts.divisionOnly === true && opts.__oneOff === "division-release");
   const db = admin.database();
   const nowMs = Date.now();
-  const runId = new Date(nowMs).toISOString().slice(0, 16).replace(/:/g, "-"); // 2026-07-12T10-15
+  const runId = new Date(nowMs).toISOString().slice(0, 16).replace(/:/g, "-") + (divisionOnly ? "-division" : ""); // 2026-07-12T10-15
   const startedAt = new Date(nowMs).toISOString();
 
   // ── claim (null-tolerant: cold-cache first pass sees null) ─────────────────
@@ -574,6 +610,14 @@ async function runScan() {
         startedAt, skipped: `paused — receiving session open since ${session.openedAt || "?"}`,
       });
       return;
+    }
+    // ONE-SHOT DIVISION RELEASE (Junid, 10 Nov 2026): a person writes
+    // config/refillEngine/divisionReleaseOnce = { requested: true } and runs the
+    // scheduler job once; THIS run claims the flag (transaction — two runs can
+    // never both claim it) and goes division-only. The flag is spent. Claimed only past the
+    // early exits (engine off, receiving session), so a skipped run never burns it.
+    if (!divisionOnly && config?.divisionReleaseOnce?.requested === true && !config.divisionReleaseOnce.consumedAt) {
+      if (await claimDivisionReleaseOnce(db, runId, startedAt)) divisionOnly = true;
     }
     // The network registry: sections, and which locations are LIVE. Only the
     // legs it allows are read at all — a location that is not live costs no
@@ -628,7 +672,7 @@ async function runScan() {
     // the scan has already read; the only extra reads are a user's name per
     // refuser and the ledger row per write-off. A failure here is logged and
     // the scan carries on (the next run re-plans from the same records).
-    try {
+    if (!divisionOnly) try {
       const woSnap = { nowMs, config, stock, products, refillRequests, movements, rejectStreak, cursors: writeoffCursors, windowStartMs: Date.parse(windowStart), network };
       const wo = refusalWriteoff.planRefusalWriteoffs(woSnap);
       // A paused location (Hub 3 being counted) takes no write-off: the count
@@ -656,11 +700,35 @@ async function runScan() {
     // new request, close, resize or retry there. Nothing paused → the same
     // plan object, unchanged.
     const paused = pausedLocations.pausedLocationSet(config);
+    // SEATING (lib/concrete-division.cjs): a scoped read of the three division
+    // locations only, and only with the division's key on. Anything holding
+    // units there is seated; the plan reads this scan's seats, written below.
+    let seatPlan = null;
+    if (concreteDivision.concreteDivisionPolicy(config)) {
+      const scoped = (path) => Promise.all(concreteDivision.DIVISION_LOCATIONS.map(
+        (l) => db.ref(`${path}/${l}`).once("value").then((s) => [l, s.val() || {}]))).then(Object.fromEntries);
+      // Seats, and the tombstones a release leaves (so a moved-out product's
+      // leftover zero cells do not seat it again) — three small nodes each.
+      const [seats, releases] = await Promise.all([scoped(concreteDivision.SEATS_PATH), scoped(concreteDivision.SEAT_RELEASES_PATH)]);
+      seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, releases, products, nowIso: new Date(nowMs).toISOString() });
+    }
+    const seatArgs = seatPlan ? { seats: seatPlan.effective } : {};
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines, locations,
-      network,
+      network, ...seatArgs,
     }), paused);
+    if (seatPlan && Object.keys(seatPlan.writes).length) {
+      const seatUpd = Object.fromEntries([
+        ...Object.entries(seatPlan.writes).map(([k, v]) => [`${concreteDivision.SEATS_PATH}/${k}`, v]),
+        ...Object.entries(seatPlan.releaseWrites || {}).map(([k, v]) => [`${concreteDivision.SEAT_RELEASES_PATH}/${k}`, v]),
+      ]);
+      if (await safeUpdate(db, seatUpd, "division seats")) counts.seats = { seated: seatPlan.seated, released: seatPlan.released };
+    }
     if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };
+    if (divisionOnly) {
+      scopePlanToDivision(plan);
+      counts.scope = "division";
+    }
     counts.errors.push(...plan.errors);
 
     // ── apply closes ──────────────────────────────────────────────────────────
@@ -885,7 +953,8 @@ async function runScan() {
       }
     }
     // Shadow is a full replace each run, so satisfied plans disappear on their own.
-    await safeSet(db, "refill_engine/shadow", Object.keys(shadowNode).length ? shadowNode : null, "shadow");
+    // (A division-only run leaves the shadow and its queue copies to the schedule.)
+    if (!divisionOnly) await safeSet(db, "refill_engine/shadow", Object.keys(shadowNode).length ? shadowNode : null, "shadow");
 
     // ── SHADOW COPIES in the REAL queues (owner decision 2026-07-12 v4) ───────
     // While a destination runs in shadow, its planned requests appear in the
@@ -900,7 +969,7 @@ async function runScan() {
     // the refill counter, and the engine's inbound math ignores them
     // (autoRefill orders are excluded there). UI renders them read-only;
     // fulfillCRBatch refuses them outright as a second line of defence.
-    {
+    if (!divisionOnly) {
       const upd = shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt, network, config });
       if (Object.keys(upd).length) await safeUpdate(db, upd, "shadow sweep");
     }
@@ -951,7 +1020,10 @@ async function runScan() {
           ? (Array.isArray(intent.forDests) && intent.forDests.length > 0
             && intent.forDests.every((d) => !networkRegistry.trustedCellsOnly(network, d) || stockTrust.cellTrusted(stock?.[d]?.[pid]?.[sizeKey])))
           : stockTrust.cellTrusted(stock?.[dest]?.[pid]?.[sizeKey]);
-        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk) {
+        // Hub 3's seated sneakers, and a seated non-sneaker on a Pine or
+        // Concrete shelf, are counted stock (concrete-division.cjs): the plan
+        // flags exactly those, and only for that destination.
+        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk && !concreteDivision.seatedIntentTrusted(intent, dest)) {
           counts.errors.push(`untrusted cell: refused ${source}→${dest} for ${pid}/${sizeKey}`);
           continue;
         }
@@ -1026,12 +1098,14 @@ async function runScan() {
     }
 
     // ── exceptions snapshot + hourly confidence ──────────────────────────────
-    counts.exceptions = Object.values(plan.exceptions).reduce((t, e) => t + e.count, 0);
+    // The division policy audit is a check, not an exception queue: left out
+    // so this run-record number means what it always meant.
+    counts.exceptions = Object.entries(plan.exceptions).reduce((t, [k, e]) => (k === "divisionPolicy" ? t : t + e.count), 0);
     // Plan-side resize suppression (engine stats) — surfaced through the SAME
     // counts object as resizeDropped so both halves of the resize pipeline are
     // visible on one run record, present only when non-zero.
     if (plan.stats?.resizeSuppressed) counts.resizeSuppressed = plan.stats.resizeSuppressed;
-    await safeSet(db, "stock_exceptions/latest", { computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions }, "exceptions snapshot");
+    if (!divisionOnly) await safeSet(db, "stock_exceptions/latest", { computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions }, "exceptions snapshot");
 
     // ── STOCK AUDIT — the once-a-day shelf-walk lists ────────────────────────
     // Rides on the snapshot this run already holds (orders, stock, products,
@@ -1042,7 +1116,7 @@ async function runScan() {
     // WRAPPED, and deliberately not rethrown: these lists are a render cache
     // recomputed from live state on the next pass, so a failure here must never
     // stop the thing that restocks the shops. Same contract as safeUpdate.
-    try {
+    if (!divisionOnly) try {
       const auditRes = await runStockAuditPass({
         db, app: admin.app(), nowMs,
         stock, products, orders, movements,
@@ -1052,16 +1126,20 @@ async function runScan() {
     } catch (e) {
       console.error("[refill-scan] stock audit pass failed:", e && e.message ? e.message : e);
     }
-    if (new Date(nowMs).getUTCMinutes() < 15) {
+    if (!divisionOnly && new Date(nowMs).getUTCMinutes() < 15) {
       const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex, products });
       await safeSet(db, "stock_confidence", { computedAt: startedAt, byLocation: confidence }, "confidence");
     }
 
     // ── run record + prune old runs (keys are time-sortable) ─────────────────
-    await safeSet(db, `refill_engine/runs/${runId}`, {
+    // A flag-claimed division run keeps its lock id but records under a
+    // "-division" key, so an hourly run in the same minute never overwrites it.
+    const recordId = divisionOnly && !runId.endsWith("-division") ? `${runId}-division` : runId;
+    await safeSet(db, `refill_engine/runs/${recordId}`, {
       startedAt, finishedAt: new Date().toISOString(),
       mode: config.mode || {}, counts: { ...counts, errors: counts.errors.length ? counts.errors : null },
       policy: plan.policy || null,   // which switch/throttle state this run used
+      ...(divisionOnly ? { divisionOnly: true } : {}),
     }, "run record");
     const cutoffKey = new Date(nowMs - RUNS_KEEP_DAYS * 864e5).toISOString().slice(0, 16).replace(/:/g, "-");
     const oldRuns = await db.ref("refill_engine/runs").orderByKey().endAt(cutoffKey).limitToFirst(200).once("value");
@@ -1195,11 +1273,18 @@ exports.refillHealthScan = onSchedule(
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
     timeoutSeconds: 300,
-    memory: "512MiB",
+    // 1 GiB (10 Nov 2026): at 512 MiB the run was killed for memory at 09:00,
+    // 10:00 and 12:00 UTC that day (Cloud Run "Memory limit of 512 MiB
+    // exceeded"), leaving no run record and raising nothing.
+    memory: "1GiB",
   },
   runScan
 );
 exports._runScan = runScan; // exported for one-off manual invocation in tests/smoke
+// One-off: plan as the hourly scan does, apply only Hub 3 / Pine / Concrete work.
+exports._runDivisionRelease = () => runScan({ divisionOnly: true, __oneOff: "division-release" });
+exports._scopePlanToDivision = scopePlanToDivision;
+exports._divisionOnceTxn = divisionOnceTxn;
 exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/resize-drop-observability.test.cjs
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
 exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin

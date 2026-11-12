@@ -22,8 +22,9 @@
 //                        seen on the floor — one bold card per product, every
 //                        location's quantity, and a Merge action.
 //
-// SCOPE: Hub 1 and Hub 2 ONLY (CLEANUP_HUBS). Pine — marathon-pine and its
-// hub3 lane — is entirely out of scope and no path here can reach it.
+// SCOPE: every hub in the network registry (cleanupHubs) — Hub 1, Hub 2 and
+// Hub 3 on the seed (Junid, 7 Nov 2026). A display's shop is one of the shops
+// its hub feeds (displayStoresForHub): Hub 3's are Marathon Pine and Concrete.
 //
 // READ MODEL: one-shot get()s, frozen into state, same as HubSneakerCount. The
 // catalogue arrives as a prop (already filtered of merged-away products at the
@@ -44,14 +45,14 @@ import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/style
 import { perSizeAutoCandidate } from "../../utils/perSizeStyleCode";
 import { buildLinkSuggestions, codeSuggestions, TIER_SCORES } from "../../utils/linkSuggestions";
 import { isMergedAway } from "../../utils/mergedProducts";
-import { wallAllows } from "../../utils/networkRegistry";
+import { listLocations, TRANSIT_ID } from "../../utils/networkRegistry";
 import { currentNetwork } from "../../utils/networkStore";
 import {
   cleanupHubs, isCleanupHub, cleanupHubLabel, resolveCleanupScan, openDuplicateFor,
   buildLeftovers, buildFinishedLines, buildUnregisteredElsewhere, buildDeactivatedRows, locationsHolding, registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, styleCodeOwners, collisionQuestion,
   STYLE_SKIP_REASONS, countPanelFor, resolveStyleNumber, registerSearchPool,
-  displayStores, displayStoreLabel,
+  displayStoresForHub, displayStoreLabel,
   labelTokenSet, mergeTokenCandidates,
 } from "./hubCleanupCore";
 import {
@@ -238,10 +239,10 @@ function Panel({ title, onClose, children }) {
 
 // ─── The module ──────────────────────────────────────────────────────────────
 
-// The card's hubs: the live cleanup hubs, plus every all-category count hub
-// (Hub 3 — Junid, 6 Nov 2026). Hub 3 is not "live" in the registry (its
-// Auto-refill is "solved"), so cleanupHubs alone never offered it, yet it is
-// the hub being recounted. It opens on the Count tab.
+// The card's hubs: every registry hub (cleanupHubs — Hub 3 included since
+// 7 Nov 2026), plus every all-category count hub, which today adds nothing
+// new (#858 added Hub 3 here before cleanupHubs offered it). Hub 3 opens on
+// the Count tab.
 const countCardHubs = () => [...new Set([...cleanupHubs(), ...ALL_CATEGORY_COUNT_HUBS])];
 const isCountCardHub = (h) => isCleanupHub(h) || countsAllCategories(h);
 
@@ -355,7 +356,9 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   const ensureAllStock = useCallback(async () => {
     if (allStock) return allStock;
     const ids = Object.keys(registry || {});
-    const fallback = ["central", "hub1", "hub2", "marathon-pe", "trophy", "in_transit"];
+    // The registry's own locations when /locations is unreadable — every
+    // section, Hub 3, Pine and Concrete included.
+    const fallback = [...listLocations(currentNetwork()).map((l) => l.id), TRANSIT_ID];
     const loaded = await loadAllStock(ids.length ? ids : fallback);
     setAllStock(loaded);
     return loaded;
@@ -1329,8 +1332,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             </button>
           ))}
           <div style={{ fontSize: 12.5, color: GRAY, lineHeight: 1.55, padding: "4px 2px" }}>
-            Displays on the shop floor ARE hub stock. Register them here, then count the hub —
-            A hub that is not live yet is not offered here.
+            Displays on the shop floor ARE hub stock. Register them here, then count the hub.
           </div>
         </div>
       </div>
@@ -2765,8 +2767,8 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
             3 · WHICH SHOP IS THIS DISPLAY AT?
           </div>
           <div style={{ display: "flex", gap: 10 }}>
-            {/* The shop floors on THIS hub's side of the section wall. */}
-            {displayStores().filter((s) => wallAllows(currentNetwork(), hub, s)).map((s) => (
+            {/* The shop floors THIS hub feeds (the registry's backStock map). */}
+            {displayStoresForHub(hub).map((s) => (
               <button key={s} type="button" disabled={busy} onClick={() => setDispStore(s)}
                 style={{ flex: 1, minHeight: 56, borderRadius: 14, cursor: "pointer", fontSize: 16, fontWeight: 800, fontFamily: FONT,
                          background: dispStore === s ? "rgba(74,222,128,.22)" : "rgba(74,127,255,.13)",

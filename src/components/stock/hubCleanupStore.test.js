@@ -180,8 +180,8 @@ describe("registration is idempotent — the mandatory mutation proof", () => {
 });
 
 describe("scope and size discipline", () => {
-  it("refuses every hub outside hub1/hub2 — Pine can never be touched", async () => {
-    for (const hub of ["hub3", "marathon-pine", "marathon-pe", "trophy", "central"]) {
+  it("refuses anything that is not a registry hub — shops, Central, a removed location", async () => {
+    for (const hub of ["marathon-pine", "concrete", "marathon-pe", "trophy", "central", "concrete-stockroom"]) {
       const r = await registerDisplayUnit({ hub, product: PRODUCT, size: "6", styleCode: STYLE });
       expect(r.ok).toBe(false);
       const extra = await addExtraDisplayUnit({ hub, product: PRODUCT, size: "6" });
@@ -432,5 +432,65 @@ describe("the register record and unresolved scans", () => {
     const rows = getPath(`settings/hubSneakerCount/unresolved/${HUB}`);
     expect(Object.keys(rows)).toHaveLength(1);
     expect(Object.values(rows)[0].code).toBe("199.55/X");
+  });
+});
+
+// ─── HUB 3 — a registration on a zeroed cell (Junid, 7 Nov 2026) ─────────────
+// Hub 3 was reset to zero for the recount. Registering a Pine or Concrete
+// display seeds that cell from 0 to 1 exactly as Hub 1 and Hub 2 do, files the
+// slot under the real shop id, and writes NOTHING else: no request, no order,
+// no engine or config node, no trust marker.
+describe("Hub 3 registration on a zeroed cell", () => {
+  const ZEROED = { qty: 0, v: 3, mv: "reset_x", lastType: "adjustment", updatedAt: "2026-11-06T12:00:00.000Z" };
+  const h3cell = (size = "7") => getPath(stockCellPath("hub3", PRODUCT.id, size));
+
+  it("0 → 1 at hub3, register record at hub3, slot at /settings/displaySlots/marathon-pine/{pid} booked hub3", async () => {
+    setPath(stockCellPath("hub3", PRODUCT.id, "7"), { ...ZEROED });
+    const r = await registerDisplayUnit({ hub: "hub3", product: PRODUCT, size: "7", styleCode: STYLE, store: "marathon-pine" });
+    expect(r.ok).toBe(true);
+    expect(r.warning).toBeUndefined();
+    expect(h3cell("7").qty).toBe(1);
+    expect(h3cell("7").trusted).toBeUndefined();          // a registration never vouches for a cell
+    expect(getPath(`settings/hubSneakerCount/register/hub3/${PRODUCT.id}__7`)).toMatchObject({ productId: PRODUCT.id, qty: 1 });
+    expect(getPath(`settings/displaySlots/marathon-pine/${PRODUCT.id}`)).toMatchObject({ bookedHub: "hub3", size: "7", source: "registration" });
+    const mv = applyMovementMock.mock.calls[0][0];
+    expect(mv).toMatchObject({ type: "received", to: "hub3", qty: 1, size: "7" });
+    expect(mv.link?.refillId).toBeUndefined();
+    expect(mv.link?.orderId).toBeUndefined();
+    expect(mv.trust).toBeUndefined();
+  });
+
+  it("writes nothing outside stock, the movement, the register and the slot — no request of any kind", async () => {
+    setPath(stockCellPath("hub3", PRODUCT.id, "7"), { ...ZEROED });
+    await registerDisplayUnit({ hub: "hub3", product: PRODUCT, size: "7", styleCode: STYLE, store: "concrete" });
+    expect(Object.keys(store).sort()).toEqual(["settings", "stock", "stock_movements"]);
+    expect(Object.keys(store.settings).sort()).toEqual(["displaySlots", "hubSneakerCount"]);
+    expect(Object.keys(store.settings.displaySlots)).toEqual(["concrete"]);
+    expect(Object.keys(store.settings.hubSneakerCount)).toEqual(["register"]);
+    expect(Object.keys(store.stock)).toEqual(["hub3"]);
+    // the style-number capture queue is the only other thing a save may touch,
+    // and only for a NEW code — this product's code is new, so it enqueued once.
+    expect(enqueueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("registering the same Hub 3 display twice still adds ONE unit", async () => {
+    setPath(stockCellPath("hub3", PRODUCT.id, "7"), { ...ZEROED });
+    await registerDisplayUnit({ hub: "hub3", product: PRODUCT, size: "7", styleCode: STYLE, store: "marathon-pine" });
+    const again = await registerDisplayUnit({ hub: "hub3", product: PRODUCT, size: "7", styleCode: STYLE, store: "marathon-pine" });
+    expect(again.already).toBe(true);
+    expect(h3cell("7").qty).toBe(1);
+    expect(movementCount()).toBe(1);
+  });
+
+  it("a shop across the wall is refused before anything writes — both directions", async () => {
+    for (const [hub, s] of [["hub1", "marathon-pine"], ["hub2", "concrete"], ["hub3", "marathon-pe"], ["hub3", "trophy"]]) {
+      const r = await registerDisplayUnit({ hub, product: PRODUCT, size: "7", styleCode: STYLE, store: s });
+      expect(r.ok).toBe(false);
+      const e = await addExtraDisplayUnit({ hub, product: PRODUCT, size: "7", store: s });
+      expect(e.ok).toBe(false);
+    }
+    expect(getPath("stock")).toBe(null);
+    expect(getPath("settings")).toBe(null);
+    expect(movementCount()).toBe(0);
   });
 });

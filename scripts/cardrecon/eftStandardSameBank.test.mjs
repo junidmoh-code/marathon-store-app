@@ -1,3 +1,6 @@
+// NOTE (8 Nov 2026): Concrete's Standard Bank account no longer has its tag
+// enforced (eftConcreteNonImmediate.test.mjs). This file's chain passes the tag
+// straight in, so it pins immediacyVerdict for an account whose tag IS enforced.
 // ─── STANDARD BANK TO STANDARD BANK IS SAME-BANK, AND SAME-BANK IS IMMEDIATE ──
 // Junid, 6 Nov 2026. The ATUGAR Standard Bank account takes immediate payments
 // only (":standardbank:immediate"). A customer paid R400 into it from her own
@@ -110,10 +113,13 @@ describe("a same-bank Standard-to-Standard payment into the immediate-only accou
     expect(sb({ heading: "Immediate Payment Confirmation" }).record.outcome).toBe("recorded");
   });
 
-  it("a same-bank payment dated AFTER its notice arrived is still refused (scheduled)", () => {
-    const r = sb({ date: "2026-11-07 09h00" }).record;
+  it("a same-bank payment dated BEYOND the next business day is still refused (scheduled)", () => {
+    // Notice of Fri 6 Nov: Fridays open the window (7 Nov 2026 evening), so
+    // Monday 9 Nov settles; Tuesday 10 Nov is beyond it.
+    expect(sb({ date: "2026-11-09 09h00" }).record.outcome).toBe("recorded");
+    const r = sb({ date: "2026-11-10 09h00" }).record;
     expect(r.outcome).toBe("refused-not-immediate");
-    expect(r.reason).toMatch(/future-dated/);
+    expect(r.reason).toMatch(/beyond the next business day/);
   });
 
   it("a Standard Bank heading out of shape (two, split, below the sentence) still refuses", () => {

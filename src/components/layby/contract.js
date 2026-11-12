@@ -21,6 +21,7 @@
 // `expired` and `rejected` are the two off-ramps.
 import { currentNetwork } from "../../utils/networkStore";
 import { fallbackHub } from "../../utils/sectionRouting";
+import { sectionOf } from "../../utils/networkRegistry";
 
 export const LAYBY_STATUS = {
   CREATED:        "created",            // POS: layby taken
@@ -109,6 +110,16 @@ export const DEFAULT_STORAGE_HUB = "hub1";
 export function storageHubOf(x, network = currentNetwork()) {
   if (x?.storageHub) return x.storageHub;
   return fallbackHub(network, x?.storeId || x?.issuingStore || null, DEFAULT_STORAGE_HUB);
+}
+
+// Does this pull belong on this TV board? A board's section is 1 or 2; null is
+// a board with no section (the in-app display), which shows every pull. A pull
+// goes by the hub storing its parcel. One whose hub the registry does not know
+// stays on the Marathon board, where every pull used to be shown.
+export function pullOnTvBoard(pull, section, network = currentNetwork()) {
+  if (!section) return true;
+  const s = sectionOf(network, storageHubOf(pull, network));
+  return s === null ? section === 2 : s === section;
 }
 
 // Coerce an epoch-ms number OR an ISO/date string to epoch ms. Returns NaN when

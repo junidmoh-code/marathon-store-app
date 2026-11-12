@@ -81,7 +81,7 @@ import { describeCallableError } from "./captureFailure";
 import { preparePhoto } from "./slipPhoto";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
 import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture, tillsWithCardLegs, daySummary } from "./todaysArrivals";
-import { captureCards, cardsBySection, takesPhoto, typesTotal } from "./terminalRegistry";
+import { captureableCards, cardsBySection, takesPhoto, typesTotal } from "./terminalRegistry";
 import { useMySections } from "../../utils/useMySections";
 import TerminalSettings from "./TerminalSettings";
 import { takeAssignRequest } from "./portalAssign";
@@ -312,7 +312,7 @@ export default function CardReconScreen({ onExit }) {
   // are grouped by section, and the callable refuses the rest regardless.
   const { sections, registry } = useMySections();
   const cardGroups = useMemo(
-    () => cardsBySection(captureCards(terminals), registry, sections),
+    () => cardsBySection(captureableCards(terminals), registry, sections),
     [terminals, registry, sections]);
   const terminalList = useMemo(() => cardGroups.flatMap((g) => g.cards), [cardGroups]);
 
@@ -542,7 +542,7 @@ export default function CardReconScreen({ onExit }) {
 
       {!settingsOpen && <div style={T.list}>
         {terminals === null && <div style={T.quiet}>Loading…</div>}
-        {terminals !== null && terminalList.length === 0 && captureCards(terminals).length === 0 && (
+        {terminals !== null && terminalList.length === 0 && captureableCards(terminals).length === 0 && (
           <div style={T.quiet}>
             No card machines are registered yet. An admin maps each machine to its till under
             /config/cardTerminals before slips can be captured.
@@ -551,7 +551,7 @@ export default function CardReconScreen({ onExit }) {
         {/* Machines exist, none of them in this viewer's section — a different
             sentence, because "none registered" would send them to Junid for a
             setup that is already done. */}
-        {terminals !== null && terminalList.length === 0 && captureCards(terminals).length > 0 && (
+        {terminals !== null && terminalList.length === 0 && captureableCards(terminals).length > 0 && (
           <div style={T.quiet}>
             There are no card machines in your section yet. Junid adds them in Card machines → settings.
           </div>

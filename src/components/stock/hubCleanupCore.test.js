@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  CLEANUP_HUBS, isCleanupHub, registerMovementId, extraUnitMovementId,
+  cleanupHubs, isCleanupHub, registerMovementId, extraUnitMovementId,
   resolveCleanupScan, openDuplicateFor, buildLeftovers, locationsHolding,
   registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, chooseFromLabelRead, styleCodeOwners,
@@ -13,12 +13,12 @@ import {
 
 const P = (id, over = {}) => ({ id, name: `Product ${id}`, category: "Footwear", sizes: ["6", "7"], ...over });
 
-describe("scope — Hub 1 and Hub 2 only, Pine never", () => {
-  it("the hub list is exactly hub1 and hub2", () => {
-    expect(CLEANUP_HUBS).toEqual(["hub1", "hub2"]);
+describe("scope — every hub in the registry (Junid, 7 Nov 2026)", () => {
+  it("the hubs are Hub 1, Hub 2 and Hub 3, Marathon's section first", () => {
+    expect(cleanupHubs()).toEqual(["hub1", "hub2", "hub3"]);
   });
-  it("every Pine-flavoured id is out", () => {
-    for (const id of ["hub3", "marathon-pine", "pine", "marathon-pe", "trophy", "central"]) {
+  it("a shop, Central, an alias or a location that does not exist is not a hub", () => {
+    for (const id of ["marathon-pine", "pine", "marathon-pe", "trophy", "concrete", "central", "concrete-stockroom", "in_transit", ""]) {
       expect(isCleanupHub(id)).toBe(false);
     }
   });

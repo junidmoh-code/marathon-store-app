@@ -1,5 +1,5 @@
 // ─── MANUAL EFT ENTRY — Junid's escape hatch while enforcement settles in ───
-// With EFT matching ENFORCED at Trophy and Marathon PE (lib/eft-enforce.cjs)
+// With EFT matching ENFORCED at Trophy, Marathon PE, Concrete and Pine (lib/eft-enforce.cjs)
 // a sale whose bank notification never arrives — a bank the pool has no
 // reader for, a delayed email, a payment Junid has seen on the statement —
 // would have no way through. So JUNID, AND JUNID ALONE, can type a customer
@@ -26,10 +26,14 @@
 //     (consumeFingerprintCheck, claimHolderCheck, the in-transaction
 //     re-derivation) all apply. One entry, one spend.
 //   · the KEY is derived from the client's entryId, so a retried tap lands
-//     on the same key and the create-if-absent write makes it idempotent;
-//     and a second entry with the SAME reference AND amount while one is
-//     already in the pool tail is refused — a double-entered payment would
-//     be two spendable records for one sum of money.
+//     on the same key and the create-if-absent write makes it idempotent.
+//     A second entry with the SAME reference AND amount typed the same SAST
+//     day is ACCEPTED WITH A WARNING (Junid, 7 Nov 2026 — it used to be
+//     refused, forcing "… 2" references): a customer can genuinely pay twice
+//     under one reference, and each hand entry is its own record. Only the
+//     EXACT same entry (reference, amount and note) submitted again within
+//     MANUAL_DOUBLE_SUBMIT_MS is an accidental double tap, answered with the
+//     first record instead of a second (manualDoubleSubmitOf).
 //
 // Every entry and every consumption is LOGGED (eft-manual log, commit 3) so
 // Junid can see how often the hatch is used and retire it when enforcement
@@ -41,6 +45,94 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
+const { sastDate, latestSettledDay } = require("./eft-text.cjs");
+const { normaliseBankRef, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
+
+// ─── ONE PAYMENT, NOT ONE REFERENCE (7 Nov 2026) ─────────────────────────────
+// A manual entry carries no bank identity — only what Junid typed: reference,
+// amount, and WHEN he typed it. The twin rules below used to match reference
+// + amount with no end date ("the bank record arrived at or after the entry"),
+// so ONE manual "SOCCER T SHIRT" R870 of 29 Oct (used on S-50363) blocked
+// every later R870 "Soccer T shirt" for ever: the customer reuses that
+// reference for repeat orders, and MR S MAISTRY's genuinely new Absa payment
+// of 7 Nov (its own transaction id) was refused at the till as "already used
+// on slip S-50363". Junid then had to type it by hand as "SOCCER T SHIRT 2"
+// to get past the manual duplicate block.
+//
+// The identity of a manual entry is therefore reference + amount + WHEN:
+//   · a bank notice is a manual entry's twin only for a payment the bank
+//     dates no later than the entry was typed and at most a week before it,
+//     whose notice landed after the typing or the same day — or, a weekend
+//     payment dated for the next business day whose notice landed before
+//     that day (withinManualTwinWindow);
+//   · a second manual entry is a duplicate when typed the same SAST day or
+//     within 12 hours (23:55 and 00:05 are the same money typed twice).
+// A payment made after an entry was typed, or on another day, that shares a reference and an amount are two
+// payments. Bank against bank is never decided here: the bank's transaction id
+// (or Absa's full synthetic identity — payer, account, date, amount,
+// reference) is the fingerprint, and the fingerprint claim spends it once.
+const DAY_MS = 24 * 60 * 60 * 1000;
+// The bank's clock and the server's may disagree a little; a payment the bank
+// timestamps up to an hour after the entry was typed is still the one typed.
+const BANK_CLOCK_TOLERANCE_MS = 60 * 60 * 1000;
+// How far back a hand entry may stand in for a payment: a weekend or a public
+// holiday between the payment and Junid typing it, with room to spare.
+const TWIN_LOOKBACK_DAYS = 7;
+const DUPLICATE_ROLLING_MS = 12 * 60 * 60 * 1000;
+const sameSastDay = (a, b) => Number.isInteger(a) && Number.isInteger(b) && sastDate(a) === sastDate(b);
+/** Whole SAST calendar days from `from` to `to` (negative when `to` is earlier). */
+const sastDaysBetween = (from, to) => Math.round((Date.parse(sastDate(to)) - Date.parse(sastDate(from))) / DAY_MS);
+/** The bank's own date for the payment (bankTs), else when it arrived. */
+function paidAtOf(record) {
+  if (Number.isInteger(record?.bankTs)) return record.bankTs;
+  if (Number.isInteger(record?.receivedAt)) return record.receivedAt;
+  return Number.isInteger(record?.at) ? record.at : null;
+}
+/**
+ * Is the bank record the payment the manual entry typed at `typedAt` stood in
+ * for? A hand entry records money ALREADY PAID, so its bank twin is a payment
+ * the bank dates NO LATER than the typing (an hour's clock tolerance) and no
+ * more than TWIN_LOOKBACK_DAYS earlier, whose notice either landed after the
+ * typing (the late notice the entry was for — however late: a Saturday
+ * payment typed on Monday, its notice on Tuesday) or on the same SAST day.
+ * A payment the bank dates AFTER the entry was typed is a new payment — a
+ * repeat customer's next order under the same reference — never the twin.
+ * (Fable spec review of #861: anchor on the payment date, not on how late
+ * the email was.)
+ */
+function withinManualTwinWindow(typedAt, bank) {
+  // An entry with no readable time (never written so) stays conservative.
+  if (!Number.isInteger(typedAt)) return true;
+  const arrived = Number.isInteger(bank?.receivedAt) ? bank.receivedAt : bank?.at;
+  // No bank date to place the payment by (never true of a record written
+  // since fix 8): the old rule — a notice landing after the entry is its twin.
+  if (!Number.isInteger(bank?.bankTs)) return !Number.isInteger(arrived) || arrived >= typedAt;
+  if (bank.bankTs > typedAt + BANK_CLOCK_TOLERANCE_MS) {
+    // A later TIME the same day is a new payment, never the twin (it was
+    // made after the entry was typed). (Substitute review of #866.)
+    if (sastDate(bank.bankTs) <= sastDate(typedAt)) return false;
+    // NEXT-BUSINESS-DAY SETTLEMENT (7 Nov 2026, Fable review of #866): a
+    // weekend payment is dated for the day it settles. Junid typing it on
+    // Saturday and the bank's notice dated Monday are ONE payment when the
+    // notice landed from the typing day up to (not including) the next
+    // business day — Saturday or Sunday for a weekend entry, the same day for
+    // a weekday one — and the bank's date is no later than that next business
+    // day. A repeat customer's next payment, whose notice lands on a later
+    // business day, stays a payment of its own. Since 7 Nov 2026 the window
+    // is open only when the typing day, or the day after it, is not a
+    // business day (a weekend, a holiday, a Friday, a holiday's eve) —
+    // latestSettledDay is that day itself otherwise,
+    // so a later-dated payment then is never the entry's twin (the poller
+    // refuses it anyway).
+    const nbd = latestSettledDay(sastDate(typedAt));
+    return Number.isInteger(arrived) && arrived >= typedAt - DAY_MS
+      && sastDate(arrived) >= sastDate(typedAt) && sastDate(arrived) < nbd
+      && sastDate(bank.bankTs) <= nbd;
+  }
+  if (sastDaysBetween(bank.bankTs, typedAt) > TWIN_LOOKBACK_DAYS) return false;
+  if (sameSastDay(typedAt, bank.bankTs)) return true;
+  return !Number.isInteger(arrived) || arrived >= typedAt;
+}
 
 const MANUAL_READER = "manual";
 const MANUAL_ENTRY_BY = "Junid";
@@ -128,35 +220,110 @@ function isManualEntry(record) {
     && record.manualEntry && typeof record.manualEntry === "object");
 }
 
+// An accidental double-submit: the exact same entry again within seconds.
+const MANUAL_DOUBLE_SUBMIT_MS = 10 * 1000;
+
 /**
- * A second entry for money already entered: the same normalised reference
- * AND the same amount on a manual record in the tail (any status — a used
- * one has been spent, an unmatched one is waiting). The same entryId is the
- * idempotent retry, not a duplicate.
+ * A SIMILAR entry — eftPoolManualEntry's WARNING since 7 Nov 2026, never a
+ * refusal (the entry goes in as its own record): the same normalised reference,
+ * the same amount, on a manual record TYPED THE SAME SAST DAY OR WITHIN 12
+ * HOURS (any status — a
+ * used one has been spent, an unmatched one is waiting). The same entryId is
+ * the idempotent retry, not a duplicate. An earlier day's entry with the same
+ * reference and amount is a different payment (a repeat customer's repeat
+ * order) and never blocks — nobody has to rename a reference to "… 2".
+ * `at` is when this entry is being typed; without it every day matches (the
+ * old rule — kept only for a caller that cannot say).
  * @returns {{key:string, record:object}|null}
  */
-function manualDuplicateOf({ reference, amountCents, entryId }, siblings) {
+function manualDuplicateOf({ reference, amountCents, entryId, at = null }, siblings) {
   const want = normaliseText(reference);
   for (const [key, rec] of siblings ?? []) {
     if (!isManualEntry(rec)) continue;
     if (rec.manualEntry.entryId === entryId) continue;
-    if (rec.amountCents === amountCents && normaliseText(rec.reference) === want) return { key, record: rec };
+    if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
+    if (Number.isInteger(at) && Number.isInteger(rec.manualEntry.at)
+      && !sameSastDay(at, rec.manualEntry.at) && Math.abs(at - rec.manualEntry.at) >= DUPLICATE_ROLLING_MS) continue;
+    return { key, record: rec };
   }
   return null;
 }
 
 /**
- * THE BANK'S OWN RECORD OF THE SAME MONEY. A manual entry exists because the
- * notification has not arrived — if an UNMATCHED bank-confirmed payment with
- * this reference and amount is already in the tail, Junid should use that
- * one, not type a second spendable copy. (Spec review, this PR.)
+ * THE ACCIDENTAL DOUBLE-SUBMIT (Junid, 7 Nov 2026): the EXACT same entry —
+ * same normalised reference, same amount, same note — typed under another
+ * entryId no more than MANUAL_DOUBLE_SUBMIT_MS before `at`. Answered with
+ * that record (no second one). A deliberate second entry seconds later with
+ * the same fields is indistinguishable from a double tap, so it is answered
+ * the same way; Junid adds a note, or waits a few seconds, to enter it.
  * @returns {{key:string, record:object}|null}
  */
-function bankTwinOfEntry({ reference, amountCents }, siblings) {
+function manualDoubleSubmitOf({ reference, amountCents, note = null, entryId, at }, siblings) {
+  if (!Number.isInteger(at)) return null;
+  const want = normaliseText(reference);
+  const wantNote = String(note ?? "").trim();
+  for (const [key, rec] of siblings ?? []) {
+    if (!isManualEntry(rec) || rec.manualEntry.entryId === entryId) continue;
+    if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
+    if (String(rec.manualEntry.note ?? "").trim() !== wantNote) continue;
+    const typed = rec.manualEntry.at;
+    if (!Number.isInteger(typed) || at - typed < 0 || at - typed > MANUAL_DOUBLE_SUBMIT_MS) continue;
+    return { key, record: rec };
+  }
+  return null;
+}
+
+/**
+ * THE SAME GUARD FOR TWO TAPS IN FLIGHT AT ONCE (architect review): the tail
+ * read cannot see a record not yet written, so the exact entry also takes a
+ * short create-only lock at MANUAL_SUBMIT_LOCK_PATH/<this key>. Its key is the
+ * entry's fields (normalised reference, amount, note) — never its entryId.
+ */
+const MANUAL_SUBMIT_LOCK_PATH = "eft_manual_submit_locks";
+function manualSubmitLockKeyOf({ reference, amountCents, note = null }) {
+  return createHash("sha256").update(`eftmanuallock1|${normaliseText(reference)}|${amountCents}|${String(note ?? "").trim()}`).digest("hex").slice(0, 40);
+}
+/** Transaction step: take the lock for `poolKey`, unless another entry took it
+ *  within MANUAL_DOUBLE_SUBMIT_MS. `capture({holder})` names who holds it. */
+function manualSubmitLockStep(poolKey, at, capture = () => {}) {
+  return (cur) => {
+    if (cur && typeof cur === "object" && typeof cur.key === "string" && cur.key !== poolKey
+      && Number.isInteger(cur.at) && Math.abs(at - cur.at) <= MANUAL_DOUBLE_SUBMIT_MS) {
+      capture({ holder: cur.key });
+      return undefined;
+    }
+    capture({ holder: poolKey });
+    return { key: poolKey, at };
+  };
+}
+
+/**
+ * THE BANK'S OWN RECORD OF THE SAME MONEY. A manual entry exists because the
+ * notification has not arrived — if an UNMATCHED bank-confirmed payment with
+ * this reference and amount, dated within the last TWIN_LOOKBACK_DAYS (or
+ * forward to latestSettledDay — on a weekend or holiday, up to the next
+ * business day; on a business day, today only), is already in the
+ * tail, Junid should use that one, not type a second spendable copy. (Spec
+ * review, this PR.) An unused bank payment older than that with the same
+ * reference is somebody's other payment — not this one's twin. (Blocking is
+ * the safe side of a money-out error: Junid uses the waiting one or looks.)
+ * @returns {{key:string, record:object}|null}
+ */
+function bankTwinOfEntry({ reference, amountCents, at = null }, siblings) {
   const want = normaliseText(reference);
   for (const [key, rec] of siblings ?? []) {
     if (!rec || rec.outcome !== "recorded" || isManualEntry(rec) || rec.status !== "unmatched") continue;
-    if (rec.amountCents === amountCents && normaliseText(rec.reference) === want) return { key, record: rec };
+    if (rec.amountCents !== amountCents || normaliseText(rec.reference) !== want) continue;
+    const paidAt = paidAtOf(rec);
+    if (Number.isInteger(at) && Number.isInteger(paidAt)) {
+      const back = sastDaysBetween(paidAt, at); // days from the payment to now
+      // Forward: up to the next business day when typed on a weekend day or
+      // public holiday (a weekend payment dated Monday, 7 Nov 2026); never
+      // forward on an ordinary business day.
+      const ahead = sastDate(paidAt) > latestSettledDay(sastDate(at));
+      if (ahead || back > TWIN_LOOKBACK_DAYS) continue;
+    }
+    return { key, record: rec };
   }
   return null;
 }
@@ -164,9 +331,10 @@ function bankTwinOfEntry({ reference, amountCents }, siblings) {
 /**
  * Two pool records that are ONE payment: a manual entry and the bank's own
  * notification of it — same normalised reference, same amount, and the bank
- * record ARRIVED AT OR AFTER the entry was typed (a bank payment from last
- * week with the same reference and amount is a different payment, not a
- * twin). Either side may be `record`. Pure.
+ * dates the payment no later than the entry was typed and within a week of
+ * it (withinManualTwinWindow). A bank payment made after the typing, or more
+ * than a week before, is a different payment, not a twin. Either side may be `record`.
+ * Two BANK records are never twins here: their fingerprints decide. Pure.
  */
 function isPaymentTwin(record, other) {
   if (!record || !other || record === other) return false;
@@ -177,14 +345,87 @@ function isPaymentTwin(record, other) {
   const ref = normaliseText(manual.reference);
   if (!ref || normaliseText(bank.reference) !== ref) return false;
   const typedAt = Number.isInteger(manual.manualEntry?.at) ? manual.manualEntry.at : null;
-  const arrived = Number.isInteger(bank.bankTs) ? bank.bankTs : Number.isInteger(bank.receivedAt) ? bank.receivedAt : bank.at;
-  return typedAt === null || !Number.isInteger(arrived) || arrived >= typedAt;
+  return withinManualTwinWindow(typedAt, bank);
 }
 
 /**
- * SETTLE-TIME, BOTH DIRECTIONS: the record about to be spent has a twin that
- * was already USED — a bank record whose manual twin was spent, or a manual
- * entry whose bank notification arrived and was spent. The two carry
+ * THE PROOF LEDGER IS NOT A SPEND (Junid, 9 Nov 2026). eftPoolManualApprove
+ * writes one record per proof, status "used" (used.outsidePos), so that the
+ * bank's later notice finds the identity already spent and is HELD. That record
+ * is a hold on the TWIN: it never paid for anything, and no sale can attach to
+ * it. A float carrying the same reference and amount must not read it as "this
+ * money was already used", or the proof blocks the very float it was attached
+ * to. That is what happened to the R150 float of 8 Nov: refused five times at
+ * the till, "already used 15:22" being the moment the proof was uploaded.
+ */
+function isProofLedger(record) {
+  return !!(record && typeof record === "object" && record.manualApproved
+    && typeof record.manualApproved === "object" && record.status === "used");
+}
+
+/**
+ * Is this float the money this proof vouches for? The twin rule, or — for a
+ * proof uploaded BEFORE the float was typed, of a payment dated an earlier day,
+ * which the twin rule cannot see (architect review of #875) — the same
+ * reference and amount typed the same SAST day as the upload. Never wider: an
+ * entry typed on another day is another payment (Junid, 7 Nov 2026 — a repeat
+ * customer's next order under one reference).
+ */
+function proofCoversFloat(float, proof) {
+  if (isPaymentTwin(float, proof)) return true;
+  if (float.amountCents !== proof.amountCents) return false;
+  const ref = normaliseText(float.reference);
+  if (!ref || normaliseText(proof.reference) !== ref) return false;
+  const typed = float.manualEntry?.at;
+  const uploaded = proof.manualApproved?.at;
+  if (!Number.isInteger(typed) || !Number.isInteger(uploaded)) return false;
+  if (Number.isInteger(proof.bankTs) && sastDate(proof.bankTs) > sastDate(typed)) return false;
+  return sameSastDay(typed, uploaded);
+}
+
+/** The proofs that cover this float, as [key, record] pairs, key order. */
+function proofsCovering(poolKey, record, siblings) {
+  if (!isManualEntry(record)) return [];
+  return (siblings ?? [])
+    .filter(([key, other]) => key !== poolKey && other !== record && isProofLedger(other) && proofCoversFloat(record, other))
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
+/**
+ * ONE PROOF, ONE FLOAT. A proof names one payment, so once a float has spent
+ * it a second hand entry of the same money must not spend it again. Each proof
+ * covers one float: N proofs of this reference and amount let N floats through
+ * (a customer who really paid twice, with a proof for each). A float that has
+ * no proof behind it at all is not judged here. `poolKey` is the float's own
+ * key, so a retried settle never counts itself.
+ * @returns {object|null} the float that spent the proof, or null
+ */
+function floatThatSpentItsProof(poolKey, record, siblings) {
+  const proofs = proofsCovering(poolKey, record, siblings);
+  if (!proofs.length) return null;
+  const spent = siblings
+    .filter(([key, other]) => key !== poolKey && other !== record && isManualEntry(other) && other.status === "used"
+      && proofs.some(([, proof]) => proofCoversFloat(other, proof)))
+    .map(([, other]) => other);
+  return spent.length >= proofs.length ? spent[spent.length - 1] : null;
+}
+
+/**
+ * Two floats of one proof at two tills in the same instant both pass the check
+ * above: each spends its own record, so no fingerprint arbitrates. The settle
+ * takes a short lock on this key (the manual entry's own lock step), which
+ * expires by itself, so a settle that fails strands nothing.
+ * @returns {string|null} the key to lock on, or null when no proof covers it
+ */
+function proofLockKeyOf(poolKey, record, siblings) {
+  return proofsCovering(poolKey, record, siblings)[0]?.[0] ?? null;
+}
+
+/**
+ * SETTLE-TIME: the record about to be spent is a MANUAL ENTRY whose bank
+ * notification arrived and was spent. (The other direction — a bank record
+ * whose manual twin was spent — refused too until 7 Nov 2026; a bank record
+ * carrying its own transaction number is now judged on that number alone.) The two carry
  * different fingerprints, so the fingerprint check cannot see they are one
  * payment; this can. Refused — the money was paid out once already; Junid
  * reverses one of them if they really are two.
@@ -192,8 +433,28 @@ function isPaymentTwin(record, other) {
  */
 function manualTwinSettleCheck({ poolKey, record, siblings }) {
   if (!record || record.outcome !== "recorded") return { ok: true };
+  // A BANK PAYMENT WITH ITS OWN TRANSACTION NUMBER is not judged here: its
+  // hand-entry twin is eft-linked-copies.cjs's (held at ingest, refused at
+  // the settle by linkedCopySettleCheck). `txnOverManualTwin` names the used
+  // twin for callers that want it. Only the record WITHOUT a number — a hand
+  // entry, a blank-number notice — is refused here when its twin was spent.
+  if (bankTransactionIdOf(record)) {
+    for (const [key, other] of siblings ?? []) {
+      if (key !== poolKey && other?.status === "used" && isPaymentTwin(record, other)) return { ok: true, txnOverManualTwin: key };
+    }
+    return { ok: true };
+  }
+  // A blank-number notice the OWNER released from a linked hold: he checked
+  // the statement against this very hand entry — separate money.
+  if (record.releasedFromHold && record.linkedHold) return { ok: true };
   for (const [key, other] of siblings ?? []) {
     if (key === poolKey || other?.status !== "used" || !isPaymentTwin(record, other)) continue;
+    // A bank twin the OWNER released from a linked hold (eft-linked-copies.cjs)
+    // is money he vouched is a separate payment: it never blocks this entry.
+    if (other.releasedFromHold && other.linkedHold) continue;
+    // The proof attached to this float arms the hold on the bank's notice; it
+    // has spent nothing (isProofLedger).
+    if (isProofLedger(other)) continue;
     const slip = other.used?.sale?.receiptNumber ? ` on slip ${other.used.sale.receiptNumber}` : "";
     // ONE sentence and one code whichever side was typed by hand: the till
     // shows the message, and a cashier must not learn that from it (Junid,
@@ -201,7 +462,15 @@ function manualTwinSettleCheck({ poolKey, record, siblings }) {
     return {
       ok: false, code: "twin-used",
       side: isManualEntry(record) ? "bank-twin-used" : "manual-twin-used",
-      message: `This payment — the same reference and amount — was already used${slip}. It cannot be used again. If the customer really paid twice, ask Junid.`,
+      message: `This payment was already used${slip}. It cannot be used again. If the customer really paid twice, ask Junid.`,
+    };
+  }
+  const spentBy = floatThatSpentItsProof(poolKey, record, siblings);
+  if (spentBy) {
+    const slip = spentBy.used?.sale?.receiptNumber ? ` on slip ${spentBy.used.sale.receiptNumber}` : "";
+    return {
+      ok: false, code: "twin-used", side: "proof-already-floated",
+      message: `This payment was already used${slip}. It cannot be used again. If the customer really paid twice, ask Junid.`,
     };
   }
   return { ok: true };
@@ -211,7 +480,8 @@ module.exports = {
   MANUAL_READER, MANUAL_ENTRY_BY, MANUAL_LOG_PATH,
   MANUAL_REFERENCE_MAX, MANUAL_REFERENCE_MIN_CHARS, MANUAL_AMOUNT_MIN_CENTS, MANUAL_AMOUNT_MAX_CENTS, MANUAL_NOTE_MAX,
   manualEntryKeyOf, manualEntryInputCheck, manualEntryRecord, isManualEntry, manualDuplicateOf,
-  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin,
+  manualDoubleSubmitOf, MANUAL_DOUBLE_SUBMIT_MS, MANUAL_SUBMIT_LOCK_PATH, manualSubmitLockKeyOf, manualSubmitLockStep,
+  bankTwinOfEntry, manualTwinSettleCheck, isPaymentTwin, isProofLedger, proofCoversFloat, floatThatSpentItsProof, proofLockKeyOf,
 };
 
 // ─── THE LOG — how often the hatch is used, and where each entry went ───────

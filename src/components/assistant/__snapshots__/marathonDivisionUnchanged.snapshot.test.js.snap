@@ -1,0 +1,3201 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, hub3 live: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, hub3 live: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, hub3 off: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, hub3 off: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, hub3 solved: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, hub3 solved: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, section 1 all live: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, section 1 all live: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, seed: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > marathon-pe, seed: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, hub3 live: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, hub3 live: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, hub3 off: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, hub3 off: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, hub3 solved: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, hub3 solved: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, section 1 all live: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, section 1 all live: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, seed: empty cart 1`] = `
+{
+  "alternatives": {
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "both@hub1/6",
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+      "h1@hub1/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:1",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:1",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:2",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;
+
+exports[`Marathon division order screen — unchanged by Hub 3 going live > trophy, seed: with a cart 1`] = `
+{
+  "alternatives": {
+    "both/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "both/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "both/9": [
+      "h2@hub2/9",
+    ],
+    "h1/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1/8": [
+      "both@hub2/8",
+    ],
+    "h1/9": [
+      "h2@hub2/9",
+    ],
+    "h1h3/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h1h3/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "h1h3/8": [
+      "both@hub2/8",
+    ],
+    "h1h3/9": [
+      "h2@hub2/9",
+    ],
+    "h2/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "h2/8": [
+      "both@hub2/8",
+    ],
+    "legacy/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "legacy/8": [
+      "both@hub2/8",
+    ],
+    "legacy/9": [
+      "h2@hub2/9",
+    ],
+    "moved/8": [
+      "both@hub2/8",
+    ],
+    "moved/9": [
+      "h2@hub2/9",
+    ],
+    "nophoto/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "nophoto/7": [
+      "h2@hub2/7",
+      "moved@hub2/7",
+      "untagged@hub1/7",
+    ],
+    "nophoto/9": [
+      "h2@hub2/9",
+    ],
+    "untagged/6": [
+      "h1@hub1/6",
+      "legacy@hub2/6",
+      "moved@hub2/6",
+    ],
+    "untagged/8": [
+      "both@hub2/8",
+    ],
+    "untagged/9": [
+      "h2@hub2/9",
+    ],
+  },
+  "cart": [
+    "h1/8 -> hub1",
+    "both/6 -> hub1",
+    "both/6 -> hub1",
+    "moved/6 -> hub2",
+  ],
+  "clothing": [
+    "tee",
+  ],
+  "clothingQty": {
+    "tee/L": "hub2:0",
+    "tee/M": "hub2:3",
+    "tee/S": "hub2:0",
+  },
+  "sectionHubIds": [],
+  "servingHub": "hub2",
+  "sizes": {
+    "bag/Free Size": "null:-",
+    "both/6": "hub1:0 OUT",
+    "both/7": "hub1:0 OUT",
+    "both/8": "hub2:2",
+    "both/9": "hub1:0 OUT",
+    "h1/6": "hub1:2",
+    "h1/7": "hub1:0 OUT",
+    "h1/8": "hub1:0 OUT",
+    "h1/9": "hub1:0 OUT",
+    "h1h3/6": "hub1:0 OUT",
+    "h1h3/7": "hub1:0 OUT",
+    "h1h3/8": "hub1:0 OUT",
+    "h1h3/9": "hub1:0 OUT",
+    "h2/6": "hub2:0 OUT",
+    "h2/7": "hub2:5",
+    "h2/8": "hub2:0 OUT",
+    "h2/9": "hub2:1",
+    "legacy/6": "hub2:1",
+    "legacy/7": "hub2:0 OUT",
+    "legacy/8": "hub2:0 OUT",
+    "legacy/9": "hub2:0 OUT",
+    "moved/6": "hub2:1",
+    "moved/7": "hub2:2",
+    "moved/8": "hub1:0 OUT",
+    "moved/9": "hub1:0 OUT",
+    "nophoto/6": "hub1:0 OUT",
+    "nophoto/7": "hub1:0 OUT",
+    "nophoto/8": "hub1:2",
+    "nophoto/9": "hub1:0 OUT",
+    "untagged/6": "hub1:0 OUT",
+    "untagged/7": "hub1:3",
+    "untagged/8": "hub1:0 OUT",
+    "untagged/9": "hub1:0 OUT",
+  },
+  "sneakers": [
+    "h1",
+    "h2",
+    "both",
+    "untagged",
+    "legacy",
+    "h1h3",
+    "moved",
+    "nophoto",
+    "bag",
+  ],
+  "subscribed": [
+    "hub1",
+    "hub2",
+  ],
+}
+`;

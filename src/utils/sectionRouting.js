@@ -259,11 +259,10 @@ export function sectionOfRecord(network, rec) {
 
 // ─── THE 6-MINUTE DISPATCH HOLD ──────────────────────────────────────────────
 // Hub 2's parcels travel to the shop, so its "Ready" is revealed to the
-// customer six minutes after Sent. That is a fact about Hub 2's van, and the
-// registry has no field for it, so it is stated here per hub rather than
-// guessed for Hub 3 or the Concrete Stockroom (which is inside the shop).
-// To hold another hub: one line.
-const DISPATCH_HOLD_MS_BY_HUB = { hub2: 6 * 60 * 1000 };
+// customer six minutes after Sent, and Hub 3's the same (Junid, 9 Nov 2026).
+// That is a fact about each hub's run to its shops, and the registry has no
+// field for it, so it is stated here per hub. To hold another hub: one line.
+const DISPATCH_HOLD_MS_BY_HUB = { hub2: 6 * 60 * 1000, hub3: 6 * 60 * 1000 };
 
 export function dispatchHoldMs(hub) {
   return DISPATCH_HOLD_MS_BY_HUB[hub] || 0;
@@ -281,24 +280,28 @@ const LEGACY_SOURCE_TABS = [
 ];
 export const SOURCE_HISTORY_TAB = { key: "refillhistory", label: "Refill History", loc: null, kind: "history", section: null };
 
+// The order Junid set on 9 Nov 2026: Hub 1, Hub 2, Hub 3, Marathon, Trophy,
+// Pine, Concrete. A location not named here (one added to the registry later)
+// follows, hubs then shops. Pine's tab is "Pine".
+const SOURCE_TAB_ORDER = ["hub1", "hub2", "hub3", "marathon-pe", "trophy", "marathon-pine", "concrete"];
+const SOURCE_TAB_LABEL = { "marathon-pine": "Pine" };
+
 // [{ key, label, loc, kind: "hub" | "shop" | "history", section }]
 export function sourceTabsFor(network, canSee) {
   const see = (id) => (canSee ? canSee(id) : true);
-  const out = [];
-  for (const t of LEGACY_SOURCE_TABS) {
-    if (locationOf(network, t.loc) && see(t.loc)) out.push({ ...t, section: sectionOf(network, t.loc) });
-  }
-  const named = new Set(LEGACY_SOURCE_TABS.map((t) => t.loc));
-  const rest = [...hubsOf(network), ...storesOf(network)].filter((l) => !named.has(l.id) && see(l.id));
-  // Per section: its hubs, then its shops — the order Section 2's tabs are in.
-  rest.sort((a, b) => (b.section - a.section) || ((a.type === "hub" ? 0 : 1) - (b.type === "hub" ? 0 : 1)) || (a.sort - b.sort));
-  for (const l of rest) {
-    out.push({
+  const legacy = new Map(LEGACY_SOURCE_TABS.map((t) => [t.loc, t]));
+  const rank = (id) => { const i = SOURCE_TAB_ORDER.indexOf(id); return i === -1 ? SOURCE_TAB_ORDER.length : i; };
+  const locs = [...hubsOf(network), ...storesOf(network)].filter((l) => see(l.id));
+  locs.sort((a, b) => rank(a.id) - rank(b.id) || ((a.type === "hub" ? 0 : 1) - (b.type === "hub" ? 0 : 1)) || (a.sort - b.sort));
+  const out = locs.map((l) => {
+    const t = legacy.get(l.id);
+    if (t) return { ...t, section: l.section };
+    return {
       key: `loc:${l.id}`, loc: l.id, section: l.section,
       kind: l.type === "hub" ? "hub" : "shop",
-      label: l.type === "hub" ? `${l.name} Refill` : l.name,
-    });
-  }
+      label: SOURCE_TAB_LABEL[l.id] || (l.type === "hub" ? `${l.name} Refill` : l.name),
+    };
+  });
   out.push(SOURCE_HISTORY_TAB);
   return out;
 }

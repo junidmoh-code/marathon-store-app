@@ -247,21 +247,20 @@ describe("a transfer between locations leaves the total unchanged", () => {
   });
 });
 
-describe("the agreed online pool: Pine, Concrete and Hub 3 do not sell online", () => {
-  // Owner decision 2026-09-08 (inventory.mjs UNTRUSTED_LOCATIONS): their counts
-  // are not accurate enough to promise a web customer. A size held ONLY there is
-  // therefore NOT sellable online — the test pins the agreed definition rather
-  // than the brief's "if the definition includes them".
+describe("the agreed online pool: Pine, Concrete and Hub 3 sell online (Junid, 12 Nov 2026)", () => {
+  // Junid reversed the 8 Sep / 6 Oct exclusion: "every unit of stock anywhere is
+  // listed on the website". A size held ONLY in the Concrete division is now
+  // sellable, and web lines route there (onlineOrders/routing.mjs).
   for (const loc of ["marathon-pine", "concrete", "hub3"]) {
-    it(`a size with stock only at ${loc} is set to 0 on Shopify`, async () => {
+    it(`a size with stock only at ${loc} is pushed as its count`, async () => {
       const { shopify, pass } = world({
         stock: { [loc]: { p1: { 6: { qty: 4 } } } },
-        shop: [variant("6", 4), variant("7", 0)],
+        shop: [variant("6", 0), variant("7", 0)],
         movements: mv(`received:r-${loc}`, { type: "received", size: "6", to: loc, ts: "2026-10-11T09:59:00.000Z" }),
         cursor: { cursorMs: Date.parse("2026-10-11T09:50:00Z") },
       });
       await pass();
-      expect(shopify.buyable("gid://shopify/InventoryItem/6")).toBe(0);
+      expect(shopify.buyable("gid://shopify/InventoryItem/6")).toBe(4);
     });
   }
 
@@ -271,7 +270,7 @@ describe("the agreed online pool: Pine, Concrete and Hub 3 do not sell online", 
     const push = [...ONLINE_EXCLUDED_LOCATIONS].sort();
     expect([...trigger.ONLINE_EXCLUDED_LOCATIONS].sort()).toEqual(push);
     expect([...social.ONLINE_EXCLUDED_LOCATIONS].sort()).toEqual(push);
-    expect(push).toEqual(expect.arrayContaining(["in_transit", "marathon-pine", "hub3", "concrete"]));
+    expect(push).toEqual(["concrete-stockroom", "in_transit"]);
   });
 });
 

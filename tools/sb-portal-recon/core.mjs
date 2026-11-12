@@ -30,6 +30,7 @@ const portalLib = require("../../functions/lib/card-portal.cjs");
 
 export const PORTAL_ORIGIN = "https://www.simplyblu.co.za";
 export const REPORT_URL = `${PORTAL_ORIGIN}/analytics/reports/single/?type=dashboard&name=Monthly+Card+POS+-+Terminal+Batch+Report&id=47`;
+export const TRANSACTIONS_URL = `${PORTAL_ORIGIN}/selling/transactions/`;
 export const METABASE_HOST = "metabasesbsaprod.littlefish.mobi";
 export const OWNER_EMAIL = "gunidmoh@gmail.com";
 export const KEYCHAIN_SERVICE = "marathon-simplyblu";
@@ -51,6 +52,62 @@ export function sastYmd(ms) {
 /** The days a run pulls: today and the two before it, never before 3 Nov 2026. */
 export function daysToPull(nowMs, back = 2) {
   return portalLib.daysToPull(sastYmd(nowMs), back);
+}
+
+// THE 07:00 RE-PULL (Junid, 8 Nov 2026): a run before 15:00 SAST re-reads the
+// last ten days, not today; the server refreshes a day only if the portal has
+// grown. Payments SimplyBLU lacks may still arrive after their batch closes.
+export const MORNING_END_MINUTE = 15 * 60;
+const MORNING_LOOKBACK_DAYS = 10;
+export function morningDays(nowMs) {
+  return daysToPull(nowMs, MORNING_LOOKBACK_DAYS).slice(0, -1);
+}
+
+// THE PORTAL'S OWN TRANSACTIONS PAGE IS THE CROSS-CHECK (8 Nov 2026): it is
+// read whole (limit=0), so a payment on it that the Metabase report does not
+// have is something the report filtered or cut. Status 2 is success; a row
+// younger than this may simply have landed between the two reads.
+const LIST_SUCCESS_STATUS = 2;
+const LIST_SETTLE_MS = 10 * 60000;
+export function listMissingFromReport(list, byDay, readAtMs) {
+  const numberCol = (d) => (d.cols || []).findIndex((c) => /^TransactionNumber$/i.test(String(c).trim()));
+  const known = new Set();
+  for (const d of Object.values(byDay || {})) {
+    const i = numberCol(d);
+    // A report without the number column cannot be compared: nothing is "lost".
+    if (i < 0) return [];
+    for (const r of d.rows || []) known.add(Number(r[i]));
+  }
+  const out = [];
+  for (const t of Array.isArray(list) ? list : []) {
+    if (!t || t.transactionStatus !== LIST_SUCCESS_STATUS || !t.terminalId) continue;
+    const at = Date.parse(t.dateCreated);
+    if (!Number.isFinite(at) || at > readAtMs - LIST_SETTLE_MS) continue;
+    const day = sastYmd(at);
+    if (!byDay?.[day] || known.has(Number(t.transactionNumber))) continue;
+    out.push({ day, number: t.transactionNumber, amount: t.amount, terminalId: t.terminalId, id: t.id ?? null, at: t.dateCreated, type: t.transactionType, batchNo: t.batchNo ?? null, ref: t.traceId ?? null, authCode: t.authCode ?? null });
+  }
+  return out;
+}
+
+// A purchase on the portal's own list that the report lacks goes into the day
+// as a report row. Type 3 is a purchase; anything else is only said in the log.
+const LIST_PURCHASE_TYPE = 3;
+export function addListRows(byDay, lost) {
+  let added = 0;
+  for (const t of lost || []) {
+    if (t.type !== LIST_PURCHASE_TYPE || !byDay?.[t.day]) continue;
+    const { cols, rows } = byDay[t.day];
+    const ix = portalLib.columnIndex(cols);
+    if (["at", "type", "status", "tid", "amount"].some((f) => ix[f] < 0)) continue;
+    const row = cols.map(() => null);
+    const put = (f, v) => { if (ix[f] >= 0) row[ix[f]] = v; };
+    put("at", t.at); put("id", t.id); put("number", t.number); put("type", "Purchase"); put("status", "Success");
+    put("tid", t.terminalId); put("batchNo", t.batchNo); put("ref", t.ref); put("authCode", t.authCode); put("amount", t.amount);
+    rows.push(row);
+    added++;
+  }
+  return added;
 }
 
 /** Metabase's date filter for one day. */

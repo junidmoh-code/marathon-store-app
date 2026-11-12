@@ -59,7 +59,9 @@ describe("it reads this product's rows, and never the node", () => {
     DB["settings/displayRows/marathon-pe/p1"] = { r1: row() };
     await render({ productId: "p1" });
     expect(READS.sort()).toEqual([
+      "settings/displayRows/concrete/p1",
       "settings/displayRows/marathon-pe/p1",
+      "settings/displayRows/marathon-pine/p1",
       "settings/displayRows/trophy/p1",
     ]);
     // The whole-node read this screen used to do. If it comes back, the cost

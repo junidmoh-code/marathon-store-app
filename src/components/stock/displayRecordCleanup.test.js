@@ -406,8 +406,15 @@ describe("findUnregisteredDisplays", () => {
     expect(r).toEqual([]);
   });
 
-  it("a floor booked at a hub with NO register is reported, not silently dropped", () => {
+  it("a floor booked at a hub this tab does not cover is reported, not silently dropped", () => {
     const r = find({ "marathon-pine": { p2: slot({ bookedHub: "hub3" }) } });
+    expect(r).toHaveLength(1);
+    expect(r[0].registerable).toBe(false);
+    expect(r[0].reason).toMatch(/does not cover/);
+  });
+
+  it("a floor booked at a covered hub whose register is not in hand is reported too", () => {
+    const r = findUnregisteredDisplays({ slots: { "marathon-pe": { p1: slot({ bookedHub: "hub2" }) } }, registerByHub: { hub1: {} }, productsById: P });
     expect(r).toHaveLength(1);
     expect(r[0].registerable).toBe(false);
     expect(r[0].reason).toMatch(/keeps no display register/);

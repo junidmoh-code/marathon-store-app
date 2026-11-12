@@ -106,9 +106,12 @@ describe("7b — immediate payments only", () => {
     expect(out.needsSample).toBeUndefined();
   });
 
-  it("a payment dated in the FUTURE of its own notification is scheduled — refused, whatever it says", () => {
-    const later = 1_000_000 + 2 * 60 * 60 * 1000;
-    expect(iv({ ...base, reader: "capitec", immediate: true, bankTs: later }).ok).toBe(false);
+  it("a payment dated a LATER day than its own notification is scheduled — refused, whatever it says", () => {
+    // base arrives Thu 1 Jan 1970 (SAST) — a business day (the holiday
+    // calendar starts with the 1994 Act), so any later date is scheduled
+    // (7 Nov 2026: the next-business-day window is weekends/holidays only).
+    expect(iv({ ...base, reader: "capitec", immediate: true, bankTs: 1_000_000 + 2 * 24 * 60 * 60 * 1000 }).ok).toBe(false);
+    expect(iv({ ...base, reader: "capitec", immediate: true, bankTs: 1_000_000 + 24 * 60 * 60 * 1000 }).ok).toBe(false);
     // A clock wobble is not a schedule: inside the tolerance passes.
     expect(iv({ ...base, reader: "capitec", immediate: true, bankTs: 1_000_000 + 5 * 60 * 1000 }).ok).toBe(true);
   });
@@ -131,12 +134,12 @@ describe("the poller runs both checks on every parsed payment (source scan)", ()
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("./email-poller.mjs", import.meta.url), "utf8");
     expect(src).toMatch(/destinationVerdict\(\{\s*accountMask: group\.parse\.accountMask, destBankName: group\.parse\.destBankName,\s*allowedAccounts: cfg\.eftAccounts/);
-    expect(src).toMatch(/immediacyVerdict\(\{\s*parsed: group\.parse, reader: group\.readerId, receivedAt: message\.receivedAt,[\s\S]{0,200}?immediateOnly: account\?\.ok === true && account\.immediateOnly === true,\s*\}\)/);
+    expect(src).toMatch(/immediacyVerdict\(\{\s*parsed: group\.parse, reader: group\.readerId, receivedAt: message\.receivedAt,[\s\S]{0,200}?immediateOnly: account\?\.ok === true && enforcesImmediateOnly\(account\),\s*\}\)/);
     // The allowlist is read WITH each account's bank and immediate-only tag.
     expect(src).toMatch(/eftAccounts: parseAccountPolicies\(env\.EFT_ALLOWED_ACCOUNTS\)/);
     expect(src).toMatch(/message, verdict, parsed: group\.parse, account, timing, dated,/);
     // Fix 8 rides beside them, on the bank's date — never the arrival time.
-    expect(src).toMatch(/paymentDateVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff \}\)/);
+    expect(src).toMatch(/datedVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff, account, floors: cfg\.eftAccountFloors\.floors \}\)/); // the global cutoff, then the account floor (10 Nov 2026)
     expect(src).not.toMatch(/accountVerdict\(/);
   });
 });

@@ -45,6 +45,8 @@
 import { LEG_BY_NODE, rowPath, storeKey, rowKeySegments } from "./nodes";
 import { isCanonicalLocationId } from "./locationIds";
 import { pageEntries, maxKey, compareKeys } from "./rtdbOrder";
+import { noteTouched } from "./censusJournal";
+import { getLegHealth, healthKey, heldRows, claimLoweredBy } from "./health";
 
 export const CHANGES_ROOT = "mirror_changes";
 export const COUNTS_ROOT = "mirror_counts";
@@ -186,7 +188,7 @@ export function rowsFromChangePage(page) {
 // Run `fn` over `items` with at most `limit` in flight. Order of results
 // matches order of items; the first rejection rejects the whole batch, which
 // is what "a failed row read abandons the page" rests on.
-async function mapWithLimit(items, limit, fn) {
+export async function mapWithLimit(items, limit, fn) {
   const out = new Array(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -254,6 +256,46 @@ export async function runChangeFeedPage({
       throw err;
     }));
 
+  // WHAT THIS PAGE ADDED AND REMOVED, FILED BEFORE IT COMMITS. The census
+  // check widens its allowance by the rows the feed has added to or removed
+  // from a leg since the census was taken (censusJournal.js) — and ONLY those.
+  // An edit to a row the device already holds does not change how many rows
+  // there are, and counting it would let a busy day's edits hide a leg that
+  // had really lost rows. So each row is asked: was it held before this page?
+  //
+  // Written first on purpose: a page that fails after this is read again and
+  // counted twice, which widens an allowance; written after, a crash in
+  // between would lose the count and the census would call real churn a drift.
+  const membership = [];
+  // leg -> rows this page removes from, and adds to, what the device holds.
+  const netByLeg = new Map();
+  {
+    const byStoreKeys = new Map();
+    for (let i = 0; i < rows.length; i += 1) {
+      if (values[i] === NOT_PERMITTED) continue;
+      const { leg, key } = rows[i];
+      const list = byStoreKeys.get(leg.store) ?? [];
+      list.push(storeKey(leg, key));
+      byStoreKeys.set(leg.store, list);
+    }
+    const heldBy = new Map();
+    for (const [store, keys] of byStoreKeys) heldBy.set(store, await db.heldKeys(store, keys));
+    for (let i = 0; i < rows.length; i += 1) {
+      const value = values[i];
+      if (value === NOT_PERMITTED) continue;
+      const { leg, key } = rows[i];
+      const wasHeld = heldBy.get(leg.store).has(storeKey(leg, key));
+      const isHeld = !(value === null || value === undefined);
+      if (wasHeld !== isHeld) {
+        membership.push(rows[i]);
+        const net = netByLeg.get(leg.name) ?? { removed: 0, added: 0 };
+        if (wasHeld) net.removed += 1; else net.added += 1;
+        netByLeg.set(leg.name, net);
+      }
+    }
+  }
+  await noteTouched(db, { cursor, lastKey, rows: membership, now });
+
   // Group by object store so each store commits its rows and the shared cursor
   // in one transaction.
   const byStore = new Map();
@@ -266,11 +308,28 @@ export async function runChangeFeedPage({
       continue;
     }
     appliedRows.push(rows[i]);
-    const bucket = byStore.get(leg.store) ?? { records: [], deleteKeys: [] };
+    const bucket = byStore.get(leg.store) ?? { records: [], deleteKeys: [], legs: new Set() };
+    bucket.legs.add(leg.name);
     const k = storeKey(leg, key);
-    if (value === null || value === undefined) bucket.deleteKeys.push(k);
-    else bucket.records.push({ key: k, value });
+    if (value === null || value === undefined) {
+      bucket.deleteKeys.push(k);
+    } else bucket.records.push({ key: k, value });
     byStore.set(leg.store, bucket);
+  }
+
+  // A DELETE THE FEED APPLIES LOWERS WHAT THE LEG CLAIMS TO HOLD, in the same
+  // transaction as the delete — see health.claimLoweredBy for the leg that
+  // stopped being served without it.
+  for (const bucket of byStore.values()) {
+    bucket.healthEntries = {};
+    for (const legName of bucket.legs) {
+      const net = netByLeg.get(legName);
+      if (!net || net.removed === 0) continue;
+      const lowered = claimLoweredBy(await getLegHealth(db, legName), {
+        held: await heldRows(db, legName), removed: net.removed, added: net.added,
+      });
+      if (lowered) bucket.healthEntries[healthKey(legName)] = lowered;
+    }
   }
 
   let applied = 0;
@@ -285,6 +344,7 @@ export async function runChangeFeedPage({
     const isLast = i === stores.length - 1;
     await db.putPage(store, bucket.records, {
       deleteKeys: bucket.deleteKeys,
+      metaEntries: bucket.healthEntries,
       ...(isLast ? {
         cursorKey: FEED_CURSOR_META, cursorValue: lastKey,
         isAfter: (next, prev) => prev === null || prev === undefined || compareKeys(next, prev) > 0,

@@ -24,13 +24,13 @@ test("a sale ANYWHERE ELSE is ignored — this is the cheap early return", () =>
   // hub1/hub2 are NOT here: sneakers sell from the hub, and those are handled
   // as their own kind below. Everything else is a movement this trigger has no
   // business reading a single extra byte for.
-  for (const from of ["central", "marathon-pine", "hub3", "in_transit", "", null, undefined]) {
+  for (const from of ["central", "in_transit", "", null, undefined]) {
     assert.equal(classifyMovement(sold({ from })), null, `from=${from}`);
   }
 });
 
-test("Pine is deliberately out of scope — its displays are booked at hub3", () => {
-  assert.equal(DISPLAY_STORES.includes("marathon-pine"), false);
+test("Pine and Concrete walls are watched, as Marathon PE's and Trophy's are (9 Nov 2026)", () => {
+  for (const s of ["marathon-pine", "concrete", "marathon-pe", "trophy"]) assert.equal(DISPLAY_STORES.includes(s), true, s);
 });
 
 test("only a SALE closes anything", () => {
@@ -155,8 +155,8 @@ test("a hub-sourced sale is its own kind, carrying the hub and no store", () => 
   assert.equal(hit.store, null);
 });
 
-test("hub3 is NOT a hub-sourced display sale — Pine is out of scope", () => {
-  assert.equal(classifyMovement({ type: "sold", from: "hub3", productId: "p1", size: "9", qty: 1 }), null);
+test("a Hub 3 sale is a hub-sourced display sale, like Hub 1's and Hub 2's (9 Nov 2026)", () => {
+  assert.equal(classifyMovement({ type: "sold", from: "hub3", productId: "p1", size: "9", qty: 1 }).kind, "sold_hub");
 });
 
 test("A BARE HUB SALE CLOSES NOTHING — the whole safety of the inference", () => {

@@ -25,6 +25,7 @@ vi.mock("./barcodeListener", () => ({ installBarcodeListener: () => () => {}, su
 // A held read: while HOLD names a product, its gets never resolve until
 // RELEASE is called — the shape needed to land a stale response late.
 let HOLD = null;
+const HUB3_OWNER = {};
 const HELD = [];
 const STOCK = {
   trophy: {
@@ -52,6 +53,10 @@ vi.mock("firebase/database", () => ({
     // hangs for ever on the mutation it exists to prove.
     if (READS.length > 100) return new Promise(() => {});
     const [root, loc, pid] = String(r.path).split("/");
+    if (root === "refill_engine") {
+      const owner = HUB3_OWNER[String(r.path).split("/")[3]];
+      return { exists: () => owner !== undefined, val: () => owner };
+    }
     const src = root === "stock" ? STOCK : root === "stock_targets" ? TARGETS : {};
     const v = src?.[loc]?.[pid];
     const snap = { exists: () => v !== undefined, val: () => v };

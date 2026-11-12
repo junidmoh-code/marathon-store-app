@@ -76,8 +76,11 @@
 
 "use strict";
 
-const { paymentFingerprint } = require("./eft-fingerprint.cjs");
-const { isManualEntry, isPaymentTwin } = require("./eft-manual.cjs");
+const { paymentFingerprint, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
+const { isManualEntry, isPaymentTwin, isProofLedger, floatThatSpentItsProof } = require("./eft-manual.cjs");
+const { linkedCopySettleCheck, absaIdentityOf } = require("./eft-linked-copies.cjs");
+/** An Absa record with a synthetic identity: its numbered twin may exist. */
+const isBlankNumberedCandidate = (r) => !!absaIdentityOf(r);
 
 const EFT_POOL_PATH = "eft_pool";
 
@@ -179,10 +182,30 @@ function publicEftView(key, record) {
  */
 function manualTwinOf(record, payments) {
   if (!record || record.status !== "unmatched") return null;
+  // A payment with its own bank transaction number is warned about only when
+  // the settle would refuse it: a LINKED copy of the same money (the hand
+  // entry it is the notice of, or its blank-number Absa twin) was used —
+  // eft-linked-copies.cjs. Never on reference + amount alone, and never once
+  // the owner released it from a hold.
+  if (bankTransactionIdOf(record) || isBlankNumberedCandidate(record)) {
+    const keyOf = payments?.find?.(([, r]) => r === record)?.[0] ?? null;
+    const check = linkedCopySettleCheck({ poolKey: keyOf, record, siblings: (payments ?? []).filter(([, r]) => r !== record) });
+    if (!check.ok) {
+      const other = (payments ?? []).find(([, r]) => r !== record && r?.status === "used" && !linkedCopySettleCheck({ poolKey: keyOf, record, siblings: [["x", r]] }).ok)?.[1];
+      return other ? { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null } : null;
+    }
+    // A numbered payment's only warning is a linked copy's (above). A
+    // BLANK-number Absa record also meets the hand-entry twin rule below.
+    if (bankTransactionIdOf(record)) return null;
+  }
   for (const [, other] of payments ?? []) {
     if (other?.status !== "used" || !isPaymentTwin(record, other)) continue;
+    if (other.releasedFromHold && other.linkedHold) continue; // owner-vouched separate money
+    if (isProofLedger(other)) continue; // the proof holds the bank's notice; it spent nothing
     return { at: Number.isInteger(other.used?.at) ? other.used.at : null, receiptNumber: other.used?.sale?.receiptNumber ?? null };
   }
+  const spent = floatThatSpentItsProof(null, record, payments);
+  if (spent) return { at: Number.isInteger(spent.used?.at) ? spent.used.at : null, receiptNumber: spent.used?.sale?.receiptNumber ?? null };
   return null;
 }
 

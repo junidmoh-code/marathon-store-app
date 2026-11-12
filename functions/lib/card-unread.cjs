@@ -94,7 +94,7 @@ const asList = (v) => (Array.isArray(v) ? v : v && typeof v === "object" ? Objec
  * @returns {{marker:object, becameUnread:boolean}} becameUnread is true only
  *   on the transition into "unread" — that is when ONE notice is queued.
  */
-function addUnreadFailure(existing, { storeId, tid, tillId, placeStoreId = null, label, dayYmd, reason, jobId = null, photos = [], source, nowMs }) {
+function addUnreadFailure(existing, { storeId, tid, tillId, placeStoreId = null, label, dayYmd, reason, jobId = null, photos = [], source, nowMs, photoReceived = false }) {
   const was = existing && typeof existing === "object" ? existing : null;
   const jobs = { ...(was && was.jobs && typeof was.jobs === "object" ? was.jobs : {}) };
   if (jobId) jobs[jobId] = { at: nowMs, reason: clip(reason) };
@@ -124,6 +124,10 @@ function addUnreadFailure(existing, { storeId, tid, tillId, placeStoreId = null,
     photos: photoList.length ? photoList : null,
     notice: (was && was.notice) || null,
     resolved: (was && was.resolved) || null,
+    // A Standard Bank till's photo is IN and its total could not be read
+    // (lib/card-sb-photo.cjs) — Junid's report says so, never "awaiting a
+    // slip". Absent on every other marker.
+    ...(photoReceived || (was && was.photoReceived === true) ? { photoReceived: true } : {}),
   };
   return { marker, becameUnread: !resolved && !(was && was.status === "unread") };
 }

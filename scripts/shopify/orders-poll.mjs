@@ -49,7 +49,7 @@ const JIMMY_DB = join(homedir(), "marathon-dm-agent", "data", "agent.db");
 
 const fnRequire = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = fnRequire("firebase-admin");
-const { resolveAssignment, saDateStringFromMs, isTriggerStoreEnabled } = fnRequire("./displayChecks/lib.cjs");
+const { resolveAssignment, saDateStringFromMs, isWebsiteStripEnabled } = fnRequire("./displayChecks/lib.cjs");
 const { loadNetwork } = fnRequire("./lib/network-load.cjs");
 const { loadStoreSettings } = fnRequire("./displayChecks/settings.cjs");
 
@@ -104,10 +104,12 @@ try {
     whatsappJunid: COMMIT ? whatsappJunid() : null,
     increment: (n) => admin.database.ServerValue.increment(n),
     resolveAssignment,
-    // A shop with Display Checks off is never routed to (it could not see or
-    // close the entry). A read that fails counts as ON — today's routing.
+    // A shop whose website strip is switched off is never routed to (it could
+    // not see or close the entry). The strip is on unless the store's Display
+    // Checks are switched OFF explicitly — a not-live store (Pine) keeps its
+    // website strip (Junid, 12 Nov 2026). A read that fails counts as ON.
     displayFeedEnabled: async (shop) => {
-      try { return isTriggerStoreEnabled(shop, await loadNetwork(liveDb), await loadStoreSettings(liveDb, shop)); }
+      try { return isWebsiteStripEnabled(shop, await loadNetwork(liveDb), await loadStoreSettings(liveDb, shop)); }
       catch { return true; }
     },
     saDate: (ms) => saDateStringFromMs(ms),

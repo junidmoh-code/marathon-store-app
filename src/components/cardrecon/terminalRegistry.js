@@ -47,13 +47,45 @@ export function captureMode(row) {
  * else; a typed-total till shows one box for the figure and no camera at all.
  */
 export function takesPhoto(row) {
+  if (isPhotoPrimary(row)) return true;
   const m = captureMode(row);
   return m !== "email" && m !== "typed";
 }
 
 /** Is this card captured by typing its total, with no photograph at all? */
 export function typesTotal(row) {
+  if (isPhotoPrimary(row)) return false;
   return captureMode(row) === "typed";
+}
+
+/**
+ * A STANDARD BANK till is photographed (Junid, 7 Nov 2026) — the server half
+ * is isPhotoPrimary in functions/lib/card-terminals.cjs. Its printed
+ * end-of-day report is the record; the typed total is optional; nothing waits
+ * for an email. Decided by the row's bank, never by a list of tills.
+ */
+export function isPhotoPrimary(row) {
+  return row?.bank === "standard-bank" && reportSource(row) === "photo";
+}
+
+/** Where this till's day comes from: "portal" | "photo" | "email" — server reportSource (lib/card-terminals.cjs). */
+export function reportSource(row) {
+  if (!row) return null;
+  if (row.source === "portal" || row.source === "photo" || row.source === "email") return row.source;
+  if (row.bank !== "standard-bank") return "email";
+  return row.record === "portal" ? "portal" : "photo";
+}
+
+/** A Standard Bank till whose record is the SimplyBLU portal (Concrete) — server isPortalRecordTerminal. */
+export function isPortalRecordTerminal(row) {
+  return row?.bank === "standard-bank" && reportSource(row) === "portal";
+}
+
+/** Does this machine's report arrive by email? Never a Standard Bank one. */
+export function expectsEmail(row) {
+  if (isPhotoPrimary(row)) return false;
+  const m = captureMode(row);
+  return m === "email" || m === "both";
 }
 
 /**
@@ -90,6 +122,15 @@ export function captureCards(terminals) {
     // an existing row, so a stray `tid` is not hypothetical. (CodeRabbit, #611.)
     .map(([tid, row]) => ({ ...row, tid }))
     .sort((a, b) => String(a.label || a.tid).localeCompare(String(b.label || b.tid)));
+}
+
+/**
+ * The cards a person captures a report for. A till whose day comes from
+ * SimplyBLU (`source: "portal"`) is not one: nothing is waited for from anyone
+ * here, so it never reads "Waiting" or "Type total" (Junid, 8 Nov 2026).
+ */
+export function captureableCards(terminals) {
+  return captureCards(terminals).filter((t) => !isPortalRecordTerminal(t));
 }
 
 // ── WHOSE TILLS, AND UNDER WHICH SECTION ─────────────────────────────────────

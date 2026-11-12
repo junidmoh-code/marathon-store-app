@@ -34,12 +34,16 @@ export function productHubsOf(product) {
  *        means Pine" is gone — Hub 3 serves Pine and Concrete — so the shop's
  *        own hubs decide. Omitted by an old caller: storeMode "pine" still
  *        reads as [hub3], exactly as before.
+ * @param {(p) => boolean} [stockedHere]  has one of THIS shop's hubs a cell for
+ *        the product (divisionAvailability.stockedAtHubs)? A shop with its
+ *        own hub list also sees a sneaker its hub holds though the tag names
+ *        another hub — the count put it there. Ignored for Marathon PE / Trophy.
  * @param {boolean}  showDeactivated  the per-shop exemption (config/assistantVisibility)
  * @param {(p) => boolean} isDeactivated  the shared predicate, injected so this
  *        module stays free of the deactivation import cycle and the test can
  *        prove the gate is CONSULTED rather than re-implemented.
  */
-export function assistantCatalogue({ products = [], wantsClothing, storeMode, showDeactivated = false, isDeactivated, servedHubs }) {
+export function assistantCatalogue({ products = [], wantsClothing, storeMode, showDeactivated = false, isDeactivated, servedHubs, stockedHere }) {
   const shopHubs = servedHubs !== undefined ? servedHubs : (storeMode === "pine" ? ["hub3"] : null);
   return (products || []).filter((p) => {
     if (!p) return false;
@@ -49,7 +53,10 @@ export function assistantCatalogue({ products = [], wantsClothing, storeMode, sh
     if (!wantsClothing) {
       const hubs = productHubsOf(p);
       if (Array.isArray(shopHubs)) {
-        if (!hubs.some((h) => shopHubs.includes(h))) return false;
+        // Tagged for one of the shop's hubs — or carried at one, whatever the
+        // tag says (`stockedHere`, the shop's own hub cells). Only a shop with its
+        // own hub list asks: the hub1/hub2 rule below never consults it.
+        if (!hubs.some((h) => shopHubs.includes(h)) && !(typeof stockedHere === "function" && stockedHere(p))) return false;
       } else if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) {
         return false;
       }

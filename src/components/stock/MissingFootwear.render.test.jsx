@@ -28,7 +28,8 @@ vi.mock("firebase/database", () => ({
   get: (r) => (hangGets ? new Promise(() => {}) : Promise.resolve({ val: () => gets[r.path] ?? null })),
 }));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
-vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
+vi.mock("../../firebase", () => ({ database: {}, functions: {}, auth: { currentUser: { uid: "u1" } } }));
+vi.mock("firebase/functions", () => ({ httpsCallable: () => async () => ({ data: { ok: true } }) }));
 const perm = { permRecord: { stockRole: "warehouse" }, isSuperAdmin: false };
 vi.mock("../PermissionsContext", () => ({ usePermissions: () => ({ ...perm }) }));
 vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toISOString(), serverNowMs: () => NOW }));
@@ -59,6 +60,7 @@ beforeEach(() => {
   paths["stock"] = { central: { shoeA: { 8: cell(5), 9: cell(5) }, shoeB: { 8: cell(5), 9: cell(5) } } };
   paths["refill_requests"] = null;
   gets["config/refillEngine/footwearRunByLocation"] = { hub1: { 8: 2, 9: 2 }, hub2: { 8: 2, 9: 2 } };
+  gets["config/refillEngine/policyGroups/footwear-all/policy/hub3"] = { target: 3, minQty: 2, reorderPoint: 1, carriedOnly: true };
   perm.permRecord = { stockRole: "warehouse" };
 });
 
@@ -104,8 +106,8 @@ describe("every disabled button on the sneaker list carries its reason", () => {
   });
 });
 
-describe("SNEAKERS: the Concrete list solves to Hub 3 — and only to Hub 3", () => {
-  it("\"Missing from Concrete · Hub 3\": Solve raises refill_requests for hub3 only, never Hub 1 or Hub 2", async () => {
+describe("SNEAKERS: on the Concrete list, Hub 3 is the default of the three hubs", () => {
+  it("\"Missing from Concrete · Hub 3\": Solve raises refill_requests for hub3 only, never Hub 1 or Hub 2 unless ticked", async () => {
     const { update } = await import("firebase/database");
     update.mockClear();
     const tree = mount();
@@ -114,13 +116,72 @@ describe("SNEAKERS: the Concrete list solves to Hub 3 — and only to Hub 3", ()
     const concrete = chip("Missing from Concrete · Hub 3");
     expect(concrete).toBeDefined();
     await act(async () => { concrete.props.onClick(); });
-    // the hub choices on this list are Hub 3's alone
-    expect(buttonsOf(tree).some((b) => /Hub 1|Hub 2/.test((b.children || []).join("")) && !/Missing from/.test((b.children || []).join("")))).toBe(false);
     await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
+    // all three hubs are offered, Hub 3 ticked
+    const hubChips = buttonsOf(tree).filter((b) => b.props.role === "checkbox").map((b) => [(b.children || []).join(""), b.props["aria-checked"]]);
+    expect(hubChips.map(([t]) => t.replace(/ · .*/, ""))).toEqual(["Hub 1", "Hub 2", "Hub 3"]);
+    expect(hubChips.filter(([, on]) => on).map(([t]) => t.replace(/ · .*/, ""))).toEqual(["Hub 3"]);
     await act(async () => { await buttonSaying(tree, "Confirm")[0].props.onClick(); });
     expect(update).toHaveBeenCalledTimes(1);
     const reqs = Object.entries(update.mock.calls[0][1]).filter(([k]) => k.startsWith("refill_requests/")).map(([, v]) => v);
     expect(reqs.length).toBeGreaterThan(0);
     for (const r of reqs) expect(r).toMatchObject({ requestingLocation: "hub3", status: "open", createdFrom: { source: "central" } });
+  });
+});
+
+describe("Hub 1 and Hub 2 never share a sneaker, across separate Solves", () => {
+  const openConfirm = async (tree) => {
+    await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
+    return buttonSaying(tree, "Confirm")[0];
+  };
+  const confirmAndText = async (tree) => {
+    const confirm = await openConfirm(tree);
+    await act(async () => { await confirm.props.onClick(); });
+    return JSON.stringify(tree.toJSON());
+  };
+  it("Hub 1's Solve raises nothing while Hub 2 holds a cell of it, sold out included", async () => {
+    const { update } = await import("firebase/database");
+    update.mockClear();
+    gets["stock/hub2/shoeA"] = { 8: cell(0) };
+    const tree = mount();
+    expect(await confirmAndText(tree)).toMatch(/seated at Hub 2, so it cannot be solved to Hub 1/);
+    expect(update).not.toHaveBeenCalled();
+  });
+  it("a Solve still open at Hub 2 refuses the next Solve to Hub 1", async () => {
+    const { update } = await import("firebase/database");
+    update.mockClear();
+    gets["refill_requests"] = { r9: { status: "open", requestingLocation: "hub2", productId: "shoeA", size: "8", qty: 1 } };
+    const tree = mount();
+    expect(await confirmAndText(tree)).toMatch(/seated at Hub 2/);
+    expect(update).not.toHaveBeenCalled();
+  });
+  it("a switched-off row at Hub 2 is no seat: Hub 1's Solve goes through", async () => {
+    const { update } = await import("firebase/database");
+    update.mockClear();
+    gets["stock/hub2/shoeA"] = { 8: cell(0) };
+    gets["stock_targets/hub2/shoeA"] = { 8: { target: 0 } };
+    const tree = mount();
+    await confirmAndText(tree);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+  it("ticking the other hub on a card is refused while that hub has it seated", async () => {
+    paths["stock"].hub1 = { shoeA: { 8: cell(2) } };
+    const tree = mount();
+    const concrete = buttonsOf(tree).find((b) => (b.children || []).join("") === "Missing from Concrete · Hub 3");
+    await act(async () => { concrete.props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
+    const chip = buttonsOf(tree).find((b) => b.props.role === "checkbox" && (b.children || []).join("").startsWith("Hub 2"));
+    await act(async () => { chip.props.onClick(); });
+    expect(JSON.stringify(tree.toJSON())).toMatch(/seated at Hub 1, so it cannot be solved to Hub 2/);
+  });
+  it("a zero cell at the other hub does not refuse the chip: it may be switched off, and Confirm reads the rows", async () => {
+    paths["stock"].hub1 = { shoeA: { 8: cell(0) } };
+    const tree = mount();
+    const concrete = buttonsOf(tree).find((b) => (b.children || []).join("") === "Missing from Concrete · Hub 3");
+    await act(async () => { concrete.props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
+    const chip = buttonsOf(tree).find((b) => b.props.role === "checkbox" && (b.children || []).join("").startsWith("Hub 2"));
+    await act(async () => { chip.props.onClick(); });
+    expect(JSON.stringify(tree.toJSON())).not.toMatch(/seated at Hub 1/);
   });
 });

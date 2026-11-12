@@ -317,3 +317,97 @@ describe("Amanda's screen, and an account with no till", () => {
     expect(everyString(t)).toMatch(/isn't set up here yet/);
   });
 });
+
+// ─── A STANDARD BANK TILL (Junid, 7 Nov 2026) ────────────────────────────────
+// Amanda's Concrete Till 1/2: the screen leads with "Photograph the end-of-day
+// report", takes several photos for a long roll, and the card total is
+// optional. Sent only on the server's receipt; she never sees a figure back.
+describe("Amanda's screen: a till whose day comes from SimplyBLU asks for nothing", () => {
+  beforeEach(() => {
+    ESTATE["00000F2Y"] = { label: "Concrete Till 1", storeId: "concrete", tillId: "till-1", capture: "typed", bank: "standard-bank", source: "portal" };
+    perms.permRecord = { displayName: "amanda", stockRole: "pos", cardSlipTills: { concrete: { "till-1": true } } };
+  });
+  afterEach(() => { delete ESTATE["00000F2Y"]; });
+
+  it("draws the till with no form, no camera, no reminder", () => {
+    const t = render();
+    const text = everyString(t);
+    expect(text).toMatch(/Concrete Till 1/);
+    expect(text).toMatch(/Nothing to send/);
+    expect(text).not.toMatch(/No slip sent|Photograph the end-of-day|Photo of the slip/);
+    expect(fileInputs(t)).toEqual([]);
+  });
+
+  it("a slip is still possible as a backup, with the total optional", async () => {
+    const t = render();
+    act(() => { t.root.findByProps({ "data-testid": "slip-backup" }).props.onClick(); });
+    expect(everyString(t)).toMatch(/optional/);
+    await pick(fileInputs(t)[0]);
+    expect(submitBtn(t).props.disabled).toBe(false);
+  });
+});
+
+describe("Amanda's screen: a Standard Bank till is photographed", () => {
+  beforeEach(() => {
+    ESTATE["00000F2Y"] = { label: "Concrete Till 1", storeId: "concrete", tillId: "till-1", capture: "typed", bank: "standard-bank" };
+    perms.permRecord = { displayName: "amanda", stockRole: "pos", cardSlipTills: { concrete: { "till-1": true } } };
+  });
+  afterEach(() => { delete ESTATE["00000F2Y"]; });
+
+  it("leads with the end-of-day report; the total is optional; Submit needs only a photo", async () => {
+    const t = render();
+    const text = everyString(t);
+    expect(text).toMatch(/Photograph the end-of-day report/);
+    expect(text).toMatch(/optional/);
+    expect(text).not.toMatch(/emailed|awaiting/i);
+    expect(fileInputs(t).map((i) => !!i.props.multiple)).toEqual([false, true]);
+    await pick(fileInputs(t)[0]);
+    expect(submitBtn(t).props.disabled).toBe(false);
+  });
+
+  it("several photos go as one report, with no total when none was typed", async () => {
+    const t = render();
+    await pick(fileInputs(t)[0]);
+    const add = () => t.root.findAll((n) => n.type === "input" && n.props.type === "file")[0];
+    await pick(add());
+    await pick(add());
+    expect(everyString(t)).toMatch(/3 photos attached/);
+    await press(submitBtn(t));
+    expect([...calls]).toEqual([{ action: "slip", pickedTid: "00000F2Y", photos: [{ base64: "QUJDRA==" }, { base64: "QUJDRA==" }, { base64: "QUJDRA==" }] }]);
+    expect(everyString(t)).toMatch(/Sent — thank you/);
+    expect(everyString(t)).not.toMatch(/R\s?\d|batch|variance|clean|short|over|read/i);
+  });
+
+  it("a typed total rides along when given", async () => {
+    const t = render();
+    await pick(fileInputs(t)[0]);
+    type(t, "1650");
+    await press(submitBtn(t));
+    expect([...calls]).toEqual([{ action: "slip", pickedTid: "00000F2Y", photos: [{ base64: "QUJDRA==" }], declaredTotal: "1650" }]);
+  });
+
+  it("a send the server did not confirm is 'Not sent — try again', never 'Sent'", async () => {
+    calls.reply = () => ({ ok: true, received: true });
+    const t = render();
+    await pick(fileInputs(t)[0]);
+    await press(submitBtn(t));
+    expect(everyString(t)).toMatch(/Not sent — try again/);
+    expect(t.root.findAll((n) => n.props["data-testid"] === "slip-sent")).toHaveLength(0);
+  });
+});
+
+describe("more report photos than there is room for (CodeRabbit, #862)", () => {
+  beforeEach(() => {
+    ESTATE["00000F2Y"] = { label: "Concrete Till 1", storeId: "concrete", tillId: "till-1", bank: "standard-bank" };
+    perms.permRecord = { displayName: "amanda", stockRole: "pos", cardSlipTills: { concrete: { "till-1": true } } };
+  });
+  afterEach(() => { delete ESTATE["00000F2Y"]; });
+
+  it("is refused with a sentence — never quietly cut to six", async () => {
+    const t = render();
+    const seven = Array.from({ length: 7 }, (_, i) => ({ name: `r${i}.jpg` }));
+    await act(async () => { await fileInputs(t)[1].props.onChange({ target: { files: seven, value: "" } }); });
+    expect(everyString(t)).toMatch(/At most 6 photos of the report/);
+    expect(submitBtn(t).props.disabled).toBe(true);
+  });
+});

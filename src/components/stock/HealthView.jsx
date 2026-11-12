@@ -836,6 +836,54 @@ export default function HealthView({ products = [], onExit }) {
             ))}
           </DetailShell>
         );
+      case "divisionPolicy": {
+        // CONCRETE DIVISION POLICY (Junid, 10 Nov 2026) — read-only. The hourly
+        // scan checks every product seated at Pine, Concrete and Hub 3, size by
+        // size, against Junid's policy (functions/lib/concrete-division.cjs
+        // divisionExpectedTarget) and writes the mismatches here.
+        const dp = ex.divisionPolicy;
+        const REASON = {
+          missing: "policy keeps it — nothing arms it",
+          unexpected: "policy keeps nothing — something arms it",
+          explicit_row: "an explicit row overrides the policy",
+          wrong_number: "armed with the wrong numbers",
+          unrouted: "policy keeps it — no live source serves this size",
+        };
+        const keep = (t) => (t ? `keep ${t.target}${t.reorderPoint != null ? `, ask at ${t.reorderPoint}` : ""}` : "no keep");
+        // Grouped per location + product (a plain fold: this screen writes nothing).
+        const byPid = items("divisionPolicy").reduce((o, r) => {
+          const k = `${r.loc}|${r.pid}`;
+          const g = o[k] || { loc: r.loc, pid: r.pid, rows: [] };
+          return { ...o, [k]: { ...g, rows: [...g.rows, r] } };
+        }, {});
+        return (
+          <DetailShell title="Concrete Division Policy" sub={`Every product seated at Pine, Concrete and Hub 3, every size, checked by the hourly scan against Junid's policy (12 Nov 2026): everything that is not footwear at Pine and Concrete keeps 2 per size (5 per design with no size), from Central — no perfume at Concrete; Hub 3 holds footwear only, its sneakers keeping 2 per size, ask at 1. Seating-tab switch-offs count as correct. Read-only — fix a line on the Engine Policy card or the Seating tab; the next scan clears it.${count("divisionPolicy") > items("divisionPolicy").length ? ` Showing ${items("divisionPolicy").length} of ${count("divisionPolicy")} cells.` : ""}`} count={count("divisionPolicy")} onBack={back}>
+            {!dp && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GRAY, fontWeight: 700, fontSize: 14 }}>No division audit in the latest scan — the Concrete division key is off, or the scan has not run since this card was added.</div>
+            )}
+            {dp && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                {Object.entries(dp.perLoc || {}).map(([loc, t]) => (
+                  <SizeFactChip key={loc} size={locLabel(loc)} value={`${t.correct}/${t.products} correct${t.mismatched ? ` · ${t.mismatched} wrong` : ""}${t.switchedOff ? ` · ${t.switchedOff} off` : ""}`} tone={t.mismatched ? RED : GREEN} />
+                ))}
+              </div>
+            )}
+            {dp && count("divisionPolicy") === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every seated product keeps exactly what the policy says 🎉</div>
+            )}
+            {Object.values(byPid).map((g) => (
+              <ProductCard key={`${g.loc}|${g.pid}`} photo={byId.get(g.pid)?.photoUrl} name={nameOf(g.pid)}
+                badges={<Badge tone={RED}>{locLabel(g.loc).toUpperCase()}</Badge>}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {g.rows.map((r, j) => (
+                    <SizeFactChip key={j} size={r.size || "one size"} value={`${REASON[r.reason] || r.reason}: policy ${keep(r.expected)}, armed ${keep(r.effective)}`} tone={RED} />
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
       case "unorderableFootwear":
         return (
           <DetailShell title="Unorderable Footwear" sub={`Shoes with units somewhere in the network but no stock cell at Hub 1 or Hub 2. The order sheet reads only the two hubs, so every size shows dashed, and a hub policy cannot arm a product the hub does not hold. Seat it (Engine Policy → Seating → Move) or transfer it.${count("unorderableFootwear") > items("unorderableFootwear").length ? ` Showing the largest ${items("unorderableFootwear").length} of ${count("unorderableFootwear")}.` : ""}`} count={count("unorderableFootwear")} onBack={back}>
@@ -1076,6 +1124,12 @@ export default function HealthView({ products = [], onExit }) {
                   healthy number. */}
               <StatCard label="Footwear Policy Drift" value={count("footwearPolicyDrift")} tone={count("footwearPolicyDrift") ? RED : GREEN}
                         sub="Footwear categories not following the one footwear policy" onClick={() => setScreen("footwearPolicyDrift")} />
+              {/* CONCRETE DIVISION POLICY (Junid, 10 Nov 2026) — the scan's own
+                  audit of every seated Pine/Concrete/Hub 3 product against the
+                  policy, from the same snapshot. Zero is the only healthy number. */}
+              <StatCard label="Concrete Division Policy" value={ex.divisionPolicy ? count("divisionPolicy") : "—"}
+                        tone={!ex.divisionPolicy ? GRAY : count("divisionPolicy") ? RED : GREEN}
+                        sub={ex.divisionPolicy ? "Seated Pine, Concrete and Hub 3 sizes whose keep does not match the policy" : "Division policy switched off"} onClick={() => setScreen("divisionPolicy")} />
               <StatCard label="Unorderable Footwear" value={count("unorderableFootwear")} tone={count("unorderableFootwear") ? AMBER : GREEN}
                         sub="Units in the network, no cell at either hub — the order sheet can't offer it" onClick={() => setScreen("unorderableFootwear")} />
               <StatCard label="Stranded In Transit" value={strandedKnown ? strandedRows.length : "—"}

@@ -66,12 +66,20 @@
 // testable claim rather than a promise in a comment.
 
 import { stockSizeKey, decodeSizeKey } from "../../utils/sizeKey";
+import { GATED_SNEAKER_HUBS, gatedSneakerHubs } from "./availabilityCore";
 
 export const DISPLAY_ROWS_ROOT = "settings/displayRows";
 /** Where the sale-close function parks its idempotency leases. */
 export const DISPLAY_ROWS_META_ROOT = "settings/displayRows_meta";
 
 /** Every way a row can end. `replaced` is the ordinary one — a new pair went out. */
+// The hubs whose Display Refill send opens a row (Junid, 9 Nov 2026, his 24 Sep
+// spec): every hub in service, which is Hub 1, Hub 2 and Hub 3 today. Hub 1 and
+// Hub 2 are named so a registry read cannot take Marathon's sends off the ledger.
+export function displayRowHubs(network) {
+  return [...new Set([...GATED_SNEAKER_HUBS, ...gatedSneakerHubs(network)])];
+}
+
 export const CLOSE_REASONS = ["replaced", "sold", "returned", "corrected", "cancelled"];
 
 export const CLOSE_REASON_TEXT = {
@@ -213,10 +221,9 @@ export function openRowIndex(rows) {
  *
  * @param rows          the ledger
  * @param productsById  Map or object pid → product (for the name and the photo)
- * @param hubs          only rows booked at these hubs are considered. Hub 1 and
- *                      Hub 2 only, per GATED_SNEAKER_HUBS — a Pine display is
- *                      booked at hub3 and this screen has no business offering
- *                      an action on it. Rows with NO bookedHub are kept: a row
+ * @param hubs          only rows booked at these hubs are considered. Defaults
+ *                      to Hub 1 and Hub 2 (the gated hubs); a caller covering
+ *                      Pine or Concrete passes ["hub3"]. Rows with NO bookedHub are kept: a row
  *                      that cannot name its hub is exactly the kind a human
  *                      should look at, and hiding it would hide a duplicate.
  * → [{ store, productId, product, productName, photo, rows: [row] }]

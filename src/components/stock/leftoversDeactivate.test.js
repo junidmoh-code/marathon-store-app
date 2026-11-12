@@ -153,7 +153,7 @@ describe("source pins — the call sites exist", () => {
   });
   it("MissingFootwear write paths carry the stale-screen guard, twice (solve and request)", () => {
     const mf = src("./MissingFootwear.jsx");
-    expect(mf.split("isDeactivated(byId.get(card.pid))").length - 1).toBe(2);
+    expect(mf.split("isDeactivated(byId.get(card.pid))").length - 1).toBe(3);
   });
   it("placeOrders carries the submit-time stale-cart guard", () => {
     const app = src("../../App.jsx");

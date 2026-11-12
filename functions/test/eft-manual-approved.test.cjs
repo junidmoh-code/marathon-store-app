@@ -709,7 +709,15 @@ test("imageKindOf and keyedIdentityCheck, as data", () => {
   assert.equal(imageKindOf(Buffer.from("%PDF-1.4 not an image")), null);
   assert.equal(imageKindOf(null), null);
   const ok = keyedIdentityCheck(ABSA_KEYED, { allowedAccounts: ["62900004321"], now: PINNED_NOW });
-  assert.equal(keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-10-30" }, { allowedAccounts: ["62900004321"], now: PINNED_NOW }).code, "bad-date", "tomorrow (SAST) is the future");
+  // 7 Nov 2026 (narrowed): keyed on Thu 29 Oct, a business day, a proof dated
+  // any later day is in the future; keyed on a Saturday, Monday's date is not.
+  const tomorrow = keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-10-30" }, { allowedAccounts: ["62900004321"], now: PINNED_NOW });
+  assert.equal(tomorrow.code, "bad-date", "dated tomorrow on a business day");
+  assert.match(tomorrow.message, /^Payment dated 2026-10-30 — a later day than 2026-10-29, a business day: a scheduled payment, not treated as settled\./);
+  const saturday = Date.UTC(2026, 9, 31, 10, 0, 0);
+  assert.equal(keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-11-02" }, { allowedAccounts: ["62900004321"], now: saturday }).ok, true, "a weekend proof dated Monday");
+  const beyond = keyedIdentityCheck({ ...ABSA_KEYED, paymentDate: "2026-11-03" }, { allowedAccounts: ["62900004321"], now: saturday });
+  assert.match(beyond.message, /^Payment dated 2026-11-03 — beyond the next business day, not treated as settled\./);
   assert.equal(ok.ok, true);
   assert.equal(ok.readerId, "absa");
   assert.equal(ok.parse.bankTs, EFT_READERS.find((r) => r.id === "absa").parse(ABSA_NO_TXN).bankTs, "the date is the reader's own bank timestamp");
@@ -819,4 +827,141 @@ test("keyedIdentityCheck reads policies or bare strings: the matched account's b
   assert.equal(keyedIdentityCheck({ ...keyed, accountTail: "8534" }, { allowedAccounts: sbPolicy, now }).parse.destBankName, "STANDARD BANK");
   assert.equal(keyedIdentityCheck({ ...keyed, accountTail: "4321" }, { allowedAccounts: sbPolicy, now }).parse.destBankName, "FIRST NATIONAL BANK");
   assert.equal(keyedIdentityCheck(keyed, { allowedAccounts: ["62900004321"], now }).parse.destBankName, "FIRST NATIONAL BANK");
+});
+
+// ─── CONCRETE (Junid, 9 Nov 2026): the manual float is the owner's alone ─────
+test("staff manual entry is refused on the server; a pool-matched float at Concrete is no enforcement breach, a plain EFT is", async () => {
+  reset();
+  await rejects(eftPoolManualEntry({ ...MANAGER, data: { entryId: "ME-staff-0001", reference: "Concrete sale", amountCents: 55000, storeId: "concrete" } }), "permission-denied", "owner-only");
+  assert.deepEqual(dbState.pool, {}, "nothing was written");
+  const { enforcementBreachOf } = require("../lib/eft-enforce.cjs");
+  const sale = (leg) => ({ type: "sale", storeId: "concrete", total: 55000, payments: { p1: { method: "eft", amount: 55000, ...leg } } });
+  assert.equal(enforcementBreachOf("S1", sale({ eftPoolKey: "a".repeat(40) }), ["concrete"]), null);
+  assert.ok(enforcementBreachOf("S2", sale({ eftReference: "typed" }), ["concrete"]));
+});
+
+// ─── A FLOAT WITH A PROOF, THROUGH THE REAL CALLABLES (review of #875) ───────
+const CASHIER_FP = { auth: { uid: "cashier-uid", token: { email: "ahmed@marathon.internal" } } };
+const PAY_DAY_NOON = Date.parse("2026-10-27T12:00:00+02:00");
+function syncTail() {
+  dbState.tail = Object.fromEntries(Object.entries(dbState.pool).map(([p, r]) => [p.replace("eft_pool/", ""), r]));
+}
+async function floatWithProof(entryId = "ME-fp-000001") {
+  const float = await eftPoolManualEntry({ ...OWNER, data: { entryId, reference: "zanele", amountCents: 190000 } });
+  syncTail();
+  pdfLines = ABSA_NO_TXN;
+  const proof = await upload(OWNER);
+  syncTail();
+  return { float, proof };
+}
+const useFloat = (key, attemptId, storeId, extra = {}) => require("../eftPool/eftPool.js").eftPoolSettle({
+  ...CASHIER_FP, data: { action: "settle", poolKey: key, attemptId, appliedCents: 190000, storeId, tillId: "t1", matchQuery: "zanele", ...extra },
+});
+
+for (const storeId of ["concrete", "pe"]) {
+  test(`at ${storeId}: a float with a proof reads unused, settles once, and a second use is refused`, async (t) => {
+    t.mock.method(Date, "now", () => PAY_DAY_NOON);
+    cashierReady();
+    const { float, proof } = await floatWithProof();
+    assert.equal(dbState.pool[`eft_pool/${float.key}`].status, "unmatched", "the upload did not touch the float");
+    assert.equal(dbState.pool[`eft_pool/${proof.key}`].status, "used", "the approval is the hold on the notice");
+    const { searchEftPool } = require("../lib/eft-pool.cjs");
+    const row = searchEftPool(dbState.tail, "zanele").results.find((r) => r.key === float.key);
+    assert.equal(row.status, "unmatched");
+    assert.equal(row.sameUsed, undefined);
+    assert.equal((await useFloat(float.key, "att-1", storeId)).ok, true);
+    assert.equal(dbState.pool[`eft_pool/${float.key}`].status, "used");
+    syncTail();
+    // Blocked both ways the till can ask: with no customer the search no longer
+    // offers it; with one, the record itself answers already used.
+    await rejects(useFloat(float.key, "att-2", storeId), "failed-precondition", "not-matched");
+    dbState.reads["customers/cust-1"] = { name: "Customer" };
+    await rejects(useFloat(float.key, "att-3", storeId, { customerId: "cust-1" }), "failed-precondition", "already-used");
+  });
+}
+
+function cashierReady() {
+  reset();
+  dbState.reads["users/cashier-uid/posAccess/isActive"] = true;
+  dbState.reads["users/cashier-uid/posAccess/displayName"] = "Ahmed";
+}
+const typeFloat = async (entryId, note = null) => {
+  const out = await eftPoolManualEntry({ ...OWNER, data: { entryId, reference: "zanele", amountCents: 190000, note } });
+  syncTail();
+  return out;
+};
+
+test("one proof, one float: a second float of the money, typed after the upload, is refused once the first has spent it", async (t) => {
+  let clock = PAY_DAY_NOON;
+  t.mock.method(Date, "now", () => clock);
+  cashierReady();
+  const { float } = await floatWithProof();
+  assert.equal((await useFloat(float.key, "att-1", "concrete")).ok, true);
+  clock += 60_000;
+  const second = await typeFloat("ME-fp-000002", "again");
+  await rejects(useFloat(second.key, "att-3", "concrete"), "failed-precondition", "twin-used");
+});
+
+test("one proof, one float: the same when the payment is dated a day before the proof was uploaded and floated", async (t) => {
+  let clock = PAY_DAY_NOON + 24 * 3600_000;
+  t.mock.method(Date, "now", () => clock);
+  cashierReady();
+  pdfLines = ABSA_NO_TXN;
+  await upload(OWNER);
+  syncTail();
+  clock += 60_000;
+  const first = await typeFloat("ME-fp-000003");
+  assert.equal((await useFloat(first.key, "att-1", "concrete")).ok, true);
+  syncTail();
+  clock += 60_000;
+  const second = await typeFloat("ME-fp-000004", "again");
+  await rejects(useFloat(second.key, "att-2", "concrete"), "failed-precondition", "twin-used");
+});
+
+test("two tills at once: the float that does not hold the proof's lock is refused, and the lock frees itself", async (t) => {
+  let clock = PAY_DAY_NOON;
+  t.mock.method(Date, "now", () => clock);
+  cashierReady();
+  const { float, proof } = await floatWithProof();
+  dbState.logs[`eft_manual_submit_locks/${proof.key}`] = { key: "f".repeat(40), at: PAY_DAY_NOON - 1000 };
+  await rejects(useFloat(float.key, "att-1", "concrete"), "failed-precondition", "proof-in-use");
+  assert.equal(dbState.pool[`eft_pool/${float.key}`].status, "unmatched", "nothing was spent");
+  clock += 11_000;
+  assert.equal((await useFloat(float.key, "att-2", "concrete")).ok, true);
+});
+
+test("two tills at once: a request that started earlier cannot take the lock from one that reached it first", async (t) => {
+  const clock = PAY_DAY_NOON;
+  t.mock.method(Date, "now", () => clock);
+  cashierReady();
+  const { float, proof } = await floatWithProof();
+  dbState.logs[`eft_manual_submit_locks/${proof.key}`] = { key: "f".repeat(40), at: PAY_DAY_NOON + 50 };
+  await rejects(useFloat(float.key, "att-1", "concrete"), "failed-precondition", "proof-in-use");
+  assert.equal(dbState.logs[`eft_manual_submit_locks/${proof.key}`].key, "f".repeat(40), "the lock stayed with its holder");
+});
+
+test("a used float's retry gets its own settlement back even while another float holds the proof's lock", async (t) => {
+  const clock = PAY_DAY_NOON;
+  t.mock.method(Date, "now", () => clock);
+  cashierReady();
+  const { float, proof } = await floatWithProof();
+  assert.equal((await useFloat(float.key, "att-1", "concrete")).ok, true);
+  syncTail();
+  dbState.logs[`eft_manual_submit_locks/${proof.key}`] = { key: "f".repeat(40), at: PAY_DAY_NOON - 1000 };
+  const retry = await useFloat(float.key, "att-1", "concrete");
+  assert.equal(retry.already, true);
+});
+
+test("which floats a proof covers: the upload's SAST day only, and never a float typed before the payment's date", () => {
+  const { proofCoversFloat } = require("../lib/eft-manual.cjs");
+  const day = (iso) => Date.parse(`${iso}+02:00`);
+  const proof = (uploaded, paid) => ({ outcome: "recorded", status: "used", reader: "absa", amountCents: 190000, reference: "zanele", bankTs: day(paid), receivedAt: day(uploaded), manualApproved: { at: day(uploaded) } });
+  const float = (typed) => ({ reader: "manual", amountCents: 190000, reference: "ZANELE", manualEntry: { at: day(typed) } });
+  const uploadedAtNoon = proof("2026-10-26T12:00:00", "2026-10-25T00:00:00");
+  assert.equal(proofCoversFloat(float("2026-10-26T12:01:00"), uploadedAtNoon), true, "typed after the upload, the same day");
+  assert.equal(proofCoversFloat(float("2026-10-27T14:00:00"), uploadedAtNoon), false, "the next day");
+  // Eleven hours later but a new SAST day: a repeat customer's next order.
+  assert.equal(proofCoversFloat(float("2026-10-27T07:00:00"), proof("2026-10-26T20:00:00", "2026-10-26T00:00:00")), false, "within 12 hours, another day");
+  assert.equal(proofCoversFloat(float("2026-10-26T12:01:00"), proof("2026-10-26T12:00:00", "2026-10-27T00:00:00")), false, "the payment is dated after the float was typed");
+  assert.equal(proofCoversFloat({ ...float("2026-10-26T12:01:00"), amountCents: 190100 }, uploadedAtNoon), false, "another amount");
 });

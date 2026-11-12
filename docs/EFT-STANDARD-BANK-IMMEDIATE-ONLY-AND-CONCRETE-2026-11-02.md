@@ -26,6 +26,8 @@ Junid asked for three changes to the live EFT confirmer.
 
 ## 2. Immediate payments only into that account
 
+> **Superseded for this account on 8 Nov 2026 (Junid).** The ATUGAR account now confirms non-immediate EFTs under the same date-phased rule as Marathon's FNB account. Its `:immediate` tag stays in `EFT_ALLOWED_ACCOUNTS`; the poller waives it for this account only (`IMMEDIATE_TAG_WAIVED` / `enforcesImmediateOnly` in `eftCore.mjs`). A confirmed payment into it records `immediate` and `paymentType`. Any other account given the tag is still held to it. Section 3 is unchanged.
+
 - **Accounts tagged `immediate`.** A payment into one of these must be IMMEDIATE, whatever its bank date.
   - The date-phased rule says that from 2026-10-27 regular payments are accepted. That rule does **not** apply to these accounts.
   - A regular payment is refused as `refused-not-immediate`. The reason given is "the account it was paid into takes IMMEDIATE payments only".

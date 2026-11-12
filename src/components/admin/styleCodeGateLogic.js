@@ -42,6 +42,7 @@ export const BLOCK_PRODUCT_UNAVAILABLE = "product-unavailable";
 /**
  * @param {object} args
  *   claim            { productId } from /style_code_index, or null
+ *   owners           every product that owns the code, primary first
  *   existingProducts rows the /products scan returned
  *   products         the catalogue actually loaded on this device
  *   selectedId       what the operator tapped, if anything
@@ -50,7 +51,7 @@ export const BLOCK_PRODUCT_UNAVAILABLE = "product-unavailable";
  *          |{kind:"choose", options:string[]}
  *          |{kind:"blocked", reason:string}}
  */
-export function resolveAddStockTarget({ claim, existingProducts, products, selectedId } = {}) {
+export function resolveAddStockTarget({ claim, owners, existingProducts, products, selectedId } = {}) {
   const loaded = Array.isArray(products) ? products.filter(Boolean) : [];
   const isLoaded = (id) => !!id && loaded.some((p) => p && p.id === id);
   const scan = (Array.isArray(existingProducts) ? existingProducts : []).filter((p) => p && p.id);
@@ -62,6 +63,16 @@ export function resolveAddStockTarget({ claim, existingProducts, products, selec
   // it. If the claim names a product this device cannot see, we cannot verify
   // anything about it — refuse rather than fall back to a scan row.
   if (claimId) {
+    // Several owners are different colourways on one printed code. The claim
+    // says the code is ours, not which of them is in the operator's hand.
+    const ownerIds = (Array.isArray(owners) ? owners : []).filter(Boolean);
+    if (ownerIds.length > 1) {
+      if (selectedId && ownerIds.includes(selectedId) && isLoaded(selectedId)) {
+        return { kind: TARGET_READY, productId: selectedId, basis: "operator-selected" };
+      }
+      if (!ownerIds.some(isLoaded)) return { kind: TARGET_BLOCKED, reason: BLOCK_CLAIM_UNAVAILABLE, productId: claimId };
+      return { kind: TARGET_CHOOSE, options: ownerIds };
+    }
     if (isLoaded(claimId)) return { kind: TARGET_READY, productId: claimId, basis: "claim" };
     return { kind: TARGET_BLOCKED, reason: BLOCK_CLAIM_UNAVAILABLE, productId: claimId };
   }
@@ -122,7 +133,6 @@ export function orderCandidatesByColourway(candidates, colourway) {
 // retry. This mirrors the rule the resolver already enforces server-side: a
 // dead vendor is never reported as "no such shoe".
 
-export const STEP_ORPHAN = "orphan";
 export const STEP_EXISTING = "existing";
 export const STEP_FOUND = "found";
 export const STEP_UNAVAILABLE = "unavailable";
@@ -140,9 +150,13 @@ export function classifyLookupOutcome({ data, threw } = {}) {
   const d = data || {};
   const existing = Array.isArray(d.existingProducts) ? d.existingProducts : [];
 
+  // The server releases a dead claim itself, so a code that was held by one
+  // arrives here as free. claimOrphaned means it could not settle the claim on
+  // this call: we did not really find out, so we say so and offer the retry.
+  if (d.claimOrphaned) return STEP_UNAVAILABLE;
+
   // A local answer outranks a degraded remote one: if we already hold this
   // product, a broken vendor tier changes nothing about what to do next.
-  if (d.claimOrphaned) return STEP_ORPHAN;
   if (d.claim || existing.length) return STEP_EXISTING;
   if (d.found) return STEP_FOUND;
 

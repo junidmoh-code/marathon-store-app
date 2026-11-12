@@ -61,8 +61,8 @@ describe("CHANGE 1 — every reactive writer is off at hub1, untouched at hub2",
     // both lists are Hub 1 + Hub 2.
     expect(mf).toContain("const REQUEST_HUBS = HUBS;");
     expect(mf.split("(REQUEST_HUBS.includes(dests[card.pid]) ? dests[card.pid] : REQUEST_HUBS[0])").length - 1).toBe(2);
-    expect(mf).toContain("(REQUESTABLE_HUBS.includes(solveHub[card.pid]) ? solveHub[card.pid] : REQUESTABLE_HUBS[0])");
-    expect(mf.split("{REQUESTABLE_HUBS.map((h) => (").length - 1).toBe(1);
+    expect(mf).toContain("return picked.length ? picked : REQUESTABLE_HUBS.slice(0, 1);");
+    expect(mf.split("{SOLVE_HUBS.map((h) => (").length - 1).toBe(1);
     expect(mf.split("{REQUEST_HUBS.map((h) => (").length - 1).toBe(1);
     // Detection and Central-reservation math still span BOTH hubs.
     expect(mf).toContain('hubs: HUBS');

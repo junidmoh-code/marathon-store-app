@@ -21,7 +21,7 @@
 
 const admin = require("firebase-admin");
 const { CARD_TERMINALS_PATH, CARD_BATCHES_PATH, PHOTO_STORAGE_PREFIX, resolveBatchWrite, buildBatchRecord } = require("../lib/card-recon.cjs");
-const { computeExpectedCard } = require("../lib/card-expected.cjs");
+const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { sastDayStartMs, sastDayYmd, isDayYmd } = require("../lib/card-unread.cjs");
 const { slipTradingDay } = require("../lib/card-staff-slip-log.cjs");
@@ -29,6 +29,7 @@ const {
   SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, buildSupportingSlip, carriedSlips,
 } = require("../lib/card-supporting-slips.cjs");
 const P = require("../lib/card-portal.cjs");
+const { isPortalRecordTerminal } = require("../lib/card-terminals.cjs");
 
 const reject = (reason) => ({ ok: false, reason });
 const MAX_SOURCES = 10;
@@ -153,7 +154,7 @@ async function sweepHeld(db, { storeId, tid, dayYmd, key }) {
 }
 
 // ─── ONE TERMINAL, ONE DAY ───────────────────────────────────────────────────
-async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merchantNo, business, nowMs, deps = {} }) {
+async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merchantNo, business, nowMs, deps = {}, growOnly = false, elsewhere = [] }) {
   const { storeId } = row;
   const tidPath = `${CARD_BATCHES_PATH}/${storeId}/${tid}`;
   const dayRecordsVal = (await db.ref(tidPath).orderByChild("slip/closedAt")
@@ -162,13 +163,54 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     .filter(([, r]) => r && typeof r === "object")
     .map(([key, record]) => ({ key, record: { ...record, batchKey: record.batchKey || key } }));
   const last = await core().readLastBatchFor(db, storeId, tid);
-  const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction });
+  const plan = P.planPortalWrite({ dayRecords, lastBatchNo: last.batchNo, extraction, portalIsRecord: isPortalRecordTerminal(row), growOnly });
+  // A CROSS-CHECK (from 7 Nov 2026): the portal's figure beside the record in
+  // force, or — no record yet — only on the day's status; never a record.
+  if (plan.action === "check") {
+    if (!plan.key) return { outcome: "awaiting-photo", totalCents: extraction.totalCents, txnCount: extraction.txnCount };
+    // Two leaf reads and one child write — never the record's whole roll.
+    const base = `${tidPath}/${plan.key}`;
+    if (!(await db.ref(`${base}/batchKey`).once("value")).exists()) return { outcome: "awaiting-photo", totalCents: extraction.totalCents, txnCount: extraction.txnCount };
+    const recordTotal = (await db.ref(`${base}/slip/totalCents`).once("value")).val();
+    const check = P.portalCheckOf({ extraction, recordTotalCents: Number.isInteger(recordTotal) ? recordTotal : null, merchantNo, nowMs });
+    const differs = check.differsCents;
+    await db.ref(`${base}/portalCheck`).set(JSON.parse(JSON.stringify(check)));
+    return { outcome: "checked", key: plan.key, totalCents: extraction.totalCents, txnCount: extraction.txnCount, differsCents: differs };
+  }
+  // Which POS card legs the portal does not have: one bounded read of the day.
+  const gapNow = async () => {
+    const { recon } = core().reconTerminalFor({ ...row, tid }, extraction.openedAt, extraction.closedAt);
+    const legs = await (deps.cardLegsInWindow || cardLegsInWindow)(db, { startMs: extraction.openedAt, endMs: extraction.closedAt });
+    return P.portalGapOf({ lines: extraction.lines, legs, storeId: recon.storeId, tillId: recon.tillId, elsewhere });
+  };
   if (plan.action === "noop") {
+    // The POS side can change after the portal's has settled (a sale rung up
+    // late), so the unchanged record's gap is refreshed: a derived note beside
+    // its figures, which are not touched. Junid's own correction is left alone.
     const swept = await sweepHeld(db, { storeId, tid, dayYmd, key: plan.key });
+    // (`kept`: this pull's lines were not taken, so they say nothing about the record.)
+    if (!plan.correctionStands && !plan.kept) {
+      try {
+        const gap = await gapNow();
+        const ref = db.ref(`${tidPath}/${plan.key}/portalGap`);
+        const cur = (await ref.once("value")).val();
+        if (cur?.missingCount !== gap.missingCount || cur?.missingCents !== gap.missingCents
+          || Object.keys(cur?.elsewhere || {}).length !== gap.elsewhere.length) await ref.set(clean(gap));
+      } catch (err) { console.warn(`cardBatchCapture: portal gap not refreshed ${tid} ${dayYmd}: ${err && err.message}`); }
+    }
     return { outcome: "unchanged", key: plan.key, ...(plan.correctionStands ? { note: "Junid's correction stands" } : {}), ...(swept ? { sweptSlips: swept } : {}) };
   }
 
   const existingKeys = await core().readBatchKeysFor(db, storeId, tid, plan.batchNo);
+  // THE WHOLE CHAIN DECIDES, not the day's slice of it (CodeRabbit, #862): a
+  // photographed report that took this portal record over may have closed on
+  // a LATER day (PE Till 2's #562, 3→5 Nov, over the portal's 4 Nov), so the
+  // day's records cannot see it. A revision over it would put the portal back
+  // in force. If anything has superseded the portal record, it stands, and the
+  // pull writes nothing (its cross-check belongs to that record's own day).
+  if (plan.action === "revise" && existingKeys.length && existingKeys.at(-1) !== plan.supersedes) {
+    return { outcome: "superseded", key: existingKeys.at(-1), totalCents: extraction.totalCents, txnCount: extraction.txnCount };
+  }
   const write = resolveBatchWrite({ existingKeys, batchNo: plan.batchNo, correction: plan.action === "revise" });
   if (!write.ok) return { outcome: "refused", reason: write.reason };
   const ex = { ...extraction, batchNo: String(plan.batchNo) };
@@ -183,8 +225,9 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     ? (dayRecords.find((d) => d.key === write.supersedes)?.record
       || (await db.ref(`${tidPath}/${write.supersedes}`).once("value")).val())
     : null;
+  const gap = await gapNow();
   const warnings = P.portalWarnings({
-    extraction: ex, merchantNo,
+    extraction: ex, merchantNo, gap,
     replacing: write.supersedes ? (P.isPortalRecord(superseded) ? "portal" : "other") : null,
     supersededKey: write.supersedes,
   });
@@ -200,6 +243,7 @@ async function writePortalDay(db, request, { tid, row, dayYmd, extraction, merch
     submittedAt: nowMs, draftId: null, ocr: null,
     capturedVia: P.PORTAL_SOURCE,
   });
+  record.portalGap = gap;
   record.portal = { dayYmd, merchantNo: merchantNo || null, business: business || null, pulledAt: nowMs, source: P.PORTAL_SOURCE };
 
   // THE SLIPS: whatever the replaced record carried (and the replaced record
@@ -288,17 +332,24 @@ async function handlePortalDay(db, request, deps = {}) {
   // machine's merchant shows activity today. A portal that is merely behind
   // must not put a false SHORT on today (Sonnet architect review, #837).
   const isToday = dayYmd >= sastDayYmd(nowMs);
+  // A till whose record IS the portal is final from the 18:20 pull: the owner
+  // sees the figure or the specific error then, not "awaiting" until tomorrow
+  // (Junid, 8 Nov 2026). A later pull revises it if SimplyBLU catches up.
+  const pullTimePassed = Math.floor(((nowMs + 2 * 60 * 60 * 1000) % (24 * 60 * 60 * 1000)) / 60000) >= P.PORTAL_PULL_MINUTE;
   for (const [tid, row] of Object.entries(portalRows)) {
     if (!linked.has(tid)) { results[tid] = { outcome: "awaiting", reason: "not in the portal's terminal list (merchant not linked yet, or no transaction ever)" }; continue; }
     const got = byKey.get(tid) || { txns: [], merchantNo: null, name: null };
-    if (!got.txns.length && isToday && !(merchantActive.get(merchantOf.get(tid)) > 0)) {
-      results[tid] = { outcome: "awaiting", reason: "no transactions on the portal today for this merchant yet — a zero day is recorded once the day is over" };
+    if (!got.txns.length && isToday && !(merchantActive.get(merchantOf.get(tid)) > 0) && !(isPortalRecordTerminal(row) && pullTimePassed)) {
+      results[tid] = { outcome: "awaiting", reason: "no transactions on the portal today for this merchant yet — a zero day is recorded at the 18:20 pull (a portal till) or once the day is over" };
       continue;
     }
     const extraction = P.portalExtraction({ tid, mid: row.mid || null, dayYmd, txns: got.txns });
+    // This store's other machines' payments that day: a POS leg answered by one is not missing.
+    const elsewhere = [...byKey].filter(([k]) => k !== tid && registry[k]?.storeId === row.storeId)
+      .flatMap(([k, v]) => v.txns.map((t) => ({ at: t.at, amountCents: t.amountCents, tid: k, tillId: registry[k].tillId })));
     try {
       results[tid] = await writePortalDay(db, request, {
-        tid, row, dayYmd, extraction, merchantNo: got.merchantNo || row.mid || null, business: got.name || null, nowMs, deps,
+        tid, row, dayYmd, extraction, merchantNo: got.merchantNo || row.mid || null, business: got.name || null, nowMs, deps, growOnly: data.growOnly === true, elsewhere,
       });
     } catch (err) {
       console.error(`cardBatchCapture: portal write failed ${tid} ${dayYmd}: ${err && err.message}`);

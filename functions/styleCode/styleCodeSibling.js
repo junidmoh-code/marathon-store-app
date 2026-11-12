@@ -72,6 +72,26 @@ const SIBLING_WRITE_PERMISSIONS = ["product_admin", "display_checks", "stock_add
 // to a nested node, not a product.
 const SAFE_KEY = /^[^./#$[\]\s]+$/;
 
+
+/**
+ * Add a sibling inside a transaction on the WHOLE claim. A transaction on the
+ * sibling child alone would recreate a claim released a moment earlier as a node
+ * with siblings and no productId: readable as free, but refused by create-once
+ * for good. Answers null to a null first pass (the Admin SDK's empty cache).
+ */
+async function addSibling(claimRef, productId, entry) {
+  let added = false;
+  const res = await claimRef.transaction((cur) => {
+    added = false;
+    if (cur === null) return null;
+    if (!cur.productId || (cur.siblings && cur.siblings[productId])) return undefined;
+    added = true;
+    return { ...cur, siblings: { ...(cur.siblings || {}), [productId]: entry } };
+  });
+  if (res.committed && added) return { added: true, claimGone: false };
+  return { added: false, claimGone: !!res.committed };
+}
+
 /**
  * The worker core — injectable db/clock so every branch is node-testable.
  * @returns one of:
@@ -239,11 +259,9 @@ async function runSibling(db, { action, code, productId, otherId, palette, actor
       const other = (await db.ref(`products/${cleanOther}`).get()).val();
       if (!other || other.mergedInto) return false;
       if (normaliseStyleCode(other.styleCodeNormalised) !== normalised) return false;
-      const res = await db.ref(`${STYLE_CODE_INDEX_PATH}/${normalised}/siblings/${cleanOther}`).transaction((cur) => {
-        if (cur) return undefined;
-        return buildSiblingEntry({ addedBy: actor ? actor.uid : null, nowMs, origin: "registration-other" });
-      });
-      return !!res.committed;
+      const { added } = await addSibling(claimRef, cleanOther,
+        buildSiblingEntry({ addedBy: actor ? actor.uid : null, nowMs, origin: "registration-other" }));
+      return added;
     };
 
     const ownersBefore = claimOwnerIds(claim);
@@ -277,12 +295,10 @@ async function runSibling(db, { action, code, productId, otherId, palette, actor
 
     // Create-once on the sibling slot — two tablets answering at once must not
     // double-write. First writer wins; the second reads back as alreadyOwner.
-    const sibRef = db.ref(`${STYLE_CODE_INDEX_PATH}/${normalised}/siblings/${productId}`);
-    const res = await sibRef.transaction((cur) => {
-      if (cur) return undefined; // occupied — abort
-      return buildSiblingEntry({ addedBy: actor ? actor.uid : null, nowMs, origin: "registration" });
-    });
-    if (!res.committed) {
+    const { added, claimGone } = await addSibling(claimRef, productId,
+      buildSiblingEntry({ addedBy: actor ? actor.uid : null, nowMs, origin: "registration" }));
+    if (claimGone) throw new HttpsError("aborted", "This code just changed — scan it again.");
+    if (!added) {
       return { ok: true, registered: false, alreadyOwner: true, owners: claimOwnerIds((await claimRef.get()).val()) };
     }
 

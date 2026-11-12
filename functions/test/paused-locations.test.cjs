@@ -168,3 +168,15 @@ test("FIRST BATCH, flag clear: the Hub 3 leg is raised exactly as before", async
   assert.equal(res.raised, true);
   assert.equal(hub3Requests(db).length, 1);
 });
+
+// Pine shop count (Junid, 11 Nov 2026): the same flag holds the Pine shop as a
+// destination and nothing else.
+test("pausedLocations/marathon-pine holds only Pine-destination entries", () => {
+  const pl = require("../lib/paused-locations.cjs");
+  const paused = pl.pausedLocationSet({ pausedLocations: { "marathon-pine": true } });
+  const plan = { intents: [{ dest: "marathon-pine" }, { dest: "concrete" }, { dest: "hub3" }], closes: [{ dest: "marathon-pine" }, { dest: "marathon-pe" }] };
+  const out = pl.withoutPausedDestinations(plan, paused);
+  assert.deepEqual(out.intents.map((e) => e.dest), ["concrete", "hub3"]);
+  assert.deepEqual(out.closes.map((e) => e.dest), ["marathon-pe"]);
+  assert.deepEqual(pl.withoutPausedWriteoffs([{ loc: "marathon-pine" }, { loc: "trophy" }], paused), [{ loc: "trophy" }]);
+});

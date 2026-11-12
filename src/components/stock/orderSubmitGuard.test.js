@@ -184,10 +184,12 @@ describe("the guarded lines are the grid's gated lines", async () => {
   it("footwear is guarded through gatedSneakerHub on the line's own placed hub", () => {
     expect(APP).toContain("return !!gatedSneakerHub(item.product, placedHubFor(item));");
   });
-  it("so Hub 1/Hub 2 shoes are guarded and a Pine (Hub 3) shoe is not", () => {
+  // Hub 3's cells record its stock since the count (9 Nov 2026: 4,083 units),
+  // which is what kept it out; it is guarded like Hub 1 and Hub 2 now.
+  it("so Hub 1, Hub 2 and Hub 3 shoes are all guarded", () => {
     expect(gatedSneakerHub(SLIDE, "hub1")).toBe("hub1");
     expect(gatedSneakerHub(SLIDE, "hub2")).toBe("hub2");
-    expect(gatedSneakerHub(SLIDE, "hub3")).toBe(null);
+    expect(gatedSneakerHub(SLIDE, "hub3")).toBe("hub3");
   });
   it("display partner requests and pulls are never guarded; clothing customer lines are", () => {
     expect(APP).toContain("if (item.requestDisplayPartner || item.displayPairRequest === true) return false;");

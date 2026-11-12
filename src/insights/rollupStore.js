@@ -47,6 +47,8 @@ import {
 } from "firebase/database";
 import { database } from "../firebase";
 import { expandDay, storeBucketOf } from "./rollupCodec";
+import { loadKeptDays, keepDays, forgetDays } from "./rollupDayCache";
+import { onIdentityChange } from "../utils/identityChange";
 import {
   planWindow, rowsInRange, mergeNewestFirst, liveRangeFor, UNDATED_BUCKET, shiftSaDate,
 } from "./rollupWindow";
@@ -71,6 +73,9 @@ const dayCache = new Map();
 
 /** Days this recent may still be rebuilt by the sweep, so they are re-read. */
 const VOLATILE_DAYS = 2;
+
+/** How far back a day is kept on the device. Two years of nodes is ~50 MB. */
+const KEEP_DAYS = 730;
 
 export function _clearRollupCacheForTests() { dayCache.clear(); }
 export function _cachedDayCountForTests() { return dayCache.size; }
@@ -107,18 +112,37 @@ export async function readDayNodes(dates) {
   // Contiguous runs are fetched as ONE key range; a scattered set falls back to
   // per-day reads. Windows are contiguous by construction, so the first branch
   // is the normal one.
-  const sorted = dates.slice().sort();
-  let i = 0;
-  while (i < sorted.length) {
-    const slice = sorted.slice(i, i + DAYS_PAGE);
-    const snap = await get(query(
-      ref(database, DAYS_PATH),
-      orderByKey(), startAt(slice[0]), endAt(slice[slice.length - 1]),
-      limitToFirst(DAYS_PAGE),
-    ));
-    snap.forEach((child) => { dayCache.set(child.key, child.val()); });
-    i += DAYS_PAGE;
+  //
+  // ONE RANGE PER RUN OF ADJACENT DAYS — never one range across a gap. With
+  // finished days kept on the device, the set asked for is often "one old day
+  // the sweep rebuilt, plus the last three": a single startAt/endAt across
+  // those would download every finished day in between (the 60-day limit then
+  // cutting it off BEFORE the recent days it was sent for).
+  for (const run of contiguousRuns(dates)) {
+    let i = 0;
+    while (i < run.length) {
+      const slice = run.slice(i, i + DAYS_PAGE);
+      const snap = await get(query(
+        ref(database, DAYS_PATH),
+        orderByKey(), startAt(slice[0]), endAt(slice[slice.length - 1]),
+        limitToFirst(DAYS_PAGE),
+      ));
+      snap.forEach((child) => { dayCache.set(child.key, child.val()); });
+      i += DAYS_PAGE;
+    }
   }
+}
+
+/** Sorted, de-duplicated dates split into runs of calendar-adjacent days. */
+export function contiguousRuns(dates) {
+  const sorted = [...new Set(dates)].sort();
+  const runs = [];
+  for (const d of sorted) {
+    const run = runs[runs.length - 1];
+    if (run && shiftSaDate(run[run.length - 1], 1) === d) run.push(d);
+    else runs.push([d]);
+  }
+  return runs;
 }
 
 /** Returns {key, value} pairs: the KEYS are what the caller's live tail needs
@@ -193,10 +217,21 @@ export async function readLogTotals() {
  * @returns {{ log: Array, plan: object, fromRollup: number, fromLive: number,
  *             corruptDays: string[], liveKeys: Set<string>, totals: object }}
  */
+let identityWired = false;
 export async function readWindow({ startIso, endIso, nowMs, allTime = false, io = null }) {
+  if (!io && !identityWired) {
+    identityWired = true;
+    // The session cache belongs to whoever fetched it.
+    try { onIdentityChange(() => { dayCache.clear(); }); } catch { /* no auth */ }
+  }
   const readers = io || {
     readDayIndex, readDayNodes, readLogRange, readUndated, readLate, readLogTotals,
     getCached: (d) => dayCache.get(d),
+    // The finished days this DEVICE already holds (rollupDayCache.js): a
+    // reload no longer downloads them again.
+    loadKept: loadKeptDays, keep: keepDays, forget: forgetDays,
+    dropCached: (d) => { dayCache.delete(d); },
+    setCached: (d, node) => { dayCache.set(d, node); },
   };
 
   let index = {};
@@ -214,6 +249,20 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
 
   // A day the sweep may still rebuild is never served from the cache.
   const volatileFrom = shiftSaDate(plan.todaySA, -VOLATILE_DAYS);
+  // Finished days kept on this device from an earlier page load go into the
+  // session cache first — but only those whose index entry is still exactly
+  // the one they were saved under, so a day the sweep has rebuilt is fetched.
+  if (readers.loadKept && readers.setCached) {
+    const absent = plan.days.filter((d) => d < volatileFrom && readers.getCached(d) === undefined);
+    if (absent.length > 0) {
+      try {
+        const kept = await readers.loadKept(absent, index);
+        for (const [d, node] of kept) readers.setCached(d, node);
+      } catch (err) {
+        console.warn("insights rollup: kept days unreadable, fetching them instead —", err);
+      }
+    }
+  }
   const needed = plan.days.filter((d) => d >= volatileFrom || readers.getCached(d) === undefined);
   try {
     await readers.readDayNodes(needed);
@@ -222,7 +271,6 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
     console.warn("insights rollup: day nodes unreadable, falling back to the log —", err);
     degraded = degraded || "days";
   }
-
   const parts = [];
   const corruptDays = [];
   let fromRollup = 0;
@@ -239,6 +287,33 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
     fromRollup += rows.length;
     parts.push(rows);
   }
+
+  // A day that would not expand is not served again from any cache — not the
+  // device's, not this session's. It is read live below, and fetched afresh
+  // next time in case the sweep has rewritten it.
+  if (corruptDays.length > 0) {
+    if (readers.dropCached) for (const d of corruptDays) readers.dropCached(d);
+  }
+  let deviceWork = Promise.resolve();
+  // Keep what was just fetched, finished days only. Not awaited: the screen
+  // does not wait on a disk write, and a failed write only means the next
+  // page load fetches the day again.
+  if (readers.keep) {
+    const fresh = needed
+      .filter((d) => d < volatileFrom && !corruptDays.includes(d))
+      .map((d) => [d, readers.getCached(d)])
+      .filter(([, node]) => node !== undefined);
+    // One sequence, so the drop below can never be overtaken by the write.
+    if (fresh.length > 0) {
+      deviceWork = deviceWork
+        .then(() => readers.keep(fresh, index, { pruneBefore: shiftSaDate(plan.todaySA, -KEEP_DAYS) }))
+        .catch(() => {});
+    }
+  }
+  if (corruptDays.length > 0 && readers.forget) {
+    deviceWork = deviceWork.then(() => readers.forget(corruptDays)).catch(() => {});
+  }
+
 
   // Anything the rollup could not serve, plus today and the window's edges.
   // A corrupt day is simply its own live range — the day is wholly inside the

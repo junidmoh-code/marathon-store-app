@@ -89,9 +89,9 @@ describe("REJECTED — every reason the confirmer can refuse names its check", (
       outcome: "refused-not-immediate", check: "Not an immediate (real-time) payment", says: /Not an immediate payment/,
     },
     {
-      name: "not an immediate / real-time payment (future-dated)",
-      record: decide({ p: parsed({ bankTs: message.receivedAt + 24 * 3600 * 1000 }) }),
-      outcome: "refused-not-immediate", check: "Not an immediate (real-time) payment", says: /future-dated/,
+      name: "not an immediate / real-time payment (dated beyond the next business day)",
+      record: decide({ p: parsed({ bankTs: message.receivedAt + 10 * 24 * 3600 * 1000 }) }),
+      outcome: "refused-not-immediate", check: "Not an immediate (real-time) payment", says: /beyond the next business day, not treated as settled/,
     },
     {
       name: "payment dated before the cutoff (a 17 Oct payment against the default 2026-10-20 cutoff)",

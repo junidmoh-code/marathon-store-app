@@ -57,8 +57,32 @@ export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, absaSyn
 // functions/lib/eft-banks.cjs, shared with eftPoolManualApprove) can use them
 // from Cloud Functions. Re-exported here unchanged: every importer still reads
 // them from eftCore.
-const { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue } = require("./lib/eft-text.cjs");
-export { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue };
+const { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue, nextBusinessDay, settlementDateVerdict } = require("./lib/eft-text.cjs");
+export { parseBankTimestamp, redactAccountDigits, sastDate, maskAccountValue, nextBusinessDay, settlementDateVerdict };
+// Linked copies of one payment (7 Nov 2026): functions/lib/eft-linked-copies.cjs.
+const { linkedHoldOf, applyLinkedHold, crossBankSuspectOf, linkedCopySettleCheck, absaIdentityOf } = require("./lib/eft-linked-copies.cjs");
+export { linkedHoldOf, applyLinkedHold, crossBankSuspectOf, linkedCopySettleCheck, absaIdentityOf };
+
+// How many of the pool's newest records the ingest compares a new payment
+// against — the settle's own window (eftPool.js EFT_SEARCH_WINDOW).
+export const EFT_LINK_WINDOW = 400;
+
+/**
+ * INGEST, after the fingerprint claim: a recorded payment whose money another
+ * record already holds under a different fingerprint is HELD automatically
+ * (a hand entry's later bank notice; a blank-number and a numbered copy of
+ * one Absa payment). Otherwise a notice resembling a proof approved from
+ * ANOTHER bank's document is recorded with a review flag — never held.
+ * @returns {{record:object, crossBank:object|null}}
+ */
+export function linkedIngestDecision(record, poolKey, siblings, at) {
+  if (!record || record.outcome !== "recorded") return { record, crossBank: null };
+  const hold = linkedHoldOf(record, poolKey, siblings);
+  if (hold) return { record: applyLinkedHold(record, hold), crossBank: null };
+  const crossBank = crossBankSuspectOf(record, poolKey, siblings);
+  if (!crossBank) return { record, crossBank: null };
+  return { record: { ...record, reviewFlag: { ...crossBank, at: Number.isInteger(at) ? at : null } }, crossBank };
+}
 const {
   parseAllowedAccounts, parseAccountPolicies, accountPolicyProblems, destinationVerdict, destinationBankOf, FNB_BANK_NAMES, EFT_ACCOUNTS_ENV_VAR,
 } = require("./lib/eft-destination.cjs");
@@ -121,6 +145,145 @@ export function domainsAligned(a, b) {
 export function domainAllowlisted(domain) {
   const d = String(domain ?? "").toLowerCase();
   return !!d && EFT_ALLOWED_DOMAINS.some((a) => d === a || d.endsWith(`.${a}`));
+}
+
+// ─── TRUSTED NOTIFICATION SENDERS — EXACT ADDRESSES, NOT DOMAINS ─────────────
+// Junid, 10 Nov 2026. A DKIM pass for nedbank.co.za proves only that a message
+// left a Nedbank mailbox — a client advisor's own mailbox passes it too. On
+// 10 Nov one did: SipheleleMkwa@nedbank.co.za forwarded a CAPITEC proof of
+// payment (a WhatsApp-named PDF) and it was refused only by accident (no
+// reader recognised the layout). The domain allowlist above still decides who
+// may be AUTHENTICATED; this list decides who may be a PAYMENT NOTIFICATION.
+//
+// Derived from the mailbox's whole history (read-only audit, 10 Nov 2026: 657
+// bank-domain messages since 30 Aug, 398 pool records): every payment ever
+// recorded came from exactly these five automated senders, each attaching its
+// own system-named PDF, none a reply or forward. A bank with no proven sender
+// (TymeBank) has none, so its mail refuses until a genuine notification is
+// seen and its address added here. `reader` is the one reader that may read a
+// sender's mail; `attachments` are the system filenames its PDFs carry — the
+// bank's notification IS that PDF (every body says "open the attached PDF"),
+// so it is read, and nothing else attached is.
+// `dkimDomain` is the EXACT domain Gmail recorded the passing signature for on
+// every genuine message (audit: no subdomain, no other signer). The history
+// also shows exactly one From header with one address and never a Sender
+// header on any of them — senderTrustVerdict refuses anything else.
+export const TRUSTED_NOTIFICATION_SENDERS = Object.freeze([
+  Object.freeze({ address: "paymentsemail@fnb.co.za", dkimDomain: "fnb.co.za", reader: "fnb", attachments: Object.freeze([/^Payment Notification\.pdf$/i]) }),
+  Object.freeze({ address: "noreply@capitecbank.co.za", dkimDomain: "capitecbank.co.za", reader: "capitec", attachments: Object.freeze([/^ImmediatePaymentNotification\.pdf$/i, /^PaymentNotification\.pdf$/i, /^Payment\.pdf$/i]) }),
+  Object.freeze({ address: "notification@nedbank.co.za", dkimDomain: "nedbank.co.za", reader: "nedbank", attachments: Object.freeze([/^Proof_Of_Payment\.pdf$/i]) }),
+  Object.freeze({ address: "noreply@standardbank.co.za", dkimDomain: "standardbank.co.za", reader: "standardbank", attachments: Object.freeze([/^PaymentConfirmation\.pdf$/i]) }),
+  Object.freeze({ address: "ibreply@absa.co.za", dkimDomain: "absa.co.za", reader: "absa", attachments: Object.freeze([/^Absa\.pdf$/i]) }),
+]);
+
+// FNB's terminal batch-report sender: card slips, never payments. Its mail is
+// the card path's whatever the subject, so it is handed there untouched rather
+// than refused as an untrusted payment sender.
+export const CARD_REPORT_SENDERS = Object.freeze(["noreplytransreport@fnb.co.za"]);
+
+/** The trusted sender entry for an exact From address (case-insensitive), or null. */
+export function trustedSenderOf(address) {
+  const a = String(address ?? "").trim().toLowerCase();
+  if (!a) return null;
+  return TRUSTED_NOTIFICATION_SENDERS.find((t) => t.address === a) ?? null;
+}
+
+/** Is this attachment the trusted sender's own system document? */
+export function isSendersOwnDocument(sender, filename) {
+  const f = String(filename ?? "").trim();
+  return !!sender && !!f && sender.attachments.some((re) => re.test(f));
+}
+
+// A forward or a reply is a person handling a message, never the bank's system
+// sending one: no genuine notification in the history carries any of these.
+const FORWARD_SUBJECT = /^\s*(?:re|fw|fwd|aw|tr|wg)\s*(?:\[\d+\])?\s*:/i;
+const FORWARD_BODY = [
+  /-{2,}\s*forwarded message\s*-{2,}/i,
+  /begin forwarded message/i,
+  /-{2,}\s*original message\s*-{2,}/i,
+  /^\s*from:\s.+\n\s*(?:sent|date):\s/im,
+];
+
+/** Why this message reads as forwarded / replied to by a person — or null. */
+export function forwardSignOf({ subject, headerLines, bodyText }) {
+  if (FORWARD_SUBJECT.test(String(subject ?? ""))) return `its subject ("${clip(subject, 60)}") marks it as a reply or forward`;
+  for (const h of Array.isArray(headerLines) ? headerLines : []) {
+    const k = String(h?.key ?? "").toLowerCase();
+    if (k === "in-reply-to" || k === "references") return `it carries a ${k} header — it answers or continues another message`;
+    if (k === "resent-from" || k === "resent-sender") return `it carries a ${k} header — it was re-sent by someone`;
+  }
+  const body = String(bodyText ?? "");
+  if (FORWARD_BODY.some((re) => re.test(body))) return "its body carries a forwarded or quoted message";
+  return null;
+}
+
+/**
+ * The sender gate, applied AFTER the DKIM verdict. A message that passed DKIM
+ * but is not from a trusted automated sender — or is a forward/reply even from
+ * one — is NOT a payment notification: the verdict comes back failed with
+ * `untrustedSender: true`, so the whole auth-fail path applies (attachments
+ * never opened, the attempt recorded and emailed to Junid as
+ * refused-untrusted-sender). A failed DKIM verdict passes through unchanged.
+ */
+export function senderTrustVerdict({ verdict, fromAddress, fromAddressCount = 1, subject, headerLines, bodyText }) {
+  if (!verdict || verdict.pass !== true) return verdict;
+  const untrusted = (detail) => ({ ...verdict, pass: false, untrustedSender: true, sender: null, detail });
+  const sender = trustedSenderOf(fromAddress);
+  if (!sender) {
+    return untrusted(`DKIM passed for ${verdict.fromDomain}, but ${clip(String(fromAddress ?? "").toLowerCase(), 120)} is not that bank's automated payment-notification address — a person's mailbox at a bank is not a notification source`);
+  }
+  // ONE author, and it is the trusted address: two From headers, two From
+  // addresses, or a Sender header (send-on-behalf) mean someone else may be
+  // the real author. No genuine notification in the history has any of them.
+  const hdrs = Array.isArray(headerLines) ? headerLines : [];
+  const fromHeaders = hdrs.filter((h) => String(h?.key ?? "").toLowerCase() === "from").length;
+  if (fromHeaders > 1 || fromAddressCount !== 1) {
+    return untrusted(fromAddressCount === 0 && fromHeaders <= 1
+      ? `from ${sender.address}, but its From header could not be read as one plain address — a bank's notification names exactly one`
+      : `from ${sender.address}, but the message names more than one author (${fromHeaders} From header(s), ${fromAddressCount} address(es)) — a bank's notification has exactly one`);
+  }
+  if (hdrs.some((h) => String(h?.key ?? "").toLowerCase() === "sender")) {
+    return untrusted(`from ${sender.address}, but it carries a Sender header — sent on someone's behalf, which a bank's notification system never does`);
+  }
+  // The signature must be the bank's own domain EXACTLY, as on every genuine
+  // notification — not merely aligned (a subdomain mailer would align).
+  if (String(verdict.dkimDomain ?? "").toLowerCase() !== sender.dkimDomain) {
+    return untrusted(`from ${sender.address}, but its DKIM signature is for ${verdict.dkimDomain ?? "no domain"}, not ${sender.dkimDomain} — every genuine notification from this address is signed by ${sender.dkimDomain}`);
+  }
+  const fwd = forwardSignOf({ subject, headerLines, bodyText });
+  if (fwd) return untrusted(`from ${sender.address}, but ${fwd} — a bank's notification system never forwards or replies`);
+  return { ...verdict, sender };
+}
+
+/**
+ * BANK/SENDER MATCH: the reader that must read a trusted sender's document is
+ * that sender's own. A document another bank's reader recognises, and the
+ * sender's reader does not — a Capitec slip routed through a Nedbank address —
+ * is a mismatch, refused for what it is. Returns the foreign reader's id or null.
+ */
+export function foreignBankOf({ sender, lines, readers }) {
+  if (!sender || !Array.isArray(lines) || !Array.isArray(readers)) return null;
+  const own = readers.find((r) => r.id === sender.reader);
+  if (own && own.detect(lines)) return null;
+  const foreign = readers.find((r) => r.id !== sender.reader && r.detect(lines));
+  return foreign ? foreign.id : null;
+}
+
+/**
+ * Which documents a trusted sender's message offers to WHICH reader: its own
+ * bank's reader claims what it recognises; anything another bank's reader
+ * recognises instead is a mismatch. The poller acts on exactly this plan.
+ * @returns {{claimed: Array<{d:object, r:object}>, mismatched: Array<{d:object, foreign:string}>}}
+ */
+export function noticeReadPlan({ sender, offered, readers }) {
+  const docs = Array.isArray(offered) ? offered : [];
+  const own = (Array.isArray(readers) ? readers : []).find((r) => r.id === sender?.reader) ?? null;
+  const claimed = docs.map((d) => ({ d, r: own && own.detect(d.lines) ? own : null })).filter((x) => x.r);
+  const mismatched = docs
+    .filter((d) => !claimed.some((x) => x.d === d))
+    .map((d) => ({ d, foreign: foreignBankOf({ sender, lines: d.lines, readers }) }))
+    .filter((x) => x.foreign);
+  return { claimed, mismatched };
 }
 
 // ─── THE AUTHENTICATION VERDICT ──────────────────────────────────────────────
@@ -501,15 +664,19 @@ export function accountVerdict({ accountMask, allowedTails, configured }) {
 //                 footer: "may take up to three business days … check your
 //                 account"); "Channel Immediate payment" is (reader: immediate;
 //                 real samples 27 Oct 2026 — all "Internet payment")
-//   fnb           NO such field — see below.
-// Whatever a bank prints, a payment dated in the FUTURE of its own
-// notification's arrival is scheduled and refuses.
+//   fnb           NO such field — see below; a PayShap notice says PayShap
+//                 (reader: paymentType "PayShap", immediate: true)
+// Whatever a bank prints, a payment dated BEYOND THE NEXT BUSINESS DAY after
+// its own notification's arrival is scheduled and refuses (7 Nov 2026: one
+// dated on or before the next business day settles then — see below).
 export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
 // fnb: no printed field, but FNB sends this notification ONLY for a payment
 // from its OWN customer, and the account check (7a) admits only an FNB
 // destination, so a recorded FNB payment is FNB -> FNB: an intra-bank transfer,
 // which clears in real time. Immediate by its nature, not a guess (Junid's
 // rule, 5 Oct 2026). Gated below on the destination bank being FNB.
+// Exception, 7 Nov 2026: an FNB PAYSHAP notice into another bank is immediate
+// too — PayShap is real-time interbank, and FNB prints that it is (below).
 // standardBankHeading's paymentType when the heading is out of shape — never
 // a payment type, so never same-bank evidence either.
 const SB_HEADING_ANOMALIES = ["contradictory headings", "heading split across lines", "heading below the confirmation"];
@@ -526,8 +693,10 @@ export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb", "standardbank
 //
 // A reader that cannot say immediate-vs-regular cannot prove a pre-27
 // payment immediate, so it refuses; a 27+ payment does not need it. A payment
-// dated after its notification arrived is refused whatever its date: that is
-// a scheduled payment. No bank date at all is not "27 or later": it falls to
+// dated BEYOND the next business day after its notification arrived is
+// refused: that is a scheduled payment (7 Nov 2026; one dated a later day up
+// to the next business day settles then, and one timestamped later the SAME
+// day is still scheduled). No bank date at all is not "27 or later": it falls to
 // the immediate rule here and is refused by the cutoff anyway.
 export const IMMEDIATE_NOT_REQUIRED_FROM = "2026-10-27";
 
@@ -537,10 +706,13 @@ export function immediacyRequiredFor(bankTs) {
   return sastDate(bankTs) < IMMEDIATE_NOT_REQUIRED_FROM;
 }
 
-// ─── IMMEDIATE-ONLY ACCOUNTS — THE DATE NEVER RELAXES THEM ──────────────────
+// ─── IMMEDIATE-ONLY ACCOUNTS — THE DATE-PHASED RULE NEVER RELAXES THEM ──────
+// (7 Nov 2026: the NEXT-BUSINESS-DAY window does — a non-immediate payment
+// the bank dates a later day, up to the next business day, is accepted into
+// an immediate-only account; see immediacyVerdict.)
 // Junid, 2 Nov 2026: an account whose EFT_ALLOWED_ACCOUNTS entry is tagged
-// "immediate" (the Standard Bank ATUGAR account) takes IMMEDIATE payments
-// only. For a payment into it the date-phased relaxation above does not
+// "immediate" takes IMMEDIATE payments only, unless the tag is waived (below:
+// the Standard Bank ATUGAR account, since 8 Nov 2026). For a payment into it the date-phased relaxation above does not
 // apply: immediacy is required whatever the bank date, read by the same
 // per-bank signal (Standard Bank: the heading "Immediate Payment
 // Confirmation", never the footer). Every other account keeps the date-phased
@@ -550,22 +722,73 @@ export function immediacyRequiredFor(bankTs) {
 // immediate by its nature, like FNB-to-FNB (Junid, 6 Nov 2026 — see below);
 // payments into the account from any other bank must still be immediate.
 
+// ─── CONCRETE'S STANDARD BANK ACCOUNT: THE TAG NO LONGER BINDS (8 Nov 2026) ──
+// Junid, 8 Nov 2026: the immediate-only rule was rejecting real customers.
+// Concrete's Standard Bank account now confirms a non-immediate EFT exactly as
+// Marathon's FNB account does: the date-phased rule, next-business-day
+// settlement, future-dated refusal, DKIM, dedupe holds and the cutoff all
+// still apply. Its EFT_ALLOWED_ACCOUNTS entry deliberately keeps its
+// ":immediate" tag (the list was not to change), so the waiver is here, keyed
+// on the account's bank and last four — never a full number in this repo. Any
+// OTHER account tagged "immediate" is still held to it.
+export const IMMEDIATE_TAG_WAIVED = Object.freeze([Object.freeze({ bank: "standardbank", tail: "8534" })]);
+
+/**
+ * Is this account really held to immediate-only? Takes a successful
+ * destinationVerdict ({bank, tail, immediateOnly}) or a parsed policy
+ * ({bank, account, immediateOnly}).
+ */
+export function enforcesImmediateOnly(entry) {
+  if (entry?.immediateOnly !== true) return false;
+  const tail = typeof entry.tail === "string" ? entry.tail : String(entry.account ?? "").slice(-4);
+  return !IMMEDIATE_TAG_WAIVED.some((w) => w.bank === entry.bank && w.tail === tail);
+}
+
 /**
  * @param {{parsed:object, reader?:string, receivedAt:number|null, immediateOnly?:boolean}} p
  * @returns {{ok:true} | {ok:false, reason:string, needsSample?:true}}
  */
 export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = false }) {
   const id = reader ?? parsed?.reader ?? null;
-  // Future-dated by the clock (15-minute tolerance) OR by the SAST calendar
-  // day: a date-only bank (Nedbank, Absa) prints tomorrow as tomorrow's
-  // midnight, which a notification arriving after 23:45 would otherwise slip
-  // under the tolerance — and from 27 Oct nothing else stops it. (Sonnet
-  // architect review, date-phased PR.)
-  if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)
-    && (parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS || sastDate(parsed.bankTs) > sastDate(receivedAt))) {
-    return { ok: false, reason: "The payment is dated after its notification arrived — a scheduled / future-dated payment, not an immediate one." };
+  // NEXT-BUSINESS-DAY SETTLEMENT (Junid, 7 Nov 2026; narrowed the same day
+  // — see the end of this paragraph). A payment dated after
+  // its notification arrived used to refuse as scheduled — but a weekend
+  // non-immediate EFT is dated for the day it SETTLES: RICHARD CHETTY's two
+  // Nedbank "Internet payment"s of Saturday 7 Nov print Monday 09/11 and were
+  // refused, though DKIM-signed and paid into the shop's own accounts. Now a
+  // payment the bank dates on or before the NEXT BUSINESS DAY after the
+  // notice's SAST day is settled on date grounds (eft-text.cjs
+  // settlementDateVerdict; weekends and SA public holidays skipped); dated
+  // later, it is a scheduled payment and refuses, saying so. NARROWED the
+  // same day (Junid): only a notice that arrives on a non-business day —
+  // Saturday, Sunday, a public holiday (or a holiday's eve) — opens that
+  // window; on an ordinary business day a payment dated tomorrow refuses. Judged from the notice's own
+  // arrival, so a replay decides exactly as the first read did.
+  if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)) {
+    if (sastDate(parsed.bankTs) > sastDate(receivedAt)) {
+      // A LATER DAY: settled on date grounds up to the next business day.
+      const dated = settlementDateVerdict(parsed.bankTs, receivedAt);
+      if (!dated.ok) return { ok: false, reason: dated.reason };
+    } else if (parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS) {
+      // The SAME day, timestamped hours after its own notice (a timestamped
+      // bank: Standard Bank, FNB, Capitec) — scheduled for later today, as
+      // before; the next-business-day window is for a later DATE only.
+      // (Sonnet architect review of #866.)
+      return { ok: false, reason: "The payment is timestamped later today than its notification arrived — a payment scheduled for later today, not a settled one." };
+    }
   }
-  const onlyImmediate = immediateOnly === true;
+  // IMMEDIATE-ONLY ACCOUNTS RELAX FOR THAT WINDOW (Junid, 7 Nov 2026).
+  // (Concrete's Standard Bank account, whose case this was, has had its tag
+  // waived since 8 Nov — enforcesImmediateOnly. For an enforced account:) A payment
+  // the bank dates AFTER its notice's day and on or before the next business
+  // day is a weekend/next-day settlement — RICHARD CHETTY's R2450 Nedbank
+  // "Internet payment" of Saturday, dated Monday — and is accepted into it
+  // even though it is not immediate. A non-immediate payment dated the SAME
+  // day as its notice into that account still refuses (the 2 Nov rule), and
+  // one dated beyond the next business day refused above.
+  const settlesNextBusinessDay = Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)
+    && sastDate(parsed.bankTs) > sastDate(receivedAt);
+  const onlyImmediate = immediateOnly === true && !settlesNextBusinessDay;
   if (!onlyImmediate && !immediacyRequiredFor(parsed?.bankTs)) return { ok: true };
   // Why immediacy is required here — said in every refusal below.
   const because = onlyImmediate
@@ -581,6 +804,13 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     // Intra-bank only: destination must be FNB (the same names 7a accepts).
     const bank = String(parsed?.destBankName ?? "").toUpperCase().replace(/[^A-Z]/g, "");
     if (FNB_BANK_NAMES.has(bank)) return { ok: true };
+    // PAYSHAP (7 Nov 2026): FNB's own notice says the payment went over
+    // PayShap, the real-time interbank rail — immediate into ANY bank,
+    // including the immediate-only Standard Bank account. The reader sets
+    // this only from FNB's sentence below END OF NOTIFICATION (eft-banks.cjs
+    // fnbPayShap); the destination account is still checked digit for digit
+    // by destinationVerdict (7a), and the date rule above still applies.
+    if (parsed?.immediate === true && parsed?.paymentType === "PayShap") return { ok: true };
     return { ok: false, reason: parsed?.destBankName
       ? `This FNB notification pays "${clip(parsed.destBankName, 60)}", not an FNB account, so it is not an FNB-to-FNB immediate payment.`
       : "This FNB notification does not name an FNB destination account, so it cannot be confirmed as an FNB-to-FNB immediate payment." };
@@ -605,12 +835,14 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
     // A plain "Payment Confirmation" heading (immediate: false) passes too:
     // it is what a NORMAL payment prints, and a same-bank normal payment is
     // exactly what Junid accepts. A scheduled one is still refused above
-    // when the bank dates it after its notice arrived. A heading the reader
+    // when the bank dates it beyond the next business day (or later the same
+    // day than its notice). A heading the reader
     // found ANOMALOUS (two headings, one split, one below the confirmation)
     // still refuses: that is a document out of shape, not a payment type.
     // This applies wherever immediacy is required — also a Standard Bank
     // account under the date-phased rule dated 20–26 Oct — which is inert:
-    // the only Standard Bank account was added on 2 Nov, immediate-only.
+    // the only Standard Bank account was added on 2 Nov, so no payment into
+    // it is dated before then.
     // A payment into the account FROM ANY OTHER BANK (Capitec, Absa, FNB,
     // Nedbank notices) still needs that bank's immediate signal.
     return { ok: true };
@@ -689,6 +921,108 @@ export function paymentDateVerdict({ parsed, cutoff }) {
     };
   }
   return { ok: true };
+}
+
+// ─── PER-ACCOUNT EFFECTIVE-FROM FLOOR (Junid, 10 Nov 2026) ───────────────────
+// Marathon Pine's FNB account (the allowed account whose number starts 63 —
+// Marathon's own FNB account starts 62) was settled BY HAND until auto-confirm
+// went on for Pine. A payment into it that the bank dates before 2026-11-10
+// has already been handled, so confirming it now would confirm the same money
+// twice: it refuses as refused-stale-date, exactly like the global cutoff
+// (same date — the BANK's printed payment date, never the email's arrival —
+// same outcome, same quarantine). From 2026-11-10 it confirms under every
+// normal rule. The global EFT_PAYMENT_DATE_CUTOFF is untouched and still
+// applies first, to every account; this only ever ADDS a later floor.
+//
+// Keyed on bank + the account's leading digits, never a full number in this
+// repo: resolveAccountFloors finds the matching EFT_ALLOWED_ACCOUNTS entry at
+// start-up and keeps only its bank and last four (what destinationVerdict
+// answers with). Only an entry STARTING with the prefix names the floored
+// account; but a notice usually prints just the last four, so any other
+// allowed account at the same bank that shares those four is floored too
+// (strictest wins) and resolveAccountFloors flags it as a problem.
+//
+// FAIL CLOSED (Sonnet architect review, #886). A floor whose prefix matches NO
+// configured entry (a typo, an entry re-keyed to last four only) cannot name
+// its account — and silently dropping it would let exactly the pre-floor money
+// it exists to stop confirm. So an unresolved floor applies to EVERY account
+// at its bank (tail null) until EFT_ALLOWED_ACCOUNTS is fixed, and the
+// start-up line and heartbeat say so. Another account at the same bank that
+// shares the floored account's last four is flagged too: a masked notice
+// cannot tell the two apart, so the floor (strictest) applies to both.
+export const ACCOUNT_EFFECTIVE_FROM = Object.freeze([
+  Object.freeze({ bank: "fnb", prefix: "63", from: "2026-11-10", label: "Marathon Pine's FNB account" }),
+]);
+
+/**
+ * The floors that apply, resolved against the configured accounts
+ * (parseAccountPolicies). Full numbers stay inside; out come bank + last four.
+ * @returns {{floors: Array<{bank:string, tail:string, from:string, startMs:number, label:string}>, problems: string[]}}
+ */
+export function resolveAccountFloors(policies, floors = ACCOUNT_EFFECTIVE_FROM) {
+  const out = []; const problems = [];
+  const list = Array.isArray(policies) ? policies : [];
+  for (const f of floors) {
+    const startMs = parseBankTimestamp(f.from);
+    if (!Number.isInteger(startMs) || !/^\d{4}-\d{2}-\d{2}$/.test(f.from)) {
+      // A floor whose date does not read must not vanish (fail open): it
+      // refuses everything at its bank until the constant is fixed.
+      problems.push(`${f.label}: effective-from "${f.from}" is not a date — every ${f.bank.toUpperCase()} payment refuses until it is fixed`);
+      out.push({ bank: f.bank, tail: null, from: String(f.from), startMs: Number.MAX_SAFE_INTEGER, label: f.label, unresolved: true });
+      continue;
+    }
+    const hits = list.filter((p) => p && p.bank === f.bank && typeof p.account === "string" && p.account.startsWith(f.prefix) && p.account.length > f.prefix.length + 3);
+    if (!hits.length) {
+      problems.push(`${f.label}: no allowed ${f.bank.toUpperCase()} account starts ${f.prefix}, so its ${f.from} floor cannot name its account — applied to EVERY ${f.bank.toUpperCase()} account until EFT_ALLOWED_ACCOUNTS is fixed`);
+      out.push({ bank: f.bank, tail: null, from: f.from, startMs, label: f.label, unresolved: true });
+      continue;
+    }
+    for (const h of hits) {
+      const tail = h.account.slice(-4);
+      out.push({ bank: f.bank, tail, from: f.from, startMs, label: f.label });
+      const twins = list.filter((p) => p && p !== h && p.bank === f.bank && typeof p.account === "string" && p.account.endsWith(tail));
+      if (twins.length) problems.push(`${f.label}: another allowed ${f.bank.toUpperCase()} account also ends …${tail}; a masked notice cannot tell them apart, so the ${f.from} floor applies to both`);
+    }
+  }
+  return { floors: out, problems };
+}
+
+/**
+ * A payment into a floored account must be dated (by the bank) on or after
+ * that account's effective-from day. `account` is destinationVerdict's answer
+ * ({ok, bank, tail}); a refused destination is not this check's business.
+ * Two allowed accounts at one bank sharing a last four: the floor applies
+ * (the strictest policy wins, as for immediate-only).
+ * @returns {{ok:true} | {ok:false, reason:string, cutoff:string}}
+ */
+export function accountFloorVerdict({ parsed, account, floors }) {
+  if (!account || account.ok !== true) return { ok: true };
+  const hit = (Array.isArray(floors) ? floors : [])
+    .filter((f) => f.bank === account.bank && (f.tail === account.tail || f.tail === null))
+    .sort((a, b) => b.startMs - a.startMs)[0];
+  if (!hit) return { ok: true };
+  const bankTs = parsed?.bankTs;
+  if (!Number.isInteger(bankTs)) {
+    return { ok: false, cutoff: hit.from, reason: `The bank's own payment date could not be read, so it cannot be checked against the ${hit.from} start date for ${hit.label} — refused rather than assumed.` };
+  }
+  if (bankTs < hit.startMs) {
+    return {
+      ok: false, cutoff: hit.from,
+      reason: `Payment dated before the cutoff for this account: the bank dates this payment ${sastDate(bankTs)}, and ${hit.label} only confirms payments dated ${hit.from} or later — earlier payments into it were settled by hand. Check it on the bank statement; do not confirm it again.`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * The whole date gate the poller applies to one payment: the global cutoff
+ * first (every account), then the matched account's own floor, if any.
+ * @returns {{ok:true} | {ok:false, reason:string, cutoff?:string}}
+ */
+export function datedVerdict({ parsed, cutoff, account, floors }) {
+  const global = paymentDateVerdict({ parsed, cutoff });
+  if (global.ok !== true) return global;
+  return accountFloorVerdict({ parsed, account, floors });
 }
 
 // ─── IDENTITY AND IDEMPOTENCY ────────────────────────────────────────────────
@@ -775,6 +1109,8 @@ export function createOnlyStep(record, capture = () => {}) {
  *   outcome   "recorded" | "refused-auth" | "refused-parse" | "refused-account"
  *             | "refused-not-immediate" (fix 7b)
  *             | "refused-stale-date" (fix 8 — the bank dates it before the cutoff)
+ *             | "refused-untrusted-sender" (10 Nov 2026 — not the bank's automated sender, or a forward)
+ *             | "refused-bank-mismatch" (10 Nov 2026 — another bank's document from this sender)
  *             — separable on purpose: a forgery attempt, a format change and a
  *             payment into somebody else's account are different problems for
  *             different people.
@@ -809,12 +1145,17 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     reader: reader || null,
   };
   if (!verdict.pass) {
+    // An authenticated message from a bank mailbox that is not its automated
+    // notification sender (or a forward) — a person, not the bank's system.
+    if (verdict.untrustedSender === true) {
+      return { ...base, outcome: "refused-untrusted-sender", reason: clip(`Untrusted sender: ${verdict.detail}. Not read as a payment; recorded for your review.`, 400) };
+    }
     return { ...base, outcome: "refused-auth", reason: `Failed authentication: ${verdict.detail}. Treat as a forgery attempt until shown otherwise.` };
   }
   if (!parsed.ok) {
     // The reason can QUOTE the body ('The Amount line reads "…"'), so it
     // gets the account sweep too. (Delta review.)
-    return { ...base, outcome: "refused-parse", reason: clip(redactAccountDigits(parsed.reason), 400) };
+    return { ...base, outcome: parsed.bankMismatch === true ? "refused-bank-mismatch" : "refused-parse", reason: clip(redactAccountDigits(parsed.reason), 400) };
   }
   // The reader's destination fields travel on BOTH the account refusal and
   // the recorded payment — a refusal must show which account the money
@@ -886,6 +1227,14 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     syntheticRef,
     destination,
     accountTail: account.tail,
+    // Whether the bank called it immediate, kept as data on a payment into a
+    // tagged account now that it no longer decides anything there (8 Nov
+    // 2026): true, false, or null when the notice does not say. Untagged
+    // accounts' records carry no such field, exactly as before.
+    ...(account.immediateOnly === true ? {
+      immediate: typeof parsed.immediate === "boolean" ? parsed.immediate : null,
+      paymentType: clip(parsed.paymentType, 60) || null,
+    } : {}),
   };
 }
 
@@ -1104,8 +1453,14 @@ export const REREAD_ARRIVAL_TOLERANCE_MS = 5 * 60 * 1000;
 /** @returns {{ok:true, refused:object} | {ok:false, why:string}} */
 export function rereadRefusal({ record, readerId, parse, docText, fetched }) {
   if (!record) return { ok: false, why: "No refused record." };
-  if (record.outcome !== "refused-parse" || record.reader) {
-    return { ok: false, why: `Not a missing-reader refusal (outcome ${record.outcome}, reader ${record.reader ?? "none"}) — use claim-settled-bank-fingerprint.mjs.` };
+  // Also a refusal by a reader that EXISTED but could not read this layout
+  // (7 Nov 2026: FNB's PayShap notice, refused-parse with reader "fnb" and
+  // no bank id) — re-read by THAT SAME reader, now fixed. A refusal that did
+  // store a bank id goes to claim-settled-bank-fingerprint.mjs instead.
+  const readerFailed = record.outcome === "refused-parse" && record.reader
+    && record.reader === readerId && !record.bankRef && !Number.isInteger(record.amountCents);
+  if (record.outcome !== "refused-parse" || (record.reader && !readerFailed)) {
+    return { ok: false, why: `Not a missing-reader or failed-read refusal (outcome ${record.outcome}, reader ${record.reader ?? "none"}) — use claim-settled-bank-fingerprint.mjs.` };
   }
   if (record.auth?.verdict !== "pass") return { ok: false, why: "The record did not pass DKIM — a forgery's document never claims a bank id." };
   const sameFrom = clip(fetched?.from, 200) === clip(record.from, 200);

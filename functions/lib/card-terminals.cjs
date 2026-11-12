@@ -83,13 +83,67 @@ function captureMode(row) {
  * nor a chooser, and the callable refuses a photograph sent against one anyway.
  */
 function takesPhoto(row) {
+  if (isPhotoPrimary(row)) return true;
   const m = captureMode(row);
   return m !== "email" && m !== "typed";
 }
 
 /** Is this machine captured by typing its total, with no photograph at all? */
 function typesTotal(row) {
+  if (isPhotoPrimary(row)) return false;
   return captureMode(row) === "typed";
+}
+
+// ─── A STANDARD BANK TILL IS PHOTOGRAPHED (Junid, 7 Nov 2026) ────────────────
+// Standard Bank's SimplyBLU does not email the machines' batch reports, and its
+// portal's transaction list missed card money (Marathon's merchant shows no
+// rows at all; Concrete's fell short of the till on 3 and 6 Nov). So for every
+// till on a Standard Bank terminal the PRINTED end-of-day report, photographed
+// in the store app and read on the server, is the record — as card recon worked
+// before email intake. Decided by the terminal's bank in /config/cardTerminals,
+// never by a list of tills: a Standard Bank machine registered tomorrow is on
+// the photo path the moment its row says so. Its stored `capture` is ignored
+// (Concrete's rows still say "typed" from 31 Oct): the camera is always shown,
+// a typed total is optional and only a cross-check, and nothing waits for an
+// email. FNB rows are untouched by this — `bank` absent is FNB.
+function isPhotoPrimary(row) {
+  return !!row && row.bank === STANDARD_BANK && reportSource(row) === SOURCE_PHOTO;
+}
+
+// ─── …EXCEPT A TILL WHOSE RECORD IS THE SIMPLYBLU PORTAL (Junid, 7 Nov 2026) ─
+// "Concrete is fine with SimplyBLU — only Marathon and Trophy." A Standard
+// Bank row with `record: "portal"` keeps the 3 Nov behaviour exactly: the
+// portal's day is the record, the staff slip (photo + typed total) is kept
+// beside it, and its stored `capture` applies. Concrete Till 1/2 carry it.
+const PORTAL_RECORD = "portal";
+function isPortalRecordTerminal(row) {
+  return !!row && row.bank === STANDARD_BANK && reportSource(row) === SOURCE_PORTAL;
+}
+
+// ─── WHERE A TILL'S DAY COMES FROM IS PER TERMINAL (Junid, 8 Nov 2026) ───────
+// `source` on the /config/cardTerminals row: "portal" (the SimplyBLU pull),
+// "photo" (the photographed end-of-day report) or "email" (FNB's emailed
+// report). Never decided by the bank: Concrete and Marathon PE Till 2 are both
+// Standard Bank and differ. When a till's merchant is linked in SimplyBLU its
+// row changes to "portal" and nothing else changes. A row without `source`
+// keeps what it always meant: FNB is email; Standard Bank is photo unless it
+// carries the 7 Nov `record: "portal"`. `source` never moves an FNB row off
+// its emailed path: the two checks above require a Standard Bank row.
+const SOURCE_PORTAL = "portal";
+const SOURCE_PHOTO = "photo";
+const SOURCE_EMAIL = "email";
+function reportSource(row) {
+  if (!row) return null;
+  if (row.source === SOURCE_PORTAL || row.source === SOURCE_PHOTO || row.source === SOURCE_EMAIL) return row.source;
+  if (row.bank !== STANDARD_BANK) return SOURCE_EMAIL;
+  return row.record === PORTAL_RECORD ? SOURCE_PORTAL : SOURCE_PHOTO;
+}
+
+/** Does this machine's report arrive by email (so a missing email is worth a word)? */
+function expectsEmail(row) {
+  if (isPhotoPrimary(row)) return false;
+  const m = captureMode(row);
+  return m === "email" || m === "both";
 }
 
 /**
@@ -217,4 +271,10 @@ function resolveRegisteredTid(readTid, registry) {
   return hits.length === 1 ? hits[0] : null;
 }
 
-module.exports = { BANKS, STANDARD_BANK, terminalBank, canonicalTid, resolveRegisteredTid, isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
+/** The registry row a TID read off paper belongs to (resolveRegisteredTid), or null. */
+function registeredRowFor(readTid, registry) {
+  const key = resolveRegisteredTid(readTid, registry);
+  return key ? registry[key] : null;
+}
+
+module.exports = { registeredRowFor, BANKS, STANDARD_BANK, terminalBank, isPhotoPrimary, isPortalRecordTerminal, reportSource, PORTAL_RECORD, expectsEmail, canonicalTid, resolveRegisteredTid, isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };

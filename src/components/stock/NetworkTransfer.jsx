@@ -45,6 +45,7 @@ import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenPr
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
 import { isCentralFedProduct, centralFedPerSize, centralFedSizes } from "./centralFed";
+import { concreteDivisionPolicy, isDivisionFootwear, isDivisionOneSize } from "./concreteDivision";
 import { firstBatchEligible, buildFirstBatchSolveUpdate, trustExistingEmptyUpdates, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 import { setUpdateBusy } from "../../update/updateChecker";
@@ -474,14 +475,23 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // store keeps this clothing in the shop, N of EVERY declared size, straight
   // from Central — no hub, no hub seed, no hub leg. Read from the engine
   // config the owner sets on the Engine Policy card; absent ⇒ off.
+  // THE CONCRETE DIVISION (Junid, 12 Nov 2026): every non-footwear item at Pine
+  // and Concrete is kept in the shop from Central, whatever Hub 3 ever held.
+  const divisionPolicy = concreteDivisionPolicy(cfg);
+  const divisionCard = (card, store) => !!divisionPolicy && sectionOfStore(store) === 1 && !isDivisionFootwear(byId.get(card.pid));
   const cfAt = (card, store) => isCentralFedProduct(cfg, network, store, byId.get(card.pid));
+  const divisionShopKeep = (card) => {
+    const leg = divisionPolicy?.shopOnly;
+    return leg ? (isDivisionOneSize(byId.get(card.pid)) ? leg.oneSize : leg.perSize) : null;
+  };
   // The run a store's lines are planned from: the policy run, with a
   // central-fed store's row replaced by N per declared size.
   // An explicit /stock_targets row for the size wins (0 = excluded) — the
   // engine's own precedence (resolveTarget: explicit row before central-fed).
   const cfTargetAt = (card, st, sz) => {
     const row = targetRows?.[st]?.[card.pid]?.[encodeSizeKey(sz)];
-    return row && typeof row.target === "number" ? row.target : centralFedPerSize(cfg, network, st);
+    if (row && typeof row.target === "number") return row.target;
+    return divisionCard(card, st) ? divisionShopKeep(card) : centralFedPerSize(cfg, network, st);
   };
   const runAt = (card, stores) => {
     const run = runFor(card.pid);
@@ -514,7 +524,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // `centralTaken` (optional): units of a size this confirm has already dealt
   // to an earlier-ticked store — never shown as available twice.
   const solvePlan = (card, store, centralTaken = null) => computeSolvePlan({
-    std: runFor(card.pid),
+    std: runAt(card, [store]),
     sizes: qualifyingSizes(card, store),
     source: card.source,
     store,
@@ -1242,7 +1252,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                           <div style={{ marginTop: 5, color: AMBER }}>{none.map(sizeLabel).join(" · ")}: Central has none — they stay on the Missing list until it does.</div>
                         )}
                         <div style={{ marginTop: 5, color: GRAY }}>
-                          {LOC_LABEL[sStore]} keeps this clothing in the shop: {centralFedPerSize(cfg, network, sStore)} of every size, refilled straight from Central.
+                          {divisionCard(card, sStore)
+                            ? `${LOC_LABEL[sStore]} keeps this in the shop: ${divisionShopKeep(card)} ${isDivisionOneSize(byId.get(card.pid)) ? "per design" : "of every size"}, refilled straight from Central.`
+                            : <>{LOC_LABEL[sStore]} keeps this clothing in the shop: {centralFedPerSize(cfg, network, sStore)} of every size, refilled straight from Central.</>}
                         </div>
                       </div>
                     );

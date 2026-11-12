@@ -59,9 +59,10 @@ describe("Section 2 keeps the old literal — every fallback, every shop", () =>
     expect(orderIsAtHub(NET, { hub: "hub1", placedAtHub: "hubC" }, TRIAL_HUB)).toBe(true);   // hubC by placedAtHub, as before
     expect(orderIsAtHub(NET, { hub: "hub1" }, TRIAL_HUB)).toBe(false);
   });
-  it("the dispatch hold is Hub 2's alone, six minutes", () => {
+  it("the dispatch hold is Hub 2's and Hub 3's, six minutes", () => {
     expect(dispatchHoldMs("hub2")).toBe(360000);
-    for (const h of ["hub1", "hub3", "hubC", undefined]) expect(dispatchHoldMs(h)).toBe(0);
+    expect(dispatchHoldMs("hub3")).toBe(360000);
+    for (const h of ["hub1", "hubC", undefined]) expect(dispatchHoldMs(h)).toBe(0);
   });
   it("Hub 2's CR pills are Marathon PE and Trophy, in that order", () => {
     expect(shopsOfHub(NET, "hub2")).toEqual(["marathon-pe", "trophy"]);
@@ -283,11 +284,11 @@ describe("Source tabs", () => {
   it("the four Section 2 tabs keep their keys, labels, locations and order — the same as App.jsx's SOURCE_TABS", () => {
     const tabs = sourceTabsFor(NET, see([2]));
     expect(tabs.map((t) => [t.key, t.label])).toEqual([
-      ["hub1refill", "Hub 1 Refill"], ["clothing", "Hub 2 Refill"], ["trophy", "Trophy"], ["marathonpe", "Marathon"], ["refillhistory", "Refill History"],
+      ["hub1refill", "Hub 1 Refill"], ["clothing", "Hub 2 Refill"], ["marathonpe", "Marathon"], ["trophy", "Trophy"], ["refillhistory", "Refill History"],
     ]);
-    expect(tabs.slice(0, 4).map((t) => t.loc)).toEqual(["hub1", "hub2", "trophy", "marathon-pe"]);
+    expect(tabs.slice(0, 4).map((t) => t.loc)).toEqual(["hub1", "hub2", "marathon-pe", "trophy"]);
     const APP = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
-    expect(APP).toContain('const SOURCE_SHOP_TABS = [["trophy","Trophy","trophy"],["marathonpe","Marathon","marathon-pe"]];');
+    expect(APP).toContain('const SOURCE_SHOP_TABS = [["marathonpe","Marathon","marathon-pe"],["trophy","Trophy","trophy"]];');
     expect(APP).toContain('const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],...SOURCE_SHOP_TABS');
   });
   it("sourceTabKeys: every key the registry yields, for a link that cannot know the viewer", () => {
@@ -295,14 +296,15 @@ describe("Source tabs", () => {
     expect(sourceTabKeys(NET)).not.toContain("loc:concrete-stockroom");
     expect(sourceTabKeys(NET)).not.toContain("loc:hub9");
   });
-  it("both sections: Section 2's, then Section 1's hubs and shops, then history", () => {
+  it("both sections: Hub 1, Hub 2, Hub 3, Marathon, Trophy, Pine, Concrete, then history", () => {
     expect(keys(sourceTabsFor(NET, see([1, 2])))).toEqual([
-      "hub1refill", "clothing", "trophy", "marathonpe",
-      "loc:hub3", "loc:marathon-pine", "loc:concrete", "refillhistory",
+      "hub1refill", "clothing", "loc:hub3", "marathonpe", "trophy",
+      "loc:marathon-pine", "loc:concrete", "refillhistory",
     ]);
   });
   it("a Section 1 account sees only Section 1's lanes", () => {
     expect(keys(sourceTabsFor(NET, see([1])))).toEqual(["loc:hub3", "loc:marathon-pine", "loc:concrete", "refillhistory"]);
+    expect(sourceTabsFor(NET, see([1])).find((t) => t.loc === "marathon-pine").label).toBe("Pine");
   });
 });
 

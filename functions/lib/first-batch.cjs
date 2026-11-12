@@ -317,9 +317,13 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // central-fed map first: a store with no entry (every Marathon shop) costs
     // one tiny read and nothing else.
     const cfMap = (await db.ref("config/refillEngine/centralFedClothing").once("value")).val();
-    const cfConfig = cfMap && typeof cfMap === "object" && cfMap[store] != null
-      ? { centralFedClothing: cfMap, routes: (await db.ref("config/refillEngine/routes").once("value")).val() || {} }
-      : {};
+    const division = (await db.ref("config/refillEngine/concreteDivision").once("value")).val();
+    const cfConfig = {
+      ...(cfMap && typeof cfMap === "object" && cfMap[store] != null
+        ? { centralFedClothing: cfMap, routes: (await db.ref("config/refillEngine/routes").once("value")).val() || {} }
+        : {}),
+      ...(division ? { concreteDivision: division } : {}),
+    };
     if (isCentralFedProduct(cfConfig, network, store, productRead)) {
       if (!networkRegistry.autoRouteAllowed(network, SOURCE, store)) return { skipped: "section_wall", store, centralFed: true };
       const cfResolved = rr.status !== "open";

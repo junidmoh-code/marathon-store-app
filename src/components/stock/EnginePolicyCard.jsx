@@ -686,6 +686,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // history with a revert button must never produce.
     if (h.kind === "targets") return revertTargets(h);
     if (h.kind === "centralFed") return revertCentralFed(h);
+    if (h.kind === "concreteDivision") return saveConcreteDivision(h.before ?? null, h.after ?? null);
     const what = h.kind === "group" ? h.groupKey : h.categoryKey;
     const ok = window.confirm(
       `Put ${what} back to how it was before this change?\n\n` +
@@ -721,6 +722,16 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // ── CENTRAL-FED CLOTHING (centralFed.js) — Concrete keeps its clothing in
   // the shop, N of every size, straight from Central. One number per store,
   // through the same callable, history and revert as every write here.
+  const saveConcreteDivision = async (policy, expectedBefore) => {
+    setBusy(true);
+    try {
+      await setCategoryPolicyFn()({ action: "setConcreteDivision", policy, expectedBefore });
+      await load(true);
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+    setBusy(false);
+  };
   const saveCentralFed = async (location, perSize) => {
     setBusy("centralFed");
     try {
@@ -939,7 +950,11 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
               </div>
             )}
 
-            {!loading && !error && (census?.centralFedStores || []).map((loc) => (
+            {!loading && !error && census?.concreteDivision && (
+              <ConcreteDivisionPanel policy={census.concreteDivision} keeps={census.divisionKeeps} />
+            )}
+
+            {!loading && !error && !census?.concreteDivision && (census?.centralFedStores || []).map((loc) => (
               <CentralFedPanel key={loc} location={loc} perSize={census?.centralFedClothing?.[loc] ?? null}
                 busy={busy} onSave={(n) => saveCentralFed(loc, n)} />
             ))}
@@ -1697,11 +1712,11 @@ function History({ entries, onRevert, busy }) {
                   yields no label would otherwise print a bare separator with a
                   blank name after it. (CodeRabbit, PR #469.) */}
               {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
-                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : "no field changes")}
+                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : h.kind === "concreteDivision" ? divisionHistoryLine(h) : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>
           </div>
-          {h.status === "applied" && h.kind !== "rows" && (
+          {h.status === "applied" && h.kind !== "rows" && !divisionRevertRetired(h) && (
             <button onClick={() => onRevert(h)} disabled={!!busy}
               style={{ ...bGhost, padding: "6px 10px", fontSize: ".75rem", opacity: busy ? .5 : 1 }}>Revert</button>
           )}
@@ -1712,6 +1727,54 @@ function History({ entries, onRevert, busy }) {
 }
 
 export { defaultMinQty };
+
+// A division history entry in one line. Older entries record the Hub 3 keep
+// switch; the 12 Nov 2026 entry and later record the shop keep only.
+export function divisionHistoryLine(h) {
+  const legs = (p) => (p && typeof p === "object" ? Object.keys(p).sort().join("+") : "off");
+  if (h?.after === null && h?.before) return `${legs(h.before)} -> division off`;
+  if (h?.before?.hub3Keep || h?.after?.hub3Keep) {
+    if (!h?.after?.hub3Keep) return `${legs(h.before)} -> ${legs(h.after)} (Hub 3 keep removed)`;
+    return `Hub 3 keep ${h.before?.hub3Keep?.on ? "on" : "off"} -> ${h.after?.hub3Keep?.on ? "on" : "off"}`;
+  }
+  const shop = (p) => (p?.shopOnly ? `${p.shopOnly.perSize}/${p.shopOnly.oneSize}` : "off");
+  return `shop keep ${shop(h?.before)} -> ${shop(h?.after)}`;
+}
+
+// A division entry whose revert would write back the retired Hub 3 fields
+// (fromHub3 / hub3Keep): the server refuses that shape since 12 Nov 2026, so
+// the screen offers no Revert for it rather than a generic error.
+export function divisionRevertRetired(h) {
+  if (h?.kind !== "concreteDivision") return false;
+  const b = h.before;
+  return !!(b && typeof b === "object" && ("fromHub3" in b || "hub3Keep" in b));
+}
+
+// ── THE CONCRETE DIVISION ────────────────────────────────────────────────────
+// Everything that is not footwear at Pine and Concrete: kept in the shop, from
+// Central (Junid, 12 Nov 2026). Hub 3 holds footwear only, so it has no row
+// here and there is no switch. Read-only: the numbers are Junid's.
+export function ConcreteDivisionPanel({ policy, keeps = null }) {
+  const shop = policy?.shopOnly || {};
+  return (
+    <div data-concrete-division-panel style={{ ...GLASS, padding: ".9rem 1rem", marginBottom: "1rem" }}>
+      <div style={{ fontWeight: 700, color: "#fff", marginBottom: ".3rem" }}>Concrete division — everything except footwear</div>
+      <div style={{ color: GRAY, fontSize: ".85rem", marginTop: ".25rem" }}>
+        <b style={{ color: "#fff" }}>Kept in the shop, from Central:</b> {shop.perSize ?? "—"} per size, {shop.oneSize ?? "—"} per design with no size. Pine and Concrete. No perfume at Concrete.
+      </div>
+      <div data-hub3-footwear-only style={{ color: GRAY, fontSize: ".85rem", marginTop: ".25rem" }}>
+        <b style={{ color: "#fff" }}>Hub 3:</b> footwear only. Its sneakers are on the footwear policy.
+      </div>
+      {keeps && (
+        <div data-division-keeps style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginTop: ".6rem" }}>
+          {[["concrete", "Concrete keeps"], ["marathon-pine", "Pine keeps"]].map(([loc, label]) => (
+            <Tile key={loc} label={label} value={`${keeps[loc]?.products ?? 0} product${keeps[loc]?.products === 1 ? "" : "s"} · ${keeps[loc]?.cells ?? 0} sizes`} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── CENTRAL-FED CLOTHING PANEL ───────────────────────────────────────────────
 // "Concrete — clothing kept in the shop": N of every size the product has,

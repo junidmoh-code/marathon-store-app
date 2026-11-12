@@ -28,6 +28,9 @@
 //   · nothing is floated. Registration never creates spendable money: Junid
 //     floats by hand as before, or the till uses the bank's record if it
 //     arrived first. The approval is a LEDGER entry, optional and separate.
+//     Its status "used" is the HOLD on the bank's notice, NOT a consumption
+//     (Junid, 9 Nov 2026): a float of the same money stays usable, and spends
+//     the payment exactly once (eft-manual.cjs isProofLedger).
 //
 // WHAT A PROOF MAY NOT DO: if the bank's own notification is already in the
 // pool unused, the proof is refused with the record's key ("use that one");
@@ -52,10 +55,11 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
-const { clip, redactAccountDigits, parseBankTimestamp, sastDate } = require("./eft-text.cjs");
-const { paymentFingerprint, syntheticIdentityOf } = require("./eft-fingerprint.cjs");
+const { clip, redactAccountDigits, parseBankTimestamp, sastDate, settlementDateVerdict } = require("./eft-text.cjs");
+const { paymentFingerprint, syntheticIdentityOf, bankTransactionIdOf } = require("./eft-fingerprint.cjs");
 const { EFT_READERS } = require("./eft-banks.cjs");
 const { markUsedOutsidePosDecision } = require("./eft-settle.cjs");
+const { isManualEntry } = require("./eft-manual.cjs");
 
 const MANUAL_APPROVED_BY = "Junid";
 const MANUAL_APPROVED_LOG_PATH = "eft_manual_approvals";
@@ -176,7 +180,7 @@ function keyedDestinationOf(accountTail, allowedAccounts) {
  * reader would have produced — so proofIdentityOf builds the same identity.
  *   bank         one of the reader ids (standardbank, fnb, capitec, absa, nedbank)
  *   amountCents  positive integer
- *   paymentDate  "YYYY-MM-DD", the bank's payment day (SAST), not in the future
+ *   paymentDate  "YYYY-MM-DD", the bank's payment day (SAST), not beyond the next business day
  *   reference    the payer's reference, as the proof prints it (may be empty
  *                only on Absa without a transaction id: a payer who typed
  *                none still paid once, and the synthetic identity allows it)
@@ -205,7 +209,10 @@ function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
   const bankTs = /^\d{4}-\d{2}-\d{2}$/.test(date) ? parseBankTimestamp(date) : null;
   if (!Number.isInteger(bankTs)) return { ok: false, code: "bad-date", message: "Type the payment date the proof shows, as YYYY-MM-DD." };
   if (!Number.isInteger(now)) return { ok: false, code: "no-clock", message: "The server clock is missing — not registered." };
-  if (date > sastDate(now)) return { ok: false, code: "bad-date", message: "The payment date is in the future — check the date on the proof." };
+  // Next-business-day settlement (7 Nov 2026), as the poller judges a bank
+  // notice: a weekend payment dated Monday is not "in the future".
+  const dated = settlementDateVerdict(bankTs, now);
+  if (!dated.ok) return { ok: false, code: "bad-date", message: `${dated.reason} Check the date on the proof.` };
   if (now - bankTs > KEYED_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) return { ok: false, code: "bad-date", message: "The payment date is more than a year ago — check the date on the proof." };
   const reference = typeof d.reference === "string" ? d.reference.trim() : d.reference == null ? "" : null;
   const absaNoTxn = bank === "absa" && (d.bankRef == null || (typeof d.bankRef === "string" && d.bankRef.trim() === ""));
@@ -373,32 +380,98 @@ function approvedClaimDecision({ approvedKey, claim, holderRecord, now = null })
 
 /**
  * SETTLE-TIME: the record about to be spent is the bank's record of money
- * Junid approved from its proof — matched NOT by identity (the proof and the
- * emailed notice can be different documents: one may print the transaction
- * number the other leaves blank, or format the payer differently, so their
- * fingerprints can differ) but the way the manual twin is matched: same
- * amount, same normalised reference, and the bank dates it on or after the
- * day of the approval's own bank date (a payment from last week with the
- * same reference and amount is a different payment). Refused: the money was
- * settled under the approval. One sentence, no provenance, for the till
- * (Junid, 20 Oct 2026).
+ * Junid approved from its proof. The fingerprint claim already shuts the door
+ * when both documents yield the same fingerprint; this catches the same money
+ * whose two documents fingerprint DIFFERENTLY (one prints the transaction
+ * number the other leaves blank, or formats it differently).
+ *
+ * KEYED ON THE PAYMENT'S IDENTITY, NOT ITS REFERENCE (7 Nov 2026). It used to
+ * match same amount + same reference with no end date, so one approval
+ * blocked every later payment a repeat customer made under the same reference
+ * and amount. Now:
+ *   · the record being spent carries its OWN bank transaction id → a twin
+ *     only when the approval carries the SAME id (normalised). A different
+ *     id, or an approval with none, is another payment, whatever reference
+ *     and amount they share (Junid, 7 Nov 2026: the transaction number is
+ *     the identity; reference + amount never blocks a payment that has one).
+ *     (A manual entry's MANUAL-… id is not a bank id: it never decides.)
+ *   · otherwise (the record has none) → the full identity: same amount, same
+ *     reference, the record dated from the day before the proof's to three
+ *     days after (transaction vs clearing date), and —
+ *     where both documents print them — the same payer (however formatted:
+ *     "S MAISTRY" is "MR S MAISTRY") and the same destination account.
+ * Refused: the money was settled under the approval. One sentence, no
+ * provenance, for the till (Junid, 20 Oct 2026).
  * @returns {{ok:true}|{ok:false, code:string, message:string}}
  */
-const normaliseRef = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const normaliseText = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 const DAY_MS = 24 * 60 * 60 * 1000;
+const PROOF_CLEARING_DAYS = 3;
+const paidDayOf = (r, fallback) => {
+  const t = Number.isInteger(r?.bankTs) ? r.bankTs : fallback;
+  return Number.isInteger(t) ? sastDate(t) : null;
+};
+/** A real bank transaction id — never a manual entry's synthetic MANUAL-… one. */
+const bankIdOf = bankTransactionIdOf;
+/** The same payer however the two documents print it: "S MAISTRY" is "MR S MAISTRY". */
+function samePayer(a, b) {
+  const wa = String(a ?? "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  const wb = String(b ?? "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  if (!wa.length || !wb.length) return true; // one side prints none: not evidence of another payer
+  const [short, long] = wa.length <= wb.length ? [wa, wb] : [wb, wa];
+  return short.every((w) => long.includes(w));
+}
+function isApprovedTwin(record, approved) {
+  if (approved.amountCents !== record.amountCents) return false;
+  const idA = bankIdOf(record);
+  const idB = bankIdOf(approved);
+  // The same reader prints its ids one way: two different ids are two
+  // payments. Different readers (a proof from one bank's app, the notice from
+  // another's mail) may print different ids for one payment — the identity
+  // below decides.
+  // A PAYMENT WITH ITS OWN TRANSACTION NUMBER is judged on that number alone
+  // (Junid, 7 Nov 2026): never refused because an approval shares its
+  // reference and amount. The same number is the fingerprint claim's job —
+  // the approval claimed it spent, so the bank's copy is held at ingest and
+  // refused at the settle (duplicate-used). Only a record with NO number (a
+  // manual entry, an Absa synthetic identity) falls to the identity below.
+  if (idA) return idA === idB;
+  const ref = normaliseText(record.reference);
+  if (!ref || normaliseText(approved.reference) !== ref) return false;
+  // The record dated from the day BEFORE the proof's to three days after:
+  // one document may print the transaction date, the other the processing
+  // or clearing date (a weekend between them), or the payment fell near
+  // midnight. Reference, amount, payer and account still gate it.
+  const dayA = paidDayOf(record, Number.isInteger(record.receivedAt) ? record.receivedAt : record.at);
+  const dayB = paidDayOf(approved, approved.manualApproved?.at);
+  // A day that cannot be read on either side stays conservative (a twin).
+  if (dayA && dayB) {
+    const gap = Math.round((Date.parse(dayA) - Date.parse(dayB)) / DAY_MS);
+    if (gap < -1 || gap > PROOF_CLEARING_DAYS) return false;
+  }
+  if (!samePayer(record.payer, approved.payer)) return false;
+  const tailA = String(record.accountTail ?? "").replace(/\D/g, "");
+  const tailB = String(approved.accountTail ?? "").replace(/\D/g, "");
+  if (tailA.length >= 4 && tailB.length >= 4 && tailA.slice(-4) !== tailB.slice(-4)) return false;
+  return true;
+}
 function approvedTwinSettleCheck({ poolKey, record, siblings }) {
   if (!record || record.outcome !== "recorded" || isManualApproved(record)) return { ok: true };
-  const ref = normaliseRef(record.reference);
-  if (!ref) return { ok: true };
-  const paidAt = Number.isInteger(record.bankTs) ? record.bankTs : Number.isInteger(record.receivedAt) ? record.receivedAt : record.at;
+  // A FLOAT IS THE MONEY THE PROOF VOUCHES FOR, not a copy of it (Junid, 9 Nov
+  // 2026): the approval holds the bank's notice back and leaves the float
+  // spendable. Whether the proof has been spent by ANOTHER float is judged in
+  // eft-manual.cjs (manualTwinSettleCheck). Bank records are still checked here.
+  if (isManualEntry(record)) return { ok: true };
   for (const [key, other] of siblings ?? []) {
     if (key === poolKey || !isManualApproved(other)) continue;
-    if (other.amountCents !== record.amountCents || normaliseRef(other.reference) !== ref) continue;
-    const approvedPaidAt = Number.isInteger(other.bankTs) ? other.bankTs : other.manualApproved.at;
-    if (Number.isInteger(paidAt) && Number.isInteger(approvedPaidAt) && paidAt < approvedPaidAt - DAY_MS) continue;
+    // Released by the owner from a LINKED hold against THIS approval
+    // (eft-linked-copies.cjs): he checked the statement — separate money.
+    // Any other approval is still checked.
+    if (record.releasedFromHold && record.linkedHold && record.duplicateOf === key) continue;
+    if (!isApprovedTwin(record, other)) continue;
     return {
       ok: false, code: "twin-used",
-      message: "This payment — the same reference and amount — was already used. It cannot be used again. If the customer really paid twice, ask Junid.",
+      message: "This payment was already used. It cannot be used again. If the customer really paid twice, ask Junid.",
     };
   }
   return { ok: true };

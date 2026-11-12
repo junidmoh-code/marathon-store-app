@@ -23,18 +23,33 @@
 //
 // No whole-node reads: orders by exact id or by an indexed status query; stock
 // and holds by exact cell path; the variant map by exact pid.
+//
+// AND NO ORDER READ TWICE IN A TICK FOR NOTHING (cost watch, 11 Nov 2026). The
+// profiler put this poller's share at ~150 MB a day for ~20 open orders: each
+// open order was downloaded up to four times a pass (the status query, the
+// maintain transaction, a re-read after that transaction declined to write,
+// and a "fresh" re-read for escalation), and the attention mailer downloaded
+// every order with an open attention (25 long-mailed ones, 183 KB) every two
+// minutes to find nothing. What changed, and what did not:
+//   · an order the maintain transaction just handed back is USED, not read
+//     again (the transaction's snapshot is the server's value);
+//   · the attention mailer looks, every tick, at the orders this tick handled
+//     (one exact /attention read each) and runs the indexed attentionOpen
+//     query on a 10-minute cadence (ATTENTION_SWEEP_MS) for everything else.
+// What a tick detects, holds, raises, ships and mails is unchanged; the one
+// timing difference is spelled out at ATTENTION_SWEEP_MS.
 import {
   ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_ORDERS_CONFIG_PATH, PACKING_STORE, orderLabel,
   ORDER_STATUS, LINE_STATUS, ATTENTION_KIND, COURIER_COMPANY, HOLDING_STATUSES, TERMINAL_STATUSES, deriveOrderStatus,
 } from "../../../src/utils/onlineOrders.js";
 import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "../../../src/utils/sizeKey.js";
 import { productIsFootwear } from "../../../src/utils/footwearLine.js";
-import { availableAt, routeLines, ROUTED_LOCATIONS } from "./routing.mjs";
+import { availableAt, routeLines, ROUTED_LOCATIONS, STRIP_SHOPS } from "./routing.mjs";
 import {
   isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
-import { fetchOrdersUpdatedSince, fetchOrderById } from "./shopifyOrders.mjs";
+import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey } from "./shipping.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
@@ -45,7 +60,8 @@ import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 import { costAlertMail, costAlertThreshold } from "../../shipping/costAlert.mjs";
 import { applySwapRequests } from "./swapRequests.mjs";
-import { applyOrderNowRequests } from "./orderNowRequests.mjs";
+import { applyOrderNowRequests, clearAttentionIfSettled } from "./orderNowRequests.mjs";
+import { applyWaitingReroutes } from "./waitingReroute.mjs";
 
 export const META_PATH = "online_orders_meta";
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -54,6 +70,20 @@ export const DIRTY_PATH = "shopify_inventory_dirty";
 // on the order id).
 export const CURSOR_OVERLAP_MS = 10 * 60 * 1000;
 export const MAX_FULFIL_ATTEMPTS_SHOWN = 99;
+// How often the attention mailer runs the indexed attentionOpen query over ALL
+// orders. Between sweeps it reads only the orders the tick handled — which is
+// every open order (the KEEP pass), every order Shopify changed (PULL) and
+// every order shipped (SHIP) — so an attention this poller raises, or one
+// raised on any open order by anyone (the display-check Function sets the order
+// needs_attention, an open status), is still emailed in the SAME tick.
+//
+// The one thing that waits: an attention some OTHER writer puts on an order
+// that is already closed (packed / cancelled / handled elsewhere) and that this
+// tick has no other reason to touch. No writer does that today (the Function
+// skips closed orders; Jamie and the POS only clear attentions). If one ever
+// does, Junid's email goes out within 10 minutes instead of 2. Nothing a
+// customer or a till waits on reads this email.
+export const ATTENTION_SWEEP_MS = 10 * 60 * 1000;
 
 const isTerminal = (s) => TERMINAL_STATUSES.includes(s);
 
@@ -78,7 +108,7 @@ export async function runOrdersPoll(deps) {
   const { db, graphql, log = () => {} } = deps;
   const get = async (path) => (await db.ref(path).get()).val();
   const now = await deps.nowMs();
-  const ctx = { ...deps, get, now, summary: { ingested: 0, cancelled: 0, flagged: 0, kept: 0, entries: 0, holds: 0, fulfilled: 0, fulfilFailed: 0, mailed: 0, errors: [], missingIndex: new Set() } };
+  const ctx = { ...deps, get, now, touched: new Set(), summary: { ingested: 0, cancelled: 0, flagged: 0, kept: 0, entries: 0, holds: 0, fulfilled: 0, fulfilFailed: 0, mailed: 0, errors: [], missingIndex: new Set() } };
   ctx.enabled = (await get(`${ONLINE_ORDERS_CONFIG_PATH}/enabled`)) === true;
   // Escalation (escalate.mjs) raises requests staff see: only with the feeds
   // on, and never while Junid's kill switch says off.
@@ -86,6 +116,7 @@ export async function runOrdersPoll(deps) {
 
   // ── 1. PULL ────────────────────────────────────────────────────────────────
   const meta = (await get(META_PATH)) || {};
+  ctx.meta = meta;
   // `pretendGoLiveMs` is the dry run's lens only (orders-poll.mjs refuses it
   // with --commit): it shows what older orders WOULD route to without moving
   // the real line.
@@ -146,6 +177,7 @@ export async function runOrdersPoll(deps) {
     const found = await queryEq(ctx, "status", status);
     for (const [id, order0] of Object.entries(found)) {
       kept.add(id);
+      ctx.touched.add(id);
       let order = order0;
       try {
         // The POS "Replace" (swapRequests.mjs) first: the rest of the pass
@@ -159,16 +191,27 @@ export async function runOrdersPoll(deps) {
         if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor, resolveVariant })) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
+        // A line WAITING ON REFILL (nowhere on the route had it) routes itself
+        // the tick its stock lands (waitingReroute.mjs, Junid 12 Nov 2026). It
+        // raises nothing; the refill scan alone brings stock in.
+        if (await applyWaitingReroutes(ctx, id, order, { availabilityFor, resolveVariant })) {
+          await clearAttentionIfSettled(ctx, id);
+          order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+        }
         // Escalation raises requests staff see, so only with the switch on.
         if (ctx.escalate && await escalateOrder(ctx, id, order, escalationHelpers(ctx))) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
-        await maintainOrder(ctx, id, order);
+        const after = await maintainOrder(ctx, id, order);
         // The keep step itself may just have turned a line no_stock (a hub
         // marked its order Out of Stock): escalate it in THIS tick, before the
         // attention mailer below would email Junid about it.
         if (ctx.escalate) {
-          const fresh = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+          // The order as maintainOrder's own transaction left it (the server's
+          // value, handed back by that transaction) — not a second download of
+          // the same record a few milliseconds later. Read exactly only when
+          // maintainOrder had nothing to hand back.
+          const fresh = after ?? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
           if (fresh && linesOf(fresh).some(needsEscalationStart) && await escalateOrder(ctx, id, fresh, escalationHelpers(ctx))) {
             await maintainOrder(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`));
           }
@@ -322,7 +365,7 @@ async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}) {
     // A shop whose Display Checks are switched off has no feed to show the
     // entry on and cannot close it (completeDisplayCheck refuses), so it is
     // not a place a line can come from (PR #775 spec review).
-    for (const shop of ["marathon-pe", "trophy"]) if (!(await displayFeedOn(ctx, shop))) free[shop] = 0;
+    for (const shop of STRIP_SHOPS) if (!(await displayFeedOn(ctx, shop))) free[shop] = 0;
     // Units THIS order's other lines already hold there (a re-route excludes
     // the order's own rows, so its untouched lines are subtracted here).
     for (const [loc, q] of Object.entries(ownOther[key] || {})) free[loc] = Math.max(0, (free[loc] || 0) - q);
@@ -331,8 +374,10 @@ async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}) {
   return out;
 }
 
-// The shop's own Display Checks switch, as the feed and the callable judge it
-// (functions/displayChecks lib.cjs isTriggerStoreEnabled), injected by the CLI.
+// Can this shop's website strip take a line? (functions/displayChecks lib.cjs
+// isWebsiteStripEnabled — on unless the store's Display Checks are switched
+// OFF explicitly; a not-live store like Pine still has its strip), injected by
+// the CLI.
 // Asked once per tick per shop. No judge injected (tests) → on.
 async function displayFeedOn(ctx, shop) {
   ctx.displayFeed ||= {};
@@ -343,6 +388,7 @@ async function displayFeedOn(ctx, shop) {
 // ── Cancellation ─────────────────────────────────────────────────────────────
 async function cancelOrder(ctx, id, node) {
   const { db, now, log } = ctx;
+  ctx.touched?.add(id);
   const res = await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
     if (cur == null) return null;
     if (cur.status === ORDER_STATUS.CANCELLED) return undefined;
@@ -368,6 +414,9 @@ async function cancelOrder(ctx, id, node) {
     };
   });
   const order = res.snapshot.val();
+  // Already flagged on an earlier tick: that tick's second-parcel clean-up may have failed part-way, so it runs again
+  // (idempotent: a cancelled record is left as it is) — CodeRabbit on #901.
+  if (!res.committed && order?.status === ORDER_STATUS.PACKED && order.cancelledAfterPack) { await cancelReships(ctx, id, node); return; }
   if (!res.committed || !order) return;
   if (order.status === ORDER_STATUS.PACKED) {
     ctx.summary.flagged++;
@@ -377,6 +426,7 @@ async function cancelOrder(ctx, id, node) {
     await syncHolds(ctx, id, order);
     await dropEscalations(ctx, id, order);
     for (const fid of Object.keys(order.followUps || {})) await cancelOrder(ctx, fid, node);
+    await cancelReships(ctx, id, node);
     return;
   }
   ctx.summary.cancelled++;
@@ -388,6 +438,17 @@ async function cancelOrder(ctx, id, node) {
   // order: cancelled with it.
   for (const fid of Object.keys(order.followUps || {})) {
     await cancelOrder(ctx, fid, node);
+  }
+}
+
+// A second parcel not packed yet (docs/ONLINE-ORDERS.md "Second parcel"; architect review 6) stops with its order.
+// Exact reads of its keys, never a query: the parent names none of them (it is never written for one).
+async function cancelReships(ctx, id, node) {
+  for (let n = 1; n <= RESHIP_KEYS_CHECKED; n++) {
+    const rid = `${id}r${n}`;
+    const st = await ctx.get(`${ONLINE_ORDERS_PATH}/${rid}/status`);
+    if (st == null) break;
+    if (HOLDING_STATUSES.includes(st)) await cancelOrder(ctx, rid, node);
   }
 }
 
@@ -420,6 +481,7 @@ async function keepPackedEscalations(ctx, kept) {
   for (const id of ids) {
     try {
       assertSafeSegment(id, "order id");
+      ctx.touched?.add(id);
       const order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
       if (!order) { for (const [k, r] of Object.entries(reg)) if (r?.orderId === id) await ctx.db.ref(`${ESCALATIONS_PATH}/${k}`).set(null); continue; }
       if (order.status !== ORDER_STATUS.PACKED) continue;
@@ -465,6 +527,7 @@ async function cancelEntries(ctx, order) {
   // A pair the hub already SENT is on its way to (or at) Marathon PE while the
   // hub still counts it: someone must return it. Junid is told.
   if (sent.length && order?.key) {
+    ctx.touched?.add(order.key);
     await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${order.key}`).update({
       attention: { kind: ATTENTION_KIND.CANCELLED_AFTER_PACK, reason: `Cancelled on Shopify after the hub sent it (${sent.map((s) => `${s.key} from ${s.hub ?? "the hub"}`).join(", ")}) — return it to the hub`, at: ctx.now },
       attentionOpen: true,
@@ -519,7 +582,8 @@ async function cancelEntry(ctx, entryKey) {
 // ── 2. Keeping an open order true ────────────────────────────────────────────
 async function maintainOrder(ctx, id, order) {
   const { db, now, enabled } = ctx;
-  if (!order || isTerminal(order.status)) return;
+  ctx.touched?.add(id);
+  if (!order || isTerminal(order.status)) return null;
   const before = linesOf(order);
 
   // (a) RE-ROUTE what Resolve sent back. The first piece keeps the line's
@@ -633,13 +697,26 @@ async function maintainOrder(ctx, id, order) {
     next.updatedAt = now;
     return next;
   });
-  const committed = res.committed ? res.snapshot.val() : await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+  // COMMITTED OR NOT, THE TRANSACTION HANDS BACK THE SERVER'S ORDER. A
+  // transaction that declines (returns undefined — "nothing to say" on a quiet
+  // order, which is nearly every order on nearly every tick) completes with
+  // the value it was last run on, and that run was against the server's value:
+  // the cold null pass returns null, never undefined, so an abort is
+  // unreachable before the server has answered. Reading the order again here
+  // downloaded the same record a second time per open order per tick. The
+  // exact read stays as the fallback for a snapshot that carries nothing.
+  const committed = res.committed
+    ? res.snapshot.val()
+    : (res.snapshot?.val?.() ?? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`));
   ctx.summary.entries += entryKeys.size;
   // (d) HOLDS follow the lines, whatever the commit did.
   await syncHolds(ctx, id, committed || order);
   // (e) THE PARCELS the POS shows before Pack — recomputed only when the lines
   // change. Best-effort: a parcel estimate never blocks the order.
   await refreshEstimate(ctx, id, committed || order);
+  // The order as this pass left it, for the caller's escalation check. null
+  // when the order is gone (the caller then reads exactly, as it always did).
+  return committed ?? null;
 }
 
 // → { entryKey, orderKeys? } — what the line's source records about its entry.
@@ -739,9 +816,16 @@ async function syncHolds(ctx, id, order) {
   ctx.summary.holds += touched.size;
 }
 
+// Second parcels looked for when a packed order is cancelled on Shopify (<id>r1, r2, …; they are made by hand, rarely).
+const RESHIP_KEYS_CHECKED = 3;
+
+// The Courier Guy's public tracking page for a waybill (the link the customer agent sends too).
+export const courierTrackUrl = (waybill) => `https://portal.thecourierguy.co.za/track?ref=${encodeURIComponent(String(waybill))}`;
+
 // ── 3. Shopify fulfilment after the pack ─────────────────────────────────────
 async function shipOrder(ctx, id, order) {
   const { db, now, log } = ctx;
+  ctx.touched?.add(id);
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
   // JUNID'S CONDITION HOLD (30 Oct 2026, scripts/shipping/exchangeReturn.mjs): he told Jimmy the exchange's returned
   // item is NOT in good condition ("nothing ships"). The replacement is not booked while the hold stands: the order
@@ -863,6 +947,18 @@ async function shipOrder(ctx, id, order) {
   let out;
   if (noShopify) {
     out = exchange ? { ok: true, noShopify: true } : { ok: false, error: "the order carries no shopifyGid" };
+  } else if (order.reship && typeof order.reship === "object") {
+    // A SECOND PARCEL (docs/ONLINE-ORDERS.md "Second parcel"): its items are already fulfilled on Shopify with the
+    // first parcel, so nothing is fulfilled — the new waybill is added to the order's tracking (no Shopify email;
+    // the customer agent tells the customer). With live off there is no waybill: the dry run is recorded, as for any order.
+    try {
+      out = waybill
+        ? await addTrackingToOrder(ctx.graphql, { orderGid: order.shopifyGid, number: waybill, url: courierTrackUrl(waybill), company: COURIER_COMPANY, fill: courierTrackUrl })
+        : { ok: true, reshipNote: "no waybill (the live switch was off) — Shopify not changed" };
+      if (out.ok) out = { ...out, reship: true };
+    } catch (e) {
+      out = { ok: false, error: String(e?.message || e) };
+    }
   } else {
     try {
       // The Courier Guy waybill is the tracking number Shopify sends the
@@ -888,6 +984,7 @@ async function shipOrder(ctx, id, order) {
       "fulfil/error": null,
       ...(out.alreadyDone ? { "fulfil/alreadyDone": true } : {}),
       ...(out.noShopify ? { "fulfil/note": "No Shopify order (online exchange) — finished without Shopify" } : {}),
+      ...(out.reship ? { "fulfil/note": out.reshipNote || (out.alreadyDone ? `Second parcel: waybill ${waybill} was already on the Shopify order's tracking` : `Second parcel: waybill ${waybill} added to the Shopify order's tracking (no Shopify email)`) } : {}),
       // A fulfilment that failed before and has now landed takes its
       // attention with it, or it would sit in Settings for ever.
       ...([ATTENTION_KIND.FULFIL_FAILED, ATTENTION_KIND.COURIER_FAILED].includes(order.attention?.kind) ? { attention: null, attentionOpen: null } : {}),
@@ -902,6 +999,8 @@ async function shipOrder(ctx, id, order) {
     for (const pid of new Set(swapped.filter(Boolean))) await db.ref(`${DIRTY_PATH}/${pid}`).set(ctx.increment(1));
     log(out.noShopify
       ? `  ✓ ${orderLabel(order)}: exchange shipped${waybill ? ` (waybill ${waybill})` : ""} — no Shopify order, finished without Shopify`
+      : out.reship
+      ? `  ✓ ${orderLabel(order)}: second parcel shipped${waybill ? ` (waybill ${waybill}, added to the Shopify order's tracking)` : " (no waybill: live off)"}`
       : `  ✓ ${orderLabel(order)}: fulfilled on Shopify${out.alreadyDone ? " (it already was)" : ", customer notified"}`);
     return;
   }
@@ -922,17 +1021,76 @@ async function shipOrder(ctx, id, order) {
 }
 
 // ── 4. One email per attention ───────────────────────────────────────────────
+// WHICH ORDERS ARE LOOKED AT (ATTENTION_SWEEP_MS has the reasoning). Every
+// tick: the orders this tick handled, one exact /attention read each (a couple
+// of hundred bytes, or nothing), and the whole order only for one that really
+// has an unmailed attention. Every 10 minutes: the indexed attentionOpen query
+// over all orders, as every tick used to run it. The sweep is stamped done only
+// when it left nothing unsent, so "retried next tick" stays true: an email
+// that could not be sent keeps the sweep due until it has gone.
+async function attentionOnTouched(ctx) {
+  const open = {};
+  for (const id of ctx.touched ?? []) {
+    const attention = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}/attention`);
+    if (!attention || attention.mailedAt) continue;
+    const order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+    if (order?.attentionOpen === true) open[id] = order;
+  }
+  return open;
+}
+
 async function mailAttention(ctx) {
   const { db, send, log } = ctx;
-  const open = await queryEq(ctx, "attentionOpen", true);
+  const sweptAt = Number(ctx.meta?.attentionSweepAt) || 0;
+  // A stamp from the future (a restored node, a stepped clock) is not a reason
+  // to stop sweeping: it counts as never swept.
+  const sweepDue = !(sweptAt > 0 && sweptAt <= ctx.now && ctx.now - sweptAt < ATTENTION_SWEEP_MS);
+  let open = null;
+  if (sweepDue) {
+    open = await queryEq(ctx, "attentionOpen", true);
+    // No index pasted: the query answered nothing, which is not "no attention".
+    if (ctx.summary.missingIndex.has("attentionOpen")) open = null;
+  }
+  const swept = open !== null;
+  if (!swept) open = await attentionOnTouched(ctx);
   const unmailed = Object.entries(open).filter(([, o]) => o?.attention && !o.attention.mailedAt);
-  if (!unmailed.length) return;
-  if (!send) { log(`  ⚠ ${unmailed.length} attention email(s) not sent — no mail sender on this machine; retried next tick`); return; }
+  // `clean` is set only when every mail that was due has gone. A throw part-way
+  // through the sends (architect review, 11 Nov) used to leave `unsent` at 0
+  // and stamp the sweep as done, hiding an unmailed closed order for ten
+  // minutes; now anything but a normal, complete return leaves the sweep due.
+  let clean = false;
+  try {
+    if (!unmailed.length) { clean = true; return; }
+    if (!send) { log(`  ⚠ ${unmailed.length} attention email(s) not sent — no mail sender on this machine; retried next tick`); return; }
+    clean = (await sendAttentionMails(ctx, unmailed)) === 0;
+  } finally {
+    // An email owed on an order this tick handled, on a tick that did not
+    // sweep (CodeRabbit, PR #891): the next tick may not handle that order, so
+    // the sweep is made due now and the retry comes next tick, not in ten
+    // minutes. 0 = never swept.
+    if (!swept && !clean && unmailed.length) {
+      try { await db.ref(`${META_PATH}/attentionSweepAt`).set(0); }
+      catch (err) { log(`  ⚠ attentionSweepAt not cleared (${err?.message || err})`); }
+    }
+    if (swept && clean) {
+      // A lost stamp costs one extra sweep. It must never replace an error in
+      // flight or stop the rest of the tick.
+      try { await db.ref(`${META_PATH}/attentionSweepAt`).set(ctx.now); }
+      catch (err) { log(`  ⚠ attentionSweepAt not written (${err?.message || err}); the sweep runs again next tick`); }
+    }
+  }
+}
+
+// → how many could NOT be sent (they are retried next tick).
+async function sendAttentionMails(ctx, unmailed) {
+  const { db, send, log } = ctx;
+  let unsent = 0;
   for (const [id, order] of unmailed) {
     const at = order.attention.at;
     try {
       await send(attentionMail(order));
     } catch (e) {
+      unsent++;
       log(`  ✗ ${orderLabel(order)}: attention email not sent (${String(e?.message || e)}) — retried next tick`);
       continue;
     }
@@ -945,6 +1103,7 @@ async function mailAttention(ctx) {
     ctx.summary.mailed++;
     log(`  ✉ ${orderLabel(order)}: Junid emailed (${order.attention.kind})`);
   }
+  return unsent;
 }
 
 // ── The expensive-waybill email (Junid, 30 Oct 2026) ─────────────────────────

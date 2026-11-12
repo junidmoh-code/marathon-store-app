@@ -102,9 +102,9 @@ export async function clearWallRecord({ store, productId }) {
  * "NOT ON THE WALL": clear the record, then raise ONE display refill task.
  *
  * @param orders   the /orders the screen streams — the ordinary open-request guard
- * @param store    marathon-pe | trophy
+ * @param store    the shop whose wall was walked
  * @param product  the catalogue record ({ id, name, hubs, photoUrl, ... })
- * @param hubData  { hub1: { cells, promised, ready }, hub2: {...} }
+ * @param hubData  { [hub]: { cells, promised, ready } } for the wall's hubs
  * → { ok: true, orderId, hub, order }
  *   | { ok: false, already: true, orderId?, message }
  *   | { ok: false, noStock: true, message }

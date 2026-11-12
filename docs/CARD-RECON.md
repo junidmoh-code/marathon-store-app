@@ -523,20 +523,121 @@ non-FNB terminals in the estate. Registered by
   the evidence (the TID each slip photo printed; each slip total against both
   tills' POS card legs) and gives a verdict. A swap is entered as a **Move**
   in Card machines → settings, from when it took effect.
-* **No Standard Bank report reader exists yet** — none has arrived. A
-  Standard Bank report (PDF, or an email body from standardbank.co.za) is
-  recognised and refused as *"Standard Bank report — reader not built yet"*
-  with its PDF/lines kept in `card_batch_intake_evidence`; parser v4. The
-  reader, when built from the first real report, bumps `PARSER_VERSION`,
-  which re-runs those refusals still inside the poller's 14-day window (older
-  ones: `scripts/cardrecon/retry-intake-message.mjs`).
-* **Until then, capture is `typed`**: the Card Slip screen takes a photo AND
-  the typed card total. The typed total is the record and reconciles against
-  the till's POS card legs (R5 tolerance, R20 over 7 days, per till); the
-  photo is read in the background with a Standard Bank prompt only to flag a
-  different total or TID. Switch the rows to "Both" once the reader ships.
+* **Superseded 7 Nov 2026 — see the next section.** Until then no Standard
+  Bank report reader existed and capture was `typed` (the typed total was the
+  record, the photo only a check). Now the photographed end-of-day report is
+  read and IS the record; the stored `capture: "typed"` on these rows is
+  ignored (the bank decides). An emailed Standard Bank PDF is still recognised
+  and refused as *"Standard Bank report — reader not built yet"* with evidence
+  kept — SimplyBLU does not email these reports, so none is expected.
 
-## The SimplyBLU portal is the record for Standard Bank tills (from 3 Nov 2026)
+## Standard Bank tills are photographed — the read report is the record (from 7 Nov 2026)
+
+> **Concrete is photographed too — from the evening of 7 Nov 2026.** Junid:
+> "If SimplyBlu only offers a portal (no email) … make the in-app photo/typed
+> path the primary route for Concrete until an automated export exists." It
+> does: no Standard Bank/SimplyBLU batch report has ever reached marathon6631@,
+> SimplyBLU has no scheduled email of reports, and the portal's list holds only
+> payments started in the SimplyBLU app — on 7 Nov it showed **no transaction**
+> for Concrete while the POS took R19,890.00 by card on Concrete Till 1.
+> `scripts/cardrecon/apply-concrete-photo-primary-20261107.mjs` took
+> `record: "portal"` off both rows; the portal pull is a cross-check for them
+> now, as for Marathon and Trophy. The note below is history.
+>
+> **A TID line printed too faintly to read (7 Nov 2026, reader v2).** PE Till
+> 2's #564 (R71,015.00) was refused six times: the PAX left the MID/TID lines
+> almost blank. For a photo-primary Standard Bank till ONLY, and only when no
+> TID was read at all, the till is proven by its own chain
+> (`sequenceTidProof`, `lib/card-sb-photo.cjs`): a REAL report on that till
+> printed #N−1 and closed within 5 minutes of this one opening. The record
+> says so. Anything less refuses by name; a different TID is still the wrong
+> slip; FNB is never asked. Unread photos of the week were read again by
+> `scripts/cardrecon/reread-sb-unread-20261107.mjs`.
+>
+> *(History, morning of 7 Nov:)* **Concrete stays on the SimplyBLU portal** (Junid, 7 Nov 2026: "Concrete is
+> fine with SimplyBLU — only Marathon and Trophy"). A Standard Bank row with
+> `record: "portal"` (`isPortalRecordTerminal`) keeps the 3 Nov behaviour
+> exactly: the portal's day is the record, Amanda's slip (photo + typed total)
+> is held/kept beside it, and its stored `capture: "typed"` applies. Concrete
+> Till 1/2 carry it (`scripts/cardrecon/apply-concrete-portal-record-20261107.mjs`).
+> Everything below applies to Marathon PE Till 2 and Trophy Till 2.
+
+Junid, 7 Nov 2026: SimplyBLU does not email the Standard Bank machines' batch
+reports, and the portal's transaction list was not the till's money — merchant
+4977890 (Marathon PE Till 2, Trophy Till 2) showed **no rows at all** from 3
+Nov, so PE Till 2 was recorded R0.00 against R33,440 of card sales on 3 Nov,
+and Concrete fell short of the till on 3 and 6 Nov. So for **every till whose
+terminal's registry row says `bank: "standard-bank"`** (`isPhotoPrimary`,
+`lib/card-terminals.cjs` — the bank decides, never a list of tills; a stored
+`capture` is ignored):
+
+* **Staff (Card Slip screen):** "Photograph the end-of-day report" — one photo,
+  or up to six for a long roll — and an **optional** card total. "Sent — thank
+  you" only with the server's receipt; otherwise "Not sent — try again". No
+  figure or verdict is ever shown back.
+* **The read:** the photos are stored at once and read in the background
+  (`cardBatchReadJob`/`cardBatchReadRetry`) with the Standard Bank prompt, built
+  from Yasmin's real photos of 0000HP1X #556–#561 (the PAX prints the same
+  "Batch Report (#N)" blocks as an FNB speedpoint). The TID must be the till's
+  (O/0 and padding forgiven, another machine refused by name), the arithmetic
+  must add up (purchases + cash − refunds = TOTAL), and the record is
+  `capturedVia: "photo"` with `photoReport { bank, readerVersion, filing }`.
+* **A typed total** is a cross-check: `typedCheck { typedCents, readCents,
+  differs }` on the record and a warning when it differs — Junid's eyes only.
+* **The read fails:** with a typed total, that total is recorded (staff-typed)
+  with `photoRead.status: "unread"` and a `PHOTO NOT READ` warning; with none,
+  the day is Unread with `photoReceived: true` — "photo received — total
+  unreadable", never "awaiting a slip".
+* **Filing (`lib/card-sb-photo.cjs planSbFiling`) keeps the printed number.**
+  The portal numbered 3–6 Nov on from the last real batch, but PE Till 2 did
+  not settle on 4 Nov: its real #561 = 3 Nov, #562 = 3→5 Nov, #563 = 5→6 Nov,
+  against the portal's 561/562/563 = 3/4/5 Nov. A report takes over the
+  synthetic record (portal day, staff-typed total) holding **its own printed
+  number** when that day lies in its window (or the record is already
+  displaced), as a revision of that chain. Every **other** synthetic record of a
+  day the report covers (closed after the day the batch opened, up to the day
+  it closed) gets `displacedBy` — kept unchanged, skipped by every reader. A
+  printed number held by a synthetic record of a day **outside** the window is
+  never touched: the report is filed under the next free number with
+  `printedBatchNo`. A second photo of the same report is a duplicate.
+* **The typed fallback never doubles a day**: when the day already has a
+  record, the typed total is not recorded again.
+* **The portal becomes a cross-check** (`planPortalWrite` → `check`): a pull
+  never creates a record and never replaces one; it writes `portalCheck
+  { totalCents, txnCount, differsCents }` onto the record in force, and a day
+  with no record is "awaiting-photo" in `portal/days`. Portal records already
+  written (3–6 Nov) stay, and are revised by a later pull of their own day
+  until a photo takes the day over.
+* **FNB is untouched:** FNB tills keep the emailed path and the FNB prompt; the
+  real FNB corpus gives identical results.
+
+## Where a till's day comes from is per terminal (`source`, Junid, 8 Nov 2026)
+
+`source` on the `/config/cardTerminals` row decides, never the bank
+(`lib/card-terminals.cjs reportSource`; the POS and the store-app client mirror
+it):
+
+| `source` | Tills | Record | Asked of staff |
+|---|---|---|---|
+| `portal` | Concrete Till 1, Till 2 | The SimplyBLU pull (18:00 / 18:20 SAST) | Nothing. The slip screen says so and offers an optional backup. |
+| `photo` | Marathon PE Till 2, Trophy Till 2 | The photographed end-of-day report; the portal is only `portalCheck` | The report photo |
+| `email` (or absent on an FNB row) | FNB tills | The emailed report, unchanged | As before |
+
+A till's merchant being linked in SimplyBLU changes one field: `source` becomes
+`portal` on its row. A row with no `source` keeps its older meaning (FNB is
+email; Standard Bank is photo unless `record: "portal"`). `source` never moves
+an FNB row. Set by `scripts/cardrecon/apply-terminal-source-20261108.mjs`, which
+supersedes `apply-concrete-photo-primary-20261107.mjs` for Concrete.
+
+**A portal till shows "awaiting portal data" until the 18:20 pull, then the
+figure.** It also leaves the manager's capture screen: nothing is waited for there. If SimplyBLU lists nothing for a day the POS took card money, the
+record is R0.00, SHORT, and says in its warnings how much the POS took and that
+SimplyBLU lists none of it. **The portal's list can be incomplete**: it held no
+Concrete rows on 7 Nov against POS card sales, and 3 Nov fell R3,850 short. A
+short on a portal till may be SimplyBLU's list and not missing money, so check
+the printed report.
+
+## The SimplyBLU portal was the record for Standard Bank tills (3–6 Nov 2026; a cross-check from 7 Nov)
 
 Junid, 2 Nov 2026: from **3 Nov 2026** the Standard Bank tills take every card
 payment through the SimplyBLU app on the machine, so the **SimplyBLU portal**
@@ -1718,3 +1819,32 @@ and how to add marathon6631@gmail.com as the "notify by email" address.
 - **Kill switch:** `EFT_GUIDE_REPLY=off` (or `false`/`0`) in
   `~/marathon-store-app/.env`; unset, `on`, `true` or `1` is on. Any other
   value turns it OFF with a warning. A dry run never sends.
+
+## Concrete Till 1: what SimplyBLU does not hold (8 Nov 2026)
+
+Every SimplyBLU payment on 0000OF2Y from 30 Oct to 8 Nov was matched against
+Concrete Till 1's POS card legs by amount and time. Junid: the machine has only
+the SimplyBLU app, so a second payment app is not the explanation.
+
+Searched on 8 Nov, on both stores on the login: the Transactions page at every
+status (Pending, Failure and Error are empty), Orders, and every report in the
+Reports Centre. The portal's own list and the report agree (90 payments,
+numbered without a gap). Batch 9 (7 Nov) is the only machine batch number absent.
+
+- Not settlement: a payment shows within about 36 seconds of being taken, in
+  a batch still open.
+- Not date basis: reports file by the day taken, and no payment of 6 to 8 Nov is
+  unanswered by a POS sale that day.
+- Not a later upload so far: no row has ever arrived more than 36 seconds late.
+- Not another view: no store, terminal or status holds them.
+
+So these payments were never recorded on SimplyBLU's servers, and why is not
+visible from the portal. The 07:00 pull re-reads ten days in case they arrive.
+
+A portal record carries `portalGap` (`portalGapOf`, lib/card-portal.cjs): each
+POS card leg with no portal line on this machine or another in the store. The
+POS shows "portal missing N payments (R X) that the POS has" and lists them;
+only a day with every leg answered can read short.
+
+A day with no POS card sale and no portal transaction reads "No card sales —
+nothing to check".

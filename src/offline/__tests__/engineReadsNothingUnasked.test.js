@@ -152,6 +152,9 @@ describe("a device that HAS tapped Download", () => {
     const db = await freshMirrorDb();
     const w = world({ [COUNTS_ROOT]: { products: { rows: 1, at: T0 } } });
     const { rt } = await startOn(w, db);
+    const censusCalls = [];
+    const realCensus = rt.engine.checkCensus;
+    rt.engine.checkCensus = (opts) => { censusCalls.push(opts); return realCensus(opts); };
 
     await rt.consentAndDownload();
     // The download is a background loop; let it settle.
@@ -161,8 +164,10 @@ describe("a device that HAS tapped Download", () => {
 
     expect((await rt.setupState()).done).toBe(true);
     expect(await db.count("products")).toBe(1);
-    // The census was asked, FORCED, before the serving hint was written.
+    // The census was asked, FORCED, before the serving hint was written — as
+    // the one that verifies a download, which no rate limit may swallow.
     expect(w.calls.readPath).toContain(COUNTS_ROOT);
+    expect(censusCalls).toContainEqual({ force: true, afterDownload: true });
     expect(isLegServing("products")).toBe(true);
     rt.stop();
   });
@@ -179,6 +184,40 @@ describe("a device that HAS tapped Download", () => {
     const { rt: rt2 } = await startOn(w2, db);
     expect(await rt2.resume()).not.toBe("needs-consent");
     rt2.stop();
+  });
+});
+
+describe("a pass the live signal asked for", () => {
+  // Production passes are mostly signal passes — one per burst of writes, all
+  // day. Each used to walk both histories too. See sync.js runPass.
+  test("reads the change feed and leaves the two histories for the floor pass", async () => {
+    const db = await freshMirrorDb();
+    const w = world({
+      [COUNTS_ROOT]: { products: { rows: 1, at: T0 } },
+      stock_movements: { m1: { ts: "2026-05-01T00:00:00.000Z" } },
+    });
+    const { rt, timers } = await startOn(w, db);
+    await rt.consentAndDownload();
+    // The download, its census and its report all settle before the pass loop
+    // starts and the signal is subscribed.
+    await rt.downloadInBackground();
+    for (let i = 0; i < 200 && w.calls.subscribeNewChanges.length === 0; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(w.calls.subscribeNewChanges.length).toBe(1);
+    await timers.runDue(1);                                    // the first pass: a floor pass
+    const history = () => w.calls.readChildPage.length + w.calls.readKeyPage.filter((c) => c.path === "insights_log").length;
+    const feed = () => w.calls.readKeyPage.filter((c) => c.path === "mirror_changes").length;
+    const [h0, f0] = [history(), feed()];
+
+    w.signal("-Nsomething");                                   // a change record lands
+    await timers.runDue(2);                                    // the debounce, then the pass it asked for
+    expect(feed()).toBeGreaterThan(f0);
+    expect(history()).toBe(h0);
+
+    await timers.runDue(1);                                    // the 60-second floor
+    expect(history()).toBeGreaterThan(h0);
+    rt.stop();
   });
 });
 

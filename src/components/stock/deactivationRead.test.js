@@ -88,7 +88,9 @@ describe("the ordering grid (App.jsx AssistantView) — phone AND desktop", () =
     // phone photo grid, CR refill card, desktop card
     // phone photo grid (the sky AssistantPhone card, fed from App.jsx)
     const phone = read("../sky/AssistantPhone.jsx");
-    expect(app).toContain("renderDeactivated={(p) => (isDeactivated(p) ? <DeactivatedChip small /> : null)}");
+    // The chip slot also carries Pine/Concrete's UNAVAILABLE (main #878); the
+    // deactivated chip still comes first.
+    expect(app).toContain("renderDeactivated={(p) => (isDeactivated(p) ? <DeactivatedChip small />");
     expect(app).toContain("isDead={deadForOrder}");
     expect(phone).toContain("{renderDeactivated ? renderDeactivated(p) : null}");
     expect(phone).toContain("Deactivated — no sizes on offer");

@@ -148,6 +148,9 @@ export function holdRowsFor(order) {
   if (!HOLDING_STATUSES.includes(order?.status) && !packed) return rows;
   for (const line of linesOf(order)) {
     if (!line?.pid || !line.sizeKey) continue;
+    // A RE-SENT item (a second parcel, `reship`) was sold and deducted by an earlier pack sale: it is in the packer's
+    // hands, not on any shelf, so it holds nothing (a hold would hide a unit the cell no longer counts).
+    if (line.reship) continue;
     const st = line.source?.status;
     if (packed && st !== LINE_STATUS.RESOLVING) continue;
     // Settled lines hold nothing: no unit exists (unavailable), the customer
@@ -323,7 +326,7 @@ const LINE_ATTENTION = Object.freeze({
   [LINE_STATUS.NEEDS_ATTENTION]: ATTENTION_KIND.WALKIN_OVERRIDE,
 });
 
-const PLACE = { hub1: "Hub 1", hub2: "Hub 2", "marathon-pe": "Marathon PE", trophy: "Trophy" };
+const PLACE = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Marathon Pine" };
 export const placeName = (loc) => PLACE[loc] || loc || "nowhere";
 
 /** The attention an order's lines call for, or null. */

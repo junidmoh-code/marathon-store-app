@@ -1,3 +1,6 @@
+// NOTE (8 Nov 2026): Concrete's Standard Bank account no longer has its tag
+// enforced (eftConcreteNonImmediate.test.mjs). This file's chain passes the tag
+// straight in, so it pins immediacyVerdict for an account whose tag IS enforced.
 // ─── THE STANDARD BANK ATUGAR ACCOUNT — IMMEDIATE ONLY (Junid, 2 Nov 2026) ───
 // The shop is also paid into a Standard Bank account (ATUGAR TRADING PTY LTD).
 // Its EFT_ALLOWED_ACCOUNTS entry is tagged ":standardbank:immediate":

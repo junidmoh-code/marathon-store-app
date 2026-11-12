@@ -4,6 +4,8 @@
 // bug makes it fail. A test that passes both with and without the fix proves
 // nothing, which is exactly how the reaper bug shipped.
 
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   resolveAddStockTarget,
@@ -11,7 +13,7 @@ import {
   labelPhotoEvidence,
   TARGET_READY, TARGET_CHOOSE, TARGET_BLOCKED,
   BLOCK_NO_TARGET, BLOCK_CLAIM_UNAVAILABLE, BLOCK_PRODUCT_UNAVAILABLE,
-  STEP_ORPHAN, STEP_EXISTING, STEP_FOUND, STEP_UNAVAILABLE, STEP_UNKNOWN,
+  STEP_EXISTING, STEP_FOUND, STEP_UNAVAILABLE, STEP_UNKNOWN,
 } from "./styleCodeGateLogic";
 
 const P = (id, over = {}) => ({ id, name: `Product ${id}`, ...over });
@@ -193,9 +195,19 @@ describe("classifyLookupOutcome — an error is not an absence", () => {
     expect(classifyLookupOutcome({ data: { found: true, existingProducts: [], errors } })).toBe(STEP_FOUND);
   });
 
-  it("an orphaned claim outranks everything", () => {
+  it("a claim the server could not settle reads as a failed lookup, outranking everything", () => {
     expect(classifyLookupOutcome({ data: { claimOrphaned: true, claim: { productId: "x" }, found: true } }))
-      .toBe(STEP_ORPHAN);
+      .toBe(STEP_UNAVAILABLE);
+  });
+
+  it("the gate has no orphan screen left to show staff", () => {
+    const gate = fs.readFileSync(path.join(process.cwd(), "src/components/admin/StyleCodeGate.jsx"), "utf8");
+    expect(gate).not.toMatch(/doesn't exist|clear the reservation|step === "orphan"/);
+  });
+
+  it("a released dead claim is an ordinary free code", () => {
+    expect(classifyLookupOutcome({ data: { claim: null, claimOrphaned: false, existingProducts: [], found: true } }))
+      .toBe(STEP_FOUND);
   });
 
   it("a found result is FOUND", () => {
@@ -466,5 +478,32 @@ describe("orderCandidatesByColourway", () => {
 
   it("no colourway → untouched order", () => {
     expect(orderCandidatesByColourway([grey, blue], null).map((p) => p.id)).toEqual(["pGrey", "pBlue"]);
+  });
+});
+
+describe("a code with several owners is the operator's choice", () => {
+  const products = [{ id: "s1" }, { id: "s2" }];
+  const claim = { productId: "s1" };
+
+  it("never settles on the first owner", () => {
+    expect(resolveAddStockTarget({ claim, owners: ["s1", "s2"], products })).toEqual({ kind: TARGET_CHOOSE, options: ["s1", "s2"] });
+  });
+
+  it("the operator's pick among the owners is the target", () => {
+    expect(resolveAddStockTarget({ claim, owners: ["s1", "s2"], products, selectedId: "s2" }))
+      .toEqual({ kind: TARGET_READY, productId: "s2", basis: "operator-selected" });
+  });
+
+  it("a pick that is not an owner does not count", () => {
+    const all = [...products, { id: "x" }];
+    expect(resolveAddStockTarget({ claim, owners: ["s1", "s2"], products: all, selectedId: "x" }).kind).toBe(TARGET_CHOOSE);
+  });
+
+  it("no owner loaded on this device is blocked", () => {
+    expect(resolveAddStockTarget({ claim, owners: ["s1", "s2"], products: [] }).kind).toBe(TARGET_BLOCKED);
+  });
+
+  it("one owner still settles it", () => {
+    expect(resolveAddStockTarget({ claim, owners: ["s1"], products }).kind).toBe(TARGET_READY);
   });
 });

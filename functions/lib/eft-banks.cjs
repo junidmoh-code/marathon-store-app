@@ -265,9 +265,30 @@ const fnb = {
     // Required, exact, single: every line that is nothing but a currency
     // amount must agree, because a second different one is a layout this
     // reader does not understand.
-    const moneyLines = [...new Set(lines.map((l) => l.trim()).filter((l) => /^(?:ZAR|R)\s?\d[\d,\s]*(?:\.\d{1,2})?$/.test(l)))];
+    //
+    // PAYSHAP (real notice of 7 Nov 2026, R650 into Concrete's Standard Bank
+    // account): FNB's PayShap notification prints the label and the amount
+    // on ONE line — "Cur/Amount R650.00" — so there is no lone money line and
+    // the reader refused a genuine payment. The value on a "Cur/Amount" line
+    // counts as an amount line too; it must be money-only, and it joins the
+    // same must-all-agree set, so a second different figure still refuses.
+    const MONEY = /^(?:ZAR|R)\s?\d[\d,\s]*(?:\.\d{1,2})?$/;
+    const moneyLines = [];
+    for (const raw of lines) {
+      const l = raw.trim();
+      if (MONEY.test(l)) { moneyLines.push(l); continue; }
+      const inline = /^Cur\/Amount\s*:?\s*(.+)$/i.exec(l);
+      if (!inline) continue;
+      const value = inline[1].trim();
+      if (!MONEY.test(value)) {
+        return { ok: false, reason: `FNB amount line reads "${clip(l, 60)}", which does not parse exactly as a rand amount.` };
+      }
+      moneyLines.push(value);
+    }
+    // Distinct by VALUE, not spelling: "R650.00" and "ZAR650.00" are one amount.
+    const amounts = [...new Set(moneyLines.map((l) => parseRandsToCents(l)))];
     if (!moneyLines.length) return { ok: false, reason: "FNB notification carries no amount line (a lone ZAR figure)." };
-    if (moneyLines.length > 1) return { ok: false, reason: `FNB notification carries ${moneyLines.length} different amount lines — cannot tell which is the payment.` };
+    if (amounts.length > 1) return { ok: false, reason: `FNB notification carries ${amounts.length} different amount lines — cannot tell which is the payment.` };
     const amountCents = parseRandsToCents(moneyLines[0]);
     if (amountCents === null) {
       return { ok: false, reason: `FNB amount line reads "${clip(moneyLines[0], 60)}", which does not parse exactly as a rand amount.` };
@@ -309,9 +330,51 @@ const fnb = {
       beneficiaryName: (() => { const n = fnbLabelValue(lines, /^Name\s*:\s*(.*)$/i, "Name"); return n.ok && n.value ? clip(n.value, 120) : null; })(),
       destBankName: (() => { const b = fnbLabelValue(lines, /^Bank\s*:\s*(.*)$/i, "Bank"); return b.ok && b.value ? clip(b.value, 60) : null; })(),
       accountMask: clip(account.value, 40),
+      // Only a PayShap notice says anything about speed (fnbPayShap, below);
+      // an ordinary FNB notice leaves immediate unset, as it always has.
+      ...(fnbPayShap(lines) ? { paymentType: "PayShap", immediate: true } : {}),
     };
   },
 };
+
+// PAYSHAP IS REAL-TIME, AND FNB SAYS SO IN ITS OWN WORDS (7 Nov 2026). A
+// PayShap notification carries FNB's sentence "Please note that this PayShap
+// Payment Notification cannot be authenticated using our FNB “Verify
+// Payments” link, however, as PayShap payments are made in real time, …" —
+// where an ordinary notification says "To authenticate this Payment
+// Notification, please visit …". PayShap is the interbank rapid-payment
+// rail: it settles in seconds, so it is an IMMEDIATE payment whichever bank
+// it pays into (Junid: "it's an immediate payment, I did receive the money").
+//
+// Read ONLY directly below the ONE "END OF NOTIFICATION" line: everything the
+// payer can type (their name, the reference) is printed above it, so a
+// reference cannot pose as FNB's sentence. The whole two-line sentence must
+// be there as FNB prints it, and the ordinary notice's "To authenticate this
+// Payment Notification" must not. No END line, two END lines, or anything
+// out of shape: no PayShap — never assumed.
+/**
+ * Does this FNB notice carry FNB's own PayShap sentence below END OF NOTIFICATION?
+ * @param {(string|null|undefined)[]} lines the document's text lines
+ * @returns {boolean}
+ */
+function fnbPayShap(lines) {
+  const trimmed = lines.map((l) => String(l ?? "").trim());
+  // Exactly ONE end line: a second (a payer-typed "END OF NOTIFICATION")
+  // would move the boundary into text the payer controls. (Sonnet review.)
+  const ends = trimmed.reduce((acc, l, i) => (/^END OF NOTIFICATION$/i.test(l) ? [...acc, i] : acc), []);
+  if (ends.length !== 1) return false;
+  // The ordinary notice's own sentence means it is NOT a PayShap notice.
+  if (trimmed.some((l) => /^To authenticate this Payment Notification\b/i.test(l))) return false;
+  // FNB's full two-line sentence, directly below the end line, as printed:
+  //   "Please note that this PayShap Payment Notification cannot be
+  //    authenticated using our FNB “Verify Payments” link, however, as
+  //    PayShap payments are made in"
+  //   "real time, to verify this payment please check …"
+  const first = trimmed[ends[0] + 1] ?? "";
+  const second = trimmed[ends[0] + 2] ?? "";
+  return /^Please note that this PayShap Payment Notification cannot be authenticated\b.*\bas PayShap payments are made in$/i.test(first)
+    && /^real time, to verify this payment\b/i.test(second);
+}
 
 // ─── CAPITEC ─────────────────────────────────────────────────────────────────
 // Built from a REAL Capitec "Payment Notification" PDF (fixture in
@@ -501,6 +564,27 @@ const capitec = {
 // is printed space-grouped above a thousand ("1 600.00", "1 000.00" — real
 // 24 and 28 Oct notices), which parseRandsToCents reads exactly; the payment
 // date is a day only, no time of day, and there is no running balance.
+// THE PAYER'S OWN COPY (7 Nov 2026, the real R3950 of MRS CJ DELPAUL, txn
+// 80856A…, ibreply@absa.co.za, DKIM pass). Absa also sends the PAYER's
+// "Notice of Payment" — the one a payer has Absa e-mail to the shop. Same
+// labels, same values, two differences, verbatim (digits sanitised):
+//
+//   Dear MRS A PAYER                         ← the payer (no "Payment made by:")
+//   Subject: Notice Of Payment: SHOP NAME
+//   Please be advised that you made a payment to SHOP NAME as indicated below.
+//   Transaction number: 80000000A0-34
+//   Payment date:
+//   2026-11-07
+//   Payment made from: Ultimate Plus         ← the payer's account product
+//   Payment made to:
+//   SHOP NAME
+//   Beneficiary bank name: FIRSTRAND …
+//
+// It is read by the same reader: the destination account is still checked
+// digit for digit, the transaction number is still the identity, and the
+// payer is the "Dear …" line — read ONLY in this variant (the beneficiary's
+// copy greets the SHOP there).
+const ABSA_PAYER_COPY = /^Please be advised that you made a payment to .+ as indicated below\.?$/i;
 const ABSA_LABELISH = /.+:\s*$|.+:\s.+/;
 function absaLabelValue(lines, re, what) {
   const hits = [];
@@ -530,7 +614,7 @@ const absa = {
   detect(lines) {
     const has = (re) => lines.some((l) => re.test(l));
     return has(/^Notice of Payment$/i)
-      && has(/made a payment to your account/i)
+      && (has(/made a payment to your account/i) || has(ABSA_PAYER_COPY))
       && has(/^For the amount of:/i);
   },
   parse(lines) {
@@ -567,7 +651,16 @@ const absa = {
     if (!bankRef.ok) return { ok: false, reason: `Absa notification: ${bankRef.why}.` };
     const beneficiaryName = take(/^Payment made to:\s*(.*)$/i, "Payment made to");
     const destBankName = take(/^Beneficiary bank name:\s*(.*)$/i, "Beneficiary bank name");
-    const payer = take(/^Payment made by:\s*(.*)$/i, "Payment made by");
+    let payer = take(/^Payment made by:\s*(.*)$/i, "Payment made by");
+    // The payer's own copy names no "Payment made by:" — the payer is the
+    // addressee. Only when the document says it is that copy, and only when
+    // exactly one greeting line is printed.
+    if (payer.ok && !payer.value && lines.some((l) => ABSA_PAYER_COPY.test(l))) {
+      // A generic greeting names nobody (architect review): never a payer.
+      const greetings = lines.map((l) => /^Dear\s+(.{2,120})$/i.exec(l.trim())?.[1]?.trim())
+        .filter((g) => g && !/^(customer|client|sir|madam|sir\/madam|valued customer)\b/i.test(g));
+      payer = { ok: true, value: new Set(greetings).size === 1 ? greetings[0] : null };
+    }
 
     // "Payment date:" then "2026-09-01" — a shape parseBankTimestamp already
     // knows. The parse still succeeds if it will not read, but since fix 8
@@ -653,8 +746,9 @@ const absa = {
 // THE DATE IS DAY-FIRST and carries no time: "27/10/2026" can only be 27 Oct.
 // capitecTimestamp already reads that shape exactly (and refuses 31/02); a
 // date-only bankTs is the start of that SAST day, which is what the cutoff
-// (fix 8) compares, and a payment dated after the day its notification arrived
-// still refuses as future-dated (immediacyVerdict).
+// (fix 8) compares, and a payment dated beyond the next business day after its
+// notification arrived refuses as scheduled (immediacyVerdict; a weekend
+// payment dated Monday settles then — 7 Nov 2026).
 const NEDBANK_CHANNELS = [
   { re: /^internet payment$/i, immediate: false },
   { re: /^immediate payment$/i, immediate: true },

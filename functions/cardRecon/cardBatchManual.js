@@ -88,7 +88,7 @@ async function handleManualEntry(db, request, deps = {}) {
     const ds = sastDayStartMs(input.dayYmd);
     const day = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}`).orderByChild("slip/closedAt")
       .startAt(ds).endAt(ds + 24 * 60 * 60 * 1000 - 1).once("value")).val() || {};
-    if (Object.values(day).some((r) => r && r.capturedVia === PORTAL_SOURCE)) {
+    if (Object.values(day).some((r) => r && r.capturedVia === PORTAL_SOURCE && !r.displacedBy)) {
       return reject(`The SimplyBLU portal is already the record for ${row.label || tid} on ${input.dayYmd}. To change it, open that day's card and use "Correct these figures".`);
     }
   }

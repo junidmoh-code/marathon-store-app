@@ -14,7 +14,7 @@
 // silence. See bounded.js.
 
 import {
-  ref, get, set, query, orderByKey, orderByChild, startAfter, startAt, endAt,
+  ref, get, set, query, orderByKey, orderByChild, startAt, endAt,
   limitToFirst, limitToLast, onValue, onChildAdded,
 } from "firebase/database";
 import { database } from "../firebase";
@@ -88,6 +88,29 @@ export function childPageConstraints(field, { from = null, fromKey = null, limit
   return parts;
 }
 
+// ── THE CHANGE SIGNAL IS ONE RECORD WIDE, ALWAYS ────────────────────────────
+//
+// It used to be `orderByKey().startAfter(cursor)`, and that had two costs that
+// the profiler found on 11 Nov 2026:
+//
+//   · A device with NO cursor (it had just been dropped by an expired-cursor
+//     reset) subscribed with no bound at all — the whole 30-day change log,
+//     9.7 MB, delivered on every re-subscribe. One handset did that six times
+//     in three hours.
+//   · A device with an OLD cursor (first open of the morning) was sent every
+//     record since yesterday by the listener, and then read the very same
+//     records again as pages: 306 listens, 20 MB across the fleet in three
+//     hours, all of it a second copy.
+//
+// The listener is a SIGNAL — "something was written, run a pass" — and never a
+// source: the pass reads the records properly from its own stored cursor. A
+// signal needs only the NEWEST record, so that is all it asks for. It fires
+// once on attach (the pass that follows is the catch-up) and once per record
+// after that, ~85 bytes each, whatever the cursor is or is not.
+export function changeSignalConstraints() {
+  return [orderByKey(), limitToLast(1)];
+}
+
 // What a constraint is, for a test that must name it. The SDK's own
 // `_QueryConstraint` carries `type`; reading it here keeps the assertion about
 // the real object rather than about a string we chose.
@@ -126,7 +149,11 @@ export function measureBytes(value) {
 //
 // `onBytes` is optional and defaults to nothing, so every existing caller and
 // every test is unchanged by its presence.
-export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
+export function createRtdbAdapter({
+  db = database, onBytes = null,
+  // For shallowKeys only: the signed-in user's ID token, and the fetch to use.
+  getIdToken = null, fetchFn = typeof fetch === "function" ? fetch : null,
+} = {}) {
   const weigh = (value) => {
     if (onBytes) { try { onBytes(measureBytes(value)); } catch { /* never breaks a read */ } }
     return value;
@@ -234,14 +261,74 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
     // into the mirror; it asks the engine to run a pass, which reads the page
     // properly and commits it with its cursor. One path applies changes, and
     // it is the tested one.
+    // `after` is no longer part of the query — see changeSignalConstraints.
+    // The parameter stays so callers and fakes keep one signature.
+    // eslint-disable-next-line no-unused-vars
     subscribeNewChanges(path, after, onSignal) {
-      const parts = [orderByKey()];
-      if (after !== null && after !== undefined) parts.push(startAfter(after));
       return onChildAdded(
-        query(ref(db, path), ...parts),
-        (snap) => onSignal(snap.key),
+        query(ref(db, path), ...changeSignalConstraints()),
+        (snap) => { weigh(snap.val()); onSignal(snap.key); },
         (err) => console.warn(`offline mirror: change signal on /${path} failed:`, err),
       );
+    },
+
+    // ── THE KEYS OF A NODE, WITHOUT ITS VALUES ──────────────────────────
+    //
+    // The SDK cannot ask for keys alone; the REST API can (`shallow=true`),
+    // and it honours the same rules for the same signed-in user. This is what
+    // lets a leg whose COUNT disagrees with the census be repaired by
+    // comparing key sets and fetching the handful of rows that differ, where
+    // it used to be downloaded whole (sync.js reconcileLegKeys): /products is
+    // ~120 KB of keys against a 5.9 MB walk.
+    //
+    // Everything about it is allowed to fail — no token, no fetch, a refusal,
+    // a timeout — and the caller falls back to the walk it would have done
+    // anyway. It is never the only way a leg can be repaired.
+    async shallowKeys(path) {
+      if (!getIdToken || !fetchFn) throw new Error("offline mirror: no shallow read on this device");
+      const base = String(db?.app?.options?.databaseURL ?? "").replace(/\/+$/, "");
+      if (!base) throw new Error("offline mirror: no database URL for a shallow read");
+      const token = await withTimeout(Promise.resolve(getIdToken()), {
+        ms: READ_TIMEOUT_MS, label: "id token (shallow read)", sleepAware: true,
+      });
+      if (!token) throw new Error("offline mirror: no signed-in user for a shallow read");
+      const where = String(path).split("/").filter(Boolean).map(encodeURIComponent).join("/");
+      // ABORTED, not merely abandoned, when it times out or fails: a fetch
+      // nobody is waiting for would go on downloading its body, and those are
+      // bytes this device pays for and never counts.
+      const aborter = typeof AbortController === "function" ? new AbortController() : null;
+      let text;
+      try {
+        const res = await withTimeout(
+          fetchFn(`${base}/${where}.json?shallow=true&auth=${encodeURIComponent(token)}`,
+            aborter ? { signal: aborter.signal } : undefined),
+          { ms: BIG_READ_TIMEOUT_MS, label: `/${path} (keys)`, sleepAware: true },
+        );
+        if (!res.ok) {
+          const err = new Error(`offline mirror: the key read of /${path} was refused (${res.status})`);
+          if (res.status === 401 || res.status === 403) err.code = "PERMISSION_DENIED";
+          throw err;
+        }
+        text = await withTimeout(res.text(), {
+          ms: BIG_READ_TIMEOUT_MS, label: `/${path} (keys body)`, sleepAware: true,
+        });
+      } catch (err) {
+        try { aborter?.abort(); } catch { /* nothing left to stop */ }
+        throw err;
+      }
+      if (onBytes) { try { onBytes(text.length); } catch { /* never breaks a read */ } }
+      const body = JSON.parse(text);
+      // A leaf (a number, a string, `true`) has no children; neither has null.
+      if (!body || typeof body !== "object") return [];
+      // A node whose keys are dense integers comes back as an ARRAY, with
+      // `null` in every hole. A hole is not a child: named as a key, it would
+      // be read as a row the device is "missing" on every repair.
+      if (Array.isArray(body)) {
+        const keys = [];
+        for (let i = 0; i < body.length; i += 1) if (body[i] !== null && body[i] !== undefined) keys.push(String(i));
+        return keys;
+      }
+      return Object.keys(body).filter((k) => body[k] !== null && body[k] !== undefined);
     },
 
     // THE ONE WRITE THIS ADAPTER DOES: the device's own health record. Bounded

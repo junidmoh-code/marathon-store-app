@@ -362,3 +362,110 @@ describe("every return carries the same shape", () => {
     expect(Object.keys(a).sort()).toEqual(Object.keys(b).sort());
   });
 });
+
+// ─── A DELETE THE FEED APPLIES IS NOT A ROW THAT WENT MISSING ───────────────
+//
+// `legVerdict` refuses a leg whose store holds fewer rows than its record
+// claims — that is how a store emptied underneath its record is caught. But
+// nothing moved the claim when the FEED deleted a row, so a day with more
+// deletes than writes (a display re-check clearing slots) took a complete,
+// current leg out of service and its screens back to whole-node live reads.
+describe("the feed's own deletes lower what the leg claims to hold", () => {
+  async function held(n) {
+    const { healthyMeta } = await import("../health");
+    const db = await freshMirrorDb();
+    const products = Object.fromEntries(Array.from({ length: n }, (_, i) => [`p${i}`, { id: `p${i}` }]));
+    for (const [k, v] of Object.entries(products)) await db.putPage("products", [{ key: k, value: v }]);
+    await db.setMetaMany(healthyMeta("products", { path: "products", rows: n, at: T0 }));
+    return { db, products };
+  }
+
+  test("a leg stays usable through deletes the feed carried", async () => {
+    const { legVerdict, getLegHealth } = await import("../health");
+    const { db, products } = await held(10);
+    delete products.p3; delete products.p4;
+    const w = world([change(0, "products", "p3"), change(1, "products", "p4"), change(2, "products", "p5")], { products });
+    const res = await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 60_000 });
+    expect(res.deleted).toBe(2);
+    expect(await db.count("products")).toBe(8);
+    expect(await legVerdict(db, "products")).toBe("yes");
+    expect((await getLegHealth(db, "products")).rows).toBe(8);
+  });
+
+  test("the claim follows the NET change: adds in the same page count, and it never falls below what the store holds", async () => {
+    const { legVerdict, getLegHealth } = await import("../health");
+    const { db, products } = await held(10);
+    delete products.p3; delete products.p4; delete products.p5;
+    products.n1 = { id: "n1" }; products.n2 = { id: "n2" };
+    const w = world([
+      change(0, "products", "p3"), change(1, "products", "p4"), change(2, "products", "p5"),
+      change(3, "products", "n1"), change(4, "products", "n2"),
+    ], { products });
+    await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 60_000 });
+    expect(await db.count("products")).toBe(9);
+    expect((await getLegHealth(db, "products")).rows).toBe(9);    // 10 − 3 + 2, not 10 − 3
+    // …so losing even ONE row underneath the record is still seen.
+    await db.putPage("products", [], { deleteKeys: ["p0"] });
+    expect(await legVerdict(db, "products")).toBe("no");
+  });
+
+  test("a delete of a row the device never HELD lowers nothing", async () => {
+    const { getLegHealth, legVerdict } = await import("../health");
+    const { db, products } = await held(10);
+    const w = world([change(0, "products", "ghost1"), change(1, "products", "ghost2")], { products });
+    const res = await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 60_000 });
+    expect(res.deleted).toBe(2);
+    expect((await getLegHealth(db, "products")).rows).toBe(10);
+    await db.putPage("products", [], { deleteKeys: ["p0"] });
+    expect(await legVerdict(db, "products")).toBe("no");
+  });
+
+  test("the claim is lowered, never raised: adds leave it alone", async () => {
+    const { getLegHealth } = await import("../health");
+    const { db, products } = await held(10);
+    products.p99 = { id: "p99" };
+    const w = world([change(0, "products", "p99")], { products });
+    await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 60_000 });
+    expect(await db.count("products")).toBe(11);
+    expect((await getLegHealth(db, "products")).rows).toBe(10);
+  });
+
+  test("a store that had ALREADY lost rows underneath its record stays refused", async () => {
+    const { legVerdict, getLegHealth } = await import("../health");
+    const { db, products } = await held(10);
+    // Four rows vanish with no feed record: an eviction, a partial clear.
+    await db.putPage("products", [], { deleteKeys: ["p6", "p7", "p8", "p9"] });
+    expect(await legVerdict(db, "products")).toBe("no");
+    delete products.p3;
+    const w = world([change(0, "products", "p3")], { products });
+    await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 60_000 });
+    expect(await legVerdict(db, "products")).toBe("no");       // the feed did not launder the loss
+    expect((await getLegHealth(db, "products")).rows).toBe(10);
+  });
+
+  test("a leg failing for another reason keeps its reason and its (lowered) vouch", async () => {
+    const { legVerdict, getLegHealth, recordLegFailed } = await import("../health");
+    const { db, products } = await held(10);
+    await recordLegFailed(db, "products", { path: "products", reason: "timed-out", at: T0 });
+    delete products.p3;
+    const w = world([change(0, "products", "p3")], { products });
+    await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 60_000 });
+    const health = await getLegHealth(db, "products");
+    expect(health.reason).toBe("timed-out");
+    expect(health.vouched.rows).toBe(9);
+    expect(await legVerdict(db, "products")).toBe("yes");
+  });
+
+  test("the lowered claim rides the delete's own transaction — a page that fails changes neither", async () => {
+    const { getLegHealth } = await import("../health");
+    const { db, products } = await held(10);
+    delete products.p3;
+    const w = world([change(0, "products", "p3")], { products });
+    const real = db.putPage;
+    db.putPage = async () => { throw new Error("quota"); };
+    await expect(runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 60_000 })).rejects.toThrow("quota");
+    db.putPage = real;
+    expect(await db.count("products")).toBe(10);
+    expect((await getLegHealth(db, "products")).rows).toBe(10);
+  });
+});

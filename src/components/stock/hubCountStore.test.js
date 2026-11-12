@@ -697,3 +697,46 @@ describe("Hub 3 count-mode toggle", () => {
     expect(await loadHubCountMode("hub3")).toEqual({ paused: false, countMode: true, on: false });
   });
 });
+
+// ── HUB 3 COUNT RECORDS land exactly like Hub 1's (Junid, 7 Nov 2026) ───────
+describe("a Hub 3 count records under counted/hub3, shaped like hub1/hub2", () => {
+  it("confirm and adjust at hub3 write /settings/hubSneakerCount/counted/hub3/{session}/{pid}::{size}", async () => {
+    for (const hub of ["hub1", "hub3"]) {
+      setPath(stockCellPath(hub, PID, "8"), { qty: 4, v: 1, mv: "m0", lastType: "received" });
+      setPath(stockCellPath(hub, PID, "9"), { qty: 2, v: 1, mv: "m0", lastType: "received" });
+      expect((await confirmCell({ hub, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4 })).ok).toBe(true);
+      expect((await adjustCell({ hub, sessionId: SESSION, productId: PID, sizeKey: "9", expected: 2, actual: 3 })).ok).toBe(true);
+    }
+    const rec = (hub, size) => getPath(`settings/hubSneakerCount/counted/${hub}/${SESSION}/${PID}::${size}`);
+    const shape = (r) => Object.keys(r || {}).sort();
+    expect(rec("hub3", "8")).toMatchObject({ action: "confirm", expected: 4 });
+    expect(rec("hub3", "9")).toMatchObject({ action: "adjust", expected: 2, actual: 3 });
+    expect(shape(rec("hub3", "8"))).toEqual(shape(rec("hub1", "8")));
+    expect(shape(rec("hub3", "9"))).toEqual(shape(rec("hub1", "9")));
+    expect(getPath(stockCellPath("hub3", PID, "9")).qty).toBe(3);
+  });
+});
+
+// ── PINE SHOP COUNT — engine pause only (Junid, 11 Nov 2026) ─────────────────
+describe("Pine shop engine pause — one flag, never countMode", () => {
+  it("PAUSE sets only pausedLocations/marathon-pine (+ meta); ON clears it", async () => {
+    const { setEnginePause, loadEnginePause, enginePauseUpdate } = await import("./hubCountStore.js");
+    expect(Object.keys(enginePauseUpdate("marathon-pine", true, { uid: "u", at: "t" })).sort()).toEqual([
+      "config/refillEngine/pausedLocations/marathon-pine",
+      "settings/hubSneakerCount/enginePauseMeta/marathon-pine",
+    ]);
+    expect((await setEnginePause("marathon-pine", true)).ok).toBe(true);
+    expect(getPath("config/refillEngine/pausedLocations/marathon-pine")).toBe(true);
+    expect(getPath("settings/hubSneakerCount/countMode/marathon-pine")).toBe(null);
+    expect(await loadEnginePause("marathon-pine")).toEqual({ paused: true });
+    expect((await setEnginePause("marathon-pine", false)).ok).toBe(true);
+    expect(getPath("config/refillEngine/pausedLocations/marathon-pine")).toBe(null);
+  });
+  it("refuses any other location and writes nothing", async () => {
+    const { setEnginePause } = await import("./hubCountStore.js");
+    for (const loc of ["hub3", "concrete", "marathon-pe", "trophy", "hub1", "hub2", "central"]) {
+      expect((await setEnginePause(loc, true)).ok).toBe(false);
+      expect(getPath(`config/refillEngine/pausedLocations/${loc}`)).toBe(null);
+    }
+  });
+});

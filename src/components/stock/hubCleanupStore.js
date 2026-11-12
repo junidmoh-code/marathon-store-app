@@ -32,10 +32,12 @@ import { deactivateUpdates, reactivateUpdates } from "../../utils/deactivation.j
 import { normaliseStyleCode, formatStyleCodeForDisplay } from "../../utils/styleCode";
 import { enqueueStyleCodeCapture } from "../../utils/styleCodeCapture";
 import {
-  isCleanupHub, registerKey, registerMovementId, extraUnitMovementId,
+  isCleanupHub, displayStoresForHub, cleanupHubLabel, displayStoreLabel, registerKey, registerMovementId, extraUnitMovementId,
   STYLE_SKIP_REASONS,
 } from "./hubCleanupCore";
 import { setDisplaySlot } from "./displaySlots";
+import { readPathOnce } from "../../offline/localReads";
+import { onIdentityChange } from "../../utils/identityChange";
 
 const one = async (path) => (await get(child(ref(database), path))).val();
 
@@ -122,7 +124,46 @@ export async function recordColourwayAnswer({ code, productId, palette }) {
 
 /** Everything registered at this hub so far → { "pid__sizeKey": record }. */
 export async function loadRegister(hub) {
-  return (await one(registerPath(hub))) || {};
+  wireCardIdentity();
+  const value = (await one(registerPath(hub))) || {};
+  cardRegister.set(hub, { at: Date.now(), value });
+  return value;
+}
+
+// ── THE HOME CARD'S COPY ────────────────────────────────────────────────────
+// The Home card shows ONE number from this node (units registered), and it is
+// mounted every time anybody lands on Home. It used to fetch the whole hub
+// register for that — 180 KB at Hub 1 — on every one of those mounts: 274
+// reads from 37 devices in 21 hours (profiler, 10–11 Nov 2026).
+//
+// For the card only:
+//   - what this device read in the last CARD_REGISTER_TTL_MS is reused (every
+//     loadRegister above refreshes it, so the count is current the moment
+//     somebody comes back from registering on this device);
+//   - otherwise the device's local copy answers when it holds this node
+//     (offline mirror, `displayRegister` leg) and nothing is downloaded;
+//   - otherwise it is the same one-shot read as before.
+// The registration and count screens do NOT use this — they read the node
+// itself, every time, exactly as they did.
+export const CARD_REGISTER_TTL_MS = 2 * 60 * 1000;
+const cardRegister = new Map();   // hub -> { at, value }
+export function clearCardRegister() { cardRegister.clear(); }
+export const _clearCardRegisterForTests = clearCardRegister;
+// One person's copy is not shown to the next: gone on sign-out or a switch.
+let cardIdentityWired = false;
+function wireCardIdentity() {
+  if (cardIdentityWired) return;
+  cardIdentityWired = true;
+  try { onIdentityChange(clearCardRegister); } catch { /* no auth */ }
+}
+export async function loadRegisterForCard(hub, { now = Date.now, readOnce = readPathOnce } = {}) {
+  wireCardIdentity();
+  const hit = cardRegister.get(hub);
+  if (hit && now() - hit.at >= 0 && now() - hit.at < CARD_REGISTER_TTL_MS) return hit.value;
+  const path = registerPath(hub);
+  const value = (await readOnce(path, () => one(path))) || {};
+  cardRegister.set(hub, { at: now(), value });
+  return value;
 }
 
 export async function loadUnresolved(hub) {
@@ -173,7 +214,13 @@ export async function loadUnresolved(hub) {
  * (the stock unit is the fact that must not be dropped).
  */
 export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCode = null, store = null }) {
-  if (!isCleanupHub(hub)) return { ok: false, message: "Only Hub 1 and Hub 2 are in scope." };
+  if (!isCleanupHub(hub)) return { ok: false, message: `${cleanupHubLabel(hub)} is not a hub in the network registry.` };
+  // The shop must be one this hub feeds — the registration screen only offers
+  // those, and a stale or hand-built call naming another shop is refused before
+  // anything writes (a Hub 1 display can never land on Pine's floor).
+  if (store && !displayStoresForHub(hub).includes(store)) {
+    return { ok: false, message: `${displayStoreLabel(store)} is not fed by ${cleanupHubLabel(hub)} — pick one of its shops.` };
+  }
   if (!product || !product.id) return { ok: false, message: "No product." };
   const n = Number(qty);
   if (!Number.isInteger(n) || n < 1) return { ok: false, message: "Quantity must be a whole number, 1 or more." };
@@ -373,7 +420,10 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
  * transaction against that same base.
  */
 export async function addExtraDisplayUnit({ hub, product, size, store = null }) {
-  if (!isCleanupHub(hub)) return { ok: false, message: "Only Hub 1 and Hub 2 are in scope." };
+  if (!isCleanupHub(hub)) return { ok: false, message: `${cleanupHubLabel(hub)} is not a hub in the network registry.` };
+  if (store && !displayStoresForHub(hub).includes(store)) {
+    return { ok: false, message: `${displayStoreLabel(store)} is not fed by ${cleanupHubLabel(hub)} — pick one of its shops.` };
+  }
   if (!product || !product.id) return { ok: false, message: "No product." };
   const rawSize = String(size ?? "").trim();
   const sizeKey = stockSizeKey(rawSize);

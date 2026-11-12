@@ -69,7 +69,7 @@ function staffSlipDayPath({ storeId, tid, dayYmd }) {
  * figure stays on the record, where the verdict reads it.
  */
 function staffSlipEntry({ kind, storeId, tid, placeStoreId = null, tillId = null, label = null, dayYmd, at, byUid, byEmail = null,
-                          photos = [], batchKey = null, slipId = null, jobId = null }) {
+                          photos = [], batchKey = null, slipId = null, jobId = null, cents = null }) {
   if (!KINDS.has(kind)) throw new Error(`card-staff-slip-log: unknown kind ${kind}`);
   return {
     // storeId is where the terminal's batches are FILED (the path); the till
@@ -78,6 +78,9 @@ function staffSlipEntry({ kind, storeId, tid, placeStoreId = null, tillId = null
     at, byUid: byUid || null, byEmail: byEmail || null,
     photos: (Array.isArray(photos) ? photos : []).filter((p) => typeof p === "string" && p),
     batchKey: batchKey || null, slipId: slipId || null, jobId: jobId || null,
+    // A Standard Bank till's optional typed total, sent beside the photo
+    // (Junid's cross-check; never shown to staff). Absent on every other entry.
+    ...(Number.isInteger(cents) ? { cents } : {}),
   };
 }
 

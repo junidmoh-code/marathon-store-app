@@ -471,7 +471,7 @@ exports.outboxInstantSend = onDocumentCreated(
   }
 );
 
-// Hub 2 dispatch-hold reveal sweep. A Hub 2 order marked READY holds its customer
+// Dispatch-hold reveal sweep. A Hub 2 or Hub 3 order marked READY holds its customer
 // "order_ready" WhatsApp until notifyReadyAt (= Sent + HUB2_DISPATCH_HOLD_MS, set
 // by the app) so the parcel has time to reach the shop. The warehouse tablet must
 // NOT be trusted to send it later — it sleeps / closes — so the SERVER owns the
@@ -657,7 +657,24 @@ exports.refillRequestSourceGuard = onValueCreated(
     // a pick claim or a shadow re-sync — Sonnet, #833).
     const rs = require("./lib/request-source.cjs");
     const id = event.params.requestId;
-    if (rs.classifyRequestSource(event.data.val()) !== null) return;   // scan / Solve — the common case, no read
+    const source = rs.classifyRequestSource(event.data.val());
+    if (source === rs.REQUEST_SOURCE.SOLVE) {
+      // Hub 1 and Hub 2 never share a sneaker: only a Solve line at those two
+      // reads anything here, and everything else returns without a read.
+      const nowIso = new Date().toISOString();
+      try {
+        const res = await require("./lib/solve-seat.cjs").enforceMarathonSolveSeat({
+          db: admin.database(), id, rr: event.data.val(), nowIso,
+        });
+        if (res.refused) console.warn(`refillRequestSourceGuard: seat refused ${id}, cancelled=${res.cancelled}`);
+      } catch (e) {
+        // The line stands, unchecked: say so where Junid reads refusals.
+        console.error(`refillRequestSourceGuard: seat check failed for ${id}: ${e?.message || e}`);
+        await admin.database().ref(`${rs.REJECTED_LOG}/${id}`).set(rs.rejectionRecord(id, event.data.val(), { nowIso, cancelled: false, reason: "check_failed" })).catch(() => {});
+      }
+      return;
+    }
+    if (source !== null) return;   // scan — the common case, no read
     const db = admin.database();
     const nowIso = new Date().toISOString();
     let seen = null;
@@ -674,6 +691,23 @@ exports.refillRequestSourceGuard = onValueCreated(
     await db.ref(`${rs.REJECTED_LOG}/${id}`).set(rs.rejectionRecord(id, rr, { nowIso, cancelled }));
     console.warn(`refillRequestSourceGuard: ${cancelled ? "cancelled" : "logged (already touched)"} ${id} — via ${rr?.createdFrom?.via || "?"}, ${rr?.requestingLocation || "?"} ${rr?.productId || "?"} ${rr?.size ?? ""}`);
   }
+);
+
+// A Solve's seat at Hub 3, Pine or Concrete (lib/concrete-division.cjs): the
+// seats node is server-only. Refuses Hub 1 + Hub 2 on the server too.
+exports.seatDivisionSolve = onCall(
+  { region: "europe-west1", timeoutSeconds: 30, memory: "256MiB" },
+  async (request) => {
+    const { applyDivisionSeat, DivisionSeatError } = require("./lib/concrete-division.cjs");
+    try {
+      return await applyDivisionSeat({
+        db: admin.database(), callerUid: request.auth?.uid || null, data: request.data, nowIso: new Date().toISOString(),
+      });
+    } catch (e) {
+      if (e instanceof DivisionSeatError) throw new HttpsError(e.code, e.message);
+      throw e;
+    }
+  },
 );
 
 exports.firstBatchLeg = onValueWritten(
@@ -2811,9 +2845,16 @@ function classifyPhotoError(msg, engName) {
   // "moderate", and an error classifier that guesses is worse than one that
   // quotes.)
   if (/daily image-generation (cap|budget)/i.test(m)) return m.slice(0, 140);
-  if (/HTTP 429|credits are depleted|\brate[ -]?limit|quota|RESOURCE_EXHAUSTED/i.test(m)) {
-    const provider = engName === "openai" ? "OpenAI" : "Gemini";  // gemini + nbpro → Gemini
-    return `AI credits depleted or rate-limited (429) — check ${provider} billing`;
+  const provider = engName === "openai" ? "OpenAI" : "Gemini";  // gemini + nbpro → Gemini
+  // 402 FIRST, and on its own (10 Nov 2026). Gemini answers a dry prepaid
+  // balance with HTTP 402 and status RESOURCE_EXHAUSTED. Folded into the 429
+  // line, five days of "credits depleted" read as a possible rate limit, which
+  // is the kind of thing one waits out rather than pays.
+  if (/HTTP 402|credits are depleted|prepayment credits/i.test(m)) {
+    return `AI credits depleted (402) — top up ${provider} prepaid credits`;
+  }
+  if (/HTTP 429|\brate[ -]?limit|quota|RESOURCE_EXHAUSTED/i.test(m)) {
+    return `AI rate-limited or over quota (429) — check ${provider} billing`;
   }
   const kit = m.match(/no usable (\w+) Style Kit references/i);
   if (kit) return `No ${kit[1]} Style Kit references — add & enable refs for that template`;
@@ -4271,7 +4312,7 @@ exports.shopifyInventoryHealthScan = onSchedule(
 // visible /eft_unallocated hold); eftRemainderScan is the 5-minute sweep that
 // finishes any remainder whose follow-up IO crashed — pending never means lost.
 // eftEnforcementStatus is the till's read of /eft_enforcement — which stores
-// must match every EFT sale (Trophy + Marathon PE by default; lib/eft-enforce.cjs)
+// must match every EFT sale (Trophy + Marathon PE + Pine by default, Concrete by the node; lib/eft-enforce.cjs)
 // — and the owner's edit of it; the scan also flags breaches.
 // eftPoolManualEntry is JUNID'S escape hatch (owner account alone, checked
 // server-side): a typed reference + amount becomes a spendable pool record,
@@ -5195,10 +5236,10 @@ async function generateOnePost(db, {
     };
   } catch (err) {
     console.warn(`social: ${kind} failed:`, err && err.message);
-    // A 5xx made no picture and was not billed, so the unit goes back.
+    // A 5xx, 402 or 429 made no picture and was not billed, so the unit goes back.
     // Otherwise the autopilot's retries could use up the day's cap on 503s
     // alone. Best-effort: a failed release only leaves the cap one lower.
-    if (unitUnspent && socialRecovery.isUnbilledProviderError(err && err.message)) {
+    if (unitUnspent && socialRecovery.isUnbilledRefusal(err && err.message)) {
       try {
         await db.ref(`social_generation_budget/${saDate || saDateForUsage(Date.now())}/count`)
           .transaction(socialRecovery.releaseGeneration);
@@ -5636,6 +5677,120 @@ function summariseSkips(skipped) {
   return out.length ? out : null;
 }
 
+// ── SAME-DAY RETRY CUTOFFS (10 Nov 2026) ─────────────────────────────────────
+// An hour before the earliest slot a run fills. Generation takes about two
+// minutes, so an hour is ample, and a retry that started later could see
+// nextHourSlot walk that slot into tomorrow and change the posting rhythm.
+const RETRY_LEAD_MS = 60 * 60 * 1000;
+function dailyRetryCutoffMs(policy, nowMs) {
+  const times = [...(policy.reels || []), ...(policy.photos || []), ...(policy.stories || [])];
+  let earliest = Infinity;
+  for (const t of times) {
+    // Strict here: parseHHMM turns a typo into noon, which would set an 11:00 cutoff.
+    if (!/^\d{1,2}:\d{2}$/.test(String(t || "").trim())) continue;
+    const hm = parseHHMM(t);
+    earliest = Math.min(earliest, hm.hour * 60 + hm.minute);
+  }
+  if (!Number.isFinite(earliest)) return -Infinity;    // no slots: nothing to retry for
+  return sastMidnightUtc(nowMs, 0) + earliest * 60000 - RETRY_LEAD_MS;
+}
+function stillRetryCutoff(nowMs) {
+  const hm = parseHHMM(socialStill.STILL_SLOT);
+  return hm ? sastMidnightUtc(nowMs, 0) + (hm.hour * 60 + hm.minute) * 60000 - RETRY_LEAD_MS : -Infinity;
+}
+
+// ── THE PROVIDER IS BACK: WIN THE DAY BACK, NOBODY RE-RUNS ANYTHING ──────────
+// 5–10 Nov 2026 the 06:00 and 07:00 runs were refused by Gemini (prepaid
+// credits depleted) and, being finished, would not run again until the next
+// morning, whenever the balance was topped up. Every 20 minutes until the
+// last cutoff this asks, with one tiny text request, whether Gemini answers.
+// While it is still refused (402/429), the probe costs nothing and nothing
+// else happens. Once it answers, any run today that made nothing ONLY because
+// the provider refused is fired again through its OWN Cloud Scheduler job, so
+// it runs with its own memory and timeout, and through its own claim (which
+// re-checks everything in a transaction). The posting rhythm does not move:
+// the run assigns the same slots it would have at 06:00/07:00.
+const SOCIAL_RETRY_JOBS = {
+  daily: "firebase-schedule-socialDailyAutopilot-europe-west1",
+  still: "firebase-schedule-socialStillAutopilot-europe-west1",
+};
+async function geminiAnswers(apiKey) {
+  // The cheapest call that is refused exactly like an image generation when
+  // the balance is dry: a two-token text reply from the lite model.
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify({ contents: [{ parts: [{ text: "ok" }] }], generationConfig: { maxOutputTokens: 2 } }),
+    signal: AbortSignal.timeout(30000),
+  });
+  return { ok: res.ok, status: res.status };
+}
+async function runSchedulerJob(job) {
+  const { access_token: token } = await admin.credential.applicationDefault().getAccessToken();
+  const project = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || "marathon-club";
+  const res = await fetch(`https://cloudscheduler.googleapis.com/v1/projects/${project}/locations/europe-west1/jobs/${job}:run`, {
+    method: "POST", headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`scheduler ${job}: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+}
+
+exports.socialAutopilotRetry = onSchedule(
+  {
+    schedule: "20,40 7-17 * * *",   // after the 07:00 still has had time to finish; last at 17:40
+    timeZone: "Africa/Johannesburg",
+    region: "europe-west1",
+    secrets: [geminiApiKey],
+    memory: "256MiB",
+    timeoutSeconds: 120,
+  },
+  async () => {
+    if (!SOCIAL_AUTOPILOT_ENABLED) return;
+    const db = admin.database();
+    const nowMs = Date.now();
+    const saDate = saDateForUsage(nowMs);
+    const [daily, still, policy] = await Promise.all([
+      db.ref(`social_autopilot_log/${saDate}`).once("value").then((s) => s.val()),
+      db.ref(`social_still_log/${saDate}`).once("value").then((s) => s.val()),
+      loadSocialPolicy(db),
+    ]);
+    // Nothing while either run is generating: the still must start AFTER the
+    // reel is written, or its "used" scan misses the reel's product (architect review, S3).
+    if (socialRecovery.inFlight(daily, nowMs) || socialRecovery.inFlight(still, nowMs)) return;
+    // The same test the claim will make, so the probe only runs on a day that needs it.
+    const due = [];
+    if (socialRecovery.sameDayRetryClaim(daily, { kind: "daily", nowMs, cutoffMs: dailyRetryCutoffMs(policy, nowMs) })) due.push("daily");
+    if (socialRecovery.sameDayRetryClaim(still, { kind: "still", nowMs, cutoffMs: stillRetryCutoff(nowMs) })) due.push("still");
+    if (!due.length) return;
+
+    let probe;
+    try { probe = await geminiAnswers(geminiApiKey.value()); } catch (err) { probe = { ok: false, status: String(err && err.message).slice(0, 60) }; }
+    await db.ref(`social_health/retry/${saDate}`).update({ checkedAt: nowMs, due, probe: probe.status });
+    if (!probe.ok) {
+      // 402/429 is the expected "still refused". Anything else means the probe
+      // itself is broken (model renamed, key revoked): recorded so the Mac mini
+      // mailer emails it, never silently retrying nothing.
+      // A 5xx or a network blip is the provider still down, not a broken probe.
+      const broken = Number.isInteger(probe.status) && probe.status >= 400 && probe.status < 500 && probe.status !== 402 && probe.status !== 429;
+      await db.ref(`social_health/retry/${saDate}/probeBroken`).set(broken ? String(probe.status) : null);
+      console.log(`socialAutopilotRetry ${saDate}: ${due.join("+")} still refused today; Gemini answers ${probe.status}, so not retrying yet`);
+      return;
+    }
+    // ONE run per tick, daily first. The still keeps the reel's products out
+    // by scanning today's posts, so it must start after the reel is written;
+    // the next tick (20 minutes later) fires it.
+    for (const kind of due.slice(0, 1)) {
+      try {
+        await runSchedulerJob(SOCIAL_RETRY_JOBS[kind]);
+        console.warn(`socialAutopilotRetry ${saDate}: Gemini answers again — fired the ${kind} run`);
+        await db.ref(`social_health/retry/${saDate}`).update({ [`fired/${kind}`]: nowMs, fireError: null, probeBroken: null });
+      } catch (err) {
+        console.error(`socialAutopilotRetry ${saDate}: could not fire the ${kind} run: ${err && err.message}`);
+        await db.ref(`social_health/retry/${saDate}/fireError`).set(String(err && err.message).slice(0, 300));
+      }
+    }
+  }
+);
+
 exports.socialDailyAutopilot = onSchedule(
   {
     schedule: "0 6 * * *",
@@ -5684,16 +5839,22 @@ exports.socialDailyAutopilot = onSchedule(
     // outbox's and publish.mjs's own stale-claim reclaims.
     const CLAIM_STALE_MS = 40 * 60 * 1000;   // the 1800s (30 min) timeout above, plus margin
     const claimRef = db.ref(`social_autopilot_log/${saDate}`);
+    // A day the provider refused may be run again before its first slot
+    // (socialRecovery.sameDayRetryClaim; fired by socialAutopilotRetry).
+    const retryCutoffMs = dailyRetryCutoffMs(await loadSocialPolicy(db), nowMs);
     const claim = await claimRef.transaction((cur) => {
       if (cur === null) return { startedAt: nowMs };
       if (!cur.finishedAt && nowMs - Number(cur.startedAt || 0) > CLAIM_STALE_MS) {
         return { startedAt: nowMs, reclaimedFrom: cur.startedAt };
       }
-      return undefined;
+      return socialRecovery.sameDayRetryClaim(cur, { kind: "daily", nowMs, cutoffMs: retryCutoffMs });
     });
     if (!claim.committed) {
       console.log(`socialDailyAutopilot: ${saDate} already ran or is running — skipping`);
       return;
+    }
+    if (claim.snapshot.val()?.retries) {
+      console.warn(`socialDailyAutopilot: ${saDate} retry ${claim.snapshot.val().retries} — the morning run was refused by the provider (${claim.snapshot.val().refusedWith})`);
     }
     if (claim.snapshot.val()?.reclaimedFrom) {
       console.warn(`socialDailyAutopilot: reclaimed an abandoned ${saDate} run started at ${new Date(claim.snapshot.val().reclaimedFrom).toISOString()}`);
@@ -6004,10 +6165,12 @@ exports.socialStillAutopilot = onSchedule(
     }
 
     // One run per day, claimed, with the same staleness escape as the reels.
+    const stillRetryCutoffMs = stillRetryCutoff(nowMs);
     const claim = await logRef.transaction((cur) => {
       if (cur === null) return { startedAt: nowMs };
       if (!cur.finishedAt && nowMs - Number(cur.startedAt || 0) > 40 * 60 * 1000) return { startedAt: nowMs, reclaimedFrom: cur.startedAt };
-      return undefined;
+      // A day the provider refused may be run again before 14:30 (socialAutopilotRetry).
+      return socialRecovery.sameDayRetryClaim(cur, { kind: "still", nowMs, cutoffMs: stillRetryCutoffMs });
     });
     if (!claim.committed) { console.log(`socialStillAutopilot: ${saDate} already ran or is running — skipping`); return; }
 

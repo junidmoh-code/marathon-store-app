@@ -650,3 +650,8 @@ html[data-sky="on"] #root .sky-shellbar ~ * :is([style^="padding: 50px "], [styl
 html .sky-header .sky-round.sky-backgrid.sky-backgrid--back { display: inline-flex; align-items: center; justify-content: center;
   width: auto !important; min-width: 46px; padding: 0 13px 0 10px !important; gap: 3px; border-radius: 999px; }
 html .sky-round svg.sky-backgrid__chev { width: 14px; height: 14px; min-width: 14px; min-height: 14px; flex: 0 0 auto; color: var(--sky-navy); }
+
+/* "UNAVAILABLE" on a Store Assistant card (every size out at the shop's own
+   hub — Pine / Concrete; from main #878): a solid light pill, navy text. */
+.sky-unavail{position:absolute;bottom:10px;right:10px;z-index:3;padding:4px 9px;border-radius:999px;background:var(--sky-glass-solid);border:1px solid #fff;color:var(--sky-ink);font:800 10.5px/1 var(--sky-font);letter-spacing:.06em;box-shadow:0 2px 8px rgba(10,60,140,.16)}
+.sky-unavail--inline{position:static;display:inline-block;margin-left:6px;vertical-align:middle}

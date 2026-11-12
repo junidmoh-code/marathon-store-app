@@ -186,10 +186,10 @@ describe("a genuine immediate Nedbank payment confirms ONCE; a resend never re-f
 });
 
 describe("what is NOT confirmed", () => {
-  it("a future-dated (scheduled) payment refuses even when the channel says immediate", () => {
+  it("a payment dated BEYOND the next business day (scheduled) refuses even when the channel says immediate", () => {
     const later = swap("Date of Payment : 27/10/2026", "Date of Payment : 30/10/2026", IMMEDIATE);
     const { timing, record } = decide(later);
-    expect(timing.reason).toMatch(/scheduled \/ future-dated/);
+    expect(timing.reason).toBe("Payment dated 2026-10-30 — a later day than 2026-10-27, a business day: a scheduled payment, not treated as settled.");
     expect(record.outcome).toBe("refused-not-immediate");
   });
   it("a payment into someone else's account refuses", () => {
@@ -286,9 +286,14 @@ describe("the 27 Oct R350, settled by hand by Junid, can never re-float", () => 
     const plan = settledFingerprintPlan({ refusedKey: KEY_A, refused: { ...view.refused, amountCents: 141000 }, spenderKey: MANUAL_KEY, spender: manual });
     expect(plan.ok).toBe(false);
   });
-  it("refuses a forgery's record, a record that already had a reader, and an unreadable document", () => {
+  it("refuses a forgery's record, a record its reader already READ (it has a bank id), another reader's refusal, and an unreadable document", () => {
     expect(rereadRefusal({ record: { ...refusedParse, auth: { verdict: "fail" } }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
-    expect(rereadRefusal({ record: { ...refusedParse, reader: "nedbank" }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
+    expect(rereadRefusal({ record: { ...refusedParse, reader: "nedbank", bankRef: "X1", amountCents: 35000 }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
+    expect(rereadRefusal({ record: { ...refusedParse, reader: "nedbank", amountCents: 35000 }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
+    expect(rereadRefusal({ record: { ...refusedParse, reader: "fnb" }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
+    // 7 Nov 2026: a refusal by a reader that existed but could not read the
+    // layout (reader set, no bank id, no amount) re-reads by that same reader.
+    expect(rereadRefusal({ record: { ...refusedParse, reader: "nedbank" }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(true);
     expect(rereadRefusal({ record: { ...refusedParse, outcome: "refused-not-immediate" }, readerId: "nedbank", parse, docText, fetched: FETCHED }).ok).toBe(false);
     expect(rereadRefusal({ record: refusedParse, readerId: "nedbank", parse: { ok: false, reason: "x" }, docText, fetched: FETCHED }).ok).toBe(false);
   });

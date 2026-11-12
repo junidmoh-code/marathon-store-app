@@ -59,6 +59,7 @@
 
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } from "./centralFed";
+import { concreteDivisionPolicy, divisionTarget, isDivisionLocation, isDivisionFootwear, divisionNeverKeeps, hub3Refuses } from "./concreteDivision";
 import { SEED_REGISTRY, autoRouteAllowed } from "../../utils/networkRegistry";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 
@@ -302,6 +303,10 @@ export function storeCarries(stock, loc, pid) {
 
 // refill-engine.cjs:467 — the whole precedence, in its load-bearing order.
 export function resolveTarget({ targets, config, products, stock, network }, dest, pid, size) {
+  // Above every row, as the engine (refill-engine.cjs resolveTarget): Concrete
+  // never keeps perfume; with the division key on, Hub 3 keeps no non-footwear.
+  if (divisionNeverKeeps(dest, products?.[pid])) return null;
+  if (concreteDivisionPolicy(config) && hub3Refuses(dest, products?.[pid])) return null;
   const explicit = targets?.[dest]?.[pid]?.[engineSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     const rp = explicit.reorderPoint;
@@ -317,6 +322,14 @@ export function resolveTarget({ targets, config, products, stock, network }, des
   // above the category policy and the kill switch. With no registry handed
   // in, the seed answers (as the engine does); the Central route must be open.
   {
+    // The Concrete division answers before central-fed, exactly as the engine
+    // does. This screen has no seats node, so a shop's own cell stands in for
+    // its seat (divisionShopCarries); Hub 3 keeps no non-footwear at all.
+    const dvPolicy = isDivisionLocation(dest) && products?.[pid] && !isDivisionFootwear(products[pid]) ? concreteDivisionPolicy(config) : null;
+    if (dvPolicy) {
+      const dv = divisionTarget({ policy: dvPolicy }, dest, pid, size, products, stock);
+      if (dv !== undefined) return dv;
+    }
     const cfNet = network || SEED_REGISTRY;
     const cfN = centralFedPerSize(config, cfNet, dest);
     if (cfN !== null && centralFedIsClothing(products?.[pid]) && autoRouteAllowed(cfNet, "central", dest)) {

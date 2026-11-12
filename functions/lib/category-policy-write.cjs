@@ -61,10 +61,12 @@ const {
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
 const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
   FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
-const { encodeSizeKey, resolveTarget, policyCategoryKey } = require("./refill-engine.cjs");
+const { encodeSizeKey, resolveTarget, policyCategoryKey, maskUntrustedStock } = require("./refill-engine.cjs");
 const { loadNetwork } = require("./network-load.cjs");
 const { CENTRAL_FED_KEY, CENTRAL_FED_MAX, centralFedPerSize } = require("./central-fed.cjs");
 const CENTRAL_FED_PATH = `config/refillEngine/${CENTRAL_FED_KEY}`;
+const { CONCRETE_DIVISION_KEY, concreteDivisionPolicy, divisionContext, divisionKeepCounts, DIVISION_LOCATIONS, SEATS_PATH } = require("./concrete-division.cjs");
+const CONCRETE_DIVISION_PATH = `config/refillEngine/${CONCRETE_DIVISION_KEY}`;
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -925,7 +927,23 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
       footwearDrift: gk === FOOTWEAR_GROUP_KEY ? footwearDrift : [],
     });
   }
-  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift };
+  // The Concrete division's keeps (Hub 3, Pine, Concrete): counted through the
+  // engine's own target questions, on the same trust-masked stock it reads.
+  // Keyed reads of those three locations only, added to what is already held.
+  let divisionKeeps = null;
+  if (concreteDivisionPolicy(config)) {
+    const seats = {};
+    for (const loc of DIVISION_LOCATIONS) {
+      if (!stock[loc]) stock[loc] = await readMapPaged(db, `stock/${loc}`);
+      seats[loc] = await readMapPaged(db, `${SEATS_PATH}/${loc}`);
+    }
+    if (!openIndex.hub3) openIndex.hub3 = await readMapPaged(db, "refill_engine/open/hub3");
+    const { stock: stockView } = maskUntrustedStock(stock, network);
+    // Hub 3's counted view decides which sizes it serves — as the scan does.
+    const division = divisionContext({ config, rawStock: stock, seats, openIndex, heldLines: null, refillRequests: null, hub3View: stockView.hub3, nowMs: Date.now() });
+    divisionKeeps = divisionKeepCounts({ division, stockView, products });
+  }
+  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift, divisionKeeps };
 }
 
 // The audit trail, newest first, bounded. `.indexOn: ["at"]` is part of the
@@ -977,7 +995,8 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // …and the registry-routed destinations: a location going live must not be
     // served the list from before it did.
     const key = canonical({ policy: cfg.categoryPolicy ?? null, groups: cfg.policyGroups ?? null,
-      cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null, routed: policyRouting(cfg, network).added });
+      cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null, routed: policyRouting(cfg, network).added,
+      division: cfg[CONCRETE_DIVISION_KEY] ?? null });
     const fresh = !!censusCache && censusCache.key === key && (nowMs - censusCache.at) < CENSUS_TTL_MS;
     const census = fresh && d.refresh !== true
       ? censusCache.payload
@@ -997,6 +1016,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       // stores it may be set for (registry stores config.routes does not name).
       centralFedClothing: isPlainObject(cfg[CENTRAL_FED_KEY]) ? cfg[CENTRAL_FED_KEY] : null,
       centralFedStores: centralFedCandidates(cfg, network),
+      concreteDivision: isPlainObject(cfg[CONCRETE_DIVISION_KEY]) ? cfg[CONCRETE_DIVISION_KEY] : null,
       history: await readHistory(db),
       serverNowMs: nowMs,
     };
@@ -1045,6 +1065,45 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       throw httpsError("internal", "The number was written but did not read back as expected.", { historyId: historyRef.key, written: written ?? null });
     }
     return { ok: true, action: "setCentralFed", location: loc, before, after, historyId: historyRef.key, history: await readHistory(db) };
+  }
+
+  // ── THE CONCRETE DIVISION — the shop keep (lib/concrete-division.cjs) ─────
+  // One object at config/refillEngine/concreteDivision; null deletes it (the
+  // rollback). Same discipline as setCentralFed. Since 12 Nov 2026 (Junid) it
+  // holds exactly one leg, { shopOnly: { perSize, oneSize } }: the Hub 3 keep,
+  // its switch and the from-Hub 3 shop keep are gone, and are refused here so
+  // an old screen cannot write them back.
+  if (d.action === "setConcreteDivision") {
+    if (!("policy" in d)) throw httpsError("invalid-argument", "policy is required — send `policy: null` to remove it.");
+    const after = d.policy === null ? null : d.policy;
+    if (after !== null) {
+      const n = concreteDivisionPolicy({ [CONCRETE_DIVISION_KEY]: after });
+      const onlyShop = isPlainObject(after) && Object.keys(after).length === 1 && isPlainObject(after.shopOnly)
+        && Object.keys(after.shopOnly).every((k) => k === "perSize" || k === "oneSize");
+      if (!n || !onlyShop) {
+        throw httpsError("invalid-argument", "The division keeps one number pair: the shop keep per size and per design, each a whole number from 1 to 99. Hub 3 keeps footwear only.");
+      }
+    }
+    const before = isPlainObject(cfg[CONCRETE_DIVISION_KEY]) ? cfg[CONCRETE_DIVISION_KEY] : null;
+    if (dryRun) return { ok: true, dryRun: true, action: "setConcreteDivision", before, after };
+    if (sameValue(before, after)) return { ok: true, action: "setConcreteDivision", noChange: true, before, after };
+    if (d.expectedBefore !== undefined && !sameValue(before, d.expectedBefore)) {
+      throw httpsError("failed-precondition", "These numbers changed while this was open. Close and re-open it to see the current values.", { drift: true, live: before });
+    }
+    const historyRef = db.ref(HISTORY_PATH).push();
+    await historyRef.set({ kind: "concreteDivision", at: nowMs, by: callerEmail, byUid: callerUid || null, before, after, status: "pending" });
+    const liveNow = await val(db, CONCRETE_DIVISION_PATH);
+    if (!sameValue(liveNow ?? null, before)) {
+      await historyRef.update({ status: "aborted_on_drift", liveAtAbort: liveNow ?? null });
+      throw httpsError("failed-precondition", "These numbers changed while this was being saved. Nothing was written.", { drift: true, live: liveNow ?? null, historyId: historyRef.key });
+    }
+    await db.ref(CONCRETE_DIVISION_PATH).set(after);
+    invalidateCensusCache();
+    const written = await val(db, CONCRETE_DIVISION_PATH);
+    const verified = sameValue(written ?? null, after);
+    await historyRef.update({ status: verified ? "applied" : "unverified", verifiedAt: nowMs });
+    if (!verified) throw httpsError("internal", "The numbers were written but did not read back as expected.", { historyId: historyRef.key, written: written ?? null });
+    return { ok: true, action: "setConcreteDivision", before, after, historyId: historyRef.key, history: await readHistory(db) };
   }
 
   // ── THE EXPLICIT-ROW LIST — "N with their own rows", opened for editing ───

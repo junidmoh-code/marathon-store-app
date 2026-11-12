@@ -286,14 +286,15 @@ describe("the poller wires the gate on the bank's date (source scan)", () => {
     // claim (the message stays unread, retried), the heartbeat says INVALID,
     // and the slip path keeps running — config() itself never fails on it.
     const guard = src.search(/if \(!cfg\.eftPaymentDateCutoff\.ok\) \{\s*throw new Error\(/);
-    const firstDecision = src.indexOf("const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress })");
+    const firstDecision = src.indexOf("verdict: authenticationVerdict({ headerLines: parsed.headerLines, fromAddress })", src.indexOf("async function handleEftMessage")); // inside the sender gate since 10 Nov 2026
     expect(guard).toBeGreaterThan(-1);
     expect(firstDecision).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(firstDecision);
     expect(src).toMatch(/eftPaymentDateCutoff: cfg\.eftPaymentDateCutoff\.ok \? cfg\.eftPaymentDateCutoff\.date : "INVALID"/);
     expect(src).not.toMatch(/fail\(`\$\{c\.reason\}/);
-    expect(src).toMatch(/paymentDateVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff \}\)/);
+    expect(src).toMatch(/datedVerdict\(\{ parsed: group\.parse, cutoff: cfg\.eftPaymentDateCutoff, account, floors: cfg\.eftAccountFloors\.floors \}\)/); // the global cutoff, then the account floor (10 Nov 2026)
     expect(src).not.toMatch(/paymentDateVerdict\([^)]*receivedAt/);
+    expect(src).not.toMatch(/datedVerdict\([^)]*receivedAt/);
     expect(src).toMatch(/message, verdict, parsed: group\.parse, account, timing, dated,/);
     expect(src).toMatch(/eftRefusedStale: count\("refused-stale-date"\)/);
   });

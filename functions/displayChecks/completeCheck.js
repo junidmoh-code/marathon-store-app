@@ -39,12 +39,14 @@ const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const {
   isTriggerStoreEnabled,
+  isWebsiteStripEnabled,
   stockSizeKey,
   saDateStringFromMs,
   saMonthOfDate,
   completionDecision,
   completionFlipMutation,
   isOnlinePickRecord,
+  isOnlineReturnRecord,
   DISPLAY_RESULTS,
   ONLINE_PICK_RESULTS,
   ONLINE_RETURN_RESULTS,
@@ -73,6 +75,7 @@ const ERROR_CODE = {
   "not-open": "failed-precondition",
   "bad-result": "invalid-argument",
   "wrong-kind": "invalid-argument", // a display verdict on an online pick, or the reverse
+  "store-off": "failed-precondition", // a display check at a store whose Display Checks are off (website strip only)
   "archive-failed": "unavailable", // RETRYABLE: flip committed but the durable copy didn't land — retry re-heals
 };
 
@@ -129,10 +132,15 @@ async function archiveAndLog(db, store, record) {
 //   { kind:"reject", code }
 //   { kind:"needs_override", stockQty }
 //   { kind:"ok", result, completedAt, overridden }
-async function runComplete(db, { store, key, checkId, result, override, actor, nowMs, storeName }) {
+async function runComplete(db, { store, key, checkId, result, override, actor, nowMs, storeName, websiteOnly = false }) {
   const saDate = saDateStringFromMs(nowMs);
   const activeRef = db.ref(`displayChecks_active/${store}/${key}`);
   const preRead = (await activeRef.get()).val();
+  // At a store with only its website strip on, a display-check record is not
+  // this callable's to close (it should not exist; if it does, it waits).
+  if (websiteOnly && preRead && !isOnlinePickRecord(preRead) && !isOnlineReturnRecord(preRead)) {
+    return { kind: "reject", code: "store-off" };
+  }
 
   // For a no-stock close, read the live stock cell for the soft-block (the till
   // proving the item exists is what contradicts the claim). Keyed read. NOTE: a
@@ -235,8 +243,16 @@ exports.completeDisplayCheck = onCall(
       throw new HttpsError("invalid-argument", "result must be 'confirmed', 'no_stock', 'handed' or 'not_found'.");
     }
     const network = await loadNetwork(admin.database());
-    if (!isTriggerStoreEnabled(store, network, await loadStoreSettings(admin.database(), store))) {
-      throw new HttpsError("failed-precondition", "Display Checks is not enabled for this store.");
+    const storeSettings = await loadStoreSettings(admin.database(), store);
+    // A store whose sale-driven Display Checks are off (Pine: not live) can
+    // still close WEBSITE lines on its strip (isWebsiteStripEnabled, Junid
+    // 12 Nov 2026) — but only website records: runComplete refuses any other.
+    let websiteOnly = false;
+    if (!isTriggerStoreEnabled(store, network, storeSettings)) {
+      if (!isWebsiteStripEnabled(store, network, storeSettings)) {
+        throw new HttpsError("failed-precondition", "Display Checks is not enabled for this store.");
+      }
+      websiteOnly = true;
     }
 
     const db = admin.database();
@@ -265,7 +281,7 @@ exports.completeDisplayCheck = onCall(
     };
 
     const out = await runComplete(db, {
-      store, key, checkId, result, override: override === true, actor, nowMs: Date.now(),
+      store, key, checkId, result, override: override === true, actor, nowMs: Date.now(), websiteOnly,
       storeName: locationName(network, store),
     });
     if (out.kind === "reject") {

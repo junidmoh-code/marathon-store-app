@@ -13,9 +13,9 @@
 // — confirmation (the write path) is PR 7.
 
 import { useEffect, useState } from "react";
-import { ref, onValue } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
-import { database, auth } from "../../firebase";
+import { auth } from "../../firebase";
+import { subscribeLivePath } from "../../utils/sharedLiveRead";
 import { saDateString } from "../../utils/serverTime";
 
 // Local mirror of App.jsx's useAuthReady — RTDB rejects reads before sign-in and
@@ -49,9 +49,11 @@ function useKeyedNode(path, enabled) {
   useEffect(() => {
     setState({ path, items: [], ready: false, error: null });
     if (!authReady || !enabled || !path) return;
-    const node = ref(database, path);
-    const unsub = onValue(
-      node,
+    // Shared and kept across a screen switch (utils/sharedLiveRead.js): the
+    // active index is 1.5 MB at the busiest store, and going to another tab
+    // and back used to download it again.
+    const unsub = subscribeLivePath(
+      path,
       (snap) => {
         const data = snap.val();
         const arr = data && typeof data === "object"

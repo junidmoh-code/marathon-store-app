@@ -25,6 +25,7 @@ const {
 const { paymentFingerprint, consumeFingerprintCheck, claimHolderCheck } = require("../lib/eft-fingerprint.cjs");
 const { settleDecision } = require("../lib/eft-settle.cjs");
 const { publicEftView, searchEftPool } = require("../lib/eft-pool.cjs");
+const { linkedCopySettleCheck } = require("../lib/eft-linked-copies.cjs");
 
 const ACTOR = { uid: "owner-uid", email: "gunidmoh@gmail.com", name: "Junid" };
 const ENTRY = { entryId: "ME-abc12345", reference: "Thabo 0821", amountCents: 55000, note: "Capitec, no email" };
@@ -145,19 +146,19 @@ test("the same reference and amount twice is a duplicate; the same entryId is a 
   assert.equal(manualDuplicateOf({ reference: "Thabo 0821", amountCents: 56000, entryId: "ME-second001" }, [[key, r]]), null, "a different amount is a different payment");
   const bankRec = { outcome: "recorded", status: "unmatched", amountCents: 100, reference: "X", reader: "fnb", bankRef: "5TG59DVQ", at: 1 };
   assert.equal(manualDuplicateOf({ reference: "X", amountCents: 100, entryId: "ME-second001" }, [["b", bankRec]]), null, "a bank payment is never a manual duplicate");
-  // The real notification lands AFTER the manual entry was spent: the search
-  // answers with the bank payment, warning that a manual twin was used.
+  // The real notification lands AFTER the manual entry was spent. The poller
+  // holds it at ingest (eft-linked-copies.cjs, 7 Nov 2026 evening); a pair
+  // recorded before that is warned about at the till and refused at the
+  // settle (linkedCopySettleCheck) — eftPoolSettle runs both checks.
   const spent = { ...r, status: "used", used: { at: 2000, sale: { receiptNumber: "S-9" } } };
   const bankTwin = { outcome: "recorded", status: "unmatched", amountCents: 55000, reference: "THABO 0821", reader: "capitec", bankRef: "ABCD1234", at: 3000 };
   const out = searchEftPool({ [key]: spent, b: bankTwin }, "thabo 0821");
   assert.equal(out.results[0].key, "b");
   assert.deepEqual(out.results[0].sameUsed, { at: 2000, receiptNumber: "S-9" });
-  // …and the SETTLE refuses it: one payment, two records, paid out once.
+  assert.equal(linkedCopySettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, spent], ["b", bankTwin]] }).code, "twin-used");
   const settleTwin = manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, spent], ["b", bankTwin]] });
-  assert.equal(settleTwin.ok, false);
-  assert.equal(settleTwin.code, "twin-used");
-  assert.equal(settleTwin.side, "manual-twin-used", "the server's log line keeps the side");
-  assert.match(settleTwin.message, /slip S-9/);
+  assert.equal(settleTwin.ok, true);
+  assert.equal(settleTwin.txnOverManualTwin, key);
   assert.equal(manualTwinSettleCheck({ poolKey: "b", record: bankTwin, siblings: [[key, r]] }).ok, true, "a WAITING manual twin does not block");
   const both = searchEftPool({ [key]: r, b: bankTwin }, "thabo 0821").results[0];
   assert.equal(both.key, "b", "both waiting: the bank's record is the answer");
@@ -171,11 +172,14 @@ test("the same reference and amount twice is a duplicate; the same entryId is a 
   assert.equal(rev.side, "bank-twin-used");
   assert.match(rev.message, /slip S-10/);
   assert.deepEqual(searchEftPool({ [key]: r, b: bankUsed }, "thabo 0821").results[0].sameUsed, { at: 4000, receiptNumber: "S-10" });
-  // ONE SENTENCE whichever side was typed by hand: the cashier cannot tell.
-  assert.equal(rev.message.replace("S-10", "S-9"), settleTwin.message);
-  for (const m of [rev.message, settleTwin.message]) assert.doesNotMatch(m, /by hand|manual|bank's/i);
-  // …but a bank payment that arrived BEFORE the entry is a different payment (last week's), never a twin.
-  const earlier = { ...bankUsed, at: 100, receivedAt: 100, bankTs: 100 };
+  // The sentence never says a side was typed by hand: the cashier cannot tell.
+  assert.doesNotMatch(rev.message, /manual|hand|Junid typed/i);
+  assert.doesNotMatch(rev.message, /by hand|manual|bank's/i);
+  // …but a bank payment from ANOTHER DAY (last week's) is a different payment, never a twin.
+  // (7 Nov 2026: the twin is the same SAST day, not merely "arrived before" —
+  // a same-day bank payment with the same reference and amount is the twin.)
+  const WEEK = 7 * 24 * 60 * 60 * 1000;
+  const earlier = { ...bankUsed, at: 1700 - WEEK, receivedAt: 1700 - WEEK, bankTs: 1700 - WEEK };
   assert.equal(manualTwinSettleCheck({ poolKey: key, record: r, siblings: [["b", earlier]] }).ok, true);
   assert.equal(searchEftPool({ [key]: r, b: earlier }, "thabo 0821").results[0].sameUsed, undefined);
   // ENTRY-TIME: the bank's own unmatched record is already there → no manual entry.
@@ -295,7 +299,9 @@ test("Junid's entry lands in the pool: recorded, unmatched, stamped, fingerprint
   assert.equal(db.reads[`eft_manual_entries/${logKey}`].status, "unmatched");
   assert.equal(db.reads[`eft_manual_entries/${logKey}`].reference, "THABO 0821");
   // The bank's own unmatched record for the same money in the tail: refused.
-  db.tail = { bank1: { outcome: "recorded", status: "unmatched", amountCents: 60000, reference: "OTHER 1", reader: "fnb", bankRef: "ABCD9999", at: 3 } };
+  // (Dated today: since 7 Nov 2026 only a bank payment within a day of the
+  // entry is "the same money" — see the identity tests below.)
+  db.tail = { bank1: { outcome: "recorded", status: "unmatched", amountCents: 60000, reference: "OTHER 1", reader: "fnb", bankRef: "ABCD9999", at: Date.now(), receivedAt: Date.now(), bankTs: Date.now() } };
   const bt = await rejects(eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-twin00001", reference: "other 1", amountCents: 60000 } }), "failed-precondition");
   assert.equal(bt.details.code, "bank-twin-waiting");
   db.tail = {};
@@ -303,11 +309,47 @@ test("Junid's entry lands in the pool: recorded, unmatched, stamped, fingerprint
   const again = await eftPoolManualEntry({ ...OWNER, data: ENTRY });
   assert.equal(again.already, true);
   assert.equal(again.key, key);
-  // The same money with a NEW entry id is refused while the first is in the pool.
+  // THE EXACT SAME ENTRY under a new entry id within seconds: an accidental
+  // double tap — answered with the first record, nothing new written.
   db.tail = { [key]: rec };
-  const dup = await rejects(eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second001" } }), "failed-precondition");
-  assert.equal(dup.details.code, "already-entered");
+  const tap = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second001" } });
+  assert.deepEqual({ ok: tap.ok, already: tap.already, doubleSubmit: tap.doubleSubmit, key: tap.key }, { ok: true, already: true, doubleSubmit: true, key });
   assert.equal(db.reads[`eft_pool/${manualEntryKeyOf("ME-second001")}`], undefined);
+  // The same reference and amount as a SEPARATE entry (Junid, 7 Nov 2026):
+  // accepted, with a warning — its own record, its own fingerprint.
+  const earlier = { ...rec, manualEntry: { ...rec.manualEntry, at: rec.manualEntry.at - 60 * 1000 } };
+  db.tail = { [key]: earlier };
+  // (That first entry's short submit lock has long expired in this story.)
+  for (const k of Object.keys(db.reads)) if (k.startsWith("eft_manual_submit_locks/")) db.reads[k] = { ...db.reads[k], at: db.reads[k].at - 60 * 1000 };
+  const second = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second002" } });
+  assert.equal(second.ok, true);
+  assert.equal(second.already, false);
+  assert.notEqual(second.key, key);
+  assert.equal(second.reference, "THABO 0821", "the same reference — no renaming to \"… 2\"");
+  assert.equal(second.warning.code, "similar-entry");
+  assert.equal(second.warning.key, key);
+  assert.match(second.warning.message, /SEPARATE payment/);
+  const secondRec = db.reads[`eft_pool/${second.key}`];
+  assert.equal(secondRec.status, "unmatched");
+  assert.notEqual(paymentFingerprint(secondRec), paymentFingerprint(rec), "each hand entry is its own record");
+  // A different note seconds later is a deliberate entry, not a double tap.
+  db.tail = { [key]: rec };
+  const noted = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second003", note: "second payment" } });
+  assert.equal(noted.already, false);
+  assert.equal(noted.warning.code, "similar-entry");
+  // TWO TAPS IN FLIGHT AT ONCE: the tail does not yet show the first, but its
+  // submit lock does — the second is answered with the first.
+  db.tail = {};
+  const inFlight = await eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second004", note: "second payment" } });
+  assert.deepEqual({ already: inFlight.already, doubleSubmit: inFlight.doubleSubmit, key: inFlight.key }, { already: true, doubleSubmit: true, key: noted.key });
+  assert.equal(db.reads[`eft_pool/${manualEntryKeyOf("ME-second004")}`], undefined);
+  // A lock whose holder has NO record (still writing, or its write failed):
+  // the tap is refused, never written beside it (CodeRabbit).
+  const lockKey = Object.keys(db.reads).find((k) => k.startsWith("eft_manual_submit_locks/") && db.reads[k].key === noted.key);
+  db.reads[lockKey] = { key: "f".repeat(40), at: Date.now() };
+  const busy = await rejects(eftPoolManualEntry({ ...OWNER, data: { ...ENTRY, entryId: "ME-second005", note: "second payment" } }), "aborted");
+  assert.equal(busy.details.code, "submit-in-progress");
+  assert.equal(db.reads[`eft_pool/${manualEntryKeyOf("ME-second005")}`], undefined);
 });
 
 test("a cashier consumes it through the ORDINARY settle, once; the log says who, where, for whom", async () => {
@@ -347,7 +389,7 @@ test("the review list is Junid's alone and reads one bounded page by key order",
   db.queries = [];
   const out = await eftPoolManualEntry({ ...OWNER, data: { action: "list" } });
   assert.equal(out.ok, true);
-  assert.equal(out.counts.entered, 1);
+  assert.equal(out.counts.entered, 3, "the first entry and the two separate same-reference entries above");
   const q = db.queries.find((x) => x.path === "eft_manual_entries");
   assert.deepEqual(q.cs.map((c) => c[0]), ["orderByKey", "limitToLast"], "no index needed, never the node");
 });
@@ -357,6 +399,17 @@ test("the review list is Junid's alone and reads one bounded page by key order",
 // cashier matches, parks, or asks Junid to enter the payment by hand. That
 // hand entry is still Junid's alone, and a cashier AT CONCRETE consumes it
 // through the ordinary consume-once settle like any matched payment.
+test("CONCRETE: its staff still cannot hand-enter an EFT — refused on the server before anything is read (8 Nov 2026)", async () => {
+  db.reads["eft_enforcement"] = { stores: { concrete: true, pe: true, trophy: true }, updatedAt: 1, updatedBy: "gunidmoh@gmail.com" };
+  const entry = { entryId: "ME-concrt02", reference: "Concrete 0832", amountCents: 41000, note: "typed at Concrete", storeId: "concrete" };
+  for (const who of [CASHIER, REVIEWER, SHARED]) {
+    db.readLog = [];
+    const e = await rejects(eftPoolManualEntry({ ...who, data: entry }), "permission-denied");
+    assert.equal(e.details.code, "owner-only");
+    assert.deepEqual(db.readLog, [], "no read, no transaction, nothing");
+  }
+});
+
 test("CONCRETE: Junid's hand entry is the escape hatch — owner-only, and spent once by a Concrete till", async () => {
   db.reads["eft_enforcement"] = { stores: { concrete: true, pe: true, trophy: true }, updatedAt: 1, updatedBy: "gunidmoh@gmail.com" };
   const entry = { entryId: "ME-concrt01", reference: "Concrete 0831", amountCents: 32000, note: "Concrete, no email yet" };
@@ -373,4 +426,37 @@ test("CONCRETE: Junid's hand entry is the escape hatch — owner-only, and spent
   assert.equal(db.reads[`eft_pool/${key}`].status, "used");
   assert.equal(db.reads[`eft_pool/${key}`].used.storeId, "concrete");
   assert.equal((await rejects(settle("C-2"), "failed-precondition")).details.code, "already-used");
+});
+
+// ─── PINE ENFORCED (10 Nov 2026): SAME AS CONCRETE — STAFF REFUSED, OWNER FLOAT SPENDS ONCE ─
+// REGRESSION PINS, not proof of the enforcement change: hand entry is
+// owner-only at every store and settle has no per-store gate, so these hold
+// with or without Pine on the list. They pin what Junid asked to keep true at
+// Pine. The enforcement itself is proven in eft-enforce.test.cjs (PINE: …).
+const LIVE_AFTER_PINE = { stores: { concrete: true, pe: true, pine: true, trophy: true }, updatedAt: 1, updatedBy: "gunidmoh@gmail.com" };
+
+test("PINE: a STAFF hand entry at Pine is refused on the server before anything is read", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  const entry = { entryId: "ME-pine0002", reference: "Pine 0412", amountCents: 27500, note: "typed at Pine", storeId: "pine" };
+  for (const who of [CASHIER, REVIEWER, SHARED]) {
+    db.readLog = [];
+    const e = await rejects(eftPoolManualEntry({ ...who, data: entry }), "permission-denied");
+    assert.equal(e.details.code, "owner-only");
+    assert.deepEqual(db.readLog, [], "no read, no transaction, nothing");
+  }
+});
+
+test("PINE: Junid's own hand-entered float is usable at a Pine till — completes the sale once", async () => {
+  db.reads["eft_enforcement"] = LIVE_AFTER_PINE;
+  const entry = { entryId: "ME-pine0001", reference: "Pine 0411", amountCents: 18500, note: "Pine, no email yet" };
+  db.tail = {};
+  const out = await eftPoolManualEntry({ ...OWNER, data: entry });
+  assert.equal(out.ok, true);
+  const key = out.key;
+  db.tail = { [key]: db.reads[`eft_pool/${key}`] };
+  const settle = (attemptId) => eftPoolSettle({ ...CASHIER, data: { action: "settle", poolKey: key, attemptId, appliedCents: 18500, storeId: "pine", tillId: "till-1", customerId: "0821234567", confirmedCustomerId: "0821234567" } });
+  assert.equal((await settle("P-1")).ok, true);
+  assert.equal(db.reads[`eft_pool/${key}`].status, "used");
+  assert.equal(db.reads[`eft_pool/${key}`].used.storeId, "pine");
+  assert.equal((await rejects(settle("P-2"), "failed-precondition")).details.code, "already-used", "one float, one slip");
 });
