@@ -188,7 +188,9 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
         const inCart = cart[p.id]?.qty || 0;
         const price = RANDS(p.retailPrice);
         return (
-          <div key={p.id} className="lpv__card" data-in={inCart ? "1" : undefined} onClick={() => addToCart(p)}>
+          <div key={p.id} className="lpv__card" data-in={inCart ? "1" : undefined} onClick={() => addToCart(p)}
+               role="button" tabIndex={0} aria-label={`Add ${p.name} to the print queue`}
+               onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); addToCart(p); } }}>
             {inCart > 0 && <div className="lpv__qn">{inCart}</div>}
             <div className="lpv__ph">
               {p.photoUrl

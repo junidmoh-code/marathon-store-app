@@ -172,8 +172,17 @@ function guardNetwork(page, where) {
 }
 
 // A harness already serving on the port is reused (it is not ours to stop).
+// It must BE the offline harness: a plain Vite server on the port would serve
+// dev/sky-app.html with the real Firebase modules (CodeRabbit on #840).
 let vite = null;
-try { if ((await fetch(BASE)).ok) console.log(`reusing the harness on :${PORT}`); } catch {
+const isHarness = async () => {
+  // Only the harness config resolves the app's firebase imports to dev/fake-firebase/.
+  try { const r = await fetch(`http://localhost:${PORT}/src/firebase.js`); return r.ok && (await r.text()).includes("/dev/fake-firebase/"); } catch { return false; }
+};
+let answered = false;
+try { answered = (await fetch(BASE)).ok; } catch { /* nothing there */ }
+if (answered && !(await isHarness())) { console.error(`:${PORT} is serving something that is not the offline harness — refusing to run against it`); process.exit(2); }
+if (answered) console.log(`reusing the harness on :${PORT}`); else {
   vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "--config", "dev/vite.harness.config.mjs", "--port", String(PORT), "--strictPort"], { stdio: ["pipe", "ignore", "inherit"] });
 }
 const stop = () => { try { vite?.kill(); } catch { /* gone */ } };
@@ -194,11 +203,14 @@ try {
       guardNetwork(page, where);
       try {
         await land(page, r);
-        const m = await page.evaluate(measure, { audit: AUDIT, sel: ROW_SELECTOR });
+        // Untagged pill groups are always measured: one that wraps fails the run
+        // (CodeRabbit on #840) — --audit only adds the listing at the end.
+        const m = await page.evaluate(measure, { audit: true, sel: ROW_SELECTOR });
         const bad = m.rows.filter((x) => x.lines > 1);
         check(bad.length === 0, `${where}: ${m.rows.length} chip/tab row${m.rows.length === 1 ? "" : "s"} on one line${bad.length ? ` — WRAPPED: ${bad.map((b) => `${b.label} (${b.lines} lines)`).join("; ")}` : ""}`);
         if (LIST) for (const x of m.rows) console.log(`        · ${x.label} — ${x.kids} children, ${x.lines} line${x.lines === 1 ? "" : "s"}`);
         if (m.untagged.length) auditOut.push(`${where}: ${m.untagged.join("; ")}`);
+        check(m.untagged.length === 0, `${where}: no untagged pill group wraps${m.untagged.length ? ` — WRAPPED: ${m.untagged.join("; ")}` : ""}`);
         if (SHOTS && name === "chromium") await page.screenshot({ path: `${SHOTS}/${r.key}-${s.w}.png` });
       } catch (e) { check(false, `${where}: ${e.message.split("\n")[0]}`); }
       await ctx.close();
