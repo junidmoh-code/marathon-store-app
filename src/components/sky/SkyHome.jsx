@@ -217,16 +217,14 @@ html[data-sky="on"] #root .sky-hub__livecard button[style]:hover{background:rgba
   /* flex, not grid: an unfinished last row sits centred, so the hub stays balanced */
   .sky-hub__grid{display:flex;flex-wrap:wrap;justify-content:center;gap:calc(1.45 * var(--u)) calc(1.58 * var(--u))}
   .sky-hub__grid>.sky-mini{flex:0 0 calc((100% - 3 * 1.58 * var(--u)) / 4);width:calc((100% - 3 * 1.58 * var(--u)) / 4)}
-  .sky-mini{height:calc(7.12 * var(--u));min-height:0;padding:0 calc(1.2 * var(--u)) 0 calc(2.27 * var(--u));gap:calc(1.7 * var(--u));border-radius:calc(1.39 * var(--u));
-    background:linear-gradient(180deg,rgba(190,228,255,.13),rgba(120,180,240,.07));border:1.5px solid rgba(200,235,255,.42);
-    box-shadow:inset 0 1px 0 rgba(220,240,255,.35),0 10px 26px rgba(0,30,90,.14);
-    -webkit-backdrop-filter:blur(16px) saturate(125%) brightness(.94);backdrop-filter:blur(16px) saturate(125%) brightness(.94);text-shadow:0 1px 6px rgba(0,40,110,.3)}
-  .sky-mini:hover{background:linear-gradient(180deg,rgba(200,235,255,.2),rgba(140,195,245,.12))}
+  /* Geometry only: the glass, rim, shadow and text colour are the phone's
+     (Junid 12 Nov: identical tokens at every breakpoint). */
+  .sky-mini{height:calc(7.12 * var(--u));min-height:0;padding:0 calc(1.2 * var(--u)) 0 calc(2.27 * var(--u));gap:calc(1.7 * var(--u));border-radius:calc(1.39 * var(--u))}
   .sky-mini__ic{width:calc(2.65 * var(--u));height:calc(2.65 * var(--u))}
-  .sky-mini__ic svg{width:calc(2.65 * var(--u)) !important;height:calc(2.65 * var(--u)) !important;stroke-width:1.9;filter:drop-shadow(0 1px 6px rgba(0,40,110,.3)) !important}
+  .sky-mini__ic svg{width:calc(2.65 * var(--u)) !important;height:calc(2.65 * var(--u)) !important;stroke-width:1.9}
   .sky-mini__nm{font-size:calc(1.2 * var(--u));font-weight:700;letter-spacing:-.015em;line-height:1.15;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .sky-mini__bd{position:absolute;right:calc(1.51 * var(--u));top:50%;transform:translateY(-50%);min-width:0;height:calc(1.89 * var(--u));padding:0 calc(.76 * var(--u));border-radius:999px;
-    font-size:calc(1.01 * var(--u));font-weight:800;color:#0b2a52;background:#fff;border:0;box-shadow:0 2px 8px rgba(10,60,140,.16)}
+    font-size:calc(1.01 * var(--u));font-weight:800}
   .sky-mini[data-corner="1"] .sky-mini__nm{overflow:visible}
   .sky-mini:has(.sky-mini__bd):not([data-corner="1"]) .sky-mini__nm{padding-right:calc(4.2 * var(--u))}
   .sky-mini[data-corner="1"] .sky-mini__bd{top:calc(.69 * var(--u));right:calc(.76 * var(--u));transform:none}

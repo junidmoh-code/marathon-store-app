@@ -71,7 +71,10 @@ export const FIXTURE = {
   social_style_refs: {},
   social_policy: { captionMax: 2200 },
   social_publisher: { heartbeatAt: T0 },
-  users: { "harness-owner": { name: "Junid", email: "gunidmoh@gmail.com", permissions: {}, stockRole: "admin" } },
+  users: {
+    "harness-owner": { name: "Junid", email: "gunidmoh@gmail.com", permissions: {}, stockRole: "admin" },
+    "harness-staff": { name: "Staff", email: "staff@harness.invalid", username: "staff", permissions: ["store_assistant"] },
+  },
   orders: {},
   settings: {},
   config: {},
