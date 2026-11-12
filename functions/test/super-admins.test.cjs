@@ -81,6 +81,7 @@ test("Shopify publishing (maySetPublishing): Jafer, Junid pass; staff fails", ()
   assert.equal(maySetPublishing(tok(JAFER), {}), true);
   assert.equal(maySetPublishing(tok(JUNID), {}), true);
   assert.equal(maySetPublishing(tok(STAFF), {}), false);
+  assert.equal(maySetPublishing(tok(JAFER, { email_verified: false }), {}), false, "unverified super-admin email is nobody special");
 });
 
 test("style-code access: Jafer, Junid pass as super; staff with no permission fails", async () => {

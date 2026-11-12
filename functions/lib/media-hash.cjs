@@ -23,7 +23,7 @@
 // file within the same few minutes and both keep it.
 "use strict";
 
-const { isSuperAdmin } = require("./super-admins.cjs");
+const { isSuperAdminToken } = require("./super-admins.cjs");
 const MEDIA_HASH_ROOT = "shopify_sync/_mediaHash";
 const PID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const SHA_RE = /^[0-9a-f]{64}$/;
@@ -64,7 +64,7 @@ function decideClaim({ pid, existing, ownerUses, now = Date.now() }) {
 /** May this signed-in user edit Shopify publishing? Mirrors the live /shopify_publish/$pid write rule. */
 function maySetPublishing(token, userRecord) {
   if (!token || token.firebase?.sign_in_provider === "anonymous") return false;
-  if (isSuperAdmin(token.email)) return true;
+  if (isSuperAdminToken(token)) return true; // Junid or Jafer, verified email only
   if (userRecord?.stockRole === "admin") return true;
   return userRecord?.permFlags?.shopify_publish === true;
 }
