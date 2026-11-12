@@ -43,6 +43,8 @@ for (const loc of dv.DIVISION_LOCATIONS) locks[loc] = (await once(`refill_engine
 // Push ids only ("-…"): website rows ("web_…") sort after them and would
 // crowd the newest window out.
 const requests = (await db.ref("refill_requests").orderByKey().endAt("-~").limitToLast(6000).once("value")).val() || {};
+// …and the website rows ("web_…", lock-less): a bounded range of their own.
+Object.assign(requests, (await db.ref("refill_requests").orderByKey().startAt("a").once("value")).val() || {});
 // A lock naming a request older than the window: read that one request.
 for (const byPid of Object.values(locks)) for (const bySize of Object.values(byPid || {})) for (const e of Object.values(bySize || {})) {
   if (e?.refillId && !requests[e.refillId]) { const r = await once(`refill_requests/${e.refillId}`); if (r) requests[e.refillId] = r; }
