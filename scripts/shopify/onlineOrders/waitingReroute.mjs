@@ -13,7 +13,7 @@
 // IT RAISES NOTHING. No request, no refill row, no card: the hourly refill
 // scan alone decides what comes in from Central (CLAUDE.md, Junid's rules).
 // Central's count is only READ, to say honestly what the line is waiting on —
-// `source.waiting = { on: "refill", centralQty, checkedAt }` — so packers and
+// `source.waiting = { on: "refill", centralQty, since, checkedAt }` — so packers and
 // Jamie can tell "coming from Central" from "not anywhere".
 //
 // ONLY THE PLAIN WAIT. A no_stock a hub or shop GAVE (it has a locationId: the
@@ -49,10 +49,12 @@ export function waitingBlocker({ line, order, enabled }) {
 }
 
 /** The `waiting` stamp for a line still waiting. PURE. Unchanged count → same stamp (no write). */
+// `since` is when the line started waiting and survives every re-stamp.
 export function waitingStamp(prev, centralQty, nowMs) {
   const qty = Math.max(0, Number(centralQty) || 0);
-  if (prev && prev.on === WAITING_ON_REFILL && Number(prev.centralQty) === qty) return prev;
-  return { on: WAITING_ON_REFILL, centralQty: qty, checkedAt: nowMs };
+  const same = prev && prev.on === WAITING_ON_REFILL;
+  if (same && Number(prev.centralQty) === qty) return prev;
+  return { on: WAITING_ON_REFILL, centralQty: qty, since: same && Number(prev.since) ? Number(prev.since) : nowMs, checkedAt: nowMs };
 }
 
 /**

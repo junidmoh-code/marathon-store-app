@@ -112,7 +112,7 @@ describe("waiting on refill — Central is listed but never picked, and nothing 
     const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } } } }));
     const before = snapshotStock(f);
     await tick(f);
-    expect(line(f, 0).source).toMatchObject({ status: "no_stock", waiting: { on: "refill", centralQty: 6, checkedAt: NOW } });
+    expect(line(f, 0).source).toMatchObject({ status: "no_stock", waiting: { on: "refill", centralQty: 6, since: NOW, checkedAt: NOW } });
     expect(line(f, 0).source.locationId ?? null).toBeNull();
     expect(f.read("refill_requests") ?? null).toBeNull();
     expect(f.read("orders") ?? null).toBeNull();
@@ -124,7 +124,7 @@ describe("waiting on refill — Central is listed but never picked, and nothing 
     const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } } } }));
     await tick(f);
     await tick(f, NOW + 120e3);
-    expect(line(f, 0).source.waiting).toEqual({ on: "refill", centralQty: 6, checkedAt: NOW });
+    expect(line(f, 0).source.waiting).toEqual({ on: "refill", centralQty: 6, since: NOW, checkedAt: NOW });
   });
 
   it("the refill scan's box lands at Hub 2: the next tick routes it as normal", async () => {
@@ -168,6 +168,6 @@ describe("the pure parts", () => {
   it("waitingStamp is stable for an unchanged count", () => {
     const s = waitingStamp(null, 3, 1);
     expect(waitingStamp(s, 3, 2)).toBe(s);
-    expect(waitingStamp(s, 0, 2)).toEqual({ on: "refill", centralQty: 0, checkedAt: 2 });
+    expect(waitingStamp(s, 0, 2)).toEqual({ on: "refill", centralQty: 0, since: 1, checkedAt: 2 });   // since survives
   });
 });
