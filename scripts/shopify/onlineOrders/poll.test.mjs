@@ -920,6 +920,22 @@ describe("a second parcel (items the first parcel was short) — Junid, 12 Nov 2
     expect(order(f, RID)).toMatchObject({ fulfilState: "done", fulfil: { note: expect.stringMatching(/already on/) } });
   });
 
+  it("a Shopify cancel of the order stops a second parcel not packed yet (exact reads, never a query)", async () => {
+    const f = fakeDb(reshipWorld({ live: true }));
+    const cancelled = { ...shopifyOrder({ updatedAt: "2026-10-21T09:59:00Z" }), cancelledAt: "2026-10-21T09:58:00Z" };
+    const sh = { ...reshipShopify(), graphql: async (q, v) => (q.includes("orders(") ? { orders: { nodes: [cancelled], pageInfo: { hasNextPage: false } } } : reshipShopify().graphql(q, v)) };
+    await runOrdersPoll(deps(f, sh).deps);
+    expect(order(f, RID).status).toBe("cancelled");
+    expect(order(f, "9001").cancelledAfterPack).toBe(true);
+  });
+
+  it("a POS Replace on a re-sent line is refused by the one swap implementation", async () => {
+    const { swapOnlineOrderLine } = await import("../../lib/swap-line.mjs");
+    const f = fakeDb(reshipWorld({ live: true }));
+    const out = await swapOnlineOrderLine({ db: f.db, orderKey: RID, lineIndex: 0, newPid: "SNK", size: "8", now: NOW, increment, log: () => {} });
+    expect(out).toMatchObject({ ok: false, refused: expect.stringMatching(/already sold on S-50548/) });
+  });
+
   it("Shopify refuses the tracking: Packed, Shopify not updated (Retry), the waybill stands", async () => {
     const f = fakeDb(reshipWorld({ live: true }, { status: "packed", pack: { noSale: true }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 } }));
     const courier = { ...fakeCourier(), createShipment: async () => ({ id: 56, short_tracking_reference: "NEW124", charged_amount: 99 }) };

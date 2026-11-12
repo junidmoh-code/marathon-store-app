@@ -413,6 +413,14 @@ async function cancelOrder(ctx, id, node) {
     await syncHolds(ctx, id, order);
     await dropEscalations(ctx, id, order);
     for (const fid of Object.keys(order.followUps || {})) await cancelOrder(ctx, fid, node);
+    // A second parcel not packed yet (docs/ONLINE-ORDERS.md "Second parcel"; architect review 6) stops with the order.
+    // Exact reads of its keys, never a query: the parent names none of them (it is never written for one).
+    for (let n = 1; n <= RESHIP_KEYS_CHECKED; n++) {
+      const rid = `${id}r${n}`;
+      const st = await ctx.get(`${ONLINE_ORDERS_PATH}/${rid}/status`);
+      if (st == null) break;
+      if (HOLDING_STATUSES.includes(st)) await cancelOrder(ctx, rid, node);
+    }
     return;
   }
   ctx.summary.cancelled++;
@@ -790,6 +798,9 @@ async function syncHolds(ctx, id, order) {
   }
   ctx.summary.holds += touched.size;
 }
+
+// Second parcels looked for when a packed order is cancelled on Shopify (<id>r1, r2, …; they are made by hand, rarely).
+const RESHIP_KEYS_CHECKED = 3;
 
 // The Courier Guy's public tracking page for a waybill (the link the customer agent sends too).
 export const courierTrackUrl = (waybill) => `https://portal.thecourierguy.co.za/track?ref=${encodeURIComponent(String(waybill))}`;

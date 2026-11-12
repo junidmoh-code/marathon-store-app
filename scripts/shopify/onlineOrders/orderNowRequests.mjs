@@ -64,6 +64,7 @@ export function orderNowBlocker({ line, req, enabled, order = null, i = Number(r
   if (!enabled) return "the website-order feeds are switched off, so no pick can be raised";
   if (order?.packClaim || order?.pack) return "the order is being packed; nothing can be ordered on it now";
   if (!line?.pid) return "the line is gone";
+  if (line.reship) return "the line is a re-sent item already sold (a second parcel); nothing is ordered for it";
   if (String(line.pid) !== String(req.expectPid ?? "") || String(line.sizeKey ?? "") !== String(req.expectSizeKey ?? "")) return "the line changed since the tap (another item or size); look again";
   if ((Number(line.routeGen) || 0) !== (Number(req.expectRouteGen) || 0)) return "the line was routed again since the tap; look again";
   const st = line.source?.status;

@@ -186,6 +186,9 @@ export async function swapOnlineOrderLine({
   ref = order.orderNumber || String(order.shopifyName || "").replace(/\D/g, "") || orderKey;
   const line = linesOf(order)[i];
   if (!line) return refuse(`no line ${i}`);
+  // A re-sent item (a second parcel, docs/ONLINE-ORDERS.md) was sold by an earlier pack: a swap would ship a different
+  // item with no sale (architect review 3).
+  if (line.reship) return refuse(`line ${i} is a re-sent item already sold on ${line.reship.receiptNumber || line.reship.saleId || "the first parcel's sale"}; it is never swapped`);
   if (order.status === "packed") return refuse("the order is packed: a swap now ships as a follow-up (the store customer agent's path)");
   if (CLOSED_ORDER.has(order.status)) return refuse(`the order is ${order.status}`);
   if (NOT_SWAPPABLE.has(line.source?.status)) return refuse(`line ${i} is ${line.source.status}`);
