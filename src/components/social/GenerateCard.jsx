@@ -136,7 +136,7 @@ export default function GenerateCard({ products = [], onNotice, notice, onGenera
                           background: on ? "rgba(74,127,255,.08)" : undefined }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 13.5, fontWeight: 700, color: on ? BLUE_L : "#fff" }}>{k.label}</span>
-                <span style={{ fontSize: 11, color: k.generates ? AMBER : GREEN, fontWeight: 700, whiteSpace: "nowrap" }}>
+                <span data-ink-deep="" style={{ fontSize: 11, color: k.generates ? AMBER : GREEN, fontWeight: 700, whiteSpace: "nowrap" }}>
                   {k.generates ? `~$${k.costUSD.toFixed(3)}` : "no image cost"}
                 </span>
               </div>

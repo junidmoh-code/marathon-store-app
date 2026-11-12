@@ -7,6 +7,8 @@ import "../styles/sky-theme.css";
 import "../styles/sky-admin.css";
 import "../styles/sky-stock.css";
 import "../styles/sky-chips.css";
+import { startChipRowFade } from "../utils/chipRowFade.js";
+startChipRowFade();
 import { createRoot } from "react-dom/client";
 import { database } from "../firebase.js";
 

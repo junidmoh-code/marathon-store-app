@@ -182,6 +182,27 @@ async function textElements(page, strict = false) {
       const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
       const top = document.elementFromPoint(cx, cy);
       if (!top || (top !== el && !el.contains(top))) continue;   // covered, or scrolled out of its container
+      // A chip running off the edge of a one-line scrolling row, under that
+      // row's edge fade (data-fade, src/utils/chipRowFade.js), is the "more
+      // this way" signal, not text to read — skipped only when its text box
+      // reaches into a faded edge zone (22px) of its own row.
+      // Likewise text cut by the edge of a sideways-scrolling row (part of it
+      // scrolled out of view): the eye reads it when it is scrolled in.
+      let cut = false;
+      for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX;
+        if (ox === "auto" || ox === "scroll") {
+          const rb = p.getBoundingClientRect();
+          if (x0 < rb.left - 0.5 || x1 > rb.right + 0.5) cut = true;
+          break;
+        }
+      }
+      if (cut) continue;
+      const fadeRow = el.closest("[data-fade]");
+      if (fadeRow) {
+        const rb = fadeRow.getBoundingClientRect(), f = fadeRow.dataset.fade || "";
+        if ((f.includes("l") && x0 < rb.left + 22) || (f.includes("r") && x1 > rb.right - 22)) continue;
+      }
       const m = cs.color.match(/rgba?\(([^)]+)\)/);
       if (!m) continue;
       const [r, g, b, a0 = 1] = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);

@@ -34,10 +34,9 @@ html[data-sky="on"] :is(
   overscroll-behavior-x: contain;
   scroll-padding-inline: 24px;
   touch-action: pan-x pan-y;
-  /* Edge fade: the row's own pixels fade out at both ends, so a chip running
-     off the edge reads as "more this way". */
-  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
-  mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  /* The edge fade is drawn ONLY on a side with more to scroll (data-fade,
+     kept by src/utils/chipRowFade.js) — a row at rest that fits shows every
+     chip whole and at full contrast. */
   padding-inline: 10px;
   min-width: 0;
   max-width: 100%;
@@ -61,3 +60,8 @@ html[data-sky="on"] :is(
 }
 /* The Warehouse status tiles (WarehouseTop.jsx, role=tablist) are a fixed
    one-row segmented grid by design and keep their grid. */
+
+/* Edge fade, per side, only while there is more to scroll that way. */
+html[data-sky="on"] [data-fade="r"] { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent 100%); mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent 100%); }
+html[data-sky="on"] [data-fade="l"] { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 22px); mask-image: linear-gradient(90deg, transparent 0, #000 22px); }
+html[data-sky="on"] [data-fade="lr"] { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%); mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%); }

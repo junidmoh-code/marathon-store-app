@@ -10,6 +10,8 @@
 import "../styles/sky.css";
 import "../styles/sky-theme.css";
 import "../styles/sky-chips.css";
+import { startChipRowFade } from "../utils/chipRowFade.js";
+startChipRowFade();
 import { installZoomLock } from "../device/zoomLock.js";
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";

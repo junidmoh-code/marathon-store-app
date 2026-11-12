@@ -247,3 +247,7 @@ html[data-sky="on"][data-sky-admin="on"] #root :is(
 /* The selected rail item: solid navy, its icon and count white. */
 html[data-sky="on"][data-sky-admin="on"] #root#root aside button[aria-pressed="true"] svg { stroke: #fff !important; color: #fff !important; }
 html[data-sky="on"][data-sky-admin="on"] #root#root aside button[aria-pressed="true"] span[style*="background"] { background: #fff !important; color: var(--sky-navy) !important; }
+
+/* Small status text that must clear 4.5:1 wherever it lands on the phone's
+   deeper sky (12 Nov): the deep ink. Opt-in per element. */
+html[data-sky="on"] #root#root [data-ink-deep] { color: var(--sky-ink-deep) !important; }
