@@ -333,7 +333,7 @@ describe("hero prompt and the no-text check", () => {
 
 describe("loadLookbookCandidates — reads only what it needs, by pid", () => {
   const seed = () => {
-    const live = {}, products = {}, stock = { shop1: {}, hub3: {} };
+    const live = {}, products = {}, stock = { shop1: {}, in_transit: {} };
     const add = (pid, title, categoryKey, over = {}) => {
       live[pid] = { state: "live", liveState: "on", cleanName: title, liveAt: NOW - DAY, photos: [STAFF(pid)] };
       products[pid] = { name: `Nike ${categoryKey} ${pid}`, brand: "Nike", categoryKey, retailPrice: 300, sizes: ["M"], photoUrl: STAFF(pid), ...over };
@@ -349,10 +349,10 @@ describe("loadLookbookCandidates — reads only what it needs, by pid", () => {
     add("s3", "Sneaker black", "sneakers");                          // colour-only website name → skipped, no stock read
     add("s4", "Sneaker runner mesh", "sneakers", { brand: "" });     // no brand → skipped
     stock.shop1.s2 = { M: { qty: 0 } };                    // out of stock
-    stock.hub3.s2 = { M: { qty: 9 } };                     // untrusted: does not count
+    stock.in_transit.s2 = { M: { qty: 9 } };               // in transit: never counts
     live.x1 = { state: "live", liveState: "on", cleanName: "Fragrance 100ML", liveAt: NOW };
     products.x1 = { categoryKey: "perfumes", retailPrice: 900, sizes: ["_"] };
-    return new FakeRtdb({ shopify_publish: live, products, stock, locations: { shop1: { name: "S" }, hub3: { name: "H" } } });
+    return new FakeRtdb({ shopify_publish: live, products, stock, locations: { shop1: { name: "S" }, in_transit: { name: "T" } } });
   };
 
   test("candidates are live, in stock, priced and photographed", async () => {

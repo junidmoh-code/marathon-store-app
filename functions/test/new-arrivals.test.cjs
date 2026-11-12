@@ -264,11 +264,12 @@ test("each item carries sizes in stock and units, keyed per location; excluded l
   const db = lane(1, { extra: { stock: {
     central: { [pid(0)]: { 7: { qty: 2 }, 9: { qty: 5 } } },   // 9 is not a catalogue size
     hub1: { [pid(0)]: { 7: 1, 8: { qty: 0 } } },
-    hub3: { [pid(0)]: { 8: { qty: 4 } } },                       // untrusted — not counted
+    hub3: { [pid(0)]: { 8: { qty: 4 } } },                       // counts since 12 Nov 2026 (Junid)
+    in_transit: { [pid(0)]: { 8: { qty: 6 } } },                 // excluded — never counted
   } } });
   const [it] = (await na.listTab(db, "new", {})).items;
-  assert.deepEqual(it.availableSizes, ["7"]);
-  assert.equal(it.totalUnits, 3);
+  assert.deepEqual(it.availableSizes, ["7", "8"]);
+  assert.equal(it.totalUnits, 7);
   assert.equal(it.stockKnown, true);
   assert.deepEqual(it.product.sizes, ["7", "8"]);
 });
