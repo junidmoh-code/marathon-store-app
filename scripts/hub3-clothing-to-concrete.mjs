@@ -103,7 +103,7 @@ await db.ref(record).update({ startedAt: new Date(nowMs).toISOString(), by: "scr
 
 const log = (m) => console.log(m);
 const res = await applyHub3ClothingTransfer({ db, plan, products, applyMovementAdmin, nowMs, log, allowNoRecord: ALLOW_NO_RECORD });
-const fin = await finishAndVerify({ db, products, applyMovementAdmin, nowMs: Date.now(), runId: RUN_ID, log, readHub3: () => readMapPaged(db, `stock/${HUB}`) });
+const fin = await finishAndVerify({ db, products, applyMovementAdmin, nowMs: Date.now(), runId: RUN_ID, log, readHub3: () => readMapPaged(db, `stock/${HUB}`), allowNoRecord: ALLOW_NO_RECORD });
 const aligned = await applyRowAlign({ db, align: rows.align, nowIso: new Date().toISOString() });
 const movedUnits = res.moved.reduce((t, m) => t + (m.moved || 0), 0);
 const refused = [...res.moved.filter((m) => m.refused), ...res.cleaned.filter((c) => c.refused)];

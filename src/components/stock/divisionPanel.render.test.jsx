@@ -56,7 +56,7 @@ describe("the division panel on the Engine Policy card", () => {
     const OLD = { shopOnly: { perSize: 2, oneSize: 5 }, fromHub3: { perSize: 1, oneSize: 5 }, hub3Keep: { on: false, perSize: 2, oneSize: 10 } };
     expect(divisionHistoryLine({ before: { ...OLD }, after: { ...OLD, hub3Keep: { ...OLD.hub3Keep, on: true } } })).toBe("Hub 3 keep off -> on");
     expect(divisionHistoryLine({ before: OLD, after: POLICY })).toBe("fromHub3+hub3Keep+shopOnly -> shopOnly (Hub 3 keep removed)");
-    expect(divisionHistoryLine({ before: POLICY, after: null })).toBe("shop keep 2/5 -> off");
+    expect(divisionHistoryLine({ before: POLICY, after: null })).toBe("shopOnly -> division off");
   });
   it("no Revert for an entry that would write the retired Hub 3 fields back", () => {
     const OLD = { shopOnly: { perSize: 2, oneSize: 5 }, hub3Keep: { on: false, perSize: 2, oneSize: 10 } };

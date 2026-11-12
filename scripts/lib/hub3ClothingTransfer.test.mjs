@@ -105,7 +105,7 @@ describe("apply + verify", () => {
     expect(root.stock.concrete.perf._.qty).toBe(4);
     expect(root.stock.concrete.odd._.qty).toBe(2);
     expect(root.stock.concrete.pants["28_30"].qty).toBe(1);
-    expect(root.stock.concrete.cap._.qty).toBe(-2, "Concrete's own cells are never touched beyond the arrivals");
+    expect(root.stock.concrete.cap._.qty).toBe(-2);
     const mv = root.stock_movements;
     expect(mv.h3cl_20261112_tee_S).toMatchObject({ type: "transfer_in", from: "hub3", to: "concrete", qty: 3, reason: REASON, size: "S" });
     expect(mv.h3cl_20261112_pants_28_30.size).toBe("28/30");
@@ -157,8 +157,8 @@ describe("apply + verify", () => {
     await db.ref("stock/hub3/cap/_").update({ qty: 2 });
     const fin = await finishAndVerify({ db, products: PRODUCTS, applyMovementAdmin, nowMs: NOW, runId: "20261112" });
     expect(fin.clean).toBe(true);
-    expect(db.state.root.stock_movements.h3cl_20261112_cap___v1.qty).toBe(2);
-    expect(db.state.root.stock.concrete.cap._.qty).toBe(2, "an arrival credits from max(cell, 0) — Concrete's -2 is cleared, as every writer does");
+    expect(Object.entries(db.state.root.stock_movements).find(([k]) => k.startsWith("h3cl_20261112_cap___v"))[1].qty).toBe(2);
+    expect(db.state.root.stock.concrete.cap._.qty).toBe(2);
   });
 });
 
@@ -225,5 +225,55 @@ describe("review fixes", () => {
     const fin = await finishAndVerify({ db, products: PRODUCTS, applyMovementAdmin, nowMs: NOW, runId: "20261112" });
     expect(fin.removedCells.map((r) => r.path).sort()).toEqual(["stock/hub3/cap/_", "stock/hub3/gone/_", "stock/hub3/odd/_", "stock/hub3/pants/28_30", "stock/hub3/perf/_", "stock/hub3/tee/L", "stock/hub3/tee/M", "stock/hub3/tee/S"]);
     expect(fin.removedCells.every((r) => r.before && r.before.qty === 0)).toBe(true);
+  });
+});
+
+describe("review round 2", () => {
+  it("a re-run after a later arrival: the spent id is reported, and verify moves the new units under a fresh id", async () => {
+    const t = world();
+    const db = makeFakeDb(t);
+    const plan = planOf(t);
+    await applyHub3ClothingTransfer({ db, plan, products: PRODUCTS, applyMovementAdmin, nowMs: NOW });
+    await finishAndVerify({ db, products: PRODUCTS, applyMovementAdmin, nowMs: NOW, runId: "20261112" });
+    await db.ref("stock/hub3/tee/S").set({ qty: 2, v: 9, mv: "x", lastType: "transfer_in" });
+    const again = await applyHub3ClothingTransfer({ db, plan, products: PRODUCTS, applyMovementAdmin, nowMs: NOW + 1000 });
+    expect(again.moved.find((m) => m.pid === "tee").refused).toBe("id_spent_cell_refilled");
+    const fin = await finishAndVerify({ db, products: PRODUCTS, applyMovementAdmin, nowMs: NOW + 2000, runId: "20261112" });
+    expect(fin.clean).toBe(true);
+    expect(db.state.root.stock.concrete.tee.S.qty).toBe(6);
+  });
+  it("verify leaves a record-less cell above zero unless allowed", async () => {
+    const t = world();
+    const db = makeFakeDb(t);
+    await applyHub3ClothingTransfer({ db, plan: planOf(t), products: PRODUCTS, applyMovementAdmin, nowMs: NOW });
+    await db.ref("stock/hub3/ghost/8").set({ qty: 1, v: 0, mv: "x", lastType: "transfer_in" });
+    const fin = await finishAndVerify({ db, products: PRODUCTS, applyMovementAdmin, nowMs: NOW, runId: "20261112" });
+    expect(fin.clean).toBe(false);
+    expect(fin.skippedNoRecord).toContain("stock/hub3/ghost/8");
+    expect(db.state.root.stock.hub3.ghost[8].qty).toBe(1);
+  });
+  it("a record-less Hub 3 seat is not switched off; a product size of '' falls back to the key", () => {
+    const t = world();
+    t.refill_engine.seats.hub3.ghost = { via: "stock", at: "x" };
+    const p = planOf(t);
+    expect(p.seatsOff).not.toContain("ghost");
+    expect(p.seatsUnknown).toContain("ghost");
+    expect(sizeOfKey("_", { sizes: [""] })).toBe("_");
+  });
+  it("a request whose pick already moved stock (no sentQty yet) is not withdrawn", async () => {
+    const t = world();
+    t.stock_movements = { mvp: { ts: "2026-11-11T09:00:00.000Z", type: "transfer_out", link: { refillId: "rq1" } } };
+    const db = makeFakeDb(t);
+    const res = await applyHub3ClothingTransfer({ db, plan: planOf(t), products: PRODUCTS, applyMovementAdmin, nowMs: NOW });
+    expect(res.withdrawn.find((w) => w.id === "rq1").outcome).toBe("touched");
+    expect(db.state.root.refill_requests.rq1.status).toBe("open");
+  });
+  it("an orphan lock (its request gone) is removed", async () => {
+    const t = world();
+    delete t.refill_requests.rq2;
+    const db = makeFakeDb(t);
+    const res = await applyHub3ClothingTransfer({ db, plan: planOf(t), products: PRODUCTS, applyMovementAdmin, nowMs: NOW });
+    expect(res.withdrawn.find((w) => w.id === "rq2").outcome).toBe("absent");
+    expect(db.state.root.refill_engine.open?.concrete).toBeUndefined();
   });
 });

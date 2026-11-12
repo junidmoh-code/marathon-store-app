@@ -1732,6 +1732,7 @@ export { defaultMinQty };
 // switch; the 12 Nov 2026 entry and later record the shop keep only.
 export function divisionHistoryLine(h) {
   const legs = (p) => (p && typeof p === "object" ? Object.keys(p).sort().join("+") : "off");
+  if (h?.after === null && h?.before) return `${legs(h.before)} -> division off`;
   if (h?.before?.hub3Keep || h?.after?.hub3Keep) {
     if (!h?.after?.hub3Keep) return `${legs(h.before)} -> ${legs(h.after)} (Hub 3 keep removed)`;
     return `Hub 3 keep ${h.before?.hub3Keep?.on ? "on" : "off"} -> ${h.after?.hub3Keep?.on ? "on" : "off"}`;

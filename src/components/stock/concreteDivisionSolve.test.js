@@ -22,10 +22,8 @@ describe("Concrete-division Solve options", () => {
     }
   });
   it("each shop is supplied straight from Central, whatever Hub 3 ever held", () => {
-    for (const hub3Present of [false, true]) {
-      const [b] = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "central", product: TEE, productId: "t", engineConfig: CFG, hub3Present });
-      for (const s of b.stores) { expect(s.centralFed).toBe(true); expect(s.hub).toBe(null); }
-    }
+    const [b] = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "central", product: TEE, productId: "t", engineConfig: CFG });
+    for (const s of b.stores) { expect(s.centralFed).toBe(true); expect(s.hub).toBe(null); }
   });
   it("an old key with the Hub 3 fields offers the same two shops", () => {
     const old = { ...CFG, concreteDivision: { ...CFG.concreteDivision, fromHub3: { perSize: 1, oneSize: 5, askAt: 0 }, hub3Keep: { on: true, perSize: 2, oneSize: 10 } } };

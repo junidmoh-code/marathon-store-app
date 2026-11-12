@@ -23,12 +23,10 @@ describe("the Marathon list's Solve options", () => {
   for (const product of PRODUCTS) {
     for (const source of ["central", "hub2"]) {
       it(`${product.categoryKey} from ${source}: same under old key, new key and no key`, () => {
-        const at = (engineConfig, hub3Present) => solveBlocks({ network: SEED_REGISTRY, sections: [2], source, product, productId: product.id, engineConfig, hub3Present });
-        const base = at(NONE, false);
-        expect(at(OLD, false)).toEqual(base);
-        expect(at(OLD, true)).toEqual(base);
-        expect(at(NEW, false)).toEqual(base);
-        expect(at(NEW, true)).toEqual(base);
+        const at = (engineConfig) => solveBlocks({ network: SEED_REGISTRY, sections: [2], source, product, productId: product.id, engineConfig });
+        const base = at(NONE);
+        expect(at(OLD)).toEqual(base);
+        expect(at(NEW)).toEqual(base);
         expect(base[0].stores.map((s) => s.id)).toEqual(["marathon-pe", "trophy"]);
       });
     }

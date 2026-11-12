@@ -48,7 +48,7 @@ export const cleanupIdFor = (runId, pid, sizeKey) => `h3cc_${runId}_${pid}_${siz
 const { stockCellKey } = require("../../functions/lib/admin-movement.cjs");
 export function sizeOfKey(k, product) {
   const hit = ((product && product.sizes) || []).find((s) => s != null && stockCellKey(s) === k);
-  return hit != null ? String(hit) : k;
+  return hit != null && String(hit).trim() ? String(hit) : k;
 }
 
 export const isFootwear = (product) => dv.isDivisionFootwear(product);
@@ -84,7 +84,10 @@ export function planHub3ClothingTransfer({ hub3Stock, products, seats = {}, requ
       else zeros.push({ ...base, qty: 0 });
     }
   }
-  const seatsOff = Object.keys(seats?.[HUB] || {}).filter((pid) => !isFootwear(products?.[pid]));
+  // Only a seat whose product is known and not footwear: a record-less seat
+  // cannot be classified and is left (listed in seatsUnknown).
+  const seatsOff = Object.keys(seats?.[HUB] || {}).filter((pid) => products?.[pid] && !isFootwear(products[pid]));
+  const seatsUnknown = Object.keys(seats?.[HUB] || {}).filter((pid) => !products?.[pid]);
   // Requests to withdraw: open, not a shadow, non-footwear, and either INTO
   // Hub 3 or into a division shop FROM Hub 3. Lock-backed ones are found via
   // their lock even when the request is older than the requests read.
@@ -111,7 +114,7 @@ export function planHub3ClothingTransfer({ hub3Stock, products, seats = {}, requ
   for (const t of transfers) { const o = (byOwner[t.owner] ||= { products: new Set(), units: 0 }); o.products.add(t.pid); o.units += t.qty; }
   return {
     runId, transfers, cleanups, zeros, skipped, footwearKept,
-    seatOn: [...seatOn].sort(), seatsOff: seatsOff.sort(), perfumes: [...perfumes].sort(), noRecord: [...noRecord].sort(),
+    seatOn: [...seatOn].sort(), seatsOff: seatsOff.sort(), seatsUnknown: seatsUnknown.sort(), perfumes: [...perfumes].sort(), noRecord: [...noRecord].sort(),
     withdraw: [...withdraw.values()],
     summary: {
       transferCells: transfers.length, transferProducts: pidsOf(transfers).size, transferUnits: sum(transfers),
@@ -153,7 +156,14 @@ async function moveCell({ db, c, applyMovementAdmin, nowIso, runId, log }) {
   for (let attempt = 0; attempt < 4; attempt++) {
     if (!(qty > 0)) return { ...c, moved: 0, note: qty === 0 ? "now_zero" : "now_negative", now: qty };
     const r = await applyMovementAdmin(db, transferMovement(c, qty, nowIso, runId), { nowIso });
-    if (r.ok) return { ...c, moved: r.idempotent ? 0 : qty, idempotent: !!r.idempotent, plannedQty: c.qty, qty };
+    if (r.ok && r.idempotent) {
+      // This id already moved units on an earlier run. If the cell holds units
+      // again they are NEW (an arrival since): this id cannot move them — say
+      // so, and the verify pass moves them under its own run-stamped id.
+      const now = qtyOf((await db.ref(c.path).once("value")).val());
+      return now > 0 ? { ...c, moved: 0, refused: "id_spent_cell_refilled", now } : { ...c, moved: 0, idempotent: true, plannedQty: c.qty, qty };
+    }
+    if (r.ok) return { ...c, moved: qty, idempotent: false, plannedQty: c.qty, qty };
     if (r.reason !== "insufficient_stock") return { ...c, moved: 0, refused: r.reason, r };
     const now = qtyOf((await db.ref(c.path).once("value")).val());
     log(`  moved since read: ${c.path} ${qty} → ${now}, re-planning`);
@@ -196,7 +206,24 @@ async function removeZeroCell(db, path) {
   return { path, removed: !!res.committed && res.snapshot.val() === null, before: seen };
 }
 
+// A pick in progress can have written its stock movement (link.refillId) before
+// sentQty (shop-source-rule.cjs): look for one, through the ledger's ts index,
+// from the request's own createdAt on.
+async function pickHasMoved(db, w, createdAt) {
+  if (!createdAt) return false;
+  const snap = await db.ref("stock_movements").orderByChild("ts").startAt(String(createdAt)).once("value");
+  let hit = false;
+  snap.forEach((ch) => { const m = ch.val(); if (m && m.link && m.link.refillId === w.id) hit = true; });
+  return hit;
+}
 async function withdrawRequest(db, w, nowIso) {
+  const pre = (await db.ref(`refill_requests/${w.id}`).once("value")).val();
+  if (pre === null) {
+    // No request: a lock that names it is an orphan; take it off if it still does.
+    if (w.lock) { const lock = (await db.ref(w.lock).once("value")).val(); if (lock && lock.refillId === w.id) await db.ref(w.lock).remove(); }
+    return { ...w, outcome: "absent" };
+  }
+  if (pre.status === "open" && await pickHasMoved(db, w, pre.createdAt)) return { ...w, outcome: "touched" };
   let outcome = "absent";
   const res = await db.ref(`refill_requests/${w.id}`).transaction((cur) => {
     if (cur === null) return null;
@@ -250,7 +277,11 @@ export async function applyHub3ClothingTransfer({ db, plan, products, applyMovem
  * movement (id suffix _v<pass>); one below zero is cleaned up. Repeats until
  * Hub 3 holds footwear only, or `passes` runs out. Reads /stock/hub3 alone.
  */
-export async function finishAndVerify({ db, products, applyMovementAdmin, nowMs, runId, passes = 3, log = () => {}, readHub3 = null }) {
+export async function finishAndVerify({ db, products, applyMovementAdmin, nowMs, runId, passes = 3, log = () => {}, readHub3 = null, allowNoRecord = false }) {
+  // Residual moves are new movements: their ids carry this verify's own stamp
+  // so a later re-run can move a later arrival (a spent id moves nothing).
+  const stamp = Number(nowMs).toString(36);
+  const skippedNoRecord = new Set();
   const nowIso = new Date(nowMs).toISOString();
   const history = [];
   const removedCells = [];
@@ -264,15 +295,16 @@ export async function finishAndVerify({ db, products, applyMovementAdmin, nowMs,
       if (pid === "_meta" || isFootwear(products?.[pid])) continue;
       for (const [sizeKey, cell] of Object.entries(isObj(row) || Array.isArray(row) ? row : {})) if (cell != null) leftovers.push({ pid, sizeKey, qty: qtyOf(cell), path: `stock/${HUB}/${pid}/${sizeKey}` });
     }
-    if (!leftovers.length) { history.push({ pass, leftovers: 0 }); return { clean: true, history, removedCells }; }
+    if (!leftovers.length) { history.push({ pass, leftovers: 0 }); return { clean: true, history, removedCells, skippedNoRecord: [...skippedNoRecord] }; }
     const step = { pass, leftovers: leftovers.length, removed: 0, moved: 0, cleaned: 0, refused: [] };
     for (const l of leftovers) {
+      if (!products?.[l.pid] && l.qty > 0 && !allowNoRecord) { skippedNoRecord.add(l.path); continue; }
       const base = { pid: l.pid, sizeKey: l.sizeKey, size: sizeOfKey(l.sizeKey, products?.[l.pid]), path: l.path };
       if (l.qty > 0) {
-        const r = await moveCell({ db, c: { ...base, qty: l.qty, movementId: `${transferIdFor(runId, l.pid, l.sizeKey)}_v${pass}` }, applyMovementAdmin, nowIso, runId, log });
+        const r = await moveCell({ db, c: { ...base, qty: l.qty, movementId: `${transferIdFor(runId, l.pid, l.sizeKey)}_v${stamp}${pass}` }, applyMovementAdmin, nowIso, runId, log });
         if (r.moved > 0) step.moved += r.moved; else if (r.refused) step.refused.push({ ...base, why: r.refused });
       } else if (l.qty < 0) {
-        const r = await cleanupCell({ db, c: { ...base, qty: l.qty, movementId: `${cleanupIdFor(runId, l.pid, l.sizeKey)}_v${pass}` }, applyMovementAdmin, nowIso, runId, log });
+        const r = await cleanupCell({ db, c: { ...base, qty: l.qty, movementId: `${cleanupIdFor(runId, l.pid, l.sizeKey)}_v${stamp}${pass}` }, applyMovementAdmin, nowIso, runId, log });
         if (r.applied > 0) step.cleaned += r.applied; else if (r.refused) step.refused.push({ ...base, why: r.refused });
       }
       const after = qtyOf((await db.ref(l.path).once("value")).val());
@@ -285,7 +317,7 @@ export async function finishAndVerify({ db, products, applyMovementAdmin, nowMs,
   }
   const hub3 = await read();
   const left = Object.keys(hub3).filter((pid) => pid !== "_meta" && !isFootwear(products?.[pid]));
-  return { clean: left.length === 0, left, history, removedCells };
+  return { clean: left.length === 0, left, history, removedCells, skippedNoRecord: [...skippedNoRecord] };
 }
 
 // ── EXPLICIT ROWS STILL AT THE RETIRED FROM-HUB 3 KEEP ───────────────────────
@@ -321,10 +353,11 @@ export async function applyRowAlign({ db, align, nowIso, by = ACTOR }) {
     let outcome = "changed_since_read";
     // COLD-NULL TRAP: the first callback may see null for a row that exists;
     // judge it against a plain read instead of aborting on it.
-    const pre = (await db.ref(a.path).once("value")).val();
-    if (pre === null) { out.push({ ...a, outcome: "absent" }); continue; }
-    await db.ref(a.path).transaction((raw) => {
-      const cur = raw === null ? pre : raw;
+    // Null-tolerant probe (the closeRequestTxn pattern): a cold first callback
+    // sees null and returns null — on a row that exists the server refuses the
+    // proposal and re-runs with the real row; on a row really gone it stays gone.
+    await db.ref(a.path).transaction((cur) => {
+      if (cur === null) { outcome = "absent"; return null; }
       if (!(cur.target === a.from.target && (cur.reorderPoint ?? null) === a.from.reorderPoint)) { outcome = "changed_since_read"; return undefined; }
       outcome = "aligned";
       return { ...cur, target: a.to.target, minQty: a.to.minQty, reorderPoint: null, setAt: nowIso, setBy: by, prevRetiredHub3Keep: a.from };
