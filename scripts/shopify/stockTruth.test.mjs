@@ -255,7 +255,7 @@ describe("the agreed online pool: Pine, Concrete and Hub 3 sell online (Junid, 1
     it(`a size with stock only at ${loc} is pushed as its count`, async () => {
       const { shopify, pass } = world({
         stock: { [loc]: { p1: { 6: { qty: 4 } } } },
-        shop: [variant("6", 4), variant("7", 0)],
+        shop: [variant("6", 0), variant("7", 0)],
         movements: mv(`received:r-${loc}`, { type: "received", size: "6", to: loc, ts: "2026-10-11T09:59:00.000Z" }),
         cursor: { cursorMs: Date.parse("2026-10-11T09:50:00Z") },
       });

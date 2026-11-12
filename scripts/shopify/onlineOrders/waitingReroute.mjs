@@ -90,6 +90,11 @@ export async function applyWaitingReroutes(ctx, id, order, helpers) {
     const pieces = routeLines([{ key, qty, isFootwear: r.isFootwear }], { [key]: available })[0] || [];
     const routable = pieces.some((p) => p.locationId);
     const centralQty = Number(await ctx.get(`stock/central/${r.pid}/${r.sizeKey}/qty`)) || 0;
+    // The pack is claimed on the ORDER, which this line transaction cannot see:
+    // re-read the claim right before it (CodeRabbit #899). A waiting line also
+    // blocks Pack on the POS, so a claim here is the rare race, not the norm.
+    const [packClaim, pack] = await Promise.all([ctx.get(`${ONLINE_ORDERS_PATH}/${id}/packClaim`), ctx.get(`${ONLINE_ORDERS_PATH}/${id}/pack`)]);
+    if (packClaim || pack) continue;
     const res = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines/${i}`).transaction((cur) => {
       if (cur == null) return null; // cold-cache pass: never abort on it
       if (waitingBlocker({ line: cur, order: { ...order, lines: undefined }, enabled: true })) return undefined;
