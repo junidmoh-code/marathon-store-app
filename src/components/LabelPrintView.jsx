@@ -241,7 +241,7 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
 
       <div className="lpv__qf">
         {transports.length > 1 && (
-          <div className="lpv__chips lpv__chips--flat" data-chip-row="" data-scroll="">
+          <div className="lpv__seg">
             {transports.map(t => (
               <button key={t.id} type="button" className="lpv__chip" aria-pressed={transport === t.id} onClick={() => setTransport(t.id)} disabled={busy}>
                 {t.label}
@@ -264,14 +264,16 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
     return (
       <div className="lpv lpv--wide" data-testid="label-print">
         <div className="lpv__browse" data-scroll="">
-          <div className="lpv__top">
-            <div>
-              <h1 className="lpv__h1">Print Labels</h1>
+          {/* One glass head (navy never sits on the bare sky): the quiet hint
+              beside the search, then the two chip rows. No second title — the
+              header pill already says LABELS. */}
+          <div className="lpv__head">
+            <div className="lpv__top">
               <div className="lpv__hint" style={{ margin: 0 }}>Add products to the queue, set quantities, then print the batch — name · price · barcode.</div>
+              {searchEl}
             </div>
-            {searchEl}
+            {filtersEl}
           </div>
-          {filtersEl}
           {toastEl}
           {gridEl}
         </div>
@@ -283,9 +285,11 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
   // ── MOBILE — single column, queue inline above the grid ──
   return (
     <div className="lpv lpv--phone" data-testid="label-print">
-      <div className="lpv__hint">Tap products to queue them, then print the batch — name · price · barcode.</div>
-      {searchEl}
-      {filtersEl}
+      <div className="lpv__head">
+        <div className="lpv__hint">Tap products to queue them, then print the batch — name · price · barcode.</div>
+        {searchEl}
+        {filtersEl}
+      </div>
       {toastEl}
       {cartItems.length > 0 && <div style={{ marginBottom: 16 }}>{queueEl}</div>}
       {gridEl}

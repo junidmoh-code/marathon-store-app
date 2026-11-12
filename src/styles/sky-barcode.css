@@ -41,7 +41,17 @@ html[data-sky="on"] #root .lpv input.lpv__in:focus { outline: 2px solid var(--sk
   -webkit-mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
   mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%); }
 .lpv__chips::-webkit-scrollbar { display: none; }
-.lpv__chips--flat { padding: 2px 0; margin-bottom: 9px; -webkit-mask-image: none; mask-image: none; }
+/* The printer choice: two pills sharing the queue's width, one line, a long
+   name ellipsised inside its pill (never faded off the edge). */
+.lpv__seg { display: flex; gap: 6px; margin-bottom: 9px; }
+html[data-sky="on"] #root .lpv .lpv__seg > .lpv__chip { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0 10px; font-size: 12px; }
+/* The glass head: hint, search and chip rows on ONE standard glass surface,
+   so their navy never sits on the bare sky. */
+.lpv__head { border-radius: var(--sky-r-panel); padding: 12px 12px 4px; margin-bottom: 14px; color: var(--sky-ink);
+  background: var(--sky-glass); border: 1px solid var(--sky-rim); box-shadow: var(--sky-highlight), var(--sky-shadow);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6) brightness(1.05); backdrop-filter: blur(28px) saturate(1.6) brightness(1.05); }
+.lpv__head .lpv__filters { margin: 10px 0 8px; }
+.lpv--wide .lpv__head { padding: 14px 16px 6px; }
 html[data-sky="on"] #root .lpv .lpv__chip {
   flex: 0 0 auto; white-space: nowrap; height: 34px; padding: 0 14px; border-radius: 999px; cursor: pointer;
   font: 700 13px/1 var(--sky-font); color: var(--sky-ink) !important;
@@ -104,7 +114,7 @@ html[data-sky="on"] #root .lpv .lpv__print:disabled { background: rgba(255, 255,
 .lpv__browse::-webkit-scrollbar { display: none; }
 .lpv__side { min-height: 0; overflow-y: auto; scrollbar-width: none; padding: 2px 0 24px; }
 .lpv__side::-webkit-scrollbar { display: none; }
-.lpv__top { display: flex; align-items: flex-end; gap: 24px; margin-bottom: 4px; }
+.lpv__top { display: flex; align-items: center; gap: 24px; }
 .lpv__top > :first-child { flex: 1; min-width: 0; }
 .lpv__top .lpv__srch { max-width: 340px; }
 

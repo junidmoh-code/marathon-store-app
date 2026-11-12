@@ -28,6 +28,7 @@ import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { scopedLocationIds, withinScope } from "../../utils/shopScope";
+import "../../styles/sky-barcode.css";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 
@@ -613,15 +614,16 @@ export default function BarcodeCatalog({ products, canMint, onExit, myShop = nul
       {/* Below 1024px the stacked layout stays; only the header holds still
           (Junid 5 Nov), on a soft blur strip so cards pass under it cleanly. */}
       <style>{`html[data-sky="on"] #root .sky-header{position:sticky;top:0;z-index:30;padding-bottom:8px;-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);background:rgba(255,255,255,.1)}`}</style>
-      <div style={{ padding: "14px 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <button onClick={onExit} style={{ background: "none", border: "none", padding: 0, color: BLUE_L, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: FONT }}>← Home</button>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>Barcodes</div>
-        <div style={{ minWidth: 48 }} />
-      </div>
-      <div style={{ padding: "4px 14px 40px" }}>
+      {/* No in-page "← Home" or "Barcodes" title (Junid 12 Nov): the header
+          pill already says BARCODES and its grid button goes back. */}
+      <div style={{ padding: "8px 14px 40px" }}>
       {!canMint && <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>Re-print existing labels — new barcodes are created by warehouse/admin.</div>}
-      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"
-        style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 10 }} />
+      <div className="lpv" style={{ marginBottom: 10 }}>
+        <div className="lpv__srch">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
+          <input className="lpv__in" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…" aria-label="Search products" />
+        </div>
+      </div>
 
       <FilterPicker label="Location" value={loc} onChange={setLoc}
         options={[{ id: "all", label: "All locations" }, ...locations.map(l => ({ id: l.id, label: labelFor(l.id, registry) }))]} />
