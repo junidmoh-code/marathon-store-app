@@ -1,0 +1,136 @@
+/* ─── STOCK — minimal (Junid, 12 Nov) ─────────────────────────────────────────
+ *
+ * The Stock console wears the admin design system (sky-admin.css; skyNav.js
+ * lists "stock"), plus the few Stock-only pieces here:
+ *   TOOL ROW ........ ONE horizontally scrolling row of 40px single-line
+ *                     pills; the selected one solid navy with white text; the
+ *                     row fades at its edges to show it scrolls.
+ *   CHIP ROWS ....... location + category: one scrolling row each, counts in a
+ *                     lighter weight inside the chip.
+ *   SELECTOR ........ "Transfer from" / "Category": one compact glass pill;
+ *                     a tap opens the SkyOverlay sheet, one glass card per
+ *                     option (FilterPicker.jsx).
+ *   INFO LINE ....... explanatory paragraphs collapse to one line + an info
+ *                     icon that expands on tap.
+ *   LIST ROWS ....... one surface, thumb 56, one-line title, one secondary
+ *                     line; Move / Clear small icon+label buttons (navy
+ *                     outline; Clear's icon red, its text navy).
+ *   UNSENT NOTICE ... a slim inline glass notice; Restore solid navy, Discard
+ *                     navy outline.
+ * Navy text on glass, never white; no white fields; no red text on glass.
+ */
+
+html[data-sky="on"] #root .sky-stock { color: var(--adm-ink, #04122b); padding: 6px 16px 48px; max-width: 1260px; margin: 0 auto; box-sizing: border-box; }
+html[data-sky="on"] #root .sky-stock__body { min-width: 0; }
+html[data-sky="on"] #root .sky-stock__sync { font: 600 12px/1 var(--sky-font); color: var(--adm-ink, #04122b); margin: 0 2px 8px; }
+
+/* ── The tool row ── */
+html[data-sky="on"] #root .sky-stock__tabs-wrap { margin: 0 -16px 12px; }
+/* The rows own their one-line scrolling (they must already scroll on the first
+   paint, before App marks the screen as an admin-design one). */
+html[data-sky="on"] #root :is(.sky-stock__tabs, .sky-stock-chips) {
+  display: flex !important; flex-wrap: nowrap !important; overflow-x: auto !important; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+html[data-sky="on"] #root :is(.sky-stock__tabs, .sky-stock-chips)::-webkit-scrollbar { display: none; }
+html[data-sky="on"] #root .sky-stock__tabs { padding: 2px 16px 4px !important; gap: 8px !important; scroll-padding-inline: 16px; }
+/* The edge fade, only on the side there is more to scroll (useScrollRow.js). */
+html[data-sky="on"] #root :is(.sky-stock__tabs, .sky-stock-chips)[data-fade="r"] {
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 36px), transparent 100%); mask-image: linear-gradient(90deg, #000 calc(100% - 36px), transparent 100%); }
+html[data-sky="on"] #root :is(.sky-stock__tabs, .sky-stock-chips)[data-fade="l"] {
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 36px); mask-image: linear-gradient(90deg, transparent 0, #000 36px); }
+html[data-sky="on"] #root :is(.sky-stock__tabs, .sky-stock-chips)[data-fade="lr"] {
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 36px, #000 calc(100% - 36px), transparent 100%);
+          mask-image: linear-gradient(90deg, transparent 0, #000 36px, #000 calc(100% - 36px), transparent 100%); }
+html[data-sky="on"] #root#root .sky-stock__tab {
+  flex: 0 0 auto !important; height: 40px; padding: 0 16px; border-radius: 999px; white-space: nowrap;
+  font: 700 14px/1 var(--sky-font); cursor: pointer;
+  background: var(--adm-chip, rgba(255,255,255,.34)) !important; border: 1px solid var(--adm-rim, rgba(255,255,255,.72)) !important; color: var(--adm-ink, #04122b) !important;
+}
+html[data-sky="on"] #root#root .sky-stock__tab[aria-selected="true"] { background: var(--sky-navy) !important; border-color: var(--sky-navy) !important; color: #fff !important; }
+html[data-sky="on"] #root .sky-stock__tab:focus-visible { outline: 2px solid var(--sky-navy); outline-offset: 2px; }
+
+/* ── Chip rows (location, category) ── */
+html[data-sky="on"] #root .sky-stock-chips { margin: 0 -16px 10px; padding: 2px 16px 4px !important; gap: 6px !important; }
+html[data-sky="on"] #root#root .sky-stock-chip {
+  flex: 0 0 auto !important; display: inline-flex; align-items: center; gap: 5px; height: 36px; padding: 0 14px; border-radius: 999px; white-space: nowrap; cursor: pointer;
+  font: 700 13.5px/1 var(--sky-font);
+  background: var(--adm-chip, rgba(255,255,255,.34)) !important; border: 1px solid var(--adm-rim, rgba(255,255,255,.72)) !important; color: var(--adm-ink, #04122b) !important;
+}
+html[data-sky="on"] #root#root .sky-stock-chip[aria-pressed="true"] { background: var(--sky-navy) !important; border-color: var(--sky-navy) !important; color: #fff !important; }
+html[data-sky="on"] #root .sky-stock-chip__n { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* ── Search: glass, navy, 16px ── */
+html[data-sky="on"] #root#root .sky-stock-search {
+  display: block; width: 100%; box-sizing: border-box; height: 44px; margin: 0 0 10px; padding: 0 14px 0 40px; border-radius: 999px;
+  background: rgba(255,255,255,.18) url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230b2a52' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E") no-repeat 14px center / 17px 17px !important;
+  border: 1px solid var(--adm-navy-rim, rgba(11,42,82,.34)) !important; color: var(--adm-ink, #04122b) !important; font: 500 16px/1 var(--sky-font) !important; outline: none;
+}
+html[data-sky="on"] #root .sky-stock-search::placeholder { color: rgba(11, 42, 82, .6) !important; }
+
+/* ── One-line info, expands on tap ── */
+html[data-sky="on"] #root .sky-stock-info { display: flex; align-items: flex-start; gap: 8px; width: 100%; margin: 0 0 10px; padding: 0 2px; background: none !important; border: 0 !important;
+  text-align: left; cursor: pointer; color: var(--adm-ink, #04122b) !important; font: 500 13px/1.4 var(--sky-font); box-shadow: none !important; }
+html[data-sky="on"] #root .sky-stock-info__ic { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 1px; color: var(--sky-navy); }
+html[data-sky="on"] #root .sky-stock-info__t { flex: 1; min-width: 0; }
+html[data-sky="on"] #root .sky-stock-info[aria-expanded="false"] .sky-stock-info__t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html[data-sky="on"] #root .sky-stock-info b { font-weight: 800; }
+
+/* ── Summary line + list rows ── */
+html[data-sky="on"] #root .sky-stock-sum { font: 500 12px/1.2 var(--sky-font); color: var(--adm-ink, #04122b); opacity: .8; margin: 4px 2px 8px; }
+html[data-sky="on"] #root .sky-stock-list { display: flex; flex-direction: column; gap: 8px; }
+html[data-sky="on"] #root .sky-stock-row { padding: 10px 12px; border-radius: 18px; background: var(--sky-glass, rgba(255,255,255,.40)); border: 1px solid var(--sky-rim, rgba(255,255,255,.75));
+  -webkit-backdrop-filter: blur(28px) saturate(1.6) brightness(1.05); backdrop-filter: blur(28px) saturate(1.6) brightness(1.05); }
+html[data-sky="on"] #root .sky-stock-row .sky-li__body { cursor: pointer; }
+html[data-sky="on"] #root .sky-stock-row .sky-li__thumb { cursor: zoom-in; }
+html[data-sky="on"] #root .sky-stock-row .sky-thumb-empty { width: 56px; height: 56px; border-radius: 12px; }
+html[data-sky="on"] #root#root .sky-stock-act {
+  display: inline-flex !important; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+  font: 700 13px/1 var(--sky-font) !important; background: rgba(255,255,255,.18) !important; border: 1px solid var(--adm-outline, rgba(11,42,82,.55)) !important; color: var(--adm-ink, #04122b) !important;
+}
+html[data-sky="on"] #root .sky-stock-act svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--sky-navy); }
+html[data-sky="on"] #root#root .sky-stock-act--clear svg { color: #c4001d !important; stroke: #c4001d !important; }
+html[data-sky="on"] #root#root .sky-stock-act--clear::before { content: none !important; }
+html[data-sky="on"] #root .sky-stock-exp { flex: 0 0 auto; width: 30px; height: 34px; display: grid; place-items: center; background: none !important; border: 0 !important; cursor: pointer; color: var(--adm-ink, #04122b) !important; }
+html[data-sky="on"] #root .sky-stock-exp svg { width: 16px; height: 16px; transition: transform .15s; }
+html[data-sky="on"] #root .sky-stock-exp[aria-expanded="true"] svg { transform: rotate(90deg); }
+/* Phone: the title and its line get the full width beside the thumbnail; the
+   actions sit on a line of their own under them. */
+@media (max-width: 600px) {
+  html[data-sky="on"] #root .sky-stock-row .sky-li { display: grid; grid-template-columns: 56px minmax(0, 1fr); column-gap: 12px; row-gap: 8px; align-items: center; }
+  html[data-sky="on"] #root .sky-stock-row .sky-li > :first-child { grid-column: 1; grid-row: 1 / span 2; align-self: start; }
+  html[data-sky="on"] #root .sky-stock-row .sky-li__body { grid-column: 2; grid-row: 1; }
+  html[data-sky="on"] #root .sky-stock-row .sky-li__end { grid-column: 2; grid-row: 2; gap: 6px; }
+  html[data-sky="on"] #root .sky-stock-row .sky-stock-exp { margin-left: auto; }
+}
+
+/* ── The selector (FilterPicker) ── */
+html[data-sky="on"] #root#root .sky-pick {
+  display: flex !important; align-items: center; gap: 10px; width: 100%; height: 48px; margin: 0 0 10px; padding: 0 16px; box-sizing: border-box; border-radius: 16px; cursor: pointer;
+  background: rgba(255,255,255,.18) !important; border: 1px solid var(--adm-navy-rim, rgba(11,42,82,.34)) !important; color: var(--adm-ink, #04122b) !important; font-family: var(--sky-font);
+  text-align: left; box-shadow: none !important;
+}
+html[data-sky="on"] #root .sky-pick__lab { flex: 0 0 auto; font: 800 10.5px/1 var(--sky-font); letter-spacing: .14em; text-transform: uppercase; color: var(--adm-ink, #04122b); }
+html[data-sky="on"] #root .sky-pick__val { flex: 1; min-width: 0; text-align: right; font: 700 15px/1 var(--sky-font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--adm-ink, #04122b); }
+html[data-sky="on"] #root .sky-pick__val[data-placeholder] { font-weight: 600; opacity: .7; }
+html[data-sky="on"] #root .sky-pick svg { flex: 0 0 auto; width: 16px; height: 16px; color: var(--adm-ink, #04122b); }
+
+/* ── Unsent-transfer notice (Transfer.jsx's Restore banner, a guarded file —
+ * restyled here, not edited). The banner is the only element with this exact
+ * green rim + green wash; it becomes a slim inline glass notice: the title and
+ * its count line on the left, Restore (solid navy) and Discard (navy outline)
+ * on the right. ── */
+html[data-sky="on"] #root#root [style*="border: 1px solid rgba(74, 222, 128, 0.5)"][style*="background: rgba(74, 222, 128, 0.06)"] {
+  display: grid !important; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; column-gap: 12px; align-items: center;
+  padding: 8px 10px 8px 14px !important; margin-bottom: 10px !important; border-radius: 16px !important;
+  background: rgba(255,255,255,.40) !important; border: 1px solid rgba(255,255,255,.72) !important; box-shadow: none !important;
+  -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4);
+}
+html[data-sky="on"] #root#root [style*="border: 1px solid rgba(74, 222, 128, 0.5)"][style*="background: rgba(74, 222, 128, 0.06)"] > div:nth-child(1) { grid-column: 1; grid-row: 1; margin: 0 !important; font-size: 13px !important; color: var(--adm-ink, #04122b) !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html[data-sky="on"] #root#root [style*="border: 1px solid rgba(74, 222, 128, 0.5)"][style*="background: rgba(74, 222, 128, 0.06)"] > div:nth-child(2) { grid-column: 1; grid-row: 2; margin: 0 !important; font-size: 12px !important; color: var(--adm-ink, #04122b) !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html[data-sky="on"] #root#root [style*="border: 1px solid rgba(74, 222, 128, 0.5)"][style*="background: rgba(74, 222, 128, 0.06)"] > div:nth-child(2) * { color: var(--adm-ink, #04122b) !important; font-weight: 700; }
+html[data-sky="on"] #root#root [style*="border: 1px solid rgba(74, 222, 128, 0.5)"][style*="background: rgba(74, 222, 128, 0.06)"] > div:nth-child(3) { grid-column: 2; grid-row: 1 / span 2; gap: 6px !important; }
+html[data-sky="on"] #root#root [style*="border: 1px solid rgba(74, 222, 128, 0.5)"][style*="background: rgba(74, 222, 128, 0.06)"] > div:nth-child(3) > button {
+  flex: 0 0 auto !important; height: 36px; padding: 0 14px !important; border-radius: 999px !important; font: 700 13px/1 var(--sky-font) !important; white-space: nowrap; }
+html[data-sky="on"] #root#root [style*="border: 1px solid rgba(74, 222, 128, 0.5)"][style*="background: rgba(74, 222, 128, 0.06)"] > div:nth-child(3) > button:first-child {
+  background: var(--sky-navy) !important; border: 1px solid var(--sky-navy) !important; color: #fff !important; }
+html[data-sky="on"] #root#root [style*="border: 1px solid rgba(74, 222, 128, 0.5)"][style*="background: rgba(74, 222, 128, 0.06)"] > div:nth-child(3) > button:last-child {
+  background: rgba(255,255,255,.18) !important; border: 1px solid var(--sky-navy) !important; color: var(--sky-navy) !important; }

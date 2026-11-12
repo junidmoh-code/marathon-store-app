@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Product cut-outs (Mac mini): one nightly pass at 02:00 host time (the mini is
+  on SAST) that gives every product whose photo has no current cut-out a
+  background-removed PNG and writes /products/{id}/photoCutoutUrl and
+  photoCutoutFor. Nothing else on the product is touched. See
+  tools/cutouts/README.md.
+
+  A missed fire (the mini asleep) runs on wake. The single-flight lock in
+  cutout.py (~/.marathon-cutouts/cutouts.lock) means this and a
+  manual run-now pass from the installer never overlap. RunAtLoad is false so an
+  install or reboot does not start a pass by itself.
+
+  Python is the venv the installer builds from /usr/bin/python3 (no Homebrew).
+  Only PATHS appear here, never secrets. Installed by
+  tools/cutouts/install-on-mac-mini.sh; paths assume the checkout at
+  /Users/marathonclub/marathon-store-app.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.cutouts</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/marathonclub/.marathon-cutouts/venv/bin/python</string>
+    <string>/Users/marathonclub/marathon-store-app/tools/cutouts/cutout.py</string>
+    <string>--run-now</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/Users/marathonclub</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>2</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+  <!-- Last-resort capture; the readable per-product log is logs/cutouts.log. -->
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/cutouts-launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/cutouts-launchd.err.log</string>
+</dict>
+</plist>

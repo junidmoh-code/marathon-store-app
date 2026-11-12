@@ -143,7 +143,10 @@ describe("the card-level Unavailable state", () => {
     expect(memo).toContain("if (deadForOrder(p)) return null;");
   });
   it("is drawn on the phone card, the desktop card and both size sheets", () => {
-    expect(APP).toContain("const unavail = unavailableIds.has(p.id);");
+    // Sky cards (feat/sky-wall): the phone card draws it through AssistantPhone's
+    // per-card chip slot, the desktop card on the sky card itself.
+    expect(APP).toContain(": unavailableIds.has(p.id) ? <span className=\"sky-unavail sky-unavail--inline\" data-testid=\"card-unavailable\">UNAVAILABLE</span>");
+    expect(APP).toContain("{unavailableIds?.has(p.id) && <span className=\"sky-unavail\" data-testid=\"card-unavailable\">UNAVAILABLE</span>}");
     expect(APP.split('data-testid="card-unavailable"').length - 1).toBe(2);
     expect(APP).toContain('data-testid="sheet-unavailable"');
     expect(APP).toContain('data-testid="qv-unavailable"');

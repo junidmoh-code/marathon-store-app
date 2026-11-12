@@ -23,7 +23,7 @@
 // The same rules run for a code-less reading (the label's wording → the alias
 // store's candidates → the same list).
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { TongueLabelReader } from "../stock/TongueLabelReader";
 import CandidateCards from "../shared/CandidateCards";
 import { labelTokenSet, mergeTokenCandidates, exactCandidateRow, padCandidateRows } from "../stock/hubCleanupCore";
@@ -179,15 +179,26 @@ export default function AssistantLabelFinder({ products, onFound, onClose }) {
       .map((p) => ({ product: p, code: p.styleCodeNormalised || null, field: null, reasons: ["name search"] }));
   }, [products, query]);
 
+  // Escape leaves the finder (a keyboard, the iPad case).
+  useEffect(() => {
+    if (typeof document === "undefined" || !document.addEventListener) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") onClose?.(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 900, background: "#05070C", overflowY: "auto",
+    // Below the iPhone's status bar / notch, above the order view's fixed band
+    // (Junid, 6 Nov: the Close sat under the notch — "no going out").
+    <div data-label-finder="" style={{ position: "fixed", inset: 0, zIndex: 2000, background: "#05070C", overflowY: "auto",
                   fontFamily: FONT, color: "#fff" }}>
-      <div style={{ maxWidth: 560, margin: "0 auto", padding: "14px 16px 60px" }}>
+      <div style={{ maxWidth: 560, margin: "0 auto",
+                    padding: "calc(env(safe-area-inset-top, 0px) + 14px) calc(env(safe-area-inset-right, 0px) + 16px) calc(env(safe-area-inset-bottom, 0px) + 60px) calc(env(safe-area-inset-left, 0px) + 16px)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0 10px" }}>
           <div style={{ fontSize: 15, fontWeight: 800, color: "#9DBCFF" }}>Find by the tongue label</div>
-          <button type="button" onClick={onClose}
-            style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.16)", color: "rgba(233,238,255,.75)",
-                     borderRadius: 12, padding: "10px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>✕ Close</button>
+          <button type="button" onClick={onClose} aria-label="Close the label finder" data-testid="label-finder-close"
+            style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.55)", color: "#fff",
+                     borderRadius: 999, minHeight: 44, padding: "0 18px", fontSize: 15, fontWeight: 800, cursor: "pointer" }}>✕ Close</button>
         </div>
         <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.55)", lineHeight: 1.5, marginBottom: 12 }}>
           Fold the tongue forward and photograph the printed label <u>inside</u> it — the small one with the

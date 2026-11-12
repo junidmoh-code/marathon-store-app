@@ -51,7 +51,8 @@ const buttonTexts = (t) => t.root.findAllByType("button").map((b) => JSON.string
 const locationOptions = (t) => t.root.findAll((n) => n.props && n.props.label === "Location" && Array.isArray(n.props.options))[0].props.options.map((o) => o.label);
 // The product row expands to its sizes; the on-hand figure is the size chip's number.
 const instText = (inst) => (typeof inst === "string" ? inst : (inst?.children || []).map(instText).join(""));
-const openRow = (t) => act(() => { t.root.findAll((n) => n.type === "div" && typeof n.props.onClick === "function" && instText(n).includes("Samba OG"))[0].props.onClick(); });
+// The card's head is a <button aria-expanded> since the sky card (5 Nov).
+const openRow = (t) => act(() => { t.root.findAll((n) => n.type === "button" && "aria-expanded" in n.props && instText(n).includes("Samba OG"))[0].props.onClick(); });
 
 describe("Barcodes for a one-shop account", () => {
   it("unscoped (no destShop): every location is offered and on-hand counts them all, as before", () => {

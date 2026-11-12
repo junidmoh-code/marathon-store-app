@@ -10,7 +10,17 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "proof:social": "node scripts/mutation-proof-social-health.mjs && node scripts/mutation-proof-social-twin.mjs",
-    "proof:push": "node scripts/mutation-proof-push-notify.mjs"
+    "proof:push": "node scripts/mutation-proof-push-notify.mjs",
+    "contrast": "node scripts/sky-contrast.mjs --webkit",
+    "e2e:availability": "node scripts/sky-availability.e2e.mjs",
+    "e2e:barcode-scroll": "node scripts/sky-barcode-scroll.e2e.mjs",
+    "e2e:zoom-lock": "node scripts/sky-zoom-lock.e2e.mjs",
+    "e2e:phone-visual": "node scripts/sky-phone-visual.e2e.mjs",
+    "e2e:sky-wall-v3": "node scripts/sky-wall-v3.e2e.mjs",
+    "e2e:sky-shell": "node scripts/sky-shell.e2e.mjs",
+    "e2e:sky-admin": "node scripts/sky-admin.e2e.mjs",
+    "contrast:admin": "node scripts/sky-contrast.mjs --admin --webkit --port 5211",
+    "e2e:chip-rows": "node scripts/sky-chip-rows.e2e.mjs"
   },
   "dependencies": {
     "firebase": "^10.13.2",
@@ -19,10 +29,12 @@
     "html5-qrcode": "^2.3.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "simple-icons": "^16.36.0"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
+    "@playwright/test": "^1.49.1",
     "@vitejs/plugin-react": "^4.3.1",
     "fake-indexeddb": "^6.2.5",
     "puppeteer": "^25.0.2",

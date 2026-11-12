@@ -115,10 +115,21 @@ function chipFor(state, node) {
   return state;
 }
 
+// The empty thumbnail's line icon (a photo frame) — sky-admin.css shows it on
+// neutral glass in place of the emoji.
+function EmptyPhotoIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="sky-thumb-empty__ic">
+      <rect x="3" y="5" width="18" height="14" rx="2.5" /><circle cx="9" cy="10" r="1.6" /><path d="M21 16l-5-5-8 8" />
+    </svg>
+  );
+}
+
 function StateChip({ chip }) {
   const b = STATE_BADGE[chip] || STATE_BADGE.awaiting;
   return (
-    <span style={{ fontSize: 9.5, fontWeight: 800, color: b.color, border: `1px solid ${b.border}`,
+    <span data-status={chip === "on" ? "live" : chip === "blocked" ? "blocked" : "awaiting"}
+          style={{ fontSize: 9.5, fontWeight: 800, color: b.color, border: `1px solid ${b.border}`,
                    borderRadius: 8, padding: "3px 7px", whiteSpace: "nowrap", flexShrink: 0 }}>
       {b.label.toUpperCase()}
     </span>
@@ -132,12 +143,15 @@ function StateChip({ chip }) {
 function Thumb({ p, node }) {
   const primary = primaryPhotoUrl(p) || effectivePhotoList(p, node).photos[0];
   if (primary) {
-    return <PrimaryPhoto product={p} snapshot={primary} alt=""
+    return <PrimaryPhoto product={p} snapshot={primary} alt="" className="sky-li__thumb"
                 style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 10, flexShrink: 0 }}
                 onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   }
-  return <div style={{ width: 44, height: 44, borderRadius: 10, background: "rgba(120,150,255,.08)",
-                       display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>{p?.photo || "👟"}</div>;
+  return <div className="sky-li__thumb sky-thumb-empty" aria-hidden="true"
+              style={{ width: 44, height: 44, borderRadius: 10, background: "rgba(120,150,255,.08)",
+                       display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>
+    <span className="sky-thumb-empty__glyph">{p?.photo || "👟"}</span><EmptyPhotoIcon />
+  </div>;
 }
 
 // ─── BATCH CONFIRMATION ──────────────────────────────────────────────────────
@@ -238,7 +252,7 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
   };
 
   return (
-    <div style={{ display: "flex", gap: 11, padding: "12px 2px", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
+    <div className="sky-lirow" style={{ display: "flex", gap: 11, padding: "12px 2px", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
       {selection && (
         <input type="checkbox"
           checked={selection.selected}
@@ -271,51 +285,51 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
             e.preventDefault();
             onOpen(product.id);
           }}
-          style={{ display: "flex", gap: 11, minWidth: 0, cursor: "pointer" }}>
+          className="sky-li" style={{ display: "flex", gap: 11, minWidth: 0, cursor: "pointer" }}>
           <Thumb p={product} node={node} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ flex: 1, minWidth: 0, fontSize: 11, color: "rgba(255,255,255,.3)",
-                            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {product.name}
-              </div>
-              <StateChip chip={chipFor(state, node)} />
-            </div>
-            {/* The name a publish would ship — read-only here; the page edits it. */}
+          <div className="sky-li__body" style={{ flex: 1, minWidth: 0 }}>
+            {/* Title: the name a publish would ship — read-only here; the page edits it. */}
             {effective.name ? (
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginTop: 5, lineHeight: 1.3,
+              <div className="sky-li__title" style={{ fontSize: 14, fontWeight: 700, color: "#fff", lineHeight: 1.3,
                             overflowWrap: "break-word" }}>
                 {effective.name}
-                {!nameVerdict.ok && (
-                  <span style={{ fontSize: 10, fontWeight: 700, color: RED, marginLeft: 7 }}>
-                    {nameVerdict.problems.join(" · ")}
-                  </span>
-                )}
               </div>
             ) : (
-              <div style={{ fontSize: 12.5, color: GRAY, marginTop: 5 }}>
+              <div className="sky-li__title" style={{ fontSize: 12.5, color: GRAY }}>
                 needs a name{effective.reason ? ` — ${effective.reason}` : ""} — tap to fix
               </div>
             )}
+            {/* One secondary line: the original name, the photo count. */}
+            <div className="sky-li__sub" style={{ fontSize: 11, color: "rgba(255,255,255,.3)", marginTop: 4,
+                          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {product.name} · {photoCount} photo{photoCount === 1 ? "" : "s"}
+            </div>
           </div>
-          <span style={{ color: "rgba(255,255,255,.18)", fontSize: 14, alignSelf: "center", flexShrink: 0 }}>›</span>
+          <div className="sky-li__end">
+            <StateChip chip={chipFor(state, node)} />
+            <span style={{ color: "rgba(255,255,255,.18)", fontSize: 14, flexShrink: 0 }}>›</span>
+          </div>
         </div>
 
         {/* Everything below sits OUTSIDE the navigable element, indented to
             the thumbnail's width so the column still reads as one row. */}
-        <div style={{ marginLeft: 55 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 5, marginTop: 7 }}>
-            {!(state === "live" && on) && OFFERED_CONDITIONS.map((c) => (
+        <div style={{ marginLeft: 67 }}>
+          {!nameVerdict.ok && effective.name && (
+            <div style={{ fontSize: 10, fontWeight: 700, color: RED, marginTop: 6 }}>
+              {nameVerdict.problems.join(" · ")}
+            </div>
+          )}
+          {!(state === "live" && on) && (
+          <div className="sky-row1" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 5, marginTop: 7 }}>
+            {OFFERED_CONDITIONS.map((c) => (
               <button key={c} disabled={busy}
-                onClick={() => setGrade(c)}
+                onClick={() => setGrade(c)} aria-pressed={node?.condition === c}
                 style={{ ...(node?.condition === c ? tabOn : tabOff), padding: "4px 9px", fontSize: "0.68rem" }}>
                 {c.split(" — ")[0]}
               </button>
             ))}
-            <span style={{ fontSize: 10.5, color: GRAY }}>
-              {photoCount} photo{photoCount === 1 ? "" : "s"}
-            </span>
           </div>
+          )}
           {pending && (
             // The plain sentence is deliberate (owner feedback 2026-08-14):
             // the chip alone read as "in progress", and Junid didn't know a
@@ -1157,7 +1171,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   return (
     <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: 880, margin: "0 auto", overflowX: "hidden", paddingBottom: 40 }}>
       {/* TOP BAR — same shape as the other full-page views (LabelPrintView) */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "50px 14px 12px" }}>
+      <div data-legacy-header="" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "50px 14px 12px" }}>
         <div onClick={onExit}
           style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: "8px 14px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
           <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>← Switch View</span>
@@ -1169,35 +1183,24 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         <div style={{ width: 92 }} />
       </div>
 
-      {/* STICKY HEADER — search + state filter, nothing else */}
+      {/* STICKY HEADER (Junid, 6 Nov): Live / Awaiting review as ONE
+          segmented toggle, then ONE scrolling department row (with counts),
+          then the search. Rows never wrap; nothing overlaps. */}
       <div style={{ position: "sticky", top: 0, zIndex: 20, background: "#000", padding: "10px 14px 12px", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search the original name (as on the label)…"
-          style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
-        />
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+        <div className="sky-seg" role="group" aria-label="Publishing state">
           {STATE_FILTERS.map(({ key, label }) => (
-            <button key={key} onClick={() => setFilter(key)}
+            <button key={key} onClick={() => setFilter(key)} aria-pressed={filter === key} data-testid={`shopify-tab-${key}`}
               style={{ ...(filter === key ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.74rem" }}>
               {label}
             </button>
           ))}
         </div>
-        {filter === "awaiting" && hiddenInReview > 0 && (
-          <div style={{ fontSize: 11, color: GRAY, marginTop: 8 }}>
-            {hiddenInReview === 1
-              ? "1 product with no stock online is hidden. It comes back when stock arrives."
-              : `${hiddenInReview} products with no stock online are hidden. They come back when stock arrives.`}
-          </div>
-        )}
         {/* THE CATALOGUE — department, then shelf, as one-tap filter chips over
             the same flat list. Awaiting review only: that is where the work
             is, and where "show me just the sneakers" was asked for. */}
         {filter === "awaiting" && catalogueTops && catalogueTops.length > 0 && (
           <>
-            <div style={{ display: "flex", gap: 6, marginTop: 10, overflowX: "auto",
+            <div className="sky-row1" style={{ display: "flex", gap: 6, marginTop: 10, overflowX: "auto",
                           WebkitOverflowScrolling: "touch", paddingBottom: 2 }}>
               <button onClick={() => pickTop("all")}
                 style={{ ...(catTop === "all" ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.72rem", flexShrink: 0 }}>
@@ -1213,7 +1216,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
               ))}
             </div>
             {catalogueSubs && catalogueSubs.length > 1 && (
-              <div style={{ display: "flex", gap: 6, marginTop: 8, overflowX: "auto",
+              <div className="sky-row1" style={{ display: "flex", gap: 6, marginTop: 8, overflowX: "auto",
                             WebkitOverflowScrolling: "touch", paddingBottom: 2 }}>
                 <button onClick={() => setCatSub("all")}
                   style={{ ...(catSub === "all" ? tabOn : tabOff), padding: "5px 11px", fontSize: "0.7rem", flexShrink: 0 }}>
@@ -1230,6 +1233,19 @@ export default function ShopifyPublishView({ products = [], onExit }) {
               </div>
             )}
           </>
+        )}
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search the original name (as on the label)…"
+          style={{ ...inputStyle, width: "100%", boxSizing: "border-box", marginTop: 10 }}
+        />
+        {filter === "awaiting" && hiddenInReview > 0 && (
+          <div style={{ fontSize: 11, color: GRAY, marginTop: 8 }}>
+            {hiddenInReview === 1
+              ? "1 product with no stock online is hidden. It comes back when stock arrives."
+              : `${hiddenInReview} products with no stock online are hidden. They come back when stock arrives.`}
+          </div>
         )}
       </div>
 

@@ -1,0 +1,657 @@
+/* ─── SKY — the Marathon Club design DNA ──────────────────────────────────────
+ *
+ * The whole app stands in ONE sky: public/assets/sky-clear.jpg (Junid 5 Nov;
+ * the room photo sky-room.jpg is kept, unused). Everything in
+ * this file follows from the three reference images in design/ (home.png,
+ * assistant-phone.png, assistant-desktop.png). design/DNA.md explains the
+ * rules in words; this file is the rules in code.
+ *
+ *   1. The photo is never touched. No overlay, gradient, tint, blur or
+ *      darkening sits over it anywhere. It is a position:fixed div at z-index 0
+ *      (never background-attachment:fixed, which iPad Safari ignores).
+ *   2. Glass only inside an object's own box. Between objects the photo is raw.
+ *   3. Text is white on glass, dark navy on the bright (phone) cards, and the
+ *      royal "navy" of the references for prices and the active label.
+ *   4. No other colour. Status colours survive only where they carry meaning
+ *      (a refusal, a warning) — see DNA.md "What is not decoration".
+ */
+
+:root {
+  /* Typography — Inter, matched by overlay against assistant-phone.png. */
+  --sky-font: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+
+  /* Ink — text on glass is NAVY, never white (Junid, 2026-11-02: white on
+     thin glass read as white on clouds). White is for the wordmark and the
+     four home tiles only, always with --sky-text-shadow. Navy on the bare
+     sky is ~4.9:1; on standard glass it is ~9:1. */
+  --sky-white: #ffffff;
+  --sky-ink: #0b2a52;                          /* primary text on glass */
+  --sky-ink-2: #1f3d66;                        /* secondary text (#3b5f8f measured 3.7:1 on glass) */
+  --sky-ink-deep: #04122b;                     /* text sitting on the bare sky (headings) */
+  --sky-navy: #0026c2;                         /* brand blue: prices, key numbers, plus, active label (#0033f5 measured 4.1:1 on glass) */
+  --sky-navy-deep: #0a2a8f;                    /* pressed state of a navy fill */
+  --sky-text-shadow: 0 2px 14px rgba(0, 40, 110, 0.45);
+
+  /* Glass — ONE recipe for every pill, chip, card, panel, popover and bar.
+     Standard: 40% white, blur 28 / saturate 1.6 / brightness 1.05, a 75%
+     rim, a 90% inset top highlight, a soft blue shadow. A light strip in the
+     photo behind it drops to a soft glow, never a hard line. Strong (58%) for
+     popovers, modals, sidebars and anything dense with text. Active = brighter
+     glass (86%), not a solid fill. */
+  --sky-glass: rgba(255, 255, 255, 0.40);
+  --sky-glass-soft: rgba(255, 255, 255, 0.40);
+  --sky-glass-strong: rgba(255, 255, 255, 0.58);
+  --sky-glass-bright: rgba(255, 255, 255, 0.74);
+  --sky-glass-solid: rgba(255, 255, 255, 0.86);
+  --sky-rim: rgba(255, 255, 255, 0.75);
+  --sky-rim-soft: rgba(255, 255, 255, 0.75);
+  --sky-blur: 28px;
+  /* The backdrop filter is written LITERALLY at every use, never as var():
+     WebKit (Safari, iPad) drops -webkit-backdrop-filter: var(--x) to "none"
+     (measured in WebKit 18.2, 2026-11-02). Value: blur(28px) saturate(1.6) brightness(1.05). */
+  --sky-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --sky-shadow: 0 12px 32px rgba(10, 60, 140, 0.22);
+  --sky-shadow-lg: 0 22px 54px rgba(10, 60, 140, 0.3);
+
+  /* Shape */
+  --sky-r-tile: 30px;     /* home tiles (≈50px on the 2x reference) */
+  --sky-r-card: 22px;     /* product cards */
+  --sky-r-panel: 24px;
+  --sky-r-pill: 999px;
+
+  /* Rhythm */
+  --sky-gutter: 16px;
+  --sky-gap: 14px;
+}
+
+/* ── THE ROOM ─────────────────────────────────────────────────────────────── */
+html[data-sky="on"], html[data-sky="on"] body {
+  background: #1d9bfb;   /* the photo's own mid-blue, seen only before it loads */
+}
+html[data-sky="on"] body { font-family: var(--sky-font); }
+.sky-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image: url("/assets/sky-clear-wide.jpg");   /* a band of the phone sky (scripts/sky-wide-bg.mjs) */
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+/* Phones and portrait tablets: Junid's tall sky (5 Nov), same rules — cover, untouched. */
+@media (max-width: 767px), (orientation: portrait) and (max-width: 1023px) {
+  .sky-bg { background-image: url("/assets/sky-clear-phone.jpg"); }
+}
+html[data-sky="off"] .sky-bg { display: none; }
+
+/* ── NO ZOOM (Junid 5 Nov; src/device/zoomLock.js) ─────────────────────────
+   manipulation: no double-tap zoom, no 300ms delay; scrollers pan only.
+   On touch screens every field is at least 16px so iOS never zooms on focus
+   (desktop keeps its own sizes). The photo viewer opts out with its own
+   transform zoom ([data-zoom-surface], touch-action none). */
+html, body { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+.sky-brandstrip, .bcsp__list, .bcsp__side, .bcsp__right, .bcsp__items, [data-scroll] { touch-action: pan-x pan-y; }
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]), select, textarea { font-size: max(16px, 1em) !important; }
+}
+#root { position: relative; z-index: 1; }
+
+/* ── GLASS ────────────────────────────────────────────────────────────────── */
+.sky-glass {
+  position: relative;
+  background: var(--sky-glass);
+  border: 1px solid var(--sky-rim);
+  box-shadow: var(--sky-highlight), var(--sky-shadow);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6) brightness(1.05);
+  backdrop-filter: blur(28px) saturate(1.6) brightness(1.05);
+  color: var(--sky-ink);
+}
+.sky-glass--soft { background: var(--sky-glass-soft); border-color: var(--sky-rim-soft); }
+.sky-glass--strong { background: var(--sky-glass-strong); }
+.sky-glass--bright {
+  background: linear-gradient(180deg, rgba(255,255,255,.52) 0%, rgba(255,255,255,.78) 58%, rgba(255,255,255,.86) 100%);
+  border-color: rgba(255, 255, 255, 0.85);
+}
+/* The bright highlight on the top edge (home.png): a lit hairline that fades
+   out towards both corners, drawn inside the object's own box. */
+.sky-sheen::before {
+  content: "";
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  top: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,1) 50%, rgba(255,255,255,0));
+  box-shadow: 0 0 10px 1px rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+}
+.sky-solid {
+  background: var(--sky-glass-solid);
+  color: var(--sky-navy);
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow: inset 0 -6px 14px rgba(170, 205, 255, 0.35), 0 8px 22px -10px rgba(0, 60, 170, 0.45);
+}
+
+/* ── HEADER ───────────────────────────────────────────────────────────────── */
+.sky-header {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: start;
+  /* grid and user buttons sit on the WORDMARK's vertical centre */
+  --sky-logo-mid: 18px;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) var(--sky-gutter) 0;
+  color: var(--sky-ink);
+  font-family: var(--sky-font);
+}
+.sky-header__l { justify-self: start; display: flex; gap: 10px; align-items: center; margin-top: calc(var(--sky-logo-mid) - 22px); }
+.sky-header__r { justify-self: end; display: flex; gap: 14px; align-items: center; margin-top: calc(var(--sky-logo-mid) - 22px); }
+.sky-header__c { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.sky-round {
+  width: 45px; height: 45px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  color: var(--sky-ink);
+  cursor: pointer;
+  padding: 0;
+  font-family: var(--sky-font);
+}
+.sky-round svg { width: 22px; height: 22px; }
+.sky-round--user { font-size: 20px; font-weight: 800; }
+.sky-round:focus-visible, .sky-pill:focus-visible, .sky-chip:focus-visible, .sky-seg button:focus-visible,
+.sky-card:focus-visible, .sky-plus:focus-visible, .sky-tile:focus-visible {
+  outline: 2px solid var(--sky-ink); outline-offset: 3px;
+}
+.sky-logo { display: flex; flex-direction: column; align-items: center; line-height: 1; color: #fff; user-select: none; text-shadow: var(--sky-text-shadow); }
+.sky-logo__m {
+  font-family: var(--sky-font);
+  font-style: italic;
+  font-weight: 900;
+  font-size: 28px;
+  letter-spacing: -0.035em;
+  transform: skewX(-4deg);
+}
+.sky-logo__c {
+  font-family: var(--sky-font);
+  font-style: italic;
+  font-weight: 800;
+  font-size: 9.5px;
+  letter-spacing: 1.05em;
+  margin: 5px 0 0 1.05em;
+}
+.sky-logo--lg .sky-logo__m { font-size: 33px; }
+.sky-logo--lg .sky-logo__c { font-size: 10.5px; margin-top: 7px; }
+.sky-tag {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 76px; height: 20px; padding: 0 12px;
+  border-radius: var(--sky-r-pill);
+  font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--sky-ink);
+}
+/* The store pill (SkyStorePill): the tag, as a button, with a chevron. */
+.sky-storepill { gap: 5px; height: 24px; padding: 0 11px 0 13px; font-size: 11px; letter-spacing: 0.05em;
+  border: 1px solid var(--sky-rim); cursor: pointer; font-family: var(--sky-font); white-space: nowrap; }
+span.sky-storepill { cursor: default; padding: 0 13px; }
+.sky-storepill:focus-visible { outline: 2px solid var(--sky-navy); outline-offset: 2px; }
+.sky-storepill[aria-expanded="true"] { background: var(--sky-glass-solid); }
+.sky-storepill__chev { flex: none; margin-top: 1px; }
+.sky-storepill--pulse { animation: skyStorePulse 600ms ease-out 1; }
+@keyframes skyStorePulse {
+  0% { transform: scale(1); box-shadow: var(--sky-highlight), 0 0 0 0 rgba(255, 255, 255, 0.9); }
+  45% { transform: scale(1.08); box-shadow: var(--sky-highlight), 0 0 0 7px rgba(255, 255, 255, 0.55); }
+  100% { transform: scale(1); box-shadow: var(--sky-highlight), 0 0 0 12px rgba(255, 255, 255, 0); }
+}
+@media (prefers-reduced-motion: reduce) { .sky-storepill--pulse { animation: none; } }
+.sky-tag--lg { height: 30px; min-width: 70px; font-size: 14px; letter-spacing: -0.01em; padding: 0 16px; }
+
+/* ── PILLS, SEGMENTS, CHIPS ───────────────────────────────────────────────── */
+.sky-pill {
+  display: inline-flex; align-items: center; gap: 9px;
+  height: 40px; padding: 0 16px;
+  border-radius: var(--sky-r-pill);
+  font: 600 15px/1 var(--sky-font);
+  color: var(--sky-ink); cursor: pointer;
+}
+.sky-seg {
+  display: flex; gap: 0;
+  padding: 3px;
+  border-radius: var(--sky-r-pill);
+}
+.sky-seg button {
+  flex: 1;
+  border: 0; background: transparent; cursor: pointer;
+  border-radius: var(--sky-r-pill);
+  font: 700 14px/1 var(--sky-font);
+  color: var(--sky-ink);
+  min-height: 36px;
+  padding: 0 12px;
+  transition: background .18s ease, color .18s ease, box-shadow .18s ease;
+}
+.sky-seg button[aria-pressed="true"] {
+  background: var(--sky-glass-solid);
+  color: var(--sky-navy);
+  font-weight: 800;
+  box-shadow: inset 0 -5px 12px rgba(170, 205, 255, 0.45), 0 6px 16px -8px rgba(0, 60, 170, 0.5);
+}
+.sky-seg--lg button { min-height: 37px; font-size: 13.5px; }
+.sky-chips { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+.sky-chip {
+  height: 40px; min-width: 92px; padding: 0 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--sky-r-pill);
+  font: 800 16px/1 var(--sky-font);
+  letter-spacing: 0.02em;
+  color: var(--sky-ink); cursor: pointer;
+}
+.sky-chip[aria-pressed="true"] { background: var(--sky-glass-solid); color: var(--sky-navy); border-color: #fff; }
+.sky-chip svg { height: 22px; width: auto; max-width: 54px; }
+.sky-chip__txt { font-weight: 900; font-size: 15px; letter-spacing: .03em; text-transform: uppercase; white-space: nowrap; }
+
+/* The phone's brand strip (SkyBrandStrip): one full-bleed row of round glass
+   logo pills that scrolls sideways and snaps, 16px gutters, no scrollbar. The
+   vertical padding is room for the glass shadow, which overflow would clip;
+   the chips carry a tighter shadow that ends inside it (no hard edge). */
+.sky-brandstrip {
+  display: flex; gap: 10px;
+  overflow-x: auto; overflow-y: hidden;
+  padding: 4px 16px 16px;
+  scroll-padding-inline: 16px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.sky-brandstrip::-webkit-scrollbar { display: none; }
+.sky-brandstrip::after { content: ""; flex: 0 0 6px; }   /* the right gutter (16 = 10 gap + 6) */
+.sky-brandchip {
+  flex: 0 0 auto;
+  height: 44px; min-width: 64px; padding: 0 18px;
+  scroll-snap-align: start;
+  box-shadow: var(--sky-highlight), 0 5px 10px -2px rgba(10, 60, 140, 0.22);
+}
+.sky-brandchip svg { height: 22px; max-width: 48px; }
+.sky-brandchip .sky-chip__txt { font-size: 13px; }
+.sky-brandchip--all { font-size: 15px; }
+
+/* ── SEARCH ───────────────────────────────────────────────────────────────── */
+.sky-search {
+  display: flex; align-items: center;
+  height: 46px;
+  border-radius: var(--sky-r-pill);
+  padding: 0 6px 0 18px;
+  gap: 12px;
+}
+.sky-search > svg { width: 20px; height: 20px; color: var(--sky-ink); flex: 0 0 auto; }
+.sky-search input {
+  flex: 1; min-width: 0;
+  background: transparent; border: 0; outline: none;
+  font: 500 15px/1 var(--sky-font);
+  color: var(--sky-ink);
+}
+.sky-search input::placeholder { color: var(--sky-ink-2); }
+.sky-search:focus-within { outline: 2px solid var(--sky-ink); outline-offset: 3px; }
+.sky-search__div { width: 1px; align-self: center; height: 56%; background: rgba(11, 42, 82, 0.2); flex: 0 0 auto; }
+.sky-search__btn {
+  display: grid; place-items: center;
+  height: 70%; padding: 0 12px;
+  border: 0; border-radius: 999px;
+  background: transparent; color: var(--sky-ink); cursor: pointer;
+}
+.sky-search__btn:hover, .sky-search__btn[aria-expanded="true"] { background: rgba(255, 255, 255, 0.55); }
+.sky-search__btn:focus-visible { outline: 2px solid var(--sky-ink); outline-offset: 1px; }
+.sky-search__btn svg { width: 22px; height: 22px; }
+.sky-search--lg { height: 73px; padding-left: 40px; gap: 18px; }
+.sky-search--lg > svg { width: 30px; height: 30px; }
+.sky-search--lg input { font-size: 24px; font-weight: 400; }
+.sky-search--lg .sky-search__btn { padding: 0 16px; }
+.sky-search--lg { padding-right: 14px; }
+.sky-search--lg .sky-search__btn svg { width: 30px; height: 30px; }
+
+/* ── PRODUCT CARD + PODIUM ────────────────────────────────────────────────── */
+.sky-card {
+  position: relative;
+  border-radius: var(--sky-r-card);
+  overflow: hidden;
+  cursor: pointer;
+  display: flex; flex-direction: column;
+  font-family: var(--sky-font);
+  transition: transform .22s cubic-bezier(.2,.7,.2,1), box-shadow .22s;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+.sky-card:hover { transform: translateY(-4px); box-shadow: var(--sky-highlight), var(--sky-shadow-lg); }
+.sky-stage {
+  position: relative;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+/* The podium: a glass disc seen from slightly above — a lit top ellipse over a
+   shallow translucent drum, with the product's drop shadow on it. */
+.sky-podium {
+  position: absolute;
+  left: 50%; transform: translateX(-50%);
+  bottom: 10px;
+  width: 79%;
+  height: 32px;
+  pointer-events: none;
+}
+.sky-podium::before {   /* the drum */
+  content: ""; position: absolute; left: 0; right: 0; top: 9px; bottom: 0;
+  border-radius: 0 0 50% 50% / 0 0 60% 60%;
+  background: linear-gradient(180deg, rgba(255,255,255,.42), rgba(205,232,255,.22) 60%, rgba(255,255,255,.06));
+  border: 1px solid rgba(255,255,255,.55); border-top: 0;
+}
+.sky-podium::after {    /* the top face */
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 19px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at 50% 45%, rgba(255,255,255,.72), rgba(225,242,255,.48) 55%, rgba(190,225,255,.34));
+  border: 1px solid rgba(255,255,255,.9);
+  box-shadow: 0 0 10px rgba(255,255,255,.4);
+}
+.sky-cutout {
+  position: relative; z-index: 1;
+  max-width: 90%;
+  object-fit: contain;
+  filter: drop-shadow(0 9px 7px rgba(0, 30, 90, 0.38));
+}
+/* No cut-out yet: the original photo, large, rounded, never cropped, faded or
+   blurred, on a very subtle translucent surface — nothing lighter than the
+   card's own glass behind it. The image is sized to its own aspect inside the
+   stage so the rounding lands on the photo's corners. */
+.sky-frame {
+  position: absolute; inset: 8px 8px 0;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.12);
+  display: flex; align-items: center; justify-content: center;
+}
+.sky-frame img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 12px; }
+.sky-name { font-weight: 700; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sky-price { font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; white-space: nowrap; }
+.sky-plus {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center;
+  color: var(--sky-navy); cursor: pointer; padding: 0;
+}
+.sky-plus svg { width: 18px; height: 18px; }
+
+/* ── BOTTOM BAR ───────────────────────────────────────────────────────────── */
+.sky-bottombar {
+  position: fixed;
+  left: max(12px, env(safe-area-inset-left, 0px));
+  right: max(12px, env(safe-area-inset-right, 0px));
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  z-index: 60;
+  min-height: 48px;
+  border-radius: 24px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 5px 5px 5px 16px;
+  color: var(--sky-ink);
+  font-family: var(--sky-font);
+  background: var(--sky-glass-strong);
+}
+.sky-bottombar__div { width: 1px; align-self: stretch; margin: 6px 0; background: rgba(11, 42, 82, 0.18); }
+/* The height the grid reserves so the last row is never under the bar. */
+:root { --sky-bar-space: calc(48px + 24px + env(safe-area-inset-bottom, 0px)); }
+/* The device's safe areas, as variables so a test can simulate a notch
+   (Playwright cannot set env()); viewport-fit=cover is in the meta. */
+:root { --sky-sat: env(safe-area-inset-top, 0px); --sky-sab: env(safe-area-inset-bottom, 0px); --sky-sal: env(safe-area-inset-left, 0px); --sky-sar: env(safe-area-inset-right, 0px); }
+.sky-bottombar__cta {
+  margin-left: auto;
+  min-width: 140px; height: 38px;
+  border-radius: var(--sky-r-pill);
+  font: 800 14px/1 var(--sky-font);
+  cursor: pointer;
+}
+
+/* ── PANELS (every other screen) ──────────────────────────────────────────── */
+.sky-panel { border-radius: var(--sky-r-panel); padding: 18px; color: var(--sky-ink); }
+.sky-h1 { font: 800 30px/1.1 var(--sky-font); letter-spacing: -0.02em; color: var(--sky-ink-deep); margin: 0; text-align: center; }
+.sky-sub { font: 600 14px/1.4 var(--sky-font); color: var(--sky-ink-deep); text-align: center; margin-top: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sky-card, .sky-seg button, .sky-tile { transition: none !important; }
+  .sky-card:hover, .sky-tile:hover { transform: none !important; }
+}
+
+/* ── THE PHONE'S PRODUCT POPUP (the size sheet) ───────────────────────────── */
+.sky-sheet__img { position: relative; width: 132px; height: 132px; flex: 0 0 auto; border-radius: 20px; overflow: hidden;
+  background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.6); }
+.sky-sheet__img .sky-podium { width: 84%; bottom: 8px; }
+.sky-sheet__img .sky-cutout { margin-bottom: 20px !important; }
+.sky-sheet__img .sky-frame { inset: 6px; border-radius: 15px; }
+.sky-sheet__n { position: absolute; right: 6px; bottom: 6px; z-index: 2; background: #fff; color: var(--sky-navy); font: 800 11px/1 var(--sky-font); padding: 4px 7px; border-radius: 999px; }
+.sky-sheet__meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sky-sheet__meta span { font: 800 10.5px/1 var(--sky-font); letter-spacing: .05em; padding: 5px 9px; border-radius: 999px; background: rgba(255,255,255,.7); border: 1px solid #fff; color: var(--sky-navy); }
+.sky-sheet__x { position: absolute; top: -4px; right: -4px; width: 34px; height: 34px; border-radius: 50%; border: 1px solid rgba(255,255,255,.9); background: rgba(255,255,255,.7); color: var(--sky-ink); cursor: pointer; font-size: 14px; }
+.sky-sheet__lab { font: 800 11px/1 var(--sky-font); letter-spacing: .14em; text-transform: uppercase; margin-bottom: .6rem; color: var(--sky-ink); }
+.sky-sheet .sky-szgrid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); }
+html[data-sky="on"] #root .sky-szq.sky-szq { aspect-ratio: 1 / 1; padding: 0 !important; border-radius: 16px !important; display: flex !important; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  font-family: var(--sky-font) !important; font-size: 16px !important; font-weight: 800 !important;
+  color: var(--sky-navy) !important; background: rgba(255,255,255,.62) !important; border: 1px solid rgba(255,255,255,.9) !important; box-shadow: inset 0 1px 0 #fff; }
+html[data-sky="on"] #root .sky-szq__n { font-size: 11px; font-weight: 700; opacity: .9; }
+html[data-sky="on"] #root .sky-szq.sky-szq[aria-pressed="true"] { background: var(--sky-navy) !important; border-color: var(--sky-navy) !important; color: #fff !important; box-shadow: 0 10px 22px -10px rgba(0,40,170,.9); }
+/* ── UNAVAILABLE SIZE (Junid 5 Nov: "must be unmistakable at a glance") ──
+   One look on all three size surfaces — the phone sheet (.sky-szq), the
+   desktop quick view (.ad-svsz) and the hover quick-add (.ad-sz[data-out]):
+   the square at 35% (surface + size number), a diagonal strike corner to
+   corner, and the on-hand count as a full-strength navy "0". The chip stays
+   tappable: the tap raises the why-note and the alternatives, as live. */
+html[data-sky="on"] #root .sky-szq.sky-szq[aria-disabled="true"]:not([aria-pressed="true"]),
+html[data-sky="on"] #root .ad-svsz button[aria-disabled="true"]:not([aria-pressed="true"]),
+html[data-sky="on"] #root .ad-sz.ad-sz[data-out] {
+  position: relative; overflow: hidden; box-shadow: none !important; text-decoration: none !important;
+  color: rgba(11,42,82,.35) !important; background: rgba(255,255,255,.22) !important;
+  border-style: solid !important; border-color: rgba(255,255,255,.32) !important; }
+html[data-sky="on"] #root .sky-szq.sky-szq[aria-disabled="true"]:not([aria-pressed="true"])::after,
+html[data-sky="on"] #root .ad-svsz button[aria-disabled="true"]:not([aria-pressed="true"])::after,
+html[data-sky="on"] #root .ad-sz.ad-sz[data-out]::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to top right, transparent calc(50% - 1px), rgba(11,42,82,.55) calc(50% - 1px), rgba(11,42,82,.55) calc(50% + 1px), transparent calc(50% + 1px)); }
+html[data-sky="on"] #root .sky-szq[aria-disabled="true"]:not([aria-pressed="true"]) .sky-szq__n,
+html[data-sky="on"] #root .ad-svsz button[aria-disabled="true"]:not([aria-pressed="true"]) .ad-szn {
+  color: var(--sky-navy) !important; opacity: 1 !important; font-weight: 900 !important; }
+html[data-sky="on"] #root .sky-primary.sky-primary { background: var(--sky-navy) !important; color: #fff !important; border: 0 !important; border-radius: 999px !important; font-family: var(--sky-font) !important; font-weight: 800 !important;
+  box-shadow: 0 10px 24px -10px rgba(0,40,170,.8), inset 0 1px 0 rgba(255,255,255,.3) !important; }
+html[data-sky="on"] #root .sky-secondary.sky-secondary { background: rgba(255,255,255,.62) !important; color: var(--sky-navy) !important; border: 1px solid rgba(255,255,255,.95) !important; border-radius: 999px !important; font-family: var(--sky-font) !important; font-weight: 800 !important; }
+
+/* ── THE ONE OVERLAY (SkyOverlay — Junid 6 Nov, "popup readability") ─────────
+   A body-level portal: a scrim that dims and blurs the page, the panel on
+   STRONG glass with navy text. Anchored on a laptop, a bottom sheet on a
+   phone, centred dialogs. Option rows are their own 56px glass cards. */
+.sky-ovl-root { position: fixed; inset: 0; z-index: 9990; font-family: var(--sky-font); }
+.sky-ovl-scrim { position: absolute; inset: 0; background: rgba(10,40,100,.42);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: skyOvlFade .18s ease-out; }
+.sky-ovl { position: fixed; z-index: 1; color: var(--sky-ink); font-family: var(--sky-font); outline: none;
+  background: rgba(240,247,255,.86); border: 1px solid var(--sky-rim); border-radius: 22px; padding: 12px;
+  -webkit-backdrop-filter: blur(28px) saturate(1.6); backdrop-filter: blur(28px) saturate(1.6);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.95), 0 26px 60px -22px rgba(0,40,140,.6), 0 8px 22px -12px rgba(0,40,140,.35);
+  max-height: min(70vh, calc(100dvh - 120px)); overflow: auto; overscroll-behavior: contain; animation: skyOvlFade .16s ease-out; }
+.sky-ovl--sheet { left: 0; right: 0; bottom: 0; max-width: 560px; margin: 0 auto; border-radius: 26px 26px 0 0; border-bottom: 0;
+  padding: 0 16px calc(16px + env(safe-area-inset-bottom, 0px)); padding-left: calc(16px + env(safe-area-inset-left, 0px)); padding-right: calc(16px + env(safe-area-inset-right, 0px));
+  max-height: 70vh; animation: skyOvlUp .26s cubic-bezier(.2,.85,.25,1); transition: transform .2s cubic-bezier(.2,.85,.25,1); }
+.sky-ovl__handle { position: sticky; top: 0; z-index: 1; display: flex; justify-content: center; align-items: center; height: 26px; margin: 0 -16px 4px; cursor: grab; touch-action: none; }
+.sky-ovl__handle span { width: 42px; height: 5px; border-radius: 999px; background: rgba(11,42,82,.28); }
+.sky-ovl--dialog { left: 50%; top: 50%; transform: translate(-50%, -50%); width: calc(100% - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  background: none; border: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; padding: 0; overflow: visible; max-height: none; }
+@keyframes skyOvlFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes skyOvlUp { from { transform: translateY(100%); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sky-ovl, .sky-ovl-scrim, .sky-ovl--sheet { animation: none; transition: none; } }
+/* Cards: the picker's options, the dialog's message and buttons. */
+.sky-ovl-card { background: rgba(244,249,255,.9); border: 1px solid rgba(255,255,255,.9); border-radius: 18px;
+  box-shadow: inset 0 1px 0 #fff, 0 10px 24px -16px rgba(0,40,140,.5);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6); backdrop-filter: blur(28px) saturate(1.6); }
+.sky-ovl .sky-pop__lab { font: 800 10.5px/1 var(--sky-font); letter-spacing: .16em; text-transform: uppercase; color: var(--sky-navy); margin: 8px 4px 9px; }
+.sky-ovl .sky-pop__lab--gap { margin-top: 18px; }
+.sky-ovl .sky-pop__i { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 56px; margin: 0 0 10px; padding: 0 16px 0 18px;
+  text-align: left; cursor: pointer; font: 700 15px/1.2 var(--sky-font); color: var(--sky-ink);
+  background: rgba(255,255,255,.62); border: 1px solid rgba(255,255,255,.95); border-radius: 16px; box-shadow: inset 0 1px 0 #fff, 0 8px 18px -14px rgba(0,40,140,.45); }
+.sky-ovl .sky-pop__i:last-child { margin-bottom: 4px; }
+.sky-ovl .sky-pop__i:hover { background: rgba(255,255,255,.72); }
+.sky-ovl .sky-pop__i:focus-visible { outline: 2px solid var(--sky-navy); outline-offset: 2px; }
+.sky-ovl .sky-pop__i[aria-checked="true"] { background: #fff; color: var(--sky-navy); font-weight: 800; }
+.sky-ovl .sky-pop__i[aria-checked="true"]::after { content: ""; flex: 0 0 auto; width: 20px; height: 20px; background: var(--sky-navy);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E") center/contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E") center/contain no-repeat; }
+.sky-ovl .sky-pop__n { margin-left: auto; font-size: 12.5px; font-weight: 700; color: var(--sky-ink); font-variant-numeric: tabular-nums; }
+.sky-ovl .sky-pop__i[aria-checked="true"] .sky-pop__n { color: var(--sky-navy); }
+.sky-ovl .sky-pop__who { font: 800 16px/1.2 var(--sky-font); padding: 6px 6px 0; color: var(--sky-ink); }
+.sky-ovl .sky-pop__sub { font: 500 12.5px/1.3 var(--sky-font); color: var(--sky-ink); padding: 3px 6px 12px; }
+.sky-ovl-msg { padding: 22px 20px 20px; text-align: center; color: var(--sky-ink); }
+.sky-ovl-msg__icon { display: inline-grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; margin-bottom: 10px; color: var(--sky-navy);
+  background: rgba(255,255,255,.75); border: 1px solid rgba(255,255,255,.95); box-shadow: inset 0 1px 0 #fff; }
+.sky-ovl-msg__eyebrow { font: 800 10.5px/1 var(--sky-font); letter-spacing: .16em; text-transform: uppercase; color: var(--sky-navy); margin-bottom: 8px; }
+.sky-ovl-msg__title { font: 800 20px/1.2 var(--sky-font); color: var(--sky-navy); letter-spacing: -.01em; margin-bottom: 10px; }
+.sky-ovl-msg__body { font: 500 14.5px/1.5 var(--sky-font); color: var(--sky-ink); }
+.sky-ovl-msg__body b, .sky-ovl-msg__body strong { color: var(--sky-navy); font-weight: 800; }
+.sky-ovl-msg__note { margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: rgba(255,255,255,.6); border: 1px solid rgba(255,255,255,.95); font-size: 13px; font-weight: 600; color: var(--sky-ink); }
+.sky-ovl-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.sky-ovl-btn { min-height: 52px; padding: 0 14px; font: 800 15px/1.15 var(--sky-font); cursor: pointer; color: var(--sky-navy); }
+.sky-ovl-btn--ghost { border: 1.5px solid var(--sky-navy); background: rgba(244,249,255,.92); }
+.sky-ovl-btn--primary { background: var(--sky-navy); border-color: var(--sky-navy); color: #fff; box-shadow: 0 12px 26px -12px rgba(0,30,140,.8), inset 0 1px 0 rgba(255,255,255,.25); }
+.sky-ovl-btn:focus-visible { outline: 2px solid var(--sky-navy); outline-offset: 2px; }
+/* The old dark overlays that still live inside the page (legacy screens): the
+   same scrim and STRONG glass on the sky, so the page never shows through. */
+html[data-sky="on"] #root [style*="position: fixed"][style*="inset: 0"][style*="background: rgba(0, 0, 0, 0.8"],
+html[data-sky="on"] #root [style*="position: fixed"][style*="inset: 0"][style*="background: rgba(0, 0, 0, 0.85"],
+html[data-sky="on"] #root [style*="position: fixed"][style*="inset: 0"][style*="background: rgba(0, 0, 0, 0.9"] {
+  background: rgba(10,40,100,.35) !important; -webkit-backdrop-filter: blur(6px) !important; backdrop-filter: blur(6px) !important; }
+
+/* ── THE PHONE BOTTOM SHEET v3 (Junid, 6 Nov — SkySheet) ─────────────────────
+   The grid dims and blurs behind; a solid glass sheet slides up with a drag
+   handle and a close button. Sizes are pills (the chosen one white), counts
+   hidden behind a long press; a glass stepper; the Display Partner row with a
+   chevron; a full-width white Add to Cart. */
+.sky-sheetscrim { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: flex-end; justify-content: center;
+  background: rgba(10,40,100,.35); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: skyScrimIn .22s ease-out; }
+.sky-sheet.sky-sheet--v3 { position: relative; width: 100%; max-width: 520px; max-height: min(88vh, calc(100dvh - var(--sky-sat) - 24px)); overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 28px 28px 0 0; padding: 0 20px calc(18px + var(--sky-sab)); color: #fff; font-family: var(--sky-font);
+  background: linear-gradient(180deg, #1d62cf 0%, #155ac6 55%, #0b48b4 100%);
+  border: 1px solid rgba(255,255,255,.45); border-bottom: 0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.55), 0 -20px 50px -20px rgba(0,30,100,.55);
+  animation: skySheetUp .3s cubic-bezier(.2,.85,.25,1); transition: transform .22s cubic-bezier(.2,.85,.25,1); scrollbar-width: none; }
+.sky-sheet--v3::-webkit-scrollbar { display: none; }
+.sky-sheet--v3[data-dragging="true"] { transition: none; }
+@keyframes skySheetUp { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes skyScrimIn { from { opacity: 0; } to { opacity: 1; } }
+.sky-sheet__handle { display: flex; justify-content: center; align-items: center; height: 24px; margin: 0 -20px; touch-action: none; cursor: grab; }
+.sky-sheet__handle span { width: 42px; height: 5px; border-radius: 999px; background: rgba(255,255,255,.6); }
+.sky-sheet__head { position: relative; display: grid; grid-template-columns: 118px minmax(0,1fr); gap: 14px; padding: 2px 0 4px; touch-action: none; }
+.sky-sheet--v3 .sky-sheet__img { width: 118px; height: 118px; border-radius: 16px; overflow: visible; background: none; border: 0; filter: drop-shadow(0 14px 14px rgba(0,18,70,.45)); }
+.sky-sheet--v3 .sky-sheet__img .sky-stage { border-radius: 16px; }
+.sky-sheet--v3 .sky-sheet__img .sky-frame { inset: 0; border-radius: 16px; background: none; }
+.sky-sheet--v3 .sky-sheet__img .sky-frame img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 14px; }
+.sky-sheet__info { display: flex; flex-direction: column; min-width: 0; min-height: 118px; padding-right: 40px; }
+.sky-sheet__name { font: 700 16.5px/1.22 var(--sky-font); color: #fff; letter-spacing: -.005em; text-shadow: 0 1px 4px rgba(0,30,90,.25); }
+.sky-sheet__dead { margin-left: 6px; font-size: 10px; font-weight: 800; letter-spacing: .06em; padding: 2px 6px; border-radius: 6px; background: rgba(255,255,255,.25); border: 1px solid rgba(255,255,255,.6); vertical-align: middle; }
+.sky-sheet--v3 .sky-sheet__meta { margin-top: 8px; gap: 6px; }
+.sky-sheet--v3 .sky-sheet__meta span { font: 700 11px/1 var(--sky-font); letter-spacing: .04em; padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.55); color: #fff; }
+.sky-sheet__price { margin-top: auto; align-self: flex-end; font: 800 25px/1 var(--sky-font); color: #fff; font-variant-numeric: tabular-nums; letter-spacing: -.01em; padding-top: 10px; }
+.sky-sheet__noprice { font-size: 13px; font-weight: 700; }
+.sky-sheet--v3 .sky-sheet__x { top: 0; right: 0; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.6); }
+.sky-sheet__acts { position: absolute; top: 42px; right: 0; }
+.sky-sheet--v3 .sky-sheet__lab { margin: 20px 0 10px; font: 700 12px/1 var(--sky-font); letter-spacing: .12em; text-transform: uppercase; color: #fff; }
+.sky-sheet__peek { display: inline-block; margin: -2px 0 10px; padding: 6px 12px; border-radius: 999px; background: #fff; color: var(--sky-navy); font: 700 12.5px/1 var(--sky-font); }
+.sky-sheet.sky-sheet--v3 .sky-szgrid { display: flex !important; flex-wrap: wrap; gap: 8px !important; margin-bottom: 4px !important; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq { aspect-ratio: auto; height: 40px; min-width: 54px; padding: 0 14px !important; border-radius: 999px !important; flex-direction: row;
+  font-size: 15px !important; font-weight: 700 !important; color: #fff !important; background: rgba(255,255,255,.08) !important; border: 1px solid rgba(255,255,255,.55) !important; box-shadow: none;
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-pressed="true"] { background: #fff !important; border-color: #fff !important; box-shadow: 0 8px 18px -8px rgba(0,20,80,.6) !important; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-pressed="true"], html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-pressed="true"] * { color: var(--sky-navy) !important; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-disabled="true"]:not([aria-pressed="true"]) { color: rgba(255,255,255,.42) !important; background: rgba(255,255,255,.05) !important; border-color: rgba(255,255,255,.22) !important; }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq.sky-szq[aria-disabled="true"]:not([aria-pressed="true"])::after {
+  background: linear-gradient(to top right, transparent calc(50% - .75px), rgba(255,255,255,.4) calc(50% - .75px), rgba(255,255,255,.4) calc(50% + .75px), transparent calc(50% + .75px)); }
+html[data-sky="on"] #root .sky-sheet--v3 .sky-szq__n { display: none; }
+.sky-sheet__row { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 14px; }
+.sky-sheet__rowlab { font: 600 15px/1 var(--sky-font); color: #fff; }
+.sky-step { display: inline-flex; align-items: center; height: 40px; border-radius: 999px; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.55); overflow: hidden; }
+.sky-step button { width: 42px; height: 100%; border: 0; background: transparent; color: #fff; font: 600 20px/1 var(--sky-font); cursor: pointer; }
+.sky-step button:disabled { color: rgba(255,255,255,.35); cursor: not-allowed; }
+.sky-step span { min-width: 30px; text-align: center; font: 700 16px/1 var(--sky-font); font-variant-numeric: tabular-nums; color: #fff; }
+.sky-sheet__dp { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; padding: 13px 14px 13px 16px; border-radius: 16px; cursor: pointer; text-align: left;
+  color: #fff; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.45); font-family: var(--sky-font); }
+.sky-sheet__dp[aria-pressed="true"] { background: rgba(255,255,255,.26); border-color: #fff; }
+.sky-sheet__dpt { font: 600 15px/1.2 var(--sky-font); }
+.sky-sheet__dpt em { font-style: normal; font-weight: 500; opacity: .85; }
+.sky-sheet__dpt small { display: block; margin-top: 3px; font: 500 12px/1.2 var(--sky-font); opacity: .85; }
+html[data-sky="on"] #root .sky-primary.sky-primary.sky-sheet__add { height: 52px; padding: 0 !important; background: #fff !important; color: var(--sky-navy) !important; font-size: 16px !important; border-radius: 999px !important;
+  box-shadow: 0 12px 26px -12px rgba(0,20,80,.7) !important; }
+@media (prefers-reduced-motion: reduce) { .sky-sheet.sky-sheet--v3, .sky-sheetscrim { animation: none; transition: none; } }
+
+/* ── THE SHELL HEADER, PINNED (SkyShellHeader, Junid 6 Nov) ─────────────────
+   One header per screen, sticky at the top; the page scrolls under it. Its
+   glass (standard glass) fades in once scrolled. Barcode Studio opts out. */
+.sky-shellbar { position: relative; z-index: 50; padding-left: var(--sky-sal); padding-right: var(--sky-sar); }
+.sky-shellbar[data-sticky="true"] { position: sticky; top: 0; }
+.sky-shellbar > .sky-header { position: relative; z-index: 1; padding-bottom: 12px; }
+.sky-shellbar__glass { position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: 0; transition: opacity .18s ease-out;
+  background: linear-gradient(180deg, rgba(24,110,222,.94), rgba(36,126,232,.88));
+  -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4);
+  border-bottom: 1px solid rgba(255,255,255,.32); box-shadow: 0 10px 24px -16px rgba(0,30,90,.55); }
+.sky-shellbar[data-stuck="true"] .sky-shellbar__glass { opacity: 1; }
+.sky-shellpill { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.sky-shellpill svg { flex: 0 0 auto; }
+@media (prefers-reduced-motion: reduce) { .sky-shellbar__glass { transition: none; } }
+/* Legacy per-screen headers (the italic "marathon CLUB" rail wordmarks and the
+   "← Switch View · Viewing as:" bars): the shell header replaces them on the
+   sky. They stay in the code, so the classic look is untouched with the sky off. */
+html[data-sky="on"] #root [data-legacy-header] { display: none !important; }
+/* Full-height screens under the pinned header: a 100vh workspace becomes the
+   space BELOW the header (no page scroll, nothing hidden behind it), and a
+   top-sticky element sticks under the header, not behind it. */
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style^="height: 100vh"],
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style*="; height: 100vh"],
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style^="height: 100vh"],
+html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="; height: 100vh"] {
+  height: calc(100dvh - var(--sky-shell-h, 0px)) !important; max-height: calc(100dvh - var(--sky-shell-h, 0px)) !important; }
+/* ── THE OVERLAP BUG (Junid, 6 Nov — Shopify publisher + Social) ────────────
+   Measured: the Shopify page's sticky search/tab bar was drawn 103px BELOW its
+   own slot (the shell's height), leaving an empty band under the header and
+   lying on top of the counts and the first rows. Cause, two halves:
+     1. its page wrapper has overflow-x:hidden, which (CSS overflow rules) makes
+        overflow-y compute to auto — the wrapper becomes a scroll container that
+        never scrolls (it grows with its content), so the sticky bar sticks to
+        THAT box, not to the window;
+     2. the rule here rewrote every sticky top:0 to top:var(--sky-shell-h).
+        Inside a box that never scrolls, a sticky offset is simply a shift.
+   The fix, for every screen at once:
+     · page wrappers CLIP instead of hide (overflow-x:clip is not a scroll
+       container), so a page sticky bar pins to the window — under the shell;
+     · a sticky bar inside a REAL scroller (an inline overflow auto/scroll box —
+       the desktop workspaces) keeps top:0 of that scroller;
+     · a browser without overflow:clip (Safari < 16) gets no rewrite at all: the
+       bar scrolls with the page, but it is never shifted onto the content.
+   Pinned page bars carry the shell's glass so rows pass UNDER them, never
+   through them. --shell-h is the same measured height under its short name. */
+:root { --shell-h: var(--sky-shell-h, 0px); }
+@supports (overflow-x: clip) {
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style*="overflow-x: hidden"],
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="overflow-x: hidden"]:not([style*="overflow-y"]):not([style*="overflow: "]) { overflow-x: clip !important; }
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ [style*="position: sticky"][style*="top: 0px"],
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * [style*="position: sticky"][style*="top: 0px"] {
+    top: var(--sky-shell-h, 0px) !important; z-index: 40 !important;
+    background: linear-gradient(180deg, rgba(36,126,232,.90), rgba(52,140,238,.84)) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4);
+    border-bottom: 1px solid rgba(255,255,255,.32) !important; box-shadow: 0 10px 24px -18px rgba(0,30,90,.55) !important; }
+  /* …except inside a real scroller: top:0 of that scroller, as written. */
+  html[data-sky="on"] #root .sky-shellbar[data-sticky="true"] ~ * :is([style*="overflow-y: auto"], [style*="overflow-y: scroll"], [style*="overflow: auto"], [style*="overflow: scroll"]) [style*="position: sticky"][style*="top: 0px"] {
+    top: 0px !important; }
+}
+
+/* The old status-bar allowance (a 44–50px top padding on a page's first bar,
+   from before the shell header existed) is the shell's job now: content starts
+   right under the header, on every screen. */
+html[data-sky="on"] #root .sky-shellbar ~ * :is([style^="padding: 50px "], [style*="; padding: 50px "], [style^="padding: 44px "], [style*="; padding: 44px "]) { padding-top: 8px !important; }
+
+/* ── THE GRID / BACK BUTTON (SkyBackGrid, Junid 6 Nov) ───────────────────────
+   Off Home it widens into a pill: a small navy chevron, then the grid. Holding
+   it (500ms) goes Home, so no callout / selection on a long touch. */
+.sky-backgrid { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+html .sky-header .sky-round.sky-backgrid.sky-backgrid--back { display: inline-flex; align-items: center; justify-content: center;
+  width: auto !important; min-width: 46px; padding: 0 13px 0 10px !important; gap: 3px; border-radius: 999px; }
+html .sky-round svg.sky-backgrid__chev { width: 14px; height: 14px; min-width: 14px; min-height: 14px; flex: 0 0 auto; color: var(--sky-navy); }
+
+/* "UNAVAILABLE" on a Store Assistant card (every size out at the shop's own
+   hub — Pine / Concrete; from main #878): a solid light pill, navy text. */
+.sky-unavail{position:absolute;bottom:10px;right:10px;z-index:3;padding:4px 9px;border-radius:999px;background:var(--sky-glass-solid);border:1px solid #fff;color:var(--sky-ink);font:800 10.5px/1 var(--sky-font);letter-spacing:.06em;box-shadow:0 2px 8px rgba(10,60,140,.16)}
+.sky-unavail--inline{position:static;display:inline-block;margin-left:6px;vertical-align:middle}

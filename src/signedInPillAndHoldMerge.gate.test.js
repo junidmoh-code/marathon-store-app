@@ -43,23 +43,24 @@ describe("1 · the Signed-in pill is gone from every screen", () => {
     expect(SRC).not.toContain("indicatorLabel");
   });
 
-  it("the home hero shows the bare name — hoisted ABOVE the desktop/mobile split", () => {
+  // Sky home (2026-11-02): one home for every width — no desktop/mobile
+  // split. The name is declared once and shown in the account sheet behind
+  // the user button, beside the one sign-out.
+  it("the home declares the bare name ONCE and hands it to the account sheet", () => {
     const roleSelector = SRC.slice(SRC.indexOf("function RoleSelector"), SRC.indexOf("function HomeSignOutRow"));
-    const nameDecl = roleSelector.indexOf('const name = homePerm?.displayName || homePerm?.username || homeUser?.email?.split("@")[0] || "there"');
-    const split = roleSelector.indexOf("if (isDesktop)");
-    expect(nameDecl).toBeGreaterThan(-1);
-    expect(split).toBeGreaterThan(-1);
-    expect(nameDecl).toBeLessThan(split);
+    expect(roleSelector).toContain('const name = homePerm?.displayName || homePerm?.username || homeUser?.email?.split("@")[0] || "there"');
     expect(roleSelector.match(/const name = homePerm/g)).toHaveLength(1);
+    expect(roleSelector).not.toContain("if (isDesktop)");
+    expect(roleSelector).toContain("account={{\n        name,");
   });
 
-  it("the MOBILE hero renders the name (it used to rely on the floating pill)", () => {
-    const hero = SRC.slice(SRC.indexOf("{/* MARATHON HERO */}"), SRC.indexOf("{/* ROLE GROUPS"));
-    expect(hero).toContain(">{name}</div>");
+  it("the account sheet renders the name", () => {
+    const home = readFileSync(join(HERE, "components/sky/SkyHome.jsx"), "utf8");
+    expect(home).toContain('<span className="sky-acct__nm">{account.name}</span>');
   });
 
-  it("the ONE sign-out is still the red row at the bottom of home — nowhere else", () => {
-    expect(SRC.match(/<HomeSignOutRow name=\{name\} onSignOut=\{homeSignOut\} \/>/g)).toHaveLength(2); // desktop + mobile
+  it("the ONE sign-out is still the red row on home — nowhere else", () => {
+    expect(SRC.match(/<HomeSignOutRow name=\{name\} onSignOut=\{homeSignOut\} \/>/g)).toHaveLength(1);
     expect(SRC).toContain("function HomeSignOutRow");
   });
 });

@@ -103,7 +103,8 @@ import { isCardHidden, isRoleHidden } from "./components/hiddenCards";
 import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngineStr,
          photoFailureSuffix, toggleFix, fixFits } from "./components/shopify/aiStudioCore";
 import StockHoldRelease from "./components/stock/StockHoldRelease";
-import { STOCK_HOLD_ENABLED } from "./config/stockHold";
+import { STOCK_HOLD_ENABLED, canReleaseStockHold } from "./config/stockHold";
+import { loadHoldConfig } from "./components/stock/stockHoldStore";
 import RefillQueue from "./components/stock/RefillQueue";
 import { countsTowardSourceQueue } from "./components/stock/firstBatchCore";
 import NotificationSettingsRow from "./push/NotificationSettingsRow";
@@ -133,12 +134,18 @@ import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
 import AssistantLabelFinder from "./components/assistant/AssistantLabelFinder";
 import OrderLinesPanel from "./components/assistant/OrderLinesPanel.jsx";
-import SneakerWall from "./components/assistant/SneakerWall.jsx";
+import SkyHome from "./components/sky/SkyHome.jsx";
+import AssistantPhone from "./components/sky/AssistantPhone.jsx";
+import { brandOptions, filterByBrand, reconcileBrand } from "./components/assistant/brandFilter.js";
+import ZoomImage from "./components/sky/ZoomImage.jsx";
+import { SkySheet, SkySheetHead, SkyStepperRow } from "./components/sky/SkySheet.jsx";
+import WarehouseTop, { WAREHOUSE_SKY_CSS } from "./components/sky/WarehouseTop.jsx";
+import { SkyConfirm } from "./components/sky/SkyOverlay.jsx";
+import ShopSwitchConfirm from "./components/sky/ShopSwitchConfirm.jsx";
+import { parentOf, requestHomePanel, takeHomePanel, isAdminDesignScreen } from "./components/sky/skyNav.js";
+import { useSkyOff, SkyShellHeader, SkyLogo, SkyRound, SkySearch, SkyPopover, SkyStorePill, ProductStage, SkyPlus, SkyBottomBar, BrandMark } from "./components/sky/Sky.jsx";
+import { IconCart, IconBox, IconBag, IconLayers, IconExpand, IconCamera as SkyIconCamera, IconClose as SkyIconClose } from "./components/sky/SkyIcons.jsx";
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
-import { WallPair } from "./components/assistant/WallPair.jsx";
-import { generatedTileSrc, useWallManifest, wallPhotoList } from "./components/assistant/wallTiles.js";
-import { isWallPreviewOn, isWallPreviewFromUrl, canTogglePreview, setWallPreview } from "./components/assistant/orderViewPreview";
-import WallAlternatives, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/WallAlternatives.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
 import { answerStyleCodeSibling, recordLabelCodes } from "./components/stock/hubCleanupStore";
@@ -419,10 +426,14 @@ const STUDIO_GROUND = { background: "radial-gradient(120% 100% at 50% 40%,#fff 0
 // Full-screen photo viewer: shows a product's photos (primary + extra angles) with
 // prev/next arrows, swipe, dots + a thumbnail strip. Accepts an array of URLs (or a
 // single URL string for back-compat). Reused by assistant view, admin, etc.
-function GalleryLightbox({ photos, onClose }) {
+export function GalleryLightbox({ photos, onClose }) {
   const list = Array.isArray(photos) ? photos.filter(Boolean) : (photos ? [photos] : []);
   const [i, setI] = useState(0);
   const touch = useRef(null);
+  // The ONE place the app zooms (Junid 5 Nov): pinch / double-tap inside the
+  // viewer (ZoomImage, its own transform). While zoomed, a swipe pans the photo
+  // instead of changing it; a new photo or closing starts again at 1.
+  const [zoomed, setZoomed] = useState(false);
   if (!list.length) return null;
   const idx = Math.min(i, list.length - 1);
   const go = (d) => setI((cur) => (((cur + d) % list.length) + list.length) % list.length);
@@ -430,11 +441,12 @@ function GalleryLightbox({ photos, onClose }) {
   const nav = (side) => ({ position:"absolute", top:"50%", [side]:10, transform:"translateY(-50%)", width:44, height:44, borderRadius:"50%", border:"none", cursor:"pointer", background:"rgba(255,255,255,.12)", color:"#fff", fontSize:26, lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center" });
   return (
     <div onClick={onClose}
-         onTouchStart={(e) => { touch.current = e.touches[0]?.clientX ?? null; }}
-         onTouchEnd={(e) => { const s = touch.current, en = e.changedTouches[0]?.clientX; if (multi && s != null && en != null && Math.abs(en - s) > 45) go(en < s ? 1 : -1); touch.current = null; }}
+         data-photo-viewer=""
+         onTouchStart={(e) => { touch.current = e.touches.length === 1 && !zoomed ? (e.touches[0]?.clientX ?? null) : null; }}
+         onTouchEnd={(e) => { const s = touch.current, en = e.changedTouches[0]?.clientX; if (multi && !zoomed && s != null && en != null && Math.abs(en - s) > 45) go(en < s ? 1 : -1); touch.current = null; }}
          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.93)", zIndex:2000, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24 }}>
       {/* A generated wall tile is a transparent PNG: give it the wall's light studio ground so its soft shadow reads on the dark backdrop. */}
-      <img src={list[idx]} alt="" onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10, ...(isStudioTile(list[idx]) ? STUDIO_GROUND : null) }} />
+      <ZoomImage src={list[idx]} alt="" onZoomChange={setZoomed} onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10, position:"relative", zIndex:1, ...(isStudioTile(list[idx]) ? STUDIO_GROUND : null) }} />
       {multi && (
         <>
           <button onClick={e => { e.stopPropagation(); go(-1); }} aria-label="Previous" style={nav("left")}>‹</button>
@@ -1514,8 +1526,8 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
         if (s.items.length === 0) return null;
         const open = !!openMap[s.key];
         return (
-          <div key={s.key} style={{ background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, overflow:"hidden" }}>
-            <div onClick={() => toggle(s.key)}
+          <div key={s.key} data-day-section="" style={{ background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, overflow:"hidden" }}>
+            <div onClick={() => toggle(s.key)} data-day-head=""
                  style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", cursor:"pointer" }}>
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                 <div style={{ fontSize:13, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.3px" }}>{s.label}</div>
@@ -2739,7 +2751,7 @@ function CustomersView({ onExit }) {
     return (
       <div style={{ height: "100vh", maxHeight: "100dvh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "240px minmax(0,1fr)", overflow: "hidden" }}>
         <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 13px 16px", display: "flex", flexDirection: "column", gap: 3, overflow: "auto" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
+          <div data-legacy-header="" style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
             <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
             <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
           </div>
@@ -2988,7 +3000,7 @@ function CustomerDrillModal({ drill, detail, onClose, fmt }) {
 
 // ─── ROLE SELECTOR ────────────────────────────────────────────────────────────
 // ── Role icon SVGs (match HTML design exactly) ─────────────────────────────
-const RoleIcons = {
+export const RoleIcons = {
   stock_audit: (
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/><path d="M9 11l3 3 7-7"/>
@@ -3017,6 +3029,24 @@ const RoleIcons = {
   returns: (
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>
+    </svg>
+  ),
+  // Display Registration tile (Junid 5 Nov): a screen with a registered tick.
+  // Hub Count & Displays: a clipboard with a tally (hub sneaker count).
+  hub_count: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 2h6v4H9z"/><path d="M9 11v6M12 11v6M15 11v6M8 16l8-4"/>
+    </svg>
+  ),
+  // Shipment Release: a box with an up arrow (held Central→hub boxes released).
+  stock_hold: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9l9-5 9 5v9l-9 5-9-5z"/><path d="M12 18v-7M9 13.5l3-3 3 3"/>
+    </svg>
+  ),
+  display_registration: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><polyline points="8.5 10.5 11 13 15.5 8.5"/>
     </svg>
   ),
   display_checks: (
@@ -3402,8 +3432,18 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
   );
 }
 
+// Junid 5 Nov: the admin hub shows NO live cards (Hub Count & Displays,
+// Shipment Release, Display Registration) — "remove them from this screen
+// entirely, don't delete the code". Their builders stay below; true brings
+// all three back (the phone still leaves out the first two).
+const SHOW_HUB_LIVE_CARDS = false;
+// The Shipment Release card's delegate check: /settings/stockHold/config read
+// once per session per account (RoleSelector remounts on every Home visit).
+let stockHoldConfigOnce = null;
+
 function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push, mute }) {
-  const isDesktop = !useIsNarrow(1024);
+  // "Up" from an Admin card lands on the Admin panel (skyNav.js).
+  const [homePanel] = useState(() => takeHomePanel());
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut, deviceIdentity: homeDevice } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
   // MIRROR — not hasPermission, not the permissions array, not stockRole. The
@@ -3454,10 +3494,15 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // badge slot is intentionally omitted (wired to nothing yet — a later PR feeds
   // it the store's outstanding count).
   const dcVisible = displayChecksVisibleForViewer(
-    { email: homeUser?.email, permissions: homePerm?.permissions, destShop: homePerm?.destShop },
+    { uid: homeUser?.uid, email: homeUser?.email, permissions: homePerm?.permissions, destShop: homePerm?.destShop },
     isSuperAdmin ? null : (homePerm?.destShop || null)
   );
 
+  // Junid 5 Nov: on the PHONE the admin hub shows neither the Hub Count &
+  // Displays card nor the Shipment Release card ("remove the card from
+  // there, don't delete the code"). Both are still built below and still
+  // shown on iPad/desktop; the phone simply doesn't mount them.
+  const isPhoneHome = useIsNarrow(767);
   // TEMPORARY — Hub Sneaker Count card. Its own card rather than a role tile
   // because it carries live state (hub picker + N-of-M progress) that a tile
   // cannot show. Admin-only, matching the rule that gates its writes; goes dark
@@ -3476,6 +3521,22 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // the count card. The card gates ITSELF (owner email or a named delegate in
   // /settings/stockHold/config) and renders null for everyone else, so no
   // per-viewer wiring is needed here beyond the identity.
+  // The Shipment Release HOME CARD (Junid, 12 Nov: restored as an ordinary
+  // Admin hub card). Same gate the old live card applied to itself —
+  // canReleaseStockHold: the owner on the email, or a uid named in
+  // /settings/stockHold/config/delegates. The owner needs no read; anyone
+  // else costs one small one-shot read of that config node.
+  const [stockHoldAllowed, setStockHoldAllowed] = useState(() => canReleaseStockHold({ email: homeUser?.email, uid: homeUser?.uid }, null));
+  useEffect(() => {
+    const viewer = { email: homeUser?.email, uid: homeUser?.uid };
+    if (canReleaseStockHold(viewer, null)) { setStockHoldAllowed(true); return undefined; }
+    if (!STOCK_HOLD_ENABLED || !viewer.uid) { setStockHoldAllowed(false); return undefined; }
+    let alive = true;
+    // Once per session per account (not on every Home visit).
+    if (!stockHoldConfigOnce || stockHoldConfigOnce.uid !== viewer.uid) stockHoldConfigOnce = { uid: viewer.uid, p: loadHoldConfig().catch(() => null) };
+    stockHoldConfigOnce.p.then((cfg) => { if (alive) setStockHoldAllowed(canReleaseStockHold(viewer, cfg)); });
+    return () => { alive = false; };
+  }, [homeUser?.email, homeUser?.uid]);
   const stockHoldCard = STOCK_HOLD_ENABLED
     ? <StockHoldCard viewer={{ email: homeUser?.email, uid: homeUser?.uid }}
                      onOpen={() => onSelect(ROLES.STOCK_HOLD)} />
@@ -3545,6 +3606,16 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && { key:"insights", icon:RoleIcons.insights, name:"Internal Insights", desc:"Business analytics", onClick:()=>onSelect(ROLES.INSIGHTS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.DISPLAY])  && { key:"display", icon:RoleIcons.display, name:"TV Display", desc:"Customer queue screen", onClick:()=>onSelect(ROLES.DISPLAY) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && { key:"customer", icon:RoleIcons.customer, name:"Track Order", desc:"Live order status & timeline", onClick:()=>onSelect(ROLES.CUSTOMER) },
+      // Junid 5 Nov: Display Registration as a tile (its live card is off the
+      // hub) — same gate and same screen as the card.
+      // Junid 12 Nov: Hub Count and Shipment Release back as ordinary hub
+      // cards (their live cards stay off). Same gates as the old live cards:
+      // Hub Count = hubSneakerCountVisibleForViewer (owner email, or stockRole
+      // admin|warehouse); Shipment Release = canReleaseStockHold (owner email,
+      // or a named delegate uid). The routes re-check both.
+      hubCountVisible && { key:"hub_sneaker_count", icon:RoleIcons.hub_count, name:"Hub Count", desc:"Count hub sneakers · displays · leftovers", onClick:()=>onSelect(ROLES.HUB_SNEAKER_COUNT) },
+      stockHoldAllowed && { key:"stock_hold", icon:RoleIcons.stock_hold, name:"Shipment Release", desc:"Central→hub boxes land when you confirm them", onClick:()=>onSelect(ROLES.STOCK_HOLD) },
+      (canAccessStock || isSuperAdmin) && { key:"display_registration", icon:RoleIcons.display_registration, name:"Display Registration", desc:"Register display units", onClick:()=>onSelect(ROLES.DISPLAY_REGISTRATION) },
     ].filter(Boolean) },
     { label: "Administration", cards: [
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && { key:"customers", icon:RoleIcons.customers_db, name:"Customers", desc:"Customer database", onClick:()=>onSelect(ROLES.CUSTOMERS_DB) },
@@ -3669,192 +3740,65 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
     .map((g) => ({ ...g, cards: g.cards.filter((c) => !isCardHidden(c.key, homePerm, isSuperAdmin)) }));
   const anyCards = groups.some(g => g.cards.length > 0);
 
-  // ── DESKTOP HOME (≥1024px) — a live retail-ops dashboard: greeting, today's
-  //    numbers, and a BENTO of workspaces (featured primary + weighted rest).
-  //    Mobile keeps the hero image + RoleCard list. ──
-  if (isDesktop) {
-    const hr = new Date().getHours();
-    const greet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
-    const dateStr = new Date().toLocaleDateString("en-ZA", { weekday: "long", day: "numeric", month: "long" });
-    const ops = groups[0].cards;                                   // Operations
-    const featured = ops.find(c => c.key === "assistant") || ops[0] || null;
-    const opsRest = ops.filter(c => c !== featured);
-    const others = groups.slice(1).filter(g => g.cards.length > 0); // Insights, Admin
-    const stats = [
-      { k: "Orders today", v: assistantBadge, role: ROLES.WAREHOUSE },
-      { k: "In queue", v: incoming, role: ROLES.WAREHOUSE },
-      { k: "To restock", v: sourceBadge, warn: sourceBadge > 0, role: ROLES.SOURCE },
-      // "Returns" stat removed with the tile — it linked into the same module and
-      // would have been the one remaining door to a screen with nothing to do.
-    // A one-shop account (destShop) without Source doesn't see "To restock":
-    // it counts /restock_log across EVERY shop (owner, 2026-10-17: a PE
-    // assistant sees nothing of Trophy). The order figures are already theirs
-    // alone — they come off the destShop-scoped order feed.
-    ].filter((s) => !(s.role === ROLES.SOURCE && homePerm?.destShop && !hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])));
-    return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, position:"relative" }}>
-        <div style={{ position:"absolute", inset:0, pointerEvents:"none", background:"radial-gradient(1200px 560px at 84% -12%, rgba(60,110,255,.12), transparent 58%), radial-gradient(900px 520px at 4% 0%, rgba(127,90,240,.09), transparent 52%)" }} />
-        <style>{`
-          @keyframes hmRise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
-          .hm-r{opacity:0;animation:hmRise .55s cubic-bezier(.2,.7,.2,1) forwards}
-          .hm-stat{position:relative;width:100%;text-align:left;font-family:inherit;color:#f3f6ff;background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:14px 15px}
-          .hm-stat.clk{cursor:pointer;transition:transform .18s cubic-bezier(.2,.7,.2,1),border-color .18s,box-shadow .18s}
-          .hm-stat.clk:hover,.hm-stat.clk:focus-visible{transform:translateY(-3px);border-color:rgba(74,127,255,.5);box-shadow:0 14px 30px -20px rgba(60,110,255,.55);outline:none}
-          .hm-sgo{position:absolute;top:13px;right:14px;color:#4A7FFF;font-size:13px;opacity:0;transform:translateX(-3px);transition:.18s}
-          .hm-stat.clk:hover .hm-sgo,.hm-stat.clk:focus-visible .hm-sgo{opacity:1;transform:none}
-          .hm-tile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:5px;width:100%;text-align:left;cursor:pointer;font-family:inherit;color:#f3f6ff;
-            background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 60%),rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:16px;overflow:hidden;
-            transition:transform .22s cubic-bezier(.2,.7,.2,1),border-color .22s,box-shadow .22s}
-          .hm-tile:hover,.hm-tile:focus-visible{transform:translateY(-5px);border-color:rgba(74,127,255,.5);box-shadow:0 20px 46px -22px rgba(60,110,255,.6);outline:none}
-          .hm-ic{position:absolute;top:15px;left:15px;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;color:#9DBCFF;background:rgba(74,127,255,.12);border:1px solid rgba(74,127,255,.28)}
-          .hm-ic svg{width:20px;height:20px}
-          .hm-nm{font-size:15px;font-weight:750;letter-spacing:-.01em;color:#fff}
-          .hm-ds{display:block;font-size:11.5px;color:rgba(233,238,255,.5)}
-          .hm-bd{position:absolute;top:16px;right:15px;font-size:12px;font-weight:800;color:#9DBCFF;background:rgba(74,127,255,.2);border-radius:999px;padding:2px 10px;font-variant-numeric:tabular-nums}
-          .hm-ar{position:absolute;bottom:15px;right:16px;color:#4A7FFF;font-size:15px;opacity:0;transform:translateX(-4px);transition:.2s}
-          .hm-tile:hover .hm-ar,.hm-tile:focus-visible .hm-ar{opacity:1;transform:none}
-          .hm-hero{grid-column:span 2;grid-row:span 2;justify-content:space-between;padding:22px;
-            background:radial-gradient(120% 120% at 100% 0,rgba(127,90,240,.22),transparent 55%),linear-gradient(160deg,rgba(74,127,255,.14),rgba(10,12,22,.4));border-color:rgba(122,110,255,.4)}
-          .hm-hero .hm-ic{position:static;width:52px;height:52px;border-radius:15px;background:linear-gradient(135deg,#6e7bff,#7f5af0);color:#fff;border:0;box-shadow:0 10px 26px -8px rgba(127,90,240,.7)}
-          .hm-hero .hm-ic svg{width:26px;height:26px}
-          .hm-hero .hm-nm{font-size:23px;font-weight:800;letter-spacing:-.02em}
-          .hm-hero .hm-ds{font-size:13px;margin-top:2px}
-          .hm-hero .hm-bd{top:22px;right:20px;background:rgba(255,255,255,.14);color:#fff}
-          .hm-cta{display:inline-flex;align-items:center;margin-top:13px;font-size:12.5px;font-weight:800;color:#fff;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);border-radius:10px;padding:8px 13px}
-          .hm-mini{position:relative;display:flex;align-items:center;gap:12px;width:100%;text-align:left;cursor:pointer;font-family:inherit;color:#f3f6ff;
-            background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:15px;padding:13px 14px;transition:transform .2s,border-color .2s,box-shadow .2s}
-          .hm-mini:hover,.hm-mini:focus-visible{transform:translateY(-3px);border-color:rgba(74,127,255,.45);box-shadow:0 14px 32px -20px rgba(60,110,255,.55);outline:none}
-          .hm-mic{width:38px;height:38px;flex:0 0 auto;border-radius:11px;display:grid;place-items:center;color:#9DBCFF;background:rgba(74,127,255,.1);border:1px solid rgba(74,127,255,.24)}
-          .hm-mic svg{width:18px;height:18px}
-          .hm-mnm{display:block;font-size:13.5px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-          .hm-mds{display:block;font-size:11px;color:rgba(233,238,255,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-          @media(prefers-reduced-motion:reduce){.hm-r{animation:none;opacity:1}.hm-tile,.hm-mini,.hm-ar,.hm-stat{transition:none}}
-        `}</style>
-        <div style={{ position:"relative", maxWidth:1100, margin:"0 auto", padding:"28px 30px 72px" }}>
-          {/* Top bar */}
-          <div className="hm-r" style={{ display:"flex", alignItems:"center", gap:14, marginBottom:38, animationDelay:".02s" }}>
-            <span style={{ fontSize:20, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
-            <span style={{ fontSize:10, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
-            <div style={{ flex:1 }} />
-            <span style={{ fontSize:12.5, color:"rgba(233,238,255,.5)" }}>{dateStr}</span>
-            {/* Identity pill only — Sign Out moved to the BOTTOM of this page
-                (owner directive 2026-08-08): the top-right control was too easy
-                to hit in passing, and one logout in one place is the rule now. */}
-            <div style={{ display:"flex", alignItems:"center", gap:9, padding:"6px 12px 6px 6px", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, background:"rgba(255,255,255,.022)" }}>
-              <span style={{ width:26, height:26, borderRadius:"50%", background:"rgba(74,127,255,.2)", border:"1px solid rgba(74,127,255,.5)", color:"#9DBCFF", fontSize:11, fontWeight:800, display:"grid", placeItems:"center" }}>{(name[0] || "?").toUpperCase()}</span>
-              <span style={{ fontSize:12, fontWeight:700 }}>{name}</span>
-            </div>
-          </div>
-
-          {/* Greeting */}
-          <div className="hm-r" style={{ animationDelay:".08s" }}>
-            <div style={{ fontSize:"clamp(26px,3.4vw,38px)", fontWeight:800, letterSpacing:"-.02em", lineHeight:1.05, textWrap:"balance" }}>
-              {greet}, <span style={{ background:"linear-gradient(90deg,#6e7bff,#8a6dff,#7f5af0)", WebkitBackgroundClip:"text", backgroundClip:"text", WebkitTextFillColor:"transparent" }}>{name}</span>.
-            </div>
-            <div style={{ fontSize:13.5, color:"rgba(233,238,255,.5)", marginTop:9 }}>Here's what's moving at Marathon today.</div>
-          </div>
-
-          {/* Today's numbers — each jumps to its queue when you have access. */}
-          <div className="hm-r" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, margin:"22px 0 34px", animationDelay:".14s" }}>
-            {stats.map(s => {
-              const can = hasPermission(ROLE_TO_PERMISSION[s.role]);
-              const El = can ? "button" : "div";
-              return (
-                <El key={s.k} className={"hm-stat" + (can ? " clk" : "")} onClick={can ? () => onSelect(s.role) : undefined}>
-                  {can && <span className="hm-sgo">→</span>}
-                  <div style={{ fontSize:10.5, letterSpacing:".14em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700 }}>{s.k}</div>
-                  <div style={{ fontSize:28, fontWeight:800, letterSpacing:"-.02em", fontVariantNumeric:"tabular-nums", marginTop:6, color: s.warn ? "#F5A623" : "#fff" }}>{s.v}</div>
-                </El>
-              );
-            })}
-          </div>
-
-          {/* TEMPORARY — hub sneaker stock-take. Above Workspaces because it is
-              the current job, and outside the anyCards branch so it still shows
-              for an admin with no other tiles. */}
-          {hubCountCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".18s" }}>{hubCountCard}</div>}
-          {stockHoldCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".19s" }}>{stockHoldCard}</div>}
-          {displayRegCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".2s" }}>{displayRegCard}</div>}
-
-          {!anyCards ? (
-            <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
-              No tools assigned to your account yet. Ask an admin to update your permissions.
-            </div>
-          ) : (
-            <>
-              <div className="hm-r" style={{ fontSize:11, letterSpacing:".22em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700, margin:"0 2px 14px", animationDelay:".2s" }}>Workspaces</div>
-              <div className="hm-r" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gridAutoRows:118, gridAutoFlow:"dense", gap:13, marginBottom:34, animationDelay:".24s" }}>
-                {featured && <HeroTile icon={featured.icon} name={featured.name} desc={featured.desc} badge={featured.badge} onClick={featured.onClick} />}
-                {opsRest.map(c => <HomeTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} />)}
-              </div>
-
-              {others.map((g, gi) => (
-                <div key={g.label} className="hm-r" style={{ animationDelay: `${.3 + gi * .06}s` }}>
-                  <div style={{ fontSize:11, letterSpacing:".22em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700, margin:"0 2px 14px" }}>{g.label}</div>
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(224px, 1fr))", gap:12, marginBottom:30 }}>
-                    {g.cards.map(c => <MiniTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} />)}
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-          <NotificationSettingsRow push={push} mute={mute} />
-          <HomeSignOutRow name={name} onSignOut={homeSignOut} />
-        </div>
-      </div>
-    );
-  }
-
+  // ── SKY HOME (design/home.png) ───────────────────────────────────────────
+  // Four big tiles — Store Assistant, Warehouse, Display Check, Admin — each
+  // with the count the old home already showed (today's placed orders, the
+  // incoming queue). Every other card, gated exactly as above, moves into the
+  // Admin hub; the live stock cards (hub count, shipment release, display
+  // register) sit at the top of it. The old desktop stat row's three numbers
+  // are the two tile pills and the Source card's badge in the hub.
+  const PRIMARY = { assistant: true, warehouse: true, display_checks: true };
+  const allCards = groups.flatMap((g) => g.cards);
+  const primaryTile = (key) => allCards.find((c) => c.key === key) || null;
+  const homeTiles = [
+    // No count pills on the Home tiles (Junid, 12 Nov: "remove the numbers").
+    primaryTile("assistant") && { ...primaryTile("assistant"), badge: undefined },
+    primaryTile("warehouse") && { ...primaryTile("warehouse"), badge: undefined },
+    primaryTile("display_checks") && { ...primaryTile("display_checks"), name: "Display Check", badge: undefined },
+    { key: "admin", name: "Admin" },
+  ].filter(Boolean);
+  const hubGroups = groups.map((g) => ({ ...g, cards: g.cards.filter((c) => !PRIMARY[c.key]) }));
+  // The pill under the logo names the device/store the way the till accounts
+  // are named (2POS): the account's username, else the email's local part.
+  const homeTag = String(homePerm?.username || homeUser?.email?.split("@")[0] || name || "").toUpperCase();
   return (
-    <div style={{ minHeight:"100vh", background:"#000", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden" }}>
-      {/* MARATHON HERO */}
-      <div style={{ position:"relative", height:260, overflow:"hidden" }}>
-        <img src="/hero/marathon.jpg" alt="Marathon" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"contain", objectPosition:"center", zIndex:0 }}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:100, background:"linear-gradient(transparent,#000)", zIndex:1 }}/>
-        {/* The bare signed-in name, under the Marathon logo — the one who-am-I
-            signal now that the floating "Signed in:" pill is gone. Name only:
-            no wrapper text, no pill chrome, no sign-out (that's the red row at
-            the bottom of this page). */}
-        <div style={{ position:"absolute", bottom:12, left:0, right:0, textAlign:"center", zIndex:2, color:"#f3f6ff", fontSize:15, fontWeight:700, letterSpacing:".01em", textShadow:"0 1px 8px rgba(0,0,0,.8)" }}>{name}</div>
-        <div style={{ position:"absolute", top:0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 16px 0", zIndex:5 }}>
-          <button style={{ width:34, height:34, borderRadius:"50%", background:"rgba(0,0,0,.5)", backdropFilter:"blur(10px)", border:"none", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" stroke="rgba(255,255,255,.65)" fill="none" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-          </button>
-          <div style={{ display:"flex", gap:7 }}>
-            <button style={{ width:34, height:34, borderRadius:"50%", background:"rgba(0,0,0,.5)", backdropFilter:"blur(10px)", border:"none", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" stroke="rgba(255,255,255,.65)" fill="none" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
-            </button>
-            <button style={{ width:34, height:34, borderRadius:"50%", background:"rgba(0,0,0,.5)", backdropFilter:"blur(10px)", border:"none", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" stroke="rgba(255,255,255,.65)" fill="none" strokeWidth="2" strokeLinecap="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/></svg>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* ROLE GROUPS — each tile gated by hasPermission (shared `groups` data).
-          Empty groups are hidden so staff with limited permissions don't see
-          empty headings. Inventory Health lives in the Administration group above. */}
-      <div style={{ padding:"10px 14px 36px", background:"#000" }}>
-        {/* TEMPORARY — hub sneaker stock-take (see the desktop branch above). */}
-        {hubCountCard}
-        {stockHoldCard}
-        {displayRegCard}
-        {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
-          <GroupSection key={g.label} label={g.label}>
-            {g.cards.map((c, i) => (
-              <RoleCard key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} last={i === g.cards.length - 1} />
-            ))}
-          </GroupSection>
-        )) : (
-          <div style={{ textAlign:"center", color:"#555", padding:"3rem 1rem", fontSize:14 }}>
-            No tools assigned to your account yet. Ask an admin to update your permissions.
-          </div>
-        )}
-        <NotificationSettingsRow push={push} mute={mute} />
-        <HomeSignOutRow name={name} onSignOut={homeSignOut} />
-      </div>
-    </div>
+    <SkyHome
+      initialPanel={homePanel}
+      tiles={homeTiles}
+      groups={hubGroups}
+      liveCards={SHOW_HUB_LIVE_CARDS ? [["hubCount", isPhoneHome ? null : hubCountCard], ["stockHold", isPhoneHome ? null : stockHoldCard], ["displayReg", displayRegCard]] : []}
+      tag={homeTag}
+      emptyMessage="No tools assigned to your account yet. Ask an admin to update your permissions."
+      account={{
+        name,
+        initial: (name[0] || "?").toUpperCase(),
+        rows: (
+          <>
+            <NotificationSettingsRow push={push} mute={mute} />
+            <HomeSignOutRow name={name} onSignOut={homeSignOut} />
+          </>
+        ),
+      }} />
   );
+}
+
+// The pill under the wordmark on every other screen: the screen's own name.
+const SKY_SCREEN_TAGS = {
+  insights: "Insights", source: "Source", returns: "Returns", customers_db: "Customers", admin: "Admin",
+  ai_studio: "AI Studio", display_checks: "Display Check", stock: "Stock", hub_sneaker_count: "Hub count",
+  stock_hold: "Shipment release", display_registration: "Displays", stock_audit: "Stock audit", health: "Health",
+  total_stock: "Total stock", attention: "Attention", marketing: "Marketing", shopify_publish: "Shopify",
+  social: "Social", tv_ad: "TV ad", engine_policy: "Engine policy", card_recon: "Card recon", card_slip: "Card slip",
+  barcodes: "Barcodes", label_print: "Labels", warehouse: "Warehouse", customer: "Track order", broadcast_groups: "Broadcast",
+};
+const SKY_HASH_TAGS = { "#admin/users": "Users", "#admin/notifications": "Order alerts", "#admin/cost": "Cost watch",
+  "#admin/mirror": "Mirror fleet", "#admin/network": "Network", "#admin/online-orders": "Online orders",
+  "#admin/shipping": "Shipping", "#admin/devices": "Device codes", "#new-arrivals": "New arrivals", "#admin": "Admin" };
+function skyScreenTag(role, hash) {
+  if (role && SKY_SCREEN_TAGS[role]) return SKY_SCREEN_TAGS[role].toUpperCase();
+  const h = String(hash || "").replace(/\/$/, "");
+  const k = Object.keys(SKY_HASH_TAGS).find((p) => h === p || h.startsWith(p + "/"));
+  return (k ? SKY_HASH_TAGS[k] : "Marathon").toUpperCase();
 }
 
 // THE one logout in the app (owner directive 2026-08-08): every top-right
@@ -5301,6 +5245,16 @@ const MISSING_PRICE_FILTERS = [
   [UNCATEGORIZED_TOP, "Uncategorized"],
 ];
 
+// The empty-thumbnail line icon (a photo frame); sky-admin.css shows it on
+// neutral glass, and only on the sky.
+function EmptyThumbIcon() {
+  return (
+    <svg className="sky-thumb-empty__ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="2.5" /><circle cx="9" cy="10" r="1.6" /><path d="M21 16l-5-5-8 8" />
+    </svg>
+  );
+}
+
 function MissingPricesTab({ products = [] }) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("newest"); // "newest" | "oldest"
@@ -5500,9 +5454,9 @@ function MissingPricesTab({ products = [] }) {
       )}
 
       {/* Category summary */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+      <div className="sky-row1" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         {CATEGORY_FILTERS.map(([k, l]) => (
-          <button key={k} onClick={() => { setFilter(k); setPage(1); }}
+          <button key={k} onClick={() => { setFilter(k); setPage(1); }} aria-pressed={filter === k}
             style={{ background: filter === k ? "rgba(74,127,255,.2)" : "rgba(255,255,255,.04)", border: filter === k ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.1)", borderRadius: 8, color: filter === k ? "#9DBCFF" : "rgba(255,255,255,.6)", padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
             {l} <span style={{ color: filter === k ? "#fff" : "#FBBF24", fontWeight: 800 }}>{summary[k] ?? 0}</span>
           </button>
@@ -5558,22 +5512,22 @@ function MissingPricesTab({ products = [] }) {
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: liveSelected.has(p.id) ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (liveSelected.has(p.id) ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
                 <input type="checkbox" checked={liveSelected.has(p.id)} onChange={() => toggleSelect(p.id)}
                   style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: "pointer", flexShrink: 0 }} />
-                <PrimaryPhoto product={p} alt="" fallback={<span style={{ width: 44, height: 44, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
+                <PrimaryPhoto product={p} alt="" className="sky-li__thumb"
+                  fallback={<span className="sky-li__thumb sky-thumb-empty" style={{ width: 44, height: 44, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }}><EmptyThumbIcon /></span>}
                   style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                  <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)", marginTop: 2 }}>
+                <div className="sky-li__body" style={{ flex: 1, minWidth: 0 }}>
+                  <div className="sky-li__title" style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                  {/* ONE secondary line (ellipsis): who, what, the SKU, the dates. */}
+                  <div className="sky-li__sub" style={{ fontSize: 11, color: "rgba(255,255,255,.4)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {p.brand ? `${p.brand} · ` : ""}{p.category || "—"} · SKU {p.sku || "—"}
-                  </div>
-                  <div style={{ fontSize: 10, color: "rgba(255,255,255,.3)", marginTop: 2 }}>
-                    Created {fmtDate(createdAt(p))} · Updated {fmtDate(updatedAt(p))}
+                    {" · "}Created {fmtDate(createdAt(p))} · Updated {fmtDate(updatedAt(p))}
                   </div>
                 </div>
-                <div style={{ textAlign: "right", flexShrink: 0 }}>
-                  <div style={{ fontSize: 12, color: "#FBBF24", fontWeight: 700, marginBottom: 4 }}>
+                <div className="sky-li__end sky-li__end--stack" style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div data-status="awaiting" style={{ fontSize: 12, color: "#FBBF24", fontWeight: 700, marginBottom: 4 }}>
                     {needsCost(p) && needsRetail(p) ? "No Cost/Retail" : needsCost(p) ? "No Cost" : "No Retail"}
                   </div>
-                  <button onClick={() => openEdit(p)}
+                  <button onClick={() => openEdit(p)} data-secondary=""
                     style={{ background: "#4A7FFF", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     Edit Price
                   </button>
@@ -5926,6 +5880,22 @@ const AI_TOOLS = [
 // panel reports 1092px at 125% scale, 910px at 150%). Touch and panel size
 // describe how a device is used, not what it is — but a 500px-wide browser
 // window on a laptop IS genuinely better stacked, which is what the floor is for.
+// A plain viewport-width query, re-measured on resize (the phone brand strip's
+// 767px line, which must match the CSS media query that draws it).
+function useMaxWidth(px) {
+  const q = `(max-width: ${px}px)`;
+  const [hit, setHit] = useState(() => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(q).matches);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return undefined;
+    const mq = window.matchMedia(q);
+    const on = () => setHit(mq.matches);
+    on();
+    if (mq.addEventListener) mq.addEventListener("change", on); else mq.addListener(on);
+    return () => { if (mq.removeEventListener) mq.removeEventListener("change", on); else mq.removeListener(on); };
+  }, [q]);
+  return hit;
+}
+
 function useIsNarrow(px = 980) {
   // Hardware fact, fixed for the life of the tab — read once, never re-measured.
   const [platform] = useState(() => detectPlatform());
@@ -6042,7 +6012,7 @@ function AiStudioView({ products, onExit }) {
     <aside style={{ width:224, flexShrink:0, position:"sticky", top:0, height:"100vh", boxSizing:"border-box",
                     display:"flex", flexDirection:"column", gap:4, padding:"24px 14px 18px",
                     background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.07)" }}>
-      <div style={{ padding:"0 10px 20px" }}>
+      <div data-legacy-header="" style={{ padding:"0 10px 20px" }}>
         <div style={{ fontSize:22, fontWeight:800, fontStyle:"italic", letterSpacing:-.6, color:"#fff" }}>marathon</div>
         <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF", marginTop:1 }}>CLUB</div>
       </div>
@@ -6132,7 +6102,7 @@ function AiStudioView({ products, onExit }) {
   );
 }
 
-function AdminView({ products, orders, onExit }) {
+export function AdminView({ products, orders, onExit }) {
   // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation,
   // pickup-board voice) moved to the super-admin-only AI Studio view — this
   // view is pure product management now (products + category sorting).
@@ -7030,12 +7000,12 @@ function AdminView({ products, orders, onExit }) {
   // NO count badges here (owner call 2026-08-28): on a phone the numbers
   // spilled outside the chips. The counts still live on the desktop rail.
   const sectionToggle = (
-    <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
+    <div className="sky-row1 sky-row1--gutter" data-testid="admin-sections" style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
       {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
         .map(([val, label]) => {
         const on = adminSection === val;
         return (
-          <button key={val} onClick={() => setAdminSection(val)}
+          <button key={val} onClick={() => setAdminSection(val)} aria-pressed={on}
             style={{ flex:"1 1 88px", minWidth:88, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 6px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
             {label}
           </button>
@@ -7047,9 +7017,9 @@ function AdminView({ products, orders, onExit }) {
   // Shared admin chrome (was copy-pasted across the four tab branches).
   const ADMIN_WRAP = { minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 };
   const adminTopBar = (
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
+    <div data-legacy-header="" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
       <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
-      <div style={{ textAlign:"center" }}>
+      <div className="sky-glass sky-glass--strong" style={{ textAlign:"center", borderRadius:14, padding:"4px 14px" }}>
         <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
         <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
       </div>
@@ -7193,11 +7163,11 @@ function AdminView({ products, orders, onExit }) {
       {/* CATEGORY TABS — one per real top-level category (+ Uncategorized when
           needed). Wraps to a second row on narrow screens so longer labels
           ("Accessories") stay readable. */}
-      <div style={{ display:"flex", flexWrap:"wrap", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2, marginBottom:14 }}>
+      <div className="sky-row1 sky-row1--gutter sky-row1--bare" style={{ display:"flex", flexWrap:"wrap", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2, marginBottom:14 }}>
         {categoryTabs.map(([val, label, count]) => {
           const on = typeFilter === val;
           return (
-            <button key={val} onClick={() => setTypeFilter(val)}
+            <button key={val} onClick={() => setTypeFilter(val)} aria-pressed={on}
               style={{ flex:"1 1 78px", minWidth:78, padding:"8px 6px", borderRadius:9, border:"none", cursor:"pointer", fontSize:13, fontWeight:700,
                        background: on ? "rgba(60,110,255,.25)" : "transparent",
                        color: on ? "#fff" : "rgba(255,255,255,.5)",
@@ -7227,7 +7197,7 @@ function AdminView({ products, orders, onExit }) {
             {productSearch.trim() ? "No products match your search." : `No ${typeFilter} products yet. Add one above.`}
           </div>
         )}
-        <div style={isWide ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10, alignItems:"start" } : undefined}>
+        <div data-testid="admin-product-list" style={isWide ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10, alignItems:"start" } : undefined}>
           {filteredProducts.map(p => <AdminProductRow key={p.id} product={p} />)}
         </div>
       </div>
@@ -7270,7 +7240,7 @@ function AdminView({ products, orders, onExit }) {
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
-        <button key={key} onClick={() => setAdminSection(key)}
+        <button key={key} onClick={() => setAdminSection(key)} aria-pressed={on}
           style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
                    background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
                    color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
@@ -7317,7 +7287,7 @@ function AdminView({ products, orders, onExit }) {
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -7959,7 +7929,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
               {photoUploading ? "Uploading…" : "Replace photo"}
             </button>
             {product.photoUrl && (
-              <button onClick={removePhoto} disabled={photoUploading}
+              <button onClick={removePhoto} disabled={photoUploading} data-destructive=""
                       style={{ background:"rgba(180,40,40,.08)", border:"1px solid rgba(180,40,40,.25)", color:"#FF8888", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
                 Remove photo
               </button>
@@ -8077,7 +8047,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           {sizeChoices.map(s => {
             const on = productSizes.includes(s);
             return (
-              <button key={s} onClick={() => toggleSize(s)}
+              <button aria-pressed={on} key={s} onClick={() => toggleSize(s)}
                       style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.18)" : "rgba(255,255,255,.03)", color: on ? "#4A7FFF" : "rgba(255,255,255,.7)", cursor:"pointer", fontSize:13, fontWeight:600 }}><SizeTag size={s} /></button>
             );
           })}
@@ -8275,7 +8245,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       {/* DELETE */}
       <div style={{ height:1, background:"rgba(255,255,255,.08)", margin:"32px 14px 16px" }}/>
       <div style={{ padding:"0 14px 28px" }}>
-        <button onClick={handleDelete}
+        <button onClick={handleDelete} data-destructive=""
                 style={{ width:"100%", background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:15, fontWeight:600, padding:"14px", borderRadius:12, cursor:"pointer" }}>
           Delete product
         </button>
@@ -8335,7 +8305,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"250px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 15px 18px", display:"flex", flexDirection:"column", gap:12, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 3px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 3px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -8358,7 +8328,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
             <span style={{ fontSize:10.5, fontWeight:700, color:"rgba(233,238,255,.6)", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:7, padding:"3px 9px" }}>{productHubs.length} hub{productHubs.length !== 1 ? "s" : ""}</span>
           </div>
           <div style={{ flex:1 }} />
-          <button onClick={handleDelete} style={{ background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:12.5, fontWeight:700, padding:"10px", borderRadius:11, cursor:"pointer", fontFamily:FONT }}>Delete product</button>
+          <button onClick={handleDelete} data-destructive="" style={{ background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:12.5, fontWeight:700, padding:"10px", borderRadius:11, cursor:"pointer", fontFamily:FONT }}>Delete product</button>
         </aside>
         {/* MAIN */}
         <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
@@ -8780,7 +8750,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                             hubQty, servingHubLabel, clothingHubLabelOf = null, sneakerOut, sneakerOutWhy, sneakerDisplayInfo,
                             alternativesFor, onAlternativesShown, onAlternativePicked,
                             unavailableIds = null, unavailableHintFor = null,
-                            deadForOrder = isDeactivated, wallPreview = false }) {
+                            deadForOrder = isDeactivated, sizeOnHand = null, hubLabelForSize = null,
+                            brand: brandProp, setBrand: setBrandProp }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // The hub a clothing note names: the product's own back-stock hub when the
   // caller can say (a shop with a category flipped to a second hub), else the
@@ -8790,13 +8761,6 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // clothing catalog with live per-size availability at the serving CR hub
   // (hubQty/servingHubLabel from AssistantView) greying out zero-stock sizes.
   const clothingOrder = mode === "clothing";
-  // THE CLASSIC LAYOUT IS THE DEFAULT (Junid, 2026-10-20). The sneaker wall
-  // mounts only with the preview on (?view=wall or mc.orderView = "wall" —
-  // components/assistant/orderViewPreview.js); everyone else gets the sidebar,
-  // card grid and Order panel staff know.
-  const wallMode = wallPreview && mode === "sneaker";
-  // Junid and MC see a toggle for that preview; nobody else does.
-  const previewToggle = canTogglePreview(userEmail);
   // The classic grid's size gate (quickAddSizeState), memoised.
   const sizeGate = useMemo(
     () => ({ clothingOrder, hubQty, sneakerOut, sneakerOutWhy, sneakerDisplayInfo, deadForOrder, hubLabelFor }),
@@ -8806,16 +8770,26 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // the quick-view can explain adds blocked by cart-vs-hub availability.
   const clothingInCart = (pid, size) =>
     (cart || []).filter(l => l.productType === "clothing" && l.product?.id === pid && l.size === size).length;
-  const [brand, setBrand] = useState("All");
+  // The brand filter is AssistantView's (shared with the phone strip); a
+  // standalone mount (tests, the dev harness) keeps its own.
+  const [ownBrand, setOwnBrand] = useState("All");
+  const brand = brandProp ?? ownBrand;
+  const setBrand = setBrandProp ?? setOwnBrand;
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
-  // Generated studio tiles (staff wall): the popup's photo is a swipeable pair,
-  // generated first, original second; the lightbox opens in the same order.
-  const wallManifest = useWallManifest(wallMode);   // off the wall: no fetch, no timer
   const [qvSize, setQvSize] = useState(null);
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
   const [coOpen, setCoOpen] = useState(false); // desktop checkout modal
+  // THE SKY LAYOUT (design/assistant-desktop.png): the sidebar and the
+  // right-hand drawer became the nav pill. One of these is open at a time —
+  // the Order panel ("orders"), the store list ("stores"), the filter popover
+  // (Sneakers/Clothing + sort), the account popover, or the rest of the brands.
+  const [panel, setPanel] = useState(null);
+  const togglePanel = (k) => setPanel((p) => (p === k ? null : k));
+  const closePanel = useCallback(() => setPanel(null), []);
+  // Popover anchors (the popovers render in a portal at <body>: SkyPopover).
+  const storesRef = useRef(null), meRef = useRef(null), filterRef = useRef(null);
   // A stock-guard refusal always lands on an OPEN panel. The destination-
   // confirm path closes it before the guard runs (placeOrders returns
   // undefined to the button, then the modal re-invokes it), so the refusal
@@ -8832,24 +8806,15 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // re-filtered the whole ~3.9k catalog on every keystroke, twice per render.
   const catalog = products || [];
 
-  // Brand dropdown options FROM the data (product.brand), counted, most-stocked
-  // first; unbranded/code-only (brand == null) collapse into "Other". Products
-  // whose brand was NOT recognised (brandFlag) get their own "Needs brand"
-  // entry — the list someone works through to set the missing brands.
-  const brandOpts = useMemo(() => {
-    const m = new Map();
-    let needs = 0;
-    catalog.forEach(p => {
-      if (!p.brand && p.brandFlag === "unrecognised") { needs++; return; }
-      const k = p.brand || "Other"; m.set(k, (m.get(k) || 0) + 1);
-    });
-    const other = m.get("Other") || 0; m.delete("Other");
-    const ranked = [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    const out = [["All", catalog.length], ...ranked];
-    if (needs) out.push(["Needs brand", needs]);
-    if (other) out.push(["Other", other]);
-    return out;
-  }, [catalog]);
+  // Brand options FROM the data (product.brand), counted, most-stocked first;
+  // unbranded/code-only (brand == null) collapse into "Other". Products whose
+  // brand was NOT recognised (brandFlag) get their own "Needs brand" entry —
+  // the list someone works through to set the missing brands. The first few
+  // are logo chips; the rest live behind the "…" chip.
+  const brandOpts = useMemo(() => brandOptions(catalog), [catalog]);
+  // Every brand is its own chip in ONE row that slides sideways (Junid, 6 Nov:
+  // no "…" chip, no popover).
+  const chipBrands = brandOpts.slice(1);
 
   // SEARCH RESULTS come from AssistantView's `searchResults` — the ONE search
   // implementation, shared with the phone layout: barcode + SKU + per-size code
@@ -8859,30 +8824,29 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // Everything below is just the workspace's own brand filter + sort on top.
   const shown = useMemo(() => {
     const results = searchResults || catalog;   // defensive: never render undefined
-    let list = brand === "All"
-      ? results
-      : results.filter(p => (brand === "Needs brand" ? !p.brand && p.brandFlag === "unrecognised"
-        : brand === "Other" ? !p.brand && p.brandFlag !== "unrecognised" : p.brand === brand));
+    let list = filterByBrand(results, brand);
     if (sort === "ph") list = [...list].sort((a, b) => (b.retailPrice || 0) - (a.retailPrice || 0));
     else if (sort === "pl") list = [...list].sort((a, b) => (a.retailPrice || 0) - (b.retailPrice || 0));
     else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
   }, [searchResults, catalog, brand, sort]);
 
-  // Reset the brand filter when switching modes (brands differ per catalog).
-  // The wall has neither control, so entering it drops a sort left over from
-  // the clothing layout — the wall is always the featured order.
-  useEffect(() => { setBrand("All"); if (wallPreview && mode === "sneaker") setSort("feat"); }, [mode, wallPreview]);
+  // Switching store or Sneakers / Clothing recomputes the options: the brand
+  // stays chosen while it is still one of them, else back to All.
+  useEffect(() => {
+    const next = reconcileBrand(brand, brandOpts);
+    if (next !== brand) setBrand(next);
+  }, [brandOpts]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Cart grouping, the running total and the render cap — shared with the
-  // sneaker wall (components/assistant/assistantOrderModel.js).
+  // Cart grouping, the running total and the render cap
+  // (components/assistant/assistantOrderModel.js).
   const { grouped, groupedRefill, units, refillUnits, total, visible, showMore } =
     useAssistantOrderModel({ cart, shown, resetKeys: [searchResults, brand, sort, mode] });
 
   useEffect(() => {
     const h = e => {
       if (e.key === "/" && document.activeElement !== searchRef.current) { e.preventDefault(); searchRef.current?.focus(); }
-      if (e.key === "Escape") setQv(null);
+      if (e.key === "Escape") { setQv(null); setPanel(null); }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -8892,14 +8856,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // Quick-view availability note — { size, left } (mirrors the mobile sheet's
   // naNote; live via hubQty/cart every render).
   const [qvNa, setQvNa] = useState(null);
-  // THE WALL'S "← back to …" (round 3, item 10): the shoe — and the size it
-  // had no stock in — that the popup came from when an alternative in its
-  // strip swapped in. Every close path (✕, backdrop, Escape, an add) only
-  // clears qv, so drop it with qv; openQv drops it too.
-  const [qvFrom, setQvFrom] = useState(null);
-  useEffect(() => { if (!qv) setQvFrom(null); }, [qv]);
   const openQv = (p) => {
-    setQvFrom(null);
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
     setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
   };
@@ -8915,35 +8872,11 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
     openQv(pick.product);
     if (pick.size) setQvSize(pick.size);
   };
-  // objectFit CONTAIN, not cover: live product photos are predominantly
-  // 600×800 portrait (13-sample survey of /orders productPhotoUrl,
-  // 2026-08-13 — 11×600×800, 1×1500×1500 AI catalogue, 1 landscape). A
-  // portrait photo in a landscape cover box lost ~half the shoe on laptops;
-  // contain shows the whole product on the card's dark stage instead.
-  const Photo = ({ p, big }) => p.photoUrl
-    ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
-    : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
-
-  // SNEAKER ORDER = THE PHOTO WALL (Junid's design, 2026-10-19). Clothing
-  // order and the CR fallback keep the three-pane layout below, untouched.
-  // Both share this root's quick-view, checkout and shop-switch confirm.
-  const wall = wallMode;
-  // An alternative tapped in the wall popup's strip swaps the popup to that
-  // shoe in place, remembering where it came from for the back link. One
-  // level: from a second swap, back goes to the shoe before it, not the first.
-  const pickWallAlternative = (row, size) => {
-    if (!alternativeSelection(row, size)) return;
-    const from = { p: qv, size };
-    pickQvAlternative(row, size);
-    setQvFrom(from);
-  };
-  // On the wall the popup is the only way in, so it takes focus when it opens
-  // or swaps (the wall hands it back to the tile on close).
+  // The popup takes focus when it opens, and Tab / Shift-Tab cycle inside it.
   const qvCloseRef = useRef(null);
-  useEffect(() => { if (wall && qv) qvCloseRef.current?.focus?.(); }, [wall, qv]);
-  // aria-modal means it: Tab and Shift-Tab cycle inside the wall's popup.
+  useEffect(() => { if (qv) qvCloseRef.current?.focus?.(); }, [qv]);
   const trapQvTab = (e) => {
-    if (!wall || e.key !== "Tab") return;
+    if (e.key !== "Tab") return;
     const els = [...e.currentTarget.querySelectorAll('button:not([disabled]),input:not([disabled]),[tabindex]:not([tabindex="-1"])')]
       .filter(el => el.offsetParent !== null);
     if (!els.length) return;
@@ -8951,445 +8884,299 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   };
-  const backToQvFrom = () => {
-    const f = qvFrom;
-    if (!f) return;
-    openQv(f.p);
-    setQvNa({ size: f.size, left: 0, snk: true });
-  };
+
+  const who = (userEmail || "").split("@")[0] || "assistant";
+  const storeName = labelFor(effectiveShop, shopRegistry);
+  const cartCount = flow === "refill" ? refillUnits : units;
 
   return (
-    <div className={wall ? "ad-root ad-root--wall" : "ad-root"}>
-      <style>{`
-        .ad-root{position:fixed;inset:0;z-index:50;background:#000;color:#f4f6ff;font-family:${FONT.replace(/`/g,"")};display:grid;grid-template-columns:184px minmax(0,1fr) 288px;overflow:hidden}
-        .ad-root *{box-sizing:border-box}
-        .ad-root.ad-root--wall{display:block}
-        @media(max-width:1180px){.ad-root{grid-template-columns:184px minmax(0,1fr)} .ad-drawer{position:fixed;right:0;top:0;bottom:0;width:288px}}
-        .ad-side{background:rgba(255,255,255,.015);border-right:1px solid rgba(255,255,255,.08);padding:22px 12px 16px;display:flex;flex-direction:column;gap:4px;overflow:auto}
-        .ad-wm .m{font-size:21px;font-weight:800;font-style:italic;letter-spacing:-.6px;color:#fff}
-        .ad-wm .c{font-size:10px;font-weight:700;letter-spacing:5px;color:#4A7FFF;margin-top:1px}
-        .ad-lab{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:rgba(233,238,255,.3);padding:14px 10px 6px}
-        .ad-nav{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:transparent;border:1px solid transparent;color:rgba(233,238,255,.55);border-radius:10px;padding:9px 11px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s;font-family:inherit}
-        .ad-nav:hover{background:rgba(255,255,255,.04);color:#fff}
-        .ad-nav[aria-current="true"]{background:rgba(74,127,255,.14);border-color:rgba(74,127,255,.45);color:#9DBCFF}
-        .ad-nav .ic{width:16px;height:16px;flex:0 0 auto;opacity:.9}
-        .ad-who{display:flex;align-items:center;gap:9px;margin-top:8px;padding:9px 11px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:11px}
-        .ad-av{width:28px;height:28px;border-radius:50%;flex:0 0 auto;background:rgba(74,127,255,.2);border:1px solid rgba(74,127,255,.5);color:#9DBCFF;font-size:12px;font-weight:800;display:grid;place-items:center}
-        .ad-main{min-width:0;display:flex;flex-direction:column;overflow:hidden}
-        .ad-top{padding:16px 22px 13px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;gap:10px;align-items:center;background:radial-gradient(900px 260px at 18% -60%,rgba(74,127,255,.08),transparent)}
-        .ad-search{flex:1;position:relative;min-width:0}
-        .ad-search svg{position:absolute;left:13px;top:50%;transform:translateY(-50%);opacity:.4}
-        .ad-search input{width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:12px;color:#fff;font-size:13.5px;padding:11px 14px 11px 38px;outline:none;font-family:inherit}
-        .ad-search input:focus{border-color:rgba(74,127,255,.6);box-shadow:0 0 0 3px rgba(74,127,255,.12)}
-        .ad-sel{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:12px;color:rgba(233,238,255,.75);font-size:12.5px;font-weight:600;padding:10px 12px;cursor:pointer;font-family:inherit}
-        .ad-scroll{flex:1;overflow:auto;padding:16px 22px 40px}
-        .ad-count{font-size:11px;color:rgba(233,238,255,.3);margin:0 2px 12px}
-        .ad-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}
-        /* Skip layout/paint for cards scrolled out of view. contain-intrinsic-size
-           reserves each card's box so the scrollbar stays honest. Worth ~10x on the
-           till's integrated graphics; harmless everywhere else. */
-        .ad-card{content-visibility:auto;contain-intrinsic-size:auto 360px}
-        .ad-more{width:100%;margin-top:16px;padding:13px;border-radius:13px;cursor:pointer;font-family:inherit;
-                 background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);color:#cfd6e4;
-                 font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:10px}
-        .ad-more:hover{background:rgba(74,127,255,.12);border-color:rgba(74,127,255,.45);color:#9DBCFF}
-        .ad-more-n{font-size:11px;font-weight:600;color:rgba(233,238,255,.35)}
-        .ad-card{position:relative;background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 45%),rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:16px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column;transition:transform .2s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .2s}
-        .ad-card:hover,.ad-card:focus-visible{transform:translateY(-5px);border-color:rgba(74,127,255,.55);box-shadow:0 18px 42px -20px rgba(60,110,255,.6);outline:none}
-        /* 1/1 box (was 16/11): most photos are 3:4 portrait — in the old
-           landscape box even object-fit:contain would shrink them to ~half
-           the card width. A square box keeps a portrait photo at 75% width
-           while the contained image (see Photo) always shows the whole shoe. */
-        .ad-thumb{aspect-ratio:1/1;position:relative;overflow:hidden;background:#0a1020;display:grid;place-items:center}
-        .ad-cat{position:absolute;top:9px;left:9px;font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9DBCFF;background:rgba(4,6,14,.72);border:1px solid rgba(255,255,255,.08);padding:3px 8px;border-radius:999px}
-        .ad-zoom{position:absolute;top:8px;right:8px;width:29px;height:29px;border:0;border-radius:9px;background:rgba(0,0,0,.5);color:#fff;display:grid;place-items:center;cursor:pointer;opacity:0;transform:translateY(-4px);transition:.18s}
-        .ad-card:hover .ad-zoom,.ad-card:focus-within .ad-zoom{opacity:1;transform:none}
-        .ad-body{padding:11px 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
-        .ad-name{font-size:13.5px;font-weight:650;line-height:1.25;min-height:2.5em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-        .ad-crow{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:auto}
-        /* The shimmering price gradient runs ONLY on the hovered card. As an
-           always-on animation it was one compositor layer per card animating
-           forever — on the till's UHD 600 that alone pinned the GPU and made
-           typing in the search box stutter. Same look on the card you're
-           pointing at, no cost on the other 59. */
-        .ad-price{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}
-        .ad-card:hover .ad-price,.ad-card:focus-within .ad-price{animation:adSiri 4s linear infinite}
-        @media (prefers-reduced-motion: reduce){.ad-card:hover .ad-price,.ad-card:focus-within .ad-price{animation:none}}
-        @keyframes adSiri{from{background-position:0 0}to{background-position:300% 0}}
-        .ad-price.no{-webkit-text-fill-color:initial;color:rgba(233,238,255,.3);font-size:12px}
-        .ad-szn{font-size:10px;color:rgba(233,238,255,.3);font-weight:700}
-        .ad-hint{font-size:12px;font-weight:600;color:#4A7FFF}
-        .ad-quick{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .22s ease,opacity .18s}
-        .ad-card:hover .ad-quick,.ad-card:focus-within .ad-quick{grid-template-rows:1fr;opacity:1}
-        .ad-card:hover .ad-hint,.ad-card:focus-within .ad-hint{display:none}
-        .ad-quick>div{overflow:hidden;min-height:0}
-        .ad-qlab{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:rgba(233,238,255,.3);margin:2px 0 6px}
-        .ad-szrow{display:flex;flex-wrap:wrap;gap:5px}
-        .ad-sz{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;padding:6px 9px;min-width:34px;text-align:center;border-radius:8px;cursor:pointer;color:#dfe7ff;background:rgba(74,127,255,.08);border:1px solid rgba(255,255,255,.12);transition:.13s;font-family:inherit}
-        .ad-sz:hover{background:rgba(74,127,255,.24);border-color:rgba(74,127,255,.6);color:#fff;transform:translateY(-1px)}
-        .ad-sz.flash{background:#4ADE80;border-color:#4ADE80;color:#04120a}
-        .ad-drawer{background:rgba(255,255,255,.015);border-left:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;overflow:hidden;z-index:40}
-        .ad-dhead{padding:18px 16px 13px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:9px}
-        .ad-dhead h2{margin:0;font-size:15px;font-weight:800}
-        .ad-dn{font-size:11px;font-weight:800;background:rgba(74,127,255,.2);color:#9DBCFF;border-radius:999px;padding:2px 9px;font-variant-numeric:tabular-nums}
-        .ad-dlist{flex:1;overflow:auto;padding:12px 13px;display:flex;flex-direction:column;gap:9px}
-        .ad-empty{margin:auto;text-align:center;color:rgba(233,238,255,.3);padding:36px 16px;font-size:12.5px}
-        .ad-line{display:flex;gap:10px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:8px}
-        .ad-li{width:44px;height:44px;border-radius:9px;background:#0a1020;display:grid;place-items:center;font-size:20px;flex:0 0 auto;overflow:hidden}
-        .ad-ln{font-size:12px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .ad-lm{font-size:10px;color:rgba(233,238,255,.5);margin-top:1px}
-        .ad-step{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden;margin-top:5px}
-        .ad-step button{width:22px;height:22px;border:0;background:rgba(255,255,255,.04);color:#fff;cursor:pointer;font-size:13px}
-        .ad-step span{min-width:24px;text-align:center;font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums}
-        .ad-lp{font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;color:#9DBCFF;text-align:right}
-        .ad-dfoot{border-top:1px solid rgba(255,255,255,.08);padding:15px 16px 16px;display:flex;flex-direction:column;gap:11px}
-        .ad-trow{display:flex;justify-content:space-between;font-size:12.5px;color:rgba(233,238,255,.55)}
-        .ad-trow.tot{color:#fff;font-size:15px;font-weight:800}
-        .ad-place{width:100%;padding:13px;border:0;border-radius:12px;font-size:13.5px;font-weight:800;color:#04120a;background:linear-gradient(90deg,#6e7bff,#7f5af0);cursor:pointer;box-shadow:0 8px 22px -8px rgba(127,90,240,.7)}
-        .ad-place:disabled{opacity:.4;box-shadow:none;cursor:not-allowed;filter:grayscale(.5)}
-        .ad-stage{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.72);display:grid;place-items:center;padding:26px}
-        .ad-sv{width:min(820px,100%);max-height:86vh;overflow:auto;background:#06080f;border:1px solid rgba(255,255,255,.12);border-radius:22px;display:grid;grid-template-columns:1.1fr 1fr;box-shadow:0 40px 120px rgba(0,0,0,.7);position:relative}
-        @media(max-width:680px){.ad-sv{grid-template-columns:1fr}}
-        .ad-svimg{position:relative;background:#0a1020;min-height:320px;display:grid;place-items:center;overflow:hidden}
-        .ad-svbody{padding:24px 24px 22px;display:flex;flex-direction:column;gap:15px}
-        .ad-svname{font-size:21px;font-weight:800;letter-spacing:-.4px;line-height:1.15}
-        .ad-svprice{font-size:25px;font-weight:800;font-variant-numeric:tabular-nums;background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:adSiri 5s linear infinite}
-        .ad-svsz button{min-width:46px;padding:11px 12px;border-radius:10px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;color:#dfe7ff;background:rgba(74,127,255,.06);border:1px solid rgba(255,255,255,.12);transition:.13s;font-family:inherit}
-        .ad-svsz button[aria-pressed="true"]{background:rgba(74,127,255,.22);border-color:#4A7FFF;color:#fff}
-        .ad-svadd{flex:1;padding:14px;border:0;border-radius:12px;font-size:14px;font-weight:800;color:#04120a;background:linear-gradient(90deg,#6e7bff,#7f5af0);cursor:pointer;box-shadow:0 8px 22px -8px rgba(127,90,240,.7)}
-        .ad-svadd:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.5);box-shadow:none}
-        .ad-svclose{position:absolute;top:12px;right:12px;width:34px;height:34px;border:0;border-radius:10px;background:rgba(0,0,0,.5);color:#fff;font-size:16px;cursor:pointer;z-index:2}
-        .ad-danger{border:1px solid rgba(255,70,70,.55)!important;box-shadow:0 40px 120px rgba(0,0,0,.7),0 0 60px rgba(255,40,40,.28)!important;animation:adShake .5s cubic-bezier(.36,.07,.19,.97)}
-        @keyframes adShake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-5px)}40%,60%{transform:translateX(5px)}}
-        .ad-warnpulse{animation:adPulse 1.3s ease-in-out infinite}
-        @keyframes adPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,60,60,.45)}50%{box-shadow:0 0 0 12px rgba(255,60,60,0)}}
-        @keyframes adFade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
-        .ad-scroll{animation:adFade .26s ease}
-        .ad-dbody{display:flex;flex-direction:column;flex:1;overflow:hidden;animation:adFade .26s ease}
-        .ad-trackbar{width:100%;display:flex;align-items:center;gap:10px;padding:11px 13px;margin-bottom:14px;border-radius:12px;cursor:pointer;background:rgba(60,110,255,.08);border:1px solid rgba(60,110,255,.35);color:#fff;font-family:inherit;font-size:13px;font-weight:700}
-        .ad-trackbar:hover{background:rgba(60,110,255,.14)}
-        .ad-trackn{background:rgba(245,196,81,.15);color:#F5C451;border:1px solid rgba(245,196,81,.4);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:700}
-        .ad-hint2{font-size:12px;font-weight:600;color:#4A7FFF}
-        .ad-rqty{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden}
-        .ad-rqty button{width:28px;height:32px;border:0;background:rgba(255,255,255,.04);color:#fff;cursor:pointer;font-size:15px}
-        .ad-rqty input{width:40px;height:32px;text-align:center;border:0;background:rgba(0,0,0,.3);color:#fff;font-size:13px;font-weight:700;outline:none;font-family:inherit}
-        @media(prefers-reduced-motion:reduce){.ad-price,.ad-svprice{animation:none} .ad-card,.ad-quick,.ad-scroll,.ad-dbody,.ad-danger,.ad-warnpulse{animation:none;transition:none}}
-      `}</style>
+    <div className="ad-root" data-flow={flow}>
+      <style>{AD_SKY_CSS}</style>
 
-      {wall ? (
-        <SneakerWall
-          availableShops={availableShops} effectiveShop={effectiveShop} shopRegistry={shopRegistry}
-          onPickShop={setPendingShop}
-          mode={mode} setMode={setMode} onSwitchView={onSwitchView} userEmail={userEmail}
-          // Anyone who arrived by a ?view=wall link can leave it too — the
-          // query survives hash navigation, so a till would otherwise stay
-          // on the wall (CodeRabbit, #770).
-          onLeavePreview={previewToggle || isWallPreviewFromUrl() ? () => setWallPreview(false) : null}
-          search={search} setSearch={setSearch} searchRef={searchRef} onLabelFind={onLabelFind}
-          shownCount={shown.length} visible={visible} onShowMore={showMore}
-          // A modal over the wall (quick-view, checkout, shop switch) owns
-          // Escape; the wall leaves its tile/drawer alone underneath it.
-          modalOpen={!!qv || coOpen || !!pendingShop} popupOpen={!!qv}
-          // A tile tap opens the popup — the only place sizes live.
-          onQuickAdd={onQuickAdd} onOpenDetails={openQv}
-          grouped={grouped} units={units} total={total}
-          onRemoveOne={onRemoveOne} onAddDisplayPartner={onAddDisplayPartner}
-          onCheckout={() => setCoOpen(true)} />
-      ) : (<>
-      {/* SIDEBAR */}
-      <aside className="ad-side">
-        <div className="ad-wm" style={{ padding: "0 8px 14px" }}><div className="m">marathon</div><div className="c">CLUB</div></div>
-        <div className="ad-lab">Order for</div>
-        {(availableShops || []).map(s => (
-          <button key={s.id} className="ad-nav" aria-current={effectiveShop === s.id}
-                  onClick={() => { if (s.id !== effectiveShop) setPendingShop(s.id); }}>
-            <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-            {labelFor(s.id, shopRegistry)}
+      {/* ── HEADER — nav pill · wordmark · search + account ── */}
+      <header className="ad-hd">
+        <nav className="ad-navpill sky-glass sky-glass--soft" aria-label="Order screen">
+          <button type="button" className="ad-navi" aria-current={panel !== "orders" && panel !== "stores"} onClick={() => setPanel(null)}>
+            <IconBox /> Products
           </button>
-        ))}
-        <div className="ad-lab">Flow</div>
-        <button className="ad-nav" aria-current={mode === "sneaker"} onClick={() => setMode("sneaker")}>
-          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
-          Sneaker order
-        </button>
-        {/* Clothing customer orders (restored 2026-07-16) — same order flow,
-            clothing catalog, routed to the serving CR hub with live per-size
-            availability. */}
-        <button className="ad-nav" aria-current={mode === "clothing"} onClick={() => setMode("clothing")}>
-          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/></svg>
-          Clothing order
-        </button>
-        {/* "Refill tracking" rail slot REMOVED (owner decision 2026-07-16) —
-            engine refills are the warehouse's concern, not the shop's. The
-            onOpenTracking/trackingPending props stay threaded for the CR
-            fallback's trackbar (unreachable while CR is retired). */}
-        <div style={{ flex: 1 }} />
-        <button className="ad-nav" onClick={onSwitchView}>
-          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M18 2l4 4-9 9H9v-4z"/></svg>
-          Switch view
-        </button>
-        {/* The sneaker wall preview (2026-10-20) — Junid and MC only. Sets
-            mc.orderView in this browser and reloads. */}
-        {previewToggle && (
-          <button className="ad-nav" data-testid="preview-toggle" onClick={() => setWallPreview(true)}>
-            <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-            Preview new design
+          <button type="button" className="ad-navi" aria-current={panel === "orders"} onClick={() => togglePanel("orders")} data-testid="nav-orders">
+            <IconBag /> Orders{cartCount > 0 && <span className="ad-navn" data-testid="nav-orders-count">{cartCount}</span>}
+          </button>
+          <button type="button" ref={storesRef} className="ad-navi" aria-current={panel === "stores"} aria-expanded={panel === "stores"} onClick={() => togglePanel("stores")} data-testid="nav-stores">
+            <IconLayers /> Stores
+          </button>
+        </nav>
+        <SkyPopover anchorRef={storesRef} open={panel === "stores"} onClose={closePanel} label="Order for" width={240}>
+          <div className="sky-pop__lab">Order for</div>
+          {(availableShops || []).map(s => (
+            <button key={s.id} type="button" role="menuitemradio" className="sky-pop__i" aria-checked={effectiveShop === s.id}
+                    onClick={() => { setPanel(null); if (s.id !== effectiveShop) setPendingShop(s.id); }}>
+              {labelFor(s.id, shopRegistry)}
+            </button>
+          ))}
+        </SkyPopover>
+        <div className="ad-hc">
+          <button type="button" className="ad-logo" onClick={onSwitchView} aria-label="Marathon Club — switch view" title="Switch view">
+            <SkyLogo />
+          </button>
+          {/* THE STORE PILL (compact top band, Junid 5 Nov) — the store every
+              order goes to, under the wordmark. A different store still goes
+              through the red switch-confirm (setPendingShop), exactly as the
+              Stores tab's list does; the two share one panel slot, so only
+              one store list is ever open. */}
+
+        </div>
+        <div className="ad-hr" data-contrast-exempt="">
+          {/* ONE small picker beside the account (Junid, 6 Nov): store · product
+              type, in place of the two big pills and the search round. A
+              different store still goes through the red switch-confirm. */}
+          <SkyStorePill value={effectiveShop} stores={availableShops || []} labelOf={(id) => labelFor(id, shopRegistry)}
+                        onPick={(id) => { if (id !== effectiveShop) setPendingShop(id); }}
+                        open={panel === "storepill"} onOpenChange={(v) => setPanel(v ? "storepill" : null)}
+                        mode={mode === "clothing" ? "clothing" : "sneaker"}
+                        modes={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]} onMode={(v) => setMode(v)}
+                        className="ad-storepill ad-pill--store" testId="store-tag" />
+          <SkyRound label="Account" className="ad-round ad-me" buttonRef={meRef} onClick={() => togglePanel("me")}>{who[0].toUpperCase()}</SkyRound>
+          <SkyPopover anchorRef={meRef} open={panel === "me"} onClose={closePanel} align="end" width={240} label="Account">
+            <div className="sky-pop__who">{who}</div>
+            <div className="sky-pop__sub">Store assistant · {storeName}</div>
+            {/* Identity only — the ONE logout lives in the home page's account
+                sheet; Switch view goes there. */}
+            <button type="button" className="sky-pop__i" onClick={onSwitchView}>Switch view</button>
+          </SkyPopover>
+        </div>
+      </header>
+
+      <main className="ad-main">
+        {/* No Sneakers / Clothing toggle on the page (Junid 5 Nov): the
+            product type is chosen in the store pill under the wordmark. */}
+        <div className="ad-searchwrap">
+          {/* Filter and the label scan sit INSIDE the pill, behind one divider
+              (assistant-desktop.png). */}
+          <SkySearch large value={search} onChange={setSearch} inputRef={searchRef}
+                     placeholder={clothingOrder ? "Search clothing..." : "Search products..."}
+                     actions={[
+                       ...(onLabelFind ? [{ icon: "camera", label: "Find by the tongue label", onClick: onLabelFind }] : []),
+                       { icon: "filter", label: "Filter and sort", onClick: () => togglePanel("filter"), ref: filterRef, expanded: panel === "filter" },
+                     ]} />
+          <SkyPopover anchorRef={filterRef} open={panel === "filter"} onClose={closePanel} align="end" width={270} role="dialog" label="Filter and sort">
+            <div className="sky-pop__lab">Sort</div>
+            {[["feat", "Featured"], ["ph", "Price · high"], ["pl", "Price · low"], ["az", "Name · A–Z"]].map(([v, l]) => (
+              <button key={v} type="button" className="sky-pop__i" aria-checked={sort === v} role="menuitemradio" onClick={() => setSort(v)}>{l}</button>
+            ))}
+          </SkyPopover>
+        </div>
+
+        {/* BRAND CHIPS — logos, "All" first, every brand in its own light box;
+            the row slides left (trackpad, drag, or the mouse wheel). */}
+        <div className="sky-chips ad-chips" role="group" aria-label="Brand" data-contrast-exempt=""
+             onWheel={(e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) e.currentTarget.scrollLeft += e.deltaY; }}>
+          <button type="button" className="sky-chip sky-glass" aria-pressed={brand === "All"} onClick={() => setBrand("All")}>All</button>
+          {chipBrands.map(([b, n]) => (
+            <button key={b} type="button" className="sky-chip sky-glass" aria-pressed={brand === b}
+                    title={`${b} (${n})`} aria-label={`${b} (${n})`} onClick={() => setBrand(brand === b ? "All" : b)}>
+              <BrandMark brand={b} />
+            </button>
+          ))}
+        </div>
+
+        {flow === "refill" && (
+          <button className="ad-trackbar sky-glass sky-glass--soft" onClick={onOpenTracking}>
+            <span style={{ flex: 1, textAlign: "left" }}>Track requests</span>
+            {trackingPending > 0 && <span className="ad-trackn">{trackingPending} pending</span>}
+            <span aria-hidden="true">→</span>
           </button>
         )}
-        {/* Identity only — the sign-out icon here was removed with every other
-            scattered logout (owner directive 2026-08-08). The ONE logout lives
-            at the bottom of the home page; leave via "Switch view" to reach it. */}
-        <div className="ad-who">
-          <span className="ad-av">{(userEmail || "?")[0].toUpperCase()}</span>
-          <span style={{ minWidth: 0, flex: 1 }}>
-            <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{(userEmail || "").split("@")[0] || "assistant"}</span>
-            <span style={{ display: "block", fontSize: 10, color: "rgba(233,238,255,.4)" }}>Store assistant</span>
-          </span>
-        </div>
-      </aside>
 
-      {/* MAIN */}
-      <div className="ad-main">
-        <div className="ad-top">
-          <div className="ad-search">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
-            <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…  ( / )" autoComplete="off" />
-            {onLabelFind && (
-              <button type="button" onClick={onLabelFind} title="Find by the tongue label" aria-label="Find by the tongue label"
-                style={{ background:"rgba(74,127,255,.12)", border:"1px solid rgba(74,127,255,.3)", color:"#9DBCFF",
-                         borderRadius:10, minWidth:38, minHeight:32, fontSize:14, cursor:"pointer", marginLeft:8, flexShrink:0 }}>
-                📷
-              </button>
+        {/* Only the sneakers scroll (Junid, 6 Nov): the wordmark, pills,
+            search and brand row stay put above this. */}
+        <div className="ad-scroll" data-testid="ad-scroll">
+        {shown.length === 0 ? (
+          <div className="ad-none sky-glass sky-glass--soft">{flow === "refill" ? "No clothing products yet." : "No products match."}</div>
+        ) : (
+          <div className="ad-grid">
+            {visible.map(p => {
+              const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
+              const szs = sizesOf(p);
+              return (
+                <article key={p.id} className="sky-card sky-glass ad-card" tabIndex={0}
+                         onClick={() => openQv(p)} onKeyDown={e => { if (e.key === "Enter" && e.target === e.currentTarget) openQv(p); }}>
+                  {/* Cut-out on the podium when tools/cutouts has made one;
+                      otherwise the FULL-RESOLUTION photo (HiResPhoto — the
+                      file the lightbox opens, thumbnail only as its offline
+                      fallback) in a white frame. */}
+                  <ProductStage p={p} height="var(--ad-stage)" emoji={p.photo || "👟"} />
+                  {p.photoUrl && (
+                    <button className="ad-zoom" aria-label="Quick view" onClick={e => { e.stopPropagation(); onViewPhoto(productPhotos(p)); }}>
+                      <IconExpand width={15} height={15} />
+                    </button>
+                  )}
+                  {/* No three-dot on the cards (Junid, 6 Nov): deactivate /
+                      reactivate / merge live in the product popup's header. */}
+                  {/* Every size out at this shop's own hub — Pine and Concrete
+                      only (#878 on main; empty for Marathon PE and Trophy). The
+                      card still opens: the sizes inside say why. */}
+                  {unavailableIds?.has(p.id) && <span className="sky-unavail" data-testid="card-unavailable">UNAVAILABLE</span>}
+                  <div className="ad-body">
+                    <div className="sky-name ad-name" data-contrast-exempt>{p.name}
+                      {isDeactivated(p) && <span className="ad-deact">DEACTIVATED</span>}
+                    </div>
+                    {priced ? <span className="sky-price ad-price" data-contrast-exempt>{fmtR(p.retailPrice)}</span> : <span className="ad-price no" data-contrast-exempt>No price set</span>}
+                  </div>
+                  {/* Order flow: hover reveals per-size quick-add. Refill flow:
+                      multi-size qty is set in the quick-view (tap the card). */}
+                  {flow === "order" ? (
+                    <div className="ad-quick" aria-label={`${szs.length} size${szs.length !== 1 ? "s" : ""}`}><div>
+                      <div className="ad-qlab">Add a size</div>
+                      <div className="ad-szrow">
+                        {szs.map(sz => {
+                          // The one quick-add size gate (assistantOrderModel):
+                          // clothing greys a zero-at-hub size; sneakers (Hub 1
+                          // and Hub 2) take the shared resolver's ✕, composed
+                          // with the deactivation rule (#445). THE GLYPH IS
+                          // INFORMATIONAL AND NOTHING ELSE. THE THIRD
+                          // SIZE-CHIP SURFACE: an out sneaker chip stays
+                          // tappable and opens the quick-view's note with the
+                          // alternatives already up (#456's route).
+                          const { out, tappable: snkTappable, dInfo, title } = quickAddSizeState(p, sz, sizeGate);
+                          return (
+                            <button key={sz} className="ad-sz" disabled={out && !snkTappable}
+                              // No tooltip on a no-stock pill (Junid,
+                              // 2026-10-20): the strike-through says it,
+                              // and a tap on a sneaker opens the reason.
+                              title={out ? undefined : title}
+                              // Struck through again since 2026-10-20
+                              // (sizeChipTheme's header). And the same
+                              // FOUR-AXIS container difference the
+                              // other two surfaces use — opacity alone left
+                              // this tile reading as an ordinary blue chip
+                              // at 32%, a fifth of a signal (CodeRabbit).
+                              style={out ? hoverGridSizeChipStyle({ out: true, tappable: snkTappable })
+                                : dInfo ? { position:"relative" } : undefined}
+                              data-out={out ? "1" : undefined}
+                              onClick={e => {
+                                e.stopPropagation();
+                                // The unavailable tap OPENS the quick-view's
+                                // note. It still selects nothing and still
+                                // cannot raise a request — openQv clears
+                                // qvSize, and the note is raised through the
+                                // same qvNa the quick-view's own out-tap uses.
+                                if (snkTappable) { openQv(p); setQvNa({ size: sz, left: 0, snk: true }); return; }
+                                if (out) return;
+                                // quickAdd returns 0 when the cart already
+                                // holds everything the hub has — no ✓ flash
+                                // for an add that didn't happen.
+                                if (!onQuickAdd(p, sz, 1)) return;
+                                // Class-only flash for EVERY tile: the old
+                                // textContent swap destroyed any child
+                                // span (glyph, ✕) that mounted during the
+                                // 430 ms window — React never repaints a
+                                // manually-mutated node. .flash's solid
+                                // fill is the feedback.
+                                const b = e.currentTarget;
+                                b.classList.add("flash");
+                                setTimeout(() => b.classList.remove("flash"), 430);
+                              }}>{sz === "Free Size" ? "OS" : sz}{dInfo ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
+                          );
+                        })}
+                      </div>
+                    </div></div>
+                  ) : (
+                    <div className="ad-hint2">Set quantities →</div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
+        {visible.length < shown.length && (
+          <button className="ad-more sky-glass sky-glass--soft" onClick={showMore}>
+            Show {Math.min(AD_PAGE, shown.length - visible.length)} more
+            <span className="ad-more-n">{shown.length - visible.length} left</span>
+          </button>
+        )}
+        </div>
+      </main>
+
+      {/* ORDER PANEL — the order cart (→ checkout) or the refill cart (→ place
+          refill request). Opened from "Orders" or the bottom bar. */}
+      {panel === "orders" && (
+        <aside className="ad-drawer sky-glass" aria-label={flow === "refill" ? "Refill request" : "Order"}>
+          <div className="ad-dhead">
+            <h2>{flow === "refill" ? "Refill request" : "Order"}</h2>
+            <span className="ad-dn">{cartCount}</span>
+            <button type="button" className="ad-dx" aria-label="Close order" onClick={() => setPanel(null)}><SkyIconClose width={16} height={16} /></button>
+          </div>
+          <div className="ad-dbody" key={flow}>
+            {flow === "order" ? (
+              <OrderLinesPanel grouped={grouped} units={units} onRemoveOne={onRemoveOne} onQuickAdd={onQuickAdd}
+                               onAddDisplayPartner={onAddDisplayPartner} onCheckout={() => setCoOpen(true)} />
+            ) : (
+              <>
+                <div className="ad-dlist">
+                  {groupedRefill.length === 0 ? (
+                    <div className="ad-empty">
+                      <div style={{ fontWeight: 600 }}>No refills yet</div>
+                      <div style={{ marginTop: 4, fontSize: 11 }}>Open a product and set per-size quantities.</div>
+                    </div>
+                  ) : groupedRefill.map(g => (
+                    <div key={g.key} className="ad-line">
+                      <div className="ad-li">{g.product?.photoUrl ? <PrimaryPhoto product={g.product} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👕")}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="ad-ln">{g.product?.name}</div>
+                        <div className="ad-lm">Size {formatSize(g.size)}</div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 13, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>×{g.qty}</span>
+                        <button onClick={() => onRemoveOne(g.product.id, g.size)} aria-label="Remove" style={{ background: "transparent", border: 0, color: "inherit", cursor: "pointer", fontSize: 14 }}>✕</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="ad-dfoot">
+                  <div className="ad-trow"><span>{refillUnits} unit{refillUnits !== 1 ? "s" : ""}</span><span>{groupedRefill.length} line{groupedRefill.length !== 1 ? "s" : ""}</span></div>
+                  <button className="ad-place" disabled={!refillUnits || submitting} onClick={() => onPlaceRefill()}>{submitting ? "Placing…" : "Place refill request"}</button>
+                </div>
+              </>
             )}
           </div>
-          <select className="ad-sel" value={brand} onChange={e => setBrand(e.target.value)} aria-label="Brand">
-            {brandOpts.map(([b, n]) => <option key={b} value={b}>{b === "All" ? "All brands" : b} ({n})</option>)}
-          </select>
-          <select className="ad-sel" value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort">
-            <option value="feat">Featured</option>
-            <option value="ph">Price · high</option>
-            <option value="pl">Price · low</option>
-            <option value="az">Name · A–Z</option>
-          </select>
-        </div>
-        <div className="ad-scroll" key={flow}>
-          {flow === "refill" && (
-            <button className="ad-trackbar" onClick={onOpenTracking}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-              <span style={{ flex: 1, textAlign: "left" }}>Track requests</span>
-              {trackingPending > 0 && <span className="ad-trackn">{trackingPending} pending</span>}
-              <span style={{ color: "#4A7FFF" }}>→</span>
-            </button>
-          )}
-          <div className="ad-count">
-            {shown.length} {flow === "refill" ? "clothing item" : "product"}{shown.length !== 1 ? "s" : ""}
-            {visible.length < shown.length && ` · showing ${visible.length}`}
-          </div>
-          {shown.length === 0 ? (
-            <div style={{ textAlign: "center", color: "#444", padding: "3rem", fontSize: 14 }}>{flow === "refill" ? "No clothing products yet." : "No products match."}</div>
-          ) : (
-            <div className="ad-grid">
-              {visible.map(p => {
-                const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
-                const szs = sizesOf(p);
-                return (
-                  <article key={p.id} className="ad-card" tabIndex={0}
-                           onClick={() => openQv(p)} onKeyDown={e => { if (e.key === "Enter") openQv(p); }}>
-                    <div className="ad-thumb">
-                      <span className="ad-cat">{p.brand || p.subcategory || (mode !== "sneaker" ? "Clothing" : "Sneakers")}</span>
-                      {p.photoUrl && (
-                        <button className="ad-zoom" aria-label="Quick view" onClick={e => { e.stopPropagation(); onViewPhoto(productPhotos(p)); }}>
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
-                        </button>
-                      )}
-                      {/* FULL-RESOLUTION PHOTO (kept from the wall, 2026-10-20):
-                          the product's own photoUrl — the file the lightbox
-                          opens — not the mirror's 300px thumbnail, which is
-                          its offline fallback. Called directly, not through
-                          the inline Photo, so a re-render never remounts it. */}
-                      <HiResPhoto key={p.photoUrl || ""} p={p} alt={p.name}
-                                  style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                                  fallback={<span style={{ fontSize: 52 }}>{p.photo || "👟"}</span>} />
-                      {/* Deactivate / reactivate / merge, right on the card the
-                          operator is looking at (owner spec 2026-08-31).
-                          Renders nothing for a non-admin. */}
-                      <ProductActionsButton product={p} products={products}
-                                            style={{ position: "absolute", top: 8, left: 8, zIndex: 3 }} />
-                      {/* Every size out at this shop's own hub — Pine and
-                          Concrete only (the set is empty for Marathon PE and
-                          Trophy). The card still opens: the sizes inside say
-                          why, and a tap on one lists what IS there. */}
-                      {unavailableIds?.has(p.id) && (
-                        <span data-testid="card-unavailable" style={{ position: "absolute", bottom: 8, right: 8, zIndex: 3, background: "rgba(20,14,4,.82)", border: "1px solid rgba(255,170,40,.5)", color: "#FFC46B", fontSize: 11, fontWeight: 800, letterSpacing: ".04em", padding: "3px 8px", borderRadius: 999 }}>
-                          UNAVAILABLE
-                        </span>
-                      )}
-                    </div>
-                    <div className="ad-body">
-                      <div className="ad-name">{p.name}
-                        {isDeactivated(p) && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, letterSpacing: ".06em", padding: "2px 6px", borderRadius: 6, background: "rgba(150,160,190,.18)", border: "1px solid rgba(150,160,190,.4)", color: "#B9C0D4", verticalAlign: "middle" }}>DEACTIVATED</span>}
-                      </div>
-                      <div className="ad-crow">
-                        {priced ? <span className="ad-price">{fmtR(p.retailPrice)}</span> : <span className="ad-price no">No price set</span>}
-                        <span className="ad-szn">{szs.length} size{szs.length !== 1 ? "s" : ""}</span>
-                      </div>
-                      {/* Order flow: hover reveals per-size quick-add. Refill flow:
-                          multi-size qty is set in the quick-view (tap the card). */}
-                      {flow === "order" ? (
-                        <div className="ad-quick"><div>
-                          <div className="ad-qlab">Add a size</div>
-                          <div className="ad-szrow">
-                            {szs.map(sz => {
-                              // The one quick-add size gate (assistantOrderModel):
-                              // clothing greys a zero-at-hub size; sneakers (Hub 1
-                              // and Hub 2) take the shared resolver's ✕, composed
-                              // with the deactivation rule (#445). THE GLYPH IS
-                              // INFORMATIONAL AND NOTHING ELSE. THE THIRD
-                              // SIZE-CHIP SURFACE: an out sneaker chip stays
-                              // tappable and opens the quick-view's note with the
-                              // alternatives already up (#456's route).
-                              const { out, tappable: snkTappable, dInfo, title } = quickAddSizeState(p, sz, sizeGate);
-                              return (
-                                <button key={sz} className="ad-sz" disabled={out && !snkTappable}
-                                  // No tooltip on a no-stock pill (Junid,
-                                  // 2026-10-20): the strike-through says it,
-                                  // and a tap on a sneaker opens the reason.
-                                  title={out ? undefined : title}
-                                  // Struck through again since 2026-10-20
-                                  // (sizeChipTheme's header). And the same
-                                  // FOUR-AXIS container difference the
-                                  // other two surfaces use — opacity alone left
-                                  // this tile reading as an ordinary blue chip
-                                  // at 32%, a fifth of a signal (CodeRabbit).
-                                  style={out ? hoverGridSizeChipStyle({ out: true, tappable: snkTappable })
-                                    : dInfo ? { position:"relative" } : undefined}
-                                  onClick={e => {
-                                    e.stopPropagation();
-                                    // The unavailable tap OPENS the quick-view's
-                                    // note. It still selects nothing and still
-                                    // cannot raise a request — openQv clears
-                                    // qvSize, and the note is raised through the
-                                    // same qvNa the quick-view's own out-tap uses.
-                                    if (snkTappable) { openQv(p); setQvNa({ size: sz, left: 0, snk: true }); return; }
-                                    if (out) return;
-                                    // quickAdd returns 0 when the cart already
-                                    // holds everything the hub has — no ✓ flash
-                                    // for an add that didn't happen.
-                                    if (!onQuickAdd(p, sz, 1)) return;
-                                    // Class-only flash for EVERY tile: the old
-                                    // textContent swap destroyed any child
-                                    // span (glyph, ✕) that mounted during the
-                                    // 430 ms window — React never repaints a
-                                    // manually-mutated node. .flash's solid
-                                    // green is the feedback; the ✓ added
-                                    // nothing worth that failure mode.
-                                    const b = e.currentTarget;
-                                    b.classList.add("flash");
-                                    setTimeout(() => b.classList.remove("flash"), 430);
-                                  }}>{sz === "Free Size" ? "OS" : sz}{dInfo ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.75)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
-                              );
-                            })}
-                          </div>
-                        </div></div>
-                      ) : (
-                        <div className="ad-hint2">Set quantities →</div>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-          {visible.length < shown.length && (
-            <button className="ad-more" onClick={showMore}>
-              Show {Math.min(AD_PAGE, shown.length - visible.length)} more
-              <span className="ad-more-n">{shown.length - visible.length} left</span>
-            </button>
-          )}
-        </div>
-      </div>
+        </aside>
+      )}
 
-      {/* DRAWER — order cart (→ checkout) or refill cart (→ place refill request),
-          cross-fading with the flow. */}
-      <aside className="ad-drawer">
-        <div className="ad-dhead"><h2>{flow === "refill" ? "Refill request" : "Order"}</h2><span className="ad-dn">{flow === "refill" ? refillUnits : units}</span></div>
-        <div className="ad-dbody" key={flow}>
-          {flow === "order" ? (
-            <OrderLinesPanel grouped={grouped} units={units} onRemoveOne={onRemoveOne} onQuickAdd={onQuickAdd}
-                             onAddDisplayPartner={onAddDisplayPartner} onCheckout={() => setCoOpen(true)} />
-          ) : (
-            <>
-              <div className="ad-dlist">
-                {groupedRefill.length === 0 ? (
-                  <div className="ad-empty">
-                    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: .5, marginBottom: 10 }}><path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4"/></svg>
-                    <div style={{ fontWeight: 600 }}>No refills yet</div>
-                    <div style={{ marginTop: 4, fontSize: 11 }}>Open a product and set per-size quantities.</div>
-                  </div>
-                ) : groupedRefill.map(g => (
-                  <div key={g.key} className="ad-line">
-                    <div className="ad-li">{g.product?.photoUrl ? <PrimaryPhoto product={g.product} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👕")}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="ad-ln">{g.product?.name}</div>
-                      <div className="ad-lm">Size {formatSize(g.size)}</div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 13, fontWeight: 800, color: "#9DBCFF", fontVariantNumeric: "tabular-nums" }}>×{g.qty}</span>
-                      <button onClick={() => onRemoveOne(g.product.id, g.size)} aria-label="Remove" style={{ background: "transparent", border: 0, color: "rgba(233,238,255,.4)", cursor: "pointer", fontSize: 14 }}>✕</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="ad-dfoot">
-                <div className="ad-trow"><span>{refillUnits} unit{refillUnits !== 1 ? "s" : ""}</span><span>{groupedRefill.length} line{groupedRefill.length !== 1 ? "s" : ""}</span></div>
-                <button className="ad-place" disabled={!refillUnits || submitting} onClick={() => onPlaceRefill()}>{submitting ? "Placing…" : "Place refill request"}</button>
-              </div>
-            </>
-          )}
+      {/* GLASS BOTTOM BAR — the order at a glance whenever it holds anything. */}
+      {cartCount > 0 && panel !== "orders" && !qv && !coOpen && (
+        <div className="ad-cartbar">
+          <SkyBottomBar count={cartCount} onOpen={() => setPanel("orders")} />
         </div>
-      </aside>
-      </>)}
+      )}
 
-      {/* QUICK-VIEW STAGE */}
+
+      {/* QUICK-VIEW — the product popup */}
       {qv && (
         <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setQv(null); }}>
-          {/* The dialog semantics and the Tab trap belong to the wall's popup;
-              the classic quick-view stays as it was. */}
-          <div className="ad-sv" {...(wall ? { role: "dialog", "aria-modal": "true", "aria-label": qv.name, onKeyDown: trapQvTab } : {})}>
-            <button className="ad-svclose" ref={qvCloseRef} onClick={() => setQv(null)} aria-label="Close">✕</button>
-            {/* Deactivate / reactivate / merge (owner spec 2026-08-31): off the
-                wall's tiles since round 3, into the popup header. Renders
-                nothing for a non-admin. */}
-            {wall && <div className="ad-svacts"><ProductActionsButton product={qv} products={products} /></div>}
-            <div className="ad-svimg" onClick={() => { const ph = wall ? wallPhotoList(qv, productPhotos(qv), wallManifest) : productPhotos(qv); if (ph.length) onViewPhoto(ph); }} style={{ cursor: qv.photoUrl || (wall && generatedTileSrc(qv, wallManifest)) ? "zoom-in" : "default" }}>
-              <span className="ad-cat" style={{ top: 14, left: 14 }}>{qv.brand || (mode !== "sneaker" ? "Clothing" : "Sneakers")}</span>
-              {/* The wall's popup draws the full-resolution original — the
-                  file the lightbox opens — with the cached thumbnail as its
-                  offline fallback (round 3, item 2). Called directly, not
-                  through the inline Photo, so a re-render never remounts it. */}
-              {wall
-                ? <WallPair key={qv.id} p={qv} gen={generatedTileSrc(qv, wallManifest)}
-                            // the lightbox opens on the slide on screen: studio first, or the original first
-                            onOpen={(i, genOk) => {
-                              const orig = productPhotos(qv);
-                              const ph = genOk ? wallPhotoList(qv, orig, wallManifest) : orig;   // a tile that failed to load stays out
-                              // from the original slide: original, then studio, then any gallery photos (the pair stays adjacent)
-                              if (ph.length) onViewPhoto(genOk && i === 1 && ph.length > 1 ? [ph[1], ph[0], ...ph.slice(2)] : ph);
-                            }}
-                            fallback={<span style={{ fontSize: 110 }}>{qv.photo || "👟"}</span>} />
-                : <Photo p={qv} big />}
+          <div className="ad-sv sky-glass sky-sheen" role="dialog" aria-modal="true" aria-label={qv.name} onKeyDown={trapQvTab} data-testid="product-popup">
+            <button className="ad-svclose" ref={qvCloseRef} onClick={() => setQv(null)} aria-label="Close"><SkyIconClose width={16} height={16} /></button>
+            {/* Deactivate / reactivate / merge (owner spec 2026-08-31), in the
+                popup header. Renders nothing for a non-admin. */}
+            <div className="ad-svacts"><ProductActionsButton product={qv} products={products} /></div>
+            <div className="ad-svimg" onClick={() => qv.photoUrl && onViewPhoto(productPhotos(qv))} style={{ cursor: qv.photoUrl ? "zoom-in" : "default" }}>
+              <ProductStage p={qv} height="100%" emoji={qv.photo || "👟"} priority cutoutHeight="70%" podiumWidth="76%" />
             </div>
             <div className="ad-svbody">
               <div>
-                {wall && qvFrom && (
-                  <button type="button" className="ad-svback" onClick={backToQvFrom}>← back to {qvFrom.p.name}</button>
-                )}
                 <div className="ad-svname">{qv.name}
-                  {isDeactivated(qv) && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, letterSpacing: ".06em", padding: "2px 7px", borderRadius: 6, background: "rgba(150,160,190,.18)", border: "1px solid rgba(150,160,190,.4)", color: "#B9C0D4", verticalAlign: "middle" }}>DEACTIVATED</span>}
+                  {isDeactivated(qv) && <span className="ad-deact" style={{ marginLeft: 8 }}>DEACTIVATED</span>}
+                </div>
+                <div className="ad-svmeta">
+                  {qv.styleCode ? <span data-testid="popup-stylecode">{qv.styleCode}</span> : null}
+                  {(() => {
+                    const hub = clothingOrder ? hubLabelFor(qv.id) : hubLabelForSize?.(qv, qvSize);
+                    return hub ? <span data-testid="popup-hub">{hub}</span> : null;
+                  })()}
                 </div>
                 {typeof qv.retailPrice === "number" && qv.retailPrice > 0
-                  ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(qv.retailPrice)}</div>
-                  : <div className="ad-noprice" style={{ marginTop: 6, color: "rgba(233,238,255,.35)", fontWeight: 700 }}>No price set</div>}
+                  ? <div className="ad-svprice">{fmtR(qv.retailPrice)}</div>
+                  : <div className="ad-noprice">No price set</div>}
               </div>
               {flow === "order" ? (
                 <>
@@ -9406,14 +9193,12 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                       // instead of leaving "reserved" indistinguishable from
                       // "doesn't exist". Self-hides once the size frees up.
                       if (qvNa.snk && !deadForOrder(qv)) {
-                        // The wall's strip under the pills says it, quietly.
-                        if (wall) return null;
                         // Belt on the toggle's clear: partner mode lifts the
                         // grey-out, so the note must never outlive it either way.
                         if (qvDP || !sneakerOut?.(qv, qvNa.size)) return null;
                         return (
                           <>
-                            <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
+                            <div className="ad-note">
                               {sneakerBlockNoteText(qvNa.size, sneakerOutWhy?.(qv, qvNa.size))}
                             </div>
                             {/* The desktop twin of the phone sheet's strip. The
@@ -9444,18 +9229,14 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                         : rem <= 0
                           ? `Your cart already has all ${have} of size ${formatSize(qvNa.size)} that ${hubLabelFor(qv.id)} holds.`
                           : `Only ${rem} more of size ${formatSize(qvNa.size)} can be added — ${hubLabelFor(qv.id)} holds ${have}.`;
-                      return (
-                        <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
-                          {text}
-                        </div>
-                      );
+                      return <div className="ad-note">{text}</div>;
                     })()}
                     {!qvNa && !qvDP && unavailableIds?.has(qv.id) && (
                       <div data-testid="qv-unavailable" style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
                         {unavailableHintFor?.(qv)}
                       </div>
                     )}
-                    <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <div className="ad-svsz">
                       {sizesOf(qv).map(sz => {
                         // Clothing (and a deactivated line, #445) keeps its
                         // note-raising tap; a sneaker size its serving hub has
@@ -9470,16 +9251,13 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                         // tile, and it gates nothing.
                         const dInfo = !clothingOrder && !out && !deadForOrder(qv)
                           ? sneakerDisplayInfo?.(qv, sz) : null;
+                        // On-hand at the serving hub — read off the cells this
+                        // screen already streams; null when nobody can say.
+                        const onHand = sizeOnHand ? sizeOnHand(qv, sz, clothingOrder) : null;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
-                            // The ✕ is gone here too. sizeChipTheme carries the
-                            // four-axis container difference and, since
-                            // 2026-10-20, the strike-through on a no-stock size.
-                            // ONE STYLE FOR EVERY AVAILABLE CHIP. A marked size
-                            // is not a different kind of chip; the glyph in the
-                            // corner is the whole difference (it is absolutely
-                            // positioned, and quickViewSizeChipStyle already
-                            // carries the position:relative it needs).
+                            // sizeChipTheme carries the four-axis container
+                            // difference and the strike-through on a no-stock size.
                             style={quickViewSizeChipStyle({ out })}
                             onClick={() => {
                               // Deselect FIRST — before the out gate — so a
@@ -9499,52 +9277,28 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                               }
                               setQvNa(null); setQvSize(sz);
                             }}>
-                            {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
+                            <span className="ad-szv">{sz === "Free Size" ? "One size" : formatSize(sz)}</span>
+                            {Number.isFinite(onHand) ? <span className="ad-szn" data-testid="size-onhand" data-contrast-check="">{Math.max(0, onHand)}</span> : null}
+                            {snkOut ? <span style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                             {dInfo ? (
-                              <span aria-label="this size is on a display" style={{ position:"absolute", top:1, right:2, lineHeight:1 }}>
-                                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.75)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                              <span aria-label="this size is on a display" style={{ position:"absolute", top:3, right:4, lineHeight:1 }}>
+                                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                               </span>
                             ) : null}
                           </button>
                         );
                       })}
                     </div>
-                    {/* THESE HAVE IT (wall, round 3 item 10): a ✕ size's
-                        alternatives as a strip INSIDE the popup, under the
-                        pills — a suggestion, not a screen. Raised by the same
-                        ✕ tap as the classic note (qvNa.snk); Display Partner
-                        lifts every ✕, so it lifts the strip too. A tile swaps
-                        this popup to that shoe in place. */}
-                    {wall && qvNa?.snk && !clothingOrder && !deadForOrder(qv) && (() => {
-                      const alt = alternativesFor?.(qv, qvNa.size) ?? null;
-                      const stillOut = !!sneakerOut?.(qv, qvNa.size);
-                      return (
-                        // Hidden, not unmounted, under Display Partner: a remount
-                        // would log "shown" again on every toggle.
-                        <WallAlternatives key={`${qv.id}|${qvNa.size}`} hidden={qvDP} rows={alt ? alt.rows : null} requestedSize={qvNa.size}
-                          line={quietBlockLine(qvNa.size, sneakerOutWhy?.(qv, qvNa.size), stillOut)}
-                          // Its own surface: it shows up to 18, the strip 8, and
-                          // /alternatives_log must be able to tell them apart.
-                          onShown={() => onAlternativesShown?.("wall", qv, qvNa.size, alt)}
-                          // Logged only when the pick really swaps the popup.
-                          onPicked={(row) => { if (!alternativeSelection(row, qvNa.size)) return; onAlternativePicked?.("wall", qv, qvNa.size, row); pickWallAlternative(row, qvNa.size); }} />
-                      );
-                    })()}
                   </div>
                   {/* Display Partner request — sneakers only; one line, size optional. */}
                   {!clothingOrder && (
                   <div>
-                    <div className="ad-qlab">Display Partner (optional)</div>
                     {/* The toggle drops any sneaker ✕ note: partner mode lifts
                         every ✕, and a note still saying "can't be ordered"
                         above a now-selectable size contradicts the screen
                         (adversarial review). */}
-                    <button onClick={() => { setQvDP(v => !v); setQvNa(null); }}
-                            style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                                     border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
-                                     background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
-                                     color: qvDP ? "#9DBCFF" : "rgba(233,238,255,.55)", display: "inline-flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ width: 15, height: 15, borderRadius: 4, border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.25)"}`, background: qvDP ? "#4A7FFF" : "transparent", color: "#04120a", fontSize: 11, fontWeight: 900, display: "grid", placeItems: "center" }}>{qvDP ? "✓" : ""}</span>
+                    <button className="ad-dp" aria-pressed={qvDP} onClick={() => { setQvDP(v => !v); setQvNa(null); }}>
+                      <span className="ad-dpbox">{qvDP ? "✓" : ""}</span>
                       Request Display Partner
                     </button>
                   </div>
@@ -9572,10 +9326,10 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                       : (qvSize ? `Add ${qvQty} × ${qvSize === "Free Size" ? "OS" : formatSize(qvSize)} to order` : (clothingOrder ? "Select a size" : "Select a size or Display Partner"));
                     return (
                       <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: "auto" }}>
-                        <div className="ad-step" style={{ height: 48, opacity: dp ? .4 : 1 }}>
-                          <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={dp} onClick={() => setQvQty(q => Math.max(1, q - 1))}>−</button>
-                          <span style={{ minWidth: 34, fontSize: 14 }}>{qvQty}</span>
-                          <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={dp} onClick={() => setQvQty(q => Math.min(10, q + 1))}>+</button>
+                        <div className="ad-step ad-step--qv" style={{ opacity: dp ? .4 : 1 }}>
+                          <button disabled={dp} onClick={() => setQvQty(q => Math.max(1, q - 1))} aria-label="One fewer">−</button>
+                          <span>{qvQty}</span>
+                          <button disabled={dp} onClick={() => setQvQty(q => Math.min(10, q + 1))} aria-label="One more">+</button>
                         </div>
                         <button className="ad-svadd" disabled={!canAdd} onClick={doAdd}>{label}</button>
                       </div>
@@ -9592,8 +9346,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                         const n = qvRefill[sz] || 0;
                         const setN = v => setQvRefill(q => ({ ...q, [sz]: Math.max(0, Math.min(99, Math.floor(Number(v) || 0))) }));
                         return (
-                          <div key={sz} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, background: "rgba(255,255,255,.03)", border: `1px solid ${n ? "rgba(74,222,128,.4)" : "rgba(255,255,255,.1)"}`, borderRadius: 10, padding: "6px 8px" }}>
-                            <span style={{ fontSize: 12.5, fontWeight: 700, color: "#dfe7ff" }}>{sz === "Free Size" ? "OS" : formatSize(sz)}</span>
+                          <div key={sz} className="ad-rrow" data-on={n ? "1" : undefined}>
+                            <span style={{ fontSize: 12.5, fontWeight: 700 }}>{sz === "Free Size" ? "OS" : formatSize(sz)}</span>
                             <div className="ad-rqty">
                               <button onClick={() => setN(n - 1)}>−</button>
                               <input value={n || ""} placeholder="0" inputMode="numeric" onChange={e => setN(e.target.value)} />
@@ -9635,38 +9389,38 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               scrollbar that shifted every field sideways. No max-height
               either: on a short screen the STAGE scrolls (the grid row grows
               with the panel), so nothing spills out of reach. */}
-          <div className="ad-sv" data-testid="confirm-order" style={{ gridTemplateColumns: "1fr", width: "min(460px,100%)", overflow: "visible", maxHeight: "none" }}>
-            <button className="ad-svclose" onClick={() => !submitting && setCoOpen(false)} aria-label="Close">✕</button>
+          <div className="ad-sv sky-glass sky-sheen" data-testid="confirm-order" style={{ gridTemplateColumns: "1fr", width: "min(460px,100%)", overflow: "visible", maxHeight: "none" }}>
+            <button className="ad-svclose" onClick={() => !submitting && setCoOpen(false)} aria-label="Close"><SkyIconClose width={16} height={16} /></button>
             <div className="ad-svbody" style={{ gap: 13 }}>
-              <div className="ad-svname" style={{ fontSize: 19 }}>Confirm order</div>
-              <div data-testid="confirm-summary" style={{ background: "rgba(74,127,255,.05)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, padding: "9px 12px", height: 172, boxSizing: "border-box", overflow: "auto" }}>
+              <div className="ad-svname" style={{ fontSize: 21 }}>Confirm order</div>
+              <div data-testid="confirm-summary" className="ad-sum" style={{ height: 172, boxSizing: "border-box", overflow: "auto" }}>
                 <div className="ad-qlab" style={{ margin: "0 0 6px" }}>Order · {units} item{units !== 1 ? "s" : ""}</div>
                 {grouped.map(g => (
-                  <div key={g.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, color: "#dfe7ff", padding: "4px 0" }}>
+                  <div key={g.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, padding: "4px 0" }}>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.product?.name}</span>
-                    <span style={{ color: "#9DBCFF", fontWeight: 700, flexShrink: 0 }}>{g.dp ? "Display" : `Sz ${formatSize(g.size)}`}{g.qty > 1 ? ` ×${g.qty}` : ""}</span>
+                    <span style={{ fontWeight: 800, flexShrink: 0 }}>{g.dp ? "Display" : `Sz ${formatSize(g.size)}`}{g.qty > 1 ? ` ×${g.qty}` : ""}</span>
                   </div>
                 ))}
               </div>
               <div style={{ position: "relative" }}>
                 <div className="ad-qlab">Customer name *</div>
-                <input value={customerName} placeholder="e.g. Ahmed" style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                <input className="ad-in" value={customerName} placeholder="e.g. Ahmed" style={{ width: "100%", boxSizing: "border-box" }}
                        onChange={e => { setCustomerName(e.target.value); setNameDD(true); }}
                        onFocus={() => setNameDD(true)} onBlur={() => setTimeout(() => setNameDD(false), 150)} />
                 {nameDD && <CustomerSuggestionDropdown query={customerName} mode="name" customers={customerIndex} onPick={p => { onPickCustomer(p); setNameDD(false); }} onAddNew={() => setNameDD(false)} />}
               </div>
               <div style={{ position: "relative" }}>
                 <div className="ad-qlab">Phone *</div>
-                <input value={customerPhone} placeholder="0712345678" inputMode="numeric" maxLength={10} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                <input className="ad-in" value={customerPhone} placeholder="0712345678" inputMode="numeric" maxLength={10} style={{ width: "100%", boxSizing: "border-box" }}
                        onChange={e => { setCustomerPhone(e.target.value.replace(/\D/g, "").slice(0, 10)); setPhoneDD(true); }}
                        onFocus={() => setPhoneDD(true)} onBlur={() => setTimeout(() => setPhoneDD(false), 150)} />
                 {phoneDD && <CustomerSuggestionDropdown query={customerPhone} mode="phone" customers={customerIndex} onPick={p => { onPickCustomer(p); setPhoneDD(false); }} onAddNew={() => setPhoneDD(false)} />}
-                <div data-testid="phone-hint" style={{ color: "#FF6B6B", fontSize: 11, marginTop: 5, minHeight: 15, lineHeight: "15px" }}>
+                <div data-testid="phone-hint" className="ad-hintline" style={{ fontSize: 11.5, marginTop: 5, minHeight: 15, lineHeight: "15px" }}>
                   {customerPhone && !isValidLocalSAPhone(customerPhone) ? "Enter a 10-digit number starting with 0." : null}
                 </div>
               </div>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 12.5, color: "#dfe7ff" }}>
-                <input type="checkbox" checked={marketingOptIn} onChange={e => setMarketingOptIn(e.target.checked)} style={{ width: 17, height: 17, accentColor: "#4A7FFF" }} />
+              <label className="ad-check">
+                <input type="checkbox" checked={marketingOptIn} onChange={e => setMarketingOptIn(e.target.checked)} />
                 Customer wants Marathon Club deals
               </label>
               {(() => {
@@ -9686,30 +9440,267 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
       )}
 
       {/* SHOP SWITCH — a deliberately ALARMING confirm: changing shop re-routes
-          every order to a different physical store. */}
+          every order to a different physical store. The red stays: it is the
+          one colour on this screen that means something. */}
       {pendingShop && (
-        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setPendingShop(null); }}>
-          <div className="ad-sv ad-danger" style={{ gridTemplateColumns: "1fr", width: "min(430px,100%)" }}>
-            <div className="ad-svbody" style={{ gap: 15, alignItems: "center", textAlign: "center", padding: "30px 26px 26px" }}>
-              <span className="ad-warnpulse" style={{ width: 64, height: 64, borderRadius: "50%", flexShrink: 0, background: "rgba(255,60,60,.14)", border: "2px solid rgba(255,70,70,.6)", display: "grid", placeItems: "center" }}>
-                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FF5A5A" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-              </span>
-              <div style={{ fontSize: 11, letterSpacing: ".18em", textTransform: "uppercase", color: "#FF6B6B", fontWeight: 800 }}>Warning · this re-routes orders</div>
-              <div className="ad-svname" style={{ fontSize: 21, color: "#fff" }}>Change shop to {labelFor(pendingShop, shopRegistry)}?</div>
-              <div style={{ fontSize: 13.5, color: "rgba(233,238,255,.72)", lineHeight: 1.55 }}>
-                You're ordering for <b style={{ color: "#fff" }}>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ color: "#FF8B8B" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b style={{ color: "#fff" }}>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
-              </div>
-              <div style={{ display: "flex", gap: 10, width: "100%", marginTop: 4 }}>
-                <button onClick={() => setPendingShop(null)} style={{ flex: 1, padding: 13, borderRadius: 11, border: "1px solid rgba(255,255,255,.2)", background: "rgba(255,255,255,.05)", color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-                <button onClick={() => { onSelectShop(pendingShop); setPendingShop(null); }} style={{ flex: "0 0 auto", padding: "13px 20px", borderRadius: 11, border: "1px solid rgba(255,80,80,.7)", background: "rgba(230,40,40,.92)", color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 8px 26px -8px rgba(255,50,50,.75)" }}>Yes, switch</button>
-              </div>
-            </div>
-          </div>
-        </div>
+        // On THE ONE OVERLAY (Junid, 6 Nov): navy on strong glass, no red —
+        // the same copy and the same two actions.
+        <SkyConfirm title={`Change shop to ${labelFor(pendingShop, shopRegistry)}?`} eyebrow="Warning · this re-routes orders"
+                    confirmLabel="Yes, switch" onCancel={() => setPendingShop(null)} testId="shop-switch-confirm"
+                    onConfirm={() => { onSelectShop(pendingShop); setPendingShop(null); }}>
+          You're ordering for <b>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ textDecoration: "underline" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
+        </SkyConfirm>
       )}
     </div>
   );
 }
+
+// How many brand logo chips fit on the row before "…" (assistant-desktop.png
+// shows seven at 1672px). Read once per resize, never per render.
+// ─── THE DESKTOP ORDER SCREEN ON THE SKY DNA (design/assistant-desktop.png) ──
+// Measured off the 1672px reference and expressed in vw with px clamps, so a
+// 1280–1680 Mac and an iPad in landscape keep the reference's proportions.
+const AD_SKY_CSS = `
+.ad-root{position:fixed;inset:0;z-index:50;overflow:auto;color:var(--sky-ink);font-family:var(--sky-font);--ad-w:min(81.5vw,1362px);
+  /* Compact top band (Junid, 5 Nov): three full card rows under the brand
+     chips at 1440x900 — the stage gives way to the viewport height (the band
+     above the grid + three card bodies + two gaps + 12px air = 530px). */
+  --ad-stage:clamp(104px,min(10.4vw,calc((100vh - 530px) / 3)),176px)}
+.ad-root *{box-sizing:border-box}
+.ad-hd{position:relative;display:grid;grid-template-columns:1fr auto 1fr;align-items:start;padding:clamp(16px,1.5vw,26px) clamp(28px,5.1vw,85px) 0}
+.ad-navpill{justify-self:start;display:flex;align-items:center;gap:2px;padding:3px;border-radius:999px;height:clamp(46px,3.2vw,54px)}
+.ad-navi{display:inline-flex;align-items:center;gap:10px;height:100%;padding:0 clamp(14px,1.25vw,22px);border:0;border-radius:999px;background:transparent;color:var(--sky-ink);
+  font:600 clamp(14px,1.02vw,17px)/1 var(--sky-font);cursor:pointer;position:relative;white-space:nowrap}
+.ad-navi svg{width:22px;height:22px}
+.ad-navi[aria-current="true"]{background:var(--sky-glass-solid);color:var(--sky-navy);font-weight:800;box-shadow:inset 0 1px 0 #fff,0 4px 12px -6px rgba(10,60,140,.35)}
+.ad-navi:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.ad-navn{min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:var(--sky-navy);color:#fff;font-size:11.5px;font-weight:800;display:inline-grid;place-items:center;font-variant-numeric:tabular-nums}
+.ad-hc{display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:clamp(-10px,-.6vw,-4px)}
+.ad-logo{border:0;background:transparent;padding:0;cursor:pointer;color:#fff}
+.ad-logo .sky-logo__m{font-size:clamp(40px,3.2vw,54px)}
+.ad-logo .sky-logo__c{font-size:clamp(13px,1.05vw,18px);margin-top:clamp(8px,.7vw,12px)}
+.ad-hc{position:relative}
+.ad-storepill{height:28px;font-size:12px;padding:0 13px 0 15px}
+.ad-hr{justify-self:end;display:flex;align-items:center;gap:clamp(16px,1.5vw,25px);position:relative}
+.ad-round{width:clamp(50px,3.8vw,64px)!important;height:clamp(50px,3.8vw,64px)!important}
+.ad-round svg{width:clamp(22px,1.6vw,27px);height:clamp(22px,1.6vw,27px)}
+.ad-me{font-size:clamp(19px,1.4vw,24px);font-weight:800;color:var(--sky-ink)!important;background:var(--sky-glass-strong)!important}
+.ad-main{width:var(--ad-w);margin:0 auto;padding:10px 0 120px}
+.ad-searchwrap{position:relative;width:min(48.4vw,809px);margin:12px auto 0;display:flex;align-items:center;gap:12px}
+.ad-searchwrap .sky-search{flex:1;height:clamp(50px,3.6vw,60px);padding-left:clamp(26px,2.4vw,40px)}
+.ad-searchwrap .sky-search input{font-size:clamp(18px,1.44vw,24px)}
+.ad-label-unused{position:absolute;right:calc(-1 * clamp(58px,4.2vw,70px));width:clamp(46px,3.3vw,56px);height:clamp(46px,3.3vw,56px);border-radius:50%;
+  display:grid;place-items:center;color:var(--sky-ink);cursor:pointer;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.4)}
+.ad-label svg{width:22px;height:22px}
+.ad-chips{margin:12px auto 0;gap:clamp(12px,1.2vw,20px);flex-wrap:nowrap}
+.ad-chips .sky-chip{height:clamp(34px,2.4vw,40px);min-width:clamp(78px,5.6vw,95px);padding:0 16px}
+.ad-chips .sky-chip svg{height:clamp(20px,1.5vw,25px)}
+.ad-more-chip{min-width:clamp(50px,3.1vw,52px)!important;padding:0 12px!important}
+.ad-grid{margin-top:clamp(14px,1.2vw,20px);display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:clamp(12px,.9vw,16px)}
+.ad-card{border-radius:clamp(18px,1.35vw,23px);min-height:0}
+.ad-card .sky-stage{padding-top:12px}
+.ad-card .sky-podium{bottom:12px}
+.ad-card .sky-cutout{max-width:80%}
+.ad-card .sky-frame{inset:12px 12px 2px}
+.ad-body{background:rgba(255,255,255,.2);border-radius:0 0 clamp(18px,1.35vw,23px) clamp(18px,1.35vw,23px);display:flex;align-items:center;justify-content:space-between;gap:12px;padding:clamp(10px,.8vw,14px) clamp(18px,1.7vw,28px) clamp(14px,1.2vw,20px)}
+.ad-name{font-size:clamp(13.5px,1.02vw,17px);font-weight:700;color:var(--sky-ink);line-height:1.12;min-height:2.24em}
+.ad-price{font-size:clamp(17px,1.35vw,22.5px);font-weight:800;color:var(--sky-navy)}
+.ad-price.no{font-size:12px;font-weight:700;color:var(--sky-ink-2)}
+.ad-deact{margin-left:6px;font-size:10px;font-weight:800;letter-spacing:.06em;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.75);border:1px solid #fff;color:var(--sky-ink);vertical-align:middle}
+.ad-zoom{position:absolute;top:10px;right:10px;width:28px;height:28px;border-radius:50%;border:1px solid var(--sky-rim);background:var(--sky-glass);color:var(--sky-ink);
+  -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);box-shadow:var(--sky-highlight);display:grid;place-items:center;cursor:pointer;z-index:2}
+.ad-zoom:hover{background:var(--sky-glass-solid)}
+/* Hover quick-add: a glass strip that slides over the name row. */
+.ad-quick{position:absolute;left:8px;right:8px;bottom:8px;z-index:3;border-radius:16px;padding:9px 10px 10px;
+  background:rgba(255,255,255,.96);color:var(--sky-ink);box-shadow:0 10px 26px -12px rgba(0,50,140,.55);
+  opacity:0;transform:translateY(6px);pointer-events:none;transition:opacity .16s,transform .16s}
+.ad-card:hover .ad-quick,.ad-card:focus-within .ad-quick{opacity:1;transform:none;pointer-events:auto}
+.ad-qlab{font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--sky-ink);margin:0 0 7px}
+.ad-quick .ad-qlab{color:var(--sky-ink)}
+.ad-szrow{display:flex;flex-wrap:wrap;gap:5px}
+.ad-sz{position:relative;font:700 12px/1 var(--sky-font);font-variant-numeric:tabular-nums;padding:7px 8px;min-width:34px;text-align:center;border-radius:10px;cursor:pointer;
+  color:var(--sky-navy);background:#fff;border:1px solid rgba(0,51,245,.22);transition:background .12s,color .12s}
+.ad-sz:hover{background:var(--sky-navy);color:#fff}
+.ad-sz.flash{background:var(--sky-navy);color:#fff;border-color:var(--sky-navy)}
+.ad-hint2{padding:0 20px 14px;font-size:12px;font-weight:700}
+.ad-none{color:var(--sky-ink);text-align:center;padding:42px 20px;border-radius:22px;margin-top:40px;font-weight:600}
+.ad-more{color:var(--sky-ink);display:flex;align-items:center;justify-content:center;gap:10px;width:min(420px,100%);margin:22px auto 0;height:48px;border-radius:999px;color:var(--sky-ink);cursor:pointer;font:700 14px/1 var(--sky-font)}
+.ad-more-n{font-size:12px;font-weight:600;color:var(--sky-ink-2)}
+.ad-trackbar{color:var(--sky-ink);display:flex;align-items:center;gap:10px;width:100%;margin-top:22px;padding:13px 18px;border-radius:999px;color:var(--sky-ink);cursor:pointer;font:700 14px/1 var(--sky-font)}
+.ad-trackn{background:var(--sky-navy);color:#fff!important;color:var(--sky-navy);border-radius:999px;padding:3px 10px;font-size:11.5px;font-weight:800}
+/* Popovers */
+.ad-scrim{position:fixed;inset:0;z-index:55}
+.ad-pop{position:absolute;z-index:56;border-radius:20px;padding:12px;min-width:220px;color:var(--sky-ink);background:rgba(255,255,255,.34)!important}
+.ad-pop--stores{left:clamp(28px,5.1vw,85px);top:calc(clamp(28px,2.8vw,47px) + clamp(46px,3.2vw,54px) + 10px)}
+.ad-pop--me{right:0;top:calc(100% + 10px)}
+.ad-pop--filter{right:0;top:calc(100% + 10px);width:260px}
+.ad-pop--brands{left:50%;transform:translateX(-50%);top:calc(100% + 10px);max-height:340px;overflow:auto;width:260px}
+.ad-poplab{font-size:10.5px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;margin:2px 6px 8px}
+.ad-popi{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;padding:10px 12px;border-radius:12px;border:0;background:transparent;color:var(--sky-ink);
+  font:600 14px/1.2 var(--sky-font);cursor:pointer}
+.ad-popi:hover{background:rgba(255,255,255,.22)}
+.ad-popi[aria-checked="true"]{background:#fff;color:var(--sky-navy);font-weight:800}
+.ad-popn{font-size:12px;opacity:.8;font-variant-numeric:tabular-nums}
+.ad-pop .sky-seg{width:100%}
+.ad-mewho{font-size:16px;font-weight:800;padding:2px 6px 0}
+.ad-mesub{font-size:12px;opacity:.9;padding:2px 6px 10px}
+/* Order drawer */
+.ad-drawer{position:fixed;z-index:58;color:var(--sky-ink);top:clamp(16px,1.5vw,24px);right:clamp(16px,1.5vw,24px);bottom:clamp(16px,1.5vw,24px);width:min(360px,calc(100vw - 32px));
+  border-radius:26px;display:flex;flex-direction:column;overflow:hidden;color:var(--sky-ink);background:var(--sky-glass-strong)!important}
+.ad-dhead{padding:18px 16px 12px 20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(11,42,82,.12)}
+.ad-dhead h2{margin:0;font-size:18px;font-weight:800}
+.ad-dn{font-size:12px;font-weight:800;background:var(--sky-navy);color:#fff;border-radius:999px;padding:2px 9px;font-variant-numeric:tabular-nums}
+.ad-dx{margin-left:auto;width:32px;height:32px;border-radius:50%;border:1px solid #fff;background:rgba(255,255,255,.7);color:var(--sky-ink);display:grid;place-items:center;cursor:pointer}
+.ad-dbody{display:flex;flex-direction:column;flex:1;overflow:hidden}
+.ad-dlist{flex:1;overflow:auto;padding:12px 13px;display:flex;flex-direction:column;gap:9px}
+.ad-empty{margin:auto;text-align:center;padding:36px 16px;font-size:13px}
+.ad-line{display:flex;gap:10px;background:rgba(255,255,255,.82);color:var(--sky-ink);border:1px solid #fff;border-radius:16px;padding:8px}
+.ad-li{width:46px;height:46px;border-radius:11px;background:#fff;display:grid;place-items:center;font-size:20px;flex:0 0 auto;overflow:hidden}
+.ad-ln{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ad-lm{font-size:11px;opacity:.75;margin-top:1px}
+.ad-lm span{color:var(--sky-navy)!important}
+.ad-step{display:inline-flex;align-items:center;border:1px solid rgba(0,51,245,.25);border-radius:999px;overflow:hidden;margin-top:5px;background:#fff}
+.ad-step button{width:24px;height:24px;border:0;background:transparent;color:var(--sky-ink);cursor:pointer;font-size:14px;font-weight:800}
+.ad-step span{min-width:24px;text-align:center;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--sky-ink)}
+.ad-step--qv{height:50px;margin-top:0}
+.ad-step--qv button{width:38px;height:48px;font-size:19px}
+.ad-step--qv span{min-width:30px;font-size:15px}
+.ad-lp{font-size:12.5px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--sky-navy);text-align:right}
+.ad-dfoot{border-top:1px solid rgba(11,42,82,.12);padding:15px 16px 16px;display:flex;flex-direction:column;gap:11px}
+.ad-trow{display:flex;justify-content:space-between;font-size:13px}
+.ad-trow.tot{font-size:15px;font-weight:800}
+.ad-place,.ad-svadd{width:100%;padding:14px;border:0;border-radius:999px;font:800 14.5px/1 var(--sky-font);color:#fff;background:var(--sky-navy);cursor:pointer;
+  box-shadow:0 10px 24px -10px rgba(0,40,170,.8),inset 0 1px 0 rgba(255,255,255,.3)}
+.ad-place:hover,.ad-svadd:hover{background:var(--sky-navy-deep)}
+.ad-place:disabled,.ad-svadd:disabled{background:rgba(0,51,245,.38);color:#fff;box-shadow:none;cursor:not-allowed}
+.ad-svadd{flex:1;padding:17px}
+.ad-cartbar .sky-bottombar{left:50%;right:auto;transform:translateX(-50%);width:min(560px,calc(100vw - 32px));bottom:24px}
+/* The popup */
+.ad-stage{position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:26px}
+.ad-sv{width:min(880px,100%);max-height:88vh;overflow:auto;border-radius:30px;display:grid;grid-template-columns:1fr 1fr;position:relative;color:var(--sky-ink);
+  background:linear-gradient(180deg,rgba(255,255,255,.62),rgba(255,255,255,.84))!important;-webkit-backdrop-filter:blur(36px) saturate(150%)!important;backdrop-filter:blur(36px) saturate(150%)!important;box-shadow:var(--sky-highlight),var(--sky-shadow-lg)!important}
+@media(max-width:760px){.ad-sv{grid-template-columns:1fr}}
+.ad-svimg{position:relative;min-height:340px;margin:16px 0 16px 16px;border-radius:24px;background:linear-gradient(180deg,rgba(150,205,255,.35),rgba(255,255,255,.5));border:1px solid #fff;overflow:hidden}
+.ad-svimg .sky-stage{height:100%;min-height:340px}
+.ad-svimg .sky-podium{bottom:40px;height:44px}
+.ad-svimg .sky-podium::after{height:26px}
+.ad-svimg .sky-podium::before{top:12px}
+.ad-svimg .sky-cutout{margin-bottom:58px!important;max-width:84%}
+.ad-svimg .sky-frame{inset:14px}
+.ad-svbody{padding:30px 28px 26px;display:flex;flex-direction:column;gap:16px}
+.ad-svname{font-size:24px;font-weight:800;letter-spacing:-.02em;line-height:1.15;padding-right:44px}
+.ad-svmeta{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.ad-svmeta span{font-size:11.5px;font-weight:800;letter-spacing:.05em;padding:4px 10px;border-radius:999px;background:#fff;border:1px solid rgba(0,51,245,.18);color:var(--sky-navy)}
+.ad-svprice{margin-top:12px;color:var(--sky-navy);font-size:32px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.ad-noprice{margin-top:12px;font-weight:700;opacity:.85}
+.ad-svsz{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:8px}
+.ad-svsz button{position:relative;aspect-ratio:1/1;border-radius:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;cursor:pointer;
+  font-family:inherit;color:var(--sky-navy);background:rgba(255,255,255,.75);border:1px solid rgba(0,51,245,.18);box-shadow:inset 0 1px 0 #fff,0 4px 10px -6px rgba(0,50,140,.4);transition:background .12s}
+.ad-svsz button:hover{background:#fff}
+.ad-szv{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums}
+.ad-szn{font-size:11px;font-weight:700;opacity:.9;font-variant-numeric:tabular-nums}
+.ad-svsz button[aria-pressed="true"]{background:var(--sky-navy)!important;border-color:var(--sky-navy)!important;color:#fff!important;box-shadow:0 10px 22px -10px rgba(0,40,170,.9)}
+.ad-note{background:rgba(255,255,255,.88);color:var(--sky-ink);border-radius:14px;padding:10px 13px;font-size:12.5px;font-weight:600;margin-bottom:9px}
+.ad-dp{display:inline-flex;align-items:center;gap:9px;padding:11px 16px;border-radius:999px;font:700 13px/1 var(--sky-font);cursor:pointer;
+  color:var(--sky-navy);background:rgba(255,255,255,.6);border:1px solid rgba(0,51,245,.25)}
+.ad-dp[aria-pressed="true"]{background:var(--sky-navy);color:#fff}
+.ad-dpbox{width:16px;height:16px;border-radius:5px;border:1.5px solid currentColor;display:grid;place-items:center;font-size:11px;font-weight:900}
+.ad-svclose{position:absolute;top:16px;right:16px;width:38px;height:38px;border-radius:50%;border:1px solid rgba(0,51,245,.2);background:#fff;color:var(--sky-navy);display:grid;place-items:center;cursor:pointer;z-index:3}
+.ad-svacts{position:absolute;top:16px;left:30px;z-index:3}
+.ad-sum{background:rgba(255,255,255,.6);border:1px solid #fff;border-radius:16px;padding:10px 13px}
+.ad-in{background:rgba(255,255,255,.9);border:1px solid #fff;border-radius:14px;color:var(--sky-ink);font:600 15px/1 var(--sky-font);padding:13px 14px;outline:none}
+.ad-in:focus{box-shadow:0 0 0 3px rgba(255,255,255,.55)}
+.ad-in::placeholder{color:rgba(0,20,49,.45)}
+.ad-hintline{color:#b00020;font-weight:700}
+.ad-check{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13.5px;font-weight:600}
+.ad-check input{width:18px;height:18px;accent-color:#0033f5}
+.ad-btn2{padding:13px;border-radius:999px;border:1px solid rgba(0,51,245,.25);background:rgba(255,255,255,.7);color:var(--sky-navy);font-weight:800;cursor:pointer;font-family:inherit}
+.ad-danger{border:2px solid rgba(225,40,40,.85)!important;animation:adShake .5s cubic-bezier(.36,.07,.19,.97)}
+@keyframes adShake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-5px)}40%,60%{transform:translateX(5px)}}
+.ad-warnpulse{animation:adPulse 1.3s ease-in-out infinite}
+@keyframes adPulse{0%,100%{box-shadow:0 0 0 0 rgba(225,40,40,.45)}50%{box-shadow:0 0 0 12px rgba(225,40,40,0)}}
+.ad-rrow{display:flex;align-items:center;justify-content:space-between;gap:6px;background:rgba(255,255,255,.6);border:1px solid #fff;border-radius:12px;padding:6px 8px}
+.ad-rrow[data-on]{background:#fff;color:var(--sky-ink)}
+.ad-rqty{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.6);border-radius:999px;overflow:hidden;background:#fff}
+.ad-rqty button{width:28px;height:32px;border:0;background:transparent;color:var(--sky-navy);cursor:pointer;font-size:15px;font-weight:800}
+.ad-rqty input{width:38px;height:32px;text-align:center;border:0;background:transparent;color:var(--sky-ink);font-size:13px;font-weight:800;outline:none;font-family:inherit}
+@media (max-width:1180px){.ad-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.ad-root{--ad-w:min(88vw,1362px)}.ad-searchwrap{width:min(62vw,809px)}}
+/* ─── JUNID'S LAPTOP MOCK-UP (6 Nov) — measured on the 1585-wide frame ─────
+   One screen: the header, pills, search and brand row are fixed; only the
+   sneakers scroll (.ad-scroll). Cards are landscape: photo left, name and
+   price right, white on ice glass. Everything is vw so a smaller laptop is
+   the same picture, scaled. */
+.ad-root{overflow:hidden;display:flex;flex-direction:column;--ad-w:87.07vw}
+.ad-hd{flex:0 0 auto;padding:.75vw 7.5vw 0}
+.ad-navpill{display:none}
+.ad-hc{margin-top:0;gap:0;grid-column:2;grid-row:1}
+.ad-logo .sky-logo__c{margin-top:.15vw}
+html[data-sky="on"] #root .ad-root .ad-storepill,.ad-root .ad-storepill{height:2.3vw;min-height:32px;padding:0 1vw;gap:.6vw;border-radius:999px;
+  font:700 max(11px,.8vw)/1 var(--sky-font);letter-spacing:.01em;text-transform:uppercase;color:#fff!important;
+  background:rgba(255,255,255,.13)!important;border:1.5px solid rgba(255,255,255,.62)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 6px 18px -8px rgba(0,40,120,.35)!important;text-shadow:0 1px 4px rgba(0,40,110,.25)}
+.ad-storepill .sky-storepill__chev{width:max(11px,.9vw);height:max(11px,.9vw);stroke-width:2.6}
+.ad-pill--store::before{content:"";width:max(13px,1vw);height:max(13px,1vw);flex:0 0 auto;background:#fff;
+  -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9'%3E%3Cpath d='M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z'/%3E%3Ccircle cx='12' cy='9.5' r='2.6'/%3E%3C/svg%3E") center/contain no-repeat;
+          mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9'%3E%3Cpath d='M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z'/%3E%3Ccircle cx='12' cy='9.5' r='2.6'/%3E%3C/svg%3E") center/contain no-repeat}
+.ad-root .sky-modepill__ic{width:max(15px,1.3vw);height:max(15px,1.3vw)}
+.ad-hr{grid-column:3;grid-row:1;align-self:center;margin-top:0;gap:1vw}
+html[data-sky="on"] #root .ad-root .ad-round,.ad-root .ad-round{width:3.3vw!important;height:3.3vw!important;min-width:40px;min-height:40px;color:#fff!important;
+  background:rgba(255,255,255,.13)!important;border:1.5px solid rgba(255,255,255,.62)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3)!important}
+.ad-round svg{width:1.4vw;height:1.4vw;min-width:17px;min-height:17px;color:#fff;stroke:#fff}
+html[data-sky="on"] #root .ad-root .ad-me,.ad-root .ad-me{font:600 max(15px,1.3vw)/1 var(--sky-font);color:#fff!important}
+.ad-main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:0;width:var(--ad-w)}
+.ad-searchwrap{flex:0 0 auto;width:82.4vw;margin:1vw auto 0}
+html[data-sky="on"] #root .ad-root .ad-searchwrap .sky-search{height:2.97vw;min-height:38px;padding:0 1.1vw 0 1.64vw;gap:1.9vw;
+  background:rgba(255,255,255,.15)!important;border:1.5px solid rgba(255,255,255,.62)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 8px 22px -12px rgba(0,40,120,.35)!important}
+.ad-searchwrap .sky-search > svg{width:1.5vw;height:1.5vw;min-width:18px;min-height:18px;color:#fff;stroke:#fff}
+html[data-sky="on"] #root .ad-root .ad-searchwrap .sky-search input:not([type="checkbox"]):not([type="radio"]){font:400 max(14px,1.07vw)/1 var(--sky-font);color:#fff!important;caret-color:#fff;background:transparent!important;border:0!important}
+html[data-sky="on"] #root .ad-root .ad-searchwrap .sky-search input::placeholder{color:rgba(255,255,255,.95)!important}
+.ad-searchwrap .sky-search__div{display:none}
+.ad-searchwrap .sky-search__btn{color:#fff}
+.ad-searchwrap .sky-search__btn svg{width:1.5vw;height:1.5vw;min-width:18px;min-height:18px;color:#fff;stroke:#fff}
+/* THE BRAND ROW FLOATS (Junid, 6 Nov): bare white logos, no boxes, on no
+   background — the sneakers scroll up UNDER them (the scroller starts behind
+   the row; see .ad-scroll). The row still slides left. */
+.ad-chips{position:relative;z-index:3;flex:0 0 auto;width:100%;height:3.4vw;min-height:40px;margin:1vw 0 0;padding:0 .2vw;gap:1.6vw;justify-content:flex-start;align-items:center;flex-wrap:nowrap;
+  overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-width:none;pointer-events:auto;
+  -webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 4vw),transparent);mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 4vw),transparent)}
+.ad-chips::-webkit-scrollbar{display:none}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip{flex:0 0 auto;scroll-snap-align:start;height:2.4vw;min-height:30px;min-width:0;padding:0 .9vw;border-radius:999px;
+  color:#fff!important;background:none!important;border:0!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;
+  filter:drop-shadow(0 1px 3px rgba(0,30,90,.55)) drop-shadow(0 0 8px rgba(0,30,90,.25))}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:hover{opacity:.85}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip:first-child{min-width:4.7vw;font:700 max(13px,1.07vw)/1 var(--sky-font)}
+html[data-sky="on"] #root .ad-root .ad-chips .sky-chip[aria-pressed="true"]{background:#fff!important;color:var(--sky-navy)!important;filter:none;box-shadow:0 3px 10px rgba(0,40,120,.25)!important}
+.ad-chips .sky-chip svg{height:1.6vw;min-height:18px;max-width:4.6vw;fill:currentColor}
+.ad-chips .sky-chip .sky-chip__txt{font-size:max(12px,1.05vw);font-weight:700}
+.ad-trackbar{flex:0 0 auto}
+/* The one scroller: the grid passes under the fixed band, faded at its top edge. */
+.ad-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin-top:calc(-1 * max(40px,3.4vw));padding:calc(max(40px,3.4vw) + 1vw) 0 120px;scrollbar-width:none;position:relative;z-index:1;
+  -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 1.1vw);mask-image:linear-gradient(180deg,transparent 0,#000 1.1vw)}
+.ad-scroll::-webkit-scrollbar{display:none}
+.ad-grid{margin-top:0;gap:1.26vw 1.33vw}
+html[data-sky="on"] #root .ad-root .ad-card,.ad-root .ad-card{display:grid;grid-template-columns:7.76vw minmax(0,1fr);align-items:stretch;height:11.1vw;min-height:140px;padding:1.45vw 0 1.39vw 1.2vw;border-radius:1.39vw;color:#fff;
+  background:linear-gradient(180deg,rgba(255,255,255,.2),rgba(255,255,255,.12))!important;border:1.5px solid rgba(255,255,255,.6)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 0 24px rgba(255,255,255,.08),0 10px 26px -14px rgba(0,40,120,.45)!important;
+  -webkit-backdrop-filter:blur(16px) saturate(1.3);backdrop-filter:blur(16px) saturate(1.3)}
+.ad-root .ad-card .sky-stage{height:100%!important;padding:0;border-radius:0;overflow:visible;background:none!important}
+.ad-root .ad-card .sky-frame{inset:0;border-radius:0;background:none!important;border:0!important;box-shadow:none!important;display:flex;align-items:center;justify-content:center}
+.ad-root .ad-card .sky-frame img{max-width:100%;max-height:100%;object-fit:contain;border-radius:.88vw}
+.ad-root .ad-card .sky-podium{width:80%;bottom:6%}
+.ad-root .ad-card .sky-cutout{max-width:88%}
+.ad-body{background:none!important;border-radius:0;display:flex;flex-direction:column;align-items:stretch;justify-content:space-between;gap:.4vw;padding:.3vw 1.32vw .35vw 1.26vw;min-width:0}
+.ad-name{font-size:max(12.5px,1.01vw);font-weight:500;line-height:1.38;color:#fff;min-height:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;text-shadow:0 1px 4px rgba(0,40,110,.25)}
+.ad-price{align-self:flex-end;display:flex;align-items:center;font-size:max(18px,1.7vw);font-weight:700;color:#fff;letter-spacing:-.01em;text-shadow:0 1px 4px rgba(0,40,110,.25)}
+.ad-price::before{content:"";width:1px;height:1.6vw;margin-right:1.26vw;background:rgba(255,255,255,.45)}
+.ad-price.no{font-size:max(11px,.8vw);font-weight:600;color:rgba(255,255,255,.92)}
+.ad-price.no::before{display:none}
+.ad-zoom{top:auto;bottom:1.7vw;right:auto;left:1.6vw;width:24px;height:24px;opacity:0;transition:opacity .15s}
+.ad-card:hover .ad-zoom,.ad-zoom:focus-visible{opacity:1}
+@media (max-width:1180px){.ad-root{--ad-w:92vw}.ad-searchwrap{width:88vw}
+  html[data-sky="on"] #root .ad-root .ad-card,.ad-root .ad-card{grid-template-columns:10.2vw minmax(0,1fr);height:14.6vw}}
+@media (prefers-reduced-motion:reduce){.ad-quick,.ad-zoom{transition:none}.ad-danger,.ad-warnpulse{animation:none}}
+`;
 
 // ─── ASSISTANT LABEL FINDER — lives in components/assistant/AssistantLabelFinder.jsx
 // (lifted out 2026-08-23 so it renders in a test like every other label surface).
@@ -10179,16 +10170,22 @@ function AssistantView({ products, onExit, orders = [] }) {
     () => (orders || []).filter(o => o && o.customerName === "Shop Refill" && o.destShop === effectiveShop && !o.clothingRefillStatus).length,
     [orders, effectiveShop]
   );
-  // Scroll-to-top FAB: appears once the user has scrolled past the search box so
-  // a single tap returns to the top (the search bar) after browsing the grid.
-  const [showScrollTop, setShowScrollTop]               = useState(false);
-  useEffect(() => {
-    const onScroll = () => setShowScrollTop(window.scrollY > 400);
-    window.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-  const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
+  // No back-to-top button (Junid, 6 Nov): the header is sticky now, so the
+  // search is always on screen.
+  // Long-press a size in the sheet: its on-hand count, for 2s. Never selects.
+  const [peekSize, setPeekSize]                         = useState(null);
+  const sizePeekTimer = useRef(null);
+  const sizePeekFired = useRef(false);
+  const startSizePeek = (s) => {
+    clearTimeout(sizePeekTimer.current);
+    sizePeekFired.current = false;
+    sizePeekTimer.current = setTimeout(() => {
+      sizePeekFired.current = true;
+      setPeekSize({ size: s });
+      setTimeout(() => setPeekSize((p) => (p && p.size === s ? null : p)), 2000);
+    }, 450);
+  };
+  const endSizePeek = () => clearTimeout(sizePeekTimer.current);
   const [pendingSize, setPendingSize]                   = useState("");
   // Clothing availability note — { size, left } for the size the assistant
   // tapped/added that the serving hub can't (fully) cover; `left` is how many
@@ -10325,11 +10322,6 @@ function AssistantView({ products, onExit, orders = [] }) {
   // plus a full grid re-render before it appeared — which is why typing into
   // the search box on the till lagged behind the keyboard.
   const deferredSearch = useDeferredValue(search);
-  // The sneaker-wall preview (orderViewPreview.js). The toggle reloads the
-  // page, so it changes only when the signed-in account does.
-  // The stored switch counts only for the accounts that may set it, so a flag
-  // left in a shared till's browser never reaches staff (architect review).
-  const wallPreview = useMemo(() => isWallPreviewOn({ email: assistantUser?.email }), [assistantUser?.email]);
   // The brands in the pool, for "typing a brand name filters by brand" — the
   // sneaker wall has no brand dropdown (components/assistant/brandSearch.js).
   const brandIndex = useMemo(() => buildBrandIndex(base), [base]);
@@ -10374,6 +10366,21 @@ function AssistantView({ products, onExit, orders = [] }) {
     }
     return merge(fuse.search(q).map(r => r.item));
   }, [deferredSearch, base, browse, fuse, brandIndex]);
+
+  // THE BRAND FILTER — one value for both layouts: the desktop chip row and
+  // the phone brand strip (below 768px) read and set the same `brand`, over
+  // the same options (components/assistant/brandFilter.js). Switching store
+  // or Sneakers / Clothing recomputes the options; the brand stays chosen
+  // while it is still one of them, else back to All. iPad portrait has no
+  // picker, so the phone grid only narrows where the strip is drawn.
+  const [brand, setBrand] = useState("All");
+  const brandOpts = useMemo(() => brandOptions(browse), [browse]);
+  useEffect(() => {
+    const next = reconcileBrand(brand, brandOpts);
+    if (next !== brand) setBrand(next);
+  }, [brandOpts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const phoneStrip = useMaxWidth(767);
+  const phoneShown = useMemo(() => (phoneStrip ? filterByBrand(filtered, brand) : filtered), [phoneStrip, filtered, brand]);
 
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
@@ -10619,6 +10626,19 @@ function AssistantView({ products, onExit, orders = [] }) {
   // suppresses it on a ✕ tile, so an unresolved hub simply means no glyph —
   // which is also what a Hub 3 shoe gets, because this screen maps slots
   // for hub1 and hub2 only and the glyph may not outrun the availability lane.
+  // THE POPUP'S PER-SIZE COUNT (sky redesign, 2026-11-02): what the serving
+  // hub can still give for this size — clothing off the CR hub's cells, a
+  // gated sneaker off the same resolver the ✕ reads. Display only: it gates
+  // nothing, and null (an unread or ungated hub) shows no number at all.
+  const sizeOnHand = (p, s, clothing) => {
+    if (clothing) return hubQty(p.id, s);
+    const { hub, available } = sneakerSourcing(p, s);
+    return sneakerGateReady(hub) && Number.isFinite(available) ? available : null;
+  };
+  const hubLabelForSize = (p, s) => {
+    const hub = sneakerHubOf(p, s || sizesOf(p)[0]);
+    return hub ? (HUB_LABELS[hub] || hub) : null;
+  };
   const sneakerDisplayInfo = (p, s) => {
     if (!s) return null;
     const hub = sneakerHubOf(p, s);
@@ -10735,11 +10755,8 @@ function AssistantView({ products, onExit, orders = [] }) {
       // dropped merged-away records; availabilityKnown below drops everything
       // that is not a gated sneaker.
       candidates: products,
-      // Eighteen, best first, for the wall preview's strip; the phone sheet
-      // and the classic strip draw the first MAX_ALTERNATIVES_SHOWN (8) —
-      // the same eight the ranking always put first.
-      // The classic layout asks for the eight it has always shown.
-      limit: wallPreview ? ALT_PANEL_MAX : MAX_ALTERNATIVES_SHOWN,
+      // The eight the phone sheet and the desktop popup have always shown.
+      limit: MAX_ALTERNATIVES_SHOWN,
       // FOLLOWS MERGES. A pid in a list written last week may since have been
       // merged away; resolveProductById lands on the survivor, and
       // alternativesForSize de-duplicates when two entries land on the same
@@ -11661,11 +11678,14 @@ function AssistantView({ products, onExit, orders = [] }) {
     }
   };
 
+  // The phone's sheets on the sky DNA: white glass inside its own box, a
+  // bright rim, the blur inside the sheet — nothing over the photo outside it.
   const sheetStyle = {
-    background:CARD, border:BORDER,
-    borderTopLeftRadius:RADIUS, borderTopRightRadius:RADIUS,
-    padding:"2rem", width:"100%", maxWidth:"520px", maxHeight:"85vh", overflowY:"auto",
-    boxShadow: "0 -4px 30px rgba(60,110,255,.12)",
+    background:"var(--sky-glass-strong)", border:"1px solid var(--sky-rim)",
+    WebkitBackdropFilter:"blur(28px) saturate(1.6) brightness(1.05)", backdropFilter:"blur(28px) saturate(1.6) brightness(1.05)",
+    borderTopLeftRadius:28, borderTopRightRadius:28, color:"var(--sky-ink)", fontFamily:"var(--sky-font)",
+    padding:"1.6rem 1.4rem calc(1.4rem + env(safe-area-inset-bottom, 0px))", width:"100%", maxWidth:"520px", maxHeight:"85vh", overflowY:"auto",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,.9), 0 -20px 50px -20px rgba(0,52,150,.45)",
   };
 
   // Phase 15: a user assigned to zero stores can't place orders anywhere. Block
@@ -11690,7 +11710,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   }
 
   return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:880, margin:"0 auto", overflowX:"hidden", paddingBottom: cart.length > 0 ? 90 : 40 }}>
+    <div style={{ minHeight:"100vh", color:"#fff", fontFamily:"var(--sky-font)", maxWidth:880, margin:"0 auto", overflowX:"hidden", paddingBottom: 40 }}>
       {/* Desktop workspace (≥1024px, sneaker + clothing customer orders) —
           full-screen overlay reusing this view's cart + checkout. Phone/iPad
           + CR fall through to the existing layout below. The shared Checkout
@@ -11705,12 +11725,14 @@ function AssistantView({ products, onExit, orders = [] }) {
       {isDesktop && !noStoreAccess && (
         <AssistantDesktop
           products={browse} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
+          brand={brand} setBrand={setBrand}
           deadForOrder={deadForOrder}
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
           onViewPhoto={setFullPhoto} onSwitchView={onExit}
-          userEmail={assistantUser?.email || ""} mode={mode} setMode={setMode} wallPreview={wallPreview}
+          userEmail={assistantUser?.email || ""} mode={mode} setMode={setMode}
+          sizeOnHand={sizeOnHand} hubLabelForSize={hubLabelForSize}
           customerName={customerName} setCustomerName={setCustomerName}
           customerPhone={customerPhone} setCustomerPhone={setCustomerPhone}
           marketingOptIn={marketingOptIn} setMarketingOptIn={setMarketingOptIn}
@@ -11745,21 +11767,6 @@ function AssistantView({ products, onExit, orders = [] }) {
         @keyframes mcPriceSiri { from { background-position: 0% 0; } to { background-position: 300% 0; } }
         @media (prefers-reduced-motion: reduce) { .mc-price-siri { animation: none; } }
       `}</style>
-      {/* TOP BAR */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
-        <div onClick={onExit}
-             style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
-          <span style={{ fontSize:12, color:"rgba(255,255,255,.7)" }}>← Switch View</span>
-        </div>
-        <div style={{ textAlign:"center" }}>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-          <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ASSISTANT</div>
-        </div>
-        {/* Spacer balances the ← Switch View button so "ASSISTANT" stays
-            centred; the product mode selector now lives in its own row below. */}
-        <div style={{ width:92 }} />
-      </div>
-
       {/* Product mode — Sneakers / Clothing, both CUSTOMER order flows.
           Clothing was restored 2026-07-16, now routed to the universe's CR hub
           (hub2/hub3) with live per-size availability. The CR (manual Clothing
@@ -11768,46 +11775,75 @@ function AssistantView({ products, onExit, orders = [] }) {
           requests itself; the CR plumbing (ClothingCard / addClothingLines /
           placeRefillRequests) is kept intact behind mode==="cr" as the manual
           fallback if automation ever needs bypassing. */}
-      <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
-        <div style={{ display:"flex", width:"100%", maxWidth:360, background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {[["sneaker","Sneakers"],["clothing","Clothing"]].map(([val, label]) => {
-            const on = mode === val;
+      {/* THE PHONE ORDER VIEW (design/assistant-phone.png) — header with the
+          ASSISTANT pill, Sneakers / Clothing, the store chips, Place order,
+          search + camera (the tongue-label scan), two-up podium cards and
+          the glass cart bar. Same handlers as before, one component. The
+          desktop workspace above is a full-screen overlay and skips it. */}
+      {!isDesktop && (
+        <AssistantPhone
+          mode={mode} onMode={(val) => { setMode(val); resetSheet(); }}
+          shops={singleShop ? [] : availableShops} effectiveShop={effectiveShop}
+          shopLabel={(id) => labelFor(id, shopRegistry)} onShop={requestShopSwitch}
+          search={search} onSearch={setSearch} onScan={() => setLabelFinderOpen(true)}
+          products={isRefillMode ? [] : phoneShown} showGrid={!isRefillMode}
+          brands={isRefillMode ? null : brandOpts} brand={brand} onBrand={setBrand}
+          emptyText={wantsClothing ? "No clothing products yet. Add one from Admin." : "No products match your search."}
+          selectedId={selected?.id || null}
+          onOpen={(p) => { resetSheet(); setSelected(p); }}
+          onViewPhotos={(p) => setFullPhoto(productPhotos(p))} photoCount={(p) => productPhotos(p).length}
+          // No three-dot on the tiles (Junid, 6 Nov): the admin actions
+          // (deactivate / reactivate / merge) moved into the size sheet's header.
+          renderDeactivated={(p) => (isDeactivated(p) ? <DeactivatedChip small />
+            : unavailableIds.has(p.id) ? <span className="sky-unavail sky-unavail--inline" data-testid="card-unavailable">UNAVAILABLE</span> : null)}
+          isDead={deadForOrder}
+          who={(assistantUser?.email || "").split("@")[0]}
+          onExit={onExit}
+          showBar={false}>
+          {/* ── Confirmation banner ── */}
+          {lastOrders.length > 0 && (() => {
+            // Clothing now appears in both flows, so key the headline off the
+            // refill marker rather than productType (customer clothing → Hub C
+            // reads as a normal customer order).
+            const isRefill = lastOrders[0].customerName === "Shop Refill";
+            const headline = isRefill
+              ? `Refill request placed — ${lastOrders.length} line${lastOrders.length > 1 ? "s" : ""}`
+              : `${lastOrders.length} order${lastOrders.length > 1 ? "s" : ""} placed for ${lastOrders[0].customerName}`;
             return (
-              <button key={val} onClick={() => { setMode(val); resetSheet(); }}
-                style={{ flex:1, padding:"7px 6px", borderRadius:9, border:"none", cursor:"pointer", fontSize:12, fontWeight:700,
-                         background: on ? "rgba(60,110,255,.25)" : "transparent",
-                         color: on ? "#fff" : "rgba(255,255,255,.5)",
-                         boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
-                {label}
-              </button>
+              <div style={{ background:"rgba(0,150,70,.1)", border:"1px solid rgba(0,150,70,.3)", borderRadius:RADIUS, padding:"1.25rem", marginBottom:"1.5rem", display:"flex", alignItems:"flex-start", gap:"1rem" }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ color:"#4ADE80", fontWeight:"600", marginBottom:"0.3rem", fontSize:"0.9rem" }}>
+                    {headline}
+                  </div>
+                  {lastOrders.map(o => (
+                    <div key={o.id} style={{ color:"#888", fontSize:"0.82rem" }}>
+                      <strong style={{ color:"#ccc" }}>#{o.id}</strong> — {o.productName}{o.size ? ` Sz ${formatSize(o.size)}` : ""}{o.qty && o.qty > 1 ? ` × ${o.qty}` : ""}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:8 }}>
+                  <button onClick={() => setLastOrders([])} style={{ background:"transparent", border:"none", color:"#555", cursor:"pointer", fontSize:"1rem" }}>✕</button>
+                  {/* Reprint the slip if the auto-print was dismissed or failed — the
+                      only recovery path for a physical hand-to-customer receipt.
+                      Desktop-only, matching the auto-print: no thermal printer on phones. */}
+                  {isDesktop && !isRefill && (
+                    <button onClick={() => printOrderSlips(lastOrders).catch(err => console.warn("reprint slip failed:", err))}
+                            title="Reprint the order slip"
+                            style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"#cfd6e4", cursor:"pointer", fontSize:"0.72rem", fontFamily:FONT, padding:"5px 10px", whiteSpace:"nowrap" }}>
+                      🖨 Reprint slip
+                    </button>
+                  )}
+                </div>
+              </div>
             );
-          })}
-        </div>
-      </div>
+          })()}
 
-      {/* SHOP toggle — the assistant picks which physical shop (Marathon PE /
-          Trophy / Pine) the order is for; this is recorded as order.destShop and
-          drives the warehouse→shop transfer on dispatch. Per-device localStorage.
-          Only renders shops this user is assigned to (expanded from their
-          central/pine assignment); hidden entirely when they have exactly one
-          (auto-selected by the clamp effect) so there's zero chance of mis-picking. */}
-      {!singleShop && (
-      <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
-        <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {availableShops.map((s) => {
-            const on = effectiveShop === s.id;
-            return (
-              <button key={s.id} onClick={() => requestShopSwitch(s.id)}
-                style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
-                         background: on ? "rgba(60,110,255,.25)" : "transparent",
-                         color: on ? "#fff" : "rgba(255,255,255,.5)",
-                         boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
-                {labelFor(s.id, shopRegistry)}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+          {mode === "cr" && (
+            <div style={{ textAlign:"center", fontSize:11, color:"#fff", letterSpacing:"0.3px", padding:"10px 14px 0" }}>
+              Store refill — set quantities per size
+            </div>
+          )}
+        </AssistantPhone>
       )}
 
       {/* ── SHOP-SWITCH WARNING MODAL ──────────────────────────────────────────
@@ -11815,155 +11851,25 @@ function AssistantView({ products, onExit, orders = [] }) {
           DIFFERENT shop on the toggle. Names the from/to shops in plain words,
           spells out that every future order routes to the new store, and flags
           any cart lines that would go with it. Only "Yes, switch" commits. */}
-      {pendingShopSwitch && (() => {
-        const fromLabel = labelFor(effectiveShop, shopRegistry);
-        const toLabel   = labelFor(pendingShopSwitch, shopRegistry);
-        const cartCount = cart.length;
-        return (
-          <div onClick={() => setPendingShopSwitch(null)}
-               style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,.8)", backdropFilter:"blur(3px)",
-                        display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-            <div onClick={e => e.stopPropagation()}
-                 style={{ width:"100%", maxWidth:380, background:"#1c0e0e", border:"2px solid rgba(255,70,70,.6)",
-                          borderRadius:18, padding:"26px 22px", textAlign:"center", fontFamily:FONT,
-                          boxShadow:"0 0 44px rgba(255,45,45,.4)" }}>
-              <div style={{ fontSize:46, lineHeight:1, marginBottom:12 }}>⚠️</div>
-              <div style={{ color:"#FF5C5C", fontWeight:800, fontSize:19, letterSpacing:".4px", marginBottom:12 }}>
-                CHANGING STORE
-              </div>
-              <div style={{ color:"#fff", fontSize:14.5, lineHeight:1.55, marginBottom:9 }}>
-                Switching from <strong style={{ color:"#FFD166" }}>{fromLabel}</strong> to{" "}
-                <strong style={{ color:"#FF8A8A" }}>{toLabel}</strong>.
-              </div>
-              <div style={{ color:"rgba(255,255,255,.78)", fontSize:13.5, lineHeight:1.55, marginBottom: cartCount ? 12 : 22 }}>
-                Every order you place will now go to <strong style={{ color:"#FF8A8A" }}>{toLabel}</strong>.
-                If this is the wrong store, the stock ships to the wrong branch.
-              </div>
-              {cartCount > 0 && (
-                <div style={{ color:"#FFD166", fontSize:12.5, fontWeight:700, marginBottom:22, lineHeight:1.5,
-                              background:"rgba(245,196,81,.1)", border:"1px solid rgba(245,196,81,.35)",
-                              borderRadius:10, padding:"9px 11px" }}>
-                  You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — they’ll be placed for {toLabel}.
-                </div>
-              )}
-              <div style={{ display:"flex", gap:10 }}>
-                <button onClick={() => setPendingShopSwitch(null)}
-                        style={{ flex:1, padding:"13px 0", borderRadius:11, border:"1px solid rgba(255,255,255,.28)",
-                                 background:"transparent", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
-                  Cancel
-                </button>
-                <button onClick={confirmShopSwitch}
-                        style={{ flex:1.4, padding:"13px 8px", borderRadius:11, border:"none",
-                                 background:"#E03131", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
-                  Switch to {toLabel}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {pendingShopSwitch && (
+        <ShopSwitchConfirm fromLabel={labelFor(effectiveShop, shopRegistry)} toLabel={labelFor(pendingShopSwitch, shopRegistry)}
+                           cartCount={cart.length} onCancel={() => setPendingShopSwitch(null)} onConfirm={confirmShopSwitch} />
+      )}
 
       {/* ── Placement destination confirm ── fires on the FIRST order of a shop-
           session for multi-shop users (see PLACEMENT DESTINATION GUARD). Calmer
           than the red switch modal — it's a routine "confirm where this ships",
           the backstop for a device left on the wrong shop that never switched. */}
-      {destConfirm && (() => {
-        const toLabel = labelFor(effectiveShop, shopRegistry);
-        return (
-          <div onClick={() => { setDestConfirm(null); setCheckoutOpen(false); }}
-               style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,.8)", backdropFilter:"blur(3px)",
-                        display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-            <div onClick={e => e.stopPropagation()}
-                 style={{ width:"100%", maxWidth:380, background:"#0c1730", border:"2px solid rgba(74,127,255,.6)",
-                          borderRadius:18, padding:"26px 22px", textAlign:"center", fontFamily:FONT,
-                          boxShadow:"0 0 44px rgba(60,110,255,.35)" }}>
-              <div style={{ fontSize:42, lineHeight:1, marginBottom:12 }}>🏬</div>
-              <div style={{ color:"#6A9FFF", fontWeight:800, fontSize:18, letterSpacing:".4px", marginBottom:12 }}>
-                CONFIRM STORE
-              </div>
-              <div style={{ color:"#fff", fontSize:14.5, lineHeight:1.55, marginBottom:9 }}>
-                This order ships to <strong style={{ color:"#FFD166" }}>{toLabel}</strong>.
-              </div>
-              <div style={{ color:"rgba(255,255,255,.72)", fontSize:13, lineHeight:1.55, marginBottom:22 }}>
-                If the customer is at a different branch, tap <strong style={{ color:"#fff" }}>Wrong store</strong> and switch
-                stores first — otherwise the stock ships to the wrong shop.
-              </div>
-              <div style={{ display:"flex", gap:10 }}>
-                <button onClick={() => { setDestConfirm(null); setCheckoutOpen(false); }}
-                        style={{ flex:1, padding:"13px 0", borderRadius:11, border:"1px solid rgba(255,255,255,.28)",
-                                 background:"transparent", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
-                  Wrong store
-                </button>
-                <button onClick={runDestConfirm}
-                        style={{ flex:1.4, padding:"13px 8px", borderRadius:11, border:"none",
-                                 background:"#2F6FE0", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
-                  Send to {toLabel}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Mode hint line — clarifies where CR refill orders go. (The customer
-          "Clothing → Hub C" mode was removed; only Sneakers + CR remain.) */}
-      {mode === "cr" && (
-        <div style={{ textAlign:"center", fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.3px", padding:"0 14px 8px" }}>
-          Store refill — set quantities per size
-        </div>
+      {destConfirm && (
+        // On THE ONE OVERLAY (Junid, 6 Nov): readable navy on strong glass, the
+        // same copy and the same two actions.
+        <SkyConfirm title="Confirm store" confirmLabel={`Send to ${labelFor(effectiveShop, shopRegistry)}`} cancelLabel="Wrong store"
+                    icon="pin" testId="dest-confirm" onConfirm={runDestConfirm}
+                    onCancel={() => { setDestConfirm(null); setCheckoutOpen(false); }}>
+          <div>This order ships to <b>{labelFor(effectiveShop, shopRegistry)}</b>.</div>
+          <div style={{ marginTop: 8 }}>If the customer is at a different branch, tap <b>Wrong store</b> and switch stores first — otherwise the stock ships to the wrong shop.</div>
+        </SkyConfirm>
       )}
-
-      {/* "Shop stock · view only" card REMOVED from the assistant view (owner
-          decision 2026-07-16). The ShopStockPanel/ShopStockList components are
-          kept intact above in case the card returns elsewhere. */}
-
-      {/* PLACE ORDER HERO */}
-      <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>
-        <img src="/hero/place-order.jpg" alt="Place Order" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
-        <div style={{ position:"absolute", inset:0, background:"linear-gradient(to right,rgba(0,0,0,.3),transparent 30%,transparent 60%,rgba(0,0,0,.3))" }}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:50, background:"linear-gradient(transparent,#000)" }}/>
-        <div style={{ position:"absolute", top:0, left:0, right:0, height:30, background:"linear-gradient(#000,transparent)" }}/>
-      </div>
-      <div style={{ fontSize:14, color:"rgba(255,255,255,.35)", padding:"2px 14px 14px" }}>Tap a product to add it to the cart</div>
-
-      <div style={{ padding:"0 13px" }}>
-      {/* ── Confirmation banner ── */}
-      {lastOrders.length > 0 && (() => {
-        // Clothing now appears in both flows, so key the headline off the
-        // refill marker rather than productType (customer clothing → Hub C
-        // reads as a normal customer order).
-        const isRefill = lastOrders[0].customerName === "Shop Refill";
-        const headline = isRefill
-          ? `Refill request placed — ${lastOrders.length} line${lastOrders.length > 1 ? "s" : ""}`
-          : `${lastOrders.length} order${lastOrders.length > 1 ? "s" : ""} placed for ${lastOrders[0].customerName}`;
-        return (
-          <div style={{ background:"rgba(0,150,70,.1)", border:"1px solid rgba(0,150,70,.3)", borderRadius:RADIUS, padding:"1.25rem", marginBottom:"1.5rem", display:"flex", alignItems:"flex-start", gap:"1rem" }}>
-            <div style={{ flex:1 }}>
-              <div style={{ color:"#4ADE80", fontWeight:"600", marginBottom:"0.3rem", fontSize:"0.9rem" }}>
-                {headline}
-              </div>
-              {lastOrders.map(o => (
-                <div key={o.id} style={{ color:"#888", fontSize:"0.82rem" }}>
-                  <strong style={{ color:"#ccc" }}>#{o.id}</strong> — {o.productName}{o.size ? ` Sz ${formatSize(o.size)}` : ""}{o.qty && o.qty > 1 ? ` × ${o.qty}` : ""}
-                </div>
-              ))}
-            </div>
-            <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:8 }}>
-              <button onClick={() => setLastOrders([])} style={{ background:"transparent", border:"none", color:"#555", cursor:"pointer", fontSize:"1rem" }}>✕</button>
-              {/* Reprint the slip if the auto-print was dismissed or failed — the
-                  only recovery path for a physical hand-to-customer receipt.
-                  Desktop-only, matching the auto-print: no thermal printer on phones. */}
-              {isDesktop && !isRefill && (
-                <button onClick={() => printOrderSlips(lastOrders).catch(err => console.warn("reprint slip failed:", err))}
-                        title="Reprint the order slip"
-                        style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"#cfd6e4", cursor:"pointer", fontSize:"0.72rem", fontFamily:FONT, padding:"5px 10px", whiteSpace:"nowrap" }}>
-                  🖨 Reprint slip
-                </button>
-              )}
-            </div>
-          </div>
-        );
-      })()}
 
       {/* "Track requests" (refill tracking) button REMOVED from the assistant
           view (owner decision 2026-07-16) — the engine's refill requests are
@@ -11976,20 +11882,6 @@ function AssistantView({ products, onExit, orders = [] }) {
           below the screen is now the single cart trigger. Sneaker users still
           see the cart review inside the Checkout sheet. */}
 
-      {/* SEARCH BAR — desktop has its own in the workspace top bar. */}
-      <div style={{ paddingBottom:14, display: isDesktop ? "none" : undefined }}>
-        <div style={{ background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.3)", borderRadius:22, padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" stroke="rgba(255,255,255,.35)" fill="none" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products..." style={{ background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:14, flex:1 }}/>
-          <button type="button" onClick={() => setLabelFinderOpen(true)} title="Find by the tongue label"
-            aria-label="Find by the tongue label"
-            style={{ background:"rgba(74,127,255,.12)", border:"1px solid rgba(74,127,255,.3)", color:"#9DBCFF",
-                     borderRadius:14, minWidth:40, minHeight:34, fontSize:15, cursor:"pointer", flexShrink:0 }}>
-            📷
-          </button>
-        </div>
-      </div>
-
       {/* PRODUCT GRID — Sneakers AND clothing-for-customer use the 2-col
           tappable photo grid + size-picker sheet. CR (Clothing Refill) uses the
           1-col bulk list with inline qty steppers per size.
@@ -11998,122 +11890,53 @@ function AssistantView({ products, onExit, orders = [] }) {
           invisible cards re-rendering behind the workspace on each keystroke.
           The sheets below (size picker, checkout, lightbox) are shared and still
           render for both. */}
-      {isDesktop ? null : filtered.length === 0 ? (
-        <div style={{ textAlign:"center", color:"#444", padding:"3rem 1rem", fontSize:14 }}>
-          {wantsClothing
-            ? "No clothing products yet. Add one from Admin."
-            : "No products match your search."}
+      {isDesktop || !isRefillMode ? null : filtered.length === 0 ? (
+        <div className="sky-panel sky-glass sky-glass--soft" style={{ textAlign:"center", margin:"18px 13px 0", fontSize:14, fontWeight:600 }}>
+          No clothing products yet. Add one from Admin.
         </div>
-      ) : isRefillMode ? (
+      ) : (
         // Responsive: 1 column on a phone, 2 on iPad (see .mc-grid-refill above).
-        <div className="mc-grid-refill" style={{ display:"grid", gap:10 }}>
+        <div className="mc-grid-refill" style={{ display:"grid", gap:10, padding:"18px 13px 0" }}>
           {filtered.map(p => (
             <ClothingCard key={p.id} product={p} onAdd={addClothingLines} onViewPhoto={setFullPhoto} allProducts={products} />
           ))}
         </div>
-      ) : (
-        // Responsive: 2 columns on a phone, 5 on iPad (see .mc-grid-photo above).
-        <div className="mc-grid-photo" style={{ display:"grid", gap:10 }}>
-          {filtered.map(p => {
-            const isSel = selected && selected.id === p.id;
-            // Every size out at this shop's own hub (Pine / Concrete only —
-            // always false for Marathon PE / Trophy; see unavailableIds).
-            const unavail = unavailableIds.has(p.id);
-            return (
-              <div key={p.id} onClick={() => { resetSheet(); setSelected(p); }}
-                   style={{ background: isSel ? "rgba(20,40,100,.25)" : "rgba(255,255,255,.03)",
-                            border: isSel ? "2px solid #4A7FFF" : "1px solid rgba(255,255,255,.06)",
-                            borderRadius:12, overflow:"hidden", cursor:"pointer", position:"relative",
-                            boxShadow: isSel ? "0 0 16px rgba(60,110,255,.2)" : "none" }}>
-                <div style={{ width:"100%", height:140, position:"relative", background: isSel ? "rgba(60,110,255,.05)" : "rgba(255,255,255,.05)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:52 }}>
-                  {/* contain (was cover): photos are mostly 3:4 portrait — cover
-                      cropped ~45% of the shoe in this 140px-tall box on phone
-                      and tablet too, not just the desktop grid. */}
-                  {p.photoUrl
-                    ? <PrimaryPhoto product={p} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain", ...(unavail ? { opacity:.38 } : null) }}/>
-                    : <span>{p.photo}</span>}
-                  {unavail && (
-                    <span data-testid="card-unavailable" style={{ position:"absolute", bottom:8, right:8, background:"rgba(20,14,4,.82)", border:"1px solid rgba(255,170,40,.5)", color:"#FFC46B", fontSize:11, fontWeight:800, letterSpacing:".04em", padding:"3px 8px", borderRadius:999 }}>
-                      UNAVAILABLE
-                    </span>
-                  )}
-                  {/* View full photo(s) — opens the gallery viewer (primary + extra
-                      angles) without triggering the card's add-to-cart tap. */}
-                  {p.photoUrl && (
-                    <button onClick={(e) => { e.stopPropagation(); setFullPhoto(productPhotos(p)); }}
-                      title={p.gallery?.length ? `View ${productPhotos(p).length} photos` : "View full photo"}
-                      style={{ position:"absolute", top:8, right:8, width:30, height:30, borderRadius:8, border:"none", cursor:"pointer",
-                               background:"rgba(0,0,0,.55)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
-                    </button>
-                  )}
-                  {p.gallery?.length > 0 && (
-                    <span style={{ position:"absolute", bottom:8, left:8, display:"inline-flex", alignItems:"center", gap:4, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:11, fontWeight:600, padding:"3px 8px", borderRadius:999 }}>
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-                      {productPhotos(p).length}
-                    </span>
-                  )}
-                </div>
-                {/* ADMIN ACTIONS ON THE CARD ITSELF (owner spec 2026-08-31):
-                    deactivate / reactivate / merge, right where the product is
-                    seen. Renders nothing for a non-admin. */}
-                <ProductActionsButton product={p} products={products}
-                                      style={{ position:"absolute", top:8, left:8, zIndex:2 }} />
-                <div style={{ padding:"12px 13px 14px" }}>
-                  <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>
-                    {p.name}{isDeactivated(p) && <DeactivatedChip small />}
-                  </div>
-                  {typeof p.retailPrice === "number" && p.retailPrice > 0 ? (
-                    <div className="mc-price-siri" style={{ fontSize:16, fontWeight:800, marginBottom:4, width:"fit-content" }}>
-                      R{p.retailPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>
-                  )}
-                  <div style={{ fontSize:13, fontWeight:500, color: deadForOrder(p) ? "#B9C0D4" : unavail ? "#FFC46B" : "#4A7FFF" }}>
-                    {deadForOrder(p) ? "Deactivated — no sizes on offer" : unavail ? ((p.productType || "sneaker") === "clothing" ? "No sizes right now" : "Tap for similar →") : "Tap to add →"}
-                  </div>
-                </div>
-                <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
-                              background: isSel ? "rgba(60,110,255,.2)" : "rgba(60,110,255,.1)",
-                              border: isSel ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.3)",
-                              borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", color:"#4A7FFF", fontSize:16, fontWeight:600 }}>+</div>
-              </div>
-            );
-          })}
-        </div>
       )}
-      <div style={{ height:20 }}/>
-      </div>
 
-      {/* ── Size picker bottom sheet ── */}
+      {/* ── Size picker: THE BOTTOM SHEET (Junid, 6 Nov — SkySheet) ──
+          The grid dims and blurs behind; a solid glass sheet slides up with a
+          handle and a close button; drag down, close, Escape or a tap on the
+          dimmed area all call resetSheet — the same reset as before. */}
       {selected && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000 }}>
-          <div style={sheetStyle}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.5rem" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
-                {selected.photoUrl
-                  ? <div style={{ position:"relative" }}>
-                      <PrimaryPhoto product={selected} alt={selected.name} onClick={() => setFullPhoto(productPhotos(selected))}
-                           title={selected.gallery?.length ? `View ${productPhotos(selected).length} photos` : "View full photo"}
-                           style={{ width:"56px", height:"56px", objectFit:"cover", borderRadius:RADIUS, cursor:"zoom-in" }} />
-                      {selected.gallery?.length > 0 && (
-                        <span style={{ position:"absolute", bottom:-4, right:-4, background:"#4A7FFF", color:"#fff", fontSize:10, fontWeight:700, padding:"1px 6px", borderRadius:999, border:"2px solid #0b0e18" }}>{productPhotos(selected).length}</span>
-                      )}
-                    </div>
-                  : <div style={{ fontSize:"2.8rem" }}>{selected.photo}</div>}
-                <div>
-                  <div style={{ fontWeight:"700", fontSize:"1.05rem" }}>{selected.name}
-                    {isDeactivated(selected) && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, letterSpacing: ".06em", padding: "2px 6px", borderRadius: 6, background: "rgba(150,160,190,.2)", border: "1px solid rgba(150,160,190,.45)", color: "#7A8194", verticalAlign: "middle" }}>DEACTIVATED</span>}
-                  </div>
-                  <div style={{ color:"#555", fontSize:"0.8rem" }}>{selected.category}</div>
-                </div>
-              </div>
-              <button onClick={resetSheet}
-                style={{ ...bGray, borderRadius:"50%", width:"32px", height:"32px", padding:0, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
-            </div>
+        <SkySheet onClose={resetSheet} label={selected.name} testId="phone-popup">
+            {/* The shoe floating on the left; name, W-code and hub chips, price
+                on the right; the admin actions (moved off the tiles) by close. */}
+            <SkySheetHead p={selected} onClose={resetSheet}
+              onPhoto={selected.photoUrl ? () => setFullPhoto(productPhotos(selected)) : null}
+              photoTitle={selected.gallery?.length ? `View ${productPhotos(selected).length} photos` : "View full photo"}
+              photoCount={selected.gallery?.length > 0 ? productPhotos(selected).length : 0}
+              badge={isDeactivated(selected) ? <span className="sky-sheet__dead">DEACTIVATED</span> : null}
+              chips={[
+                selected.styleCode || null,
+                (() => {
+                  const clothing = (selected.productType || "sneaker") === "clothing";
+                  return (clothing ? clothingHubLabelOf(selected.id) : hubLabelForSize(selected, pendingSize)) || null;
+                })(),
+                !selected.styleCode && selected.category ? selected.category : null,
+              ]}
+              price={typeof selected.retailPrice === "number" && selected.retailPrice > 0
+                ? fmtR(selected.retailPrice)
+                : <span className="sky-sheet__noprice">No price set</span>}
+              actions={<ProductActionsButton product={selected} products={products} />} />
 
-            <div style={{ color:"#888", fontSize:"0.75rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Select Size</div>
+            <div className="sky-sheet__lab">Size</div>
+            {/* Long-press a size: its on-hand count (counts are hidden on the pills). */}
+            {peekSize && (() => {
+              const n = sizeOnHand(selected, peekSize.size, (selected.productType || "sneaker") === "clothing");
+              return Number.isFinite(n)
+                ? <div className="sky-sheet__peek" role="status" data-testid="size-peek">Size {formatSize(peekSize.size)} · {Math.max(0, n)} on hand</div>
+                : null;
+            })()}
             {/* Inline availability note — shows ABOVE the size row when a
                 greyed (zero-at-hub) size is tapped or an Add asks for more
                 than the hub can still cover. Live: it recomputes remaining
@@ -12176,7 +11999,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                 {unavailableHintFor(selected)}
               </div>
             )}
-            <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
+            <div className="sky-szgrid" style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
               {selectedSizes.map(s => {
                 // Clothing sizes the serving hub has ZERO of are greyed out and
                 // not selectable — tapping one raises the note above instead of
@@ -12209,8 +12032,12 @@ function AssistantView({ products, onExit, orders = [] }) {
                   // No `disabled` on a ✕ tile: the tap must land so it can
                   // raise the why-note below (selection is still blocked by
                   // the `out` guard in the handler). aria keeps the truth.
-                  <button key={s} aria-disabled={out && pendingSize !== s}
+                  <button key={s} aria-disabled={out && pendingSize !== s} aria-pressed={pendingSize === s} className="sky-szq"
+                    onPointerDown={() => startSizePeek(s)} onPointerUp={endSizePeek} onPointerLeave={endSizePeek} onPointerCancel={endSizePeek}
+                    onContextMenu={(e) => e.preventDefault()}
                     onClick={() => {
+                      // A long press only shows the count; it never selects.
+                      if (sizePeekFired.current) { sizePeekFired.current = false; return; }
                       // Tapping the ALREADY-SELECTED size deselects it — a
                       // mis-tapped size was otherwise stuck (owner bug report
                       // 2026-08-26; it matters most on a size-optional Display
@@ -12239,7 +12066,12 @@ function AssistantView({ products, onExit, orders = [] }) {
                       // ONE STYLE FOR EVERY AVAILABLE CHIP — marked or not.
                       // The glyph is the whole difference.
                       : phoneSizeChipStyle({ out: false, selected: pendingSize === s })}>
-                    <SizeTag size={s} />{snkOut ? <span className="sr-only" style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
+                    <SizeTag size={s} />{(() => {
+                      // On-hand at the serving hub, read off the cells this
+                      // screen already streams. Display only; gates nothing.
+                      const n = sizeOnHand(selected, s, clothing);
+                      return Number.isFinite(n) ? <span className="sky-szq__n" data-contrast-check="">{Math.max(0, n)}</span> : null;
+                    })()}{snkOut ? <span className="sr-only" style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                     {dispInfo ? (
                       <span aria-label="this size is on a display" style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.75)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
@@ -12252,34 +12084,28 @@ function AssistantView({ products, onExit, orders = [] }) {
 
             {/* Quantity stepper — same-size, multiple-pair shortcut. Pushes
                 N identical cart lines on Add to Cart (one box per pair). */}
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.25rem", padding:"4px 0" }}>
-              <div style={{ color:"#ccc", fontSize:"0.95rem", fontWeight:600 }}>Quantity</div>
-              <div style={{ display:"flex", alignItems:"center", gap:"0.5rem" }}>
-                <button onClick={() => setPendingQty(q => Math.max(1, q - 1))} disabled={pendingQty <= 1}
-                        style={{ width:36, height:36, borderRadius:10, border:"1px solid rgba(60,110,255,.25)", background:"rgba(60,110,255,.08)", color: pendingQty <= 1 ? "rgba(255,255,255,.25)" : "#4A7FFF", fontSize:18, fontWeight:700, cursor: pendingQty <= 1 ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>−</button>
-                <div style={{ minWidth:34, textAlign:"center", color:"#fff", fontSize:"1.05rem", fontWeight:700, fontVariantNumeric:"tabular-nums" }}>{pendingQty}</div>
-                <button onClick={() => setPendingQty(q => Math.min(10, q + 1))} disabled={pendingQty >= 10}
-                        style={{ width:36, height:36, borderRadius:10, border:"1px solid rgba(60,110,255,.35)", background:"rgba(60,110,255,.12)", color: pendingQty >= 10 ? "rgba(255,255,255,.25)" : "#4A7FFF", fontSize:18, fontWeight:700, cursor: pendingQty >= 10 ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>+</button>
-              </div>
-            </div>
+            <SkyStepperRow value={pendingQty}
+              onDec={() => setPendingQty(q => Math.max(1, q - 1))} decDisabled={pendingQty <= 1}
+              onInc={() => setPendingQty(q => Math.min(10, q + 1))} incDisabled={pendingQty >= 10} />
 
             {/* Display Partner request — sneakers only (it routes to Hub 1, which
                 clothing can't use). Hidden for clothing customer orders. */}
             {(selected.productType || "sneaker") !== "clothing" && (
-            <div style={{ marginBottom:"1.25rem" }}>
-              <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
-              <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
-                <button onClick={() => {
+            // The Display Partner (Optional) ROW with a chevron (Junid, 6 Nov) —
+            // the same toggle, the same flag; pressed, it reads "Requested ✓".
+            <button type="button" className="sky-sheet__dp" aria-pressed={pendingDisplayPartner} data-contrast-exempt=""
+              onClick={() => {
                   setPendingDisplayPartner(v => !v);
                   // Partner mode lifts every ✕ — a lingering "can't be
                   // ordered" note would contradict the now-selectable tiles.
                   setNaNote(null);
-                }}
-                  style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
-                  Request Display Partner
-                </button>
-              </div>
-            </div>
+                }}>
+              <span className="sky-sheet__dpt">Display Partner <em>(Optional)</em>
+                <small>{pendingDisplayPartner ? "Requested — tap to cancel" : "Request Display Partner"}</small></span>
+              {pendingDisplayPartner
+                ? <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                : <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>}
+            </button>
             )}
 
             {(() => {
@@ -12298,7 +12124,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                       : `Add Size ${formatSize(pendingSize)} to Cart`)
                   : ((selected.productType || "sneaker") === "clothing" ? "Select a size" : "Select a size or display option");
               return (
-                <button onClick={addToCart} disabled={!canAdd}
+                <button onClick={addToCart} disabled={!canAdd} className="sky-primary sky-sheet__add"
                   style={{ width:"100%", ...bBlue, borderRadius:"10px", padding:"0.9rem", fontSize:"1rem", marginBottom:"0.65rem", opacity:canAdd?1:0.4, cursor:canAdd?"pointer":"not-allowed" }}>
                   {btnLabel}
                 </button>
@@ -12307,14 +12133,14 @@ function AssistantView({ products, onExit, orders = [] }) {
 
             {cart.length > 0 && (
               <button onClick={() => { resetSheet(); (hasCustomerInCart ? openCheckout() : placeRefillRequests()); }}
+                className="sky-secondary"
                 style={{ width:"100%", ...bGhost, borderRadius:"10px", padding:"0.75rem", fontSize:"0.95rem" }}>
                 {hasCustomerInCart
                   ? `Checkout (${customerCount} item${customerCount > 1 ? "s" : ""}) →`
                   : `Place Refill Request (${refillCount} item${refillCount > 1 ? "s" : ""}) →`}
               </button>
             )}
-          </div>
-        </div>
+        </SkySheet>
       )}
 
       {/* ── Checkout bottom sheet ── */}
@@ -12440,43 +12266,31 @@ function AssistantView({ products, onExit, orders = [] }) {
       {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
 
       {/* ── Phase 12B: Floating cart trigger ── (desktop has its own drawer) */}
-      {cart.length > 0 && !checkoutOpen && !selected && !isDesktop && (
-        <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px 14px", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
-          <div style={{ maxWidth:880, margin:"0 auto", pointerEvents:"auto" }}>
+      {/* THE GLASS CART BAR (design/assistant-phone.png): cart icon, item count
+          and the order button — a slim bar that appears only once something
+          is in the cart (Junid 5 Nov). Same button, same handler as the old
+          floating bar: checkout, or (a refill-only cart) place the refill request. */}
+      {!checkoutOpen && !selected && !isDesktop && cart.length > 0 && (
+        <div className="sky-bottombar sky-glass sky-sheen" data-testid="sky-cartbar">
+          <IconCart width={22} height={22} />
+          <span className="sky-bottombar__div" aria-hidden="true" />
+          <span style={{ fontSize:14, fontWeight:800 }}>{hasCustomerInCart ? customerCount : cart.length} item{(hasCustomerInCart ? customerCount : cart.length) === 1 ? "" : "s"}</span>
             <button
               onClick={hasCustomerInCart ? openCheckout : () => placeRefillRequests()}
-              disabled={submitting}
-              style={{ width:"100%", padding:"13px 16px", borderRadius:12, border:"1px solid rgba(60,110,255,.55)",
-                       background:"#4A7FFF", color:"#fff",
-                       fontSize:14, fontWeight:700, cursor:"pointer",
-                       display:"flex", alignItems:"center", justifyContent:"center", gap:8,
-                       boxShadow:"0 4px 20px rgba(60,110,255,.45)",
-                       opacity: submitting ? 0.7 : 1 }}>
+              disabled={submitting || cart.length === 0}
+              className="sky-bottombar__cta sky-solid">
               <span>
                 {submitting
                   ? (hasCustomerInCart ? "Placing orders…" : "Placing refill…")
-                  : (hasCustomerInCart
-                      ? `Checkout (${customerCount})`
+                  : (hasCustomerInCart || cart.length === 0
+                      ? "View order"
                       : `Place Refill Request (${refillCount})${singleShop ? "" : ` · ${labelFor(effectiveShop, shopRegistry)}`}`)
                 }
               </span>
-              <span style={{ fontSize:16 }}>→</span>
             </button>
-          </div>
         </div>
       )}
 
-      {/* ── Scroll-to-top FAB ── appears after scrolling down; one tap returns
-          to the search box. Sits above the floating cart bar when it's shown. */}
-      {showScrollTop && !isDesktop && (
-        <button onClick={scrollToTop} aria-label="Scroll to top"
-          style={{ position:"fixed", right:16, bottom: cart.length > 0 && !checkoutOpen && !selected ? 92 : 24, zIndex:60,
-                   width:46, height:46, borderRadius:"50%", cursor:"pointer",
-                   background:"#4A7FFF", border:"1px solid rgba(60,110,255,.55)", color:"#fff",
-                   boxShadow:"0 4px 16px rgba(0,0,0,.45)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-        </button>
-      )}
     </div>
   );
 }
@@ -14025,11 +13839,11 @@ function WarehouseView({ products = [], orders, onExit }) {
       {mainTab === "queue" && (
         <>
           {/* PILLS */}
-          <div style={{ display:"flex", gap:7, padding:"0 13px 12px", overflowX:"auto", scrollbarWidth:"none" }}>
+          <div className="wh-chips" style={{ display:"flex", gap:7, padding:"0 13px 12px", overflowX:"auto", scrollbarWidth:"none" }}>
             {queueFilters.map(t => {
               const on = filter === t.key;
               return (
-                <div key={t.key} onClick={() => setFilter(t.key)}
+                <div key={t.key} onClick={() => setFilter(t.key)} className="wh-chip" data-on={on ? "" : undefined}
                      style={{ padding:"6px 14px", borderRadius:20, fontSize:12, fontWeight:600, whiteSpace:"nowrap", cursor:"pointer", display:"flex", alignItems:"center", gap:5,
                               background: on ? "rgba(60,110,255,.12)" : "rgba(6,9,20,1)",
                               border:"1px solid " + (on ? "rgba(60,110,255,.4)" : "rgba(255,255,255,.07)"),
@@ -14311,13 +14125,13 @@ function WarehouseView({ products = [], orders, onExit }) {
                       {displayPairBanner}
                       {!pickerOpen ? (
                         // 2×2 action grid — Sent / OOS on top row, Tomorrow / Substitute on bottom.
-                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-                          <button onClick={() => markSentAndPrint(order)}
+                        <div className="wh-actgrid" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                          <button onClick={() => markSentAndPrint(order)} className="wh-act--sent"
                                   style={{ padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.3)", color:"#4ACA7A" }}>
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                             Mark as Sent
                           </button>
-                          <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)}
+                          <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)} className="wh-act--oos"
                                   style={{ padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B" }}>
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                             Mark as Out of Stock
@@ -14472,7 +14286,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         )}
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -14529,7 +14343,8 @@ function WarehouseView({ products = [], orders, onExit }) {
 
 
   return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+    <div className="wh-sky" style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      <style>{WAREHOUSE_SKY_CSS}</style>
       {/* What was just sent — visible for a few seconds after the card leaves,
           so the operator can SEE what they did (owner fix 2026-08-06). */}
       {sentBanner && (
@@ -14549,59 +14364,13 @@ function WarehouseView({ products = [], orders, onExit }) {
           {printToast.text}
         </div>
       )}
-      {/* TOP BAR */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
-        <div onClick={onExit}
-             style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>
-          ← Switch View
-        </div>
-        <div style={{ textAlign:"center" }}>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-          <div style={{ fontSize:15, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>WAREHOUSE</div>
-        </div>
-        <div style={{ background:"rgba(20,40,100,.6)", border:"1px solid rgba(60,110,255,.35)", borderRadius:12, padding:"7px 12px", display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
-          <div style={{ width:7, height:7, background:"#4A7FFF", borderRadius:"50%", boxShadow:"0 0 6px rgba(60,110,255,.8)" }}/>
-          <div>
-            <div style={{ fontSize:14, fontWeight:700, color:"#fff", lineHeight:1 }}>{incomingCount}</div>
-            <div style={{ fontSize:9, color:"rgba(255,255,255,.5)" }}>incoming</div>
-          </div>
-          <span style={{ color:"#4A7FFF", fontSize:13 }}>›</span>
-        </div>
-      </div>
-
-      {/* CIRCUIT LINE */}
-      <div style={{ height:20, padding:"0 14px", margin:"4px 0 2px", overflow:"hidden" }}>
-        <svg width="100%" height="100%" viewBox="0 0 400 20" preserveAspectRatio="none">
-          <path d="M0,10 L60,10 L80,3 L140,3 L160,10 L220,10 L240,17 L300,17 L320,10 L400,10" stroke="rgba(60,110,255,.4)" strokeWidth="1" fill="none" strokeLinecap="round"/>
-          <circle cx="80" cy="3" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="160" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="240" cy="17" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="320" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
-        </svg>
-      </div>
-
-      {/* WAREHOUSE QUEUE HERO IMAGE */}
-      <div style={{ position:"relative", width:"100%", height:130, overflow:"hidden", margin:"4px 0 0" }}>
-        <img src="/hero/warehouse.jpg" alt="Warehouse Queue" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:50, background:"linear-gradient(transparent,#000)" }}/>
-        <div style={{ position:"absolute", top:0, left:0, right:0, height:20, background:"linear-gradient(#000,transparent)" }}/>
-      </div>
-
-      {/* HUB ROW */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px 10px" }}>
-        <div style={{ background:"rgba(20,40,120,.5)", border:"1px solid rgba(60,110,255,.5)", borderRadius:10, padding:"7px 16px", color:"#4A7FFF", fontSize:13, fontWeight:700 }}>
-          {HUB_LABELS[selectedHub] || selectedHub}
-        </div>
-        <div onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }}
-             style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"7px 16px", color:"rgba(255,255,255,.7)", fontSize:12, fontWeight:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2">
-            <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/>
-          </svg>
-          Switch Hub
-        </div>
-      </div>
-
-      <div style={{ fontSize:12, color:"rgba(255,255,255,.3)", padding:"2px 14px 10px" }}>Update order status in real time.</div>
+      {/* THE SKY TOP BAND (Junid, 6 Nov): the header is the shell's (one header
+          per screen); this is the hub + Switch Hub, the live line and the tabs
+          as glass tiles. Same handlers: the Switch Hub reset and setMainTab over
+          tabDefs. */}
+      <WarehouseTop hubLabel={HUB_LABELS[selectedHub] || selectedHub}
+        tabs={tabDefs} tab={mainTab} onTab={setMainTab}
+        onSwitchHub={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }} />
 
       {/* ON HOLD CARD */}
       {onHoldCard}
@@ -14613,28 +14382,6 @@ function WarehouseView({ products = [], orders, onExit }) {
         <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
           onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
       )}
-
-      {/* TABS — same hub→tabs wiring as the desktop rail; tabDefs is the single
-          source of truth (CR Orders on the CR hubs: hub2 for PE/Trophy, hub3 for
-          Pine — see CR_HUB_BY_UNIVERSE). Only the mobile chrome differs below. */}
-      <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
-        {tabDefs.map(([key, label, badge]) => (
-          <div key={key} onClick={() => setMainTab(key)}
-               style={{ flex:1, padding:"10px 6px", borderRadius:10, fontSize:11.5, fontWeight:600, textAlign:"center", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5,
-                        background: mainTab===key ? "rgba(60,110,255,.12)" : "rgba(6,9,20,1)",
-                        border: mainTab===key ? "1px solid rgba(60,110,255,.4)" : "1px solid rgba(255,255,255,.07)",
-                        color: mainTab===key ? "#4A7FFF" : "rgba(255,255,255,.3)" }}>
-            {key === "queue"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>}
-            {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
-            {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
-            {key === "layby"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/></svg>}
-            <span>{label}</span>
-            {badge != null && badge > 0 && (
-              <span style={{ background: mainTab===key ? "#F59E0B" : "rgba(245,158,11,.85)", color:"#000", fontSize:10, fontWeight:800, minWidth:18, height:18, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
-            )}
-          </div>
-        ))}
-      </div>
 
       {content}
     </div>
@@ -15455,7 +15202,7 @@ function CustomerView({ orders, onExit }) {
         <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <div style={{ padding: "22px 16px 12px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+              <div data-legacy-header="" style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
                 <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
                 <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
               </div>
@@ -15578,7 +15325,7 @@ function CustomerView({ orders, onExit }) {
 
       {/* Brand header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <div data-legacy-header="" style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
           <span style={{ fontSize: 20, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
           <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
         </div>
@@ -16917,6 +16664,71 @@ const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],.
 const SOURCE_SHOP_BY_TAB = Object.fromEntries(SOURCE_SHOP_TABS.map(([k, , loc]) => [k, loc]));
 const SOURCE_SHOP_LOCS = new Set(SOURCE_SHOP_TABS.map(([, , loc]) => loc));
 
+// ─── SOURCE, SKY (Junid 5 Nov mock-up) ───────────────────────────────────────
+// Scoped to .srcsky (the desktop Source shell). The rows are RefillQueue's own
+// markup, unchanged: a product card is the div holding [data-row] size lines;
+// its first child is the photo/name/age header. One-size cards put the size
+// line beside the header, as in the mock-up; more sizes stack under it on the
+// right; an open Fulfil panel takes the full card width.
+// Registry tabs (Hub 3, Pine, Concrete) have no SOURCE_TAB_ICON entry; the
+// sky rail draws one so every row has an icon, as in the mock-up.
+const SOURCE_SKY_FALLBACK_ICON = (label) => /pine/i.test(label)
+  ? <path d="M12 4l9 16H3z M8.5 20l3.5-6 3.5 6"/>
+  : /concrete/i.test(label)
+    ? <><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></>
+    : <><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9h18v2a3 3 0 01-6 0 3 3 0 01-6 0 3 3 0 01-6 0z"/><path d="M5 13v7h14v-7"/><path d="M10 20v-4h4v4"/></>;
+const SRC_ROW = 'html[data-sky="on"] #root .srcsky__list div:has(> [data-row])';
+const SOURCE_SKY_CSS = `
+.srcsky{display:grid;grid-template-columns:264px minmax(0,1fr);gap:0 54px;align-items:start;padding:22px 48px 48px;font-family:var(--sky-font);color:var(--sky-ink-deep);box-sizing:border-box}
+.srcsky *{box-sizing:border-box}
+.srcsky__glass{border-radius:26px;background:rgba(255,255,255,.34);border:1px solid rgba(255,255,255,.8);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 14px 34px rgba(10,60,140,.16);
+  -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
+.srcsky__side{position:sticky;top:16px;display:flex;flex-direction:column;gap:40px}
+.srcsky__rail{padding:18px 16px 22px;display:flex;flex-direction:column;gap:4px}
+html[data-sky="on"] #root .srcsky button.srcsky__exit{display:flex;align-items:center;gap:12px;width:100%;height:46px;padding:0 18px;margin-bottom:14px;border:0!important;border-bottom:1px solid rgba(11,42,82,.18)!important;border-radius:0;background:none!important;color:var(--sky-ink-deep)!important;font:500 17px/1 var(--sky-font);cursor:pointer}
+.srcsky__lab{padding:14px 18px 10px;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sky-ink-deep)}
+html[data-sky="on"] #root .srcsky button.srcsky__nav{display:flex;align-items:center;gap:14px;width:100%;min-height:46px;padding:6px 8px 6px 16px;border-radius:14px;border:1px solid transparent!important;background:none!important;color:var(--sky-ink-deep)!important;font:500 16px/1.2 var(--sky-font);text-align:left;cursor:pointer;transition:background .14s}
+html[data-sky="on"] #root .srcsky button.srcsky__nav:hover{background:rgba(255,255,255,.3)!important}
+html[data-sky="on"] #root .srcsky button.srcsky__nav[data-on="1"]{background:rgba(255,255,255,.55)!important;border-color:rgba(255,255,255,.9)!important;font-weight:600}
+.srcsky__navl{flex:1;min-width:0}
+.srcsky__bd{flex:0 0 auto;min-width:40px;height:32px;padding:0 9px;border-radius:999px;display:grid;place-items:center;background:rgba(255,255,255,.7);border:1px solid #fff;color:var(--sky-ink-deep);font-size:14.5px;font-weight:600;font-variant-numeric:tabular-nums}
+.srcsky__tot{display:flex;align-items:center;gap:20px;padding:20px 32px;color:var(--sky-ink-deep)}
+.srcsky__tot b{display:block;font-size:28px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.srcsky__tot span{display:block;margin-top:5px;font-size:13px;font-weight:500;letter-spacing:.03em;text-transform:uppercase}
+.srcsky__main{min-width:0;padding-top:6px}
+.srcsky__h1{margin:0;font-size:44px;font-weight:800;letter-spacing:-.02em;line-height:1.1;color:#fff;text-shadow:var(--sky-text-shadow)}
+.srcsky__sub{margin-top:6px;font-size:19px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow)}
+.srcsky__list{margin-top:30px;display:flex;flex-direction:column;gap:16px}
+html[data-sky="on"] #root .srcsky__list > div > button:not([aria-pressed]),
+html[data-sky="on"] #root .srcsky__list > div > div > button:first-child:not([aria-pressed]){color:#fff!important;text-shadow:var(--sky-text-shadow);font-size:14px!important;font-weight:600!important}
+html[data-sky="on"] #root .srcsky__list button[aria-pressed]{background:rgba(255,255,255,.3)!important;border:1px solid rgba(255,255,255,.8)!important;color:var(--sky-ink-deep)!important;border-radius:16px!important}
+html[data-sky="on"] #root .srcsky__list button[aria-pressed="true"]{background:rgba(255,255,255,.86)!important;font-weight:800!important}
+${SRC_ROW}{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:22px;row-gap:8px;
+  padding:13px 26px 13px 28px!important;border-radius:24px!important;background:rgba(255,255,255,.34)!important;border:1px solid rgba(255,255,255,.8)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 12px 30px rgba(10,60,140,.14)!important;
+  -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
+${SRC_ROW} > div:first-child{grid-column:1;gap:24px!important;min-width:0}
+${SRC_ROW} > div:first-child > img,
+${SRC_ROW} > div:first-child > span:first-child{width:70px!important;height:70px!important;border-radius:12px!important;background:#fff!important;box-shadow:0 4px 12px rgba(10,60,140,.16)}
+${SRC_ROW} > div:first-child > div > div:first-child{color:var(--sky-ink-deep)!important;font-size:17.5px!important;font-weight:700!important}
+${SRC_ROW} > div:first-child > div > div + div{color:var(--sky-ink)!important;font-size:15px!important;margin-top:4px!important}
+${SRC_ROW} > div:first-child > div + span{font-size:14px!important;font-weight:600!important;padding:6px 14px!important;gap:9px!important;background:rgba(255,255,255,.75)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important}
+${SRC_ROW} > div:first-child > div + span[style*="248, 113, 113"]{background:rgba(255,226,230,.92)!important;color:#b3121b!important}
+${SRC_ROW} > div:first-child > div + span[style*="251, 191, 36"]{background:rgba(255,240,205,.92)!important;color:#7a4b00!important}
+html[data-sky="on"] #root .srcsky__list [data-row]{grid-column:2;border-top:0!important;margin-top:0!important;padding-top:0!important}
+html[data-sky="on"] #root .srcsky__list [data-row]:has(> :nth-child(2)){grid-column:1 / -1;border-top:1px solid rgba(11,42,82,.1)!important;padding-top:12px!important}
+html[data-sky="on"] #root .srcsky__list [data-line-actions]{gap:18px!important;justify-content:flex-end}
+html[data-sky="on"] #root .srcsky__list [data-line-actions] > span:first-child{flex:0 1 auto!important}
+html[data-sky="on"] #root .srcsky__list [data-line-actions] > span:first-child,
+html[data-sky="on"] #root .srcsky__list [data-line-actions] > span:first-child *{color:var(--sky-ink-deep)!important}
+html[data-sky="on"] #root .srcsky__list.srcsky__list.srcsky__list [data-line-actions] > button[style]{min-height:52px!important;padding:0 26px!important;border-radius:16px!important;background:rgba(255,255,255,.45)!important;border:1px solid rgba(255,255,255,.9)!important;color:var(--sky-ink-deep)!important;font:500 16px/1 var(--sky-font)!important;box-shadow:inset 0 1px 0 #fff,0 6px 16px rgba(10,60,140,.1)}
+html[data-sky="on"] #root .srcsky__list.srcsky__list.srcsky__list [data-line-actions] > button[style]:hover{background:rgba(255,255,255,.7)!important}
+@media (max-width:1279px){.srcsky{grid-template-columns:236px minmax(0,1fr);gap:0 28px;padding:18px 24px 40px}.srcsky__h1{font-size:36px}
+  ${SRC_ROW}{grid-template-columns:minmax(0,1fr)}
+  html[data-sky="on"] #root .srcsky__list [data-row]{grid-column:1}}
+@media (prefers-reduced-motion:reduce){.srcsky *{transition:none!important}}
+`;
+
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [rawTab, setTab] = usePersistedTab("source", "hub1refill");
   // A device may carry a persisted tab key that no longer exists (today /
@@ -17429,49 +17241,41 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       // Per-hub pending work (sold cells + stragglers + open requests) on its hub tab.
       const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : sectionTabLoc[key] ? (hubBadges[sectionTabLoc[key]] || 0) : 0;
       return (
-        <button key={key} onClick={() => setTab(key)}
-          style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
-                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
-                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>{SOURCE_TAB_ICON[key]}</svg>
-          <span style={{ flex:1 }}>{label}</span>
-          {badge > 0 && (
-            <span style={{ background:"#F59E0B", color:"#000", fontSize:10.5, fontWeight:800, minWidth:19, height:19, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
-          )}
+        <button key={key} type="button" className="srcsky__nav" data-on={on ? "1" : undefined} aria-current={on ? "page" : undefined} onClick={() => setTab(key)}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{SOURCE_TAB_ICON[key] || SOURCE_SKY_FALLBACK_ICON(label)}</svg>
+          <span className="srcsky__navl">{label}</span>
+          {badge > 0 && <span className="srcsky__bd">{badge}</span>}
         </button>
       );
     };
+    // Sky shell (Junid 5 Nov mock-up, "this is the exact one I want for
+    // Source"): a glass rail (Exit, RESTOCK, the tabs with white count pills)
+    // and a glass "TO RESTOCK" total under it; the white heading on the sky
+    // and the SAME content (RefillQueue / RefillHistory, untouched) as glass
+    // rows. Presentation only: SOURCE_SKY_CSS restyles the rows by the data
+    // attributes RefillQueue already renders.
     return (
-      <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
-        {/* RAIL */}
-        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
-            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
-            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
-          </div>
-          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:8 }}>&larr; Exit</button>
-          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"6px 9px", fontWeight:700 }}>Restock</div>
-          {viewTabs.map(navItem)}
-          <div style={{ flex:1 }} />
-          <div style={{ display:"flex", gap:8 }}>
-            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
-              <div style={{ fontSize:18, fontWeight:800, color: totalPending ? "#9DBCFF" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{totalPending}</div>
-              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>To restock</div>
-            </div>
+      <div className="srcsky">
+        <style>{SOURCE_SKY_CSS}</style>
+        <aside className="srcsky__side">
+          <nav className="srcsky__rail srcsky__glass" aria-label="Restock">
+            <button type="button" className="srcsky__exit" onClick={onExit}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>
+              Exit
+            </button>
+            <div className="srcsky__lab">Restock</div>
+            {viewTabs.map(navItem)}
+          </nav>
+          <div className="srcsky__tot srcsky__glass">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>
+            <div><b>{totalPending}</b><span>To restock</span></div>
           </div>
         </aside>
-        {/* MAIN */}
-        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-          <div style={{ padding:"20px 30px 14px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
-            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{activeLabel}</div>
-            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>What sold &mdash; and what to restock.</div>
-          </div>
-          <div style={{ flex:1, overflow:"auto", padding:"14px 30px 48px" }}>
-            <div style={{ maxWidth:1160, margin:"0 auto", display:"flex", flexDirection:"column", gap:16 }}>
-              {content}
-            </div>
-          </div>
-        </div>
+        <main className="srcsky__main">
+          <h1 className="srcsky__h1" data-contrast-exempt="">{activeLabel}</h1>
+          <div className="srcsky__sub" data-contrast-exempt="">What sold &mdash; and what to restock.</div>
+          <div className="srcsky__list">{content}</div>
+        </main>
       </div>
     );
   }
@@ -17810,7 +17614,7 @@ function ReturnsView({ orders, products = [], onExit }) {
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -19830,7 +19634,7 @@ function InsightsView({ onExit }) {
     return (
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 6px" }}>
+          <div data-legacy-header="" style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 6px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
             <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
           </div>
@@ -20864,7 +20668,7 @@ function AppInner() {
   // store-scoped display_checks grant). Used both to guard a stale persisted role
   // and to mount the view. Dark by default (master flag off).
   const displayChecksRouteOpen = displayChecksVisibleForViewer(
-    { email: authUser?.email, permissions: permRecord?.permissions, destShop: permRecord?.destShop },
+    { uid: authUser?.uid, email: authUser?.email, permissions: permRecord?.permissions, destShop: permRecord?.destShop },
     isSuperAdmin ? null : (permRecord?.destShop || null)
   );
   // Stock access is gated by stockRole, NOT an app permission, so warehouse seed
@@ -20956,6 +20760,15 @@ function AppInner() {
   // cleanup it did now lives in HomeSignOutRow, the app's one logout.
 
   const [role, setRole] = useState(() => localStorage.getItem("marathon_role") || null);
+  // THE ADMIN DESIGN SYSTEM (src/styles/sky-admin.css) is on while an admin
+  // screen is open: Admin (every section + product edit), Shopify publishing,
+  // Social, AI Studio, TV Ad and the #admin/… cards. Look only.
+  const skyAdmin = isAdminDesignScreen(role, hash);
+  useEffect(() => {
+    const el = document.documentElement;
+    if (skyAdmin) el.dataset.skyAdmin = "on"; else delete el.dataset.skyAdmin;
+    return () => { delete el.dataset.skyAdmin; };
+  }, [skyAdmin]);
   useEffect(() => {
     if (role) localStorage.setItem("marathon_role", role);
     else localStorage.removeItem("marathon_role");
@@ -21431,7 +21244,26 @@ function AppInner() {
           consumer unmounts so the 18.73 MB is not held on a tablet that has
           moved on. See src/insights/InsightsLogProvider.jsx. */}
       <InsightsLogProvider authReady={insightsAuthReady}>
-        <AppErrorBoundary key={role || "home"}>{view}</AppErrorBoundary>
+        <AppErrorBoundary key={role || "home"}>
+          {/* THE SKY HEADER ON EVERY SCREEN (design/DNA.md): grid = home, the
+              wordmark, and a pill naming the screen. Home and the order view
+              draw their own (they have reference images); the customer TV
+              board has its own world and none. */}
+          {view && view.type !== RoleSelector && role !== ROLES.ASSISTANT && role !== ROLES.DISPLAY && (
+            <SkyShellHeader tag={skyScreenTag(role, hash)} sticky={role !== ROLES.BARCODES}
+                            backLabel={parentOf({ role, hash }).label}
+                            onBack={() => {
+                              // Up ONE level in the route hierarchy (skyNav.js), not
+                              // browser history: an item → its list; a card → Admin.
+                              const up = parentOf({ role, hash: window.location.hash });
+                              if (up.level === "card") { window.location.hash = up.hash; return; }
+                              requestHomePanel(up.panel);
+                              setRole(null); if (window.location.hash) window.location.hash = "";
+                            }}
+                            onHome={() => { requestHomePanel(null); setRole(null); if (window.location.hash) window.location.hash = ""; }} />
+          )}
+          {view}
+        </AppErrorBoundary>
       </InsightsLogProvider>
     </>
   );
@@ -21493,6 +21325,9 @@ const VOICE_VOCAB = {
 };
 
 function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
+  // The customer board keeps its own world (background manager #724): the sky
+  // room and the global glass layer step aside while it is up.
+  useSkyOff();
   // The customer pickup board shows REAL customer orders only. "Shop Refill"
   // rows are internal clothing-refill (CR) requests that live in the SAME
   // /orders node — the warehouse Order Queue already excludes them (see the
