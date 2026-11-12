@@ -306,9 +306,9 @@ const EXTRACTION_SCHEMA = {
 // ── GATE — the card_recon permission flag (photo_generation pattern) ─────────
 // FAIL CLOSED: an RTDB read error refuses. Reads the SAME scalar the client
 // tile gate mirrors (permFlagsFor in src/components/permissionCatalog.js).
-const { isSuperAdmin } = require("../lib/super-admins.cjs"); // Junid and Jafer
+const { isSuperAdminToken } = require("../lib/super-admins.cjs"); // Junid and Jafer, verified email only
 async function assertCardRecon(request, db = null) {
-  if (isSuperAdmin(request.auth?.token?.email)) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
@@ -342,7 +342,7 @@ async function assertCardRecon(request, db = null) {
 // identity (the poller's), gated by assertEmailIntake.
 async function sectionRefusalFor(db, request, picked, terminal) {
   const token = request.auth?.token || {};
-  if (isSuperAdmin(token.email)) return null;
+  if (isSuperAdminToken(token)) return null;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let sections;
@@ -364,7 +364,7 @@ async function sectionRefusalFor(db, request, picked, terminal) {
 // who can capture a slip from a phone. One identity holds it — the poller's —
 // and it is data, so revoking it is a rules-free edit rather than a redeploy.
 async function assertEmailIntake(request, db = null) {
-  if (isSuperAdmin(request.auth?.token?.email)) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   // assertCardRecon has already refused an unauthenticated call, so this cannot
   // be reached without a uid — and it does not depend on that being true, since
@@ -390,7 +390,7 @@ async function assertEmailIntake(request, db = null) {
 // FAIL CLOSED, like the gates above: a scope that cannot be read refuses.
 // Junid passes, as he does every other gate here.
 async function slipScopeAllowsNow(db, request, terminal, nowMs) {
-  if (isSuperAdmin(request.auth?.token?.email)) return true;
+  if (isSuperAdminToken(request.auth?.token)) return true;
   const uid = request.auth?.uid;
   if (!uid) return false;
   let raw;
