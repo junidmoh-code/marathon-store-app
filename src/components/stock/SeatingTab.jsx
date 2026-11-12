@@ -42,7 +42,6 @@ import CameraScanner from "./CameraScanner";
 import { FONT, GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGhost, bGray, input } from "./ui";
 import SeatingActions from "./SeatingActions";
 import { readSeatingContext } from "./seatingStore";
-import { DIVISION_HUB, isDivisionFootwear } from "./concreteDivision";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found",
 // not a mis-pathed read. (Mirrors Transfer.jsx's lookupBarcode.)
@@ -199,7 +198,7 @@ export default function SeatingTab({ products, viewer, flash }) {
 
   const full = useMemo(() => {
     if (!ctx || !product) return null;
-    return { products: byId, stock: ctx.stock, targets: ctx.targets, config: engineConfig, hub3Owner: ctx.hub3Owner };
+    return { products: byId, stock: ctx.stock, targets: ctx.targets, config: engineConfig };
   }, [ctx, product, byId, engineConfig]);
 
   const rows = useMemo(() => (full ? seatingRows(full, rowLocations, pid) : []), [full, rowLocations, pid]);
@@ -331,9 +330,6 @@ export function SeatRow({ seat, product, label, registry, locations, destination
         <div style={{ fontWeight: 700, fontSize: 13.5, flex: 1, minWidth: 120 }}>{label}</div>
         <Badge tone={tone}>{seat.label}</Badge>
         <Badge tone={seat.units > 0 ? BLUE_L : GRAY}>{seat.units} on hand</Badge>
-        {seat.loc === DIVISION_HUB && ctx?.hub3Owner && !isDivisionFootwear(product) && (
-          <Badge tone={GREEN}>Owned by {labelFor(ctx.hub3Owner, registry)}</Badge>
-        )}
         <button onClick={onToggle} style={bGhost} aria-expanded={expanded}>
           {expanded ? "Close" : "Change"}
         </button>

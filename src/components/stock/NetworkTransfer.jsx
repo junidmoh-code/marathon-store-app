@@ -45,9 +45,7 @@ import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenPr
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
 import { isCentralFedProduct, centralFedPerSize, centralFedSizes } from "./centralFed";
-import { httpsCallable } from "firebase/functions";
-import { functions } from "../../firebase";
-import { concreteDivisionPolicy, divisionSizes, isDivisionFootwear, isDivisionOneSize, DIVISION_HUB } from "./concreteDivision";
+import { concreteDivisionPolicy, isDivisionFootwear, isDivisionOneSize } from "./concreteDivision";
 import { firstBatchEligible, buildFirstBatchSolveUpdate, trustExistingEmptyUpdates, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 import { setUpdateBusy } from "../../update/updateChecker";
@@ -183,8 +181,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [solvePid, setSolvePid] = useState(null);   // which row's Solve panel is open
   const [solveTicks, setSolveTicks] = useState({}); // pid → the stores ticked, IN THE ORDER TICKED (absent = the default tick)
   const [solveBusy, setSolveBusy] = useState(null);
-  const [ownerPick, setOwnerPick] = useState({});   // pid → the shop that owns a Hub 3 Solve
-  const [ownerAsk, setOwnerAsk] = useState(null);   // pid whose Pine-or-Concrete chooser is open
   const [solved, setSolved] = useState({});         // pid → {store, sizes, msg, ok}
 
   // ── SOLVE UNDO — this session's solves, each reversible while safe ─────────
@@ -276,7 +272,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // returning card offers Solve again, not last week's success message.
         setUndoables((l) => l.filter((x) => x.key !== u.key));
         setSolved((d) => { const n = { ...d }; delete n[u.pid]; return n; });
-        if (u.divisionSeat) httpsCallable(functions, "seatDivisionSolve")({ location: DIVISION_HUB, pid: u.pid, clear: true, solveId: u.firstBatch?.solveId }).catch(() => {});
       }
     } catch (e) {
       setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` } : x)));
@@ -480,13 +475,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // store keeps this clothing in the shop, N of EVERY declared size, straight
   // from Central — no hub, no hub seed, no hub leg. Read from the engine
   // config the owner sets on the Engine Policy card; absent ⇒ off.
+  // THE CONCRETE DIVISION (Junid, 12 Nov 2026): every non-footwear item at Pine
+  // and Concrete is kept in the shop from Central, whatever Hub 3 ever held.
   const divisionPolicy = concreteDivisionPolicy(cfg);
-  // Has Hub 3 ever held this product? Then a shop refills from Hub 3, never Central.
-  const hub3Holds = (pid) => Object.keys(allStock?.[DIVISION_HUB]?.[pid] || {}).length > 0;
   const divisionCard = (card, store) => !!divisionPolicy && sectionOfStore(store) === 1 && !isDivisionFootwear(byId.get(card.pid));
-  const cfAt = (card, store) => !(divisionCard(card, store) && hub3Holds(card.pid)) && isCentralFedProduct(cfg, network, store, byId.get(card.pid));
+  const cfAt = (card, store) => isCentralFedProduct(cfg, network, store, byId.get(card.pid));
   const divisionShopKeep = (card) => {
-    const leg = hub3Holds(card.pid) ? divisionPolicy?.fromHub3 : divisionPolicy?.shopOnly;
+    const leg = divisionPolicy?.shopOnly;
     return leg ? (isDivisionOneSize(byId.get(card.pid)) ? leg.oneSize : leg.perSize) : null;
   };
   // The run a store's lines are planned from: the policy run, with a
@@ -501,11 +496,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const runAt = (card, stores) => {
     const run = runFor(card.pid);
     for (const st of stores || []) {
-      if (divisionCard(card, st) && !cfAt(card, st)) {
-        // Hub 3 has held it: the shop's keep is the from-Hub 3 number.
-        run[st] = Object.fromEntries(divisionSizes(byId.get(card.pid)).map((sz) => [String(sz).toUpperCase(), divisionShopKeep(card)]));
-        continue;
-      }
       if (!cfAt(card, st)) continue;
       run[st] = Object.fromEntries(centralFedSizes(byId.get(card.pid)).map((sz) => [String(sz).toUpperCase(), cfTargetAt(card, st, sz)]));
     }
@@ -524,7 +514,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // Every declared size the store has no cell for yet (a size it already
     // carries is the engine's to top up — never asked for twice).
     if (cfAt(card, store)) return centralFedSizes(byId.get(card.pid)).filter((sz) => cfGap(card, store, sz) && cfTargetAt(card, store, sz) > 0);
-    if (divisionCard(card, store)) return divisionSizes(byId.get(card.pid)).filter((sz) => cfGap(card, store, sz) && cfTargetAt(card, store, sz) > 0);
     const hub = hubOf(card, store);
     if (!hub) return [];
     return computeQualifyingSizes(catalogSizes(card.pid), card.source, store, runFor(card.pid), hub);
@@ -585,7 +574,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // sentence that says why and cannot be ticked (solveSections.solveBlocks).
   // The card's division — the list it is on — is the only block offered.
   const divisionOf = (card) => cardSection(card, network);
-  const blocksFor = (card) => solveBlocks({ network, sections: [divisionOf(card)].filter((s) => mySections.includes(s)), source: card.source, product: byId.get(card.pid), productId: card.pid, engineConfig: cfg, hub3Present: hub3Holds(card.pid) });
+  const blocksFor = (card) => solveBlocks({ network, sections: [divisionOf(card)].filter((s) => mySections.includes(s)), source: card.source, product: byId.get(card.pid), productId: card.pid, engineConfig: cfg });
   const tickableStores = (card) => blocksFor(card).flatMap((b) => b.stores).filter((st) => !st.blocked).map((st) => st.id);
   // HUB PRESENCE (the hard precondition — firstBatchCore.hub2PresenceSignals),
   // judged at the STORE'S OWN hub. From the /stock node this screen already
@@ -637,7 +626,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const c = firstBatchStoreChoice({ history: historyFor(card, candidates[0]), candidates, labels: LOC_LABEL });
       return c.store ? c : { store: candidates[0], tier: null, sentence: null };
     }
-    return { store: tickable.find((st) => st !== DIVISION_HUB && sectionOfStore(st) === home) || null, tier: null, sentence: null };
+    return { store: tickable.find((st) => sectionOfStore(st) === home) || null, tier: null, sentence: null };
   };
   const defaultStoreFor = (card) => storeChoiceFor(card).store;
   // THE TICKS, in the order ticked — which is the order Central's units are
@@ -646,21 +635,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const ticksFor = (card) => {
     const tickable = new Set(tickableStores(card));
     const raw = solveTicks[card.pid] ?? [defaultStoreFor(card)].filter(Boolean);
-    if (raw.includes(DIVISION_HUB)) return tickable.has(DIVISION_HUB) ? [DIVISION_HUB] : [];
     return allocationOrder({ network, ticked: raw, tickable: (st) => tickable.has(st) });
   };
   const toggleTick = (card, store) => {
     const cur = ticksFor(card);
-    // Hub 3 stands alone: a product solved to Hub 3 has one owning shop, chosen
-    // in the small chooser, not a tick beside it.
-    if (store === DIVISION_HUB) {
-      if (cur.includes(DIVISION_HUB)) { setSolveTicks((prev) => ({ ...prev, [card.pid]: [] })); return; }
-      setSolveTicks((prev) => ({ ...prev, [card.pid]: [DIVISION_HUB] }));
-      setOwnerAsk(card.pid);
-      return;
-    }
-    const without = cur.filter((x) => x !== DIVISION_HUB);
-    setSolveTicks((prev) => ({ ...prev, [card.pid]: without.includes(store) ? without.filter((x) => x !== store) : [...without, store] }));
+    setSolveTicks((prev) => ({ ...prev, [card.pid]: cur.includes(store) ? cur.filter((x) => x !== store) : [...cur, store] }));
   };
 
   // CENTRAL'S OPEN RESERVATIONS (2026-09-17, firstBatchCore.js
@@ -748,7 +727,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // written. `firstBatchOk: false` (the live lock table could not be read at
   // the write) puts every store on the old seed-only path.
   const planFor = (card, ticks, openByLoc = openLocks[card.pid], { firstBatchOk = true } = {}) => {
-    if (ticks.includes(DIVISION_HUB)) return { lines: [], taken: {}, centralLeft: () => 0 };
     const reserved = cfg ? centralReservedBySize({ openByLoc: openByLoc || {}, routes: cfg.routes }) : {};
     return planSectionSolve({
       stores: ticks,
@@ -775,7 +753,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const solve = async (card) => {
     const ticks = ticksFor(card);
     if (solveBusy || !canAct || !ticks.length) return;
-    if (ticks.includes(DIVISION_HUB)) return solveToHub3(card);
     // ONE DIVISION PER SOLVE — the list's own. A tick from the other division
     // (or a hub across the wall) is refused here, whatever the panel offered.
     const division = divisionOf(card);
@@ -919,76 +896,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     setSolveBusy(null);
   };
 
-  // ── SOLVED TO HUB 3 (Junid, 9 Nov 2026) ────────────────────────────────────
-  // Hub 3 asks Central for its own keep now; the owning shop asks Hub 3 only
-  // once Hub 3 holds the stock (the scan does that — this raises nothing for
-  // the shop). Both cells are seeded so the scan can see them; the owner is
-  // recorded on the seat by the server.
-  const hub3KeepOf = (card) => (isDivisionOneSize(byId.get(card.pid)) ? divisionPolicy?.hub3Keep?.oneSize : divisionPolicy?.hub3Keep?.perSize) || 0;
-  const hub3SolveLines = (card, openByLoc) => {
-    const reserved = cfg ? centralReservedBySize({ openByLoc: openByLoc || {}, routes: cfg.routes }) : {};
-    const cap = Number(cfg?.maxUnitsPerIntent) > 0 ? Number(cfg.maxUnitsPerIntent) : 20;
-    const keep = hub3KeepOf(card);
-    return divisionSizes(byId.get(card.pid)).map((size) => {
-      const free = centralFreeFor({ qtyAt: (x) => qtyAt(CENTRAL, card.pid, x), reserved, size });
-      return { size, qty: Math.min(keep, Math.max(free, 0), cap), want: keep };
-    });
-  };
-  const solveToHub3 = async (card) => {
-    const owner = ownerPick[card.pid];
-    if (!owner) { setOwnerAsk(card.pid); return; }
-    setSolveBusy(card.pid);
-    const uid = auth.currentUser?.uid || null;
-    const now = serverNowIso();
-    let seated = null;
-    try {
-      const openNow = await readOpenLocks(card.pid);
-      const lines = hub3SolveLines(card, openNow);
-      const raise = lines.filter((l) => l.qty > 0);
-      const solveId = solveIdFor(card.pid, serverNowMs());
-      seated = solveId;
-      await httpsCallable(functions, "seatDivisionSolve")({ location: DIVISION_HUB, pid: card.pid, owner, solveId });
-      const updates = {};
-      const requestIds = [];
-      for (const l of raise) {
-        const id = push(ref(database, "refill_requests")).key;
-        requestIds.push(id);
-        updates[`refill_requests/${id}`] = stampRecord({
-          productId: card.pid, size: l.size === "_" ? "" : l.size, qty: l.qty, requestingLocation: DIVISION_HUB, status: "open", createdAt: now,
-          createdFrom: { source: CENTRAL, via: "hub3_solve", divisionSolve: true, ownerShop: owner, solveId },
-          requestSource: "solve",
-        }, "raise");
-      }
-      const seedCell = (loc) => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: now, updatedBy: uid, ...(trustedCellsOnly(network, loc) ? trustStamp("solve", now) : {}) });
-      const locs = [DIVISION_HUB, owner];
-      const paths = [];
-      const existing = {};
-      const priorOpen = {};
-      for (const loc of locs) {
-        existing[loc] = (await get(ref(database, `stock/${loc}/${card.pid}`))).val() || {};
-        priorOpen[loc] = openNow[loc] ?? null;
-        for (const l of lines) {
-          if (existing[loc][stockSizeKey(l.size)] !== undefined) continue;
-          const path = stockCellPath(loc, card.pid, l.size);
-          updates[path] = seedCell(loc);
-          paths.push(path);
-        }
-      }
-      Object.assign(updates, trustExistingEmptyUpdates({ pid: card.pid, locs, sizes: lines.map((l) => l.size), existing, nowIso: now, uid, isSolvedLoc: (l) => trustedCellsOnly(network, l), cellTrusted }));
-      await update(ref(database), updates);
-      const units = raise.reduce((t, l) => t + l.qty, 0);
-      setUndoables((l) => [{ key: `${card.pid}_${now}_hub3`, pid: card.pid, name: card.name, store: DIVISION_HUB, locs, paths, priorOpen, divisionSeat: true, firstBatch: { solveId, requestIds, store: DIVISION_HUB, units } }, ...l]);
-      setSolved((d) => ({ ...d, [card.pid]: { ok: true, store: DIVISION_HUB, sizes: lines.map((l) => l.size), msg: units > 0
-        ? `${units} unit${units === 1 ? "" : "s"} requested from Central for Hub 3 — ${LOC_LABEL[owner] || owner} asks Hub 3 for its keep once Hub 3 has received them.`
-        : `Seated at Hub 3 for ${LOC_LABEL[owner] || owner}, but Central has none free — nothing was requested.` } }));
-    } catch (e) {
-      if (seated) httpsCallable(functions, "seatDivisionSolve")({ location: DIVISION_HUB, pid: card.pid, clear: true, solveId: seated }).catch(() => {});
-      setSolvePid((cur) => (cur === card.pid ? null : cur));
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: DIVISION_HUB, sizes: [], msg: `Couldn't solve — nothing was requested, retry. (${e?.message || "error"})` } }));
-    }
-    setSolveBusy(null);
-  };
-
   // MOVE MANUALLY — by hand, inside the wall. From Central: the hubs and
   // hubs and stores of the LIST'S OWN division (owner rule 8 Oct 2026 — the
   // other division moves from its own list). From a hub: that hub's own
@@ -1043,9 +950,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     <div key={u.key} style={{ ...GLASS, padding: "9px 12px", marginBottom: 8, fontSize: 12.5 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ flex: 1, color: "rgba(255,255,255,.75)" }}>
-          {u.divisionSeat
-            ? <>Solved — <b style={{ color: "#fff" }}>{u.name}</b>: {u.firstBatch.units} unit{u.firstBatch.units === 1 ? "" : "s"} requested from Central for Hub 3</>
-            : u.firstBatch
+          {u.firstBatch
             ? <>Solved — <b style={{ color: "#fff" }}>{u.name}</b>: {u.firstBatch.units} unit{u.firstBatch.units === 1 ? "" : "s"} requested from Central for {LOC_LABEL[u.store]} ({LOC_LABEL[u.locs[0]]}'s batch follows)</>
             : <>Solved — <b style={{ color: "#fff" }}>{u.name}</b> now carried at {LOC_LABEL[u.store]}{u.locs.length > 1 && u.locs[0] !== u.store ? ` (via ${LOC_LABEL[u.locs[0]]})` : ""}</>}
         </span>
@@ -1174,7 +1079,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // the request written (never a false "2" over a promised 1).
         const confirmBlocked = sOpen ? (
           (ticks.length ? null : (solveConfirmReason({ canAct, busy: solveBusy === card.pid, sizesInPlan: 1 }) || "Tick at least one store."))
-          || (ticks.includes(DIVISION_HUB) ? (solveConfirmReason({ canAct, busy: solveBusy === card.pid, sizesInPlan: 1 }) || (ownerPick[card.pid] ? null : "Choose Pine or Concrete.")) : null)
           || sPlan.lines.map((l) => solveConfirmReason({ canAct, busy: solveBusy === card.pid, sizesInPlan: l.sizes.length, storeLabel: LOC_LABEL[l.store] })).find(Boolean)
           || (sPlan.lines.some((l) => l.split) && !locksReadyFor(card.pid) ? "One moment — checking what Central has already promised…" : null)
         ) : null;
@@ -1317,32 +1221,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                     ))}
                   </div>
                 ))}
-                {ticks.includes(DIVISION_HUB) && (() => {
-                  const owner = ownerPick[card.pid];
-                  const lines = hub3SolveLines(card, openLocks[card.pid]);
-                  const units = lines.reduce((t, l) => t + l.qty, 0);
-                  return (
-                    <div data-hub3-solve style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
-                      <b style={{ color: "#fff" }}>{units} unit{units === 1 ? "" : "s"}</b> ({lines.filter((l) => l.qty > 0).map((l) => `${sizeLabel(l.size)}×${l.qty}`).join(" · ") || "Central has none free"}) requested from Central for <b style={{ color: "#fff" }}>Hub 3</b>.
-                      <div style={{ marginTop: 5, color: GRAY }}>
-                        {owner ? <>For <b style={{ color: "#fff" }}>{owner === "concrete" ? "Concrete" : "Pine"}</b> — it asks Hub 3 for its keep once Hub 3 has received this. <button onClick={() => setOwnerAsk(card.pid)} style={{ background: "none", border: 0, color: BLUE_L, cursor: "pointer", fontFamily: FONT, fontSize: 12, padding: 0 }}>Change</button></> : "Choose the shop this is for."}
-                      </div>
-                    </div>
-                  );
-                })()}
-                {ownerAsk === card.pid && (
-                  <div role="dialog" aria-label="Pine or Concrete" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
-                    <div style={{ ...GLASS, padding: 18, width: "100%", maxWidth: 300, textAlign: "center" }}>
-                      <div style={{ fontWeight: 700, color: "#fff", marginBottom: 12 }}>Pine or Concrete</div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        {[["marathon-pine", "Pine"], ["concrete", "Concrete"]].map(([id, label]) => (
-                          <button key={id} onClick={() => { setOwnerPick((m) => ({ ...m, [card.pid]: id })); setOwnerAsk(null); }} style={{ ...bGreen, flex: 1, padding: "12px" }}>{label}</button>
-                        ))}
-                      </div>
-                      <button onClick={() => { setOwnerAsk(null); if (!ownerPick[card.pid]) setSolveTicks((prev) => ({ ...prev, [card.pid]: [] })); }} style={{ background: "none", border: 0, color: GRAY, cursor: "pointer", fontFamily: FONT, fontSize: 12, marginTop: 10 }}>Cancel</button>
-                    </div>
-                  </div>
-                )}
                 {/* Location history's one line — why this shop is pre-ticked.
                     Informational: the ticks above still decide. */}
                 {storeWhy && (

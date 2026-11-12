@@ -1,4 +1,7 @@
 // ─── HUB 3 POLICY — GO LIVE (Junid, 9 Nov 2026) ──────────────────────────────
+// HISTORICAL (9 Nov 2026). Superseded by apply-central-clothing-policy.mjs on
+// 12 Nov 2026: setConcreteDivision now refuses the fromHub3/hub3Keep shape
+// below, so running this fails. Kept as the record of what went live then.
 // Through applyCategoryPolicy, the function the Engine Policy card calls, so
 // each change has a history entry and a one-tap revert. Dry run by default.
 //   1. the footwear-all group gains a Hub 3 leg: keep 3, ask at 1, seated only;
