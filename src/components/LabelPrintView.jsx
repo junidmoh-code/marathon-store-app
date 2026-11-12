@@ -19,24 +19,14 @@ import PrinterStatus from "./stock/PrinterStatus";
 import { useLocations, useStockCells } from "./stock/useStock";
 import { sellableLocations, labelFor } from "./stock/locations";
 import { useWide } from "./stock/hooks";
-import { FONT } from "./stock/ui";
 import { withinScope } from "../utils/shopScope";
 import { PrimaryPhoto } from "./shared/PrimaryPhoto.jsx";
+import "../styles/sky-barcode.css";
 
 const RANDS = (v) =>
   v == null || v === "" || isNaN(Number(v)) ? "" : `R${Number(v).toLocaleString("en-ZA")}`;
 
 const byName = (a, b) => String(a?.name || "").localeCompare(String(b?.name || ""), undefined, { sensitivity: "base" });
-
-// Workspace filter chip — neutral glass, blue when active (matches the rest of
-// the redesigned app; replaces the old blue-heavy chip).
-const chip = (on) => ({
-  padding: "7px 13px", borderRadius: 999, cursor: "pointer", fontSize: 12.5, fontWeight: 700, fontFamily: FONT,
-  border: on ? "1px solid rgba(74,127,255,.45)" : "1px solid rgba(255,255,255,.1)",
-  background: on ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.03)",
-  color: on ? "#9DBCFF" : "rgba(233,238,255,.55)",
-  transition: "background .14s, color .14s, border-color .14s",
-});
 
 function Thumb({ p, size = 44, radius = 10 }) {
   if (p?.photoUrl) return <PrimaryPhoto product={p} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: radius, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
@@ -145,49 +135,45 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
     }
   }
 
-  // ── Shared pieces ───────────────────────────────────────────────────────────
+  // ── Shared pieces (sky, Junid 12 Nov: the Stock screen's chip/search/card
+  // rules; classes in src/styles/sky-barcode.css). Presentation only. ──
   const searchEl = (
-    <div style={{ position: "relative", width: "100%", maxWidth: isWide ? 320 : 560 }}>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", opacity: .4 }}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
-      <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search a product by name…"
-        style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px 10px 36px", borderRadius: 11, fontSize: 13.5,
-                 background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.14)", color: "#fff", outline: "none", fontFamily: FONT }} />
+    <div className="lpv__srch">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
+      <input className="lpv__in" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search a product by name…" aria-label="Search products" />
     </div>
   );
 
+  const storeOpts = [{ id: "all", label: myShop ? "All products" : "All stores" }, ...stores.map((s) => ({ id: s.id, label: labelFor(s.id, registry) }))];
   const filtersEl = (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+    <div className="lpv__filters">
       {stores.length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" }}>
-          <span style={{ fontSize: 10, color: "rgba(233,238,255,.35)", textTransform: "uppercase", letterSpacing: ".08em", fontWeight: 700, marginRight: 2 }}>Store</span>
-          {[{ id: "all", label: myShop ? "All products" : "All stores" }, ...stores.map((s) => ({ id: s.id, label: labelFor(s.id, registry) }))].map((o) => (
-            <button key={o.id} onClick={() => setStore(o.id)} style={chip(storeId === o.id)}>{o.label}</button>
-          ))}
+        <div className="lpv__frow">
+          <span className="lpv__lab">Store</span>
+          <div className="lpv__chips" data-chip-row="" data-scroll="">
+            {storeOpts.map((o) => (
+              <button key={o.id} type="button" className="lpv__chip" aria-pressed={storeId === o.id} onClick={() => setStore(o.id)}>{o.label}</button>
+            ))}
+          </div>
         </div>
       )}
       {categories.length > 1 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" }}>
-          <span style={{ fontSize: 10, color: "rgba(233,238,255,.35)", textTransform: "uppercase", letterSpacing: ".08em", fontWeight: 700, marginRight: 2 }}>Category</span>
-          {["all", ...categories].map((c) => (
-            <button key={c} onClick={() => setCat(c)} style={chip(cat === c)}>{c === "all" ? "All" : c}</button>
-          ))}
+        <div className="lpv__frow">
+          <span className="lpv__lab">Category</span>
+          <div className="lpv__chips" data-chip-row="" data-scroll="">
+            {["all", ...categories].map((c) => (
+              <button key={c} type="button" className="lpv__chip" aria-pressed={cat === c} onClick={() => setCat(c)}>{c === "all" ? "All" : c}</button>
+            ))}
+          </div>
         </div>
       )}
     </div>
   );
 
-  const toastEl = toast ? (
-    <div style={{ margin: "0 0 14px", padding: "10px 13px", borderRadius: 11, fontSize: 13, fontWeight: 600,
-      background: toast.kind === "ok" ? "rgba(74,222,128,.1)" : "rgba(248,113,113,.1)",
-      border: `1px solid ${toast.kind === "ok" ? "rgba(74,222,128,.35)" : "rgba(248,113,113,.35)"}`,
-      color: toast.kind === "ok" ? "#4ADE80" : "#F87171" }}>
-      {toast.text}
-    </div>
-  ) : null;
+  const toastEl = toast ? <div className="lpv__toast" data-kind={toast.kind}>{toast.text}</div> : null;
 
-  const gridCols = isWide ? "repeat(auto-fill, minmax(150px, 1fr))" : "repeat(2, 1fr)";
   const gridEl = shown.length === 0 ? (
-    <div style={{ textAlign: "center", color: "rgba(255,255,255,.4)", fontSize: 14, padding: "48px 0" }}>
+    <div className="lpv__none">
       {query.trim()
         ? `No products match “${query}”.`
         : storeId !== "all"
@@ -195,30 +181,23 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
           : cat !== "all" ? `No ${cat} products.` : "No products yet."}
     </div>
   ) : (
-    <div style={{ display: "grid", gridTemplateColumns: gridCols, gap: 12 }}>
+    <div className={isWide ? "lpv__grid lpv__grid--wide" : "lpv__grid"}>
       {shown.map((p) => {
         const inCart = cart[p.id]?.qty || 0;
         const price = RANDS(p.retailPrice);
         return (
-          <div key={p.id} onClick={() => addToCart(p)}
-            style={{ background: "rgba(255,255,255,.024)", border: inCart ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.08)",
-                     borderRadius: 14, overflow: "hidden", cursor: "pointer", position: "relative", transition: "border-color .14s, transform .14s",
-                     boxShadow: inCart ? "0 14px 34px -22px rgba(74,127,255,.5)" : "none" }}>
-            {inCart > 0 && (
-              <div style={{ position: "absolute", top: 8, right: 8, zIndex: 2, minWidth: 22, height: 22, padding: "0 6px", borderRadius: 999, background: "#4A7FFF", color: "#fff", fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px -2px rgba(74,127,255,.7)" }}>{inCart}</div>
-            )}
-            <div style={{ width: "100%", aspectRatio: "1 / 1", position: "relative", background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 46 }}>
+          <div key={p.id} className="lpv__card" data-in={inCart ? "1" : undefined} onClick={() => addToCart(p)}>
+            {inCart > 0 && <div className="lpv__qn">{inCart}</div>}
+            <div className="lpv__ph">
               {p.photoUrl
-                ? <PrimaryPhoto product={p} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                ? <PrimaryPhoto product={p} alt={p.name} onError={(e) => { e.currentTarget.style.display = "none"; }} />
                 : <span>{p.photo || "👟"}</span>}
             </div>
-            <div style={{ padding: "11px 12px 12px" }}>
-              <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", marginBottom: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                <span style={{ fontSize: 13, fontWeight: 800, color: "#9DBCFF", fontVariantNumeric: "tabular-nums" }}>{price || "—"}</span>
-                <span style={{ fontSize: 11.5, fontWeight: 700, color: inCart ? "#9DBCFF" : "rgba(233,238,255,.4)", display: "flex", alignItems: "center", gap: 4 }}>
-                  {inCart ? `${inCart} queued` : (<>+ Add</>)}
-                </span>
+            <div className="lpv__bd">
+              <div className="lpv__nm">{p.name}</div>
+              <div className="lpv__ft">
+                <span className="lpv__pr">{price || "—"}</span>
+                <span className="lpv__add">{inCart ? `${inCart} queued` : "+ Add"}</span>
               </div>
             </div>
           </div>
@@ -227,59 +206,50 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
     </div>
   );
 
-  // Print queue panel — sticky rail on desktop, inline block on mobile.
+  // Print queue panel — sticky column on desktop, inline block on mobile.
   const queueEl = (
-    <div style={{ background: "rgba(255,255,255,.024)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-      <div style={{ padding: "14px 15px", borderBottom: "1px solid rgba(255,255,255,.07)", display: "flex", alignItems: "center", gap: 10 }}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9DBCFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" /></svg>
+    <div className="lpv__q">
+      <div className="lpv__qh">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--sky-ink)" }}><polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" /></svg>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff" }}>Print queue</div>
-          <div style={{ fontSize: 11, color: "rgba(233,238,255,.45)", marginTop: 1 }}>{totalLabels} label{totalLabels !== 1 ? "s" : ""} · {cartItems.length} product{cartItems.length !== 1 ? "s" : ""}</div>
+          <div className="lpv__qt">Print queue</div>
+          <div className="lpv__qs">{totalLabels} label{totalLabels !== 1 ? "s" : ""} · {cartItems.length} product{cartItems.length !== 1 ? "s" : ""}</div>
         </div>
-        {cartItems.length > 0 && (
-          <button onClick={clearCart} style={{ background: "transparent", border: "none", color: "rgba(233,238,255,.5)", fontSize: 11.5, fontWeight: 600, cursor: "pointer", padding: 4 }}>Clear</button>
-        )}
+        {cartItems.length > 0 && <button type="button" className="lpv__clear" onClick={clearCart}>Clear</button>}
       </div>
 
       {cartItems.length === 0 ? (
-        <div style={{ padding: "26px 18px", textAlign: "center", color: "rgba(233,238,255,.4)", fontSize: 12.5, lineHeight: 1.5 }}>
-          Tap products to build a batch, then print them all at once.
-        </div>
+        <div className="lpv__qe">Tap products to build a batch, then print them all at once.</div>
       ) : (
-        <div style={{ maxHeight: isWide ? "calc(100vh - 320px)" : 360, overflow: "auto", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ maxHeight: isWide ? "calc(100vh - 360px)" : 360, overflow: "auto", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
           {cartItems.map(({ product: p, qty }) => (
-            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(255,255,255,.02)", border: "1px solid rgba(255,255,255,.06)", borderRadius: 11, padding: 8 }}>
+            <div key={p.id} className="lpv__qi">
               <Thumb p={p} size={40} radius={9} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
-                <div style={{ fontSize: 11.5, fontWeight: 700, color: "#9DBCFF", marginTop: 1, fontVariantNumeric: "tabular-nums" }}>{RANDS(p.retailPrice) || "—"}</div>
+                <div className="lpv__qin">{p.name}</div>
+                <div className="lpv__qip">{RANDS(p.retailPrice) || "—"}</div>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
-                <button onClick={() => setQty(p.id, qty - 1)} aria-label="Decrease" style={qtyBtn}>−</button>
-                <span style={{ minWidth: 22, textAlign: "center", fontSize: 13, fontWeight: 800, color: "#fff", fontVariantNumeric: "tabular-nums" }}>{qty}</span>
-                <button onClick={() => setQty(p.id, qty + 1)} aria-label="Increase" style={qtyBtn}>+</button>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                <button type="button" className="lpv__step" onClick={() => setQty(p.id, qty - 1)} aria-label="Decrease">−</button>
+                <span className="lpv__qn2">{qty}</span>
+                <button type="button" className="lpv__step" onClick={() => setQty(p.id, qty + 1)} aria-label="Increase">+</button>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      <div style={{ padding: 12, borderTop: "1px solid rgba(255,255,255,.07)" }}>
+      <div className="lpv__qf">
         {transports.length > 1 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 9 }}>
+          <div className="lpv__chips lpv__chips--flat" data-chip-row="" data-scroll="">
             {transports.map(t => (
-              <button key={t.id} onClick={() => setTransport(t.id)} disabled={busy} style={{ ...chip(transport === t.id), fontSize: 11.5, padding: "5px 10px" }}>
+              <button key={t.id} type="button" className="lpv__chip" aria-pressed={transport === t.id} onClick={() => setTransport(t.id)} disabled={busy}>
                 {t.label}
               </button>
             ))}
           </div>
         )}
-        <button onClick={printBatch} disabled={busy || totalLabels === 0}
-          style={{ width: "100%", padding: "12px", borderRadius: 11, border: "none", fontSize: 13.5, fontWeight: 800, fontFamily: FONT,
-                   cursor: busy || totalLabels === 0 ? "not-allowed" : "pointer",
-                   background: totalLabels === 0 ? "rgba(255,255,255,.05)" : "rgba(74,127,255,.92)",
-                   color: totalLabels === 0 ? "rgba(233,238,255,.35)" : "#fff",
-                   display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+        <button type="button" className="lpv__print" onClick={printBatch} disabled={busy || totalLabels === 0}>
           {busy ? "Printing…" : totalLabels === 0 ? "Queue is empty" : `Print ${totalLabels} label${totalLabels !== 1 ? "s" : ""}`}
         </button>
         {transport === "xprinter" && <PrinterStatus style={{ marginTop: 9 }} />}
@@ -287,86 +257,38 @@ export default function LabelPrintView({ products = [], onExit, myShop = null })
     </div>
   );
 
-  // ── DESKTOP WORKSPACE (≥1024px) — rail + browse + sticky queue ──
+  // ── DESKTOP WORKSPACE (≥1024px) — browse + sticky queue, under the shell
+  // header (its grid button is the way back; no in-page Exit, no second
+  // wordmark — the header pill already says LABELS). ──
   if (isWide) {
     return (
-      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "236px minmax(0,1fr)", overflow: "hidden" }}>
-        {/* RAIL */}
-        <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 13px 16px", display: "flex", flexDirection: "column", gap: 3, overflow: "auto" }}>
-          <div data-legacy-header="" style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
-            <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: -.6 }}>marathon</span>
-            <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
-          </div>
-          <button onClick={onExit} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", color: "rgba(233,238,255,.6)", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, marginBottom: 10 }}>← Exit</button>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(74,127,255,.1)", border: "1px solid rgba(74,127,255,.32)", borderRadius: 11, padding: "10px 12px" }}>
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#9DBCFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" /></svg>
-            <div style={{ fontSize: 13.5, fontWeight: 800, color: "#cfe0ff" }}>Print Labels</div>
-          </div>
-          <div style={{ flex: 1 }} />
-          <div style={{ background: "rgba(255,255,255,.022)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 11, padding: "11px 12px" }}>
-            <div style={{ fontSize: 22, fontWeight: 800, color: totalLabels ? "#9DBCFF" : "rgba(233,238,255,.5)", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{totalLabels}</div>
-            <div style={{ fontSize: 10, color: "rgba(233,238,255,.45)", marginTop: 4, letterSpacing: ".04em", textTransform: "uppercase", fontWeight: 600 }}>Labels queued</div>
-          </div>
-        </aside>
-
-        {/* MAIN */}
-        <div style={{ minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div style={{ padding: "20px 30px 18px", borderBottom: "1px solid rgba(255,255,255,.08)", background: "radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)", display: "flex", alignItems: "center", gap: 24 }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 23, fontWeight: 800, letterSpacing: -.4 }}>Print Labels</div>
-              <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.55)", marginTop: 3 }}>Add products to the queue, set quantities, then print the batch — name · price · barcode.</div>
+      <div className="lpv lpv--wide" data-testid="label-print">
+        <div className="lpv__browse" data-scroll="">
+          <div className="lpv__top">
+            <div>
+              <h1 className="lpv__h1">Print Labels</h1>
+              <div className="lpv__hint" style={{ margin: 0 }}>Add products to the queue, set quantities, then print the batch — name · price · barcode.</div>
             </div>
             {searchEl}
           </div>
-          <div style={{ flex: 1, overflow: "auto", padding: "18px 30px 40px" }}>
-            {toastEl}
-            <div style={{ display: "flex", gap: 22, alignItems: "flex-start" }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                {filtersEl}
-                {gridEl}
-              </div>
-              <div style={{ width: 320, flexShrink: 0, position: "sticky", top: 0 }}>
-                {queueEl}
-              </div>
-            </div>
-          </div>
+          {filtersEl}
+          {toastEl}
+          {gridEl}
         </div>
+        <aside className="lpv__side" data-scroll="">{queueEl}</aside>
       </div>
     );
   }
 
   // ── MOBILE — single column, queue inline above the grid ──
   return (
-    <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: 880, margin: "0 auto", overflowX: "hidden", paddingBottom: 40 }}>
-      {/* TOP BAR */}
-      <div data-legacy-header="" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "50px 14px 12px" }}>
-        <div onClick={onExit}
-          style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: "8px 14px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-          <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>← Switch View</span>
-        </div>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 10, color: "rgba(255,255,255,.4)", letterSpacing: "0.5px" }}>Viewing as:</div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#4A7FFF", letterSpacing: "0.5px" }}>PRINT LABELS</div>
-        </div>
-        <div style={{ width: 92 }} />
-      </div>
-
-      <div style={{ padding: "0 14px 8px" }}>
-        <div style={{ fontSize: 13.5, color: "rgba(255,255,255,.4)", marginBottom: 12 }}>Tap products to queue them, then print the batch — name · price · barcode.</div>
-        {searchEl}
-      </div>
-
-      <div style={{ padding: "12px 14px 0" }}>
-        {toastEl}
-        {filtersEl}
-        {cartItems.length > 0 && <div style={{ marginBottom: 16 }}>{queueEl}</div>}
-        {gridEl}
-      </div>
+    <div className="lpv lpv--phone" data-testid="label-print">
+      <div className="lpv__hint">Tap products to queue them, then print the batch — name · price · barcode.</div>
+      {searchEl}
+      {filtersEl}
+      {toastEl}
+      {cartItems.length > 0 && <div style={{ marginBottom: 16 }}>{queueEl}</div>}
+      {gridEl}
     </div>
   );
 }
-
-const qtyBtn = {
-  width: 26, height: 26, borderRadius: 8, border: "1px solid rgba(255,255,255,.14)", background: "rgba(255,255,255,.05)",
-  color: "#dfe7ff", fontSize: 15, fontWeight: 800, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT,
-};

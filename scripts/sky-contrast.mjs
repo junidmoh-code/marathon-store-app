@@ -21,7 +21,7 @@
 // Routes are the dev harness (dev/sky-harness.html — the real components with
 // fixtures; the app itself needs a staff sign-in) plus the real sign-in page.
 //
-//   node scripts/sky-contrast.mjs [--webkit] [--out dir] [--port 5198]
+//   node scripts/sky-contrast.mjs [--webkit] [--out dir] [--port 5198] [--only route,…]
 //   exit 0 = every text element passes; 1 = failures (listed); 2 = harness error
 
 import { spawn } from "node:child_process";
@@ -36,6 +36,8 @@ const PORT = Number(flag("--port", 5198));
 const OUT = flag("--out", "contrast-report");
 const ENGINES = args.includes("--webkit") ? [["chromium", chromium], ["webkit", webkit]] : [["chromium", chromium]];
 const MIN = 4.5;
+const ONLY = flag("--only", null)?.split(",");   // --only route,route (a subset, for iterating)
+const SHOW = flag("--show", null)?.split("|");                // --show text|class: print the measured contrast of matching elements
 const BASE = `http://localhost:${PORT}`;
 const H = "/dev/sky-harness.html";
 
@@ -51,6 +53,9 @@ export const ROUTES = [
   ["assistant-popup-out", `${H}?screen=desktop&popup=1&out=1`],
   ["assistant-phone", `${H}?screen=phone&cart=2`],
   ["barcode-cards", `${H}?screen=barcodes&open=1`],
+  // Barcode Studio as it opens (Junid 12 Nov, design/barcode-studio.png):
+  // white titles, labels and empty-state text on the saturated blue panels.
+  ["barcode-studio", `${H}?screen=barcodes`],
   ["assistant-phone-brands", `${H}?screen=phone&chips=ref&brand=Reebok`],
   // Warehouse (Junid 6 Nov): one glass level per nesting, navy ink on glass.
   ["warehouse", `${H}?screen=warehouse`],
@@ -90,8 +95,22 @@ export const ADMIN_ROUTES = [
   ["social-style", A, { ls: { marathon_role: "social" }, tap: "[data-testid=social-tab-library]" }],
   ["social-generate", A, { ls: { marathon_role: "social" }, tap: "[data-testid=social-tab-generate]" }],
   ["social-policy", A, { ls: { marathon_role: "social" }, tap: "[data-testid=social-tab-policy]" }],
+  // Junid 12 Nov: Barcode Studio and the Labels screen on the real App.
+  ["barcode-studio-app", A, { ls: { marathon_role: "barcodes" } }],
+  ["labels", A, { ls: { marathon_role: "label_print" } }],
 ];
 export const SIZES = [[1440, 900], [390, 844]];
+// Routes that are also judged at a size beyond SIZES (Junid 12 Nov: Barcode
+// Studio at 1280x800, the second laptop size of his reference).
+export const EXTRA_SIZES = {
+  "barcode-cards": [[1280, 800]],
+  "barcode-studio": [[1280, 800]],
+  "barcode-studio-app": [[1280, 800]],
+};
+const ALL_SIZES = [...SIZES, ...Object.values(EXTRA_SIZES).flat()]
+  .filter((s, i, a) => a.findIndex((t) => t[0] === s[0] && t[1] === s[1]) === i);
+const routeAtSize = (name, w, h) => SIZES.some(([a, b]) => a === w && b === h)
+  || (EXTRA_SIZES[name] || []).some(([a, b]) => a === w && b === h);
 const EXEMPT = ".sky-logo, .sky-tile, [data-contrast-exempt]";
 
 // ── WCAG relative luminance / contrast ──
@@ -209,10 +228,11 @@ async function run() {
     await waitFor(`${BASE}${ADMIN ? A : H}`);
     for (const [ename, engine] of ENGINES) {
       const browser = await engine.launch();
-      for (const [w, h] of SIZES) {
+      for (const [w, h] of ALL_SIZES) {
         const dpr = w < 600 ? 2 : 1;
         const ctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: dpr });
         for (const [name, path, setup] of (ADMIN ? ADMIN_ROUTES : ROUTES)) {
+          if (!routeAtSize(name, w, h) || (ONLY && !ONLY.includes(name))) continue;
           const page = await ctx.newPage();
           if (setup) await page.addInitScript((ls) => { try { localStorage.clear(); for (const [k, v] of Object.entries(ls)) localStorage.setItem(k, v); } catch { /* none */ } }, setup.ls || {});
           await page.goto(BASE + path, { waitUntil: "networkidle", timeout: 90000 }).catch(() => {});
@@ -241,6 +261,7 @@ async function run() {
           const fails = [];
           for (const el of els) {
             const c = judge(el, bg, dpr);
+            if (SHOW && SHOW.some((s) => el.cls.includes(s) || el.text.includes(s))) console.log(`   ·  ${Math.round(c * 100) / 100}:1  <${el.tag}.${el.cls.split(" ")[0]}> "${el.text}"`);
             if (c < MIN) fails.push({ ...el, contrast: Math.round(c * 100) / 100 });
           }
           report.results.push({ engine: ename, route: name, size: `${w}x${h}`, checked: els.length, failures: fails, deadGlass });

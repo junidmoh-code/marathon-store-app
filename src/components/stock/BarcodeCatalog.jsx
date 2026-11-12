@@ -107,19 +107,25 @@ export const BCS_PAGE_CSS = `
 html,body{overflow:hidden!important;overscroll-behavior:none}
 .bcsp{position:relative;height:calc(100vh - var(--bcsp-top,140px));height:calc(100dvh - var(--bcsp-top,140px));display:grid;grid-template-columns:212px minmax(0,1fr) 296px;grid-template-rows:minmax(0,1fr);gap:0 26px;padding:8px 30px 0;color:#fff;font-family:var(--sky-font);box-sizing:border-box;overflow:hidden}
 .bcsp *{box-sizing:border-box}
-.bcsp__glass{border-radius:26px;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.7);box-shadow:inset 0 1px 0 rgba(255,255,255,.8),0 14px 34px rgba(10,60,140,.18);
-  -webkit-backdrop-filter:blur(28px) saturate(1.6) brightness(1.05);backdrop-filter:blur(28px) saturate(1.6) brightness(1.05)}
+/* Junid 12 Nov (design/barcode-studio.png): the three panels are SATURATED
+   BLUE glass, one flat tone — no fade to white at the bottom (the old 22%
+   white glass picked up the pale lower sky and read cyan→white). White text
+   sits on them, so the blue is deep enough for 4.5:1 even over a white cloud:
+   88% of #005cd4 over pure white composites to ~#1f6fd9 = 4.8:1 with white.
+   No brightness() in the backdrop filter — it would lift that floor. */
+.bcsp__glass{border-radius:26px;background:rgba(0,92,212,.88);border:1px solid rgba(255,255,255,.6);box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 14px 34px rgba(10,60,140,.22);
+  -webkit-backdrop-filter:blur(28px) saturate(1.4);backdrop-filter:blur(28px) saturate(1.4)}
 .bcsp__w{text-shadow:var(--sky-text-shadow)}
 .bcsp__side{align-self:stretch;margin-bottom:24px;overflow-y:auto;scrollbar-width:none;padding:24px 16px 18px;display:flex;flex-direction:column}
 .bcsp__side::-webkit-scrollbar{display:none}
 .bcsp__mark{display:flex;align-items:baseline;gap:9px;padding:0 8px 22px;color:#fff;text-shadow:var(--sky-text-shadow)}
 .bcsp__mark b{font-size:25px;font-weight:900;font-style:italic;letter-spacing:-.04em}
 .bcsp__mark span{font-size:11px;font-weight:800;font-style:italic;letter-spacing:.5em}
-html[data-sky="on"] #root .bcsp .bcsp__home{display:flex;align-items:center;gap:8px;width:100%;height:46px;padding:0 16px;border-radius:15px;background:rgba(255,255,255,.72)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important;font:700 16px/1 var(--sky-font);cursor:pointer;box-shadow:0 6px 16px rgba(10,60,140,.12)}
+html[data-sky="on"] #root .bcsp .bcsp__home{display:flex;align-items:center;gap:8px;width:100%;height:46px;padding:0 16px;border-radius:15px;background:rgba(255,255,255,.88)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important;font:700 16px/1 var(--sky-font);cursor:pointer;box-shadow:0 6px 16px rgba(10,60,140,.12)}
 .bcsp__lab{font-size:12px;font-weight:800;letter-spacing:.22em;text-transform:uppercase;color:#fff;text-shadow:var(--sky-text-shadow);padding:26px 8px 10px}
 .bcsp__selw{position:relative}
 .bcsp__selw svg{position:absolute;right:15px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--sky-ink-deep)}
-html[data-sky="on"] #root .bcsp select.bcsp__sel{-webkit-appearance:none;appearance:none;width:100%;height:48px;padding:0 40px 0 16px;border-radius:15px;background:rgba(255,255,255,.62)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important;font:600 16px/1 var(--sky-font);cursor:pointer}
+html[data-sky="on"] #root .bcsp select.bcsp__sel{-webkit-appearance:none;appearance:none;width:100%;height:48px;padding:0 40px 0 16px;border-radius:15px;background:rgba(255,255,255,.88)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important;font:700 16px/1 var(--sky-font);cursor:pointer}
 html[data-sky="on"] #root .bcsp .bcsp__pr{display:flex;align-items:center;gap:9px;width:100%;margin-bottom:6px;height:42px;padding:0 14px;border-radius:13px;text-align:left;font:600 14px/1 var(--sky-font);cursor:pointer;background:rgba(255,255,255,.4)!important;border:1px solid rgba(255,255,255,.75)!important;color:var(--sky-ink)!important}
 html[data-sky="on"] #root .bcsp .bcsp__pr[data-on="1"]{background:rgba(255,255,255,.86)!important;border-color:#fff!important;color:var(--sky-ink-deep)!important;font-weight:800}
 html[data-sky="on"] #root .bcsp .bcsp__pr:disabled{cursor:not-allowed;opacity:.55}
@@ -135,18 +141,22 @@ html[data-sky="on"] #root .bcsp .bcsp__x{background:none!important;border:0!impo
 .bcsp__sub{margin-top:8px;font-size:18px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow)}
 .bcsp__srch{position:relative;margin:14px 0 18px}
 .bcsp__srch svg{position:absolute;z-index:1;left:18px;top:50%;transform:translateY(-50%);color:#fff;pointer-events:none}
-html[data-sky="on"] #root .bcsp input.bcsp__in:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]){width:100%;height:42px;padding:0 18px 0 50px;border-radius:999px;background:rgba(255,255,255,.26)!important;border:1px solid rgba(255,255,255,.75)!important;color:#fff!important;caret-color:#fff;font:500 17px/1 var(--sky-font);outline:none;text-shadow:0 1px 6px rgba(0,40,110,.35);
+html[data-sky="on"] #root .bcsp input.bcsp__in:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]){width:100%;height:42px;padding:0 18px 0 50px;border-radius:999px;background:rgba(0,92,212,.5)!important;border:1px solid rgba(255,255,255,.75)!important;color:#fff!important;caret-color:#fff;font:600 17px/1 var(--sky-font);outline:none;text-shadow:0 1px 6px rgba(0,40,110,.35);
   -webkit-backdrop-filter:blur(20px) saturate(1.5);backdrop-filter:blur(20px) saturate(1.5)}
 html[data-sky="on"] #root .bcsp input.bcsp__in:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])::placeholder{color:rgba(255,255,255,.92)!important}
 .bcsp__n{margin:34px 4px 16px;font-size:17px;font-weight:800;color:#fff;text-shadow:var(--sky-text-shadow);font-variant-numeric:tabular-nums}
 .bcsp__list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:6px 4px 48px;margin:0 -4px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 12px);mask-image:linear-gradient(to bottom,transparent 0,#000 12px)}
 .bcsp__list::-webkit-scrollbar{display:none}
 .bcsp__grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 20px;align-items:start}
+/* The reference's cards: light frosted glass, near white and translucent. */
+.bcsp .bcs2{background:rgba(255,255,255,.66);border-color:rgba(255,255,255,.9)}
+.bcsp .bcs2:hover{background:rgba(255,255,255,.74)}
+.bcsp .bcs2[data-open="1"]{background:rgba(255,255,255,.78)}
 .bcsp__right{min-height:0;height:100%;overflow-y:auto;scrollbar-width:none;display:flex;flex-direction:column;gap:26px;padding-bottom:24px}
 .bcsp__right::-webkit-scrollbar{display:none}
 .bcsp__tray{display:flex;flex-direction:column;min-height:240px;max-height:62%;flex:0 1 auto}
 .bcsp__lp{flex:0 0 auto}
-.bcsp__th{display:flex;align-items:center;gap:12px;padding:18px 18px 16px;border-bottom:1px solid rgba(255,255,255,.6)}
+.bcsp__th{display:flex;align-items:center;gap:12px;padding:18px 18px 16px;border-bottom:1px solid rgba(255,255,255,.35)}
 .bcsp__th h2{margin:0;font-size:22px;font-weight:800;letter-spacing:-.015em;color:#fff;text-shadow:var(--sky-text-shadow)}
 .bcsp__badge{min-width:44px;height:30px;padding:0 12px;border-radius:999px;display:grid;place-items:center;background:rgba(255,255,255,.85);border:1px solid #fff;color:var(--sky-ink-deep);font-size:16px;font-weight:900;font-variant-numeric:tabular-nums}
 html[data-sky="on"] #root .bcsp .bcsp__clear{margin-left:auto;background:rgba(255,255,255,.72)!important;border:1px solid #fff!important;color:var(--sky-ink-deep)!important;border-radius:999px;padding:6px 12px;font:700 13px/1 var(--sky-font);cursor:pointer}
@@ -164,8 +174,30 @@ html[data-sky="on"] #root .bcsp .bcsp__print:disabled{cursor:not-allowed;opacity
 .bcsp__lp{padding:18px 18px 20px}
 .bcsp__lp h2{margin:0 0 6px;font-size:22px;font-weight:800;letter-spacing:-.015em;color:#fff;text-shadow:var(--sky-text-shadow)}
 .bcsp__lpe{display:flex;flex-direction:column;align-items:center;gap:16px;padding:22px 6px 6px;font-size:16px;font-weight:500;color:#fff;text-shadow:var(--sky-text-shadow);text-align:center}
-.bcsp__lpi{width:62px;height:62px;border-radius:16px;display:grid;place-items:center;background:rgba(255,255,255,.6);border:1px solid #fff;color:var(--sky-ink-deep);box-shadow:0 8px 20px rgba(10,60,140,.16)}
+.bcsp__lpi{width:62px;height:62px;border-radius:16px;display:grid;place-items:center;background:rgba(255,255,255,.9);border:1px solid #fff;color:var(--sky-ink-deep);box-shadow:0 8px 20px rgba(10,60,140,.16)}
 .bcsp__label{margin-top:10px;background:#f7f7f2;color:#0a0a0a;border-radius:10px;padding:12px 14px 10px;box-shadow:0 12px 30px -12px rgba(0,30,90,.5);font-family:'SF Mono',ui-monospace,monospace}
+/* Scale of design/barcode-studio.png (Junid 12 Nov), measured by overlay at
+   1440 wide: a wider side panel and tray column, the big title, taller cards
+   with the larger name, size count and photo, taller Home and dropdowns. */
+.bcsp{grid-template-columns:238px minmax(0,1fr) 330px;gap:0 22px;padding:4px 24px 0}
+.bcsp__h1{font-size:44px;letter-spacing:-.03em}
+.bcsp__srch{margin:12px 0 16px}
+html[data-sky="on"] #root .bcsp input.bcsp__in:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]){height:46px;font-size:19px}
+html[data-sky="on"] #root .bcsp .bcsp__home{height:52px;font-size:19px;border-radius:18px}
+html[data-sky="on"] #root .bcsp select.bcsp__sel{height:54px;font-size:19px;border-radius:18px}
+.bcsp__lab{font-size:14px;padding:28px 10px 10px}
+.bcsp__grid{gap:14px 20px}
+.bcsp .bcs2__head{min-height:84px;gap:16px;padding:9px 18px 9px 14px}
+.bcsp .bcs2__ph{width:66px;height:66px;border-radius:14px}
+.bcsp .bcs2__nm{font-size:19px;letter-spacing:-.02em}
+.bcsp .bcs2__meta{font-size:17px;font-weight:500;color:var(--sky-ink-deep)}
+.bcsp .bcs2__chev svg{width:22px;height:22px}
+.bcsp__th h2,.bcsp__lp h2{font-size:26px;letter-spacing:-.02em}
+.bcsp__empty,.bcsp__lpe{font-size:17px}
+/* 1280-wide laptops: the same page a step smaller, so names still fit. */
+@media (max-width:1439px){.bcsp{grid-template-columns:210px minmax(0,1fr) 288px;gap:0 18px;padding:4px 20px 0}
+  .bcsp .bcs2__head{min-height:78px;gap:13px;padding:9px 14px 9px 11px}.bcsp .bcs2__ph{width:58px;height:58px}
+  .bcsp .bcs2__nm{font-size:17px}.bcsp .bcs2__meta{font-size:15px}.bcsp__h1{font-size:40px}}
 @media (max-width:1279px){.bcsp{grid-template-columns:196px minmax(0,1fr) 264px;gap:0 18px;padding:8px 18px 0}.bcsp__grid{grid-template-columns:minmax(0,1fr)}.bcsp__h1{font-size:34px}}
 @media (prefers-reduced-motion:reduce){.bcsp *{transition:none!important}}
 `;
@@ -209,7 +241,7 @@ export function BarcodeStudioDesktop(v) {
         <div className="bcsp__mark" data-contrast-exempt="" data-legacy-header=""><b>marathon</b><span>CLUB</span></div>
         <button type="button" className="bcsp__home" onClick={onExit}>← Home</button>
 
-        <div className="bcsp__lab" data-contrast-exempt="">Location</div>
+        <div className="bcsp__lab">Location</div>
         <div className="bcsp__selw">
           <select className="bcsp__sel" value={loc} onChange={(e) => setLoc(e.target.value)} aria-label="Location">
             {locOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
@@ -217,7 +249,7 @@ export function BarcodeStudioDesktop(v) {
           <IcoChevDown />
         </div>
         {categories.length > 1 && <>
-          <div className="bcsp__lab" data-contrast-exempt="">Category</div>
+          <div className="bcsp__lab">Category</div>
           <div className="bcsp__selw">
             <select className="bcsp__sel" value={cat} onChange={(e) => setCat(e.target.value)} aria-label="Category">
               <option value="all">All</option>
@@ -276,12 +308,12 @@ export function BarcodeStudioDesktop(v) {
       <aside className="bcsp__right">
         <section className="bcsp__tray bcsp__glass" aria-label="Print tray">
           <div className="bcsp__th">
-            <h2 data-contrast-exempt="">Print tray</h2>
+            <h2>Print tray</h2>
             <span className="bcsp__badge">{selList.length}</span>
             {selList.length > 0 && <button type="button" className="bcsp__clear" onClick={clearSel}>Clear</button>}
           </div>
           {selList.length === 0 ? (
-            <div className="bcsp__empty" data-contrast-exempt=""><IcoPrinter s={44} />Tray is empty.</div>
+            <div className="bcsp__empty"><IcoPrinter s={44} /><span>Tray is empty.</span></div>
           ) : <>
             <div className="bcsp__items">
               {selList.map(([k, it]) => (
@@ -304,7 +336,7 @@ export function BarcodeStudioDesktop(v) {
         </section>
 
         <section className="bcsp__lp bcsp__glass" aria-label="Label preview">
-          <h2 data-contrast-exempt="">Label preview</h2>
+          <h2>Label preview</h2>
           {lastP && lastItem ? (
             <div className="bcsp__label">
               <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: -.2 }}>{lastP.name}</div>
@@ -322,9 +354,9 @@ export function BarcodeStudioDesktop(v) {
               )}
             </div>
           ) : (
-            <div className="bcsp__lpe" data-contrast-exempt="">
+            <div className="bcsp__lpe">
               <span className="bcsp__lpi"><svg width="30" height="26" viewBox="0 0 30 26" fill="currentColor"><rect x="2" y="2" width="3" height="22" rx="1.5" /><rect x="8" y="2" width="3" height="22" rx="1.5" /><rect x="14" y="2" width="3" height="22" rx="1.5" /><rect x="20" y="2" width="3" height="22" rx="1.5" /><rect x="26" y="2" width="3" height="22" rx="1.5" /></svg></span>
-              Select a size to preview its label.
+              <span>Select a size to preview its label.</span>
             </div>
           )}
         </section>
