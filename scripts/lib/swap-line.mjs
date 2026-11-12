@@ -51,7 +51,7 @@
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { routeLine, availableAt, ROUTED_LOCATIONS } from "../shopify/onlineOrders/routing.mjs";
+import { routeLine, availableAt, ROUTED_LOCATIONS, STRIP_SHOPS } from "../shopify/onlineOrders/routing.mjs";
 import { placeName, linesOf, holdRowsFor, displayKey } from "../shopify/onlineOrders/orderModel.mjs";
 import { withdrawRequest, ESCALATIONS_PATH } from "../shopify/onlineOrders/escalate.mjs";
 import { paidCents, rands, lineLedger, swapResolution } from "../online/agent/core.mjs";
@@ -151,7 +151,7 @@ async function defaultAvailable({ get, orderKey, order, i, pid, sizeKey, display
     if (loc && free[loc] != null) free[loc] = Math.max(0, free[loc] - (Number(l.qty) || 0));
   });
   // A shop whose Display Checks are off can neither see nor close an entry.
-  if (displayFeedOn) for (const shop of ["marathon-pe", "trophy"]) if ((await displayFeedOn(shop)) === false) free[shop] = 0;
+  if (displayFeedOn) for (const shop of STRIP_SHOPS) if ((await displayFeedOn(shop)) === false) free[shop] = 0;
   return { stockQty, free };
 }
 
@@ -370,8 +370,9 @@ export async function afterSwap({ db, orderKey, i, order, swappedFrom, to, newPi
       qty: Number(swappedFrom.qty) || 1, locationId: loc, hubOrders: back.hubOrders.length ? back.hubOrders : null,
       swappedTo: to, at: now, by: whoName(by), via, state: "open",
     });
-    // Trophy sees it on its own Website orders strip (Yasmin is at the packing store).
-    if (loc === "trophy" && !back.hubOrders.length) {
+    // Trophy, Concrete and Pine see it on their own Website orders strip (the
+    // packer is at Marathon PE, the packing store, so PE needs no entry).
+    if (["trophy", "concrete", "marathon-pine"].includes(loc) && !back.hubOrders.length) {
       const key = `${displayKey(orderKey, i, gen)}__return`;
       returnRec.entryKey = `displayChecks_active/${loc}/${key}`;
       await db.ref(returnRec.entryKey).transaction((cur) => (cur == null ? clean({

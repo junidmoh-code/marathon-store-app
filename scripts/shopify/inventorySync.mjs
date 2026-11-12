@@ -182,8 +182,8 @@ export function onlineHoldAdjustment(reserved, committed, released = 0) {
  * FILTERED AT THE SOURCE, not only inside networkTotals. A location in
  * ONLINE_EXCLUDED_LOCATIONS cannot change the answer — networkTotals drops it
  * either way — so fetching its cells is a point read per product per sweep
- * bought for nothing. With in_transit, hub3 and marathon-pine excluded that is
- * three reads saved on every product on every pass, and the backstop walks the
+ * bought for nothing. With in_transit excluded that is
+ * a read saved on every product on every pass, and the backstop walks the
  * whole live catalogue continuously.
  *
  * networkTotals still filters. This is a saving, never the guarantee: the

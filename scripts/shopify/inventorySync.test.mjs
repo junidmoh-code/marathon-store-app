@@ -580,12 +580,16 @@ describe("the excluded-location list is shared with the trigger", () => {
     expect([...fromTrigger].sort()).toEqual([...ONLINE_EXCLUDED_LOCATIONS].sort());
   });
 
-  it("both sides refuse to count the untrusted locations", () => {
+  it("both sides leave out In Transit and the dead stockroom id, and count every shop and hub", () => {
     const { ONLINE_EXCLUDED_LOCATIONS: fromTrigger } =
       createRequire(import.meta.url)("../../functions/lib/shopify-inventory-dirty.cjs");
-    for (const id of ["in_transit", "hub3", "marathon-pine", "concrete", "concrete-stockroom"]) {
+    for (const id of ["in_transit", "concrete-stockroom"]) {
       expect(ONLINE_EXCLUDED_LOCATIONS.has(id), `push must not count ${id}`).toBe(true);
       expect(fromTrigger.has(id), `trigger must not mark on ${id}`).toBe(true);
+    }
+    for (const id of ["hub3", "marathon-pine", "concrete", "central"]) {
+      expect(ONLINE_EXCLUDED_LOCATIONS.has(id), `push must count ${id}`).toBe(false);
+      expect(fromTrigger.has(id), `trigger must mark on ${id}`).toBe(false);
     }
   });
 });
@@ -606,10 +610,10 @@ describe("locationNames — only the shelves that feed the storefront", () => {
     ref: () => ({ get: async () => ({ val: () => locations }) }),
   });
 
-  it("drops the excluded locations and keeps every trusted one", async () => {
+  it("drops only In Transit and keeps every shop and hub, Concrete division included", async () => {
     const names = await locationNames(dbWith(registry));
     expect(names.sort()).toEqual(
-      ["base", "central", "hub1", "hub2", "marathon-pe", "studio", "trophy"].sort()
+      ["base", "central", "hub1", "hub2", "hub3", "marathon-pe", "marathon-pine", "studio", "trophy"].sort()
     );
   });
 

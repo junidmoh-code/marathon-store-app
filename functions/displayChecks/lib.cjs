@@ -67,6 +67,20 @@ function isTriggerStoreEnabled(storeId, network, settings) {
   return flags[storeId] === true;
 }
 
+// ── THE WEBSITE STRIP (Junid, 12 Nov 2026) ───────────────────────────────────
+// A website-order line (online_pick / online_return) routed to a shop sits on
+// that shop's website strip. The strip is ON at every registry store unless
+// its Display Checks are switched OFF explicitly (/displayChecks_settings/
+// {store}/enabled === false). Unlike the sale-driven display checks it does NOT
+// need the store to be fully live: Pine (not live, switch unset) has a working
+// strip without its till sales raising display checks. A hub, Central or an
+// unknown id is not a store → off.
+function isWebsiteStripEnabled(storeId, network, settings) {
+  if (!isRegistryStore(storeId, network)) return false;
+  const s = settings ? normStoreSettings(settings) : null;
+  return !(s && s.enabled === false);
+}
+
 // The stores the trigger is on for, in registry order. settingsByStore:
 // { storeId: rawSettings } for the stores whose settings were read.
 function triggerStores(network, settingsByStore) {
@@ -790,6 +804,7 @@ module.exports = {
   processedClaimDecision,
   bumpTxn,
   isTriggerStoreEnabled,
+  isWebsiteStripEnabled,
   DISPLAY_SCOPES,
   DEFAULT_SCOPE,
   normStoreSettings,

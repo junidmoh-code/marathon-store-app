@@ -44,7 +44,7 @@ import {
 } from "../../../src/utils/onlineOrders.js";
 import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "../../../src/utils/sizeKey.js";
 import { productIsFootwear } from "../../../src/utils/footwearLine.js";
-import { availableAt, routeLines, ROUTED_LOCATIONS } from "./routing.mjs";
+import { availableAt, routeLines, ROUTED_LOCATIONS, STRIP_SHOPS } from "./routing.mjs";
 import {
   isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
@@ -60,7 +60,8 @@ import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 import { costAlertMail, costAlertThreshold } from "../../shipping/costAlert.mjs";
 import { applySwapRequests } from "./swapRequests.mjs";
-import { applyOrderNowRequests } from "./orderNowRequests.mjs";
+import { applyOrderNowRequests, clearAttentionIfSettled } from "./orderNowRequests.mjs";
+import { applyWaitingReroutes } from "./waitingReroute.mjs";
 
 export const META_PATH = "online_orders_meta";
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -188,6 +189,13 @@ export async function runOrdersPoll(deps) {
         // is back in stock goes to reroute, and maintainOrder below routes and
         // raises it exactly like a new order's line.
         if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor, resolveVariant })) {
+          order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+        }
+        // A line WAITING ON REFILL (nowhere on the route had it) routes itself
+        // the tick its stock lands (waitingReroute.mjs, Junid 12 Nov 2026). It
+        // raises nothing; the refill scan alone brings stock in.
+        if (await applyWaitingReroutes(ctx, id, order, { availabilityFor, resolveVariant })) {
+          await clearAttentionIfSettled(ctx, id);
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
         // Escalation raises requests staff see, so only with the switch on.
@@ -357,7 +365,7 @@ async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}) {
     // A shop whose Display Checks are switched off has no feed to show the
     // entry on and cannot close it (completeDisplayCheck refuses), so it is
     // not a place a line can come from (PR #775 spec review).
-    for (const shop of ["marathon-pe", "trophy"]) if (!(await displayFeedOn(ctx, shop))) free[shop] = 0;
+    for (const shop of STRIP_SHOPS) if (!(await displayFeedOn(ctx, shop))) free[shop] = 0;
     // Units THIS order's other lines already hold there (a re-route excludes
     // the order's own rows, so its untouched lines are subtracted here).
     for (const [loc, q] of Object.entries(ownOther[key] || {})) free[loc] = Math.max(0, (free[loc] || 0) - q);
@@ -366,8 +374,10 @@ async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}) {
   return out;
 }
 
-// The shop's own Display Checks switch, as the feed and the callable judge it
-// (functions/displayChecks lib.cjs isTriggerStoreEnabled), injected by the CLI.
+// Can this shop's website strip take a line? (functions/displayChecks lib.cjs
+// isWebsiteStripEnabled — on unless the store's Display Checks are switched
+// OFF explicitly; a not-live store like Pine still has its strip), injected by
+// the CLI.
 // Asked once per tick per shop. No judge injected (tests) → on.
 async function displayFeedOn(ctx, shop) {
   ctx.displayFeed ||= {};

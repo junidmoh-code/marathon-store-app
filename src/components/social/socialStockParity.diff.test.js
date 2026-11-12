@@ -63,16 +63,14 @@ describe("the excluded-location set is the same on both sides", () => {
     expect([...cjsExcluded].sort()).toEqual([...ONLINE_EXCLUDED_LOCATIONS].sort());
   });
 
-  it("holds the locations the owner decided must not feed the storefront", () => {
-    // Named explicitly so REMOVING one is a deliberate act with a test to
-    // change, not a silent widening of what the shop offers strangers.
-    for (const id of ["in_transit", "hub3", "marathon-pine", "concrete", "concrete-stockroom"]) {
-      expect(ONLINE_EXCLUDED_LOCATIONS.has(id), `${id} must not feed the storefront`).toBe(true);
-    }
+  it("holds exactly In Transit and the dead concrete-stockroom id (Junid, 12 Nov 2026)", () => {
+    // Named explicitly so ADDING one is a deliberate act with a test to
+    // change, not a silent narrowing of what the shop offers.
+    expect([...ONLINE_EXCLUDED_LOCATIONS].sort()).toEqual(["concrete-stockroom", "in_transit"]);
   });
 
-  it("does not exclude a location that is trusted", () => {
-    for (const id of ["central", "hub1", "hub2", "marathon-pe", "trophy"]) {
+  it("does not exclude any shop, hub or Central — stock anywhere is our stock", () => {
+    for (const id of ["central", "hub1", "hub2", "hub3", "marathon-pe", "trophy", "concrete", "marathon-pine"]) {
       expect(ONLINE_EXCLUDED_LOCATIONS.has(id), `${id} must still count`).toBe(false);
     }
   });
@@ -84,10 +82,10 @@ describe("the excluded-location set is the same on both sides", () => {
     // that and would have passed while a caller quietly deleted Pine from the
     // set and put 1,668 units back on the storefront. Assert the refusal.
     for (const set of [ONLINE_EXCLUDED_LOCATIONS, cjsExcluded]) {
-      expect(() => set.delete("marathon-pine")).toThrow(/immutable/);
+      expect(() => set.delete("in_transit")).toThrow(/immutable/);
       expect(() => set.add("hub1")).toThrow(/immutable/);
       expect(() => set.clear()).toThrow(/immutable/);
-      expect(set.has("marathon-pine")).toBe(true);
+      expect(set.has("in_transit")).toBe(true);
       expect(set.has("hub1")).toBe(false);
     }
   });
@@ -106,31 +104,29 @@ describe("the number itself, checked by hand", () => {
     return mine;
   };
 
-  it("counts the trusted locations and only those", () => {
-    // 2 (PE) + 5 (hub2) + 1 (central) = 8 countable;
-    // 12 at Pine, 9 at Hub 3 and 99 in transit are real units that do not sell online.
+  it("counts every shop, hub and Central — only In Transit is left out", () => {
+    // 2 (PE) + 5 (hub2) + 1 (central) + 12 (Pine) + 9 (Hub 3) + 4 (Concrete) = 33;
+    // 99 in transit cannot be picked and does not sell online.
     const tree = {
       "marathon-pe": { p1: { M: { qty: 2 } } },
       hub2: { p1: { M: { qty: 5 } } },
       central: { p1: { M: { qty: 1 } } },
       "marathon-pine": { p1: { M: { qty: 12 } } },
       hub3: { p1: { M: { qty: 9 } } },
+      concrete: { p1: { M: { qty: 4 } } },
       in_transit: { p1: { M: { qty: 99 } } },
     };
-    expect(bothAgree(tree, ["M"])).toBe(8);
+    expect(bothAgree(tree, ["M"])).toBe(33);
   });
 
-  it("a Pine-only product is exactly zero — the 43-product shape", () => {
-    const tree = { "marathon-pine": { p1: { "8": { qty: 3 }, "9": { qty: 4 } } } };
-    expect(bothAgree(tree, ["8", "9"])).toBe(0);
+  it("a Concrete-division-only product sells online (12 Nov 2026)", () => {
+    const tree = { "marathon-pine": { p1: { "8": { qty: 3 } } }, hub3: { p1: { "9": { qty: 4 } } } };
+    expect(bothAgree(tree, ["8", "9"])).toBe(7);
   });
 
-  it("the baseline policy still counts Pine — proof the exclusion is what removed it", () => {
-    // Same tree, the pool passed explicitly. If this ever returned 3 as well,
-    // the zero above would be measuring something other than the exclusion.
-    const tree = { "marathon-pine": { p1: { M: { qty: 12 } } }, central: { p1: { M: { qty: 3 } } } };
-    expect(sumTotals(networkTotals(tree, "p1", ["M"], new Set(["in_transit"])))).toBe(15);
-    expect(sumTotals(networkTotals(tree, "p1", ["M"]))).toBe(3);
+  it("a negative or zeroed count cell at Pine sells nothing", () => {
+    const tree = { "marathon-pine": { p1: { M: { qty: -2 }, L: { qty: 0 } } } };
+    expect(bothAgree(tree, ["M", "L"])).toBe(0);
   });
 });
 

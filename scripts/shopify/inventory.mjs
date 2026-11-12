@@ -5,9 +5,8 @@
 // (the app's own convention: negatives are bookkeeping artefacts, never
 // sellable). Never create locations mirroring PE / Pine / Trophy / the hubs.
 //
-// "Every location" was literally true until 2026-09-08; it is not any more.
-// ONLINE_EXCLUDED_LOCATIONS below is the pool, and the block comment on it is
-// the reason. The one-Shopify-location decision is UNCHANGED — the shop still
+// "Every location" was not true from 2026-09-08 to 2026-11-12 (Hub 3, Pine and
+// Concrete were left out); it is again now, except In Transit. The one-Shopify-location decision is UNCHANGED — the shop still
 // has exactly one pool; what narrowed is which of our shelves feed it.
 //
 // networkTotals is pure (unit-tested against a /stock-shaped tree);
@@ -25,26 +24,12 @@ import { stockSizeKey } from "../../src/utils/sizeKey.js";
 // sellable false. Pushing it as available would let the storefront sell stock
 // nobody can pick. This set is a property of the system and is not a policy.
 //
-// UNTRUSTED — the stock may well be sellable, but the COUNT is not believed.
-// Hub 3 and Pine keep their own /stock cells, get refilled, get counted and
-// get reported exactly as before; what changed (owner decision, 2026-09-08) is
-// that their numbers are no longer accurate enough to promise a stranger on
-// the internet. The owner's framing is the specification: "I'd rather a
-// product show as unavailable than sell something I can't fulfil." So a
-// A location enters this set when its count stops being trustworthy and leaves
-// it when the count is trusted again. That is NOT a one-line edit, and this
-// comment said it was: the list is mirrored into two Cloud Functions and named
-// by three test files, and the change needs a mini pull, three named function
-// deploys, a full inventory correction and a search-index rebuild. The whole
-// sequence is written down under "Trusting a location again" in
-// scripts/shopify/README.md; measure it first with
-// scripts/shopify/census-online-locations.mjs.
-//
-// Measured at the time of the decision, across 1,203 live products:
-//   marathon-pine  1,668 units on 268 live products (10.5% of the pool)
-//   hub3               4 units on   3 live products ( 0.0%)
-// and 43 live products — 3.6% of the live catalogue — fall to zero and go
-// unavailable. Hub 3 alone takes NOTHING to zero; Pine is the whole cost.
+// UNTRUSTED — a POLICY: stock that is real but whose count is not promised
+// to a web customer. Hub 3 and Pine were put here on 8 Sep 2026 and Concrete on
+// 6 Oct 2026; Junid took all three off on 12 Nov 2026 (see the block above the
+// sets). The set is empty today. Measure any future change first with
+// scripts/shopify/census-online-locations.mjs; the deploy sequence is under
+// "Trusting a location again" in scripts/shopify/README.md.
 //
 // ONLINE_EXCLUDED_LOCATIONS is the union, and it is the only one anything
 // reads.
@@ -92,15 +77,25 @@ function sealedSet(ids) {
   return Object.freeze(set);
 }
 
-export const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
-// Concrete and its stockroom (added 6 Oct 2026 with the sections work) are on
-// this list for a different reason from Hub 3 and Pine: they are new, in the
-// other section, and nothing online picks from them. Their stock is not
-// promised to a web customer until the owner says so; take them off this list
-// (all three copies) when he does.
-// ("concrete-stockroom" no longer exists — 8 Oct 2026 — and is kept here as a
-// TOMBSTONE: a stray /stock cell under that id must never count as sellable online.)
-export const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine", "concrete", "concrete-stockroom"]);
+// ── EVERY SHOP AND HUB COUNTS (Junid, 12 Nov 2026) ──────────────────────────
+// Hub 3, Concrete and Pine were on an "untrusted" list from 8 Sep / 6 Oct 2026
+// and fed nothing to the website. Junid reversed that on 12 Nov 2026: "every
+// unit of stock anywhere is listed on the website, Central included. Stock
+// anywhere is our stock." Website lines now route Marathon first, then the
+// Concrete division (scripts/shopify/onlineOrders/routing.mjs), so a unit at
+// Hub 3, Concrete or Pine is one a web order can actually be picked from.
+// The untrusted list is therefore EMPTY and kept only so the census tool and
+// the tests can still name the idea. Negative cells still count 0 (the summer
+// clamps them), so Pine's zeroed count cells sell nothing until counted.
+//
+// "concrete-stockroom" no longer exists (8 Oct 2026) and stays excluded as a
+// TOMBSTONE in UNSELLABLE: a stray /stock cell under that id is not a place
+// anyone can pick from, so it must never count as sellable online.
+// This list is mirrored in FOUR files (scripts/shopify/inventory.mjs,
+// functions/lib/shopify-inventory-dirty.cjs, functions/lib/social-select.cjs,
+// src/utils/onlinePool.js); the parity tests pin them by import.
+export const UNSELLABLE_LOCATIONS = sealedSet(["in_transit", "concrete-stockroom"]);
+export const UNTRUSTED_LOCATIONS = sealedSet([]);
 export const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
   ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,
 ]);

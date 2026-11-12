@@ -102,16 +102,15 @@ Pure modules, tested via the normal `npm test`:
 - Shopify has exactly ONE location, deliberately: inventory is one sellable
   pool. Never create locations mirroring PE / Pine / Trophy / the hubs;
   per-location breakdown becomes a metafield in a later slice.
-- **Not every shelf feeds that pool.** `ONLINE_EXCLUDED_LOCATIONS` in
-  `inventory.mjs` is the list that does not count toward what a web customer is
-  offered, and it is the union of two separate ideas:
-  `UNSELLABLE_LOCATIONS` (`in_transit` — stock that physically cannot be
-  picked) and `UNTRUSTED_LOCATIONS` (`hub3`, `marathon-pine` — real, sellable
-  stock whose COUNT is not believed; owner decision 2026-09-08). `concrete` and
-  `concrete-stockroom` joined that list on 2026-10-06 (new Section 1 locations
-  nothing online picks from yet — a default, not an owner ruling). Excluded
-  locations keep their `/stock` cells, their refills and their reporting; they
-  are simply not promised to strangers. Measure before changing the list:
+- **Every shop and hub feeds that pool (Junid, 12 Nov 2026), Central
+  included.** `ONLINE_EXCLUDED_LOCATIONS` in `inventory.mjs` is now only
+  `UNSELLABLE_LOCATIONS`: `in_transit` (stock that physically cannot be
+  picked) and the dead `concrete-stockroom` id (a tombstone).
+  `UNTRUSTED_LOCATIONS` is empty: Hub 3 and Pine were on it from 2026-09-08 and
+  Concrete from 2026-10-06; Junid took them off when website lines started
+  routing to the Concrete division (`onlineOrders/routing.mjs`). Central is
+  listed but never picked: a line only Central holds waits on the refill scan.
+  Measure before changing the list:
   `node scripts/shopify/census-online-locations.mjs --exclude <ids>`.
 
 ### Writing a quantity to Shopify: read Shopify FIRST

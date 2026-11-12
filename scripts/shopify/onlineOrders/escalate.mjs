@@ -139,7 +139,7 @@ export function lineForEscalation(line, esc) {
 /** The line put back on the pick / display path at `at` (a fresh entry key). */
 export function deliveredLine(line, esc, nowMs) {
   const at = esc.deliverAt;
-  const hub = at === "hub1" || at === "hub2";
+  const hub = at === "hub1" || at === "hub2" || at === "hub3";
   const next = stepEscalation(esc, { type: "delivered" }, { nowMs });
   return {
     ...line,

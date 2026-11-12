@@ -99,7 +99,7 @@ describe("availableAt — live cells minus other orders' holds", () => {
       holdsCell: { o1: { qty: 1, locs: { "marathon-pe": 1 } }, o2: { qty: 2, locs: { hub1: 2 } } },
       orderId: "o9",
     });
-    expect(a).toEqual({ hub1: 1, hub2: 0, "marathon-pe": 1, trophy: 1 });
+    expect(a).toEqual({ hub1: 1, hub2: 0, hub3: 0, "marathon-pe": 1, trophy: 1, concrete: 0, "marathon-pine": 0 });
   });
   it("never counts the order's own hold against it", () => {
     const a = availableAt({ stockQty: { "marathon-pe": 1 }, holdsCell: { o1: { qty: 1, locs: { "marathon-pe": 1 } } }, orderId: "o1" });
@@ -111,5 +111,42 @@ describe("availableAt — live cells minus other orders' holds", () => {
   });
   it("covers exactly the routed locations", () => {
     expect(Object.keys(availableAt({})).sort()).toEqual([...ROUTED_LOCATIONS].sort());
+  });
+});
+
+// ── Junid, 12 Nov 2026: shops and hubs only, Marathon first, then Concrete ──
+describe("routeLine — the Concrete division after Marathon (12 Nov 2026)", () => {
+  it("sneakers: Hub 3 when neither Hub 1 nor Hub 2 has the size — a hub order (pick)", () => {
+    expect(routeLine({ qty: 1, isFootwear: true, available: { hub3: 2 } })).toEqual([pick("hub3")]);
+  });
+  it("sneakers: Marathon wins — Hub 1 before Hub 3 even when Hub 3 has more", () => {
+    expect(routeLine({ qty: 1, isFootwear: true, available: { hub1: 1, hub3: 9 } })).toEqual([pick("hub1")]);
+  });
+  it("sneakers never go to the Concrete or Pine shop", () => {
+    expect(routeLine({ qty: 1, isFootwear: true, available: { concrete: 5, "marathon-pine": 5 } })).toEqual([none()]);
+  });
+  it("clothing: Concrete after PE, Trophy and Hub 2 — a strip entry (display)", () => {
+    expect(routeLine({ qty: 1, isFootwear: false, available: { concrete: 1, "marathon-pine": 1 } })).toEqual([display("concrete")]);
+  });
+  it("clothing: Pine last", () => {
+    expect(routeLine({ qty: 1, isFootwear: false, available: { "marathon-pine": 1 } })).toEqual([display("marathon-pine")]);
+  });
+  it("clothing: Hub 2 before Concrete", () => {
+    expect(routeLine({ qty: 1, isFootwear: false, available: { hub2: 1, concrete: 4 } })).toEqual([pick("hub2")]);
+  });
+  it("clothing never goes to Hub 3 (sneakers only there)", () => {
+    expect(routeLine({ qty: 1, isFootwear: false, available: { hub3: 5 } })).toEqual([none()]);
+  });
+  it("qty 3 splits PE ×1, Concrete ×1, Pine ×1", () => {
+    expect(routeLine({ qty: 3, isFootwear: false, available: { "marathon-pe": 1, concrete: 1, "marathon-pine": 1 } }))
+      .toEqual([display("marathon-pe"), display("concrete"), display("marathon-pine")]);
+  });
+  it("CENTRAL IS NEVER A SOURCE — a line only Central holds waits (no_stock, no location)", () => {
+    expect(routeLine({ qty: 1, isFootwear: false, available: { central: 50 } })).toEqual([none()]);
+    expect(routeLine({ qty: 1, isFootwear: true, available: { central: 50 } })).toEqual([none()]);
+    expect(ROUTED_LOCATIONS).not.toContain("central");
+  });
+  it("routing reads exactly the shops and hubs of both divisions", () => {
+    expect([...ROUTED_LOCATIONS].sort()).toEqual(["concrete", "hub1", "hub2", "hub3", "marathon-pe", "marathon-pine", "trophy"]);
   });
 });

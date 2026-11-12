@@ -326,7 +326,7 @@ const LINE_ATTENTION = Object.freeze({
   [LINE_STATUS.NEEDS_ATTENTION]: ATTENTION_KIND.WALKIN_OVERRIDE,
 });
 
-const PLACE = { hub1: "Hub 1", hub2: "Hub 2", "marathon-pe": "Marathon PE", trophy: "Trophy" };
+const PLACE = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Marathon Pine" };
 export const placeName = (loc) => PLACE[loc] || loc || "nowhere";
 
 /** The attention an order's lines call for, or null. */

@@ -40,3 +40,16 @@ describe("display check switch per store", () => {
     expect(isDisplayChecksStoreEnabled("trophy", SEED_REGISTRY)).toBe(true);   // unreadable → live rule
   });
 });
+
+describe("the website strip (Junid, 12 Nov 2026)", () => {
+  it("is on at every store unless its Display Checks are switched OFF explicitly — Pine included", async () => {
+    const { isWebsiteStripStoreEnabled } = await import("./displayChecks");
+    expect(isWebsiteStripStoreEnabled("marathon-pine", SEED_REGISTRY, {})).toBe(true);
+    expect(isWebsiteStripStoreEnabled("concrete", SEED_REGISTRY, { concrete: { enabled: true } })).toBe(true);
+    expect(isWebsiteStripStoreEnabled("trophy", SEED_REGISTRY, { trophy: { enabled: false } })).toBe(false);
+    expect(isWebsiteStripStoreEnabled("hub3", SEED_REGISTRY, {})).toBe(false);
+    expect(isWebsiteStripStoreEnabled("central", SEED_REGISTRY, {})).toBe(false);
+    // …without turning Pine's sale-driven display checks on.
+    expect(isDisplayChecksStoreEnabled("marathon-pine", SEED_REGISTRY, {})).toBe(false);
+  });
+});

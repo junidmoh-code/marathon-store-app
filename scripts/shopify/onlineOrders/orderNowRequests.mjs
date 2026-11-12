@@ -49,7 +49,7 @@ export const MAX_ATTEMPTS = 3;
 const ATTENTION_LINE = new Set([LINE_STATUS.NO_STOCK, LINE_STATUS.NOT_FOUND, LINE_STATUS.NEEDS_ATTENTION, LINE_STATUS.UNRESOLVED]);
 // The grey lines: out of stock, being resolved, missing, given up on.
 export const ORDER_NOW_LINE = Object.freeze([LINE_STATUS.RESOLVING, LINE_STATUS.UNAVAILABLE, LINE_STATUS.NO_STOCK, LINE_STATUS.NOT_FOUND, LINE_STATUS.NEEDS_ATTENTION]);
-export const PLACE = Object.freeze({ hub1: "Hub 1", hub2: "Hub 2", "marathon-pe": "Marathon PE", trophy: "Trophy", central: "Central" });
+export const PLACE = Object.freeze({ hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Marathon Pine", central: "Central" });
 
 const clean = (v) => JSON.parse(JSON.stringify(v ?? null));
 const place = (loc) => PLACE[loc] || loc;
@@ -115,7 +115,7 @@ async function sentHubUnits(ctx, id, i, line) {
  * emailed about a line that was just ordered. The keep step sets it again if
  * the re-route comes out no_stock.
  */
-async function clearAttentionIfSettled(ctx, id) {
+export async function clearAttentionIfSettled(ctx, id) {
   await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
     if (cur == null) return null;
     if (!cur.attention || !["no_stock", "not_found", "walkin_override"].includes(cur.attention.kind)) return undefined;

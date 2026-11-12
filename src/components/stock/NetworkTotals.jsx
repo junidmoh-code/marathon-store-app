@@ -171,7 +171,7 @@ export default function NetworkTotals({ products = [], registry, onExit }) {
             never absent: a total whose scope is invisible gets misread. */}
         <div style={{ fontSize: 11, color: "rgba(233,238,255,.34)", marginBottom: 12, lineHeight: 1.5 }}>
           All sizes at {counted}. <span style={{ color: "rgba(233,238,255,.5)" }}>Online</span> is what the
-          website may sell — the exact number sent to Shopify: the sizes the product lists, never In Transit, Pine, Hub 3 or Concrete.
+          website may sell — the exact number sent to Shopify: the sizes the product lists, never In Transit.
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
