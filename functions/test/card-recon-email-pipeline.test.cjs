@@ -25,7 +25,7 @@ const realPdf = (n) => fs.readFileSync(path.join(REAL, `${n}.pdf`));
 const realLines = (n) => require(path.join(REAL, `${n}.lines.json`));
 // The poller's identity, as the owner for brevity: both permission checks
 // short-circuit on it, and neither is what these tests are about.
-const POLLER = { uid: "card-recon-email-poller", token: { email: "gunidmoh@gmail.com" } };
+const POLLER = { uid: "card-recon-email-poller", token: { email: "gunidmoh@gmail.com", email_verified: true } }; // super-admin shortcut; the real poller is a flag-granted custom-token uid
 const TERMINALS = {
   "67377843": { label: "Marathon Till 1", storeId: "trophy", tillId: "till-1" },
   "67325636": { label: "Trophy Till 1", storeId: "pe", tillId: "till-1" },
