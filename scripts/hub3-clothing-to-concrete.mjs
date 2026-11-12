@@ -40,7 +40,9 @@ const seats = {};
 for (const loc of dv.DIVISION_LOCATIONS) seats[loc] = (await once(`${dv.SEATS_PATH}/${loc}`)) || {};
 const locks = {};
 for (const loc of dv.DIVISION_LOCATIONS) locks[loc] = (await once(`refill_engine/open/${loc}`)) || {};
-const requests = (await db.ref("refill_requests").orderByKey().limitToLast(6000).once("value")).val() || {};
+// Push ids only ("-…"): website rows ("web_…") sort after them and would
+// crowd the newest window out.
+const requests = (await db.ref("refill_requests").orderByKey().endAt("-~").limitToLast(6000).once("value")).val() || {};
 // A lock naming a request older than the window: read that one request.
 for (const byPid of Object.values(locks)) for (const bySize of Object.values(byPid || {})) for (const e of Object.values(bySize || {})) {
   if (e?.refillId && !requests[e.refillId]) { const r = await once(`refill_requests/${e.refillId}`); if (r) requests[e.refillId] = r; }
