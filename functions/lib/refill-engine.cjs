@@ -34,7 +34,7 @@ const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_C
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
 const { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } = require("./central-fed.cjs");
-const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict, divisionNeverKeeps } = require("./concrete-division.cjs");
+const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict, divisionNeverKeeps, hub3Refuses } = require("./concrete-division.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -557,9 +557,10 @@ function resolveTarget({ targets, config, products, stock: baseStock, network, d
   // Deactivated products resolve NOTHING — before the explicit row, so no
   // stored policy of any kind can raise a request for a finished line.
   if (isDeactivated(products?.[pid])) return null;
-  // A category a location NEVER keeps (Concrete: perfume — Junid, 10 Nov 2026)
-  // resolves nothing there, above every row, policy and rule.
-  if (divisionNeverKeeps(dest, products?.[pid])) return null;
+  // A category a location NEVER keeps (Concrete: perfume — Junid, 10 Nov 2026;
+  // Hub 3: anything that is not footwear — Junid, 12 Nov 2026) resolves nothing
+  // there, above every row, policy and rule.
+  if (divisionNeverKeeps(dest, products?.[pid]) || (division && hub3Refuses(dest, products?.[pid]))) return null;
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     const rp = explicit.reorderPoint;
@@ -574,9 +575,9 @@ function resolveTarget({ targets, config, products, stock: baseStock, network, d
     };
   }
   // ── THE CONCRETE DIVISION (Junid, 9 Nov 2026) — lib/concrete-division.cjs ──
-  // Non-sneakers at Hub 3, Pine and Concrete, under an explicit row and above
-  // every template or central-fed number. undefined = not the division's
-  // business (a sneaker, Section 2, or the key is off).
+  // Non-footwear at Pine and Concrete (2 per size / 5 per design, from Central),
+  // under an explicit row and above every template or central-fed number.
+  // undefined = not the division's business (footwear, Section 2, or the key is off).
   {
     const dv = divisionTarget(division, dest, pid, size, products, stock);
     if (dv !== undefined) return dv;
@@ -775,8 +776,8 @@ function networkRouting(config, network, division = null) {
     if (inConfig(s.id)) continue;
     const hubs = networkRegistry.backStockHubsOf(network, s.id)
       .filter((h) => networkRegistry.autoRouteAllowed(network, h, s.id));
-    // The division's shops take a non-sneaker straight from Central until Hub 3
-    // has held it, whatever the older central-fed map says (concrete-division.cjs).
+    // The division's shops take every non-footwear item straight from Central
+    // (Junid, 12 Nov 2026), whatever the older central-fed map says (concrete-division.cjs).
     const cf = !!central && (centralFedPerSize(config, network, s.id) !== null || (!!division && DIVISION_SHOPS.includes(s.id))) && networkRegistry.autoRouteAllowed(network, central, s.id);
     if (!hubs.length && !cf) continue;   // no routed hub on its side: nothing automatic
     stores.add(s.id);
@@ -785,9 +786,9 @@ function networkRouting(config, network, division = null) {
     registryRouted.add(s.id);
   }
   const memo = new Map();
-  // `size` (optional): the Concrete division routes a shop's non-sneaker per
-  // SIZE while the Hub 3 keep is off (concrete-division.cjs hub3ServesSize).
-  // Every other answer is per product, whatever size is asked.
+  // `size` (optional): passed through to the division's source question, which
+  // since 12 Nov 2026 answers Central for every size. Every answer is per
+  // product, whatever size is asked.
   const sourceFor = (dest, product, pid, size) => {
     const fixed = routes[dest];
     if (fixed !== undefined || !stores.has(dest)) return fixed;
@@ -1498,10 +1499,11 @@ function computeRefillPlan(snapshot) {
         continue;
       }
       // A category the destination NEVER keeps (Concrete: perfume — Junid,
-      // 10 Nov 2026): every open lock-less row there (a Solve, a manual row) is
+      // 10 Nov 2026; Hub 3: anything not footwear while the division key is on —
+      // Junid, 12 Nov 2026): every open lock-less row there (a Solve, a manual row) is
       // withdrawn too, untouched only — a row a picker has claimed or a pick
       // has moved is left to finish (requireUntouched; in flight skipped).
-      if (divisionNeverKeeps(dest, products?.[r.productId])) {
+      if (divisionNeverKeeps(dest, products?.[r.productId]) || (division && hub3Refuses(dest, products?.[r.productId]))) {
         if (!movedRefillIds.has(String(id))) {
           satisfiedClosures.push({
             refillId: id, dest, pid: r.productId, sizeKey, size: r.size,
@@ -2067,8 +2069,8 @@ function computeRefillPlan(snapshot) {
       // The source is per product for a registry-routed store. A product whose
       // back-stock hub is not live (or is not mapped at all) has no leg: the
       // engine neither asks for it nor reports on it.
-      // A Concrete-division shop's source is a per-SIZE question (below): its
-      // product-level answer must not drop the product before that is asked.
+      // A Concrete-division shop's source is asked again per size below (the
+      // answer is Central either way); its product-level answer never drops it.
       const srcAny = srcOf(dest, pid);
       if (!srcAny && !(division && DIVISION_SHOPS.includes(dest))) continue;
       // Defensive class filter (managedPids already admitted this pid). Footwear
@@ -2086,8 +2088,8 @@ function computeRefillPlan(snapshot) {
         // A "solved" location arms TRUSTED cells only (maskUntrustedStock).
         if (!trustedCell(dest, pid, sizeKey)) continue;
         const size = rawSize(pid, sizeKey);
-        // Per size: a Concrete-division shop asks Hub 3 only for a size Hub 3
-        // holds while the Hub 3 keep is off. Everyone else: srcAny.
+        // Asked per size (the division's answer is Central for every size of a
+        // non-footwear item since 12 Nov 2026). Everyone else: srcAny.
         const src = srcOf(dest, pid, size);
         if (!src) continue;
         const t = resolveTarget(ctx, dest, pid, size);

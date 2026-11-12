@@ -59,7 +59,7 @@
 
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } from "./centralFed";
-import { concreteDivisionPolicy, divisionTarget, hub3PresenceIndex, isDivisionLocation, isDivisionFootwear } from "./concreteDivision";
+import { concreteDivisionPolicy, divisionTarget, isDivisionLocation, isDivisionFootwear } from "./concreteDivision";
 import { SEED_REGISTRY, autoRouteAllowed } from "../../utils/networkRegistry";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 
@@ -319,11 +319,11 @@ export function resolveTarget({ targets, config, products, stock, network }, des
   // in, the seed answers (as the engine does); the Central route must be open.
   {
     // The Concrete division answers before central-fed, exactly as the engine
-    // does. This screen has no seats node: a Hub 3 cell stands in for the seat.
+    // does. This screen has no seats node, so a shop's own cell stands in for
+    // its seat (divisionShopCarries); Hub 3 keeps no non-footwear at all.
     const dvPolicy = isDivisionLocation(dest) && products?.[pid] && !isDivisionFootwear(products[pid]) ? concreteDivisionPolicy(config) : null;
     if (dvPolicy) {
-      // hub3Stock: while the Hub 3 keep is off, a shop asks Hub 3 only for a size Hub 3 holds.
-      const dv = divisionTarget({ policy: dvPolicy, seats: { hub3: stock?.hub3 || {} }, hub3Present: hub3PresenceIndex({ hub3Stock: stock?.hub3 }), hub3Stock: stock?.hub3 || {} }, dest, pid, size, products, stock);
+      const dv = divisionTarget({ policy: dvPolicy }, dest, pid, size, products, stock);
       if (dv !== undefined) return dv;
     }
     const cfNet = network || SEED_REGISTRY;

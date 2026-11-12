@@ -951,8 +951,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
             )}
 
             {!loading && !error && census?.concreteDivision && (
-              <ConcreteDivisionPanel policy={census.concreteDivision} keeps={census.divisionKeeps} busy={busy}
-                onSave={(next) => saveConcreteDivision(next, census.concreteDivision)} />
+              <ConcreteDivisionPanel policy={census.concreteDivision} keeps={census.divisionKeeps} />
             )}
 
             {!loading && !error && !census?.concreteDivision && (census?.centralFedStores || []).map((loc) => (
@@ -1713,7 +1712,7 @@ function History({ entries, onRevert, busy }) {
                   yields no label would otherwise print a bare separator with a
                   blank name after it. (CodeRabbit, PR #469.) */}
               {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
-                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : h.kind === "concreteDivision" ? `Hub 3 keep ${h.before?.hub3Keep?.on ? "on" : "off"} -> ${h.after?.hub3Keep?.on ? "on" : "off"}` : "no field changes")}
+                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : h.kind === "concreteDivision" ? divisionHistoryLine(h) : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>
           </div>
@@ -1729,39 +1728,40 @@ function History({ entries, onRevert, busy }) {
 
 export { defaultMinQty };
 
+// A division history entry in one line. Older entries record the Hub 3 keep
+// switch; the 12 Nov 2026 entry and later record the shop keep only.
+export function divisionHistoryLine(h) {
+  const legs = (p) => (p && typeof p === "object" ? Object.keys(p).sort().join("+") : "off");
+  if (h?.before?.hub3Keep || h?.after?.hub3Keep) {
+    if (!h?.after?.hub3Keep) return `${legs(h.before)} -> ${legs(h.after)} (Hub 3 keep removed)`;
+    return `Hub 3 keep ${h.before?.hub3Keep?.on ? "on" : "off"} -> ${h.after?.hub3Keep?.on ? "on" : "off"}`;
+  }
+  const shop = (p) => (p?.shopOnly ? `${p.shopOnly.perSize}/${p.shopOnly.oneSize}` : "off");
+  return `shop keep ${shop(h?.before)} -> ${shop(h?.after)}`;
+}
+
 // ── THE CONCRETE DIVISION ────────────────────────────────────────────────────
-// Everything that is not a sneaker at Hub 3, Pine and Concrete. The one control
-// here is Hub 3's own keep, shipped off because Hub 3's clothing is not counted.
-export function ConcreteDivisionPanel({ policy, busy, onSave, keeps = null }) {
-  const keep = policy?.hub3Keep || {};
-  const on = keep.on === true;
-  const row = (label, leg, extra) => (
-    <div style={{ color: GRAY, fontSize: ".85rem", marginTop: ".25rem" }}>
-      <b style={{ color: "#fff" }}>{label}:</b> {leg?.perSize ?? "—"} per size, {leg?.oneSize ?? "—"} per design{extra}
-    </div>
-  );
+// Everything that is not footwear at Pine and Concrete: kept in the shop, from
+// Central (Junid, 12 Nov 2026). Hub 3 holds footwear only, so it has no row
+// here and there is no switch. Read-only: the numbers are Junid's.
+export function ConcreteDivisionPanel({ policy, keeps = null }) {
+  const shop = policy?.shopOnly || {};
   return (
     <div data-concrete-division-panel style={{ ...GLASS, padding: ".9rem 1rem", marginBottom: "1rem" }}>
-      <div style={{ fontWeight: 700, color: "#fff", marginBottom: ".3rem" }}>Concrete division — everything except sneakers</div>
-      {row("Kept in the shop, from Central", policy?.shopOnly)}
-      {row("Shop keep, from Hub 3", policy?.fromHub3, ", asks at 0")}
-      {row("Hub 3 keep, from Central", keep)}
+      <div style={{ fontWeight: 700, color: "#fff", marginBottom: ".3rem" }}>Concrete division — everything except footwear</div>
+      <div style={{ color: GRAY, fontSize: ".85rem", marginTop: ".25rem" }}>
+        <b style={{ color: "#fff" }}>Kept in the shop, from Central:</b> {shop.perSize ?? "—"} per size, {shop.oneSize ?? "—"} per design with no size. Pine and Concrete. No perfume at Concrete.
+      </div>
+      <div data-hub3-footwear-only style={{ color: GRAY, fontSize: ".85rem", marginTop: ".25rem" }}>
+        <b style={{ color: "#fff" }}>Hub 3:</b> footwear only. Its sneakers are on the footwear policy.
+      </div>
       {keeps && (
         <div data-division-keeps style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginTop: ".6rem" }}>
-          {[["hub3", "Hub 3 keeps"], ["concrete", "Concrete keeps"], ["marathon-pine", "Pine keeps"]].map(([loc, label]) => (
+          {[["concrete", "Concrete keeps"], ["marathon-pine", "Pine keeps"]].map(([loc, label]) => (
             <Tile key={loc} label={label} value={`${keeps[loc]?.products ?? 0} product${keeps[loc]?.products === 1 ? "" : "s"} · ${keeps[loc]?.cells ?? 0} sizes`} />
           ))}
         </div>
       )}
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: ".6rem" }}>
-        <span data-hub3-keep-state style={{ color: on ? "#4ade80" : "#fbbf24", fontSize: ".85rem", fontWeight: 700 }}>
-          Hub 3 keep is {on ? "ON" : "OFF"}
-        </span>
-        <button disabled={!!busy} onClick={() => onSave({ ...policy, hub3Keep: { ...keep, on: !on } })} style={{ ...bGray, opacity: busy ? .5 : 1 }}>
-          {on ? "Switch Hub 3 keep off" : "Switch Hub 3 keep on"}
-        </button>
-      </div>
-      {!on && <div style={{ color: GRAY, fontSize: ".8rem", marginTop: ".4rem" }}>Switch on once Hub 3's clothing is counted. Until then Hub 3 asks Central only for what a Solve raises.</div>}
     </div>
   );
 }

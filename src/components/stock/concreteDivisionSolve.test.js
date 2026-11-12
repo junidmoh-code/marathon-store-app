@@ -1,4 +1,5 @@
-// The Concrete division's Solve options and the sneaker pair split (Junid, 9 Nov 2026).
+// The Concrete division's Solve options (Junid, 12 Nov 2026: Concrete and Pine only,
+// both from Central) and the sneaker pair split (9 Nov 2026).
 import { describe, it, expect } from "vitest";
 import { solveBlocks, divisionSolveOn } from "./solveSections";
 import { footwearPairPlan } from "./missingFootwearCore";
@@ -6,28 +7,30 @@ import { sneakerSolvePairAllowed, concreteDivisionPolicy, divisionSizes, isDivis
 import { isCentralFedProduct } from "./centralFed";
 import { SEED_REGISTRY } from "../../utils/networkRegistry";
 
-const CFG = { routes: { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" }, concreteDivision: { shopOnly: { perSize: 2, oneSize: 5 }, fromHub3: { perSize: 1, oneSize: 5, askAt: 0 }, hub3Keep: { on: false, perSize: 2, oneSize: 10 } } };
+const CFG = { routes: { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" }, concreteDivision: { shopOnly: { perSize: 2, oneSize: 5 } } };
 const TEE = { id: "t", name: "T", categoryKey: "t-shirts", category: "Clothing", productType: "clothing", sizes: ["S", "M"] };
 const CAP = { id: "c", name: "C", categoryKey: "caps-beanies", category: "Accessories", sizes: ["_"] };
 const SHOE = { id: "s", name: "S", categoryKey: "soccer-boots", category: "Footwear", sizes: ["8"] };
 
 describe("Concrete-division Solve options", () => {
-  it("are exactly Hub 3, Concrete, Pine — labelled so", () => {
-    const [b] = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "central", product: TEE, productId: "t", engineConfig: CFG });
-    expect(b.stores.map((s) => s.name)).toEqual(["Hub 3", "Concrete", "Pine"]);
-    expect(b.stores[0].isDivisionHub).toBe(true);
-    expect(b.stores.every((s) => s.blocked === null)).toBe(true);
+  it("are exactly Concrete and Pine — Hub 3 is never offered for non-footwear", () => {
+    for (const product of [TEE, CAP]) {
+      const [b] = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "central", product, productId: product.id, engineConfig: CFG });
+      expect(b.stores.map((s) => s.name)).toEqual(["Concrete", "Pine"]);
+      expect(b.stores.some((s) => s.id === "hub3" || s.isDivisionHub)).toBe(false);
+      expect(b.stores.every((s) => s.blocked === null)).toBe(true);
+    }
   });
-  it("a shop is direct-from-Central until Hub 3 has held it, then Hub 3 is its source", () => {
-    const direct = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "central", product: TEE, productId: "t", engineConfig: CFG })[0];
-    expect(direct.stores.find((s) => s.id === "concrete").centralFed).toBe(true);
-    const held = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "central", product: TEE, productId: "t", engineConfig: CFG, hub3Present: true })[0];
-    expect(held.stores.find((s) => s.id === "concrete").centralFed).toBe(false);
-    expect(held.stores.find((s) => s.id === "concrete").hub).toBe("hub3");
+  it("each shop is supplied straight from Central, whatever Hub 3 ever held", () => {
+    for (const hub3Present of [false, true]) {
+      const [b] = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "central", product: TEE, productId: "t", engineConfig: CFG, hub3Present });
+      for (const s of b.stores) { expect(s.centralFed).toBe(true); expect(s.hub).toBe(null); }
+    }
   });
-  it("Hub 3 refuses stock not at Central", () => {
-    const [b] = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "hub3", product: TEE, productId: "t", engineConfig: CFG });
-    expect(b.stores[0].blocked).toMatch(/Central first/);
+  it("an old key with the Hub 3 fields offers the same two shops", () => {
+    const old = { ...CFG, concreteDivision: { ...CFG.concreteDivision, fromHub3: { perSize: 1, oneSize: 5, askAt: 0 }, hub3Keep: { on: true, perSize: 2, oneSize: 10 } } };
+    const [b] = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "central", product: TEE, productId: "t", engineConfig: old });
+    expect(b.stores.map((s) => s.id)).toEqual(["concrete", "marathon-pine"]);
   });
   it("Marathon's options and a key-less config are untouched; sneakers never take this path", () => {
     expect(divisionSolveOn(CFG, 2, TEE)).toBe(false);

@@ -92,8 +92,8 @@ function shopHubFor(loc, ctx = {}) {
 // with `product`/`pid`, a Central source is allowed exactly when the engine's
 // own routing answers Central for that product; asked without them, the
 // predicate keeps its old meaning ("a shop ← Central row").
-// `size` (optional): the Concrete division answers Central per size while the
-// Hub 3 keep is off (concrete-division.cjs hub3ServesSize).
+// `size` (optional): passed to the engine's routing (the Concrete division
+// answers Central for every size of a non-footwear item since 12 Nov 2026).
 function forbiddenShopSource({ dest, source, routes, locations, routing, product, pid, size } = {}) {
   if (source !== CENTRAL) return false;
   if ((product !== undefined || pid !== undefined) && routing && typeof routing.sourceFor === "function"

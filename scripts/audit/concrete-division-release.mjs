@@ -101,7 +101,7 @@ for (const pid of seatedOrHeld) {
   const sizes = fw ? (p.sizes || []).map(String) : dv.divisionSizes(p);
   for (const s of sizes) {
     const size = s === "_" ? "" : s;
-    const path = fw ? "sneaker" : dv.divisionNeverKeeps("concrete", p) ? "never kept" : !seatPlan.effective.concrete?.[pid] ? "not seated" : dv.hub3ServesSize(division, pid, size) ? "Hub 3-owned" : "shop-only";
+    const path = fw ? "sneaker" : dv.divisionNeverKeeps("concrete", p) ? "never kept" : !seatPlan.effective.concrete?.[pid] ? "not seated" : "shop-only";
     const t = engine.resolveTarget(ctx, "concrete", pid, size);
     const src = t && t.target > 0 ? (routing.sourceFor("concrete", p, pid, size) || "none") : "—";
     const key = `${cat(pid)}|${path}`;
