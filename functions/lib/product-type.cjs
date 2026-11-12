@@ -69,7 +69,7 @@ function planTypeChange(product, to, { cellsByLoc = {}, isManager = false, typeL
   if (hasHistory && !isManager) {
     return {
       ok: false, code: "permission-denied",
-      message: "This product has stock or sales, so only Junid or MC can change its Type. Ask one of them.",
+      message: "This product has stock or sales, so only Junid, Jafer or MC can change its Type. Ask one of them.",
     };
   }
 

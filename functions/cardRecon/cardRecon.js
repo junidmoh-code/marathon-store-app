@@ -306,14 +306,14 @@ const EXTRACTION_SCHEMA = {
 // ── GATE — the card_recon permission flag (photo_generation pattern) ─────────
 // FAIL CLOSED: an RTDB read error refuses. Reads the SAME scalar the client
 // tile gate mirrors (permFlagsFor in src/components/permissionCatalog.js).
-const ADMIN_EMAIL = "gunidmoh@gmail.com";
-async function assertCardRecon(request) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+const { isSuperAdminToken } = require("../lib/super-admins.cjs"); // Junid and Jafer, verified email only
+async function assertCardRecon(request, db = null) {
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
   try {
-    const snap = await admin.database().ref(`users/${uid}/permFlags/card_recon`).once("value");
+    const snap = await (db || admin.database()).ref(`users/${uid}/permFlags/card_recon`).once("value");
     granted = snap.val() === true;
   } catch (err) {
     console.error("assertCardRecon: permission read failed:", err.message);
@@ -342,7 +342,7 @@ async function assertCardRecon(request) {
 // identity (the poller's), gated by assertEmailIntake.
 async function sectionRefusalFor(db, request, picked, terminal) {
   const token = request.auth?.token || {};
-  if (token.email === ADMIN_EMAIL) return null;
+  if (isSuperAdminToken(token)) return null;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let sections;
@@ -363,8 +363,8 @@ async function sectionRefusalFor(db, request, picked, terminal) {
 // is the one path with no picked till, so it must not be reachable by everyone
 // who can capture a slip from a phone. One identity holds it — the poller's —
 // and it is data, so revoking it is a rules-free edit rather than a redeploy.
-async function assertEmailIntake(request) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+async function assertEmailIntake(request, db = null) {
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   // assertCardRecon has already refused an unauthenticated call, so this cannot
   // be reached without a uid — and it does not depend on that being true, since
@@ -373,7 +373,7 @@ async function assertEmailIntake(request) {
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
   try {
-    const snap = await admin.database().ref(`users/${uid}/permFlags/${EMAIL_INTAKE_FLAG}`).once("value");
+    const snap = await (db || admin.database()).ref(`users/${uid}/permFlags/${EMAIL_INTAKE_FLAG}`).once("value");
     granted = snap.val() === true;
   } catch (err) {
     console.error("assertEmailIntake: permission read failed:", err.message);
@@ -390,7 +390,7 @@ async function assertEmailIntake(request) {
 // FAIL CLOSED, like the gates above: a scope that cannot be read refuses.
 // Junid passes, as he does every other gate here.
 async function slipScopeAllowsNow(db, request, terminal, nowMs) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return true;
+  if (isSuperAdminToken(request.auth?.token)) return true;
   const uid = request.auth?.uid;
   if (!uid) return false;
   let raw;
@@ -1329,7 +1329,7 @@ async function handleExtract(db, request, opts = {}) {
   let declared = null;
   if (declaring) {
     if (!mayDeclareTotal(request.auth?.token)) {
-      throw new HttpsError("permission-denied", "Only Junid can type a batch total. Photograph the slip instead.");
+      throw new HttpsError("permission-denied", "Only Junid or Jafer can type a batch total. Photograph the slip instead.");
     }
     if (channel === "email" || pdf) {
       throw new HttpsError("invalid-argument", "A typed total goes with a photo of the slip, never with a file.");
@@ -3334,7 +3334,7 @@ exports.cardBatchCapture = onCall(
       // waits in the POS report, where Junid enters the figure
       // (cardBatchManualEntry) for that till and day.
       if (!mayDeclareTotal(request.auth?.token)) {
-        throw new HttpsError("permission-denied", "Only Junid can type in a machine's total.");
+        throw new HttpsError("permission-denied", "Only Junid or Jafer can type in a machine's total.");
       }
       const picked = normaliseTid(request.data?.pickedTid);
       if (!picked) throw new HttpsError("invalid-argument", "Pick the till first.");
@@ -3419,6 +3419,9 @@ exports.listNotices = listNotices;
 exports.recordNoticeResults = recordNoticeResults;
 exports.toExtraction = toExtraction;
 exports.sectionRefusalFor = sectionRefusalFor;
+exports._assertCardRecon = assertCardRecon;
+exports._assertEmailIntake = assertEmailIntake;
+exports._slipScopeAllowsNow = slipScopeAllowsNow;
 // The summary-first gate, exported so it can be tested directly: everything
 // else about it lives inside async handlers behind a database.
 exports.totalsAgree = totalsAgree;

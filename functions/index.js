@@ -855,17 +855,17 @@ exports.primaryPhotoMetaReady = onValueWritten(
 //   getBroadcastGroups → GET  /api/groups     (list available WhatsApp groups)
 //   sendBroadcast      → POST /api/broadcast  (send caption + media to groups)
 //
-// Only the admin (gunidmoh@gmail.com) may invoke these. The VM's bearer token
+// Only a super admin (Junid or Jafer — lib/super-admins.cjs) may invoke these. The VM's bearer token
 // is read from Secret Manager (secret name: broadcast-service-token) and is
 // never logged, returned, or otherwise exposed to the caller.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const broadcastToken   = defineSecret("broadcast-service-token");
 const BROADCAST_VM_URL = "http://34.59.92.37";
-const ADMIN_EMAIL      = "gunidmoh@gmail.com";
+const { JUNID_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdmin, isSuperAdminToken } = require("./lib/super-admins.cjs");
 
 function assertAdmin(request) {
-  if (request.auth?.token?.email !== ADMIN_EMAIL) {
+  if (!isSuperAdminToken(request.auth?.token)) {
     throw new HttpsError("permission-denied", "Admin only.");
   }
 }
@@ -893,7 +893,7 @@ function assertAdmin(request) {
 // FAIL CLOSED: an RTDB read error refuses. A gate that opens when the database
 // is unreachable is not a gate.
 async function assertPhotoGeneration(request) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
@@ -930,7 +930,7 @@ async function assertPhotoGeneration(request) {
 // FAIL CLOSED: an RTDB read error refuses. A gate that opens when the database
 // is unreachable is not a gate.
 async function assertEnginePolicy(request) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
@@ -1797,7 +1797,7 @@ async function buildDemandDrivenPlan({ client, demand, businessContext }) {
  * is within the last 15 minutes.
  *
  * Rate limit: 1 hour between fresh runs for non-super-admin callers.
- * Super-admin (gunidmoh@gmail.com) can override with { force: true }
+ * A super admin (Junid or Jafer) can override with { force: true }
  * in the payload; force is ignored for non-super-admin.
  *
  * Returns: { plan, meta } directly to the caller for backwards
@@ -1817,11 +1817,11 @@ exports.analyzeReorderNeeds = onCall(
     const startedAt = Date.now();
     const callerEmail = request.auth.token.email;
     const callerUid   = request.auth.uid;
-    const isSuperAdmin = callerEmail === ADMIN_EMAIL;
+    const callerIsSuperAdmin = isSuperAdminToken(request.auth.token); // verified email only
     // payload.force is honoured only for the super-admin. Any other caller
     // that passes force: true falls back to the normal rate-limit path.
     const requestedForce = !!(request.data && request.data.force);
-    const force = requestedForce && isSuperAdmin;
+    const force = requestedForce && callerIsSuperAdmin;
 
     // ── 0a. Rate-limit gate. Reads /insights/reorderPlan/latest only.
     //     This check is intentionally non-atomic — the running-lock
@@ -1917,7 +1917,7 @@ exports.analyzeReorderNeeds = onCall(
         // supplied, so /products /orders /insights_log /returns_log are NOT read.
         let businessContext = null;
         try {
-          const ctxSnap = await db.ref("aiAssistant/memory/gunidmoh/businessContext").once("value");
+          const ctxSnap = await db.ref(`aiAssistant/memory/${JUNID_EMAIL.split("@")[0]}/businessContext`).once("value");
           businessContext = ctxSnap.val() || null;
         } catch (err) {
           console.warn("analyzeReorderNeeds(demand): businessContext read failed:", err.message);
@@ -2008,7 +2008,7 @@ exports.analyzeReorderNeeds = onCall(
           db.ref("orders").once("value"),
           db.ref("insights_log").once("value"),
           db.ref("returns_log").once("value"),
-          db.ref("aiAssistant/memory/gunidmoh/businessContext").once("value"),
+          db.ref(`aiAssistant/memory/${JUNID_EMAIL.split("@")[0]}/businessContext`).once("value"),
         ]);
       } catch (err) {
         console.error("analyzeReorderNeeds: RTDB read failed:", err.message);
@@ -3088,7 +3088,7 @@ exports.generateProductPhotos = onCall(
 //
 // Flow on each request:
 //   1. Verify the Firebase ID token in the Authorization header. Reject if
-//      missing/invalid OR if the verified email isn't ADMIN_EMAIL.
+//      missing/invalid OR if the verified email isn't a super admin's.
 //   2. Read /orders, /insights_log, /insights/reorderPlan/latest. Take the
 //      most recent CHAT_CONTEXT_RECENT_LIMIT entries from orders + logs
 //      (full plan is small enough to send whole).
@@ -3181,7 +3181,7 @@ exports.chatStream = onRequest(
       console.warn("chatStream: token verification failed:", err.code || err.message);
       return res.status(401).json({ error: "Invalid or expired token." });
     }
-    if (decoded.email !== ADMIN_EMAIL) {
+    if (!isSuperAdminToken(decoded)) { // verified email only (CodeRabbit, PR #896)
       console.warn(`chatStream: forbidden caller ${decoded.email}`);
       return res.status(403).json({ error: "Forbidden." });
     }
@@ -3623,8 +3623,8 @@ exports.deleteStaffUser = onCall(
       throw new HttpsError("invalid-argument", "uid is required.");
     }
 
-    // ── Self-deletion guard. The super-admin uses a Google account with the
-    //    ADMIN_EMAIL address; if anyone ever tampers with /users to include
+    // ── Self-deletion guard. The super-admin uses a Google account with a
+    //    super-admin address (Junid or Jafer); if anyone ever tampers with /users to include
     //    that email, this stops a UI mis-click from locking the org out. ──
     let target;
     try {
@@ -3636,7 +3636,7 @@ exports.deleteStaffUser = onCall(
       console.error("deleteStaffUser: getUser failed:", err);
       throw new HttpsError("internal", "Could not look up user.");
     }
-    if (target.email === ADMIN_EMAIL) {
+    if (isSuperAdmin(target.email)) {
       throw new HttpsError("failed-precondition", "Cannot delete the super-admin account.");
     }
 
@@ -4375,7 +4375,7 @@ exports.setCategoryPolicy = onCall(
         db: admin.database(),
         callerEmail: request.auth?.token?.email,
         callerUid: request.auth?.uid || null,
-        adminEmail: ADMIN_EMAIL,
+        adminEmail: SUPER_ADMIN_EMAILS,
         data: request.data,
         // Server clock. serverNowMs() is the CLIENT's corrected clock and does
         // not exist here; inside a Cloud Function Date.now() IS server time.

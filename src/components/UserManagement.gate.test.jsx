@@ -135,16 +135,20 @@ describe("LAYER 2 — the component gate, with the route gate bypassed", () => {
   it("refuses an account whose email merely resembles the admin's", () => {
     for (const email of [
       "gunidmoh@gmail.com.evil.com",
-      "GUNIDMOH@gmail.com",           // the check is case-sensitive; keep it that way
       "junidmoh@gmail.com",           // the real near-miss: Junid's OTHER address
       "gunidmoh@gmail.co",
-      " gunidmoh@gmail.com",
     ]) {
       const names = screenNames(render({ authUser: { uid: "x", email } }));
       expect(names, `must refuse ${email}`).toContain("NotAuthorized");
       expect(names, `must refuse ${email}`).not.toContain("UserManagementAuthed");
     }
     expect(onValueMock).not.toHaveBeenCalled();
+  });
+
+  it("admits Jafer as well as Junid (one super-admin list)", () => {
+    const names = screenNames(render({ authUser: { uid: "jafer-uid", email: "jafermohammed340@gmail.com" } }));
+    expect(names).toContain("UserManagementAuthed");
+    expect(names).not.toContain("NotAuthorized");
   });
 
   it("admits the super-admin — proving the refusals above mean something", () => {

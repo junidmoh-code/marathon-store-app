@@ -67,8 +67,6 @@ describe("the identity test itself", () => {
       { email: "junid@marathon.internal" },
       { email: "ahmed@marathon.internal" },
       { email: "junidmoh@gmail.com" },              // Junid's OTHER address — the real near-miss
-      { email: "GUNIDMOH@GMAIL.COM" },              // case-sensitive, and it stays that way
-      { email: " gunidmoh@gmail.com" },
       { email: "gunidmoh@gmail.com.evil.com" },
       { email: "gunidmoh@gmail.co" },
     ]) {

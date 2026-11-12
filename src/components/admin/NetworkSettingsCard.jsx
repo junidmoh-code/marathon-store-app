@@ -26,7 +26,7 @@
 import { useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
-import { ADMIN_EMAIL } from "../PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "../../config/superAdmins";
 import { useNetwork } from "../../utils/useNetwork";
 import { usePathState } from "../stock/useStock";
 import { serverNowMs } from "../../utils/serverTime";
@@ -76,7 +76,7 @@ function Choice({ value, options, onPick, busy }) {
 }
 
 export default function NetworkSettingsCard({ authUser, products = [], onExit, write = defaultWrite, now = serverNowMs }) {
-  const isOwner = !!authUser && authUser.email === ADMIN_EMAIL;
+  const isOwner = !!authUser && isSuperAdminEmail(authUser.email);
   const { registry, settled, error, raw } = useNetwork(isOwner);
   const stockLocs = usePathState("locations", isOwner);
   const [busy, setBusy] = useState(false);

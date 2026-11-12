@@ -76,7 +76,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref as dbRef, onValue, query, orderByChild, limitToLast, startAt } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions, auth } from "../../firebase";
-import { ADMIN_EMAIL } from "../PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "../../config/superAdmins";
 import { describeCallableError } from "./captureFailure";
 import { preparePhoto } from "./slipPhoto";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
@@ -226,7 +226,7 @@ export default function CardReconScreen({ onExit }) {
   // ── THE SETTINGS SHEET IS JUNID'S ALONE ────────────────────────────────────
   // The same account the card-recon reports are gated to. Hiding the icon is
   // convenience; the callable refuses everyone else regardless.
-  const isOwner = auth.currentUser?.email === ADMIN_EMAIL;
+  const isOwner = isSuperAdminEmail(auth.currentUser?.email);
   // The POS's "Assign" on an unassigned SimplyBLU terminal opens the sheet on it.
   // Taken on EVERY device (it restores the device's own role); acted on only for Junid.
   const [assignTid] = useState(() => { const t = takeAssignRequest(); return isOwner ? t : null; });

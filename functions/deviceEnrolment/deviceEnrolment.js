@@ -23,6 +23,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { createHash, randomInt, randomUUID } = require("node:crypto");
 const admin = require("firebase-admin");
 const E = require("../lib/device-enrolment.cjs");
+const { isSuperAdmin, isSuperAdminToken, superAdminName } = require("../lib/super-admins.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -98,8 +99,8 @@ async function handleEnrol(request, deps) {
   if (!auth || !auth.uid || auth.token?.firebase?.sign_in_provider === "anonymous") {
     throw new HttpsError("unauthenticated", "Sign in first.");
   }
-  if (auth.token?.email === E.OWNER_EMAIL) {
-    throw new HttpsError("failed-precondition", "Junid's account never needs a device code.");
+  if (isSuperAdmin(auth.token?.email)) {
+    throw new HttpsError("failed-precondition", "Junid's and Jafer's accounts never need a device code.");
   }
   const code = E.readCode(request.data?.code);
   const deviceId = E.readDeviceId(request.data?.deviceId);
@@ -260,7 +261,7 @@ async function readBounded(db, path) {
 async function managerIdentity(db, auth) {
   if (!auth || !auth.uid) return null;
   const t = auth.token || {};
-  if (t.email === E.OWNER_EMAIL && t.email_verified === true) return { owner: true, by: "Junid", personId: null, deviceId: null };
+  if (isSuperAdminToken(t)) return { owner: true, by: superAdminName(t.email), personId: null, deviceId: null };
   if (typeof t.deviceId === "string" && typeof t.eid === "string" && typeof t.personId === "string") {
     const [gate, person] = await Promise.all([
       db.ref(`users/${auth.uid}/deviceGate/${t.deviceId}`).once("value"),
@@ -280,7 +281,7 @@ async function whoIsAdmin(db, auth) {
   if (!auth || !auth.uid) throw new HttpsError("unauthenticated", "Sign in first.");
   const who = await managerIdentity(db, auth);
   if (who) return who;
-  throw new HttpsError("permission-denied", "Only Junid or MC can manage device codes.");
+  throw new HttpsError("permission-denied", "Only Junid, Jafer or MC can manage device codes.");
 }
 
 function audit(db, now, who, action, detail) {
@@ -328,7 +329,7 @@ async function handleAdmin(request, deps) {
     const name = E.cleanText(request.data?.name, 40);
     if (!name) throw new HttpsError("invalid-argument", "Type the person's name (or the shop device's name).");
     const kind = request.data?.kind === "shared" ? "shared" : "person";
-    // Only Junid may make another code-maker.
+    // Only a super admin (Junid or Jafer) may make another code-maker.
     const canManageCodes = who.owner && kind === "person" && request.data?.canManageCodes === true;
     // ── THE SECTION THE CODE IS FOR ─────────────────────────────────────────
     // Picked on the Device codes screen: 1 or 2, and nothing else — checked
@@ -388,7 +389,7 @@ async function handleAdmin(request, deps) {
     if (!who.owner && d.personId) {
       const p = (await db.ref(`${E.PATHS.people}/${d.personId}`).once("value")).val();
       if (p && p.canManageCodes === true && d.personId !== who.personId) {
-        throw new HttpsError("permission-denied", "Only Junid can revoke another code-maker's device.");
+        throw new HttpsError("permission-denied", "Only Junid or Jafer can revoke another code-maker's device.");
       }
     }
     await revokeOne(db, deviceId, now, who);
@@ -403,7 +404,7 @@ async function handleAdmin(request, deps) {
     const p = (await db.ref(`${E.PATHS.people}/${personId}`).once("value")).val();
     if (!p) throw new HttpsError("not-found", "That person is not on the list.");
     if (!who.owner && p.canManageCodes === true && personId !== who.personId) {
-      throw new HttpsError("permission-denied", "Only Junid can revoke another code-maker.");
+      throw new HttpsError("permission-denied", "Only Junid or Jafer can revoke another code-maker.");
     }
     // The code first: from this moment it enrols nothing.
     if (p.code) {

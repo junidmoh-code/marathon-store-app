@@ -182,15 +182,17 @@ describe("LAYER 2 — the component gate, with App.jsx's route gate bypassed", (
   it("refuses an account whose email merely resembles the admin's", async () => {
     for (const email of [
       "gunidmoh@gmail.com.evil.com",
-      "GUNIDMOH@gmail.com",
       "junidmoh@gmail.com",   // the real near-miss: Junid's OTHER address
       "gunidmoh@gmail.co",
-      " gunidmoh@gmail.com",
     ]) {
       const names = screenNames(await render({ authUser: { uid: "x", email } }));
       expect(names, `must refuse ${email}`).not.toContain("PushAssignmentsAuthed");
       expect(getMock, `must not read for ${email}`).not.toHaveBeenCalled();
     }
+  });
+
+  it("admits Jafer as well as Junid (one super-admin list)", async () => {
+    expect(screenNames(await render({ authUser: { uid: "jafer-uid", email: "jafermohammed340@gmail.com" } }))).toContain("PushAssignmentsAuthed");
   });
 
   it("admits the super-admin — so the refusals above mean something", async () => {

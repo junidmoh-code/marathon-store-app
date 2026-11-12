@@ -13,7 +13,7 @@ const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 const {
   parseSlipTimestamp, validateExtraction, buildBatchRecord,
-  hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal, DECLARED_TOTAL_EMAIL,
+  hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
 } = require("../lib/card-recon.cjs");
 
 // ── the parse ────────────────────────────────────────────────────────────────
@@ -53,8 +53,8 @@ test("absent, null and blank all mean no total was declared", () => {
 });
 
 // ── the gate ─────────────────────────────────────────────────────────────────
-test("only Junid's own token may declare a total", () => {
-  assert.equal(DECLARED_TOTAL_EMAIL, "gunidmoh@gmail.com");
+test("only a super admin's own verified token (Junid or Jafer) may declare a total", () => {
+  assert.equal(mayDeclareTotal({ email: require("../lib/super-admins.cjs").JAFER_EMAIL, email_verified: true }), true);
   assert.equal(mayDeclareTotal({ email: "gunidmoh@gmail.com", email_verified: true }), true);
   // The address alone is not enough: an unverified credential claiming it is refused.
   assert.equal(mayDeclareTotal({ email: "gunidmoh@gmail.com" }), false);

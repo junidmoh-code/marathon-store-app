@@ -45,6 +45,11 @@ const refillButton = (tree, loc, label) => rowOf(tree, loc).find((n) => n.props 
 describe("the gate", () => {
   beforeEach(() => { useNetworkMock.mockReset(); usePathStateMock.mockReset(); });
 
+  it("admits Jafer as well as Junid (one super-admin list); staff stays out", () => {
+    mount({ uid: "jafer-uid", email: "jafermohammed340@gmail.com" });
+    expect(useNetworkMock).toHaveBeenCalledWith(true);
+  });
+
   it("gives a non-owner no control, and disables both reads", () => {
     const { tree, write } = mount(STAFF);
     expect(useNetworkMock).toHaveBeenCalledWith(false);

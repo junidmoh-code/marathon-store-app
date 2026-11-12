@@ -46,6 +46,7 @@ import { categorize, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGO
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "./config/superAdmins";
 import { toAuthPassword } from "./utils/auth-utils";
 import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, phoneGroupKey } from "./utils/phone";
 import { filterCustomerList } from "./utils/customerSearch";
@@ -457,7 +458,7 @@ function GalleryLightbox({ photos, onClose }) {
 const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", CARD_SLIP: "card_slip", TV_AD: "tv_ad", STOCK_AUDIT: "stock_audit" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
-// signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
+// signed-in user lacks the permission. Super-admin (isSuperAdmin — Junid or Jafer)
 // bypasses every check via hasPermission's email shortcut.
 // TV Display and Customer are auxiliary admin-only tiles — no dedicated perm
 // in the spec, so they ride on product_admin (admin and super_admin only).
@@ -8063,7 +8064,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           })}
         </div>
         <div style={{ padding:"0 12px 10px", fontSize:11.5, color:"rgba(255,255,255,.4)", lineHeight:1.4 }}>
-          {typeBusy ? "Changing…" : "A product with stock or sales can only change Type by Junid or MC. Every change is logged."}
+          {typeBusy ? "Changing…" : "A product with stock or sales can only change Type by Junid, Jafer or MC. Every change is logged."}
         </div>
       </div>
 
@@ -19126,7 +19127,7 @@ function InsightSalesSummaryTab({ log, returnsLog, productPhotoMap, filterStart,
 // keeps running server-side; status subscription will flip to "running" on its
 // own. Synchronous rejections (rate limit, concurrent run, permission) surface
 // as triggerError. The Run buttons are super-admin-only because the function's
-// assertAdmin only accepts ADMIN_EMAIL.
+// assertAdmin only accepts a super-admin email.
 function InsightReorderTab({ productPhotoMap }) {
   const { isSuperAdmin } = usePermissions();
   const [status, setStatus]   = useState(null);
@@ -20752,19 +20753,18 @@ if (typeof document !== "undefined" && !document.getElementById("__bcast_spin"))
 // ─────────────────────────────────────────────────────────────────────────────
 // Triggered by visiting the site with #admin in the URL, e.g.
 //   https://marathon-club.web.app/#admin
-// Sign-in opens a Google popup. Only ADMIN_EMAIL is allowed; any other Google
+// Sign-in opens a Google popup. Only a super-admin email (Junid or Jafer) is allowed; any other Google
 // account is signed out immediately and an error is shown.
 //
 // While admin is signed in:
 //   • All views render normally (the home hero shows the bare name; the one
 //     sign-out is the red row at the bottom of the home page).
-//   • request.auth.token.email === ADMIN_EMAIL → broadcast Cloud Functions
+//   • request.auth.token.email is a super admin → broadcast Cloud Functions
 //     and broadcast-media writes are allowed.
 //
 // Sign-out drops back to anonymous (not fully out) so the database keeps
 // working for the next visitor on the device.
 
-const ADMIN_EMAIL = "gunidmoh@gmail.com";
 
 function AdminSignInScreen({ onCancel }) {
   const [busy,  setBusy]  = useState(false);
@@ -20774,10 +20774,10 @@ function AdminSignInScreen({ onCancel }) {
     setBusy(true); setError(null);
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      if (result.user.email !== ADMIN_EMAIL) {
+      if (!isSuperAdminEmail(result.user.email)) {
         const wrong = result.user.email;
         await signOut(auth); // existing onAuthStateChanged effect re-signs anonymously
-        setError(`Wrong account: ${wrong}. Sign in with ${ADMIN_EMAIL}.`);
+        setError(`Wrong account: ${wrong}. Sign in with an admin Google account.`);
         return;
       }
       window.location.hash = ""; // success → parent unmounts this screen
@@ -20798,7 +20798,7 @@ function AdminSignInScreen({ onCancel }) {
       <div style={{ width:"100%", maxWidth:380, background:CARD, border:BORDER, borderRadius:RADIUS, padding:"2rem 1.5rem", boxShadow:GLOW }}>
         <h1 style={{ margin:0, fontSize:"1.5rem", color:"#fff", fontWeight:600 }}>Admin Sign In</h1>
         <p style={{ marginTop:"0.5rem", marginBottom:"1.5rem", color:"#888", fontSize:"0.875rem", lineHeight:1.5 }}>
-          Use the <span style={{ color:BLUE_L }}>{ADMIN_EMAIL}</span> Google account.
+          Use an admin Google account (Junid or Jafer).
         </p>
         <button
           onClick={handleSignIn}
@@ -21316,7 +21316,7 @@ function AppInner() {
   // already holds the catalogue, and the count view freezes it on entry.
   // viewer.stockRole is the STORED role, deliberately NOT the super-admin-widened
   // `stockRole` above: the RTDB rules read /users/{uid}/stockRole and know nothing
-  // about ADMIN_EMAIL, so the write gate must be told the truth or it would
+  // about the client super-admin list, so the write gate must be told the truth or it would
   // promise corrections it cannot deliver.
   else if (role === ROLES.HUB_SNEAKER_COUNT) view = hubCountRouteOpen
     ? <HubCleanup products={products} actorRole={stockRole}

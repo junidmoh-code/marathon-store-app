@@ -33,7 +33,7 @@ if (!admin.apps.length) {
   admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 }
 
-const ADMIN_EMAIL = "gunidmoh@gmail.com"; // the super-admin, as in functions/index.js
+const { isSuperAdminToken } = require("../lib/super-admins.cjs"); // Junid and Jafer, as in functions/index.js
 // The method an item gets with no choice of its own (the studio function reads the same file).
 const CONFIGURED_METHOD = require("./studio/config/generation.json").defaultMethod;
 const DEFAULT_METHOD = core.METHODS.includes(CONFIGURED_METHOD) ? CONFIGURED_METHOD : "full";
@@ -42,7 +42,7 @@ const DEFAULT_METHOD = core.METHODS.includes(CONFIGURED_METHOD) ? CONFIGURED_MET
 // Shopify publish, so it takes the same grant the publishing card does. Read
 // from the permFlags scalar the rules read. FAIL CLOSED on a read error.
 async function assertNewArrivalsAccess(request, db = admin.database()) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
@@ -286,7 +286,8 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
 
 const callableOpts = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 };
 
-const isJunid = (request) => request.auth?.token?.email === ADMIN_EMAIL;
+// "isJunid" kept as the name the tests and _internals use; it means a super admin (Junid or Jafer).
+const isJunid = (request) => isSuperAdminToken(request.auth?.token);
 
 const newArrivalsList = onCall(callableOpts, async (request) => {
   await assertNewArrivalsAccess(request);
@@ -309,7 +310,7 @@ async function setPause(db, { which, paused }, uid, nowMs) {
 }
 
 const newArrivalsPause = onCall(callableOpts, async (request) => {
-  if (!isJunid(request)) throw new HttpsError("permission-denied", "Only Junid can pause or resume.");
+  if (!isJunid(request)) throw new HttpsError("permission-denied", "Only Junid or Jafer can pause or resume.");
   const d = request.data || {};
   return setPause(admin.database(), { which: d.which, paused: d.paused }, request.auth?.uid, Date.now());
 });

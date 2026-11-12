@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getDatabase, ref, get, set, update, onValue, push } from "firebase/database";
-import { ADMIN_EMAIL } from "../PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail, SUPER_ADMIN_RULE_EXPR } from "../../config/superAdmins";
 import { DEFAULT_SHIPPING_CONFIG, ITEM_KINDS, mergeShippingConfig } from "../../shipping/shippingConfig.js";
 import { estimateParcel } from "../../shipping/estimateParcel.js";
 import { orderLines, deliveryAddress, deliveryContact, orderRef } from "../../shipping/orderShipment.js";
@@ -32,13 +32,13 @@ const EDITABLE_KEYS = ["collectionAddress", "collectionContact", "shoebox", "fla
 
 export const RULE_TEXT = `"config": {
   "shipping": {
-    ".write": "auth != null && auth.token.email === '${ADMIN_EMAIL}'",
+    ".write": "auth != null && ${SUPER_ADMIN_RULE_EXPR}",
     "live": { ".validate": "newData.isBoolean()" }
   }
 },
 "shipping_quotes": {
-  ".read": "auth != null && auth.token.email === '${ADMIN_EMAIL}'",
-  ".write": "auth != null && auth.token.email === '${ADMIN_EMAIL}'",
+  ".read": "auth != null && ${SUPER_ADMIN_RULE_EXPR}",
+  ".write": "auth != null && ${SUPER_ADMIN_RULE_EXPR}",
   "answers": { ".indexOn": ["answeredAt"] }
 }`;
 
@@ -120,8 +120,8 @@ export function summariseContents(contents) {
 }
 
 export default function ShippingCard({ authUser, products = null, onExit }) {
-  // Strict, case-sensitive — the same comparison the RTDB rule makes.
-  const isSuperAdmin = authUser?.email === ADMIN_EMAIL;
+  // isSuperAdmin (Junid or Jafer, lowercased + trimmed) — the same two addresses the RTDB rule names.
+  const isSuperAdmin = isSuperAdminEmail(authUser?.email);
 
   const [cfg, setCfg] = useState(null);
   const [live, setLive] = useState(false);

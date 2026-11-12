@@ -95,7 +95,7 @@ export const SHOP_IDS = shopIdsOf(SEED_REGISTRY);
 export const SHOP_LABELS = Object.fromEntries(SHOP_IDS.map((id) => [id, shopLabelOf(id, SEED_REGISTRY)]));
 
 // Resolve the stores a user may actually place orders against.
-//   • super-admin               → all stores (bypass, per ADMIN_EMAIL)
+//   • super-admin               → all stores (bypass, per isSuperAdmin)
 //   • no storeIds field (legacy) → all stores (backward-compatible)
 //   • storeIds present           → that list, filtered to known stores
 // An empty result means "no store access" — the caller should block the flow.

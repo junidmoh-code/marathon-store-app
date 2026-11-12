@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // User Management (super-admin only) — /#admin/users
 // ─────────────────────────────────────────────────────────────────────────────
-// Master-detail UI for staff account lifecycle. Gated on the super-admin email
-// gunidmoh@gmail.com (matches the gate used by AdminSignInScreen in App.jsx and
+// Master-detail UI for staff account lifecycle. Gated on the super-admin list
+// (config/superAdmins.js — Junid and Jafer; matches the gate used by AdminSignInScreen in App.jsx and
 // the assertAdmin helper in functions/index.js).
 //
 // ── 2026-07 permissions redesign — read this before touching gating ──────────
@@ -43,7 +43,7 @@ import { database, functions } from "../firebase";
 import { SHOP_IDS, SHOP_LABELS } from "../utils/stores";
 import { PERMISSION_GROUPS, ALL_PERMISSIONS, STOCK_PERM_KEYS, ROLE_DEFAULT_PERMS, permFlagsFor } from "./permissionCatalog";
 // The one super-admin identity, shared with AuthGate and every admin card.
-import { ADMIN_EMAIL } from "./PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "../config/superAdmins";
 import { useNetwork } from "../utils/useNetwork";
 import { listLocations } from "../utils/networkRegistry";
 import { accountSections, sectionChoiceOf, sectionPatch, sectionName } from "./sectionAccess";
@@ -165,7 +165,7 @@ function friendlyError(err) {
 // this component at all for a non-super-admin. Both layers are real; neither
 // relies on the other.
 export default function UserManagement({ authUser, onExit }) {
-  if (!authUser || authUser.email !== ADMIN_EMAIL) {
+  if (!authUser || !isSuperAdminEmail(authUser.email)) {
     return <NotAuthorized onExit={onExit} />;
   }
   return <UserManagementAuthed authUser={authUser} onExit={onExit} />;
@@ -332,7 +332,7 @@ function NotAuthorized({ onExit }) {
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "1rem", gap: 16 }}>
       <div style={{ fontSize: 22, fontWeight: 600 }}>Not authorized</div>
       <div style={{ color: TEXT_2, fontSize: 14, textAlign: "center", maxWidth: 320 }}>
-        Only the super-admin (gunidmoh@gmail.com) can manage staff accounts.
+        Only a super-admin (Junid or Jafer) can manage staff accounts.
       </div>
       <button onClick={onExit} style={primaryBtn}>Back to home</button>
     </div>

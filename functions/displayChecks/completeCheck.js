@@ -65,7 +65,7 @@ if (!admin.apps.length) {
   });
 }
 
-const ADMIN_EMAIL = "gunidmoh@gmail.com"; // super-admin (mirrors config/displayChecks.js)
+const { isSuperAdmin } = require("../lib/super-admins.cjs"); // Junid and Jafer (mirrors config/displayChecks.js)
 
 // Reject-code → callable error code. Everything else is a failed-precondition.
 const ERROR_CODE = {
@@ -215,6 +215,15 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   return { kind: "reject", code: "already-completed" };
 }
 
+// Who may complete a check for THIS store: a super admin (Junid or Jafer) with a
+// VERIFIED email, or an account holding display_checks scoped to this store.
+function displayCheckAllowed({ email, emailVerified, userRec, store }) {
+  const perms = Array.isArray(userRec?.permissions) ? userRec.permissions : [];
+  const isSuper = isSuperAdmin(email) && emailVerified === true;
+  return isSuper || (perms.includes("display_checks") && userRec?.destShop === store);
+}
+exports._displayCheckAllowed = displayCheckAllowed;
+
 // Exported for the completion regression tests (write-once, no-stock soft-block,
 // and THE hard gate: completion never deletes the active record).
 exports.runComplete = runComplete;
@@ -260,16 +269,13 @@ exports.completeDisplayCheck = onCall(
     // ── Authorize for THIS store: super-admin, or store-scoped display_checks
     // (mirrors config/displayChecks.canUseDisplayChecks server-side). ──
     // The super-admin shortcut trusts the email claim, so it MUST be a VERIFIED
-    // email — otherwise a self-signed-up account claiming gunidmoh@gmail.com with
+    // email — otherwise a self-signed-up account claiming a super-admin address with
     // email_verified:false would inherit super-admin. Google sign-in (the real
     // super-admin's provider) sets email_verified:true, so this is safe. The
     // staff path never trusts email — it authorizes by uid-keyed /users perms.
     const emailVerified = !!(request.auth.token && request.auth.token.email_verified);
     const userRec = (await db.ref(`users/${uid}`).get()).val() || {};
-    const perms = Array.isArray(userRec.permissions) ? userRec.permissions : [];
-    const isSuper = email === ADMIN_EMAIL && emailVerified;
-    const allowed = isSuper
-      || (perms.includes("display_checks") && userRec.destShop === store);
+    const allowed = displayCheckAllowed({ email, emailVerified, userRec, store });
     if (!allowed) {
       throw new HttpsError("permission-denied", "You can't complete checks for this store.");
     }

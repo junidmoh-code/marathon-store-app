@@ -81,7 +81,8 @@ import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
 import ArmingTab from "./ArmingTab";
 import { writableRow, shapeOfRow } from "./targetOverride";
-import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
+import { enginePolicyVisibleForViewer } from "../../config/enginePolicy";
+import { isSuperAdmin as isSuperAdminEmail, superAdminName } from "../../config/superAdmins";
 import { nameOf } from "./sectionRouting";
 import { locationOf } from "../../utils/networkRegistry";
 import { currentNetwork } from "../../utils/networkStore";
@@ -1673,7 +1674,8 @@ function whoLabel(by) {
   // authorless. Coerce, then apply the same rules. (CodeRabbit, PR #469.)
   const s = typeof by === "string" ? by : String(by);
   if (!s || s === "[object Object]") return "";
-  if (s === ADMIN_EMAIL) return "Super Admin";
+  // Two super admins now: name which one, so the history still says who.
+  if (isSuperAdminEmail(s)) return superAdminName(s);
   const at = s.indexOf("@");
   return at > 0 ? s.slice(0, at) : s;
 }

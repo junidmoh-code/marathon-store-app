@@ -61,6 +61,7 @@ const {
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
 const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
   FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
+const { normaliseEmail } = require("./super-admins.cjs");
 const { encodeSizeKey, resolveTarget, policyCategoryKey, maskUntrustedStock } = require("./refill-engine.cjs");
 const { loadNetwork } = require("./network-load.cjs");
 const { CENTRAL_FED_KEY, CENTRAL_FED_MAX, centralFedPerSize } = require("./central-fed.cjs");
@@ -163,7 +164,11 @@ const sameValue = (a, b) => canonical(a) === canonical(b);
 // scripts/mutation-proof-engine-policy.mjs (M-SERVER).
 async function assertEnginePolicyCaller({ db, callerEmail, callerUid, adminEmail }) {
   if (!adminEmail) throw httpsError("failed-precondition", "Admin identity is not configured.");
-  if (typeof callerEmail === "string" && callerEmail === adminEmail) return;
+  // adminEmail is one address or a list (index.js passes SUPER_ADMIN_EMAILS:
+  // Junid and Jafer). Compared normalised, the same way isSuperAdmin compares.
+  const admins = [].concat(adminEmail).map(normaliseEmail).filter(Boolean);
+  const caller = normaliseEmail(callerEmail);
+  if (caller && admins.includes(caller)) return;
   if (typeof callerUid !== "string" || !callerUid) {
     throw httpsError("permission-denied", "Engine Policy permission required.");
   }

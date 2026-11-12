@@ -50,7 +50,7 @@ import { seatingSizes, seatingAt } from "./seatingCore";
 import { switchOffDraft, clearDraft, targetPayload, isOurs, writableRow } from "./targetOverride";
 import { applyMovement } from "./applyMovement";
 import { isTransitLane } from "./transitLanes";
-import { ADMIN_EMAIL } from "../../config/enginePolicy";
+import { isSuperAdmin as isSuperAdminEmail } from "../../config/superAdmins";
 
 // RTDB path segments: a junk size key must fail loudly here rather than write
 // somewhere else. (Same guard as utils/sizeKey assertSafeSegment.)
@@ -107,7 +107,7 @@ function actorOf(viewer) {
 // so he keeps the label he always had. (Adversarial delta review, PR #469.)
 function actorRoleOf(viewer) {
   if (typeof viewer?.stockRole === "string" && viewer.stockRole) return viewer.stockRole;
-  return viewer?.email && viewer.email === ADMIN_EMAIL ? "admin" : null;
+  return viewer?.email && isSuperAdminEmail(viewer.email) ? "admin" : null;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

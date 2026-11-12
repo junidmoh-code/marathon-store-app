@@ -19,7 +19,7 @@ const { emailedLines, makeSlipPdfPaged } = require("./fixtures/makeSlipPdf.cjs")
 const { handleExtract, handleSubmit, resolveWriteFor } = require("../cardRecon/cardRecon.js");
 const { windowTill } = require("../lib/card-terminal-placements.cjs");
 
-const POLLER = { uid: "card-recon-email-poller", token: { email: "gunidmoh@gmail.com" } };
+const POLLER = { uid: "card-recon-email-poller", token: { email: "gunidmoh@gmail.com", email_verified: true } }; // super-admin shortcut; the real poller is a flag-granted custom-token uid
 const bucket = () => ({ file() { return { save: async () => {} }; } });
 const SWAP = Date.parse("2026-08-20T12:46:00+02:00"); // before the fixture's 29 Aug report
 

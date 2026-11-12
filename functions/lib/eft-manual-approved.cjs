@@ -195,7 +195,7 @@ function keyedDestinationOf(accountTail, allowedAccounts) {
  * identity (`alsoSyntheticRef`) — whichever the notice carries is taken.
  * @returns {{ok:true, readerId, parse, lines, alsoSyntheticRef}|{ok:false, code, message}}
  */
-function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
+function keyedIdentityCheck(data, { allowedAccounts = [], now, by = MANUAL_APPROVED_BY } = {}) {
   const d = data && typeof data === "object" ? data : {};
   const bank = typeof d.bank === "string" ? d.bank.trim().toLowerCase() : "";
   if (!KEYED_READER_IDS.includes(bank)) {
@@ -246,7 +246,7 @@ function keyedIdentityCheck(data, { allowedAccounts = [], now } = {}) {
   };
   const alsoSyntheticRef = bank === "absa" && refRaw && payer ? syntheticIdentityOf({ ...parse, bankRef: null }, "absa") : null;
   const lines = [
-    `Keyed by hand by ${MANUAL_APPROVED_BY} from a photo of the proof of payment (not read by machine).`,
+    `Keyed by hand by ${by} from a photo of the proof of payment (not read by machine).`,
     `Bank: ${BANK_NAMES[bank]}`,
     `Amount: R${(amountCents / 100).toFixed(2)}`,
     `Payment date: ${date}`,
@@ -291,6 +291,8 @@ function proofIdentityOf(parse, readerId) {
 function manualApprovedRecord({ key, readerId, parse, lines, identity, destination, actor, at, note, filename, entryId, proof = null }) {
   const text = Array.isArray(lines) ? lines.join("\n") : "";
   const photo = proof && proof.kind === "image";
+  // The super admin who approved it ("Junid" or "Jafer"); the fallback keeps old callers' stamp.
+  const by = actor?.name || MANUAL_APPROVED_BY;
   const unmatched = {
     at,
     receivedAt: at,
@@ -298,13 +300,13 @@ function manualApprovedRecord({ key, readerId, parse, lines, identity, destinati
     messageId: `manual-approved:${entryId}`,
     from: actor?.email ?? null,
     subject: photo
-      ? `Photo of a proof of payment (${readerId}) keyed and approved by hand by ${MANUAL_APPROVED_BY}`
-      : `Proof of payment (${readerId}) approved by hand by ${MANUAL_APPROVED_BY}`,
+      ? `Photo of a proof of payment (${readerId}) keyed and approved by hand by ${by}`
+      : `Proof of payment (${readerId}) approved by hand by ${by}`,
     auth: {
       verdict: "manual-approved", fromDomain: null, dkimDomain: null,
       detail: photo
-        ? `Photo of a proof of payment uploaded by ${MANUAL_APPROVED_BY}; its identity was typed by hand from the photo — no bank notification was read and nothing was authenticated.`
-        : `Proof of payment uploaded by ${MANUAL_APPROVED_BY} and approved by hand — no bank notification was read and nothing was authenticated.`,
+        ? `Photo of a proof of payment uploaded by ${by}; its identity was typed by hand from the photo — no bank notification was read and nothing was authenticated.`
+        : `Proof of payment uploaded by ${by} and approved by hand — no bank notification was read and nothing was authenticated.`,
     },
     rawText: clip(redactAccountDigits(text), 4000),
     reader: readerId,
@@ -319,7 +321,7 @@ function manualApprovedRecord({ key, readerId, parse, lines, identity, destinati
     destination: destination ?? null,
     accountTail: destination?.accountTail ?? null,
     manualApproved: {
-      by: MANUAL_APPROVED_BY,
+      by,
       uid: actor?.uid ?? null,
       email: actor?.email ?? null,
       at,
@@ -330,7 +332,7 @@ function manualApprovedRecord({ key, readerId, parse, lines, identity, destinati
       ...(photo && proof.alsoFingerprint ? { alsoFingerprint: proof.alsoFingerprint } : {}),
     },
   };
-  const used = markUsedOutsidePosDecision(unmatched, { at, actorUid: actor?.uid, actorName: MANUAL_APPROVED_BY, reason: MANUAL_APPROVED_REASON });
+  const used = markUsedOutsidePosDecision(unmatched, { at, actorUid: actor?.uid, actorName: by, reason: MANUAL_APPROVED_REASON });
   if (!used.ok) return used;
   return { ok: true, value: { ...used.value, approvedKey: key } };
 }
@@ -558,7 +560,7 @@ function approvedResponse(record, { already = false } = {}) {
     bankRef: record.bankRef ?? null,
     synthetic: !record.bankRef && !!record.syntheticRef,
     at: record.manualApproved?.at ?? record.at,
-    by: MANUAL_APPROVED_BY,
+    by: record.manualApproved?.by ?? MANUAL_APPROVED_BY,
     status: record.status,
     ...(record.manualApproved?.proof ? { keyedByHand: true, proofPath: record.manualApproved.proof.path ?? null } : {}),
   };

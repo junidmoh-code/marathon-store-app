@@ -7,6 +7,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const E = require("../lib/device-enrolment.cjs");
+const { JUNID_EMAIL } = require("../lib/super-admins.cjs");
 const { makeFakeDb, readAt } = require("./helpers/fake-rtdb.cjs");
 const { _handleEnrol } = require("../deviceEnrolment/deviceEnrolment.js");
 
@@ -202,7 +203,7 @@ test("a device LIVE under someone else is never taken over by another code — o
   assert.equal(d.tokens.length, 0);
   assert.equal(readAt(db.state.root, `users/${MC}/deviceGate/${DEV_A}`), first.tokens[0].claims.eid, "Sipho's phone keeps working");
   assert.equal(readAt(db.state.root, "device_enrolment/people/p-hub2/devices"), null, "no slot taken");
-  await _handleAdmin({ auth: { uid: "owner", token: { email: E.OWNER_EMAIL, email_verified: true } }, data: { action: "revokeDevice", deviceId: DEV_A } },
+  await _handleAdmin({ auth: { uid: "owner", token: { email: JUNID_EMAIL, email_verified: true } }, data: { action: "revokeDevice", deviceId: DEV_A } },
     { db, now: () => NOW, randomInt: () => 4821 });
   const after = await _handleEnrol(req({ code: "7305" }), deps(db));
   assert.equal(after.ok, true);
@@ -274,7 +275,7 @@ test("a revoked person's code is just a wrong code", async () => {
 test("an account that does not need a code, Junid, anonymous and a missing device id are refused outright", async () => {
   const db = world();
   await assert.rejects(_handleEnrol(req({ code: "4821" }, { uid: "other" }), deps(db)), /does not need a device code/);
-  await assert.rejects(_handleEnrol(req({ code: "4821" }, { email: E.OWNER_EMAIL }), deps(db)), /never needs a device code/);
+  await assert.rejects(_handleEnrol(req({ code: "4821" }, { email: JUNID_EMAIL }), deps(db)), /never need a device code/);
   await assert.rejects(_handleEnrol(req({ code: "4821" }, { provider: "anonymous" }), deps(db)), /Sign in first/);
   await assert.rejects(_handleEnrol({ ...req({ code: "4821" }), auth: null }, deps(db)), /Sign in first/);
   await assert.rejects(_handleEnrol(req({ code: "4821", deviceId: "x/../y" }), deps(db)), /no id/);
@@ -301,7 +302,7 @@ test("a success clears this device's wrong-code count", async () => {
 
 // ── the admin callable ───────────────────────────────────────────────────────
 const { _handleAdmin } = require("../deviceEnrolment/deviceEnrolment.js");
-const OWNER = { uid: "owner", token: { email: E.OWNER_EMAIL, email_verified: true } };
+const OWNER = { uid: "owner", token: { email: JUNID_EMAIL, email_verified: true } };
 const adminDeps = (db, seq = [4821, 7305, 3916, 5082]) => {
   let i = 0;
   return { db, now: () => NOW, randomInt: () => seq[i++ % seq.length] };
@@ -401,15 +402,15 @@ test("admin: everyone else is refused — a staff phone, a revoked code-maker, a
   const staff = deps(db);
   await _handleEnrol(req({ code: "4821" }), staff);
   const staffAuth = { uid: MC, token: staff.tokens[0].claims };
-  await assert.rejects(call(staffAuth, { action: "list" }, db), /Only Junid or MC/);
+  await assert.rejects(call(staffAuth, { action: "list" }, db), /Only Junid, Jafer or MC/);
   const mc = deps(db);
   await _handleEnrol(req({ code: "3916", deviceId: DEV_C }), mc);
   const mcAuth = { uid: MC, token: mc.tokens[0].claims };
   await call(mcAuth, { action: "list" }, db);
   await call(OWNER, { action: "revokeDevice", deviceId: DEV_C }, db);
-  await assert.rejects(call(mcAuth, { action: "list" }, db), /Only Junid or MC/, "a revoked device's token no longer works");
-  await assert.rejects(call({ uid: MC, token: { email: "mc@marathon.internal" } }, { action: "list" }, db), /Only Junid or MC/);
-  await assert.rejects(call({ uid: "x", token: { email: E.OWNER_EMAIL, email_verified: false } }, { action: "list" }, db), /Only Junid or MC/);
+  await assert.rejects(call(mcAuth, { action: "list" }, db), /Only Junid, Jafer or MC/, "a revoked device's token no longer works");
+  await assert.rejects(call({ uid: MC, token: { email: "mc@marathon.internal" } }, { action: "list" }, db), /Only Junid, Jafer or MC/);
+  await assert.rejects(call({ uid: "x", token: { email: JUNID_EMAIL, email_verified: false } }, { action: "list" }, db), /Only Junid, Jafer or MC/);
   await assert.rejects(call(null, { action: "list" }, db), /Sign in first/);
 });
 

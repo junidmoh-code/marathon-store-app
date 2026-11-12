@@ -7,7 +7,8 @@
 // by a comment.)
 //
 // ── TWO WAYS IN, AND ONLY TWO ────────────────────────────────────────────────
-// 1. The owner's Firebase Auth email (ADMIN_EMAIL).
+// 1. A super admin's Firebase Auth email (isSuperAdmin, src/config/superAdmins.js —
+//    Junid and Jafer; until 12 Nov 2026 this was the single ADMIN_EMAIL).
 // 2. An account carrying the `engine_policy` permission — read from the
 //    permFlags MIRROR, not from the permissions array.
 //
@@ -70,7 +71,7 @@
 // own server-side check — is the only one an attacker cannot reach around, and
 // even it is bypassed by writing the node directly until then.
 
-import { ADMIN_EMAIL } from "../components/PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "./superAdmins";
 
 // The permission key. Mirrored in src/components/permissionCatalog.js (what the
 // editor can grant) and in VALID_PERMISSIONS in functions/index.js (what
@@ -111,7 +112,7 @@ export const ENGINE_POLICY_PERMISSION = "engine_policy";
 // non-anonymous account, so the tab still SHOWS where a product sits.
 export function enginePolicySeatingWritable(viewer) {
   if (!viewer) return false;
-  if (viewer.email === ADMIN_EMAIL) return true;
+  if (isSuperAdminEmail(viewer.email)) return true;
   // Not "has a stockRole" — 'admin', because /stock_targets asks for 'admin'
   // and a switch-off writes a target row before it writes a cell.
   return viewer.stockRole === "admin";
@@ -140,7 +141,7 @@ export function enginePolicySeatingWritable(viewer) {
 // give one. (Adversarial re-review, PR #469.)
 export function enginePolicySeatingMovable(viewer) {
   if (!viewer) return false;
-  if (viewer.email === ADMIN_EMAIL) return true;
+  if (isSuperAdminEmail(viewer.email)) return true;
   // The movement rule's own list, in its own order. `p` roles (POS) are absent
   // deliberately: they may record a sale, not a transfer.
   return ["admin", "warehouse", "store"].includes(viewer.stockRole);
@@ -150,10 +151,9 @@ export function enginePolicyVisibleForViewer(viewer) {
   if (!viewer) return false;
   // Gate A — the owner, on the Auth email alone. Deliberately consults nothing
   // else: his /users record carries no permissions array to consult.
-  if (viewer.email === ADMIN_EMAIL) return true;
+  if (isSuperAdminEmail(viewer.email)) return true;
   // Gate B — the named grant. `=== true` and not a truthy test: the flag is
   // written as a boolean, and anything else arriving here is not a grant.
   return viewer.permFlags?.[ENGINE_POLICY_PERMISSION] === true;
 }
 
-export { ADMIN_EMAIL };
