@@ -3751,8 +3751,9 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   const allCards = groups.flatMap((g) => g.cards);
   const primaryTile = (key) => allCards.find((c) => c.key === key) || null;
   const homeTiles = [
-    primaryTile("assistant") && { ...primaryTile("assistant"), badge: assistantBadge },
-    primaryTile("warehouse") && { ...primaryTile("warehouse"), badge: incoming },
+    // No count pills on the Home tiles (Junid, 12 Nov: "remove the numbers").
+    primaryTile("assistant") && { ...primaryTile("assistant"), badge: undefined },
+    primaryTile("warehouse") && { ...primaryTile("warehouse"), badge: undefined },
     primaryTile("display_checks") && { ...primaryTile("display_checks"), name: "Display Check", badge: undefined },
     { key: "admin", name: "Admin" },
   ].filter(Boolean);

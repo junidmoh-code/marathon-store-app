@@ -17,7 +17,10 @@ describe("home stats for a one-shop account", () => {
     expect(src).not.toContain('{ k: "To restock"');
   });
   it("keeps the order figures, which are already that shop's own", () => {
-    expect(src).toContain('primaryTile("assistant") && { ...primaryTile("assistant"), badge: assistantBadge }');
+    // The Home tiles show no count (Junid, 12 Nov); the figure is still the
+    // shop's own where it is used (the Admin hub card list).
+    expect(src).toContain('primaryTile("assistant") && { ...primaryTile("assistant"), badge: undefined }');
+    expect(src).toContain('badge:assistantBadge');
     expect(src).toMatch(/const myShop = isSuperAdmin \? null : \(permRecord\?\.destShop \|\| null\);\s*\n\s*const orders = useOrders\(myShop\)/);
   });
 });

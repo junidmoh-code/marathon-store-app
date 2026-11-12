@@ -147,8 +147,10 @@ const HOME_CSS = `
 .sky-tile__ct{margin-top:14px;min-width:72px;height:35px;padding:0 15px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;
   font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--sky-ink);text-shadow:none;
   background:var(--sky-glass-solid);border:1px solid #fff;box-shadow:inset 0 1px 0 #fff}
-.sky-tile[data-testid="home-tile-display_checks"],.sky-tile[data-testid="home-tile-admin"]{padding-top:32px}
-.sky-tile[data-testid="home-tile-display_checks"] .sky-tile__nm,.sky-tile[data-testid="home-tile-admin"] .sky-tile__nm{margin-top:24px}
+/* No count pills (Junid 12 Nov), so every tile centres icon + name the way
+   Display Check and Admin always did. */
+.sky-home .sky-tile{padding-top:32px}
+.sky-home .sky-tile .sky-tile__nm{margin-top:24px}
 @media (min-width:900px){
   /* Laptop home (Junid 5 Nov, plain sky): smaller tiles, centred on the screen. */
   .sky-home__band{margin-top:0;position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);padding:0 32px}
