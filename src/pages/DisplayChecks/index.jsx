@@ -124,7 +124,13 @@ export default function DisplayChecks({ onExit, products }) {
     ? displayChecksAllStores().map((id) => ({ id, label: enabledIds.has(id) ? shopLabelOf(id) : `${shopLabelOf(id)} (off)` }))
     : ENABLED_STORES;
   const [superStore, setSuperStore] = useState(ENABLED_STORES[0]?.id || null);
-  const store = isSuper ? superStore : (permRecord?.destShop || null);
+  // Junid's policy (12 Nov): every signed-in staff member may open Display
+  // Check. A staff account scoped to a store sees that store, exactly as
+  // before; one with NO store (a hub, a roaming account) picks from the
+  // enabled stores. What it may read or complete there is still the database
+  // rules' and the completeDisplayCheck callable's decision.
+  const canPickStore = isSuper || !permRecord?.destShop;
+  const store = canPickStore ? (superStore || ENABLED_STORES[0]?.id || null) : (permRecord?.destShop || null);
   const storeLabel = SHOP_LABELS[store] || store || "—";
   const canManage = canManageDisplayChecks(gateUser, store);
   const visibleTabs = TABS.filter((t) => !t.manager || canManage);
@@ -192,7 +198,7 @@ export default function DisplayChecks({ onExit, products }) {
   const activeLabel = visibleTabs.find((t) => t.key === tab)?.label || "Today";
 
   // Store-toggle buttons, shared by both chromes.
-  const storeToggle = isSuper && PICKER_STORES.length > 1
+  const storeToggle = canPickStore && PICKER_STORES.length > 1
     ? PICKER_STORES.map((s) => {
         const on = s.id === store;
         return (

@@ -73,7 +73,7 @@ html[data-sky="on"] body { font-family: var(--sky-font); }
   position: fixed;
   inset: 0;
   z-index: 0;
-  background-image: url("/assets/sky-clear.jpg");
+  background-image: url("/assets/sky-clear-wide.jpg");   /* a band of the phone sky (scripts/sky-wide-bg.mjs) */
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;

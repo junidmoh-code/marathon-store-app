@@ -101,7 +101,8 @@ import { isCardHidden, isRoleHidden } from "./components/hiddenCards";
 import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngineStr,
          photoFailureSuffix, toggleFix, fixFits } from "./components/shopify/aiStudioCore";
 import StockHoldRelease from "./components/stock/StockHoldRelease";
-import { STOCK_HOLD_ENABLED } from "./config/stockHold";
+import { STOCK_HOLD_ENABLED, canReleaseStockHold } from "./config/stockHold";
+import { loadHoldConfig } from "./components/stock/stockHoldStore";
 import RefillQueue from "./components/stock/RefillQueue";
 import { countsTowardSourceQueue } from "./components/stock/firstBatchCore";
 import NotificationSettingsRow from "./push/NotificationSettingsRow";
@@ -3016,6 +3017,18 @@ export const RoleIcons = {
     </svg>
   ),
   // Display Registration tile (Junid 5 Nov): a screen with a registered tick.
+  // Hub Count & Displays: a clipboard with a tally (hub sneaker count).
+  hub_count: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 2h6v4H9z"/><path d="M9 11v6M12 11v6M15 11v6M8 16l8-4"/>
+    </svg>
+  ),
+  // Shipment Release: a box with an up arrow (held Central→hub boxes released).
+  stock_hold: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9l9-5 9 5v9l-9 5-9-5z"/><path d="M12 18v-7M9 13.5l3-3 3 3"/>
+    </svg>
+  ),
   display_registration: (
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><polyline points="8.5 10.5 11 13 15.5 8.5"/>
@@ -3463,7 +3476,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // badge slot is intentionally omitted (wired to nothing yet — a later PR feeds
   // it the store's outstanding count).
   const dcVisible = displayChecksVisibleForViewer(
-    { email: homeUser?.email, permissions: homePerm?.permissions, destShop: homePerm?.destShop },
+    { uid: homeUser?.uid, email: homeUser?.email, permissions: homePerm?.permissions, destShop: homePerm?.destShop },
     isSuperAdmin ? null : (homePerm?.destShop || null)
   );
 
@@ -3490,6 +3503,20 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // the count card. The card gates ITSELF (owner email or a named delegate in
   // /settings/stockHold/config) and renders null for everyone else, so no
   // per-viewer wiring is needed here beyond the identity.
+  // The Shipment Release HOME CARD (Junid, 12 Nov: restored as an ordinary
+  // Admin hub card). Same gate the old live card applied to itself —
+  // canReleaseStockHold: the owner on the email, or a uid named in
+  // /settings/stockHold/config/delegates. The owner needs no read; anyone
+  // else costs one small one-shot read of that config node.
+  const [stockHoldAllowed, setStockHoldAllowed] = useState(() => canReleaseStockHold({ email: homeUser?.email, uid: homeUser?.uid }, null));
+  useEffect(() => {
+    const viewer = { email: homeUser?.email, uid: homeUser?.uid };
+    if (canReleaseStockHold(viewer, null)) { setStockHoldAllowed(true); return undefined; }
+    if (!STOCK_HOLD_ENABLED || !viewer.uid) { setStockHoldAllowed(false); return undefined; }
+    let alive = true;
+    loadHoldConfig().then((cfg) => { if (alive) setStockHoldAllowed(canReleaseStockHold(viewer, cfg)); }).catch(() => { if (alive) setStockHoldAllowed(false); });
+    return () => { alive = false; };
+  }, [homeUser?.email, homeUser?.uid]);
   const stockHoldCard = STOCK_HOLD_ENABLED
     ? <StockHoldCard viewer={{ email: homeUser?.email, uid: homeUser?.uid }}
                      onOpen={() => onSelect(ROLES.STOCK_HOLD)} />
@@ -3561,6 +3588,13 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && { key:"customer", icon:RoleIcons.customer, name:"Track Order", desc:"Live order status & timeline", onClick:()=>onSelect(ROLES.CUSTOMER) },
       // Junid 5 Nov: Display Registration as a tile (its live card is off the
       // hub) — same gate and same screen as the card.
+      // Junid 12 Nov: Hub Count and Shipment Release back as ordinary hub
+      // cards (their live cards stay off). Same gates as the old live cards:
+      // Hub Count = hubSneakerCountVisibleForViewer (owner email, or stockRole
+      // admin|warehouse); Shipment Release = canReleaseStockHold (owner email,
+      // or a named delegate uid). The routes re-check both.
+      hubCountVisible && { key:"hub_sneaker_count", icon:RoleIcons.hub_count, name:"Hub Count", desc:"Count hub sneakers · displays · leftovers", onClick:()=>onSelect(ROLES.HUB_SNEAKER_COUNT) },
+      stockHoldAllowed && { key:"stock_hold", icon:RoleIcons.stock_hold, name:"Shipment Release", desc:"Central→hub boxes land when you confirm them", onClick:()=>onSelect(ROLES.STOCK_HOLD) },
       (canAccessStock || isSuperAdmin) && { key:"display_registration", icon:RoleIcons.display_registration, name:"Display Registration", desc:"Register display units", onClick:()=>onSelect(ROLES.DISPLAY_REGISTRATION) },
     ].filter(Boolean) },
     { label: "Administration", cards: [
@@ -20501,7 +20535,7 @@ function AppInner() {
   // store-scoped display_checks grant). Used both to guard a stale persisted role
   // and to mount the view. Dark by default (master flag off).
   const displayChecksRouteOpen = displayChecksVisibleForViewer(
-    { email: authUser?.email, permissions: permRecord?.permissions, destShop: permRecord?.destShop },
+    { uid: authUser?.uid, email: authUser?.email, permissions: permRecord?.permissions, destShop: permRecord?.destShop },
     isSuperAdmin ? null : (permRecord?.destShop || null)
   );
   // Stock access is gated by stockRole, NOT an app permission, so warehouse seed

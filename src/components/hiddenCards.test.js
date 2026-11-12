@@ -7,7 +7,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { hiddenCardsFor, isCardHidden, isRoleHidden, roleForCard } from "./hiddenCards";
+import { NEVER_HIDDEN, hiddenCardsFor, isCardHidden, isRoleHidden, roleForCard } from "./hiddenCards";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -137,6 +137,8 @@ describe("hiding a card also closes the ROLE it opens", () => {
 
     const broken = [];
     for (const { cardKey, roleConst } of pairs) {
+      // A NEVER_HIDDEN card (Display Check, Junid 12 Nov) is visible to all by policy.
+      if (NEVER_HIDDEN.has(cardKey)) continue;
       const roleValue = roleValues[roleConst];
       expect(roleValue, `ROLES.${roleConst} is not defined`).toBeTruthy();
       // Hiding this card must close BOTH the tile and the route.

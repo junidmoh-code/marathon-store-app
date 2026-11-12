@@ -62,6 +62,17 @@ STATUS.forEach((status, i) => {
   };
 });
 
+
+// A few counted cells across locations (Stock → Counted, Transfer grids).
+const stock = {};
+const LOCS = ["central", "hub1", "hub2", "hub3", "marathon-pe", "trophy", "marathon-pine", "concrete", "in_transit"];
+ids.forEach((id, i) => {
+  if (i % 2 === 1) return;
+  const loc = LOCS[i % LOCS.length];
+  const sizes = products[id].sizes.slice(0, 2 + (i % 3));
+  (stock[loc] ||= {})[id] = Object.fromEntries(sizes.map((s, j) => [s.replace(/\./g, "_"), { qty: 1 + ((i + j) % 4) }]));
+});
+
 export const FIXTURE = {
   ".info": { serverTimeOffset: 0, connected: true },
   products,
@@ -71,8 +82,12 @@ export const FIXTURE = {
   social_style_refs: {},
   social_policy: { captionMax: 2200 },
   social_publisher: { heartbeatAt: T0 },
-  users: { "harness-owner": { name: "Junid", email: "gunidmoh@gmail.com", permissions: {}, stockRole: "admin" } },
+  users: {
+    "harness-owner": { name: "Junid", email: "gunidmoh@gmail.com", permissions: {}, stockRole: "admin" },
+    "harness-staff": { name: "Staff", email: "staff@harness.invalid", username: "staff", permissions: ["store_assistant"] },
+  },
   orders: {},
+  stock,
   settings: {},
   config: {},
   mirror_switch: { enabled: false },
