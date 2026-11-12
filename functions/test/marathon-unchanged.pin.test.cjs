@@ -162,6 +162,46 @@ for (const seed of [11, 42, 2026]) {
   });
 }
 
+// THE 12 NOV 2026 MODEL (Junid): Central supplies every Pine/Concrete
+// non-footwear item straight to the shop (2 per size / 5 per design), Hub 3 is
+// sneakers only (keep 2, ask at 1). Pinned BEFORE that engine change landed:
+// with the live shape still holding Hub 3 clothing, owner seats and open Hub 3
+// clothing locks, the Marathon slice must be exactly the no-division plan —
+// under the new config now, and under whatever the engine does with it later.
+const NEW_MODEL_CONFIG = (base) => {
+  const c = clone(base);
+  c.concreteDivision = { shopOnly: { perSize: 2, oneSize: 5 } };
+  c.policyGroups["footwear-all"].policy.hub3 = { target: 2, minQty: 1, reorderPoint: 1, carriedOnly: true };
+  return c;
+};
+function newModelDivision(w, seed) {
+  const r = rng(seed + 29);
+  const d = liveShapeDivision(w, seed);
+  // Hub 3 non-footwear seats with an owning shop (the chooser being removed).
+  // No Section 1 lock is open at scan start (as above): an open lock rightly
+  // holds Central units, which is availability, not policy.
+  for (const [pid, p] of Object.entries(w.products)) {
+    if (!d.seats.hub3[pid] || p.category === "Footwear") continue;
+    if (r() < 0.5) d.seats.hub3[pid].owner = r() < 0.5 ? "concrete" : "marathon-pine";
+  }
+  return d;
+}
+
+for (const seed of [11, 42, 2026]) {
+  test(`the 12 Nov model (shop-only from Central, Hub 3 sneakers only) leaves the Marathon plan untouched (world ${seed})`, () => {
+    const w = world(seed);
+    const uncap = (c) => ({ ...c, maxIntentsPerRun: 100000, maxFootwearIntentsPerRun: 100000 });
+    const d = newModelDivision(w, seed);
+    const before = marathonSlice(plan({ config: uncap(clone(CONFIG)), stock: w.stock, products: w.products }));
+    const p = plan({ config: uncap(NEW_MODEL_CONFIG(CONFIG)), stock: d.stock, products: w.products, seats: d.seats });
+    assert.ok(p.intents.some((i) => i.dest === "concrete" || i.dest === "marathon-pine"), "the division must raise shop work, or the pin proves nothing");
+    assert.deepEqual(marathonSlice(p), before);
+    const capped = plan({ config: NEW_MODEL_CONFIG(CONFIG), stock: d.stock, products: w.products, seats: d.seats });
+    assert.deepEqual(marathonSlice(capped), marathonSlice(plan({ config: clone(CONFIG), stock: w.stock, products: w.products })));
+    assert.equal(hashOf(marathonSlice(plan({ config: clone(CONFIG), stock: w.stock, products: w.products }))), GOLDEN[seed]);
+  });
+}
+
 test("the Marathon destinations are exactly the config routes, and Section 1 is not among them", () => {
   assert.deepEqual(Object.keys(CONFIG.routes).sort(), [...MARATHON].sort());
   for (const loc of S1) assert.equal(CONFIG.routes[loc], undefined);
