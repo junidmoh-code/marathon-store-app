@@ -124,7 +124,11 @@ export function planHub3ClothingTransfer({ hub3Stock, products, seats = {}, requ
 }
 
 /** Refuse a plan that would touch a footwear product or write outside its paths. */
-export function assertPlanScope(plan, products) {
+export function assertPlanScope(plan, products, { allowNoRecord = false } = {}) {
+  // A cell above zero whose product record is gone cannot be classified: it
+  // might be footwear. Refused unless the operator has looked and said so.
+  const blind = plan.transfers.filter((c) => !products?.[c.pid]);
+  if (blind.length && !allowNoRecord) throw new Error(`REFUSED: ${blind.length} cell(s) above zero have no product record (${[...new Set(blind.map((c) => c.pid))].join(", ")}) — review them, then pass --allow-no-record`);
   for (const c of [...plan.transfers, ...plan.cleanups, ...plan.zeros]) {
     if (isFootwear(products?.[c.pid])) throw new Error(`REFUSED: ${c.pid} is footwear`);
     if (!c.path.startsWith(`stock/${HUB}/`) || c.path.split("/").length !== 4) throw new Error(`REFUSED: ${c.path} is outside stock/${HUB}/`);
@@ -213,8 +217,8 @@ async function withdrawRequest(db, w, nowIso) {
  * Apply the plan. `applyMovementAdmin` is injected (functions/lib/admin-movement.cjs).
  * Returns what actually landed.
  */
-export async function applyHub3ClothingTransfer({ db, plan, products, applyMovementAdmin, nowMs, concurrency = 6, log = () => {} }) {
-  assertPlanScope(plan, products);
+export async function applyHub3ClothingTransfer({ db, plan, products, applyMovementAdmin, nowMs, concurrency = 6, log = () => {}, allowNoRecord = false }) {
+  assertPlanScope(plan, products, { allowNoRecord });
   const nowIso = new Date(nowMs).toISOString();
   const pool = async (items, fn) => {
     const out = []; const q = [...items];
@@ -246,17 +250,21 @@ export async function applyHub3ClothingTransfer({ db, plan, products, applyMovem
  * movement (id suffix _v<pass>); one below zero is cleaned up. Repeats until
  * Hub 3 holds footwear only, or `passes` runs out. Reads /stock/hub3 alone.
  */
-export async function finishAndVerify({ db, products, applyMovementAdmin, nowMs, runId, passes = 3, log = () => {} }) {
+export async function finishAndVerify({ db, products, applyMovementAdmin, nowMs, runId, passes = 3, log = () => {}, readHub3 = null }) {
   const nowIso = new Date(nowMs).toISOString();
   const history = [];
+  const removedCells = [];
+  // The caller may hand in a paged reader (the runner does); the default is one
+  // read of the single location node.
+  const read = readHub3 || (async () => (await db.ref(`stock/${HUB}`).once("value")).val() || {});
   for (let pass = 1; pass <= passes; pass++) {
-    const hub3 = (await db.ref(`stock/${HUB}`).once("value")).val() || {};
+    const hub3 = await read();
     const leftovers = [];
     for (const [pid, row] of Object.entries(hub3)) {
       if (pid === "_meta" || isFootwear(products?.[pid])) continue;
       for (const [sizeKey, cell] of Object.entries(isObj(row) || Array.isArray(row) ? row : {})) if (cell != null) leftovers.push({ pid, sizeKey, qty: qtyOf(cell), path: `stock/${HUB}/${pid}/${sizeKey}` });
     }
-    if (!leftovers.length) { history.push({ pass, leftovers: 0 }); return { clean: true, history }; }
+    if (!leftovers.length) { history.push({ pass, leftovers: 0 }); return { clean: true, history, removedCells }; }
     const step = { pass, leftovers: leftovers.length, removed: 0, moved: 0, cleaned: 0, refused: [] };
     for (const l of leftovers) {
       const base = { pid: l.pid, sizeKey: l.sizeKey, size: sizeOfKey(l.sizeKey, products?.[l.pid]), path: l.path };
@@ -270,14 +278,14 @@ export async function finishAndVerify({ db, products, applyMovementAdmin, nowMs,
       const after = qtyOf((await db.ref(l.path).once("value")).val());
       if (after === 0 || after === null) {
         const rm = await removeZeroCell(db, l.path);
-        if (rm.removed) step.removed++;
+        if (rm.removed) { step.removed++; removedCells.push({ path: l.path, before: rm.before }); }
       }
     }
     history.push(step);
   }
-  const hub3 = (await db.ref(`stock/${HUB}`).once("value")).val() || {};
+  const hub3 = await read();
   const left = Object.keys(hub3).filter((pid) => pid !== "_meta" && !isFootwear(products?.[pid]));
-  return { clean: left.length === 0, left, history };
+  return { clean: left.length === 0, left, history, removedCells };
 }
 
 // ── EXPLICIT ROWS STILL AT THE RETIRED FROM-HUB 3 KEEP ───────────────────────

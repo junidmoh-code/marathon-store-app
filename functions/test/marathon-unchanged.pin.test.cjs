@@ -165,9 +165,12 @@ for (const seed of [11, 42, 2026]) {
 // THE 12 NOV 2026 MODEL (Junid): Central supplies every Pine/Concrete
 // non-footwear item straight to the shop (2 per size / 5 per design), Hub 3 is
 // sneakers only (keep 2, ask at 1). Pinned BEFORE that engine change landed:
-// with the live shape still holding Hub 3 clothing, owner seats and open Hub 3
-// clothing locks, the Marathon slice must be exactly the no-division plan —
-// under the new config now, and under whatever the engine does with it later.
+// with the live shape still holding Hub 3 clothing and owner seats (and, like
+// the pins above, NO Section 1 lock open at scan start), the Marathon slice
+// must be exactly the no-division plan. What this pin cannot see: a Section 1
+// lock already holding Central units changing size (the Hub 3 leg 3 → 2 shrinks
+// Hub 3's locks and frees Central pairs Hub 2 can then ask for) — that is
+// measured on live data by scripts/audit/central-clothing-dry-run.mjs.
 const NEW_MODEL_CONFIG = (base) => {
   const c = clone(base);
   c.concreteDivision = { shopOnly: { perSize: 2, oneSize: 5 } };

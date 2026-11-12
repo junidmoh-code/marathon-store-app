@@ -52,7 +52,9 @@ function divisionNeverKeeps(loc, product) {
 // stock"). A rule of the division, so it holds while the division key is on:
 // Hub 3 never keeps, is never seated with and is never Solved anything that is
 // not footwear, above every row and rule. With the key deleted (the rollback)
-// the older routes come back whole.
+// the pre-division routes (the seed's templates, central-fed) come back for
+// the engine; the 9–11 Nov Hub 3 clothing code is gone, and a Solve seat or
+// the scan's seat pass still refuses Hub 3 non-footwear.
 function hub3Refuses(loc, product) {
   return loc === DIVISION_HUB && !!product && !isDivisionFootwear(product);
 }

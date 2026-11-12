@@ -1,4 +1,7 @@
 // ─── HUB 3 CLOTHING CENSUS (Junid, 12 Nov 2026) — READ-ONLY ──────────────────
+// NOTE: the "on the Hub 3-owned path" count needs the pre-12-Nov
+// concrete-division.cjs (hub3ServesSize); run it from main at 374cdbb8 or
+// earlier. On this branch that section reports nothing.
 // Maps the state the 12 Nov division change starts from. Reads a snapshot made
 // by scripts/audit/concrete-division-dump.mjs (paged, scoped reads) and writes
 // NOTHING to the database. Prints a markdown report.

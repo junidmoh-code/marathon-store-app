@@ -1716,7 +1716,7 @@ function History({ entries, onRevert, busy }) {
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>
           </div>
-          {h.status === "applied" && h.kind !== "rows" && (
+          {h.status === "applied" && h.kind !== "rows" && !divisionRevertRetired(h) && (
             <button onClick={() => onRevert(h)} disabled={!!busy}
               style={{ ...bGhost, padding: "6px 10px", fontSize: ".75rem", opacity: busy ? .5 : 1 }}>Revert</button>
           )}
@@ -1738,6 +1738,15 @@ export function divisionHistoryLine(h) {
   }
   const shop = (p) => (p?.shopOnly ? `${p.shopOnly.perSize}/${p.shopOnly.oneSize}` : "off");
   return `shop keep ${shop(h?.before)} -> ${shop(h?.after)}`;
+}
+
+// A division entry whose revert would write back the retired Hub 3 fields
+// (fromHub3 / hub3Keep): the server refuses that shape since 12 Nov 2026, so
+// the screen offers no Revert for it rather than a generic error.
+export function divisionRevertRetired(h) {
+  if (h?.kind !== "concreteDivision") return false;
+  const b = h.before;
+  return !!(b && typeof b === "object" && ("fromHub3" in b || "hub3Keep" in b));
 }
 
 // ── THE CONCRETE DIVISION ────────────────────────────────────────────────────

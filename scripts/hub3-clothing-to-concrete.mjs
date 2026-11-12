@@ -30,6 +30,7 @@ const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i > 0
 const APPLY = process.argv.includes("--apply");
 const RUN_ID = arg("--run-id", "20261112");
 const MD = arg("--md", null);
+const ALLOW_NO_RECORD = process.argv.includes("--allow-no-record");
 const db = admin.database();
 const once = async (p) => (await db.ref(p).once("value")).val();
 
@@ -49,7 +50,7 @@ const targets = {};
 for (const loc of dv.DIVISION_SHOPS) targets[loc] = await readMapPaged(db, `stock_targets/${loc}`);
 const plan = planHub3ClothingTransfer({ hub3Stock, products, seats, requests, locks, runId: RUN_ID });
 const rows = planRowAlign({ targets, products });
-assertPlanScope(plan, products);
+assertPlanScope(plan, products, { allowNoRecord: ALLOW_NO_RECORD });
 for (const w of plan.withdraw) if (!dv.DIVISION_LOCATIONS.includes(w.dest)) throw new Error(`REFUSED: a withdrawal outside the division (${w.dest})`);
 
 const name = (pid) => products[pid]?.name || "(no product record)";
@@ -101,8 +102,8 @@ const record = `settings/hub3ClothingTransfer/${RUN_ID}`;
 await db.ref(record).update({ startedAt: new Date(nowMs).toISOString(), by: "script:hub3-clothing-to-concrete", status: "running", planned: plan.summary });
 
 const log = (m) => console.log(m);
-const res = await applyHub3ClothingTransfer({ db, plan, products, applyMovementAdmin, nowMs, log });
-const fin = await finishAndVerify({ db, products, applyMovementAdmin, nowMs: Date.now(), runId: RUN_ID, log });
+const res = await applyHub3ClothingTransfer({ db, plan, products, applyMovementAdmin, nowMs, log, allowNoRecord: ALLOW_NO_RECORD });
+const fin = await finishAndVerify({ db, products, applyMovementAdmin, nowMs: Date.now(), runId: RUN_ID, log, readHub3: () => readMapPaged(db, `stock/${HUB}`) });
 const aligned = await applyRowAlign({ db, align: rows.align, nowIso: new Date().toISOString() });
 const movedUnits = res.moved.reduce((t, m) => t + (m.moved || 0), 0);
 const refused = [...res.moved.filter((m) => m.refused), ...res.cleaned.filter((c) => c.refused)];
@@ -117,8 +118,10 @@ const result = {
   rowsAligned: aligned.map((a) => ({ path: a.path, outcome: a.outcome })),
   verify: fin,
 };
-await db.ref(record).update({ finishedAt: new Date().toISOString(), status: fin.clean && !refused.length ? "done" : "done_with_issues", result: JSON.parse(JSON.stringify(result)) });
+const claimed = res.withdrawn.filter((w) => w.outcome === "touched");
+if (claimed.length) console.log(`\n!!! ${claimed.length} request(s) a picker has claimed were NOT withdrawn — they may still deliver non-footwear to Hub 3 or name Hub 3 as a source; re-run this script once they close:\n${claimed.map((w) => `  ${w.id} ${w.dest} ${w.pid} ${w.size ?? ""}`).join("\n")}\n`);
+await db.ref(record).update({ finishedAt: new Date().toISOString(), status: fin.clean && !refused.length && !claimed.length ? "done" : "done_with_issues", result: JSON.parse(JSON.stringify(result)), removedCells: fin.removedCells || [] });
 const md = report(`\n### Result\n\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\`\n`);
 process.stdout.write(md);
 if (MD) writeFileSync(MD, md);
-process.exit(fin.clean ? 0 : 2);
+process.exit(fin.clean && !claimed.length ? 0 : 2);

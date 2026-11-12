@@ -17,7 +17,7 @@ vi.mock("./useStock", () => ({ useLocations: () => ({}), useEngineConfig: () => 
 
 const { SeatRow } = await import("./SeatingTab.jsx");
 const { readSeatingContext } = await import("./seatingStore.js");
-const { ConcreteDivisionPanel, divisionHistoryLine } = await import("./EnginePolicyCard.jsx");
+const { ConcreteDivisionPanel, divisionHistoryLine, divisionRevertRetired } = await import("./EnginePolicyCard.jsx");
 
 const seat = (loc) => ({ loc, pid: "tee", reason: "not_seated", label: "Not seated", units: 0, sizes: [], rowCount: 0, offRows: [], seated: false, hasCell: false });
 const TEE = { id: "tee", name: "Tee", category: "Clothing", productType: "clothing", sizes: ["M"] };
@@ -57,5 +57,11 @@ describe("the division panel on the Engine Policy card", () => {
     expect(divisionHistoryLine({ before: { ...OLD }, after: { ...OLD, hub3Keep: { ...OLD.hub3Keep, on: true } } })).toBe("Hub 3 keep off -> on");
     expect(divisionHistoryLine({ before: OLD, after: POLICY })).toBe("fromHub3+hub3Keep+shopOnly -> shopOnly (Hub 3 keep removed)");
     expect(divisionHistoryLine({ before: POLICY, after: null })).toBe("shop keep 2/5 -> off");
+  });
+  it("no Revert for an entry that would write the retired Hub 3 fields back", () => {
+    const OLD = { shopOnly: { perSize: 2, oneSize: 5 }, hub3Keep: { on: false, perSize: 2, oneSize: 10 } };
+    expect(divisionRevertRetired({ kind: "concreteDivision", before: OLD, after: POLICY })).toBe(true);
+    expect(divisionRevertRetired({ kind: "concreteDivision", before: POLICY, after: null })).toBe(false);
+    expect(divisionRevertRetired({ kind: "group", before: OLD })).toBe(false);
   });
 });

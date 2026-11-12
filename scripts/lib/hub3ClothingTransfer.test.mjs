@@ -206,3 +206,24 @@ describe("the one-off release", () => {
     expect(db.state.root.refill_requests.b.earlyRelease).toBeUndefined();
   });
 });
+
+describe("review fixes", () => {
+  it("a positive cell with no product record is refused unless the operator allows it", async () => {
+    const t = world();
+    t.stock.hub3.ghost = { 8: cell(2) };
+    const plan = planOf(t);
+    expect(() => assertPlanScope(plan, PRODUCTS)).toThrow(/no product record/);
+    expect(() => assertPlanScope(plan, PRODUCTS, { allowNoRecord: true })).not.toThrow();
+    const db = makeFakeDb(t);
+    await expect(applyHub3ClothingTransfer({ db, plan, products: PRODUCTS, applyMovementAdmin, nowMs: NOW })).rejects.toThrow(/no product record/);
+    expect(db.state.root.stock.hub3.ghost[8].qty).toBe(2);
+  });
+  it("verify reports every cell it removed, with what it held", async () => {
+    const t = world();
+    const db = makeFakeDb(t);
+    await applyHub3ClothingTransfer({ db, plan: planOf(t), products: PRODUCTS, applyMovementAdmin, nowMs: NOW });
+    const fin = await finishAndVerify({ db, products: PRODUCTS, applyMovementAdmin, nowMs: NOW, runId: "20261112" });
+    expect(fin.removedCells.map((r) => r.path).sort()).toEqual(["stock/hub3/cap/_", "stock/hub3/gone/_", "stock/hub3/odd/_", "stock/hub3/pants/28_30", "stock/hub3/perf/_", "stock/hub3/tee/L", "stock/hub3/tee/M", "stock/hub3/tee/S"]);
+    expect(fin.removedCells.every((r) => r.before && r.before.qty === 0)).toBe(true);
+  });
+});

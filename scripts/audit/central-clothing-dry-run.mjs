@@ -6,7 +6,7 @@
 //           (simulated in memory with the transfer's own plan).
 // Proves the Marathon slice did not move, and reports the first scan's
 // Concrete / Pine / Hub 3 lines under the live caps (and uncapped).
-//   node scripts/audit/central-clothing-dry-run.mjs <snapshot.json> --old <dir holding functions/lib> [--hold-hub3-leg]
+//   node scripts/audit/central-clothing-dry-run.mjs <snapshot.json> --old <dir holding functions/lib> [--hold-hub3-leg] [--unpause]
 // --hold-hub3-leg: the Hub 3 sneaker leg stays at its live value (the division
 // key and the transfer only) — the state shipped while Junid decides the leg.
 import { readFileSync } from "fs";
@@ -33,6 +33,8 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 const pol = planCentralClothingPolicy({ liveGroup: d.config.policyGroups["footwear-all"], liveDivision: d.config.concreteDivision });
 const newConfig = clone(d.config);
 const HOLD_LEG = argv.includes("--hold-hub3-leg");
+// --unpause: estimate the scan once Pine's count pause is lifted.
+if (argv.includes("--unpause")) { delete newConfig.pausedLocations; }
 if (!HOLD_LEG) newConfig.policyGroups["footwear-all"] = pol.group;
 newConfig.concreteDivision = pol.division;
 
