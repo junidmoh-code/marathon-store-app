@@ -1,4 +1,6 @@
-// ─── THE CONCRETE DIVISION — seating, Hub 3 sneakers, keeps, source (Junid, 9 Nov 2026)
+// ─── THE CONCRETE DIVISION — seating, Hub 3 sneakers, keeps, source ──────────
+// Junid, 9 Nov 2026; the 12 Nov 2026 model: Pine/Concrete non-footwear kept in
+// the shop from Central (2 per size / 5 per design); Hub 3 sneakers only (2, ask at 1).
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -17,8 +19,8 @@ const base = () => ({
   routes: { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" },
   mode: { hub1: "live", hub2: "live", "marathon-pe": "live", trophy: "live" },
   ruleBasedTargets: true, maxIntentsPerRun: 500, maxFootwearIntentsPerRun: 500, maxUnitsPerIntent: 20,
-  concreteDivision: { shopOnly: { perSize: 2, oneSize: 5 }, fromHub3: { perSize: 1, oneSize: 5, askAt: 0 }, hub3Keep: { on: false, perSize: 2, oneSize: 10 } },
-  policyGroups: { "footwear-all": { armed: true, memberCategoryKeys: FOOTWEAR_CATEGORY_KEYS.slice(), policy: { perSize: true, hub3: { target: 3, minQty: 2, reorderPoint: 1, carriedOnly: true } } } },
+  concreteDivision: { shopOnly: { perSize: 2, oneSize: 5 } },
+  policyGroups: { "footwear-all": { armed: true, memberCategoryKeys: FOOTWEAR_CATEGORY_KEYS.slice(), policy: { perSize: true, hub3: { target: 2, minQty: 1, reorderPoint: 1, carriedOnly: true } } } },
   categoryPolicy: {},
 });
 const counted = (qty) => ({ qty, v: 1, mv: "m", lastType: "count" });
@@ -35,48 +37,60 @@ const lines = (p, dest) => p.intents.filter((i) => i.dest === dest).map((i) => `
 const central = { s1: { 7: counted(9), 8: counted(9), 9: counted(9) }, t1: { S: counted(9), M: counted(9) }, c1: { _: counted(20) } };
 
 test("seats: units seat a product; a sell-out keeps it; only a transfer out releases it", () => {
-  // Since 10 Nov 2026 a cell at zero seats too (t1 at Hub 3).
-  const stock = { hub3: { s1: { 7: counted(2) }, t1: { S: counted(0) } }, concrete: { c1: { _: counted(1) } } };
-  const r = dv.planSeats({ rawStock: stock, seats: {}, movements: [], nowIso: ISO });
-  assert.deepEqual(Object.keys(r.effective.hub3).sort(), ["s1", "t1"]);
-  assert.deepEqual(Object.keys(r.effective.concrete), ["c1"]);
+  // Since 10 Nov 2026 a cell at zero seats too (s1's size 8 at Hub 3).
+  const stock = { hub3: { s1: { 7: counted(2) } }, concrete: { c1: { _: counted(1) }, t1: { S: counted(0) } } };
+  const r = dv.planSeats({ rawStock: stock, seats: {}, movements: [], nowIso: ISO, products });
+  assert.deepEqual(Object.keys(r.effective.hub3), ["s1"]);
+  assert.deepEqual(Object.keys(r.effective.concrete).sort(), ["c1", "t1"]);
   assert.equal(r.seated, 3);
-  assert.equal(r.effective.hub3.t1.via, "cell");
-  const seats = { hub3: { t1: seat() } };
-  const sold = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "customer", type: "sold", ts: ISO }], nowIso: ISO });
-  assert.ok(sold.effective.hub3.t1, "a sale leaves it seated");
-  const moved = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "central", type: "transfer_out", ts: "2026-11-09T13:00:00.000Z" }], nowIso: ISO });
-  assert.equal(moved.effective.hub3.t1, undefined);
-  assert.equal(moved.writes["hub3/t1"], null);
-  const stillHeld = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(1) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "central", type: "transfer_out", ts: ISO }], nowIso: ISO });
-  assert.ok(stillHeld.effective.hub3.t1);
+  assert.equal(r.effective.concrete.t1.via, "cell");
+  const seats = { concrete: { t1: seat() } };
+  const sold = dv.planSeats({ rawStock: { concrete: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "concrete", to: "customer", type: "sold", ts: ISO }], nowIso: ISO, products });
+  assert.ok(sold.effective.concrete.t1, "a sale leaves it seated");
+  const moved = dv.planSeats({ rawStock: { concrete: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "concrete", to: "central", type: "transfer_out", ts: "2026-11-09T13:00:00.000Z" }], nowIso: ISO, products });
+  assert.equal(moved.effective.concrete.t1, undefined);
+  assert.equal(moved.writes["concrete/t1"], null);
+  const stillHeld = dv.planSeats({ rawStock: { concrete: { t1: { S: counted(1) } } }, seats, movements: [{ productId: "t1", from: "concrete", to: "central", type: "transfer_out", ts: ISO }], nowIso: ISO, products });
+  assert.ok(stillHeld.effective.concrete.t1);
+});
+
+test("seats (12 Nov 2026): Hub 3 is never seated with a non-footwear item, and an old seat comes off", () => {
+  const stock = { hub3: { t1: { S: counted(3) }, c1: { _: counted(0) }, s1: { 7: counted(1) } } };
+  const r = dv.planSeats({ rawStock: stock, seats: { hub3: { c1: seat({ owner: "concrete" }) } }, movements: [], nowIso: ISO, products });
+  assert.deepEqual(Object.keys(r.effective.hub3), ["s1"]);
+  assert.equal(r.writes["hub3/c1"], null, "the old owner seat is switched off");
+  assert.equal(r.writes["hub3/t1"], undefined, "never written");
 });
 
 test("seats: a refill leaving, or a Solve newer than the move, does not release a seat", () => {
-  const seats = { hub3: { t1: seat() } };
-  const refill = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "hub3", to: "concrete", type: "transfer_out", ts: "2026-11-09T13:00:00.000Z", link: { refillId: "r" } }], nowIso: ISO });
-  assert.ok(refill.effective.hub3.t1, "a refill leaving is the hub doing its job");
-  const resolve = dv.planSeats({ rawStock: { hub3: { t1: { S: counted(0) } } }, seats: { hub3: { t1: seat({ via: "solve", at: "2026-11-09T12:00:00.000Z" }) } }, movements: [{ productId: "t1", from: "hub3", to: "central", type: "transfer_out", ts: "2026-11-01T08:00:00.000Z" }], nowIso: ISO });
-  assert.ok(resolve.effective.hub3.t1, "the Solve came after the move");
+  const seats = { concrete: { t1: seat() } };
+  const refill = dv.planSeats({ rawStock: { concrete: { t1: { S: counted(0) } } }, seats, movements: [{ productId: "t1", from: "concrete", to: "marathon-pine", type: "transfer_out", ts: "2026-11-09T13:00:00.000Z", link: { refillId: "r" } }], nowIso: ISO, products });
+  assert.ok(refill.effective.concrete.t1, "a refill leaving is not a person moving it out");
+  const resolve = dv.planSeats({ rawStock: { concrete: { t1: { S: counted(0) } } }, seats: { concrete: { t1: seat({ via: "solve", at: "2026-11-09T12:00:00.000Z" }) } }, movements: [{ productId: "t1", from: "concrete", to: "central", type: "transfer_out", ts: "2026-11-01T08:00:00.000Z" }], nowIso: ISO, products });
+  assert.ok(resolve.effective.concrete.t1, "the Solve came after the move");
 });
 
-test("seat: a second Solve cannot take a product from its owning shop; clear removes only its own Solve", async () => {
-  const db = makeFakeDb({ users: { u1: { stockRole: "store" } }, products: { t1: TEE } });
+test("seat: Hub 3 refuses a non-footwear Solve; there is no owning shop; clear removes only its own Solve", async () => {
+  const db = makeFakeDb({ users: { u1: { stockRole: "store" } }, products: { t1: TEE, s1: SHOE } });
   const ctx = { db, callerUid: "u1", nowIso: ISO };
-  await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", owner: "concrete", solveId: "a" } });
-  await assert.rejects(dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", owner: "marathon-pine", solveId: "b" } }), /already belongs/);
-  const other = await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", clear: true, solveId: "b" } });
+  await assert.rejects(dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", solveId: "a" } }), /footwear only/);
+  await assert.rejects(dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", owner: "concrete", solveId: "a" } }), /footwear only/);
+  await assert.rejects(dv.applyDivisionSeat({ ...ctx, data: { location: "concrete", pid: "t1", owner: "concrete", solveId: "a" } }), /no owning shop/);
+  const shop = await dv.applyDivisionSeat({ ...ctx, data: { location: "concrete", pid: "t1", solveId: "a" } });
+  assert.equal(shop.seat.owner, undefined);
+  await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "s1", solveId: "a" } });
+  const other = await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "s1", clear: true, solveId: "b" } });
   assert.equal(other.cleared, false);
-  const mine = await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", clear: true, solveId: "a" } });
+  const mine = await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "s1", clear: true, solveId: "a" } });
   assert.equal(mine.cleared, true);
 });
 
-test("Hub 3 sneakers: keep 3, ask at 1, every declared size, seated only, counted through the trust mask", () => {
+test("Hub 3 sneakers: keep 2, ask at 1, every declared size, seated only, counted through the trust mask", () => {
   const stock = { central, hub3: { s1: { 7: counted(2), 8: counted(1) } } };
   const unseated = plan({ stock });
   assert.deepEqual(lines(unseated, "hub3"), [], "not seated — nothing");
   const p = plan({ stock, seats: { hub3: { s1: seat() } } });
-  assert.deepEqual(lines(p, "hub3"), ["central:8:2", "central:9:3"], "7 holds 2 (above the ask), 8 tops up to 3, 9 has no cell and is a declared size");
+  assert.deepEqual(lines(p, "hub3"), ["central:8:1", "central:9:2"], "7 holds 2, 8 is at the ask (1 left) and tops up to 2, 9 has no cell and is a declared size");
   assert.ok(p.intents.filter((i) => i.dest === "hub3").every((i) => i.seatedHub3 === true));
 });
 
@@ -92,43 +106,26 @@ test("Hub 3 sneakers never remove excess, and a size nobody holds anywhere stays
   assert.equal((p.closes || []).length, 0);
 });
 
-test("Hub 3 non-sneakers are off at go-live, seated or not, and switch on through the one key", () => {
-  const stock = { central, hub3: { t1: { S: trusted(0), M: trusted(0) } } };
-  const seats = { hub3: { t1: seat({ owner: "concrete" }) } };
+test("Hub 3 holds no non-footwear (12 Nov 2026): seated, owned, an explicit row, or an old key's switch — nothing", () => {
+  const stock = { central, hub3: { t1: { S: trusted(0), M: trusted(0) }, c1: { _: trusted(0) } } };
+  const seats = { hub3: { t1: seat({ owner: "concrete" }), c1: seat({ via: "solve" }) } };
   assert.deepEqual(lines(plan({ stock, seats }), "hub3"), []);
-  const on = base(); on.concreteDivision.hub3Keep.on = true;
-  assert.deepEqual(lines(plan({ stock, seats, config: on }), "hub3"), ["central:M:2", "central:S:2"]);
+  const old = base(); old.concreteDivision = { ...old.concreteDivision, fromHub3: { perSize: 1, oneSize: 5, askAt: 0 }, hub3Keep: { on: true, perSize: 2, oneSize: 10 } };
+  assert.deepEqual(lines(plan({ stock, seats, config: old }), "hub3"), [], "an older key's Hub 3 switch is ignored");
+  const targets = { hub3: { t1: { S: { target: 4, minQty: 2 } } } };
+  assert.deepEqual(lines(plan({ stock, seats, targets }), "hub3"), [], "above an explicit row too");
 });
 
-test("with the Hub 3 keep on, an uncounted Hub 3 clothing cell still raises nothing", () => {
-  const on = base(); on.concreteDivision.hub3Keep.on = true;
-  const p = plan({ stock: { central, hub3: { t1: { S: counted(0) } } }, seats: { hub3: { t1: seat() } }, config: on });
-  assert.deepEqual(lines(p, "hub3"), []);
-});
-
-test("Solved to Hub 3: no shop request while the Solve's box is on its way; then the owner asks Hub 3, one per size, at 0", () => {
-  const seats = { hub3: { t1: seat({ via: "solve", owner: "concrete" }) } };
-  // The Solve's first batch into Hub 3, S and M (since 10 Nov a size with
-  // nothing at Hub 3 and nothing coming goes to Central while the keep is off).
+test("a shop asks Central for its keep whatever Hub 3 holds or has coming, whoever 'owned' it there", () => {
+  const seats = { hub3: { t1: seat({ via: "solve", owner: "concrete" }), c1: seat({ owner: "concrete" }) }, concrete: { t1: seat() }, "marathon-pine": { c1: seat() } };
   const solve = (size) => ({ status: "open", productId: "t1", size, qty: 2, requestingLocation: "hub3", createdAt: ISO, createdFrom: { source: "central", divisionSolve: true } });
-  const refillRequests = { rS: solve("S"), rM: solve("M") };
-  const before = plan({ stock: { central, hub3: { t1: { S: trusted(0), M: trusted(0) } }, concrete: { t1: { S: trusted(0), M: trusted(0) } } }, seats, refillRequests });
-  assert.deepEqual(lines(before, "concrete"), [], "receipt-gated");
-  assert.deepEqual(lines(before, "hub3"), [], "and no pass-through leg either");
-  // Hub 3 received S; M's box never came (no stock, nothing on the way): M from Central under the shop's own keep.
-  const after = plan({ stock: { central, hub3: { t1: { S: trusted(2), M: trusted(0) } }, concrete: { t1: { S: trusted(0), M: trusted(0) } } }, seats });
-  assert.deepEqual(lines(after, "concrete"), ["central:M:2", "hub3:S:1"]);
-  assert.deepEqual(lines(after, "marathon-pine"), []);
-  const holding = plan({ stock: { central, hub3: { t1: { S: trusted(2) } }, concrete: { t1: { S: trusted(1) } } }, seats });
-  assert.deepEqual(lines(holding, "concrete"), [], "ask at 0");
-});
-
-test("the shop that is not the owner asks nothing; a one-size item keeps 5 from Hub 3", () => {
-  const seats = { hub3: { c1: seat({ via: "solve", owner: "concrete" }) } };
-  const stock = { central, hub3: { c1: { _: trusted(9) } }, concrete: { c1: { _: trusted(0) } }, "marathon-pine": { c1: { _: trusted(0) } } };
-  const p = plan({ stock, seats });
-  assert.deepEqual(lines(p, "concrete"), ["hub3:_:5"]);
-  assert.deepEqual(lines(p, "marathon-pine"), []);
+  const p = plan({
+    stock: { central, hub3: { t1: { S: trusted(5), M: trusted(0) }, c1: { _: trusted(9) } }, concrete: { t1: { S: trusted(0), M: trusted(1) } }, "marathon-pine": { c1: { _: trusted(0) } } },
+    seats, refillRequests: { rM: solve("M") },
+  });
+  assert.deepEqual(lines(p, "concrete"), ["central:M:1", "central:S:2"]);
+  assert.deepEqual(lines(p, "marathon-pine"), ["central:_:5"], "the other shop is no longer shut out");
+  assert.deepEqual(lines(p, "hub3"), []);
 });
 
 test("shop-only: straight from Central, 2 per size and 5 per design, any shortfall including one piece", () => {
@@ -138,20 +135,16 @@ test("shop-only: straight from Central, 2 per size and 5 per design, any shortfa
   assert.deepEqual(lines(p, "marathon-pine"), ["central:_:1"]);
 });
 
-test("HARD RULE (Hub 3 keep ON): a product at Hub 3 by any means is never requested from Central by a shop", () => {
-  const on = base(); on.concreteDivision.hub3Keep.on = true;
-  for (const hub3 of [{ t1: { S: counted(0) } }, { t1: { S: trusted(0) } }]) {
-    const p = plan({ stock: { central, hub3, concrete: { t1: { S: trusted(0), M: trusted(0) } } }, config: on });
-    assert.ok(!p.intents.some((i) => i.dest === "concrete" && i.source === "central"), JSON.stringify(hub3));
-  }
-  const locked = plan({ config: on, stock: { central, concrete: { t1: { S: trusted(0) } } }, openIndex: { hub3: { t1: { S: { qty: 1, source: "central", refillId: "x", createdAt: ISO } } } }, refillRequests: { x: { status: "open", productId: "t1", size: "S", requestingLocation: "hub3", createdAt: ISO } } });
-  assert.ok(!locked.intents.some((i) => i.dest === "concrete" && i.source === "central"));
-});
-
-test("Hub 3 keep OFF (10 Nov 2026): the rule holds only for a size Hub 3 holds or has coming", () => {
-  // S is on its way into Hub 3 (a lock): the shop waits for it. M: nothing at Hub 3, nothing coming → Central.
-  const locked = plan({ stock: { central, concrete: { t1: { S: trusted(0) } } }, seats: { concrete: { t1: seat() } }, openIndex: { hub3: { t1: { S: { qty: 1, source: "central", refillId: "x", createdAt: ISO } } } }, refillRequests: { x: { status: "open", productId: "t1", size: "S", requestingLocation: "hub3", createdAt: ISO } } });
-  assert.deepEqual(lines(locked, "concrete"), ["central:M:2"]);
+test("a Hub 3 non-footwear row with no lock is withdrawn untouched as never kept there; a picked one finishes", () => {
+  const row = { status: "open", productId: "t1", size: "S", qty: 2, requestingLocation: "hub3", createdAt: ISO, createdFrom: { source: "central", via: "hub3_solve", divisionSolve: true } };
+  const p = plan({ stock: { central, hub3: { t1: { S: trusted(0) } } }, refillRequests: { r1: row } });
+  const c = (p.satisfiedClosures || []).find((x) => x.refillId === "r1");
+  assert.ok(c, "withdrawn");
+  assert.equal(c.cancelReason, "never_kept_here");
+  assert.equal(c.requireUntouched, true);
+  const off = base(); delete off.concreteDivision;
+  const keyOff = plan({ stock: { central, hub3: { t1: { S: trusted(0) } } }, refillRequests: { r1: row }, config: off });
+  assert.ok(!(keyOff.satisfiedClosures || []).some((x) => x.refillId === "r1" && x.cancelReason === "never_kept_here"), "the rule is the division's: key off, not applied");
 });
 
 test("an explicit row of 0 (the Seating switch-off) still wins at every division location", () => {
@@ -185,14 +178,14 @@ test("the server refuses a request row that claims Hub 1 + Hub 2", () => {
   assert.equal(classifyRequestSource({ requestSource: "solve", createdFrom: { via: "hub3_solve", divisionSolve: true } }), "solve");
 });
 
-test("seatDivisionSolve: a stock role is needed, a non-sneaker at Hub 3 needs its shop, the pair is refused", async () => {
+test("seatDivisionSolve: a stock role is needed, Hub 3 takes footwear only, the pair is refused", async () => {
   const make = (uid) => ({ db: makeFakeDb({ users: { u1: { stockRole: "store" } }, products: { t1: TEE, s1: SHOE } }), callerUid: uid, nowIso: ISO });
-  await assert.rejects(dv.applyDivisionSeat({ ...make("nobody"), data: { location: "hub3", pid: "t1", owner: "concrete" } }), /stock role/);
-  await assert.rejects(dv.applyDivisionSeat({ ...make("u1"), data: { location: "hub3", pid: "t1" } }), /Pine or Concrete/);
+  await assert.rejects(dv.applyDivisionSeat({ ...make("nobody"), data: { location: "hub3", pid: "s1" } }), /stock role/);
+  await assert.rejects(dv.applyDivisionSeat({ ...make("u1"), data: { location: "hub3", pid: "t1" } }), /footwear only/);
   await assert.rejects(dv.applyDivisionSeat({ ...make("u1"), data: { location: "hub3", pid: "s1", hubs: ["hub1", "hub2"] } }), /cannot be solved together/);
-  const ctx = make("u1");
-  const r = await dv.applyDivisionSeat({ ...ctx, data: { location: "hub3", pid: "t1", owner: "concrete" } });
-  assert.equal(r.seat.owner, "concrete");
+  const r = await dv.applyDivisionSeat({ ...make("u1"), data: { location: "hub3", pid: "s1", hubs: ["hub2", "hub3"] } });
+  assert.equal(r.seat.via, "solve");
+  assert.equal(r.seat.owner, undefined);
 });
 
 test("one list of footwear keys; the browser twin is byte-identical", () => {

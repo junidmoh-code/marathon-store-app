@@ -1,7 +1,9 @@
 // ─── THE CONCRETE DIVISION POLICY AUDIT (Junid, 10 Nov 2026) ─────────────────
 // Every product seated at Pine, Concrete and Hub 3, every size: Junid's policy
-// (computed from the key alone) against what the engine arms. Written by the
-// scan into /stock_exceptions/latest.divisionPolicy for the Health card.
+// (his pinned numbers) against what the engine arms. Written by the scan into
+// /stock_exceptions/latest.divisionPolicy for the Health card. The 12 Nov 2026
+// model: shops 2 per size / 5 per design from Central; Hub 3 sneakers 2, ask at 1;
+// Hub 3 keeps no non-footwear.
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -11,12 +13,12 @@ const dv = require("../lib/concrete-division.cjs");
 const { FOOTWEAR_CATEGORY_KEYS } = require("../lib/policy-resolve.cjs");
 
 const ISO = "2026-11-10T09:00:00.000Z";
-const cfg = (on = false) => ({
+const cfg = () => ({
   routes: { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" },
   mode: { hub1: "live", hub2: "live", "marathon-pe": "live", trophy: "live" },
   ruleBasedTargets: true, maxIntentsPerRun: 500, maxFootwearIntentsPerRun: 500,
-  concreteDivision: { shopOnly: { perSize: 2, oneSize: 5 }, fromHub3: { perSize: 1, oneSize: 5, askAt: 0 }, hub3Keep: { on, perSize: 2, oneSize: 10 } },
-  policyGroups: { "footwear-all": { armed: true, memberCategoryKeys: FOOTWEAR_CATEGORY_KEYS.slice(), policy: { perSize: true, hub3: { target: 3, minQty: 2, reorderPoint: 1, carriedOnly: true } } } },
+  concreteDivision: { shopOnly: { perSize: 2, oneSize: 5 } },
+  policyGroups: { "footwear-all": { armed: true, memberCategoryKeys: FOOTWEAR_CATEGORY_KEYS.slice(), policy: { perSize: true, hub3: { target: 2, minQty: 1, reorderPoint: 1, carriedOnly: true } } } },
 });
 const shelf = (qty) => ({ qty, v: 1, mv: "m", lastType: "transfer_in" });
 const counted = (qty) => ({ qty, v: 1, mv: "m", lastType: "count" });
@@ -59,12 +61,12 @@ test("a Seating switch-off (target 0) is correct, and counted as switched off", 
   assert.equal(a.perLoc.concrete.switchedOff, 2);
 });
 
-test("the expected number is Junid's, not the engine's: a Hub 3 sneaker leg drifted to keep 2 is wrong_number", () => {
-  const c = cfg(); c.policyGroups["footwear-all"].policy.hub3 = { target: 2, minQty: 1, reorderPoint: 1, carriedOnly: true };
+test("the expected number is Junid's, not the engine's: a Hub 3 sneaker leg still at the old keep of 3 is wrong_number", () => {
+  const c = cfg(); c.policyGroups["footwear-all"].policy.hub3 = { target: 3, minQty: 2, reorderPoint: 1, carriedOnly: true };
   const a = run({ config: c });
   // Both sizes: Central holds 9 too, so neither is a dead size.
   assert.deepEqual(a.byReason, { wrong_number: 2 });
-  assert.deepEqual(a.items.map((m) => `${m.loc}:${m.pid}:${m.size}:${m.expected.target}->${m.effective.target}`), ["hub3:s1:8:3->2", "hub3:s1:9:3->2"]);
+  assert.deepEqual(a.items.map((m) => `${m.loc}:${m.pid}:${m.size}:${m.expected.target}->${m.effective.target}`), ["hub3:s1:8:2->3", "hub3:s1:9:2->3"]);
   assert.equal(a.perLoc.hub3.mismatched, 1);
 });
 
@@ -75,17 +77,22 @@ test("verdicts: missing, unexpected, dead size, none", () => {
   assert.deepEqual(dv.divisionAuditVerdict({ expected: null, effective: null }), { ok: true, reason: "none" });
 });
 
-test("expected keeps, straight from the policy", () => {
-  const division = dv.divisionContext({ config: cfg(), rawStock: { hub3: { h1: { L: counted(2) } } }, seats, openIndex: {}, heldLines: {}, refillRequests: {} });
+test("expected keeps, straight from Junid's 12 Nov numbers", () => {
+  const division = dv.divisionContext({ config: cfg(), seats });
   assert.deepEqual(dv.divisionExpectedTarget(division, "concrete", "t1", "S", products.t1), { target: 2, reorderPoint: null });
   assert.deepEqual(dv.divisionExpectedTarget(division, "concrete", "b1", "", products.b1), { target: 5, reorderPoint: null });
-  assert.deepEqual(dv.divisionExpectedTarget(division, "concrete", "h1", "L", products.h1), { target: 1, reorderPoint: 0 }, "Hub 3 holds L: the from-Hub-3 keep");
+  assert.deepEqual(dv.divisionExpectedTarget(division, "concrete", "h1", "L", products.h1), { target: 2, reorderPoint: null }, "Hub 3 holding it changes nothing");
   assert.equal(dv.divisionExpectedTarget(division, "concrete", "s1", "8", products.s1), null);
-  assert.deepEqual(dv.divisionExpectedTarget(division, "hub3", "s1", "8", products.s1), { target: 3, reorderPoint: 1 });
-  assert.equal(dv.divisionExpectedTarget(division, "hub3", "h1", "L", products.h1), null, "Hub 3 clothing keep off");
-  const on = dv.divisionContext({ config: cfg(true), rawStock: {}, seats, openIndex: {}, heldLines: {}, refillRequests: {} });
-  assert.deepEqual(dv.divisionExpectedTarget(on, "hub3", "h1", "L", products.h1), { target: 2, reorderPoint: null });
-  assert.deepEqual(dv.divisionExpectedTarget(on, "hub3", "b1", "", products.b1), { target: 10, reorderPoint: null });
+  assert.deepEqual(dv.divisionExpectedTarget(division, "hub3", "s1", "8", products.s1), { target: 2, reorderPoint: 1 });
+  assert.equal(dv.divisionExpectedTarget(division, "hub3", "h1", "L", products.h1), null, "Hub 3 keeps no non-footwear");
+  assert.equal(dv.divisionExpectedTarget(division, "hub3", "b1", "", products.b1), null);
+  assert.equal(dv.divisionExpectedTarget(division, "concrete", "p1", "", { category: "Perfume", categoryKey: "perfumes", sizes: [] }), null, "no perfume at Concrete");
+  assert.deepEqual(dv.divisionExpectedTarget(division, "marathon-pine", "p1", "", { category: "Perfume", categoryKey: "perfumes", sizes: [] }), { target: 5, reorderPoint: null });
+});
+
+test("a Hub 3 clothing seat left over (before the scan unseats it) is not a mismatch: nothing expected, nothing armed", () => {
+  const a = run();
+  assert.ok(!a.items.some((m) => m.loc === "hub3" && m.pid === "h1"), JSON.stringify(a.items));
 });
 
 test("key off: no audit at all", () => {
@@ -104,9 +111,8 @@ test("the expected keeps are Junid's numbers, not the key's: a key drifted to 3 
   const a = run({ config: c });
   assert.ok(a.count > 0);
   assert.ok(a.items.every((m) => m.reason === "wrong_number" && m.expected.target === 2 && m.effective.target === 3), JSON.stringify(a.items));
-  assert.deepEqual(dv.JUNID_DIVISION_KEEPS.shopOnly, { perSize: 2, oneSize: 5, askAt: null });
-  assert.deepEqual(dv.JUNID_DIVISION_KEEPS.fromHub3, { perSize: 1, oneSize: 5, askAt: 0 });
-  assert.deepEqual(dv.JUNID_DIVISION_KEEPS.hub3Keep, { perSize: 2, oneSize: 10, askAt: null });
+  assert.deepEqual(dv.JUNID_DIVISION_KEEPS, { shopOnly: { perSize: 2, oneSize: 5, askAt: null } });
+  assert.deepEqual(dv.HUB3_SNEAKER_KEEP, { target: 2, reorderPoint: 1 });
 });
 
 test("an explicit row is always named explicit_row, even with the policy's target (ask-at differs)", () => {
@@ -116,8 +122,8 @@ test("an explicit row is always named explicit_row, even with the policy's targe
 
 test("a keep with no live source for the size is 'unrouted', not 'kept'", () => {
   const net = JSON.parse(JSON.stringify(reg.SEED_REGISTRY));
-  net.locations.hub3.autoRefill = "off";
-  // h1 is held at Hub 3 (L): the policy says from Hub 3, but Hub 3 is not routable to Concrete.
+  net.locations.central.autoRefill = "off";
+  // Central is not routable to Concrete: the shop keep has no source at all.
   const a = computeRefillPlan({ nowMs: Date.parse(ISO), config: cfg(), targets: {}, stock: world(), products, openIndex: {}, refillRequests: {}, orders: {}, movements: [], network: net, seats }).exceptions.divisionPolicy;
   assert.ok(a.items.some((m) => m.loc === "concrete" && m.pid === "h1" && m.reason === "unrouted"), JSON.stringify(a.items));
 });

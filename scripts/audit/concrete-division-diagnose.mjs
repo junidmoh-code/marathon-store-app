@@ -71,7 +71,7 @@ function reasonFor(loc, pid) {
   if (!seatPlan.effective?.[loc]?.[pid]) return "not seated";
   const rows = d.targets?.[loc]?.[pid];
   if (rows && Object.values(rows).length && Object.values(rows).every((r) => r && Number(r.target) <= 0)) return "switched off in Seating (target 0 rows — correct)";
-  if (loc === "hub3" && !footwear && !division?.policy?.hub3Keep?.on) return "Hub 3 clothing keep switched OFF (correct, by decision)";
+  if (loc === "hub3" && !footwear) return "Hub 3 holds footwear only (correct, Junid 12 Nov 2026)";
   const below = belowBy.get(`${loc}|${pid}`) || [];
   if (below.length) {
     const mine = (list) => list.filter((r) => r.loc === loc && r.pid === pid);

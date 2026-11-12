@@ -1,4 +1,6 @@
 // ─── HUB 3 POLICY — NEXT-SCAN DRY RUN (Junid, 9 Nov 2026) ────────────────────
+// HISTORICAL (9 Nov 2026): models the retired fromHub3/hub3Keep key.
+// The 12 Nov model is measured by central-clothing-dry-run.mjs.
 // WRITES NOTHING. Replays a snapshot from hub3-policy-dump.mjs through the real
 // computeRefillPlan twice: today's config, and today's config plus the proposed
 // Hub 3 leg and division key. Reports Section 1 lines/units and proves the

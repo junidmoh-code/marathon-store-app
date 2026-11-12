@@ -1,4 +1,4 @@
-// ─── MUTATION PROOF — Concrete division refill fixes (Junid, 10 Nov 2026) ────
+// ─── MUTATION PROOF — Concrete division refill (Junid, 10 Nov 2026; 12 Nov model) ─
 // For each guard: reintroduce the hole, prove the suite FAILS, restore the file,
 // prove it PASSES. ERROR is not FAIL; anchors must be unique; files must be
 // clean before anything is touched; restore is signal-safe. Run it in a
@@ -19,7 +19,11 @@ const TWIN = "src/components/stock/concreteDivision.js";   // shared-body twin: 
 const T = (f) => `functions/test/${f}`;
 const SHELF = [T("concrete-division-seated-shelf.test.cjs")];
 const SEATS = [T("concrete-division-seats-history.test.cjs"), T("concrete-division.test.cjs")];
-const OFF = [T("concrete-division-hub3-off.test.cjs"), T("concrete-division.test.cjs"), T("division-keeps.test.cjs")];
+const CC = [T("concrete-division-central-clothing.test.cjs"), T("concrete-division.test.cjs"), T("division-keeps.test.cjs")];
+const XFER = ["scripts/lib/hub3ClothingTransfer.test.mjs"];
+const WRITE = "functions/lib/category-policy-write.cjs";
+const XLIB = "scripts/lib/hub3ClothingTransfer.mjs";
+const RP = [T("concrete-division-release-perfume.test.cjs")];
 const AUDIT = [T("concrete-division-policy-audit.test.cjs")];
 const PIN = [T("marathon-unchanged.pin.test.cjs")];
 
@@ -44,16 +48,6 @@ const MUTATIONS = [
     from: "        const out = movedOut(loc, pid, node[pid]);", to: "        const out = null;", node: SEATS },
   { id: "M-TOMBSTONE", guard: "a release tombstone holds after the move ages out", file: CD,
     from: "        if (divisionIsObj(tomb) && !(activity && activity > String(tomb.at || \"\"))) continue;\n", to: "", node: SEATS },
-  { id: "M-KEEP-ON", twin: true, guard: "keep ON: Hub 3 serves every size", file: CD,
-    from: "  if (division.policy?.hub3Keep?.on) return true;\n", to: "", node: OFF },
-  { id: "M-PER-SIZE", twin: true, guard: "keep OFF: Hub 3 serves only a size it holds", file: CD,
-    from: "  return hub3HoldsSize(division, pid, size);\n}", to: "  return true;\n}", node: OFF },
-  { id: "M-INBOUND", twin: true, guard: "a size on its way into Hub 3 waits for it", file: CD,
-    from: "  if (division?.hub3Inbound && typeof division.hub3Inbound.has === \"function\" && division.hub3Inbound.has(`${pid}|${enc}`)) return true;\n", to: "", node: OFF },
-  { id: "M-MEMO", guard: "the route memo keeps product-level and one-size apart", file: ENG,
-    from: "size === undefined ? \"\\u0000\" : `=${size}`", to: "size === undefined ? \"\" : String(size)", node: OFF },
-  { id: "M-WITHDRAW", guard: "a Central line for a size Hub 3 lacks is not withdrawn", file: SSR,
-    from: "ctx.routing.sourceFor(loc, ctx.product, ctx.pid, ctx.size)", to: "ctx.routing.sourceFor(loc, ctx.product, ctx.pid)", node: OFF },
   { id: "M-AUDIT-NUMBER", guard: "the audit flags a keep armed with the wrong numbers", file: CD,
     from: "  const differs = eff.target !== expected.target || rpE !== rpA;", to: "  const differs = false;", node: AUDIT },
   { id: "M-AUDIT-OFF", guard: "a Seating switch-off counts as correct", file: CD,
@@ -62,16 +56,10 @@ const MUTATIONS = [
     from: "    const first = dealFairly(list.filter((i) => !isSolvedDest(i)), cap);\n    return [...first, ...dealFairly(list.filter(isSolvedDest), Math.max(0, cap - first.length))];",
     to: "    return dealFairly(list, cap);", node: PIN },
   // ── review fixes (PR #884) ──
-  { id: "M-SHOP-GATE", guard: "a division shop is not dropped on its product-level route", file: ENG,
-    from: "      if (!srcAny && !(division && DIVISION_SHOPS.includes(dest))) continue;", to: "      if (!srcAny) continue;", node: OFF },
   { id: "M-TOMB-LEDGER", guard: "a product moved out before tombstones existed gets one", file: CD,
     from: "          if (!divisionIsObj(gone[pid])) releaseWrites[`${loc}/${pid}`] = { at: nowIso, moveTs: out ? String(out.ts) : null };\n", to: "", node: SEATS },
   { id: "M-CELL-STAMP", guard: "a cell stamped by a transfer out (ledger aged out) is not re-seated", file: CD,
     from: "        const stamped = !out && !activity && cellsSayMovedOut(node[pid]);", to: "        const stamped = false;", node: SEATS },
-  { id: "M-COUNTED-HUB3", guard: "Hub 3 'holds' a size only in its counted view", file: ENG,
-    from: "refillRequests: snapshot.refillRequests, hub3View: stock[DIVISION_HUB], nowMs });", to: "refillRequests: snapshot.refillRequests, nowMs });", node: OFF },
-  { id: "M-STALE-INBOUND", guard: "a box into Hub 3 older than the stale window stops holding the size", file: CD, twin: true,
-    from: "  const fresh = (iso) => nowMs == null || (Number.isFinite(Date.parse(iso)) && nowMs - Date.parse(iso) <= maxAgeMs);", to: "  const fresh = () => true;", node: OFF },
   { id: "M-JUNID-NUMBERS", guard: "the audit's expected keeps are Junid's, not the key's", file: CD,
     from: "  shopOnly: Object.freeze({ perSize: 2, oneSize: 5, askAt: null }),", to: "  shopOnly: Object.freeze({ perSize: 3, oneSize: 5, askAt: null }),", node: AUDIT },
   { id: "M-UNROUTED", guard: "an unrouted keep is a mismatch, not 'kept'", file: ENG,
@@ -84,23 +72,66 @@ const MUTATIONS = [
   { id: "M-DIVISION-CEILING", guard: "past 500 the division is paced", file: ENG,
     from: "const plannedDivisionClothing = divisionSet.size ? dealFairly(divisionClothing, maxDivisionIntents) : [];", to: "const plannedDivisionClothing = divisionSet.size ? divisionClothing : [];", node: [T("concrete-division-release-perfume.test.cjs")] },
   { id: "M-NEVER-KEEPS", guard: "Concrete resolves no perfume target from any branch", file: ENG,
-    from: "  if (divisionNeverKeeps(dest, products?.[pid])) return null;\n", to: "", node: [T("concrete-division-release-perfume.test.cjs")] },
+    from: "  if (divisionNeverKeeps(dest, products?.[pid]) || (division && hub3Refuses(dest, products?.[pid]))) return null;\n", to: "  if (division && hub3Refuses(dest, products?.[pid])) return null;\n", node: RP },
   { id: "M-NEVER-SEAT", guard: "Concrete never seats perfume, and unseats it", file: CD,
-    from: "      if (products && products[pid] && divisionNeverKeeps(loc, products[pid])) {", to: "      if (false) {", node: [T("concrete-division-release-perfume.test.cjs")] },
+    from: "      if (products && products[pid] && divisionRefuses(loc, products[pid])) {", to: "      if (products && products[pid] && hub3Refuses(loc, products[pid])) {", node: RP },
   { id: "M-SEAT-ONLY", guard: "with seats handed in, an unseated counted cell arms nothing", file: CD, twin: true,
     from: "  if (division && divisionIsObj(division.seats?.[dest])) return false;\n", to: "", node: [T("concrete-division-release-perfume.test.cjs")] },
   { id: "M-SCOPE", guard: "the division-only run applies no Marathon work", file: SCAN,
     from: "  for (const k of PLAN_WORK_LISTS) if (Array.isArray(plan[k])) plan[k] = plan[k].filter(mine);", to: "", node: [T("concrete-division-release-perfume.test.cjs")] },
   { id: "M-LOCKLESS-NEVER", guard: "a lock-less open Concrete perfume row is withdrawn", file: ENG,
-    from: "      if (divisionNeverKeeps(dest, products?.[r.productId])) {\n        if (!movedRefillIds.has(String(id))) {", to: "      if (false) {\n        if (!movedRefillIds.has(String(id))) {", node: [T("concrete-division-release-perfume.test.cjs")] },
+    from: "      if (divisionNeverKeeps(dest, products?.[r.productId]) || (division && hub3Refuses(dest, products?.[r.productId]))) {", to: "      if (division && hub3Refuses(dest, products?.[r.productId])) {", node: RP },
   { id: "M-APPLY-ORDER", guard: "every Marathon line is applied before the division's release", file: ENG,
     from: "  const plannedIntents = [...plannedClothing, ...plannedFootwear, ...plannedDivisionClothing];", to: "  const plannedIntents = [...plannedClothing, ...plannedDivisionClothing, ...plannedFootwear];", node: [T("concrete-division-release-perfume.test.cjs")] },
   { id: "M-SEAT-REFUSE", guard: "a hand-made Seat for a perfume at Concrete is refused", file: CD,
-    from: "  if (divisionNeverKeeps(location, product)) {\n    throw", to: "  if (false) {\n    throw", node: [T("concrete-division-release-perfume.test.cjs")] },
+    from: "  if (divisionRefuses(location, product)) {\n    throw", to: "  if (hub3Refuses(location, product)) {\n    throw", node: RP },
   { id: "M-HEALTH-CARD", guard: "Health draws the division audit the scan writes", file: HEALTH,
     from: "      case \"divisionPolicy\": {", to: "      case \"divisionPolicyX\": {", vitest: ["src/components/stock/healthDivisionPolicy.test.js"] },
   { id: "M-HUB3-SCREEN", guard: "Source → Hub 3 mounts the hub refill screen", file: APP,
     from: ": sectionTabLoc[tab] === \"hub3\"\n            ? hubTabContent(\"hub3\")", to: ": false\n            ? hubTabContent(\"hub3\")", vitest: ["src/hub3RefillScreen.pin.test.js"] },
+  // ── the 12 Nov 2026 model: Pine/Concrete non-footwear from Central, Hub 3 sneakers only ──
+  { id: "M-HUB3-REFUSES", twin: true, guard: "Hub 3 refuses every non-footwear item", file: CD,
+    from: "  return loc === DIVISION_HUB && !!product && !isDivisionFootwear(product);", to: "  return false;", node: CC },
+  { id: "M-HUB3-ABOVE-ROW", guard: "Hub 3 non-footwear resolves nothing even under an explicit row", file: ENG,
+    from: "  if (divisionNeverKeeps(dest, products?.[pid]) || (division && hub3Refuses(dest, products?.[pid]))) return null;", to: "  if (divisionNeverKeeps(dest, products?.[pid])) return null;", node: [T("concrete-division.test.cjs")] },
+  { id: "M-HUB3-KEY-GATE", guard: "with the division key off, Hub 3's older routes come back whole", file: ENG,
+    from: "  if (divisionNeverKeeps(dest, products?.[pid]) || (division && hub3Refuses(dest, products?.[pid]))) return null;", to: "  if (divisionNeverKeeps(dest, products?.[pid]) || hub3Refuses(dest, products?.[pid])) return null;", node: [T("sections-policy-template.test.cjs"), T("first-batch-sections.test.cjs")] },
+  { id: "M-HUB3-SEAT", guard: "Hub 3 is never seated with a non-footwear item", file: CD,
+    from: "      if (products && divisionRefuses(loc, products[pid])) continue;", to: "      if (products && divisionNeverKeeps(loc, products[pid])) continue;", node: [T("concrete-division.test.cjs")] },
+  { id: "M-HUB3-UNSEAT", guard: "an old Hub 3 non-footwear seat comes off", file: CD,
+    from: "      if (products && products[pid] && divisionRefuses(loc, products[pid])) {", to: "      if (products && products[pid] && divisionNeverKeeps(loc, products[pid])) {", node: [T("concrete-division.test.cjs")] },
+  { id: "M-HUB3-SOLVE", guard: "seatDivisionSolve refuses a non-footwear item at Hub 3", file: CD,
+    from: "  if (divisionRefuses(location, product)) {\n    throw", to: "  if (divisionNeverKeeps(location, product)) {\n    throw", node: [T("concrete-division.test.cjs")] },
+  { id: "M-NO-OWNER", guard: "a seat has no owning shop", file: CD,
+    from: "  if (owner !== undefined && owner !== null) {\n    throw", to: "  if (false) {\n    throw", node: [T("concrete-division.test.cjs")] },
+  { id: "M-SOURCE-CENTRAL", twin: true, guard: "a shop's non-footwear source is Central", file: CD,
+    from: "  if (!division || !DIVISION_SHOPS.includes(dest) || !product || isDivisionFootwear(product)) return undefined;\n  return central;", to: "  if (!division || !DIVISION_SHOPS.includes(dest) || !product || isDivisionFootwear(product)) return undefined;\n  return DIVISION_HUB;", node: CC },
+  { id: "M-SHOP-KEEP", twin: true, guard: "the shop keep is 2 per size / 5 per design", file: CD,
+    from: "  return divisionTargetShape(isDivisionOneSize(product) ? policy.shopOnly.oneSize : policy.shopOnly.perSize);", to: "  return divisionTargetShape(isDivisionOneSize(product) ? policy.shopOnly.oneSize : 1);", node: CC },
+  { id: "M-LOCKLESS-HUB3", guard: "a lock-less Hub 3 non-footwear row is withdrawn as never kept there", file: ENG,
+    from: "      if (divisionNeverKeeps(dest, products?.[r.productId]) || (division && hub3Refuses(dest, products?.[r.productId]))) {", to: "      if (divisionNeverKeeps(dest, products?.[r.productId])) {", node: [T("concrete-division.test.cjs")] },
+  { id: "M-AUDIT-HUB3-NF", guard: "the audit expects nothing of Hub 3 non-footwear", file: CD,
+    from: "  if (loc === DIVISION_HUB) return footwear ? { ...HUB3_SNEAKER_KEEP } : null;", to: "  if (loc === DIVISION_HUB) return { ...HUB3_SNEAKER_KEEP };", node: AUDIT },
+  { id: "M-AUDIT-HUB3-TWO", guard: "the audit expects Hub 3 sneakers at 2, ask at 1", file: CD,
+    from: "const HUB3_SNEAKER_KEEP = Object.freeze({ target: 2, reorderPoint: 1 });", to: "const HUB3_SNEAKER_KEEP = Object.freeze({ target: 3, reorderPoint: 1 });", node: AUDIT },
+  { id: "M-WRITE-SHOP-ONLY", guard: "setConcreteDivision refuses the old Hub 3 fields", file: WRITE,
+    from: "      if (!n || !onlyShop) {", to: "      if (!n) {", node: [T("concrete-division-central-clothing.test.cjs")] },
+  { id: "M-T-FOOTWEAR", guard: "the transfer never touches footwear", file: XLIB,
+    from: "    if (isFootwear(product)) { footwearKept.push(pid); continue; }", to: "    if (false) { footwearKept.push(pid); continue; }", vitest: XFER },
+  { id: "M-T-PERFUME", guard: "a perfume moves but is never seated at Concrete", file: XLIB,
+    from: "        if (product && dv.divisionRefuses(DEST, product)) perfumes.add(pid); else if (product) seatOn.add(pid);", to: "        if (product) seatOn.add(pid);", vitest: XFER },
+  { id: "M-T-FULL-QTY", guard: "a positive cell moves in full", file: XLIB,
+    from: "        transfers.push({ ...base, qty: q, movementId: transferIdFor(runId, pid, sizeKey) });", to: "        transfers.push({ ...base, qty: Math.max(1, q - 1), movementId: transferIdFor(runId, pid, sizeKey) });", vitest: XFER },
+  { id: "M-T-RACE", guard: "a cell that moved since the read is re-planned at its new qty", file: XLIB,
+    from: "    if (r.reason !== \"insufficient_stock\") return { ...c, moved: 0, refused: r.reason, r };", to: "    return { ...c, moved: 0, refused: r.reason, r };", vitest: XFER },
+  { id: "M-T-VERIFY", guard: "verify moves an arrival in the gap and still ends footwear-only", file: XLIB,
+    from: "      if (l.qty > 0) {\n        const r = await moveCell(", to: "      if (false) {\n        const r = await moveCell(", vitest: XFER },
+  { id: "M-T-UNTOUCHED", guard: "a picked request is never withdrawn", file: XLIB,
+    from: "    if (!requestUntouched(cur, Date.parse(nowIso))) { outcome = \"touched\"; return undefined; }", to: "", vitest: XFER },
+  { id: "M-T-ROW-SHAPE", guard: "only the retired from-Hub 3 rows are edited", file: XLIB,
+    from: "        const retired = r.reorderPoint === RETIRED_FROM_HUB3.askAt && r.target === (one ? RETIRED_FROM_HUB3.oneSize : RETIRED_FROM_HUB3.perSize);", to: "        const retired = r.target > 0;", vitest: XFER },
+  { id: "M-T-RELEASE-SCOPE", guard: "the one-off release never touches a Marathon line", file: XLIB,
+    from: "!r.earlyRelease && dv.DIVISION_LOCATIONS.includes(r.requestingLocation) && String", to: "!r.earlyRelease && String", vitest: XFER },
 ];
 
 function runNode(files) {

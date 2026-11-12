@@ -1072,16 +1072,21 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     return { ok: true, action: "setCentralFed", location: loc, before, after, historyId: historyRef.key, history: await readHistory(db) };
   }
 
-  // ── THE CONCRETE DIVISION — keeps and the Hub 3 switch (lib/concrete-division.cjs)
+  // ── THE CONCRETE DIVISION — the shop keep (lib/concrete-division.cjs) ─────
   // One object at config/refillEngine/concreteDivision; null deletes it (the
-  // rollback). Same discipline as setCentralFed.
+  // rollback). Same discipline as setCentralFed. Since 12 Nov 2026 (Junid) it
+  // holds exactly one leg, { shopOnly: { perSize, oneSize } }: the Hub 3 keep,
+  // its switch and the from-Hub 3 shop keep are gone, and are refused here so
+  // an old screen cannot write them back.
   if (d.action === "setConcreteDivision") {
     if (!("policy" in d)) throw httpsError("invalid-argument", "policy is required — send `policy: null` to remove it.");
     const after = d.policy === null ? null : d.policy;
     if (after !== null) {
       const n = concreteDivisionPolicy({ [CONCRETE_DIVISION_KEY]: after });
-      if (!n || !n.shopOnly || !n.fromHub3 || !n.hub3Keep) {
-        throw httpsError("invalid-argument", "Every keep needs a whole number from 1 to 99 per size and per design.");
+      const onlyShop = isPlainObject(after) && Object.keys(after).length === 1 && isPlainObject(after.shopOnly)
+        && Object.keys(after.shopOnly).every((k) => k === "perSize" || k === "oneSize");
+      if (!n || !onlyShop) {
+        throw httpsError("invalid-argument", "The division keeps one number pair: the shop keep per size and per design, each a whole number from 1 to 99. Hub 3 keeps footwear only.");
       }
     }
     const before = isPlainObject(cfg[CONCRETE_DIVISION_KEY]) ? cfg[CONCRETE_DIVISION_KEY] : null;

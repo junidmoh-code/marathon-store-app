@@ -30,7 +30,7 @@ import { firstBatchSplit } from "./firstBatchCore";
 import { net, storeIds, nameOf, solveHubFor, solveStoreBlock } from "./sectionRouting";
 import { sectionName, sectionsInOrder } from "../../utils/networkRegistry";
 import { isCentralFedProduct } from "./centralFed";
-import { concreteDivisionPolicy, isDivisionFootwear, DIVISION_HUB, DIVISION_SHOPS } from "./concreteDivision";
+import { concreteDivisionPolicy, isDivisionFootwear, DIVISION_SHOPS } from "./concreteDivision";
 
 // The blocks the panel renders: one per section the viewer may see, each with
 // its stores in registry order.
@@ -38,26 +38,23 @@ import { concreteDivisionPolicy, isDivisionFootwear, DIVISION_HUB, DIVISION_SHOP
 // `blocked` is null (tickable) or the plain sentence shown beside the tick.
 // `engineConfig` (optional): a CENTRAL-FED store (centralFed.js) has no hub
 // for this product — its clothing comes straight from Central.
-// THE CONCRETE DIVISION (Junid, 9 Nov 2026), non-sneakers with its key on: the
-// options are exactly Hub 3, Concrete, Pine. `hub3Present` — Hub 3 has held this
-// product, so a shop refills from Hub 3 and never takes a direct Central batch.
-const DIVISION_LABEL = { "marathon-pine": "Pine", concrete: "Concrete", hub3: "Hub 3" };
+// THE CONCRETE DIVISION (Junid, 12 Nov 2026), non-footwear with its key on: the
+// options are exactly Concrete and Pine, each supplied straight from Central.
+// Hub 3 holds footwear only and is never offered here (the sneaker Solve on the
+// Sneakers tab is where Hub 3 is offered, with the Hub 1/Hub 2 pair rule).
+const DIVISION_LABEL = { "marathon-pine": "Pine", concrete: "Concrete" };
 export function divisionSolveOn(engineConfig, section, product) {
   return section === 1 && !!product && !isDivisionFootwear(product) && !!concreteDivisionPolicy(engineConfig);
 }
-export function solveBlocks({ network, sections = [1, 2], source, product, productId, engineConfig, hub3Present = false } = {}) {
+export function solveBlocks({ network, sections = [1, 2], source, product, productId, engineConfig } = {}) {
   const N = net(network);
   return sectionsInOrder(N, sections).map((section) => {
     const division = divisionSolveOn(engineConfig, section, product);
     const stores = (division ? ["concrete", "marathon-pine"].filter((s) => DIVISION_SHOPS.includes(s)) : storeIds(N, { section })).map((id) => {
-      const centralFed = !!engineConfig && !(division && hub3Present) && isCentralFedProduct(engineConfig, N, id, product);
+      const centralFed = !!engineConfig && isCentralFedProduct(engineConfig, N, id, product);
       const hub = centralFed ? null : solveHubFor(N, id, product, productId);
       return { id, name: division ? DIVISION_LABEL[id] : nameOf(id, N), hub, hubName: hub ? nameOf(hub, N) : null, centralFed, blocked: solveStoreBlock(N, { source, store: id, hub, centralFed }) };
     });
-    if (division) {
-      stores.unshift({ id: DIVISION_HUB, name: DIVISION_LABEL[DIVISION_HUB], hub: null, hubName: null, centralFed: false, isDivisionHub: true,
-        blocked: source !== "central" ? `the stock is at ${nameOf(source, N)} — send it back to Central first` : solveStoreBlock(N, { source, store: DIVISION_SHOPS[0], hub: DIVISION_HUB }) });
-    }
     return { section, name: sectionName(N, section), stores };
   }).filter((b) => b.stores.length > 0);
 }
