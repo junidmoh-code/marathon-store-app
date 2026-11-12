@@ -310,7 +310,7 @@ async function setPause(db, { which, paused }, uid, nowMs) {
 }
 
 const newArrivalsPause = onCall(callableOpts, async (request) => {
-  if (!isJunid(request)) throw new HttpsError("permission-denied", "Only Junid can pause or resume.");
+  if (!isJunid(request)) throw new HttpsError("permission-denied", "Only Junid or Jafer can pause or resume.");
   const d = request.data || {};
   return setPause(admin.database(), { which: d.which, paused: d.paused }, request.auth?.uid, Date.now());
 });

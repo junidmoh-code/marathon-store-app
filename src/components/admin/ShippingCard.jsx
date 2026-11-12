@@ -120,7 +120,7 @@ export function summariseContents(contents) {
 }
 
 export default function ShippingCard({ authUser, products = null, onExit }) {
-  // Strict, case-sensitive — the same comparison the RTDB rule makes.
+  // isSuperAdmin (Junid or Jafer, lowercased + trimmed) — the same two addresses the RTDB rule names.
   const isSuperAdmin = isSuperAdminEmail(authUser?.email);
 
   const [cfg, setCfg] = useState(null);

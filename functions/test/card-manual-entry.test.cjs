@@ -41,7 +41,7 @@ test("Junid's verified login only — an unverified token claiming the address, 
   assert.equal(mayEnterManually(null), false);
   for (const auth of [{ uid: "m", token: { email: "mgr@x.com", email_verified: true } }, { uid: "g", token: { email: "gunidmoh@gmail.com" } }]) {
     await assert.rejects(cardBatchManualEntry.run({ auth, data: { tid: "0000HP1X", dayYmd: "2026-10-07", total: "1.00", batchNo: "1" } }),
-      /Only Junid can enter batch figures by hand/);
+      /Only Junid or Jafer can enter batch figures by hand/);
   }
 });
 

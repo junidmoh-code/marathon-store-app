@@ -47,7 +47,7 @@ function assertOwner(request) {
   // A VERIFIED email, not just a matching string — an unverified account can
   // carry any address. Junid's is Google-verified (checked 21 Sept 2026).
   if (!isSuperAdminToken(request.auth?.token)) {
-    throw new HttpsError("permission-denied", "Only Junid can change the card terminals.");
+    throw new HttpsError("permission-denied", "Only Junid or Jafer can change the card terminals.");
   }
 }
 

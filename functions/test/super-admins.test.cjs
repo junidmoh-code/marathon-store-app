@@ -142,3 +142,69 @@ test("index.js gates all ask the super-admin helper", () => {
   assert.match(src, /if \(isSuperAdmin\(target\.email\)\) \{/);                               // never delete either admin
   assert.match(src, /adminEmail: SUPER_ADMIN_EMAILS,/);
 });
+
+// ── per-gate behaviour, the gates the first pass only checked by shape ───────
+const cardRecon = require("../cardRecon/cardRecon.js");
+const { _isOwner } = require("../eftPool/eftPool.js");
+const { _displayCheckAllowed } = require("../displayChecks/completeCheck.js");
+const { _assertMergeAccess } = require("../productMerge/mergeProducts.js");
+const { _handleEnrol } = require("../deviceEnrolment/deviceEnrolment.js");
+
+test("cardRecon assertCardRecon: Jafer, Junid pass without a flag; staff without it fails", async () => {
+  const db = makeFakeDb({ users: {} });
+  await cardRecon._assertCardRecon(req(JAFER), db);
+  await cardRecon._assertCardRecon(req(JUNID), db);
+  await assert.rejects(() => cardRecon._assertCardRecon(req(STAFF), db), (e) => e.code === "permission-denied");
+});
+
+test("cardRecon assertEmailIntake: Jafer, Junid pass; staff without the intake flag fails", async () => {
+  const db = makeFakeDb({ users: {} });
+  await cardRecon._assertEmailIntake(req(JAFER), db);
+  await cardRecon._assertEmailIntake(req(JUNID), db);
+  await assert.rejects(() => cardRecon._assertEmailIntake(req(STAFF), db), (e) => e.code === "permission-denied");
+});
+
+test("cardRecon sectionRefusalFor: Jafer, Junid are never narrowed; a PE-locked staff account is refused Concrete", async () => {
+  const concrete = { storeId: "concrete", tillId: "till-1", label: "Concrete Till 1" };
+  const db = makeFakeDb({ users: { [`uid-${STAFF}`]: { destShop: "marathon-pe" } } });
+  assert.equal(await cardRecon.sectionRefusalFor(db, req(JAFER), "A", concrete), null);
+  assert.equal(await cardRecon.sectionRefusalFor(db, req(JUNID), "A", concrete), null);
+  assert.match(await cardRecon.sectionRefusalFor(db, req(STAFF), "A", concrete), /not in your section/);
+});
+
+test("cardRecon slipScopeAllowsNow: Jafer, Junid may send any till's slip; staff with no scope may not", async () => {
+  const term = { storeId: "pe", tillId: "till-1", label: "Marathon Till 1" };
+  const db = makeFakeDb({ users: {} });
+  assert.equal(await cardRecon._slipScopeAllowsNow(db, req(JAFER), term, Date.now()), true);
+  assert.equal(await cardRecon._slipScopeAllowsNow(db, req(JUNID), term, Date.now()), true);
+  assert.equal(await cardRecon._slipScopeAllowsNow(db, req(STAFF), term, Date.now()), false);
+});
+
+test("eftPool isOwner: Jafer, Junid pass; staff fails", () => {
+  assert.equal(_isOwner(req(JAFER)), true);
+  assert.equal(_isOwner(req(JUNID)), true);
+  assert.equal(_isOwner(req(STAFF)), false);
+});
+
+test("display checks completion: Jafer, Junid pass for any store; staff with no grant fails", () => {
+  const userRec = { permissions: [] };
+  assert.equal(_displayCheckAllowed({ email: JAFER, emailVerified: true, userRec, store: "pe" }), true);
+  assert.equal(_displayCheckAllowed({ email: JUNID, emailVerified: true, userRec, store: "pe" }), true);
+  assert.equal(_displayCheckAllowed({ email: STAFF, emailVerified: true, userRec, store: "pe" }), false);
+});
+
+test("mergeProducts access: Jafer, Junid pass as super; staff without stock admin fails", async () => {
+  const db = makeFakeDb({ users: {} });
+  db.ref = ((orig) => (p) => { const r = orig(p); r.get = r.get || (async () => r.once("value")); return r; })(db.ref.bind(db));
+  assert.equal((await _assertMergeAccess(req(JAFER), db)).isSuper, true);
+  assert.equal((await _assertMergeAccess(req(JUNID), db)).isSuper, true);
+  await assert.rejects(() => _assertMergeAccess(req(STAFF), db), (e) => e.code === "permission-denied");
+});
+
+test("device enrolment: Jafer and Junid are told they never need a code; staff are not", async () => {
+  const deps = { db: makeFakeDb({}), now: () => Date.now() };
+  const enrol = (email) => _handleEnrol({ auth: { uid: `uid-${email}`, token: tok(email) }, data: { code: "4821", deviceId: "aaaaaaaa-1111-4111-8111-111111111111" } }, deps);
+  await assert.rejects(() => enrol(JAFER), /never need a device code/);
+  await assert.rejects(() => enrol(JUNID), /never need a device code/);
+  await enrol(STAFF).then(() => {}, (e) => assert.doesNotMatch(String(e.message), /never need a device code/));
+});

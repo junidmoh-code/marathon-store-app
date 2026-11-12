@@ -104,7 +104,7 @@ function emailViaAlertLog(log = console.error) {
 // Cloud Monitoring's alert email to junidmoh@gmail.com. Every email that DOES
 // reach Junid — the EFT confirmer verdicts, the orders-poller watchdog, the
 // recycler reports — goes over Gmail SMTP from the shop mailbox
-// (marathon6631@gmail.com) to Junid's G-address (JUNID_EMAIL), "the inbox he reads"
+// (marathon6631@gmail.com) to Junid's G-address (the inbox the MAIL_TO line below names), "the inbox he reads"
 // (scripts/cardrecon/verdictMailCore.mjs, scripts/shopify/orders-poll-watchdog.mjs).
 // So the digest now goes that way too: this channel files the finished email
 // in a small outbox node, and the mini's launchd agent

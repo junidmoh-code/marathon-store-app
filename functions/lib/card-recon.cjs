@@ -959,10 +959,8 @@ function buildBatchRecord({
 //
 // The parse is the slip's own strict parser: a mangled figure is refused,
 // never coerced. A STRING only — a JSON number would skip the shape check.
-const { JUNID_EMAIL, isSuperAdminToken } = require("./super-admins.cjs");
-// Kept for importers (card-supporting-slips, tests): Junid's address. The GATE
-// is mayDeclareTotal, which admits either super admin (Junid or Jafer).
-const DECLARED_TOTAL_EMAIL = JUNID_EMAIL;
+// The gate is mayDeclareTotal: either super admin (Junid or Jafer), verified.
+const { isSuperAdminToken } = require("./super-admins.cjs");
 // A day's takings on one terminal; anything larger is a slipped finger.
 const MAX_DECLARED_TOTAL_CENTS = 100000000; // R1,000,000
 
@@ -1215,6 +1213,6 @@ module.exports = {
   planTypedCapture, sastDayIndexOf,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
-  DECLARED_TOTAL_EMAIL, MAX_DECLARED_TOTAL_CENTS, hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
+  MAX_DECLARED_TOTAL_CENTS, hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
   anchorDeclaredWindow,
 };

@@ -36,9 +36,7 @@
 const { parseRandsToCents, formatCents, normaliseTid } = require("./card-recon.cjs");
 const { sastDayYmd, sastDayStartMs, isDayYmd, DAY_MS } = require("./card-unread.cjs");
 
-const { JUNID_EMAIL, isSuperAdminToken } = require("./super-admins.cjs");
-// Kept for importers: the address a manual entry was historically stamped with.
-const MANUAL_EMAIL = JUNID_EMAIL;
+const { isSuperAdminToken } = require("./super-admins.cjs");
 const MAX_TOTAL_CENTS = 100000000; // R1,000,000 — a slipped finger, not a batch
 const MAX_WINDOW_MS = 7 * DAY_MS;
 // With no close typed, a manual batch closes at 18:00 SAST on its day: after
@@ -220,4 +218,4 @@ function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = tru
   };
 }
 
-module.exports = { MANUAL_EMAIL, DEFAULT_CLOSE_HOUR_SAST, REASONS, mayEnterManually, planManualEntry };
+module.exports = { DEFAULT_CLOSE_HOUR_SAST, REASONS, mayEnterManually, planManualEntry };

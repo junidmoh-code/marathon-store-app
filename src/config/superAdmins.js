@@ -5,7 +5,7 @@
 //
 // The Cloud Functions keep their own copy in functions/lib/super-admins.cjs
 // (they deploy separately and cannot import from src/). Keep the two lists in
-// step; test/superAdminsGrep.test.js fails if a literal creeps back in.
+// step; src/superAdminsGrep.test.js fails if a literal creeps back in.
 
 export const JUNID_EMAIL = "gunidmoh@gmail.com";
 export const JAFER_EMAIL = "jafermohammed340@gmail.com";
@@ -35,7 +35,7 @@ export function superAdminName(email) {
 }
 
 // The RTDB rule expression that admits either super admin. The live console
-// rules carry exactly this shape; admin cards print it when they show the rule
-// a node needs.
+// rules (RTDB and Storage) were widened to exactly this shape on 12 Nov 2026;
+// admin cards print it when they show the rule a node needs.
 export const SUPER_ADMIN_RULE_EXPR =
   "(" + SUPER_ADMIN_EMAILS.map((e) => `auth.token.email === '${e}'`).join(" || ") + ")";

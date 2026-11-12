@@ -8064,7 +8064,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           })}
         </div>
         <div style={{ padding:"0 12px 10px", fontSize:11.5, color:"rgba(255,255,255,.4)", lineHeight:1.4 }}>
-          {typeBusy ? "Changing…" : "A product with stock or sales can only change Type by Junid or MC. Every change is logged."}
+          {typeBusy ? "Changing…" : "A product with stock or sales can only change Type by Junid, Jafer or MC. Every change is logged."}
         </div>
       </div>
 

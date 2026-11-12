@@ -35,6 +35,11 @@ const button = (tree, re) => tree.root.findAll((n) => n.type === "button" && re.
 beforeEach(() => { onValueMock.mockReset().mockImplementation(() => () => {}); });
 
 describe("OnlineOrdersSettingsCard", () => {
+  it("admits Jafer as well as Junid (one super-admin list); staff stays out", async () => {
+    await render({ uid: "jafer-uid", email: "jafermohammed340@gmail.com" });
+    expect(onValueMock).toHaveBeenCalled();
+  });
+
   it("a non-owner gets nothing and reads nothing", async () => {
     const tree = await render({ uid: "s", email: "rashid@marathon.internal" });
     expect(text(tree)).toMatch(/Junid only/);

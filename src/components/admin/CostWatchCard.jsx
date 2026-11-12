@@ -163,12 +163,10 @@ export default function CostWatchCard({ authUser, onExit }) {
   // same email condition. Deleting either leaves a working gate. The card
   // reads nothing that is not already super-admin-only, but a cost breakdown
   // names people's devices and it should not render for anyone else.
-  // Strict, case-sensitive, exactly like every other super-admin gate in this
-  // app (AuthGate, PushAssignmentsCard, UserManagement, config/enginePolicy).
-  // A lowercasing comparison here would fail SAFE, but it would also admit an
-  // address that the RTDB rule -- which is strict === -- then refuses, turning
-  // a clean "not for you" into a PERMISSION_DENIED nobody can explain. The
-  // client gate must match the rule that actually enforces it.
+  // isSuperAdmin (config/superAdmins.js), like every other super-admin gate in
+  // this app: Junid or Jafer, compared lowercased and trimmed. The RTDB rule is
+  // a strict === on the two addresses; Google sign-in delivers them lowercase,
+  // so in practice the client and the rule admit the same two accounts.
   const isSuperAdmin = isSuperAdminEmail(authUser?.email);
 
   const [state, setState] = useState({ loading: true });

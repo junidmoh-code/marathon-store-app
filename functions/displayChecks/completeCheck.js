@@ -207,6 +207,15 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   return { kind: "reject", code: "already-completed" };
 }
 
+// Who may complete a check for THIS store: a super admin (Junid or Jafer) with a
+// VERIFIED email, or an account holding display_checks scoped to this store.
+function displayCheckAllowed({ email, emailVerified, userRec, store }) {
+  const perms = Array.isArray(userRec?.permissions) ? userRec.permissions : [];
+  const isSuper = isSuperAdmin(email) && emailVerified === true;
+  return isSuper || (perms.includes("display_checks") && userRec?.destShop === store);
+}
+exports._displayCheckAllowed = displayCheckAllowed;
+
 // Exported for the completion regression tests (write-once, no-stock soft-block,
 // and THE hard gate: completion never deletes the active record).
 exports.runComplete = runComplete;
@@ -250,10 +259,7 @@ exports.completeDisplayCheck = onCall(
     // staff path never trusts email — it authorizes by uid-keyed /users perms.
     const emailVerified = !!(request.auth.token && request.auth.token.email_verified);
     const userRec = (await db.ref(`users/${uid}`).get()).val() || {};
-    const perms = Array.isArray(userRec.permissions) ? userRec.permissions : [];
-    const isSuper = isSuperAdmin(email) && emailVerified;
-    const allowed = isSuper
-      || (perms.includes("display_checks") && userRec.destShop === store);
+    const allowed = displayCheckAllowed({ email, emailVerified, userRec, store });
     if (!allowed) {
       throw new HttpsError("permission-denied", "You can't complete checks for this store.");
     }

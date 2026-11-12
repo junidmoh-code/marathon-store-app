@@ -5,7 +5,7 @@
 // request.auth.token.email against a literal.
 //
 // The client keeps its own copy in src/config/superAdmins.js. Keep the two
-// lists in step; test/superAdminsGrep.test.js fails if a literal creeps back in.
+// lists in step; src/superAdminsGrep.test.js fails if a literal creeps back in.
 "use strict";
 
 const JUNID_EMAIL = "gunidmoh@gmail.com";

@@ -41,6 +41,8 @@ async function assertMergeAccess(request, db) {
   return { uid, email, isSuper };
 }
 
+exports._assertMergeAccess = assertMergeAccess;
+
 exports.mergeProducts = onCall({ region: "europe-west1" }, async (request) => {
   const db = admin.database();
   const actor = await assertMergeAccess(request, db);

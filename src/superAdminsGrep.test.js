@@ -44,14 +44,44 @@ describe("one super-admin list, no literal email checks", () => {
     const BAD = [
       /(===|!==|==|!=)\s*(ADMIN_EMAIL|OWNER_EMAIL|MANUAL_EMAIL|DECLARED_TOTAL_EMAIL|JUNID_EMAIL|JAFER_EMAIL)\b/,
       /\b(ADMIN_EMAIL|OWNER_EMAIL|MANUAL_EMAIL|DECLARED_TOTAL_EMAIL|JUNID_EMAIL|JAFER_EMAIL)\s*(===|!==|==|!=)/,
-      /\bemail\s*(===|!==|==|!=)\s*["'`][^"'`]+@gmail\.com["'`]/i,
+      /\bemail\s*(===|!==|==|!=)\s*["'`][^"'`]+@[^"'`]+["'`]/i,
+      // A one-address list is a literal check in disguise: [JUNID_EMAIL].includes(x)
+      /\[\s*[A-Za-z_$.]*EMAIL[A-Za-z_$]*\s*\]\s*\.includes\(/,
+      /\[\s*["'`][^"'`\],]+@[^"'`\],]+["'`]\s*\]\s*\.includes\(/,
       /jafermohammed340/i,
     ];
+    const isComment = (l) => /^\s*(\/\/|\*|\/\*)/.test(l);
     const offenders = [];
     for (const f of FILES) {
       if (ALLOWED.has(f)) continue;
       const lines = fs.readFileSync(path.join(ROOT, f), "utf8").split("\n");
-      lines.forEach((l, i) => { if (BAD.some((re) => re.test(l))) offenders.push(`${f}:${i + 1}: ${l.trim()}`); });
+      lines.forEach((l, i) => { if (!isComment(l) && BAD.some((re) => re.test(l))) offenders.push(`${f}:${i + 1}: ${l.trim()}`); });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  // JUNID_EMAIL / JAFER_EMAIL name ONE person each. A gate built on either one
+  // (however it is spelled) would pass every other test, so outside the two
+  // list modules they may appear only where a single person is genuinely meant:
+  // the digest's mail recipient and the assistant's memory path.
+  it("JUNID_EMAIL / JAFER_EMAIL appear only on the allow-listed lines", () => {
+    const ALLOW_LINE = {
+      "functions/lib/writeoff-digest.cjs": [/^const MAIL_TO = require\(".\/super-admins\.cjs"\)\.JUNID_EMAIL;/],
+      "functions/index.js": [
+        /^const \{ JUNID_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdmin \} = require\(".\/lib\/super-admins\.cjs"\);$/,
+        /db\.ref\(`aiAssistant\/memory\/\$\{JUNID_EMAIL\.split\("@"\)\[0\]\}\/businessContext`\)/,
+      ],
+    };
+    const offenders = [];
+    for (const f of FILES) {
+      if (ALLOWED.has(f)) continue;
+      const lines = fs.readFileSync(path.join(ROOT, f), "utf8").split("\n");
+      lines.forEach((l, i) => {
+        if (!/\b(JUNID_EMAIL|JAFER_EMAIL)\b/.test(l)) return;
+        const t = l.trim();
+        if ((ALLOW_LINE[f] || []).some((re) => re.test(t))) return;
+        offenders.push(`${f}:${i + 1}: ${t}`);
+      });
     }
     expect(offenders).toEqual([]);
   });

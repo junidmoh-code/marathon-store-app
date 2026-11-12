@@ -145,6 +145,12 @@ describe("LAYER 2 — the component gate, with the route gate bypassed", () => {
     expect(onValueMock).not.toHaveBeenCalled();
   });
 
+  it("admits Jafer as well as Junid (one super-admin list)", () => {
+    const names = screenNames(render({ authUser: { uid: "jafer-uid", email: "jafermohammed340@gmail.com" } }));
+    expect(names).toContain("UserManagementAuthed");
+    expect(names).not.toContain("NotAuthorized");
+  });
+
   it("admits the super-admin — proving the refusals above mean something", () => {
     const names = screenNames(render({ authUser: ADMIN }));
     expect(names).toContain("UserManagementAuthed");

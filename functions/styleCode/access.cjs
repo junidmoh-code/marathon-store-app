@@ -19,8 +19,7 @@
 
 const { HttpsError } = require("firebase-functions/v2/https");
 
-const { JUNID_EMAIL, isSuperAdmin } = require("../lib/super-admins.cjs"); // Junid and Jafer (mirrors config/displayChecks.js)
-const ADMIN_EMAIL = JUNID_EMAIL; // kept for importers; the gate asks isSuperAdmin
+const { isSuperAdmin } = require("../lib/super-admins.cjs"); // Junid and Jafer (mirrors config/displayChecks.js)
 
 // Any ONE of these implies style-code work is part of this person's job:
 // intake (products), the shop-floor display flow, receiving stock — and, since
@@ -66,4 +65,4 @@ async function assertStyleCodeAccess(request, db) {
   };
 }
 
-module.exports = { ADMIN_EMAIL, STYLE_CODE_PERMISSIONS, assertStyleCodeAccess };
+module.exports = { STYLE_CODE_PERMISSIONS, assertStyleCodeAccess };

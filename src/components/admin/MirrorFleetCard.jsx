@@ -274,10 +274,9 @@ export default function MirrorFleetCard({ authUser, onExit }) {
   const [offError, setOffError] = useState(null);
   // ── THE COMPONENT'S OWN GATE ──────────────────────────────────────────────
   // Re-checked here, independently of the route gate that mounted it, on the
-  // same strict, case-sensitive email condition the RTDB rule uses. A
-  // lowercasing comparison would fail safe here and then be refused by the
-  // rule, turning a clean "not for you" into a PERMISSION_DENIED nobody can
-  // explain.
+  // super-admin list the RTDB rule names (Junid or Jafer). isSuperAdmin compares
+  // lowercased and trimmed; Google delivers both addresses lowercase, so the
+  // client and the rule admit the same two accounts.
   const isSuperAdmin = isSuperAdminEmail(authUser?.email);
 
   const [state, setState] = useState({ loading: true, devices: [] });

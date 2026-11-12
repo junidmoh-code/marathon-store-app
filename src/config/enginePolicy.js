@@ -7,16 +7,17 @@
 // by a comment.)
 //
 // ── TWO WAYS IN, AND ONLY TWO ────────────────────────────────────────────────
-// 1. The owner's Firebase Auth email (isSuperAdmin, src/config/superAdmins.js — Junid and Jafer).
+// 1. A super admin's Firebase Auth email (isSuperAdmin, src/config/superAdmins.js —
+//    Junid and Jafer; until 12 Nov 2026 this was the single ADMIN_EMAIL).
 // 2. An account carrying the `engine_policy` permission — read from the
 //    permFlags MIRROR, not from the permissions array.
 //
 // Nothing else. No stockRole, no role, no store scope, no other permission.
 //
 // ── WHY IT WAS EMAIL-ONLY UNTIL 2026-08-27, AND WHY THAT CHANGED ─────────────
-// The original gate was `isSuperAdminEmail(viewer.email)` and nothing else. The
+// The original gate was `viewer.email === ADMIN_EMAIL` and nothing else. The
 // stated reason was that Junid's own /users record has NO permissions array —
-// his access works only because hasPermission() short-circuits on the super-admin email
+// his access works only because hasPermission() short-circuits on ADMIN_EMAIL
 // before it ever looks at the array — so a gate written as
 // hasPermission("engine_policy") would have locked out the one person the
 // screen existed for.

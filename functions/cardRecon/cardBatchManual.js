@@ -277,7 +277,7 @@ exports.cardBatchManualEntry = onCall(
   { region: "europe-west1", timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     if (!mayEnterManually(request.auth?.token)) {
-      throw new HttpsError("permission-denied", "Only Junid can enter batch figures by hand.");
+      throw new HttpsError("permission-denied", "Only Junid or Jafer can enter batch figures by hand.");
     }
     const db = admin.database();
     const action = request.data?.action || "enter";

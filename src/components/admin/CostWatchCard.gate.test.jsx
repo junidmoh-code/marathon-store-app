@@ -61,6 +61,11 @@ async function render(authUser) {
 describe("CostWatchCard gate", () => {
   beforeEach(() => { getMock.mockClear(); onValueMock.mockClear(); });
 
+  it("admits Jafer as well as Junid (one super-admin list); staff stays out", async () => {
+    await render({ uid: "jafer-uid", email: "jafermohammed340@gmail.com" });
+    expect(getMock).toHaveBeenCalled();
+  });
+
   it("reads nothing at all for a viewer who is not the owner", async () => {
     await render(STAFF);
     expect(getMock).not.toHaveBeenCalled();
