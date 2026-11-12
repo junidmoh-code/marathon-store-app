@@ -5,6 +5,7 @@
 import "../styles/sky.css";
 import "../styles/sky-theme.css";
 import "../styles/sky-admin.css";
+import "../styles/sky-stock.css";
 import { createRoot } from "react-dom/client";
 import { database } from "../firebase.js";
 
