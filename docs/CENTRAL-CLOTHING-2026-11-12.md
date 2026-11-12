@@ -52,7 +52,9 @@ withdrawn: 0.
 One `transfer_in` movement per cell (`h3cl_20261112_<pid>_<sizeKey>`, reason
 `hub3_clothing_to_concrete`) through `applyMovementAdmin`; negatives would be
 `adjustment` up to zero (`h3cc_…`, reason `hub3_clothing_cleanup`). Every
-non-footwear Hub 3 cell then at exactly zero is removed, and a verify pass
+non-footwear Hub 3 cell then at exactly zero is removed (Junid: "every
+remaining /stock/hub3 cell must be footwear"; each removed path and what it
+held is listed in the run record and the backup), and a verify pass
 re-reads `/stock/hub3` until it holds footwear only. Backup in
 `~/marathon-rollbacks/hub3-clothing-before-20261112-<ms>.json`; the run record
 at `/settings/hub3ClothingTransfer/20261112`.
@@ -62,7 +64,18 @@ at `/settings/hub3ClothingTransfer/20261112`.
 After the transfer, under the live caps: **Concrete 84 lines / 121 units / 35
 products, all from Central**; Pine 0 (Pine is paused for its count —
 `pausedLocations/marathon-pine`); Hub 3 2 sneaker lines. No Hub 3 non-footwear
-line, no shop line from Hub 3. Well under the 500 division ceiling.
+line, no shop line from Hub 3. **Uncapped the numbers are the same** (84 / 0 /
+2), so nothing is being held back by `maxDivisionIntentsPerRun` (500).
+
+Pine once its count pause is lifted (`--unpause`, same snapshot): 63 lines /
+123 units / 45 products, all from Central. That snapshot has Pine's shelves at
+zero mid-count, so the real figure depends on what the count records.
+
+Later scans: Concrete's and Pine's Central lines become locks on Central
+clothing, which Hub 2 also draws on. Marathon is dealt first within a scan, and
+the first scan is proven unchanged; across scans the two compete for scarce
+Central pieces exactly as Hub 2 and the Marathon shops already do. That is the
+model Junid asked for and is not treated as a stop.
 
 ## STOP — the Hub 3 sneaker keep 3 → 2 changes a Marathon request
 
