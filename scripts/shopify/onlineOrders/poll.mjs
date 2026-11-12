@@ -404,6 +404,9 @@ async function cancelOrder(ctx, id, node) {
     };
   });
   const order = res.snapshot.val();
+  // Already flagged on an earlier tick: that tick's second-parcel clean-up may have failed part-way, so it runs again
+  // (idempotent: a cancelled record is left as it is) — CodeRabbit on #901.
+  if (!res.committed && order?.status === ORDER_STATUS.PACKED && order.cancelledAfterPack) { await cancelReships(ctx, id, node); return; }
   if (!res.committed || !order) return;
   if (order.status === ORDER_STATUS.PACKED) {
     ctx.summary.flagged++;
@@ -413,14 +416,7 @@ async function cancelOrder(ctx, id, node) {
     await syncHolds(ctx, id, order);
     await dropEscalations(ctx, id, order);
     for (const fid of Object.keys(order.followUps || {})) await cancelOrder(ctx, fid, node);
-    // A second parcel not packed yet (docs/ONLINE-ORDERS.md "Second parcel"; architect review 6) stops with the order.
-    // Exact reads of its keys, never a query: the parent names none of them (it is never written for one).
-    for (let n = 1; n <= RESHIP_KEYS_CHECKED; n++) {
-      const rid = `${id}r${n}`;
-      const st = await ctx.get(`${ONLINE_ORDERS_PATH}/${rid}/status`);
-      if (st == null) break;
-      if (HOLDING_STATUSES.includes(st)) await cancelOrder(ctx, rid, node);
-    }
+    await cancelReships(ctx, id, node);
     return;
   }
   ctx.summary.cancelled++;
@@ -432,6 +428,17 @@ async function cancelOrder(ctx, id, node) {
   // order: cancelled with it.
   for (const fid of Object.keys(order.followUps || {})) {
     await cancelOrder(ctx, fid, node);
+  }
+}
+
+// A second parcel not packed yet (docs/ONLINE-ORDERS.md "Second parcel"; architect review 6) stops with its order.
+// Exact reads of its keys, never a query: the parent names none of them (it is never written for one).
+async function cancelReships(ctx, id, node) {
+  for (let n = 1; n <= RESHIP_KEYS_CHECKED; n++) {
+    const rid = `${id}r${n}`;
+    const st = await ctx.get(`${ONLINE_ORDERS_PATH}/${rid}/status`);
+    if (st == null) break;
+    if (HOLDING_STATUSES.includes(st)) await cancelOrder(ctx, rid, node);
   }
 }
 
@@ -936,7 +943,7 @@ async function shipOrder(ctx, id, order) {
     // the customer agent tells the customer). With live off there is no waybill: the dry run is recorded, as for any order.
     try {
       out = waybill
-        ? await addTrackingToOrder(ctx.graphql, { orderGid: order.shopifyGid, number: waybill, url: courierTrackUrl(waybill), company: COURIER_COMPANY })
+        ? await addTrackingToOrder(ctx.graphql, { orderGid: order.shopifyGid, number: waybill, url: courierTrackUrl(waybill), company: COURIER_COMPANY, fill: courierTrackUrl })
         : { ok: true, reshipNote: "no waybill (the live switch was off) — Shopify not changed" };
       if (out.ok) out = { ...out, reship: true };
     } catch (e) {

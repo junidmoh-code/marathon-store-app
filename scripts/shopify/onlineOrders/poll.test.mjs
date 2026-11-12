@@ -929,6 +929,28 @@ describe("a second parcel (items the first parcel was short) — Junid, 12 Nov 2
     expect(order(f, "9001").cancelledAfterPack).toBe(true);
   });
 
+  it("CodeRabbit #901: an existing number with no link gets the courier's link; a full list is refused, never truncated", async () => {
+    const { addedTrackingInput } = await import("./shopifyOrders.mjs");
+    const t = addedTrackingInput({ trackingInfo: [{ company: "The Courier Guy", number: "39PPFL", url: null }] }, { number: "NEW1", url: "u/NEW1", company: "The Courier Guy", fill: (n) => `u/${n}` });
+    expect(t).toEqual({ company: "The Courier Guy", numbers: ["39PPFL", "NEW1"], urls: ["u/39PPFL", "u/NEW1"] });
+    const f = fakeDb(reshipWorld({ live: true }, { status: "packed", pack: { noSale: true }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 } }));
+    const courier = { ...fakeCourier(), createShipment: async () => ({ id: 57, short_tracking_reference: "NEW125", charged_amount: 99 }) };
+    const many = Array.from({ length: 50 }, (_, i) => ({ company: "The Courier Guy", number: `N${i}`, url: "x" }));
+    const sh = reshipShopify({ fulfillments: [{ ...FULFILMENT, trackingInfo: many }] });
+    await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sh.calls.some((c) => c.query.includes("fulfillmentTrackingInfoUpdate"))).toBe(false);
+    expect(order(f, RID)).toMatchObject({ fulfilState: "failed", fulfil: { error: expect.stringMatching(/by hand/) } });
+  });
+
+  it("CodeRabbit #901: a cancel already flagged on the parent still finishes the second parcel's clean-up", async () => {
+    const f = fakeDb(reshipWorld({ live: true }));
+    await f.db.ref("online_orders/9001").update({ cancelledAfterPack: true });
+    const cancelled = { ...shopifyOrder({ updatedAt: "2026-10-21T09:59:00Z" }), cancelledAt: "2026-10-21T09:58:00Z" };
+    const sh = { ...reshipShopify(), graphql: async (q, v) => (q.includes("orders(") ? { orders: { nodes: [cancelled], pageInfo: { hasNextPage: false } } } : reshipShopify().graphql(q, v)) };
+    await runOrdersPoll(deps(f, sh).deps);
+    expect(order(f, RID).status).toBe("cancelled");
+  });
+
   it("a POS Replace on a re-sent line is refused by the one swap implementation", async () => {
     const { swapOnlineOrderLine } = await import("../../lib/swap-line.mjs");
     const f = fakeDb(reshipWorld({ live: true }));

@@ -226,19 +226,27 @@ export async function fulfilLinesOnShopify(graphql, { orderGid, packed, baseline
 // tells the customer on WhatsApp, so Shopify sends no email (notifyCustomer false).
 // Idempotent: a retry that finds the number already there is done.
 
+// Both lists are read whole or not at all (CodeRabbit on #901): a list that comes back full may be truncated, and the
+// update REPLACES the numbers, so it is refused rather than dropping one it never read.
+const TRACKING_LIMIT = 50;
 const TRACKING_FIELDS = `
   id cancelledAt
-  fulfillments(first: 20) { id status createdAt trackingInfo(first: 10) { company number url } }`;
+  fulfillments(first: ${TRACKING_LIMIT}) { id status createdAt trackingInfo(first: ${TRACKING_LIMIT}) { company number url } }`;
 const DEAD_FULFILMENT = new Set(["CANCELLED", "ERROR", "FAILURE"]);
 const sameNumber = (a, b) => String(a ?? "").trim().toUpperCase() === String(b ?? "").trim().toUpperCase();
 
 /** Pure: the tracking input that adds `number` to `fulfillment`'s numbers, or null when it is already there. */
-export function addedTrackingInput(fulfillment, { number, url, company }) {
+const sameCourier = (a, b) => String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+export function addedTrackingInput(fulfillment, { number, url, company, fill = null }) {
   const info = (fulfillment?.trackingInfo ?? []).filter((t) => t?.number);
   if (info.some((t) => sameNumber(t.number, number))) return null;
-  const all = [...info.map((t) => ({ number: String(t.number), url: t.url ? String(t.url) : null })), { number: String(number), url: url ? String(url) : null }];
+  const co = String(info.find((t) => t.company)?.company || company);
+  // An existing number with no stored link gets the courier's own link when it is the same courier (CodeRabbit on #901:
+  // one missing link must not drop the others, the new one included).
+  const linkFor = (t) => (t.url ? String(t.url) : sameCourier(t.company || co, company) && fill ? fill(String(t.number)) : null);
+  const all = [...info.map((t) => ({ number: String(t.number), url: linkFor(t) })), { number: String(number), url: url ? String(url) : null }];
   return {
-    company: String(info.find((t) => t.company)?.company || company),
+    company: co,
     numbers: all.map((t) => t.number),
     // Only when every number has its link (Shopify pairs them by position).
     ...(all.every((t) => t.url) ? { urls: all.map((t) => t.url) } : {}),
@@ -246,15 +254,18 @@ export function addedTrackingInput(fulfillment, { number, url, company }) {
 }
 
 /** → { ok: true, fulfillmentId, alreadyDone? } | { ok: false, error } */
-export async function addTrackingToOrder(graphql, { orderGid, number, url = null, company }) {
+export async function addTrackingToOrder(graphql, { orderGid, number, url = null, company, fill = null }) {
   const data = await graphql(`query ($id: ID!) { order(id: $id) { ${TRACKING_FIELDS} } }`, { id: orderGid });
   const order = data.order ?? null;
   if (!order) return { ok: false, error: "Shopify no longer has this order" };
+  if ((order.fulfillments ?? []).length >= TRACKING_LIMIT || (order.fulfillments ?? []).some((f) => (f?.trackingInfo ?? []).length >= TRACKING_LIMIT)) {
+    return { ok: false, error: `the order has ${TRACKING_LIMIT}+ fulfilments or tracking numbers; add the second parcel's waybill by hand` };
+  }
   const live = (order.fulfillments ?? []).filter((f) => f && !DEAD_FULFILMENT.has(String(f.status || "").toUpperCase()));
   if (!live.length) return { ok: false, error: "the order has no fulfilment on Shopify to add the second parcel's tracking to" };
   if (live.some((f) => (f.trackingInfo ?? []).some((t) => sameNumber(t.number, number)))) return { ok: true, fulfillmentId: null, alreadyDone: true };
   const latest = [...live].sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))[0];
-  const input = addedTrackingInput(latest, { number, url, company });
+  const input = addedTrackingInput(latest, { number, url, company, fill });
   const res = await graphql(
     `mutation ($id: ID!, $t: FulfillmentTrackingInput!) {
       fulfillmentTrackingInfoUpdate(fulfillmentId: $id, trackingInfoInput: $t, notifyCustomer: false) {
