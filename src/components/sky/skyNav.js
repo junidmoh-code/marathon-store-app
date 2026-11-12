@@ -49,7 +49,9 @@ export function parentOf({ role = null, hash = "" } = {}) {
 }
 
 /** Screens that wear the admin design system (src/styles/sky-admin.css). */
-export const ADMIN_DESIGN_ROLES = new Set(["admin", "shopify_publish", "social", "ai_studio", "tv_ad"]);
+// Stock joins it (Junid 12 Nov, Stock redesign): glass fields, navy chips,
+// navy-outline actions with a red icon only.
+export const ADMIN_DESIGN_ROLES = new Set(["admin", "shopify_publish", "social", "ai_studio", "tv_ad", "stock"]);
 export function isAdminDesignScreen(role, hash = "") {
   const h = String(hash || "");
   return ADMIN_DESIGN_ROLES.has(role) || /^#product\//.test(h) || /^#shopify\//.test(h) || ADMIN_HASH.test(h.replace(/\/+$/, ""));
