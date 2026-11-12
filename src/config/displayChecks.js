@@ -138,6 +138,17 @@ export function isDisplayChecksStoreEnabled(storeId, network = currentNetwork(),
   return s.enabled !== null ? s.enabled : l.live === true;
 }
 
+// Is this store's WEBSITE strip on? (Junid, 12 Nov 2026.) Every registry store
+// unless its Display Checks are switched OFF explicitly — a not-live store like
+// Pine keeps a working strip for website lines without its till sales raising
+// display checks. Server mirror: functions/displayChecks/lib.cjs
+// isWebsiteStripEnabled (completeDisplayCheck and the Mac mini's routing).
+export function isWebsiteStripStoreEnabled(storeId, network = currentNetwork(), switches = currentDisplayCheckSwitches()) {
+  const l = locationOf(network, storeId);
+  if (!l || l.type !== "store" || l.id !== storeId) return false;
+  return displayCheckSwitchOf(storeId, switches).enabled !== false;
+}
+
 // ── GATES ─────────────────────────────────────────────────────────────────────
 // Every gate takes a plain `user` = { email, permissions, destShop }. Callers
 // build it from the auth user (email) + the /users/{uid} record (permissions,
@@ -179,5 +190,8 @@ export function canManageDisplayChecks(user, storeId) {
 export function displayChecksVisibleForViewer(user, storeId) {
   if (!DISPLAY_CHECKS_MASTER_ENABLED) return false;
   if (isDisplayChecksSuperAdmin(user)) return true;
-  return canUseDisplayChecks(user, storeId) && isDisplayChecksStoreEnabled(storeId);
+  // The website strip lives in this module, so a store with only its strip on
+  // (Pine) opens it too; its normal check list is simply empty.
+  return canUseDisplayChecks(user, storeId)
+    && (isDisplayChecksStoreEnabled(storeId) || isWebsiteStripStoreEnabled(storeId));
 }

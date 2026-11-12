@@ -269,7 +269,7 @@ export function requestOutcome(kind, record) {
   return null;
 }
 
-const PLACE = { hub1: "Hub 1", hub2: "Hub 2", central: "Central", "marathon-pe": "Marathon PE", trophy: "Trophy" };
+const PLACE = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", central: "Central", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Marathon Pine" };
 const place = (loc) => PLACE[loc] || loc || "?";
 
 /** "Where it is" and "what happens next", for Settings → Online orders. */
