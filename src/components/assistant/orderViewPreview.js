@@ -11,16 +11,18 @@
 //     MC must not put a staff login on the wall).
 //
 // The "Preview new design" toggle that writes the localStorage key is shown
-// to two accounts only: Junid's (the owner email the database rules name) and
+// to the super admins (Junid and Jafer) and
 // the staff-code user MC. Flipping it reloads the page, so the answer below is
 // read once per page load and never changes underneath a mounted screen.
+
+import { SUPER_ADMIN_EMAILS } from "../../config/superAdmins";
 
 export const ORDER_VIEW_KEY = "mc.orderView";
 export const ORDER_VIEW_WALL = "wall";
 
-// Junid's account (ADMIN_EMAIL / the rules' owner email) and MC's staff-code
+// The super admins (Junid and Jafer, config/superAdmins.js) and MC's staff-code
 // login (usernameToEmail("mc")).
-export const PREVIEW_TOGGLE_EMAILS = Object.freeze(["gunidmoh@gmail.com", "mc@marathon.internal"]);
+export const PREVIEW_TOGGLE_EMAILS = Object.freeze([...SUPER_ADMIN_EMAILS, "mc@marathon.internal"]);
 
 function defaultStorage() {
   try { return typeof window !== "undefined" ? window.localStorage : null; } catch { return null; }

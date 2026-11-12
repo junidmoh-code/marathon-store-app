@@ -21,7 +21,7 @@
 // held cell double-orders. The switch defaulting to OFF is what makes the
 // hosting deploy safe on its own.
 
-import { ADMIN_EMAIL } from "../components/PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "./superAdmins";
 
 export const STOCK_HOLD_ENABLED = true;
 
@@ -32,7 +32,7 @@ export const STOCK_HOLD_ENABLED = true;
 export const STOCK_HOLD_ROOT = "settings/stockHold";
 
 export function isStockHoldSuperAdmin(viewer) {
-  return !!viewer && viewer.email === ADMIN_EMAIL;
+  return !!viewer && isSuperAdminEmail(viewer.email);
 }
 
 /**

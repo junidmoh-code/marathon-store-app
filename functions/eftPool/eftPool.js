@@ -174,15 +174,15 @@ if (!admin.apps.length) {
   });
 }
 
-// Same constant as the POS app's PermissionsContext and posUsers.js.
-const ADMIN_EMAIL = "gunidmoh@gmail.com";
+// Same super-admin list as the POS app (Junid and Jafer) — lib/super-admins.cjs.
+const { isSuperAdminToken } = require("../lib/super-admins.cjs");
 
 // Owner = the admin email AND a VERIFIED one. The owner signs in with Google
 // (always verified); requiring the flag closes the theoretical seam where an
 // unverified credential claiming the address would inherit owner rights on
 // pool projections and reversals. (CodeRabbit, this PR.)
 function isOwner(request) {
-  return request.auth?.token?.email === ADMIN_EMAIL && request.auth?.token?.email_verified === true;
+  return isSuperAdminToken(request.auth?.token);
 }
 
 const RUNTIME = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 30 };
@@ -876,7 +876,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       throw new HttpsError("permission-denied", "Only the owner can release a held payment.");
     }
     const reason = String(data.reason ?? "").trim().slice(0, 300);
-    decision = await runPoolTransaction(key, (current) => releaseHoldDecision(current, { at: now, by: ADMIN_EMAIL, reason }));
+    decision = await runPoolTransaction(key, (current) => releaseHoldDecision(current, { at: now, by: request.auth.token.email, reason }));
     if (!decision.ok) throw refusalToError(decision);
     console.log(`eftPoolSettle: releaseHold ${key} by owner — ${reason}`);
     return { ok: true };
@@ -934,7 +934,7 @@ exports.eftEnforcementStatus = onCall(RUNTIME, async (request) => {
   const db = admin.database();
   if (data.action === "set") {
     if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid can change which stores enforce EFT matching.");
-    const update = enforcementUpdateOf(data, { at: Date.now(), by: ADMIN_EMAIL });
+    const update = enforcementUpdateOf(data, { at: Date.now(), by: request.auth.token.email });
     if (!update.ok) throw new HttpsError("invalid-argument", update.message, { code: update.code });
     // MERGE, never replace: switching Pine on must not silently switch Trophy
     // off. A node that does not exist yet starts from the DEFAULT set, so the
@@ -1308,7 +1308,7 @@ exports.eftPoolReverse = onCall(RUNTIME, async (request) => {
   const at = Date.now();
   const decision = await runPoolTransaction(key, (current) => reverseDecision(current, {
     at,
-    by: ADMIN_EMAIL,
+    by: request.auth.token.email,
     reason,
   }));
   if (!decision.ok) throw refusalToError(decision);

@@ -40,13 +40,13 @@ if (!admin.apps.length) {
 }
 
 // The same identity the card-recon reports are gated to.
-const OWNER_EMAIL = "gunidmoh@gmail.com";
+const { isSuperAdminToken } = require("../lib/super-admins.cjs"); // Junid and Jafer
 const AUDIT_PATH = "card_terminal_audit";
 
 function assertOwner(request) {
   // A VERIFIED email, not just a matching string — an unverified account can
   // carry any address. Junid's is Google-verified (checked 21 Sept 2026).
-  if (request.auth?.token?.email !== OWNER_EMAIL || request.auth?.token?.email_verified !== true) {
+  if (!isSuperAdminToken(request.auth?.token)) {
     throw new HttpsError("permission-denied", "Only Junid can change the card terminals.");
   }
 }

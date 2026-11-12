@@ -32,7 +32,7 @@ vi.mock("../utils/useNetwork", async () => {
 });
 
 const UserManagement = (await import("./UserManagement.jsx")).default;
-const { ADMIN_EMAIL } = await import("./PermissionsContext.jsx");
+const { JUNID_EMAIL: ADMIN_EMAIL } = await import("../config/superAdmins.js");
 
 const ADMIN = { uid: "admin-uid", email: ADMIN_EMAIL, displayName: "Junid" };
 const STAFF = { uid: "staff-uid", email: "rashid@marathon.internal" };
@@ -147,13 +147,13 @@ describe("owner only — the same gate as the rest of the screen", () => {
     expect(onValueMock).not.toHaveBeenCalled();
   });
 
-  it("the screen and the context share ONE owner address — no private copy in this file", async () => {
+  it("the screen and the card share ONE super-admin list — no private copy in either file", async () => {
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("./UserManagement.jsx", import.meta.url), "utf8");
-    expect(src).toMatch(/import \{ ADMIN_EMAIL \} from "\.\/PermissionsContext"/);
+    expect(src).toMatch(/import \{ isSuperAdmin as isSuperAdminEmail \} from "\.\.\/config\/superAdmins"/);
     expect(src).not.toMatch(/const ADMIN_EMAIL\s*=/);
     const card = readFileSync(new URL("../push/PushAssignmentsCard.jsx", import.meta.url), "utf8");
-    expect(card).toMatch(/import \{ ADMIN_EMAIL \} from "\.\.\/components\/PermissionsContext"/);
+    expect(card).toMatch(/import \{ isSuperAdmin as isSuperAdminEmail \} from "\.\.\/config\/superAdmins"/);
     expect(card).not.toMatch(/const ADMIN_EMAIL\s*=/);
   });
 });

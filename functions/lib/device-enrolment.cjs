@@ -46,7 +46,8 @@ const PATHS = {
   audit: `${ROOT}/audit`,
 };
 
-const OWNER_EMAIL = "gunidmoh@gmail.com";
+// Junid's address, kept for importers; the gates ask isSuperAdmin (Junid or Jafer).
+const { JUNID_EMAIL: OWNER_EMAIL } = require("./super-admins.cjs");
 // A person's code enrols at most this many devices at once; a shared shop
 // device's code exactly one.
 const PERSON_MAX_DEVICES = 2;

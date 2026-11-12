@@ -30,7 +30,7 @@
 //   • session state    — /settings/hubSneakerCount/** (/settings is already
 //                        read: auth != null, write: any non-anon auth)
 
-import { ADMIN_EMAIL } from "../components/PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "./superAdmins";
 
 // ── THE MASTER FLAG ───────────────────────────────────────────────────────────
 // Flip to false when the count is done. Nothing renders after that: no home
@@ -54,7 +54,7 @@ export const HUB_COUNT_ROOT = "settings/hubSneakerCount";
 // Auth (email — the only unforgeable signal) + the /users/{uid} record.
 
 export function isHubCountSuperAdmin(viewer) {
-  return !!viewer && viewer.email === ADMIN_EMAIL;
+  return !!viewer && isSuperAdminEmail(viewer.email);
 }
 
 /**
@@ -87,7 +87,7 @@ export function canUseHubSneakerCount(viewer) {
  * decided in different places:
  *
  *   • OPENING the view is decided by this app, in JS.
- *   • WRITING is decided by the RTDB rules, which do not know ADMIN_EMAIL exists
+ *   • WRITING is decided by the RTDB rules, which do not know the client super-admin list exists
  *     and read only the STORED record:
  *
  *       /stock/$loc/$pid/$size  .write  requires users/{uid}/stockRole to EXIST

@@ -63,7 +63,7 @@ if (!admin.apps.length) {
   });
 }
 
-const ADMIN_EMAIL = "gunidmoh@gmail.com"; // super-admin (mirrors config/displayChecks.js)
+const { isSuperAdmin } = require("../lib/super-admins.cjs"); // Junid and Jafer (mirrors config/displayChecks.js)
 
 // Reject-code → callable error code. Everything else is a failed-precondition.
 const ERROR_CODE = {
@@ -244,14 +244,14 @@ exports.completeDisplayCheck = onCall(
     // ── Authorize for THIS store: super-admin, or store-scoped display_checks
     // (mirrors config/displayChecks.canUseDisplayChecks server-side). ──
     // The super-admin shortcut trusts the email claim, so it MUST be a VERIFIED
-    // email — otherwise a self-signed-up account claiming gunidmoh@gmail.com with
+    // email — otherwise a self-signed-up account claiming a super-admin address with
     // email_verified:false would inherit super-admin. Google sign-in (the real
     // super-admin's provider) sets email_verified:true, so this is safe. The
     // staff path never trusts email — it authorizes by uid-keyed /users perms.
     const emailVerified = !!(request.auth.token && request.auth.token.email_verified);
     const userRec = (await db.ref(`users/${uid}`).get()).val() || {};
     const perms = Array.isArray(userRec.permissions) ? userRec.permissions : [];
-    const isSuper = email === ADMIN_EMAIL && emailVerified;
+    const isSuper = isSuperAdmin(email) && emailVerified;
     const allowed = isSuper
       || (perms.includes("display_checks") && userRec.destShop === store);
     if (!allowed) {

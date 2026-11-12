@@ -29,7 +29,8 @@ import { onAuthStateChanged, onIdTokenChanged, signInAnonymously, signInWithCust
 import { onValue, ref, set } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { auth, database, functions } from "../firebase";
-import { PermissionsContext, ADMIN_EMAIL } from "./PermissionsContext";
+import { PermissionsContext } from "./PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "../config/superAdmins";
 import { revokeBeforeSignOut } from "../push/registerPush";
 import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
@@ -217,7 +218,7 @@ export default function AuthGate({ children, renderTv }) {
   if (!user || user.isAnonymous) return <Login />;
   if (!permLoaded) return <LoadingScreen />;
 
-  const isSuperAdmin  = user.email === ADMIN_EMAIL;
+  const isSuperAdmin  = isSuperAdminEmail(user.email);
   // A login that needs a device code: the code screen and nothing else until
   // this device is enrolled — and again the moment it is revoked, because the
   // gate entry lives on the /users record subscribed just above.

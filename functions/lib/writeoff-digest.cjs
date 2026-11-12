@@ -104,7 +104,7 @@ function emailViaAlertLog(log = console.error) {
 // Cloud Monitoring's alert email to junidmoh@gmail.com. Every email that DOES
 // reach Junid — the EFT confirmer verdicts, the orders-poller watchdog, the
 // recycler reports — goes over Gmail SMTP from the shop mailbox
-// (marathon6631@gmail.com) to gunidmoh@gmail.com, "the inbox he reads"
+// (marathon6631@gmail.com) to Junid's G-address (JUNID_EMAIL), "the inbox he reads"
 // (scripts/cardrecon/verdictMailCore.mjs, scripts/shopify/orders-poll-watchdog.mjs).
 // So the digest now goes that way too: this channel files the finished email
 // in a small outbox node, and the mini's launchd agent
@@ -113,7 +113,7 @@ function emailViaAlertLog(log = console.error) {
 // a real receipt from the receiving provider, not "an alert was raised". The
 // Monitoring route stays as a second copy; nothing else changed.
 const OUTBOX = "refill_engine/refusalWriteoffDigestOutbox";
-const MAIL_TO = "gunidmoh@gmail.com";   // Junid reads this one (with a G)
+const MAIL_TO = require("./super-admins.cjs").JUNID_EMAIL;   // Junid reads this one (with a G)
 const MAIL_SUBJECT_PREFIX = "[Write-off digest]";
 
 function emailViaMiniOutbox(db) {

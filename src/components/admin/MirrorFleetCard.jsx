@@ -40,7 +40,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { getDatabase, ref, get, set, remove, onValue, query, orderByKey, startAt } from "firebase/database";
-import { ADMIN_EMAIL } from "../PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail, SUPER_ADMIN_RULE_EXPR } from "../../config/superAdmins";
 import { DEVICES_ROOT, SAST_OFFSET_MS, sastDate } from "../../offline/deviceHealth";
 import { MIRROR_SWITCH_PATH, switchVerdict } from "../../offline/killSwitch";
 import { DEVICE_OFF_ROOT, deviceOffPath, deviceOffVerdict } from "../../offline/deviceOff";
@@ -59,10 +59,10 @@ export const REJECT_DAYS = 7;
 
 const RULE_TEXT = `"mirror_switch": {
   ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-  ".write": "auth != null && auth.token.email === '${ADMIN_EMAIL}'"
+  ".write": "auth != null && ${SUPER_ADMIN_RULE_EXPR}"
 },
 "mirror_devices": {
-  ".read": "auth != null && auth.token.email === '${ADMIN_EMAIL}'",
+  ".read": "auth != null && ${SUPER_ADMIN_RULE_EXPR}",
   "$deviceId": {
     ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
     ".validate": "newData.child('deviceId').val() === $deviceId"
@@ -278,7 +278,7 @@ export default function MirrorFleetCard({ authUser, onExit }) {
   // lowercasing comparison would fail safe here and then be refused by the
   // rule, turning a clean "not for you" into a PERMISSION_DENIED nobody can
   // explain.
-  const isSuperAdmin = authUser?.email === ADMIN_EMAIL;
+  const isSuperAdmin = isSuperAdminEmail(authUser?.email);
 
   const [state, setState] = useState({ loading: true, devices: [] });
   const [switchOn, setSwitchOn] = useState(null);

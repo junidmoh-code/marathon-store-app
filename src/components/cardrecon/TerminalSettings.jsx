@@ -1,5 +1,5 @@
 // ─── TERMINAL SETTINGS — THE ESTATE, CHANGED FROM THE SCREEN ─────────────────
-// Owner only (gunidmoh@gmail.com): opened from the settings icon on the Card
+// Super admins only (Junid or Jafer): opened from the settings icon on the Card
 // machines page. Lists every card terminal and adds, edits, retires,
 // reinstates and replaces them — the changes that used to need a Claude Code
 // session and scripts/apply-terminal-registry-*.mjs.

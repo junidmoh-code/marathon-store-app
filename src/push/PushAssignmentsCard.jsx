@@ -125,7 +125,7 @@ import { hubSectionOf } from "./pushHubs";
 import { useNetwork } from "../utils/useNetwork";
 import { accountSections, sectionRecord, sectionName } from "../components/sectionAccess";
 // The one super-admin identity the rest of the admin surface uses.
-import { ADMIN_EMAIL } from "../components/PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "../config/superAdmins";
 
 // ── THE HUBS, GROUPED BY SECTION ─────────────────────────────────────────────
 // Every hub in the network registry, under the section it belongs to. Section 2
@@ -155,7 +155,7 @@ export default function PushAssignmentsCard({ authUser, onExit }) {
   // GATE 2 of 3 — see the header. An independent check, not a re-read of the
   // route's decision: this component refuses to render for anyone else even if
   // it is mounted by mistake.
-  if (!authUser || authUser.email !== ADMIN_EMAIL) {
+  if (!authUser || !isSuperAdminEmail(authUser.email)) {
     return (
       <div style={{ minHeight: "100vh", background: "#000", color: TEXT_2, fontFamily: FONT, display: "grid", placeItems: "center", padding: 24, textAlign: "center" }}>
         <div>

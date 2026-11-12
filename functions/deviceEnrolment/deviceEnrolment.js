@@ -23,6 +23,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { createHash, randomInt, randomUUID } = require("node:crypto");
 const admin = require("firebase-admin");
 const E = require("../lib/device-enrolment.cjs");
+const { isSuperAdmin, isSuperAdminToken, superAdminName } = require("../lib/super-admins.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -98,7 +99,7 @@ async function handleEnrol(request, deps) {
   if (!auth || !auth.uid || auth.token?.firebase?.sign_in_provider === "anonymous") {
     throw new HttpsError("unauthenticated", "Sign in first.");
   }
-  if (auth.token?.email === E.OWNER_EMAIL) {
+  if (isSuperAdmin(auth.token?.email)) {
     throw new HttpsError("failed-precondition", "Junid's account never needs a device code.");
   }
   const code = E.readCode(request.data?.code);
@@ -260,7 +261,7 @@ async function readBounded(db, path) {
 async function managerIdentity(db, auth) {
   if (!auth || !auth.uid) return null;
   const t = auth.token || {};
-  if (t.email === E.OWNER_EMAIL && t.email_verified === true) return { owner: true, by: "Junid", personId: null, deviceId: null };
+  if (isSuperAdminToken(t)) return { owner: true, by: superAdminName(t.email), personId: null, deviceId: null };
   if (typeof t.deviceId === "string" && typeof t.eid === "string" && typeof t.personId === "string") {
     const [gate, person] = await Promise.all([
       db.ref(`users/${auth.uid}/deviceGate/${t.deviceId}`).once("value"),

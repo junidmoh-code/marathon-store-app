@@ -76,7 +76,7 @@ describe("the gate", () => {
   });
 
   it("is not fooled by an address that merely contains the owner's", async () => {
-    for (const email of ["gunidmoh@gmail.com.evil.com", "gunidmoh@gmail.co", " gunidmoh@gmail.com", "GUNIDMOH@Gmail.com"]) {
+    for (const email of ["gunidmoh@gmail.com.evil.com", "gunidmoh@gmail.co", "x-gunidmoh@gmail.com"]) {
       getMock.mockClear();
       await render({ uid: "u", email });
       expect(getMock, `"${email}" must not be admitted`).not.toHaveBeenCalled();

@@ -36,7 +36,9 @@
 const { parseRandsToCents, formatCents, normaliseTid } = require("./card-recon.cjs");
 const { sastDayYmd, sastDayStartMs, isDayYmd, DAY_MS } = require("./card-unread.cjs");
 
-const MANUAL_EMAIL = "gunidmoh@gmail.com";
+const { JUNID_EMAIL, isSuperAdminToken } = require("./super-admins.cjs");
+// Kept for importers: the address a manual entry was historically stamped with.
+const MANUAL_EMAIL = JUNID_EMAIL;
 const MAX_TOTAL_CENTS = 100000000; // R1,000,000 — a slipped finger, not a batch
 const MAX_WINDOW_MS = 7 * DAY_MS;
 // With no close typed, a manual batch closes at 18:00 SAST on its day: after
@@ -45,9 +47,9 @@ const MAX_WINDOW_MS = 7 * DAY_MS;
 const DEFAULT_CLOSE_HOUR_SAST = 18;
 const REASONS = ["no-slip", "unread", "wrong"];
 
-/** Junid's own VERIFIED token, and nothing a permission flag grants. */
+/** A super admin's (Junid or Jafer) VERIFIED token, and nothing a permission flag grants. */
 function mayEnterManually(token) {
-  return !!token && token.email === MANUAL_EMAIL && token.email_verified === true;
+  return isSuperAdminToken(token);
 }
 
 const amount = (raw, label, { required = false } = {}) => {

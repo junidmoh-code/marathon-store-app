@@ -32,7 +32,7 @@ const UNREAD_PATH = `${OVERRIDES_PATH}/unread`;
 const NOTICES_PATH = `${OVERRIDES_PATH}/notices`;
 const MANUAL_AUDIT_PATH = `${OVERRIDES_PATH}/manual_audit`;
 // Junid's own inbox — the address every card-recon alarm already goes to
-// (install-cardrecon-alarm.mjs). gunidmoh@ is his Firebase admin login, not a
+// (install-cardrecon-alarm.mjs). His G-address (JUNID_EMAIL) is his Firebase admin login, not a
 // mailbox he reads for alerts. Decided HERE, server-side: the poller only
 // delivers, so a typo in the mini's .env cannot send a notice elsewhere.
 const NOTIFY_TO = "junidmoh@gmail.com";

@@ -33,7 +33,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getDatabase, ref, get, onValue } from "firebase/database";
-import { ADMIN_EMAIL } from "../PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail, SUPER_ADMIN_RULE_EXPR } from "../../config/superAdmins";
 
 const SAST_OFFSET_MS = 2 * 3600 * 1000;
 const sastDate = (offsetDays = 0) => {
@@ -46,7 +46,7 @@ const money = (n) => `$${Number(n || 0).toFixed(2)}`;
 const pct = (n) => `${(100 * Number(n || 0)).toFixed(0)}%`;
 
 const RULE_TEXT = `"cost_watch": {
-  ".read": "auth != null && auth.token.email === '${ADMIN_EMAIL}'",
+  ".read": "auth != null && ${SUPER_ADMIN_RULE_EXPR}",
   ".write": false
 }`;
 
@@ -163,13 +163,13 @@ export default function CostWatchCard({ authUser, onExit }) {
   // same email condition. Deleting either leaves a working gate. The card
   // reads nothing that is not already super-admin-only, but a cost breakdown
   // names people's devices and it should not render for anyone else.
-  // Strict, case-sensitive, exactly like every other ADMIN_EMAIL gate in this
+  // Strict, case-sensitive, exactly like every other super-admin gate in this
   // app (AuthGate, PushAssignmentsCard, UserManagement, config/enginePolicy).
   // A lowercasing comparison here would fail SAFE, but it would also admit an
   // address that the RTDB rule -- which is strict === -- then refuses, turning
   // a clean "not for you" into a PERMISSION_DENIED nobody can explain. The
   // client gate must match the rule that actually enforces it.
-  const isSuperAdmin = authUser?.email === ADMIN_EMAIL;
+  const isSuperAdmin = isSuperAdminEmail(authUser?.email);
 
   const [state, setState] = useState({ loading: true });
 

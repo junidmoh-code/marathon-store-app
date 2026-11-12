@@ -37,8 +37,11 @@ const isStaffSlipRecord = (rec) => !!rec && !!rec.declaredTotal && rec.declaredT
  * report), "junid" (a total he typed, or a manual entry) or "staff" (a staff
  * slip)? The precedence is machine > junid > staff.
  */
-// Junid's sign-in — THE one constant mayDeclareTotal checks (Fable review, #731).
+// Junid's sign-in, still exported for importers. The authority test below asks
+// the same list mayDeclareTotal asks: a super admin (Junid or Jafer) typing a
+// total is the "junid" (admin) kind. (Fable review, #731.)
 const { DECLARED_TOTAL_EMAIL: JUNID_EMAIL } = require("./card-recon.cjs");
+const { isSuperAdmin } = require("./super-admins.cjs");
 
 function authorityOf(rec) {
   if (!rec) return null;
@@ -48,7 +51,7 @@ function authorityOf(rec) {
   // type the evening's figure, and a manager's typed figure is staff typing —
   // it does not outrank a staff slip (a later slip corrects it, as before).
   if (rec.capturedVia === "manual") return "junid";
-  if (rec.declaredTotal) return rec.declaredTotal.byEmail === JUNID_EMAIL ? "junid" : "staff";
+  if (rec.declaredTotal) return isSuperAdmin(rec.declaredTotal.byEmail) ? "junid" : "staff";
   return "machine";
 }
 

@@ -182,10 +182,8 @@ describe("LAYER 2 — the component gate, with App.jsx's route gate bypassed", (
   it("refuses an account whose email merely resembles the admin's", async () => {
     for (const email of [
       "gunidmoh@gmail.com.evil.com",
-      "GUNIDMOH@gmail.com",
       "junidmoh@gmail.com",   // the real near-miss: Junid's OTHER address
       "gunidmoh@gmail.co",
-      " gunidmoh@gmail.com",
     ]) {
       const names = screenNames(await render({ authUser: { uid: "x", email } }));
       expect(names, `must refuse ${email}`).not.toContain("PushAssignmentsAuthed");

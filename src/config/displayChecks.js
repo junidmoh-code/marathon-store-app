@@ -10,8 +10,8 @@
 // master flag below is flipped by hand.
 //
 // ── SUPER-ADMIN ──────────────────────────────────────────────────────────────
-// Super-admin is the Firebase admin account gunidmoh@gmail.com (NOT junidmoh@…).
-// We import the ONE existing ADMIN_EMAIL constant rather than re-declaring the
+// Super-admin is either super-admin Google account (Junid or Jafer).
+// We import the ONE super-admin list (config/superAdmins.js) rather than re-declaring an
 // address, so there is a single source of truth for "who is super-admin".
 //
 // ── STORE SCOPE IS PART OF THE GATE ──────────────────────────────────────────
@@ -39,7 +39,7 @@
 //   the scope read to a `displayManagerStores: string[]` field instead. Flagged
 //   for the owner; not decided here.
 
-import { ADMIN_EMAIL } from "../components/PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "./superAdmins";
 import { SEED_REGISTRY, storesOf, locationOf } from "../utils/networkRegistry";
 import { currentNetwork } from "../utils/networkStore";
 
@@ -147,7 +147,7 @@ export function isDisplayChecksStoreEnabled(storeId, network = currentNetwork(),
 // The verified super-admin email. `user.email` comes from Firebase Auth, which
 // is the only trusted identity signal (a /users record cannot forge it).
 export function isDisplayChecksSuperAdmin(user) {
-  return !!user && user.email === ADMIN_EMAIL;
+  return !!user && isSuperAdminEmail(user.email);
 }
 
 // BASE ACCESS — may this user see the module (card, route, Today, Availability)

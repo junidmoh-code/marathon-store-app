@@ -24,7 +24,7 @@
 import { useEffect, useState } from "react";
 import { ref, onValue, update, query, orderByChild, equalTo } from "firebase/database";
 import { database } from "../../firebase";
-import { ADMIN_EMAIL } from "../PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "../../config/superAdmins";
 import { serverNowMs } from "../../utils/serverTime";
 import { ONLINE_ORDERS_PATH, ONLINE_ORDERS_CONFIG_PATH } from "../../utils/onlineOrders";
 import { escalationRows, overrideUpdates } from "../onlineOrders/escalations";
@@ -60,7 +60,7 @@ function saWhen(ms) {
 }
 
 export default function OnlineOrdersSettingsCard({ authUser, onExit, write = defaultWrite, now = serverNowMs }) {
-  const isOwner = !!authUser && authUser.email === ADMIN_EMAIL;
+  const isOwner = !!authUser && isSuperAdminEmail(authUser.email);
   const [cfg, setCfg] = useState({ settled: false, enabled: false, error: false });
   const [att, setAtt] = useState({ settled: false, rows: [], error: false });
   const [esc, setEsc] = useState({ settled: false, rows: [], error: false });
