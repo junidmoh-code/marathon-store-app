@@ -476,6 +476,41 @@ poller would refuse. Nothing moves stock (the Pack is
 the one deduction); no refill policy or target changes. The
 POS refuses Pack while a request is pending.
 
+## Second parcel — items a parcel that already went out was short (Junid, 12 Nov 2026, #1859)
+
+A parcel that left with items missing (the pack sale SOLD and DEDUCTED them,
+the customer did not get them) ships the missing items as a record of its own:
+
+```
+/online_orders/{orderId}r{n} = {
+  orderNumber, shopifyGid, shopifyName (the SAME Shopify order — no new Shopify order), followUpOf: orderId,
+  reship: { of: orderId, why, by, at },
+  customer, shipping: { address } (copied from the parent), totals: { subtotalCents: 0 },
+  status: "ready", basket: { [i]: true },
+  lines: [{ …the parent line's product fields, qty: the missing units,
+            source: { locationId: "marathon-pe", status: "handed" },
+            reship: { saleId, receiptNumber, fromOrder, fromLine } }]   ← the sale that already sold it
+}
+```
+
+- **No sale, no stock, no hold.** The POS Pack of a record whose every line is
+  `reship` writes no `/pos/sales` record and moves no stock
+  (`packOnlineOrder.js packReship`): status `packed`, `pack { noSale: true,
+  soldOn: [{ saleId, receiptNumber }], by, at }`, `fulfilState: "pending"`.
+  `buildPackDraft` refuses a `reship` line outright, so no path can sell it a
+  second time. `holdRowsFor` gives a `reship` line no hold. No hub order, strip
+  entry, escalation or refill request is ever raised for it (its lines are
+  `handed` from the start).
+- **Its own waybill.** `bookShipment` accepts the `{orderId}r{n}` key (existence
+  checked on `reship/of`) and books Courier Guy like any pack.
+- **Shopify.** The parent's line items are already fulfilled, so nothing is
+  fulfilled: the waybill is ADDED to the order's latest live fulfilment as a
+  further tracking number (existing numbers kept, each with its tracking link),
+  `notifyCustomer: false` — the customer agent tells the customer on WhatsApp.
+  A refusal is `fulfilState: "failed"` ("Packed, Shopify not updated", Retry).
+- The parent record is never written. Its name on every screen is
+  `#1859 (second parcel)`.
+
 ## Out of scope (seam left)
 
 Courier booking and waybills. `shipping.provider` is null and

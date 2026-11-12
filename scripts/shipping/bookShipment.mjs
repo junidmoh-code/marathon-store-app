@@ -66,6 +66,10 @@ async function defaultDeps(deps) {
 // this same flow, and finished without Shopify (poll.mjs shipOrder).
 export const EXCHANGE_KEY = /^exchange-\d+-\d+$/;
 export const isExchangeKey = (key) => EXCHANGE_KEY.test(String(key ?? ""));
+// A SECOND PARCEL of items an earlier parcel was short (docs/ONLINE-ORDERS.md "Second parcel"):
+// /online_orders/<shopify order id>r<n>, same Shopify order, its own Courier Guy waybill.
+export const RESHIP_KEY = /^\d+r\d+$/;
+export const isReshipKey = (key) => RESHIP_KEY.test(String(key ?? ""));
 
 // The /online_orders key (the Shopify order id, digits — or an exchange key),
 // never the order's code.
@@ -75,7 +79,7 @@ function orderKey(order) {
   // A ref (KQZ) passed as id/key would put the claim on a junk node the real
   // order never sees — and the one-booking guard with it. Keys are digits,
   // or exchange-<n>-<ms>; anything else is refused.
-  if (!/^\d+$/.test(key) && !isExchangeKey(key)) throw new Error(`bookShipment: "${key}" is not an /online_orders key (the Shopify order id)`);
+  if (!/^\d+$/.test(key) && !isExchangeKey(key) && !isReshipKey(key)) throw new Error(`bookShipment: "${key}" is not an /online_orders key (the Shopify order id)`);
   return assertSafeSegment(key, "order key");
 }
 
@@ -253,7 +257,7 @@ export async function bookShipment(order, deps = {}) {
   // shopifyGid is on every ingested order (ref is not, since 2026-10-21 —
   // gating on ref refused every live booking of a new order). An exchange
   // record has no shopifyGid; Jimmy writes it only once paid (exchange.paidAt).
-  const existsField = isExchangeKey(key) ? "exchange/paidAt" : "shopifyGid";
+  const existsField = isExchangeKey(key) ? "exchange/paidAt" : isReshipKey(key) ? "reship/of" : "shopifyGid";
   if (!(await db.ref(`online_orders/${key}/${existsField}`).get()).exists()) {
     log(`bookShipment ${key} REFUSED no order at /online_orders/${key}`);
     return { skipped: true, reason: `no order at /online_orders/${key}` };

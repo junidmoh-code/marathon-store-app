@@ -49,7 +49,7 @@ import {
   isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
-import { fetchOrdersUpdatedSince, fetchOrderById } from "./shopifyOrders.mjs";
+import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey } from "./shipping.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
@@ -404,6 +404,9 @@ async function cancelOrder(ctx, id, node) {
     };
   });
   const order = res.snapshot.val();
+  // Already flagged on an earlier tick: that tick's second-parcel clean-up may have failed part-way, so it runs again
+  // (idempotent: a cancelled record is left as it is) — CodeRabbit on #901.
+  if (!res.committed && order?.status === ORDER_STATUS.PACKED && order.cancelledAfterPack) { await cancelReships(ctx, id, node); return; }
   if (!res.committed || !order) return;
   if (order.status === ORDER_STATUS.PACKED) {
     ctx.summary.flagged++;
@@ -413,6 +416,7 @@ async function cancelOrder(ctx, id, node) {
     await syncHolds(ctx, id, order);
     await dropEscalations(ctx, id, order);
     for (const fid of Object.keys(order.followUps || {})) await cancelOrder(ctx, fid, node);
+    await cancelReships(ctx, id, node);
     return;
   }
   ctx.summary.cancelled++;
@@ -424,6 +428,17 @@ async function cancelOrder(ctx, id, node) {
   // order: cancelled with it.
   for (const fid of Object.keys(order.followUps || {})) {
     await cancelOrder(ctx, fid, node);
+  }
+}
+
+// A second parcel not packed yet (docs/ONLINE-ORDERS.md "Second parcel"; architect review 6) stops with its order.
+// Exact reads of its keys, never a query: the parent names none of them (it is never written for one).
+async function cancelReships(ctx, id, node) {
+  for (let n = 1; n <= RESHIP_KEYS_CHECKED; n++) {
+    const rid = `${id}r${n}`;
+    const st = await ctx.get(`${ONLINE_ORDERS_PATH}/${rid}/status`);
+    if (st == null) break;
+    if (HOLDING_STATUSES.includes(st)) await cancelOrder(ctx, rid, node);
   }
 }
 
@@ -791,6 +806,12 @@ async function syncHolds(ctx, id, order) {
   ctx.summary.holds += touched.size;
 }
 
+// Second parcels looked for when a packed order is cancelled on Shopify (<id>r1, r2, …; they are made by hand, rarely).
+const RESHIP_KEYS_CHECKED = 3;
+
+// The Courier Guy's public tracking page for a waybill (the link the customer agent sends too).
+export const courierTrackUrl = (waybill) => `https://portal.thecourierguy.co.za/track?ref=${encodeURIComponent(String(waybill))}`;
+
 // ── 3. Shopify fulfilment after the pack ─────────────────────────────────────
 async function shipOrder(ctx, id, order) {
   const { db, now, log } = ctx;
@@ -916,6 +937,18 @@ async function shipOrder(ctx, id, order) {
   let out;
   if (noShopify) {
     out = exchange ? { ok: true, noShopify: true } : { ok: false, error: "the order carries no shopifyGid" };
+  } else if (order.reship && typeof order.reship === "object") {
+    // A SECOND PARCEL (docs/ONLINE-ORDERS.md "Second parcel"): its items are already fulfilled on Shopify with the
+    // first parcel, so nothing is fulfilled — the new waybill is added to the order's tracking (no Shopify email;
+    // the customer agent tells the customer). With live off there is no waybill: the dry run is recorded, as for any order.
+    try {
+      out = waybill
+        ? await addTrackingToOrder(ctx.graphql, { orderGid: order.shopifyGid, number: waybill, url: courierTrackUrl(waybill), company: COURIER_COMPANY, fill: courierTrackUrl })
+        : { ok: true, reshipNote: "no waybill (the live switch was off) — Shopify not changed" };
+      if (out.ok) out = { ...out, reship: true };
+    } catch (e) {
+      out = { ok: false, error: String(e?.message || e) };
+    }
   } else {
     try {
       // The Courier Guy waybill is the tracking number Shopify sends the
@@ -941,6 +974,7 @@ async function shipOrder(ctx, id, order) {
       "fulfil/error": null,
       ...(out.alreadyDone ? { "fulfil/alreadyDone": true } : {}),
       ...(out.noShopify ? { "fulfil/note": "No Shopify order (online exchange) — finished without Shopify" } : {}),
+      ...(out.reship ? { "fulfil/note": out.reshipNote || (out.alreadyDone ? `Second parcel: waybill ${waybill} was already on the Shopify order's tracking` : `Second parcel: waybill ${waybill} added to the Shopify order's tracking (no Shopify email)`) } : {}),
       // A fulfilment that failed before and has now landed takes its
       // attention with it, or it would sit in Settings for ever.
       ...([ATTENTION_KIND.FULFIL_FAILED, ATTENTION_KIND.COURIER_FAILED].includes(order.attention?.kind) ? { attention: null, attentionOpen: null } : {}),
@@ -955,6 +989,8 @@ async function shipOrder(ctx, id, order) {
     for (const pid of new Set(swapped.filter(Boolean))) await db.ref(`${DIRTY_PATH}/${pid}`).set(ctx.increment(1));
     log(out.noShopify
       ? `  ✓ ${orderLabel(order)}: exchange shipped${waybill ? ` (waybill ${waybill})` : ""} — no Shopify order, finished without Shopify`
+      : out.reship
+      ? `  ✓ ${orderLabel(order)}: second parcel shipped${waybill ? ` (waybill ${waybill}, added to the Shopify order's tracking)` : " (no waybill: live off)"}`
       : `  ✓ ${orderLabel(order)}: fulfilled on Shopify${out.alreadyDone ? " (it already was)" : ", customer notified"}`);
     return;
   }

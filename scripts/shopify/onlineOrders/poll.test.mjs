@@ -848,6 +848,124 @@ describe("an online exchange ships through the normal pack/courier flow", () => 
   });
 });
 
+describe("a second parcel (items the first parcel was short) — Junid, 12 Nov 2026, #1859", () => {
+  const RID = "9001r1";
+  const SOLD = { saleId: "-SALE1", receiptNumber: "S-50548", fromOrder: "9001" };
+  const reshipWorld = (cfg = {}, over = {}) => world({
+    config: { onlineOrders: { enabled: true }, shipping: { collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg } },
+    online_orders: {
+      9001: { orderNumber: 1801, shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "done", fulfil: { state: "done" }, shipping: { waybill: "39PPFL" }, lines: [{ pid: "TEE", sizeKey: "M", qty: 3, source: { status: "handed", locationId: "marathon-pe" } }] },
+      [RID]: {
+        orderNumber: 1801, shopifyGid: "gid://shopify/Order/9001", shopifyName: "#1801", followUpOf: "9001",
+        reship: { of: "9001", why: "2 tees missing from the first parcel" },
+        customer: { name: "Thandi M", phone: "+27821234567" },
+        shipping: { address: { name: "Thandi M", address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa", phone: "0829999999" } },
+        totals: { subtotalCents: 0, currency: "ZAR" },
+        status: "ready", basket: { 0: true },
+        lines: [{ lineId: "l0r", pid: "TEE", size: "M", sizeKey: "M", qty: 2, title: "Club Tee", isFootwear: false, unitPriceCents: 25000, category: "Clothing", source: { locationId: "marathon-pe", status: "handed" }, reship: { ...SOLD, fromLine: 0 } }],
+        ...over,
+      },
+    },
+  });
+  const FULFILMENT = { id: "gid://shopify/Fulfillment/77", status: "SUCCESS", createdAt: "2026-10-30T06:00:00Z", trackingInfo: [{ company: "The Courier Guy", number: "39PPFL", url: "https://portal.thecourierguy.co.za/track?ref=39PPFL" }] };
+  const reshipShopify = ({ fulfillments = [FULFILMENT], errors = [] } = {}) => {
+    const calls = [];
+    const graphql = async (query, vars) => {
+      calls.push({ query, vars });
+      if (query.includes("orders(")) return { orders: { nodes: [], pageInfo: { hasNextPage: false } } };
+      if (query.includes("fulfillmentTrackingInfoUpdate")) return { fulfillmentTrackingInfoUpdate: errors.length ? { fulfillment: null, userErrors: errors.map((message) => ({ message })) } : { fulfillment: { id: vars.id }, userErrors: [] } };
+      if (query.includes("fulfillments(first")) return { order: { id: vars.id, cancelledAt: null, fulfillments } };
+      throw new Error(`unexpected query ${query.slice(0, 60)}`);
+    };
+    return { graphql, calls };
+  };
+
+  it("while it waits for the Pack: it holds NOTHING (the units were sold and deducted by the first parcel) and stays Ready", async () => {
+    const f = fakeDb(reshipWorld({ live: true }));
+    await runOrdersPoll(deps(f, reshipShopify()).deps);
+    expect(f.read("online_reservations")).toBeFalsy();
+    expect(order(f, RID).status).toBe("ready");
+    expect(order(f, RID).lines[0].source).toEqual({ locationId: "marathon-pe", status: "handed" }); // no strip entry, no hub order
+    expect(f.writes.some(([, p]) => p.startsWith("orders/") || p.startsWith("displayChecks_active/") || p.startsWith("refill_requests/") || p.startsWith("stock/"))).toBe(false);
+  });
+
+  it("after the Pack: books its OWN Courier Guy waybill and adds it to the Shopify order's tracking, 39PPFL kept, no email", async () => {
+    const f = fakeDb(reshipWorld({ live: true }, { status: "packed", pack: { noSale: true, by: "u1", at: NOW }, packedLines: { 0: true }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 } }));
+    const sent = [];
+    const courier = { ...fakeCourier(), createShipment: async (body) => { sent.push(body); return { id: 55, short_tracking_reference: "NEW123", charged_amount: 99 }; } };
+    const sh = reshipShopify();
+    const out = await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ customer_reference: "#1801", delivery_address: { street_address: "5 Esplanade Road", city: "Cape Town" } });
+    const upd = sh.calls.find((c) => c.query.includes("fulfillmentTrackingInfoUpdate"));
+    expect(upd.vars).toEqual({
+      id: "gid://shopify/Fulfillment/77",
+      t: { company: "The Courier Guy", numbers: ["39PPFL", "NEW123"], urls: ["https://portal.thecourierguy.co.za/track?ref=39PPFL", "https://portal.thecourierguy.co.za/track?ref=NEW123"] },
+    });
+    expect(upd.query).toMatch(/notifyCustomer: false/);
+    expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false); // nothing fulfilled twice
+    expect(out.fulfilled).toBe(1);
+    expect(order(f, RID)).toMatchObject({ fulfilState: "done", fulfil: { state: "done", note: expect.stringMatching(/NEW123 added/) }, shipping: { waybill: "NEW123", booking: { waybill: "NEW123" } } });
+    // The first parcel's record is untouched.
+    expect(order(f, "9001").shipping).toEqual({ waybill: "39PPFL" });
+    expect(f.writes.some(([, p]) => p.startsWith("online_orders/9001/") || p === "online_orders/9001")).toBe(false);
+  });
+
+  it("a retry that finds the waybill already on Shopify is done without a second update", async () => {
+    const f = fakeDb(reshipWorld({ live: true }, { status: "packed", pack: { noSale: true }, fulfilState: "pending", fulfil: { state: "pending", attempts: 1 }, shipping: { address: { name: "Thandi M", address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" }, waybill: "NEW123", courierBooking: { state: "booked", waybill: "NEW123" }, booking: { waybill: "NEW123" } } }));
+    const courier = { ...fakeCourier(), createShipment: async () => { throw new Error("must not book twice"); } };
+    const sh = reshipShopify({ fulfillments: [{ ...FULFILMENT, trackingInfo: [...FULFILMENT.trackingInfo, { company: "The Courier Guy", number: "NEW123", url: "u" }] }] });
+    await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sh.calls.some((c) => c.query.includes("fulfillmentTrackingInfoUpdate"))).toBe(false);
+    expect(order(f, RID)).toMatchObject({ fulfilState: "done", fulfil: { note: expect.stringMatching(/already on/) } });
+  });
+
+  it("a Shopify cancel of the order stops a second parcel not packed yet (exact reads, never a query)", async () => {
+    const f = fakeDb(reshipWorld({ live: true }));
+    const cancelled = { ...shopifyOrder({ updatedAt: "2026-10-21T09:59:00Z" }), cancelledAt: "2026-10-21T09:58:00Z" };
+    const sh = { ...reshipShopify(), graphql: async (q, v) => (q.includes("orders(") ? { orders: { nodes: [cancelled], pageInfo: { hasNextPage: false } } } : reshipShopify().graphql(q, v)) };
+    await runOrdersPoll(deps(f, sh).deps);
+    expect(order(f, RID).status).toBe("cancelled");
+    expect(order(f, "9001").cancelledAfterPack).toBe(true);
+  });
+
+  it("CodeRabbit #901: an existing number with no link gets the courier's link; a full list is refused, never truncated", async () => {
+    const { addedTrackingInput } = await import("./shopifyOrders.mjs");
+    const t = addedTrackingInput({ trackingInfo: [{ company: "The Courier Guy", number: "39PPFL", url: null }] }, { number: "NEW1", url: "u/NEW1", company: "The Courier Guy", fill: (n) => `u/${n}` });
+    expect(t).toEqual({ company: "The Courier Guy", numbers: ["39PPFL", "NEW1"], urls: ["u/39PPFL", "u/NEW1"] });
+    const f = fakeDb(reshipWorld({ live: true }, { status: "packed", pack: { noSale: true }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 } }));
+    const courier = { ...fakeCourier(), createShipment: async () => ({ id: 57, short_tracking_reference: "NEW125", charged_amount: 99 }) };
+    const many = Array.from({ length: 50 }, (_, i) => ({ company: "The Courier Guy", number: `N${i}`, url: "x" }));
+    const sh = reshipShopify({ fulfillments: [{ ...FULFILMENT, trackingInfo: many }] });
+    await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sh.calls.some((c) => c.query.includes("fulfillmentTrackingInfoUpdate"))).toBe(false);
+    expect(order(f, RID)).toMatchObject({ fulfilState: "failed", fulfil: { error: expect.stringMatching(/by hand/) } });
+  });
+
+  it("CodeRabbit #901: a cancel already flagged on the parent still finishes the second parcel's clean-up", async () => {
+    const f = fakeDb(reshipWorld({ live: true }));
+    await f.db.ref("online_orders/9001").update({ cancelledAfterPack: true });
+    const cancelled = { ...shopifyOrder({ updatedAt: "2026-10-21T09:59:00Z" }), cancelledAt: "2026-10-21T09:58:00Z" };
+    const sh = { ...reshipShopify(), graphql: async (q, v) => (q.includes("orders(") ? { orders: { nodes: [cancelled], pageInfo: { hasNextPage: false } } } : reshipShopify().graphql(q, v)) };
+    await runOrdersPoll(deps(f, sh).deps);
+    expect(order(f, RID).status).toBe("cancelled");
+  });
+
+  it("a POS Replace on a re-sent line is refused by the one swap implementation", async () => {
+    const { swapOnlineOrderLine } = await import("../../lib/swap-line.mjs");
+    const f = fakeDb(reshipWorld({ live: true }));
+    const out = await swapOnlineOrderLine({ db: f.db, orderKey: RID, lineIndex: 0, newPid: "SNK", size: "8", now: NOW, increment, log: () => {} });
+    expect(out).toMatchObject({ ok: false, refused: expect.stringMatching(/already sold on S-50548/) });
+  });
+
+  it("Shopify refuses the tracking: Packed, Shopify not updated (Retry), the waybill stands", async () => {
+    const f = fakeDb(reshipWorld({ live: true }, { status: "packed", pack: { noSale: true }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 } }));
+    const courier = { ...fakeCourier(), createShipment: async () => ({ id: 56, short_tracking_reference: "NEW124", charged_amount: 99 }) };
+    await runOrdersPoll(deps(f, reshipShopify({ errors: ["nope"] }), { courier }).deps);
+    expect(order(f, RID)).toMatchObject({ fulfilState: "failed", attentionOpen: true, shipping: { waybill: "NEW124" } });
+  });
+});
+
 describe("one bad order never stops the rest", () => {
   it("is parked and retried by id; the cursor moves on", async () => {
     const f = fakeDb(world(), { failWritesUnder: "online_orders/9001" });
