@@ -36,6 +36,7 @@ const { placementAt } = require("../lib/card-terminal-placements.cjs");
 const { SUPPORTING_FIELD, carriedSlips, authorityOf } = require("../lib/card-supporting-slips.cjs");
 const sastDayYmdOf = (ms) => (Number.isFinite(ms) ? new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(0, 10) : null);
 const { mayEnterManually, planManualEntry } = require("../lib/card-manual-entry.cjs");
+const { superAdminName } = require("../lib/super-admins.cjs");
 const {
   MANUAL_AUDIT_PATH, unreadPath, resolveUnreadMarker, isDayYmd, sastDayStartMs,
 } = require("../lib/card-unread.cjs");
@@ -132,6 +133,7 @@ async function handleManualEntry(db, request, deps = {}) {
   const prev = await prevRecord(db, storeId, tid, first2.extraction.closedAt);
   const plan = planManualEntry({
     input, nowMs, replaced, replacedIsLatest, nextOpenedAt,
+    byName: superAdminName(request.auth?.token?.email),
     prevClosedAt: prev && Number.isFinite(prev.slip?.closedAt) ? prev.slip.closedAt : null,
     prevBatchNo: prev && Number.isInteger(Number(prev.batchNo)) ? Number(prev.batchNo) : null,
   });
