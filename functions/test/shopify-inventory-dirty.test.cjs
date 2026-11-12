@@ -135,9 +135,18 @@ test("a live+on product gets the INVENTORY marker only, never the review marker"
   assert.deepEqual(f.writes, [[`${DIRTY_PATH}/p1`, { __increment: 1 }]]);
 });
 
-test("does NOT review-mark at Pine — its units do not count toward the website", async () => {
+test("review-marks at Pine — its units count toward the website since 12 Nov 2026", async () => {
   const { f, d } = deps({ stock: { "marathon-pine": { p1: { M: { qty: 0 } } } } });
   await markInventoryDirty(d, { loc: "marathon-pine", pid: "p1", before: { M: { qty: 1 } } });
+  assert.equal(f.writes.length, 1);
+});
+
+test("does NOT mark on the dead concrete-stockroom id — a tombstone, never sellable", async () => {
+  const { f, d } = deps({
+    stock: { "concrete-stockroom": { p1: { M: { qty: 2 } } } },
+    shopify_publish: { p1: LIVE },
+  });
+  assert.equal((await markInventoryDirty(d, { loc: "concrete-stockroom", pid: "p1", before: null })).marked, false);
   assert.deepEqual(f.writes, []);
 });
 
@@ -153,33 +162,20 @@ test("does NOT mark on a movement inside in_transit — it is not sellable", asy
   assert.ok(UNSELLABLE_LOCATIONS.has("in_transit"));
 });
 
-// ── THE UNTRUSTED LOCATIONS, EXERCISED THROUGH THE REAL ENTRY POINT ─────────
-// A set-equality test in another file proves the two copies of the LIST agree.
-// It does not prove this function CONSULTS the list: a reviewer reverted the
-// predicate here to the old UNSELLABLE_LOCATIONS and every test still passed,
-// because nothing called markInventoryDirty with an untrusted location. These
-// do. Both directions are asserted — the refusal AND the arrival — because a
-// gate that refuses everything would pass a refusal-only test while silently
-// freezing the whole storefront.
-test("does NOT mark on a movement at Pine — its count does not feed the storefront", async () => {
-  const { f, d } = deps({
-    stock: { "marathon-pine": { p1: { M: { qty: 2 } } } },
-    shopify_publish: { p1: LIVE },
+// ── EVERY SHOP AND HUB COUNTS (Junid, 12 Nov 2026) ──────────────────────────
+// Through the real entry point: a movement at Pine, Hub 3 or Concrete now
+// marks the live product, so the storefront hears of it on the next tick.
+for (const loc of ["marathon-pine", "hub3", "concrete", "central"]) {
+  test(`marks a live product on a movement at ${loc} — its units feed the storefront`, async () => {
+    const { f, d } = deps({
+      stock: { [loc]: { p1: { M: { qty: 2 } } } },
+      shopify_publish: { p1: LIVE },
+    });
+    const r = await markInventoryDirty(d, { loc, pid: "p1", before: { M: { qty: 5 } } });
+    assert.equal(r.marked, true);
+    assert.equal(f.writes.length, 1);
   });
-  const r = await markInventoryDirty(d, { loc: "marathon-pine", pid: "p1", before: { M: { qty: 5 } } });
-  assert.equal(r.marked, false);
-  assert.match(r.why, /does not count toward online availability/);
-  assert.deepEqual(f.writes, []);
-});
-
-test("does NOT mark on a movement at Hub 3 either", async () => {
-  const { f, d } = deps({
-    stock: { hub3: { p1: { M: { qty: 9 } } } },
-    shopify_publish: { p1: LIVE },
-  });
-  assert.equal((await markInventoryDirty(d, { loc: "hub3", pid: "p1", before: null })).marked, false);
-  assert.deepEqual(f.writes, []);
-});
+}
 
 test("STILL marks a movement at a trusted location — the gate refuses, it does not freeze", async () => {
   const { f, d } = deps({
@@ -190,30 +186,13 @@ test("STILL marks a movement at a trusted location — the gate refuses, it does
   assert.equal(f.writes.length, 1);
 });
 
-test("a transfer OUT of Pine into a trusted hub is learned from the arriving leg", async () => {
-  // The movement writes two /stock paths, so the trigger fires twice — once per
-  // {loc}/{pid}. The Pine leg is refused; the hub leg is what tells the
-  // storefront the units became sellable. If BOTH were refused, a real increase
-  // would be invisible until the slow backstop happened past it.
-  const store = {
-    stock: { "marathon-pine": { p1: { M: { qty: 0 } } }, hub1: { p1: { M: { qty: 3 } } } },
-    shopify_publish: { p1: LIVE },
-  };
-  const { f, d } = deps(store);
-  const out = await markInventoryDirty(d, { loc: "marathon-pine", pid: "p1", before: { M: { qty: 3 } } });
-  const arrive = await markInventoryDirty(d, { loc: "hub1", pid: "p1", before: { M: { qty: 0 } } });
-  assert.equal(out.marked, false);
-  assert.equal(arrive.marked, true);
-  assert.equal(f.writes.length, 1);
-});
-
 test("the excluded set refuses mutation rather than pretending to be frozen", () => {
   // Object.freeze on a Set does NOT stop add/delete/clear. This asserts the
   // real refusal, not Object.isFrozen — which answers true either way and is
   // therefore worthless as a guarantee.
-  assert.throws(() => ONLINE_EXCLUDED_LOCATIONS.delete("marathon-pine"), /immutable/);
+  assert.throws(() => ONLINE_EXCLUDED_LOCATIONS.delete("in_transit"), /immutable/);
   assert.throws(() => ONLINE_EXCLUDED_LOCATIONS.add("hub1"), /immutable/);
-  assert.ok(ONLINE_EXCLUDED_LOCATIONS.has("marathon-pine"));
+  assert.ok(ONLINE_EXCLUDED_LOCATIONS.has("in_transit"));
   assert.ok(!ONLINE_EXCLUDED_LOCATIONS.has("hub1"));
 });
 

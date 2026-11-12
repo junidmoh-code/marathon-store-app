@@ -37,8 +37,7 @@
 //
 //   UNSELLABLE — /stock/in_transit: not sellable by nature. The movement's
 //     other leg fires its own event at a location that does count.
-//   UNTRUSTED  — hub3 and marathon-pine: real, sellable stock whose COUNT is
-//     not trusted enough to promise online (owner decision, 2026-09-08).
+//   UNTRUSTED  — empty since 12 Nov 2026 (Junid: every shop and hub counts).
 //
 // This list MUST stay in step with ONLINE_EXCLUDED_LOCATIONS in
 // scripts/shopify/inventory.mjs. Out of step in one direction a movement is
@@ -67,15 +66,25 @@ function sealedSet(ids) {
   return Object.freeze(set);
 }
 
-const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
-// Concrete and its stockroom (added 6 Oct 2026 with the sections work) are on
-// this list for a different reason from Hub 3 and Pine: they are new, in the
-// other section, and nothing online picks from them. Their stock is not
-// promised to a web customer until the owner says so; take them off this list
-// (all three copies) when he does.
-// ("concrete-stockroom" no longer exists — 8 Oct 2026 — and is kept here as a
-// TOMBSTONE: a stray /stock cell under that id must never count as sellable online.)
-const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine", "concrete", "concrete-stockroom"]);
+// ── EVERY SHOP AND HUB COUNTS (Junid, 12 Nov 2026) ──────────────────────────
+// Hub 3, Concrete and Pine were on an "untrusted" list from 8 Sep / 6 Oct 2026
+// and fed nothing to the website. Junid reversed that on 12 Nov 2026: "every
+// unit of stock anywhere is listed on the website, Central included. Stock
+// anywhere is our stock." Website lines now route Marathon first, then the
+// Concrete division (scripts/shopify/onlineOrders/routing.mjs), so a unit at
+// Hub 3, Concrete or Pine is one a web order can actually be picked from.
+// The untrusted list is therefore EMPTY and kept only so the census tool and
+// the tests can still name the idea. Negative cells still count 0 (the summer
+// clamps them), so Pine's zeroed count cells sell nothing until counted.
+//
+// "concrete-stockroom" no longer exists (8 Oct 2026) and stays excluded as a
+// TOMBSTONE in UNSELLABLE: a stray /stock cell under that id is not a place
+// anyone can pick from, so it must never count as sellable online.
+// This list is mirrored in FOUR files (scripts/shopify/inventory.mjs,
+// functions/lib/shopify-inventory-dirty.cjs, functions/lib/social-select.cjs,
+// src/utils/onlinePool.js); the parity tests pin them by import.
+const UNSELLABLE_LOCATIONS = sealedSet(["in_transit", "concrete-stockroom"]);
+const UNTRUSTED_LOCATIONS = sealedSet([]);
 const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
   ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,
 ]);

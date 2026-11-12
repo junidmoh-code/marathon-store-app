@@ -15,7 +15,7 @@ describe("the Total Stock card's online figure is the Shopify push's number", ()
 
   const cases = [
     ["a plain pool", { central: { 6: { qty: 2 } }, hub1: { 7: { qty: 1 } }, trophy: { 6: { qty: 1 } } }, ["6", "7"]],
-    ["in transit, Pine, Hub 3 and Concrete are not sold online", { in_transit: { 6: { qty: 5 } }, "marathon-pine": { 6: { qty: 3 } }, hub3: { 6: { qty: 2 } }, concrete: { 6: { qty: 1 } }, hub2: { 6: { qty: 1 } } }, ["6"]],
+    ["in transit is not sold online; Pine, Hub 3 and Concrete are", { in_transit: { 6: { qty: 5 } }, "marathon-pine": { 6: { qty: 3 } }, hub3: { 6: { qty: 2 } }, concrete: { 6: { qty: 1 } }, hub2: { 6: { qty: 1 } } }, ["6"]],
     ["a stray size cell does not ship", { central: { 6: { qty: 2 }, 13: { qty: 9 } } }, ["6"]],
     ["negatives count zero", { central: { 6: { qty: -4 } }, hub1: { 6: { qty: 1 } } }, ["6"]],
     ["half sizes and one-size", { hub1: { "5_5": { qty: 2 }, _: { qty: 1 } } }, ["5.5", "Free Size"]],

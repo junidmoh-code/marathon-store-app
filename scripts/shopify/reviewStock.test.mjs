@@ -23,9 +23,9 @@ function world({ stock = {}, node, sizes = ["8", "9"], marker = 1, hidden } = {}
 }
 
 describe("hasSellableStock IS networkTotals", () => {
-  it("agrees with networkTotals on Pine / transit / negatives / off-record sizes", () => {
+  it("agrees with networkTotals on transit / negatives / off-record sizes", () => {
     const tree = {
-      "marathon-pine": { p1: { "8": { qty: 4 } } },     // untrusted: does not count
+      "concrete-stockroom": { p1: { "8": { qty: 4 } } }, // dead id: a tombstone, never counts
       in_transit: { p1: { "9": { qty: 2 } } },          // unsellable
       pe: { p1: { "8": { qty: -3 }, "12": { qty: 5 } } }, // negative; 12 not in the record
     };
@@ -41,9 +41,13 @@ describe("hasSellableStock IS networkTotals", () => {
     // 3 units across two sizes and two shops — hidden under the old bar, shown now.
     expect(hasSellableStock({ pe: { p1: { "8": { qty: 2 } } }, hub1: { p1: { "9": { qty: 1 } } } }, "p1", ["8", "9"])).toBe(true);
     expect(hasSellableStock({ pe: { p1: { "8": { qty: 0 } } } }, "p1", ["8"])).toBe(false);
-    // Pine's units never count toward the bar.
+    // Pine's units count toward the bar since 12 Nov 2026 (Junid) — a
+    // Concrete-division-only product is publishable.
     const withPine = { pe: { p1: { "8": { qty: 0 } } }, "marathon-pine": { p1: { "8": { qty: 9 } } } };
-    expect(hasSellableStock(withPine, "p1", ["8"])).toBe(false);
+    expect(hasSellableStock(withPine, "p1", ["8"])).toBe(true);
+    expect(hasSellableStock({ hub3: { p1: { "8": { qty: 1 } } } }, "p1", ["8"])).toBe(true);
+    // In Transit still never does.
+    expect(hasSellableStock({ in_transit: { p1: { "8": { qty: 9 } } } }, "p1", ["8"])).toBe(false);
   });
   it("cannot judge a record with no sizes — null, never false", () => {
     expect(hasSellableStock({ pe: { p1: { "_": { qty: 0 } } } }, "p1", undefined)).toBe(null);
@@ -78,7 +82,7 @@ describe("sweepReviewStock", () => {
   it("HIDES a not-live product with no sellable unit, and touches nothing else", async () => {
     const f = fakeDb(world({
       node: { state: "awaiting", cleanName: "Nice Shoe", condition: "new", photos: ["a"] },
-      stock: { pe: { p1: { "8": { qty: 0 } } }, "marathon-pine": { p1: { "8": { qty: 3 } } } },
+      stock: { pe: { p1: { "8": { qty: 0 } } }, in_transit: { p1: { "8": { qty: 3 } } } },
     }));
     const before = JSON.stringify(f.store.shopify_publish);
     const r = await sweepReviewStock(f.db, { commit: true, timestamp: TS });
@@ -172,7 +176,7 @@ describe("sweepReviewStock", () => {
     expect(reads).not.toContain("stock");
     expect(reads.filter((p) => p.startsWith("stock/")).every((p) => p.split("/").length === 3)).toBe(true);
     // Excluded locations are not even read.
-    expect(reads).not.toContain("stock/marathon-pine/p1");
+    expect(reads).not.toContain("stock/in_transit/p1");
   });
 
   it("caps a run", async () => {

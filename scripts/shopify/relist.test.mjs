@@ -70,8 +70,9 @@ describe("relistVerdict", () => {
 });
 
 describe("onlineUnits", () => {
-  it("counts only the website's locations (Pine never counts)", () => {
-    expect(onlineUnits({ pe: { p1: { M: { qty: 1 } } }, "marathon-pine": { p1: { M: { qty: 9 } } } }, "p1", ["M"])).toBe(1);
+  it("counts the website's locations — Pine counts since 12 Nov 2026, In Transit never", () => {
+    expect(onlineUnits({ pe: { p1: { M: { qty: 1 } } }, "marathon-pine": { p1: { M: { qty: 9 } } } }, "p1", ["M"])).toBe(10);
+    expect(onlineUnits({ pe: { p1: { M: { qty: 1 } } }, in_transit: { p1: { M: { qty: 9 } } } }, "p1", ["M"])).toBe(1);
     expect(onlineUnits({}, "p1", undefined)).toBe(0);
   });
 });
