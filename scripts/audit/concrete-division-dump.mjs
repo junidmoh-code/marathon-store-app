@@ -39,7 +39,8 @@ for (const l of ["hub3", "marathon-pine", "concrete"]) {
 out.held = (await once("settings/stockHold/held")) || {};
 out.rejectStreak = (await once("refill_engine/rejectStreak")) || {};
 out.retryState = (await once("refill_engine/retryState")) || {};
-const recent = await db.ref("refill_requests").orderByKey().limitToLast(6000).once("value");
+// Push ids only: "web_…" keys sort after them and would crowd the window out.
+const recent = await db.ref("refill_requests").orderByKey().endAt("-~").limitToLast(6000).once("value");
 out.recentRequests = recent.val() || {};
 out.orders = await readMapPaged(db, "orders");
 const mv = await db.ref("stock_movements").orderByChild("ts").startAt(SINCE).once("value");

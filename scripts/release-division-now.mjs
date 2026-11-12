@@ -16,7 +16,9 @@ if (!SINCE || !Number.isFinite(Date.parse(SINCE))) throw new Error("--since <ISO
 const SINCE_ISO = new Date(SINCE).toISOString();
 const APPLY = process.argv.includes("--apply");
 const db = admin.database();
-const requests = (await db.ref("refill_requests").orderByKey().limitToLast(3000).once("value")).val() || {};
+// Push ids only ("-…"): website rows ("web_…") sort after them and would
+// crowd the newest window out.
+const requests = (await db.ref("refill_requests").orderByKey().endAt("-~").limitToLast(3000).once("value")).val() || {};
 const lines = planEarlyRelease({ requests, sinceIso: SINCE_ISO });
 const by = (loc) => lines.filter((l) => l.dest === loc).length;
 console.log(`division lines raised since ${SINCE}: ${lines.length} (Concrete ${by("concrete")}, Pine ${by("marathon-pine")}, Hub 3 ${by("hub3")}); sources ${JSON.stringify(lines.reduce((o, l) => ({ ...o, [l.source]: (o[l.source] || 0) + 1 }), {}))}`);
