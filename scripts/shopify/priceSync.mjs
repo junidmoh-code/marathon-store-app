@@ -26,7 +26,17 @@
 //
 // Every correction is printed to the reconcile log and recorded at
 // /shopify_sync/_priceLog/{pid} (last correction: when, from, to, source).
+//
+// RRP (13 Nov 2026). Every push also carries the variant's compareAtPrice — the
+// struck-through "RRP" the website shows above the price. It is DERIVED here,
+// at push time, from the same app price (src/utils/shopifyRrp.js: rrpFor) and
+// the per-product chip /shopify_publish/{pid}/rrpDiscountPct (65 or 70). It is
+// never stored as a second price on /products and the till never sees it.
+// compareAtPrice is part of the drift comparison, so a price edit moves the RRP
+// with it on the next tick, a wrong RRP is corrected by the backstop, and a
+// listing already showing the right pair is never re-pushed.
 import { isPriceRecord } from "../../src/utils/productCategory.js";
+import { rrpFor, rrpDiscountPctOf } from "../../src/utils/shopifyRrp.js";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { clearMarker } from "./inventorySync.mjs";
 import { runBulkQuery } from "./bulkSnapshot.mjs";
@@ -60,14 +70,40 @@ export function shopifyPriceFor(product) {
 const cents = (v) => Math.round(Number(v) * 100);
 
 /**
- * PURE: which variants disagree with the app. variants = [{ id, price }].
- * Compared in whole cents, so "700" and "700.00" agree.
+ * The compareAtPrice ("RRP") Shopify must show, as a decimal string, or null
+ * when there must be none (no usable retail price → no RRP; Shopify clears it).
+ * `publishNode` is /shopify_publish/{pid} — only its rrpDiscountPct is read.
  */
-export function planPriceFix(want, variants) {
-  if (want == null) return [];
+export function shopifyCompareAtFor(product, publishNode) {
+  const price = shopifyPriceFor(product);
+  if (price == null) return null;
+  const rrp = rrpFor(price, rrpDiscountPctOf(publishNode));
+  return rrp == null ? null : rrp.toFixed(2);
+}
+
+const blank = (v) => v == null || v === "";
+/** Same compare-at? Both absent agree; otherwise compared in whole cents. */
+const sameCompareAt = (a, b) => (blank(a) || blank(b) ? blank(a) && blank(b) : cents(a) === cents(b));
+
+/**
+ * PURE: which variants disagree with the app. variants = [{ id, price,
+ * compareAtPrice }]. Price compared in whole cents, so "700" and "700.00"
+ * agree. `wantCompareAt` null means "no RRP": a variant still carrying one is
+ * cleared. With no app price (`want` null) the price is never touched — only a
+ * stale RRP is cleared, since an RRP above an unknown price means nothing.
+ * Each fix: { id, from, to, fromCompareAt, toCompareAt } (`to` null = leave
+ * the price alone).
+ */
+export function planPriceFix(want, variants, wantCompareAt = null) {
+  const toCompareAt = want == null ? null : wantCompareAt;
   return (variants || [])
-    .filter((v) => v?.id && cents(v.price) !== cents(want))
-    .map((v) => ({ id: v.id, from: String(v.price), to: want }));
+    .filter((v) => v?.id && ((want != null && cents(v.price) !== cents(want)) || !sameCompareAt(v.compareAtPrice, toCompareAt)))
+    .map((v) => ({ id: v.id, from: String(v.price), to: want, fromCompareAt: blank(v.compareAtPrice) ? null : String(v.compareAtPrice), toCompareAt }));
+}
+
+/** The productVariantsBulkUpdate input for a fix list. */
+export function variantInputsFor(fixes) {
+  return fixes.map((f) => ({ id: f.id, ...(f.to != null ? { price: f.to } : {}), compareAtPrice: f.toCompareAt }));
 }
 
 /** Which of the three suspects a mismatch looks like (for reports). */
@@ -80,7 +116,7 @@ export function driftPattern({ retail, trade, shopify }) {
 
 async function readVariants(graphql, gid) {
   const r = await graphql(
-    `query ($id: ID!) { product(id: $id) { id variants(first: 100) { pageInfo { hasNextPage } nodes { id price } } } }`,
+    `query ($id: ID!) { product(id: $id) { id variants(first: 100) { pageInfo { hasNextPage } nodes { id price compareAtPrice } } } }`,
     { id: gid }
   );
   if (!r.product) return null;
@@ -95,7 +131,7 @@ async function writePrices(graphql, gid, fixes) {
     `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
       productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
     }`,
-    { productId: gid, variants: fixes.map((f) => ({ id: f.id, price: f.to })) },
+    { productId: gid, variants: variantInputsFor(fixes) },
     { mutation: true }
   );
   const errs = r.productVariantsBulkUpdate.userErrors;
@@ -109,29 +145,35 @@ async function writePrices(graphql, gid, fixes) {
  */
 export async function syncProductPrice(db, graphql, pid, { commit = false, source = "marker", now = () => Date.now(), log = () => {} } = {}) {
   assertSafeSegment(pid, "productId");
-  const [product, gid] = await Promise.all([
+  const [product, gid, rrpDiscountPct] = await Promise.all([
     db.ref(`products/${pid}`).get().then((s) => s.val()),
     db.ref(`shopify_sync/${pid}/shopifyProductId`).get().then((s) => s.val()),
+    db.ref(`shopify_publish/${pid}/rrpDiscountPct`).get().then((s) => s.val()),
   ]);
   if (!gid) return { pid, ok: true, changed: false, why: "no Shopify mapping" };
   // A merge loser's price is stale by definition — the survivor carries the
   // product now. Never price a loser's listing (the publish path refuses it too).
   if (product?.mergedInto) return { pid, ok: true, changed: false, why: `merged into ${product.mergedInto}` };
   const want = shopifyPriceFor(product);
-  if (want == null) return { pid, ok: false, changed: false, why: "no retailPrice > 0 on the record — Shopify left as it is" };
+  const wantCompareAt = shopifyCompareAtFor(product, { rrpDiscountPct });
+  const noRetail = "no retailPrice > 0 on the record — Shopify price left as it is";
   const variants = await readVariants(graphql, gid);
   if (!variants) return { pid, ok: false, changed: false, productGone: true, why: `${gid} is not on Shopify` };
   if (variants.tooMany) return { pid, ok: false, changed: false, why: ">100 variants on Shopify — not priced automatically" };
-  const fixes = planPriceFix(want, variants);
-  if (!fixes.length) return { pid, ok: true, changed: false };
+  const fixes = planPriceFix(want, variants, wantCompareAt);
+  // No app price: the price is left alone, but an RRP still showing above it is
+  // cleared (the fixes then carry only compareAtPrice: null).
+  if (!fixes.length) return want == null ? { pid, ok: false, changed: false, why: noRetail } : { pid, ok: true, changed: false };
   const from = [...new Set(fixes.map((f) => f.from))].join("/");
-  if (!commit) return { pid, ok: true, changed: false, wouldChange: true, from, to: want, fixes };
+  const fromCompareAt = [...new Set(fixes.map((f) => f.fromCompareAt ?? "none"))].join("/");
+  const toCompareAt = wantCompareAt ?? "none";
+  if (!commit) return { pid, ok: true, changed: false, wouldChange: true, from, to: want, fromCompareAt, toCompareAt, fixes };
   await writePrices(graphql, gid, fixes);
   await db.ref(`${PRICE_LOG_PATH}/${pid}`).set({
-    at: await now(), from, to: want, variants: fixes.length, source, gid,
+    at: await now(), from, to: want, fromCompareAt, toCompareAt, variants: fixes.length, source, gid,
   });
-  log(`  price ${pid}: Shopify R${from} → R${want} (${fixes.length} variant(s), ${source})`);
-  return { pid, ok: true, changed: true, from, to: want };
+  log(`  price ${pid}: Shopify R${from} → ${want == null ? "(left as it is)" : `R${want}`} · RRP ${fromCompareAt} → ${toCompareAt} (${fixes.length} variant(s), ${source})`);
+  return { pid, ok: true, changed: true, from, to: want, fromCompareAt, toCompareAt, ...(want == null ? { why: noRetail } : {}) };
 }
 
 /**
@@ -172,12 +214,12 @@ export async function sweepPriceDirty(db, graphql, { commit = false, isLive, max
 export function priceBulkQuery() {
   return `{
     products(query: "status:active") {
-      edges { node { id variants { edges { node { id price } } } } }
+      edges { node { id variants { edges { node { id price compareAtPrice } } } } }
     }
   }`;
 }
 
-/** PURE: bulk JSONL → Map(productGid → [{ id, price }]). */
+/** PURE: bulk JSONL → Map(productGid → [{ id, price, compareAtPrice }]). */
 export function parsePriceSnapshot(jsonl) {
   const products = new Map();
   const variants = [];
@@ -187,7 +229,7 @@ export function parsePriceSnapshot(jsonl) {
     if (o.__parentId) variants.push(o);
     else if (String(o.id).includes("/Product/")) products.set(o.id, []);
   }
-  for (const v of variants) products.get(v.__parentId)?.push({ id: v.id, price: v.price });
+  for (const v of variants) products.get(v.__parentId)?.push({ id: v.id, price: v.price, compareAtPrice: v.compareAtPrice ?? null });
   return products;
 }
 
@@ -202,19 +244,22 @@ export async function inBatches(items, width, fn) {
 
 /**
  * Every listed product: the app's prices beside Shopify's. Read-only.
- * → [{ pid, gid, retail, trade, want, variants, fixes }]
+ * → [{ pid, gid, retail, trade, want, wantCompareAt, rrpDiscountPct, variants, fixes }]
  */
 export async function comparePrices(db, graphql, pids, { snapshot = null, log = () => {} } = {}) {
   const snap = snapshot ?? parsePriceSnapshot(await runBulkQuery(graphql, priceBulkQuery(), { log }));
   return inBatches(pids, 25, async (pid) => {
-    const [retail, trade, gid] = await Promise.all([
+    const [retail, trade, gid, rrpDiscountPct] = await Promise.all([
       db.ref(`products/${pid}/retailPrice`).get().then((s) => s.val()),
       db.ref(`products/${pid}/stockPrice`).get().then((s) => s.val()),
       db.ref(`shopify_sync/${pid}/shopifyProductId`).get().then((s) => s.val()),
+      db.ref(`shopify_publish/${pid}/rrpDiscountPct`).get().then((s) => s.val()),
     ]);
     const variants = gid ? snap.get(gid) ?? null : null;
     const want = shopifyPriceFor({ retailPrice: retail });
-    return { pid, gid, retail, trade, want, variants, fixes: variants ? planPriceFix(want, variants) : [] };
+    const wantCompareAt = shopifyCompareAtFor({ retailPrice: retail }, { rrpDiscountPct });
+    return { pid, gid, retail, trade, want, wantCompareAt, rrpDiscountPct: rrpDiscountPctOf({ rrpDiscountPct }),
+             variants, fixes: variants ? planPriceFix(want, variants, wantCompareAt) : [] };
   });
 }
 
