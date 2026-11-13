@@ -530,6 +530,42 @@
   font-weight: 500;
   opacity: 0.72;
 }
+/* RRP (13 Nov 2026): struck-through market RRP above the price, with the
+   saving. Quieter than the price — it is the reference, not the number paid. */
+.mc-panel__rrp {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 0 0 -0.4rem;
+  font-size: 1.5rem;
+  line-height: 1.3;
+  color: rgb(255 255 255 / 0.62);
+}
+.mc-panel__rrp-label {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.mc-panel__rrp-price {
+  text-decoration-thickness: 1px;
+}
+.mc-panel__rrp-off {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #fff;
+  background: #c8102e;
+  border-radius: 0.4rem;
+  padding: 0.1rem 0.6rem;
+}
+/* Product page / Dawn price snippet: the "RRP" label beside the struck price. */
+.price__rrp-label {
+  font-size: 0.85em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin-inline-end: 0.4rem;
+  opacity: 0.75;
+}
 
 /* ─── CONDITION ────────────────────────────────────────────────────────────── */
 /* A public claim about used goods, so it is stated in full, in the shopper's

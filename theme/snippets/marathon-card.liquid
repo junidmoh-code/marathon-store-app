@@ -279,6 +279,20 @@
       {%- if panel_subtitle != blank -%}
         <p class="mc-panel__subtitle">{{ panel_subtitle }}</p>
       {%- endif -%}
+      {%- comment -%}
+        RRP (Junid, 13 Nov 2026): the compare-at price is the market RRP,
+        struck through ABOVE the price, labelled "RRP" (never "Was"), with the
+        saving rounded DOWN so it never overstates. Set by the reconciler from
+        the app price (scripts/shopify/priceSync.mjs); absent → nothing shown.
+      {%- endcomment -%}
+      {%- if product.compare_at_price > product.price -%}
+        {%- assign rrp_off = product.compare_at_price | minus: product.price | times: 100 | divided_by: product.compare_at_price -%}
+        <p class="mc-panel__rrp">
+          <span class="mc-panel__rrp-label">RRP</span>
+          <s class="mc-panel__rrp-price">{{ product.compare_at_price | money }}</s>
+          <span class="mc-panel__rrp-off">-{{ rrp_off }}%</span>
+        </p>
+      {%- endif -%}
       <p class="mc-panel__price">{{ panel_price_major }}<span class="mc-panel__price-minor">.{{ panel_price_minor }}</span></p>
       <div class="jdgm-widget jdgm-preview-badge" data-id="{{ product.id }}" style="margin:.25rem 0 .5rem;"></div>
 
