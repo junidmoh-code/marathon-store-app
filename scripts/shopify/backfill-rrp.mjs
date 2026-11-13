@@ -5,7 +5,7 @@
 //   node scripts/shopify/backfill-rrp.mjs --commit           write it; the rollback file
 //                                                            goes to ~/marathon-rollbacks/ FIRST
 //   node scripts/shopify/backfill-rrp.mjs --rollback <file>  put every variant's previous
-//                                                            compareAtPrice (and price) back
+//                                                            compareAtPrice back (price untouched)
 //   --limit N    only the first N products that need a change (a trial run)
 //   --pids a,b   only these products
 //
@@ -54,7 +54,9 @@ if (ROLLBACK) {
   const file = JSON.parse(readFileSync(ROLLBACK, "utf8"));
   let restored = 0, failed = 0;
   await inBatches(file.rows, WIDTH, async (row) => {
-    const fixes = row.before.map((v) => ({ id: v.id, to: v.price, toCompareAt: v.compareAtPrice ?? null }));
+    // RRP ONLY: the price is never restored — an app price edit since the
+    // backfill must not be undone, and the price sync owns price anyway.
+    const fixes = row.before.map((v) => ({ id: v.id, to: null, toCompareAt: v.compareAtPrice ?? null }));
     try {
       const r = await graphql(
         `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
