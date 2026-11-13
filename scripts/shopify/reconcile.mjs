@@ -102,7 +102,7 @@ import { sweepMovements } from "./movementSync.mjs";
 // shopifyPriceDirty markers every tick, and runs the price backstop on its own
 // cadence. See priceSync.mjs.
 import {
-  shopifyPriceFor, sweepPriceDirty, sweepPriceBackstop, PRICE_BACKSTOP_INTERVAL_MS,
+  shopifyPriceFor, shopifyCompareAtFor, markPriceDirtyIfRrpMoved, sweepPriceDirty, sweepPriceBackstop, PRICE_BACKSTOP_INTERVAL_MS,
 } from "./priceSync.mjs";
 import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
 import { metaReadyFirstPhoto } from "./metaReadyCreate.mjs";
@@ -955,6 +955,8 @@ for (const { pid, want } of capped) {
         continue;
       }
       const price = shopifyPriceFor(product);
+      // The struck-through RRP, derived from the same price (priceSync.mjs).
+      const compareAtPrice = shopifyCompareAtFor(product, fresh);
       const created = await graphql(
         `mutation ($input: ProductSetInput!) {
           productSet(synchronous: true, input: $input) {
@@ -976,6 +978,7 @@ for (const { pid, want } of capped) {
             variants: sizes.map((s) => ({
               optionValues: [{ optionName: "Size", name: displaySizeName(s) }],
               price,
+              compareAtPrice,
               // Tracked + DENY at birth. Without this, productSet leaves
               // `tracked` at its FALSE default and Shopify ignores every
               // quantity setAvailable later writes — the storefront then shows
@@ -1039,16 +1042,17 @@ for (const { pid, want } of capped) {
       // push the CURRENT retailPrice too — a price correction made while the
       // product sat OFF would otherwise go live stale.
       const priceNow = shopifyPriceFor(product);
+      const compareAtNow = shopifyCompareAtFor(product, fresh);
       const priced = await graphql(
         `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
           productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
         }`,
-        { productId: gid, variants: rows.map((r) => ({ id: r.variantId, price: priceNow })) },
+        { productId: gid, variants: rows.map((r) => ({ id: r.variantId, price: priceNow, compareAtPrice: compareAtNow })) },
         { mutation: true }
       );
       const priceErrs = priced.productVariantsBulkUpdate.userErrors;
       if (priceErrs?.length) { const down = await failSafeUnpublish(gid); await refuse(pid, `variant price update userErrors: ${JSON.stringify(priceErrs)}`, { tookDown: down }); continue; }
-      console.log(`  variant prices set to ${priceNow}`);
+      console.log(`  variant prices set to ${priceNow} (RRP ${compareAtNow ?? "none"})`);
     }
     if (bp.media?.pageInfo?.hasNextPage) { const down = await failSafeUnpublish(gid); await refuse(pid, ">250 media unpaginated — cannot verify the photo set", { tookDown: down }); continue; }
     const mediaCount = bp.media?.nodes?.length ?? 0;
@@ -1441,6 +1445,15 @@ for (const { pid, want } of capped) {
       continue;
     }
     await confirmLiveState(db, pid, "on", UPDATED_BY, { gid });
+    // An RRP chip tap that landed mid-publish was skipped by shopifyRrpDirty
+    // (not live yet) — catch it now so the next tick pushes the right RRP.
+    try {
+      if (await markPriceDirtyIfRrpMoved(db, pid, fresh, (n) => admin.database.ServerValue.increment(n))) {
+        console.log("  RRP discount changed during the publish — price marked for the next tick");
+      }
+    } catch (e) {
+      console.error(`  ⚠ ${pid}: RRP re-check failed (${String(e?.message || e)}) — the price backstop will correct it`);
+    }
     // Now that it IS live, put it in the storefront search index — through
     // the SAME builder the sweep uses, so the two can never write different
     // documents for the same product.

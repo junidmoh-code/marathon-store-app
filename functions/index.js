@@ -5,7 +5,7 @@ const { onValueWritten, onValueCreated } = require("firebase-functions/v2/databa
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { markInventoryDirty } = require("./lib/shopify-inventory-dirty.cjs");
-const { markPriceDirty } = require("./lib/shopify-price-dirty.cjs");
+const { markPriceDirty, markRrpDirty } = require("./lib/shopify-price-dirty.cjs");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
 const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
@@ -815,6 +815,38 @@ exports.shopifyPriceDirty = onValueWritten(
       );
     } catch (e) {
       console.error(`shopifyPriceDirty: ${String(e?.message || e)}`);
+    }
+  }
+);
+
+// ─── SHOPIFY RRP MARKER: the 65% / 70% chip reaches the website ─────────────
+// The struck-through RRP on Shopify is derived at push time from the app price
+// and /shopify_publish/{pid}/rrpDiscountPct (scripts/shopify/priceSync.mjs).
+// A chip tap writes only that key, so this marks the product's price dirty and
+// the reconciler re-pushes price + compareAtPrice on its next tick. Same
+// marker, same drain, same backstop as shopifyPriceDirty above.
+//   firebase deploy --only functions:shopifyRrpDirty
+exports.shopifyRrpDirty = onValueWritten(
+  {
+    ref:            "/shopify_publish/{pid}/rrpDiscountPct",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          false,
+  },
+  async (event) => {
+    try {
+      await markRrpDirty(
+        {
+          db:        admin.database(),
+          increment: (n) => admin.database.ServerValue.increment(n),
+          log:       () => {},
+        },
+        { pid: event.params.pid, before: event.data.before.val() }
+      );
+    } catch (e) {
+      console.error(`shopifyRrpDirty: ${String(e?.message || e)}`);
     }
   }
 );

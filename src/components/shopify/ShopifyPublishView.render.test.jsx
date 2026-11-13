@@ -46,7 +46,7 @@ globalThis.window = fakeWindow;
 globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => fn());
 
 const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [], media: [], appPhoto: [],
-                applyProposal: [], dismissProposal: [], proposalPages: [] };
+                applyProposal: [], dismissProposal: [], proposalPages: [], rrp: [] };
 let keys = new Set();
 let reviewHidden = new Set();
 let pipeline = {};
@@ -126,6 +126,10 @@ vi.mock("./shopifyPublishStore", () => ({
     return Promise.resolve({ ok: true, node: { ...(node || {}), state: node?.state || "awaiting", desiredState: want } });
   },
   setCondition: (pid, node, condition) => Promise.resolve({ ok: true, node: { ...(node || {}), condition, state: node?.state || "awaiting" } }),
+  setRrpDiscount: (pid, node, pct) => {
+    calls.rrp.push({ pid, pct });
+    return Promise.resolve({ ok: true, node: { ...(node || {}), rrpDiscountPct: pct } });
+  },
   setPublishPhotos: (pid, node, photos) => {
     calls.photos.push({ pid, photos });
     return Promise.resolve({ ok: true, node: { ...(node || {}), state: node?.state || "awaiting", photos } });
@@ -1584,4 +1588,28 @@ test("a malformed non-string styleCode never false-matches a search", async () =
     expect(out).not.toContain("Slide sandal black");
     expect(out).toContain("Nothing matches");
   });
+});
+
+// ─── RRP CHIP (13 Nov 2026) ──────────────────────────────────────────────────
+test("the RRP chip previews the website's RRP and writes only the discount choice", async () => {
+  calls.rrp.length = 0;
+  let changed = null;
+  let tree;
+  await act(() => {
+    tree = create(
+      <ShopifyProductPage product={PRODUCTS[0]} node={AWAITING_READY} onBack={() => {}} onChanged={(pid, n) => { changed = n; }} />,
+      { createNodeMock: nodeMock });
+  });
+  await flush();
+  // R199 at the default 65%: R199 / 0.35 = 568.57 → R599, 66% off (rounded down)
+  expect(texts(tree)).toContain("RRP R599 · 66% off");
+  await act(() => { button(tree, "70%").props.onClick(); });
+  await flush();
+  expect(calls.rrp).toEqual([{ pid: "p1", pct: 70 }]);
+  expect(changed.rrpDiscountPct).toBe(70);
+  await act(() => {
+    tree.update(<ShopifyProductPage product={PRODUCTS[0]} node={changed} onBack={() => {}} onChanged={() => {}} />);
+  });
+  await flush();
+  expect(texts(tree)).toContain("RRP R699 · 71% off");
 });

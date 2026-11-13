@@ -1,7 +1,7 @@
 // ── The price marker: an app retail edit on a listed product earns a mark ────
 const test = require("node:test");
 const assert = require("node:assert");
-const { markPriceDirty, isListed, PRICE_DIRTY_PATH } = require("../lib/shopify-price-dirty.cjs");
+const { markPriceDirty, markRrpDirty, isListed, PRICE_DIRTY_PATH } = require("../lib/shopify-price-dirty.cjs");
 
 function fakeDb(store) {
   const writes = [];
@@ -61,4 +61,18 @@ test("a retail price cleared on a listed product is marked (the sweep decides)",
 test("isListed matches inventorySync's isListedOnShopify (state live)", () => {
   assert.strictEqual(isListed({ state: "live", liveState: "off" }), true);
   assert.strictEqual(isListed({ state: "awaiting" }), false);
+});
+
+test("RRP chip 65 → 70 on a listed product marks it", async () => {
+  const f = fakeDb({ shopify_publish: { p1: { ...LIVE_ON, rrpDiscountPct: 70 } } });
+  assert.deepStrictEqual(await markRrpDirty({ db: f.db, increment: INCREMENT }, { pid: "p1", before: null }), { marked: true });
+  assert.deepStrictEqual(f.writes, [[`${PRICE_DIRTY_PATH}/p1`, { __increment: 1 }]]);
+});
+
+test("RRP chip: absent ↔ 65 is no change; a non-listed product is not marked", async () => {
+  const same = fakeDb({ shopify_publish: { p1: { ...LIVE_ON, rrpDiscountPct: 65 } } });
+  assert.strictEqual((await markRrpDirty({ db: same.db, increment: INCREMENT }, { pid: "p1", before: null })).marked, false);
+  const awaiting = fakeDb({ shopify_publish: { p1: { state: "awaiting", rrpDiscountPct: 70 } } });
+  assert.strictEqual((await markRrpDirty({ db: awaiting.db, increment: INCREMENT }, { pid: "p1", before: 65 })).marked, false);
+  assert.strictEqual(same.writes.length + awaiting.writes.length, 0);
 });

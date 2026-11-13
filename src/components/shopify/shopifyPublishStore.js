@@ -15,10 +15,11 @@
 //   this file writes; the browser never calls Shopify), blockedReason,
 //   cleanName, cleanNameSource (lexicon|ai|manual), nameApprovedAt,
 //   condition, updatedAt, updatedBy
-import { ref, child, get, runTransaction, query, orderByChild, equalTo, startAt, endAt, limitToFirst } from "firebase/database";
+import { ref, child, get, set, runTransaction, query, orderByChild, equalTo, startAt, endAt, limitToFirst } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { OFFERED_CONDITIONS } from "./shopifyPublishCore";
+import { RRP_DISCOUNT_CHOICES } from "../../utils/shopifyRrp";
 import { APP_STORAGE_PREFIX, publishPhotoListProblem, precheck, approveNameMutator, applyProposalMutator,
          dismissProposalMutator, publishMutator, desiredStateMutator, photosMutator, conditionMutator,
          mediaMutator, appendMediaMutator } from "./publishMutators";
@@ -393,4 +394,29 @@ export async function setCondition(productId, node, condition) {
   const problem = precheck.condition(condition);
   if (problem) return { ok: false, message: problem };
   return decide(productId, node, conditionMutator, { condition });
+}
+
+/**
+ * The RRP chip (65% / 70%): writes ONLY /shopify_publish/{pid}/rrpDiscountPct.
+ * A single-key write, deliberately not a node transaction — it changes nothing
+ * the publish flow reads, never stamps updatedAt (so the reconciler does not
+ * treat it as a new publish intent and re-push the whole listing), and needs
+ * no rule beyond the node's existing `$other`. The shopifyRrpDirty function
+ * marks the product's price dirty, so the website's RRP follows on the next
+ * reconciler tick. The node must already exist (the rules require `state`).
+ */
+export async function setRrpDiscount(productId, node, pct) {
+  if (!RRP_DISCOUNT_CHOICES.includes(pct)) return { ok: false, message: "RRP discount must be 65% or 70%." };
+  if (!node?.state) return { ok: false, message: "This product isn't in Shopify publishing yet — publish it first, then set the RRP." };
+  try {
+    await set(ref(database, `shopify_publish/${safeSeg(productId)}/rrpDiscountPct`), pct);
+    markSeen(productId);
+    // Return the COMMITTED node, not the caller's copy with one field changed —
+    // the page folds this in as the truth, and a state/switch change that
+    // landed meanwhile must not be painted back to the stale snapshot.
+    const snap = await get(ref(database, `shopify_publish/${safeSeg(productId)}`));
+    return { ok: true, node: snap.val() ?? { ...node, rrpDiscountPct: pct } };
+  } catch (err) {
+    return writeError(err);
+  }
 }

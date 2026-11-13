@@ -25,7 +25,7 @@ import { mkdirSync, writeFileSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { graphql } from "./client.mjs";
-import { comparePrices, driftPattern, syncProductPrice, PRICE_LOG_PATH } from "./priceSync.mjs";
+import { comparePrices, driftPattern, syncProductPrice, variantInputsFor, PRICE_LOG_PATH } from "./priceSync.mjs";
 import { serverNowMs } from "./publishNode.mjs";
 
 const flags = process.argv.slice(2);
@@ -43,16 +43,17 @@ if (ROLLBACK) {
   const file = JSON.parse(readFileSync(ROLLBACK, "utf8"));
   let n = 0;
   for (const row of file.rows) {
-    const byPrice = new Map();
-    for (const v of row.before) (byPrice.get(v.price) ?? byPrice.set(v.price, []).get(v.price)).push(v.id);
-    for (const [price, ids] of byPrice) {
-      const r = await graphql(
-        `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-          productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } } }`,
-        { productId: row.gid, variants: ids.map((id) => ({ id, price })) }, { mutation: true });
-      const errs = r.productVariantsBulkUpdate.userErrors;
-      if (errs?.length) console.error(`  ⚠ ${row.pid}: ${JSON.stringify(errs)}`); else n += ids.length;
-    }
+    // Files written before the RRP (13 Nov 2026) have no compareAtPrice key:
+    // those restore the price only and leave the RRP as it is.
+    const variants = row.before.map((v) => ("compareAtPrice" in v
+      ? variantInputsFor([{ id: v.id, to: v.price, toCompareAt: v.compareAtPrice }])[0]
+      : { id: v.id, price: v.price }));
+    const r = await graphql(
+      `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } } }`,
+      { productId: row.gid, variants }, { mutation: true });
+    const errs = r.productVariantsBulkUpdate.userErrors;
+    if (errs?.length) console.error(`  ⚠ ${row.pid}: ${JSON.stringify(errs)}`); else n += variants.length;
   }
   console.log(`rollback: ${n} variant price(s) restored from ${ROLLBACK}.`);
   console.log("NOTE: the reconciler's price backstop will set them back to the app price on its next run unless the app prices change too.");
@@ -65,8 +66,14 @@ const nodeOf = new Map(live);
 const pids = live.map(([pid]) => pid).sort();
 console.log(`live and ON: ${pids.length} products — reading the app's prices and one Shopify bulk snapshot…`);
 
+// PRICE drift only. comparePrices also lists RRP-only (compareAtPrice) fixes;
+// those belong to the RRP sync (backfill-rrp.mjs), not to this report, so each
+// row keeps only the variants whose PRICE disagrees with the app.
+const cents = (v) => Math.round(Number(v) * 100);
 async function measure() {
-  return comparePrices(db, graphql, pids, { log: (l) => console.error(l) });
+  const rows = await comparePrices(db, graphql, pids, { log: (l) => console.error(l) });
+  for (const r of rows) r.fixes = r.fixes.filter((f) => f.to != null && cents(f.from) !== cents(f.to));
+  return rows;
 }
 
 async function classify(rows) {
@@ -130,7 +137,7 @@ writeFileSync(file, JSON.stringify({
   writtenAt: new Date().toISOString(),
   note: "Shopify variant prices BEFORE price-drift.mjs --apply. Restore: node scripts/shopify/price-drift.mjs --rollback <this file>",
   rows: before.bad.map((r) => ({ pid: r.pid, gid: r.gid, name: r.name, appRetail: r.want, appTrade: r.trade, pattern: r.pattern,
-    before: r.variants.map((v) => ({ id: v.id, price: v.price })) })),
+    before: r.variants.map((v) => ({ id: v.id, price: v.price, compareAtPrice: v.compareAtPrice ?? null })) })),
 }, null, 2));
 console.log(`\nrollback file written: ${file}`);
 
