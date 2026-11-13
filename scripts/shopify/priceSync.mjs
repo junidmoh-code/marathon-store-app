@@ -101,6 +101,20 @@ export function planPriceFix(want, variants, wantCompareAt = null) {
     .map((v) => ({ id: v.id, from: String(v.price), to: want, fromCompareAt: blank(v.compareAtPrice) ? null : String(v.compareAtPrice), toCompareAt }));
 }
 
+/**
+ * The RRP chip was tapped while a publish was in flight: the push used the
+ * node read at the start (`usedNode`), the chip has since moved, and the
+ * shopifyRrpDirty function skipped it because the product was not live yet.
+ * Called right after a product is confirmed live — marks its price dirty so
+ * the next tick pushes the right RRP instead of waiting for the backstop.
+ */
+export async function markPriceDirtyIfRrpMoved(db, pid, usedNode, increment) {
+  const now = (await db.ref(`shopify_publish/${pid}/rrpDiscountPct`).get()).val();
+  if (rrpDiscountPctOf({ rrpDiscountPct: now }) === rrpDiscountPctOf(usedNode)) return false;
+  await db.ref(`${PRICE_DIRTY_PATH}/${pid}`).set(increment(1));
+  return true;
+}
+
 /** The productVariantsBulkUpdate input for a fix list. */
 export function variantInputsFor(fixes) {
   return fixes.map((f) => ({ id: f.id, ...(f.to != null ? { price: f.to } : {}), compareAtPrice: f.toCompareAt }));
@@ -143,7 +157,7 @@ async function writePrices(graphql, gid, fixes) {
  * Shopify before writing — a snapshot is never the baseline for a write.
  * → { pid, ok, changed, from?, to?, why? }
  */
-export async function syncProductPrice(db, graphql, pid, { commit = false, source = "marker", now = () => Date.now(), log = () => {} } = {}) {
+export async function syncProductPrice(db, graphql, pid, { commit = false, source = "marker", now = () => Date.now(), log = () => {}, beforeWrite = async () => {} } = {}) {
   assertSafeSegment(pid, "productId");
   const [product, gid, rrpDiscountPct] = await Promise.all([
     db.ref(`products/${pid}`).get().then((s) => s.val()),
@@ -168,6 +182,9 @@ export async function syncProductPrice(db, graphql, pid, { commit = false, sourc
   const fromCompareAt = [...new Set(fixes.map((f) => f.fromCompareAt ?? "none"))].join("/");
   const toCompareAt = wantCompareAt ?? "none";
   if (!commit) return { pid, ok: true, changed: false, wouldChange: true, from, to: want, fromCompareAt, toCompareAt, fixes };
+  // The exact product + variant values this write was planned from, handed to
+  // the caller BEFORE the write so a rollback restores what was really changed.
+  await beforeWrite({ pid, gid, before: variants.map((v) => ({ id: v.id, price: v.price, compareAtPrice: v.compareAtPrice ?? null })) });
   await writePrices(graphql, gid, fixes);
   await db.ref(`${PRICE_LOG_PATH}/${pid}`).set({
     at: await now(), from, to: want, fromCompareAt, toCompareAt, variants: fixes.length, source, gid,

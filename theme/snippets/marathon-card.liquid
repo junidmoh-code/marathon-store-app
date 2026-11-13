@@ -285,7 +285,9 @@
         saving rounded DOWN so it never overstates. Set by the reconciler from
         the app price (scripts/shopify/priceSync.mjs); absent → nothing shown.
       {%- endcomment -%}
-      {%- if product.compare_at_price > product.price -%}
+      {%- comment -%} One price pair only: product.price and product.compare_at_price
+        are separate variant minima, so the % is shown only when neither varies. {%- endcomment -%}
+      {%- if product.compare_at_price > product.price and product.price_varies == false and product.compare_at_price_varies == false -%}
         {%- assign rrp_off = product.compare_at_price | minus: product.price | times: 100 | divided_by: product.compare_at_price -%}
         <p class="mc-panel__rrp">
           <span class="mc-panel__rrp-label">RRP</span>

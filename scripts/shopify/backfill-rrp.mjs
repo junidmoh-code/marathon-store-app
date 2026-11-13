@@ -125,25 +125,40 @@ if (!work.length) { console.log("\nnothing to change."); process.exit(0); }
 const dir = join(homedir(), "marathon-rollbacks");
 mkdirSync(dir, { recursive: true });
 const file = join(dir, `shopify-rrp-backfill-${new Date().toISOString().replace(/[:.]/g, "")}.json`);
-writeFileSync(file, JSON.stringify({
+// Rows are the values syncProductPrice read from Shopify for the very write it
+// is about to send (its beforeWrite hook) — never the earlier bulk snapshot —
+// and the file is re-written after each one, before the next batch starts.
+const rollbackRows = [];
+const saveRollback = () => writeFileSync(file, JSON.stringify({
   writtenAt: new Date().toISOString(),
   note: "Shopify variant price + compareAtPrice BEFORE backfill-rrp.mjs --commit. Restore: node scripts/shopify/backfill-rrp.mjs --rollback <this file>",
-  rows: work.map((r) => ({ pid: r.pid, gid: r.gid, appRetail: r.want, rrp: r.wantCompareAt, rrpDiscountPct: r.rrpDiscountPct,
-    before: r.variants.map((v) => ({ id: v.id, price: v.price, compareAtPrice: v.compareAtPrice ?? null })) })),
+  rows: rollbackRows,
 }, null, 2));
-console.log(`\nrollback file written: ${file}`);
+saveRollback();
+console.log(`\nrollback file: ${file} (filled in as each product is written)`);
 
-let changed = 0, already = 0, failed = 0, done = 0;
+let changed = 0, already = 0, failed = 0, done = 0, noLongerLive = 0;
 await inBatches(work, WIDTH, async (r) => {
   try {
-    const res = await syncProductPrice(db, graphql, r.pid, { commit: true, source: "backfill-rrp", now: () => serverNowMs(db), log: () => {} });
+    // LIVE ONLY, re-checked at write time: a product switched off (or
+    // unlisted) since the measurement is left alone.
+    const node = (await db.ref(`shopify_publish/${r.pid}`).get()).val();
+    if (node?.state !== "live" || node?.liveState !== "on") { noLongerLive++; console.log(`  ${r.pid}: no longer live and ON — skipped`); return; }
+    const res = await syncProductPrice(db, graphql, r.pid, {
+      commit: true, source: "backfill-rrp", now: () => serverNowMs(db), log: () => {},
+      beforeWrite: async (row) => {
+        if (!r.variants.length || row.gid !== r.gid) throw new Error(`mapping moved from ${r.gid} to ${row.gid} since the measurement — not written`);
+        rollbackRows.push({ ...row, appRetail: r.want, rrp: r.wantCompareAt, rrpDiscountPct: r.rrpDiscountPct });
+        saveRollback();
+      },
+    });
     if (res.changed) changed++;
     else if (res.ok) already++;
     else { failed++; console.error(`  ⚠ ${r.pid}: ${res.why}`); }
   } catch (e) { failed++; console.error(`  ⚠ ${r.pid}: ${String(e?.message || e)}`); }
   if (++done % 100 === 0) console.log(`  … ${done}/${work.length}`);
 });
-console.log(`\napplied: ${changed} product(s) written · ${already} already right on re-read · ${failed} failed · log at /${PRICE_LOG_PATH}/{pid}`);
+console.log(`\napplied: ${changed} product(s) written · ${already} already right on re-read · ${noLongerLive} no longer live · ${failed} failed · log at /${PRICE_LOG_PATH}/{pid}`);
 
 // Re-measure only what this run touched — proves the write converged.
 const after = await comparePrices(db, graphql, work.map((r) => r.pid), { log: (l) => console.error(l) });

@@ -5,7 +5,7 @@ import { fakeDb } from "./fakeRtdb.testutil.mjs";
 import {
   shopifyPriceFor, planPriceFix, driftPattern, parsePriceSnapshot,
   syncProductPrice, sweepPriceDirty, sweepPriceBackstop, PRICE_DIRTY_PATH, PRICE_LOG_PATH,
-  shopifyCompareAtFor, variantInputsFor,
+  shopifyCompareAtFor, variantInputsFor, markPriceDirtyIfRrpMoved,
 } from "./priceSync.mjs";
 
 // A Shopify fake: products by gid → variants [{ id, price }]; records writes.
@@ -318,5 +318,38 @@ describe("RRP on the reconciler's own pushes (create + switch-on)", () => {
   it("compareAtPrice is never typed by hand in reconcile.mjs — it always comes from shopifyCompareAtFor", () => {
     expect(src).not.toMatch(/rrpFor\(/);
     expect(src.match(/= shopifyCompareAtFor\(product, fresh\)/g)?.length).toBe(2);
+  });
+});
+
+describe("review fixes (CodeRabbit #902)", () => {
+  it("beforeWrite receives the exact read the write was planned from, BEFORE the write", async () => {
+    const { db } = fakeDb(travis());
+    const shop = fakeShop({ [GID]: [{ id: "v6", price: "700.00", compareAtPrice: "1.00" }] });
+    const seen = [];
+    await syncProductPrice(db, shop.graphql, "p1778140291773", { commit: true, now: async () => 1,
+      beforeWrite: async (row) => seen.push({ ...row, writesSoFar: shop.writes.length }) });
+    expect(seen).toEqual([{ pid: "p1778140291773", gid: GID, before: [{ id: "v6", price: "700.00", compareAtPrice: "1.00" }], writesSoFar: 0 }]);
+    expect(shop.writes).toHaveLength(1);
+  });
+  it("a throwing beforeWrite stops the write", async () => {
+    const { db } = fakeDb(travis());
+    const shop = fakeShop({ [GID]: [{ id: "v6", price: "700.00" }] });
+    await expect(syncProductPrice(db, shop.graphql, "p1778140291773", { commit: true,
+      beforeWrite: async () => { throw new Error("moved"); } })).rejects.toThrow("moved");
+    expect(shop.writes).toEqual([]);
+  });
+  it("markPriceDirtyIfRrpMoved: marks only when the chip moved since the publish read it", async () => {
+    const inc = (n) => n;
+    const s = travis(); s.shopify_publish.p1778140291773.rrpDiscountPct = 70;
+    const a = fakeDb(s);
+    expect(await markPriceDirtyIfRrpMoved(a.db, "p1778140291773", { rrpDiscountPct: 65 }, inc)).toBe(true);
+    expect(a.store[PRICE_DIRTY_PATH].p1778140291773).toBe(1);
+    const b = fakeDb(travis());
+    expect(await markPriceDirtyIfRrpMoved(b.db, "p1778140291773", {}, inc)).toBe(false);
+    expect(b.store[PRICE_DIRTY_PATH]?.p1778140291773 ?? null).toBeNull();
+  });
+  it("reconcile.mjs re-checks the chip right after confirming a product live", () => {
+    const src = readFileSync(new URL("./reconcile.mjs", import.meta.url), "utf8");
+    expect(src).toMatch(/await confirmLiveState\(db, pid, "on", UPDATED_BY, \{ gid \}\);\n[\s\S]{0,200}markPriceDirtyIfRrpMoved\(db, pid, fresh,/);
   });
 });

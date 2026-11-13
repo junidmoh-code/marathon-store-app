@@ -102,7 +102,7 @@ import { sweepMovements } from "./movementSync.mjs";
 // shopifyPriceDirty markers every tick, and runs the price backstop on its own
 // cadence. See priceSync.mjs.
 import {
-  shopifyPriceFor, shopifyCompareAtFor, sweepPriceDirty, sweepPriceBackstop, PRICE_BACKSTOP_INTERVAL_MS,
+  shopifyPriceFor, shopifyCompareAtFor, markPriceDirtyIfRrpMoved, sweepPriceDirty, sweepPriceBackstop, PRICE_BACKSTOP_INTERVAL_MS,
 } from "./priceSync.mjs";
 import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
 import { metaReadyFirstPhoto } from "./metaReadyCreate.mjs";
@@ -1445,6 +1445,15 @@ for (const { pid, want } of capped) {
       continue;
     }
     await confirmLiveState(db, pid, "on", UPDATED_BY, { gid });
+    // An RRP chip tap that landed mid-publish was skipped by shopifyRrpDirty
+    // (not live yet) — catch it now so the next tick pushes the right RRP.
+    try {
+      if (await markPriceDirtyIfRrpMoved(db, pid, fresh, (n) => admin.database.ServerValue.increment(n))) {
+        console.log("  RRP discount changed during the publish — price marked for the next tick");
+      }
+    } catch (e) {
+      console.error(`  ⚠ ${pid}: RRP re-check failed (${String(e?.message || e)}) — the price backstop will correct it`);
+    }
     // Now that it IS live, put it in the storefront search index — through
     // the SAME builder the sweep uses, so the two can never write different
     // documents for the same product.

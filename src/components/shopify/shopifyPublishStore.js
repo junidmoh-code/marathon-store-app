@@ -411,7 +411,11 @@ export async function setRrpDiscount(productId, node, pct) {
   try {
     await set(ref(database, `shopify_publish/${safeSeg(productId)}/rrpDiscountPct`), pct);
     markSeen(productId);
-    return { ok: true, node: { ...node, rrpDiscountPct: pct } };
+    // Return the COMMITTED node, not the caller's copy with one field changed —
+    // the page folds this in as the truth, and a state/switch change that
+    // landed meanwhile must not be painted back to the stale snapshot.
+    const snap = await get(ref(database, `shopify_publish/${safeSeg(productId)}`));
+    return { ok: true, node: snap.val() ?? { ...node, rrpDiscountPct: pct } };
   } catch (err) {
     return writeError(err);
   }
