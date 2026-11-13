@@ -69,3 +69,15 @@ export function rrpOffPct(price, rrp) {
 export function formatRands(n) {
   return `R${Math.round(Number(n)).toLocaleString("en-US")}`;
 }
+
+/**
+ * The chip's preview line for a selling price at a discount choice:
+ * "RRP R1,799 · 65% off" — the same numbers the website will show (the % is
+ * rrpOffPct, rounded down, exactly as the theme computes it). null when the
+ * product has no usable price.
+ */
+export function rrpPreview(price, discountPct = RRP_DEFAULT_DISCOUNT_PCT) {
+  const rrp = rrpFor(price, discountPct);
+  if (rrp == null) return null;
+  return { rrp, off: rrpOffPct(price, rrp), label: `RRP ${formatRands(rrp)} · ${rrpOffPct(price, rrp)}% off` };
+}

@@ -29,8 +29,9 @@ import {
 } from "./shopifyPublishCore";
 import { describeOff } from "./publishAudit";
 import { buildDescriptionHtml } from "./publishShared";
-import { approveName, publishProduct, setDesiredState, setCondition,
+import { approveName, publishProduct, setDesiredState, setCondition, setRrpDiscount,
          applyNameProposal, dismissNameProposal } from "./shopifyPublishStore";
+import { RRP_DISCOUNT_CHOICES, rrpDiscountPctOf, rrpPreview } from "../../utils/shopifyRrp";
 import MediaStrip from "./MediaStrip";
 
 // The uppercase section label used across the full-page views.
@@ -440,6 +441,32 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
               </div>
             )}
           </>
+        ))}
+
+        {section("RRP on the website — struck through above the price", (
+          price > 0 ? (
+            <>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {RRP_DISCOUNT_CHOICES.map((pct) => (
+                  <button key={pct} disabled={busy || !node?.state}
+                    onClick={() => run(() => setRrpDiscount(product.id, node, pct), (res) => onChanged(product.id, res.node))}
+                    style={{ ...(rrpDiscountPctOf(node) === pct ? tabOn : tabOff), padding: "6px 11px", fontSize: "0.72rem" }}>
+                    {`${pct}%`}
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", marginTop: 6 }}>
+                {rrpPreview(price, rrpDiscountPctOf(node))?.label}
+              </div>
+              <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>
+                {node?.state
+                  ? "Shown on Shopify only — the till price never changes. The website updates within a few minutes."
+                  : "Available once the product is in publishing."}
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 11.5, color: GRAY }}>No price set — no RRP is shown on the website.</div>
+          )
         ))}
 
         {section("Description — exactly as it will appear on Shopify", (

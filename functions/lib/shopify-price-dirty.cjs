@@ -42,4 +42,22 @@ async function markPriceDirty({ db, increment, log = () => {} }, { pid, before }
   return { marked: true };
 }
 
-module.exports = { PRICE_DIRTY_PATH, isListed, markPriceDirty };
+/**
+ * The RRP chip (13 Nov 2026): /shopify_publish/{pid}/rrpDiscountPct moved
+ * between 65 and 70. The website's struck-through RRP is derived from it at
+ * push time (scripts/shopify/priceSync.mjs), so a change earns the SAME price
+ * marker — the next tick re-pushes price + compareAtPrice. Re-reads the value
+ * (absent = 65) rather than trusting the event, like markPriceDirty.
+ */
+const rrpPct = (v) => (Number(v) === 70 ? 70 : 65);
+async function markRrpDirty({ db, increment, log = () => {} }, { pid, before }) {
+  if (!pid) return { marked: false, why: "no product id" };
+  const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+  if (rrpPct(before) === rrpPct(node?.rrpDiscountPct)) return { marked: false, why: "RRP discount unchanged" };
+  if (!isListed(node)) return { marked: false, why: "not listed on Shopify" };
+  await db.ref(`${PRICE_DIRTY_PATH}/${pid}`).set(increment(1));
+  log(`shopify price marked dirty (RRP discount): ${pid}`);
+  return { marked: true };
+}
+
+module.exports = { PRICE_DIRTY_PATH, isListed, markPriceDirty, markRrpDirty };

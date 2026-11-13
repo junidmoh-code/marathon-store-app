@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { rrpFor, rrpOffPct, rrpDiscountPctOf, formatRands, RRP_DISCOUNT_CHOICES } from "./shopifyRrp.js";
+import { rrpFor, rrpOffPct, rrpDiscountPctOf, formatRands, rrpPreview, RRP_DISCOUNT_CHOICES } from "./shopifyRrp.js";
 
 describe("rrpFor", () => {
   it("no usable price → null (no RRP shown)", () => {
@@ -85,5 +85,13 @@ describe("formatRands", () => {
   it("formats with a thousands comma", () => {
     expect(formatRands(1799)).toBe("R1,799");
     expect(formatRands(599)).toBe("R599");
+  });
+});
+
+describe("rrpPreview — the chip's line", () => {
+  it("reads like the website", () => {
+    expect(rrpPreview(629).label).toBe("RRP R1,799 · 65% off");
+    expect(rrpPreview(629, 70).label).toBe("RRP R2,099 · 70% off");
+    expect(rrpPreview(0)).toBeNull();
   });
 });
