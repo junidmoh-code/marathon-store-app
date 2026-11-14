@@ -88,13 +88,19 @@ function saveLedger(l) {
   renameSync(tmp, LEDGER);
 }
 
-/** One run at a time. The lock is touched after every post; one untouched for 2 hours is a crashed run. */
+/** One run at a time. A lock is stale only when the process that wrote it is gone (its age proves nothing). */
 const NONCE = `${process.pid}:${randomUUID()}`;
 let locked = false;
 function lock() {
   mkdirSync(STATE_DIR, { recursive: true });
   try {
-    if (existsSync(LOCK) && Date.now() - statSync(LOCK).mtimeMs > 2 * 3600000) rmSync(LOCK);
+    if (existsSync(LOCK)) {
+      const pid = Number(String(readFileSync(LOCK, "utf8")).split(":")[0]);
+      let alive = false;
+      try { process.kill(pid, 0); alive = true; } catch (e) { alive = e.code === "EPERM"; }
+      if (alive) return false;
+      rmSync(LOCK); // its owner died without releasing it
+    }
     writeFileSync(LOCK, NONCE, { flag: "wx" });
     return (locked = true);
   } catch { return false; }
