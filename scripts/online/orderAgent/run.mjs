@@ -34,7 +34,7 @@ export async function readOpenOrders(db) {
   const out = {};
   for (const st of OPEN_STATUSES) {
     const snap = await db.ref("online_orders").orderByChild("status").equalTo(st).get();
-    snap.forEach((c) => { out[c.key] = c.val(); });
+    for (const [k, v] of Object.entries(snap.val() || {})) if (v && typeof v === "object") out[k] = v;
   }
   return out;
 }
@@ -137,7 +137,7 @@ export async function runOrderAgent(deps) {
 
       const marks = (await get(db, `${AGENT_ROOT}/marks/${id}`)) || {};
       const done = [];
-      for (const a of verdict.actions) {
+      for (const a of bundle(verdict.actions, order)) {
         const line = linesOf(order).find(([k]) => k === a.i)?.[1];
         const rg = num(line?.routeGen);
         const res = await act({ db, chase, push, commit, now, day, id, order, label, line, a, rg, marks, log });
@@ -177,7 +177,7 @@ export async function runOrderAgent(deps) {
   }
 
   if (commit) {
-    for (const row of logRows) await db.ref(`${AGENT_ROOT}/log/${day}`).push(row);
+    for (const row of logRows) await db.ref(`${AGENT_ROOT}/log/${day}`).push().set(row);
     await db.ref(`${AGENT_ROOT}/lastRun`).set(clean({ at: now, run: runId, checked: result.checked, green: result.green, red: result.red, incoming: result.incoming, actions: result.actions.length }));
   }
 
@@ -201,6 +201,26 @@ export async function runOrderAgent(deps) {
     await db.ref().update(upd);
   }
   return result;
+}
+
+/** Nudges grouped per place, escalations into one per order; every other action as it is. PURE. */
+export function bundle(actions, order) {
+  const lineOf = (i) => linesOf(order).find(([k]) => k === i)?.[1];
+  const item = (a) => ({ i: a.i, rg: num(lineOf(a.i)?.routeGen), line: lineOf(a.i), level: a.level || "4h", evidence: a.evidence || {} });
+  const out = [];
+  const nudges = new Map();
+  let esc = null;
+  for (const a of actions) {
+    if (a.type === "nudge") {
+      if (!nudges.has(a.location)) { const n = { type: "nudge", location: a.location, i: a.i, items: [] }; nudges.set(a.location, n); out.push(n); }
+      nudges.get(a.location).items.push(item(a));
+    } else if (a.type === "escalate") {
+      if (!esc) { esc = { type: "escalate", i: a.i, items: [] }; out.push(esc); }
+      esc.items.push(item(a));
+    } else out.push(a);
+  }
+  for (const n of out) if (n.items) n.evidence = n.items.map((it) => ({ line: it.i, ...it.evidence }));
+  return out;
 }
 
 /** Perform one action (or, on a dry run, say what would be done). → { ...outcome } | { skipped } */
@@ -243,28 +263,35 @@ async function act({ db, chase, push, commit, now, day, id, order, label, line, 
     return { queued: row.id };
   }
   if (a.type === "nudge") {
-    if (marks[markKey("nudge")]) return { skipped: true };
-    const title = `${label}: ${line?.title || "an item"} still to pick`;
-    const body = `${place(a.location)} — website order ${label}${line?.size && line.size !== "_" ? `, size ${line.size}` : ""} has waited ${a.evidence?.tradingHours ?? "2+"} trading hours. Please pick it and send it to Marathon PE.`;
+    // One push per place per order: every line still waiting there, each nudged once per route generation.
+    const due = (a.items || []).filter((it) => !marks[safeKey(`nudge_${it.i}_${it.rg}`)]);
+    if (!due.length) return { skipped: true };
+    const what = due.map((it) => `${it.line?.title || "an item"}${it.line?.size && it.line.size !== "_" ? ` (${it.line.size})` : ""}`).join(", ");
+    const title = `${label}: ${due.length === 1 ? "an item" : `${due.length} items`} still to pick`;
+    const body = `${place(a.location)} — website order ${label}: ${what}, waiting ${Math.max(...due.map((it) => num(it.evidence?.tradingHours)))} trading hours. Please pick and send to Marathon PE.`;
     let res = { sent: false, why: "dry run" };
     if (commit) {
-      res = push ? await push({ hub: a.location, title, body, tag: `online-${id}-${a.i}` }).catch((e) => ({ sent: false, why: String(e?.message || e).slice(0, 120) })) : { sent: false, why: "no push sender" };
-      await mark("nudge");
+      res = push ? await push({ hub: a.location, title, body, tag: `online-${id}-${a.location}` }).catch((e) => ({ sent: false, why: String(e?.message || e).slice(0, 120) })) : { sent: false, why: "no push sender" };
+      for (const it of due) await db.ref(`${AGENT_ROOT}/marks/${id}/${safeKey(`nudge_${it.i}_${it.rg}`)}`).set({ at: now, day });
     }
-    return { ...res, title };
+    return { ...res, title, lines: due.map((it) => it.i) };
   }
   if (a.type === "escalate") {
-    const level = a.level || "4h";
-    if (marks[markKey(`escalate_${level}`)]) return { skipped: true };
-    const where = a.evidence?.at || a.evidence?.from;
-    const words = level === "transit" ? `${label}: ${line?.title || "an item"} left ${place(where)} ${a.evidence?.tradingHours} trading hours ago and is not confirmed at Marathon PE.`
-      : level === "unlinked" ? `${label}: a line is not linked to a product in the app (${a.evidence?.reason || "unknown"}); it cannot be picked until it is linked.`
-      : `${label}: ${line?.title || "an item"}${line?.size && line.size !== "_" ? ` size ${line.size}` : ""} has waited ${a.evidence?.tradingHours} trading hours at ${place(where)} (staff nudged at 2 h). Please chase ${place(where)}.`;
-    const row = { id: `junid_escalation:${id}:${a.i}:${day}`, at: now, kind: "junid_escalation", order_key: String(id), order_number: String(order.orderNumber ?? label), line_index: a.i, reason: words, evidence: JSON.stringify(a.evidence || {}) };
+    // One Jamie-app case per order per day, naming every line that needs Junid.
+    const due = (a.items || []).filter((it) => !marks[safeKey(`escalate_${it.level}_${it.i}_${it.rg}`)]);
+    if (!due.length) return { skipped: true };
+    const part = (it) => {
+      const where = place(it.evidence?.at);
+      const item = `${it.line?.title || "an item"}${it.line?.size && it.line.size !== "_" ? ` size ${it.line.size}` : ""}`;
+      return it.level === "unlinked" ? `a line is not linked to a product in the app (${it.evidence?.reason || "unknown"}); it cannot be picked until it is linked`
+        : `${item} has waited ${it.evidence?.tradingHours} trading hours at ${where} (staff nudged at 2 h)`;
+    };
+    const words = `${label}: ${due.map(part).join("; ")}. Please chase it.`;
+    const row = { id: `junid_escalation:${id}:-:${day}`, at: now, kind: "junid_escalation", order_key: String(id), order_number: String(order.orderNumber ?? label), line_index: null, reason: words, evidence: JSON.stringify(due.map((it) => ({ line: it.i, level: it.level, ...it.evidence }))) };
     if (!commit) return { would: row.id, words };
     const inserted = chase.insert(row);
-    await mark(`escalate_${level}`);
-    return inserted ? { queued: row.id, words } : { skipped: true };
+    for (const it of due) await db.ref(`${AGENT_ROOT}/marks/${id}/${safeKey(`escalate_${it.level}_${it.i}_${it.rg}`)}`).set({ at: now, day });
+    return inserted ? { queued: row.id, words, lines: due.map((it) => it.i) } : { skipped: true };
   }
   return { skipped: true };
 }

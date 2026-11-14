@@ -18,7 +18,8 @@
 //   3 payment        a dearer pick's difference is unpaid → payment_link (Jamie resends once a day).
 //   4 not here       a place could not produce it and another place on its route has a free unit → re-pick there
 //                    (excluding the place that failed, unless stock reached it since). Still at a place: nudge its
-//                    staff after 2 trading hours, Junid after 4. On its way to PE: Junid after 8 trading hours.
+//                    staff after 2 trading hours, Junid after 4. On its way to PE: red, no action (the till confirms
+//                    a unit only at the Pack today).
 //   5 unavailable    nowhere on the route and nothing at Central → alternatives_now (unless Jamie already has it).
 // Never: a stock or refill request created, changed or cancelled; a policy value; a stock movement.
 import { tradingHoursBetween } from "./hours.mjs";
@@ -35,13 +36,15 @@ export const SETTLE_AFTER_MS = 30 * 60e3;
 export const JAMIE_GAP_MS = 30 * 60e3; // a failed line is Jamie's own for this long before the agent hands it over
 export const NUDGE_AFTER_TH = 2;
 export const ESCALATE_AFTER_TH = 4;
-export const TRANSIT_ESCALATE_TH = 8;
 export const MARK_MAX_AGE_MS = 14 * 24 * H; // the POS's own bound on a customer-wait mark
 
 const OFF_PARCEL = new Set(["resolved", "moved", "cancelled"]);
 const FAILED = new Set(["not_found", "no_stock", "needs_attention"]);
 const CUSTOMER_STATES = new Set(["waiting_reply", "no_answer", "not_contacted", "unreachable", "told_late"]);
 const MONEY_STATES = new Set(["refunded", "refund_pending", "credit_pending"]);
+// Jamie's states that mean Jamie already has the line in hand (the POS's JAMIE_OWNS): no second hand-off.
+const JAMIE_OWNS = new Set(["waiting_reply", "no_answer", "not_contacted", "told_late", "chose", "credit_pending", "refund_pending", "unreachable"]);
+const owns = (rec) => !!rec && JAMIE_OWNS.has(String(rec.state));
 // The order a reason is picked by: what the customer or money must do first, then what the shops must find.
 export const PRIORITY = Object.freeze({ payment: 1, customer: 2, refund: 3, finding: 4, wait_stock: 5, nowhere: 6, at_place: 7, transit: 8, other: 9 });
 
@@ -100,9 +103,12 @@ export const choseToWait = (rec) => rec?.state === "chose" && (/when it arrives|
  * Places to skip when re-picking a failed line: the place that said it cannot produce it, unless stock reached it
  * since (an inbound movement on its cell after the failure, e.g. #2085's transfer into Marathon PE at 12:55).
  */
-export function excludedPlaces(line, facts, failedAt) {
+export function excludedPlaces(line, facts, failedAt, { walkin = false } = {}) {
   const loc = line?.source?.locationId;
   if (!loc) return [];
+  // A walk-in sale that took the held unit is not a place failing to find one: the cell already counts that sale,
+  // so whatever it still shows is on the shelf (#2085).
+  if (walkin) return [];
   const cell = facts?.stockAt?.[loc];
   const restocked = cell && num(cell.qty) > 0 && num(cell.updatedAtMs) > num(failedAt) && /_in$|^arrival|^receive|^return|^adjust/.test(String(cell.lastType || ""));
   return restocked ? [] : [loc];
@@ -177,21 +183,21 @@ export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
   if (FAILED.has(st)) {
     const loc = line.source?.locationId || null;
     const failedAt = failedAtOf(line, order);
-    const exclude = excludedPlaces(line, facts, failedAt);
     const walkin = st === "needs_attention" && order?.attention?.kind === "walkin_override";
+    const exclude = excludedPlaces(line, facts, failedAt, { walkin });
     const head = walkin ? "Held item sold at the till" : st === "no_stock" && HUBS.has(loc) ? `${place(loc)} rejected` : loc ? `Not found at ${place(loc)}` : "Not in stock";
     const to = line.pid ? freeAnywhere(exclude) : null;
     if (to) return out("finding", PRIORITY.finding, `${head} — re-picking at ${place(to)}`, [{ type: "repick", i, exclude, to, evidence: { failed: { status: st, at: loc, since: failedAt || null }, free: facts.free || {}, exclude, restockedAt: exclude.length ? null : facts.stockAt?.[loc]?.updatedAtMs || null } }]);
     if (num(facts.central) > 0) return out("wait_stock", PRIORITY.wait_stock, `${head} — waiting on refill from Central`);
     // Genuinely unavailable: Jamie offers alternatives at once (unless the line is already his).
     const recent = failedAt > 0 && now - failedAt < JAMIE_GAP_MS;
-    const actions = rec || recent ? [] : [{ type: "chase", kind: "alternatives_now", i, evidence: { failed: { status: st, at: loc, since: failedAt || null }, free: facts.free || {}, central: num(facts.central) } }];
+    const actions = owns(rec) || recent ? [] : [{ type: "chase", kind: "alternatives_now", i, evidence: { failed: { status: st, at: loc, since: failedAt || null }, free: facts.free || {}, central: num(facts.central) } }];
     return out("nowhere", PRIORITY.nowhere, `${head} — not in stock anywhere, Jamie offering alternatives`, actions);
   }
   if (st === "unavailable") {
-    if (num(facts.central) > 0 && !rec) return out("wait_stock", PRIORITY.wait_stock, "Waiting on refill from Central");
+    if (num(facts.central) > 0 && !owns(rec)) return out("wait_stock", PRIORITY.wait_stock, "Waiting on refill from Central");
     const since = Math.max(num(line.unavailable?.at), num(line.source?.at));
-    const actions = rec || (since > 0 && now - since < JAMIE_GAP_MS) ? [] : [{ type: "chase", kind: "alternatives_now", i, evidence: { status: st, free: facts.free || {}, central: num(facts.central) } }];
+    const actions = owns(rec) || (since > 0 && now - since < JAMIE_GAP_MS) ? [] : [{ type: "chase", kind: "alternatives_now", i, evidence: { status: st, free: facts.free || {}, central: num(facts.central) } }];
     return out("nowhere", PRIORITY.nowhere, "Not available — Jamie offering alternatives", actions);
   }
   if (st === "unresolved") return out("other", PRIORITY.other, "Item not linked to a product — Junid to fix", [{ type: "escalate", i, level: "unlinked", evidence: { reason: line.reason || null } }]);
@@ -209,12 +215,9 @@ export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
     else if (th >= NUDGE_AFTER_TH) actions.push({ type: "nudge", i, location: loc, evidence: ev });
     return out("at_place", PRIORITY.at_place, `Waiting for ${place(loc)}`, actions);
   }
-  if (st === "handed") {
-    const since = num(line.source?.handedAt);
-    const th = since > 0 ? tradingHoursBetween(since, now) : 0;
-    const actions = th >= TRANSIT_ESCALATE_TH ? [{ type: "escalate", i, level: "transit", evidence: { from: loc, handedAt: since, tradingHours: Math.round(th * 10) / 10 } }] : [];
-    return out("transit", PRIORITY.transit, `On its way from ${place(loc)}`, actions);
-  }
+  // Released by the place, not confirmed in at Marathon PE yet. Today the till confirms a unit only when the packer
+  // scans it at the Pack, so this is not a fault on its own: no action; the day's summary lists the ones waiting.
+  if (st === "handed") return out("transit", PRIORITY.transit, `On its way from ${place(loc)}`);
   return out("other", PRIORITY.other, "Being sorted out");
 }
 
