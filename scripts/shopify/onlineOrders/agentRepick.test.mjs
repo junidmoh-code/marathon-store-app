@@ -119,3 +119,22 @@ describe("repickBlocker / planRepick (pure)", () => {
     expect(planRepick({ line: tee(), available: { "marathon-pe": 1, hub2: 1 }, exclude: ["marathon-pe"] }).pieces).toEqual([{ qty: 1, locationId: "hub2", status: "pick" }]);
   });
 });
+
+describe("a line the customer chose to wait for (#2133 line 18 shape)", () => {
+  const waiting = () => tee({ swappedFrom: undefined, resolution: undefined, routeGen: 0, source: { status: "unavailable", locationId: "marathon-pe" } });
+  const chose = { 1: { state: "chose", pid: "GST", size: "XXL", next: "send it when it arrives", customerSaid: { text: "I'll wait for the stock" } } };
+  it("goes on a pick once a place has it, keeping its item", async () => {
+    const w = world({ lines: [beanie(), waiting()], stock: { concrete: { GST: { XXL: { qty: 1 } } } }, repicks: { "1_0": ask(1, waiting(), { exclude: ["marathon-pe"] }) } });
+    w.online_orders[2085].jimmyStatus = chose;
+    const f = fakeDb(w);
+    await tick(f);
+    expect(reqOf(f, "1_0")).toMatchObject({ state: REPICK.ORDERED, routedTo: "concrete" });
+    expect(line1(f).source).toMatchObject({ status: "display", locationId: "concrete" });
+  });
+  it("without the customer's wait on record an unavailable line is refused", async () => {
+    const f = fakeDb(world({ lines: [beanie(), waiting()], stock: { concrete: { GST: { XXL: { qty: 1 } } } }, repicks: { "1_0": ask(1, waiting()) } }));
+    await tick(f);
+    expect(reqOf(f, "1_0").state).toBe(REPICK.REFUSED);
+    expect(line1(f).source.status).toBe("unavailable");
+  });
+});

@@ -48,6 +48,19 @@ const clean = (v) => JSON.parse(JSON.stringify(v ?? null));
 const place = (loc) => PLACE[loc] || loc;
 export const repickId = (lineIndex, routeGen) => `${Number(lineIndex)}_${Number(routeGen) || 0}`;
 
+/**
+ * The customer told Jamie they will wait for THIS item (jimmyStatus state "chose" about the line's own product and
+ * size): an `unavailable` line parked for that wait may go on a pick the moment a place has it. PURE.
+ */
+export function customerChoseToWait(order, i, line) {
+  const all = order?.jimmyStatus;
+  const rec = all && typeof all === "object" ? all[i] ?? all[String(i)] : null;
+  if (!rec || typeof rec !== "object" || rec.state !== "chose") return false;
+  if (!rec.pid || String(rec.pid) !== String(line?.pid)) return false;
+  if (rec.size != null && line?.size != null && String(rec.size) !== String(line.size)) return false;
+  return /\bwhen it arrives\b|\bwait/i.test(String(rec.next || "")) || /\bwait\b/i.test(String(rec.customerSaid?.text || ""));
+}
+
 /** Why line `line` cannot be re-picked, or null. PURE. */
 export function repickBlocker({ line, req, enabled, order = null, i = Number(req?.lineIndex) }) {
   if (!enabled) return "the website-order feeds are switched off, so no pick can be raised";
@@ -58,7 +71,7 @@ export function repickBlocker({ line, req, enabled, order = null, i = Number(req
   if ((Number(line.routeGen) || 0) !== (Number(req?.expectRouteGen) || 0)) return "the line was routed again since the agent looked";
   const st = line.source?.status;
   if (req?.expectStatus && st !== req.expectStatus) return `the line is "${st || "unknown"}" now, not "${req.expectStatus}"`;
-  if (!REPICK_LINE.includes(st)) return `the line is "${st || "unknown"}", not one a place failed`;
+  if (!REPICK_LINE.includes(st) && !(st === LINE_STATUS.UNAVAILABLE && customerChoseToWait(order, i, line))) return `the line is "${st || "unknown"}", not one a place failed`;
   if (line.escalation) return "the line has an escalation under way";
   if (line.awaitingCustomer || line.resolution?.conversation) return "the customer is being asked about this line";
   if (line.escalationOverride && !line.escalationOverride.appliedAt) return "Junid's decision on this line is still being applied";
