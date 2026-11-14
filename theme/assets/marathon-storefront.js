@@ -396,7 +396,10 @@
   // lives in localStorage — and every access is wrapped, because a private
   // window can THROW on the accessor rather than return null, which would take
   // the whole script down with it.
-  var DENSITY_KEY = "mc-cols";
+  // "-v2" (14 Nov 2026): the default became 2 across on a phone. A value saved
+  // under the old key was very likely just the old default of 3, so it is
+  // ignored; a choice made from now on is remembered under the new key.
+  var DENSITY_KEY = "mc-cols-v2";
 
   function readDensity() {
     try {
@@ -415,8 +418,48 @@
     });
   }
 
+  // No saved choice: the CSS default stands (2 on a phone, 3 from 750px) and
+  // only the pressed button is synced to it. The grid gets no inline value,
+  // so the breakpoint keeps deciding as the window changes.
+  function syncDefaultDensity() {
+    var g = $("[data-mc-grid]");
+    if (!g) return;
+    var n = parseInt(getComputedStyle(g).getPropertyValue("--mc-cols"), 10);
+    if (!(n >= 2 && n <= 4)) return;
+    $$("[data-mc-density] [data-mc-cols]").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-mc-cols") === String(n) ? "true" : "false");
+    });
+  }
+
+  // ── SAVE box fit ───────────────────────────────────────────────────────────
+  // The card's price block scales with the card (cqi in the CSS), and the CSS
+  // drops the SAVE box on the narrowest cards. This catches the rest: a SAVE
+  // box whose text is wider than its card (a big saving at 3 or 4 across) is
+  // hidden rather than clipped or wrapped. Re-checked when the density, the
+  // window or the fonts change, and when infinite scroll adds cards.
+  function fitSaves(scope) {
+    $$("[data-mc-pb-save]", scope || document).forEach(function (s) {
+      s.hidden = false;
+      var inner = s.firstElementChild;
+      if (inner && s.clientWidth > 0 && inner.offsetWidth > s.clientWidth + 0.5) s.hidden = true;
+    });
+  }
+  var fitQueued = false;
+  function queueFit() {
+    if (fitQueued) return;
+    fitQueued = true;
+    (window.requestAnimationFrame || setTimeout)(function () { fitQueued = false; fitSaves(); });
+  }
+  window.addEventListener("resize", function () {
+    if (!readDensity()) syncDefaultDensity();
+    queueFit();
+  });
+  try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(queueFit); } catch (e) { /* fine */ }
+
   var saved = readDensity();
   if (saved) applyDensity(saved);
+  else syncDefaultDensity();
+  fitSaves();
 
   document.addEventListener("click", function (ev) {
     var btn = ev.target.closest && ev.target.closest("[data-mc-cols]");
@@ -426,6 +469,7 @@
     if (!(n >= 2 && n <= 4)) return;
     applyDensity(n);
     writeDensity(n);
+    queueFit();
   });
 
   // ── infinite scroll ────────────────────────────────────────────────────────
@@ -509,6 +553,7 @@
         // Newly-appended cards need their hearts marked (the click handler is
         // delegated and needs nothing, but the FILLED state is per-card).
         applyLoved(grid);
+        fitSaves(grid);
 
         // Swap in the next sentinel, or the end marker.
         var nextMore = doc.querySelector("[data-mc-more]");
@@ -827,7 +872,9 @@
   // data attributes and classes.
   function captureCardMeta(card) {
     var img = $(".mc-card__media img", card);
-    var priceEl = $(".mc-card__price", card);
+    // The card's own price (the price block's red figure), or the "Sold out"
+    // slot; never the whole block, whose text would also carry RRP and SAVE.
+    var priceEl = $(".mc-card__foot [data-mc-price-now]", card) || $(".mc-card__soldout", card) || $(".mc-card__price", card);
     var singleInput = $("[data-mc-single]", card);
     // EVERY SIZE, CAPTURED OFF THE SAME HIDDEN PANEL THE QUICK-VIEW USES
     // (see marathon-card.liquid's `.mc-sizes [data-mc-size]` buttons) — so the

@@ -1730,3 +1730,94 @@ main .shopify-section > .gradient,
 .mc-pb--view .mc-pb__rrp { font-size: var(--mc-pb-view-rrp); }
 .mc-pb--view .mc-pb__save { font-size: var(--mc-pb-view-save); justify-content: flex-start; }
 .mc-pb-badge--view { font-size: var(--mc-pb-view-badge); flex: 0 0 auto; }
+
+/* ─── THE GRID CARD (Junid's mockup, 14 Nov 2026) ────────────────────────────
+   SUPERSEDES the album wall above (hairline gaps, the dark mat and frame around
+   each photo, the black price strip): each product is now a CARD, a near-black
+   fill with a 1px edge and rounded corners, the square photo at the top, and
+   the shared price block (snippets/mc-price-block.liquid) centred below it.
+   The photo itself is treated exactly as before (square, same crop, same
+   filter); only what surrounds it changed. The density buttons stay, and the
+   default is now 2 across on a phone. */
+.mc-grid {
+  --mc-cols: 2;
+  gap: var(--mc-card-gap);
+  padding-inline: var(--mc-card-gap);
+  box-sizing: border-box;
+}
+@media screen and (min-width: 750px) {
+  .mc-grid { --mc-cols: 3; }
+}
+
+.mc-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--mc-card-fill);
+  border: 1px solid var(--mc-card-edge);
+  border-radius: var(--mc-card-radius);
+  overflow: hidden;
+  /* NOT a size container: container-type implies layout containment, which
+     would make the card the containing block of its position:fixed quick-view
+     panel and trap the modal inside the tile. The photo and the price slot
+     are the containers instead (below). */
+}
+.mc-card__media {
+  container-type: inline-size;   /* the pill scales with the photo's width */
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--mc-card-fill);
+}
+.mc-card__media img { border-radius: 0; }
+@media screen and (min-width: 750px) {
+  .mc-card__media { padding: 0; }
+}
+
+/* The heart sits where it did, top-right over the photo; the mat it used to be
+   offset by is gone, so it hugs the corner. */
+.mc-card > .mc-love { top: 2px; right: 2px; }
+@media screen and (min-width: 750px) {
+  .mc-card > .mc-love { top: 4px; right: 4px; }
+}
+
+/* The "-NN%" pill, top-left over the photo. */
+.mc-card__media .mc-pb-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  font-size: var(--mc-pb-card-badge);
+  pointer-events: none;
+}
+
+/* Below the photo: the price block, centred. The slot grows, so a card whose
+   block is shorter (no RRP, or sold out) still lines up with its row. */
+.mc-card__foot {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 1rem 0.8rem 1.1rem;
+  text-align: center;
+  min-width: 0;
+  container-type: inline-size;   /* the price block scales with the slot's width */
+}
+.mc-card__foot .mc-pb--card .mc-pb__save { justify-self: stretch; min-width: 0; }
+.mc-card__soldout {
+  margin: 0;
+  color: var(--mc-rrp);
+  font-size: var(--mc-pb-card-rrp);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mc-card__stars { font-size: 0.72em; white-space: nowrap; }
+.mc-card__stars:empty { display: none; }
+/* 4 across on a phone: the SAVE box would wrap, so it goes. The script hides
+   any other SAVE box that does not fit its card (fitSaves). */
+@container (max-width: 96px) {
+  .mc-pb--card .mc-pb__save { display: none; }
+}

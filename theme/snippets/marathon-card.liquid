@@ -188,6 +188,10 @@
           alt: img_alt
       }}
     {%- endif -%}
+    {%- comment -%} The "-NN%" pill, top-left over the photo (Junid's mockup,
+      14 Nov 2026). Computed from the variant's real price pair by the shared
+      price snippet; renders nothing when there is no RRP. {%- endcomment -%}
+    {%- unless sold_out -%}{%- render 'mc-price-block', product: product, layout: 'badge' -%}{%- endunless -%}
     {%- comment -%}
       NO PRODUCT NAME anywhere on the tile. The price (or "Sold out") is the
       only text a tile carries; the name still lives only in the panel and on
@@ -216,7 +220,21 @@
     and a filled one is a short row of small stars after the price. The core
     app embed fills it by data-id; without JavaScript it is an empty span.
   {%- endcomment -%}
-  <span class="mc-card__price">{% if sold_out %}Sold out{% else %}{{ product.price | money }}{% endif %}<span class="jdgm-widget jdgm-preview-badge" data-id="{{ product.id }}" style="display:inline-block;vertical-align:middle;margin-left:.5em;font-size:.72em;white-space:nowrap;"></span></span>
+  {%- comment -%}
+    THE PRICE BLOCK (Junid's mockup, 14 Nov 2026): RRP struck through, the
+    price big and red, "SAVE R x" boxed — the SAME snippet the quick view and
+    the product page render, so the three cannot drift. A sold-out card says
+    "Sold out" in the same slot; the card is a flex column and this slot
+    grows, so every card in a row is the same height either way.
+  {%- endcomment -%}
+  <div class="mc-card__foot">
+    {%- if sold_out -%}
+      <p class="mc-card__soldout">Sold out</p>
+    {%- else -%}
+      {%- render 'mc-price-block', product: product, layout: 'card' -%}
+    {%- endif -%}
+    <span class="jdgm-widget jdgm-preview-badge mc-card__stars" data-id="{{ product.id }}"></span>
+  </div>
 
 
   {%- comment -%}
