@@ -270,10 +270,10 @@
       {%- endcomment -%}
       {%- comment -%} Product view (Junid's mockup, 14 Nov 2026): rounded photo,
         heart top-right (the same love button as the tile, same product id, so
-        the two stay in step), zoom bottom-right. Without JavaScript the zoom is
+        the two stay in step), enlarge bottom-right. Without JavaScript it is
         a plain link to the full-size photograph. {%- endcomment -%}
       {%- if product.featured_media -%}
-        <div class="mc-panel__media" data-mc-zoom-host>
+        <div class="mc-panel__media" data-mc-enlarge-host>
           {{
             product.featured_media.preview_image
             | image_url: width: 1000
@@ -297,10 +297,10 @@
             </svg>
           </button>
           <a
-            class="mc-panel__zoom"
-            data-mc-zoom
+            class="mc-panel__enlarge"
+            data-mc-enlarge
             href="{{ product.featured_media.preview_image | image_url: width: 2000 }}"
-            aria-label="Zoom photo"
+            aria-label="Enlarge photo"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
               <circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M10.5 7.5v6M7.5 10.5h6"/>

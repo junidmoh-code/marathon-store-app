@@ -111,7 +111,7 @@
     if (panel) panel.hidden = true;
     var sheet = panel && $("[data-mc-sheet]", panel);
     if (sheet) { sheet.style.transform = ""; sheet.classList.remove("is-dragging"); }
-    $$("[data-mc-zoom-host].is-zoomed", card).forEach(function (h) { h.classList.remove("is-zoomed"); });
+    $$("[data-mc-enlarge-host].is-enlarged", card).forEach(function (h) { h.classList.remove("is-enlarged"); });
     card.classList.remove(OPEN_CLASS);
     openCard = null;
     unlockScroll();
@@ -237,16 +237,16 @@
       return;
     }
 
-    // ZOOM (product view, 14 Nov 2026): the photo fills the screen; a tap on
-    // the zoomed photo puts it back. Without JS the zoom is a link to the
+    // ENLARGE (product view, 14 Nov 2026): the photo fills the screen; a tap
+    // on the enlarged photo puts it back. Without JS the control is a link to the
     // full-size photograph.
-    var zoom = target.closest && target.closest("[data-mc-zoom]");
-    if (zoom) {
-      var host = zoom.closest("[data-mc-zoom-host]");
-      if (host) { ev.preventDefault(); host.classList.add("is-zoomed"); return; }
+    var enlarge = target.closest && target.closest("[data-mc-enlarge]");
+    if (enlarge) {
+      var host = enlarge.closest("[data-mc-enlarge-host]");
+      if (host) { ev.preventDefault(); host.classList.add("is-enlarged"); return; }
     }
-    var zoomed = target.closest && target.closest("[data-mc-zoom-host].is-zoomed");
-    if (zoomed) { ev.preventDefault(); zoomed.classList.remove("is-zoomed"); return; }
+    var enlarged = target.closest && target.closest("[data-mc-enlarge-host].is-enlarged");
+    if (enlarged) { ev.preventDefault(); enlarged.classList.remove("is-enlarged"); return; }
 
     var size = target.closest && target.closest("[data-mc-size]");
     if (size) {
@@ -274,8 +274,8 @@
 
   document.addEventListener("keydown", function (ev) {
     if (ev.key !== "Escape" || !openCard) return;
-    var z = $("[data-mc-zoom-host].is-zoomed", openCard);
-    if (z) { z.classList.remove("is-zoomed"); return; }
+    var z = $("[data-mc-enlarge-host].is-enlarged", openCard);
+    if (z) { z.classList.remove("is-enlarged"); return; }
     close(true);
   });
 

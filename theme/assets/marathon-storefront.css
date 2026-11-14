@@ -1797,7 +1797,7 @@ main .shopify-section > .gradient,
 
 /* ─── THE PRODUCT VIEW (Junid's mockup, 14 Nov 2026) ─────────────────────────
    The quick-view panel and the product page get the same treatment: rounded
-   photo with the heart top-right and zoom bottom-right; title left with the
+   photo with the heart top-right and enlarge bottom-right; title left with the
    "-NN% OFF" pill right; the shared price block (big red price, grey RRP on
    the same line, YOU SAVE box); a thin rule; outlined size buttons, selected =
    white border; a full-width white ADD TO CART; the trust row. */
@@ -1834,7 +1834,7 @@ main .shopify-section > .gradient,
 .mc-panel__media { position: relative; }
 .mc-panel__photo { border-radius: var(--mc-card-radius); }
 .mc-panel__media .mc-panel__love { top: 0.4rem; right: 0.4rem; }
-.mc-panel__zoom {
+.mc-panel__enlarge {
   position: absolute;
   right: 0.8rem;
   bottom: 0.8rem;
@@ -1845,20 +1845,20 @@ main .shopify-section > .gradient,
   border-radius: 50%;
   background: var(--mc-icon-chip);
   color: #fff;
-  cursor: zoom-in;
+  cursor: pointer;
 }
-.mc-panel__zoom svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
-/* Zoomed: the photo fills the screen, tap it to put it back. */
-.mc-panel__media.is-zoomed {
+.mc-panel__enlarge svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+/* Enlarged: the photo fills the screen, tap it to put it back. */
+.mc-panel__media.is-enlarged {
   position: fixed;
   inset: 0;
   z-index: 40;
   display: grid;
   place-items: center;
   background: #000;
-  cursor: zoom-out;
+  cursor: pointer;
 }
-.mc-panel__media.is-zoomed .mc-panel__photo {
+.mc-panel__media.is-enlarged .mc-panel__photo {
   max-height: 100vh;
   max-width: 100vw;
   width: auto;
@@ -1866,8 +1866,8 @@ main .shopify-section > .gradient,
   border-radius: 0;
   background: none;
 }
-.mc-panel__media.is-zoomed .mc-panel__love,
-.mc-panel__media.is-zoomed .mc-panel__zoom { display: none; }
+.mc-panel__media.is-enlarged .mc-panel__love,
+.mc-panel__media.is-enlarged .mc-panel__enlarge { display: none; }
 
 .mc-panel__head {
   display: flex;
@@ -1976,11 +1976,11 @@ main .shopify-section > .gradient,
 /* The script moves the heart into the first photo's own box (a portrait photo
    is narrowed and centred, so the column's corner is not the photo's). */
 .product-media-container > .mc-pdp-love { top: 0.2rem; right: 0.2rem; }
-/* Its own stacking context, so the heart (above Dawn's zoom toggle inside the
+/* Its own stacking context, so the heart (above Dawn's media toggle inside the
    photo) never paints over the sticky header when the page scrolls. */
 .mc-pdp-media .product-media-container { z-index: 0; }
 .product__info-container .product-form__input--pill input[type='radio'] + label { font-style: normal; }
-/* Zoom icon to the bottom-right (Dawn puts it top-left). */
+/* Dawn's photo icon to the bottom-right (Dawn puts it top-left). */
 .mc-pdp-media .product__media-icon {
   left: auto;
   top: auto;
