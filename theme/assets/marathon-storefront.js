@@ -381,7 +381,13 @@
         // a beat so "Added to cart." is seen. Only if this panel is still the
         // open one: a shopper who already moved on is not yanked anywhere.
         var addedCard = btn.closest("[data-mc-card]");
-        setTimeout(function () { if (addedCard && openCard === addedCard) close(true); }, 700);
+        // Focus goes back to the card's photo link, as a closed dialog should.
+        setTimeout(function () {
+          if (!addedCard || openCard !== addedCard) return;
+          close(true);
+          var opener = $("[data-mc-open]", addedCard);
+          if (opener) opener.focus({ preventScroll: true });
+        }, 700);
       })
       .catch(function (err) {
         say(String((err && err.message) || "Could not add that."), true);
@@ -894,7 +900,10 @@
     var img = $(".mc-card__media img", card) || $("[data-mc-love-img]", card);
     // The card's own price (the price block's red figure), or the "Sold out"
     // slot; never the whole block, whose text would also carry RRP and SAVE.
-    var priceEl = $(".mc-card__foot [data-mc-price-now]", card) || $(".mc-card__soldout", card) || $(".mc-card__price", card);
+    // The product page's love host carries its own [data-mc-price-now]; it is
+    // only read there (on a grid card the panel's price is not the tile's).
+    var priceEl = $(".mc-card__foot [data-mc-price-now]", card) || $(".mc-card__soldout", card) ||
+      (card.hasAttribute("data-mc-love-host") ? $("[data-mc-price-now]", card) : null) || $(".mc-card__price", card);
     var singleInput = $("[data-mc-single]", card);
     // EVERY SIZE, CAPTURED OFF THE SAME HIDDEN PANEL THE QUICK-VIEW USES
     // (see marathon-card.liquid's `.mc-sizes [data-mc-size]` buttons) — so the
