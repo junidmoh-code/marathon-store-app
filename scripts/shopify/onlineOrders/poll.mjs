@@ -62,6 +62,7 @@ import { costAlertMail, costAlertThreshold } from "../../shipping/costAlert.mjs"
 import { applySwapRequests } from "./swapRequests.mjs";
 import { applyOrderNowRequests, clearAttentionIfSettled } from "./orderNowRequests.mjs";
 import { applyWaitingReroutes } from "./waitingReroute.mjs";
+import { applyAgentRepicks } from "./agentRepick.mjs";
 
 export const META_PATH = "online_orders_meta";
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -189,6 +190,12 @@ export async function runOrdersPoll(deps) {
         // is back in stock goes to reroute, and maintainOrder below routes and
         // raises it exactly like a new order's line.
         if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor, resolveVariant })) {
+          order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+        }
+        // The order agent's re-pick (agentRepick.mjs, Junid 14 Nov 2026): a line a
+        // place could not produce goes to the next place on its route with a free
+        // unit, KEEPING its item (a swapped line too). Raises no request.
+        if (order?.agentRepicks && await applyAgentRepicks(ctx, id, order, { availabilityFor, cancelLine: (line) => cancelLineEntries(ctx, line) })) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
         // A line WAITING ON REFILL (nowhere on the route had it) routes itself
