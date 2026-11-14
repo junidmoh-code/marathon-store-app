@@ -46,9 +46,15 @@ async function lineFacts(db, id, order, i, line) {
   const facts = { free: {}, stockAt: {}, central: 0, sinceMs: 0 };
   const sk = stockKey(line);
   if (line?.pid && sk != null) {
-    const holds = (await get(db, `online_reservations/${line.pid}/${sk}`)) || {};
-    for (const loc of ROUTED) {
-      const cell = await get(db, `stock/${loc}/${line.pid}/${sk}`);
+    // Exact cells, read side by side: the holds row, each routed place, Central.
+    const [holdsRaw, centralQty, ...cells] = await Promise.all([
+      get(db, `online_reservations/${line.pid}/${sk}`),
+      get(db, `stock/central/${line.pid}/${sk}/qty`),
+      ...ROUTED.map((loc) => get(db, `stock/${loc}/${line.pid}/${sk}`)),
+    ]);
+    const holds = holdsRaw || {};
+    for (const [n, loc] of ROUTED.entries()) {
+      const cell = cells[n];
       const qty = num(cell?.qty);
       let held = 0;
       for (const [oid, row] of Object.entries(holds)) if (oid !== String(id) && row && typeof row === "object") held += num(row.locs?.[loc]);
@@ -61,7 +67,7 @@ async function lineFacts(db, id, order, i, line) {
       if (!["pick", "display", "handed"].includes(l.source.status)) continue;
       facts.free[l.source.locationId] = Math.max(0, num(facts.free[l.source.locationId]) - num(l.qty || 1));
     }
-    facts.central = num(await get(db, `stock/central/${line.pid}/${sk}/qty`));
+    facts.central = num(centralQty);
   }
   const st = line?.source?.status;
   if ((st === "pick" || st === "display") && line.source?.entryKey) {
@@ -125,8 +131,9 @@ export async function runOrderAgent(deps) {
       if (needy.length && graphql && order.shopifyGid) {
         try { refunds = await shopifyRefunds(graphql, order.shopifyGid); } catch (e) { log(`  ! ${label}: Shopify read failed — ${String(e?.message || e).slice(0, 120)}`); }
       }
-      for (const [i, l] of needy) {
-        facts.lines[i] = await lineFacts(db, id, order, i, l);
+      const read = await Promise.all(needy.map(([i, l]) => lineFacts(db, id, order, i, l)));
+      for (const [n, [i, l]] of needy.entries()) {
+        facts.lines[i] = read[n];
         const tail = String(l.shopifyLineItemId || "").split("/").pop();
         const r = refunds?.byLine?.[tail];
         if (r && r.qty >= num(l.qty || 1)) facts.lines[i].shopifyRefund = { at: r.at, cents: r.cents };
