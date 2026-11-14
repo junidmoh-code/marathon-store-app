@@ -509,7 +509,7 @@ function PushAssignmentsAuthed({ onExit }) {
 
         <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 6px", letterSpacing: "-.02em" }}>Order alerts</h1>
         <p style={{ fontSize: 13, lineHeight: 1.55, color: TEXT_2, margin: "0 0 18px" }}>
-          Choose who is alerted when a shop places an order, and for which hub.
+          Choose who is alerted when a shop places an order, and for which hub — and, under Website picks, which shop staff are nudged about a website pick waiting on their floor.
           Nobody is alerted unless you switch a hub on here — staff have no
           setting of their own. Someone on more than one hub hears about each of
           them.

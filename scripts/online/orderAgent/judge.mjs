@@ -154,11 +154,15 @@ const firstFree = (free, exclude, isFootwear, qty) => {
 export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
   const st = line?.source?.status ?? null;
   if (OFF_PARCEL.has(st)) return null;
-  if (lineIsHere(order, i, line)) return null;
   const rec = jamieRecord(order, i, line);
+  // Money the customer owes holds the parcel even when the item is in hand (the POS's red rule too).
+  if (rec?.state === "awaiting_payment" && num(rec.diffCents) > 0 && lineIsHere(order, i, line)) {
+    return { i, kind: "payment", prio: PRIORITY.payment, why: `${rands(rec.diffCents)} difference unpaid`, title: line?.title || line?.pid || `Line ${i + 1}`, status: st, central: 0, actions: [{ type: "chase", kind: "payment_link", i, evidence: { diffCents: num(rec.diffCents), jamieState: rec.state } }] };
+  }
+  if (lineIsHere(order, i, line)) return null;
   const mark = markOf(line, now);
   const title = line?.title || line?.pid || `Line ${i + 1}`;
-  const out = (kind, prio, why, actions = []) => ({ i, kind, prio, why, title, actions, status: st });
+  const out = (kind, prio, why, actions = []) => ({ i, kind, prio, why, title, actions, status: st, central: num(facts.central) });
 
   // 1 SETTLED — Shopify's own refund record for this line item.
   const refund = facts.shopifyRefund;
@@ -253,7 +257,8 @@ export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
 // everywhere) or (b) the customer owes us money (a dearer pick's difference unpaid). Everything else is GREEN —
 // waiting for items, released or on its way from a hub or shop, a balance WE owe the customer — with "X of Y here".
 const UNAVAILABLE_STATUS = new Set(["not_found", "no_stock", "needs_attention", "unavailable", "resolving", "unresolved"]);
-export const isRedLine = (j) => j.kind === "payment" || UNAVAILABLE_STATUS.has(String(j.status));
+// Stock at Central that the refill scan brings is WAITING FOR ITEMS (green), not unavailable (architect review).
+export const isRedLine = (j) => j.kind === "payment" || (UNAVAILABLE_STATUS.has(String(j.status)) && !(j.kind === "wait_stock" && j.central > 0));
 /** A red line's few plain words: "R100 difference unpaid", "Item unavailable — Jamie offering alternatives". */
 export function redWords(j) {
   if (j.kind === "payment") return j.why;

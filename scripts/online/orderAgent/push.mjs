@@ -1,13 +1,16 @@
 // ── The 2-trading-hour nudge: a web push to the place's assigned staff ──────
 // The same audience the store-order push uses (functions/lib/order-push.cjs): push_hub_audience/{place} (Junid
 // assigns people per hub), each person's own mute as a veto (push_mutes/{uid}/muted, unreadable = audible), their
-// tokens under push_tokens/{uid}. Exact reads only. Shops have no audience today: the nudge says so and the 4-hour
-// escalation to Junid carries it.
+// tokens under push_tokens/{uid}. Exact reads only. Shops get their people from the Order Alerts card's "Website
+// picks (shops)" group (after the push_assignments rule paste, docs/ORDER-AGENT-RULES.md); until then a shop nudge
+// says "no push audience", is tried again the next day, and the 4-hour escalation to Junid says so.
 export const MAX_RECIPIENTS = 50;
 export function makeHubPush({ db, messaging }) {
   return async function push({ hub, title, body, tag }) {
     // Relative, as the order push links: the service worker opens it on the store app's own origin.
-    const link = `/?push=order&hub=${encodeURIComponent(hub)}&tab=queue`;
+    // Hubs open their own queue; a shop opens the app plainly (the deep link accepts warehouse hubs only and would
+    // switch a shop account into the warehouse role).
+    const link = /^hub\d+$/.test(String(hub)) ? `/?push=order&hub=${encodeURIComponent(hub)}&tab=queue` : "/";
     const aud = (await db.ref(`push_hub_audience/${hub}`).get()).val();
     const uids = aud && typeof aud === "object" ? Object.keys(aud).slice(0, MAX_RECIPIENTS) : [];
     if (!uids.length) return { sent: false, why: `no push audience for ${hub}` };
