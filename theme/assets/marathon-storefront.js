@@ -975,6 +975,15 @@
       if (String(h.getAttribute("data-product-id")) === id) h.setAttribute("aria-pressed", i === -1 ? "true" : "false");
     });
   });
+  // PRODUCT PAGE HEART ON THE PHOTO (14 Nov 2026). main-product renders it in
+  // the media column; a portrait photo there is narrowed and centred, so the
+  // column's corner is off the photo. Move it into the first photo's own box.
+  // Without JS it stays on the column's corner and still works the same way.
+  (function () {
+    var host = $(".mc-pdp-love");
+    var box = $(".mc-pdp-media .product__media-item .product-media-container");
+    if (host && box) box.appendChild(host);
+  })();
   applyLoved(document);
   surgeLoved();
 

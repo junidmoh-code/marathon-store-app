@@ -39,15 +39,13 @@
     assign pb_off = pb_save | times: 100 | divided_by: pb_compare
   endif
 
-  if settings.currency_code_enabled
-    assign pb_now_m = pb_price | money_with_currency
-    assign pb_rrp_m = pb_compare | money_with_currency
-    assign pb_save_m = pb_save | money_with_currency
-  else
-    assign pb_now_m = pb_price | money
-    assign pb_rrp_m = pb_compare | money
-    assign pb_save_m = pb_save | money
-  endif
+  # Plain "R 2,499.00" everywhere, as in the mockup, deliberately NOT
+  # money_with_currency: the shop's "show currency code" setting is on, and
+  # "R 2,499.00 ZAR" three times in one small block is noise. The grid tile
+  # already used plain money; the product page now matches it.
+  assign pb_now_m = pb_price | money
+  assign pb_rrp_m = pb_compare | money
+  assign pb_save_m = pb_save | money
 -%}
 {%- case pb_layout -%}
   {%- when 'badge' -%}

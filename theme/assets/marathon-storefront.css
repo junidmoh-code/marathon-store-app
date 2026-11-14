@@ -1593,10 +1593,10 @@ main .shopify-section > .gradient,
   --mc-pb-save-radius: 4px;
   --mc-pb-pill-radius: 999px;
   /* Grid card: [floor, share of the card's width, ceiling]. */
-  --mc-pb-card-rrp: clamp(1rem, 6.4cqi, 1.45rem);
-  --mc-pb-card-now: clamp(1.35rem, 11cqi, 2.3rem);
-  --mc-pb-card-save: clamp(0.9rem, 5.9cqi, 1.25rem);
-  --mc-pb-card-badge: clamp(0.95rem, 6.2cqi, 1.3rem);
+  --mc-pb-card-rrp: clamp(1rem, 6.4cqi, 1.7rem);
+  --mc-pb-card-now: clamp(1.35rem, 12.5cqi, 3.2rem);
+  --mc-pb-card-save: clamp(0.88rem, 7cqi, 1.6rem);
+  --mc-pb-card-badge: clamp(0.95rem, 6.2cqi, 1.5rem);
   /* Product view (quick-view panel + product page). */
   --mc-pb-view-now: 3.4rem;
   --mc-pb-view-rrp: 1.5rem;
@@ -1607,6 +1607,9 @@ main .shopify-section > .gradient,
   :root { --mc-pb-view-now: 3.8rem; --mc-pb-view-rrp: 1.6rem; --mc-pb-view-save: 1.5rem; }
 }
 
+/* Upright: the site's italic heading style must not reach the numbers. (The
+   face itself is the site-wide sans, set by BODY TEXT above.) */
+.mc-pb, .mc-pb *, .mc-pb-badge, .mc-card__soldout, .mc-trust, .mc-trust * { font-style: normal; }
 .mc-pb { margin: 0; color: var(--mc-fg); }
 .mc-pb p { margin: 0; }
 .mc-pb__now {
@@ -1645,9 +1648,9 @@ main .shopify-section > .gradient,
   color: var(--mc-sale);
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   line-height: 1.15;
-  padding: 0.25em 0.55em;
+  padding: 0.22em 0.4em;
   white-space: nowrap;
 }
 
@@ -1688,6 +1691,7 @@ main .shopify-section > .gradient,
 .mc-pb--view .mc-pb__now { font-size: var(--mc-pb-view-now); }
 .mc-pb--view .mc-pb__rrp { font-size: var(--mc-pb-view-rrp); }
 .mc-pb--view .mc-pb__save { font-size: var(--mc-pb-view-save); justify-content: flex-start; }
+.mc-pb--view .mc-pb__save > span { padding: 0.4em 0.75em; letter-spacing: 0.04em; }
 .mc-pb-badge--view { font-size: var(--mc-pb-view-badge); flex: 0 0 auto; }
 
 /* ─── THE GRID CARD (Junid's mockup, 14 Nov 2026) ────────────────────────────
@@ -1759,7 +1763,7 @@ main .shopify-section > .gradient,
   align-items: stretch;
   justify-content: center;
   gap: 0.4rem;
-  padding: 1rem 0.8rem 1.1rem;
+  padding: 1rem 0.4rem 1.1rem;
   text-align: center;
   min-width: 0;
   container-type: inline-size;   /* the price block scales with the slot's width */
@@ -1775,10 +1779,20 @@ main .shopify-section > .gradient,
 }
 .mc-card__stars { font-size: 0.72em; white-space: nowrap; }
 .mc-card__stars:empty { display: none; }
-/* 4 across on a phone: the SAVE box would wrap, so it goes. The script hides
-   any other SAVE box that does not fit its card (fitSaves). */
-@container (max-width: 96px) {
+/* 4 across on a phone (~73px of room): the SAVE box would wrap, so it goes,
+   and the struck RRP drops its "RRP" word and steps down a size so it stays
+   on one line (measured: it overflowed 20 of 24 cards otherwise). The script
+   hides any other SAVE box that does not fit its card (fitSaves). */
+@container (max-width: 80px) {
   .mc-pb--card .mc-pb__save { display: none; }
+  .mc-pb--card .mc-pb__rrp { font-size: 0.8rem; }
+  .mc-pb--card .mc-pb__rrp-label { display: none; }
+  .mc-pb--card .mc-pb__now { font-size: 1.05rem; }
+}
+/* The pill on a 4-across photo (~82px): smaller, tighter to the corner, so it
+   clears the heart on the other side. */
+@container (max-width: 100px) {
+  .mc-card__media .mc-pb-badge { font-size: 0.85rem; top: 5px; left: 5px; padding: 0.3em 0.45em; }
 }
 
 /* ─── THE PRODUCT VIEW (Junid's mockup, 14 Nov 2026) ─────────────────────────
@@ -1800,7 +1814,7 @@ main .shopify-section > .gradient,
   --mc-cta-size: 1.55rem;
   --mc-icon-chip: rgb(0 0 0 / 0.55);
   --mc-trust-icon: 2.4rem;
-  --mc-trust-text: 1.05rem;
+  --mc-trust-text: 0.95rem;
 }
 @media screen and (min-width: 750px) {
   :root { --mc-view-title: 2.6rem; }
@@ -1909,10 +1923,14 @@ main .shopify-section > .gradient,
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.8rem;
 }
+/* Icon above two short lines, centred: three columns on a 390px phone leave
+   ~100px each, too narrow for icon-beside-text without a third line. */
 .mc-trust__item {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 0.6rem;
+  text-align: center;
+  gap: 0.5rem;
   min-width: 0;
   color: #fff;
 }
@@ -1930,10 +1948,11 @@ main .shopify-section > .gradient,
   display: grid;
   font-size: var(--mc-trust-text);
   line-height: 1.25;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   text-transform: uppercase;
   min-width: 0;
 }
+.mc-trust__text b, .mc-trust__text span { white-space: nowrap; }
 .mc-trust__text b { font-weight: 700; }
 .mc-trust__text span { opacity: 0.7; }
 
@@ -1954,6 +1973,13 @@ main .shopify-section > .gradient,
   z-index: 3;
 }
 .mc-pdp-love .mc-love { position: static; }
+/* The script moves the heart into the first photo's own box (a portrait photo
+   is narrowed and centred, so the column's corner is not the photo's). */
+.product-media-container > .mc-pdp-love { top: 0.2rem; right: 0.2rem; }
+/* Its own stacking context, so the heart (above Dawn's zoom toggle inside the
+   photo) never paints over the sticky header when the page scrolls. */
+.mc-pdp-media .product-media-container { z-index: 0; }
+.product__info-container .product-form__input--pill input[type='radio'] + label { font-style: normal; }
 /* Zoom icon to the bottom-right (Dawn puts it top-left). */
 .mc-pdp-media .product__media-icon {
   left: auto;
@@ -1967,12 +1993,17 @@ main .shopify-section > .gradient,
   justify-content: space-between;
   gap: 1.2rem;
 }
-.mc-pdp-title h1 {
+/* White, regular weight, sentence case, as in the mockup. The site-wide
+   heading rule (main h1:not([class]), Oswald caps, !important) has to be
+   outranked on specificity, hence the longer selector and !important. */
+.product__info-container .mc-pdp-title h1 {
   font-size: var(--mc-view-title);
-  font-weight: var(--mc-view-title-weight);
-  font-family: inherit;
-  text-transform: none;
-  letter-spacing: normal;
+  font-weight: var(--mc-view-title-weight) !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;
+  font-style: normal;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  color: #fff;
   margin: 0;
 }
 .mc-pdp-title .mc-pb-badge { margin-top: 0.4rem; }
@@ -2010,5 +2041,7 @@ main .shopify-section > .gradient,
   min-height: 5.6rem;
 }
 .product__info-container .product-form__submit::before,
-.product__info-container .product-form__submit::after { border-radius: var(--mc-cta-radius); }
+.product__info-container .product-form__submit::after { border-radius: var(--mc-cta-radius); box-shadow: none; }
+.product__info-container .product-form__submit,
+.product__info-container .product-form__submit * { font-style: normal; }
 .product__info-container .mc-trust { margin: 1.4rem 0 0.4rem; }
