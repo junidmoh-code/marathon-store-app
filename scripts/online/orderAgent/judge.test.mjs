@@ -50,7 +50,7 @@ describe("#2085 (walk-in took the held swapped tee; a fresh XXL landed at PE aft
   it("red with a plain reason (never 'Needs attention'), re-picked at PE: a walk-in sale is not a place failing to find it", () => {
     const v = judgeOrder(order, facts, NOW);
     expect(v.group).toBe("red");
-    expect(v.reason).toBe("Held item sold at the till — re-picking at Marathon PE");
+    expect(v.reason).toBe("Item unavailable — re-picking at Marathon PE");
     expect(v.reason).not.toMatch(/attention/i);
     expect(v.actions).toEqual([expect.objectContaining({ type: "repick", i: 2, to: "marathon-pe", exclude: [] })]);
   });
@@ -89,7 +89,7 @@ describe("#2133 shape (29 lines; a not-found today, waits, a refund, a reply owe
   it("red; the customer's open question speaks first; never 'Needs attention'", () => {
     const v = judgeOrder(order, facts, NOW);
     expect(v.group).toBe("red");
-    expect(v.reason).toBe("Customer choosing alternative (+4 more)");
+    expect(v.reason).toBe("Item unavailable — Jamie offering alternatives (+3 more)"); // line 9 at Trophy is not red (Junid 14 Nov)
     for (const l of v.lines) expect(l.why).not.toMatch(/attention/i);
   });
   it("line 0 not found at PE (PE's count is stale) → re-picked at Concrete, PE excluded", () => {
@@ -125,6 +125,15 @@ describe("the customer and the money", () => {
     expect(judgeOrder(ask({ told: { at: NOW - 3 * 3600e3 } }), {}, NOW).actions).toEqual([]);
     expect(judgeOrder(ask({ told: { at: NOW - 5 * 3600e3 } }), {}, NOW).actions).toEqual([expect.objectContaining({ type: "chase", kind: "follow_up" })]);
     expect(judgeOrder(ask({ told: { at: NOW - 25 * 3600e3 } }), {}, NOW).actions).toEqual([expect.objectContaining({ type: "chase", kind: "no_answer_24h" })]);
+  });
+  it("waiting for items / on the way is GREEN with 'X of Y here' (Junid 14 Nov)", () => {
+    const o = { lines: [handedPE(), { pid: "B", size: "M", sizeKey: "M", qty: 1, source: { status: "handed", locationId: "hub1", orderKeys: ["ABC"] } }, { pid: "C", size: "M", sizeKey: "M", qty: 1, source: { status: "display", locationId: "trophy" } }] };
+    expect(judgeOrder(o, {}, NOW)).toMatchObject({ group: "green", reason: null, detail: "1 of 3 here" });
+  });
+  it("Concrete keeps its own hours: Sat 13:00–16:00 is 3 trading hours there, Sunday 09–14 only", async () => {
+    const { tradingHoursBetween: th } = await import("./hours.mjs");
+    expect(th(T("2026-11-14T11:00:00Z"), T("2026-11-14T16:00:00Z"), "concrete")).toBe(3);
+    expect(th(T("2026-11-14T11:00:00Z"), T("2026-11-14T16:00:00Z"), "trophy")).toBe(5);
   });
   it("a dearer pick's unpaid difference → 'R100 difference unpaid' + payment_link, ahead of everything", () => {
     const o = { lines: [handedPE({ pid: "N", source: { status: "pick", locationId: "hub2" } })], jimmyStatus: { 0: { pid: "N", state: "awaiting_payment", diffCents: 10000 } } };

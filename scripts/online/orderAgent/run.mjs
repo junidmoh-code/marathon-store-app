@@ -199,7 +199,7 @@ export async function runOrderAgent(deps) {
         logRows.push(clean({ at: now, run: runId, order: label, id, line: a.i, type: a.type, kind: a.kind || null, to: a.to || a.location || null, result: res, evidence: a.evidence || null }));
       }
       const note = done.length ? done.join(" · ") : null;
-      const stamp = clean({ at: now, run: runId, group: verdict.group, reason: verdict.reason, actions: done, note, here: verdict.here, total: verdict.total });
+      const stamp = clean({ at: now, run: runId, group: verdict.group, reason: verdict.reason, detail: verdict.detail, actions: done, note, here: verdict.here, total: verdict.total });
       const prev = dayOrders[id] || {};
       const dayRow = clean({
         label, firstSeenAt: prev.firstSeenAt || now, firstGroup: prev.firstGroup || verdict.group, group: verdict.group, reason: verdict.reason,

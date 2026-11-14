@@ -23,6 +23,10 @@ export const LEGACY_WAREHOUSE_HUBS = Object.freeze(["hubC"]);
 // category for the stores it serves (Hub 1) works customer orders and has no
 // CR Orders tab; every other hub does.
 export const SNEAKER_CATEGORY = "sneakers";
+// The shops whose staff pick website orders off their floor (the website strip). Junid, 14 Nov 2026: a website pick
+// stuck at a shop nudges that shop's assigned staff at 2 trading hours (scripts/online/orderAgent/push.mjs). Store
+// orders never fan out to these (order-push.cjs routes by warehouse hub only).
+export const PUSH_SHOPS = Object.freeze(["marathon-pe", "trophy", "concrete", "marathon-pine"]);
 
 function reg(registry) {
   return registry && registry.locations && registry.backStock ? registry : SEED_REGISTRY;

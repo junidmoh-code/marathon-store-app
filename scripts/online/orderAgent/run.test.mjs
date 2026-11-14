@@ -53,7 +53,7 @@ describe("one committed run", () => {
     const push = async (p) => { pushes.push(p); return { sent: true, delivered: 1 }; };
     // 13:30 SAST: #2142's entries are 4.5 trading hours old → escalate (and no nudge: the 4 h step replaces it).
     const r = await runOrderAgent({ db: f.db, chase: q, push, now: T("2026-11-14T11:30:00Z"), commit: true });
-    expect(r).toMatchObject({ checked: 4, green: 1, red: 3 });
+    expect(r).toMatchObject({ checked: 4, green: 2, red: 2 }); // #2142 waits for Trophy/Concrete: green (Junid 14 Nov)
     const rp = Object.values(f.read("online_orders/2085/agentRepicks"));
     expect(rp).toEqual([expect.objectContaining({ lineIndex: 1, expectStatus: "needs_attention", expectRouteGen: 2, state: "pending", by: "order-agent" })]);
     expect(rp[0].exclude).toBeUndefined(); // an empty list is dropped by RTDB; the poller reads it as none
@@ -61,8 +61,8 @@ describe("one committed run", () => {
     const esc = rows(q).find((x) => x.kind === "junid_escalation");
     expect(esc.reason).toMatch(/^#2142: Dress size L has waited .* at Trophy .*; Top size L has waited .* at Concrete/);
     expect(f.read("online_orders/2150/agent")).toMatchObject({ group: "green", total: 1, here: 1 });
-    expect(f.read("online_orders/2085/agent")).toMatchObject({ group: "red", reason: "Held item sold at the till — re-picking at Marathon PE", note: "re-pick at Marathon PE asked" });
-    expect(f.read("online_order_agent/lastRun")).toMatchObject({ checked: 4, green: 1, red: 3 });
+    expect(f.read("online_orders/2085/agent")).toMatchObject({ group: "red", reason: "Item unavailable — re-picking at Marathon PE", note: "re-pick at Marathon PE asked" });
+    expect(f.read("online_order_agent/lastRun")).toMatchObject({ checked: 4, green: 2, red: 2 });
     expect(Object.values(f.read("online_order_agent/log/2026-11-14")).length).toBe(3);
     // Never a request, never stock.
     expect(f.writes.filter(([, p]) => /^(refill_requests|stock\/|orders\/)/.test(p))).toEqual([]);
@@ -105,7 +105,7 @@ describe("one committed run", () => {
     const at = T("2026-11-14T16:05:00Z");
     const r = await runOrderAgent({ db: f.db, chase: q, now: at, commit: true });
     expect(r.summary).toMatch(/^Website orders, 2026-11-14 \(order agent\)\nTurned green: none\nShipped: none\nChased: /);
-    expect(r.summary).toMatch(/Still red \(3\):\n- #2085: Held item sold at the till/);
+    expect(r.summary).toMatch(/Still red \(2\):\n- #2085: Item unavailable — re-picking at Marathon PE/);
     await runOrderAgent({ db: f.db, chase: q, now: at + 10 * 60e3, commit: true });
     expect(rows(q).filter((x) => x.kind === "daily_summary").length).toBe(1);
   });
