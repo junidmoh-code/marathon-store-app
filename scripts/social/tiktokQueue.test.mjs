@@ -1,7 +1,7 @@
 // ── TIKTOK QUEUE — tests for the pure parts (tiktokQueue.mjs) ───────────────
 import { describe, it, expect } from "vitest";
 import {
-  buildQueue, pickNext, eligible, counts, captionParts, cutWords, tiktokText, familyKey, slotGap,
+  buildQueue, pickNext, classifyPost, eligible, counts, captionParts, cutWords, tiktokText, familyKey, slotGap,
   MAX_ATTEMPTS, GAP_MIN_MS, GAP_MAX_MS, PHOTO_TITLE_MAX, VIDEO_CAPTION_MAX,
 } from "./tiktokQueue.mjs";
 
@@ -101,4 +101,38 @@ describe("captions", () => {
 it("slot gap stays inside 15 to 20 minutes", () => {
   expect(slotGap(() => 0)).toBe(GAP_MIN_MS);
   expect(slotGap(() => 0.9999)).toBeLessThan(GAP_MAX_MS);
+});
+
+describe("review fixes", () => {
+  it("a feed twin of a reel's story twin is the reel's family", () => {
+    const q = buildQueue([
+      { id: "r", format: "reel", status: "posted", results: ok, media: [vid("r")], postedAt: 1 },
+      { id: "s", format: "story", videoFrom: "r", twinOf: "r", status: "posted", results: ok, media: [vid("r")], postedAt: 2 },
+      { id: "f", format: "feed", twinOf: "s", status: "posted", results: ok, media: [img("f")], postedAt: 3 },
+    ]);
+    expect(q.map((c) => c.key)).toEqual(["r"]);
+  });
+  it("hashtags dedupe case-insensitively and house tags match whole words only", () => {
+    expect(captionParts("x #fypage #Nike #nike", "single").tags).toEqual(["#fypage", "#Nike", "#MarathonClub", "#SneakerTok", "#SouthAfrica"]);
+  });
+  it("never cuts an emoji in half", () => {
+    const out = cutWords("a".repeat(8) + "\u{1F45F}\u{1F45F}", 10);
+    expect(/[\uD800-\uDBFF]…$/.test(out)).toBe(false);
+  });
+  it("skip set keeps a refused family out of the rest of the run", () => {
+    const q = [{ key: "a", media: "PHOTO" }, { key: "b", media: "PHOTO" }];
+    expect(pickNext(q, { families: { a: { state: "refused", attempts: 1 } } }, null, new Set(["a"])).key).toBe("b");
+  });
+  it("classifies Signal Studio replies", () => {
+    expect(classifyPost(200, { publishId: "p" })).toMatchObject({ state: "sent" });
+    expect(classifyPost(502, { kind: "unknown" })).toMatchObject({ state: "failed", abort: false });
+    expect(classifyPost(502, { kind: "wait" })).toMatchObject({ state: null, abort: true, attempt: false });
+    expect(classifyPost(502, { kind: "limit" })).toMatchObject({ state: null, abort: true });
+    expect(classifyPost(502, { kind: "permanent" })).toMatchObject({ state: "refused", attempt: true, abort: false });
+    expect(classifyPost(409, { error: "TikTok is not connected yet" })).toMatchObject({ state: null, abort: true });
+    expect(classifyPost(409, { error: "file x was already sent to TikTok" })).toMatchObject({ state: "failed" });
+    expect(classifyPost(400, { error: "bad" })).toMatchObject({ state: "refused", attempt: true });
+    expect(classifyPost(500, {})).toMatchObject({ state: "failed", abort: true });
+    expect(classifyPost(0, {})).toMatchObject({ state: "failed", abort: true });
+  });
 });

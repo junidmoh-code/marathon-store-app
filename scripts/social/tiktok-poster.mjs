@@ -26,13 +26,14 @@
 // Nothing here ever blocks anything else. Failures show in Signal Studio's
 // daily report (its "TikTok local poster" line) and in logs/tiktok-poster.log.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { adminRequire } from "../adminRequire.mjs";
 import {
-  PER_SLOT, PHOTO_MAX_H, PHOTO_MAX_W, VIDEO_MAX_S, VIDEO_MIN_S, backoff, buildQueue, counts, pickNext, slotGap, tiktokText,
+  MAX_ATTEMPTS, PER_SLOT, PHOTO_MAX_H, PHOTO_MAX_W, STUCK_MS, VIDEO_MAX_S, VIDEO_MIN_S, backoff, buildQueue, classifyPost, counts, pickNext, slotGap, tiktokText,
 } from "./tiktokQueue.mjs";
 
 const args = process.argv.slice(2);
@@ -71,26 +72,35 @@ function token() {
   } catch { return null; }
 }
 
+/** Empty only when there is no ledger yet. An unreadable one stops the run: posting from a blank memory would repost. */
 function readLedger() {
-  try { return JSON.parse(readFileSync(LEDGER, "utf8")); } catch { return { families: {}, last: null }; }
+  let text;
+  try { text = readFileSync(LEDGER, "utf8"); } catch (e) { if (e.code === "ENOENT") return { families: {}, last: null }; throw new Error(`ledger unreadable (${e.code}); not posting`); }
+  const l = JSON.parse(text); // a parse error throws: not posting
+  if (!l || typeof l.families !== "object") throw new Error("ledger has no families; not posting");
+  return l;
 }
 function saveLedger(l) {
   mkdirSync(STATE_DIR, { recursive: true });
+  try { if (existsSync(LEDGER)) copyFileSync(LEDGER, `${LEDGER}.bak`); } catch { /* best effort */ }
   const tmp = `${LEDGER}.tmp`;
   writeFileSync(tmp, JSON.stringify(l, null, 1));
   renameSync(tmp, LEDGER);
 }
 
-/** One run at a time. A lock older than 2 hours is a crashed run. */
+/** One run at a time. The lock is touched after every post; one untouched for 2 hours is a crashed run. */
+const NONCE = `${process.pid}:${randomUUID()}`;
+let locked = false;
 function lock() {
   mkdirSync(STATE_DIR, { recursive: true });
   try {
     if (existsSync(LOCK) && Date.now() - statSync(LOCK).mtimeMs > 2 * 3600000) rmSync(LOCK);
-    writeFileSync(LOCK, String(process.pid), { flag: "wx" });
-    return true;
+    writeFileSync(LOCK, NONCE, { flag: "wx" });
+    return (locked = true);
   } catch { return false; }
 }
-const unlock = () => { try { rmSync(LOCK); } catch { /* gone */ } };
+const touchLock = () => { try { if (locked) utimesSync(LOCK, new Date(), new Date()); } catch { /* gone */ } };
+const unlock = () => { try { if (locked && readFileSync(LOCK, "utf8") === NONCE) rmSync(LOCK); } catch { /* gone */ } locked = false; };
 
 async function local(path, { method = "GET", body, type } = {}) {
   const t = token();
@@ -154,6 +164,9 @@ function checkVideo(buf) {
 
 /** Poll a publish id until it settles or ~3 minutes pass; updates the ledger entry in place. */
 async function settle(entry, ledger) {
+  if (Date.now() - (entry.at || 0) > STUCK_MS) {
+    entry.state = "failed"; entry.lastError = "status never settled within a day; not reposted"; saveLedger(ledger); return entry;
+  }
   for (let i = 0; i < 18; i++) {
     let r;
     try { r = await local(`/tiktok/post-status?publishId=${encodeURIComponent(entry.publishId)}`); } catch (e) { r = { status: 0, json: { error: e.message } }; }
@@ -169,10 +182,12 @@ async function settle(entry, ledger) {
   return entry; // still processing: the next run looks again
 }
 
+/** Returns { ok, abort }. abort: the account or the service is the problem; stop the run, count nothing. */
 async function postOne(c, ledger) {
   const fam = ledger.families;
-  const prev = fam[c.key] || {};
-  const entry = { state: "sending", media: c.media, ids: c.ids, attempts: (prev.attempts || 0) + 1, at: Date.now() };
+  const prev = fam[c.key];
+  const restore = () => { if (prev) fam[c.key] = prev; else delete fam[c.key]; saveLedger(ledger); };
+  const entry = { state: "sending", media: c.media, ids: c.ids, attempts: (prev?.attempts || 0) + 1, at: Date.now() };
   const { title, description } = tiktokText(c);
   // Prepare everything that can fail without touching TikTok first.
   const files = [];
@@ -183,14 +198,19 @@ async function postOne(c, ledger) {
       if (c.media === "PHOTO") bytes = await photoBytes(raw);
       else { const bad = checkVideo(raw); if (bad) throw new Error(`video not usable: ${bad}`); }
       const up = await retrying("upload", () => local(`/tiktok/media?type=${c.media === "PHOTO" ? "jpg" : "mp4"}`, { method: "POST", body: bytes, type: "application/octet-stream" }));
-      if (up.status !== 200) throw new Error(`upload refused: ${up.json?.error || up.status}`);
+      if (up.status !== 200) { const e = new Error(`upload refused: ${up.json?.error || up.status}`); e.service = up.status !== 400; throw e; }
       files.push(up.json.name);
     }
   } catch (e) {
+    // Our own tooling or Signal Studio failing is not this item's fault: stop the run and count nothing.
+    if (e.service || e.code === "ENOENT" || /fetch failed|ECONNREFUSED/.test(e.message)) {
+      log(`TikTok run stopped before posting ${c.key}: ${e.message}`);
+      return { ok: false, abort: true };
+    }
     fam[c.key] = { ...entry, state: "refused", lastError: e.message.slice(0, 200) };
     saveLedger(ledger);
-    log(`FAILED ${c.key} ${c.media}: ${e.message} (attempt ${entry.attempts}, nothing sent to TikTok)`);
-    return null;
+    log(`FAILED ${c.key} ${c.media}: ${e.message} (attempt ${entry.attempts}/${MAX_ATTEMPTS}, nothing sent to TikTok)`);
+    return { ok: false, abort: false };
   }
   fam[c.key] = entry;
   saveLedger(ledger); // "sending" is on disk before the one call that can create a post
@@ -198,17 +218,16 @@ async function postOne(c, ledger) {
   try {
     r = await local("/tiktok/post", { method: "POST", type: "application/json", body: JSON.stringify({ media: c.media, files, title, description, isAigc: c.isAigc, brandOrganic: true }) });
   } catch (e) {
-    fam[c.key] = { ...entry, state: "failed", lastError: `outcome unknown: ${e.message}`.slice(0, 200) };
-    saveLedger(ledger);
-    log(`FAILED ${c.key} ${c.media}: outcome unknown (${e.message}); never retried, check TikTok`);
-    return null;
+    r = { status: 0, json: { error: `no answer: ${e.message}` } };
   }
-  if (r.status !== 200) {
-    const unknown = r.json?.kind === "unknown" || r.status >= 500 && r.json?.kind !== "transient";
-    fam[c.key] = { ...entry, state: unknown ? "failed" : "refused", lastError: String(r.json?.error || r.status).slice(0, 200) };
+  const v = classifyPost(r.status, r.json);
+  if (v.state !== "sent") {
+    const why = String(r.json?.error || r.status).slice(0, 200);
+    if (v.state === null) { restore(); log(`TikTok run stopped at ${c.key}: ${why} (nothing created, nothing counted)`); return { ok: false, abort: true }; }
+    fam[c.key] = { ...entry, attempts: v.attempt ? entry.attempts : prev?.attempts || 0, state: v.state, lastError: v.state === "failed" ? `outcome unknown or failed: ${why}` : why };
     saveLedger(ledger);
-    log(`FAILED ${c.key} ${c.media}: ${r.json?.error || r.status}${unknown ? " (outcome unknown; never retried)" : ` (attempt ${entry.attempts}, created nothing)`}`);
-    return null;
+    log(`FAILED ${c.key} ${c.media}: ${why}${v.state === "failed" ? " (may be live; never retried, check TikTok)" : ` (attempt ${entry.attempts}/${MAX_ATTEMPTS}, created nothing)`}`);
+    return { ok: false, abort: v.abort };
   }
   Object.assign(entry, { state: "sent", publishId: r.json.publishId, privacy: r.json.privacy, at: Date.now() });
   fam[c.key] = entry;
@@ -216,16 +235,20 @@ async function postOne(c, ledger) {
   saveLedger(ledger);
   await settle(entry, ledger);
   log(`posted ${c.key} ${c.media} privacy=${entry.privacy} publish=${entry.publishId} status=${entry.status || "PROCESSING"}${entry.url ? ` ${entry.url}` : ""}`);
-  return entry;
+  return { ok: true, abort: false };
 }
 
 async function main() {
+  if (!DRY && !STATUS && !SLOT && !KICKOFF) { console.log("usage: tiktok-poster.mjs --slot | --kickoff N | --dry-run | --status"); return; }
   const t = token();
   if (!t && !DRY) { log("TikTok: SIGNAL_LOCAL_POST_TOKEN is not in ~/.env; skipped"); return; }
 
   let st = null;
   if (t) {
-    try { st = (await local("/tiktok/status")).json; } catch (e) { st = { connected: false, reason: `Signal Studio not reachable (${e.message})` }; }
+    try {
+      const r = await local("/tiktok/status");
+      st = r.status === 200 ? r.json : { connected: false, reason: `Signal Studio answered HTTP ${r.status}: ${r.json?.error || ""}` };
+    } catch (e) { st = { connected: false, reason: `Signal Studio not reachable (${e.message})` }; }
   }
 
   const require = adminRequire(import.meta.url);
@@ -234,7 +257,9 @@ async function main() {
   const snap = await admin.database().ref("social_posts").orderByChild("status").equalTo("posted").once("value");
   const posts = Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p }));
   const queue = buildQueue(posts);
-  const ledger = readLedger();
+  const posting = !DRY && !STATUS;
+  if (posting && st?.connected && !lock()) { log("TikTok: another run is in progress; skipped"); return; }
+  const ledger = readLedger(); // after the lock, so another run's posts are seen
   const n = counts(queue, ledger);
   const summary = `queue ${n.total} (${n.photos} photos, ${n.videos} videos): ${n.posted} live, ${n.pending} pending, ${n.failed} failed, ${n.waiting} waiting`;
 
@@ -257,20 +282,22 @@ async function main() {
     log(`TikTok: not connected in Signal Studio (${st?.reason || "unknown"}); skipped. ${summary}`);
     return;
   }
-  if (!lock()) { log("TikTok: another run is in progress; skipped"); return; }
   try {
-    // Anything left processing by an earlier run is settled first.
-    for (const e of Object.values(ledger.families)) if (e.state === "sent" && e.publishId) await settle(e, ledger);
+    // Anything left processing by an earlier run is settled first (at most 5 per run).
+    for (const e of Object.values(ledger.families).filter((x) => x.state === "sent" && x.publishId).slice(0, 5)) await settle(e, ledger);
     const want = KICKOFF || (SLOT ? PER_SLOT : 1);
     const gap = () => (KICKOFF ? 3 * 60000 : slotGap());
     log(`TikTok run: ${want} post(s) as @${st.username} (${st.nickname}), privacy options ${JSON.stringify(st.privacyOptions)}; ${summary}`);
     let done = 0, tries = 0;
+    const skip = new Set(); // a family that failed this run waits for a later run
     while (done < want && tries < want + 3) {
       tries++;
-      const c = pickNext(queue, ledger, ledger.last?.media);
+      const c = pickNext(queue, ledger, ledger.last?.media, skip);
       if (!c) { log("TikTok: queue is empty; nothing left to post"); break; }
       const r = await postOne(c, ledger);
-      if (r) { done++; if (done < want) await sleep(gap()); }
+      touchLock();
+      if (r.abort) break;
+      if (r.ok) { done++; if (done < want) await sleep(gap()); } else skip.add(c.key);
     }
     log(`TikTok run done: ${done}/${want} posted. ${(() => { const m = counts(queue, ledger); return `${m.posted} live, ${m.pending} pending, ${m.failed} failed, ${m.waiting} waiting`; })()}`);
   } finally { unlock(); }

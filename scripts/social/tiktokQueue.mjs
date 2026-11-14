@@ -44,10 +44,13 @@ const videos = (p) => (Array.isArray(p?.media) ? p.media : []).filter((m) => m &
 
 /** One TikTok candidate per family, oldest first. `posts` is [{ id, ...record }]. */
 export function buildQueue(posts) {
+  // Resolve chains (a feed twin of a reel's story twin) to the one root, over every record, posted or not.
+  const byId = new Map(posts.map((p) => [p.id, p]));
+  const root = (p) => { let k = p.id, cur = p; for (let i = 0; i < 5; i++) { const up = familyKey(cur); if (up === k || !byId.has(up)) return up; k = up; cur = byId.get(up); } return k; };
   const fams = new Map();
   for (const p of posts) {
     if (!postedOk(p)) continue;
-    const k = familyKey(p);
+    const k = root(p);
     if (!fams.has(k)) fams.set(k, []);
     fams.get(k).push(p);
   }
@@ -80,8 +83,8 @@ export function eligible(entry) {
 }
 
 /** The next family: the oldest eligible one, switching type from the last post when the other type is available. */
-export function pickNext(queue, ledger, lastMedia) {
-  const open = queue.filter((c) => eligible(ledger?.families?.[c.key]));
+export function pickNext(queue, ledger, lastMedia, skip = new Set()) {
+  const open = queue.filter((c) => !skip.has(c.key) && eligible(ledger?.families?.[c.key]));
   if (!open.length) return null;
   if (lastMedia && open[0].media === lastMedia) return open.find((c) => c.media !== lastMedia) || open[0];
   return open[0];
@@ -101,11 +104,12 @@ export function counts(queue, ledger) {
   return n;
 }
 
-const HOUSE_SKIP = /^#(marathonclub|sneakersa|shoponline|southafrica|fyp|foryou|tiktok)/i;
+const HOUSE_SKIP = /^#(marathonclub|sneakersa|shoponline|southafrica|fyp|foryou|foryoupage|tiktok|sneakertok|ootd)$/i;
 /** Caption body without its hashtags, plus 3 to 5 tags: up to 2 of the post's own, then the house ones. */
 export function captionParts(caption, kind) {
   const text = String(caption || "");
-  const own = [...new Set(text.match(/#[\p{L}\p{N}_]+/gu) || [])].filter((t) => !HOUSE_SKIP.test(t)).slice(0, 2);
+  const seen = new Set();
+  const own = (text.match(/#[\p{L}\p{N}_]+/gu) || []).filter((t) => !HOUSE_SKIP.test(t) && !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase())).slice(0, 2);
   const body = text.replace(/(^|\s)#[\p{L}\p{N}_]+/gu, "$1").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
   const style = kind === "outfit" || kind === "lookbook" || kind === "flatlay" ? "#OOTD" : "#SneakerTok";
   const tags = [...new Set([...own, "#MarathonClub", style, "#SouthAfrica"])].slice(0, 5);
@@ -116,7 +120,8 @@ export function captionParts(caption, kind) {
 export function cutWords(s, max) {
   const t = String(s || "").trim();
   if (t.length <= max) return t;
-  const room = t.slice(0, Math.max(0, max - 1));
+  let room = t.slice(0, Math.max(0, max - 1));
+  if (/[\uD800-\uDBFF]$/.test(room)) room = room.slice(0, -1); // never half an emoji
   const at = room.lastIndexOf(" ");
   return `${(at > max * 0.6 ? room.slice(0, at) : room).replace(/[\s,.;:!-]+$/, "")}…`;
 }
@@ -137,3 +142,27 @@ export const backoff = (attempt) => Math.min(60000, 2000 * 2 ** attempt);
 
 /** A random gap inside the slot spacing. */
 export const slotGap = (rand = Math.random) => GAP_MIN_MS + Math.floor(rand() * (GAP_MAX_MS - GAP_MIN_MS));
+
+/**
+ * What a reply from Signal Studio's POST /tiktok/post means for the ledger (see social/local.ts).
+ *   state:   sent | failed (may be live: never again) | refused (created nothing) | null (leave the entry as it was)
+ *   attempt: counts toward MAX_ATTEMPTS (only problems with this item)
+ *   abort:   stop the run (the account or service is the problem, not the item)
+ */
+export function classifyPost(status, json) {
+  const kind = json?.kind;
+  if (status === 200 && json?.publishId) return { state: "sent", attempt: false, abort: false };
+  if (status === 0) return { state: "failed", attempt: false, abort: true };              // no answer at all
+  if (kind === "unknown") return { state: "failed", attempt: false, abort: false };
+  if (status === 409 && /already sent/.test(String(json?.error))) return { state: "failed", attempt: false, abort: false };
+  if (status === 401 || status === 409) return { state: null, attempt: false, abort: true };
+  if (status === 502) {
+    if (["wait", "limit", "auth", "transient", "unaudited"].includes(kind)) return { state: null, attempt: false, abort: true };
+    return { state: "refused", attempt: true, abort: false };                              // permanent: this item
+  }
+  if (status === 400) return { state: "refused", attempt: true, abort: false };
+  return { state: "failed", attempt: false, abort: true };                                 // 500 or odd: may have posted
+}
+
+/** A sent post whose status never settled is given up on (never re-posted) after a day. */
+export const STUCK_MS = 24 * 3600000;
