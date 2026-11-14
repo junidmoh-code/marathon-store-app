@@ -97,7 +97,8 @@ function lock() {
     if (existsSync(LOCK)) {
       const pid = Number(String(readFileSync(LOCK, "utf8")).split(":")[0]);
       let alive = false;
-      try { process.kill(pid, 0); alive = true; } catch (e) { alive = e.code === "EPERM"; }
+      if (!Number.isInteger(pid) || pid <= 0) alive = Date.now() - statSync(LOCK).mtimeMs < 6 * 3600000; // unreadable: only age can tell
+      else { try { process.kill(pid, 0); alive = true; } catch (e) { alive = e.code === "EPERM"; } }
       if (alive) return false;
       rmSync(LOCK); // its owner died without releasing it
     }
