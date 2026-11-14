@@ -209,7 +209,8 @@ export async function runOrderAgent(deps) {
       // The stamp changes the order every POS downloads: written when what it says changes, or every STAMP_EVERY_MS
       // so the card's "last run" line stays current.
       const old = order.agent || {};
-      const same = old.group === stamp.group && (old.reason ?? null) === (stamp.reason ?? null) && (old.note ?? null) === (stamp.note ?? null);
+      const same = old.group === stamp.group && (old.reason ?? null) === (stamp.reason ?? null) && (old.note ?? null) === (stamp.note ?? null)
+        && (old.detail ?? null) === (stamp.detail ?? null) && num(old.here) === num(stamp.here) && num(old.total) === num(stamp.total);
       if (commit && (!same || !(now - num(old.at) < STAMP_EVERY_MS))) {
         // Never recreate an order deleted since it was read: the stamp lands only while the order still has a status.
         await db.ref(`online_orders/${id}`).transaction((cur) => (cur == null ? null : cur.status ? { ...cur, agent: stamp } : undefined));

@@ -288,18 +288,22 @@ export function judgeOrder(order, facts = {}, now = Date.now()) {
   const entries = linesOf(order).filter(([, l]) => !OFF_PARCEL.has(l?.source?.status ?? null));
   const total = entries.length;
   const judged = entries.map(([i, l]) => judgeLine(order, i, l, facts.lines?.[i] || {}, now)).filter(Boolean);
-  const here = total - judged.length;
+  // Physically in hand, counted on its own: a line in hand with a difference unpaid is red but still here.
+  const here = entries.filter(([i, l]) => lineIsHere(order, i, l)).length;
   const actions = judged.flatMap((j) => j.actions);
   const detail = total > 0 && here < total ? `${here} of ${total} here` : null;
   if (awaitingIncomingReturn(order)) return { group: "incoming", reason: "Waiting for the customer's return", detail, lines: judged, actions: actions.filter((a) => a.type === "close_refund"), here, total };
   if (total === 0) return { group: "green", reason: null, detail: "Nothing left to ship — closing", lines: [], actions: [], here: 0, total: 0 };
-  const red = judged.filter(isRedLine).sort((a, b) => a.prio - b.prio || a.i - b.i);
+  // Junid's card surface rule (14 Nov 2026, latest): GREEN only when everything is in hand and the order can be
+  // packed (a balance we owe the customer included); anything blocking is RED — an unavailable item, Jamie offering
+  // alternatives, finding stock, money owed, and an item still at a place or on its way. Unavailable / money speak first.
+  const red = [...judged.filter(isRedLine).sort((a, b) => a.prio - b.prio || a.i - b.i), ...judged.filter((j) => !isRedLine(j)).sort((a, b) => a.prio - b.prio || a.i - b.i)];
   if (!red.length) {
     // Green, still with what is not here yet in the agent's own words for the log (the card shows "X of Y here").
     const sorted = [...judged].sort((a, b) => a.prio - b.prio || a.i - b.i);
     return { group: "green", reason: null, detail, lines: sorted, actions, here, total };
   }
-  const reason = `${redWords(red[0])}${red.length > 1 ? ` (+${red.length - 1} more)` : ""}`;
-  const others = judged.filter((j) => !isRedLine(j)).sort((a, b) => a.prio - b.prio || a.i - b.i);
-  return { group: "red", reason, detail, lines: [...red, ...others], actions, here, total };
+  const top = red[0];
+  const reason = `${isRedLine(top) ? redWords(top) : top.why}${red.length > 1 ? ` (+${red.length - 1} more)` : ""}`;
+  return { group: "red", reason, detail, lines: red, actions, here, total };
 }

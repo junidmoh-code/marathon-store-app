@@ -89,7 +89,7 @@ describe("#2133 shape (29 lines; a not-found today, waits, a refund, a reply owe
   it("red; the customer's open question speaks first; never 'Needs attention'", () => {
     const v = judgeOrder(order, facts, NOW);
     expect(v.group).toBe("red");
-    expect(v.reason).toBe("Item unavailable — Jamie offering alternatives (+2 more)"); // line 9 at Trophy and line 5 (2 at Central, coming by refill) are not red (Junid 14 Nov)
+    expect(v.reason).toBe("Item unavailable — Jamie offering alternatives (+4 more)"); // card rule (latest): line 9 at Trophy and line 5 (coming from Central) block too
     for (const l of v.lines) expect(l.why).not.toMatch(/attention/i);
   });
   it("line 0 not found at PE (PE's count is stale) → re-picked at Concrete, PE excluded", () => {
@@ -126,9 +126,9 @@ describe("the customer and the money", () => {
     expect(judgeOrder(ask({ told: { at: NOW - 5 * 3600e3 } }), {}, NOW).actions).toEqual([expect.objectContaining({ type: "chase", kind: "follow_up" })]);
     expect(judgeOrder(ask({ told: { at: NOW - 25 * 3600e3 } }), {}, NOW).actions).toEqual([expect.objectContaining({ type: "chase", kind: "no_answer_24h" })]);
   });
-  it("waiting for items / on the way is GREEN with 'X of Y here' (Junid 14 Nov)", () => {
+  it("waiting for items / on the way is RED under the latest card rule (green = everything in hand)", () => {
     const o = { lines: [handedPE(), { pid: "B", size: "M", sizeKey: "M", qty: 1, source: { status: "handed", locationId: "hub1", orderKeys: ["ABC"] } }, { pid: "C", size: "M", sizeKey: "M", qty: 1, source: { status: "display", locationId: "trophy" } }] };
-    expect(judgeOrder(o, {}, NOW)).toMatchObject({ group: "green", reason: null, detail: "1 of 3 here" });
+    expect(judgeOrder(o, {}, NOW)).toMatchObject({ group: "red", detail: "1 of 3 here" });
   });
   it("Concrete keeps its own hours: Sat 13:00–16:00 is 3 trading hours there, Sunday 09–14 only", async () => {
     const { tradingHoursBetween: th } = await import("./hours.mjs");
