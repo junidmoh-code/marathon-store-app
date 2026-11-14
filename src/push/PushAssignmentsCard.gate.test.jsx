@@ -13,6 +13,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
+// The website-pick shops the card lists after the hubs (Junid, 14 Nov 2026).
+const SHOPS = ["marathon-pe", "trophy", "concrete", "marathon-pine"];
+const SHOP_OFF = SHOPS.map(() => false);
+const SHOP_NULLS = Object.fromEntries(SHOPS.map((h) => [`push_hub_audience/${h}/u1`, null]));
 
 globalThis.window = globalThis.window || {
   addEventListener() {}, removeEventListener() {},
@@ -230,7 +234,7 @@ describe("the roster it shows", () => {
     // 3 usable accounts × every hub in PUSH_HUBS. The 4th uid is not a legal
     // RTDB key. Derived from the list, so adding a hub cannot leave a row
     // half-rendered, and the reason the number is what it is stays on screen.
-    expect(rowSwitches(tree)).toHaveLength(3 * PUSH_HUBS.length);
+    expect(rowSwitches(tree)).toHaveLength(3 * (PUSH_HUBS.length + SHOPS.length));
     expect(rowSwitches(tree).map((n) => n.props["aria-label"]).join("|")).toContain("Hub 3 alerts for");
     expect(rowSwitches(tree).map((n) => n.props["aria-label"]).join("|")).not.toContain("Dawid");
   });
@@ -241,9 +245,9 @@ describe("the roster it shows", () => {
     const ayanda = rowSwitches(tree).filter((n) => n.props["aria-label"].includes("Ayanda"));
     // hub1 on; hub2 explicitly false; hub3 ABSENT from this legacy-shaped
     // record and therefore off — not unset-and-therefore-on.
-    expect(ayanda.map((n) => n.props["aria-checked"])).toEqual([true, false, false]);
+    expect(ayanda.map((n) => n.props["aria-checked"])).toEqual([true, false, false, ...SHOP_OFF]);
     // three hubs — there is no Concrete Stockroom (removed 8 Oct 2026)
-    expect(ayanda.map((n) => n.props["aria-label"])).toEqual([
+    expect(ayanda.map((n) => n.props["aria-label"]).slice(0, 3)).toEqual([
       "Hub 1 alerts for Ayanda", "Hub 2 alerts for Ayanda", "Hub 3 alerts for Ayanda",
     ]);
   });
@@ -286,6 +290,7 @@ describe("what a tap actually writes", () => {
       "push_hub_audience/hub1/u1": { at: 1_757_000_000_000 },
       "push_hub_audience/hub2/u1": null,
       "push_hub_audience/hub3/u1": null,
+      ...SHOP_NULLS,
     });
   });
 
@@ -558,7 +563,7 @@ describe("only the newest load may write state", () => {
     await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
     expect(sw().props["aria-checked"], "a stale load must not put the switch back").toBe(true);
     expect(tree.root.findAll((n) => n.props && n.props.role === "switch"),
-      "and must not rebuild the list underneath it").toHaveLength(2 * PUSH_HUBS.length);
+      "and must not rebuild the list underneath it").toHaveLength(2 * (PUSH_HUBS.length + SHOPS.length));
   });
 });
 
@@ -652,7 +657,7 @@ describe("a truncated ROSTER raises its own banner", () => {
     expect(t, "the roster banner must fire").toContain("more staff accounts than this screen reads");
     expect(t, "the assignments read was fine").not.toContain("assignments could not be read");
     expect(tree.root.findAll((n) => n.props && n.props.role === "switch"),
-      "the one non-till account still rendered").toHaveLength(PUSH_HUBS.length);
+      "the one non-till account still rendered").toHaveLength(PUSH_HUBS.length + SHOPS.length);
   });
 
   it("both banners stand together when both nodes are truncated, without contradicting each other", async () => {
@@ -835,7 +840,7 @@ describe("hubs from the registry, by section", () => {
     getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     const tree = await render({ authUser: ADMIN });
     const groups = tree.root.findAll((n) => n.type === "span" && n.props["data-hub-group"] !== undefined);
-    expect(groups.map((g) => g.props["data-hub-group"])).toEqual([2, 1]);
+    expect(groups.map((g) => g.props["data-hub-group"])).toEqual([2, 1, "shops"]);
     const labelsIn = (g) => g.findAll((n) => n.props && n.props.role === "switch").map((n) => n.props["aria-label"]);
     expect(labelsIn(groups[0])).toEqual(["Hub 1 alerts for Ayanda", "Hub 2 alerts for Ayanda"]);
     expect(labelsIn(groups[1])).toEqual(["Hub 3 alerts for Ayanda"]);
@@ -863,6 +868,7 @@ describe("hubs from the registry, by section", () => {
       "push_hub_audience/hub1/u1": null,
       "push_hub_audience/hub2/u1": null,
       "push_hub_audience/hub3/u1": { at: 1_757_000_000_000 },
+      ...SHOP_NULLS,
     });
   });
 
@@ -902,8 +908,9 @@ describe("hubs from the registry, by section", () => {
     } }));
     const tree = await render({ authUser: ADMIN });
     const disabled = (name) => switchesFor(tree, name).map((n) => n.props.disabled);
-    expect(disabled("Petra")).toEqual([true, true, false]);
-    expect(disabled("Wally")).toEqual([false, false, false]);
-    expect(disabled("Bothy")).toEqual([false, false, false]);
+    // Then the website-pick shops: PE, Trophy (Section 2), Concrete, Pine (Section 1).
+    expect(disabled("Petra")).toEqual([true, true, false, true, true, false, false]);
+    expect(disabled("Wally")).toEqual([false, false, false, false, false, false, false]);
+    expect(disabled("Bothy")).toEqual([false, false, false, false, false, false, false]);
   });
 });

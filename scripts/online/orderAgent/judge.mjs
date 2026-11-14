@@ -154,11 +154,15 @@ const firstFree = (free, exclude, isFootwear, qty) => {
 export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
   const st = line?.source?.status ?? null;
   if (OFF_PARCEL.has(st)) return null;
-  if (lineIsHere(order, i, line)) return null;
   const rec = jamieRecord(order, i, line);
+  // Money the customer owes holds the parcel even when the item is in hand (the POS's red rule too).
+  if (rec?.state === "awaiting_payment" && num(rec.diffCents) > 0 && lineIsHere(order, i, line)) {
+    return { i, kind: "payment", prio: PRIORITY.payment, why: `${rands(rec.diffCents)} difference unpaid`, title: line?.title || line?.pid || `Line ${i + 1}`, status: st, central: 0, actions: [{ type: "chase", kind: "payment_link", i, evidence: { diffCents: num(rec.diffCents), jamieState: rec.state } }] };
+  }
+  if (lineIsHere(order, i, line)) return null;
   const mark = markOf(line, now);
   const title = line?.title || line?.pid || `Line ${i + 1}`;
-  const out = (kind, prio, why, actions = []) => ({ i, kind, prio, why, title, actions });
+  const out = (kind, prio, why, actions = []) => ({ i, kind, prio, why, title, actions, status: st, central: num(facts.central) });
 
   // 1 SETTLED — Shopify's own refund record for this line item.
   const refund = facts.shopifyRefund;
@@ -235,7 +239,7 @@ export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
   const loc = line.source?.locationId || null;
   if (st === "pick" || st === "display") {
     const since = num(facts.sinceMs) || num(line.repick?.appliedAt) || num(order?.ingestedAt);
-    const th = since > 0 ? tradingHoursBetween(since, now) : 0;
+    const th = since > 0 ? tradingHoursBetween(since, now, loc) : 0;
     const actions = [];
     const ev = { at: loc, status: st, since: since || null, tradingHours: Math.round(th * 10) / 10, entry: line.source?.entryKey || null };
     if (th >= ESCALATE_AFTER_TH) actions.push({ type: "escalate", i, level: "4h", evidence: ev });
@@ -248,21 +252,58 @@ export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
   return out("other", PRIORITY.other, "Being sorted out");
 }
 
+// ── THE COLOURS (Junid's final decision, 14 Nov 2026) ─────────────────────────────────────────────────────────
+// RED only when (a) an item is genuinely unavailable (a place rejected it / could not find it, or it is unavailable
+// everywhere) or (b) the customer owes us money (a dearer pick's difference unpaid). Everything else is GREEN —
+// waiting for items, released or on its way from a hub or shop, a balance WE owe the customer — with "X of Y here".
+const UNAVAILABLE_STATUS = new Set(["not_found", "no_stock", "needs_attention", "unavailable", "resolving", "unresolved"]);
+// Stock at Central that the refill scan brings is WAITING FOR ITEMS (green), not unavailable (architect review).
+export const isRedLine = (j) => j.kind === "payment" || (UNAVAILABLE_STATUS.has(String(j.status)) && !(j.kind === "wait_stock" && j.central > 0));
+/** A red line's few plain words: "R100 difference unpaid", "Item unavailable — Jamie offering alternatives". */
+export function redWords(j) {
+  if (j.kind === "payment") return j.why;
+  const tail = {
+    customer: "Jamie offering alternatives",
+    nowhere: "Jamie offering alternatives",
+    refund: "refund being closed",
+    settled: "refund being closed",
+  }[j.kind];
+  if (tail) return `Item unavailable — ${tail}`;
+  if (j.kind === "finding") {
+    const m = String(j.why).match(/re-picking at (.+)$/);
+    if (m) return `Item unavailable — re-picking at ${m[1]}`;
+    if (/Junid deciding/.test(j.why)) return "Item unavailable — Junid deciding";
+    return "Item unavailable — finding stock";
+  }
+  if (j.kind === "wait_stock") return /Customer waiting/.test(j.why) ? "Item unavailable — customer waiting for stock" : "Item unavailable — waiting on refill";
+  if (String(j.status) === "unresolved") return "Item unavailable — not linked to a product";
+  return "Item unavailable — being sorted out";
+}
+
 /**
- * The whole order → { group, reason, lines: [judged…], actions: [...], here, total }.
+ * The whole order → { group, reason, detail, lines: [judged…], actions: [...], here, total }.
  *   facts  { lines: { [i]: lineFacts } }
  */
 export function judgeOrder(order, facts = {}, now = Date.now()) {
   const entries = linesOf(order).filter(([, l]) => !OFF_PARCEL.has(l?.source?.status ?? null));
   const total = entries.length;
   const judged = entries.map(([i, l]) => judgeLine(order, i, l, facts.lines?.[i] || {}, now)).filter(Boolean);
-  const here = total - judged.length;
+  // Physically in hand, counted on its own: a line in hand with a difference unpaid is red but still here.
+  const here = entries.filter(([i, l]) => lineIsHere(order, i, l)).length;
   const actions = judged.flatMap((j) => j.actions);
-  if (awaitingIncomingReturn(order)) return { group: "incoming", reason: "Waiting for the customer's return", lines: judged, actions: actions.filter((a) => a.type === "close_refund"), here, total };
-  if (total === 0) return { group: "red", reason: "Nothing left to ship — closing", lines: [], actions: [], here: 0, total: 0 };
-  if (!judged.length) return { group: "green", reason: null, lines: [], actions: [], here, total };
-  const sorted = [...judged].sort((a, b) => a.prio - b.prio || a.i - b.i);
-  const top = sorted[0];
-  const reason = `${top.why}${judged.length > 1 ? ` (+${judged.length - 1} more)` : ""}`;
-  return { group: "red", reason, lines: sorted, actions, here, total };
+  const detail = total > 0 && here < total ? `${here} of ${total} here` : null;
+  if (awaitingIncomingReturn(order)) return { group: "incoming", reason: "Waiting for the customer's return", detail, lines: judged, actions: actions.filter((a) => a.type === "close_refund"), here, total };
+  if (total === 0) return { group: "green", reason: null, detail: "Nothing left to ship — closing", lines: [], actions: [], here: 0, total: 0 };
+  // Junid's card surface rule (14 Nov 2026, latest): GREEN only when everything is in hand and the order can be
+  // packed (a balance we owe the customer included); anything blocking is RED — an unavailable item, Jamie offering
+  // alternatives, finding stock, money owed, and an item still at a place or on its way. Unavailable / money speak first.
+  const red = [...judged.filter(isRedLine).sort((a, b) => a.prio - b.prio || a.i - b.i), ...judged.filter((j) => !isRedLine(j)).sort((a, b) => a.prio - b.prio || a.i - b.i)];
+  if (!red.length) {
+    // Green, still with what is not here yet in the agent's own words for the log (the card shows "X of Y here").
+    const sorted = [...judged].sort((a, b) => a.prio - b.prio || a.i - b.i);
+    return { group: "green", reason: null, detail, lines: sorted, actions, here, total };
+  }
+  const top = red[0];
+  const reason = `${isRedLine(top) ? redWords(top) : top.why}${red.length > 1 ? ` (+${red.length - 1} more)` : ""}`;
+  return { group: "red", reason, detail, lines: red, actions, here, total };
 }

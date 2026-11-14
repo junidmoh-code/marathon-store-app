@@ -121,7 +121,7 @@ import {
   assignmentUpdates,
   isLegalKey,
 } from "./pushAssignments";
-import { hubSectionOf } from "./pushHubs";
+import { hubSectionOf, PUSH_SHOPS } from "./pushHubs";
 import { useNetwork } from "../utils/useNetwork";
 import { accountSections, sectionRecord, sectionName } from "../components/sectionAccess";
 // The one super-admin identity the rest of the admin surface uses.
@@ -140,8 +140,14 @@ export function hubGroups(registry) {
     if (!g) { g = { section, name: sectionName(registry, section), hubs: [] }; out.push(g); }
     g.hubs.push({ id: hub, label: pushHubLabel(registry, hub) });
   }
-  return out.sort((a, b) => b.section - a.section);
+  out.sort((a, b) => b.section - a.section);
+  // The shops whose staff pick website orders (Junid, 14 Nov 2026): one more group, "Website picks". Only the order
+  // agent's 2-hour nudge reads these; store orders still fan out to hubs only.
+  out.push({ section: "shops", name: "Website picks (shops)", hubs: PUSH_SHOPS.map((id) => ({ id, label: pushHubLabel(registry, id) })) });
+  return out;
 }
+/** Every id an assignment may name on this card: the registry's hubs, then the website-pick shops. */
+export const cardHubsFor = (registry) => [...pushHubsFor(registry), ...PUSH_SHOPS.filter((h) => !pushHubsFor(registry).includes(h))];
 
 const FONT    = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 const CARD    = "#1c1c1e";
@@ -226,7 +232,7 @@ function PushAssignmentsAuthed({ onExit }) {
   // every hub there is today.
   const { registry } = useNetwork();
   const groups = useMemo(() => hubGroups(registry), [registry]);
-  const allHubs = useMemo(() => pushHubsFor(registry), [registry]);
+  const allHubs = useMemo(() => cardHubsFor(registry), [registry]);
   // The load reads each record FOR this list, so it runs again if the list
   // itself changes (a hub added on the Network card) — keyed on the ids, not on
   // the registry object, so an unrelated registry edit reloads nothing.
@@ -503,7 +509,7 @@ function PushAssignmentsAuthed({ onExit }) {
 
         <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 6px", letterSpacing: "-.02em" }}>Order alerts</h1>
         <p style={{ fontSize: 13, lineHeight: 1.55, color: TEXT_2, margin: "0 0 18px" }}>
-          Choose who is alerted when a shop places an order, and for which hub.
+          Choose who is alerted when a shop places an order, and for which hub — and, under Website picks, which shop staff are nudged about a website pick waiting on their floor.
           Nobody is alerted unless you switch a hub on here — staff have no
           setting of their own. Someone on more than one hub hears about each of
           them.
@@ -653,7 +659,8 @@ function PushAssignmentsAuthed({ onExit }) {
 /** May this account be alerted about this hub at all? A hub with no section
  *  (none today) is open to everyone. */
 function hubInSections(registry, sections, hub) {
-  const s = hubSectionOf(registry, hub);
+  // A website-pick shop belongs to its own section (Pine and Concrete to Section 1, PE and Trophy to Section 2).
+  const s = PUSH_SHOPS.includes(hub) ? (registry?.locations?.[hub]?.section ?? null) : hubSectionOf(registry, hub);
   return s === null || (sections || []).includes(s);
 }
 

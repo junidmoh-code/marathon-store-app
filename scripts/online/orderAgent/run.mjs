@@ -6,8 +6,8 @@
 //   repick        → /online_orders/{id}/agentRepicks/{rid} (the poller applies it: agentRepick.mjs)
 //   chase         → a row in Jamie's jamie_chase_requests (Jamie follows up / sends the link / offers alternatives
 //                   through its own paced paths; the row's id makes it once per order line per SAST day)
-//   nudge         → a web push to the hub's assigned staff (push_hub_audience, mute veto); shops have no audience,
-//                   which is logged
+//   nudge         → a web push to the place's assigned staff (push_hub_audience, mute veto): hubs, and the shops
+//                   once Junid switches their staff on (Order Alerts card); "nobody assigned" is retried next day
 //   escalate      → one Jamie-app case to Junid (a chase row of kind junid_escalation)
 // Every order it checked gets `agent` {at, group, reason, actions, note} (the POS card's "last run" line), every
 // action a log row with its evidence under online_order_agent/log/{day}. At the first run from 18:00 the day's summary
@@ -199,7 +199,7 @@ export async function runOrderAgent(deps) {
         logRows.push(clean({ at: now, run: runId, order: label, id, line: a.i, type: a.type, kind: a.kind || null, to: a.to || a.location || null, result: res, evidence: a.evidence || null }));
       }
       const note = done.length ? done.join(" · ") : null;
-      const stamp = clean({ at: now, run: runId, group: verdict.group, reason: verdict.reason, actions: done, note, here: verdict.here, total: verdict.total });
+      const stamp = clean({ at: now, run: runId, group: verdict.group, reason: verdict.reason, detail: verdict.detail, actions: done, note, here: verdict.here, total: verdict.total });
       const prev = dayOrders[id] || {};
       const dayRow = clean({
         label, firstSeenAt: prev.firstSeenAt || now, firstGroup: prev.firstGroup || verdict.group, group: verdict.group, reason: verdict.reason,
@@ -209,7 +209,8 @@ export async function runOrderAgent(deps) {
       // The stamp changes the order every POS downloads: written when what it says changes, or every STAMP_EVERY_MS
       // so the card's "last run" line stays current.
       const old = order.agent || {};
-      const same = old.group === stamp.group && (old.reason ?? null) === (stamp.reason ?? null) && (old.note ?? null) === (stamp.note ?? null);
+      const same = old.group === stamp.group && (old.reason ?? null) === (stamp.reason ?? null) && (old.note ?? null) === (stamp.note ?? null)
+        && (old.detail ?? null) === (stamp.detail ?? null) && num(old.here) === num(stamp.here) && num(old.total) === num(stamp.total);
       if (commit && (!same || !(now - num(old.at) < STAMP_EVERY_MS))) {
         // Never recreate an order deleted since it was read: the stamp lands only while the order still has a status.
         await db.ref(`online_orders/${id}`).transaction((cur) => (cur == null ? null : cur.status ? { ...cur, agent: stamp } : undefined));
@@ -332,17 +333,20 @@ async function act({ db, chase, push, commit, now, day, id, order, label, line, 
   }
   if (a.type === "nudge") {
     // One push per place per order: every line still waiting there, each nudged once per route generation.
-    const due = (a.items || []).filter((it) => !marks[safeKey(`nudge_${it.i}_${it.rg}`)]);
+    const due = (a.items || []).filter((it) => { const m = marks[safeKey(`nudge_${it.i}_${it.rg}`)]; return !m || (!m.sent && m.day !== day); });
     if (!due.length) return { skipped: true };
     const what = due.map((it) => `${it.line?.title || "an item"}${it.line?.size && it.line.size !== "_" ? ` (${it.line.size})` : ""}`).join(", ");
     const title = `${label}: ${due.length === 1 ? "an item" : `${due.length} items`} still to pick`;
-    const body = `${place(a.location)} — website order ${label}: ${what}, waiting ${Math.max(...due.map((it) => num(it.evidence?.tradingHours)))} trading hours. Please pick and send to Marathon PE.`;
+    const ask = a.location === "marathon-pe" ? "Please pick it for the packer." : "Please pick and send to Marathon PE.";
+    const body = `${place(a.location)} — website order ${label}: ${what}, waiting ${Math.max(...due.map((it) => num(it.evidence?.tradingHours)))} trading hours. ${ask}`;
     let res = { sent: false, why: "dry run" };
     if (commit) {
       res = push ? await push({ hub: a.location, title, body, tag: `online-${id}-${a.location}` }).catch((e) => ({ sent: false, why: String(e?.message || e).slice(0, 120) })) : { sent: false, why: "no push sender" };
       // Marked only when delivered, or when it never can be (no audience / no phone): a transient failure is retried.
-      const permanent = !res.sent && /^no (push audience|phone registered)/.test(String(res.why || ""));
-      if (res.sent || permanent) for (const it of due) await db.ref(`${AGENT_ROOT}/marks/${id}/${safeKey(`nudge_${it.i}_${it.rg}`)}`).set({ at: now, day, sent: !!res.sent, why: res.why || null });
+      // Delivered → done. Nobody assigned / no phone yet (shops until Junid switches their staff on) → tried again
+      // the next day, never burned for good. A transient failure → tried again next run.
+      const noOne = !res.sent && /^no (push audience|phone registered)/.test(String(res.why || ""));
+      if (res.sent || noOne) for (const it of due) await db.ref(`${AGENT_ROOT}/marks/${id}/${safeKey(`nudge_${it.i}_${it.rg}`)}`).set({ at: now, day, sent: !!res.sent, why: res.why || null });
     }
     return { ...res, title, lines: due.map((it) => it.i) };
   }
