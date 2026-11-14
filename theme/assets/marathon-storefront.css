@@ -2045,3 +2045,5 @@ main .shopify-section > .gradient,
 .product__info-container .product-form__submit,
 .product__info-container .product-form__submit * { font-style: normal; }
 .product__info-container .mc-trust { margin: 1.4rem 0 0.4rem; }
+/* 2026-11-14 Junid: plain black page background to match the mockup */
+.mc-fence-bg { background-image: none !important; background-color: #000 !important; }
