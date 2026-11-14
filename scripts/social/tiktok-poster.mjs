@@ -77,7 +77,7 @@ function readLedger() {
   let text;
   try { text = readFileSync(LEDGER, "utf8"); } catch (e) { if (e.code === "ENOENT") return { families: {}, last: null }; throw new Error(`ledger unreadable (${e.code}); not posting`); }
   const l = JSON.parse(text); // a parse error throws: not posting
-  if (!l || typeof l.families !== "object") throw new Error("ledger has no families; not posting");
+  if (!l || !l.families || typeof l.families !== "object" || Array.isArray(l.families)) throw new Error("ledger has no families object; not posting");
   return l;
 }
 function saveLedger(l) {
@@ -131,10 +131,17 @@ async function download(url) {
   for (let i = 0; ; i++) {
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(120000) });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) { const e = new Error(`HTTP ${r.status}`); e.httpStatus = r.status; throw e; }
       return Buffer.from(await r.arrayBuffer());
     } catch (e) {
-      if (i === 3) throw new Error(`download failed: ${e.message}`);
+      if (i === 3) {
+        // The file itself is gone (4xx except 408/429): this item's problem. Anything else (5xx, 429, network) is
+        // Storage or the network: the run stops and nothing is counted against the item.
+        const s = e.httpStatus;
+        const err = new Error(`download failed: ${e.message}`);
+        err.service = !(s >= 400 && s < 500 && s !== 408 && s !== 429);
+        throw err;
+      }
       await sleep(backoff(i));
     }
   }
@@ -254,7 +261,9 @@ async function main() {
   const require = adminRequire(import.meta.url);
   const admin = require("firebase-admin");
   if (!admin.apps.length) admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
-  const snap = await admin.database().ref("social_posts").orderByChild("status").equalTo("posted").once("value");
+  // Every record, not only posted ones: a posted twin's parent may itself have failed, and the family root must
+  // still resolve through it (buildQueue keeps only posted records as sources).
+  const snap = await admin.database().ref("social_posts").once("value");
   const posts = Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p }));
   const queue = buildQueue(posts);
   const posting = !DRY && !STATUS;

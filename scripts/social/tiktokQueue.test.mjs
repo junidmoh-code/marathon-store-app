@@ -136,3 +136,11 @@ describe("review fixes", () => {
     expect(classifyPost(0, {})).toMatchObject({ state: "failed", abort: true });
   });
 });
+
+it("a posted feed twin whose story parent failed still resolves to the parent's family", () => {
+  const q = buildQueue([
+    { id: "s", format: "story", status: "failed", results: {}, media: [img("s")], postedAt: 1 },
+    { id: "f", format: "feed", twinOf: "s", status: "posted", results: ok, media: [img("f")], postedAt: 2 },
+  ]);
+  expect(q.map((c) => [c.key, c.urls[0]])).toEqual([["s", "https://x/f.jpg"]]);
+});
