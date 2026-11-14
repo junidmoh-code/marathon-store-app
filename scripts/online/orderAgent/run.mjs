@@ -306,7 +306,9 @@ async function act({ db, chase, push, commit, now, day, id, order, label, line, 
     if (commit) {
       const res = await db.ref(path).transaction((cur) => {
         if (cur == null) return null;
-        if (cur.escalationOverride || OFF_PARCEL.has(cur.source?.status) || cur.source?.status === "handed") return undefined;
+        if (cur.escalationOverride || cur.escalation?.request || cur.escalation?.pending || OFF_PARCEL.has(cur.source?.status) || cur.source?.status === "handed") return undefined;
+        // Still the line that was judged: same item, size, route generation and swap (a swap since gets no refund close).
+        if (String(cur.pid) !== String(line?.pid) || String(cur.size) !== String(line?.size) || num(cur.routeGen) !== rg || num(cur.swappedFrom?.at) !== num(line?.swappedFrom?.at)) return undefined;
         return { ...cur, escalationOverride: { kind: "resolved", by: "order-agent", at: now, why: `refunded R${Math.round(num(a.evidence?.cents) / 100)} (Shopify refund ${new Date(num(a.evidence?.refundedAt)).toISOString()})` }, resolution: { ...(cur.resolution || {}), outcome: { kind: "refund", amountCents: num(a.evidence?.cents), at: num(a.evidence?.refundedAt) || now, via: "order-agent", source: "shopify" } }, awaitingCustomer: null };
       });
       if (!res.committed) return { skipped: true };

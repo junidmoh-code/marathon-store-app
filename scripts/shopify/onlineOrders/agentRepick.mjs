@@ -173,20 +173,25 @@ export async function applyAgentRepicks(ctx, id, order, helpers) {
         continue;
       }
       const to = plan.pieces[0];
-      // The basket and the till's code confirmations, read again just before the line moves (a packer may have
-      // scanned it in since the order was read).
-      const [basketNow, codesNow] = await Promise.all([ctx.get(`${ONLINE_ORDERS_PATH}/${id}/basket/${i}`), ctx.get(`${ONLINE_ORDERS_PATH}/${id}/codesIn`)]);
-      if (basketNow === true || (Array.isArray(line.source?.orderKeys) && line.source.orderKeys.some((c) => codesNow?.[c] === true))) {
-        await answer({ state: REPICK.REFUSED, why: "part of this line is already in the basket" });
-        continue;
-      }
       const old = clean({ status: line.source?.status ?? null, locationId: line.source?.locationId ?? null, entryKey: line.source?.entryKey ?? null, orderKeys: line.source?.orderKeys ?? null });
-      const landed = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines/${i}`).transaction((cur) => {
-        if (cur == null) return null; // the SDK's cold-cache pass: never abort on it
-        if (repickBlocker({ line: cur, req, enabled: true, order: { ...fresh, lines: undefined }, i })) return undefined;
+      // The old place's entry goes FIRST (a walk-in override leaves one open; a not-found strip entry is already
+      // closed): a hub unit sent in the meantime comes back as "sent" and the re-pick stops, so a second unit is
+      // never picked while the first is on its way. Cancelling a dead entry of a failed line changes nothing else.
+      if (old.entryKey || old.orderKeys) {
+        const sent = (await helpers.cancelLine({ source: old })) || [];
+        if (sent.length) { await answer({ state: REPICK.REFUSED, why: `${place(sent[0].hub) || "a hub"} already sent a unit of this line (${sent.map((x) => x.key).join(", ")})` }); continue; }
+      }
+      // ONE transaction on the order: the line, the basket, the till's code confirmations and the pack claim as they
+      // are NOW (a packer may have scanned it in, or started packing, since the order was read).
+      let landedLine = null;
+      const landed = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((curOrder) => {
+        if (curOrder == null) return null; // the SDK's cold-cache pass: never abort on it
+        const lines = linesOf(curOrder);
+        const cur = lines[i];
+        if (!cur || repickBlocker({ line: cur, req, enabled: true, order: curOrder, i })) return undefined;
         // routeGen + 1: the new strip entry / hub codes are this generation's own,
         // never a completed entry or a used code of the old one.
-        return clean({
+        landedLine = clean({
           ...cur,
           routeGen: (Number(cur.routeGen) || 0) + 1,
           repickCount: (Number(cur.repickCount) || 0) + 1,
@@ -194,16 +199,23 @@ export async function applyAgentRepicks(ctx, id, order, helpers) {
           // after their failure). A walk-in sale is not a place failing.
           failedPlaces: { ...(cur.failedPlaces || {}), ...(old.locationId && old.status !== LINE_STATUS.NEEDS_ATTENTION ? { [old.locationId]: Number(req.evidence?.failed?.since) || ctx.now } : {}) },
           source: { status: to.status, locationId: to.locationId },
-          repick: { rid, at: Number(req.at) || ctx.now, appliedAt: ctx.now, by: req.by || "order-agent", from: { status: old.status, locationId: old.locationId }, to: to.locationId, old, exclude },
+          repick: { rid, at: Number(req.at) || ctx.now, appliedAt: ctx.now, cancelledAt: ctx.now, by: req.by || "order-agent", from: { status: old.status, locationId: old.locationId }, to: to.locationId, old, exclude },
         });
+        const nextLines = Array.isArray(curOrder.lines) ? [...curOrder.lines] : { ...curOrder.lines };
+        nextLines[i] = landedLine;
+        return { ...curOrder, lines: nextLines };
       });
-      if (!landed.committed || !landed.snapshot.val()) { await answer({ state: REPICK.REFUSED, why: "the line changed while it was being re-picked", checked: plan.checked }); continue; }
-      // The old place's entry (a walk-in override leaves one open; a not-found strip entry is already closed).
-      if (old.entryKey || old.orderKeys) await helpers.cancelLine({ source: old });
-      await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines/${i}/repick/cancelledAt`).set(ctx.now);
-      await clearAttentionIfSettled(ctx, id);
-      await answer({ state: REPICK.ORDERED, routedTo: to.locationId, checked: plan.checked });
+      if (!landed.committed || !landed.snapshot.val() || !landedLine) { await answer({ state: REPICK.REFUSED, why: "the line changed, was scanned in or is being packed; not re-picked", checked: plan.checked }); continue; }
       moved = true;
+      // After the commit nothing can undo the move: a failure below leaves the request "applying" and the RESUME
+      // branch finishes it once it is stale (never "refused" over a line that did move).
+      try {
+        await clearAttentionIfSettled(ctx, id);
+        await answer({ state: REPICK.ORDERED, routedTo: to.locationId, checked: plan.checked });
+      } catch (e) {
+        ctx.summary?.errors?.push(`${id} agent re-pick ${rid} (after the move): ${String(e?.message || e)}`);
+      }
+      continue;
     } catch (e) {
       if (e?.answered) continue;
       ctx.summary?.errors?.push(`${id} agent re-pick ${rid}: ${String(e?.message || e)}`);

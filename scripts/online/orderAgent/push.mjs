@@ -19,8 +19,9 @@ export function makeHubPush({ db, messaging }) {
       for (const [tokenId, rec] of Object.entries(v && typeof v === "object" ? v : {})) if (rec && typeof rec.token === "string") tokens.push({ uid, tokenId, token: rec.token });
     }
     if (!tokens.length) return { sent: false, why: `no phone registered for ${hub}` };
-    // Data-only, like the order push: the service worker (or the open page) shows it, exactly once.
-    const res = await messaging.sendEachForMulticast({ tokens: tokens.map((t) => t.token), data: { kind: "order", hub, title, body, link, tag, sentAt: String(Date.now()) }, webpush: { fcmOptions: { link } } });
+    // Data-only, like the order push: the service worker (or the open page) shows it, exactly once. The relative link
+    // rides in data.link only (FCM's webpush.fcmOptions.link must be an absolute HTTPS URL).
+    const res = await messaging.sendEachForMulticast({ tokens: tokens.map((t) => t.token), data: { kind: "order", hub, title, body, link, tag, sentAt: String(Date.now()) } });
     const ok = (res?.responses || []).filter((r) => r.success).length;
     return { sent: ok > 0, delivered: ok, of: tokens.length, people: live.length, why: ok ? null : "every send failed" };
   };
