@@ -515,49 +515,8 @@
   padding-inline-end: 3rem;
   color: rgb(255 255 255 / 0.62);
 }
-/* ~30px, 500–600 weight, strong hierarchy right under the title block
-   (owner order 2026-08-27). The ".00" rides the SAME baseline as "R 350" —
-   inline elements share a baseline by default, so no vertical-align trick is
-   needed — just a smaller size and a little transparency to read as the
-   quieter half of one number, not a separate line. */
-.mc-panel__price {
-  font-size: 3rem;
-  font-weight: 600;
-  margin: 0;
-}
-.mc-panel__price-minor {
-  font-size: 1.8rem;
-  font-weight: 500;
-  opacity: 0.72;
-}
-/* RRP (13 Nov 2026): struck-through market RRP above the price, with the
-   saving. Quieter than the price — it is the reference, not the number paid. */
-.mc-panel__rrp {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  margin: 0 0 -0.4rem;
-  font-size: 1.5rem;
-  line-height: 1.3;
-  color: rgb(255 255 255 / 0.62);
-}
-.mc-panel__rrp-label {
-  font-size: 1.15rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-.mc-panel__rrp-price {
-  text-decoration-thickness: 1px;
-}
-.mc-panel__rrp-off {
-  font-size: 1.2rem;
-  font-weight: 700;
-  color: #fff;
-  background: #c8102e;
-  border-radius: 0.4rem;
-  padding: 0.1rem 0.6rem;
-}
+/* The panel price and RRP line moved to the shared price block (THE PRICE
+   BLOCK, below); their old rules are gone with their markup. */
 /* Product page / Dawn price snippet: the "RRP" label beside the struck price. */
 .price__rrp-label {
   font-size: 0.85em;
@@ -1610,3 +1569,479 @@ main .shopify-section > .gradient,
   background: transparent !important;
 }
 /* MSA:fence:end */
+
+/* ─── THE PRICE BLOCK (Junid's mockup, 14 Nov 2026) ──────────────────────────
+   snippets/mc-price-block.liquid, rendered by the grid card, the quick-view
+   panel and the product page alike. RRP struck through in grey, the selling
+   price big and red, "SAVE R x" in a red outlined box, and a red "-NN%" pill.
+   Every colour and size is a token here; the snippet carries no inline style.
+
+   CARD SIZES SCALE WITH THE CARD, not the screen: `.mc-card` is a size
+   container, so `cqi` is a percentage of the card's own width. The same block
+   is proportionally smaller at 3 and 4 across, with a floor (the first clamp
+   value) that keeps it legible. */
+:root {
+  --mc-sale: #e0282e;            /* price, SAVE box, pill */
+  --mc-sale-text: #fff;          /* text on the pill */
+  --mc-rrp: #bdbdbd;             /* struck-through RRP */
+  --mc-rrp-label: #8f8f8f;       /* the small "RRP" word */
+  --mc-card-fill: #0b0b0b;
+  --mc-card-edge: #2a2a2a;
+  --mc-card-radius: 12px;
+  --mc-card-gap: 12px;
+  --mc-pb-save-border: 1.5px;
+  --mc-pb-save-radius: 4px;
+  --mc-pb-pill-radius: 999px;
+  /* Grid card: [floor, share of the card's width, ceiling]. */
+  --mc-pb-card-rrp: clamp(1rem, 6.4cqi, 1.7rem);
+  --mc-pb-card-now: clamp(1.35rem, 12.5cqi, 3.2rem);
+  --mc-pb-card-save: clamp(0.88rem, 7cqi, 1.6rem);
+  --mc-pb-card-badge: clamp(0.95rem, 6.2cqi, 1.5rem);
+  /* Product view (quick-view panel + product page). */
+  --mc-pb-view-now: 3.4rem;
+  --mc-pb-view-rrp: 1.5rem;
+  --mc-pb-view-save: 1.4rem;
+  --mc-pb-view-badge: 1.3rem;
+}
+@media screen and (min-width: 750px) {
+  :root { --mc-pb-view-now: 3.8rem; --mc-pb-view-rrp: 1.6rem; --mc-pb-view-save: 1.5rem; }
+}
+
+/* Upright: the site's italic heading style must not reach the numbers. (The
+   face itself is the site-wide sans, set by BODY TEXT above.) */
+.mc-pb, .mc-pb *, .mc-pb-badge, .mc-card__soldout, .mc-trust, .mc-trust * { font-style: normal; }
+.mc-pb { margin: 0; color: var(--mc-fg); }
+.mc-pb p { margin: 0; }
+.mc-pb__now {
+  color: var(--mc-sale);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.mc-pb__rrp {
+  color: var(--mc-rrp);
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.mc-pb__rrp-label {
+  color: var(--mc-rrp-label);
+  font-size: 0.82em;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.mc-pb__rrp-price {
+  color: var(--mc-rrp);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.mc-pb__save {
+  display: flex;
+  justify-content: center;
+}
+.mc-pb__save > span {
+  display: inline-block;
+  border: var(--mc-pb-save-border) solid var(--mc-sale);
+  border-radius: var(--mc-pb-save-radius);
+  background: transparent;
+  color: var(--mc-sale);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  line-height: 1.15;
+  padding: 0.22em 0.4em;
+  white-space: nowrap;
+}
+
+/* The pill. */
+.mc-pb-badge {
+  display: inline-block;
+  background: var(--mc-sale);
+  color: var(--mc-sale-text);
+  border-radius: var(--mc-pb-pill-radius);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  padding: 0.38em 0.65em;
+  white-space: nowrap;
+}
+
+/* Grid card: stacked and centred. */
+.mc-pb--card {
+  display: grid;
+  justify-items: center;
+  gap: 0.35em;
+  text-align: center;
+}
+.mc-pb--card .mc-pb__rrp { font-size: var(--mc-pb-card-rrp); }
+.mc-pb--card .mc-pb__now { font-size: var(--mc-pb-card-now); }
+.mc-pb--card .mc-pb__save { font-size: var(--mc-pb-card-save); margin-top: 0.2em; }
+.mc-pb--card .mc-pb__save[hidden] { display: none; }
+
+/* Product view: price + RRP on one line, YOU SAVE below. */
+.mc-pb--view { display: grid; gap: 1rem; justify-items: start; }
+.mc-pb--view .mc-pb__row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 1.2rem;
+  row-gap: 0.4rem;
+}
+.mc-pb--view .mc-pb__now { font-size: var(--mc-pb-view-now); }
+.mc-pb--view .mc-pb__rrp { font-size: var(--mc-pb-view-rrp); }
+.mc-pb--view .mc-pb__save { font-size: var(--mc-pb-view-save); justify-content: flex-start; }
+.mc-pb--view .mc-pb__save > span { padding: 0.4em 0.75em; letter-spacing: 0.04em; }
+.mc-pb-badge--view { font-size: var(--mc-pb-view-badge); flex: 0 0 auto; }
+
+/* ─── THE GRID CARD (Junid's mockup, 14 Nov 2026) ────────────────────────────
+   SUPERSEDES the album wall above (hairline gaps, the dark mat and frame around
+   each photo, the black price strip): each product is now a CARD, a near-black
+   fill with a 1px edge and rounded corners, the square photo at the top, and
+   the shared price block (snippets/mc-price-block.liquid) centred below it.
+   The photo itself is treated exactly as before (square, same crop, same
+   filter); only what surrounds it changed. The density buttons stay, and the
+   default is now 2 across on a phone. */
+.mc-grid {
+  --mc-cols: 2;
+  gap: var(--mc-card-gap);
+  padding-inline: var(--mc-card-gap);
+  box-sizing: border-box;
+}
+@media screen and (min-width: 750px) {
+  .mc-grid { --mc-cols: 3; }
+}
+
+.mc-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--mc-card-fill);
+  border: 1px solid var(--mc-card-edge);
+  border-radius: var(--mc-card-radius);
+  overflow: hidden;
+  /* NOT a size container: container-type implies layout containment, which
+     would make the card the containing block of its position:fixed quick-view
+     panel and trap the modal inside the tile. The photo and the price slot
+     are the containers instead (below). */
+}
+.mc-card__media {
+  container-type: inline-size;   /* the pill scales with the photo's width */
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--mc-card-fill);
+}
+.mc-card__media img { border-radius: 0; }
+@media screen and (min-width: 750px) {
+  .mc-card__media { padding: 0; }
+}
+
+/* The heart sits where it did, top-right over the photo; the mat it used to be
+   offset by is gone, so it hugs the corner. */
+.mc-card > .mc-love { top: 2px; right: 2px; }
+@media screen and (min-width: 750px) {
+  .mc-card > .mc-love { top: 4px; right: 4px; }
+}
+
+/* The "-NN%" pill, top-left over the photo. */
+.mc-card__media .mc-pb-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  font-size: var(--mc-pb-card-badge);
+  pointer-events: none;
+}
+
+/* Below the photo: the price block, centred. The slot grows, so a card whose
+   block is shorter (no RRP, or sold out) still lines up with its row. */
+.mc-card__foot {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 1rem 0.4rem 1.1rem;
+  text-align: center;
+  min-width: 0;
+  container-type: inline-size;   /* the price block scales with the slot's width */
+}
+.mc-card__foot .mc-pb--card .mc-pb__save { justify-self: stretch; min-width: 0; }
+.mc-card__soldout {
+  margin: 0;
+  color: var(--mc-rrp);
+  font-size: var(--mc-pb-card-rrp);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mc-card__stars { font-size: 0.72em; white-space: nowrap; }
+.mc-card__stars:empty { display: none; }
+/* 4 across on a phone (~73px of room): the SAVE box would wrap, so it goes,
+   and the struck RRP drops its "RRP" word and steps down a size so it stays
+   on one line (measured: it overflowed 20 of 24 cards otherwise). The script
+   hides any other SAVE box that does not fit its card (fitSaves). */
+@container (max-width: 80px) {
+  .mc-pb--card .mc-pb__save { display: none; }
+  .mc-pb--card .mc-pb__rrp { font-size: 0.8rem; }
+  .mc-pb--card .mc-pb__rrp-label { display: none; }
+  .mc-pb--card .mc-pb__now { font-size: 1.05rem; }
+}
+/* The pill on a 4-across photo (~82px): smaller, tighter to the corner, so it
+   clears the heart on the other side. */
+@container (max-width: 100px) {
+  .mc-card__media .mc-pb-badge { font-size: 0.85rem; top: 5px; left: 5px; padding: 0.3em 0.45em; }
+}
+
+/* ─── THE PRODUCT VIEW (Junid's mockup, 14 Nov 2026) ─────────────────────────
+   The quick-view panel and the product page get the same treatment: rounded
+   photo with the heart top-right and enlarge bottom-right; title left with the
+   "-NN% OFF" pill right; the shared price block (big red price, grey RRP on
+   the same line, YOU SAVE box); a thin rule; outlined size buttons, selected =
+   white border; a full-width white ADD TO CART; the trust row. */
+:root {
+  --mc-view-fill: #0b0b0b;
+  --mc-view-title: 2.2rem;
+  --mc-view-title-weight: 400;
+  --mc-size-edge: rgb(255 255 255 / 0.28);
+  --mc-size-edge-on: #fff;
+  --mc-size-radius: 0.8rem;
+  --mc-cta-fill: #fff;
+  --mc-cta-text: #0b0b0b;
+  --mc-cta-radius: 0.8rem;
+  --mc-cta-size: 1.55rem;
+  --mc-icon-chip: rgb(0 0 0 / 0.55);
+  --mc-trust-icon: 2.4rem;
+  --mc-trust-text: 0.95rem;
+}
+@media screen and (min-width: 750px) {
+  :root { --mc-view-title: 2.6rem; }
+}
+
+/* ── quick-view panel ── */
+.mc-panel__sheet {
+  background: var(--mc-view-fill);
+  border: 1px solid var(--mc-card-edge);
+  gap: 1.2rem;
+}
+/* Close moves to the top-LEFT: the heart now owns the photo's top-right. */
+.mc-panel__close {
+  inset-inline-end: auto;
+  inset-inline-start: 0.6rem;
+}
+.mc-panel__media { position: relative; }
+.mc-panel__photo { border-radius: var(--mc-card-radius); }
+.mc-panel__media .mc-panel__love { top: 0.4rem; right: 0.4rem; }
+.mc-panel__enlarge {
+  position: absolute;
+  right: 0.8rem;
+  bottom: 0.8rem;
+  width: 3.6rem;
+  height: 3.6rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--mc-icon-chip);
+  color: #fff;
+  cursor: pointer;
+}
+.mc-panel__enlarge svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+/* Enlarged: the photo fills the screen, tap it to put it back. */
+.mc-panel__media.is-enlarged {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: #000;
+  cursor: pointer;
+}
+.mc-panel__media.is-enlarged .mc-panel__photo {
+  max-height: 100vh;
+  max-width: 100vw;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+}
+.mc-panel__media.is-enlarged .mc-panel__love,
+.mc-panel__media.is-enlarged .mc-panel__enlarge { display: none; }
+
+.mc-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.2rem;
+}
+.mc-panel__names { min-width: 0; display: grid; gap: 0.4rem; }
+.mc-panel__title {
+  font-size: var(--mc-view-title);
+  font-weight: var(--mc-view-title-weight);
+  color: #fff;
+  padding-inline-end: 0;
+}
+.mc-panel__subtitle { margin: 0; padding-inline-end: 0; }
+.mc-panel__head .mc-pb-badge { margin-top: 0.3rem; }
+.mc-panel__stars:empty { display: none; }
+.mc-panel__rule {
+  margin: 0.2rem 0;
+  border: 0;
+  border-top: 1px solid var(--mc-card-edge);
+}
+
+/* Sizes: outlined rounded rectangles; selected = white border. Sold out keeps
+   its strike-through (unchanged). */
+.mc-size {
+  border: 1px solid var(--mc-size-edge);
+  border-radius: var(--mc-size-radius);
+}
+.mc-size[aria-pressed="true"] {
+  background: transparent;
+  color: #fff;
+  border-color: var(--mc-size-edge-on);
+  box-shadow: inset 0 0 0 1px var(--mc-size-edge-on);
+}
+
+.mc-add {
+  background: var(--mc-cta-fill);
+  color: var(--mc-cta-text);
+  border-radius: var(--mc-cta-radius);
+  font-size: var(--mc-cta-size);
+  font-weight: 800;
+  letter-spacing: 0.12rem;
+}
+.mc-panel__delivery { font-size: 1.4rem; line-height: 1.5; margin: 1.2rem 0; }
+
+/* ── trust row (panel + product page) ── */
+.mc-trust {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+/* Icon above two short lines, centred: three columns on a 390px phone leave
+   ~100px each, too narrow for icon-beside-text without a third line. */
+.mc-trust__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.5rem;
+  min-width: 0;
+  color: #fff;
+}
+.mc-trust__icon {
+  flex: 0 0 auto;
+  width: var(--mc-trust-icon);
+  height: var(--mc-trust-icon);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.mc-trust__text {
+  display: grid;
+  font-size: var(--mc-trust-text);
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  min-width: 0;
+}
+.mc-trust__text b, .mc-trust__text span { white-space: nowrap; }
+.mc-trust__text b { font-weight: 700; }
+.mc-trust__text span { opacity: 0.7; }
+
+/* ── product page ── */
+.mc-pdp-media {
+  position: relative;
+  --media-radius: var(--mc-card-radius);
+}
+.mc-pdp-media .product__media-item .product-media-container,
+.mc-pdp-media .product__media-item .media {
+  border-radius: var(--mc-card-radius);
+  overflow: hidden;
+}
+.mc-pdp-love {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  z-index: 3;
+}
+.mc-pdp-love .mc-love { position: static; }
+/* The script moves the heart into the first photo's own box (a portrait photo
+   is narrowed and centred, so the column's corner is not the photo's). */
+.product-media-container > .mc-pdp-love { top: 0.2rem; right: 0.2rem; }
+/* Its own stacking context, so the heart (above Dawn's media toggle inside the
+   photo) never paints over the sticky header when the page scrolls. */
+.mc-pdp-media .product-media-container { z-index: 0; }
+.product__info-container .product-form__input--pill input[type='radio'] + label { font-style: normal; }
+/* Dawn's photo icon to the bottom-right (Dawn puts it top-left). */
+.mc-pdp-media .product__media-icon {
+  left: auto;
+  top: auto;
+  right: 1.2rem;
+  bottom: 1.2rem;
+}
+.mc-pdp-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.2rem;
+}
+/* White, regular weight, sentence case, as in the mockup. The site-wide
+   heading rule (main h1:not([class]), Oswald caps, !important) has to be
+   outranked on specificity, hence the longer selector and !important. */
+.product__info-container .mc-pdp-title h1 {
+  font-size: var(--mc-view-title);
+  font-weight: var(--mc-view-title-weight) !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;
+  font-style: normal;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  color: #fff;
+  margin: 0;
+}
+.mc-pdp-title .mc-pb-badge { margin-top: 0.4rem; }
+.mc-pdp-price { margin: 1.2rem 0 1.6rem; }
+.product__info-container variant-selects {
+  display: block;
+  border-top: 1px solid var(--mc-card-edge);
+  padding-top: 1.6rem;
+}
+.product__info-container .product-form__input--pill input[type='radio'] + label {
+  border-radius: var(--mc-size-radius);
+  border-color: var(--mc-size-edge);
+  background-color: transparent;
+  color: var(--mc-fg);
+}
+.product__info-container .product-form__input--pill input[type='radio'] + label::before { border-radius: var(--mc-size-radius); }
+.product__info-container .product-form__input--pill input[type='radio']:checked + label {
+  background-color: transparent;
+  color: #fff;
+  border-color: var(--mc-size-edge-on);
+  box-shadow: inset 0 0 0 1px var(--mc-size-edge-on);
+}
+.product__info-container .product-form__input--pill input[type='radio'].disabled:checked + label,
+.product__info-container .product-form__input--pill input[type='radio']:disabled:checked + label {
+  color: rgb(255 255 255 / 0.6);
+}
+.product__info-container .product-form__submit {
+  background-color: var(--mc-cta-fill) !important;
+  color: var(--mc-cta-text) !important;
+  border-radius: var(--mc-cta-radius);
+  font-size: var(--mc-cta-size);
+  font-weight: 800;
+  letter-spacing: 0.12rem;
+  text-transform: uppercase;
+  min-height: 5.6rem;
+}
+.product__info-container .product-form__submit::before,
+.product__info-container .product-form__submit::after { border-radius: var(--mc-cta-radius); box-shadow: none; }
+.product__info-container .product-form__submit,
+.product__info-container .product-form__submit * { font-style: normal; }
+.product__info-container .mc-trust { margin: 1.4rem 0 0.4rem; }

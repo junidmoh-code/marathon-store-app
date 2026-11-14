@@ -1,0 +1,78 @@
+{%- comment -%}
+  ─── THE PRICE BLOCK: ONE SNIPPET FOR THE GRID CARD AND THE PRODUCT VIEW ─────
+
+  Junid's mockup (14 Nov 2026): RRP struck through in grey, the selling price
+  big and red, and "SAVE R x" in a red outlined box, with a red "-NN%" pill.
+  The grid card, the quick-view panel and the product page all render THIS
+  file, so the three can never drift apart.
+
+  EVERY NUMBER IS COMPUTED HERE from the variant's own price and compare-at
+  price. Nothing is hardcoded to 65: the RRP is set per product by the
+  reconciler (scripts/shopify/priceSync.mjs → rrpFor, 65% or 70% chip), and
+  rounding it up to a "…99" gives cheap items 66–75%. The percent is whole-cent
+  integer division, so it rounds DOWN and never overstates the saving.
+
+  NO RRP (compare-at absent, zero, or not above the price) → the red price only:
+  no pill, no strike-through, no SAVE box.
+
+  ACCEPTS
+    product   (required)
+    variant   the variant to price; defaults to selected_or_first_available_variant
+    layout    'card'  — grid: RRP line, price, SAVE box, stacked and centred
+              'view'  — product view: price + RRP on one line, YOU SAVE box below
+              'badge' — just the pill, "-65%"           (grid photo, top-left)
+              'badge_off' — just the pill, "-65% OFF"   (product view title row)
+
+  Colours and sizes live in marathon-storefront.css as tokens (--mc-pb-*,
+  --mc-sale, --mc-rrp); nothing here is inline.
+{%- endcomment -%}
+{%- liquid
+  assign pb_layout = layout | default: 'card'
+  assign pb_variant = variant | default: product.selected_or_first_available_variant
+  assign pb_price = pb_variant.price | default: 0
+  assign pb_compare = pb_variant.compare_at_price | default: 0
+  assign pb_on_sale = false
+  assign pb_off = 0
+  if pb_price > 0 and pb_compare > pb_price
+    assign pb_on_sale = true
+    assign pb_save = pb_compare | minus: pb_price
+    assign pb_off = pb_save | times: 100 | divided_by: pb_compare
+  endif
+
+  # Plain "R 2,499.00" everywhere, as in the mockup, deliberately NOT
+  # money_with_currency: the shop's "show currency code" setting is on, and
+  # "R 2,499.00 ZAR" three times in one small block is noise. The grid tile
+  # already used plain money; the product page now matches it.
+  assign pb_now_m = pb_price | money
+  assign pb_rrp_m = pb_compare | money
+  assign pb_save_m = pb_save | money
+-%}
+{%- case pb_layout -%}
+  {%- when 'badge' -%}
+    {%- if pb_on_sale -%}<span class="mc-pb-badge" data-mc-pb-badge>-{{ pb_off }}%</span>{%- endif -%}
+  {%- when 'badge_off' -%}
+    {%- if pb_on_sale -%}<span class="mc-pb-badge mc-pb-badge--view" data-mc-pb-badge>-{{ pb_off }}% OFF</span>{%- endif -%}
+  {%- when 'view' -%}
+    <div class="mc-pb mc-pb--view{% if pb_on_sale %} mc-pb--rrp{% endif %}" data-mc-pb data-mc-pb-off="{{ pb_off }}">
+      <p class="mc-pb__row">
+        <span class="visually-hidden">Price</span>
+        <span class="mc-pb__now" data-mc-price-now>{{ pb_now_m }}</span>
+        {%- if pb_on_sale %}
+          <span class="mc-pb__rrp"><span class="mc-pb__rrp-label">RRP</span> <s class="mc-pb__rrp-price">{{ pb_rrp_m }}</s></span>
+        {%- endif -%}
+      </p>
+      {%- if pb_on_sale -%}
+        <p class="mc-pb__save"><span>You save {{ pb_save_m }}</span></p>
+      {%- endif -%}
+    </div>
+  {%- else -%}
+    <div class="mc-pb mc-pb--card{% if pb_on_sale %} mc-pb--rrp{% endif %}" data-mc-pb data-mc-pb-off="{{ pb_off }}">
+      {%- if pb_on_sale -%}
+        <p class="mc-pb__rrp"><span class="mc-pb__rrp-label">RRP</span> <s class="mc-pb__rrp-price">{{ pb_rrp_m }}</s></p>
+      {%- endif -%}
+      <p class="mc-pb__now"><span class="visually-hidden">Price </span><span data-mc-price-now>{{ pb_now_m }}</span></p>
+      {%- if pb_on_sale -%}
+        <p class="mc-pb__save" data-mc-pb-save><span>Save {{ pb_save_m }}</span></p>
+      {%- endif -%}
+    </div>
+{%- endcase -%}

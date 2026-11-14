@@ -145,18 +145,6 @@
     assign panel_subtitle = panel_subtitle | strip
   endif
 
-  # ─── PANEL PRICE: MAJOR/MINOR SPLIT FOR THE BASELINE-ALIGNED ".00" ────────
-  # Splits whatever `money` actually renders (currency symbol, spacing and
-  # thousands separator all come from the shop's own settings, not hardcoded
-  # here) on its decimal point, so "R 350.00" becomes "R 350" + ".00" without
-  # assuming a currency symbol or its position.
-  assign panel_price_str = product.price | money
-  assign panel_price_parts = panel_price_str | split: '.'
-  assign panel_price_major = panel_price_parts | first
-  assign panel_price_minor = panel_price_parts | last
-  if panel_price_parts.size < 2
-    assign panel_price_minor = '00'
-  endif
 -%}
 
 <article
@@ -188,6 +176,10 @@
           alt: img_alt
       }}
     {%- endif -%}
+    {%- comment -%} The "-NN%" pill, top-left over the photo (Junid's mockup,
+      14 Nov 2026). Computed from the variant's real price pair by the shared
+      price snippet; renders nothing when there is no RRP. {%- endcomment -%}
+    {%- unless sold_out -%}{%- render 'mc-price-block', product: product, layout: 'badge' -%}{%- endunless -%}
     {%- comment -%}
       NO PRODUCT NAME anywhere on the tile. The price (or "Sold out") is the
       only text a tile carries; the name still lives only in the panel and on
@@ -216,7 +208,21 @@
     and a filled one is a short row of small stars after the price. The core
     app embed fills it by data-id; without JavaScript it is an empty span.
   {%- endcomment -%}
-  <span class="mc-card__price">{% if sold_out %}Sold out{% else %}{{ product.price | money }}{% endif %}<span class="jdgm-widget jdgm-preview-badge" data-id="{{ product.id }}" style="display:inline-block;vertical-align:middle;margin-left:.5em;font-size:.72em;white-space:nowrap;"></span></span>
+  {%- comment -%}
+    THE PRICE BLOCK (Junid's mockup, 14 Nov 2026): RRP struck through, the
+    price big and red, "SAVE R x" boxed — the SAME snippet the quick view and
+    the product page render, so the three cannot drift. A sold-out card says
+    "Sold out" in the same slot; the card is a flex column and this slot
+    grows, so every card in a row is the same height either way.
+  {%- endcomment -%}
+  <div class="mc-card__foot">
+    {%- if sold_out -%}
+      <p class="mc-card__soldout">Sold out</p>
+    {%- else -%}
+      {%- render 'mc-price-block', product: product, layout: 'card' -%}
+    {%- endif -%}
+    <span class="jdgm-widget jdgm-preview-badge mc-card__stars" data-id="{{ product.id }}"></span>
+  </div>
 
 
   {%- comment -%}
@@ -262,41 +268,63 @@
         the whole product should be visible, so it keeps its real proportions.
         Lazy, because it is inside a panel that is hidden until opened.
       {%- endcomment -%}
+      {%- comment -%} Product view (Junid's mockup, 14 Nov 2026): rounded photo,
+        heart top-right (the same love button as the tile, same product id, so
+        the two stay in step), enlarge bottom-right. Without JavaScript it is
+        a plain link to the full-size photograph. {%- endcomment -%}
       {%- if product.featured_media -%}
-        {{
-          product.featured_media.preview_image
-          | image_url: width: 1000
-          | image_tag:
-            loading: 'lazy',
-            widths: '400,600,800,1000',
-            sizes: '(min-width: 750px) 460px, 92vw',
-            class: 'mc-panel__photo',
-            alt: img_alt
-        }}
+        <div class="mc-panel__media" data-mc-enlarge-host>
+          {{
+            product.featured_media.preview_image
+            | image_url: width: 1000
+            | image_tag:
+              loading: 'lazy',
+              widths: '400,600,800,1000,1400',
+              sizes: '(min-width: 750px) 460px, 92vw',
+              class: 'mc-panel__photo',
+              alt: img_alt
+          }}
+          <button
+            type="button"
+            class="mc-love mc-panel__love"
+            data-mc-love
+            data-product-id="{{ product.id }}"
+            aria-pressed="false"
+            aria-label="Love {{ product.title | escape }}"
+          >
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+              <path d="M12 21s-6.7-4.3-9.3-8.1C.6 9.9 1.5 6.4 4.3 5c2.2-1.1 4.6-.3 6 1.5L12 8l1.7-1.5c1.4-1.8 3.8-2.6 6-1.5 2.8 1.4 3.7 4.9 1.6 7.9C18.7 16.7 12 21 12 21z"/>
+            </svg>
+          </button>
+          <a
+            class="mc-panel__enlarge"
+            data-mc-enlarge
+            href="{{ product.featured_media.preview_image | image_url: width: 2000 }}"
+            aria-label="Enlarge photo"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+              <circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M10.5 7.5v6M7.5 10.5h6"/>
+            </svg>
+          </a>
+        </div>
       {%- endif -%}
 
-      <p class="mc-panel__title">{{ panel_title }}</p>
-      {%- if panel_subtitle != blank -%}
-        <p class="mc-panel__subtitle">{{ panel_subtitle }}</p>
-      {%- endif -%}
-      {%- comment -%}
-        RRP (Junid, 13 Nov 2026): the compare-at price is the market RRP,
-        struck through ABOVE the price, labelled "RRP" (never "Was"), with the
-        saving rounded DOWN so it never overstates. Set by the reconciler from
-        the app price (scripts/shopify/priceSync.mjs); absent → nothing shown.
-      {%- endcomment -%}
-      {%- comment -%} One price pair only: product.price and product.compare_at_price
-        are separate variant minima, so the % is shown only when neither varies. {%- endcomment -%}
-      {%- if product.compare_at_price > product.price and product.price_varies == false and product.compare_at_price_varies == false -%}
-        {%- assign rrp_off = product.compare_at_price | minus: product.price | times: 100 | divided_by: product.compare_at_price -%}
-        <p class="mc-panel__rrp">
-          <span class="mc-panel__rrp-label">RRP</span>
-          <s class="mc-panel__rrp-price">{{ product.compare_at_price | money }}</s>
-          <span class="mc-panel__rrp-off">-{{ rrp_off }}%</span>
-        </p>
-      {%- endif -%}
-      <p class="mc-panel__price">{{ panel_price_major }}<span class="mc-panel__price-minor">.{{ panel_price_minor }}</span></p>
-      <div class="jdgm-widget jdgm-preview-badge" data-id="{{ product.id }}" style="margin:.25rem 0 .5rem;"></div>
+      {%- comment -%} Title left, "-NN% OFF" pill right; then the shared price
+        block (snippets/mc-price-block.liquid), the same one the tile and the
+        product page render. Every number is computed there from the variant's
+        price and compare-at; no RRP → the red price alone. {%- endcomment -%}
+      <div class="mc-panel__head">
+        <div class="mc-panel__names">
+          <p class="mc-panel__title">{{ panel_title }}</p>
+          {%- if panel_subtitle != blank -%}
+            <p class="mc-panel__subtitle">{{ panel_subtitle }}</p>
+          {%- endif -%}
+        </div>
+        {%- render 'mc-price-block', product: product, layout: 'badge_off' -%}
+      </div>
+      {%- render 'mc-price-block', product: product, layout: 'view' -%}
+      <div class="jdgm-widget jdgm-preview-badge mc-panel__stars" data-id="{{ product.id }}"></div>
+      <hr class="mc-panel__rule">
 
     {%- comment -%}
       CONDITION IS DELIBERATELY OMITTED FROM THIS QUICK-ADD PANEL (owner
@@ -345,7 +373,8 @@
         data-mc-add
         {% if sold_out %}disabled{% endif %}
       >{% if sold_out %}Sold out{% else %}Add to cart{% endif %}</button>
-      <p style="font-size:14px;line-height:1.5;margin:12px 0;">R99 delivery across South Africa. Free on orders from R1,000.</p>
+      {%- render 'mc-trust' -%}
+      <p class="mc-panel__delivery">R99 delivery across South Africa. Free on orders from R1,000.</p>
       <div class="msa-pairs-slot" data-msa-pairs hidden></div>
       <a class="mc-panel__link" href="{{ product.url }}">Product details &amp; condition</a>
       </div>
