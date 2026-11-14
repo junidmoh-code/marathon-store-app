@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- TikTok poster (scripts/social/tiktok-poster.mjs): 3 posts from 08:30 and 3 from
+     18:30 SAST, 15-20 minutes apart, through Signal Studio's 127.0.0.1 poster.
+     StartCalendarInterval uses the machine clock (the mini is on SAST). One run
+     posts the whole slot and exits; the script's lock stops any overlap.
+     Install: cp to ~/Library/LaunchAgents && launchctl bootstrap gui/$(id -u) <file> -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.tiktokposter</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-social/scripts/social/tiktok-poster.mjs</string>
+    <string>--slot</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-social</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-social/logs/tiktok-poster.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-social/logs/tiktok-poster.err.log</string>
+</dict>
+</plist>
