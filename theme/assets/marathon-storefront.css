@@ -1610,3 +1610,123 @@ main .shopify-section > .gradient,
   background: transparent !important;
 }
 /* MSA:fence:end */
+
+/* ─── THE PRICE BLOCK (Junid's mockup, 14 Nov 2026) ──────────────────────────
+   snippets/mc-price-block.liquid, rendered by the grid card, the quick-view
+   panel and the product page alike. RRP struck through in grey, the selling
+   price big and red, "SAVE R x" in a red outlined box, and a red "-NN%" pill.
+   Every colour and size is a token here; the snippet carries no inline style.
+
+   CARD SIZES SCALE WITH THE CARD, not the screen: `.mc-card` is a size
+   container, so `cqi` is a percentage of the card's own width. The same block
+   is proportionally smaller at 3 and 4 across, with a floor (the first clamp
+   value) that keeps it legible. */
+:root {
+  --mc-sale: #e0282e;            /* price, SAVE box, pill */
+  --mc-sale-text: #fff;          /* text on the pill */
+  --mc-rrp: #bdbdbd;             /* struck-through RRP */
+  --mc-rrp-label: #8f8f8f;       /* the small "RRP" word */
+  --mc-card-fill: #0b0b0b;
+  --mc-card-edge: #2a2a2a;
+  --mc-card-radius: 12px;
+  --mc-card-gap: 12px;
+  --mc-pb-save-border: 1.5px;
+  --mc-pb-save-radius: 4px;
+  --mc-pb-pill-radius: 999px;
+  /* Grid card: [floor, share of the card's width, ceiling]. */
+  --mc-pb-card-rrp: clamp(1rem, 6.4cqi, 1.45rem);
+  --mc-pb-card-now: clamp(1.35rem, 11cqi, 2.3rem);
+  --mc-pb-card-save: clamp(0.9rem, 5.9cqi, 1.25rem);
+  --mc-pb-card-badge: clamp(0.95rem, 6.2cqi, 1.3rem);
+  /* Product view (quick-view panel + product page). */
+  --mc-pb-view-now: 3.4rem;
+  --mc-pb-view-rrp: 1.5rem;
+  --mc-pb-view-save: 1.4rem;
+  --mc-pb-view-badge: 1.3rem;
+}
+@media screen and (min-width: 750px) {
+  :root { --mc-pb-view-now: 3.8rem; --mc-pb-view-rrp: 1.6rem; --mc-pb-view-save: 1.5rem; }
+}
+
+.mc-pb { margin: 0; color: var(--mc-fg); }
+.mc-pb p { margin: 0; }
+.mc-pb__now {
+  color: var(--mc-sale);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.mc-pb__rrp {
+  color: var(--mc-rrp);
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.mc-pb__rrp-label {
+  color: var(--mc-rrp-label);
+  font-size: 0.82em;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.mc-pb__rrp-price {
+  color: var(--mc-rrp);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.mc-pb__save {
+  display: flex;
+  justify-content: center;
+}
+.mc-pb__save > span {
+  display: inline-block;
+  border: var(--mc-pb-save-border) solid var(--mc-sale);
+  border-radius: var(--mc-pb-save-radius);
+  background: transparent;
+  color: var(--mc-sale);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.15;
+  padding: 0.25em 0.55em;
+  white-space: nowrap;
+}
+
+/* The pill. */
+.mc-pb-badge {
+  display: inline-block;
+  background: var(--mc-sale);
+  color: var(--mc-sale-text);
+  border-radius: var(--mc-pb-pill-radius);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  padding: 0.38em 0.65em;
+  white-space: nowrap;
+}
+
+/* Grid card: stacked and centred. */
+.mc-pb--card {
+  display: grid;
+  justify-items: center;
+  gap: 0.35em;
+  text-align: center;
+}
+.mc-pb--card .mc-pb__rrp { font-size: var(--mc-pb-card-rrp); }
+.mc-pb--card .mc-pb__now { font-size: var(--mc-pb-card-now); }
+.mc-pb--card .mc-pb__save { font-size: var(--mc-pb-card-save); margin-top: 0.2em; }
+.mc-pb--card .mc-pb__save[hidden] { display: none; }
+
+/* Product view: price + RRP on one line, YOU SAVE below. */
+.mc-pb--view { display: grid; gap: 1rem; justify-items: start; }
+.mc-pb--view .mc-pb__row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 1.2rem;
+  row-gap: 0.4rem;
+}
+.mc-pb--view .mc-pb__now { font-size: var(--mc-pb-view-now); }
+.mc-pb--view .mc-pb__rrp { font-size: var(--mc-pb-view-rrp); }
+.mc-pb--view .mc-pb__save { font-size: var(--mc-pb-view-save); justify-content: flex-start; }
+.mc-pb-badge--view { font-size: var(--mc-pb-view-badge); flex: 0 0 auto; }
