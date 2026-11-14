@@ -5,7 +5,7 @@
 //
 //   node scripts/online/order-agent.mjs            dry run: prints what it would do, writes nothing
 //   node scripts/online/order-agent.mjs --commit   one real run (launchd: com.marathon.orderagent)
-//   --force                                        run outside 08:00–18:15 SAST too
+//   --force                                        run outside 08:00–18:30 SAST too
 //
 // launchd keeps it alive: KeepAlive + ThrottleInterval 900 → one run every 15 minutes; outside the run window a
 // start exits at once. Kill switch: /config/onlineOrders/orderAgentOff === true → no run.
@@ -25,7 +25,7 @@ const FORCE = process.argv.includes("--force");
 const now = Date.now();
 
 if (!FORCE && !inRunWindow(now)) {
-  console.log(`[order-agent] ${new Date(now).toISOString()} outside 08:00–18:15 SAST — no run`);
+  console.log(`[order-agent] ${new Date(now).toISOString()} outside 08:00–18:30 SAST — no run`);
   process.exit(0);
 }
 
@@ -38,10 +38,15 @@ const off = (await db.ref("config/onlineOrders/orderAgentOff").get()).val() === 
 if (off) { console.log("[order-agent] switched off (/config/onlineOrders/orderAgentOff) — no run"); process.exit(0); }
 
 const JIMMY_DB = join(homedir(), "marathon-dm-agent", "data", "agent.db");
-const chase = existsSync(JIMMY_DB) ? await openChaseQueue(JIMMY_DB) : { insert: () => false, todayCounts: () => null, close() {} };
+const chase = existsSync(JIMMY_DB) ? await openChaseQueue(JIMMY_DB) : { available: false, insert: () => false, exists: () => false, todayCounts: () => null, close() {} };
 if (!existsSync(JIMMY_DB)) console.log(`[order-agent] Jamie's database is not at ${JIMMY_DB} — hand-offs are skipped`);
 const push = makeHubPush({ db, messaging: admin.messaging() });
 
+// ONE run at a time: a manual run beside launchd must not double-nudge (a 10-minute lease in RTDB).
+if (COMMIT) {
+  const lease = await db.ref("online_order_agent/lock").transaction((cur) => (cur && Number(cur.at) > now - 10 * 60e3 ? undefined : { at: now, pid: process.pid }));
+  if (!lease.committed) { console.log("[order-agent] another run holds the lock — no run"); process.exit(0); }
+}
 console.log(`[order-agent] ${new Date(now).toISOString()} (${hhmm(now)} SAST) ${COMMIT ? "COMMIT" : "dry run"}`);
 try {
   const r = await runOrderAgent({ db, graphql, chase, push, now, commit: COMMIT, log: (m) => console.log(m) });
@@ -53,5 +58,6 @@ try {
   process.exitCode = 1;
 } finally {
   chase.close?.();
+  if (COMMIT) await db.ref("online_order_agent/lock").set(null).catch(() => {});
 }
 process.exit(process.exitCode || 0);

@@ -15,8 +15,8 @@ describe("hours", () => {
   it("runs 08:00–18:15 SAST", () => {
     expect(inRunWindow(T("2026-11-14T05:59:00Z"))).toBe(false);
     expect(inRunWindow(T("2026-11-14T06:00:00Z"))).toBe(true);
-    expect(inRunWindow(T("2026-11-14T16:15:00Z"))).toBe(true);
-    expect(inRunWindow(T("2026-11-14T16:16:00Z"))).toBe(false);
+    expect(inRunWindow(T("2026-11-14T16:30:00Z"))).toBe(true);
+    expect(inRunWindow(T("2026-11-14T16:31:00Z"))).toBe(false);
     expect(nextRunAt(T("2026-11-14T17:00:00Z"))).toBe(T("2026-11-15T06:00:00Z"));
     expect(dayKey(T("2026-11-14T22:30:00Z"))).toBe("2026-11-15");
   });
@@ -143,5 +143,29 @@ describe("incoming exchanges", () => {
   it("an exchange whose return is not confirmed → its own group", () => {
     expect(judgeOrder({ incoming: { arrival: null }, lines: [handedPE()] }, {}, NOW).group).toBe("incoming");
     expect(judgeOrder({ incoming: { arrival: { state: "done" } }, lines: [handedPE()] }, {}, NOW).group).toBe("green");
+  });
+});
+
+describe("architect review of #905", () => {
+  it("no ping-pong: a place that failed this line before stays skipped after a re-pick", () => {
+    const line = { pid: "S", size: "7", sizeKey: "7", qty: 1, isFootwear: true, routeGen: 3, repickCount: 1, failedPlaces: { hub1: T("2026-11-14T06:00:00Z") }, source: { status: "no_stock", locationId: "hub2" } };
+    const facts = { free: { hub1: 2, hub2: 1, hub3: 0 }, central: 0, stockAt: { hub1: { qty: 2, updatedAtMs: T("2026-11-01T00:00:00Z"), lastType: "adjustment" } } };
+    const j = judgeLine({ lines: [line] }, 0, line, facts, NOW);
+    expect(j.actions.find((a) => a.type === "repick")).toBeUndefined();
+  });
+  it("an adjustment is not a restock; an unknown failure time never counts as restocked", () => {
+    const nf = { source: { status: "not_found", locationId: "trophy" } };
+    expect(excludedPlaces(nf, { stockAt: { trophy: { qty: 3, updatedAtMs: NOW, lastType: "adjustment" } } }, NOW - 3600e3)).toEqual(["trophy"]);
+    expect(excludedPlaces(nf, { stockAt: { trophy: { qty: 3, updatedAtMs: NOW, lastType: "transfer_in" } } }, 0)).toEqual(["trophy"]);
+  });
+  it("after 3 re-picks, or a refused re-pick, Junid decides (no more re-picks)", () => {
+    const base = { pid: "S", size: "7", sizeKey: "7", qty: 1, isFootwear: true, routeGen: 2, source: { status: "no_stock", locationId: "hub2" } };
+    const facts = { free: { hub1: 1 }, central: 0 };
+    const capped = judgeLine({ lines: [] }, 0, { ...base, repickCount: 3 }, facts, NOW);
+    expect(capped.actions).toEqual([expect.objectContaining({ type: "escalate", level: "repicks" })]);
+    const refused = judgeLine({ lines: [] }, 0, base, { ...facts, lastRepick: { expectRouteGen: 2, state: "refused", why: "x" } }, NOW);
+    expect(refused.actions).toEqual([expect.objectContaining({ type: "escalate", level: "refused" })]);
+    const nis = judgeLine({ lines: [] }, 0, base, { ...facts, lastRepick: { expectRouteGen: 2, state: "not_in_stock" } }, NOW);
+    expect(nis.actions.find((a) => a.type === "repick")).toBeUndefined();
   });
 });

@@ -18,6 +18,45 @@ import { judgeOrder, linesOf, lineIsHere, PLACE } from "./judge.mjs";
 import { dayKey, hhmm, sast, SUMMARY_HOUR } from "./hours.mjs";
 
 export const AGENT_ROOT = "online_order_agent";
+export const MAX_NUDGES_PER_RUN = 5;
+export const MAX_ESCALATIONS_PER_RUN = 3;
+export const STAMP_EVERY_MS = 30 * 60e3;
+export const FOLLOW_UP_GAP_MS = 20 * 3600e3;
+export const PAYMENT_LINK_MAX_DAYS = 5;
+
+/**
+ * Which lines Shopify's refunds fully cover. A Shopify line item split over several app lines (PE ×1, Hub 2 ×1)
+ * shares one line-item id: refunded units are allocated to its lines in index order, and only a line whose whole
+ * quantity is covered counts (architect review). → { [lineIndex]: { at, cents } }. PURE.
+ */
+export function refundCoverage(order, refunds) {
+  const out = {};
+  if (!refunds?.byLine) return out;
+  const groups = {};
+  for (const [i, l] of linesOf(order)) {
+    const tail = String(l?.shopifyLineItemId || "").split("/").pop();
+    if (tail) (groups[tail] ||= []).push([i, l]);
+  }
+  for (const [tail, members] of Object.entries(groups)) {
+    const r = refunds.byLine[tail];
+    if (!r) continue;
+    let left = num(r.qty);
+    const unit = num(r.qty) > 0 ? num(r.cents) / num(r.qty) : 0;
+    // Lines already off the parcel take their units first (they were the ones refunded before).
+    const ordered = [...members].sort((a, b) => (OFF_PARCEL.has(b[1]?.source?.status) ? 1 : 0) - (OFF_PARCEL.has(a[1]?.source?.status) ? 1 : 0) || a[0] - b[0]);
+    for (const [i, l] of ordered) {
+      const q = Math.max(1, num(l?.qty) || 1);
+      if (left >= q) { left -= q; if (!OFF_PARCEL.has(l?.source?.status)) out[i] = { at: r.at, cents: Math.round(unit * q) }; } else break;
+    }
+  }
+  return out;
+}
+/** The newest re-pick request the agent made for line i (any route generation). PURE. */
+export function lastRepickFor(order, i) {
+  let best = null;
+  for (const r of Object.values(order?.agentRepicks || {})) if (r && Number(r.lineIndex) === i && (!best || num(r.at) > num(best.at))) best = r;
+  return best;
+}
 export const OPEN_STATUSES = Object.freeze(["new", "picking", "ready", "needs_attention"]);
 export const ROUTED = Object.freeze(["hub1", "hub2", "hub3", "marathon-pe", "trophy", "concrete", "marathon-pine"]);
 const OFF_PARCEL = new Set(["resolved", "moved", "cancelled"]);
@@ -120,6 +159,7 @@ export async function runOrderAgent(deps) {
   const result = { runId, at: now, checked: 0, green: 0, red: 0, incoming: 0, actions: [], outcomes: [] };
   const logRows = [];
   const dayOrders = (await get(db, `${AGENT_ROOT}/days/${day}/orders`)) || {};
+  const budget = { nudge: MAX_NUDGES_PER_RUN, escalate: MAX_ESCALATIONS_PER_RUN };
 
   for (const [id, order] of Object.entries(orders)) {
     result.checked++;
@@ -132,11 +172,11 @@ export async function runOrderAgent(deps) {
         try { refunds = await shopifyRefunds(graphql, order.shopifyGid); } catch (e) { log(`  ! ${label}: Shopify read failed — ${String(e?.message || e).slice(0, 120)}`); }
       }
       const read = await Promise.all(needy.map(([i, l]) => lineFacts(db, id, order, i, l)));
+      const covered = refundCoverage(order, refunds);
       for (const [n, [i, l]] of needy.entries()) {
         facts.lines[i] = read[n];
-        const tail = String(l.shopifyLineItemId || "").split("/").pop();
-        const r = refunds?.byLine?.[tail];
-        if (r && r.qty >= num(l.qty || 1)) facts.lines[i].shopifyRefund = { at: r.at, cents: r.cents };
+        if (covered[i]) facts.lines[i].shopifyRefund = covered[i];
+        facts.lines[i].lastRepick = lastRepickFor(order, i);
       }
       const verdict = judgeOrder(order, facts, now);
       result[verdict.group] = (result[verdict.group] || 0) + 1;
@@ -145,10 +185,15 @@ export async function runOrderAgent(deps) {
       const marks = (await get(db, `${AGENT_ROOT}/marks/${id}`)) || {};
       const done = [];
       for (const a of bundle(verdict.actions, order)) {
+        // Per-run caps: the first run, or the 11:00 / 13:00 crossings, must not flood staff or Junid. The rest go next run.
+        if (a.type === "nudge" && budget.nudge <= 0) continue;
+        if (a.type === "escalate" && budget.escalate <= 0) continue;
         const line = linesOf(order).find(([k]) => k === a.i)?.[1];
         const rg = num(line?.routeGen);
         const res = await act({ db, chase, push, commit, now, day, id, order, label, line, a, rg, marks, log });
         if (!res || res.skipped) continue;
+        if (a.type === "nudge") budget.nudge--;
+        if (a.type === "escalate") budget.escalate--;
         done.push(actionWords(a, res));
         result.actions.push({ order: label, id, ...a, result: res });
         logRows.push(clean({ at: now, run: runId, order: label, id, line: a.i, type: a.type, kind: a.kind || null, to: a.to || a.location || null, result: res, evidence: a.evidence || null }));
@@ -161,8 +206,15 @@ export async function runOrderAgent(deps) {
         greenAt: verdict.group === "green" ? prev.greenAt || (prev.group && prev.group !== "green" ? now : null) : null,
         wasRed: prev.wasRed || verdict.group === "red",
       });
+      // The stamp changes the order every POS downloads: written when what it says changes, or every STAMP_EVERY_MS
+      // so the card's "last run" line stays current.
+      const old = order.agent || {};
+      const same = old.group === stamp.group && (old.reason ?? null) === (stamp.reason ?? null) && (old.note ?? null) === (stamp.note ?? null);
+      if (commit && (!same || !(now - num(old.at) < STAMP_EVERY_MS))) {
+        // Never recreate an order deleted since it was read: the stamp lands only while the order still has a status.
+        await db.ref(`online_orders/${id}`).transaction((cur) => (cur == null ? null : cur.status ? { ...cur, agent: stamp } : undefined));
+      }
       if (commit) {
-        await db.ref(`online_orders/${id}/agent`).set(stamp);
         await db.ref(`${AGENT_ROOT}/days/${day}/orders/${id}`).set(dayRow);
       }
       dayOrders[id] = dayRow;
@@ -188,24 +240,25 @@ export async function runOrderAgent(deps) {
     await db.ref(`${AGENT_ROOT}/lastRun`).set(clean({ at: now, run: runId, checked: result.checked, green: result.green, red: result.red, incoming: result.incoming, actions: result.actions.length }));
   }
 
-  // The day's summary to Junid, once, at the first run from 18:00.
-  if (sast(now).hour >= SUMMARY_HOUR) {
-    const sent = await get(db, `${AGENT_ROOT}/days/${day}/summarySentAt`);
-    if (!sent) {
-      const text = summaryText({ day, dayOrders, orders, outcomes: result.outcomes, counts: chase?.todayCounts ? chase.todayCounts(day) : null, logToday: await get(db, `${AGENT_ROOT}/counts/${day}`) });
-      result.summary = text;
-      if (commit) {
-        const ok = chase.insert({ id: `daily_summary:-:-:${day}`, at: now, kind: "daily_summary", order_key: "-", order_number: null, line_index: null, reason: text, evidence: JSON.stringify({ day }) });
-        if (ok) await db.ref(`${AGENT_ROOT}/days/${day}/summarySentAt`).set(now);
-      }
-    }
-  }
   if (commit && result.actions.length) {
     const tally = {};
     for (const a of result.actions) { const k = a.type === "chase" ? `chase_${a.kind}` : a.type; tally[k] = (tally[k] || 0) + 1; }
     const upd = {};
     for (const [k, n] of Object.entries(tally)) upd[`${AGENT_ROOT}/counts/${day}/${k}`] = { ".sv": { increment: n } };
     await db.ref().update(upd);
+  }
+  // The day's summary to Junid, once, at the first run from 18:00 (the run window goes to 18:30: two chances).
+  if (sast(now).hour >= SUMMARY_HOUR) {
+    const sent = await get(db, `${AGENT_ROOT}/days/${day}/summarySentAt`);
+    if (!sent) {
+      const text = summaryText({ day, dayOrders, orders, outcomes: result.outcomes, counts: chase?.todayCounts ? chase.todayCounts(day) : null, logToday: await get(db, `${AGENT_ROOT}/counts/${day}`) });
+      result.summary = text;
+      if (commit && chase?.available !== false) {
+        const id = `daily_summary:-:-:${day}`;
+        const ok = chase.insert({ id, at: now, kind: "daily_summary", order_key: "-", order_number: null, line_index: null, reason: text, evidence: JSON.stringify({ day }) });
+        if (ok || chase.exists?.(id)) await db.ref(`${AGENT_ROOT}/days/${day}/summarySentAt`).set(now);
+      }
+    }
   }
   return result;
 }
@@ -262,11 +315,17 @@ async function act({ db, chase, push, commit, now, day, id, order, label, line, 
   }
   if (a.type === "chase") {
     if (a.kind === "no_answer_24h" && marks[markKey("no_answer_24h")]) return { skipped: true };
+    // Cadence bounds on top of the once-a-day id: a follow-up never within 20 h of the last one; a payment link
+    // resent on at most 5 days.
+    if (a.kind === "follow_up" && now - num(marks[markKey("follow_up")]?.at) < FOLLOW_UP_GAP_MS) return { skipped: true };
+    if (a.kind === "payment_link" && num(marks[markKey("payment_link")]?.days) >= PAYMENT_LINK_MAX_DAYS) return { skipped: true };
     const row = { id: `${a.kind}:${id}:${a.i}:${day}`, at: now, kind: a.kind, order_key: String(id), order_number: String(order.orderNumber ?? label), line_index: a.i, reason: `${label} line ${a.i + 1} (${line?.title || line?.pid || "item"}${line?.size && line.size !== "_" ? ` ${line.size}` : ""})`, evidence: JSON.stringify(a.evidence || {}) };
     if (!commit) return { would: row.id };
     const inserted = chase.insert(row);
     if (!inserted) return { skipped: true };
     if (a.kind === "no_answer_24h") await mark("no_answer_24h");
+    if (a.kind === "follow_up") await mark("follow_up");
+    if (a.kind === "payment_link") await db.ref(`${AGENT_ROOT}/marks/${id}/${markKey("payment_link")}`).set({ at: now, day, days: num(marks[markKey("payment_link")]?.days) + 1 });
     return { queued: row.id };
   }
   if (a.type === "nudge") {
@@ -279,7 +338,9 @@ async function act({ db, chase, push, commit, now, day, id, order, label, line, 
     let res = { sent: false, why: "dry run" };
     if (commit) {
       res = push ? await push({ hub: a.location, title, body, tag: `online-${id}-${a.location}` }).catch((e) => ({ sent: false, why: String(e?.message || e).slice(0, 120) })) : { sent: false, why: "no push sender" };
-      for (const it of due) await db.ref(`${AGENT_ROOT}/marks/${id}/${safeKey(`nudge_${it.i}_${it.rg}`)}`).set({ at: now, day });
+      // Marked only when delivered, or when it never can be (no audience / no phone): a transient failure is retried.
+      const permanent = !res.sent && /^no (push audience|phone registered)/.test(String(res.why || ""));
+      if (res.sent || permanent) for (const it of due) await db.ref(`${AGENT_ROOT}/marks/${id}/${safeKey(`nudge_${it.i}_${it.rg}`)}`).set({ at: now, day, sent: !!res.sent, why: res.why || null });
     }
     return { ...res, title, lines: due.map((it) => it.i) };
   }
@@ -291,13 +352,16 @@ async function act({ db, chase, push, commit, now, day, id, order, label, line, 
       const where = place(it.evidence?.at);
       const item = `${it.line?.title || "an item"}${it.line?.size && it.line.size !== "_" ? ` size ${it.line.size}` : ""}`;
       return it.level === "unlinked" ? `a line is not linked to a product in the app (${it.evidence?.reason || "unknown"}); it cannot be picked until it is linked`
-        : `${item} has waited ${it.evidence?.tradingHours} trading hours at ${where} (staff nudged at 2 h)`;
+        : it.level === "repicks" || it.level === "refused" ? `${item}: ${where} could not produce it and the re-pick stopped (${it.evidence?.why}); please decide`
+        : `${item} has waited ${it.evidence?.tradingHours} trading hours at ${where} (${marks[safeKey(`nudge_${it.i}_${it.rg}`)]?.sent ? "staff nudged at 2 h" : "staff could not be nudged: no phones registered for that place"})`;
     };
     const words = `${label}: ${due.map(part).join("; ")}. Please chase it.`;
-    const row = { id: `junid_escalation:${id}:-:${day}`, at: now, kind: "junid_escalation", order_key: String(id), order_number: String(order.orderNumber ?? label), line_index: null, reason: words, evidence: JSON.stringify(due.map((it) => ({ line: it.i, level: it.level, ...it.evidence }))) };
+    const row = { id: `junid_escalation:${id}:${due.map((it) => it.i).join("+")}:${day}`, at: now, kind: "junid_escalation", order_key: String(id), order_number: String(order.orderNumber ?? label), line_index: null, reason: words, evidence: JSON.stringify(due.map((it) => ({ line: it.i, level: it.level, ...it.evidence }))) };
     if (!commit) return { would: row.id, words };
     const inserted = chase.insert(row);
-    for (const it of due) await db.ref(`${AGENT_ROOT}/marks/${id}/${safeKey(`escalate_${it.level}_${it.i}_${it.rg}`)}`).set({ at: now, day });
+    // Marked only when Jamie has the row (new, or already there from an earlier run): a missing database never
+    // swallows an escalation.
+    if (inserted || chase.exists?.(row.id)) for (const it of due) await db.ref(`${AGENT_ROOT}/marks/${id}/${safeKey(`escalate_${it.level}_${it.i}_${it.rg}`)}`).set({ at: now, day });
     return inserted ? { queued: row.id, words, lines: due.map((it) => it.i) } : { skipped: true };
   }
   return { skipped: true };

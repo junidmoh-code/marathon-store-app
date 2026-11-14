@@ -18,6 +18,7 @@ export function chaseQueueOver(sqlite) {
       const r = ins.run(String(row.id), Number(row.at), row.kind, String(row.order_key), row.order_number == null ? null : String(row.order_number), row.line_index == null ? null : Number(row.line_index), row.reason ?? null, row.evidence ?? null);
       return Number(r.changes) > 0;
     },
+    exists(id) { return !!sqlite.prepare(`SELECT 1 FROM ${CHASE_TABLE} WHERE id = ?`).get(String(id)); },
     /** Today's rows by state, e.g. { done: 4, open: 1 } (ids end with the SAST day). */
     todayCounts(day) {
       const out = {};

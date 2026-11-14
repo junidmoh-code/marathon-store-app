@@ -6,7 +6,7 @@
 export const SAST_OFFSET_MS = 2 * 3600e3;
 export const TRADING = Object.freeze({ 0: [9, 14], 1: [9, 18], 2: [9, 18], 3: [9, 18], 4: [9, 18], 5: [9, 18], 6: [9, 18] });
 export const RUN_FROM_HOUR = 8;
-export const RUN_TO_MS = 18 * 3600e3 + 15 * 60e3; // last run starts by 18:15
+export const RUN_TO_MS = 18 * 3600e3 + 30 * 60e3; // last run starts by 18:30 (two chances for the 18:00 summary)
 export const RUN_EVERY_MS = 15 * 60e3;
 export const SUMMARY_HOUR = 18;
 

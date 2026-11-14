@@ -123,3 +123,27 @@ describe("summary + bundling (pure)", () => {
     expect(b[0].items.map((x) => x.i)).toEqual([0, 1]);
   });
 });
+
+describe("architect review of #905 (run)", () => {
+  it("a refund of 1 unit on a Shopify line split over two app lines closes only one of them", async () => {
+    const { refundCoverage } = await import("./run.mjs");
+    const order = { lines: [{ shopifyLineItemId: "gid://shopify/LineItem/9", qty: 1, source: { status: "display" } }, { shopifyLineItemId: "gid://shopify/LineItem/9", qty: 1, source: { status: "pick" } }] };
+    expect(Object.keys(refundCoverage(order, { byLine: { 9: { at: 1, cents: 100, qty: 1 } } }))).toEqual(["0"]);
+    expect(Object.keys(refundCoverage(order, { byLine: { 9: { at: 1, cents: 200, qty: 2 } } }))).toEqual(["0", "1"]);
+  });
+  it("without Jamie's database an escalation is not marked done (it is asked again next run)", async () => {
+    const f = fakeDb(world());
+    const none = { available: false, insert: () => false, exists: () => false, todayCounts: () => null };
+    await runOrderAgent({ db: f.db, chase: none, now: T("2026-11-14T11:30:00Z"), commit: true });
+    const marks = f.read("online_order_agent/marks/2142") || {};
+    expect(Object.keys(marks).filter((k) => k.startsWith("escalate"))).toEqual([]);
+  });
+  it("per-run caps hold nudges to 5", async () => {
+    const w = world();
+    for (let n = 0; n < 8; n++) w.online_orders[`9${n}`] = { shopifyName: `#9${n}`, status: "picking", lines: [{ pid: `P${n}`, size: "L", sizeKey: "L", qty: 1, title: "x", source: { status: "pick", locationId: "hub2", entryKey: "displayChecks_active/trophy/e1" } }] };
+    const f = fakeDb(w);
+    const pushes = [];
+    await runOrderAgent({ db: f.db, chase: mkQueue(), push: async (p) => { pushes.push(p); return { sent: true }; }, now: T("2026-11-14T09:00:00Z"), commit: true });
+    expect(pushes.length).toBe(5);
+  });
+});

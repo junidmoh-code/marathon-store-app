@@ -37,6 +37,7 @@ export const JAMIE_GAP_MS = 30 * 60e3; // a failed line is Jamie's own for this 
 export const NUDGE_AFTER_TH = 2;
 export const ESCALATE_AFTER_TH = 4;
 export const MARK_MAX_AGE_MS = 14 * 24 * H; // the POS's own bound on a customer-wait mark
+export const MAX_REPICKS = 3; // re-picks per line before Junid decides
 
 const OFF_PARCEL = new Set(["resolved", "moved", "cancelled"]);
 const FAILED = new Set(["not_found", "no_stock", "needs_attention"]);
@@ -104,14 +105,22 @@ export const choseToWait = (rec) => rec?.state === "chose" && (/when it arrives|
  * since (an inbound movement on its cell after the failure, e.g. #2085's transfer into Marathon PE at 12:55).
  */
 export function excludedPlaces(line, facts, failedAt, { walkin = false } = {}) {
+  // Every place that failed this line before (kept across re-picks by agentRepick.mjs: line.failedPlaces), plus the
+  // one that failed now, so a re-pick never ping-pongs between two places that both said no (architect review).
+  const failed = { ...(line?.failedPlaces && typeof line.failedPlaces === "object" ? line.failedPlaces : {}) };
   const loc = line?.source?.locationId;
-  if (!loc) return [];
   // A walk-in sale that took the held unit is not a place failing to find one: the cell already counts that sale,
   // so whatever it still shows is on the shelf (#2085).
-  if (walkin) return [];
-  const cell = facts?.stockAt?.[loc];
-  const restocked = cell && num(cell.qty) > 0 && num(cell.updatedAtMs) > num(failedAt) && /_in$|^arrival|^receive|^return|^adjust/.test(String(cell.lastType || ""));
-  return restocked ? [] : [loc];
+  if (loc && !walkin) failed[loc] = Math.max(num(failed[loc]), num(failedAt));
+  const out = [];
+  for (const [where, at] of Object.entries(failed)) {
+    const cell = facts?.stockAt?.[where];
+    // Restocked only by a stock ARRIVAL after that place's own known failure time; an unknown failure time, an
+    // adjustment (it can be downward) or a return never counts.
+    const restocked = num(at) > 0 && cell && num(cell.qty) > 0 && num(cell.updatedAtMs) > num(at) && /^transfer_in$|^arrival|^receive/.test(String(cell.lastType || ""));
+    if (!restocked) out.push(where);
+  }
+  return out;
 }
 /** When the line's current failure can be dated (0 when unknown). */
 export function failedAtOf(line, order) {
@@ -119,6 +128,19 @@ export function failedAtOf(line, order) {
   if (line?.source?.status === "needs_attention" && order?.attention?.kind === "walkin_override") ts.push(order.attention.at);
   for (const o of Object.values(order?.overrides || {})) if (o && String(o.productId) === String(line?.pid) && String(o.size) === String(line?.size)) ts.push(o.at);
   return Math.max(0, ...ts.map(num));
+}
+/**
+ * May the agent ask for a re-pick of this line now? → { ok } | { ok: false, why, escalate? }
+ * The poller's last answer for this route generation is read back: refused / not in stock → no "re-picking" claim.
+ */
+export function repickAllowed(line, facts) {
+  if (num(line?.repickCount) >= MAX_REPICKS) return { ok: false, why: `re-picked ${num(line.repickCount)} times`, escalate: "repicks" };
+  const last = facts?.lastRepick;
+  if (last && num(last.expectRouteGen) === num(line?.routeGen)) {
+    if (last.state === "refused") return { ok: false, why: last.why || "refused", escalate: "refused" };
+    if (last.state === "not_in_stock") return { ok: false, why: "no free unit after all" };
+  }
+  return { ok: true };
 }
 const firstFree = (free, exclude, isFootwear, qty) => {
   const route = isFootwear ? ["hub1", "hub2", "hub3"] : ["marathon-pe", "trophy", "hub2", "concrete", "marathon-pine"];
@@ -140,7 +162,7 @@ export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
 
   // 1 SETTLED — Shopify's own refund record for this line item.
   const refund = facts.shopifyRefund;
-  if (refund && num(refund.at) > 0 && now - num(refund.at) >= SETTLE_AFTER_MS && !line.escalationOverride && order?.basket?.[i] !== true && st !== "handed") {
+  if (refund && num(refund.at) > 0 && now - num(refund.at) >= SETTLE_AFTER_MS && !line.escalationOverride && !line.escalation?.request && !line.escalation?.pending && order?.basket?.[i] !== true && st !== "handed") {
     const swapAt = line?.swappedFrom ? num(line.swappedFrom.at) : 0;
     const mixedHub = num(line.qty) > 1 && codesOf(line).length > 1;
     if (!(swapAt > 0 && num(refund.at) < swapAt) && !mixedHub && line.escalation?.phase !== "done") {
@@ -174,7 +196,8 @@ export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
   // The customer chose to wait for this very item: it goes on a pick the moment a place has it.
   if (rec && choseToWait(rec) && (st === "unavailable" || FAILED.has(st))) {
     const exclude = excludedPlaces(line, facts, failedAtOf(line, order));
-    const to = line.pid ? freeAnywhere(exclude) : null;
+    const gate = repickAllowed(line, facts);
+    const to = line.pid && gate.ok ? freeAnywhere(exclude) : null;
     if (to) return out("finding", PRIORITY.finding, `Customer waiting — found at ${place(to)}, re-picking`, [{ type: "repick", i, exclude, to, evidence: { free: facts.free || {}, exclude, choseAt: rec.customerSaid?.at || null } }]);
     return out("wait_stock", PRIORITY.wait_stock, num(facts.central) > 0 ? "Customer waiting for stock (coming from Central)" : "Customer waiting for stock");
   }
@@ -186,7 +209,11 @@ export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
     const walkin = st === "needs_attention" && order?.attention?.kind === "walkin_override";
     const exclude = excludedPlaces(line, facts, failedAt, { walkin });
     const head = walkin ? "Held item sold at the till" : st === "no_stock" && HUBS.has(loc) ? `${place(loc)} rejected` : loc ? `Not found at ${place(loc)}` : "Not in stock";
-    const to = line.pid ? freeAnywhere(exclude) : null;
+    const gate = repickAllowed(line, facts);
+    const to = line.pid && gate.ok ? freeAnywhere(exclude) : null;
+    if (!gate.ok && gate.escalate && line.pid && freeAnywhere(exclude)) {
+      return out("finding", PRIORITY.finding, `${head} — Junid deciding (${gate.why})`, [{ type: "escalate", i, level: gate.escalate, evidence: { at: loc, why: gate.why, free: facts.free || {}, exclude } }]);
+    }
     if (to) return out("finding", PRIORITY.finding, `${head} — re-picking at ${place(to)}`, [{ type: "repick", i, exclude, to, evidence: { failed: { status: st, at: loc, since: failedAt || null }, free: facts.free || {}, exclude, restockedAt: exclude.length ? null : facts.stockAt?.[loc]?.updatedAtMs || null } }]);
     if (num(facts.central) > 0) return out("wait_stock", PRIORITY.wait_stock, `${head} — waiting on refill from Central`);
     // Genuinely unavailable: Jamie offers alternatives at once (unless the line is already his).

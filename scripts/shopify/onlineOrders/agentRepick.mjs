@@ -7,7 +7,7 @@
 // another place on the line's EXISTING route has a free unit it asks this tick
 // to put the line on that place's pick:
 //
-//   /online_orders/{id}/agentRepicks/{lineIndex}_{routeGen} =
+//   /online_orders/{id}/agentRepicks/{lineIndex}_{routeGen}_{hourSlot} =
 //     { lineIndex, expectPid, expectSizeKey, expectStatus, expectRouteGen,
 //       exclude: [locationId…], by: "order-agent", at, state: "pending", evidence }
 //     → "ordered"      { routedTo, checked, answeredAt }
@@ -46,7 +46,7 @@ export const REPICK_LINE = Object.freeze([LINE_STATUS.NOT_FOUND, LINE_STATUS.NO_
 
 const clean = (v) => JSON.parse(JSON.stringify(v ?? null));
 const place = (loc) => PLACE[loc] || loc;
-export const repickId = (lineIndex, routeGen) => `${Number(lineIndex)}_${Number(routeGen) || 0}`;
+const CUSTOMER_STATES = new Set(["waiting_reply", "no_answer", "not_contacted", "unreachable"]);
 
 /**
  * The customer told Jamie they will wait for THIS item (jimmyStatus state "chose" about the line's own product and
@@ -75,6 +75,9 @@ export function repickBlocker({ line, req, enabled, order = null, i = Number(req
   if (line.escalation) return "the line has an escalation under way";
   if (line.awaitingCustomer || line.resolution?.conversation) return "the customer is being asked about this line";
   if (line.escalationOverride && !line.escalationOverride.appliedAt) return "Junid's decision on this line is still being applied";
+  if (["unavailable", "resolved"].includes(line.escalationOverride?.kind)) return `Junid decided this line (${line.escalationOverride.kind})`;
+  const rec = order?.jimmyStatus && typeof order.jimmyStatus === "object" ? order.jimmyStatus[i] ?? order.jimmyStatus[String(i)] : null;
+  if (rec && CUSTOMER_STATES.has(String(rec.state)) && (!rec.pid || String(rec.pid) === String(line.pid))) return "Jamie is waiting on the customer about this line";
   if (line.resolution?.money) return "money is recorded on this line";
   const outcome = line.resolution?.outcome?.kind;
   if (outcome && outcome !== "swap") return `the line was settled (${outcome})`;
@@ -170,6 +173,13 @@ export async function applyAgentRepicks(ctx, id, order, helpers) {
         continue;
       }
       const to = plan.pieces[0];
+      // The basket and the till's code confirmations, read again just before the line moves (a packer may have
+      // scanned it in since the order was read).
+      const [basketNow, codesNow] = await Promise.all([ctx.get(`${ONLINE_ORDERS_PATH}/${id}/basket/${i}`), ctx.get(`${ONLINE_ORDERS_PATH}/${id}/codesIn`)]);
+      if (basketNow === true || (Array.isArray(line.source?.orderKeys) && line.source.orderKeys.some((c) => codesNow?.[c] === true))) {
+        await answer({ state: REPICK.REFUSED, why: "part of this line is already in the basket" });
+        continue;
+      }
       const old = clean({ status: line.source?.status ?? null, locationId: line.source?.locationId ?? null, entryKey: line.source?.entryKey ?? null, orderKeys: line.source?.orderKeys ?? null });
       const landed = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines/${i}`).transaction((cur) => {
         if (cur == null) return null; // the SDK's cold-cache pass: never abort on it
@@ -179,6 +189,10 @@ export async function applyAgentRepicks(ctx, id, order, helpers) {
         return clean({
           ...cur,
           routeGen: (Number(cur.routeGen) || 0) + 1,
+          repickCount: (Number(cur.repickCount) || 0) + 1,
+          // Every place that failed this line, kept across re-picks (the agent skips them unless stock arrives there
+          // after their failure). A walk-in sale is not a place failing.
+          failedPlaces: { ...(cur.failedPlaces || {}), ...(old.locationId && old.status !== LINE_STATUS.NEEDS_ATTENTION ? { [old.locationId]: Number(req.evidence?.failed?.since) || ctx.now } : {}) },
           source: { status: to.status, locationId: to.locationId },
           repick: { rid, at: Number(req.at) || ctx.now, appliedAt: ctx.now, by: req.by || "order-agent", from: { status: old.status, locationId: old.locationId }, to: to.locationId, old, exclude },
         });
