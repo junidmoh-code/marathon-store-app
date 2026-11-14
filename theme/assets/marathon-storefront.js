@@ -111,6 +111,7 @@
     if (panel) panel.hidden = true;
     var sheet = panel && $("[data-mc-sheet]", panel);
     if (sheet) { sheet.style.transform = ""; sheet.classList.remove("is-dragging"); }
+    $$("[data-mc-zoom-host].is-zoomed", card).forEach(function (h) { h.classList.remove("is-zoomed"); });
     card.classList.remove(OPEN_CLASS);
     openCard = null;
     unlockScroll();
@@ -236,6 +237,17 @@
       return;
     }
 
+    // ZOOM (product view, 14 Nov 2026): the photo fills the screen; a tap on
+    // the zoomed photo puts it back. Without JS the zoom is a link to the
+    // full-size photograph.
+    var zoom = target.closest && target.closest("[data-mc-zoom]");
+    if (zoom) {
+      var host = zoom.closest("[data-mc-zoom-host]");
+      if (host) { ev.preventDefault(); host.classList.add("is-zoomed"); return; }
+    }
+    var zoomed = target.closest && target.closest("[data-mc-zoom-host].is-zoomed");
+    if (zoomed) { ev.preventDefault(); zoomed.classList.remove("is-zoomed"); return; }
+
     var size = target.closest && target.closest("[data-mc-size]");
     if (size) {
       ev.preventDefault();
@@ -261,7 +273,10 @@
   });
 
   document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && openCard) close(true);
+    if (ev.key !== "Escape" || !openCard) return;
+    var z = $("[data-mc-zoom-host].is-zoomed", openCard);
+    if (z) { z.classList.remove("is-zoomed"); return; }
+    close(true);
   });
 
   // Back/forward: the panel state IS the history state, so honour it in both
@@ -362,6 +377,11 @@
         say("Added to cart.", false);
         trackAdded(r.body, "grid_panel");
         refreshCartCount();
+        // The panel closes after a successful add (Junid, 14 Nov 2026), after
+        // a beat so "Added to cart." is seen. Only if this panel is still the
+        // open one: a shopper who already moved on is not yanked anywhere.
+        var addedCard = btn.closest("[data-mc-card]");
+        setTimeout(function () { if (addedCard && openCard === addedCard) close(true); }, 700);
       })
       .catch(function (err) {
         say(String((err && err.message) || "Could not add that."), true);
@@ -871,7 +891,7 @@
   // or (later) a product-page equivalent, as long as it carries these same
   // data attributes and classes.
   function captureCardMeta(card) {
-    var img = $(".mc-card__media img", card);
+    var img = $(".mc-card__media img", card) || $("[data-mc-love-img]", card);
     // The card's own price (the price block's red figure), or the "Sold out"
     // slot; never the whole block, whose text would also carry RRP and SAVE.
     var priceEl = $(".mc-card__foot [data-mc-price-now]", card) || $(".mc-card__soldout", card) || $(".mc-card__price", card);
@@ -943,7 +963,7 @@
     var meta = readMeta();
     if (i === -1) {
       loved.push(id);
-      var card = b.closest("[data-mc-card]");
+      var card = b.closest("[data-mc-card], [data-mc-love-host]");
       if (card) meta[id] = captureCardMeta(card);
     } else {
       loved.splice(i, 1);
@@ -951,7 +971,9 @@
     }
     writeLoved(loved);
     writeMeta(meta);
-    b.setAttribute("aria-pressed", i === -1 ? "true" : "false");
+    $$("[data-mc-love]").forEach(function (h) {
+      if (String(h.getAttribute("data-product-id")) === id) h.setAttribute("aria-pressed", i === -1 ? "true" : "false");
+    });
   });
   applyLoved(document);
   surgeLoved();
