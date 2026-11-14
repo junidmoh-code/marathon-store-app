@@ -2,10 +2,9 @@
 // PURE: the order record + the facts run.mjs read for it → its group on the POS card (green / red / incoming),
 // one short reason in plain words, and the actions the agent takes. Nothing here reads or writes anything.
 //
-//   GREEN    every line on the parcel is physically at Marathon PE (handed there, every hub unit confirmed in at the
-//            till, or in the basket) and nothing waits on the customer or on money.
-//   RED      anything else: the customer must answer, a difference is unpaid, a place could not produce a line, an
-//            item is still at another place or on its way, a refund is being processed.
+//   GREEN    THE DEFAULT (Junid, 14 Nov 2026 evening): in hand, or still coming — being picked, waiting at a hub,
+//            released / on its way, waiting on a refill from Central — and any state not listed under RED.
+//   RED      only a line a place rejected / could not find / unavailable (isRedLine), or money the customer owes.
 //   INCOMING an exchange whose customer's item is not back yet (Confirm arrival not done) — its own section.
 //
 // The actions, one rule each (the brief's five steps):
@@ -294,16 +293,17 @@ export function judgeOrder(order, facts = {}, now = Date.now()) {
   const detail = total > 0 && here < total ? `${here} of ${total} here` : null;
   if (awaitingIncomingReturn(order)) return { group: "incoming", reason: "Waiting for the customer's return", detail, lines: judged, actions: actions.filter((a) => a.type === "close_refund"), here, total };
   if (total === 0) return { group: "green", reason: null, detail: "Nothing left to ship — closing", lines: [], actions: [], here: 0, total: 0 };
-  // Junid's card surface rule (14 Nov 2026, latest): GREEN only when everything is in hand and the order can be
-  // packed (a balance we owe the customer included); anything blocking is RED — an unavailable item, Jamie offering
-  // alternatives, finding stock, money owed, and an item still at a place or on its way. Unavailable / money speak first.
-  const red = [...judged.filter(isRedLine).sort((a, b) => a.prio - b.prio || a.i - b.i), ...judged.filter((j) => !isRedLine(j)).sort((a, b) => a.prio - b.prio || a.i - b.i)];
+  // Junid (14 Nov 2026 evening, "every order is red — wrong"): GREEN is the default; RED only when a line is
+  // unavailable (rejected / not found / nowhere) or the customer owes money (isRedLine). Items still at a place or on
+  // their way are green — the agent still nudges / re-picks them (its actions do not depend on the colour).
+  const red = judged.filter(isRedLine).sort((a, b) => a.prio - b.prio || a.i - b.i);
   if (!red.length) {
     // Green, still with what is not here yet in the agent's own words for the log (the card shows "X of Y here").
     const sorted = [...judged].sort((a, b) => a.prio - b.prio || a.i - b.i);
     return { group: "green", reason: null, detail, lines: sorted, actions, here, total };
   }
   const top = red[0];
-  const reason = `${isRedLine(top) ? redWords(top) : top.why}${red.length > 1 ? ` (+${red.length - 1} more)` : ""}`;
-  return { group: "red", reason, detail, lines: red, actions, here, total };
+  const reason = `${redWords(top)}${red.length > 1 ? ` (+${red.length - 1} more)` : ""}`;
+  const rest = judged.filter((j) => !isRedLine(j)).sort((a, b) => a.prio - b.prio || a.i - b.i);
+  return { group: "red", reason, detail, lines: [...red, ...rest], actions, here, total };
 }
