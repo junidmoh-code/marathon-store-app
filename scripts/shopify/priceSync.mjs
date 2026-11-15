@@ -35,14 +35,15 @@
 // compareAtPrice is part of the drift comparison, so a price edit moves the RRP
 // with it on the next tick, a wrong RRP is corrected by the backstop, and a
 // listing already showing the right pair is never re-pushed.
+import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
 import { isPriceRecord } from "../../src/utils/productCategory.js";
 import { rrpFor, rrpDiscountPctOf } from "../../src/utils/shopifyRrp.js";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { clearMarker } from "./inventorySync.mjs";
 import { runBulkQuery } from "./bulkSnapshot.mjs";
 
-export const PRICE_DIRTY_PATH = "shopify_price_dirty";
-export const PRICE_LOG_PATH = "shopify_sync/_priceLog";
+export const PRICE_DIRTY_PATH = storeNode("shopify_price_dirty");
+export const PRICE_LOG_PATH = `${SYNC_PATH}/_priceLog`;
 // Markers drained per tick. Each costs one Shopify read and at most one write.
 export const PRICE_MAX_PER_RUN = 40;
 // The backstop's cadence. One bulk query plus two tiny RTDB reads per listed
@@ -109,7 +110,7 @@ export function planPriceFix(want, variants, wantCompareAt = null) {
  * the next tick pushes the right RRP instead of waiting for the backstop.
  */
 export async function markPriceDirtyIfRrpMoved(db, pid, usedNode, increment) {
-  const now = (await db.ref(`shopify_publish/${pid}/rrpDiscountPct`).get()).val();
+  const now = (await db.ref(`${PUBLISH_PATH}/${pid}/rrpDiscountPct`).get()).val();
   if (rrpDiscountPctOf({ rrpDiscountPct: now }) === rrpDiscountPctOf(usedNode)) return false;
   await db.ref(`${PRICE_DIRTY_PATH}/${pid}`).set(increment(1));
   return true;
@@ -161,8 +162,8 @@ export async function syncProductPrice(db, graphql, pid, { commit = false, sourc
   assertSafeSegment(pid, "productId");
   const [product, gid, rrpDiscountPct] = await Promise.all([
     db.ref(`products/${pid}`).get().then((s) => s.val()),
-    db.ref(`shopify_sync/${pid}/shopifyProductId`).get().then((s) => s.val()),
-    db.ref(`shopify_publish/${pid}/rrpDiscountPct`).get().then((s) => s.val()),
+    db.ref(`${SYNC_PATH}/${pid}/shopifyProductId`).get().then((s) => s.val()),
+    db.ref(`${PUBLISH_PATH}/${pid}/rrpDiscountPct`).get().then((s) => s.val()),
   ]);
   if (!gid) return { pid, ok: true, changed: false, why: "no Shopify mapping" };
   // A merge loser's price is stale by definition — the survivor carries the
@@ -269,8 +270,8 @@ export async function comparePrices(db, graphql, pids, { snapshot = null, log = 
     const [retail, trade, gid, rrpDiscountPct] = await Promise.all([
       db.ref(`products/${pid}/retailPrice`).get().then((s) => s.val()),
       db.ref(`products/${pid}/stockPrice`).get().then((s) => s.val()),
-      db.ref(`shopify_sync/${pid}/shopifyProductId`).get().then((s) => s.val()),
-      db.ref(`shopify_publish/${pid}/rrpDiscountPct`).get().then((s) => s.val()),
+      db.ref(`${SYNC_PATH}/${pid}/shopifyProductId`).get().then((s) => s.val()),
+      db.ref(`${PUBLISH_PATH}/${pid}/rrpDiscountPct`).get().then((s) => s.val()),
     ]);
     const variants = gid ? snap.get(gid) ?? null : null;
     const want = shopifyPriceFor({ retailPrice: retail });

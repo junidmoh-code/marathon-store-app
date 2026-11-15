@@ -91,6 +91,13 @@ const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
 
 const DIRTY_PATH = "shopify_inventory_dirty";
 
+// ── THE CONCRETE STORE (second Shopify store, one stock pool, 2026-11-15) ────
+// A product live on Concrete gets ITS marker too. stock-fanout.mjs on the Mac
+// mini listens to this node and pushes the product to every store it is live
+// on within seconds — the Marathon marker and sweep are unchanged.
+const CONCRETE_PUBLISH_PATH = "shopify_publish_concrete";
+const CONCRETE_DIRTY_PATH = "shopify_inventory_dirty_concrete";
+
 // ── THE REVIEW LIST'S MARKER (docs/SHOPIFY-REVIEW-INSTOCK.md) ────────────────
 // A product NOT live on the storefront sits in the Shopify Publisher's review
 // list, and a product with no sellable stock must not. This marker tells the
@@ -158,6 +165,19 @@ async function markInventoryDirty({ db, increment, log = () => {} }, { loc, pid,
   // would grow a key for every stock movement on everything we do not sell
   // online — tens of thousands of products — and the sweep's per-run cap would
   // then be spent clearing noise while a live product waited its turn.
+  // Concrete first, and independent of everything below: its outcome never
+  // changes what Marathon's marker does. A failed read is logged and skipped —
+  // the Concrete reconcile tick's movement pass is the backstop.
+  try {
+    const concreteNode = (await db.ref(`${CONCRETE_PUBLISH_PATH}/${pid}`).get()).val();
+    if (isLiveOn(concreteNode)) {
+      await db.ref(`${CONCRETE_DIRTY_PATH}/${pid}`).set(increment(1));
+      log(`concrete inventory marked dirty: ${pid} (${loc})`);
+    }
+  } catch (e) {
+    log(`concrete inventory mark failed for ${pid}: ${String(e?.message || e)}`);
+  }
+
   const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
   if (!isLiveOn(node)) {
     // Not on the storefront, so in the review list: no inventory push, but the
@@ -177,6 +197,7 @@ async function markInventoryDirty({ db, increment, log = () => {} }, { loc, pid,
 
 module.exports = {
   DIRTY_PATH,
+  CONCRETE_DIRTY_PATH,
   REVIEW_DIRTY_PATH,
   UNSELLABLE_LOCATIONS,
   ONLINE_EXCLUDED_LOCATIONS,

@@ -1,3 +1,4 @@
+import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
 // ─── INVENTORY FROM THE MOVEMENT LEDGER — the path that needs no trigger ─────
 //
 // WHY A THIRD PATH. inventorySync.mjs already has two: dirty markers written by
@@ -38,7 +39,7 @@
 // writes it and no client reads it, so no rule is needed.
 
 export const MOVEMENTS_PATH = "stock_movements";
-export const CURSOR_PATH = "shopify_sync/_movementCursor";
+export const CURSOR_PATH = `${SYNC_PATH}/_movementCursor`;
 // 90 minutes: one and a half times the worst lag measured (61 min).
 export const LOOKBACK_MS = 90 * 60 * 1000;
 // Products pushed per tick. A bulk receive can move hundreds at once; the rest

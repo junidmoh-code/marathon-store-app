@@ -89,6 +89,7 @@
 // that is right about what the shoe is, so it stays the join.
 import { isPriceRecord } from "../../src/utils/productCategory.js";
 import { triggersInText } from "../../src/utils/shopifyTriggers.js";
+import { STORE } from "./storeConfig.mjs";
 
 // The one currency the shop trades in. Money conditions must carry it.
 export const CURRENCY = "ZAR";
@@ -105,7 +106,7 @@ export const CURRENCY = "ZAR";
 // sortOrder    a CollectionSortOrder enum value (API 2026-07).
 // conditions   smart only. The 2026-07 shape: a conditions SOURCE carrying an
 //              inclusion match. `ruleSet` is deprecated on this version.
-export const COLLECTIONS = [
+const MARATHON_COLLECTIONS = [
   // ── Top level ──────────────────────────────────────────────────────────────
   {
     key: "sneakers",
@@ -345,6 +346,13 @@ export const COLLECTIONS = [
     seoDescription: "Everything under R500 at Marathon Club, cheapest first.",
   },
 ];
+
+// The Concrete store gets the SAME collections — same keys, handles and smart
+// rules, so the reconciler's category → collection routing is identical — with
+// the store name in its SEO copy. Marathon's list is returned untouched.
+export const COLLECTIONS = STORE.key === "marathon"
+  ? MARATHON_COLLECTIONS
+  : MARATHON_COLLECTIONS.map((c) => JSON.parse(JSON.stringify(c).replaceAll("Marathon Club", STORE.label)));
 
 export const COLLECTION_BY_KEY = new Map(COLLECTIONS.map((c) => [c.key, c]));
 export const MANUAL_KEYS = COLLECTIONS.filter((c) => c.kind === "manual").map((c) => c.key);

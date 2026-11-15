@@ -35,6 +35,7 @@
 // this file walks every live product a slice at a time, reading no marker and
 // clearing none. Markers are the fast path, not the only path.
 
+import { PUBLISH_PATH, SYNC_PATH, storeNode, STORE } from "./storeConfig.mjs";
 import {
   networkTotals, requireSingleLocation, setAvailable, readAvailable, readLevels,
   readProductVariants, untrackedVariants, enforceTracking,
@@ -43,14 +44,14 @@ import {
 import { ONLINE_RESERVATIONS_PATH, heldUnits } from "../../src/utils/onlineOrders.js";
 
 // The node the trigger writes to and this sweep drains.
-export const DIRTY_PATH = "shopify_inventory_dirty";
+export const DIRTY_PATH = storeNode("shopify_inventory_dirty");
 
 // The heartbeat and the nightly sweep's report. Written by the reconciler
 // (lastPassAt — a movement pass with no failures) and stock-truth-sweep.mjs
 // (lastSweep); read by shopifyInventoryHealthScan (functions/index.js), which
 // emails Junid when either says the storefront may be selling what the app
 // does not hold. Server-only: Admin SDK on both sides, no client rule needed.
-export const HEALTH_PATH = "shopify_inventory_health";
+export const HEALTH_PATH = storeNode("shopify_inventory_health");
 
 /**
  * Does this product have a Shopify listing whose quantities must be kept true?
@@ -80,7 +81,7 @@ export const MAX_PER_RUN = 40;
  * error: a product that was never pushed to Shopify has nothing to correct.
  */
 export async function desiredFor(db, pid, locNames = null) {
-  const map = (await db.ref(`shopify_sync/${pid}`).get()).val();
+  const map = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
   if (!map?.variants) return null;
   const sizes = Object.keys(map.variants);
   // ── THE LOCATION NAMES COME FROM /locations, NOT FROM /stock ───────────────
@@ -101,7 +102,7 @@ export async function desiredFor(db, pid, locNames = null) {
   // Website-order holds for this product: ONE point read of its own
   // reservation node (docs/ONLINE-ORDERS.md), read with the stock it adjusts.
   const holds = await readReservations(db, pid);
-  return { map, totals: networkTotals(tree, pid, sizes), reserved: reservedBySize(holds), released: releasedBySize(holds) };
+  return { map, totals: withoutForeignHolds(networkTotals(tree, pid, sizes), holds), reserved: reservedBySize(holds), released: releasedBySize(holds) };
 }
 
 // /online_reservations/{pid} → { [sizeKey]: units held by open website orders }.
@@ -116,10 +117,41 @@ async function readReservations(db, pid) {
   }
 }
 
+// ── ONE STOCK POOL, TWO STORES ───────────────────────────────────────────────
+// A hold row carries `store` when the order came from a store other than
+// Marathon (absent = Marathon, every row before 2026-11-15). Only THIS store's
+// own holds are netted against its own Shopify `committed` (that is the
+// double-count onlineHoldAdjustment exists to avoid). Another store's holds
+// are never in this store's `committed`, so they come off in FULL — the unit a
+// Concrete customer bought must not be on sale on Marathon, and vice versa.
+const rowStore = (row) => row?.store || "marathon";
+const ownCell = (cell, own) => Object.fromEntries(Object.entries(cell || {}).filter(([, r]) => (rowStore(r) === STORE.key) === own));
+
+/** Units held per size by OTHER stores' open orders. */
+export function foreignBySize(node) {
+  const out = {};
+  for (const [sizeKey, cell] of Object.entries(node || {})) {
+    const n = heldUnits(ownCell(cell, false));
+    if (n > 0) out[sizeKey] = n;
+  }
+  return out;
+}
+
+/** totals minus other stores' holds (and any `extra` per size), floored at 0. */
+export function withoutForeignHolds(totals, holdsNode, extra = null) {
+  const foreign = foreignBySize(holdsNode);
+  const out = { ...totals };
+  for (const k of Object.keys(out)) {
+    const minus = (foreign[k] || 0) + (Number(extra?.[k]) || 0);
+    if (minus) out[k] = Math.max(0, (out[k] || 0) - minus);
+  }
+  return out;
+}
+
 export function reservedBySize(node) {
   const out = {};
   for (const [sizeKey, cell] of Object.entries(node || {})) {
-    const n = heldUnits(cell);
+    const n = heldUnits(ownCell(cell, true));
     if (n > 0) out[sizeKey] = n;
   }
   return out;
@@ -133,7 +165,7 @@ export function releasedBySize(node) {
   const out = {};
   for (const [sizeKey, cell] of Object.entries(node || {})) {
     let n = 0;
-    for (const row of Object.values(cell || {})) {
+    for (const row of Object.values(ownCell(cell, true))) {
       const q = Number(row?.released);
       if (Number.isFinite(q) && q > 0) n += q;
     }
@@ -285,7 +317,7 @@ export function planProduct({ map, variants, baseline, totals, reserved = null, 
   };
 }
 
-export async function syncProduct(db, graphql, pid, { commit = false, locationId = null, locNames = null } = {}) {
+export async function syncProduct(db, graphql, pid, { commit = false, locationId = null, locNames = null, pendingForeign = null } = {}) {
   // ── ORDER OF READS IS LOAD-BEARING ─────────────────────────────────────────
   // Shopify is read BEFORE /stock, and the value it gives is the compare-and-set
   // baseline for the write at the end. That ordering is the whole protection
@@ -294,7 +326,7 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   // write instead of being silently replaced by a number that predates it.
   // Reading Shopify after /stock — which is what this did — guarded a window of
   // microseconds and left the window that mattered wide open.
-  const map = (await db.ref(`shopify_sync/${pid}`).get()).val();
+  const map = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
   // `permanent`: retrying cannot change this answer, so a queue must not hold
   // for it (movementSync.mjs) — it is reported, and the nightly sweep owns it.
   if (!map?.variants) return { pid, skipped: "no shopify_sync id map", permanent: true };
@@ -328,7 +360,10 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   // NOW the stock snapshot, strictly after the baseline.
   const desired = await desiredFor(db, pid, locNames);
   if (!desired) return { pid, skipped: "no shopify_sync id map", permanent: true };
-  const plan = planProduct({ map, variants, baseline, totals: desired.totals, reserved: desired.reserved, released: desired.released, committed });
+  // `pendingForeign` (stock-fanout.mjs): units another store has sold that the
+  // app has not pulled in yet — taken off so the last unit cannot sell twice.
+  const totals = pendingForeign ? withoutForeignHolds(desired.totals, null, pendingForeign) : desired.totals;
+  const plan = planProduct({ map, variants, baseline, totals, reserved: desired.reserved, released: desired.released, committed });
   const { known, drift, untracked, stale, meta } = plan;
 
   // ── AN ENTIRELY UNKNOWN ID MAP HAS TWO VERY DIFFERENT CAUSES ──────────────

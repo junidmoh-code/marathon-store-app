@@ -39,7 +39,10 @@ export function randomOrderRef(rand = Math.random) {
 /** "#1768" — the name a person reads for a website order (a follow-up says so). */
 export function orderLabel(order) {
   const n = order?.orderNumber;
-  const base = n != null && String(n) !== "" ? `#${n}` : (order?.shopifyName || order?.ref || "#?");
+  const num = n != null && String(n) !== "" ? `#${n}` : (order?.shopifyName || order?.ref || "#?");
+  // Concrete's numbers start at #1001 like Marathon's once did — the store
+  // name keeps "#1003" on a Concrete parcel from reading as Marathon's #1003.
+  const base = order?.sourceStore === "concrete" ? `Concrete ${num}` : num;
   // A second parcel of items an earlier parcel was short (every line `reship`; docs/ONLINE-ORDERS.md "Second parcel").
   if (order?.reship && typeof order.reship === "object") return `${base} (second parcel)`;
   return order?.followUpOf != null ? `${base} (follow-up)` : base;

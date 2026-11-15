@@ -43,6 +43,7 @@
 //     wrote itself (plus products it creates and maps in the same breath).
 //   • Nodes still in pre-migration states (none/nominated/draft) are skipped
 //     loudly — run migrate-live-state.mjs first.
+import { PUBLISH_PATH, SYNC_PATH, storeNode, adminProductUrl, STORE, IS_MARATHON } from "./storeConfig.mjs";
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey, stockSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
@@ -89,13 +90,19 @@ import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
 // The storefront search index. Kept in step at the moment the reconciler
 // CONFIRMS a state, so it tracks the storefront within one tick rather than
 // waiting for a rebuild. Best-effort by design — see searchIndexWrite.mjs.
-import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchIndexWrite.mjs";
+import { indexProductLive as indexProductLiveRaw, unindexProduct as unindexProductRaw, sweepSearchIndex as sweepSearchIndexRaw } from "./searchIndexWrite.mjs";
+// The search index is the MARATHON storefront's. The Concrete process
+// (SHOPIFY_STORE=concrete) must never add or remove a document there — turning
+// a product off on Concrete would otherwise un-list it from Marathon's search.
+const indexProductLive = (...a) => (IS_MARATHON ? indexProductLiveRaw(...a) : Promise.resolve("skipped — Concrete store"));
+const unindexProduct = (...a) => (IS_MARATHON ? unindexProductRaw(...a) : Promise.resolve(null));
+const sweepSearchIndex = (...a) => (IS_MARATHON ? sweepSearchIndexRaw(...a) : Promise.resolve({ skipped: false, capped: false, missing: 0, orphans: 0 }));
 // The continuous inventory push. reconcile.mjs writes a product's quantity to
 // Shopify exactly once, when it goes live; this drains the dirty markers the
 // shopifyInventoryDirty trigger writes, so a product that is ALREADY live keeps
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
-import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, releasedBySize, onlineHoldAdjustment } from "./inventorySync.mjs";
+import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, releasedBySize, onlineHoldAdjustment, withoutForeignHolds } from "./inventorySync.mjs";
 import { sweepMovements } from "./movementSync.mjs";
 // PRICE. The app owns it; this module is the only place that decides the
 // number Shopify shows (retail, never the trade price), drains the
@@ -186,6 +193,28 @@ const stockLocationKeys = makeStockLocationResolver(admin.app(), { meter });
 // One cached read of .info/serverTimeOffset per process; it degrades to
 // Date.now() if that fails, which is exactly today's behaviour.
 const runStartedAt = await serverNowMs(db);
+
+// ── CONCRETE: AN UNMARKED PRODUCT COMES OFF THE CONCRETE STORE ──────────────
+// Unmarking in Product Admin writes desiredState "off" for products the page
+// KNEW were live; this is the backstop for any it did not (its live read
+// refused before the rules were pasted, a script, a console edit). Every
+// Concrete product live and wanted ON whose /products record is no longer
+// listOnConcrete gets its intent set to off; the normal off path below
+// unpublishes it. Marathon never runs this.
+if (!IS_MARATHON && COMMIT) {
+  try {
+    const live = (await db.ref(PUBLISH_PATH).orderByChild("state").equalTo("live").get()).val() || {};
+    for (const [pid, node] of Object.entries(live)) {
+      if (node?.desiredState === "off") continue;
+      const marked = (await db.ref(`products/${pid}/listOnConcrete`).get()).val();
+      if (marked === true) continue;
+      await db.ref(`${PUBLISH_PATH}/${pid}`).update({ desiredState: "off", updatedAt: await serverNowMs(db), updatedBy: UPDATED_BY });
+      console.log(`  concrete: ${pid} is no longer marked for Concrete — switching its Concrete listing off`);
+    }
+  } catch (e) {
+    console.error(`  ⚠ concrete: unmarked-product check failed (${String(e?.message || e)}) — next tick retries`);
+  }
+}
 const scanState = COMMIT ? await readReconcileState(db, { meter }) : null;
 const scan = COMMIT && !ONLY
   ? planScan({ state: scanState, nowMs: runStartedAt, force: FULL })
@@ -193,7 +222,7 @@ const scan = COMMIT && !ONLY
 const retryPids = Object.keys(scanState?.retry || {});
 const readWholeNode = async () => {
   const v = await readAllPublishNodes(db);
-  meter("shopify_publish (whole node)", v);
+  meter(`${PUBLISH_PATH} (whole node)`, v);
   return v;
 };
 let scanMode = scan.mode;
@@ -264,7 +293,7 @@ if (!COMMIT) {
   console.log("\npid              action            collection        title / note");
   for (const { pid, node, want } of worklist) {
     assertSafeSegment(pid, "productId");
-    const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
+    const mapNode = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
     // The dry run is a PREVIEW, so it must say REFUSE where the commit run
     // would refuse. Showing "CREATE+PUBLISH" for a product the ON path rejects
     // outright would preview the opposite of what happens.
@@ -302,7 +331,7 @@ if (!COMMIT) {
 // LISTED, not merely on: see isListedOnShopify.
 const listed = async (pid) => {
   assertSafeSegment(pid, "productId");
-  return isListedOnShopify((await db.ref(`shopify_publish/${pid}`).get()).val());
+  return isListedOnShopify((await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val());
 };
 
 // ── THE MOVEMENT LEDGER — every product that moved, every tick ──────────────
@@ -429,7 +458,7 @@ if (worklist.length) {
 // path last touched it. Returns null when the product cannot be indexed (no
 // mapping, gone from the shop) — the caller counts that, it is not a throw.
 const buildSearchDocFor = async (pid) => {
-  const map = (await db.ref(`shopify_sync/${pid}`).get()).val();
+  const map = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
   const gid = map?.shopifyProductId;
   if (!gid) return null;
   const rec = (await db.ref(`products/${pid}`).get()).val();
@@ -575,12 +604,12 @@ for (const { pid, want } of capped) {
   try {
     // Re-read at the last moment — the page may have flipped the switch back
     // (or a publish may have been cancelled) since the worklist was read.
-    const fresh = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    const fresh = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
     if (fresh?.desiredState !== want || (want === "on") === confirmedOn(fresh)) {
       results.push({ pid, ok: true, note: "intent changed since the run started — skipped" });
       continue;
     }
-    const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
+    const mapNode = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
 
     if (want === "off") {
       // Channel unpublish ONLY. Status, handle, media, ID map all survive.
@@ -744,6 +773,11 @@ for (const { pid, want } of capped) {
     const product = (await db.ref(`products/${pid}`).get()).val();
     if (!product) { await refuse(pid, "no /products record"); continue; }
     if (product.mergedInto) { await refuse(pid, `record merged into ${product.mergedInto} — publish the survivor`); continue; }
+    // CONCRETE: only a product Junid marked listOnConcrete may go on the
+    // Concrete store. Checked here, at apply time, for the same reason as the
+    // price-record refusal below — an intent written any other way must not
+    // reach the storefront.
+    if (!IS_MARATHON && product.listOnConcrete !== true) { await refuse(pid, "not marked for Concrete (listOnConcrete is off) — mark it in Product Admin → All products"); continue; }
     // NOT MERCHANDISE. This is the enforcement point, not the UI: the page's
     // filter stops a price record being nominated, but an intent written
     // before that filter shipped — or by a script, or by hand in the console —
@@ -1144,7 +1178,7 @@ for (const { pid, want } of capped) {
         const { count } = await attachMedia(graphql, gid, metaFirst ? [{ ...mediaPlan[0], originalSource: metaFirst }, ...mediaPlan.slice(1)] : mediaPlan);
         // The count rides beside the fingerprint so the media-list path can
         // later prove exactly which set this attached (mediaSync.mjs).
-        await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp, mediaCount: mediaPlan.length });
+        await db.ref(`${SYNC_PATH}/${pid}`).update({ mediaFingerprint: planFp, mediaCount: mediaPlan.length });
         console.log(mediaCount > 0 ? `  media re-synced to the reviewed set: ${count}` : `  media READY: ${count}`);
       } catch (e) {
         const down = await failSafeUnpublish(gid);
@@ -1205,7 +1239,7 @@ for (const { pid, want } of capped) {
 
     // Inventory at the moment it starts mattering to customers — from a FRESH
     // read of this product's cells (a sale mid-run must not be re-listed).
-    const finalMap = (await db.ref(`shopify_sync/${pid}`).get()).val();
+    const finalMap = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
     // ── SHOPIFY'S SIDE FIRST, THEN /stock ─────────────────────────────────────
     // This baseline is the compare-and-set value for the write further down, and
     // it is read BEFORE the stock snapshot on purpose: that is what makes the
@@ -1227,10 +1261,11 @@ for (const { pid, want } of capped) {
       const cells = (await db.ref(`stock/${loc}/${pid}`).get()).val();
       if (cells) tree[loc] = { [pid]: cells };
     }
-    const totals = networkTotals(tree, pid, sizes);
     // Website-order holds come off before the push, exactly as on every other
-    // push path (onlineHoldAdjustment, inventorySync.mjs).
+    // push path (onlineHoldAdjustment, inventorySync.mjs). Another store's
+    // holds come off in full (withoutForeignHolds — one stock pool).
     const holdsNode = (await db.ref(`online_reservations/${pid}`).get()).val();
+    const totals = withoutForeignHolds(networkTotals(tree, pid, sizes), holdsNode);
     const heldBySize = reservedBySize(holdsNode);
     const releasedHeld = releasedBySize(holdsNode);
     for (const [sizeKey, v] of Object.entries(finalMap.variants)) {
@@ -1245,7 +1280,7 @@ for (const { pid, want } of capped) {
     // record's title and photos).
     if (relistAsIs && !Object.values(totals).some((q) => q > 0)) {
       await failSafeUnpublish(gid);
-      await db.ref(`shopify_publish/${pid}`).update({ desiredState: "off", relistKeep: null, relistGid: null,
+      await db.ref(`${PUBLISH_PATH}/${pid}`).update({ desiredState: "off", relistKeep: null, relistGid: null,
                                                      updatedAt: await serverNowMs(db), updatedBy: UPDATED_BY });
       results.push({ pid, ok: true, note: "relist withdrawn — no stock left online now; left off" });
       continue;
@@ -1337,7 +1372,7 @@ for (const { pid, want } of capped) {
     // is what goes public — so the intent is re-read right before it. On a
     // cancel, the product stays created-but-unpublished, which IS the "off"
     // the operator asked for.
-    const lastCheck = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    const lastCheck = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
     if (lastCheck?.desiredState !== "on") {
       // Fail-safe here too: if drift left this product visible, a cancel
       // confirming "off" without an unpublish would strand it up for good.
@@ -1469,7 +1504,7 @@ for (const { pid, want } of capped) {
     const numericId = gid.split("/").pop();
     results.push({
       pid, ok: true,
-      note: `LIVE on the Online Store — "${title}" · https://admin.shopify.com/store/nu3ei8-0p/products/${numericId}`,
+      note: `LIVE on the Online Store — "${title}" · ${adminProductUrl(numericId)}`,
     });
   } catch (e) {
     // DELIBERATELY NOT markBlocked. A throw here is usually transient (a
@@ -1676,7 +1711,7 @@ if (!ONLY) try {
 // /config/shopifyReviewHidden and its own markers: never /shopify_publish, never
 // Shopify. A quiet tick costs one read of an empty node. A failure never fails
 // the tick, because the markers survive and the next tick retries.
-if (!ONLY) try {
+if (!ONLY && IS_MARATHON) try {
   // Every product whose intent this tick applied is re-judged in this same
   // sweep, because a state change is not a stock event:
   //   · taken OFF → it re-enters the review list. With no sellable stock it
@@ -1712,7 +1747,7 @@ if (!ONLY) try {
 // already built its worklist, so they go to Shopify on the NEXT tick, through
 // every check the reconciler applies. Never touches a product that is on.
 // Off switch: /config/shopifyAutoPublish/enabled (absent = off).
-if (!ONLY) try {
+if (!ONLY && IS_MARATHON) try {
   const ap = await drainAutoPublish(db, { now: () => serverNowMs(db), log: (line) => console.error(line) });
   if (ap.queued && ap.enabled) {
     console.log(`\nauto-publish: ${ap.queued} queued · ${ap.published} sent to publish · ${ap.done} closed · ${ap.waiting} waiting` +
@@ -1816,7 +1851,7 @@ if (COMMIT) try {
   for (const pid of candidates) {
     try {
       assertSafeSegment(pid, "productId");
-      const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+      const node = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
       const pending = !!pendingNow[pid];
       // A product off the shop (or with no list) waits for its next publish,
       // which re-plans everything — nothing is carried for it meanwhile.
@@ -1826,7 +1861,7 @@ if (COMMIT) try {
         }
         continue;
       }
-      const gid = (await db.ref(`shopify_sync/${pid}/shopifyProductId`).get()).val();
+      const gid = (await db.ref(`${SYNC_PATH}/${pid}/shopifyProductId`).get()).val();
       if (!gid) { console.error(`  ⚠ media ${pid}: live but no Shopify mapping — left for the next publish`); continue; }
       const product = (await db.ref(`products/${pid}`).get()).val();
       // The ON path's title rule, exactly: the reviewed name while it is

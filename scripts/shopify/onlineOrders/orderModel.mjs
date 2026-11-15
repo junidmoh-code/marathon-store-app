@@ -111,7 +111,7 @@ export function buildLine({ index, item, resolved, piece }) {
   });
 }
 
-export function buildOrder({ node, lines, nowMs }) {
+export function buildOrder({ node, lines, nowMs, store = "marathon" }) {
   const order = {
     // The order's NAME is its Shopify number (orderLabel → "#1768"); the
     // three-letter codes belong to its hub order units, not to the order.
@@ -127,6 +127,10 @@ export function buildOrder({ node, lines, nowMs }) {
     lines,
     status: ORDER_STATUS.NEW,
   };
+  // Tagged with its store when it is not Marathon's (absent = Marathon, which
+  // is every order before 2026-11-15) — the POS, the labels and each store's
+  // poller tell the two apart by this field.
+  if (store && store !== "marathon") order.sourceStore = store;
   if (!Object.keys(order.shipping).length) delete order.shipping;
   if (!Object.keys(order.customer).length) delete order.customer;
   return order;

@@ -42,6 +42,7 @@
 // RECORD WRITES ARE FIELD-LEVEL. The tick and the video runner both write
 // /shopify_sync/{pid}/media/items; each writes only the fields it changed, so
 // neither can overwrite the other's (above all, never the runner's resourceUrl).
+import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import https from "node:https";
 import {
@@ -50,7 +51,7 @@ import {
 
 export const MEDIA_PRODUCTS_PER_TICK = 25;
 export const MAX_ATTEMPTS = 3;
-export const MEDIA_PENDING_PATH = "shopify_sync/_mediaPending";
+export const MEDIA_PENDING_PATH = `${SYNC_PATH}/_mediaPending`;
 const MEDIA_PAGE = 250; // Shopify's per-product media cap AND its largest page
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -383,7 +384,7 @@ export async function uploadVideoToShopify(graphql, item, { fetchImpl = fetch, r
 export async function sendNextQueuedVideo({ graphql, db, pid, node, product = null, upload = uploadVideoToShopify, log = () => {} }) {
   const items = desiredPushItems(node, product).filter((m) => m.type === "video");
   if (!items.length) return { sent: false };
-  const recRef = db.ref(`shopify_sync/${pid}/media/items`);
+  const recRef = db.ref(`${SYNC_PATH}/${pid}/media/items`);
   const record = (await recRef.get()).val() || {};
   const m = items.find((v) => {
     const r = record[v.id] || {};
@@ -391,7 +392,7 @@ export async function sendNextQueuedVideo({ graphql, db, pid, node, product = nu
   });
   if (!m) return { sent: false };
   const itemRef = recRef.child(m.id);
-  const projRef = db.ref(`shopify_publish/${pid}/mediaShopify/${m.id}`);
+  const projRef = db.ref(`${PUBLISH_PATH}/${pid}/mediaShopify/${m.id}`);
   await itemRef.update({ type: "video", url: m.url, status: "uploading" });
   await projRef.set({ status: "uploading" });
   log(`  media: sending video ${m.id} of ${pid} (${Math.round(Number(m.bytes) / 1e6)} MB) to Shopify…`);
@@ -429,10 +430,10 @@ export async function syncProductMedia({ graphql, db, pid, gid, node, product, t
   if (!desired.length || desired[0].type !== "photo" || desired[0].id !== listed[0]?.id) {
     return { ok: false, retryable: false, error: "the list's first photo cannot be pushed (no photo first, or not this app's own Storage file) — an imageless or wrong-primary product is never pushed", pending: false, notes: [], writes: 0 };
   }
-  const mediaRef = db.ref(`shopify_sync/${pid}/media`);
+  const mediaRef = db.ref(`${SYNC_PATH}/${pid}/media`);
   const stored = (await mediaRef.get()).val() || {};
-  const fingerprint = (await db.ref(`shopify_sync/${pid}/mediaFingerprint`).get()).val();
-  const legacyCount = fingerprint ? (await db.ref(`shopify_sync/${pid}/mediaCount`).get()).val() : null;
+  const fingerprint = (await db.ref(`${SYNC_PATH}/${pid}/mediaFingerprint`).get()).val();
+  const legacyCount = fingerprint ? (await db.ref(`${SYNC_PATH}/${pid}/mediaCount`).get()).val() : null;
   let shopify = await readProductMedia(graphql, gid);
   if (!shopify) return { ok: false, retryable: true, error: `${gid} not found on Shopify`, pending: true, notes: [], writes: 0 };
 
@@ -565,7 +566,7 @@ export async function syncProductMedia({ graphql, db, pid, gid, node, product, t
   }
   const removalsLeft = Object.values(rec).some((r) => r.remove);
   const pending = removalsLeft || desired.some((m) => !["ready", "failed"].includes(statusMap[m.id].status));
-  const pubRef = db.ref(`shopify_publish/${pid}`);
+  const pubRef = db.ref(`${PUBLISH_PATH}/${pid}`);
   if (stable(node?.mediaShopify || null) !== stable(statusMap)) {
     await pubRef.child("mediaShopify").set(statusMap);
   }

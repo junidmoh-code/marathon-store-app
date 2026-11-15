@@ -41,6 +41,7 @@
 // from the page, and vice versa. cachePublishName never overwrites an existing
 // cleanName: a name is generated once and never regenerated (AI is
 // non-deterministic; a re-run must not silently change a reviewed title).
+import { PUBLISH_PATH, SYNC_PATH, storeNode, adminProductUrl, STORE, IS_MARATHON } from "./storeConfig.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { buildOffRecord, OFF_LOG_KEEP } from "../../src/components/shopify/publishAudit.js";
 
@@ -83,14 +84,14 @@ function offFields(record) {
 // list. Deleting an already-deleted key is a no-op.
 async function trimOffLog(db, productId) {
   try {
-    const existing = (await db.ref(`shopify_publish/${productId}/offLog`).get()).val();
+    const existing = (await db.ref(`${PUBLISH_PATH}/${productId}/offLog`).get()).val();
     if (!existing) return;
     const keys = Object.keys(existing).filter((k) => /^\d+$/.test(k)).sort((a, b) => Number(a) - Number(b));
     const drop = keys.slice(0, Math.max(0, keys.length - OFF_LOG_KEEP));
     if (!drop.length) return;
     const kill = {};
     for (const k of drop) kill[`offLog/${k}`] = null;
-    await db.ref(`shopify_publish/${productId}`).update(kill);
+    await db.ref(`${PUBLISH_PATH}/${productId}`).update(kill);
   } catch (e) {
     console.error(`  ⚠ ${productId}: could not trim the off log (${String(e?.message || e)}) — the record itself is written`);
   }
@@ -162,11 +163,11 @@ export async function serverNowMs(db) {
 
 export async function readPublishNode(db, productId) {
   assertSafeSegment(productId, "productId");
-  return (await db.ref(`shopify_publish/${productId}`).get()).val();
+  return (await db.ref(`${PUBLISH_PATH}/${productId}`).get()).val();
 }
 
 export async function readAllPublishNodes(db) {
-  return (await db.ref("shopify_publish").get()).val() || {};
+  return (await db.ref(PUBLISH_PATH).get()).val() || {};
 }
 
 // Cache a generated/typed clean name. Returns "cached" | "kept-existing".
@@ -175,12 +176,12 @@ export async function readAllPublishNodes(db) {
 // "no name" and the later write clobber the earlier reviewed one.
 export async function cachePublishName(db, productId, { cleanName, source, updatedBy }) {
   assertSafeSegment(productId, "productId");
-  const nameRef = db.ref(`shopify_publish/${productId}/cleanName`);
+  const nameRef = db.ref(`${PUBLISH_PATH}/${productId}/cleanName`);
   const result = await nameRef.transaction((cur) =>
     cur === null ? String(cleanName) : undefined
   );
   if (!result.committed) return "kept-existing";
-  await db.ref(`shopify_publish/${productId}`).update({
+  await db.ref(`${PUBLISH_PATH}/${productId}`).update({
     cleanNameSource: source,
     updatedAt: await serverNowMs(db),
     updatedBy,
@@ -220,14 +221,14 @@ export async function confirmLiveState(db, productId, liveState, updatedBy, { gi
   const audit = recordOff
     ? offFields(buildOffRecord({ at, actor: updatedBy, reasonCode: offReason, detail: offDetail }))
     : {};
-  await db.ref(`shopify_publish/${productId}`).update({
+  await db.ref(`${PUBLISH_PATH}/${productId}`).update({
     state: "live",
     liveState,
     blockedReason: null,
     // A relist intent is one-shot (reconcile.mjs "RELIST AS IT IS").
     relistKeep: null,
     relistGid: null,
-    ...(numericId ? { adminUrl: `https://admin.shopify.com/store/nu3ei8-0p/products/${numericId}` } : {}),
+    ...(numericId ? { adminUrl: adminProductUrl(numericId) } : {}),
     ...(!numericId && clearAdminUrl ? { adminUrl: null } : {}),
     ...(liveState === "on" ? { liveAt: at } : {}),
     ...audit,
@@ -253,7 +254,7 @@ export async function confirmLiveState(db, productId, liveState, updatedBy, { gi
 export async function markBlocked(db, productId, reason, updatedBy, { wasTakenDown = false, blockedHandle = null } = {}) {
   assertSafeSegment(productId, "productId");
   const at = await serverNowMs(db);
-  await db.ref(`shopify_publish/${productId}`).update({
+  await db.ref(`${PUBLISH_PATH}/${productId}`).update({
     state: "blocked",
     blockedReason: String(reason),
     blockedHandle: blockedHandle ? String(blockedHandle) : null,

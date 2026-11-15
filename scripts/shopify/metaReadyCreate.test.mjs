@@ -38,6 +38,6 @@ describe("reconcile.mjs uses it only on a fresh CREATE (pinned by source)", () =
   const SRC = readFileSync(new URL("./reconcile.mjs", import.meta.url), "utf8");
   it("both media paths ask only when createdNow", () => {
     expect(SRC.match(/createdNow\n?\s*\?\s*await metaReadyFirstPhoto\(/g)?.length).toBe(2);
-    expect(SRC).toMatch(/await db\.ref\(`shopify_sync\/\$\{pid\}`\)\.update\(\{ mediaFingerprint: planFp, mediaCount: mediaPlan\.length \}\)/); // the reviewed set's own fingerprint
+    expect(SRC).toMatch(/await db\.ref\(`\$\{SYNC_PATH\}\/\$\{pid\}`\)\.update\(\{ mediaFingerprint: planFp, mediaCount: mediaPlan\.length \}\)/); // the reviewed set's own fingerprint
   });
 });

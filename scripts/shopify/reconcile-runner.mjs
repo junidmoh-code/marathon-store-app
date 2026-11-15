@@ -369,6 +369,48 @@ if (process.env.ONLINE_ORDERS_POLL !== "0") {
   if (code !== 0) log(`⚠ orders poll exited ${code} — see logs/orders-poll.log; reconciling anyway`);
 }
 
+// ── THE CONCRETE STORE'S LEG (second Shopify store, 2026-11-15) ─────────────
+// concrete-leg.mjs runs Concrete's orders poll and reconcile in their OWN
+// processes (SHOPIFY_STORE=concrete), under this same lock so nothing overlaps.
+// ISOLATED: its output goes to logs/concrete-reconcile.log, its exit code is
+// one line here, and it never touches Marathon's failure counter or exit
+// status. Without Concrete credentials it exits at once, printing
+// "concrete: credentials missing" — echoed here at most once an hour.
+// CONCRETE_LEG=0 switches the leg off entirely.
+const CONCRETE_LOG = join(LOG_DIR, "concrete-reconcile.log");
+const CONCRETE_TIMEOUT_MS = 8 * 60 * 1000;
+if (process.env.CONCRETE_LEG !== "0") {
+  let lastLine = "";
+  const code = await new Promise((done) => {
+    child = spawn(process.execPath, [join(HERE, "concrete-leg.mjs")], { cwd: REPO, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    lockOwners.childPid = child.pid;
+    try { writeLockAtomically(); } catch { /* recorded on the Marathon spawn below */ }
+    let carry = "";
+    const take = (chunk) => {
+      const parts = (carry + chunk.toString()).split("\n");
+      carry = parts.pop() ?? "";
+      for (const l of parts) {
+        if (!l.trim()) continue;
+        lastLine = l.trimEnd();
+        try { appendFileSync(CONCRETE_LOG, `${stamp()}  ${lastLine}\n`); } catch { /* convenience log */ }
+      }
+    };
+    child.stdout.on("data", take);
+    child.stderr.on("data", take);
+    const timer = setTimeout(() => { lastLine = `stopped after ${CONCRETE_TIMEOUT_MS / 60000} min`; try { child.kill("SIGKILL"); } catch { /* gone */ } }, CONCRETE_TIMEOUT_MS);
+    child.on("error", (e) => { clearTimeout(timer); lastLine = `could not start concrete-leg.mjs: ${String(e?.message || e)}`; done(-1); });
+    child.on("close", (c) => { clearTimeout(timer); done(c); });
+  });
+  child = null;
+  if (shuttingDown) { release(); process.exit(130); }
+  if (/credentials missing/.test(lastLine)) {
+    const hourKey = new Date().toISOString().slice(0, 13);
+    if (readState().concreteMissingLog !== hourKey) { log("concrete: credentials missing — Concrete leg disabled (docs/CONCRETE-STORE.md)"); writeState({ concreteMissingLog: hourKey }); }
+  } else if (code !== 0) {
+    log(`⚠ concrete leg exited ${code} — see logs/concrete-reconcile.log (Marathon unaffected): ${lastLine}`);
+  }
+}
+
 child = spawn(process.execPath, [join(HERE, "reconcile.mjs"), "--commit"], {
   cwd: REPO,
   env: process.env,
