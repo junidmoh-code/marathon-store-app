@@ -45,6 +45,7 @@
 //     loudly — run migrate-live-state.mjs first.
 import { PUBLISH_PATH, SYNC_PATH, storeNode, adminProductUrl, STORE, IS_MARATHON } from "./storeConfig.mjs";
 import { needsBrandCheck } from "../../src/utils/concreteListing.js";
+import { readPendingForeign } from "./stockFanoutCore.mjs";
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey, stockSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
@@ -1288,7 +1289,12 @@ for (const { pid, want } of capped) {
     // push path (onlineHoldAdjustment, inventorySync.mjs). Another store's
     // holds come off in full (withoutForeignHolds — one stock pool).
     const holdsNode = (await db.ref(`online_reservations/${pid}`).get()).val();
-    const totals = withoutForeignHolds(networkTotals(tree, pid, sizes), holdsNode);
+    // …and units another store has sold that the app has not pulled in yet
+    // (/shopify_pending_sales) — the same subtraction every push path makes.
+    let pendingForeign = null;
+    try { pendingForeign = await readPendingForeign(async (p) => (await db.ref(p).get()).val(), pid, STORE.key, Date.now()); }
+    catch (e) { console.error(`  ⚠ ${pid}: pending other-store sales unreadable (${String(e?.message || e)}) — pushed without them`); }
+    const totals = withoutForeignHolds(networkTotals(tree, pid, sizes), holdsNode, pendingForeign);
     const heldBySize = reservedBySize(holdsNode);
     const releasedHeld = releasedBySize(holdsNode);
     for (const [sizeKey, v] of Object.entries(finalMap.variants)) {
