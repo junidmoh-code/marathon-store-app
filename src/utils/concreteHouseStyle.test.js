@@ -28,7 +28,7 @@ describe("house style rules", () => {
     const u = buildQueueUpdate({ pids: ["p1", "p2"], uid: "u", nowMs: 9, cfg: { model: "flash" } });
     expect(Object.keys(u)).toEqual(["concrete_house_style/p1", "concrete_house_style/p2"]);
     expect(u["concrete_house_style/p1"]).toMatchObject({ status: "queued", attempts: 0, estimateUsd: 0.067 });
-    expect(estimateUsd({})).toBe(0.134);
+    expect(estimateUsd({})).toBe(0.16);
     expect(money(0.134)).toBe("$0.134 (≈ R2.41)");
   });
 });

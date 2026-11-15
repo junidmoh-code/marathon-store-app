@@ -31,10 +31,12 @@ export const STATUS = Object.freeze({
   APPROVED: "approved", REJECTED: "rejected", FAILED: "failed",
 });
 
-// Models the worker may use. Price = the documented per-image figure (2K,
-// square); the worker records the MEASURED cost from usageMetadata per image.
+// Models the worker may use. The estimate shown before spending is the
+// MEASURED figure: 5 samples on 15 Nov 2026 at 2K square cost $0.154–0.159
+// each (usageMetadata), so Pro is quoted at $0.16. The worker records the
+// measured cost of every image it makes.
 export const MODELS = Object.freeze({
-  nbpro: { id: "gemini-3-pro-image", label: "Gemini 3 Pro Image (best for style references)", estimateUsd: 0.134 },
+  nbpro: { id: "gemini-3-pro-image", label: "Gemini 3 Pro Image (best for style references)", estimateUsd: 0.16 },
   flash: { id: "gemini-3.1-flash-image", label: "Gemini 3.1 Flash Image (cheaper)", estimateUsd: 0.067 },
 });
 export const DEFAULT_MODEL = "nbpro";
