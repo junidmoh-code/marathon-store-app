@@ -448,6 +448,15 @@ describe("review of #846: held picks, the ledger on settle", () => {
     expect(line(f).ledger).toMatchObject({ paidCents: 25000, settledCents: 0, creditCents: 1000, extraCents: 0 });
   });
 
+  it("review of #909: a cancelled task that may have gone through is never topped up automatically — the new credit is by hand", async () => {
+    const f = fakeDb(world({ line: unavailableLine({ resolution: { money: { kind: "credit", amountCents: 1000, state: "failed", ambiguous: true } } }) }));
+    const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });
+    await f.db.ref("online_orders/9001/lines/0/resolution/conversation").set({ state: "offering", email: "thandi@example.com", tag: "T", startedAt: NOW - H, offers: { 0: OFFERS[0], 1: OFFERS[1] }, sends: { 1: { kind: "offer", sentAt: NOW - H } } });
+    await h.run({ inbox: { replies: async () => [reply("1")] } });
+    expect(line(f).pid).toBe("ALT1");
+    expect(line(f).resolution.money).toMatchObject({ kind: "credit", amountCents: 1000, state: "manual", heldBecause: expect.stringMatching(/may have gone/) });
+  });
+
   it("settle asks only what is left of what was paid (R250 paid, R100 given back → R150 credit)", async () => {
     const f = fakeDb(world({ line: unavailableLine({ resolution: { moneySettled: { a: { state: "done", amountCents: 10000 } } } }) }));
     const h = harness(f, { scopes: ["write_store_credit_account_transactions"] });

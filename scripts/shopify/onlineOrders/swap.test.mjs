@@ -457,6 +457,31 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(h.mails.filter((m) => /owed back to us/.test(m.subject))).toHaveLength(1);
   });
 
+  it("review of #909: owed back to us, cleared by a swap, then owed again is emailed again", async () => {
+    const { f, h } = await ingested();
+    await ask(f, 1, "POLO", "M");
+    await h.tick();
+    await f.db.ref("online_orders/9001/lines/1/resolution/money/state").set("done");
+    await ask(f, 1, "TEE", "M", { rid: "r2" });
+    await h.tick();
+    await ask(f, 1, "POLO", "M", { rid: "r3" });
+    await h.tick();
+    expect(line(f, 1).resolution.owedToUs).toBeUndefined();
+    expect(line(f, 1).resolution.owedToUsMailedCents).toBeUndefined();
+    await ask(f, 1, "TEE", "M", { rid: "r4" });
+    await h.tick();
+    expect(h.mails.filter((m) => /R50 owed back to us/.test(m.subject))).toHaveLength(2);
+  });
+
+  it("review of #909: a voided request that never reached Junid (pending) is not emailed", async () => {
+    const { f, h } = await ingested();
+    await f.db.ref("online_orders/9001/lines/1/resolution/money").set({ kind: "credit", amountCents: 1000, state: "pending", at: NOW - 60e3 });
+    await ask(f, 1, "POLO", "M");
+    await h.tick();
+    expect(request(f)).toMatchObject({ state: "applied" });
+    expect(h.mails.filter((m) => /CANCEL/.test(m.subject))).toHaveLength(0);
+  });
+
   it("15 Nov 2026: a payment in flight this minute only delays a POS swap (back to pending), never a refusal", async () => {
     const { f, h } = await ingested();
     await f.db.ref("online_orders/9001/lines/1/resolution/money").set({ kind: "credit", amountCents: 1000, state: "claimed", at: NOW - 60e3 });
@@ -612,6 +637,10 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     expect(lineLedger(l, { priceCents: 40000 })).toMatchObject({ paidCents: 50000, creditCents: 10000 });
     expect(lineLedger(l, { priceCents: 50000 })).toMatchObject({ creditCents: 0, extraCents: 0 });
   });
+  it("review of #909: a claim with no time on it is stale at once (never busy for ever)", () => {
+    expect(lineLedger(L({ resolution: { money: { state: "claimed", amountCents: 5000 } } }), { priceCents: 40000 })).toMatchObject({ busy: false, unclear: true });
+  });
+
   it("a claim: busy while fresh; past 15 minutes it is unclear (the payer died), never refused for ever", () => {
     const at = 1_000_000;
     const c = L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "claimed", at } } });
@@ -635,7 +664,7 @@ describe("COMMIT 6: the line ledger (pure)", () => {
   });
   it("a dearer second swap needs its difference: refused without a price decision", () => {
     expect(lineLedger(L(), { priceCents: 50000 })).toMatchObject({ extraCents: 5000, creditCents: 0 });
-    expect(lineLedger(L({ resolution: { money: { state: "claimed", amountCents: 5000 } } }), { priceCents: 40000 }).busy).toBe(true);
+    expect(lineLedger(L({ resolution: { money: { state: "claimed", amountCents: 5000, at: NOW } } }), { priceCents: 40000, now: NOW }).busy).toBe(true);
   });
 });
 

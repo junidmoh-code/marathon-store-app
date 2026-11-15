@@ -57,7 +57,8 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   const nowCents = Math.max(0, Math.round(Number(priceCents) || 0)) * qty;
   const net = paid - settled - nowCents;
   const claimedAt = Number(m?.at) || 0;
-  const stale = isObj && m.state === "claimed" && claimedAt > 0 && now - claimedAt > CLAIM_STALE_MS;
+  // A claim with no time on it can never age out: stale at once (review of #909, 3), never a retry loop for ever.
+  const stale = isObj && m.state === "claimed" && (!(claimedAt > 0) || now - claimedAt > CLAIM_STALE_MS);
   let unclearWhy = null;
   if (isObj && m.state === "manual") unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line was approved for Junid to do by hand and is not marked done yet (once done in Shopify, Junid tells Jamie on his line "done #<order>")`;
   else if (isObj && m.state === "failed" && m.ambiguous !== false) unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line may have gone through (its answer was lost): check it in Shopify first`;
@@ -99,7 +100,10 @@ export function swapResolution(resolution, { now, outcome, closeConversation = n
   const cur = resolution || {};
   const m = cur.money;
   const done = !!m && typeof m === "object" && m.state === "done";
-  const { money: _old, owedToUs: _owed, ...rest0 } = cur;
+  // The mailed marker goes with a cleared record (review of #909, 2): owed again later is emailed again.
+  const { money: _old, owedToUs: _owed, ...rest00 } = cur;
+  const { owedToUsMailedCents: _mk, ...restNoMark } = rest00;
+  const rest0 = owedToUsCents > 0 ? rest00 : restNoMark;
   // Recomputed on every swap: a later swap that brings it to 0 clears it.
   const rest = owedToUsCents > 0 || !_owed ? rest0 : { ...rest0, owedToUsCleared: { ..._owed, clearedAt: now } };
   const conv = cur.conversation;
