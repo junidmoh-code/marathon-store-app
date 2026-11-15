@@ -32,8 +32,8 @@ import { storedMediaKey } from "./publishShared";
 // it renders the (shared) view; every read and write below addresses it. Only
 // one tab is ever mounted, and the key cache is held PER NODE so a tab switch
 // can never serve one store's keys to the other.
-import { PUBLISH_TARGETS, setPublishTarget, publishTarget, publishNodePath } from "./publishTarget.js";
-export { PUBLISH_TARGETS, setPublishTarget, publishTarget, publishNodePath };
+import { PUBLISH_TARGETS, setPublishTarget, publishTarget, publishNodePath, holdTarget } from "./publishTarget.js";
+export { PUBLISH_TARGETS, setPublishTarget, publishTarget, publishNodePath, holdTarget };
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
 // and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
@@ -251,6 +251,7 @@ export async function loadReviewHidden({ fresh = false, throwOnError = false } =
 // pid so the caller keeps every body that DID load.
 export async function loadNodesFor(pids) {
   const list = [...(pids || [])];
+  const node = publishNodePath();   // captured once: the whole load reads ONE store
   const out = {};
   const failed = [];
   let i = 0;
@@ -258,7 +259,7 @@ export async function loadNodesFor(pids) {
     while (i < list.length) {
       const pid = list[i++];
       try {
-        const snap = await get(child(ref(database), `${publishNodePath()}/${safeSeg(pid)}`));
+        const snap = await get(child(ref(database), `${node}/${safeSeg(pid)}`));
         out[pid] = snap.val();
       } catch {
         failed.push(pid);

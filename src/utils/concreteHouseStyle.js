@@ -96,7 +96,18 @@ export function afterFailure(job, error, nowMs) {
   return { status: STATUS.FAILED, error: msg, flaggedAt: nowMs };
 }
 
-/** The queue write for a batch (one multi-path update). */
+/** May a row be (re)queued? Never while queued or generating — that would re-bill or clobber the worker. */
+export function canQueue(cur) {
+  return !cur || ![STATUS.QUEUED, STATUS.RUNNING].includes(cur.status);
+}
+
+/** A "running" row whose worker died: requeue (counts as an attempt) after this long. */
+export const STALE_RUNNING_MS = 10 * 60 * 1000;
+export function isStaleRunning(job, nowMs) {
+  return job?.status === STATUS.RUNNING && nowMs - (Number(job.startedAt) || 0) > STALE_RUNNING_MS;
+}
+
+/** The queue rows for a batch, keyed by path. */
 export function buildQueueUpdate({ pids, uid, nowMs, cfg }) {
   const est = estimateUsd(cfg);
   const u = {};

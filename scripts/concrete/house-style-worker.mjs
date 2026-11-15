@@ -23,7 +23,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   HOUSE_STYLE_CONFIG_PATH, HOUSE_STYLE_JOBS_PATH, STATUS, MAX_ATTEMPTS,
-  modelFor, subjectUrls, refsToSend, buildParts, afterFailure, money,
+  modelFor, subjectUrls, refsToSend, buildParts, afterFailure, money, isStaleRunning,
 } from "../../src/utils/concreteHouseStyle.js";
 
 const fnRequire = createRequire(new URL("../../functions/package.json", import.meta.url));
@@ -153,6 +153,19 @@ if (sampleArg) {
   process.exit(0);
 }
 
+// A row left "running" by a worker that died (crash, kill, restart) is put back
+// in the queue after 10 minutes — through afterFailure, so it counts as an
+// attempt and a job that keeps dying ends flagged instead of billing forever.
+try {
+  const running = (await db.ref(HOUSE_STYLE_JOBS_PATH).orderByChild("status").equalTo(STATUS.RUNNING).get()).val() || {};
+  const now = await serverNow();
+  for (const [pid, job] of Object.entries(running)) {
+    if (!isStaleRunning(job, now)) continue;
+    await db.ref(`${HOUSE_STYLE_JOBS_PATH}/${pid}`).transaction((cur) => (cur === null ? null : isStaleRunning(cur, now) ? { ...cur, ...afterFailure(cur, "the worker stopped mid-generation", now) } : undefined));
+    log(`↻ ${pid}: stale "running" row reclaimed`);
+  }
+} catch (e) { if (!/index not defined/i.test(String(e?.message || e))) log(`⚠ stale-row check: ${String(e?.message || e)}`); }
+
 const jobs = await queued();
 const pids = Object.keys(jobs);
 if (!pids.length) { process.exit(0); }
@@ -168,11 +181,16 @@ for (const pid of pids) {
   try {
     const r = await generate(pid, job, cfg, key);
     spent += r.costUsd;
-    await db.ref(`${HOUSE_STYLE_JOBS_PATH}/${pid}`).update({
-      status: STATUS.AWAITING, ...r, generatedAt: await serverNow(), error: null, lastErrorAt: null,
-    });
+    // The image is paid for and stored: the row write is retried rather than
+    // falling into the catch, which would re-queue it and bill a second image.
+    const patch = { status: STATUS.AWAITING, ...r, generatedAt: await serverNow(), error: null, lastErrorAt: null };
+    for (let i = 0; ; i++) {
+      try { await db.ref(`${HOUSE_STYLE_JOBS_PATH}/${pid}`).update(patch); break; }
+      catch (e) { if (i >= 4) { log(`✗ ${pid}: generated (${r.url}) but the row could not be written: ${String(e?.message || e)}`); throw Object.assign(e, { noRequeue: true }); } await new Promise((res) => setTimeout(res, 2000 * (i + 1))); }
+    }
     log(`✓ ${pid}: generated (${r.model}, ${r.refsUsed} refs) — ${money(r.costUsd)} — awaiting approval`);
   } catch (e) {
+    if (e?.noRequeue) continue;
     const patch = afterFailure(job, String(e?.message || e), await serverNow());
     await db.ref(`${HOUSE_STYLE_JOBS_PATH}/${pid}`).update(patch);
     log(`${patch.status === STATUS.FAILED ? "✗ FLAGGED" : "↻ retry queued"} ${pid} (attempt ${job.attempts}/${MAX_ATTEMPTS}): ${patch.error}`);

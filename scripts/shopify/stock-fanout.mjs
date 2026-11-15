@@ -51,12 +51,33 @@ const OTHERS = Object.values(STORES).filter((s) => s.key !== STORE.key);
 let dual = new Set();
 let ownLive = new Set();
 async function refreshDual() {
-  const liveOf = async (path) => new Set(Object.entries((await db.ref(path).orderByChild("state").equalTo("live").get()).val() || {})
-    .filter(([, n]) => isLiveOn(n)).map(([p]) => p));
-  ownLive = await liveOf(PUBLISH_PATH);
-  const other = new Set();
-  for (const s of OTHERS) for (const p of await liveOf(s.publishPath)) other.add(p);
-  dual = new Set([...ownLive].filter((p) => other.has(p)));
+  // Cheap by construction (architect review, PR #911): "dual" is always a
+  // subset of CONCRETE's live set, which is small. Only that node is queried;
+  // Marathon's state is point-read for those pids. Marathon's /shopify_publish
+  // (thousands of live bodies) is never scanned.
+  const concreteLive = Object.entries((await db.ref(STORES.concrete.publishPath).orderByChild("state").equalTo("live").get()).val() || {})
+    .filter(([, n]) => isLiveOn(n)).map(([p]) => p);
+  const both = [];
+  for (const pid of concreteLive) {
+    const [st, ls] = await Promise.all([get(`${STORES.marathon.publishPath}/${pid}/state`), get(`${STORES.marathon.publishPath}/${pid}/liveState`)]);
+    if (st === "live" && ls === "on") both.push(pid);
+  }
+  ownLive = new Set(IS_MARATHON ? both : concreteLive);
+  dual = new Set(both);
+}
+
+// ── WHEN DOES A HOLD TAKE OVER FROM A PENDING SALE? ──────────────────────────
+// Not the moment /online_orders/{id} appears: the poller writes the order
+// first and its hold rows a moment later (syncHolds), and a push in between
+// would count neither. So an order counts as ingested for a product once a
+// hold row for it exists there — or once the app has had it for 3 minutes
+// (a line that holds nothing, e.g. already packed, must stop deducting too).
+const INGEST_SETTLE_MS = 3 * 60 * 1000;
+async function orderIngested(orderId, pid, nowMs) {
+  const holds = (await get(`online_reservations/${pid}`)) || {};
+  for (const cell of Object.values(holds)) if (cell && cell[orderId]) return true;
+  const at = Number(await get(`online_orders/${orderId}/ingestedAt`)) || 0;
+  return at > 0 && nowMs - at > INGEST_SETTLE_MS;
 }
 
 let locationId = null;
@@ -66,12 +87,15 @@ async function pushOne(pid, { revision = null, reason = "stock", startedAt = Dat
   locNames ||= await locationNames(db);
   const pending = (await get(PENDING_PATH)) || {};
   const now = await serverNowMs(db);
-  const pendingForeign = await pendingForeignFor(pending, pid, STORE.key, async (id) => (await get(`online_orders/${id}/status`)) != null, now);
+  const pendingForeign = await pendingForeignFor(pending, pid, STORE.key, (id) => orderIngested(id, pid, now), now);
   const r = await syncProduct(db, graphql, pid, { commit: true, locationId, locNames, pendingForeign });
   const done = Date.now();
   log(`pushed ${pid} (${reason})${pendingForeign ? ` · minus pending ${JSON.stringify(pendingForeign)}` : ""} → ${r.ok === false ? `FAILED ${r.error || r.skipped || ""}` : (r.skipped ? `skipped: ${r.skipped}` : `${r.changed || 0} size(s) corrected`)} · ${lagLine("marker→push", pid, done - startedAt)}${saleAt ? ` · ${lagLine("sale→other-store", pid, done - saleAt)}` : ""}`);
   if (saleAt) {
     await db.ref(`shopify_fanout_stats/${STORE.key}/${done}`).set({ pid, saleToPushMs: done - saleAt, markerToPushMs: done - startedAt });
+    // Keep a week of samples (the lag report reads these); older ones go.
+    const old = (await db.ref(`shopify_fanout_stats/${STORE.key}`).orderByKey().endAt(String(done - 7 * 864e5)).limitToFirst(50).get()).val() || {};
+    for (const k of Object.keys(old)) await db.ref(`shopify_fanout_stats/${STORE.key}/${k}`).set(null);
   }
   // Only THIS store's own marker is ever cleared, and only by the Concrete
   // process — Marathon's marker stays for Marathon's reconcile tick as before.
@@ -155,7 +179,8 @@ for (;;) {
     // Housekeeping: drop pending entries the app has ingested, or that are old.
     const mine = (await get(`${PENDING_PATH}/${STORE.key}`)) || {};
     for (const [id, entry] of Object.entries(mine)) {
-      if (now - (Number(entry?.at) || 0) > PENDING_MAX_AGE_MS || (await get(`online_orders/${id}/status`)) != null) {
+      const at = Number(await get(`online_orders/${id}/ingestedAt`)) || 0;
+      if (now - (Number(entry?.at) || 0) > PENDING_MAX_AGE_MS || (at > 0 && now - at > INGEST_SETTLE_MS)) {
         await db.ref(`${PENDING_PATH}/${STORE.key}/${id}`).set(null);
       }
     }

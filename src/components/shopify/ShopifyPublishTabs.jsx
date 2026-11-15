@@ -9,7 +9,7 @@
 // one store's loaded nodes can never be shown or written under the other.
 import React, { useEffect, useMemo, useState } from "react";
 import ShopifyPublishView from "./ShopifyPublishView";
-import { setPublishTarget } from "./shopifyPublishStore";
+import { setPublishTarget, targetBusy } from "./publishTarget.js";
 import { isOnConcrete } from "../../utils/concreteListing";
 import HouseStylePanel from "../concrete/HouseStylePanel";
 
@@ -18,13 +18,16 @@ const readTab = () => { try { return sessionStorage.getItem(TAB_KEY) === "concre
 
 export default function ShopifyPublishTabs({ products = [], onExit }) {
   const [tab, setTab] = useState(readTab);
+  const [busyNote, setBusyNote] = useState(null);
   const concreteProducts = useMemo(() => products.filter(isOnConcrete), [products]);
-  setPublishTarget(tab);
+  try { setPublishTarget(tab); } catch { /* held by a running publish — choose() already refused the switch */ }
   // Leaving the page puts the store back on Marathon: the home screen's
   // awaiting badge (useShopifyAwaitingCount) reads through the same store.
-  useEffect(() => () => setPublishTarget("marathon"), []);
+  useEffect(() => () => { try { setPublishTarget("marathon"); } catch { /* a held op finishes on its own store */ } }, []);
   const choose = (t) => {
     if (t === tab) return;
+    if (targetBusy()) { setBusyNote("A publish is still running — wait for it to finish before switching store."); return; }
+    setBusyNote(null);
     try { sessionStorage.setItem(TAB_KEY, t); } catch { /* storage off */ }
     if (typeof window !== "undefined" && /^#shopify\//.test(window.location.hash || "")) window.location.hash = "";
     setTab(t);
@@ -44,6 +47,7 @@ export default function ShopifyPublishTabs({ products = [], onExit }) {
         {btn("marathon", "Marathon")}
         {btn("concrete", "Concrete", concreteProducts.length)}
       </div>
+      {busyNote && <div style={{ padding: "0 14px 8px", fontSize: 12.5, color: "#FBBF24" }}>{busyNote}</div>}
       {tab === "concrete" && <HouseStylePanel products={concreteProducts} />}
     </div>
   );

@@ -5,17 +5,17 @@
 // the browser never calls Gemini and never spends money without the batch
 // confirm in HouseStylePanel.
 import { useEffect, useState } from "react";
-import { ref, onValue, update, get, child } from "firebase/database";
+import { ref, onValue, update, get, child, runTransaction } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { database, storage, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import {
-  HOUSE_STYLE_CONFIG_PATH, HOUSE_STYLE_JOBS_PATH, HOUSE_STYLE_REFS_STORAGE, STATUS, buildQueueUpdate,
+  HOUSE_STYLE_CONFIG_PATH, HOUSE_STYLE_JOBS_PATH, HOUSE_STYLE_REFS_STORAGE, STATUS, buildQueueUpdate, canQueue,
 } from "../../utils/concreteHouseStyle";
 import { CONCRETE_PUBLISH_PATH } from "../../utils/concreteListing";
 import { lazyPhotoItem, resolveMediaList } from "../shopify/publishShared";
-import { setPublishMedia } from "../shopify/shopifyPublishStore";
-import { publishTarget } from "../shopify/publishTarget";
+import { commitPublishMedia } from "../shopify/publishMediaCommit";
+import { publishTarget, holdTarget } from "../shopify/publishTarget";
 
 const uid = () => auth.currentUser?.uid || null;
 const plain = (err) => {
@@ -73,19 +73,32 @@ export async function deleteRef(id, entry) {
   return { ok: true };
 }
 
-/** Queue many products (after the batch confirm). */
+/**
+ * Queue many products (after the batch confirm). Per product, by transaction:
+ * a row already queued or generating is left alone (never re-billed, never
+ * overwritten under the worker); anything else becomes a fresh queued row.
+ */
 export async function queueGeneration(pids, cfg) {
   if (!pids.length) return { ok: true, count: 0 };
+  const rows = buildQueueUpdate({ pids, uid: uid(), nowMs: serverNowMs(), cfg });
+  let count = 0;
   try {
-    await update(ref(database), buildQueueUpdate({ pids, uid: uid(), nowMs: serverNowMs(), cfg }));
-    return { ok: true, count: pids.length };
-  } catch (e) { return { ok: false, message: plain(e) }; }
+    for (const [path, row] of Object.entries(rows)) {
+      const res = await runTransaction(ref(database, path), (cur) => (canQueue(cur) ? row : undefined));
+      if (res.committed && res.snapshot.val()?.requestedAt === row.requestedAt) count += 1;
+    }
+    return { ok: true, count };
+  } catch (e) { return { ok: false, count, message: plain(e) }; }
 }
 
-export async function rejectImage(pid) {
+export async function rejectImage(pid, shownUrl) {
   try {
-    await update(ref(database, `${HOUSE_STYLE_JOBS_PATH}/${pid}`), { status: STATUS.REJECTED, rejectedAt: serverNowMs(), rejectedBy: uid() });
-    return { ok: true };
+    const res = await runTransaction(ref(database, `${HOUSE_STYLE_JOBS_PATH}/${pid}`), (cur) => {
+      if (cur === null) return null;
+      if (cur.status !== STATUS.AWAITING || cur.url !== shownUrl) return undefined;
+      return { ...cur, status: STATUS.REJECTED, rejectedAt: serverNowMs(), rejectedBy: uid() };
+    });
+    return res.committed && res.snapshot.val()?.status === STATUS.REJECTED ? { ok: true } : { ok: false, message: "That image changed while you were looking — check it again." };
   } catch (e) { return { ok: false, message: plain(e) }; }
 }
 
@@ -98,17 +111,32 @@ export async function rejectImage(pid) {
  */
 export async function approveImage(pid, job, product) {
   // The store writes whichever node the Publishing tab targets; refuse unless
-  // that is Concrete's, so an approval can never land on Marathon's listing.
+  // that is Concrete's, and hold it for the whole approval.
   if (publishTarget() !== "concrete") return { ok: false, message: "Open the Concrete tab to approve." };
+  const release = holdTarget();
   try {
-    const nodeSnap = await get(child(ref(database), `${CONCRETE_PUBLISH_PATH}/${pid}`));
-    const node = nodeSnap.val();
+    // 1. Approve EXACTLY the image that was shown: the row must still be
+    //    awaiting approval with this url (a regenerate or retry since the tap
+    //    replaced it with an image nobody has seen).
+    const res = await runTransaction(ref(database, `${HOUSE_STYLE_JOBS_PATH}/${pid}`), (cur) => {
+      if (cur === null) return null;
+      if (cur.status !== STATUS.AWAITING || cur.url !== job.url) return undefined;
+      return { ...cur, status: STATUS.APPROVED, approvedAt: serverNowMs(), approvedBy: uid() };
+    });
+    if (!(res.committed && res.snapshot.val()?.status === STATUS.APPROVED && res.snapshot.val()?.url === job.url)) {
+      return { ok: false, message: "That image changed while you were looking — check it again." };
+    }
+    // 2. Make it the Concrete publishing photo when the product has a
+    //    Concrete row; otherwise the reconciler uses it at first publish.
+    const node = (await get(child(ref(database), `${CONCRETE_PUBLISH_PATH}/${pid}`))).val();
     if (node) {
       const existing = resolveMediaList(node, product).items.filter((it) => it.url !== job.url);
-      const r = await setPublishMedia(pid, node, [lazyPhotoItem(job.url, "concrete_house_style"), ...existing]);
-      if (!r?.ok) return { ok: false, message: r?.message || "Could not set the Concrete photo" };
+      // Through the ONE media writer (publishMediaCommit). On the Concrete
+      // target it never moves the app photo, so no app-photo deps are needed.
+      const { res: r } = await commitPublishMedia(product, node, "set", [lazyPhotoItem(job.url, "concrete_house_style"), ...existing], null);
+      if (!r?.ok) return { ok: false, message: `Approved, but the Concrete photo list could not be updated: ${r?.message || "not saved"}` };
     }
-    await update(ref(database, `${HOUSE_STYLE_JOBS_PATH}/${pid}`), { status: STATUS.APPROVED, approvedAt: serverNowMs(), approvedBy: uid() });
     return { ok: true };
   } catch (e) { return { ok: false, message: plain(e) }; }
+  finally { release(); }
 }

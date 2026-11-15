@@ -148,7 +148,7 @@ export default function HouseStylePanel({ products = [] }) {
                 <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                   <button style={btn(true)} disabled={busy} onClick={() => act(approveImage, p.id, j, p)}>Approve</button>
                   <button style={btn(false)} disabled={busy} onClick={() => setConfirm({ pids: [p.id] })}>Regenerate</button>
-                  <button style={btn(false)} disabled={busy} onClick={() => act(rejectImage, p.id)}>Reject</button>
+                  <button style={btn(false)} disabled={busy} onClick={() => act(rejectImage, p.id, j.url)}>Reject</button>
                 </div>
               </div>
             );

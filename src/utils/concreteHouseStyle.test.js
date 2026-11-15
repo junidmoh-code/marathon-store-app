@@ -32,3 +32,17 @@ describe("house style rules", () => {
     expect(money(0.134)).toBe("$0.134 (≈ R2.41)");
   });
 });
+
+import { canQueue, isStaleRunning, STALE_RUNNING_MS } from "./concreteHouseStyle.js";
+describe("queue safety", () => {
+  it("never re-queues a row that is queued or generating", () => {
+    expect(canQueue(null)).toBe(true);
+    for (const s of ["awaiting_approval", "approved", "rejected", "failed"]) expect(canQueue({ status: s })).toBe(true);
+    for (const s of ["queued", "running"]) expect(canQueue({ status: s })).toBe(false);
+  });
+  it("a running row is stale only after the window", () => {
+    expect(isStaleRunning({ status: "running", startedAt: 0 }, STALE_RUNNING_MS + 1)).toBe(true);
+    expect(isStaleRunning({ status: "running", startedAt: 0 }, STALE_RUNNING_MS)).toBe(false);
+    expect(isStaleRunning({ status: "queued", startedAt: 0 }, 1e12)).toBe(false);
+  });
+});

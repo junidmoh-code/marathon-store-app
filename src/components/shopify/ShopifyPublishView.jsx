@@ -65,6 +65,7 @@ import { productMatchesQuery } from "../../utils/productSearch.js";
 import {
   loadPipelineNodes, loadPublishKeys, loadReviewHidden, loadNodesFor, publishProduct, setCondition,
 } from "./shopifyPublishStore";
+import { holdTarget } from "./publishTarget.js";
 import ShopifyProductPage from "./ShopifyProductPage";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
@@ -1071,6 +1072,8 @@ export default function ShopifyPublishView({ products = [], onExit, topSlot = nu
   const runBatch = async () => {
     if (batchBusy) return;
     setBatchBusy(true);
+    // The store tab cannot switch until the whole batch is written (publishTarget.js).
+    const releaseTarget = holdTarget();
     const failures = [];
     let okCount = 0;
     try {
@@ -1096,6 +1099,7 @@ export default function ShopifyPublishView({ products = [], onExit, topSlot = nu
         }
       }
     } finally {
+      releaseTarget();
       setBatchBusy(false);
       setBatchConfirm(false);
     }

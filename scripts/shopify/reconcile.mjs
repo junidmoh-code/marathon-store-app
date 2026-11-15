@@ -44,6 +44,7 @@
 //   • Nodes still in pre-migration states (none/nominated/draft) are skipped
 //     loudly — run migrate-live-state.mjs first.
 import { PUBLISH_PATH, SYNC_PATH, storeNode, adminProductUrl, STORE, IS_MARATHON } from "./storeConfig.mjs";
+import { needsBrandCheck } from "../../src/utils/concreteListing.js";
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey, stockSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
@@ -778,6 +779,10 @@ for (const { pid, want } of capped) {
     // price-record refusal below — an intent written any other way must not
     // reach the storefront.
     if (!IS_MARATHON && product.listOnConcrete !== true) { await refuse(pid, "not marked for Concrete (listOnConcrete is off) — mark it in Product Admin → All products"); continue; }
+    // …and brand-checked. A product marked from the upload form (staff) waits
+    // in Product Admin → Brand Check; until Junid or an admin confirms it, it
+    // cannot go on Concrete (PayFast branded-goods rule — a human looks first).
+    if (!IS_MARATHON && needsBrandCheck(product, pid)) { await refuse(pid, "waiting for Brand Check — confirm it in Product Admin → Brand Check, then publish again"); continue; }
     // CONCRETE HOUSE STYLE: an APPROVED studio photo is the Concrete listing's
     // primary photo. Approving in the app writes it into this node's media
     // list when the node already exists; a product approved BEFORE its first

@@ -13,3 +13,19 @@ describe("publish target", () => {
     expect(() => setPublishTarget("other")).toThrow();
   });
 });
+
+describe("the target cannot move under work in flight", async () => {
+  const { setPublishTarget, publishTarget, holdTarget, targetBusy } = await import("./publishTarget.js");
+  it("a held target refuses a switch until released", () => {
+    setPublishTarget("marathon");
+    const release = holdTarget();
+    expect(targetBusy()).toBe(true);
+    expect(() => setPublishTarget("concrete")).toThrow(/still running/);
+    expect(publishTarget()).toBe("marathon");
+    release(); release();
+    expect(targetBusy()).toBe(false);
+    setPublishTarget("concrete");
+    expect(publishTarget()).toBe("concrete");
+    setPublishTarget("marathon");
+  });
+});
