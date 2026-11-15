@@ -96,12 +96,14 @@ The runner logs `concrete: credentials missing` and does nothing for Concrete.
 
 1. Go to https://dev.shopify.com/dashboard → the same organisation as
    "Marathon Catalogue Sync" → **Create app** → name it "Concrete Catalogue Sync".
-2. **Versions → Create version**. Access scopes — the same as Marathon
-   Catalogue Sync plus orders: `read_products, write_products,
-   read_inventory, write_inventory, read_locations, read_publications,
-   write_publications, read_orders, write_merchant_managed_fulfillment_orders,
-   read_merchant_managed_fulfillment_orders, write_files, read_files`.
-   API version 2026-07. Release the version.
+2. **Versions → Create version**. Access scopes — exactly Marathon Catalogue
+   Sync's (read from its live token, 15 Nov 2026), which already include
+   order read for the ingest:
+   `read_all_orders, read_customers, write_discounts, write_files,
+   write_inventory, read_locations, write_merchant_managed_fulfillment_orders,
+   write_online_store_navigation, write_orders, write_products,
+   write_publications, write_store_credit_account_transactions, write_themes,
+   customer_write_orders`. API version 2026-07. Release the version.
 3. **Home → Install app** → choose the store **Concrete World
    (g2m9cm-9q.myshopify.com)** → Install.
 4. **Settings** → copy **Client ID** and **Client secret**.
