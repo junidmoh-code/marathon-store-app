@@ -36,6 +36,7 @@
 // clearing none. Markers are the fast path, not the only path.
 
 import { PUBLISH_PATH, SYNC_PATH, storeNode, STORE } from "./storeConfig.mjs";
+import { readPendingForeign } from "./stockFanoutCore.mjs";
 import {
   networkTotals, requireSingleLocation, setAvailable, readAvailable, readLevels,
   readProductVariants, untrackedVariants, enforceTracking,
@@ -360,9 +361,17 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   // NOW the stock snapshot, strictly after the baseline.
   const desired = await desiredFor(db, pid, locNames);
   if (!desired) return { pid, skipped: "no shopify_sync id map", permanent: true };
-  // `pendingForeign` (stock-fanout.mjs): units another store has sold that the
-  // app has not pulled in yet — taken off so the last unit cannot sell twice.
-  const totals = pendingForeign ? withoutForeignHolds(desired.totals, null, pendingForeign) : desired.totals;
+  // Units another store has sold that the app has not pulled in yet
+  // (/shopify_pending_sales, written by stock-fanout.mjs) — taken off on EVERY
+  // push path so the last unit cannot sell twice. Empty (and so a no-op) until
+  // a product is live on both stores. A failed read pushes without it, like a
+  // failed holds read above.
+  let pf = pendingForeign;
+  if (pf == null) {
+    try { pf = await readPendingForeign(async (p) => (await db.ref(p).get()).val(), pid, STORE.key, Date.now()); }
+    catch (e) { console.error(`  ⚠ ${pid}: pending other-store sales unreadable (${String(e?.message || e)}) — pushed without them`); pf = null; }
+  }
+  const totals = pf ? withoutForeignHolds(desired.totals, null, pf) : desired.totals;
   const plan = planProduct({ map, variants, baseline, totals, reserved: desired.reserved, released: desired.released, committed });
   const { known, drift, untracked, stale, meta } = plan;
 

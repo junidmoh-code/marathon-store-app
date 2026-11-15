@@ -50,8 +50,12 @@ export async function confirmBrand(product, on, { liveOnConcrete = null } = {}) 
   const uid = auth.currentUser?.uid;
   if (!uid) return { ok: false, message: "Not signed in." };
   try {
+    // The mark as the SERVER holds it now, not the list's snapshot: another
+    // admin may have flipped it since this row rendered, and a confirm must
+    // never stamp a mark nobody looked at (CodeRabbit, #911).
+    const fresh = (await get(ref(database, `products/${product.id}/listOnConcrete`))).val();
     await applyRootUpdate(buildBrandConfirmUpdate({
-      productId: product.id, on, wasOn: isOnConcrete(product), uid, nowMs: serverNowMs(), liveOnConcrete,
+      productId: product.id, on, wasOn: fresh === true, uid, nowMs: serverNowMs(), liveOnConcrete,
     }));
     return { ok: true };
   } catch (err) {

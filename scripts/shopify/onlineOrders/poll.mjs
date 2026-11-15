@@ -112,7 +112,18 @@ async function queryEq(ctx, child, value) {
     // Each store's poller works only its own orders: Marathon's fulfils on
     // Marathon's Shopify, Concrete's on Concrete's. Before 2026-11-15 every
     // order is Marathon's, so this filter removes nothing from Marathon's run.
-    return Object.fromEntries(Object.entries(all).filter(([, o]) => ownsOrder(o)));
+    // A second parcel (<id>r1, made by hand) carries no tag of its own: it
+    // belongs to its parent's store (CodeRabbit, #911).
+    const out = {};
+    for (const [id, o] of Object.entries(all)) {
+      let order = o;
+      if (o && !o.sourceStore && /r\d+$/.test(id)) {
+        const parentStore = await ctx.get(`${ONLINE_ORDERS_PATH}/${id.replace(/r\d+$/, "")}/sourceStore`).catch(() => null);
+        if (parentStore) order = { ...o, sourceStore: parentStore };
+      }
+      if (ownsOrder(order)) out[id] = o;
+    }
+    return out;
   } catch (e) {
     if (!/index not defined/i.test(String(e?.message || e))) throw e;
     ctx.summary.missingIndex.add(child);

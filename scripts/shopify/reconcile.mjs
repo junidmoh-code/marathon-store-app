@@ -788,12 +788,14 @@ for (const { pid, want } of capped) {
     // list when the node already exists; a product approved BEFORE its first
     // publish has no list yet, so the approved image is put first here, in
     // memory only, with the record's own photos after it. Never on Marathon.
+    let houseStylePhotos = null;
     if (!IS_MARATHON && fresh && !fresh.photos && !fresh.media) {
       try {
         const hs = (await db.ref(`concrete_house_style/${pid}`).get()).val();
         if (hs?.status === "approved" && typeof hs.url === "string" && hs.url) {
           const recordPhotos = [product.photoUrl, ...(Array.isArray(product.gallery) ? product.gallery : [])].filter((u) => typeof u === "string" && u && u !== hs.url);
           fresh.photos = [hs.url, ...recordPhotos];
+          houseStylePhotos = fresh.photos;
         }
       } catch (e) {
         console.error(`  ⚠ ${pid}: house-style photo unreadable (${String(e?.message || e)}) — publishing the record's photos`);
@@ -1394,6 +1396,10 @@ for (const { pid, want } of capped) {
     // cancel, the product stays created-but-unpublished, which IS the "off"
     // the operator asked for.
     const lastCheck = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
+    // The approved house-style photo was injected into `fresh` in memory; the
+    // re-read node does not carry it, so give it the same list or the photo
+    // check below would see a change that did not happen (CodeRabbit, #911).
+    if (houseStylePhotos && lastCheck && !lastCheck.photos && !lastCheck.media) lastCheck.photos = houseStylePhotos;
     if (lastCheck?.desiredState !== "on") {
       // Fail-safe here too: if drift left this product visible, a cancel
       // confirming "off" without an unpublish would strand it up for good.

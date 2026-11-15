@@ -21,8 +21,8 @@ import { serverNowMs } from "./publishNode.mjs";
 import { syncProduct, clearMarker, locationNames, DIRTY_PATH } from "./inventorySync.mjs";
 import { requireSingleLocation } from "./inventory.mjs";
 import {
-  PENDING_PATH, PENDING_MAX_AGE_MS, ORDER_LOOKBACK_MS, ORDER_POLL_MS,
-  isLiveOn, pendingLinesFor, pendingForeignFor, makeResolver, lagLine,
+  PENDING_PATH, PENDING_MAX_AGE_MS, ORDER_LOOKBACK_MS, ORDER_POLL_MS, INGEST_SETTLE_MS,
+  isLiveOn, pendingLinesFor, readPendingForeign, makeResolver, lagLine,
 } from "./stockFanoutCore.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -66,29 +66,14 @@ async function refreshDual() {
   dual = new Set(both);
 }
 
-// ── WHEN DOES A HOLD TAKE OVER FROM A PENDING SALE? ──────────────────────────
-// Not the moment /online_orders/{id} appears: the poller writes the order
-// first and its hold rows a moment later (syncHolds), and a push in between
-// would count neither. So an order counts as ingested for a product once a
-// hold row for it exists there — or once the app has had it for 3 minutes
-// (a line that holds nothing, e.g. already packed, must stop deducting too).
-const INGEST_SETTLE_MS = 3 * 60 * 1000;
-async function orderIngested(orderId, pid, nowMs) {
-  const holds = (await get(`online_reservations/${pid}`)) || {};
-  for (const cell of Object.values(holds)) if (cell && cell[orderId]) return true;
-  const at = Number(await get(`online_orders/${orderId}/ingestedAt`)) || 0;
-  return at > 0 && nowMs - at > INGEST_SETTLE_MS;
-}
-
 let locationId = null;
 let locNames = null;
 async function pushOne(pid, { revision = null, reason = "stock", startedAt = Date.now(), saleAt = null } = {}) {
   locationId ||= await requireSingleLocation(graphql);
   locNames ||= await locationNames(db);
-  const pending = (await get(PENDING_PATH)) || {};
   const now = await serverNowMs(db);
-  const pendingForeign = await pendingForeignFor(pending, pid, STORE.key, (id) => orderIngested(id, pid, now), now);
-  const r = await syncProduct(db, graphql, pid, { commit: true, locationId, locNames, pendingForeign });
+  const pendingForeign = await readPendingForeign(get, pid, STORE.key, now);
+  const r = await syncProduct(db, graphql, pid, { commit: true, locationId, locNames, pendingForeign: pendingForeign || {} });
   const done = Date.now();
   log(`pushed ${pid} (${reason})${pendingForeign ? ` · minus pending ${JSON.stringify(pendingForeign)}` : ""} → ${r.ok === false ? `FAILED ${r.error || r.skipped || ""}` : (r.skipped ? `skipped: ${r.skipped}` : `${r.changed || 0} size(s) corrected`)} · ${lagLine("marker→push", pid, done - startedAt)}${saleAt ? ` · ${lagLine("sale→other-store", pid, done - saleAt)}` : ""}`);
   if (saleAt) {
@@ -150,37 +135,56 @@ for (const s of OTHERS) {
 }
 
 // ── 2. Poll this store's own newest orders ──────────────────────────────────
-const resolveVariant = makeResolver(get, SYNC_PATH);
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+const sameLines = (a, b) => JSON.stringify(a || {}) === JSON.stringify(b || {});
 let lastDualRefresh = Date.now();
 for (;;) {
   try {
     if (Date.now() - lastDualRefresh > 5 * 60 * 1000) { await refreshDual(); lastDualRefresh = Date.now(); }
     const now = await serverNowMs(db);
     if (dual.size) {
-      const data = await graphql(`query ($q: String!) { orders(first: 25, sortKey: CREATED_AT, reverse: true, query: $q) {
-        nodes { legacyResourceId createdAt cancelledAt lineItems(first: 100) { nodes { quantity currentQuantity variant { id product { id } } } } } } }`,
-        { q: `created_at:>='${iso(now - ORDER_LOOKBACK_MS)}'` });
-      for (const order of data.orders?.nodes || []) {
+      // A fresh resolver each poll: a mapping repaired since the last poll is
+      // seen at once (no cached "not found" — CodeRabbit, #911).
+      const resolveVariant = makeResolver(get, SYNC_PATH);
+      const orders = [];
+      let after = null;
+      for (let page = 0; page < 4; page++) {   // paged: a busy two hours is never truncated to the newest 25
+        const data = await graphql(`query ($q: String!, $after: String) { orders(first: 25, after: $after, sortKey: CREATED_AT, reverse: true, query: $q) {
+          pageInfo { hasNextPage endCursor }
+          nodes { legacyResourceId createdAt cancelledAt lineItems(first: 100) { nodes { quantity currentQuantity variant { id product { id } } } } } } }`,
+          { q: `created_at:>='${iso(now - ORDER_LOOKBACK_MS)}'`, after });
+        orders.push(...(data.orders?.nodes || []));
+        if (!data.orders?.pageInfo?.hasNextPage) break;
+        after = data.orders.pageInfo.endCursor;
+      }
+      for (const order of orders) {
         const id = String(order.legacyResourceId);
         const path = `${PENDING_PATH}/${STORE.key}/${id}`;
-        if ((await get(`online_orders/${id}/status`)) != null) continue;   // ingested — holds own it
-        if ((await get(path)) != null) continue;                          // already announced
+        const ingestedAt = Number(await get(`online_orders/${id}/ingestedAt`)) || 0;
+        if (ingestedAt && now - ingestedAt > INGEST_SETTLE_MS) continue;   // the app holds it now
         const lines = await pendingLinesFor(order, { dualPids: dual, resolve: resolveVariant });
-        if (!Object.keys(lines).length) continue;
+        const have = await get(path);
+        // Re-announced when the order CHANGED (a cancel or an edit before the
+        // app pulled it in), not only when it is new.
+        if (have && sameLines(have.lines, lines)) continue;
+        if (!have && !Object.keys(lines).length) continue;
         const saleAt = Date.parse(order.createdAt) || now;
-        await db.ref(path).set({ at: now, saleAt, lines });
-        for (const pid of Object.keys(lines)) {
-          for (const s of OTHERS) await db.ref(`${storeNode("shopify_inventory_dirty", s)}/${pid}`).set(admin.database.ServerValue.increment(1));
+        // ONE write: the pending entry and every other store's dirty marker
+        // land together, so a failed marker can never leave an entry that no
+        // store was told about (CodeRabbit, #911).
+        const u = { [path]: Object.keys(lines).length ? { at: now, saleAt, lines } : null };
+        for (const pid of new Set([...Object.keys(lines), ...Object.keys(have?.lines || {})])) {
+          for (const s of OTHERS) u[`${storeNode("shopify_inventory_dirty", s)}/${pid}`] = admin.database.ServerValue.increment(1);
         }
-        log(`sale on ${STORE.label} order ${id} for ${Object.keys(lines).join(", ")} — ${OTHERS.map((s) => s.label).join("/")} told (${((now - saleAt) / 1000).toFixed(0)} s after the sale)`);
+        await db.ref().update(u);
+        log(`${have ? "changed" : "sale"} on ${STORE.label} order ${id} for ${Object.keys({ ...lines, ...(have?.lines || {}) }).join(", ")} — ${OTHERS.map((s) => s.label).join("/")} told (${((now - saleAt) / 1000).toFixed(0)} s after the sale)`);
       }
     }
     // Housekeeping: drop pending entries the app has ingested, or that are old.
     const mine = (await get(`${PENDING_PATH}/${STORE.key}`)) || {};
     for (const [id, entry] of Object.entries(mine)) {
-      const at = Number(await get(`online_orders/${id}/ingestedAt`)) || 0;
-      if (now - (Number(entry?.at) || 0) > PENDING_MAX_AGE_MS || (at > 0 && now - at > INGEST_SETTLE_MS)) {
+      const ingested = Number(await get(`online_orders/${id}/ingestedAt`)) || 0;
+      if (now - (Number(entry?.at) || 0) > PENDING_MAX_AGE_MS || (ingested > 0 && now - ingested > INGEST_SETTLE_MS)) {
         await db.ref(`${PENDING_PATH}/${STORE.key}/${id}`).set(null);
       }
     }

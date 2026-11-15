@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pendingLinesFor, pendingForeignFor, makeResolver, PENDING_MAX_AGE_MS } from "./stockFanoutCore.mjs";
+import { pendingLinesFor, pendingForeignFor, makeResolver, makeIngestedCheck, readPendingForeign, PENDING_MAX_AGE_MS, INGEST_SETTLE_MS } from "./stockFanoutCore.mjs";
 
 const order = (lines, extra = {}) => ({ legacyResourceId: 1, createdAt: "2026-11-15T10:00:00Z", lineItems: { nodes: lines }, ...extra });
 const li = (v, p, q = 1, cur = q) => ({ quantity: q, currentQuantity: cur, variant: { id: v, product: { id: p } } });
@@ -25,6 +25,9 @@ describe("pendingForeignFor", () => {
   it("sums OTHER stores' un-ingested, fresh sales only", async () => {
     const out = await pendingForeignFor(node, "p1", "concrete", async (id) => id === "o2", NOW);
     expect(out).toEqual({ 9: 1 });
+    // per size: o2 held in size 9 only — its size-10 unit still counts
+    const perSize = await pendingForeignFor(node, "p1", "concrete", async (id, size) => id === "o2" && size === "9", NOW);
+    expect(perSize).toEqual({ 9: 1, 10: 1 });
   });
   it("never counts its own store's sales; null when nothing", async () => {
     expect(await pendingForeignFor(node, "p1", "marathon", async () => true, NOW)).toBe(null);
@@ -41,5 +44,20 @@ describe("makeResolver", () => {
     await r("gid://shopify/Product/11", "gid://shopify/ProductVariant/5");
     expect(reads).toBe(2);
     expect(await r("gid://shopify/Product/12", "x")).toBe(null);
+  });
+});
+
+describe("ingested = a hold exists for that size, or the app has had it a while", () => {
+  it("per size, then by settle time", async () => {
+    const NOW = 50_000_000;
+    const data = { "online_reservations/p1": { 9: { o1: { qty: 1 } } }, "online_orders/o2/ingestedAt": NOW - INGEST_SETTLE_MS - 1, "online_orders/o3/ingestedAt": NOW - 1000 };
+    const check = makeIngestedCheck(async (p) => data[p] ?? null, "p1", NOW);
+    expect(await check("o1", "9")).toBe(true);
+    expect(await check("o1", "10")).toBe(false);
+    expect(await check("o2", "10")).toBe(true);
+    expect(await check("o3", "10")).toBe(false);
+  });
+  it("readPendingForeign is a no-op with no pending node", async () => {
+    expect(await readPendingForeign(async () => null, "p1", "marathon", 1)).toBe(null);
   });
 });

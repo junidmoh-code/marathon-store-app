@@ -51,9 +51,11 @@ export async function pendingLinesFor(order, { dualPids, resolve }) {
 }
 
 /**
- * Units of `pid` sold on OTHER stores and not yet ingested:
- * pendingNode = /shopify_pending_sales (whole, small); `ingested(orderId)` →
- * true when /online_orders/{orderId} exists.
+ * Units of `pid` sold on OTHER stores and not yet held by the app, per size:
+ * pendingNode = /shopify_pending_sales (whole, small); `ingested(orderId,
+ * sizeKey)` → true once the app holds that order's units of this product in
+ * that size (checked PER SIZE: a hold written for size 9 says nothing about
+ * size 10 of the same order — CodeRabbit, #911).
  */
 export async function pendingForeignFor(pendingNode, pid, ownStore, ingested, nowMs) {
   const out = {};
@@ -63,11 +65,43 @@ export async function pendingForeignFor(pendingNode, pid, ownStore, ingested, no
       const lines = entry?.lines?.[pid];
       if (!lines) continue;
       if (nowMs - (Number(entry.at) || 0) > PENDING_MAX_AGE_MS) continue;
-      if (await ingested(orderId)) continue;
-      for (const [sizeKey, q] of Object.entries(lines)) out[sizeKey] = (out[sizeKey] || 0) + (Number(q) || 0);
+      for (const [sizeKey, q] of Object.entries(lines)) {
+        if (await ingested(orderId, sizeKey)) continue;
+        out[sizeKey] = (out[sizeKey] || 0) + (Number(q) || 0);
+      }
     }
   }
   return Object.keys(out).length ? out : null;
+}
+
+// ── WHEN DOES A HOLD TAKE OVER FROM A PENDING SALE? ──────────────────────────
+// Not the moment /online_orders/{id} appears: the poller writes the order
+// first and its hold rows a moment later (syncHolds), and a push in between
+// would count neither. So a size counts as ingested once a hold row for the
+// order exists there — or once the app has had the order for 3 minutes (a
+// line that holds nothing, e.g. already packed, must stop deducting too).
+export const INGEST_SETTLE_MS = 3 * 60 * 1000;
+export function makeIngestedCheck(get, pid, nowMs) {
+  let holds;
+  const ingestedAt = new Map();
+  return async (orderId, sizeKey) => {
+    if (holds === undefined) holds = (await get(`online_reservations/${pid}`)) || {};
+    if (holds?.[sizeKey]?.[orderId]) return true;
+    if (!ingestedAt.has(orderId)) ingestedAt.set(orderId, Number(await get(`online_orders/${orderId}/ingestedAt`)) || 0);
+    const at = ingestedAt.get(orderId);
+    return at > 0 && nowMs - at > INGEST_SETTLE_MS;
+  };
+}
+
+/**
+ * EVERY push path's pending subtraction (syncProduct calls this when its
+ * caller passes nothing), so the reconcile sweeps can never push back a
+ * higher number over the fan-out's (CodeRabbit, #911). One small read.
+ */
+export async function readPendingForeign(get, pid, ownStore, nowMs) {
+  const pending = await get(PENDING_PATH);
+  if (!pending) return null;
+  return pendingForeignFor(pending, pid, ownStore, makeIngestedCheck(get, pid, nowMs), nowMs);
 }
 
 /** Variant → { pid, sizeKey } through a store's id map (claims, then variants). */

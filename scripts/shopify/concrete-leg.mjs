@@ -20,7 +20,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { appendFileSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, linkSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, linkSync, renameSync } from "node:fs";
 import { STORES, missingCredentials } from "./storeConfig.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -51,7 +51,14 @@ function acquire() {
       try { linkSync(tmp, LOCK_FILE); return true; } catch {
         const owner = Number(readFileSync(LOCK_FILE, "utf8")) || 0;
         if (owner && alive(owner)) return false;
-        try { unlinkSync(LOCK_FILE); } catch { /* raced */ }
+        // Reclaim a dead owner's lock WITHOUT ever deleting a replacement:
+        // move it aside first, then check what was moved. If another tick had
+        // already replaced it, put theirs back and stand down (CodeRabbit, #911).
+        const aside = `${LOCK_FILE}.stale.${process.pid}`;
+        try { renameSync(LOCK_FILE, aside); } catch { continue; }
+        const moved = Number(readFileSync(aside, "utf8")) || 0;
+        if (moved !== owner) { try { linkSync(aside, LOCK_FILE); } catch { /* someone holds it */ } try { unlinkSync(aside); } catch { /* gone */ } return false; }
+        try { unlinkSync(aside); } catch { /* gone */ }
       }
     }
     return false;
