@@ -433,6 +433,16 @@ export default function NewProductForm({
         </label>
       )}
 
+      {/* ── CONCRETE — also list on the Concrete store. Default OFF. ───────── */}
+      <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer",
+                      color: "rgba(233,238,255,.8)", fontSize: 14, fontWeight: 600 }}>
+        <input type="checkbox" role="switch" checked={form.listOnConcrete === true}
+               onChange={(e) => setForm((f) => ({ ...f, listOnConcrete: e.target.checked }))}
+               style={{ width: 20, height: 20, accentColor: BLUE, cursor: "pointer" }} />
+        Concrete
+        <span style={{ color: "rgba(233,238,255,.32)", fontSize: 12, fontStyle: "italic" }}>(also list on the Concrete store)</span>
+      </label>
+
       <div style={{ fontSize: 12, color: "rgba(233,238,255,.3)", fontStyle: "italic" }}>
         {isPerfume && form.printedBarcode
           ? "SKU is assigned automatically on save. This product uses the barcode printed on its box."

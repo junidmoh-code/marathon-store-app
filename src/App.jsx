@@ -46,6 +46,9 @@ import { categorize, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGO
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
+import AllProductsList from "./components/concrete/AllProductsList";
+import BrandCheckTab, { useBrandCheckCount } from "./components/concrete/BrandCheckTab";
+import { canVerifyBrand, useConcreteLiveSet } from "./components/concrete/concreteStore";
 import { isSuperAdmin as isSuperAdminEmail } from "./config/superAdmins";
 import { toAuthPassword } from "./utils/auth-utils";
 import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, phoneGroupKey } from "./utils/phone";
@@ -3509,6 +3512,8 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // and writes /social_posts and /social_style_refs, whose console rules name
   // Junid or a stockRole admin. The route below re-checks the same gate.
   const socialVisible = isSuperAdmin || homePerm?.stockRole === "admin";
+  // Brand Check's waiting count on the Admin tile — Junid or a stockRole admin.
+  const brandCheckBadge = useBrandCheckCount(products, canVerifyBrand(homeUser, homePerm));
 
   // TV Ad — writes /settings/tvAd, which the TV screen overlay reads live.
   // Same identity as Social/Shopify: super-admin or stockRole admin, matching
@@ -3549,7 +3554,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
     ].filter(Boolean) },
     { label: "Administration", cards: [
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && { key:"customers", icon:RoleIcons.customers_db, name:"Customers", desc:"Customer database", onClick:()=>onSelect(ROLES.CUSTOMERS_DB) },
-      hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && { key:"admin", icon:RoleIcons.admin, name:"Admin", desc:"Manage products", onClick:()=>onSelect(ROLES.ADMIN) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && { key:"admin", icon:RoleIcons.admin, name:"Admin", desc:"Manage products", badge: brandCheckBadge || undefined, onClick:()=>onSelect(ROLES.ADMIN) },
       canAccessStock                                           && { key:"stock", icon:RoleIcons.stock, name:"Stock", desc:"Inventory & transfers", onClick:()=>onSelect(ROLES.STOCK) },
       // Inventory Health — the AI refill engine's control centre, promoted to its
       // own primary card (owner decision 2026-07-12). Same access as Stock.
@@ -6134,6 +6139,12 @@ function AiStudioView({ products, onExit }) {
 }
 
 function AdminView({ products, orders, onExit }) {
+  // Concrete (second Shopify store): the All products marking list and the
+  // Brand Check queue. Brand Check is Junid or a stockRole admin only.
+  const { user: adminUser, permRecord: adminPerm } = usePermissions();
+  const canBrandCheck = canVerifyBrand(adminUser, adminPerm);
+  const brandCheckCount = useBrandCheckCount(products, canBrandCheck);
+  const concreteLive = useConcreteLiveSet(!!adminUser);
   // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation,
   // pickup-board voice) moved to the super-admin-only AI Studio view — this
   // view is pure product management now (products + category sorting).
@@ -6163,7 +6174,7 @@ function AdminView({ products, orders, onExit }) {
   // See photoGuides.js and handleGuidedPhoto below.
   // sku + barcode are NOT in form state — they auto-generate at save time via
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
-  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
+  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false, listOnConcrete:false });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   // ── STYLE CODE INTAKE (step 1) ──────────────────────────────────────────
   // While null, "Add Product" shows the style-code gate instead of the create
@@ -6595,6 +6606,15 @@ function AdminView({ products, orders, onExit }) {
       // onValueCreated trigger) turns it into the queue entry — the client
       // never writes /new_arrivals itself, so no rule is involved.
       newProduct.newArrivalAt = serverNowMs();
+      // CONCRETE (second Shopify store) — the upload form's one switch, OFF by
+      // default. Only an ON is written: absent means "Marathon only". The
+      // brand check is NOT stamped here — a new product always lands in Brand
+      // Check for Junid/admin to confirm (src/utils/concreteListing.js).
+      if (form.listOnConcrete === true && auth.currentUser?.uid) {
+        newProduct.listOnConcrete = true;
+        newProduct.listOnConcreteSetBy = auth.currentUser.uid;
+        newProduct.listOnConcreteSetAt = serverNowMs();
+      }
       // The AI source copies uploaded above. Set only when present — the
       // record never carries a null for a photo it was not given.
       if (photoSourceUrl) newProduct.photoSourceUrl = photoSourceUrl;
@@ -6865,7 +6885,7 @@ function AdminView({ products, orders, onExit }) {
 
       // Any photo still being prepared belongs to the product just saved.
       photoPrepSeq.current.photo += 1;
-      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
+      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false, listOnConcrete:false });
       setShoeboxTouched(false);
       setRecvQtys({});
       setSaveAttempted(false);
@@ -7032,7 +7052,7 @@ function AdminView({ products, orders, onExit }) {
   // spilled outside the chips. The counts still live on the desktop rail.
   const sectionToggle = (
     <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
+      {[["products","Products"],["all-products","All products"],...(canBrandCheck ? [["brand-check","Brand Check"]] : []),["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
         .map(([val, label]) => {
         const on = adminSection === val;
         return (
@@ -7267,7 +7287,7 @@ function AdminView({ products, orders, onExit }) {
   // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
   //    Handles both admin sections; mobile keeps the single column below. ──
   if (isWide) {
-    const NAV = [["products", "Products", products.length], ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0], ["taxonomy", "Taxonomy", 0]];
+    const NAV = [["products", "Products", products.length], ["all-products", "All products", 0], ...(canBrandCheck ? [["brand-check", "Brand Check", brandCheckCount]] : []), ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0], ["taxonomy", "Taxonomy", 0]];
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
@@ -7295,13 +7315,19 @@ function AdminView({ products, orders, onExit }) {
         </button>
       );
     };
-    const title = adminSection === "assign-categories" ? "Assign Categories"
+    const title = adminSection === "all-products" ? "All products"
+      : adminSection === "brand-check" ? "Brand Check"
+      : adminSection === "assign-categories" ? "Assign Categories"
       : adminSection === "review-categories" ? "Categories"
       : adminSection === "missing-prices" ? "Missing Prices"
       : adminSection === "bulk-pricing" ? "Bulk Pricing"
       : adminSection === "specials" ? "Specials"
       : adminSection === "taxonomy" ? "Taxonomy" : "Products";
-    const subtitle = adminSection === "assign-categories"
+    const subtitle = adminSection === "all-products"
+      ? "Every product. Mark which ones also list on the Concrete store."
+      : adminSection === "brand-check"
+      ? "New and re-marked products waiting for a brand check."
+      : adminSection === "assign-categories"
       ? "Give every product its real category. Nothing else changes."
       : adminSection === "review-categories"
       ? "Sort uncategorised products into the browse tree."
@@ -7350,7 +7376,9 @@ function AdminView({ products, orders, onExit }) {
           </div>
           <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
             <div style={{ maxWidth:1160, margin:"0 auto" }}>
-              {adminSection === "assign-categories" ? <AssignCategoriesTab products={products} registry={taxonomy} />
+              {adminSection === "all-products" ? <AllProductsList products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />
+                : adminSection === "brand-check" ? <BrandCheckTab products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />
+                : adminSection === "assign-categories" ? <AssignCategoriesTab products={products} registry={taxonomy} />
                 : adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} />
                 : adminSection === "missing-prices" ? <MissingPricesTab products={products} />
                 : adminSection === "bulk-pricing" ? <BulkPricingTab products={products} />
@@ -7364,6 +7392,8 @@ function AdminView({ products, orders, onExit }) {
     );
   }
 
+  if (adminSection === "all-products") return reviewShell(<AllProductsList products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />);
+  if (adminSection === "brand-check") return reviewShell(<BrandCheckTab products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />);
   if (adminSection === "assign-categories") return reviewShell(<AssignCategoriesTab products={products} registry={taxonomy} />);
   if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
   if (adminSection === "missing-prices") return reviewShell(<MissingPricesTab products={products} />);
