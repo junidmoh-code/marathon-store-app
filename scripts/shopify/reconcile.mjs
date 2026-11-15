@@ -1291,9 +1291,9 @@ for (const { pid, want } of capped) {
     const holdsNode = (await db.ref(`online_reservations/${pid}`).get()).val();
     // …and units another store has sold that the app has not pulled in yet
     // (/shopify_pending_sales) — the same subtraction every push path makes.
-    let pendingForeign = null;
-    try { pendingForeign = await readPendingForeign(async (p) => (await db.ref(p).get()).val(), pid, STORE.key, Date.now()); }
-    catch (e) { console.error(`  ⚠ ${pid}: pending other-store sales unreadable (${String(e?.message || e)}) — pushed without them`); }
+    // Unreadable is NOT empty: the publish is refused and retried rather than
+    // pushing a unit another store already sold (CodeRabbit r2, #911).
+    const pendingForeign = await readPendingForeign(async (p) => (await db.ref(p).get()).val(), pid, STORE.key, await serverNowMs(db));
     const totals = withoutForeignHolds(networkTotals(tree, pid, sizes), holdsNode, pendingForeign);
     const heldBySize = reservedBySize(holdsNode);
     const releasedHeld = releasedBySize(holdsNode);

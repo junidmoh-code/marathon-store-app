@@ -364,12 +364,13 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   // Units another store has sold that the app has not pulled in yet
   // (/shopify_pending_sales, written by stock-fanout.mjs) — taken off on EVERY
   // push path so the last unit cannot sell twice. Empty (and so a no-op) until
-  // a product is live on both stores. A failed read pushes without it, like a
-  // failed holds read above.
+  // a product is live on both stores. UNREADABLE IS NOT EMPTY (CodeRabbit r2,
+  // #911): the push is not made and the product is reported not done, so
+  // every queue keeps its marker and retries — never a unit sold twice.
   let pf = pendingForeign;
   if (pf == null) {
     try { pf = await readPendingForeign(async (p) => (await db.ref(p).get()).val(), pid, STORE.key, Date.now()); }
-    catch (e) { console.error(`  ⚠ ${pid}: pending other-store sales unreadable (${String(e?.message || e)}) — pushed without them`); pf = null; }
+    catch (e) { return { pid, ok: false, error: `pending other-store sales unreadable (${String(e?.message || e)}) — not pushed; retried next pass` }; }
   }
   const totals = pf ? withoutForeignHolds(desired.totals, null, pf) : desired.totals;
   const plan = planProduct({ map, variants, baseline, totals, reserved: desired.reserved, released: desired.released, committed });
