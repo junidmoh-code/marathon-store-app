@@ -39,6 +39,7 @@
 //
 // Any one failing refuses. Anything the API cannot answer refuses — an unknown
 // is not a yes.
+import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { serverNowMs } from "./publishNode.mjs";
 
@@ -146,7 +147,7 @@ export async function adoptionVerdict(graphql, gid, onlineStorePublicationId) {
 export async function requestFreshName(db, productId, why) {
   assertSafeSegment(productId, "productId");
   try {
-    await db.ref(`shopify_publish/${productId}`).update({
+    await db.ref(`${PUBLISH_PATH}/${productId}`).update({
       nameRerunRequestedAt: await serverNowMs(db),
       nameRerunReason: String(why ?? "").slice(0, 300),
     });

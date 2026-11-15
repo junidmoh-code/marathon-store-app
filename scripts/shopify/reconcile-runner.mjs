@@ -369,6 +369,44 @@ if (process.env.ONLINE_ORDERS_POLL !== "0") {
   if (code !== 0) log(`⚠ orders poll exited ${code} — see logs/orders-poll.log; reconciling anyway`);
 }
 
+// ── THE CONCRETE STORE'S LEG (second Shopify store, 2026-11-15) ─────────────
+// concrete-leg.mjs runs Concrete's orders poll and reconcile in their OWN
+// processes (SHOPIFY_STORE=concrete). It is started DETACHED and NOT awaited:
+// it holds its own lock (logs/concrete-leg.lock) and writes its own log
+// (logs/concrete-reconcile.log), so a slow or failing Concrete run can never
+// delay, block or fail this Marathon tick (architect review, PR #911). Without
+// Concrete credentials nothing is started at all; this log says
+// "concrete: credentials missing" at most once an hour. CONCRETE_LEG=0 = off.
+// Imported HERE, lazily and guarded: a broken or missing store module costs
+// the Concrete leg, never the Marathon tick.
+let concreteConfig = null;
+if (process.env.CONCRETE_LEG !== "0") {
+  try {
+    await import("./env.mjs");
+    concreteConfig = await import("./storeConfig.mjs");
+  } catch (e) {
+    log(`⚠ concrete leg skipped — store config unavailable (${String(e?.message || e)})`);
+  }
+}
+if (concreteConfig) {
+  const missingConcrete = concreteConfig.missingCredentials(concreteConfig.STORES.concrete);
+  if (missingConcrete.length) {
+    const hourKey = new Date().toISOString().slice(0, 13);
+    if (readState().concreteMissingLog !== hourKey) {
+      log(`concrete: credentials missing (${missingConcrete.join(", ")}) — Concrete leg disabled (docs/CONCRETE-STORE.md)`);
+      writeState({ concreteMissingLog: hourKey });
+    }
+  } else {
+    try {
+      const leg = spawn(process.execPath, [join(HERE, "concrete-leg.mjs")], { cwd: REPO, env: process.env, stdio: "ignore", detached: true });
+      leg.on("error", (e) => log(`⚠ concrete leg could not start: ${String(e?.message || e)}`));
+      leg.unref();
+    } catch (e) {
+      log(`⚠ concrete leg could not start: ${String(e?.message || e)}`);
+    }
+  }
+}
+
 child = spawn(process.execPath, [join(HERE, "reconcile.mjs"), "--commit"], {
   cwd: REPO,
   env: process.env,

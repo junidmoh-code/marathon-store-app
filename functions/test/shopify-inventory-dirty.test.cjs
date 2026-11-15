@@ -223,3 +223,33 @@ test("a missing location or product id is refused rather than writing a junk key
   assert.equal((await markInventoryDirty(d, { loc: "pe", pid: "", before: null })).marked, false);
   assert.deepEqual(f.writes, []);
 });
+
+// ── Concrete (second store, one stock pool) ──────────────────────────────────
+const { CONCRETE_DIRTY_PATH } = require("../lib/shopify-inventory-dirty.cjs");
+
+test("a product live on Concrete gets the Concrete marker too; Marathon's marker unchanged", async () => {
+  const { f, d } = deps({
+    stock: { hub1: { p1: { M: { qty: 1 } } } },
+    shopify_publish: { p1: LIVE },
+    shopify_publish_concrete: { p1: LIVE },
+  });
+  const r = await markInventoryDirty(d, { loc: "hub1", pid: "p1", before: { M: { qty: 2 } } });
+  assert.equal(r.marked, true);
+  assert.deepEqual(f.writes.map(([p]) => p).sort(), [`${CONCRETE_DIRTY_PATH}/p1`, `${DIRTY_PATH}/p1`].sort());
+});
+
+test("a product live only on Concrete marks Concrete and leaves Marathon's review marker as before", async () => {
+  const { f, d } = deps({
+    stock: { hub1: { p1: { M: { qty: 1 } } } },
+    shopify_publish_concrete: { p1: LIVE },
+  });
+  const r = await markInventoryDirty(d, { loc: "hub1", pid: "p1", before: { M: { qty: 2 } } });
+  assert.equal(r.reviewMarked, true);
+  assert.deepEqual(f.writes.map(([p]) => p).sort(), [`${CONCRETE_DIRTY_PATH}/p1`, `${REVIEW_DIRTY_PATH}/p1`].sort());
+});
+
+test("not live on Concrete → no Concrete marker", async () => {
+  const { f, d } = deps({ stock: { hub1: { p1: { M: { qty: 1 } } } }, shopify_publish: { p1: LIVE } });
+  await markInventoryDirty(d, { loc: "hub1", pid: "p1", before: { M: { qty: 2 } } });
+  assert.deepEqual(f.writes.map(([p]) => p), [`${DIRTY_PATH}/p1`]);
+});

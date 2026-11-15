@@ -57,10 +57,11 @@
 // .write: false` in the live rules — server-only, which is exactly right for a
 // bookkeeping node no browser should see, and the Admin SDK bypasses rules.
 // The `_` prefix follows the existing `_collections` sibling.
+import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { shallowKeys } from "../lib/rtdbPaged.mjs";
 
-export const RECONCILE_STATE_PATH = "shopify_sync/_reconcile";
+export const RECONCILE_STATE_PATH = `${SYNC_PATH}/_reconcile`;
 
 // How far BEFORE the recorded watermark an incremental window starts.
 //
@@ -337,7 +338,7 @@ export function nextWatermark({ runStartedAt, unapplied = [], previousWatermark 
 //     "contended" the write did not land (see below) — nothing changed
 export async function removeMappingIfUnchanged(db, productId, expectedGid) {
   assertSafeSegment(productId, "productId");
-  const ref = db.ref(`shopify_sync/${productId}`);
+  const ref = db.ref(`${SYNC_PATH}/${productId}`);
   // The latch is legitimate here for the same reason it is in releaseClaim: with
   // no abort, the callback's last invocation is the committed one. It only ever
   // separates two outcomes that BOTH commit with the node absent, and the
@@ -375,7 +376,7 @@ export function isMissingIndexError(err, field) {
 // quietly omits the biggest remaining item is worse than no meter.
 export async function readReconcileState(db, { meter = () => {} } = {}) {
   const val = (await db.ref(RECONCILE_STATE_PATH).get()).val() || null;
-  meter("shopify_sync/_reconcile (scan state)", val);
+  meter(`${SYNC_PATH}/_reconcile (scan state)`, val);
   return val;
 }
 
@@ -389,10 +390,10 @@ export async function writeReconcileState(db, patch) {
 // `meter` is called with each snapshot value so the run can report what it
 // actually cost; bandwidth this loop spends is the whole point of the module.
 export async function readChangedPublishNodes(db, { since, retryPids = [], meter = () => {}, onUnreadable = () => {} }) {
-  const q = db.ref("shopify_publish").orderByChild("updatedAt").startAt(since);
+  const q = db.ref(PUBLISH_PATH).orderByChild("updatedAt").startAt(since);
   const snap = await q.get();
   const val = snap.val() || {};
-  meter("shopify_publish (updatedAt window)", val);
+  meter(`${PUBLISH_PATH} (updatedAt window)`, val);
   const nodes = { ...val };
   // A failed product's node was not written, so its updatedAt did not move and
   // the window above cannot contain it. Read those by id — one small read each,
@@ -409,8 +410,8 @@ export async function readChangedPublishNodes(db, { since, retryPids = [], meter
     if (nodes[pid] !== undefined) continue;
     assertSafeSegment(pid, "productId");   // a bad id is a bug, not a blip
     try {
-      const one = (await db.ref(`shopify_publish/${pid}`).get()).val();
-      meter(`shopify_publish/${pid} (retry)`, one);
+      const one = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
+      meter(`${PUBLISH_PATH}/${pid} (retry)`, one);
       if (one) nodes[pid] = one;
     } catch (e) {
       onUnreadable(pid, e);
@@ -426,7 +427,7 @@ export async function readChangedPublishNodes(db, { since, retryPids = [], meter
 export async function readLivePids(db, { meter = () => {} } = {}) {
   let snap;
   try {
-    snap = await db.ref("shopify_publish").orderByChild("state").equalTo("live").get();
+    snap = await db.ref(PUBLISH_PATH).orderByChild("state").equalTo("live").get();
   } catch (e) {
     // `state` has been indexed for a long time, so this query is safe today.
     // The reason it gets a guard anyway is that §9.1 asks a person to paste an
@@ -447,7 +448,7 @@ export async function readLivePids(db, { meter = () => {} } = {}) {
     throw e;
   }
   const val = snap.val() || {};
-  meter("shopify_publish (state=live)", val);
+  meter(`${PUBLISH_PATH} (state=live)`, val);
   return Object.entries(val).filter(([, n]) => n?.liveState === "on").map(([pid]) => pid);
 }
 

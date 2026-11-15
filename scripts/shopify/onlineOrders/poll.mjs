@@ -38,6 +38,7 @@
 //     query on a 10-minute cadence (ATTENTION_SWEEP_MS) for everything else.
 // What a tick detects, holds, raises, ships and mails is unchanged; the one
 // timing difference is spelled out at ATTENTION_SWEEP_MS.
+import { PUBLISH_PATH, SYNC_PATH, storeNode, STORE, IS_MARATHON, STORES } from "../storeConfig.mjs";
 import {
   ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_ORDERS_CONFIG_PATH, PACKING_STORE, orderLabel,
   ORDER_STATUS, LINE_STATUS, ATTENTION_KIND, COURIER_COMPANY, HOLDING_STATUSES, TERMINAL_STATUSES, deriveOrderStatus,
@@ -64,8 +65,18 @@ import { applyOrderNowRequests, clearAttentionIfSettled } from "./orderNowReques
 import { applyWaitingReroutes } from "./waitingReroute.mjs";
 import { applyAgentRepicks } from "./agentRepick.mjs";
 
-export const META_PATH = "online_orders_meta";
-export const DIRTY_PATH = "shopify_inventory_dirty";
+// Per store: Marathon keeps /online_orders_meta exactly as before; the
+// Concrete process (SHOPIFY_STORE=concrete) keeps its own cursor and retry
+// list at /online_orders_meta_concrete. Orders themselves share /online_orders
+// (the POS reads one list); a Concrete order carries sourceStore: "concrete".
+export const META_PATH = storeNode("online_orders_meta");
+// Every store's inventory-dirty node. A hold that appears or goes changes what
+// EVERY store may sell of that product (one stock pool), so each store's
+// pusher is told — the Concrete pusher ignores products not live there.
+export const ALL_DIRTY_PATHS = Object.values(STORES).map((st) => storeNode("shopify_inventory_dirty", st));
+/** Does this process own the order? Absent sourceStore = Marathon (every order before 2026-11-15). */
+export const ownsOrder = (order, storeKey = STORE.key) => (order?.sourceStore || "marathon") === storeKey;
+export const DIRTY_PATH = storeNode("shopify_inventory_dirty");
 // Shopify's search index lags the write by seconds to a minute; re-reading a
 // window behind the cursor costs a page and is harmless (ingest is idempotent
 // on the order id).
@@ -97,7 +108,22 @@ const isTerminal = (s) => TERMINAL_STATUSES.includes(s);
 // else changes. Any OTHER error still throws.
 async function queryEq(ctx, child, value) {
   try {
-    return (await ctx.db.ref(ONLINE_ORDERS_PATH).orderByChild(child).equalTo(value).get()).val() || {};
+    const all = (await ctx.db.ref(ONLINE_ORDERS_PATH).orderByChild(child).equalTo(value).get()).val() || {};
+    // Each store's poller works only its own orders: Marathon's fulfils on
+    // Marathon's Shopify, Concrete's on Concrete's. Before 2026-11-15 every
+    // order is Marathon's, so this filter removes nothing from Marathon's run.
+    // A second parcel (<id>r1, made by hand) carries no tag of its own: it
+    // belongs to its parent's store (CodeRabbit, #911).
+    const out = {};
+    for (const [id, o] of Object.entries(all)) {
+      let order = o;
+      if (o && !o.sourceStore && /r\d+$/.test(id)) {
+        const parentStore = await ctx.get(`${ONLINE_ORDERS_PATH}/${id.replace(/r\d+$/, "")}/sourceStore`).catch(() => null);
+        if (parentStore) order = { ...o, sourceStore: parentStore };
+      }
+      if (ownsOrder(order)) out[id] = o;
+    }
+    return out;
   } catch (e) {
     if (!/index not defined/i.test(String(e?.message || e))) throw e;
     ctx.summary.missingIndex.add(child);
@@ -114,6 +140,11 @@ export async function runOrdersPoll(deps) {
   // Escalation (escalate.mjs) raises requests staff see: only with the feeds
   // on, and never while Junid's kill switch says off.
   ctx.escalate = ctx.enabled && (await get(`${ONLINE_ORDERS_CONFIG_PATH}/escalationOff`)) !== true;
+  // NEVER for Concrete. Escalation can raise refill requests, and Junid's rule
+  // is that only the scan raises a request (CLAUDE.md). Concrete orders are
+  // pulled in, held, routed and packed like Marathon's; a short line is left
+  // for staff to see, not escalated.
+  if (!IS_MARATHON) ctx.escalate = false;
 
   // ── 1. PULL ────────────────────────────────────────────────────────────────
   const meta = (await get(META_PATH)) || {};
@@ -335,7 +366,7 @@ async function buildIngestedOrder(ctx, id, node) {
     for (const piece of routed[k]) lines.push(buildLine({ index: lines.length, item, resolved: r, piece }));
     k++;
   });
-  return buildOrder({ node, lines, nowMs: ctx.now });
+  return buildOrder({ node, lines, nowMs: ctx.now, store: STORE.key });
 }
 
 /**
@@ -347,9 +378,9 @@ async function buildIngestedOrder(ctx, id, node) {
 async function resolveVariant(ctx, variantGid, productGid, variantTitle) {
   const { get } = ctx;
   if (!variantGid || !productGid) return { reason: "a custom or deleted Shopify item with no product behind it" };
-  const pid = await get(`shopify_sync/_claims/${numericId(productGid)}`);
+  const pid = await get(`${SYNC_PATH}/_claims/${numericId(productGid)}`);
   if (typeof pid !== "string" || !pid) return { reason: `Shopify product ${numericId(productGid)} is not linked to a product in the app` };
-  const variants = (await get(`shopify_sync/${pid}/variants`)) || {};
+  const variants = (await get(`${SYNC_PATH}/${pid}/variants`)) || {};
   const mapKey = Object.keys(variants).find((key) => variants[key]?.shopifyVariantId === variantGid);
   if (!mapKey) return { reason: `size "${variantTitle || "?"}" is not linked to a size of ${pid} in the app` };
   const product = await get(`products/${pid}`);
@@ -805,7 +836,7 @@ async function syncHolds(ctx, id, order) {
     const have = await ctx.get(path);
     const row = want[key] || null;
     if (sameHold(have, row)) continue;
-    await db.ref(path).set(row ? { ...row, at: now } : null);
+    await db.ref(path).set(row ? { ...row, ...(IS_MARATHON ? {} : { store: STORE.key }), at: now } : null);
     touched.add(key);
   }
   if (touched.size && Object.keys(want).length) {
@@ -820,7 +851,7 @@ async function syncHolds(ctx, id, order) {
   // The reconciler pushes a product when its dirty marker moves — so a hold
   // that appears or goes reaches Shopify on this same tick's reconcile.
   for (const pid of new Set([...touched].map((k) => k.split("/")[0]))) {
-    await db.ref(`${DIRTY_PATH}/${pid}`).set(ctx.increment(1));
+    for (const dirty of ALL_DIRTY_PATHS) await db.ref(`${dirty}/${pid}`).set(ctx.increment(1));
   }
   ctx.summary.holds += touched.size;
 }

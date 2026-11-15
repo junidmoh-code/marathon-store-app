@@ -32,6 +32,7 @@
 // Writes: Shopify collection membership ONLY (productUpdate collectionsToJoin /
 // collectionsToLeave). No RTDB writes at all — not /shopify_publish, not
 // /shopify_sync. Nothing is created, archived, deleted or unpublished.
+import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
@@ -137,7 +138,7 @@ const confirmedOn = (n) => n?.state === "live" && n?.liveState === "on";
 // A pid with no publish node reads as not-confirmed-ON, so it can only ever
 // LEAVE collections, never join one.
 const publishNodes = await readAllPublishNodes(db);
-const syncNodes = (await db.ref("shopify_sync").get()).val() || {};
+const syncNodes = (await db.ref(SYNC_PATH).get()).val() || {};
 const pids = [...new Set([
   ...Object.keys(publishNodes),
   ...Object.keys(syncNodes).filter(isProductRecordKey),   // skips _collections, _reconcile, _claims
@@ -152,14 +153,14 @@ const results = [];
 for (const pid of pids) {
   assertSafeSegment(pid, "productId");
 
-  const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
+  const mapNode = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
   const gid = mapNode?.shopifyProductId;
   // Declared out here so a throw inside the try still reports a usable name.
   let name = pid;
   // The publish node is read LATER, after Shopify — see the loop body. Only the
   // no-mapping branch needs it early, and it re-reads for itself.
   if (!gid) {
-    const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    const node = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
     const live = confirmedOn(node);
     name = node?.cleanName || pid;
     // Nothing of ours exists on Shopify for this record, so there is no
@@ -185,7 +186,7 @@ for (const pid of pids) {
     // is visible in the membership; anything it does after cannot be in the
     // `leave` list, because `leave` is computed from that same earlier read.
     const { collections, published, status } = await readProductCollections(graphql, gid, onlinePublicationId);
-    const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    const node = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
     const live = confirmedOn(node);
     name = node?.cleanName || pid;
 

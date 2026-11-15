@@ -34,10 +34,11 @@
 // `_collections` cannot collide with a product entry: product ids are "p" +
 // digits (src/App.jsx), and idMap.mjs's claim transaction only ever inspects a
 // child's `shopifyProductId`, which this subtree does not have at its top level.
+import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { COLLECTIONS, COLLECTION_BY_KEY, CATEGORY_MAP, validateCollectionPayload, CURRENCY } from "./collectionMap.mjs";
 
-export const COLLECTIONS_NODE = "shopify_sync/_collections";
+export const COLLECTIONS_NODE = `${SYNC_PATH}/_collections`;
 
 // THE COLLECTION BODY IS EMPTY, ALWAYS. Junid does not want a paragraph on his
 // category pages (owner decision 2026-08-19) — the heading says what the
