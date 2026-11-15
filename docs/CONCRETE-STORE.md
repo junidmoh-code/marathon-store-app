@@ -51,7 +51,78 @@ Helper: `src/utils/concreteListing.js` (`isOnConcrete`, `buildConcreteUpdate`,
     "$other":          { ".validate": true }
   }
 },
-"shopify_sync_concrete": { ".read": false, ".write": false },
-"shopify_inventory_dirty_concrete": { ".read": false, ".write": false },
-"online_orders_meta_concrete": { ".read": false, ".write": false },
+"concrete_house_style": {
+  ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+  ".indexOn": ["status"],
+  "$pid": {
+    ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && ((auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com') || root.child('users').child(auth.uid).child('stockRole').val() === 'admin' || root.child('users').child(auth.uid).child('permFlags').child('shopify_publish').val() === true)",
+    "status": { ".validate": "newData.isString() && newData.val().matches(/^(queued|running|awaiting_approval|approved|rejected|failed)$/)" }
+  }
+},
 ```
+
+`shopify_sync_concrete`, `shopify_inventory_dirty_concrete`,
+`online_orders_meta_concrete`, `shopify_pending_sales` and
+`shopify_fanout_stats` are Admin-SDK-only: no rule is needed (no rule = denied
+to every browser), the same as `shopify_sync` effectively is.
+
+### 3. Inside `"config"` — a sibling of `"shopify"`
+
+```json
+"concrete_house_style": {
+  ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && ((auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com') || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')"
+}
+```
+
+### 4. Storage rules (Firebase console → Storage → Rules) — inside `match /b/{bucket}/o`
+
+The repo's `storage.rules` has drifted from the live rules too (live has a
+`tv_ads` block and Jafer on `aiStudio`), so it is NOT deployed. Paste:
+
+```
+    // Concrete house-style reference photos. Public read (the Mac mini worker
+    // fetches them by URL); write = the owners (Storage rules cannot read
+    // stockRole from the database).
+    match /concrete_style_refs/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null
+                   && (request.auth.token.email == "gunidmoh@gmail.com" || request.auth.token.email == "jafermohammed340@gmail.com");
+    }
+```
+
+## Concrete store credentials (until these exist the Concrete leg is OFF)
+
+The runner logs `concrete: credentials missing` and does nothing for Concrete.
+
+1. Go to https://dev.shopify.com/dashboard → the same organisation as
+   "Marathon Catalogue Sync" → **Create app** → name it "Concrete Catalogue Sync".
+2. **Versions → Create version**. Access scopes — the same as Marathon
+   Catalogue Sync plus orders: `read_products, write_products,
+   read_inventory, write_inventory, read_locations, read_publications,
+   write_publications, read_orders, write_merchant_managed_fulfillment_orders,
+   read_merchant_managed_fulfillment_orders, write_files, read_files`.
+   API version 2026-07. Release the version.
+3. **Home → Install app** → choose the store **Concrete World
+   (g2m9cm-9q.myshopify.com)** → Install.
+4. **Settings** → copy **Client ID** and **Client secret**.
+5. On the Mac mini, add two lines to `~/marathon-store-app/.env`:
+   ```
+   CONCRETE_SHOPIFY_CLIENT_ID=<client id>
+   CONCRETE_SHOPIFY_CLIENT_SECRET=<client secret>
+   ```
+6. Nothing to restart: the next reconcile tick (≤ 2 min, trading hours)
+   recreates the collections on Concrete, then publishes, and the
+   `com.marathon.stockfanout.concrete` agent picks the credentials up within
+   an hour (or `launchctl kickstart -k gui/501/com.marathon.stockfanout.concrete`).
+   In Concrete's admin, make sure the store has ONE location (339C Monty
+   Naicker Road) — the stock push refuses a store with two.
+
+## Moving parts
+
+| piece | where | cadence |
+|---|---|---|
+| Concrete publish/stock/price/media | `concrete-leg.mjs` from `reconcile-runner.mjs` | every reconcile tick, own processes, own log `logs/concrete-reconcile.log` |
+| Concrete website orders → POS | `orders-poll.mjs` with `SHOPIFY_STORE=concrete` | same tick; `sourceStore: "concrete"`; escalation OFF |
+| cross-store stock push | `stock-fanout.mjs` × 2 (`com.marathon.stockfanout.{marathon,concrete}`) | event-driven (seconds), all hours |
+| house-style generation | `scripts/concrete/house-style-worker.mjs` (`com.marathon.concretestyle`) | every 30 s, only queued rows |
+

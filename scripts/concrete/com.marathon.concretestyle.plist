@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Concrete house-style generator (queue worker). Re-runs every 30 s; a pass
+  with nothing queued is one small RTDB query and exits. Generation is paid
+  Gemini, but only for rows Junid queued after the batch confirm in the app.
+  Firebase Admin uses the gcloud ADC on the mini (the reconciler SA reads
+  secrets only and cannot write Storage), GEMINI_API_KEY comes from Secret
+  Manager through that same gcloud.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.concretestyle</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/concrete/house-style-worker.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/concrete-style.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/concrete-style.err.log</string>
+</dict>
+</plist>

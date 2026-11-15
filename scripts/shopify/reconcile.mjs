@@ -778,6 +778,22 @@ for (const { pid, want } of capped) {
     // price-record refusal below — an intent written any other way must not
     // reach the storefront.
     if (!IS_MARATHON && product.listOnConcrete !== true) { await refuse(pid, "not marked for Concrete (listOnConcrete is off) — mark it in Product Admin → All products"); continue; }
+    // CONCRETE HOUSE STYLE: an APPROVED studio photo is the Concrete listing's
+    // primary photo. Approving in the app writes it into this node's media
+    // list when the node already exists; a product approved BEFORE its first
+    // publish has no list yet, so the approved image is put first here, in
+    // memory only, with the record's own photos after it. Never on Marathon.
+    if (!IS_MARATHON && fresh && !fresh.photos && !fresh.media) {
+      try {
+        const hs = (await db.ref(`concrete_house_style/${pid}`).get()).val();
+        if (hs?.status === "approved" && typeof hs.url === "string" && hs.url) {
+          const recordPhotos = [product.photoUrl, ...(Array.isArray(product.gallery) ? product.gallery : [])].filter((u) => typeof u === "string" && u && u !== hs.url);
+          fresh.photos = [hs.url, ...recordPhotos];
+        }
+      } catch (e) {
+        console.error(`  ⚠ ${pid}: house-style photo unreadable (${String(e?.message || e)}) — publishing the record's photos`);
+      }
+    }
     // NOT MERCHANDISE. This is the enforcement point, not the UI: the page's
     // filter stops a price record being nominated, but an intent written
     // before that filter shipped — or by a script, or by hand in the console —
