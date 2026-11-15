@@ -668,7 +668,12 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
   const scopes = ctx.scopes ? await ctx.scopes() : new Set();
   const need = kind === "credit" ? CREDIT_SCOPE : REFUND_SCOPE;
   let slot;
-  if (!scopes.has(need)) {
+  // A cancelled task that MAY have moved money (a lost Shopify answer, a payer that died, an unknown state) and is not yet
+  // settled by Junid's word: never paid automatically on top of it (review of #909, 1) — his by-hand task, with the reason.
+  const maybeMoved = Object.values(line?.resolution?.moneyVoided || {}).some((v) => v && typeof v === "object" && !v.settledAfterVoid && Number(v.amountCents) > 0 && (v.state === "claimed" || (v.state === "failed" && v.ambiguous !== false) || !["manual", "pending", "failed", "done"].includes(String(v.state))));
+  if (maybeMoved) {
+    slot = { state: "manual", via: "junid_email", heldBecause: "an earlier cancelled task may have gone through" };
+  } else if (!scopes.has(need)) {
     slot = { state: "manual", via: "junid_email", missingScope: need };
   } else {
     let r;

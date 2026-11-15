@@ -93,7 +93,7 @@ export async function applySwapRequests(ctx, id, order) {
     // The difference BEFORE the request says applied: a crash in between
     // resumes above and settles again (money() finds its own slot).
     await settleDifference(ctx, id, { ...req, id: rid }, out);
-    await mailLineMoneyChanges(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`).catch(() => null));
+    await mailLineMoneyChanges(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`).catch(() => null)).catch((e) => ctx.log(`  ✗ ${orderLabel(order)}: money email check failed (${String(e?.message || e)}); retried next tick`));
     await ctx.db.ref(path).update(clean({ state: SWAP_REQUEST.APPLIED, summary: out.summary, appliedAt: ctx.now, creditCents: out.creditCents || 0, extraCents: out.extraCents || 0, returns: out.returns?.length || 0 }));
   }
   return applied;
@@ -144,7 +144,8 @@ async function settleDifference(ctx, id, req, out) {
 // A swap VOIDS an unsettled credit/refund task (core.mjs swapResolution → resolution.moneyVoided) and may find a credit
 // already given is now too big (resolution.owedToUs). Each is emailed to Junid ONCE, here, for every swap path (the POS,
 // Jamie's CLI, the agent): the poller's keep pass calls this for every open order. Nothing here blocks anything.
-const VOID_MAIL_STATES = new Set(["manual", "failed", "claimed", "pending"]);
+// A pending request Junid never saw, or a definite refusal, moved nothing and was never his to do: no email (review of #909, 4).
+const voidNeedsMail = (v) => v.state !== "pending" && !(v.state === "failed" && v.ambiguous === false);
 export async function mailLineMoneyChanges(ctx, id, order) {
   if (!order) return 0;
   let sent = 0;
@@ -157,7 +158,7 @@ export async function mailLineMoneyChanges(ctx, id, order) {
     if (!res || typeof res !== "object") continue;
     const base = `${ONLINE_ORDERS_PATH}/${id}/lines/${i}/resolution`;
     for (const [k, v] of Object.entries(res.moneyVoided || {})) {
-      if (!v || typeof v !== "object" || v.mailedAt || v.state === "done") continue;
+      if (!v || typeof v !== "object" || v.mailedAt || v.state === "done" || !voidNeedsMail(v)) continue;
       const amt = Math.max(0, Math.round(Number(v.amountCents) || 0));
       if (!amt) continue;
       if (!ctx.send) { ctx.log(`  ⚠ ${ref}: cancelled ${rands(amt)} ${v.kind || "money"} task NOT emailed (no mail sender); retried next tick`); continue; }
