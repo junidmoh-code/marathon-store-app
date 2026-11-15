@@ -400,7 +400,7 @@ export function useShopifyAwaitingCount(products, enabled) {
   }, [enabled, keys, hidden, products]);
 }
 
-export default function ShopifyPublishView({ products = [], onExit }) {
+export default function ShopifyPublishView({ products = [], onExit, topSlot = null, title = "SHOPIFY PUBLISHING" }) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   // Opens on Awaiting review — the work. "All" is gone with the categories,
@@ -1164,10 +1164,11 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         </div>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,.4)", letterSpacing: "0.5px" }}>Viewing as:</div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#4A7FFF", letterSpacing: "0.5px" }}>SHOPIFY PUBLISHING</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#4A7FFF", letterSpacing: "0.5px" }}>{title}</div>
         </div>
         <div style={{ width: 92 }} />
       </div>
+      {topSlot}
 
       {/* STICKY HEADER — search + state filter, nothing else */}
       <div style={{ position: "sticky", top: 0, zIndex: 20, background: "#000", padding: "10px 14px 12px", borderBottom: "1px solid rgba(255,255,255,.08)" }}>

@@ -97,7 +97,8 @@ import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard"
 import StockAuditView from "./components/stock/StockAuditView";
 import { stockAuditVisibleForViewer } from "./config/stockAudit";
 import DisplayRegistrationView from "./components/stock/DisplayRegistrationView";
-import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
+import { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
+import ShopifyPublishTabs from "./components/shopify/ShopifyPublishTabs";
 import SocialView from "./components/social/SocialView";
 import TvAdSettingsCard from "./components/TvAdSettingsCard";
 import { isCardHidden, isRoleHidden } from "./components/hiddenCards";
@@ -21383,7 +21384,7 @@ function AppInner() {
   // Shopify Publishing — the full-page review tab. Reads /shopify_publish in
   // partial slices only; writes only /shopify_publish (store-enforced).
   else if (role === ROLES.SHOPIFY_PUBLISH) view = shopifyRouteOpen
-    ? <ShopifyPublishView products={products} onExit={() => setRole(null)} />
+    ? <ShopifyPublishTabs products={products} onExit={() => setRole(null)} />
     : null;
   // Social — the content engine. Reads /social_posts in bounded per-status
   // queries and /social_style_refs one page at a time; writes only those two

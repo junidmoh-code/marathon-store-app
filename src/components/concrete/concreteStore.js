@@ -9,7 +9,7 @@ import { ref, update, get, query, orderByChild, equalTo } from "firebase/databas
 import { database, auth } from "../../firebase";
 import { notePendingUpdate } from "../../offline/pendingWrites";
 import { serverNowMs } from "../../utils/serverTime";
-import { JUNID_EMAIL } from "../../config/superAdmins";
+import { isSuperAdmin } from "../../config/superAdmins";
 import { setOnConcrete, buildBrandConfirmUpdate, isOnConcrete, CONCRETE_PUBLISH_PATH } from "../../utils/concreteListing";
 
 // Bulk writes are chunked: one RTDB update carries every path in a chunk, and
@@ -21,9 +21,9 @@ async function applyRootUpdate(updates) {
   try { notePendingUpdate(updates); } catch { /* the echo is a courtesy */ }
 }
 
-/** Junid or a stockRole admin — the identities Brand Check and verify belong to. */
+/** The owners or a stockRole admin — the identities Brand Check and verify belong to. */
 export function canVerifyBrand(user, permRecord) {
-  return user?.email === JUNID_EMAIL || permRecord?.stockRole === "admin";
+  return isSuperAdmin(user?.email) || permRecord?.stockRole === "admin";
 }
 
 /**

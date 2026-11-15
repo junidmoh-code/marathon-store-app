@@ -10,6 +10,7 @@
 // (appPhoto.browserPrimaryPhotoDeps in the app).
 import { photoUrlsOf, resolveMediaList } from "./publishShared";
 import { setPublishMedia, appendPublishMedia } from "./shopifyPublishStore";
+import { publishTarget } from "./publishTarget.js";
 import { setShopifyPrimaryPhoto } from "./primaryPhotoCore";
 
 const primaryOf = (node, product) => photoUrlsOf(resolveMediaList(node, product).items)[0] || null;
@@ -29,6 +30,10 @@ export async function commitPublishMedia(product, node, op, items, deps) {
   if (!res?.ok) return { res, app: null };
   const newPrimary = primaryOf(res.node, product);
   if (!newPrimary || newPrimary === oldPrimary) return { res, app: { ok: true, changed: false } };
+  // CONCRETE NEVER MOVES THE APP PHOTO. The Concrete store's publishing photo
+  // (its house-style photo, or any reorder on that tab) is a Concrete-only
+  // choice: the product's app photo — and so Marathon's listing — is untouched.
+  if (publishTarget() !== "marathon") return { res, app: { ok: true, changed: false, reason: "concrete-only" } };
   const args = { product, oldPrimary, newPrimary };
   let app = await setShopifyPrimaryPhoto(product.id, args, deps);
   if (!app.ok) app = await setShopifyPrimaryPhoto(product.id, args, deps);
