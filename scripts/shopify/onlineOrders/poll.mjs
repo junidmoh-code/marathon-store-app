@@ -59,7 +59,7 @@ import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs
 import { fulfilParcel } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 import { costAlertMail, costAlertThreshold } from "../../shipping/costAlert.mjs";
-import { applySwapRequests } from "./swapRequests.mjs";
+import { applySwapRequests, mailLineMoneyChanges } from "./swapRequests.mjs";
 import { applyOrderNowRequests, clearAttentionIfSettled } from "./orderNowRequests.mjs";
 import { applyWaitingReroutes } from "./waitingReroute.mjs";
 import { applyAgentRepicks } from "./agentRepick.mjs";
@@ -186,6 +186,8 @@ export async function runOrdersPoll(deps) {
         if (order?.swapRequests && await applySwapRequests(ctx, id, order)) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
+        // A cancelled money task / a credit now too big (any swap path): Junid by email, once. Never blocks.
+        await mailLineMoneyChanges(ctx, id, order).catch((e) => log(`  ✗ ${id}: money email check failed (${String(e?.message || e)})`));
         // The POS "Order it now" (orderNowRequests.mjs): a grey line whose item
         // is back in stock goes to reroute, and maintainOrder below routes and
         // raises it exactly like a new order's line.

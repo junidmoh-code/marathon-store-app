@@ -76,6 +76,13 @@ export async function applySwapRequests(ctx, id, order) {
         out = { ok: false, refused: `the swap failed: ${String(e?.message || e).slice(0, 200)}` };
       }
     }
+    if (!out.ok && out.moneyBusy) {
+      // A payment for the line being made this very minute: NOT a refusal (money never blocks packing, Junid 15 Nov
+      // 2026). The request goes back to pending and is applied on a later tick; the packer sees "Replacing…".
+      await ctx.db.ref(path).update({ state: SWAP_REQUEST.PENDING, claimedAt: null, retriedAt: ctx.now });
+      ctx.log(`  … ${orderLabel(order)} line ${Number(req.lineIndex) + 1}: POS swap waits a tick (money in flight)`);
+      continue;
+    }
     if (!out.ok) {
       await ctx.db.ref(path).update({ state: SWAP_REQUEST.REFUSED, why: String(out.refused || out.summary || "refused").slice(0, 400), refusedAt: ctx.now });
       ctx.log(`  ✗ ${orderLabel(order)} line ${Number(req.lineIndex) + 1}: POS swap refused — ${out.refused}`);
@@ -86,6 +93,7 @@ export async function applySwapRequests(ctx, id, order) {
     // The difference BEFORE the request says applied: a crash in between
     // resumes above and settles again (money() finds its own slot).
     await settleDifference(ctx, id, { ...req, id: rid }, out);
+    await mailLineMoneyChanges(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`).catch(() => null));
     await ctx.db.ref(path).update(clean({ state: SWAP_REQUEST.APPLIED, summary: out.summary, appliedAt: ctx.now, creditCents: out.creditCents || 0, extraCents: out.extraCents || 0, returns: out.returns?.length || 0 }));
   }
   return applied;
@@ -130,4 +138,67 @@ async function settleDifference(ctx, id, req, out) {
       "Nothing was charged from the POS — please collect it (payment link or EFT).",
     ]);
   }
+}
+
+// ── Money after a swap, told to Junid by email — never on the packing screen (Junid, 15 Nov 2026) ───────────────────
+// A swap VOIDS an unsettled credit/refund task (core.mjs swapResolution → resolution.moneyVoided) and may find a credit
+// already given is now too big (resolution.owedToUs). Each is emailed to Junid ONCE, here, for every swap path (the POS,
+// Jamie's CLI, the agent): the poller's keep pass calls this for every open order. Nothing here blocks anything.
+const VOID_MAIL_STATES = new Set(["manual", "failed", "claimed", "pending"]);
+export async function mailLineMoneyChanges(ctx, id, order) {
+  if (!order) return 0;
+  let sent = 0;
+  const ref = orderLabel(order);
+  const num = order.orderNumber || String(order.shopifyName || "").replace(/\D/g, "") || id;
+  const lines = linesOf(order);
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const res = l?.resolution;
+    if (!res || typeof res !== "object") continue;
+    const base = `${ONLINE_ORDERS_PATH}/${id}/lines/${i}/resolution`;
+    for (const [k, v] of Object.entries(res.moneyVoided || {})) {
+      if (!v || typeof v !== "object" || v.mailedAt || v.state === "done") continue;
+      const amt = Math.max(0, Math.round(Number(v.amountCents) || 0));
+      if (!amt) continue;
+      if (!ctx.send) { ctx.log(`  ⚠ ${ref}: cancelled ${rands(amt)} ${v.kind || "money"} task NOT emailed (no mail sender); retried next tick`); continue; }
+      // Claimed once (a crash or a second poller never mails twice).
+      const claim = await ctx.db.ref(`${base}/moneyVoided/${k}/mailedAt`).transaction((cur) => (cur == null ? ctx.now : undefined));
+      if (!claim.committed) continue;
+      const nowMoney = res.money && typeof res.money === "object" ? ` A new ${rands(res.money.amountCents)} ${res.money.kind || "credit"} task replaces it (you get its own email).` : " Nothing is owed to the customer for this line now.";
+      const mayHaveGone = v.state === "manual"
+        ? `If you ALREADY did it in Shopify, tell Jamie "money #${num} went": it is then recorded and anything too much is recorded as owed back to us.`
+        : `It may or may not have gone through (${v.state}): check Shopify. If it went, tell Jamie "money #${num} went".`;
+      try {
+        await ctx.send({ subject: `Website order ${ref}: CANCEL the ${rands(amt)} ${v.kind || "money"} — not needed any more`, text: [
+          `Line ${i + 1}: the customer's item changed (now ${l.title || l.pid}${l.size && l.size !== "_" ? ` size ${l.size}` : ""}, ${rands((Number(l.unitPriceCents) || 0) * (Number(l.qty) || 1))}).`,
+          `The ${rands(amt)} ${v.kind || "money"} task (${v.why || "swap difference"}) is cancelled: do NOT do it.${nowMoney}`,
+          mayHaveGone,
+          "Packing was never held up by this.",
+        ].join("\n") });
+        sent++;
+      } catch (e) {
+        await ctx.db.ref(`${base}/moneyVoided/${k}/mailedAt`).set(null).catch(() => {});
+        ctx.log(`  ✗ ${ref}: cancelled-task email failed (${String(e?.message || e)}); retried next tick`);
+      }
+    }
+    const owed = res.owedToUs;
+    const owedCents = owed && typeof owed === "object" ? Math.max(0, Math.round(Number(owed.amountCents) || 0)) : 0;
+    if (owedCents > 0 && Number(res.owedToUsMailedCents) !== owedCents) {
+      if (!ctx.send) { ctx.log(`  ⚠ ${ref}: ${rands(owedCents)} owed back to us NOT emailed (no mail sender); retried next tick`); continue; }
+      const claim = await ctx.db.ref(`${base}/owedToUsMailedCents`).transaction((cur) => (Number(cur) === owedCents ? undefined : owedCents));
+      if (!claim.committed) continue;
+      try {
+        await ctx.send({ subject: `Website order ${ref}: ${rands(owedCents)} owed back to us (store credit given is too much now)`, text: [
+          `Line ${i + 1}: now ${l.title || l.pid}${l.size && l.size !== "_" ? ` size ${l.size}` : ""}, ${rands((Number(l.unitPriceCents) || 0) * (Number(l.qty) || 1))}.`,
+          `Store credit already given for this line is ${rands(owedCents)} more than the price difference now (credit = paid − what ships).`,
+          "Recorded on the order as owed back to us. The order packs as normal; how to recover it is your call.",
+        ].join("\n") });
+        sent++;
+      } catch (e) {
+        await ctx.db.ref(`${base}/owedToUsMailedCents`).set(null).catch(() => {});
+        ctx.log(`  ✗ ${ref}: owed-back email failed (${String(e?.message || e)}); retried next tick`);
+      }
+    }
+  }
+  return sent;
 }

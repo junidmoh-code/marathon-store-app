@@ -392,14 +392,14 @@ const clearHeld = (ctx, orderId, i) => lineTxn(ctx, orderId, i, (cur) => { const
 async function pick(ctx, key, orderId, order, i, line, offer, { held = false } = {}) {
   const judged = judgeSwap(line, offer, { now: ctx.now });
   if (!judged.ok && judged.why === "money_unclear") {
-    // An earlier credit or refund on this line has no known result (COMMIT 6 ledger): nothing is swapped on a guess. The
-    // pick is HELD on the conversation and tried again each run (review of #846, 4); Junid is told once.
+    // A payment for this line is being made this very minute: the pick is HELD and tried again next run.
     if (held) return; // still unclear: held, nothing new said
     const offers = Object.values(line.resolution?.conversation?.offers || {});
     const n = offers.findIndex((o) => o && o.pid === offer.pid && String(o.size ?? "") === String(offer.size ?? "")) + 1;
     await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, heldPick: { n: n || null, pid: offer.pid, at: ctx.now } } } } : undefined));
-    await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: not swapped yet, ${judged.note}` });
-    await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, NOT swapped yet`, [`Line: ${line.title}${line.size ? ` size ${line.size}` : ""}.`, `${judged.note}. Settle that first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go"); the pick is kept and goes on by itself once it is settled.`]);
+    // Only a payment in flight this minute holds it now (Junid, 15 Nov 2026): it goes on by itself next run; nothing for
+    // Junid to do by hand.
+    await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: not swapped yet, ${judged.note}; tried again next run` });
     return;
   }
   if (!judged.ok && judged.why === "refunded_full") {
