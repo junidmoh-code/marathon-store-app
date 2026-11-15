@@ -50,13 +50,24 @@ const OTHERS = Object.values(STORES).filter((s) => s.key !== STORE.key);
 // ── Which products are live on this store AND on another one ────────────────
 let dual = new Set();
 let ownLive = new Set();
+let warnedNoIndex = false;
 async function refreshDual() {
   // Cheap by construction (architect review, PR #911): "dual" is always a
   // subset of CONCRETE's live set, which is small. Only that node is queried;
   // Marathon's state is point-read for those pids. Marathon's /shopify_publish
   // (thousands of live bodies) is never scanned.
-  const concreteLive = Object.entries((await db.ref(STORES.concrete.publishPath).orderByChild("state").equalTo("live").get()).val() || {})
-    .filter(([, n]) => isLiveOn(n)).map(([p]) => p);
+  // Until the /shopify_publish_concrete rules block (with its .indexOn) is
+  // pasted, the indexed query is refused. That node only ever holds Concrete
+  // products — empty today — so a plain read is the fallback, not a crash.
+  let concreteNodes;
+  try {
+    concreteNodes = (await db.ref(STORES.concrete.publishPath).orderByChild("state").equalTo("live").get()).val() || {};
+  } catch (e) {
+    if (!/index not defined/i.test(String(e?.message || e))) throw e;
+    if (!warnedNoIndex) { log("⚠ /shopify_publish_concrete has no .indexOn yet (rules paste pending) — reading it whole; it holds Concrete products only"); warnedNoIndex = true; }
+    concreteNodes = (await db.ref(STORES.concrete.publishPath).get()).val() || {};
+  }
+  const concreteLive = Object.entries(concreteNodes).filter(([, n]) => isLiveOn(n)).map(([p]) => p);
   const both = [];
   for (const pid of concreteLive) {
     const [st, ls] = await Promise.all([get(`${STORES.marathon.publishPath}/${pid}/state`), get(`${STORES.marathon.publishPath}/${pid}/liveState`)]);
@@ -121,7 +132,7 @@ const onMarker = (snap) => {
 };
 const saleSeen = new Map(); // pid → the other store's sale time, for the lag line
 
-await refreshDual();
+try { await refreshDual(); } catch (e) { log(`⚠ first live-set read failed (${String(e?.message || e)}) — retried in 5 min`); }
 log(`${STORE.key}: fan-out started — ${ownLive.size} live here, ${dual.size} also live on ${OTHERS.map((s) => s.label).join("/")}`);
 db.ref(DIRTY_PATH).on("child_added", onMarker);
 db.ref(DIRTY_PATH).on("child_changed", onMarker);
