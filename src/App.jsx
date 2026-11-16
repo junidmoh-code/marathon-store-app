@@ -8843,7 +8843,15 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const [brand, setBrand] = useState("All");
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
-  const qvPrice = qv ? retailPriceOf(qv) : null;
+  // The quick view holds the product as it was when opened. Its PRICE is read
+  // from the current catalogue, so a price that lands while it is open (the
+  // change feed, or the one-row recheck) shows at once. If the product has
+  // left the catalogue, the opened copy stands. docs/ASSISTANT-NO-PRICE-SET.md
+  const qvPrice = useMemo(() => {
+    if (!qv) return null;
+    const fresh = (products || []).find((x) => x && x.id === qv.id);
+    return retailPriceOf(fresh || qv);
+  }, [qv, products]);
   // Generated studio tiles (staff wall): the popup's photo is a swipeable pair,
   // generated first, original second; the lightbox opens in the same order.
   const wallManifest = useWallManifest(wallMode);   // off the wall: no fetch, no timer
