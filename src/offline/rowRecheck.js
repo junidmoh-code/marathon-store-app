@@ -28,6 +28,8 @@
 import { LEG_BY_NODE, rowPath, storeKey } from "./nodes";
 import { bumpLegs } from "./mirrorSignal";
 
+// Key-order sensitive on purpose: the worst a reordered-but-equal row costs is
+// one redundant put and re-render, never a wrong value.
 const sameJson = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 /**
@@ -39,6 +41,9 @@ export async function recheckMirroredRows({ node, keys, db, read, bump = bumpLeg
   if (!leg || leg.depth !== 1) throw new Error(`recheckMirroredRows: ${node} is not a depth-1 mirrored node`);
   let checked = 0;
   const patched = [];
+  // The bump is in `finally`: rows patched before a later read throws are
+  // already in IndexedDB, and the screen must re-read them.
+  try {
   for (const key of keys ?? []) {
     if (typeof key !== "string" || key === "" || key.includes("/")) continue;
     const sk = storeKey(leg, key);
@@ -51,6 +56,8 @@ export async function recheckMirroredRows({ node, keys, db, read, bump = bumpLeg
     // Atomic: put only if the row is still exactly what was compared.
     if (await db.putIfUnchanged(leg.store, sk, before, server, sameJson)) patched.push(key);
   }
-  if (patched.length) bump([leg.name]);
+  } finally {
+    if (patched.length) bump([leg.name]);
+  }
   return { checked, patched: patched.length, keys: patched };
 }

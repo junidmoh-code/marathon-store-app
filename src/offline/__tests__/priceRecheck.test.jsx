@@ -226,6 +226,18 @@ describe("recheckMirroredRows", () => {
     },
   });
 
+  it("a read that throws part-way still bumps for the rows already patched", async () => {
+    const db = fakeDb({ p1: { id: "p1" }, p2: { id: "p2" } });
+    const bump = vi.fn();
+    const read = vi.fn(async (path) => {
+      if (path === "products/p2") throw new Error("offline");
+      return { id: "p1", retailPrice: 300 };
+    });
+    await expect(recheckMirroredRows({ node: "products", keys: ["p1", "p2"], db, read, bump })).rejects.toThrow("offline");
+    expect(db.rows.get("p1").retailPrice).toBe(300);
+    expect(bump).toHaveBeenCalledWith(["products"]);
+  });
+
   it("never ADDS a row the device does not hold (membership is the feed's)", async () => {
     const db = fakeDb({});
     const read = vi.fn(async () => ({ id: "p9", retailPrice: 300 }));
@@ -260,7 +272,7 @@ describe("recheckMirroredRows", () => {
   });
 });
 
-describe("the real mirror db: putIfUnchanged is one transaction", () => {
+describe("the real mirror db: putIfUnchanged compares before it puts", () => {
   it("puts when unchanged, refuses when the row moved or is absent", async () => {
     const db = await freshMirrorDb();
     await db.putPage("products", [{ key: "p1", value: { id: "p1" } }]);
@@ -295,7 +307,9 @@ describe("runPriceRecheck", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await runPriceRecheck([UNPRICED_6080], { serving: () => true, openDb: async () => ({}), recheck: fail });
     warn.mockRestore();
-    expect(idsToRecheck([UNPRICED_6080])).toEqual(["p6080"]);
+    // backed off for a minute, then asked again
+    expect(idsToRecheck([UNPRICED_6080])).toEqual([]);
+    expect(idsToRecheck([UNPRICED_6080], { now: Date.now() + 61_000 })).toEqual(["p6080"]);
   });
 
   it("caps a pass, and skips priced and legacy-priced products", () => {

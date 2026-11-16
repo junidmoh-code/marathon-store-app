@@ -8843,6 +8843,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const [brand, setBrand] = useState("All");
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
+  const qvPrice = qv ? retailPriceOf(qv) : null;
   // Generated studio tiles (staff wall): the popup's photo is a swipeable pair,
   // generated first, original second; the lightbox opens in the same order.
   const wallManifest = useWallManifest(wallMode);   // off the wall: no fetch, no timer
@@ -9422,8 +9423,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                 <div className="ad-svname">{qv.name}
                   {isDeactivated(qv) && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, letterSpacing: ".06em", padding: "2px 7px", borderRadius: 6, background: "rgba(150,160,190,.18)", border: "1px solid rgba(150,160,190,.4)", color: "#B9C0D4", verticalAlign: "middle" }}>DEACTIVATED</span>}
                 </div>
-                {retailPriceOf(qv) !== null
-                  ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(retailPriceOf(qv))}</div>
+                {qvPrice !== null
+                  ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(qvPrice)}</div>
                   : <div className="ad-noprice" style={{ marginTop: 6, color: "rgba(233,238,255,.35)", fontWeight: 700 }}>No price set</div>}
               </div>
               {flow === "order" ? (
@@ -12058,6 +12059,7 @@ function AssistantView({ products, onExit, orders = [] }) {
             // Every size out at this shop's own hub (Pine / Concrete only —
             // always false for Marathon PE / Trophy; see unavailableIds).
             const unavail = unavailableIds.has(p.id);
+            const cardPrice = retailPriceOf(p);   // docs/ASSISTANT-NO-PRICE-SET.md
             return (
               <div key={p.id} onClick={() => { resetSheet(); setSelected(p); }}
                    style={{ background: isSel ? "rgba(20,40,100,.25)" : "rgba(255,255,255,.03)",
@@ -12102,9 +12104,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                   <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>
                     {p.name}{isDeactivated(p) && <DeactivatedChip small />}
                   </div>
-                  {retailPriceOf(p) !== null ? (
+                  {cardPrice !== null ? (
                     <div className="mc-price-siri" style={{ fontSize:16, fontWeight:800, marginBottom:4, width:"fit-content" }}>
-                      R{retailPriceOf(p).toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
+                      R{cardPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
                     </div>
                   ) : (
                     <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>

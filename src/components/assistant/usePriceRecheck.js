@@ -29,15 +29,20 @@ export const PRICE_RECHECK_MAX_PER_PASS = 25;
 // still carries the price when one is set.
 const checked = new Set();
 const inFlight = new Set();
+// id -> ms of its last FAILED read. Retried, but not more often than this, so a
+// device offline through a busy feed does not re-read on every catalogue bump.
+const failedAt = new Map();
+export const PRICE_RECHECK_RETRY_MS = 60 * 1000;
 
 /** The ids a pass would re-check: unpriced, not yet checked, capped. Pure. */
-export function idsToRecheck(products, { done = checked, busy = inFlight, max = PRICE_RECHECK_MAX_PER_PASS } = {}) {
+export function idsToRecheck(products, { done = checked, busy = inFlight, max = PRICE_RECHECK_MAX_PER_PASS, now = Date.now() } = {}) {
   const out = [];
   for (const p of products ?? []) {
     if (out.length >= max) break;
     if (!p || typeof p.id !== "string" || !p.id) continue;
     if (retailPriceOf(p) !== null) continue;
     if (done.has(p.id) || busy.has(p.id)) continue;
+    if (now - (failedAt.get(p.id) ?? -Infinity) < PRICE_RECHECK_RETRY_MS) continue;
     out.push(p.id);
   }
   return out;
@@ -64,12 +69,14 @@ export async function runPriceRecheck(products, {
   try {
     const db = await openDb();
     const res = await recheck({ node: "products", keys: ids, db, read });
-    ids.forEach((id) => checked.add(id));
+    ids.forEach((id) => { checked.add(id); failedAt.delete(id); });
     return res;
   } catch (err) {
     // Not marked checked: a failed read (offline, timeout) is asked again on
     // the next pass, which runs when the catalogue next changes (any feed
     // page that touches /products, or a remount).
+    const at = Date.now();
+    ids.forEach((id) => failedAt.set(id, at));
     console.warn("price recheck: could not re-read", ids.length, "product(s):", err?.message || err);
     return { checked: 0, patched: 0, keys: [], error: true };
   } finally {
@@ -87,4 +94,5 @@ export function usePriceRecheck(products) {
 export function _resetPriceRecheckForTests() {
   checked.clear();
   inFlight.clear();
+  failedAt.clear();
 }
