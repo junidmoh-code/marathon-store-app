@@ -19,8 +19,11 @@
 //   · delete. A row that reads back null is left for the feed, which owns
 //     deletes and the census bookkeeping that goes with them;
 //   · move the feed cursor, or touch any meta;
-//   · overwrite a row the feed changed while the read was in flight (the local
-//     copy is compared before and after; if it moved, the feed is fresher).
+//   · add a row this device does not hold: membership is the feed's and the
+//     census's, and an added row would move a count nothing journalled;
+//   · overwrite a row the feed changed while the read was in flight. The
+//     compare and the put are ONE IndexedDB transaction (db.putIfUnchanged),
+//     so a feed page cannot commit between them.
 
 import { LEG_BY_NODE, rowPath, storeKey } from "./nodes";
 import { bumpLegs } from "./mirrorSignal";
@@ -40,14 +43,13 @@ export async function recheckMirroredRows({ node, keys, db, read, bump = bumpLeg
     if (typeof key !== "string" || key === "" || key.includes("/")) continue;
     const sk = storeKey(leg, key);
     const before = await db.get(leg.store, sk);
+    if (before === undefined) continue;                       // not held: the feed's to add
     const server = await read(rowPath(leg, key));
     checked += 1;
     if (server === null || server === undefined) continue;   // deletes are the feed's
     if (sameJson(before, server)) continue;
-    const now = await db.get(leg.store, sk);
-    if (!sameJson(now, before)) continue;                     // the feed moved it meanwhile
-    await db.putPage(leg.store, [{ key: sk, value: server }]);
-    patched.push(key);
+    // Atomic: put only if the row is still exactly what was compared.
+    if (await db.putIfUnchanged(leg.store, sk, before, server, sameJson)) patched.push(key);
   }
   if (patched.length) bump([leg.name]);
   return { checked, patched: patched.length, keys: patched };

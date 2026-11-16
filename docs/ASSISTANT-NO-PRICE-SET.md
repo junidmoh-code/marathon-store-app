@@ -87,8 +87,10 @@ mirror does.
 
 ### Why a device can stay stale indefinitely: the gap this fixes
 
-**(b) is the cause.** A device that missed those two records holds the
-pre-price row, and nothing ever corrects it:
+**(b) is the most likely cause.** (a) is ruled out by the code and the data.
+The server wrote the records. No device's local rows can be read from here, so
+it is not proven that a particular device missed them. What is proven is that
+a device which did miss them keeps the unpriced row indefinitely:
 
 - The only self-heal is the daily census
   (`functions/mirrorChanges/mirrorChanges.js:128-180`). It compares **row
@@ -113,12 +115,18 @@ depend on knowing which device it was.
 
 1. One reader, `retailPriceOf(p)` (`src/utils/retailPrice.js`): canonical
    `retailPrice`, then a defensive fallback to a legacy `price`. Every assistant
-   site above uses it.
+   site above uses it. Two visible changes: an order line for a product priced
+   0 now prints "—" instead of "R0". A product with only a legacy `price` would
+   show it on the assistant view, while checkout still reads `retailPrice`.
+   Today 0 products are in that state.
 2. A targeted backstop on the device, using the existing mechanism. When the
    assistant view would render a product as unpriced while serving the mirror,
-   it re-reads that **one row** (`products/{id}`) once per session. If the
-   server has a different row, it patches the local copy and bumps the
-   products leg (`mirrorSignal.bumpLegs`). That is the same signal the change
+   it re-reads that **one row** (`products/{id}`) once per tab session. It is
+   gated on the mirror's real verdict for the leg, not the serving hint. Rows the
+   device does not hold are skipped. If the
+   server has a different row, it patches the local copy in one
+   compare-and-put IndexedDB transaction (`db.putIfUnchanged`, so it can never
+   overwrite a fresher feed write) and bumps the products leg (`mirrorSignal.bumpLegs`). That is the same signal the change
    feed uses, so `useMirroredPath` re-reads and the price appears. Cost is one
    child read per unpriced product per session (1 in the whole catalogue
    today). No whole-node read, no polling.

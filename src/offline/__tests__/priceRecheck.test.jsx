@@ -218,6 +218,21 @@ describe("recheckMirroredRows", () => {
     rows: new Map(Object.entries(rows)),
     async get(store, k) { return this.rows.get(k); },
     async putPage(store, records) { for (const { key, value } of records) this.rows.set(key, value); },
+    async putIfUnchanged(store, k, expected, value, same) {
+      const cur = this.rows.get(k);
+      if (cur === undefined || !same(cur, expected)) return false;
+      this.rows.set(k, value);
+      return true;
+    },
+  });
+
+  it("never ADDS a row the device does not hold (membership is the feed's)", async () => {
+    const db = fakeDb({});
+    const read = vi.fn(async () => ({ id: "p9", retailPrice: 300 }));
+    const res = await recheckMirroredRows({ node: "products", keys: ["p9"], db, read, bump: vi.fn() });
+    expect(res.patched).toBe(0);
+    expect(read).not.toHaveBeenCalled();
+    expect(db.rows.has("p9")).toBe(false);
   });
 
   it("never deletes: a row that reads back null is left for the feed", async () => {
@@ -242,6 +257,28 @@ describe("recheckMirroredRows", () => {
     const read = vi.fn();
     await recheckMirroredRows({ node: "products", keys: ["a/b", "", 5], db: fakeDb({}), read, bump: vi.fn() });
     expect(read).not.toHaveBeenCalled();
+  });
+});
+
+describe("the real mirror db: putIfUnchanged is one transaction", () => {
+  it("puts when unchanged, refuses when the row moved or is absent", async () => {
+    const db = await freshMirrorDb();
+    await db.putPage("products", [{ key: "p1", value: { id: "p1" } }]);
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    expect(await db.putIfUnchanged("products", "p1", { id: "p2" }, { id: "p1", retailPrice: 1 }, same)).toBe(false);
+    expect(await db.putIfUnchanged("products", "p1", { id: "p1" }, { id: "p1", retailPrice: 300 }, same)).toBe(true);
+    expect((await db.get("products", "p1")).retailPrice).toBe(300);
+    expect(await db.putIfUnchanged("products", "nope", undefined, { id: "x" }, same)).toBe(false);
+    expect(await db.get("products", "nope")).toBeUndefined();
+  });
+});
+
+describe("the price save echoes on both write paths", () => {
+  it("applyPriceBatch and restorePriceBatch each call echoPriceWrite after their update()", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../../components/admin/priceStore.js", import.meta.url), "utf8");
+    const hits = src.match(/await rtdbUpdate\(ref\(database\), built\.updates\);\n\s*echoPriceWrite\(built\.updates\);/g) || [];
+    expect(hits).toHaveLength(2);
   });
 });
 
