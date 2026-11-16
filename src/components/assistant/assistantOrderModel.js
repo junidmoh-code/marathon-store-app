@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { orderSizeOut } from "../../utils/deactivation";
 import { orderSizesForDisplay } from "../../utils/sizeDisplayOrder";
 import { formatSize } from "../../utils/sizeLabel";
+import { retailPriceOf } from "../../utils/retailPrice";
 
 // How many product cards the desktop workspace builds at once. The till is a
 // Celeron J4125 with UHD 600 graphics: ~2.4k clothing cards (each with a photo,
@@ -63,8 +64,8 @@ export function groupRefillLines(cart) {
 export function orderLinesTotal(grouped) {
   return (grouped || []).reduce((s, g) => {
     if (g.dp) return s;
-    const price = g.product?.retailPrice;
-    return s + (typeof price === "number" && price > 0 ? price * g.qty : 0);
+    const price = retailPriceOf(g.product);
+    return s + (price !== null ? price * g.qty : 0);
   }, 0);
 }
 
