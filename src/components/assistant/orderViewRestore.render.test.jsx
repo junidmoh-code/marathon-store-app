@@ -301,7 +301,10 @@ describe("a price change while the quick view is open", () => {
     act(() => { r.root.findAll(n => n.props?.className === "ad-card")[0].props.onClick(); });
     const after = [{ ...JERSEY, retailPrice: 300 }];
     act(() => { r.update(<AssistantDesktop {...r.props} products={after} searchResults={after} />); });
-    const sizeBtn = r.root.findAll(n => n.type === "button" && n.children.join("").trim() === "M")[0];
+    // The size pill INSIDE the quick view (the card has its own quick-add pills).
+    const sv = r.root.findAll(n => n.type === "div" && n.props.className === "ad-sv")[0];
+    const sizeBtn = sv.findAll(n => n.type === "button" && "aria-pressed" in n.props)[0];
+    expect(sizeBtn).toBeTruthy();
     act(() => { sizeBtn.props.onClick({ stopPropagation() {}, preventDefault() {}, currentTarget: { classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, getBoundingClientRect: () => ({}) }, target: {} }); });
     act(() => { r.root.findAll(n => n.props?.className === "ad-svadd")[0].props.onClick({ stopPropagation() {}, preventDefault() {}, currentTarget: { classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, getBoundingClientRect: () => ({}) }, target: {} }); });
     expect(added).toHaveLength(1);

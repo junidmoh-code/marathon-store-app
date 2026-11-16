@@ -9602,7 +9602,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                     const canAdd = clothingOrder ? !!qvSize : (!!qvSize || dp);
                     const doAdd = () => {
                       if (!canAdd) return;
-                      if (dp) { onAddDisplayPartner(qvLive, qvSize || null); setQv(null); return; }
+                      if (dp) { onAddDisplayPartner(qv, qvSize || null); setQv(null); return; }
                       // Clothing: quickAdd caps at hub-minus-cart availability
                       // and returns what it actually added — a short add keeps
                       // the quick-view open with the explanatory note.
