@@ -8847,11 +8847,13 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   // from the current catalogue, so a price that lands while it is open (the
   // change feed, or the one-row recheck) shows at once. If the product has
   // left the catalogue, the opened copy stands. docs/ASSISTANT-NO-PRICE-SET.md
-  const qvPrice = useMemo(() => {
+  // `qvLive` is that current record, and it is also what an order add from the
+  // quick view hands on, so the order line carries the price on screen.
+  const qvLive = useMemo(() => {
     if (!qv) return null;
-    const fresh = (products || []).find((x) => x && x.id === qv.id);
-    return retailPriceOf(fresh || qv);
+    return (products || []).find((x) => x && x.id === qv.id) || qv;
   }, [qv, products]);
+  const qvPrice = qvLive ? retailPriceOf(qvLive) : null;
   // Generated studio tiles (staff wall): the popup's photo is a swipeable pair,
   // generated first, original second; the lightbox opens in the same order.
   const wallManifest = useWallManifest(wallMode);   // off the wall: no fetch, no timer
@@ -9600,11 +9602,11 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                     const canAdd = clothingOrder ? !!qvSize : (!!qvSize || dp);
                     const doAdd = () => {
                       if (!canAdd) return;
-                      if (dp) { onAddDisplayPartner(qv, qvSize || null); setQv(null); return; }
+                      if (dp) { onAddDisplayPartner(qvLive, qvSize || null); setQv(null); return; }
                       // Clothing: quickAdd caps at hub-minus-cart availability
                       // and returns what it actually added — a short add keeps
                       // the quick-view open with the explanatory note.
-                      const added = onQuickAdd(qv, qvSize, qvQty);
+                      const added = onQuickAdd(qvLive, qvSize, qvQty);
                       if (clothingOrder && added < qvQty) { setQvNa({ size: qvSize, left: 0 }); return; }
                       // A ZERO add (a sneaker size that went ✕ while the panel
                       // was open) must not close the panel as if it succeeded.
