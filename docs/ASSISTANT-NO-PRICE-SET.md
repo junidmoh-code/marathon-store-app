@@ -125,3 +125,24 @@ depend on knowing which device it was.
 3. The price save notes its write in the existing pending-write echo
    (`src/offline/pendingWrites.js`), so the saving device shows the new price
    at once.
+
+## Data check (16 Nov 2026)
+
+`scripts/audit/assistant-no-price-census.mjs`, read-only and bounded (a key
+range of `/price_history_index`, then batches and product fields by key). Full
+output: `docs/assistant-no-price-census-2026-11-16.txt`.
+
+- **Field mismatch: 0 products.** Across the 1,227 products touched by the
+  1,759 price batches of the last 30 days, none holds a price in the editor's
+  field that the old card logic would refuse. That fits the 6,216-row local
+  mirror check above (0 string prices, 0 legacy-only prices).
+- **First priced in the window: 943 products** (`retailPrice` went from not
+  set to a price): 747 by mc@, 167 by jafer@, the rest by others. The big days
+  were 30 Oct (378), 31 Oct (129), 1 Nov (80), 2 Nov (75) and 13 Nov (171,
+  6080 and 6082 among them). These are the rows a device that missed the
+  change record would still show as "No price set". Which devices missed which
+  records cannot be read from the server. With this fix, any such card heals
+  itself the first time it is on screen.
+
+No data was rewritten. The fix needs none: the server rows were right all
+along.
