@@ -75,6 +75,7 @@ function mount(over = {}) {
   };
   let r;
   act(() => { r = TestRenderer.create(<AssistantDesktop {...props} />); });
+  r.props = props;   // for a re-render with new props
   return r;
 }
 const text = (r) => JSON.stringify(r.toJSON());
@@ -270,5 +271,43 @@ describe("KEEP #5 — no-stock size pills", () => {
     expect(out.props.style.cursor).toBe("default");
     expect(out.props.style.textDecoration).toBe("line-through");
     expect(out.props.title).toBeUndefined();
+  });
+});
+
+// docs/ASSISTANT-NO-PRICE-SET.md — a price that lands while the quick view is open.
+describe("a price change while the quick view is open", () => {
+  it("the open quick view goes from 'No price set' to the new price without reopening", () => {
+    const JERSEY = { id: "p6080", name: "Manchester city soccer jersey black", brand: "", sizes: ["M"], productType: "clothing" };
+    const before = [JERSEY, SAMBA];
+    const r = mount({ products: before, searchResults: before });
+    act(() => { r.root.findAll(n => n.props?.className === "ad-card")[0].props.onClick(); });
+    const svPrice = () => r.root.findAll(n => n.type === "div" && (n.props.className === "ad-svprice" || n.props.className === "ad-noprice"))
+      .map(n => n.children.join(""));
+    expect(svPrice()).toEqual(["No price set"]);
+    const after = [{ ...JERSEY, retailPrice: 300, stockPrice: 250 }, SAMBA];
+    act(() => { r.update(<AssistantDesktop {...r.props} products={after} searchResults={after} />); });
+    expect(svPrice()).toEqual(["R300"]);
+    // …and the card under it agrees.
+    const card = r.root.findAll(n => n.props?.className === "ad-card")[0];
+    expect(JSON.stringify(card.findAll(n => n.props?.className === "ad-price").map(n => n.children))).toContain("R300");
+  });
+
+  it("an order add from the still-open quick view hands on the CURRENT record, with its price", () => {
+    const JERSEY = { id: "p6080", name: "Manchester city soccer jersey black", brand: "", sizes: ["M"], productType: "clothing" };
+    const added = [];
+    const before = [JERSEY];
+    const r = mount({ products: before, searchResults: before, mode: "clothing",
+      onQuickAdd: (p, size, qty) => { added.push({ p, size, qty }); return qty; } });
+    act(() => { r.root.findAll(n => n.props?.className === "ad-card")[0].props.onClick(); });
+    const after = [{ ...JERSEY, retailPrice: 300 }];
+    act(() => { r.update(<AssistantDesktop {...r.props} products={after} searchResults={after} />); });
+    // The size pill INSIDE the quick view (the card has its own quick-add pills).
+    const sv = r.root.findAll(n => n.type === "div" && n.props.className === "ad-sv")[0];
+    const sizeBtn = sv.findAll(n => n.type === "button" && "aria-pressed" in n.props)[0];
+    expect(sizeBtn).toBeTruthy();
+    act(() => { sizeBtn.props.onClick({ stopPropagation() {}, preventDefault() {}, currentTarget: { classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, getBoundingClientRect: () => ({}) }, target: {} }); });
+    act(() => { r.root.findAll(n => n.props?.className === "ad-svadd")[0].props.onClick({ stopPropagation() {}, preventDefault() {}, currentTarget: { classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, getBoundingClientRect: () => ({}) }, target: {} }); });
+    expect(added).toHaveLength(1);
+    expect(added[0].p.retailPrice).toBe(300);
   });
 });

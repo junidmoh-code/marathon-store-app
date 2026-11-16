@@ -146,6 +146,8 @@ import { isWallPreviewOn, isWallPreviewFromUrl, canTogglePreview, setWallPreview
 import WallAlternatives, { quietBlockLine, ALT_PANEL_MAX } from "./components/assistant/WallAlternatives.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
+import { retailPriceOf } from "./utils/retailPrice";
+import { usePriceRecheck } from "./components/assistant/usePriceRecheck";
 import { answerStyleCodeSibling, recordLabelCodes } from "./components/stock/hubCleanupStore";
 import { extractDominantColours } from "./utils/dominantColours";
 import { displaySendNeedsSize } from "./utils/displaySend";
@@ -8841,6 +8843,17 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const [brand, setBrand] = useState("All");
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
+  // The quick view holds the product as it was when opened. Its PRICE is read
+  // from the current catalogue, so a price that lands while it is open (the
+  // change feed, or the one-row recheck) shows at once. If the product has
+  // left the catalogue, the opened copy stands. docs/ASSISTANT-NO-PRICE-SET.md
+  // `qvLive` is that current record, and it is also what an order add from the
+  // quick view hands on, so the order line carries the price on screen.
+  const qvLive = useMemo(() => {
+    if (!qv) return null;
+    return (products || []).find((x) => x && x.id === qv.id) || qv;
+  }, [qv, products]);
+  const qvPrice = qvLive ? retailPriceOf(qvLive) : null;
   // Generated studio tiles (staff wall): the popup's photo is a swipeable pair,
   // generated first, original second; the lightbox opens in the same order.
   const wallManifest = useWallManifest(wallMode);   // off the wall: no fetch, no timer
@@ -8895,8 +8908,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
       ? results
       : results.filter(p => (brand === "Needs brand" ? !p.brand && p.brandFlag === "unrecognised"
         : brand === "Other" ? !p.brand && p.brandFlag !== "unrecognised" : p.brand === brand));
-    if (sort === "ph") list = [...list].sort((a, b) => (b.retailPrice || 0) - (a.retailPrice || 0));
-    else if (sort === "pl") list = [...list].sort((a, b) => (a.retailPrice || 0) - (b.retailPrice || 0));
+    if (sort === "ph") list = [...list].sort((a, b) => (retailPriceOf(b) || 0) - (retailPriceOf(a) || 0));
+    else if (sort === "pl") list = [...list].sort((a, b) => (retailPriceOf(a) || 0) - (retailPriceOf(b) || 0));
     else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
   }, [searchResults, catalog, brand, sort]);
@@ -9222,7 +9235,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           ) : (
             <div className="ad-grid">
               {visible.map(p => {
-                const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
+                const price = retailPriceOf(p);   // docs/ASSISTANT-NO-PRICE-SET.md
+                const priced = price !== null;
                 const szs = sizesOf(p);
                 return (
                   <article key={p.id} className="ad-card" tabIndex={0}
@@ -9262,7 +9276,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                         {isDeactivated(p) && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, letterSpacing: ".06em", padding: "2px 6px", borderRadius: 6, background: "rgba(150,160,190,.18)", border: "1px solid rgba(150,160,190,.4)", color: "#B9C0D4", verticalAlign: "middle" }}>DEACTIVATED</span>}
                       </div>
                       <div className="ad-crow">
-                        {priced ? <span className="ad-price">{fmtR(p.retailPrice)}</span> : <span className="ad-price no">No price set</span>}
+                        {priced ? <span className="ad-price">{fmtR(price)}</span> : <span className="ad-price no">No price set</span>}
                         <span className="ad-szn">{szs.length} size{szs.length !== 1 ? "s" : ""}</span>
                       </div>
                       {/* Order flow: hover reveals per-size quick-add. Refill flow:
@@ -9419,8 +9433,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                 <div className="ad-svname">{qv.name}
                   {isDeactivated(qv) && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, letterSpacing: ".06em", padding: "2px 7px", borderRadius: 6, background: "rgba(150,160,190,.18)", border: "1px solid rgba(150,160,190,.4)", color: "#B9C0D4", verticalAlign: "middle" }}>DEACTIVATED</span>}
                 </div>
-                {typeof qv.retailPrice === "number" && qv.retailPrice > 0
-                  ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(qv.retailPrice)}</div>
+                {qvPrice !== null
+                  ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(qvPrice)}</div>
                   : <div className="ad-noprice" style={{ marginTop: 6, color: "rgba(233,238,255,.35)", fontWeight: 700 }}>No price set</div>}
               </div>
               {flow === "order" ? (
@@ -9592,7 +9606,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                       // Clothing: quickAdd caps at hub-minus-cart availability
                       // and returns what it actually added — a short add keeps
                       // the quick-view open with the explanatory note.
-                      const added = onQuickAdd(qv, qvSize, qvQty);
+                      const added = onQuickAdd(qvLive, qvSize, qvQty);
                       if (clothingOrder && added < qvQty) { setQvNa({ size: qvSize, left: 0 }); return; }
                       // A ZERO add (a sneaker size that went ✕ while the panel
                       // was open) must not close the panel as if it succeeded.
@@ -10326,6 +10340,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // feeds BOTH the phone grid (`filtered` below) and the desktop overlay (which
   // takes `products={browse}` + `searchResults={filtered}`), so neither can drift.
   const browse = useMemo(() => (showDeactivated ? base : browsableProducts(base)), [base, showDeactivated]);
+  // A card about to say "No price set" while this device serves /products from
+  // its mirror: that one row is re-read once against the server, and patched if
+  // the mirror missed the price (docs/ASSISTANT-NO-PRICE-SET.md).
+  usePriceRecheck(base);
 
   // THE ORDERING PREDICATE, once. At a strict store `base` no longer contains a
   // deactivated product at all, so this can only ever fire on a cart line added
@@ -12051,6 +12069,7 @@ function AssistantView({ products, onExit, orders = [] }) {
             // Every size out at this shop's own hub (Pine / Concrete only —
             // always false for Marathon PE / Trophy; see unavailableIds).
             const unavail = unavailableIds.has(p.id);
+            const cardPrice = retailPriceOf(p);   // docs/ASSISTANT-NO-PRICE-SET.md
             return (
               <div key={p.id} onClick={() => { resetSheet(); setSelected(p); }}
                    style={{ background: isSel ? "rgba(20,40,100,.25)" : "rgba(255,255,255,.03)",
@@ -12095,9 +12114,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                   <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>
                     {p.name}{isDeactivated(p) && <DeactivatedChip small />}
                   </div>
-                  {typeof p.retailPrice === "number" && p.retailPrice > 0 ? (
+                  {cardPrice !== null ? (
                     <div className="mc-price-siri" style={{ fontSize:16, fontWeight:800, marginBottom:4, width:"fit-content" }}>
-                      R{p.retailPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
+                      R{cardPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
                     </div>
                   ) : (
                     <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>

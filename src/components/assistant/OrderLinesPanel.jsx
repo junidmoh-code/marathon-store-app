@@ -8,6 +8,7 @@
 
 import { formatSize } from "../../utils/sizeLabel";
 import { fmtR } from "./assistantOrderModel";
+import { retailPriceOf } from "../../utils/retailPrice";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 export default function OrderLinesPanel({ grouped, units, onRemoveOne, onQuickAdd, onAddDisplayPartner, onCheckout,
@@ -29,7 +30,7 @@ export default function OrderLinesPanel({ grouped, units, onRemoveOne, onQuickAd
               <div className="ad-lm">
                 {g.dp
                   ? <span style={{ color: "#9DBCFF" }}>Display Partner{g.size ? ` · Sz ${formatSize(g.size)}` : ""}</span>
-                  : `Size ${g.size === "Free Size" ? "OS" : formatSize(g.size)} · ${typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice) : "—"}`}
+                  : `Size ${g.size === "Free Size" ? "OS" : formatSize(g.size)} · ${retailPriceOf(g.product) !== null ? fmtR(retailPriceOf(g.product)) : "—"}`}
               </div>
               <div className="ad-step">
                 <button onClick={() => onRemoveOne(g.product.id, g.size, g.dp, g.pull)}>−</button>
@@ -40,7 +41,7 @@ export default function OrderLinesPanel({ grouped, units, onRemoveOne, onQuickAd
                   : <button onClick={() => g.dp ? onAddDisplayPartner(g.product, g.size) : onQuickAdd(g.product, g.size, 1)}>+</button>}
               </div>
             </div>
-            <div className="ad-lp">{g.dp ? "—" : (typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice * g.qty) : "—")}</div>
+            <div className="ad-lp">{g.dp ? "—" : (retailPriceOf(g.product) !== null ? fmtR(retailPriceOf(g.product) * g.qty) : "—")}</div>
           </div>
         ))}
       </div>
