@@ -24,6 +24,8 @@ export const blackFridayApi = {
   // Multi-select: one transaction per product. → { ok, done: [pid], refused: [{ pid, refusal }] }
   approveMany: (sigs) => set({ action: "approveMany", sigs }),
   rejectMany: (pids) => set({ action: "rejectMany", pids }),
+  // The multi-select, saved as Junid ticks ({ pid: sig }; {} clears it). list("main") returns it as `selection`.
+  selSave: (sigs, label = null) => set({ action: "selSave", sigs, ...(label ? { label } : {}) }),
   resetMany: (pids) => set({ action: "resetMany", pids }),
   // Undo: { pid: { prev, expectAt } } from an action's answer — each pick back to exactly what it was.
   undo: (items) => set({ action: "undo", items }),

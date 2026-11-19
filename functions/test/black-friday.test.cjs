@@ -425,3 +425,20 @@ test("Generate: a failed model call gives the product back unchanged", async () 
   assert.equal(ph.generating, undefined);
   assert.equal(ph.gens, undefined);
 });
+
+test("SELECTION is kept on the server as Junid ticks: saved, read back, replaced, cleared; bad input refused", async () => {
+  const db = seed();
+  const sigs = Object.fromEntries(Array.from({ length: 574 }, (_, i) => [`p${i}`, "current"]));
+  assert.deepEqual(await _internals.saveSelection(db, "junid", sigs, 100), { ok: true, saved: 574 });
+  const back = await _internals.loadSelection(db, "junid");
+  assert.equal(Object.keys(back.sigs).length, 574);
+  assert.equal(back.at, 100);
+  await _internals.saveSelection(db, "junid", { a: "current" }, 200);
+  assert.deepEqual((await _internals.loadSelection(db, "junid")).sigs, { a: "current" }, "replaced, never merged");
+  assert.equal(await _internals.loadSelection(db, "someone-else"), null, "per admin");
+  await _internals.saveSelection(db, "junid", {}, 300);
+  assert.equal(await _internals.loadSelection(db, "junid"), null, "empty clears it");
+  await assert.rejects(_internals.saveSelection(db, "junid", { "../x": "current" }, 1), /Which product/);
+  await assert.rejects(_internals.saveSelection(db, "junid", { a: "<script>" }, 1), /Which photo/);
+  await assert.rejects(_internals.saveSelection(db, null, { a: "current" }, 1), /Sign in/);
+});
