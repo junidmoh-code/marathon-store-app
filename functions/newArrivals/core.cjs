@@ -695,6 +695,8 @@ function postPlan(rows, max = SEND_MAX) {
  * wrote it ({ at, ready, missing[] }). Pure.
  */
 const POSTER_STALE_MS = 10 * 60 * 1000;
+// A Post-all request the Mac mini has not finished in this long is closed as expired (it never posts days later).
+const REQUEST_EXPIRY_MS = 2 * 60 * 60 * 1000;
 function postAllBlock({ poster, pause, approvedCount }, nowMs) {
   if (!(approvedCount > 0)) return "Nothing approved to post";
   if (!poster || !Number.isFinite(Number(poster.at))) return "The Mac mini poster has not reported in yet";
@@ -708,7 +710,7 @@ function postAllBlock({ poster, pause, approvedCount }, nowMs) {
 
 module.exports = {
   LIVE_TABS, APPROVED_LANES, WINDOW_DAYS, DAY_MS, liveTabOf, normalizeLiveTab, windowStartKey, uploadedAt,
-  DIVISIONS, SEND_MAX, divisionOf, postPlan, POSTER_STALE_MS, postAllBlock, stockPriceOf,
+  DIVISIONS, SEND_MAX, divisionOf, postPlan, POSTER_STALE_MS, REQUEST_EXPIRY_MS, postAllBlock, stockPriceOf,
   parseBucketCursor, bucketRank, REQUEST_STALE_MS, requestPending,
   currentGenUrl,
   checkerWrongRules, approveAction,

@@ -670,7 +670,16 @@ const newArrivalsUnapprove = onCall(callableOpts, async (request) => {
 // new_arrivals/post_requests/{key} for the Mac mini poster, which posts
 // exactly those items and marks the request done. Refused while the poster is
 // not ready, with the same reason the button shows.
-async function approvedNotPosted(db) {
+const APPROVED_TTL_MS = 30 * 1000;
+const approvedCache = new WeakMap(); // db → { at, v }
+async function approvedNotPosted(db, { fresh = false, nowMs = Date.now() } = {}) {
+  const hit = approvedCache.get(db);
+  if (!fresh && hit && nowMs - hit.at < APPROVED_TTL_MS) return hit.v;
+  const v = await readApprovedLanes(db);
+  approvedCache.set(db, { at: nowMs, v });
+  return v;
+}
+async function readApprovedLanes(db) {
   const keys = new Map();
   await Promise.all(core.APPROVED_LANES.map(async (s) => {
     const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().limitToLast(core.INDEX_CEILING).once("value");
@@ -682,7 +691,7 @@ async function approvedNotPosted(db) {
 }
 
 async function buildPlan(db, nowMs) {
-  const { laneOf, posted } = await approvedNotPosted(db);
+  const { laneOf, posted } = await approvedNotPosted(db, { fresh: true });
   const pids = [...laneOf.keys()].filter((p) => posted.get(p) == null);
   const locations = await stockLocations(db);
   const rows = [];
@@ -712,12 +721,22 @@ async function postAll(db, { dryRun = true } = {}, uid, nowMs) {
   const [poster, pause] = await Promise.all([val(db, `${core.ROOT}/poster/status`), pauseSwitch.readPause(db)]);
   const block = core.postAllBlock({ poster, pause, approvedCount: photos }, nowMs);
   if (block) throw new HttpsError("failed-precondition", block);
-  const open = await val(db, `${core.ROOT}/post_request_open`);
-  if (open) throw new HttpsError("failed-precondition", "A Post all is already on its way — wait for it to finish");
+  // ONE open request at a time, claimed by a transaction (two taps never both pass).
+  // A request the Mac mini has not finished within REQUEST_EXPIRY_MS is closed as
+  // expired — it never posts days later at a scheduled window.
   const key = db.ref(`${core.ROOT}/post_requests`).push().key;
+  let blocked = null;
+  let expired = null;
+  const claim = await db.ref(`${core.ROOT}/post_request_open`).transaction((cur) => {
+    blocked = null; expired = null;
+    if (cur && typeof cur === "object" && Number(cur.at) > nowMs - core.REQUEST_EXPIRY_MS) { blocked = "A Post all is already on its way — wait for it to finish"; return undefined; }
+    if (cur) expired = typeof cur === "object" ? cur.key : String(cur);
+    return { key, at: nowMs };
+  });
+  if (blocked || !claim.committed) throw new HttpsError("failed-precondition", blocked || "A Post all is already on its way — wait for it to finish");
   await writeRoot(db, {
     [`post_requests/${key}`]: { at: nowMs, by: uid || "unknown", status: "queued", posts, photos },
-    post_request_open: key,
+    ...(expired ? { [`post_requests/${expired}/status`]: "expired", [`post_requests/${expired}/endedAt`]: nowMs } : {}),
     ...await decisionPaths(db, posts[0]?.items[0]?.pid || "p0000000000", { at: nowMs, uid, item: null, action: "post-all" }),
   });
   return { dryRun: false, queued: key, posts, photos, skipped: plan.skipped };
@@ -778,7 +797,8 @@ async function listLive(db, tabAsked, { cursor = null, limit, group = null, nowM
   // New: the window, by key.
   const newLaneOf = new Map();
   await Promise.all(core.NEW_LANES.map(async (s) => {
-    const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().startAt(since).limitToFirst(core.INDEX_CEILING + 1).once("value");
+    // limitToLast: past the ceiling it is the OLDEST of the window that is cut, never today's uploads.
+    const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().startAt(since).limitToLast(core.INDEX_CEILING).once("value");
     for (const k of Object.keys(snap.val() || {})) if (!newLaneOf.has(k)) newLaneOf.set(k, s);
   }));
   const stock = await laneStock(db, [...newLaneOf.keys()], locations, nowMs);
@@ -795,7 +815,7 @@ async function listLive(db, tabAsked, { cursor = null, limit, group = null, nowM
   for (const k of newKeys) { groupCounts[groups.get(k)] += 1; if (!stock.get(k).priced) noStockPrice[groups.get(k)] += 1; }
 
   // Approved / Done: the approved lanes, split by the posted marker.
-  const { laneOf: apprLaneOf, posted } = await approvedNotPosted(db);
+  const { laneOf: apprLaneOf, posted } = await approvedNotPosted(db, { nowMs });
   const approvedKeys = [...apprLaneOf.keys()].filter((k) => posted.get(k) == null);
   const doneKeys = [...apprLaneOf.keys()].filter((k) => posted.get(k) != null);
   const tabCounts = { new: newKeys.length, approved: approvedKeys.length, done: doneKeys.length };
@@ -808,7 +828,8 @@ async function listLive(db, tabAsked, { cursor = null, limit, group = null, nowM
   let start = 0;
   if (after) {
     const i = ordered.indexOf(after);
-    start = i >= 0 ? i + 1 : (tab === "done" ? 0 : ordered.findIndex((k) => core.keyCmp(k, after) < 0));
+    // A posted item never leaves Done, so a Done cursor that is gone means the end — never page 1 again.
+    start = i >= 0 ? i + 1 : (tab === "done" ? ordered.length : ordered.findIndex((k) => core.keyCmp(k, after) < 0));
     if (start < 0) start = ordered.length;
   }
   const pageKeys = ordered.slice(start, start + n);

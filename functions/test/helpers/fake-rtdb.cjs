@@ -278,7 +278,12 @@ function makeFakeDb(initial = {}, hooks = {}) {
           if (hooks.beforeRead) await hooks.beforeRead(path, state);
           const v = readAt(state.root, path);
           if (!v || typeof v !== "object") return makeSnapshot(self.key, null);
-          const keys = rtdbKeyOrder(v).slice(-n);
+          // startAt / endAt bound the range first (inclusive, RTDB key order), as the real
+          // database does: orderByKey().startAt(k).limitToLast(n) is the last n FROM k.
+          const keys = rtdbKeyOrder(v)
+            .filter((k) => self._startAt === undefined || self._startAt === null || rtdbKeyCmp(k, self._startAt) >= 0)
+            .filter((k) => self._endAt === undefined || self._endAt === null || rtdbKeyCmp(k, self._endAt) <= 0)
+            .slice(-n);
           return makeSnapshot(self.key, keys.length ? Object.fromEntries(keys.map((k) => [k, v[k]])) : null);
         } }; },
       };

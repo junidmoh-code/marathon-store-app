@@ -159,8 +159,14 @@ test("Post all: a dry run plans and sends nothing; a real press is refused while
   const req = await read(db, `new_arrivals/post_requests/${real.queued}`);
   assert.equal(req.status, "queued");
   assert.equal(req.photos, 2);
-  assert.equal(await read(db, "new_arrivals/post_request_open"), real.queued);
+  assert.equal((await read(db, "new_arrivals/post_request_open")).key, real.queued);
   await assert.rejects(na.postAll(db, { dryRun: false }, "junid", NOW), /already on its way/);
+  // Not finished in 2 hours: closed as expired, and a new press goes through.
+  const later = NOW + core.REQUEST_EXPIRY_MS + 1;
+  await db.ref("new_arrivals/poster/status").set({ at: later - 1000, ready: true, missing: null });
+  const again = await na.postAll(db, { dryRun: false }, "junid", later);
+  assert.equal(await read(db, `new_arrivals/post_requests/${real.queued}/status`), "expired");
+  assert.equal((await read(db, "new_arrivals/post_request_open")).key, again.queued);
 });
 
 test("postAllBlock: the exact words on the button", () => {
