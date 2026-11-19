@@ -161,6 +161,32 @@ test("multi-select: approve many (each with the photo shown), reject many, and U
   await assert.rejects(_internals.many(db, "reset", Array.from({ length: 501 }, (_, i) => `p${i}`), "junid", 1), /Too many/);
 });
 
+test("UNDO fully reverses: an approved product rejected then undone is approved again with the SAME photo; a rejected one approved then undone is rejected again", async () => {
+  const db = seed();
+  await tap(db, { action: "approve", pid: "a" }, 1000);
+  const before = await pick(db, "a");
+  const rj = await _internals.many(db, "reject", ["a"], "junid", 2000);
+  await _internals.restore(db, rj.undo, "junid", 3000);
+  const after = await pick(db, "a");
+  assert.deepEqual({ ...after, rev: 0 }, { ...before, rev: 0 }, "the original approval (sig, shown, at) is back");
+  await tap(db, { action: "reject", pid: "b" }, 4000);
+  const ap = await tap(db, { action: "approve", pid: "b" }, 5000);
+  await _internals.restore(db, ap.undo, "junid", 6000);
+  assert.equal((await pick(db, "b")).state, "rejected");
+  const big = await _internals.approveBig(db, { a: "current" }, "junid", 7000);
+  assert.deepEqual(big.undo, {}, "a is already approved: nothing to undo");
+});
+
+test("UNDO never clobbers a newer change; approveMany needs the photo shown", async () => {
+  const db = seed();
+  const ap = await tap(db, { action: "approve", pid: "c" }, 1000);
+  await tap(db, { action: "reject", pid: "c" }, 2000); // a newer decision within the 6 s
+  const u = await _internals.restore(db, ap.undo, "junid", 3000);
+  assert.deepEqual(u.refused.map((x) => x.pid), ["c"]);
+  assert.equal((await pick(db, "c")).state, "rejected");
+  await assert.rejects(_internals.many(db, "approve", ["a"], "junid", 1), /photo the card showed/);
+});
+
 test("a category's AI look: established for sneakers and clothing; new kinds need Junid's approval", async () => {
   const db = seed();
   let v = await _internals.list(db);

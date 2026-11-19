@@ -42,17 +42,30 @@ export function rowActions(r) {
 
 // Long-press (iPhone Safari, Chrome, a mouse held down): 500 ms opens the quick popup.
 const LONG_PRESS_MS = 500;
+const MOVE_PX = 10;           // a finger that moves more than this is scrolling, not pressing
+const SWALLOW_MS = 700;       // the click that follows a long-press is swallowed
 export function useLongPress(onLong) {
   const timer = useRef(null);
-  const fired = useRef(false);
-  const start = () => { fired.current = false; clearTimeout(timer.current); timer.current = setTimeout(() => { fired.current = true; onLong(); }, LONG_PRESS_MS); };
+  const firedAt = useRef(0);
+  const lastTouch = useRef(0);
+  const origin = useRef(null);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const fire = () => { firedAt.current = Date.now(); onLong(); };
+  // A press that starts on a button is that button's tap — never a long-press.
+  const onButton = (e) => !!(e && e.target && e.target.closest && e.target.closest("button"));
+  const start = (e, x, y) => { if (onButton(e)) return; origin.current = { x, y }; clearTimeout(timer.current); timer.current = setTimeout(fire, LONG_PRESS_MS); };
   const stop = () => clearTimeout(timer.current);
   return {
-    onTouchStart: start, onTouchEnd: stop, onTouchMove: stop, onTouchCancel: stop,
-    onMouseDown: start, onMouseUp: stop, onMouseLeave: stop,
+    onTouchStart: (e) => { lastTouch.current = Date.now(); const t = e.touches && e.touches[0]; start(e, t ? t.clientX : 0, t ? t.clientY : 0); },
+    onTouchMove: (e) => { const t = e.touches && e.touches[0]; if (!t || !origin.current || Math.hypot(t.clientX - origin.current.x, t.clientY - origin.current.y) > MOVE_PX) stop(); },
+    onTouchEnd: (e) => { stop(); if (Date.now() - firedAt.current < SWALLOW_MS && e.cancelable) e.preventDefault(); },
+    onTouchCancel: stop,
+    // A mouse held down (desktop); the mouse events a phone emulates after a touch are ignored.
+    onMouseDown: (e) => { if (Date.now() - lastTouch.current > 800) start(e, e.clientX, e.clientY); },
+    onMouseUp: stop, onMouseLeave: stop,
     // The phone's own image menu (save / share / copy) never opens on a product.
-    onContextMenu: (e) => { e.preventDefault(); if (!fired.current) { fired.current = true; onLong(); } },
-    wasLong: () => fired.current,
+    onContextMenu: (e) => { e.preventDefault(); if (onButton(e)) return; if (Date.now() - firedAt.current > SWALLOW_MS) fire(); },
+    wasLong: () => Date.now() - firedAt.current < SWALLOW_MS,
   };
 }
 // No callout, no selection, no drag on product photos (iPhone's image menu suppressed).
@@ -219,15 +232,21 @@ export default function BlackFridayScreen({ api, onExit }) {
     try {
       const r = await fn();
       if (r && r.ok === false) setNote(r.refusal);
-      else if (undo) { const u = undo(r); if (u) showToast(u.text, u.reverse); }
-      else if (r && r.pid) patch(r.pid, r.row, r.rejected);
+      else {
+        if (r && r.pid) patch(r.pid, r.row, r.rejected);
+        if (undo) { const u = undo(r); if (u) showToast(u.text, u.reverse); }
+      }
       // The row was patched in place; only the main view (totals, Approved tab) is re-read — never the long under-13 list.
       if (reload || (r && r.pid)) load();
       if (reload && showUnder) loadUnder();
     } catch (e) { setNote(e?.message || String(e)); load(); }
     finally { setBusy(false); }
   };
-  const undoTo = (pids) => () => { setToast(null); run(() => api.resetMany(pids), { reload: true }); };
+  // Undo puts each product back to exactly what it was (and refuses one that changed since).
+  const undoWith = (items) => () => {
+    setToast(null);
+    run(async () => { const r = await api.undo(items); if (r && r.refused && r.refused.length) setNote(`${r.refused.length} not undone — changed since`); return { ok: true }; }, { reload: true });
+  };
   const sigOfRow = (r) => r.sig || (r.use === "generated" ? r.genId : "current");
   const generate = async (r) => {
     setGens((x) => ({ ...x, [r.pid]: "Starting…" }));
@@ -238,8 +257,8 @@ export default function BlackFridayScreen({ api, onExit }) {
   };
   const sec = (s) => (r) => ({ ...r, section: s });
   const on = {
-    approve: (r) => run(() => api.approve(r.pid, r.section, sigOfRow(r)), { undo: (x) => (x && !x.noop ? { text: `Approved ${r.name}`, reverse: undoTo([r.pid]) } : null) }),
-    reject: (r) => run(() => api.reject(r.pid, r.section), { undo: (x) => (x && !x.noop ? { text: `Rejected ${r.name}`, reverse: undoTo([r.pid]) } : null) }),
+    approve: (r) => run(() => api.approve(r.pid, r.section, sigOfRow(r)), { undo: (x) => (x && x.undo ? { text: `Approved ${r.name}`, reverse: undoWith(x.undo) } : null) }),
+    reject: (r) => run(() => api.reject(r.pid, r.section), { undo: (x) => (x && x.undo ? { text: `Rejected ${r.name}`, reverse: undoWith(x.undo) } : null) }),
     reset: (r) => run(() => api.reset(r.pid)),
     use: (r, use) => run(() => api.use(r.pid, use, use === "generated" ? r.genId : null, r.section)),
     generate,
@@ -251,14 +270,15 @@ export default function BlackFridayScreen({ api, onExit }) {
   const picked = [...selected.values()];
   const clearSel = () => setSelected(new Map());
   const bulkApprove = () => run(() => api.approveMany(Object.fromEntries(picked.map((r) => [r.pid, sigOfRow(r)]))), {
-    reload: true, undo: (x) => { clearSel(); if (x && x.refused && x.refused.length) setNote(x.refused.map((y) => `${y.pid}: ${y.refusal}`).join(" · ")); return x && x.done && x.done.length ? { text: `Approved ${x.done.length}`, reverse: undoTo(x.done) } : null; },
+    reload: true, undo: (x) => { clearSel(); if (x && x.refused && x.refused.length) setNote(x.refused.map((y) => `${y.pid}: ${y.refusal}`).join(" · ")); return x && x.done && x.done.length ? { text: `Approved ${x.done.length}`, reverse: undoWith(x.undo || {}) } : null; },
   });
   const bulkReject = () => run(() => api.rejectMany(picked.map((r) => r.pid)), {
-    reload: true, undo: (x) => { clearSel(); return x && x.done && x.done.length ? { text: `Rejected ${x.done.length}`, reverse: undoTo(x.done) } : null; },
+    reload: true, undo: (x) => { clearSel(); return x && x.done && x.done.length ? { text: `Rejected ${x.done.length}`, reverse: undoWith(x.undo || {}) } : null; },
   });
   // Generate for every selected product: queued, two at a time; AI spend updates as each lands.
   const bulkGenerate = async () => {
-    const queue = [...picked];
+    // Never the same product twice: skip any already queued or being made.
+    const queue = picked.filter((r) => !gens[r.pid] && !r.generating);
     clearSel();
     setGens((g) => ({ ...g, ...Object.fromEntries(queue.map((r) => [r.pid, "Queued…"])) }));
     const worker = async () => { while (queue.length) { await generate(queue.shift()); } };
@@ -277,7 +297,7 @@ export default function BlackFridayScreen({ api, onExit }) {
   const shared = { busy, gens, on, selectMode, selected };
   return (
     // Bottom padding: the selection bar and the Undo toast never cover the last row.
-    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: `14px 14px ${BOTTOM_ROOM}px` }}>
+    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: `14px 14px ${BOTTOM_ROOM}px`, paddingBottom: `calc(${BOTTOM_ROOM}px + env(safe-area-inset-bottom))` }}>
       <div style={{ maxWidth: 680, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <button onClick={onExit} style={{ ...bGray, minHeight: 40, padding: "0 12px" }} aria-label="Back">←</button>
@@ -293,8 +313,8 @@ export default function BlackFridayScreen({ api, onExit }) {
               <button data-testid="select-toggle" aria-pressed={selectMode} onClick={() => { setSelectMode(!selectMode); clearSel(); }} style={{ ...(selectMode ? bBlue : bGray), padding: "6px 12px", fontSize: 12 }}>{selectMode ? "Done" : "Select"}</button>
             </div>
             <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-              <button data-testid="tab-review" aria-pressed={tab === "review"} onClick={() => setTab("review")} style={{ ...(tab === "review" ? bBlue : bGray), flex: 1 }}>To review ({nReview})</button>
-              <button data-testid="tab-approved" aria-pressed={tab === "approved"} onClick={() => setTab("approved")} style={{ ...(tab === "approved" ? bBlue : bGray), flex: 1 }}>Approved ({nApproved})</button>
+              <button data-testid="tab-review" aria-pressed={tab === "review"} onClick={() => { setTab("review"); clearSel(); }} style={{ ...(tab === "review" ? bBlue : bGray), flex: 1 }}>To review ({nReview})</button>
+              <button data-testid="tab-approved" aria-pressed={tab === "approved"} onClick={() => { setTab("approved"); clearSel(); }} style={{ ...(tab === "approved" ? bBlue : bGray), flex: 1 }}>Approved ({nApproved})</button>
             </div>
             {note && <div data-testid="note" style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>{note}</div>}
             {tab === "approved" && (
@@ -305,11 +325,11 @@ export default function BlackFridayScreen({ api, onExit }) {
               </div>
             )}
             <Block testid="block-big" title="30+ on hand" rows={big} {...shared}>
-              {tab === "review" && bigToReview > 0 && <button data-testid="approve-big" disabled={busy} onClick={() => run(() => api.approveBig(Object.fromEntries(d.review.filter((x) => x.big).map((x) => [x.pid, sigOfRow(x)]))), { reload: true, undo: (x) => (x && x.pids && x.pids.length ? { text: `Approved ${x.pids.length} with 30+`, reverse: undoTo(x.pids) } : null) })} style={{ ...bGreen, padding: "6px 10px", fontSize: 12 }}>Approve all 30+ ({bigToReview})</button>}
+              {tab === "review" && bigToReview > 0 && <button data-testid="approve-big" disabled={busy} onClick={() => run(() => api.approveBig(Object.fromEntries(d.review.filter((x) => x.big).map((x) => [x.pid, sigOfRow(x)]))), { reload: true, undo: (x) => (x && x.pids && x.pids.length ? { text: `Approved ${x.pids.length} with 30+`, reverse: undoWith(x.undo || {}) } : null) })} style={{ ...bGreen, padding: "6px 10px", fontSize: 12 }}>Approve all 30+ ({bigToReview})</button>}
             </Block>
             <Block testid="block-mid" title="13–29 on hand" rows={mid} {...shared} />
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0" }}>
-              <input data-testid="show-under" type="checkbox" checked={showUnder} onChange={(e) => setShowUnder(e.target.checked)} /> Show under 13{t.underReview != null ? ` (${t.underReview} to review)` : d.meta.under ? ` (${d.meta.under})` : ""}
+              <input data-testid="show-under" type="checkbox" checked={showUnder} onChange={(e) => { setShowUnder(e.target.checked); clearSel(); }} /> Show under 13{t.underReview != null ? ` (${t.underReview} to review)` : d.meta.under ? ` (${d.meta.under})` : ""}
             </label>
             {showUnder && !under && <div style={{ color: GRAY, fontSize: 12 }}>Loading…</div>}
             <Block testid="block-under" title="Under 13" rows={underRows} {...shared} />
@@ -334,16 +354,16 @@ export default function BlackFridayScreen({ api, onExit }) {
         </div>
       )}
       {toast && (
-        <div data-testid="toast" style={{ position: "fixed", left: 12, right: 12, bottom: (selectMode && selected.size ? BAR_H : 0) + 16, margin: "0 auto", maxWidth: 520, background: "#232a3b", border: "1px solid rgba(255,255,255,.12)", borderRadius: 12, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, zIndex: 40, boxShadow: "0 6px 24px rgba(0,0,0,.4)" }}>
+        <div data-testid="toast" style={{ position: "fixed", left: 12, right: 12, bottom: `calc(${selectMode && selected.size ? BAR_H : 0}px + env(safe-area-inset-bottom) + 16px)`, margin: "0 auto", maxWidth: 520, background: "#232a3b", border: "1px solid rgba(255,255,255,.12)", borderRadius: 12, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, zIndex: 40, boxShadow: "0 6px 24px rgba(0,0,0,.4)" }}>
           <div style={{ flex: 1, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{toast.text}</div>
           <button data-testid="toast-undo" onClick={toast.undo} style={{ ...bGray, padding: "6px 12px", fontSize: 13, color: BLUE_L, fontWeight: 700 }}>Undo</button>
         </div>
       )}
       {selectMode && selected.size > 0 && (
-        <div data-testid="select-bar" style={{ position: "fixed", left: 0, right: 0, bottom: 0, height: BAR_H, background: "#11151f", borderTop: "1px solid rgba(255,255,255,.1)", display: "flex", alignItems: "center", gap: 6, padding: "0 12px", paddingBottom: "env(safe-area-inset-bottom)", zIndex: 30 }}>
+        <div data-testid="select-bar" style={{ position: "fixed", left: 0, right: 0, bottom: 0, height: `calc(${BAR_H}px + env(safe-area-inset-bottom))`, boxSizing: "border-box", background: "#11151f", borderTop: "1px solid rgba(255,255,255,.1)", display: "flex", alignItems: "center", gap: 6, padding: "0 12px", paddingBottom: "env(safe-area-inset-bottom)", zIndex: 30 }}>
           <div data-testid="select-count" style={{ fontSize: 13, fontWeight: 700, flex: 1 }}>{selected.size} selected</div>
           <button data-testid="bulk-approve" disabled={busy} onClick={bulkApprove} style={{ ...bGreen, padding: "8px 10px", fontSize: 12 }}>Approve</button>
-          <button data-testid="bulk-generate" disabled={busy} onClick={bulkGenerate} style={{ ...bBlue, padding: "8px 10px", fontSize: 12 }}>Generate</button>
+          <button data-testid="bulk-generate" disabled={busy || !picked.some((r) => !gens[r.pid] && !r.generating)} onClick={bulkGenerate} style={{ ...bBlue, padding: "8px 10px", fontSize: 12 }}>Generate</button>
           <button data-testid="bulk-reject" disabled={busy} onClick={bulkReject} style={{ ...bGray, padding: "8px 10px", fontSize: 12, color: RED }}>Reject</button>
           <button data-testid="bulk-clear" onClick={clearSel} style={{ ...bGray, padding: "8px 10px", fontSize: 12 }}>Clear</button>
         </div>

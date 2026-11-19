@@ -24,8 +24,9 @@ export const blackFridayApi = {
   // Multi-select: one transaction per product. → { ok, done: [pid], refused: [{ pid, refusal }] }
   approveMany: (sigs) => set({ action: "approveMany", sigs }),
   rejectMany: (pids) => set({ action: "rejectMany", pids }),
-  // Undo: back to To review.
   resetMany: (pids) => set({ action: "resetMany", pids }),
+  // Undo: { pid: { prev, expectAt } } from an action's answer — each pick back to exactly what it was.
+  undo: (items) => set({ action: "undo", items }),
   schedule: (schedule, { confirm = false } = {}) => set({ action: "schedule", schedule, confirm: confirm === true }),
   clearSchedule: () => set({ action: "clearSchedule" }),
   // One AI photo (streams { type: "status" | "thought" } while it works).

@@ -176,6 +176,17 @@ function resetMutator(out = {}) {
     return { name: cur.name || "" };
   };
 }
+/**
+ * Undo: put back exactly what the pick was before (prev), but only if it is
+ * still what the action wrote (its `at`) — an Undo never clobbers a newer change.
+ */
+function restoreMutator({ prev, expectAt }, out = {}) {
+  return (cur) => {
+    if (!cur || Number(cur.at) !== Number(expectAt)) { out.refusal = "it changed since — not undone"; return undefined; }
+    const { rev, ...was } = prev || {}; // eslint-disable-line no-unused-vars
+    return was.state ? was : { name: was.name || cur.name || "" };
+  };
+}
 /** Choose the photo a product posts with. On photos/{pid}. */
 function useMutator({ use, genId = null }, out = {}) {
   return (cur) => {
@@ -266,7 +277,7 @@ module.exports = {
   ROOT, PID_RE, GEN_RE, KIND_RE, SECTIONS, BIG_QTY, ALBUM_MAX, CAPTION_MAX, ESTABLISHED_STYLES, KIND_LABEL,
   priceLabel, priceKey, captionPreview, sigOf, isApproved, isRejected, postedFor,
   viewItem, orderRows, viewSection, totalsOf, planView,
-  approveMutator, rejectMutator, resetMutator, useMutator, withRev,
+  approveMutator, rejectMutator, resetMutator, restoreMutator, useMutator, withRev,
   toPost, albumsOf, planAlbums, fnv,
   ...sched,
 };
