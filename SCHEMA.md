@@ -1351,3 +1351,25 @@ or unreadable the built-in seed applies (`src/utils/networkRegistry.js`): Sectio
 
 New `/orders` and refill-request records carry `section` (of `destShop`). A record without it is legacy;
 readers derive it from `destShop`. Rules for all of the above: `docs/SECTIONS-RULES.md`.
+
+---
+
+## `/bf_campaign_2026` — Black Friday 2026 WhatsApp re-advertising (Junid, 19 Nov 2026)
+
+Server-only: no client rule. The card (`#black-friday`, super admin) goes
+through `bfCampaignList` / `bfCampaignSet` (`functions/blackFriday/`); the Mac
+mini (`marathon-group-poster` `bin/bf-build.mjs`, `bin/bf-post.mjs`) uses the
+Admin SDK. Small: one entry per stock-price group (~60).
+
+| Path | Writer | Shape |
+|---|---|---|
+| `meta` | Mac (05:00 build) | `{ builtAt, day, snapshotTakenAt, eligible, groupCount, keys[], noPhotoCount, noPhoto[{pid,name,qty}] (≤200), noPriceCount }` |
+| `groups/{key}` | Mac | `{ key, label, price (STOCK price), part, parts, caption, count, builtAt, items: { pid: { n, name, sizes, qty, photo } } }` — `key` is `R<price>` or `R<price>-part<N>` (cents as `_NN`) |
+| `state/{key}` | `bfCampaignSet` only | `{ approvedAt, approvedBy, approvedItems: {pid:true}, excluded: {pid:true} }` — absent = waiting, nothing unticked |
+| `posts/{key}` | Mac poster | `{ lap (= the approvedAt it posted), status: "posted"\|"sold out"\|"held", at, label, price, caption, posted: {pid:name}, dropped: {pid:{name,why}}, groupsReached }` |
+| `decisions/{push}` | `bfCampaignSet` | `{ at, by, action, key, pid?, lap? }` — one row per tap |
+
+Status on the card: waiting → approved → posted / partly sold out (a post
+with `dropped`) / sold out. A group approved again after it posted gets a new
+`approvedAt` (a new lap) and posts once more; otherwise never twice. The
+retail price is never stored here.
