@@ -126,15 +126,20 @@ function viewSection(node, section = "main", { postingPaused = false, nowMs = Da
 function totalsOf(n, picks, photos) {
   const m = n.meta || {};
   const idx = n.idx || null;
-  let approved = 0, rejected = 0;
+  // "To review" is MAIN only (13+ on hand, Junid 19 Nov): under-13 has its own count behind its switch.
+  let approved = 0, rejected = 0, mainTouched = 0, underTouched = 0;
   for (const [pid, p] of Object.entries(picks)) {
     if (idx && !idx[pid]) continue;
+    const touched = isRejected(p) || isApproved(p, photos[pid]);
     if (isRejected(p)) rejected += 1;
     else if (isApproved(p, photos[pid])) approved += 1;
+    if (touched) { if ((idx ? idx[pid] : (p.section === "under" ? "u" : "m")) === "u") underTouched += 1; else mainTouched += 1; }
   }
-  const all = (Number(m.main) || 0) + (Number(m.under) || 0);
   const spent = Number(n.stats && n.stats.spentZar) || 0;
-  return { review: Math.max(0, all - approved - rejected), approved, rejected, spentZar: Math.round(spent * 100) / 100 };
+  return {
+    review: Math.max(0, (Number(m.main) || 0) - mainTouched), underReview: Math.max(0, (Number(m.under) || 0) - underTouched),
+    approved, rejected, spentZar: Math.round(spent * 100) / 100,
+  };
 }
 
 const planView = (plan) => Object.entries(plan || {}).map(([album, e]) => ({ album, due: Number(e && e.due) || null, count: Object.keys((e && e.pids) || {}).length }))
@@ -169,6 +174,17 @@ function resetMutator(out = {}) {
   return (cur) => {
     if (!cur || !cur.state) { out.noop = true; return undefined; }
     return { name: cur.name || "" };
+  };
+}
+/**
+ * Undo: put back exactly what the pick was before (prev), but only if it is
+ * still what the action wrote (its `at`) — an Undo never clobbers a newer change.
+ */
+function restoreMutator({ prev, expectAt }, out = {}) {
+  return (cur) => {
+    if (!cur || Number(cur.at) !== Number(expectAt)) { out.refusal = "it changed since — not undone"; return undefined; }
+    const { rev, ...was } = prev || {}; // eslint-disable-line no-unused-vars
+    return was.state ? was : { name: was.name || cur.name || "" };
   };
 }
 /** Choose the photo a product posts with. On photos/{pid}. */
@@ -261,7 +277,7 @@ module.exports = {
   ROOT, PID_RE, GEN_RE, KIND_RE, SECTIONS, BIG_QTY, ALBUM_MAX, CAPTION_MAX, ESTABLISHED_STYLES, KIND_LABEL,
   priceLabel, priceKey, captionPreview, sigOf, isApproved, isRejected, postedFor,
   viewItem, orderRows, viewSection, totalsOf, planView,
-  approveMutator, rejectMutator, resetMutator, useMutator, withRev,
+  approveMutator, rejectMutator, resetMutator, restoreMutator, useMutator, withRev,
   toPost, albumsOf, planAlbums, fnv,
   ...sched,
 };

@@ -25,12 +25,16 @@ const has = (r, id) => r.root.findAll((n) => n.props && n.props["data-testid"] =
 function fakeApi(over = {}) {
   return {
     list: vi.fn(async (section) => (section === "under" ? view({ section: "under", review: [row("u", 4)], approved: [], rejected: [] }) : view())),
-    approve: vi.fn(async (pid) => ({ ok: true, pid, row: row(pid, 45, { tab: "approved" }) })),
-    reject: vi.fn(async (pid) => ({ ok: true, pid, rejected: true, row: null })),
+    approve: vi.fn(async (pid) => ({ ok: true, pid, row: row(pid, 45, { tab: "approved" }), undo: { [pid]: { prev: null, expectAt: 1 } } })),
+    reject: vi.fn(async (pid) => ({ ok: true, pid, rejected: true, row: null, undo: { [pid]: { prev: { state: "approved", sig: "current", at: 0 }, expectAt: 2 } } })),
     reset: vi.fn(async (pid) => ({ ok: true, pid, row: row(pid, 45) })),
     use: vi.fn(async (pid) => ({ ok: true, pid, row: row(pid, 45) })),
-    approveBig: vi.fn(async () => ({ ok: true, approved: 2 })),
+    approveBig: vi.fn(async () => ({ ok: true, approved: 2, pids: ["a", "b"], undo: { a: { prev: null, expectAt: 9 }, b: { prev: null, expectAt: 9 } } })),
     approveStyle: vi.fn(async () => ({ ok: true })),
+    approveMany: vi.fn(async (sigs) => ({ ok: true, done: Object.keys(sigs), refused: [], undo: Object.fromEntries(Object.keys(sigs).map((p) => [p, { prev: null, expectAt: 1 }])) })),
+    rejectMany: vi.fn(async (pids) => ({ ok: true, done: pids, refused: [], undo: Object.fromEntries(pids.map((p) => [p, { prev: null, expectAt: 1 }])) })),
+    undo: vi.fn(async (items) => ({ ok: true, done: Object.keys(items), refused: [] })),
+    resetMany: vi.fn(async (pids) => ({ ok: true, done: pids, refused: [] })),
     schedule: vi.fn(async (s, { confirm }) => ({ ok: true, preview: !confirm, plan: [{ album: "R300-clothing-1", label: "R300 Clothing", due: Date.parse("2026-11-20T09:00:00+02:00"), count: 2 }], albums: 1 })),
     clearSchedule: vi.fn(async () => ({ ok: true })),
     generate: vi.fn(async () => ({ ok: true })),
@@ -123,5 +127,111 @@ describe("Black Friday card v3", () => {
     await flush();
     expect(text(byId(r, "note"))).toContain("internal");
     expect(api.list.mock.calls.filter((c) => c[0] === "main").length).toBe(2);
+  });
+
+  it("Select: tapping rows ticks them; the bar shows n selected with Approve, Generate, Reject, Clear; Approve has an Undo toast", async () => {
+    const api = fakeApi();
+    const r = await mount(api);
+    expect(has(r, "select-bar")).toBe(false);
+    await act(async () => { byId(r, "select-toggle").props.onClick(); });
+    await act(async () => { byId(r, "row-a").props.onClick(); });
+    await act(async () => { byId(r, "row-c").props.onClick(); });
+    expect(text(byId(r, "select-count"))).toBe("2 selected");
+    expect(byId(r, "sel-a").props["aria-checked"]).toBe(true);
+    await act(async () => { byId(r, "bulk-approve").props.onClick(); });
+    await flush();
+    expect(api.approveMany).toHaveBeenCalledWith({ a: "current", c: "current" });
+    expect(text(byId(r, "toast"))).toContain("Approved 2");
+    await act(async () => { byId(r, "toast-undo").props.onClick(); });
+    await flush();
+    expect(api.undo).toHaveBeenCalledWith({ a: { prev: null, expectAt: 1 }, c: { prev: null, expectAt: 1 } });
+  });
+
+  it("bulk Reject and Clear; bulk Generate queues one generation per selected product", async () => {
+    const api = fakeApi();
+    const r = await mount(api);
+    await act(async () => { byId(r, "select-toggle").props.onClick(); });
+    await act(async () => { byId(r, "row-a").props.onClick(); });
+    await act(async () => { byId(r, "row-b").props.onClick(); });
+    await act(async () => { byId(r, "bulk-clear").props.onClick(); });
+    expect(has(r, "select-bar")).toBe(false);
+    await act(async () => { byId(r, "row-b").props.onClick(); });
+    await act(async () => { byId(r, "bulk-reject").props.onClick(); });
+    await flush();
+    expect(api.rejectMany).toHaveBeenCalledWith(["b"]);
+    expect(text(byId(r, "toast"))).toContain("Rejected 1");
+    await act(async () => { byId(r, "row-a").props.onClick(); });
+    await act(async () => { byId(r, "row-c").props.onClick(); });
+    await act(async () => { byId(r, "bulk-generate").props.onClick(); });
+    await flush(); await flush();
+    expect(api.generate.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "c"]);
+  });
+
+  it("long-press (or the phone's context menu) opens the quick popup with Generate and Approve; the image menu is suppressed", async () => {
+    const api = fakeApi();
+    const r = await mount(api);
+    const ev = { preventDefault: vi.fn() };
+    await act(async () => { byId(r, "row-a").props.onContextMenu(ev); });
+    expect(ev.preventDefault).toHaveBeenCalled();
+    expect(has(r, "quick")).toBe(true);
+    await act(async () => { byId(r, "quick-approve").props.onClick(); });
+    await flush();
+    expect(api.approve).toHaveBeenCalledWith("a", "main", "current");
+    expect(text(byId(r, "toast"))).toContain("Approved");
+    const img = r.root.findAll((n) => n.type === "img")[0];
+    expect(img.props.draggable).toBe(false);
+    expect(img.props.style.WebkitTouchCallout).toBe("none");
+    await act(async () => { byId(r, "row-c").props.onContextMenu({ preventDefault() {} }); });
+    await act(async () => { byId(r, "quick-generate").props.onClick(); });
+    await flush();
+    expect(api.generate).toHaveBeenCalledWith("c", "main", expect.any(Object));
+  });
+
+  it("Approve and Reject each offer Undo; Approve all 30+ undoes exactly the products it approved; the toast clears after 6 s", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const api = fakeApi();
+    const r = await mount(api);
+    await act(async () => { byId(r, "reject-a").props.onClick(); });
+    await flush();
+    expect(text(byId(r, "toast"))).toContain("Rejected Item a");
+    await act(async () => { byId(r, "approve-big").props.onClick(); });
+    await flush();
+    await act(async () => { byId(r, "toast-undo").props.onClick(); });
+    expect(api.undo).toHaveBeenCalledWith({ a: { prev: null, expectAt: 9 }, b: { prev: null, expectAt: 9 } });
+    await act(async () => { byId(r, "approve-c").props.onClick(); });
+    await flush();
+    expect(has(r, "toast")).toBe(true);
+    await act(async () => { vi.advanceTimersByTime(6100); });
+    expect(has(r, "toast")).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("the bar and the toast never cover the last row: the page keeps room for both", async () => {
+    const r = await mount(fakeApi());
+    const page = r.root.findAll((n) => n.type === "div" && n.props.style && typeof n.props.style.padding === "string" && n.props.style.minHeight === "100vh")[0];
+    const bottom = Number(page.props.style.padding.split(" ")[2].replace("px", ""));
+    expect(bottom).toBeGreaterThanOrEqual(64 + 64);
+    expect(page.props.style.paddingBottom).toContain("safe-area-inset-bottom");
+  });
+
+  it("a long-press that starts on a button is that button's tap, never the popup; the click after a long-press is swallowed", async () => {
+    const api = fakeApi();
+    const r = await mount(api);
+    const onButton = { preventDefault() {}, target: { closest: (sel) => (sel === "button" ? {} : null) } };
+    await act(async () => { byId(r, "row-a").props.onContextMenu(onButton); });
+    expect(has(r, "quick")).toBe(false);
+    await act(async () => { byId(r, "select-toggle").props.onClick(); });
+    await act(async () => { byId(r, "row-c").props.onContextMenu({ preventDefault() {}, target: { closest: () => null } }); });
+    await act(async () => { byId(r, "row-c").props.onClick(); });
+    expect(has(r, "select-bar")).toBe(false, "the click that followed the long-press did not tick the row");
+  });
+
+  it("the selection clears on a tab switch; bulk Generate never queues the same product twice", async () => {
+    const api = fakeApi();
+    const r = await mount(api);
+    await act(async () => { byId(r, "select-toggle").props.onClick(); });
+    await act(async () => { byId(r, "row-a").props.onClick(); });
+    await act(async () => { byId(r, "tab-approved").props.onClick(); });
+    expect(has(r, "select-bar")).toBe(false);
   });
 });

@@ -35,7 +35,7 @@ test("MAIN: one row per product, every 30+ product first in one block, then 13â€
   const v = await _internals.list(seed());
   assert.deepEqual(v.review.map((r) => [r.pid, r.qty, r.big]), [["a", 45, true], ["b", 31, true], ["c", 20, false], ["d", 13, false]]);
   assert.equal(v.approved.length, 0);
-  assert.deepEqual(v.totals, { review: 6, approved: 0, rejected: 0, spentZar: 0 });
+  assert.deepEqual(v.totals, { review: 4, underReview: 2, approved: 0, rejected: 0, spentZar: 0 });
   assert.equal(v.meta.paperBags, 53);
   assert.equal(v.schedule, null);
   assert.equal(JSON.stringify(v).includes("retail"), false);
@@ -64,7 +64,7 @@ test("Approve moves a product to Approved; Reject removes it from the list; reje
   assert.deepEqual(v.review.map((x) => x.pid), ["a", "b"]);
   assert.deepEqual(v.approved.map((x) => x.pid), ["c"]);
   assert.deepEqual(v.rejected.map((x) => [x.pid, x.name]), [["d", "Hoodie D"]]);
-  assert.deepEqual(v.totals, { review: 4, approved: 1, rejected: 1, spentZar: 0 });
+  assert.deepEqual(v.totals, { review: 2, underReview: 2, approved: 1, rejected: 1, spentZar: 0 });
   await tap(db, { action: "reset", pid: "d" }, 7000);
   v = await _internals.list(db);
   assert.ok(v.review.some((x) => x.pid === "d"), "undo brings it back to To review");
@@ -78,6 +78,7 @@ test("Approve all 30+: every untouched 30+ product in MAIN; never a rejected one
   await tap(db, { action: "reject", pid: "b" });
   const r = await _internals.approveBig(db, { a: "current", b: "current" }, "junid", 9000);
   assert.equal(r.approved, 1);
+  assert.deepEqual(r.pids, ["a"], "the pids, for Undo");
   assert.equal((await pick(db, "a")).state, "approved");
   assert.equal((await pick(db, "b")).state, "rejected", "a rejection is never overridden");
   assert.equal(await pick(db, "c"), null, "20 on hand is not 30+");
@@ -124,7 +125,7 @@ test("counts include only products in the campaign now (idx); under-13 approvals
   await db.ref("bf_campaign_2026/items/main/a").remove();
   await db.ref("bf_campaign_2026/meta/main").set(3);
   const v = await _internals.list(db);
-  assert.deepEqual(v.totals, { review: 4, approved: 1, rejected: 0, spentZar: 0 });
+  assert.deepEqual(v.totals, { review: 3, underReview: 1, approved: 1, rejected: 0, spentZar: 0 });
   assert.deepEqual(v.rejected, [], "no ghost in Rejected (n)");
   assert.deepEqual(v.approved.map((x) => x.pid), ["u"], "the under-13 approval is on the Approved tab");
   assert.ok(!v.review.some((x) => x.pid === "u"));
@@ -141,6 +142,49 @@ test("AN APPROVAL IS OF A PHOTO: a new generation sends the product back to To r
   assert.equal((await tap(db, { action: "approve", pid: "a" }, 2000)).row.tab, "approved");
   assert.equal((await pick(db, "a")).sig, "g1790000000001");
   assert.match((await tap(db, { action: "use", pid: "b", use: "generated" })).refusal, /tap Generate/);
+});
+
+test("multi-select: approve many (each with the photo shown), reject many, and Undo (back to review) â€” one transaction each", async () => {
+  const db = seed();
+  await db.ref("bf_campaign_2026/photos/b").set({ use: "generated", genId: "g1790000000002", gens: { g1790000000002: { url: "u" } }, rev: 1 });
+  const r = await _internals.many(db, "approve", { a: "current", b: "current", c: "current", zz: "current" }, "junid", 5000);
+  assert.deepEqual(r.done.sort(), ["a", "c"]);
+  assert.deepEqual(r.refused.map((x) => x.pid).sort(), ["b", "zz"], "b's photo changed; zz is not in the campaign");
+  const rj = await _internals.many(db, "reject", ["d", "u"], "junid", 6000);
+  assert.deepEqual(rj.done.sort(), ["d", "u"]);
+  const undo = await _internals.many(db, "reset", ["a", "c", "d", "u"], "junid", 7000);
+  assert.equal(undo.done.length, 4);
+  const v = await _internals.list(db);
+  assert.equal(v.approved.length, 0);
+  assert.equal(v.rejected.length, 0);
+  await assert.rejects(_internals.many(db, "approve", { "../x": "current" }, "junid", 1), /Which product/);
+  await assert.rejects(_internals.many(db, "reset", Array.from({ length: 501 }, (_, i) => `p${i}`), "junid", 1), /Too many/);
+});
+
+test("UNDO fully reverses: an approved product rejected then undone is approved again with the SAME photo; a rejected one approved then undone is rejected again", async () => {
+  const db = seed();
+  await tap(db, { action: "approve", pid: "a" }, 1000);
+  const before = await pick(db, "a");
+  const rj = await _internals.many(db, "reject", ["a"], "junid", 2000);
+  await _internals.restore(db, rj.undo, "junid", 3000);
+  const after = await pick(db, "a");
+  assert.deepEqual({ ...after, rev: 0 }, { ...before, rev: 0 }, "the original approval (sig, shown, at) is back");
+  await tap(db, { action: "reject", pid: "b" }, 4000);
+  const ap = await tap(db, { action: "approve", pid: "b" }, 5000);
+  await _internals.restore(db, ap.undo, "junid", 6000);
+  assert.equal((await pick(db, "b")).state, "rejected");
+  const big = await _internals.approveBig(db, { a: "current" }, "junid", 7000);
+  assert.deepEqual(big.undo, {}, "a is already approved: nothing to undo");
+});
+
+test("UNDO never clobbers a newer change; approveMany needs the photo shown", async () => {
+  const db = seed();
+  const ap = await tap(db, { action: "approve", pid: "c" }, 1000);
+  await tap(db, { action: "reject", pid: "c" }, 2000); // a newer decision within the 6 s
+  const u = await _internals.restore(db, ap.undo, "junid", 3000);
+  assert.deepEqual(u.refused.map((x) => x.pid), ["c"]);
+  assert.equal((await pick(db, "c")).state, "rejected");
+  await assert.rejects(_internals.many(db, "approve", ["a"], "junid", 1), /photo the card showed/);
 });
 
 test("a category's AI look: established for sneakers and clothing; new kinds need Junid's approval", async () => {
