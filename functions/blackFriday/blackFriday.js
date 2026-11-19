@@ -20,7 +20,12 @@ if (!admin.apps.length) {
   admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 }
 
-const callableOpts = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 60 };
+// invoker "public": a callable's Cloud Run service must allow allUsers to
+// invoke (auth is checked in code — assertJunid). The first deploy of these
+// two failed at create and left the service with no invoker binding, so every
+// call was refused at the door and the card showed only "internal" (19 Nov).
+// Stating it here makes every deploy set the binding.
+const callableOpts = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 60, invoker: "public" };
 
 function assertJunid(request) {
   if (!isSuperAdminToken(request.auth && request.auth.token)) throw new HttpsError("permission-denied", "The Black Friday card is Junid's.");
