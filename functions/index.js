@@ -6645,6 +6645,11 @@ exports.insightsRollupSweep = onSchedule(
   exports.newArrivalsHow = na.newArrivalsHow;
   exports.newArrivalsPause = na.newArrivalsPause;
   exports.newArrivalsMethod = na.newArrivalsMethod;
+  // The live card (19 Nov 2026): Use current photo, Un-approve, Post all approved.
+  //   firebase deploy --only functions:newArrivalsUseCurrent,functions:newArrivalsUnapprove,functions:newArrivalsPostAll
+  exports.newArrivalsUseCurrent = na.newArrivalsUseCurrent;
+  exports.newArrivalsUnapprove = na.newArrivalsUnapprove;
+  exports.newArrivalsPostAll = na.newArrivalsPostAll;
   // The photo studio: ONE streaming callable that calls Gemini directly on Junid's tap.
   //   firebase deploy --only functions:newArrivalsStudio
   exports.newArrivalsStudio = require("./newArrivals/studio.js").newArrivalsStudio;
