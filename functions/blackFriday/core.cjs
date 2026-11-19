@@ -231,7 +231,8 @@ function albumsOf(pending) {
     split(n).forEach((part, i) => {
       const pids = part.map((r) => r.pid);
       out.push({ key: `${priceKey(price)}-${kind}-${i + 1}`, price, kind, part: i + 1, parts: n, pids,
-        lap: fnv(part.map((r) => `${r.pid}:${r.sig}`).join("|")), firstAt: Math.min(...part.map((r) => Number(r.at) || 0)) });
+        // The send id covers the products, their photos AND their approval times: a re-approval is a new send.
+        lap: fnv(part.map((r) => `${r.pid}:${r.sig}:${r.at}`).join("|")), firstAt: Math.min(...part.map((r) => Number(r.at) || 0)) });
     });
   }
   return out;

@@ -52,7 +52,7 @@ function promptFor(kind, { hasBox = false, conditionClause = "" } = {}) {
     "PRODUCT (the second image): the real item being sold. Show THIS EXACT ITEM: the same kind of product, the same colour or colours, the same logos, text, pattern, stitching, materials, hardware and every detail, the same proportions. NEVER turn it into another kind of product, NEVER change its colour, NEVER add, remove or redesign any part.",
     ...(hasBox ? ["BOX (the third image): this product's own box. If you show a box, it is exactly this one."] : []),
     `STAGING: ${s.text}`,
-    "One product only, centred, in sharp focus, photorealistic, with a soft natural contact shadow. No text, no price, no watermark, no people, no hands, no other products.",
+    "One product only, centred, in sharp focus, photorealistic, with a soft natural contact shadow. No text, no price, no watermark, no people, no hands, no other products." + (hasBox ? "" : " Do not add a box, a stand or any object that is not in the product photo."),
     conditionClause,
   ].filter(Boolean).join("\n\n");
 }

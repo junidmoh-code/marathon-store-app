@@ -178,6 +178,14 @@ test("albums over 30 photos (or a caption past 950 characters) split into parts"
   for (const x of core.albumsOf(long)) assert.ok(core.captionPreview(650, x.pids.map((pid) => long[pid])).length <= 950);
 });
 
+test("the album send id changes when a product is re-approved (a re-approval really posts again)", () => {
+  const a1 = core.albumsOf({ t: P("Tee", 150, "clothing", 5) })[0];
+  const a2 = core.albumsOf({ t: P("Tee", 150, "clothing", 9) })[0];
+  assert.notEqual(a1.lap, a2.lap);
+  assert.match(styles.promptFor("headwear"), /Do not add a box/);
+  assert.doesNotMatch(styles.promptFor("perfume", { hasBox: true }), /Do not add a box/);
+});
+
 test("only approved products with the photo they show, and not yet posted for this approval, are posted", () => {
   const picks = { a: P("A", 1, "clothing", 5), b: P("B", 1, "clothing", 5, "g1"), r: { state: "rejected" }, p: P("P", 1, "clothing", 7) };
   const photos = { b: { use: "generated", genId: "g2", gens: { g2: {} } } };
