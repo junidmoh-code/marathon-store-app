@@ -209,6 +209,7 @@ test("New: an item with a generated photo waiting for Junid stays on New past th
     { pid: pidAt(45), status: "rejected", item: { generatedUrl: "https://x/r.jpg" } },
     { pid: pidAt(50), status: "ready", units: 0, item: { generatedUrl: "https://x/s.jpg" } },   // sold out: still hidden
     { pid: pidAt(41) },                                                                       // old, no photo: outside the window
+    { pid: pidAt(42), status: "rejected" },                                                    // old, rejected lane but NO photo: outside
     { pid: pidAt(2) },
   ] });
   const out = await na.listLive(db, "new", { nowMs: NOW });

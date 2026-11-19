@@ -815,7 +815,13 @@ async function listLive(db, tabAsked, { cursor = null, limit, group = null, nowM
   // These lanes are small; read by key with the ceiling, never unbounded.
   await Promise.all(core.PHOTO_LANES.map(async (s) => {
     const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().limitToLast(core.INDEX_CEILING).once("value");
-    for (const k of Object.keys(snap.val() || {})) if (!newLaneOf.has(k)) newLaneOf.set(k, s);
+    const older = Object.keys(snap.val() || {}).filter((k) => !newLaneOf.has(k));
+    // Only with a real generated photo (two keyed scalars each): a lane alone is not a photo (CodeRabbit).
+    await inBatches(older, 50, async (k) => {
+      const [generatedUrl, currentGen] = await Promise.all([val(db, `${core.ITEMS}/${k}/generatedUrl`), val(db, `${core.ITEMS}/${k}/currentGen`)]);
+      const genUrl = currentGen ? await val(db, `${core.ITEMS}/${k}/generations/${currentGen}/url`) : null;
+      if (generatedUrl || genUrl) newLaneOf.set(k, s);
+    });
   }));
   const stock = await laneStock(db, [...newLaneOf.keys()], locations, nowMs);
   const hidden = { soldOut: 0, gone: 0 };
