@@ -11,6 +11,9 @@ import { FONT, BG, GLASS, GREEN, GRAY, AMBER, RED, BLUE_L, bGreen, bGray, bBlue 
 
 const KIND = { sneakers: "Sneakers", clothing: "Clothing", headwear: "Caps & beanies", perfume: "Perfume", bags: "Bags", belts: "Belts", sunglasses: "Sunglasses", watches: "Watches", jewellery: "Chains & bracelets", accessories: "Accessories" };
 const PAGE = 60;
+const UNDO_MS = 6000;
+const BAR_H = 64;            // the selection bar
+const BOTTOM_ROOM = 64 + 80; // bar + toast: the last row always stays clear of both
 const sast = (ms) => (ms ? new Intl.DateTimeFormat("en-ZA", { timeZone: "Africa/Johannesburg", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ms)) : "");
 const rand = (n) => `R${(Number(n) || 0).toFixed(2)}`;
 const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
@@ -37,13 +40,35 @@ export function rowActions(r) {
   };
 }
 
-function Row({ r, busy, gen, on }) {
+// Long-press (iPhone Safari, Chrome, a mouse held down): 500 ms opens the quick popup.
+const LONG_PRESS_MS = 500;
+export function useLongPress(onLong) {
+  const timer = useRef(null);
+  const fired = useRef(false);
+  const start = () => { fired.current = false; clearTimeout(timer.current); timer.current = setTimeout(() => { fired.current = true; onLong(); }, LONG_PRESS_MS); };
+  const stop = () => clearTimeout(timer.current);
+  return {
+    onTouchStart: start, onTouchEnd: stop, onTouchMove: stop, onTouchCancel: stop,
+    onMouseDown: start, onMouseUp: stop, onMouseLeave: stop,
+    // The phone's own image menu (save / share / copy) never opens on a product.
+    onContextMenu: (e) => { e.preventDefault(); if (!fired.current) { fired.current = true; onLong(); } },
+    wasLong: () => fired.current,
+  };
+}
+// No callout, no selection, no drag on product photos (iPhone's image menu suppressed).
+const NO_CALLOUT = { WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none" };
+
+function Row({ r, busy, gen, on, selectMode, selected }) {
   const a = rowActions(r);
   const sm = { ...bGray, padding: "4px 8px", fontSize: 11, minHeight: 28 };
+  const lp = useLongPress(() => on.longPress(r));
+  const { wasLong, ...press } = lp;
   return (
-    <div data-testid={`row-${r.pid}`} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,.06)" }}>
-      <div style={{ position: "relative", width: 72, height: 96, flex: "0 0 72px", borderRadius: 8, overflow: "hidden", background: "#0b0d12" }}>
-        {r.shown && <img src={r.shown} alt={r.name} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
+    <div data-testid={`row-${r.pid}`} {...press} onClick={() => { if (selectMode && !wasLong()) on.toggle(r); }}
+      style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,.06)", ...NO_CALLOUT, ...(selectMode ? { cursor: "pointer", background: selected ? "rgba(74,127,255,.18)" : "transparent" } : {}) }}>
+      {selectMode && <div data-testid={`sel-${r.pid}`} aria-checked={!!selected} role="checkbox" style={{ flex: "0 0 22px", alignSelf: "center", width: 22, height: 22, borderRadius: 6, border: `2px solid ${selected ? BLUE_L : GRAY}`, background: selected ? BLUE_L : "transparent", color: "#000", textAlign: "center", lineHeight: "18px", fontWeight: 800 }}>{selected ? "✓" : ""}</div>}
+      <div style={{ position: "relative", width: 72, height: 96, flex: "0 0 72px", borderRadius: 8, overflow: "hidden", background: "#0b0d12", ...NO_CALLOUT }}>
+        {r.shown && <img src={r.shown} alt={r.name} loading="lazy" draggable={false} onContextMenu={(e) => e.preventDefault()} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none", ...NO_CALLOUT }} />}
         {r.use === "generated" && <span style={{ position: "absolute", top: 3, right: 3, background: BLUE_L, color: "#000", borderRadius: 5, padding: "0 4px", fontSize: 9, fontWeight: 700 }}>AI</span>}
         {gen && <div data-testid={`gen-${r.pid}`} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 4, fontSize: 10, textAlign: "center" }}>{gen}</div>}
       </div>
@@ -53,7 +78,7 @@ function Row({ r, busy, gen, on }) {
         <div style={{ fontSize: 11, color: GRAY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.sizes}</div>
         {r.changedSinceApproval && <div style={{ fontSize: 11, color: AMBER }}>Photo changed — approve again</div>}
         {r.posted && <div style={{ fontSize: 11, color: GREEN }}>Posted</div>}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+        {!selectMode && <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
           {a.approve && <button data-testid={`approve-${r.pid}`} disabled={busy || a.approveDisabled} onClick={() => on.approve(r)} style={{ ...bGreen, padding: "4px 10px", fontSize: 11, minHeight: 28 }}>Approve</button>}
           {a.backToReview && <button data-testid={`back-${r.pid}`} disabled={busy} onClick={() => on.reset(r)} style={sm}>Back to review</button>}
           <button data-testid={`reject-${r.pid}`} disabled={busy} onClick={() => on.reject(r)} style={{ ...sm, color: RED }}>Reject</button>
@@ -61,7 +86,7 @@ function Row({ r, busy, gen, on }) {
           {a.useAi && <button data-testid={`use-ai-${r.pid}`} disabled={busy} onClick={() => on.use(r, "generated")} style={sm}>Use AI photo</button>}
           {(a.generate || a.regenerate) && <button data-testid={`generate-${r.pid}`} disabled={!!gen || r.generating} onClick={() => on.generate(r)} style={r.styleApproved && a.generate ? { ...bBlue, padding: "4px 8px", fontSize: 11, minHeight: 28 } : sm}>{a.regenerate ? "Regenerate" : "Generate"}</button>}
           {a.approveLook && <button data-testid={`look-${r.pid}`} disabled={busy} onClick={() => on.approveLook(r)} style={sm}>Approve the AI look for {KIND[r.kind] || r.kind}</button>}
-        </div>
+        </div>}
       </div>
     </div>
   );
@@ -76,7 +101,7 @@ function Block({ title, rows, testid, children, ...rest }) {
         <div style={{ fontSize: 13, fontWeight: 800, flex: 1 }}>{title} ({rows.length})</div>
         {children}
       </div>
-      {rows.slice(0, n).map((r) => <Row key={r.pid} r={r} {...rest} gen={rest.gens[r.pid]} />)}
+      {rows.slice(0, n).map((r) => <Row key={r.pid} r={r} {...rest} gen={rest.gens[r.pid]} selected={rest.selected && rest.selected.has(r.pid)} />)}
       {rows.length > n && <button onClick={() => setN(n + PAGE)} style={{ ...bGray, margin: "8px 0", padding: "6px 10px", fontSize: 12 }}>Show {Math.min(PAGE, rows.length - n)} more</button>}
     </div>
   );
@@ -149,6 +174,18 @@ export default function BlackFridayScreen({ api, onExit }) {
   const [gens, setGens] = useState({});
   const [sched, setSched] = useState(false);
   const [showRejected, setShowRejected] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState(() => new Map()); // pid → row
+  const [toast, setToast] = useState(null); // { text, undo }
+  const [quick, setQuick] = useState(null); // the long-pressed row
+  const toastTimer = useRef(null);
+  // Every Approve, Reject and bulk action: a toast with Undo for 6 seconds that fully reverses it.
+  const showToast = (text, undo) => {
+    clearTimeout(toastTimer.current);
+    setToast({ text, undo });
+    toastTimer.current = setTimeout(() => setToast(null), UNDO_MS);
+  };
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
 
   const ticket = useRef(0);
   const load = useCallback(() => {
@@ -177,11 +214,12 @@ export default function BlackFridayScreen({ api, onExit }) {
     };
     setMain(fix); setUnder(fix);
   };
-  const run = async (fn, { reload = false } = {}) => {
+  const run = async (fn, { reload = false, undo = null } = {}) => {
     setBusy(true); setNote(null);
     try {
       const r = await fn();
       if (r && r.ok === false) setNote(r.refusal);
+      else if (undo) { const u = undo(r); if (u) showToast(u.text, u.reverse); }
       else if (r && r.pid) patch(r.pid, r.row, r.rejected);
       // The row was patched in place; only the main view (totals, Approved tab) is re-read — never the long under-13 list.
       if (reload || (r && r.pid)) load();
@@ -189,6 +227,8 @@ export default function BlackFridayScreen({ api, onExit }) {
     } catch (e) { setNote(e?.message || String(e)); load(); }
     finally { setBusy(false); }
   };
+  const undoTo = (pids) => () => { setToast(null); run(() => api.resetMany(pids), { reload: true }); };
+  const sigOfRow = (r) => r.sig || (r.use === "generated" ? r.genId : "current");
   const generate = async (r) => {
     setGens((x) => ({ ...x, [r.pid]: "Starting…" }));
     try { await api.generate(r.pid, r.section, { onEvent: (ev) => { if (ev && ev.text) setGens((x) => ({ ...x, [r.pid]: String(ev.text).slice(0, 80) })); } }); }
@@ -198,12 +238,31 @@ export default function BlackFridayScreen({ api, onExit }) {
   };
   const sec = (s) => (r) => ({ ...r, section: s });
   const on = {
-    approve: (r) => run(() => api.approve(r.pid, r.section, r.sig || (r.use === "generated" ? r.genId : "current"))),
-    reject: (r) => run(() => api.reject(r.pid, r.section)),
+    approve: (r) => run(() => api.approve(r.pid, r.section, sigOfRow(r)), { undo: (x) => (x && !x.noop ? { text: `Approved ${r.name}`, reverse: undoTo([r.pid]) } : null) }),
+    reject: (r) => run(() => api.reject(r.pid, r.section), { undo: (x) => (x && !x.noop ? { text: `Rejected ${r.name}`, reverse: undoTo([r.pid]) } : null) }),
     reset: (r) => run(() => api.reset(r.pid)),
     use: (r, use) => run(() => api.use(r.pid, use, use === "generated" ? r.genId : null, r.section)),
     generate,
     approveLook: (r) => run(() => api.approveStyle(r.kind), { reload: true }),
+    toggle: (r) => setSelected((m) => { const n = new Map(m); if (n.has(r.pid)) n.delete(r.pid); else n.set(r.pid, r); return n; }),
+    longPress: (r) => setQuick(r),
+  };
+  // ── multi-select ───────────────────────────────────────────────────────────
+  const picked = [...selected.values()];
+  const clearSel = () => setSelected(new Map());
+  const bulkApprove = () => run(() => api.approveMany(Object.fromEntries(picked.map((r) => [r.pid, sigOfRow(r)]))), {
+    reload: true, undo: (x) => { clearSel(); if (x && x.refused && x.refused.length) setNote(x.refused.map((y) => `${y.pid}: ${y.refusal}`).join(" · ")); return x && x.done && x.done.length ? { text: `Approved ${x.done.length}`, reverse: undoTo(x.done) } : null; },
+  });
+  const bulkReject = () => run(() => api.rejectMany(picked.map((r) => r.pid)), {
+    reload: true, undo: (x) => { clearSel(); return x && x.done && x.done.length ? { text: `Rejected ${x.done.length}`, reverse: undoTo(x.done) } : null; },
+  });
+  // Generate for every selected product: queued, two at a time; AI spend updates as each lands.
+  const bulkGenerate = async () => {
+    const queue = [...picked];
+    clearSel();
+    setGens((g) => ({ ...g, ...Object.fromEntries(queue.map((r) => [r.pid, "Queued…"])) }));
+    const worker = async () => { while (queue.length) { await generate(queue.shift()); } };
+    await Promise.all([worker(), worker()]);
   };
 
   const d = main;
@@ -215,9 +274,10 @@ export default function BlackFridayScreen({ api, onExit }) {
   const bigToReview = d ? d.review.filter((r) => r.big).length : 0;
   const nReview = t.review ?? 0;
   const nApproved = d?.approved.length || 0;
-  const shared = { busy, gens, on };
+  const shared = { busy, gens, on, selectMode, selected };
   return (
-    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: "14px 14px 96px" }}>
+    // Bottom padding: the selection bar and the Undo toast never cover the last row.
+    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: `14px 14px ${BOTTOM_ROOM}px` }}>
       <div style={{ maxWidth: 680, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <button onClick={onExit} style={{ ...bGray, minHeight: 40, padding: "0 12px" }} aria-label="Back">←</button>
@@ -228,7 +288,10 @@ export default function BlackFridayScreen({ api, onExit }) {
         {!d && !error && <div style={{ color: GRAY }}>Loading…</div>}
         {d && (
           <>
-            <div data-testid="totals" style={{ fontSize: 13, color: "#dfe7ff", marginBottom: 10 }}>To review {t.review} · Approved {t.approved} · AI spend {rand(t.spentZar)}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <div data-testid="totals" style={{ fontSize: 13, color: "#dfe7ff", flex: 1 }}>To review {t.review} · Approved {t.approved} · AI spend {rand(t.spentZar)}</div>
+              <button data-testid="select-toggle" aria-pressed={selectMode} onClick={() => { setSelectMode(!selectMode); clearSel(); }} style={{ ...(selectMode ? bBlue : bGray), padding: "6px 12px", fontSize: 12 }}>{selectMode ? "Done" : "Select"}</button>
+            </div>
             <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
               <button data-testid="tab-review" aria-pressed={tab === "review"} onClick={() => setTab("review")} style={{ ...(tab === "review" ? bBlue : bGray), flex: 1 }}>To review ({nReview})</button>
               <button data-testid="tab-approved" aria-pressed={tab === "approved"} onClick={() => setTab("approved")} style={{ ...(tab === "approved" ? bBlue : bGray), flex: 1 }}>Approved ({nApproved})</button>
@@ -242,11 +305,11 @@ export default function BlackFridayScreen({ api, onExit }) {
               </div>
             )}
             <Block testid="block-big" title="30+ on hand" rows={big} {...shared}>
-              {tab === "review" && bigToReview > 0 && <button data-testid="approve-big" disabled={busy} onClick={() => run(() => api.approveBig(Object.fromEntries(d.review.filter((x) => x.big).map((x) => [x.pid, x.sig || (x.use === "generated" ? x.genId : "current")]))), { reload: true })} style={{ ...bGreen, padding: "6px 10px", fontSize: 12 }}>Approve all 30+ ({bigToReview})</button>}
+              {tab === "review" && bigToReview > 0 && <button data-testid="approve-big" disabled={busy} onClick={() => run(() => api.approveBig(Object.fromEntries(d.review.filter((x) => x.big).map((x) => [x.pid, sigOfRow(x)]))), { reload: true, undo: (x) => (x && x.pids && x.pids.length ? { text: `Approved ${x.pids.length} with 30+`, reverse: undoTo(x.pids) } : null) })} style={{ ...bGreen, padding: "6px 10px", fontSize: 12 }}>Approve all 30+ ({bigToReview})</button>}
             </Block>
             <Block testid="block-mid" title="13–29 on hand" rows={mid} {...shared} />
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0" }}>
-              <input data-testid="show-under" type="checkbox" checked={showUnder} onChange={(e) => setShowUnder(e.target.checked)} /> Show under 13{d.meta.under ? ` (${d.meta.under})` : ""}
+              <input data-testid="show-under" type="checkbox" checked={showUnder} onChange={(e) => setShowUnder(e.target.checked)} /> Show under 13{t.underReview != null ? ` (${t.underReview} to review)` : d.meta.under ? ` (${d.meta.under})` : ""}
             </label>
             {showUnder && !under && <div style={{ color: GRAY, fontSize: 12 }}>Loading…</div>}
             <Block testid="block-under" title="Under 13" rows={underRows} {...shared} />
@@ -259,6 +322,32 @@ export default function BlackFridayScreen({ api, onExit }) {
           </>
         )}
       </div>
+      {quick && (
+        <div data-testid="quick" onClick={() => setQuick(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ ...GLASS, background: "#151924", width: "100%", maxWidth: 520, padding: 16, borderRadius: "16px 16px 0 0", paddingBottom: "max(16px, env(safe-area-inset-bottom))" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{quick.name}</div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button data-testid="quick-generate" disabled={!!gens[quick.pid] || quick.generating} onClick={() => { const r = quick; setQuick(null); generate(r); }} style={{ ...bBlue, flex: 1, minHeight: 56, fontSize: 16 }}>{quick.generations ? "Regenerate" : "Generate"}</button>
+              {quick.tab === "review" && <button data-testid="quick-approve" disabled={busy || quick.generating} onClick={() => { const r = quick; setQuick(null); on.approve(r); }} style={{ ...bGreen, flex: 1, minHeight: 56, fontSize: 16 }}>Approve</button>}
+            </div>
+          </div>
+        </div>
+      )}
+      {toast && (
+        <div data-testid="toast" style={{ position: "fixed", left: 12, right: 12, bottom: (selectMode && selected.size ? BAR_H : 0) + 16, margin: "0 auto", maxWidth: 520, background: "#232a3b", border: "1px solid rgba(255,255,255,.12)", borderRadius: 12, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, zIndex: 40, boxShadow: "0 6px 24px rgba(0,0,0,.4)" }}>
+          <div style={{ flex: 1, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{toast.text}</div>
+          <button data-testid="toast-undo" onClick={toast.undo} style={{ ...bGray, padding: "6px 12px", fontSize: 13, color: BLUE_L, fontWeight: 700 }}>Undo</button>
+        </div>
+      )}
+      {selectMode && selected.size > 0 && (
+        <div data-testid="select-bar" style={{ position: "fixed", left: 0, right: 0, bottom: 0, height: BAR_H, background: "#11151f", borderTop: "1px solid rgba(255,255,255,.1)", display: "flex", alignItems: "center", gap: 6, padding: "0 12px", paddingBottom: "env(safe-area-inset-bottom)", zIndex: 30 }}>
+          <div data-testid="select-count" style={{ fontSize: 13, fontWeight: 700, flex: 1 }}>{selected.size} selected</div>
+          <button data-testid="bulk-approve" disabled={busy} onClick={bulkApprove} style={{ ...bGreen, padding: "8px 10px", fontSize: 12 }}>Approve</button>
+          <button data-testid="bulk-generate" disabled={busy} onClick={bulkGenerate} style={{ ...bBlue, padding: "8px 10px", fontSize: 12 }}>Generate</button>
+          <button data-testid="bulk-reject" disabled={busy} onClick={bulkReject} style={{ ...bGray, padding: "8px 10px", fontSize: 12, color: RED }}>Reject</button>
+          <button data-testid="bulk-clear" onClick={clearSel} style={{ ...bGray, padding: "8px 10px", fontSize: 12 }}>Clear</button>
+        </div>
+      )}
     </div>
   );
 }

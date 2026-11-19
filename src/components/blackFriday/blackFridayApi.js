@@ -21,6 +21,11 @@ export const blackFridayApi = {
   // sigs: { pid: sig } of the 30+ rows the card shows in To review.
   approveBig: (sigs) => set({ action: "approveBig", sigs }),
   approveStyle: (kind) => set({ action: "approveStyle", kind }),
+  // Multi-select: one transaction per product. → { ok, done: [pid], refused: [{ pid, refusal }] }
+  approveMany: (sigs) => set({ action: "approveMany", sigs }),
+  rejectMany: (pids) => set({ action: "rejectMany", pids }),
+  // Undo: back to To review.
+  resetMany: (pids) => set({ action: "resetMany", pids }),
   schedule: (schedule, { confirm = false } = {}) => set({ action: "schedule", schedule, confirm: confirm === true }),
   clearSchedule: () => set({ action: "clearSchedule" }),
   // One AI photo (streams { type: "status" | "thought" } while it works).

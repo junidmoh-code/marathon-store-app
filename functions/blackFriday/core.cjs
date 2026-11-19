@@ -126,15 +126,20 @@ function viewSection(node, section = "main", { postingPaused = false, nowMs = Da
 function totalsOf(n, picks, photos) {
   const m = n.meta || {};
   const idx = n.idx || null;
-  let approved = 0, rejected = 0;
+  // "To review" is MAIN only (13+ on hand, Junid 19 Nov): under-13 has its own count behind its switch.
+  let approved = 0, rejected = 0, mainTouched = 0, underTouched = 0;
   for (const [pid, p] of Object.entries(picks)) {
     if (idx && !idx[pid]) continue;
+    const touched = isRejected(p) || isApproved(p, photos[pid]);
     if (isRejected(p)) rejected += 1;
     else if (isApproved(p, photos[pid])) approved += 1;
+    if (touched) { if ((idx ? idx[pid] : (p.section === "under" ? "u" : "m")) === "u") underTouched += 1; else mainTouched += 1; }
   }
-  const all = (Number(m.main) || 0) + (Number(m.under) || 0);
   const spent = Number(n.stats && n.stats.spentZar) || 0;
-  return { review: Math.max(0, all - approved - rejected), approved, rejected, spentZar: Math.round(spent * 100) / 100 };
+  return {
+    review: Math.max(0, (Number(m.main) || 0) - mainTouched), underReview: Math.max(0, (Number(m.under) || 0) - underTouched),
+    approved, rejected, spentZar: Math.round(spent * 100) / 100,
+  };
 }
 
 const planView = (plan) => Object.entries(plan || {}).map(([album, e]) => ({ album, due: Number(e && e.due) || null, count: Object.keys((e && e.pids) || {}).length }))

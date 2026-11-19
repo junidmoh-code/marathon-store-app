@@ -124,20 +124,58 @@ async function approveBig(db, sigs, uid, nowMs) {
   const items = (await val(db, `${core.ROOT}/items/main`)) || {};
   const asked = sigs && typeof sigs === "object" ? sigs : {};
   const todo = Object.entries(items).filter(([pid, it]) => it && Number(it.qty) >= core.BIG_QTY && core.PID_RE.test(pid) && Object.prototype.hasOwnProperty.call(asked, pid));
-  let approved = 0;
+  const approved = [];
   for (let i = 0; i < todo.length; i += 25) {
     await Promise.all(todo.slice(i, i + 25).map(async ([pid, it]) => {
       const out = {};
       const photo = await val(db, `${core.ROOT}/photos/${pid}`);
       const res = await revTransaction(db.ref(`${core.ROOT}/picks/${pid}`), core.approveMutator({ item: it, section: "main", photo, uid, nowMs, seenSig: String(asked[pid] || "current"), onlyIfUntouched: true }, out), out);
-      if (res && res.committed && !out.noop && !out.refusal) approved += 1;
+      if (res && res.committed && !out.noop && !out.refusal) approved.push(pid);
     }));
   }
-  if (approved) {
-    await log(db, { at: nowMs, by: uid || null, action: "approveBig", count: approved });
+  if (approved.length) {
+    await log(db, { at: nowMs, by: uid || null, action: "approveBig", count: approved.length });
     await replan(db, nowMs);
   }
-  return { ok: true, approved };
+  // The pids, so the card's Undo can take exactly these back.
+  return { ok: true, approved: approved.length, pids: approved };
+}
+
+const MANY_MAX = 500;
+/**
+ * The card's multi-select: approve (each with the photo the card showed), reject,
+ * or back to review (Undo) — one transaction per product. → { ok, done: [pid], refused: [{ pid, refusal }] }
+ */
+async function many(db, action, list, uid, nowMs) {
+  const entries = Array.isArray(list) ? list.map((pid) => [pid, null]) : Object.entries(list && typeof list === "object" ? list : {});
+  if (entries.length > MANY_MAX) throw new HttpsError("invalid-argument", "Too many at once.");
+  for (const [pid, sig] of entries) {
+    if (!core.PID_RE.test(String(pid))) throw new HttpsError("invalid-argument", "Which product?");
+    if (sig !== null && sig !== "current" && !core.GEN_RE.test(String(sig))) throw new HttpsError("invalid-argument", "Which photo?");
+  }
+  const done = [], refused = [];
+  for (let i = 0; i < entries.length; i += 25) {
+    await Promise.all(entries.slice(i, i + 25).map(async ([pid, sig]) => {
+      const out = {};
+      const ref = db.ref(`${core.ROOT}/picks/${pid}`);
+      if (action === "reset") await revTransaction(ref, core.resetMutator(out), out);
+      else {
+        const { item, section } = await findItem(db, pid, null);
+        if (!item && action === "approve") { refused.push({ pid, refusal: "not in the campaign" }); return; }
+        if (action === "approve") {
+          const photo = await val(db, `${core.ROOT}/photos/${pid}`);
+          await revTransaction(ref, core.approveMutator({ item, section, photo, uid, nowMs, seenSig: sig || null }, out), out);
+        } else await revTransaction(ref, core.rejectMutator({ item, section, uid, nowMs }, out), out);
+      }
+      if (out.refusal) refused.push({ pid, refusal: out.refusal });
+      else if (!out.noop) done.push(pid);
+    }));
+  }
+  if (done.length) {
+    await log(db, { at: nowMs, by: uid || null, action: `${action}Many`, count: done.length });
+    await replan(db, nowMs);
+  }
+  return { ok: true, done, refused };
 }
 
 async function approveStyle(db, kind, uid, nowMs) {
@@ -182,8 +220,11 @@ const bfCampaignSet = onCall(callableOpts, async (request) => {
   if (d.action === "schedule") return schedule(db, d.schedule, { confirm: d.confirm === true }, uid, now);
   if (d.action === "clearSchedule") return clearSchedule(db, uid, now);
   if (d.action === "approveBig") return approveBig(db, d.sigs, uid, now);
+  if (d.action === "approveMany") return many(db, "approve", d.sigs, uid, now);
+  if (d.action === "rejectMany") return many(db, "reject", d.pids, uid, now);
+  if (d.action === "resetMany") return many(db, "reset", d.pids, uid, now);
   if (d.action === "approveStyle") return approveStyle(db, d.kind, uid, now);
   return tap(db, { action: d.action, pid: d.pid, section: d.section, use: d.use, genId: d.genId, sig: d.sig }, uid, now);
 });
 
-module.exports = { bfCampaignList, bfCampaignSet, _internals: { list, tap, approveBig, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
+module.exports = { bfCampaignList, bfCampaignSet, _internals: { list, tap, approveBig, many, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
