@@ -50,6 +50,8 @@ function promptFor(kind, { hasBox = false, conditionClause = "" } = {}) {
     "You are photographing a real product for a shop's Black Friday post, in the shop's own house style.",
     "BACKDROP (the first image): the shop's own studio backdrop — a black-rail mesh fence" + (s.plate === STAND ? " with a white pedestal" : "") + ". Keep it exactly: the same fence, the same light, the same colours. Do not redraw, recolour or extend it.",
     "PRODUCT (the second image): the real item being sold. Show THIS EXACT ITEM: the same kind of product, the same colour or colours, the same logos, text, pattern, stitching, materials, hardware and every detail, the same proportions. NEVER turn it into another kind of product, NEVER change its colour, NEVER add, remove or redesign any part.",
+    "COLOUR: match the product's true colour exactly as it appears in the product photo — the same hue, the same darkness. Never lighten, brighten, fade or shift it, even though the studio light is brighter than the photo's.",
+    "SET: if the product photo shows a set or several pieces sold together (for example a watch with a bracelet and a necklace, or a gift box), show EVERY piece of the set together — never just one of them.",
     ...(hasBox ? ["BOX (the third image): this product's own box. If you show a box, it is exactly this one."] : []),
     `STAGING: ${s.text}`,
     "One product only, centred, in sharp focus, photorealistic, with a soft natural contact shadow. No text, no price, no watermark, no people, no hands, no other products." + (hasBox ? "" : " Do not add a box, a stand or any object that is not in the product photo."),

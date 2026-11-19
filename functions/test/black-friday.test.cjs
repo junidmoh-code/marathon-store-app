@@ -251,6 +251,8 @@ test("styles: the sneaker formula is never used for anything else; each kind its
     assert.doesNotMatch(p, /side-on|toe to the right|SHOE PHOTO|one direction/i, `${k}: no sneaker formula`);
   }
   assert.match(styles.promptFor("headwear"), /AS HEADWEAR/);
+  assert.match(styles.promptFor("bags"), /Never lighten, brighten, fade or shift it/);
+  assert.match(styles.promptFor("watches"), /show EVERY piece of the set/);
   assert.match(styles.promptFor("perfume", { hasBox: true }), /BOX \(the third image\)/);
   assert.match(styles.promptFor("perfume", { hasBox: true }), /UPRIGHT/);
   assert.doesNotMatch(styles.promptFor("perfume"), /third image/);
