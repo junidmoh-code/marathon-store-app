@@ -885,6 +885,26 @@ async function shipOrder(ctx, id, order) {
     log(`  ✗ ${orderLabel(order)}: condition hold — courier not booked`);
     return;
   }
+  // AN IN-STORE EXCHANGE (Junid, 19 Nov 2026; marathon-dm-agent src/jimmy/inStoreExchange.js): a Durban customer swaps
+  // at Marathon PE and takes the replacement over the counter. The Pack is the hand-over: the hub orders close, nothing
+  // is booked with The Courier Guy and there is no Shopify order to fulfil.
+  if (isExchangeKey(id) && !order.shopifyGid && order.exchange?.inStore && typeof order.exchange.inStore === "object") {
+    await closeHubOrders(ctx, { ...order, key: id });
+    await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
+      fulfilState: "done",
+      "fulfil/state": "done",
+      "fulfil/attempts": Math.min(MAX_FULFIL_ATTEMPTS_SHOWN, (Number(order.fulfil?.attempts) || 0) + 1),
+      "fulfil/at": now,
+      "fulfil/error": null,
+      "fulfil/note": "In-store exchange: handed over at the counter — no courier, no Shopify order",
+      ...([ATTENTION_KIND.FULFIL_FAILED, ATTENTION_KIND.COURIER_FAILED].includes(order.attention?.kind) ? { attention: null, attentionOpen: null } : {}),
+      courierError: null,
+      updatedAt: now,
+    });
+    ctx.summary.fulfilled++;
+    log(`  ✓ ${orderLabel(order)}: in-store exchange handed over — no courier, no Shopify order`);
+    return;
+  }
   await closeHubOrders(ctx, { ...order, key: id });
   // The order goes to bookShipment WITH its key (the record carries
   // shopifyGid too, which bookShipment can derive the key from — the explicit
