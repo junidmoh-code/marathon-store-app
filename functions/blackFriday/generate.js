@@ -2,9 +2,15 @@
 // bfGenerate  Junid taps Generate / Regenerate on ONE product of the Black
 //             Friday card. One tap = one photo. Never automatic, never retried.
 //
-// THE LOOK IS CHOSEN BY THE PRODUCT'S KIND (styles.cjs): sneakers and clothing
-// use the New Arrivals engine and house look exactly as New Arrivals does
-// (functions/newArrivals/studio); every other kind (caps & beanies, perfume,
+// THE LOOK IS CHOSEN BY THE PRODUCT'S KIND (styles.cjs): sneakers (all footwear)
+// and clothing use the New Arrivals engine EXACTLY as the New Arrivals card does
+// (functions/newArrivals/studio studioGenerate): Full Gemini, New Arrivals' own
+// generation settings (2K), its own finishing (the plate canvas, JPEG q93) and,
+// for footwear, its plate-lock correction at that size. REVERT (Junid, 19 Nov
+// evening): the 4K / lossless overrides made footwear cut-outs jagged; they are
+// gone for footwear and clothing. A result that is really the original photo is
+// never shown as generated: it fails ("Failed, tap to retry"). Every other kind
+// (caps & beanies, perfume,
 // bags, belts, sunglasses, watches, chains …) gets its own staging on Junid's
 // same backdrop plates. The sneaker formula is never used for anything else.
 // The product is kept exactly as photographed.
@@ -75,10 +81,33 @@ async function release(db, pid, claimAt) {
   } catch (e) { console.error(`bfGenerate: ${pid} not released — ${e.message}`); }
 }
 
+/** Mean absolute difference (0-255) between two photos at 64x64 greyscale: near 0 = the same picture. */
+async function picDiff(sharp, a, b) {
+  const g = (x) => sharp(x).rotate().resize(64, 64, { fit: "fill" }).greyscale().raw().toBuffer();
+  const [x, y] = await Promise.all([g(a), g(b)]);
+  let t = 0;
+  for (let i = 0; i < x.length; i++) t += Math.abs(x[i] - y[i]);
+  return t / x.length;
+}
+const ECHO_DIFF = 12;
+/** A "generated" photo that is really the original (the model gave it back): never landed, never charged to the item. */
+async function refuseEcho({ shown, product, pid, studio, fetchBytes, sharp, usage }) {
+  const url = studio.originalUrlOf({ pid }, product);
+  if (!url) return;
+  let d = null;
+  try { d = await picDiff(sharp, shown, (await fetchBytes(url)).buffer); } catch { return; }
+  if (d !== null && d < ECHO_DIFF) {
+    const err = new Error(`the model returned the original photo (difference ${d.toFixed(1)})`);
+    err.echo = true; err.usage = usage || null;
+    throw err;
+  }
+}
+
 /** The product after a finished photo: added to its generations and made the photo it shows. Pure. */
 function landed(base, { genId, gen, claimAt }) {
   const p = base || {};
   const next = { ...p, gens: { ...(p.gens || {}), [genId]: gen }, genId, use: "generated" };
+  delete next.failed; // a photo landed: no longer "Failed, tap to retry"
   if (p.generating && p.generating.at === claimAt) delete next.generating;
   return core.withRev(next, base);
 }
@@ -144,12 +173,13 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
   let res, final = null;
   try {
     if (styles.ESTABLISHED.includes(kind)) {
-      // Sneakers and clothing: the New Arrivals engine and house look, at 4K, lossless.
+      // Sneakers (all footwear) and clothing: the New Arrivals engine exactly as the New Arrivals card runs it.
       const asProduct = kind === "clothing" ? { ...product, categoryKey: styles.clothingKeyFor(product.categoryKey) } : product;
+      let shown = null;
       const upload = async (p, buf, mime) => {
         const bfPath = String(p).replace("/new_arrivals/", "/black_friday/");
         const r = await e.uploadImmutable(bucket, bfPath, buf, mime);
-        if (/\/gen_\d+\.(png|jpg|webp)$/.test(bfPath)) { const m = await sharp(buf).metadata().catch(() => ({})); final = { width: m.width || null, height: m.height || null, mime, bytes: buf.length }; }
+        if (/\/gen_\d+\.(png|jpg|webp)$/.test(bfPath)) { shown = buf; const m = await sharp(buf).metadata().catch(() => ({})); final = { width: m.width || null, height: m.height || null, mime, bytes: buf.length }; }
         return r;
       };
       res = await studio.generateOne({
@@ -161,20 +191,23 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
           libraryBox: (k) => e.libraryBox(bucket, k),
           loadExamples: (k, { brand = null } = {}) => e.loadExamples(bucket, compose.forModel, brand),
           ...(deps.assets || {}),
-          spec: e.spec, generation: { ...e.generation, imageSize: BF_IMAGE_SIZE }, conditionClause: e.CONDITION_CLAUSE,
+          // New Arrivals' own settings, finishing and footwear correction: no Black Friday overrides (the revert).
+          spec: e.spec, generation: e.generation, conditionClause: e.CONDITION_CLAUSE,
           ...(deps.correct ? { correct: deps.correct } : {}),
-          finish: losslessFinish(sharp), lossless: true,
           image: e.atModelCall(db, deps.image || ((m, p, c, o) => gemini.streamImage(m, p, c, { ...o, apiKey: deps.apiKey }))),
           upload, now, log: (m) => console.warn(`bfGenerate: ${pid} — ${m}`),
         },
       });
+      // Never the original photo shown as a generated one (Junid): checked against the product's own photo.
+      if (shown) await refuseEcho({ shown, product, pid, studio, fetchBytes: deps.fetchBytes || e.fetchBytes, sharp, usage: res.usage });
     } else {
       res = await stagedGenerate({ kind, pid, product, genId, e, mods, deps: { ...deps, now }, db, emit, sharp });
       final = res.final;
     }
   } catch (err) {
     const status = Number(err.status) || 0;
-    const reason = err.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
+    const reason = err.echo ? "Failed, tap to retry — the model gave back the original photo, so nothing was charged"
+      : err.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
       : err.studioRefusal ? err.message
       : err.refusal ? "Gemini declined to make this photo"
       : status === 402 ? "the Gemini prepaid credit has run out — top it up in Google AI Studio, then tap Generate again"
@@ -182,7 +215,14 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
       : "the photo could not be made — tap Generate again";
     await release(db, pid, t0);
     console.error(`bfGenerate: ${pid} (${kind}) failed${err.paid ? " AFTER the image was made" : ""} — ${err.message}`);
-    if (err.paid || err.usage) {
+    // The card shows "Failed, tap to retry" from this mark; the next successful photo clears it.
+    await db.ref(`${core.ROOT}/photos/${pid}/failed`).set({ at: now(), reason: String(reason).slice(0, 200) }).catch(() => {});
+    if (err.echo) {
+      // Nothing charged to the item or the card's AI spend; the provider's real cost is kept apart, for the record.
+      const fx = await fxAt(now());
+      const zar = record.failedCallZar({ model, usage: err.usage, prices: e.prices, fx });
+      if (Number.isFinite(zar) && zar > 0) await db.ref(`${core.ROOT}/stats`).update({ failedZar: admin.database.ServerValue.increment(zar) }).catch(() => {});
+    } else if (err.paid || err.usage) {
       const fx = await fxAt(now());
       const lost = err.paid ? record.generationCost({ model, usage: err.usage, prices: e.prices, fx }) : null;
       const zar = lost ? lost.zar : record.failedCallZar({ model, usage: err.usage, prices: e.prices, fx });
@@ -194,7 +234,8 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
   const at = now();
   const cost = record.generationCost({ model, usage: res.usage, prices: e.prices, fx: await fxAt(at) });
   const gen = {
-    url: res.generated.url, path: res.generated.path || null, at, model, imageSize: BF_IMAGE_SIZE, kind,
+    url: res.generated.url, path: res.generated.path || null, at, model, imageSize: styles.ESTABLISHED.includes(kind) ? e.generation.imageSize : BF_IMAGE_SIZE, kind,
+    ...(styles.ESTABLISHED.includes(kind) ? { pipeline: "new-arrivals" } : {}),
     costZar: Number.isFinite(cost.zar) ? cost.zar : null, costEstimated: !!cost.estimated,
     ...(final || {}), ...(res.note ? { note: res.note } : {}),
   };
@@ -234,4 +275,4 @@ const bfGenerateFn = onCall(
   },
 );
 
-module.exports = { bfGenerate: bfGenerateFn, _internals: { bfGenerate, losslessFinish, landed, claim, release, stagedGenerate, BF_IMAGE_SIZE } };
+module.exports = { bfGenerate: bfGenerateFn, _internals: { bfGenerate, losslessFinish, landed, claim, release, stagedGenerate, BF_IMAGE_SIZE, picDiff, refuseEcho, ECHO_DIFF } };
