@@ -59,6 +59,9 @@ function viewGroup(key, group, state, post) {
     newSinceApproval: items.filter((it) => it.newSinceApproval).length,
     caption: captionPreview(group.price, included),
     items,
+    // Posted under an EARLIER approval (then undone or approved again): said
+    // plainly, so a new Approve is never mistaken for a first post.
+    postedEarlierAt: post && post.status === "posted" && !(state && post.lap === state.approvedAt) ? (post.at || null) : null,
     post: post && state && post.lap === state.approvedAt ? {
       at: post.at || null, status: post.status || null,
       posted: Object.keys(post.posted || {}).length,

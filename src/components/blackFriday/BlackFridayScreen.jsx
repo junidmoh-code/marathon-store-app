@@ -62,6 +62,7 @@ function GroupRow({ g, busy, onApprove, onUndo, onTick }) {
         {g.included === g.count ? `${g.count} item${g.count === 1 ? "" : "s"}` : `${g.included} of ${g.count} items (${g.count - g.included} unticked)`}
         {g.newSinceApproval > 0 && <span style={{ color: AMBER }}> · {g.newSinceApproval} new since you approved</span>}
         {g.post?.at && <span> · posted {sast(g.post.at)}</span>}
+        {g.postedEarlierAt && <span data-testid={`earlier-${g.key}`} style={{ color: AMBER }}> · already posted {sast(g.postedEarlierAt)} — approving again sends it once more</span>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: 8 }}>
         {shown.map((it) => <Thumb key={it.pid} it={it} gkey={g.key} canTick={a.canTick} busy={busy} onTick={(item, wasOff) => onTick(g, item, wasOff)} />)}

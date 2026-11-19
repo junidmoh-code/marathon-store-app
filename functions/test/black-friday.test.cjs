@@ -71,6 +71,7 @@ test("posted → status from the poster's record; approving again is a NEW lap (
   await set(db, { action: "approve", key: "R300" }, 7000);
   v = await _internals.list(db);
   assert.equal(v.groups[0].status, "approved");
+  assert.equal(v.groups[0].postedEarlierAt, 6000, "the card says it already went out once");
   assert.equal(v.groups[0].approvedAt, 7000);
 });
 
