@@ -46,8 +46,13 @@ function captionPreview(price, items) {
 function sigOf(photo) {
   return photo && photo.use === "generated" && photo.genId && photo.gens && photo.gens[photo.genId] ? photo.genId : "current";
 }
-/** Approved, with the photo it shows now. Pure. */
-const isApproved = (pick, photo) => !!pick && pick.state === "approved" && pick.sig === sigOf(photo);
+/**
+ * Approved, with the photo it shows now. Pure. With the product's card row: its
+ * own photo must also still be the one approved (pick.shown) — a photo the
+ * 05:00 rebuild brought in is never "approved" unseen.
+ */
+const isApproved = (pick, photo, item = null) => !!pick && pick.state === "approved" && pick.sig === sigOf(photo)
+  && !(item && pick.sig === "current" && pick.shown && item.photo && item.photo !== pick.shown);
 const isRejected = (pick) => !!pick && pick.state === "rejected";
 /** Posted for THIS approval (a re-approval posts again). Pure. */
 const postedFor = (pick, posted) => !!posted && !!pick && posted.approvedAt === pick.at;
@@ -57,13 +62,13 @@ function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = 
   const sig = sigOf(photo);
   const gen = sig !== "current" ? photo.gens[sig] : null;
   const latest = photo && photo.genId && photo.gens && photo.gens[photo.genId] ? photo.gens[photo.genId] : null;
-  const approved = isApproved(pick, photo);
+  const approved = isApproved(pick, photo, it);
   const kind = it.kind || "clothing";
   return {
     pid, name: it.name || pid, price: it.price, qty: Number(it.qty) || 0, sizes: it.sizes || "", kind,
     big: (Number(it.qty) || 0) >= BIG_QTY, na: it.na === true,
     photo: it.photo || null, shown: gen ? gen.url : (it.photo || null),
-    use: sig === "current" ? "current" : "generated", genId: photo && photo.genId ? photo.genId : null,
+    use: sig === "current" ? "current" : "generated", genId: photo && photo.genId ? photo.genId : null, sig,
     generatedUrl: latest ? latest.url : null, generations: photo && photo.gens ? Object.keys(photo.gens).length : 0,
     generating: !!(photo && photo.generating && nowMs - Number(photo.generating.at) < sched.CLAIM_MS),
     // A kind whose AI look Junid has not approved yet: "Use current photo" is the safe default.
@@ -83,9 +88,10 @@ function orderRows(rows) {
  * The card for one section. node: { meta, items: { [section]: … }, picks, photos, posted, styles, stats, schedule }.
  * Rejected products are never listed (only in the small "Rejected (n)" list). Pure.
  */
-function viewSection(node, section = "main", { postingPaused = false, nowMs = Date.now() } = {}) {
+function viewSection(node, section = "main", { postingPaused = false, nowMs = Date.now(), extraApproved = {} } = {}) {
   const n = node || {};
-  const items = ((n.items || {})[section]) || {};
+  // extraApproved: the other section's APPROVED products (so the Approved tab always shows every approval).
+  const items = { ...extraApproved, ...(((n.items || {})[section]) || {}) };
   const picks = n.picks || {}, photos = n.photos || {}, posted = n.posted || {}, styles = n.styles || {};
   const rows = [];
   for (const [pid, it] of Object.entries(items)) {
@@ -94,11 +100,13 @@ function viewSection(node, section = "main", { postingPaused = false, nowMs = Da
   }
   const ordered = orderRows(rows);
   const m = n.meta || {};
-  const rejected = Object.entries(picks).filter(([, p]) => isRejected(p)).map(([pid, p]) => ({ pid, name: p.name || pid, section: p.section || null, at: p.at || null }))
+  const idx = n.idx || null;
+  const live = (pid) => !idx || !!idx[pid];
+  const rejected = Object.entries(picks).filter(([pid, p]) => isRejected(p) && live(pid)).map(([pid, p]) => ({ pid, name: p.name || pid, section: p.section || null, at: p.at || null }))
     .sort((a, b) => (b.at || 0) - (a.at || 0));
   return {
     section,
-    review: ordered.filter((r) => r.tab === "review"),
+    review: ordered.filter((r) => r.tab === "review" && !extraApproved[r.pid]),
     approved: ordered.filter((r) => r.tab === "approved"),
     totals: totalsOf(n, picks, photos),
     rejected,
@@ -110,11 +118,17 @@ function viewSection(node, section = "main", { postingPaused = false, nowMs = Da
   };
 }
 
-/** To review / Approved across BOTH sections, and AI spend. Pure. */
+/**
+ * To review / Approved across BOTH sections, and AI spend — counting only
+ * products in the campaign now (idx, written by the build): a pick for a
+ * product that sold out and left is never a ghost in the counts. Pure.
+ */
 function totalsOf(n, picks, photos) {
   const m = n.meta || {};
+  const idx = n.idx || null;
   let approved = 0, rejected = 0;
   for (const [pid, p] of Object.entries(picks)) {
+    if (idx && !idx[pid]) continue;
     if (isRejected(p)) rejected += 1;
     else if (isApproved(p, photos[pid])) approved += 1;
   }
@@ -128,11 +142,20 @@ const planView = (plan) => Object.entries(plan || {}).map(([album, e]) => ({ alb
 
 // ── the taps, as transaction mutators on picks/{pid} ─────────────────────────
 /** item: the product's row (from items/{section}); photo: photos/{pid}. */
-function approveMutator({ item, section, photo, uid, nowMs }, out = {}) {
+/**
+ * seenSig: the photo the card showed when Junid tapped ("current" or a genId).
+ * A different photo now (a generation landed meanwhile) is refused — never an
+ * approval of a photo he has not seen. onlyIfUntouched: "Approve all 30+".
+ * `shown` pins the exact image approved.
+ */
+function approveMutator({ item, section, photo, uid, nowMs, seenSig = null, onlyIfUntouched = false }, out = {}) {
   return (cur) => {
     const sig = sigOf(photo);
-    if (cur && cur.state === "approved" && cur.sig === sig) { out.noop = true; return undefined; }
-    return { state: "approved", sig, at: nowMs, by: uid || null, section, price: item.price, kind: item.kind || "clothing", name: item.name || "", sizes: item.sizes || "" };
+    if (seenSig && seenSig !== sig) { out.refusal = "its photo changed since the card loaded — look again, then approve"; return undefined; }
+    if (onlyIfUntouched && cur && cur.state) { out.noop = true; return undefined; }
+    const shown = sig === "current" ? (item.photo || null) : ((photo.gens[sig] && photo.gens[sig].url) || null);
+    if (cur && cur.state === "approved" && cur.sig === sig && cur.shown === shown) { out.noop = true; return undefined; }
+    return { state: "approved", sig, shown, at: nowMs, by: uid || null, section, price: item.price, kind: item.kind || "clothing", name: item.name || "", sizes: item.sizes || "" };
   };
 }
 function rejectMutator({ item, section, uid, nowMs }, out = {}) {

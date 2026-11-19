@@ -56,7 +56,7 @@ test("Approve moves a product to Approved; Reject removes it from the list; reje
   const db = seed();
   const r = await tap(db, { action: "approve", pid: "c" }, 5000);
   assert.equal(r.row.tab, "approved");
-  assert.deepEqual({ ...(await pick(db, "c")), rev: undefined }, { state: "approved", sig: "current", at: 5000, by: "junid", section: "main", price: 150, kind: "headwear", name: "Cap C", sizes: "M-XL", rev: undefined });
+  assert.deepEqual({ ...(await pick(db, "c")), rev: undefined }, { state: "approved", sig: "current", shown: "https://x/Cap C.jpg", at: 5000, by: "junid", section: "main", price: 150, kind: "headwear", name: "Cap C", sizes: "M-XL", rev: undefined });
   await tap(db, { action: "reject", pid: "d" }, 6000);
   // The 05:00 rebuild writes the product again — it stays rejected.
   await db.ref("bf_campaign_2026/items/main/d").set(it_("Hoodie D", 450, 14));
@@ -76,13 +76,58 @@ test("Approve moves a product to Approved; Reject removes it from the list; reje
 test("Approve all 30+: every untouched 30+ product in MAIN; never a rejected one; still rejectable after", async () => {
   const db = seed();
   await tap(db, { action: "reject", pid: "b" });
-  const r = await _internals.approveBig(db, "junid", 9000);
+  const r = await _internals.approveBig(db, { a: "current", b: "current" }, "junid", 9000);
   assert.equal(r.approved, 1);
   assert.equal((await pick(db, "a")).state, "approved");
   assert.equal((await pick(db, "b")).state, "rejected", "a rejection is never overridden");
   assert.equal(await pick(db, "c"), null, "20 on hand is not 30+");
   await tap(db, { action: "reject", pid: "a" });
   assert.equal((await pick(db, "a")).state, "rejected");
+});
+
+test("the photo approved is PINNED: a photo the 05:00 rebuild brings in is not approved until Junid sees it", async () => {
+  const db = seed();
+  await tap(db, { action: "approve", pid: "a" });
+  await db.ref("bf_campaign_2026/items/main/a/photo").set("https://x/new-photo.jpg");
+  const v = await _internals.list(db);
+  assert.equal(v.review.find((x) => x.pid === "a").changedSinceApproval, true);
+  assert.equal((await tap(db, { action: "approve", pid: "a" }, 2000)).row.tab, "approved");
+  assert.equal((await pick(db, "a")).shown, "https://x/new-photo.jpg");
+});
+
+test("Approve approves only the photo the card showed (a generation that landed meanwhile is refused)", async () => {
+  const db = seed();
+  await db.ref("bf_campaign_2026/photos/a").set({ use: "generated", genId: "g1790000000001", gens: { g1790000000001: { url: "u" } }, rev: 1 });
+  assert.match((await tap(db, { action: "approve", pid: "a", sig: "current" })).refusal, /photo changed/);
+  assert.equal((await tap(db, { action: "approve", pid: "a", sig: "g1790000000001" })).row.tab, "approved");
+  await assert.rejects(tap(db, { action: "approve", pid: "b", sig: "../x" }), /Which photo/);
+});
+
+test("Approve all 30+ never overwrites a reject made in the same moment, nor a photo the card did not show", async () => {
+  const db = seed();
+  await db.ref("bf_campaign_2026/photos/b").set({ use: "generated", genId: "g1790000000002", gens: { g1790000000002: { url: "u" } }, rev: 1 });
+  // The card showed a and b with their current photos; meanwhile b got a generation and a was rejected.
+  await tap(db, { action: "reject", pid: "a" });
+  const r = await _internals.approveBig(db, { a: "current", b: "current", c: "current" }, "junid", 9000);
+  assert.equal(r.approved, 0);
+  assert.equal((await pick(db, "a")).state, "rejected");
+  assert.equal(await pick(db, "b"), null);
+  assert.equal(await pick(db, "c"), null, "20 on hand is never in Approve all 30+");
+});
+
+test("counts include only products in the campaign now (idx); under-13 approvals show on the Approved tab", async () => {
+  const db = seed({ idx: { a: "m", b: "m", c: "m", d: "m", u: "u", v: "u" } });
+  await tap(db, { action: "reject", pid: "a" });
+  await tap(db, { action: "approve", pid: "u", section: "under" });
+  // a sells out and leaves the campaign.
+  await db.ref("bf_campaign_2026/idx/a").remove();
+  await db.ref("bf_campaign_2026/items/main/a").remove();
+  await db.ref("bf_campaign_2026/meta/main").set(3);
+  const v = await _internals.list(db);
+  assert.deepEqual(v.totals, { review: 4, approved: 1, rejected: 0, spentZar: 0 });
+  assert.deepEqual(v.rejected, [], "no ghost in Rejected (n)");
+  assert.deepEqual(v.approved.map((x) => x.pid), ["u"], "the under-13 approval is on the Approved tab");
+  assert.ok(!v.review.some((x) => x.pid === "u"));
 });
 
 test("AN APPROVAL IS OF A PHOTO: a new generation sends the product back to To review", async () => {

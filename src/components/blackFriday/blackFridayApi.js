@@ -12,12 +12,14 @@ export const blackFridayApi = {
   // One section: "main" (13+ on hand) or "under" (Show under 13).
   // → { review: [row], approved: [row], totals, rejected, styles, schedule, plan, postingPaused, meta }
   list: (section = "main") => call("bfCampaignList")({ section }),
-  approve: (pid, section) => set({ action: "approve", pid, section }),
+  // sig: the photo the card showed ("current" or a genId) — a different photo now is refused.
+  approve: (pid, section, sig) => set({ action: "approve", pid, section, ...(sig ? { sig } : {}) }),
   reject: (pid, section) => set({ action: "reject", pid, section }),
   // Back to To review: undo a rejection, or take back an approval.
   reset: (pid) => set({ action: "reset", pid }),
   use: (pid, use, genId = null, section) => set({ action: "use", pid, use, section, ...(genId ? { genId } : {}) }),
-  approveBig: () => set({ action: "approveBig" }),
+  // sigs: { pid: sig } of the 30+ rows the card shows in To review.
+  approveBig: (sigs) => set({ action: "approveBig", sigs }),
   approveStyle: (kind) => set({ action: "approveStyle", kind }),
   schedule: (schedule, { confirm = false } = {}) => set({ action: "schedule", schedule, confirm: confirm === true }),
   clearSchedule: () => set({ action: "clearSchedule" }),

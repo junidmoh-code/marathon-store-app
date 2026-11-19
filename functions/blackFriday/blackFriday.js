@@ -37,13 +37,20 @@ const val = async (db, path) => (await db.ref(path).once("value")).val();
 /** One section, read narrowly: that section's products and the small decision nodes (never `decisions`). */
 async function list(db, section = "main") {
   if (!core.SECTIONS.includes(section)) throw new HttpsError("invalid-argument", "main or under.");
-  const parts = ["meta", `items/${section}`, "picks", "photos", "posted", "styles", "stats", "schedule"];
+  const parts = ["meta", `items/${section}`, "picks", "photos", "posted", "styles", "stats", "schedule", "idx"];
   const [vals, paused] = await Promise.all([
     Promise.all(parts.map((p) => val(db, `${core.ROOT}/${p}`))),
     val(db, POSTING_PAUSE).catch(() => null),
   ]);
-  const node = { meta: vals[0], items: { [section]: vals[1] }, picks: vals[2], photos: vals[3], posted: vals[4], styles: vals[5], stats: vals[6], schedule: vals[7] };
-  return core.viewSection(node, section, { postingPaused: paused === true });
+  const node = { meta: vals[0], items: { [section]: vals[1] }, picks: vals[2], photos: vals[3], posted: vals[4], styles: vals[5], stats: vals[6], schedule: vals[7], idx: vals[8] };
+  // The Approved tab shows EVERY approval: on the main view, the under-13 products Junid approved are read one by one.
+  const extraApproved = {};
+  if (section === "main") {
+    const other = Object.entries(node.picks || {}).filter(([pid, p]) => p && p.state === "approved" && p.section === "under" && !(node.items.main || {})[pid]);
+    const rows = await Promise.all(other.map(([pid]) => val(db, `${core.ROOT}/items/under/${pid}`)));
+    other.forEach(([pid], i) => { if (rows[i]) extraApproved[pid] = rows[i]; });
+  }
+  return core.viewSection(node, section, { postingPaused: paused === true, extraApproved });
 }
 
 /** A transaction safe on a Cloud Function's cold first callback (the node is never deleted: core.withRev). */
@@ -79,7 +86,7 @@ async function findItem(db, pid, hint) {
   return { item: null, section: null };
 }
 
-async function tap(db, { action, pid, section, use, genId }, uid, nowMs) {
+async function tap(db, { action, pid, section, use, genId, sig }, uid, nowMs) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Which product?");
   if (!["approve", "reject", "reset", "use"].includes(action)) throw new HttpsError("invalid-argument", "approve, reject, reset or use.");
   const out = {};
@@ -92,7 +99,8 @@ async function tap(db, { action, pid, section, use, genId }, uid, nowMs) {
     await revTransaction(db.ref(`${core.ROOT}/photos/${pid}`), core.useMutator({ use, genId: genId || null }, out), out);
   } else if (action === "approve") {
     const photo = await val(db, `${core.ROOT}/photos/${pid}`);
-    await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs }, out), out);
+    if (sig !== undefined && sig !== null && sig !== "current" && !core.GEN_RE.test(String(sig))) throw new HttpsError("invalid-argument", "Which photo?");
+    await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs, seenSig: sig || null }, out), out);
   } else if (action === "reject") {
     await revTransaction(pickRef, core.rejectMutator({ item, section: sec, uid, nowMs }, out), out);
   } else {
@@ -107,21 +115,29 @@ async function tap(db, { action, pid, section, use, genId }, uid, nowMs) {
   return { ok: true, pid, noop: !!out.noop, rejected: core.isRejected(pick), row: item ? core.viewItem(pid, item, { pick, photo, posted, styles: styles || {}, nowMs }) : null };
 }
 
-/** "Approve all 30+": every MAIN product with 30+ on hand still in To review (not rejected, not approved). */
-async function approveBig(db, uid, nowMs) {
-  const [items, picks, photos] = await Promise.all(["items/main", "picks", "photos"].map((p) => val(db, `${core.ROOT}/${p}`)));
-  const todo = Object.entries(items || {}).filter(([pid, it]) => it && Number(it.qty) >= core.BIG_QTY && !(picks || {})[pid]?.state);
-  const upd = {};
-  for (const [pid, it] of todo) {
-    upd[`picks/${pid}`] = core.withRev({ state: "approved", sig: core.sigOf((photos || {})[pid]), at: nowMs, by: uid || null, section: "main", price: it.price, kind: it.kind || "clothing", name: it.name || "", sizes: it.sizes || "" }, (picks || {})[pid]);
+/**
+ * "Approve all 30+": every MAIN product with 30+ on hand still in To review,
+ * each with the photo the card showed (sigs: { pid: sig }). One transaction per
+ * product: a product rejected or re-photographed meanwhile is left alone.
+ */
+async function approveBig(db, sigs, uid, nowMs) {
+  const items = (await val(db, `${core.ROOT}/items/main`)) || {};
+  const asked = sigs && typeof sigs === "object" ? sigs : {};
+  const todo = Object.entries(items).filter(([pid, it]) => it && Number(it.qty) >= core.BIG_QTY && core.PID_RE.test(pid) && Object.prototype.hasOwnProperty.call(asked, pid));
+  let approved = 0;
+  for (let i = 0; i < todo.length; i += 25) {
+    await Promise.all(todo.slice(i, i + 25).map(async ([pid, it]) => {
+      const out = {};
+      const photo = await val(db, `${core.ROOT}/photos/${pid}`);
+      const res = await revTransaction(db.ref(`${core.ROOT}/picks/${pid}`), core.approveMutator({ item: it, section: "main", photo, uid, nowMs, seenSig: String(asked[pid] || "current"), onlyIfUntouched: true }, out), out);
+      if (res && res.committed && !out.noop && !out.refusal) approved += 1;
+    }));
   }
-  // One multi-path write over products nobody has touched; the plan re-checks each photo signature, so nothing posts unseen.
-  if (todo.length) {
-    await db.ref(core.ROOT).update(upd);
-    await log(db, { at: nowMs, by: uid || null, action: "approveBig", count: todo.length });
+  if (approved) {
+    await log(db, { at: nowMs, by: uid || null, action: "approveBig", count: approved });
     await replan(db, nowMs);
   }
-  return { ok: true, approved: todo.length };
+  return { ok: true, approved };
 }
 
 async function approveStyle(db, kind, uid, nowMs) {
@@ -165,9 +181,9 @@ const bfCampaignSet = onCall(callableOpts, async (request) => {
   const now = Date.now();
   if (d.action === "schedule") return schedule(db, d.schedule, { confirm: d.confirm === true }, uid, now);
   if (d.action === "clearSchedule") return clearSchedule(db, uid, now);
-  if (d.action === "approveBig") return approveBig(db, uid, now);
+  if (d.action === "approveBig") return approveBig(db, d.sigs, uid, now);
   if (d.action === "approveStyle") return approveStyle(db, d.kind, uid, now);
-  return tap(db, { action: d.action, pid: d.pid, section: d.section, use: d.use, genId: d.genId }, uid, now);
+  return tap(db, { action: d.action, pid: d.pid, section: d.section, use: d.use, genId: d.genId, sig: d.sig }, uid, now);
 });
 
 module.exports = { bfCampaignList, bfCampaignSet, _internals: { list, tap, approveBig, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };

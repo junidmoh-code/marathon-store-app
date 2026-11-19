@@ -53,7 +53,7 @@ describe("Black Friday card v3", () => {
   it("short totals; two tabs with counts; 30+ block first with Approve all 30+, then 13–29; no badges, no chips, no schedule on the main view", async () => {
     const r = await mount(fakeApi());
     expect(text(byId(r, "totals"))).toBe("To review 4605 · Approved 1 · AI spend R12.50");
-    expect(text(byId(r, "tab-review"))).toBe("To review (3)");
+    expect(text(byId(r, "tab-review"))).toBe("To review (4605)");
     expect(text(byId(r, "tab-approved"))).toBe("Approved (1)");
     expect(text(byId(r, "block-big"))).toContain("30+ on hand (2)");
     expect(text(byId(r, "approve-big"))).toBe("Approve all 30+ (2)");
@@ -68,11 +68,11 @@ describe("Black Friday card v3", () => {
     const api = fakeApi();
     const r = await mount(api);
     await act(async () => { byId(r, "approve-a").props.onClick(); });
-    expect(api.approve).toHaveBeenCalledWith("a", "main");
+    expect(api.approve).toHaveBeenCalledWith("a", "main", "current");
     await act(async () => { byId(r, "reject-b").props.onClick(); });
     expect(api.reject).toHaveBeenCalledWith("b", "main");
     await act(async () => { byId(r, "approve-big").props.onClick(); });
-    expect(api.approveBig).toHaveBeenCalled();
+    expect(api.approveBig).toHaveBeenCalledWith({ a: "current", b: "current" });
   });
 
   it("Rejected (n) is a small link at the bottom with undo", async () => {

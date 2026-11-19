@@ -155,7 +155,11 @@ export default function BlackFridayScreen({ api, onExit }) {
     const t = ++ticket.current;
     return api.list("main").then((d) => { if (t === ticket.current) { setMain(d); setError(null); } }, (e) => { if (t === ticket.current) setError(e?.message || String(e)); });
   }, [api]);
-  const loadUnder = useCallback(() => api.list("under").then(setUnder, (e) => setNote(e?.message || String(e))), [api]);
+  const underTicket = useRef(0);
+  const loadUnder = useCallback(() => {
+    const t = ++underTicket.current;
+    return api.list("under").then((d) => { if (t === underTicket.current) setUnder(d); }, (e) => setNote(e?.message || String(e)));
+  }, [api]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => { if (showUnder && !under) loadUnder(); }, [showUnder, under, loadUnder]);
 
@@ -179,7 +183,9 @@ export default function BlackFridayScreen({ api, onExit }) {
       const r = await fn();
       if (r && r.ok === false) setNote(r.refusal);
       else if (r && r.pid) patch(r.pid, r.row, r.rejected);
-      if (reload || (r && r.pid)) { load(); if (showUnder) loadUnder(); }
+      // The row was patched in place; only the main view (totals, Approved tab) is re-read — never the long under-13 list.
+      if (reload || (r && r.pid)) load();
+      if (reload && showUnder) loadUnder();
     } catch (e) { setNote(e?.message || String(e)); load(); }
     finally { setBusy(false); }
   };
@@ -192,7 +198,7 @@ export default function BlackFridayScreen({ api, onExit }) {
   };
   const sec = (s) => (r) => ({ ...r, section: s });
   const on = {
-    approve: (r) => run(() => api.approve(r.pid, r.section)),
+    approve: (r) => run(() => api.approve(r.pid, r.section, r.sig || (r.use === "generated" ? r.genId : "current"))),
     reject: (r) => run(() => api.reject(r.pid, r.section)),
     reset: (r) => run(() => api.reset(r.pid)),
     use: (r, use) => run(() => api.use(r.pid, use, use === "generated" ? r.genId : null, r.section)),
@@ -203,11 +209,12 @@ export default function BlackFridayScreen({ api, onExit }) {
   const d = main;
   const t = d?.totals || {};
   const mainRows = d ? (tab === "review" ? d.review : d.approved).map(sec("main")) : [];
-  const underRows = showUnder && under ? (tab === "review" ? under.review : under.approved).map(sec("under")) : [];
+  // The Approved tab comes from the main view, which already carries every under-13 approval.
+  const underRows = showUnder && under && tab === "review" ? under.review.map(sec("under")) : [];
   const big = mainRows.filter((r) => r.big), mid = mainRows.filter((r) => !r.big);
   const bigToReview = d ? d.review.filter((r) => r.big).length : 0;
-  const nReview = (d?.review.length || 0) + (showUnder && under ? under.review.length : 0);
-  const nApproved = (d?.approved.length || 0) + (showUnder && under ? under.approved.length : 0);
+  const nReview = t.review ?? 0;
+  const nApproved = d?.approved.length || 0;
   const shared = { busy, gens, on };
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: "14px 14px 96px" }}>
@@ -235,7 +242,7 @@ export default function BlackFridayScreen({ api, onExit }) {
               </div>
             )}
             <Block testid="block-big" title="30+ on hand" rows={big} {...shared}>
-              {tab === "review" && bigToReview > 0 && <button data-testid="approve-big" disabled={busy} onClick={() => run(() => api.approveBig(), { reload: true })} style={{ ...bGreen, padding: "6px 10px", fontSize: 12 }}>Approve all 30+ ({bigToReview})</button>}
+              {tab === "review" && bigToReview > 0 && <button data-testid="approve-big" disabled={busy} onClick={() => run(() => api.approveBig(Object.fromEntries(d.review.filter((x) => x.big).map((x) => [x.pid, x.sig || (x.use === "generated" ? x.genId : "current")]))), { reload: true })} style={{ ...bGreen, padding: "6px 10px", fontSize: 12 }}>Approve all 30+ ({bigToReview})</button>}
             </Block>
             <Block testid="block-mid" title="13–29 on hand" rows={mid} {...shared} />
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0" }}>
