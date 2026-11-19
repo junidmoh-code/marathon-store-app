@@ -1,44 +1,39 @@
-// ─── BLACK FRIDAY 2026 — Generate (one Gemini photo, on Junid's tap) ─────────
-// bfGenerate  Junid taps Generate / Regenerate on ONE item of the Black Friday
-//             card. One tap = one photo. Never automatic, never retried.
+// ─── BLACK FRIDAY 2026 — Generate (one AI photo, on Junid's tap) ─────────────
+// bfGenerate  Junid taps Generate / Regenerate on ONE product of the Black
+//             Friday card. One tap = one photo. Never automatic, never retried.
 //
-// THE SAME ENGINE AND HOUSE LOOK as New Arrivals (functions/newArrivals/studio
-// — Junid's plates, references, brand boxes and locked prompt), with two
-// Black Friday settings (Junid, 19 Nov: highest quality everywhere):
-//   · Gemini at its MAXIMUM size ("4K"), and
-//   · the photo kept WITHOUT recompression: cropped to the plate's shape at
-//     the model's own resolution and stored as PNG (lossless) — or the
-//     model's bytes untouched when no crop is needed. A footwear photo is
-//     placed on Junid's fixed footwear plate, so it has the plate's own
-//     resolution (also PNG).
-// New Arrivals' photos and settings are not touched. The New Arrivals
-// generation pause switch stops this too.
+// THE LOOK IS CHOSEN BY THE PRODUCT'S KIND (styles.cjs): sneakers and clothing
+// use the New Arrivals engine and house look exactly as New Arrivals does
+// (functions/newArrivals/studio); every other kind (caps & beanies, perfume,
+// bags, belts, sunglasses, watches, chains …) gets its own staging on Junid's
+// same backdrop plates. The sneaker formula is never used for anything else.
+// The product is kept exactly as photographed.
 //
-// Writes only /bf_campaign_2026/photos/{pid} and stats; the photo goes to
-// Storage at products/{pid}/black_friday/. Deploy BY NAME:
-//   firebase deploy --only functions:bfGenerate
+// Highest quality: Gemini at its MAXIMUM size ("4K"); the photo kept WITHOUT
+// recompression — cropped to the plate's shape at the model's own resolution
+// and stored as PNG, or the model's bytes untouched when no crop is needed.
+// New Arrivals is not touched. The New Arrivals generation pause stops this too.
+//
+// Writes only /bf_campaign_2026/photos/{pid} and stats; photos go to
+// products/{pid}/black_friday/. Deploy BY NAME: firebase deploy --only functions:bfGenerate
 "use strict";
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const core = require("./core.cjs");
+const styles = require("./styles.cjs");
 const pauseSwitch = require("../newArrivals/pause.cjs");
 const { isSuperAdminToken } = require("../lib/super-admins.cjs");
 
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
-const CLAIM_MS = 10 * 60 * 1000;
 const BF_IMAGE_SIZE = "4K";
 
 let engineP = null;
 const engine = () => (engineP ||= Promise.resolve().then(() => require("../newArrivals/studio.js").engine));
-
 const val = async (db, path) => (await db.ref(path).once("value")).val();
 
-/**
- * The Black Friday finish: crop to the plate's shape at the model's own
- * resolution, lossless. Untouched bytes when the shape already matches.
- */
+/** Crop to the plate's shape at the model's own resolution, lossless; untouched bytes when the shape already matches. */
 function losslessFinish(sharp) {
   return async (buf, plate) => {
     const m = await sharp(buf).metadata();
@@ -52,7 +47,6 @@ function losslessFinish(sharp) {
   };
 }
 
-/** Claim photos/{pid}: one generation at a time per item. */
 async function claim(db, pid, uid, nowMs) {
   const ref = db.ref(`${core.ROOT}/photos/${pid}`);
   const pre = (await ref.once("value")).val();
@@ -61,7 +55,7 @@ async function claim(db, pid, uid, nowMs) {
     out.refusal = null;
     const base = cur === null ? pre : cur;
     const p = base || {};
-    if (p.generating && nowMs - Number(p.generating.at) < CLAIM_MS) { out.refusal = "a photo is already being made for it"; return undefined; }
+    if (p.generating && nowMs - Number(p.generating.at) < core.CLAIM_MS) { out.refusal = "a photo is already being made for it"; return undefined; }
     return core.withRev({ ...p, generating: { at: nowMs, by: uid || null } }, base);
   });
   const v = res && res.committed && res.snapshot && res.snapshot.val();
@@ -81,7 +75,7 @@ async function release(db, pid, claimAt) {
   } catch (e) { console.error(`bfGenerate: ${pid} not released — ${e.message}`); }
 }
 
-/** The item after a finished photo: added to its generations and made the photo it shows. Pure. */
+/** The product after a finished photo: added to its generations and made the photo it shows. Pure. */
 function landed(base, { genId, gen, claimAt }) {
   const p = base || {};
   const next = { ...p, gens: { ...(p.gens || {}), [genId]: gen }, genId, use: "generated" };
@@ -89,65 +83,95 @@ function landed(base, { genId, gen, claimAt }) {
   return core.withRev(next, base);
 }
 
-async function addSpend(db, zar) {
-  if (!(Number.isFinite(zar) && zar > 0)) return;
-  try { await db.ref(`${core.ROOT}/stats`).update({ spentZar: admin.database.ServerValue.increment(zar) }); }
-  catch (e) { console.error(`bfGenerate: spend of R${zar} not counted — ${e.message}`); }
+/** A kind with its own Black Friday staging: one image call with Junid's plate, the product photo (and its box). */
+async function stagedGenerate({ kind, pid, product, genId, e, mods, deps, db, emit, sharp }) {
+  const { studio, gemini, compose } = mods;
+  const st = styles.stagingFor(kind);
+  const bucket = deps.bucket;
+  const plate = deps.assets?.loadPlateFile ? await deps.assets.loadPlateFile(st.plate) : await e.loadRoleFile(bucket, st.plate, compose.forModel);
+  const fetchBytes = deps.fetchBytes || e.fetchBytes;
+  const originalUrl = studio.originalUrlOf({ pid }, product);
+  if (!originalUrl) { const err = new Error("the product has no photo to work from"); err.studioRefusal = true; throw err; }
+  emit({ type: "status", text: "Reading the original photo…" });
+  const orig = await compose.forModel((await fetchBytes(originalUrl)).buffer);
+  let box = null;
+  if (kind === "perfume" && product.photoBoxUrl) { try { box = await compose.forModel((await fetchBytes(product.photoBoxUrl)).buffer); } catch { box = null; } }
+  const parts = [
+    gemini.textPart(styles.promptFor(kind, { hasBox: !!box, conditionClause: e.CONDITION_CLAUSE })),
+    gemini.imagePart(plate.forModel), gemini.imagePart(orig), ...(box ? [gemini.imagePart(box)] : []),
+  ];
+  const imageConfig = { aspectRatio: compose.closestAspect(plate.width, plate.height), imageSize: BF_IMAGE_SIZE };
+  emit({ type: "status", text: "Making the photo…" });
+  const image = e.atModelCall(db, deps.image || ((m, p, c, o) => gemini.streamImage(m, p, c, { ...o, apiKey: deps.apiKey })));
+  const gen = await image(e.generation.imageModel, parts, imageConfig, { onEvent: (ev) => { if (ev && ev.type === "thought" && ev.text) emit({ type: "thought", text: ev.text }); } });
+  try {
+    const m = await sharp(gen.buffer).metadata();
+    if (!m.width || !m.height) throw new Error("the image model's answer was not a readable image");
+    const fin = await losslessFinish(sharp)(gen.buffer, plate);
+    const stamp = (deps.now || Date.now)();
+    const ext = fin.mime === "image/jpeg" ? "jpg" : fin.mime === "image/webp" ? "webp" : "png";
+    const generated = await e.uploadImmutable(bucket, `products/${pid}/black_friday/gen_${stamp}.${ext}`, fin.buffer, fin.mime);
+    const fm = await sharp(fin.buffer).metadata();
+    return { generated, usage: gen.usage || null, kind, final: { width: fm.width, height: fm.height, mime: fin.mime, bytes: fin.buffer.length } };
+  } catch (err) { err.paid = true; err.usage = gen.usage || null; throw err; }
 }
 
 /**
  * deps (injectable for tests): { bucket, apiKey, now(), engine?, image?, fetchBytes?, assets?, correct?, sharp?, fx? }
- * → { ok, pid, genId, costZar, width, height, mime, item }
+ * → { ok, pid, genId, kind, costZar, width, height, mime }
  */
-async function bfGenerate(db, { key, pid }, uid, deps, emit = () => {}) {
+async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
   if (await pauseSwitch.isPaused(db, "generation")) throw new HttpsError("failed-precondition", "Paused — generation is switched off on the New Arrivals card.");
-  if (!core.KEY_RE.test(String(key || ""))) throw new HttpsError("invalid-argument", "Which group?");
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
-  const inGroup = await val(db, `${core.ROOT}/groups/${key}/items/${pid}`);
-  if (!inGroup) throw new HttpsError("invalid-argument", "That item is not in this group.");
+  const order = core.SECTIONS.includes(section) ? [section, ...core.SECTIONS.filter((s) => s !== section)] : core.SECTIONS;
+  let item = null;
+  for (const s of order) { item = await val(db, `${core.ROOT}/items/${s}/${pid}`); if (item) break; }
+  if (!item) throw new HttpsError("invalid-argument", "That product is not in the campaign.");
   const product = await val(db, `products/${pid}`);
   if (!product) throw new HttpsError("failed-precondition", "Can't generate — the product record no longer exists.");
+  const kind = item.kind || "clothing";
   const e = deps.engine || await engine();
-  const { studio, gemini, record, compose } = await e.mods();
+  const mods = await e.mods();
+  const { studio, gemini, record, compose } = mods;
   const sharp = deps.sharp || require("sharp");
   const now = deps.now || (() => Date.now());
   const fxAt = (t) => (deps.fx ? deps.fx(t) : e.usdZarToday(db, t)).catch(() => ({ rate: e.prices.usdToZar, fallback: true }));
   const t0 = now();
   await claim(db, pid, uid, t0);
   const genId = `g${t0}`;
-  const generation = { ...e.generation, imageSize: BF_IMAGE_SIZE };
-  const model = generation.imageModel;
+  const model = e.generation.imageModel;
   const bucket = deps.bucket;
-  let final = null;
-  const upload = async (p, buf, mime) => {
-    // Everything Black Friday makes lives under black_friday/, never beside New Arrivals' photos.
-    const bfPath = String(p).replace("/new_arrivals/", "/black_friday/");
-    const r = await e.uploadImmutable(bucket, bfPath, buf, mime);
-    if (/\/gen_\d+\.(png|jpg|webp)$/.test(bfPath)) {
-      const m = await sharp(buf).metadata().catch(() => ({}));
-      final = { width: m.width || null, height: m.height || null, mime, bytes: buf.length };
-    }
-    return r;
-  };
-  let res;
+  let res, final = null;
   try {
-    res = await studio.generateOne({
-      item: { pid, categoryKey: product.categoryKey || null }, product, genId, method: "full", provider: "gemini", emit,
-      deps: {
-        fetchBytes: deps.fetchBytes || e.fetchBytes,
-        loadPlate: (kind) => e.loadRoleFile(bucket, compose.ROLES[kind].plate, compose.forModel),
-        loadReference: (kind) => (compose.ROLES[kind].reference ? e.loadRoleFile(bucket, compose.ROLES[kind].reference, compose.forModel) : null),
-        libraryBox: (k) => e.libraryBox(bucket, k),
-        loadExamples: (kind, { brand = null } = {}) => e.loadExamples(bucket, compose.forModel, brand),
-        ...(deps.assets || {}),
-        spec: e.spec, generation, conditionClause: e.CONDITION_CLAUSE,
-        ...(deps.correct ? { correct: deps.correct } : {}),
-        finish: losslessFinish(sharp), lossless: true,
-        image: e.atModelCall(db, deps.image || ((m, parts, imageConfig, opts) => gemini.streamImage(m, parts, imageConfig, { ...opts, apiKey: deps.apiKey }))),
-        upload, now,
-        log: (m) => console.warn(`bfGenerate: ${pid} — ${m}`),
-      },
-    });
+    if (styles.ESTABLISHED.includes(kind)) {
+      // Sneakers and clothing: the New Arrivals engine and house look, at 4K, lossless.
+      const asProduct = kind === "clothing" ? { ...product, categoryKey: styles.clothingKeyFor(product.categoryKey) } : product;
+      const upload = async (p, buf, mime) => {
+        const bfPath = String(p).replace("/new_arrivals/", "/black_friday/");
+        const r = await e.uploadImmutable(bucket, bfPath, buf, mime);
+        if (/\/gen_\d+\.(png|jpg|webp)$/.test(bfPath)) { const m = await sharp(buf).metadata().catch(() => ({})); final = { width: m.width || null, height: m.height || null, mime, bytes: buf.length }; }
+        return r;
+      };
+      res = await studio.generateOne({
+        item: { pid, categoryKey: asProduct.categoryKey || null }, product: asProduct, genId, method: "full", provider: "gemini", emit,
+        deps: {
+          fetchBytes: deps.fetchBytes || e.fetchBytes,
+          loadPlate: (k) => e.loadRoleFile(bucket, compose.ROLES[k].plate, compose.forModel),
+          loadReference: (k) => (compose.ROLES[k].reference ? e.loadRoleFile(bucket, compose.ROLES[k].reference, compose.forModel) : null),
+          libraryBox: (k) => e.libraryBox(bucket, k),
+          loadExamples: (k, { brand = null } = {}) => e.loadExamples(bucket, compose.forModel, brand),
+          ...(deps.assets || {}),
+          spec: e.spec, generation: { ...e.generation, imageSize: BF_IMAGE_SIZE }, conditionClause: e.CONDITION_CLAUSE,
+          ...(deps.correct ? { correct: deps.correct } : {}),
+          finish: losslessFinish(sharp), lossless: true,
+          image: e.atModelCall(db, deps.image || ((m, p, c, o) => gemini.streamImage(m, p, c, { ...o, apiKey: deps.apiKey }))),
+          upload, now, log: (m) => console.warn(`bfGenerate: ${pid} — ${m}`),
+        },
+      });
+    } else {
+      res = await stagedGenerate({ kind, pid, product, genId, e, mods, deps: { ...deps, now }, db, emit, sharp });
+      final = res.final;
+    }
   } catch (err) {
     const status = Number(err.status) || 0;
     const reason = err.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
@@ -157,23 +181,22 @@ async function bfGenerate(db, { key, pid }, uid, deps, emit = () => {}) {
       : status === 429 || status === 503 ? "the photo service is busy — tap Generate again"
       : "the photo could not be made — tap Generate again";
     await release(db, pid, t0);
-    console.error(`bfGenerate: ${pid} failed${err.paid ? " AFTER the image was made" : ""} — ${err.message}`);
+    console.error(`bfGenerate: ${pid} (${kind}) failed${err.paid ? " AFTER the image was made" : ""} — ${err.message}`);
     if (err.paid || err.usage) {
       const fx = await fxAt(now());
       const lost = err.paid ? record.generationCost({ model, usage: err.usage, prices: e.prices, fx }) : null;
-      await addSpend(db, lost ? lost.zar : record.failedCallZar({ model, usage: err.usage, prices: e.prices, fx }));
+      const zar = lost ? lost.zar : record.failedCallZar({ model, usage: err.usage, prices: e.prices, fx });
+      if (Number.isFinite(zar) && zar > 0) await db.ref(`${core.ROOT}/stats`).update({ spentZar: admin.database.ServerValue.increment(zar) }).catch(() => {});
     }
     throw new HttpsError(err.studioRefusal ? "failed-precondition" : status === 402 ? "resource-exhausted" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
   }
 
   const at = now();
-  const fx = await fxAt(at);
-  const cost = record.generationCost({ model, usage: res.usage, prices: e.prices, fx });
+  const cost = record.generationCost({ model, usage: res.usage, prices: e.prices, fx: await fxAt(at) });
   const gen = {
-    url: res.generated.url, path: res.generated.path || null, at, model, imageSize: BF_IMAGE_SIZE,
+    url: res.generated.url, path: res.generated.path || null, at, model, imageSize: BF_IMAGE_SIZE, kind,
     costZar: Number.isFinite(cost.zar) ? cost.zar : null, costEstimated: !!cost.estimated,
-    ...(final || {}), kind: res.kind || null,
-    ...(res.note ? { note: res.note } : {}), ...(res.corrected !== undefined ? { corrected: !!res.corrected } : {}),
+    ...(final || {}), ...(res.note ? { note: res.note } : {}),
   };
   for (const [k, v] of Object.entries(gen)) if (v === null || v === undefined) delete gen[k];
   const ref = db.ref(`${core.ROOT}/photos/${pid}`);
@@ -182,7 +205,7 @@ async function bfGenerate(db, { key, pid }, uid, deps, emit = () => {}) {
   try {
     const done = await studio.withRetries(() => ref.transaction((cur) => {
       const base = cur === null ? pre : cur;
-      if (base && base.gens && base.gens[genId]) return undefined; // an earlier try landed it
+      if (base && base.gens && base.gens[genId]) return undefined;
       return landed(base, { genId, gen, claimAt: t0 });
     }));
     saved = done && done.snapshot && done.snapshot.val();
@@ -195,21 +218,20 @@ async function bfGenerate(db, { key, pid }, uid, deps, emit = () => {}) {
     await release(db, pid, t0);
     throw new HttpsError("internal", `No photo — the photo was made (${res.generated.path}) but could not be put on the card. It was charged; tap Generate to make another.`);
   }
-  await db.ref(`${core.ROOT}/decisions`).push().set({ at: t0, by: uid || null, action: "generate", key, pid, genId }).catch(() => {});
-  return { ok: true, pid, genId, costZar: gen.costZar || null, width: gen.width || null, height: gen.height || null, mime: gen.mime || null };
+  await db.ref(`${core.ROOT}/decisions`).push().set({ at: t0, by: uid || null, action: "generate", pid, genId, kind }).catch(() => {});
+  return { ok: true, pid, genId, kind, url: gen.url, costZar: gen.costZar || null, width: gen.width || null, height: gen.height || null, mime: gen.mime || null };
 }
 
 const bfGenerateFn = onCall(
-  // 2 vCPU for sharp; a 4K generation holds a few hundred MB of images. Not retried.
   { region: "europe-west1", memory: "2GiB", cpu: 2, timeoutSeconds: 540, concurrency: 3, maxInstances: 3, secrets: [geminiApiKey], invoker: "public" },
   async (request, response) => {
     if (!isSuperAdminToken(request.auth && request.auth.token)) throw new HttpsError("permission-denied", "The Black Friday card is Junid's.");
     const emit = request.acceptsStreaming && response ? (ev) => { response.sendChunk(ev); } : () => {};
     const d = request.data || {};
     const e = await engine();
-    return bfGenerate(admin.database(), { key: d.key, pid: d.pid }, request.auth.uid,
+    return bfGenerate(admin.database(), { pid: d.pid, section: d.section }, request.auth.uid,
       { bucket: admin.storage().bucket(e.BUCKET), apiKey: geminiApiKey.value() }, emit);
   },
 );
 
-module.exports = { bfGenerate: bfGenerateFn, _internals: { bfGenerate, losslessFinish, landed, claim, release, BF_IMAGE_SIZE } };
+module.exports = { bfGenerate: bfGenerateFn, _internals: { bfGenerate, losslessFinish, landed, claim, release, stagedGenerate, BF_IMAGE_SIZE } };

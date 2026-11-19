@@ -1,224 +1,154 @@
-// ─── BLACK FRIDAY 2026 — the card's state, pure ──────────────────────────────
-// Junid, 19 Nov 2026. The Mac mini (marathon-group-poster bin/bf-build.mjs)
-// writes the price groups to /bf_campaign_2026/groups every morning: every
-// product with more than 12 on hand PLUS every New Arrival (past 20 days),
-// grouped by exact STOCK price — clothing and sneakers never in one group.
-// Junid's approvals, photo choices and the schedule are written ONLY by the
-// card's callables; the poster records what went out in /posts.
+// ─── BLACK FRIDAY 2026 — the card's state, pure (v3, Junid 19 Nov evening) ────
+// ONE ROW PER PRODUCT. The Mac mini (marathon-group-poster bin/bf-build.mjs)
+// writes the campaign's products every morning, never a paper bag:
+//   items/main/{pid}   total on hand 13 or more (New Arrivals included)
+//   items/under/{pid}  everything else that qualifies (in stock, priced, photo)
+//                      — shown only behind "Show under 13"
+// Junid's decisions are per product (the card's callables only):
+//   picks/{pid}   { state: "approved"|"rejected", sig, at, by, section, price,
+//                   kind, name, sizes, rev }   — absent = To review.
+//                 A rejection PERSISTS: the rebuild never brings it back.
+//   photos/{pid}  { use, genId, gens, generating, rev }      (photo choice)
+//   styles/{kind} { approvedAt, by }   Junid approved that category's AI look
+//   schedule      { …, plan: { album: { due, lap, pids: { pid: true } } } }
+//   posted/{pid}  { at, sig, approvedAt, album }             (the poster)
+// GROUPING HAPPENS ONLY AT POSTING: approved products → albums of one stock
+// price and one kind (clothing and sneakers never together; caps/beanies,
+// perfumes, bags … each with their own kind), ≤ 30 photos and a caption that
+// fits, computed here when the plan is made. Only the STOCK price is shown.
 //
-//   groups/{key}    { key, label, price, division, part, parts, caption, count, builtAt,
-//                     items: { pid: { n, name, sizes, qty, photo, na? } } }      (the Mac)
-//   state/{key}     { approvedAt, approvedBy, approvedItems: { pid: sig },
-//                     excluded: { pid: true }, rev }                            (the card)
-//   photos/{pid}    { use: "current"|"generated", genId, gen, gens: { genId: gen },
-//                     generating: { at, by }, rev }                             (the card)
-//   schedule        { start, from, to, mode, gapMin, until, confirmedAt, confirmedBy,
-//                     plan: { key: dueMs }, planAt }                            (the card)
-//   stats           { spentZar, generations }                                   (bfGenerate)
-//   posts/{key}     { lap, status, at, posted, dropped }                        (the poster)
-//   decisions/{push}  one row per tap                                           (the card)
-//
-// AN APPROVAL IS OF A PHOTO: approvedItems[pid] holds the signature of the
-// photo Junid approved ("current", or the generation's id). Choosing another
-// photo or generating a new one changes the signature, so the item is simply
-// waiting again — Approve is offered (never greyed out) and nothing posts a
-// photo Junid has not seen. (`true` from the first version means "current".)
-//
-// Only the STOCK price is ever shown.
+// AN APPROVAL IS OF A PHOTO: picks.sig = "current" or the generation id
+// approved; a new photo makes the product wait again.
 "use strict";
 
+const sched = require("./schedule.cjs");
+
 const ROOT = "bf_campaign_2026";
-const KEY_RE = /^R\d+(_\d\d)?(-(clothing|sneakers))?(-part\d+)?$/;
 const PID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const GEN_RE = /^g\d{10,16}$/;
-const DIVISIONS = Object.freeze(["clothing", "sneakers"]);
-const DIVISION_LABEL = Object.freeze({ clothing: "Clothing", sneakers: "Sneakers" });
+const KIND_RE = /^[a-z][a-z0-9-]{0,30}$/;
+const SECTIONS = Object.freeze(["main", "under"]);
+const BIG_QTY = 30;            // "Approve all 30+": the first block of MAIN
+const ALBUM_MAX = 30;          // photos per album
+const CAPTION_MAX = 950;       // caption characters (WhatsApp's limit is 1024)
+// The AI looks Junid has had since October; every other kind needs his OK on its sample first.
+const ESTABLISHED_STYLES = Object.freeze(["sneakers", "clothing"]);
+const KIND_LABEL = Object.freeze({ sneakers: "Sneakers", clothing: "Clothing", headwear: "Caps & beanies", perfume: "Perfume", bags: "Bags", belts: "Belts", sunglasses: "Sunglasses", watches: "Watches", jewellery: "Chains & bracelets", accessories: "Accessories" });
 
-// Junid's caption, word for word — the Mac's src/bf/core.mjs CAPTION_TEXT.
 const priceLabel = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
+const priceKey = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2).replace(".", "_")}`);
 const sizesPhrase = (t) => (t === "one size" ? "one size" : `sizes ${t}`);
 function captionPreview(price, items) {
   const lines = items.map((it, i) => `${i + 1}. ${String(it.name || "").trim()} — ${sizesPhrase(it.sizes)}`);
   return [`BLACK FRIDAY 🔥 ${priceLabel(price)} EACH`, ...lines, "Message us to order."].join("\n");
 }
 
-/** The photo an item would post now: its signature. Pure. */
 function sigOf(photo) {
   return photo && photo.use === "generated" && photo.genId && photo.gens && photo.gens[photo.genId] ? photo.genId : "current";
 }
-/** Is pid approved with the photo it shows now? Pure. */
-function itemApproved(state, pid, photo) {
-  const v = state && state.approvedItems ? state.approvedItems[pid] : undefined;
-  if (v === undefined || v === null || v === false) return false;
+/** Approved, with the photo it shows now. Pure. */
+const isApproved = (pick, photo) => !!pick && pick.state === "approved" && pick.sig === sigOf(photo);
+const isRejected = (pick) => !!pick && pick.state === "rejected";
+/** Posted for THIS approval (a re-approval posts again). Pure. */
+const postedFor = (pick, posted) => !!posted && !!pick && posted.approvedAt === pick.at;
+
+/** One product row as the card shows it. Pure. */
+function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = {}, nowMs = Date.now() } = {}) {
   const sig = sigOf(photo);
-  return v === sig || (v === true && sig === "current");
-}
-
-function groupStatus(state, post) {
-  const lap = (state && state.approvedAt) || null;
-  if (lap && post && post.lap === lap) {
-    if (post.status === "sold out") return "sold out";
-    if (post.status === "held") return "held";
-    return post.dropped && Object.keys(post.dropped).length ? "partly sold out" : "posted";
-  }
-  return lap ? "approved" : "waiting";
-}
-
-const itemsInOrder = (group) => Object.entries((group && group.items) || {})
-  .map(([pid, it]) => ({ pid, ...it })).sort((a, b) => (a.n || 0) - (b.n || 0));
-
-/** The pids a group would post now: approved with their current photo, not unticked. Pure. */
-function postablePids(group, state, photos) {
-  const ex = (state && state.excluded) || {};
-  return itemsInOrder(group).map((it) => it.pid).filter((pid) => ex[pid] !== true && itemApproved(state, pid, (photos || {})[pid]));
-}
-/** Every ticked item approved with the photo it shows — the only way a group is queued. Pure. */
-function groupComplete(group, state, photos) {
-  const ex = (state && state.excluded) || {};
-  const ticked = itemsInOrder(group).filter((it) => ex[it.pid] !== true);
-  return ticked.length > 0 && postablePids(group, state, photos).length === ticked.length;
-}
-
-/** One group as the card shows it. Pure. */
-function viewGroup(key, group, state, post, photos = {}, planDue = null, nowMs = Date.now()) {
-  const excluded = (state && state.excluded) || {};
-  const status = groupStatus(state, post);
-  const items = itemsInOrder(group).map((it) => {
-    const ph = photos[it.pid] || null;
-    const sig = sigOf(ph);
-    const gen = sig !== "current" ? ph.gens[sig] : null;
-    const latestGen = ph && ph.genId && ph.gens && ph.gens[ph.genId] ? ph.gens[ph.genId] : null;
-    const approved = itemApproved(state, it.pid, ph);
-    return {
-      pid: it.pid, n: it.n, name: it.name || it.pid, sizes: it.sizes || "", qty: it.qty || 0,
-      photo: it.photo || null, na: it.na === true,
-      excluded: excluded[it.pid] === true,
-      use: sig === "current" ? "current" : "generated",
-      shown: gen ? gen.url : (it.photo || null),
-      generatedUrl: latestGen ? latestGen.url : null,
-      genId: ph && ph.genId ? ph.genId : null,
-      generations: ph && ph.gens ? Object.keys(ph.gens).length : 0,
-      // A claim older than CLAIM_MS is dead (the run crashed before giving it back): not generating.
-      generating: !!(ph && ph.generating && ph.generating.at && nowMs - Number(ph.generating.at) < CLAIM_MS),
-      approved,
-      // Approved with a photo it no longer shows (Junid chose another or generated a new one): waiting again.
-      changedSinceApproval: !approved && !!(state && state.approvedItems && state.approvedItems[it.pid]),
-    };
-  });
-  const included = items.filter((it) => !it.excluded);
-  const approvedItems = included.filter((it) => it.approved);
+  const gen = sig !== "current" ? photo.gens[sig] : null;
+  const latest = photo && photo.genId && photo.gens && photo.gens[photo.genId] ? photo.gens[photo.genId] : null;
+  const approved = isApproved(pick, photo);
+  const kind = it.kind || "clothing";
   return {
-    key, label: group.label || key, price: group.price, division: group.division || null,
-    part: group.part || 1, parts: group.parts || 1,
-    count: items.length, included: included.length, approvedCount: approvedItems.length, status,
-    // Queued to post only when EVERY ticked item is approved with the photo it shows (never a partial album).
-    complete: included.length > 0 && approvedItems.length === included.length,
-    approvedAt: (state && state.approvedAt) || null,
-    dueAt: status === "approved" ? planDue : null,
-    caption: captionPreview(group.price, approvedItems.length ? approvedItems : included),
-    items,
-    postedEarlierAt: post && post.status === "posted" && !(state && post.lap === state.approvedAt) ? (post.at || null) : null,
-    post: post && state && post.lap === state.approvedAt ? {
-      at: post.at || null, status: post.status || null,
-      posted: Object.keys(post.posted || {}).length,
-      dropped: Object.entries(post.dropped || {}).map(([pid, d]) => ({ pid, name: (d && d.name) || pid, why: (d && d.why) || "" })),
-    } : null,
+    pid, name: it.name || pid, price: it.price, qty: Number(it.qty) || 0, sizes: it.sizes || "", kind,
+    big: (Number(it.qty) || 0) >= BIG_QTY, na: it.na === true,
+    photo: it.photo || null, shown: gen ? gen.url : (it.photo || null),
+    use: sig === "current" ? "current" : "generated", genId: photo && photo.genId ? photo.genId : null,
+    generatedUrl: latest ? latest.url : null, generations: photo && photo.gens ? Object.keys(photo.gens).length : 0,
+    generating: !!(photo && photo.generating && nowMs - Number(photo.generating.at) < sched.CLAIM_MS),
+    // A kind whose AI look Junid has not approved yet: "Use current photo" is the safe default.
+    styleApproved: ESTABLISHED_STYLES.includes(kind) || !!(styles[kind] && styles[kind].approvedAt),
+    tab: approved ? "approved" : "review",
+    changedSinceApproval: !!pick && pick.state === "approved" && !approved,
+    posted: approved && postedFor(pick, posted) ? (posted.at || true) : null,
   };
 }
 
-/** The totals at the top of the card. Pure. */
-function totalsOf(list, stats) {
-  const pids = new Set(), ai = new Set();
-  let photosN = 0, approved = 0, waiting = 0;
-  for (const g of list) {
-    for (const it of g.items) {
-      pids.add(it.pid);
-      if (it.generations > 0) ai.add(it.pid);
-      if (it.excluded) continue;
-      photosN += 1;
-      if (it.approved) approved += 1; else waiting += 1;
-    }
-  }
-  const spent = Number(stats && stats.spentZar) || 0;
-  return { products: pids.size, photos: photosN, groups: list.length, aiPhotos: ai.size, approved, waiting, spentZar: Math.round(spent * 100) / 100 };
+/** MAIN order: every 30+ product first (one block, highest first), then 13–29 (highest first). UNDER: highest first. Pure. */
+function orderRows(rows) {
+  return [...rows].sort((a, b) => (Number(b.big) - Number(a.big)) || (b.qty - a.qty) || String(a.name).localeCompare(String(b.name)) || (a.pid < b.pid ? -1 : 1));
 }
 
-/** The whole card from the campaign node. Pure. */
-function viewCampaign(node, { postingPaused = false, nowMs = Date.now() } = {}) {
+/**
+ * The card for one section. node: { meta, items: { [section]: … }, picks, photos, posted, styles, stats, schedule }.
+ * Rejected products are never listed (only in the small "Rejected (n)" list). Pure.
+ */
+function viewSection(node, section = "main", { postingPaused = false, nowMs = Date.now() } = {}) {
   const n = node || {};
-  const groups = n.groups || {};
-  const photos = n.photos || {};
-  const plan = (n.schedule && n.schedule.plan) || {};
-  const keys = (n.meta && Array.isArray(n.meta.keys) ? n.meta.keys : Object.keys(groups)).filter((k) => groups[k]);
-  const list = keys.map((k) => viewGroup(k, groups[k], (n.state || {})[k] || null, (n.posts || {})[k] || null, photos, plan[k] || null, nowMs));
-  const counts = {};
-  for (const g of list) counts[g.status] = (counts[g.status] || 0) + 1;
+  const items = ((n.items || {})[section]) || {};
+  const picks = n.picks || {}, photos = n.photos || {}, posted = n.posted || {}, styles = n.styles || {};
+  const rows = [];
+  for (const [pid, it] of Object.entries(items)) {
+    if (!it || isRejected(picks[pid])) continue;
+    rows.push(viewItem(pid, it, { pick: picks[pid], photo: photos[pid], posted: posted[pid], styles, nowMs }));
+  }
+  const ordered = orderRows(rows);
   const m = n.meta || {};
-  const s = n.schedule || null;
+  const rejected = Object.entries(picks).filter(([, p]) => isRejected(p)).map(([pid, p]) => ({ pid, name: p.name || pid, section: p.section || null, at: p.at || null }))
+    .sort((a, b) => (b.at || 0) - (a.at || 0));
   return {
-    groups: list, counts, totals: totalsOf(list, n.stats),
-    schedule: s && s.confirmedAt ? { start: s.start, from: s.from, to: s.to, mode: s.mode, gapMin: s.gapMin || null, until: s.until || null, confirmedAt: s.confirmedAt, planAt: s.planAt || null } : null,
+    section,
+    review: ordered.filter((r) => r.tab === "review"),
+    approved: ordered.filter((r) => r.tab === "approved"),
+    totals: totalsOf(n, picks, photos),
+    rejected,
+    styles: Object.fromEntries(Object.entries(styles).map(([k, v]) => [k, !!(v && v.approvedAt)])),
+    schedule: n.schedule && n.schedule.confirmedAt ? { start: n.schedule.start, from: n.schedule.from, to: n.schedule.to, mode: n.schedule.mode, gapMin: n.schedule.gapMin || null, until: n.schedule.until || null, confirmedAt: n.schedule.confirmedAt } : null,
+    plan: n.schedule && n.schedule.confirmedAt ? planView(n.schedule.plan) : [],
     postingPaused: !!postingPaused,
-    meta: { builtAt: m.builtAt || null, eligible: m.eligible || 0, newArrivals: m.newArrivals || 0, groupCount: m.groupCount || list.length, noPhotoCount: m.noPhotoCount || 0, noPhoto: Array.isArray(m.noPhoto) ? m.noPhoto : [] },
+    meta: { builtAt: m.builtAt || null, main: m.main || 0, big: m.big || 0, under: m.under || 0, newArrivals: m.newArrivals || 0, paperBags: m.paperBags || 0, noPhotoCount: m.noPhotoCount || 0 },
   };
 }
 
-// ── the taps, as transaction mutators on state/{key} ─────────────────────────
-// `post` is posts/{key}; `group` is groups/{key}; `photos` the photos of its items.
+/** To review / Approved across BOTH sections, and AI spend. Pure. */
+function totalsOf(n, picks, photos) {
+  const m = n.meta || {};
+  let approved = 0, rejected = 0;
+  for (const [pid, p] of Object.entries(picks)) {
+    if (isRejected(p)) rejected += 1;
+    else if (isApproved(p, photos[pid])) approved += 1;
+  }
+  const all = (Number(m.main) || 0) + (Number(m.under) || 0);
+  const spent = Number(n.stats && n.stats.spentZar) || 0;
+  return { review: Math.max(0, all - approved - rejected), approved, rejected, spentZar: Math.round(spent * 100) / 100 };
+}
 
-/**
- * Approve: one item (pid) or the whole group (every item not unticked), each
- * with the photo it shows now. A posted group approved again is a new lap.
- */
-function approveMutator({ group, post, uid, nowMs, photos = {}, pid = null }, out = {}) {
+const planView = (plan) => Object.entries(plan || {}).map(([album, e]) => ({ album, due: Number(e && e.due) || null, count: Object.keys((e && e.pids) || {}).length }))
+  .sort((a, b) => (a.due || 0) - (b.due || 0));
+
+// ── the taps, as transaction mutators on picks/{pid} ─────────────────────────
+/** item: the product's row (from items/{section}); photo: photos/{pid}. */
+function approveMutator({ item, section, photo, uid, nowMs }, out = {}) {
   return (cur) => {
-    const s = cur || {};
-    const excluded = s.excluded || {};
-    const pids = (pid ? [pid] : itemsInOrder(group).map((it) => it.pid)).filter((p) => excluded[p] !== true);
-    if (!pids.length) { out.refusal = pid ? "that item is unticked — tick it first" : "every item is unticked — tick at least one"; return undefined; }
-    const status = groupStatus(s, post);
-    const cover = Object.fromEntries(pids.map((p) => [p, sigOf(photos[p])]));
-    if (status === "approved" && pids.every((p) => itemApproved(s, p, photos[p]))) { out.noop = true; return undefined; }
-    const keepLap = status === "approved";
-    out.lap = keepLap ? s.approvedAt : nowMs;
-    return { ...s, approvedAt: out.lap, approvedBy: uid || null, approvedItems: keepLap ? { ...(s.approvedItems || {}), ...cover } : cover };
+    const sig = sigOf(photo);
+    if (cur && cur.state === "approved" && cur.sig === sig) { out.noop = true; return undefined; }
+    return { state: "approved", sig, at: nowMs, by: uid || null, section, price: item.price, kind: item.kind || "clothing", name: item.name || "", sizes: item.sizes || "" };
   };
 }
-
-/** Undo a group's approval that has not posted. */
-function unapproveMutator({ post }, out = {}) {
+function rejectMutator({ item, section, uid, nowMs }, out = {}) {
   return (cur) => {
-    const s = cur || {};
-    const status = groupStatus(s, post);
-    if (status === "waiting") { out.noop = true; return undefined; }
-    if (status !== "approved") { out.refusal = "already posted — nothing to undo"; return undefined; }
-    const { approvedAt, approvedBy, approvedItems, ...rest } = s; // eslint-disable-line no-unused-vars
-    return Object.keys(rest).length ? rest : null;
+    if (cur && cur.state === "rejected") { out.noop = true; return undefined; }
+    return { state: "rejected", at: nowMs, by: uid || null, section, name: (item && item.name) || (cur && cur.name) || "" };
   };
 }
-
-/**
- * Untick (exclude) or tick (include) one item. An untick drops the item from a
- * waiting approval; ticking it back does NOT approve it (it has its own Approve).
- */
-function tickMutator({ pid, include, post }, out = {}) {
+/** Back to To review (undo a rejection, or take back an approval). The node stays (rev). */
+function resetMutator(out = {}) {
   return (cur) => {
-    const s = { ...(cur || {}) };
-    const excluded = { ...(s.excluded || {}) };
-    if (include) delete excluded[pid]; else excluded[pid] = true;
-    s.excluded = Object.keys(excluded).length ? excluded : null;
-    if (groupStatus(cur || {}, post) === "approved") {
-      const ap = { ...(s.approvedItems || {}) };
-      if (!include) delete ap[pid];
-      if (Object.keys(ap).length) s.approvedItems = ap;
-      else { s.approvedItems = null; s.approvedAt = null; s.approvedBy = null; out.unapproved = true; }
-    }
-    const clean = Object.fromEntries(Object.entries(s).filter(([, v]) => v !== null && v !== undefined));
-    return Object.keys(clean).length ? clean : null;
+    if (!cur || !cur.state) { out.noop = true; return undefined; }
+    return { name: cur.name || "" };
   };
 }
-
-/** Choose the photo an item posts with: its current photo, or one of its generations. On photos/{pid}. */
+/** Choose the photo a product posts with. On photos/{pid}. */
 function useMutator({ use, genId = null }, out = {}) {
   return (cur) => {
     const p = cur || {};
@@ -232,146 +162,82 @@ function useMutator({ use, genId = null }, out = {}) {
     return { ...p, use: "generated", genId: id };
   };
 }
-
-/** Every state/photos write bumps `rev`, so the node is never empty and never deleted (see bfCampaignSet). */
+/** Every picks/photos write bumps `rev`, so the node is never empty and never deleted. */
 function withRev(next, base) {
   return { ...(next || {}), rev: ((base && base.rev) || 0) + 1 };
 }
 
-// ── the schedule ─────────────────────────────────────────────────────────────
-// Times are SAST (UTC+2, no daylight saving). Pure functions of their inputs.
-const SAST_MS = 2 * 3600 * 1000;
-const DAY_MS = 24 * 3600 * 1000;
-const CAMPAIGN_END_MS = Date.parse("2026-11-27T20:00:00+02:00");
-const HM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
-const NOW_GAP_MS = 3 * 60 * 1000;
-const CLAIM_MS = 10 * 60 * 1000;
-const hm = (s) => { const m = HM_RE.exec(String(s || "")); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
-const sastDayStart = (t) => Math.floor((t + SAST_MS) / DAY_MS) * DAY_MS - SAST_MS;
-
-/** The first moment at or after t inside the daily window [from, to). Pure. */
-function intoWindow(t, fromMin, toMin) {
-  const day = sastDayStart(t);
-  const open = day + fromMin * 60000, close = day + toMin * 60000;
-  if (t < open) return open;
-  if (t >= close) return open + DAY_MS;
-  return t;
-}
-/** t moved forward by `ms` of window time (time outside the window doesn't count). Pure. */
-function addWindowTime(t, ms, fromMin, toMin) {
-  let at = intoWindow(t, fromMin, toMin), left = ms;
-  for (let i = 0; i < 400 && left > 0; i++) {
-    const close = sastDayStart(at) + toMin * 60000;
-    if (at + left < close) return at + left;
-    left -= close - at;
-    at = intoWindow(close, fromMin, toMin);
+// ── posting: albums are made from the approved products, only when planning ─
+/** Approved products still to post: { pid: pick }. Pure. */
+function toPost(picks, photos, posted) {
+  const out = {};
+  for (const [pid, p] of Object.entries(picks || {})) {
+    if (!isApproved(p, (photos || {})[pid])) continue;
+    if (postedFor(p, (posted || {})[pid])) continue;
+    out[pid] = p;
   }
-  return at;
-}
-/** Window time between a and b. Pure. */
-function windowTimeBetween(a, b, fromMin, toMin) {
-  let total = 0, at = intoWindow(a, fromMin, toMin);
-  for (let i = 0; i < 400 && at < b; i++) {
-    const close = sastDayStart(at) + toMin * 60000;
-    total += Math.min(close, b) - at;
-    at = intoWindow(close, fromMin, toMin);
-  }
-  return total;
+  return out;
 }
 
-/** A schedule as typed on the card → a clean one, or { error }. Pure. */
-function cleanSchedule(raw, nowMs) {
-  const r = raw || {};
-  const mode = ["gap", "spread", "now"].includes(r.mode) ? r.mode : null;
-  if (!mode) return { error: "Choose a gap, spread evenly, or post all now." };
-  const from = r.from || "08:00", to = r.to || "20:00";
-  const fromMin = hm(from), toMin = hm(to);
-  if (fromMin === null || toMin === null || toMin <= fromMin) return { error: "The daily window must be like 08:00 to 20:00." };
-  const start = mode === "now" ? nowMs : Number(r.start);
-  if (!Number.isFinite(start) || start <= 0) return { error: "Choose a start date and time." };
-  const out = { mode, from, to, start };
-  if (mode === "gap") {
-    const g = Number(r.gapMin);
-    if (!(Number.isFinite(g) && g >= 5 && g <= 24 * 60)) return { error: "The gap must be between 5 minutes and 24 hours." };
-    out.gapMin = Math.round(g);
+/** 32-bit FNV-1a of a string → a safe whole number (the album's send id for Signal Studio). Pure. */
+function fnv(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h;
+}
+
+/**
+ * Albums: one stock price + one kind, ≤ ALBUM_MAX photos and a caption ≤
+ * CAPTION_MAX; as few near-equal parts as hold them. Products in name order.
+ * → [{ key, price, kind, part, parts, pids: [pid], lap, firstAt }]. Pure.
+ */
+function albumsOf(pending) {
+  const by = new Map();
+  for (const [pid, p] of Object.entries(pending)) {
+    const k = `${Number(p.price)}|${p.kind || "clothing"}`;
+    if (!by.has(k)) by.set(k, { price: Number(p.price), kind: p.kind || "clothing", rows: [] });
+    by.get(k).rows.push({ pid, ...p });
   }
-  if (mode === "spread") {
-    const u = Number(r.until);
-    if (!(Number.isFinite(u) && u > Math.max(start, nowMs))) return { error: "\"Spread evenly until\" must be after the start." };
-    out.until = Math.min(u, CAMPAIGN_END_MS);
+  const fits = (rows) => captionPreview(rows[0].price, rows).length <= CAPTION_MAX;
+  const out = [];
+  for (const { price, kind, rows } of [...by.values()].sort((a, b) => (a.price - b.price) || (a.kind < b.kind ? -1 : 1))) {
+    rows.sort((a, b) => String(a.name).localeCompare(String(b.name)) || (a.pid < b.pid ? -1 : 1));
+    const split = (n) => { const size = Math.floor(rows.length / n), extra = rows.length % n; const parts = []; let at = 0; for (let i = 0; i < n; i++) { const c = size + (i < extra ? 1 : 0); parts.push(rows.slice(at, at + c)); at += c; } return parts; };
+    let n = Math.ceil(rows.length / ALBUM_MAX);
+    while (n < rows.length && !split(n).every(fits)) n++;
+    split(n).forEach((part, i) => {
+      const pids = part.map((r) => r.pid);
+      out.push({ key: `${priceKey(price)}-${kind}-${i + 1}`, price, kind, part: i + 1, parts: n, pids,
+        lap: fnv(part.map((r) => `${r.pid}:${r.sig}`).join("|")), firstAt: Math.min(...part.map((r) => Number(r.at) || 0)) });
+    });
   }
   return out;
 }
 
 /**
- * Which approved group posts when. `queue`: [{ key, approvedAt, price, part }]
- * (approved, complete, not yet posted). → { key: dueMs }.
- * prevPlan: the plan as it stands. A group already in it KEEPS ITS TIME (a tap
- * never pulls the next group forward); only new groups are placed, after the
- * last kept time. A confirm passes no prevPlan: a fresh plan. A time past the
- * end of the campaign (27 Nov 20:00) is left out. Pure.
+ * The plan: { album: { due, lap, pids } }. An album already planned for a
+ * time still ahead — or not yet posted at all — keeps its time; the rest are
+ * placed after the last kept time. A confirm passes no prevPlan. Pure.
  */
-function planSchedule(queue, schedule, nowMs, prevPlan = null) {
-  const s = schedule;
-  if (!s || !queue.length) return {};
-  const order = [...queue].sort((a, b) => (a.approvedAt - b.approvedAt) || (a.price - b.price) || ((a.part || 1) - (b.part || 1)) || (a.key < b.key ? -1 : 1));
+function planAlbums(albums, schedule, nowMs, prevPlan = null, posted = {}) {
+  const keep = {};
+  for (const [key, e] of Object.entries(prevPlan || {})) {
+    if (!e || !(Number(e.due) > 0)) continue;
+    const anyPosted = Object.keys(e.pids || {}).some((pid) => posted && posted[pid] && posted[pid].album === key && Number(posted[pid].at) >= Number(e.due) - 60_000);
+    if (Number(e.due) > nowMs || !anyPosted) keep[key] = Number(e.due);
+  }
+  const queue = albums.map((a) => ({ key: a.key, approvedAt: a.firstAt, price: a.price, part: a.part }));
+  const times = sched.planSchedule(queue, schedule, nowMs, keep);
   const plan = {};
-  const prev = prevPlan || {};
-  for (const g of order) if (Number(prev[g.key]) > 0) plan[g.key] = Number(prev[g.key]);
-  const fresh = order.filter((g) => !plan[g.key]);
-  if (!fresh.length) return plan;
-  const kept = Object.values(plan);
-  const lastKept = kept.length ? Math.max(...kept) : null;
-  if (s.mode === "now") {
-    const t0 = Math.max(nowMs, s.start, lastKept ? lastKept + NOW_GAP_MS : 0);
-    fresh.forEach((g, i) => { const t = t0 + i * NOW_GAP_MS; if (t < CAMPAIGN_END_MS) plan[g.key] = t; });
-    return plan;
-  }
-  const fromMin = hm(s.from), toMin = hm(s.to);
-  let step;
-  if (s.mode === "gap") step = s.gapMin * 60000;
-  else {
-    const from = intoWindow(Math.max(s.start, nowMs, lastKept || 0), fromMin, toMin);
-    const span = windowTimeBetween(from, Math.min(s.until, CAMPAIGN_END_MS), fromMin, toMin);
-    // After kept groups, the new ones share the time left after the last of them (the first one a step later);
-    // with none kept, the first posts at the start and n groups share the span in n equal steps.
-    // (One step of room is always left at the end, so the last never lands on the window's close.)
-    step = lastKept ? Math.floor(span / (fresh.length + 1)) : (fresh.length > 1 ? Math.floor(span / fresh.length) : 0);
-  }
-  let t = lastKept ? addWindowTime(Math.max(lastKept, nowMs), step, fromMin, toMin) : intoWindow(Math.max(s.start, nowMs), fromMin, toMin);
-  for (const g of fresh) {
-    if (t >= CAMPAIGN_END_MS) break;
-    plan[g.key] = t;
-    t = addWindowTime(t, step, fromMin, toMin);
-  }
+  for (const a of albums) if (times[a.key]) plan[a.key] = { due: times[a.key], lap: a.lap, pids: Object.fromEntries(a.pids.map((p) => [p, true])) };
   return plan;
 }
 
-/** Is t inside the schedule's daily window? ("now" mode has none.) Pure. */
-function inWindow(schedule, t) {
-  if (!schedule || schedule.mode === "now") return true;
-  return intoWindow(t, hm(schedule.from), hm(schedule.to)) === t;
-}
-
-/** The queue planSchedule takes, from the campaign node. Pure. */
-function queueOf(node) {
-  const n = node || {};
-  const groups = n.groups || {};
-  const keys = (n.meta && Array.isArray(n.meta.keys) ? n.meta.keys : Object.keys(groups)).filter((k) => groups[k]);
-  const out = [];
-  for (const k of keys) {
-    const st = (n.state || {})[k] || null;
-    if (groupStatus(st, (n.posts || {})[k] || null) !== "approved") continue;
-    if (!groupComplete(groups[k], st, n.photos)) continue;
-    out.push({ key: k, approvedAt: st.approvedAt, price: groups[k].price, part: groups[k].part || 1 });
-  }
-  return out;
-}
-
 module.exports = {
-  ROOT, KEY_RE, PID_RE, GEN_RE, DIVISIONS, DIVISION_LABEL, CAMPAIGN_END_MS,
-  priceLabel, captionPreview, sigOf, itemApproved, groupStatus, postablePids, viewGroup, viewCampaign, totalsOf,
-  approveMutator, unapproveMutator, tickMutator, useMutator, withRev,
-  CLAIM_MS, groupComplete, inWindow,
-  cleanSchedule, planSchedule, queueOf, intoWindow, addWindowTime, windowTimeBetween,
+  ROOT, PID_RE, GEN_RE, KIND_RE, SECTIONS, BIG_QTY, ALBUM_MAX, CAPTION_MAX, ESTABLISHED_STYLES, KIND_LABEL,
+  priceLabel, priceKey, captionPreview, sigOf, isApproved, isRejected, postedFor,
+  viewItem, orderRows, viewSection, totalsOf, planView,
+  approveMutator, rejectMutator, resetMutator, useMutator, withRev,
+  toPost, albumsOf, planAlbums, fnv,
+  ...sched,
 };
