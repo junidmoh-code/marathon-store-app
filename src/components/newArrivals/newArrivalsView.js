@@ -8,8 +8,12 @@
 // holds every item not yet approved (the lanes new, generating, ready and
 // rejected, merged — a lane never moves an item between tabs or hides it);
 // a generation lands ON THE SAME CARD. Done is the history.
+// THREE TABS (Junid, 19 Nov 2026): New (not approved, uploaded in the last 20
+// days, in stock), Approved (approved, not yet posted — clothing and footwear
+// in one list) and Done (posted to the groups: where and when).
 export const TABS = [
   { key: "new", label: "New" },
+  { key: "approved", label: "Approved" },
   { key: "done", label: "Done" },
 ];
 /** The lanes the New tab shows (mirror of functions/newArrivals/core.cjs NEW_LANES). */
@@ -395,16 +399,19 @@ export function needsStockPrice(product) {
 export function actionsFor(item) {
   const s = item?.status;
   const lane = NEW_LANES.includes(s);
-  const priced = Number(item?.product?.stockPrice) > 0;
+  const priced = !needsStockPrice(item?.product);
   const generating = isGenerating(item);
   const photo = hasPhoto(item);
-  // A photo made from a product photo that has since been replaced is never approved: Regenerate first.
-  const outdated = photo && item?.sourceChanged === true;
-  const approveWhy = !photo ? null : generating ? "generating…" : outdated ? "the product's photo changed — regenerate first" : !priced ? "add stock price first" : null;
+  // JUNID'S APPROVE IS FINAL (19 Nov 2026): the ONE thing that blocks Approve or
+  // Use current photo is a missing stock price. A photo made from an earlier
+  // product photo is a grey note only; the generation switch gates Generate only.
+  const hasCurrent = !!(item?.product?.photoUrl || item?.sourceUrl);
   return {
-    approve: photo,
-    approveEnabled: photo && !generating && priced && !outdated,
-    approveWhy,
+    approve: lane && photo,
+    approveEnabled: lane && photo && priced,
+    approveWhy: lane && !priced ? NO_STOCK_PRICE_TEXT : null,
+    useCurrent: lane && hasCurrent,
+    useCurrentEnabled: lane && hasCurrent && priced,
     generate: lane && !photo && !generating,
     // Lane rejected / ready without a photo: the server needs the regenerate flag.
     generateRegenerate: lane && !photo && s !== "new",
@@ -412,6 +419,25 @@ export function actionsFor(item) {
     reject: photo && !generating,
     skip: lane && s !== "generating",
   };
+}
+
+/** The plain reason Approve and Use current photo are blocked (the only block there is). */
+export const NO_STOCK_PRICE_TEXT = "No stock price on this product yet — the groups post only the stock price, so Approve opens once it has one.";
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "Uploaded 12 Nov" (South African day), or null. Pure. */
+export function uploadedText(at) {
+  const n = Number(at);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const d = new Date(n + 2 * 3600_000); // SAST, no DST
+  return `Uploaded ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+}
+
+/** One planned post as a line: "Footwear · R350 · 12 items (part 1 of 2)". Pure. */
+export function planLine(p) {
+  const div = p.division === "footwear" ? "Footwear" : "Clothing";
+  const part = p.of > 1 ? ` (part ${p.part} of ${p.of})` : "";
+  return `${div} · R${Math.round(Number(p.price))} · ${p.count} item${p.count === 1 ? "" : "s"}${part}`;
 }
 
 /** The tabs whose cards carry the two price fields (Done is history). */
