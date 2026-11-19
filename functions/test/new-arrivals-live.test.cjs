@@ -202,3 +202,17 @@ test("Post all: a refused claim leaves no orphan — the request is marked refus
   assert.deepEqual(reqs.map((r) => r.status), ["refused"]);
   assert.equal((await read(db, "new_arrivals/post_request_open")).key, "-held");
 });
+
+test("New: an item with a generated photo waiting for Junid stays on New past the 20-day window", async () => {
+  const db = world({ items: [
+    { pid: pidAt(40), status: "ready", item: { currentGen: "g1", generatedUrl: "https://x/g.jpg", generations: { g1: { url: "https://x/g.jpg" } } } },
+    { pid: pidAt(45), status: "rejected", item: { generatedUrl: "https://x/r.jpg" } },
+    { pid: pidAt(50), status: "ready", units: 0, item: { generatedUrl: "https://x/s.jpg" } },   // sold out: still hidden
+    { pid: pidAt(41) },                                                                       // old, no photo: outside the window
+    { pid: pidAt(42), status: "rejected" },                                                    // old, rejected lane but NO photo: outside
+    { pid: pidAt(2) },
+  ] });
+  const out = await na.listLive(db, "new", { nowMs: NOW });
+  assert.deepEqual(ids(out), [pidAt(2), pidAt(40), pidAt(45)]);
+  assert.equal(out.hidden.soldOut, 1);
+});

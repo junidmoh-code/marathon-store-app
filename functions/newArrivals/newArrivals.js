@@ -785,6 +785,26 @@ async function laneStock(db, pids, locations, nowMs = Date.now()) {
   return out;
 }
 
+// Does an item carry a generated photo? generatedUrl, else its current
+// generation's url — keyed scalars, cached per process like laneStock (a photo
+// only ever arrives; an item that gains one shows within PHOTO_TTL_MS).
+const PHOTO_TTL_MS = 3 * 60 * 1000;
+const photoCache = new WeakMap(); // db → Map(pid → { v, at })
+async function hasPhotoMap(db, pids, nowMs = Date.now()) {
+  let cache = photoCache.get(db);
+  if (!cache) { cache = new Map(); photoCache.set(db, cache); }
+  const out = new Map();
+  await inBatches(pids, 50, async (k) => {
+    const hit = cache.get(k);
+    if (hit && nowMs - hit.at < PHOTO_TTL_MS) { out.set(k, hit.v); return; }
+    const [generatedUrl, currentGen] = await Promise.all([val(db, `${core.ITEMS}/${k}/generatedUrl`), val(db, `${core.ITEMS}/${k}/currentGen`)]);
+    const v = !!(generatedUrl || (currentGen && await val(db, `${core.ITEMS}/${k}/generations/${currentGen}/url`)));
+    cache.set(k, { v, at: nowMs });
+    out.set(k, v);
+  });
+  return out;
+}
+
 /**
  * One page of one live tab.
  *   new       the New lanes, keys from windowStartKey (the upload time IS the
@@ -802,13 +822,26 @@ async function listLive(db, tabAsked, { cursor = null, limit, group = null, nowM
   const since = core.windowStartKey(nowMs);
   const locations = await stockLocations(db);
 
-  // New: the window, by key.
+  // New: the window, by key — and, in parallel, the photo lanes' OLDER keys.
   const newLaneOf = new Map();
-  await Promise.all(core.NEW_LANES.map(async (s) => {
-    // limitToLast: past the ceiling it is the OLDEST of the window that is cut, never today's uploads.
-    const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().startAt(since).limitToLast(core.INDEX_CEILING).once("value");
-    for (const k of Object.keys(snap.val() || {})) if (!newLaneOf.has(k)) newLaneOf.set(k, s);
-  }));
+  const older = new Map();
+  await Promise.all([
+    ...core.NEW_LANES.map(async (s) => {
+      // limitToLast: past the ceiling it is the OLDEST of the window that is cut, never today's uploads.
+      const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().startAt(since).limitToLast(core.INDEX_CEILING).once("value");
+      for (const k of Object.keys(snap.val() || {})) newLaneOf.set(k, newLaneOf.get(k) || s);
+    }),
+    // A PHOTO WAITING FOR JUNID STAYS, whatever its age (19 Nov 2026): an item
+    // in lane ready / rejected that really has a generated photo is his to
+    // approve, not to lose to the 20-day window. Only keys BEFORE the window
+    // (endAt), by key with the ceiling — these lanes are small.
+    ...core.PHOTO_LANES.map(async (s) => {
+      const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().endAt(since).limitToLast(core.INDEX_CEILING).once("value");
+      for (const k of Object.keys(snap.val() || {})) older.set(k, older.get(k) || s);
+    }),
+  ]);
+  const photos = await hasPhotoMap(db, [...older.keys()].filter((k) => !newLaneOf.has(k)), nowMs);
+  for (const [k, s] of older) if (!newLaneOf.has(k) && photos.get(k)) newLaneOf.set(k, s);
   const stock = await laneStock(db, [...newLaneOf.keys()], locations, nowMs);
   const hidden = { soldOut: 0, gone: 0 };
   const newKeys = [...newLaneOf.keys()].filter((k) => {
