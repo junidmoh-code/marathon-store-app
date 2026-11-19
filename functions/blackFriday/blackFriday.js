@@ -1,18 +1,17 @@
-// ─── BLACK FRIDAY 2026 — the card's callables (Junid only) ──────────────────
-// bfCampaignList  the whole campaign node (small: ~80 groups) as the card shows it.
-// bfCampaignSet   one tap: approve (an item, a group, or several groups — Approve
-//                 All), unapprove, untick / tick one item, choose an item's photo
-//                 (current / generated), and the schedule (preview, confirm, clear).
-// bfGenerate      (generate.js) one Gemini photo for one item, on Junid's tap.
-// The card never reads or writes /bf_campaign_2026 directly, so no database
-// rule is needed: these use the Admin SDK behind the super-admin gate.
+// ─── BLACK FRIDAY 2026 — the card's callables (Junid only, v3) ───────────────
+// bfCampaignList  one section of the card (main = 13+ on hand, under = the
+//                 rest, loaded only when Junid flips "Show under 13").
+// bfCampaignSet   one tap on one product: approve, reject, back to review,
+//                 choose its photo; "Approve all 30+"; approve a category's
+//                 AI look; the schedule (preview, confirm, clear).
+// bfGenerate      (generate.js) one AI photo for one product, on Junid's tap.
+// Server-only node (no database rule): the Admin SDK behind the super-admin gate.
 //
-// NOTHING POSTS WITHOUT A SCHEDULE (Junid, 19 Nov): the poster on the Mac mini
-// posts only groups in schedule/plan, and schedule/plan exists only after
-// Junid confirms a schedule here. It is recomputed after every tap that can
-// change what is queued.
+// NOTHING POSTS WITHOUT A SCHEDULE: schedule/plan (albums made from the
+// approved products, by stock price and kind) exists only after Junid confirms
+// a schedule, and is recomputed after every tap that changes what is approved.
 //
-// Deploy BY NAME, never a bare --only functions (DEPLOY-TRACKER.md):
+// Deploy BY NAME:
 //   firebase deploy --only functions:bfCampaignList,functions:bfCampaignSet,functions:bfGenerate
 "use strict";
 
@@ -25,11 +24,8 @@ if (!admin.apps.length) {
   admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 }
 
-// invoker "public": a callable's Cloud Run service must allow allUsers to
-// invoke (auth is checked in code — assertJunid). The first deploy of these
-// two failed at create and left the service with no invoker binding, so every
-// call was refused at the door and the card showed only "internal" (19 Nov).
-const callableOpts = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 60, invoker: "public" };
+// invoker "public": a callable's Cloud Run service must allow allUsers to invoke (auth is checked in code).
+const callableOpts = { region: "europe-west1", memory: "512MiB", timeoutSeconds: 120, invoker: "public" };
 const POSTING_PAUSE = "new_arrivals/pause/posting/paused";
 
 function assertJunid(request) {
@@ -38,45 +34,26 @@ function assertJunid(request) {
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
 
-// The card's children — never `decisions` (a log that only grows) or `sending`.
-const VIEW_CHILDREN = ["meta", "groups", "state", "photos", "posts", "schedule", "stats"];
-async function list(db) {
+/** One section, read narrowly: that section's products and the small decision nodes (never `decisions`). */
+async function list(db, section = "main") {
+  if (!core.SECTIONS.includes(section)) throw new HttpsError("invalid-argument", "main or under.");
+  const parts = ["meta", `items/${section}`, "picks", "photos", "posted", "styles", "stats", "schedule", "idx"];
   const [vals, paused] = await Promise.all([
-    Promise.all(VIEW_CHILDREN.map((c) => val(db, `${core.ROOT}/${c}`))),
+    Promise.all(parts.map((p) => val(db, `${core.ROOT}/${p}`))),
     val(db, POSTING_PAUSE).catch(() => null),
   ]);
-  const node = Object.fromEntries(VIEW_CHILDREN.map((c, i) => [c, vals[i]]));
-  return core.viewCampaign(node, { postingPaused: paused === true });
+  const node = { meta: vals[0], items: { [section]: vals[1] }, picks: vals[2], photos: vals[3], posted: vals[4], styles: vals[5], stats: vals[6], schedule: vals[7], idx: vals[8] };
+  // The Approved tab shows EVERY approval: on the main view, the under-13 products Junid approved are read one by one.
+  const extraApproved = {};
+  if (section === "main") {
+    const other = Object.entries(node.picks || {}).filter(([pid, p]) => p && p.state === "approved" && p.section === "under" && !(node.items.main || {})[pid]);
+    const rows = await Promise.all(other.map(([pid]) => val(db, `${core.ROOT}/items/under/${pid}`)));
+    other.forEach(([pid], i) => { if (rows[i]) extraApproved[pid] = rows[i]; });
+  }
+  return core.viewSection(node, section, { postingPaused: paused === true, extraApproved });
 }
 
-/**
- * What the plan needs, read narrowly: the small state/posts/schedule nodes,
- * then the group and photo choices of approved groups only.
- */
-async function queueNode(db) {
-  const [state, posts, schedule, keys] = await Promise.all(["state", "posts", "schedule", "meta/keys"].map((c) => val(db, `${core.ROOT}/${c}`)));
-  const live = (Array.isArray(keys) ? keys : Object.keys(state || {})).filter((k) => core.groupStatus((state || {})[k], (posts || {})[k]) === "approved");
-  const groups = {}, photos = {};
-  await Promise.all(live.map(async (k) => {
-    const g = await val(db, `${core.ROOT}/groups/${k}`);
-    if (!g) return;
-    groups[k] = g;
-    const pids = Object.keys(g.items || {});
-    const ph = await Promise.all(pids.map((pid) => val(db, `${core.ROOT}/photos/${pid}`)));
-    pids.forEach((pid, i) => { if (ph[i]) photos[pid] = ph[i]; });
-  }));
-  return { meta: { keys: live }, groups, state, posts, photos, schedule };
-}
-
-/**
- * A transaction that is safe on a Cloud Function's cold first callback: that
- * call works from a fresh read (`pre`) so a refusal or no-op is never decided
- * on a phantom empty state. Safe ONLY because the node, once written, is never
- * deleted again (every write carries `rev`): the cold write goes out expecting
- * null, so if the node exists (or changed after `pre`) the server's CAS
- * mismatches and re-runs the callback on the REAL value — a stale `pre` can
- * never bring back an undone approval. `out` is reset on every call.
- */
+/** A transaction safe on a Cloud Function's cold first callback (the node is never deleted: core.withRev). */
 async function revTransaction(ref, mut, out) {
   const pre = (await ref.once("value")).val();
   return ref.transaction((cur) => {
@@ -87,69 +64,102 @@ async function revTransaction(ref, mut, out) {
   });
 }
 
-/** Recompute schedule/plan from the node as it is now. No schedule → no plan → nothing posts. */
+/** Recompute schedule/plan. No confirmed schedule → no plan → nothing posts. */
 async function replan(db, nowMs) {
   const s = await val(db, `${core.ROOT}/schedule`);
   if (!s || !s.confirmedAt) return null;
-  const node = await queueNode(db);
-  // Groups already planned keep their time; only new ones are placed.
-  const plan = core.planSchedule(core.queueOf(node), s, nowMs, s.plan || {});
+  const [picks, photos, posted] = await Promise.all(["picks", "photos", "posted"].map((p) => val(db, `${core.ROOT}/${p}`)));
+  const plan = core.planAlbums(core.albumsOf(core.toPost(picks, photos, posted)), s, nowMs, s.plan || {}, posted || {});
   await db.ref(`${core.ROOT}/schedule`).update({ plan: Object.keys(plan).length ? plan : null, planAt: nowMs });
   return plan;
 }
 
-async function groupPhotos(db, group) {
-  const pids = Object.keys((group && group.items) || {});
-  const rows = await Promise.all(pids.map((pid) => val(db, `${core.ROOT}/photos/${pid}`)));
-  return Object.fromEntries(pids.map((pid, i) => [pid, rows[i]]).filter(([, v]) => v));
-}
-
 const log = (db, row) => db.ref(`${core.ROOT}/decisions`).push().set(row);
 
-async function setOne(db, { action, key, pid, use, genId }, uid, nowMs, { replanAfter = true } = {}) {
-  if (!core.KEY_RE.test(String(key || ""))) throw new HttpsError("invalid-argument", "Which group?");
-  const [group, post] = await Promise.all(["groups", "posts"].map((p) => val(db, `${core.ROOT}/${p}/${key}`)));
-  if (!group) throw new HttpsError("not-found", `${key} is not in today's groups.`);
-  const needsPid = ["approveItem", "exclude", "include", "use"].includes(action);
-  if (needsPid && (!core.PID_RE.test(String(pid || "")) || !(group.items || {})[pid])) throw new HttpsError("invalid-argument", "That item is not in this group.");
-  const out = {};
+/** The product's row from main or under. → { item, section } */
+async function findItem(db, pid, hint) {
+  const order = core.SECTIONS.includes(hint) ? [hint, ...core.SECTIONS.filter((s) => s !== hint)] : core.SECTIONS;
+  for (const section of order) {
+    const item = await val(db, `${core.ROOT}/items/${section}/${pid}`);
+    if (item) return { item, section };
+  }
+  return { item: null, section: null };
+}
 
+async function tap(db, { action, pid, section, use, genId, sig }, uid, nowMs) {
+  if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Which product?");
+  if (!["approve", "reject", "reset", "use"].includes(action)) throw new HttpsError("invalid-argument", "approve, reject, reset or use.");
+  const out = {};
+  const pickRef = db.ref(`${core.ROOT}/picks/${pid}`);
+  const { item, section: sec } = await findItem(db, pid, section);
+  if ((action === "use" || action === "approve") && !item) throw new HttpsError("not-found", "That product is not in the campaign.");
   if (action === "use") {
     if (!["current", "generated"].includes(use)) throw new HttpsError("invalid-argument", "Use the current photo or a generated one.");
     if (genId !== undefined && genId !== null && !core.GEN_RE.test(String(genId))) throw new HttpsError("invalid-argument", "Which generated photo?");
-    const res = await revTransaction(db.ref(`${core.ROOT}/photos/${pid}`), core.useMutator({ use, genId: genId || null }, out), out);
-    if (out.refusal) return { key, ok: false, refusal: out.refusal };
-    if (res.committed && !out.noop) await log(db, { at: nowMs, by: uid || null, action, key, pid, use, ...(genId ? { genId } : {}) });
+    await revTransaction(db.ref(`${core.ROOT}/photos/${pid}`), core.useMutator({ use, genId: genId || null }, out), out);
+  } else if (action === "approve") {
+    const photo = await val(db, `${core.ROOT}/photos/${pid}`);
+    if (sig !== undefined && sig !== null && sig !== "current" && !core.GEN_RE.test(String(sig))) throw new HttpsError("invalid-argument", "Which photo?");
+    await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs, seenSig: sig || null }, out), out);
+  } else if (action === "reject") {
+    await revTransaction(pickRef, core.rejectMutator({ item, section: sec, uid, nowMs }, out), out);
   } else {
-    const photos = await groupPhotos(db, group);
-    let mut;
-    if (action === "approve") mut = core.approveMutator({ group, post, uid, nowMs, photos }, out);
-    else if (action === "approveItem") mut = core.approveMutator({ group, post, uid, nowMs, photos, pid }, out);
-    else if (action === "unapprove") mut = core.unapproveMutator({ post }, out);
-    else if (action === "exclude" || action === "include") mut = core.tickMutator({ pid, include: action === "include", post }, out);
-    else throw new HttpsError("invalid-argument", "approve, approveItem, unapprove, exclude, include or use.");
-    const res = await revTransaction(db.ref(`${core.ROOT}/state/${key}`), mut, out);
-    if (out.refusal) return { key, ok: false, refusal: out.refusal };
-    if (res.committed && !out.noop) {
-      await log(db, { at: nowMs, by: uid || null, action, key, ...(pid ? { pid } : {}), ...(out.lap ? { lap: out.lap } : {}) });
-    }
+    await revTransaction(pickRef, core.resetMutator(out), out);
   }
-  if (replanAfter && !out.noop) await replan(db, nowMs);
-  const [state, photos, plan] = await Promise.all([val(db, `${core.ROOT}/state/${key}`), groupPhotos(db, group), val(db, `${core.ROOT}/schedule/plan/${key}`)]);
-  return { key, ok: true, noop: !!out.noop, unapproved: !!out.unapproved, group: core.viewGroup(key, group, state, post, photos, plan) };
+  if (out.refusal) return { ok: false, pid, refusal: out.refusal };
+  if (!out.noop) {
+    await log(db, { at: nowMs, by: uid || null, action, pid, ...(use ? { use } : {}), ...(genId ? { genId } : {}) });
+    await replan(db, nowMs);
+  }
+  const [pick, photo, posted, styles] = await Promise.all([`picks/${pid}`, `photos/${pid}`, `posted/${pid}`, "styles"].map((p) => val(db, `${core.ROOT}/${p}`)));
+  return { ok: true, pid, noop: !!out.noop, rejected: core.isRejected(pick), row: item ? core.viewItem(pid, item, { pick, photo, posted, styles: styles || {}, nowMs }) : null };
 }
 
-/** The schedule: preview (nothing written) or confirm (written, plan computed). */
+/**
+ * "Approve all 30+": every MAIN product with 30+ on hand still in To review,
+ * each with the photo the card showed (sigs: { pid: sig }). One transaction per
+ * product: a product rejected or re-photographed meanwhile is left alone.
+ */
+async function approveBig(db, sigs, uid, nowMs) {
+  const items = (await val(db, `${core.ROOT}/items/main`)) || {};
+  const asked = sigs && typeof sigs === "object" ? sigs : {};
+  const todo = Object.entries(items).filter(([pid, it]) => it && Number(it.qty) >= core.BIG_QTY && core.PID_RE.test(pid) && Object.prototype.hasOwnProperty.call(asked, pid));
+  let approved = 0;
+  for (let i = 0; i < todo.length; i += 25) {
+    await Promise.all(todo.slice(i, i + 25).map(async ([pid, it]) => {
+      const out = {};
+      const photo = await val(db, `${core.ROOT}/photos/${pid}`);
+      const res = await revTransaction(db.ref(`${core.ROOT}/picks/${pid}`), core.approveMutator({ item: it, section: "main", photo, uid, nowMs, seenSig: String(asked[pid] || "current"), onlyIfUntouched: true }, out), out);
+      if (res && res.committed && !out.noop && !out.refusal) approved += 1;
+    }));
+  }
+  if (approved) {
+    await log(db, { at: nowMs, by: uid || null, action: "approveBig", count: approved });
+    await replan(db, nowMs);
+  }
+  return { ok: true, approved };
+}
+
+async function approveStyle(db, kind, uid, nowMs) {
+  if (!core.KIND_RE.test(String(kind || ""))) throw new HttpsError("invalid-argument", "Which category?");
+  await db.ref(`${core.ROOT}/styles/${kind}`).set({ approvedAt: nowMs, by: uid || null });
+  await log(db, { at: nowMs, by: uid || null, action: "approveStyle", kind });
+  return { ok: true, kind };
+}
+
+/** The schedule: preview (nothing written) or confirm (written with a fresh plan). */
 async function schedule(db, raw, { confirm }, uid, nowMs) {
   const s = core.cleanSchedule(raw, nowMs);
   if (s.error) return { ok: false, refusal: s.error };
-  const node = await queueNode(db);
-  const plan = core.planSchedule(core.queueOf(node), s, nowMs);
-  const queued = core.queueOf(node).length;
-  if (!confirm) return { ok: true, preview: true, schedule: s, plan, queued };
+  const [picks, photos, posted] = await Promise.all(["picks", "photos", "posted"].map((p) => val(db, `${core.ROOT}/${p}`)));
+  const albums = core.albumsOf(core.toPost(picks, photos, posted));
+  const plan = core.planAlbums(albums, s, nowMs);
+  const label = (a) => `${core.priceLabel(a.price)} ${core.KIND_LABEL[a.kind] || a.kind}${a.parts > 1 ? ` – ${a.part} of ${a.parts}` : ""}`;
+  const preview = core.planView(plan).map((p) => { const a = albums.find((x) => x.key === p.album); return { ...p, label: a ? label(a) : p.album }; });
+  if (!confirm) return { ok: true, preview: true, schedule: s, plan: preview, albums: albums.length };
   await db.ref(`${core.ROOT}/schedule`).set({ ...s, confirmedAt: nowMs, confirmedBy: uid || null, plan: Object.keys(plan).length ? plan : null, planAt: nowMs });
   await log(db, { at: nowMs, by: uid || null, action: "schedule", mode: s.mode });
-  return { ok: true, schedule: s, plan, queued };
+  return { ok: true, schedule: s, plan: preview, albums: albums.length };
 }
 
 async function clearSchedule(db, uid, nowMs) {
@@ -160,7 +170,7 @@ async function clearSchedule(db, uid, nowMs) {
 
 const bfCampaignList = onCall(callableOpts, async (request) => {
   assertJunid(request);
-  return list(admin.database());
+  return list(admin.database(), (request.data && request.data.section) || "main");
 });
 
 const bfCampaignSet = onCall(callableOpts, async (request) => {
@@ -168,18 +178,12 @@ const bfCampaignSet = onCall(callableOpts, async (request) => {
   const d = request.data || {};
   const db = admin.database();
   const uid = request.auth && request.auth.uid;
-  if (d.action === "schedule") return schedule(db, d.schedule, { confirm: d.confirm === true }, uid, Date.now());
-  if (d.action === "clearSchedule") return clearSchedule(db, uid, Date.now());
-  if (d.action === "approve" && Array.isArray(d.keys)) {
-    if (d.keys.length > 200) throw new HttpsError("invalid-argument", "Too many groups at once.");
-    const results = [];
-    // One at a time, a millisecond apart, so Approve All keeps price order in the queue; one replan at the end.
-    let t = Date.now();
-    for (const key of d.keys) results.push(await setOne(db, { action: "approve", key }, uid, t++, { replanAfter: false }));
-    await replan(db, Date.now());
-    return { ok: true, results };
-  }
-  return setOne(db, { action: d.action, key: d.key, pid: d.pid, use: d.use, genId: d.genId }, uid, Date.now());
+  const now = Date.now();
+  if (d.action === "schedule") return schedule(db, d.schedule, { confirm: d.confirm === true }, uid, now);
+  if (d.action === "clearSchedule") return clearSchedule(db, uid, now);
+  if (d.action === "approveBig") return approveBig(db, d.sigs, uid, now);
+  if (d.action === "approveStyle") return approveStyle(db, d.kind, uid, now);
+  return tap(db, { action: d.action, pid: d.pid, section: d.section, use: d.use, genId: d.genId, sig: d.sig }, uid, now);
 });
 
-module.exports = { bfCampaignList, bfCampaignSet, _internals: { list, setOne, schedule, clearSchedule, replan, revTransaction, assertJunid } };
+module.exports = { bfCampaignList, bfCampaignSet, _internals: { list, tap, approveBig, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };

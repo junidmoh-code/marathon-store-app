@@ -9,23 +9,24 @@ const call = (name) => async (data) => (await httpsCallable(functions, name)(dat
 const set = call("bfCampaignSet");
 
 export const blackFridayApi = {
-  // { groups: [view], counts, totals, schedule, postingPaused, meta }
-  list: () => call("bfCampaignList")({}),
-  approve: (key) => set({ action: "approve", key }),
-  approveItem: (key, pid) => set({ action: "approveItem", key, pid }),
-  approveAll: (keys) => set({ action: "approve", keys }),
-  unapprove: (key) => set({ action: "unapprove", key }),
-  tick: (key, pid, include) => set({ action: include ? "include" : "exclude", key, pid }),
-  // "Use current photo" / back to the generated one.
-  use: (key, pid, use, genId = null) => set({ action: "use", key, pid, use, ...(genId ? { genId } : {}) }),
-  // The schedule: confirm:false returns the plan only; confirm:true saves it (and posting can start).
+  // One section: "main" (13+ on hand) or "under" (Show under 13).
+  // → { review: [row], approved: [row], totals, rejected, styles, schedule, plan, postingPaused, meta }
+  list: (section = "main") => call("bfCampaignList")({ section }),
+  // sig: the photo the card showed ("current" or a genId) — a different photo now is refused.
+  approve: (pid, section, sig) => set({ action: "approve", pid, section, ...(sig ? { sig } : {}) }),
+  reject: (pid, section) => set({ action: "reject", pid, section }),
+  // Back to To review: undo a rejection, or take back an approval.
+  reset: (pid) => set({ action: "reset", pid }),
+  use: (pid, use, genId = null, section) => set({ action: "use", pid, use, section, ...(genId ? { genId } : {}) }),
+  // sigs: { pid: sig } of the 30+ rows the card shows in To review.
+  approveBig: (sigs) => set({ action: "approveBig", sigs }),
+  approveStyle: (kind) => set({ action: "approveStyle", kind }),
   schedule: (schedule, { confirm = false } = {}) => set({ action: "schedule", schedule, confirm: confirm === true }),
   clearSchedule: () => set({ action: "clearSchedule" }),
-  // GENERATE / REGENERATE one photo (Gemini, the New Arrivals house look). Streams
-  // { type: "status" | "thought" | "draft" } while it works; resolves with { ok, pid, genId, costZar, width, height }.
-  generate: (key, pid, { onEvent = null } = {}) => streamCallable({
+  // One AI photo (streams { type: "status" | "thought" } while it works).
+  generate: (pid, section, { onEvent = null } = {}) => streamCallable({
     url: `https://europe-west1-${app.options.projectId}.cloudfunctions.net/bfGenerate`,
-    data: { key, pid },
+    data: { pid, section },
     getToken: () => auth.currentUser?.getIdToken(),
     onChunk: onEvent,
   }),
