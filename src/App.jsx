@@ -64,6 +64,8 @@ import { hasSlipScope } from "./components/cardrecon/slipScope";
 import { usePrefetchSlipTerminals } from "./components/cardrecon/slipTerminals";
 import NewArrivalsScreen from "./components/newArrivals/NewArrivalsScreen";
 import { newArrivalsApi } from "./components/newArrivals/newArrivalsApi";
+import BlackFridayScreen from "./components/blackFriday/BlackFridayScreen";
+import { blackFridayApi } from "./components/blackFriday/blackFridayApi";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import { createVoiceKeeper, isKioskLaunch, readVoiceArmed, shouldShowVoiceHint, voiceWanted } from "./components/tv/tvVoiceKeeper";
@@ -3066,6 +3068,13 @@ const RoleIcons = {
       <path d="M22 2 11 13"/>
     </svg>
   ),
+  black_friday: (
+    // A price tag — the Black Friday card groups everything by its stock price.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/>
+      <circle cx="7.5" cy="7.5" r="1.2"/>
+    </svg>
+  ),
   cost_watch: (
     // lucide-style "trending line in a frame": a cost chart, not a currency
     // symbol — the card is about where the money goes, not about money.
@@ -3581,6 +3590,10 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Approve. Junid or the Shopify Publishing grant (Approve ends in a
       // Shopify publish); the callables re-check the same grant server-side.
       (isSuperAdmin || hasPermission("shopify_publish"))      && { key:"new_arrivals", icon:RoleIcons.new_arrivals, name:"New Arrivals", desc:"New uploads · generated photo · approve", onClick:()=>(window.location.hash = "#new-arrivals") },
+      // Black Friday 2026 — Junid approves each stock-price group; the Mac mini posts
+      // the approved ones to the 14 WhatsApp groups. Super-admin only (the
+      // bfCampaign* callables re-check it server-side).
+      isSuperAdmin                                             && { key:"black_friday", icon:RoleIcons.black_friday, name:"Black Friday", desc:"Price groups · approve · WhatsApp", onClick:()=>(window.location.hash = "#black-friday") },
       shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · publish", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
       // Social — generated posts waiting for approval, the style reference
       // library, and the generator. Nothing goes out without approval, so
@@ -20983,6 +20996,9 @@ function AppInner() {
   // Recognises the hash only; the mount below gates, and the callables are
   // what actually refuse.
   const wantNewArrivals = hash === "#new-arrivals" || hash === "#new-arrivals/";
+  // /#black-friday — the Black Friday 2026 card. Recognises the hash only; the
+  // mount below gates (super admin), and the callables are what actually refuse.
+  const wantBlackFriday = hash === "#black-friday" || hash === "#black-friday/";
   // /#admin/network — NETWORK. Recognises the HASH only and grants nothing;
   // authorization happens at the mount below, and the RTDB rule on /network
   // is what actually refuses the write.
@@ -21272,6 +21288,10 @@ function AppInner() {
     // real account gets the admin sign-in (which only Junid can pass).
     view = (isSuperAdmin || deviceIdentity?.canManageCodes === true)
       ? <DeviceCodesCard isOwner={isSuperAdmin} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantBlackFriday) {
+    view = isSuperAdmin
+      ? <BlackFridayScreen api={blackFridayApi} onExit={() => (window.location.hash = "")} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantNewArrivals) {
     view = (isSuperAdmin || hasPermission("shopify_publish"))

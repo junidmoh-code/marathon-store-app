@@ -6655,6 +6655,16 @@ exports.insightsRollupSweep = onSchedule(
   exports.newArrivalsStudio = require("./newArrivals/studio.js").newArrivalsStudio;
 }
 
+// ─── BLACK FRIDAY 2026 — Junid's approve card (the Mac mini posts) ──────────
+// /bf_campaign_2026 is server-only (no client rule): the card goes through these
+// two callables. See functions/blackFriday/core.cjs.
+//   firebase deploy --only functions:bfCampaignList,functions:bfCampaignSet
+{
+  const bf = require("./blackFriday/blackFriday.js");
+  exports.bfCampaignList = bf.bfCampaignList;
+  exports.bfCampaignSet = bf.bfCampaignSet;
+}
+
 // ── ALTERNATIVES: automatic enrichment + per-product profile (2026-10-09) ────
 // See alternativesProfile.js. Deploy by name:
 //   firebase deploy --only functions:alternativesProfile,functions:alternativesProfileFromAttributes,functions:alternativesEnrichSweep
