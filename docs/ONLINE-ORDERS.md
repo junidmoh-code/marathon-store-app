@@ -49,6 +49,12 @@ Shopify order (paid, unfulfilled, not cancelled, created after go-live)
        POS Retry re-runs the booking only
 ```
 
+**In-store exchange** (Junid, 19 Nov 2026): an exchange record whose `exchange.inStore = { holdUntil, acceptedAt, by }`
+(a Durban customer swapping at Marathon PE; minted by Jamie, marathon-dm-agent `src/jimmy/inStoreExchange.js`) is
+finished at Pack without a Courier Guy booking or any Shopify call: the Pack is the hand-over at the counter. Its
+`incoming.stageText` reads "Coming in store: [name], #order, returning X, taking Y"; Confirm arrival on the returned
+item first, as for any exchange. Not collected by `holdUntil`: Jamie sets `release_requested` and the poller releases it.
+
 ## `/online_orders/{orderId}`
 
 `orderId` is the Shopify order's numeric id (`legacyResourceId`), as a string.

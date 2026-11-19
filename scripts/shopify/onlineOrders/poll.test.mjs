@@ -820,6 +820,20 @@ describe("an online exchange ships through the normal pack/courier flow", () => 
     expect(order(f, EX).fulfilState).toBe("done");
   });
 
+  it("an in-store exchange (Junid, 19 Nov 2026): the Pack is the hand-over — nothing booked, no Shopify, done", async () => {
+    const f = fakeDb(exchangeWorld({ live: true }, { exchange: { kind: "exchange", paidCents: 0, paidAt: 1761800000000, inStore: { holdUntil: 1762059200000, acceptedAt: 1761800000000, by: "jamie" } } }));
+    const sent = [];
+    const courier = { ...fakeCourier(), createShipment: async (body) => { sent.push(body); return { id: 44, short_tracking_reference: "EXW125", charged_amount: 99 }; } };
+    const sh = shopify({ fos });
+    const out = await runOrdersPoll(deps(f, sh, { courier }).deps);
+    expect(sent).toHaveLength(0);
+    expect(courier.calls).toEqual([]);
+    expect(shopifyWrites(sh)).toEqual([]);
+    expect(out.fulfilled).toBe(1);
+    expect(order(f, EX)).toMatchObject({ status: "packed", fulfilState: "done", fulfil: { state: "done", note: expect.stringMatching(/In-store exchange/) } });
+    expect(order(f, EX).shipping?.waybill).toBeUndefined();
+  });
+
   it("live, booking fails: held as courier_failed exactly like a website order (no Shopify either way)", async () => {
     const f = fakeDb(exchangeWorld({ live: true }));
     const courier = { ...fakeCourier(), createShipment: async () => { throw Object.assign(new Error("HTTP 400 bad address"), { status: 400 }); } };
