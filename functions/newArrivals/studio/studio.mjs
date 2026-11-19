@@ -188,7 +188,12 @@ export async function generateOne({ item, product, genId, method = "full", provi
     // An answer that is not a readable image is not a photo: it is never stored or shown as one.
     if (!gm.width || !gm.height) throw new Error("the image model's answer was not a readable image");
     let out, mime = "image/jpeg";
-    try { out = await toCanvas(gen.buffer, plate); }
+    // deps.finish (optional, Black Friday): its own finishing step → { buffer, mime } (e.g. lossless PNG at
+    // the model's full resolution). New Arrivals passes none: the plate canvas as JPEG q93, as always.
+    try {
+      if (deps.finish) ({ buffer: out, mime } = await deps.finish(gen.buffer, plate));
+      else out = await toCanvas(gen.buffer, plate);
+    }
     catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as ${engine} made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
     measured = out;
     const stamp = deps.now();
@@ -204,13 +209,15 @@ export async function generateOne({ item, product, genId, method = "full", provi
     if (kind === "footwear" && generation.footwearCorrection && !finishNote) {
       say({ type: "status", text: "Placing it on your backdrop…" });
       let fixed = null;
-      try { fixed = await (deps.correct || correctFootwear)({ photoBuf: gen.buffer, plate, spec }); }
+      try { fixed = await (deps.correct || correctFootwear)({ photoBuf: gen.buffer, plate, spec, ...(deps.lossless ? { lossless: true } : {}) }); }
       catch (e) { fixed = { problem: `the correction step failed (${String(e.message || e).slice(0, 80)})` }; }
       if (fixed?.buffer) {
         // Gemini's own photo is kept beside it, as a thumbnail on the card and on the record.
-        try { const u = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}-uncorrected.jpg`, out, "image/jpeg")); uncorrected = { url: u.url, path: u.path || null }; }
+        try { const u = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}-uncorrected.${mime === "image/jpeg" ? "jpg" : "png"}`, out, mime)); uncorrected = { url: u.url, path: u.path || null }; }
         catch { /* the corrected photo is still shown; the record says the thumbnail is missing */ }
         out = fixed.buffer; measured = out;
+        // The corrected photo's own format (JPEG for New Arrivals; PNG when Black Friday asked for lossless).
+        mime = (await sharp(out).metadata().catch(() => ({}))).format === "png" ? "image/png" : "image/jpeg";
         if (fixed.fittedSpec) placedSpec = fixed.fittedSpec;
         correction = { applied: true, ...(uncorrected ? {} : { thumbnailMissing: true }), version: fixed.version, how: fixed.how, found: fixed.found, placed: fixed.placed, deviations: fixed.deviations || null, ...(fixed.fitted ? { fitted: fixed.fitted } : {}) };
         // Gemini was given a box but none could be found in its photo: the corrected photo has no box — said, never silent.

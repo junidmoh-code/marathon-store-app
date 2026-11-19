@@ -178,7 +178,7 @@ const sizeOf = async (png) => { const m = await sharp(png).metadata(); return { 
  *   parts: footwear { shoe: png, box?: png } · single { garment: png } · twopiece { pieces: [png, png] } or { garment: png }
  * → { buffer (JPEG at the plate's own resolution), placed (fractions), deviations, productBox, boxBox }
  */
-export async function composeOnPlate({ kind, plate, spec, parts, packagingAt = "behind" }) {
+export async function composeOnPlate({ kind, plate, spec, parts, packagingAt = "behind", lossless = false }) {
   const pm = await sharp(plate.buffer).metadata();
   const canvas = { width: pm.width, height: pm.height };
   const layers = [], shadows = [], placed = {};
@@ -220,9 +220,10 @@ export async function composeOnPlate({ kind, plate, spec, parts, packagingAt = "
     layers.push({ input: s, left: gp.left, top: gp.top });
     placed.garment = frac({ ...gp, scale: gp.width / (await sizeOf(png)).width }, canvas);
   }
-  const buffer = await sharp(plate.buffer).removeAlpha()
-    .composite([...shadows.map((input) => ({ input, left: 0, top: 0 })), ...layers])
-    .jpeg({ quality: 93 }).toBuffer();
+  const composed = sharp(plate.buffer).removeAlpha()
+    .composite([...shadows.map((input) => ({ input, left: 0, top: 0 })), ...layers]);
+  // lossless (Black Friday): PNG, never recompressed. New Arrivals: JPEG q93, as always.
+  const buffer = await (lossless ? composed.png() : composed.jpeg({ quality: 93 })).toBuffer();
   const productBox = placed.shoe || placed.garment || (placed.pieces && unionRect(placed.pieces));
   return { buffer, canvas, placed, deviations: placementDeviations(kind, placed, spec), productBox, boxBox: placed.box || placed.packaging || null };
 }
