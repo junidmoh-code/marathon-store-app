@@ -158,7 +158,11 @@ test("multi-select: approve many (each with the photo shown), reject many, and U
   assert.equal(v.approved.length, 0);
   assert.equal(v.rejected.length, 0);
   await assert.rejects(_internals.many(db, "approve", { "../x": "current" }, "junid", 1), /Which product/);
-  await assert.rejects(_internals.many(db, "reset", Array.from({ length: 501 }, (_, i) => `p${i}`), "junid", 1), /Too many/);
+  // Any real selection in one call (Junid ticked 574): no 500 cap, chunked inside.
+  const big = await _internals.many(db, "reject", Array.from({ length: 600 }, (_, i) => `p${i}`), "junid", 8000);
+  assert.equal(big.ok, true);
+  assert.equal(big.done.length + big.refused.length, 600, "every one of the 600 answered");
+  await assert.rejects(_internals.many(db, "reset", Array.from({ length: 20001 }, (_, i) => `p${i}`), "junid", 1), /Too many/);
 });
 
 test("UNDO fully reverses: an approved product rejected then undone is approved again with the SAME photo; a rejected one approved then undone is rejected again", async () => {
