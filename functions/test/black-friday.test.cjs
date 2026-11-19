@@ -175,6 +175,13 @@ test("NOTHING POSTS WITHOUT A SCHEDULE: approvals make no plan until Junid confi
   assert.equal((await db.ref("bf_campaign_2026/schedule").once("value")).val(), null);
 });
 
+test("no schedule, or one never confirmed: no plan at all", async () => {
+  assert.deepEqual(core.planSchedule([{ key: "a", approvedAt: 1, price: 300 }], null, 0), {});
+  const db = seed({ schedule: { mode: "gap", from: "08:00", to: "20:00", start: 1, gapMin: 30 } });
+  await set(db, { action: "approve", key: A }, T("2026-11-20T07:00:00"));
+  assert.equal((await db.ref("bf_campaign_2026/schedule/plan").once("value")).val(), null, "an unconfirmed schedule never gets a plan");
+});
+
 test("plan: a gap walks the daily window (08:00–20:00) and skips nights", () => {
   const q = ["a", "b", "c", "d"].map((k, i) => ({ key: k, approvedAt: i, price: 300 }));
   const plan = core.planSchedule(q, { mode: "gap", from: "08:00", to: "20:00", start: T("2026-11-20T18:30:00"), gapMin: 60 }, T("2026-11-20T07:00:00"));
