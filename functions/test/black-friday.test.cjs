@@ -458,3 +458,15 @@ test("SELECTION is kept on the server as Junid ticks: saved, read back, replaced
   await assert.rejects(_internals.saveSelection(db, "junid", { a: "<script>" }, 1), /Which photo/);
   await assert.rejects(_internals.saveSelection(db, null, { a: "current" }, 1), /Sign in/);
 });
+
+test("POSTING BRAIN: the card reads brain/view and writes only brain/control (Pause, a slot time inside 07:00–21:30)", async () => {
+  const db = seed();
+  await db.ref(`${core.ROOT}/brain/view`).set({ posted: 3, days: {} });
+  assert.equal((await _internals.brainView(db)).posted, 3);
+  await _internals.brainPause(db, true, "junid", 1);
+  assert.equal((await _internals.brainView(db)).paused, true);
+  await _internals.brainSlot(db, { day: "2026-11-21", i: 1, at: "14:15" }, "junid", 2);
+  assert.equal((await _internals.brainView(db)).overrides["2026-11-21"][1], "14:15");
+  await assert.rejects(_internals.brainSlot(db, { day: "2026-11-21", i: 1, at: "23:00" }, "junid", 3), /never 22:00/);
+  await assert.rejects(_internals.brainSlot(db, { day: "2026-12-01", i: 1, at: "10:00" }, "junid", 3), /day of the campaign/);
+});

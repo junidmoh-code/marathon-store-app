@@ -31,6 +31,9 @@ export const blackFridayApi = {
   undo: (items) => set({ action: "undo", items }),
   schedule: (schedule, { confirm = false } = {}) => set({ action: "schedule", schedule, confirm: confirm === true }),
   clearSchedule: () => set({ action: "clearSchedule" }),
+  // The posting brain: Pause / resume, and a slot moved to another time (null = back to the brain's time).
+  brainPause: (paused) => set({ action: "brainPause", paused: paused === true }),
+  brainSlot: (day, i, at) => set({ action: "brainSlot", day, i, at: at || null }),
   // One AI photo (streams { type: "status" | "thought" } while it works).
   generate: (pid, section, { onEvent = null } = {}) => streamCallable({
     url: `https://europe-west1-${app.options.projectId}.cloudfunctions.net/bfGenerate`,

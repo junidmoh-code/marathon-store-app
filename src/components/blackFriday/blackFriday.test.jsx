@@ -1,5 +1,5 @@
 // Black Friday card v3 — one row per product, two tabs, reject persists,
-// Approve all 30+, under-13 switch, schedule behind "Schedule posting".
+// Approve all 30+, under-13 switch, the posting brain's plan on the Approved tab.
 import { describe, it, expect, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
@@ -100,18 +100,24 @@ describe("Black Friday card v3", () => {
     expect(text(byId(r, "block-under"))).toContain("Under 13 (1)");
   });
 
-  it("the schedule only appears behind Schedule posting on the Approved tab; the plan shows before confirming", async () => {
-    const api = fakeApi();
+  it("the posting brain's plan on the Approved tab: slots per kind, counts, Best times chart, Pause, a slot moved", async () => {
+    const brain = {
+      paused: false, approved: 632, posted: 80, remaining: 552, reserved: 94, newArrivals: 15, todayPhotos: 80, cap: 400, overrides: {},
+      days: { "2026-11-20": [{ day: "2026-11-20", i: 0, at: "08:00", size: 26, byKind: { clothing: 7, sneakers: 15 }, why: "test day: -60 min from 09:00", status: "planned" }] },
+      hours: [{ hour: 20, albums: 3, r15: 0.2, r60: 0.5, medianMin: 40, answersPer100: 1.2, score: 0.4 }],
+    };
+    const api = fakeApi({ list: vi.fn(async () => view({ brain })), brainPause: vi.fn(async () => ({ ok: true })), brainSlot: vi.fn(async () => ({ ok: true })) });
     const r = await mount(api);
+    expect(has(r, "brain")).toBe(false);
     await act(async () => { byId(r, "tab-approved").props.onClick(); });
-    expect(text(byId(r, "no-schedule"))).toContain("Nothing posts");
-    await act(async () => { byId(r, "schedule-posting").props.onClick(); });
-    await act(async () => { byId(r, "show-plan").props.onClick(); });
-    await flush();
-    expect(api.schedule).toHaveBeenCalledWith(expect.objectContaining({ mode: "spread" }), { confirm: false });
-    expect(text(byId(r, "plan"))).toContain("R300 Clothing");
-    await act(async () => { byId(r, "confirm-schedule").props.onClick(); });
-    expect(api.schedule).toHaveBeenLastCalledWith(expect.anything(), { confirm: true });
+    expect(text(byId(r, "brain-counts"))).toContain("Posted 80");
+    expect(text(byId(r, "brain-day-2026-11-20"))).toContain("Clothing 7");
+    expect(text(byId(r, "best-times"))).toContain("50% in 1 h");
+    await act(async () => { byId(r, "brain-pause").props.onClick(); });
+    expect(api.brainPause).toHaveBeenCalledWith(true);
+    await act(async () => { byId(r, "slot-2026-11-20|0").props.onClick(); });
+    await act(async () => { byId(r, "slot-time-2026-11-20|0").props.onBlur({ target: { value: "09:30" } }); });
+    expect(api.brainSlot).toHaveBeenCalledWith("2026-11-20", 0, "09:30");
   });
 
   it("a new kind's AI look can be approved from a product that has one", async () => {
