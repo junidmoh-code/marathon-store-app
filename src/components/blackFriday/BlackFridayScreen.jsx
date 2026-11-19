@@ -17,7 +17,6 @@ const BAR_H = 64;            // the selection bar
 const BULK_CHUNK = 100;      // a bulk action goes to the server this many at a time, with progress
 const SAVE_MS = 400;         // the selection is saved this long after the last tick
 const BOTTOM_ROOM = 64 + 80; // bar + toast: the last row always stays clear of both
-const sast = (ms) => (ms ? new Intl.DateTimeFormat("en-ZA", { timeZone: "Africa/Johannesburg", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ms)) : "");
 const rand = (n) => `R${(Number(n) || 0).toFixed(2)}`;
 const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
 
@@ -124,58 +123,56 @@ function Block({ title, rows, testid, children, ...rest }) {
   );
 }
 
-const toLocalInput = (ms) => { const d = new Date(ms); const p = (x) => String(x).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 
-/** Behind "Schedule posting" on the Approved tab: nothing posts until Junid confirms. */
-function SchedulePanel({ data, api, busy, run }) {
-  const s = data.schedule;
-  const [edit, setEdit] = useState(!s);
-  const [form, setForm] = useState(() => ({ mode: "spread", start: toLocalInput(Date.now() + 15 * 60000), from: "08:00", to: "20:00", gapMin: 60, until: "2026-11-27T20:00" }));
-  const [preview, setPreview] = useState(null);
-  const [err, setErr] = useState(null);
-  const f = (k) => (e) => { setForm({ ...form, [k]: e.target.value }); setPreview(null); };
-  const payload = () => ({ mode: form.mode, from: form.from, to: form.to, start: new Date(form.start).getTime(), ...(form.mode === "gap" ? { gapMin: Number(form.gapMin) } : {}), ...(form.mode === "spread" ? { until: new Date(form.until).getTime() } : {}) });
-  const showPlan = async () => { setErr(null); try { const r = await api.schedule(payload(), { confirm: false }); if (r.ok === false) setErr(r.refusal); else setPreview(r); } catch (e) { setErr(e?.message || String(e)); } };
-  const inp = { background: "rgba(255,255,255,.06)", color: "#fff", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, padding: "6px 8px", fontFamily: FONT, fontSize: 13 };
+const pct = (x) => (x === null || x === undefined ? "–" : `${Math.round(x * 100)}%`);
+/** The posting brain: today's slots and the next days, posted / remaining, the Best times chart, Pause. */
+export function BrainPanel({ brain, api, busy, run }) {
+  const [editing, setEditing] = useState(null); // "day|i"
+  if (!brain) return <div data-testid="brain" style={{ ...GLASS, padding: 12, marginBottom: 12, fontSize: 12, color: GRAY }}>The posting brain has not reported yet.</div>;
+  const days = Object.entries(brain.days || {});
+  const hours = brain.hours || [];
+  const maxScore = Math.max(0.01, ...hours.map((h) => h.score || 0));
   return (
-    <div data-testid="schedule" style={{ ...GLASS, padding: 12, marginBottom: 12, fontSize: 13 }}>
-      {data.postingPaused && <div data-testid="paused" style={{ color: RED, fontSize: 12, marginBottom: 6 }}>WhatsApp posting is paused on the New Arrivals card — nothing posts until it is switched on there.</div>}
-      {s && !edit && (
-        <div>
-          <div data-testid="schedule-summary">{s.mode === "now" ? "Posting all approved now, a few minutes apart." : s.mode === "gap" ? `From ${sast(s.start)}, every ${s.gapMin} min, ${s.from}–${s.to}.` : `From ${sast(s.start)}, spread evenly until ${sast(s.until)}, ${s.from}–${s.to}.`}</div>
-          {data.plan.length > 0 && <ol style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 12, color: GRAY, maxHeight: 160, overflow: "auto" }}>{data.plan.map((p) => <li key={p.album}>{sast(p.due)} — {p.album} ({p.count})</li>)}</ol>}
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <button onClick={() => setEdit(true)} disabled={busy} style={{ ...bGray, padding: "6px 10px", fontSize: 12 }}>Change</button>
-            <button data-testid="stop-schedule" onClick={() => run(() => api.clearSchedule(), { reload: true })} disabled={busy} style={{ ...bGray, padding: "6px 10px", fontSize: 12, color: RED }}>Stop posting</button>
-          </div>
+    <div data-testid="brain" style={{ ...GLASS, padding: 12, marginBottom: 12, fontSize: 13 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <div style={{ flex: 1, fontWeight: 800 }}>Posting plan {brain.paused && <span data-testid="brain-paused" style={{ color: AMBER, fontWeight: 700 }}>· paused</span>}</div>
+        <button data-testid="brain-pause" disabled={busy} onClick={() => run(() => api.brainPause(!brain.paused), { reload: true })} style={{ ...(brain.paused ? bGreen : bGray), padding: "6px 12px", fontSize: 12, color: brain.paused ? undefined : AMBER }}>{brain.paused ? "Resume" : "Pause"}</button>
+      </div>
+      <div data-testid="brain-counts" style={{ fontSize: 12, color: "#dfe7ff", marginBottom: 8 }}>Posted {brain.posted} · Remaining {brain.remaining} · Held for Friday {brain.reserved} · New Arrivals {brain.newArrivals} · Today {brain.todayPhotos}/{brain.cap} photos</div>
+      {days.map(([day, slots], di) => (
+        <div key={day} data-testid={`brain-day-${day}`} style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: di === 0 ? "#fff" : GRAY }}>{di === 0 ? "Today / next" : day}</div>
+          {slots.map((sl) => {
+            const k = `${day}|${sl.i}`;
+            return (
+              <div key={k} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 12, padding: "3px 0", borderBottom: "1px solid rgba(255,255,255,.06)" }}>
+                {editing === k
+                  ? <input data-testid={`slot-time-${k}`} type="time" min="07:00" max="21:30" step="900" defaultValue={sl.at} onBlur={(e) => { setEditing(null); if (e.target.value && e.target.value !== sl.at) run(() => api.brainSlot(day, sl.i, e.target.value), { reload: true }); }} style={{ width: 92 }} autoFocus />
+                  : <button data-testid={`slot-${k}`} disabled={busy || sl.status === "done"} onClick={() => setEditing(k)} title="Move this slot" style={{ ...bGray, padding: "2px 8px", fontSize: 12, minWidth: 64 }}>{sl.at}</button>}
+                <div style={{ flex: 1 }}>
+                  <b>{sl.size}</b> photos{sl.status === "done" ? " ✓" : ""} — {Object.entries(sl.byKind || {}).map(([kk, n]) => `${KIND[kk] || kk} ${n}`).join(", ") || "nothing left"}
+                  <div style={{ fontSize: 10, color: GRAY }}>{sl.why}{(brain.overrides?.[day] || {})[sl.i] ? <> · <button onClick={() => run(() => api.brainSlot(day, sl.i, null), { reload: true })} style={{ background: "none", border: "none", color: BLUE_L, padding: 0, fontSize: 10, cursor: "pointer" }}>back to the brain's time</button></> : null}</div>
+                </div>
+              </div>
+            );
+          })}
         </div>
-      )}
-      {edit && (
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[["spread", "Spread evenly until…"], ["gap", "A gap between albums"], ["now", "Post all approved now"]].map(([md, t]) => (
-              <button key={md} data-testid={`mode-${md}`} onClick={() => { setForm({ ...form, mode: md }); setPreview(null); }} style={{ ...(form.mode === md ? bBlue : bGray), padding: "6px 10px", fontSize: 12 }}>{t}</button>
-            ))}
-          </div>
-          {form.mode !== "now" && (
-            <>
-              <label>Start <input data-testid="start" type="datetime-local" value={form.start} onChange={f("start")} style={inp} /></label>
-              <label>Daily window <input type="time" value={form.from} onChange={f("from")} style={inp} /> to <input type="time" value={form.to} onChange={f("to")} style={inp} /></label>
-              {form.mode === "gap" && <label>Gap <input data-testid="gap" type="number" min="5" value={form.gapMin} onChange={f("gapMin")} style={{ ...inp, width: 80 }} /> minutes</label>}
-              {form.mode === "spread" && <label>Until <input type="datetime-local" value={form.until} onChange={f("until")} style={inp} /></label>}
-            </>
-          )}
-          <button data-testid="show-plan" onClick={showPlan} disabled={busy} style={{ ...bBlue, padding: "6px 10px", fontSize: 12, justifySelf: "start" }}>Show the plan</button>
-          {err && <div data-testid="schedule-error" style={{ color: RED, fontSize: 12 }}>{err}</div>}
-          {preview && (
-            <div data-testid="plan">
-              <div style={{ color: GRAY, fontSize: 12, marginBottom: 4 }}>{preview.plan.length} album{preview.plan.length === 1 ? "" : "s"} (same stock price, one kind each). Products you approve later join this plan.</div>
-              <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, maxHeight: 220, overflow: "auto" }}>{preview.plan.map((p) => <li key={p.album}>{sast(p.due)} — {p.label} ({p.count})</li>)}</ol>
-              <button data-testid="confirm-schedule" onClick={() => run(async () => { const r = await api.schedule(payload(), { confirm: true }); if (r.ok !== false) { setEdit(false); setPreview(null); } return r; }, { reload: true })} disabled={busy} style={{ ...bGreen, marginTop: 8, width: "100%" }}>Confirm — start posting on this plan</button>
+      ))}
+      <div style={{ fontSize: 12, fontWeight: 700, margin: "10px 0 4px" }}>Best times</div>
+      {hours.length === 0
+        ? <div data-testid="best-times-empty" style={{ fontSize: 11, color: GRAY }}>Read receipts come in after the first posts; the chart fills as they do.</div>
+        : <div data-testid="best-times" role="img" aria-label="Read speed and replies by hour of day">
+          {hours.map((h) => (
+            <div key={h.hour} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, margin: "2px 0" }}>
+              <div style={{ width: 40, color: GRAY }}>{String(h.hour).padStart(2, "0")}:00</div>
+              <div style={{ flex: 1, background: "rgba(255,255,255,.06)", borderRadius: 4, height: 12 }}>
+                <div style={{ width: `${Math.round(((h.score || 0) / maxScore) * 100)}%`, background: BLUE_L, height: 12, borderRadius: 4 }} />
+              </div>
+              <div style={{ width: 150, textAlign: "right" }}>{pct(h.r60)} in 1 h · {h.medianMin ?? "–"} min · {(h.answersPer100 || 0).toFixed(1)}/100</div>
             </div>
-          )}
-        </div>
-      )}
+          ))}
+          <div style={{ fontSize: 10, color: GRAY, marginTop: 2 }}>Bar = read speed and replies. % of members who read within 1 h (receipts off left out) · median minutes to read · replies + reactions per 100 members.</div>
+        </div>}
     </div>
   );
 }
@@ -189,7 +186,6 @@ export default function BlackFridayScreen({ api, onExit }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null);
   const [gens, setGens] = useState({});
-  const [sched, setSched] = useState(false);
   const [showRejected, setShowRejected] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState(() => new Map()); // pid → row
@@ -394,9 +390,8 @@ export default function BlackFridayScreen({ api, onExit }) {
             {note && <div data-testid="note" style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>{note}</div>}
             {tab === "approved" && (
               <div style={{ marginBottom: 10 }}>
-                {!sched && <button data-testid="schedule-posting" onClick={() => setSched(true)} style={{ ...bGreen, width: "100%" }}>Schedule posting{d.schedule ? " (set)" : ""}</button>}
-                {sched && <SchedulePanel data={d} api={api} busy={busy} run={run} />}
-                {!d.schedule && <div data-testid="no-schedule" style={{ color: GRAY, fontSize: 11, marginTop: 4 }}>Nothing posts until you set a schedule.</div>}
+                {/* The posting brain replaced the old schedule (19 Nov night): it posts approved products 3 times a day by itself. */}
+                <BrainPanel brain={d.brain} api={api} busy={busy} run={run} />
               </div>
             )}
             <Block testid="block-big" title="30+ on hand" rows={big} {...shared}>

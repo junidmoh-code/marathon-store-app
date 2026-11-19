@@ -257,14 +257,40 @@ async function clearSchedule(db, uid, nowMs) {
   return { ok: true, cleared: true };
 }
 
+// ── THE POSTING BRAIN (the Mac's bin/bf-brain.mjs) ──────────────────────────
+// It writes brain/view (the plan, posted/remaining, best times); the card reads it and writes only
+// brain/control: the Pause switch and a slot time Junid moves.
+async function brainView(db) {
+  const [view, control] = await Promise.all([val(db, `${core.ROOT}/brain/view`), val(db, `${core.ROOT}/brain/control`)]);
+  return view ? { ...view, paused: !!(control && control.paused), overrides: (control && control.slots) || {} } : null;
+}
+async function brainPause(db, paused, uid, nowMs) {
+  await db.ref(`${core.ROOT}/brain/control`).update({ paused: paused === true, pausedAt: nowMs, pausedBy: uid || null });
+  await log(db, { at: nowMs, by: uid || null, action: paused === true ? "brainPause" : "brainResume" });
+  return { ok: true, paused: paused === true };
+}
+async function brainSlot(db, { day, i, at }, uid, nowMs) {
+  if (!/^2026-11-(19|2[0-7])$/.test(String(day || ""))) throw new HttpsError("invalid-argument", "A day of the campaign.");
+  if (!Number.isInteger(i) || i < 0 || i > 3) throw new HttpsError("invalid-argument", "Slot 0–3.");
+  if (at !== null) {
+    if (!/^\d{2}:\d{2}$/.test(String(at))) throw new HttpsError("invalid-argument", "A time like 09:30.");
+    const [h, m] = String(at).split(":").map(Number);
+    if (h < 7 || h > 21 || m > 59 || (h === 21 && m > 30)) throw new HttpsError("invalid-argument", "Slots run from 07:00 to 21:30 (never 22:00–07:00).");
+  }
+  await db.ref(`${core.ROOT}/brain/control/slots/${day}/${i}`).set(at);
+  await log(db, { at: nowMs, by: uid || null, action: "brainSlot", day, i, time: at });
+  return { ok: true, day, i, at };
+}
+
 const bfCampaignList = onCall(callableOpts, async (request) => {
   assertJunid(request);
   const db = admin.database();
-  const [v, selection] = await Promise.all([
+  const [v, selection, brain] = await Promise.all([
     list(db, (request.data && request.data.section) || "main"),
     loadSelection(db, request.auth && request.auth.uid),
+    brainView(db),
   ]);
-  return { ...v, selection };
+  return { ...v, selection, brain };
 });
 
 const bfCampaignSet = onCall(callableOpts, async (request) => {
@@ -273,6 +299,8 @@ const bfCampaignSet = onCall(callableOpts, async (request) => {
   const db = admin.database();
   const uid = request.auth && request.auth.uid;
   const now = Date.now();
+  if (d.action === "brainPause") return brainPause(db, d.paused, uid, now);
+  if (d.action === "brainSlot") return brainSlot(db, { day: d.day, i: d.i, at: d.at === undefined ? null : d.at }, uid, now);
   if (d.action === "schedule") return schedule(db, d.schedule, { confirm: d.confirm === true }, uid, now);
   if (d.action === "clearSchedule") return clearSchedule(db, uid, now);
   if (d.action === "approveBig") return approveBig(db, d.sigs, uid, now);
@@ -285,4 +313,4 @@ const bfCampaignSet = onCall(callableOpts, async (request) => {
   return tap(db, { action: d.action, pid: d.pid, section: d.section, use: d.use, genId: d.genId, sig: d.sig }, uid, now);
 });
 
-module.exports = { bfCampaignList, bfCampaignSet, _internals: { list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
+module.exports = { bfCampaignList, bfCampaignSet, _internals: { brainView, brainPause, brainSlot, list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
