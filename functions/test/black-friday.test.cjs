@@ -160,6 +160,12 @@ test("NOTHING POSTS WITHOUT A SCHEDULE; the plan is shown before confirming; a t
   assert.equal((await db.ref("bf_campaign_2026/schedule").once("value")).val(), null);
 });
 
+test("a schedule never confirmed gets no plan, whatever is approved", async () => {
+  const db = seed({ schedule: { mode: "gap", from: "08:00", to: "20:00", start: 1, gapMin: 30 } });
+  await tap(db, { action: "approve", pid: "a" }, T("2026-11-20T07:00:00"));
+  assert.equal((await db.ref("bf_campaign_2026/schedule/plan").once("value")).val(), null);
+});
+
 test("planAlbums: kept while ahead or not posted; a posted album's new members get a fresh slot", () => {
   const s = { mode: "gap", from: "08:00", to: "20:00", start: T("2026-11-20T08:00:00"), gapMin: 60 };
   const a1 = { key: "R1-clothing-1", price: 1, part: 1, pids: ["x"], lap: 1, firstAt: 1 };
