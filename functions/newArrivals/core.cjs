@@ -202,6 +202,17 @@ function listLimit(n) {
 }
 
 /** What the card needs from /products/{pid}. Price and sizes are read live. */
+// THE GROUPS' PRICE: products/{pid}/stockPrice, the field every price save in
+// the app writes (src/components/admin/priceStore.js is its only writer). A
+// number above zero, or a numeric string an import may have written. Anything
+// else is "no stock price". Pure.
+function stockPriceOf(p) {
+  const v = p && p.stockPrice;
+  if (typeof v === "number") return Number.isFinite(v) && v > 0 ? v : null;
+  if (typeof v === "string" && /^\s*\d+(\.\d+)?\s*$/.test(v)) { const n = Number(v); return n > 0 ? n : null; }
+  return null;
+}
+
 function productSummary(p) {
   if (!p) return null;
   const sizes = Array.isArray(p.sizes) ? p.sizes.filter((s) => s !== null && s !== undefined && s !== "")
@@ -212,7 +223,7 @@ function productSummary(p) {
     retailPrice: Number.isFinite(Number(p.retailPrice)) ? Number(p.retailPrice) : null,
     // Cost too: the Ready card fills BOTH missing prices through the Missing
     // prices save, so the product leaves Missing prices.
-    stockPrice: Number.isFinite(Number(p.stockPrice)) ? Number(p.stockPrice) : null,
+    stockPrice: stockPriceOf(p),
     sizes: sizes.map(String),
     photoUrl: p.photoUrl || null,
     photoUrlOriginal: p.photoUrlOriginal || null,
@@ -351,7 +362,7 @@ const REJECT_CHIPS = Object.freeze(["background wrong", "colour off", "detail ch
 // calibration counts it as an approval of THAT generation.
 // "love" / "unlove" (3 Oct evening, learning log): Junid's ❤ on one generation —
 // the strongest positive for calibration; an unlove cancels it.
-const DECISION_ACTIONS = Object.freeze(["approve", "approve-anyway", "regenerate", "reject", "skip", "restore", "generate", "pick", "love", "unlove"]);
+const DECISION_ACTIONS = Object.freeze(["approve", "approve-anyway", "approve-current", "unapprove", "post-all", "regenerate", "reject", "skip", "restore", "generate", "pick", "love", "unlove"]);
 
 /**
  * The ledger row for one of Junid's actions (decisions/{push}). `item` is the
@@ -597,7 +608,111 @@ function keyCmp(a, b) {
 // The most index keys one list call reads per status (see listTab).
 const INDEX_CEILING = 2000;
 
+
+// ═══ THE LIVE CARD (Junid, 19 Nov 2026) ══════════════════════════════════════
+// Three tabs: New (not approved, uploaded in the last WINDOW_DAYS, in stock),
+// Approved (approved, not yet posted to the groups — clothing and footwear
+// mixed) and Done (posted: where and when). Statuses are unchanged — the
+// Shopify chain still moves approved → chaining → done — so a tab is decided
+// by the lane AND by whether the WhatsApp leg has posted it
+// (items/{pid}/destinations/groups, written by the Mac mini poster).
+const LIVE_TABS = Object.freeze(["new", "approved", "done"]);
+const APPROVED_LANES = Object.freeze(["approved", "chaining", "done"]);
+const WINDOW_DAYS = 20;
+const DAY_MS = 86_400_000;
+/** "new" | "approved" | "done" | null for one item, given whether it was posted. Pure. */
+function liveTabOf(item) {
+  if (!item || !item.status) return null;
+  if (NEW_LANES.includes(item.status)) return "new";
+  if (APPROVED_LANES.includes(item.status)) return item.destinations && item.destinations.groups ? "done" : "approved";
+  return null;
+}
+/** The live tab a request means (an old bundle's "ready"/"rejected" → new). Pure. */
+function normalizeLiveTab(t) {
+  const k = String(t || "");
+  if (LIVE_TABS.includes(k)) return k;
+  return LEGACY_TABS[k] || null;
+}
+/** The first key of the rolling window: product ids are "p" + the creation time in ms. Pure. */
+const windowStartKey = (nowMs, days = WINDOW_DAYS) => `p${Math.floor(nowMs - days * DAY_MS)}`;
+
+/**
+ * When the product was uploaded, and where that came from. Pure.
+ * marker   newArrivalAt — the upload form's own stamp (serverNowMs at save)
+ * created  createdBy.at — the upload form's attribution stamp (older bundles)
+ * id       the creation write itself: a product id is "p" + Date.now() at the
+ *          moment the record was first written
+ */
+function uploadedAt(pid, product) {
+  const marker = Number(product && product.newArrivalAt);
+  if (Number.isFinite(marker) && marker > 0) return { at: marker, from: "marker" };
+  const created = Number(product && product.createdBy && product.createdBy.at);
+  if (Number.isFinite(created) && created > 0) return { at: created, from: "created" };
+  const m = /^p(\d{10,})$/.exec(String(pid || ""));
+  return m ? { at: Number(m[1]), from: "id" } : { at: null, from: null };
+}
+
+// ── POSTING (Junid, 19 Nov 2026) ─────────────────────────────────────────────
+// Only the STOCK price is posted. Footwear and clothing NEVER share a post,
+// even at the same price. Within a division every item at one stock price is
+// ONE post: its photos, then one text with the price and each item's sizes.
+// Order: FOOTWEAR price groups first (cheapest first), then CLOTHING.
+// A send carries at most SEND_MAX photos (Junid's ~35); a price group bigger
+// than that is split into parts, each with its own text. The Mac mini
+// forwards every send to 5 groups at a time through all 14.
+const DIVISIONS = Object.freeze(["footwear", "clothing"]);
+const SEND_MAX = 35;
+const divisionOf = (product) => (groupOf(product) === "sneakers" ? "footwear" : "clothing");
+/**
+ * rows: [{ pid, name, price, division, sizesText, photoUrl }] → { posts, dropped }. Pure.
+ * posts: [{ division, price, part, of, items }] in posting order.
+ */
+function postPlan(rows, max = SEND_MAX) {
+  const dropped = [];
+  const by = new Map();
+  for (const r of rows) {
+    const price = stockPriceOf({ stockPrice: r.price });
+    if (price === null) { dropped.push({ pid: r.pid, why: "no stock price" }); continue; }
+    if (!r.sizesText) { dropped.push({ pid: r.pid, why: "sold out" }); continue; }
+    const division = DIVISIONS.includes(r.division) ? r.division : "clothing";
+    // The EXACT stock price (to the cent) is the group: R350.10 and R350.40 are two posts, each with its own price.
+    const exact = Math.round(price * 100) / 100;
+    const key = `${division}|${exact}`;
+    if (!by.has(key)) by.set(key, { division, price: exact, items: [] });
+    by.get(key).items.push(r);
+  }
+  const groups = [...by.values()].sort((a, b) => DIVISIONS.indexOf(a.division) - DIVISIONS.indexOf(b.division) || a.price - b.price);
+  const posts = [];
+  for (const g of groups) {
+    const items = [...g.items].sort((a, b) => keyCmp(b.pid, a.pid));
+    const of = Math.ceil(items.length / max);
+    for (let i = 0; i < items.length; i += max) posts.push({ division: g.division, price: g.price, part: i / max + 1, of, items: items.slice(i, i + max) });
+  }
+  return { posts, dropped };
+}
+
+/**
+ * Why "Post all approved" cannot be pressed now (the exact words on the
+ * button), or null. poster = new_arrivals/poster/status as the Mac mini last
+ * wrote it ({ at, ready, missing[] }). Pure.
+ */
+const POSTER_STALE_MS = 10 * 60 * 1000;
+// A Post-all request the Mac mini has not finished in this long is closed as expired (it never posts days later).
+const REQUEST_EXPIRY_MS = 2 * 60 * 60 * 1000;
+function postAllBlock({ poster, pause, approvedCount }, nowMs) {
+  if (!(approvedCount > 0)) return "Nothing approved to post";
+  if (!poster || !Number.isFinite(Number(poster.at))) return "The Mac mini poster has not reported in yet";
+  const age = nowMs - Number(poster.at);
+  if (age > POSTER_STALE_MS) return `The Mac mini poster has not reported for ${Math.round(age / 60000)} min`;
+  const missing = Array.isArray(poster.missing) ? poster.missing.filter(Boolean) : Object.values(poster.missing || {}).filter(Boolean);
+  if (poster.ready !== true) return `Not ready to post: ${missing.length ? missing.join("; ") : "the poster says it is not ready"}`;
+  if (pause && pause.posting === true) return "WhatsApp posting is Paused — switch it on above";
+  return null;
+}
+
 module.exports = {
+  LIVE_TABS, APPROVED_LANES, WINDOW_DAYS, DAY_MS, liveTabOf, normalizeLiveTab, windowStartKey, uploadedAt,
+  DIVISIONS, SEND_MAX, divisionOf, postPlan, POSTER_STALE_MS, REQUEST_EXPIRY_MS, postAllBlock, stockPriceOf,
   parseBucketCursor, bucketRank, REQUEST_STALE_MS, requestPending,
   currentGenUrl,
   checkerWrongRules, approveAction,

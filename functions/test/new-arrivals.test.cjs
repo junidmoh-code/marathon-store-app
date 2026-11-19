@@ -98,7 +98,7 @@ test("approve refuses an item with no stock price, in words", async () => {
     await db.ref(`products/${PID}/stockPrice`).set(stockPrice);
     const out = await na.approve(db, { pids: [PID] }, "junid", NOW);
     assert.deepEqual(out.approved, []);
-    assert.deepEqual(out.skipped, [{ pid: PID, why: "no stock price yet — enter it on the card, then approve" }]);
+    assert.deepEqual(out.skipped, [{ pid: PID, why: na.NO_STOCK_PRICE }]);
     assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
   }
 });
@@ -878,14 +878,16 @@ test("Approve on a new-lane item with a photo (no pending request); passed verdi
   assert.deepEqual(d2.checkerWrong, ["fidelity:colour"]);
 });
 
-test("approve is refused while a generate request is pending; nothing logged", async () => {
+test("approve is NOT blocked by a pending generation (19 Nov 2026): the request is cleared, the approval is final", async () => {
   const db = withGens("ready", { generateRequest: { at: NOW + 1, by: "junid", studio: true, regenerate: true } });
+  await db.ref(`${core.ROOT}/requests/${PID}`).set(NOW + 1);
   const out = await na.approve(db, { pids: [PID] }, "junid", NOW + 2);
-  assert.deepEqual(out.approved, []);
-  assert.match(out.skipped[0].why, /being generated/);
-  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
-  assert.deepEqual(await decisions(db), []);
-  await assert.rejects(na.approve(db, { pids: [PID], genId: "g1" }, "junid", NOW + 2).then((r) => { if (!r.approved.length) throw new Error(r.skipped[0].why); }), /being generated/);
+  assert.deepEqual(out.approved, [PID]);
+  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.status, "approved");
+  assert.equal("generateRequest" in it, false);
+  assert.equal((await db.ref(`${core.ROOT}/requests/${PID}`).once()).val(), null);
+  assert.equal((await decisions(db))[0].action, "approve");
 });
 
 // ── how Gemini did it (newArrivalsHow) + per-item method (newArrivalsMethod) ──

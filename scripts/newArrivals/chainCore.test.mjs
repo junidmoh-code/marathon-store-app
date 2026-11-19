@@ -66,6 +66,20 @@ describe("advance — the happy path, step by step", () => {
     expect(await read(db, `new_arrivals/by_status/approved`)).toBeNull();
   });
 
+  it("Use current photo: lists the app's own photo on Shopify and leaves the app photo exactly as it is", async () => {
+    const db = world({ item: { generatedUrl: ORIG, useCurrentPhoto: true } });
+    const before = await read(db, `products/${PID}`);
+    const { d, thumbs } = deps(db);
+    const r = await advance(PID, d);
+    expect(r).toEqual({ pid: PID, outcome: "waiting", step: "shopify" });
+    const p = await read(db, `products/${PID}`);
+    expect(p.photoUrl).toBe(before.photoUrl);
+    expect(p.photoUrlOriginal).toBeUndefined();
+    expect(thumbs).toHaveLength(0);
+    expect((await read(db, `shopify_publish/${PID}`)).photos).toEqual([ORIG]);
+    expect((await read(db, `new_arrivals/items/${PID}/chain/photo`)).current).toBe(true);
+  });
+
   it("finishes to Done when the reconciler confirms live, with where and when", async () => {
     const db = world();
     const { d } = deps(db);

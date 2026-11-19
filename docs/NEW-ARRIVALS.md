@@ -1,5 +1,36 @@
 # New Arrivals — the photo studio
 
+## The live card (Junid, 19 Nov 2026) — supersedes the tab rules below
+
+| Tab | What |
+|---|---|
+| **New** | not approved, uploaded in the **last 20 days** (rolling; `orderByKey().startAt` on the lane, the key is the upload time), stock above zero, **newest upload first**, Sneakers / Clothing. Each card shows "Uploaded 12 Nov" first. |
+| **Approved** | approved and not yet posted (lanes approved / chaining / done without `destinations/groups`) — clothing and footwear in ONE list: photo, stock price, sizes, upload date, **Un-approve** (back to New; refused once posted). |
+| **Done** | posted to the groups — where and when (`destinations/groups`, written by the Mac mini). |
+
+- **Two routes on New**: Generate (manual, one photo per tap) or **Use current
+  photo** (`newArrivalsUseCurrent`): approves with the app's own photo — no
+  generation, no cost. The product and its photo are never touched; the chain
+  lists that photo on Shopify and leaves the app photo alone
+  (`chainCore.mjs`, `useCurrentPhoto`).
+- **Approve is final.** The ONLY block on Approve and Use current photo is a
+  missing stock price (`core.stockPriceOf`: `products/{pid}/stockPrice`, the field
+  every price save writes), shown in plain words. A photo made from an earlier
+  product photo is a grey note only. A generation still running and the
+  generation switch do not block it.
+- **Post all approved** (`newArrivalsPostAll`, Junid/Jafer only): nothing posts
+  until it is pressed. `dryRun` returns the plan. A real press queues
+  `new_arrivals/post_requests/{key}` (+ `post_request_open`) for the Mac mini.
+  The plan (`core.postPlan`): footwear and clothing never share a post; within
+  a division one post per stock price (photos, then one text with the price and
+  each item's sizes); **footwear first, then clothing**, cheapest first; at most
+  35 photos per send, forwarded 5 groups at a time through all 14. The button
+  is disabled with the exact reason (`core.postAllBlock`) unless the Mac mini's
+  heartbeat at `new_arrivals/poster/status` (≤10 min old) says ready and the
+  posting switch is on.
+
+Deploy: `firebase deploy --only functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsUseCurrent,functions:newArrivalsUnapprove,functions:newArrivalsPostAll --project=marathon-club`
+
 ```
 upload ─▶ New ─[Junid: Generate]─▶ photo appears on the card ─[Junid: Approve]─▶ Done
 Done ─▶ chaining (photo → name → Excellent → publish intent) ─▶ reconciler ─▶ live on Shopify

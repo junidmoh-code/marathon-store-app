@@ -62,9 +62,9 @@ const tabLabels = (tree) => tree.root.findAll((n) => n.props && n.props.role ===
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("the card: clean, one screen", () => {
-  it("tabs New and Done only; the switcher pill reads 'Sneakers · N'; original beside the current photo; no bulk bar", async () => {
+  it("tabs New, Approved and Done; the switcher pill reads 'Sneakers · N'; original beside the current photo; no bulk bar", async () => {
     const tree = await render(fakeApi([withPhoto(1), bare(2)]));
-    expect(tabLabels(tree)).toEqual(["New 2", "Done 5"]);
+    expect(tabLabels(tree)).toEqual(["New 2", "Approved", "Done 5"]);
     expect(label(byId(tree.root, "group-name")[0])).toBe("Sneakers · 2");
     const c = card(tree, P(1));
     expect(c.findAll((n) => n.type === "img").map((i) => i.props.src).slice(0, 2)).toEqual(["https://x/o1.jpg", "https://x/g2.jpg"]);
@@ -93,7 +93,7 @@ describe("the card: clean, one screen", () => {
     const tree = await render(fakeApi([withPhoto(1, { product: { name: "x", sizes: ["7"] } })]));
     const c = card(tree, P(1));
     expect(btn(c, "Approve").props.disabled).toBe(true);
-    expect(label(byId(c, "approve-note")[0])).toBe("add stock price first");
+    expect(label(byId(c, "approve-note")[0])).toBe(view.NO_STOCK_PRICE_TEXT);
   });
 
   it("every earlier generation in the strip has its G-code, ❤, Use this one and How Gemini did it", async () => {
@@ -246,13 +246,13 @@ describe("Generate: live on the card", () => {
 });
 
 describe("instant taps: the screen changes at once, the write runs behind it", () => {
-  it("Approve: the card leaves for Done BEFORE the write answers; the counts move with it; nothing reloads", async () => {
+  it("Approve: the card leaves for Approved BEFORE the write answers; the counts move with it; nothing reloads", async () => {
     const d = deferred();
     const api = fakeApi([withPhoto(1), withPhoto(2)], { approve: vi.fn(() => d.promise) });
     const tree = await render(api);
     await tap(btn(card(tree, P(1)), "Approve"));
     expect(cards(tree)).toEqual([P(2)]);
-    expect(tabLabels(tree)).toEqual(["New 1", "Done 6"]);
+    expect(tabLabels(tree)).toEqual(["New 1", "Approved", "Done 5"]);
     expect(label(byId(tree.root, "group-name")[0])).toBe("Sneakers · 1");
     // Exactly the photo on the card is approved.
     expect(api.approve).toHaveBeenCalledWith([P(1)], { genId: "g2" });
@@ -267,7 +267,7 @@ describe("instant taps: the screen changes at once, the write runs behind it", (
     await tap(btn(card(tree, P(2)), "Approve"));
     await settle(() => {});
     expect(cards(tree)).toEqual([P(1), P(2), P(3)]);
-    expect(tabLabels(tree)).toEqual(["New 3", "Done 5"]);
+    expect(tabLabels(tree)).toEqual(["New 3", "Approved", "Done 5"]);
     expect(lastToast(tree)).toBe("Item 2: Not approved — no stock price yet — enter it on the card, then approve. It is back on the list.");
   });
 
@@ -754,7 +754,7 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     expect(lastToast(tree)).toBe("Item 1: Prices saved.");
   });
 
-  it("while a photo is being made: ❤ and Use this one wait; the current photo stays in sight in the strip", async () => {
+  it("while a photo is being made: ❤ and Use this one wait, Approve does NOT (19 Nov 2026); the current photo stays in sight", async () => {
     const api = fakeApi([withPhoto(1)], { generate: vi.fn(() => new Promise(() => {})) });
     const tree = await render(api);
     await tap(btn(card(tree, P(1)), "Regenerate"));
@@ -762,7 +762,7 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     expect(strip.findAll((n) => n.type === "img").map((i) => i.props.src)).toEqual(["https://x/g2.jpg", "https://x/g1.jpg"]);
     expect(byId(strip, "love").every((b) => b.props.disabled)).toBe(true);
     expect(btn(strip, "Use this one").props.disabled).toBe(true);
-    expect(btn(card(tree, P(1)), "Approve").props.disabled).toBe(true);
+    expect(btn(card(tree, P(1)), "Approve").props.disabled).toBe(false);
     expect(btn(card(tree, P(1)), "Skip").props.disabled).toBe(true);
   });
 
@@ -784,12 +784,12 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     expect(api.list).toHaveBeenCalledTimes(2);
   });
 
-  it("a photo being made from elsewhere (page reloaded mid-way): said in words, and Generate / Approve / Skip wait", async () => {
+  it("a photo being made from elsewhere (page reloaded mid-way): said in words; Generate / Skip wait, Approve does NOT (19 Nov 2026)", async () => {
     const tree = await render(fakeApi([withPhoto(1, { generateRequest: { at: Date.now() - 30_000, by: "junid", studio: true } })]));
     const c = card(tree, P(1));
     expect(text(tree)).toContain("A photo is being made for this item — it will appear here in a minute.");
     expect(btn(c, "Generating…").props.disabled).toBe(true);
-    expect(btn(c, "Approve").props.disabled).toBe(true);
+    expect(btn(c, "Approve").props.disabled).toBe(false);
     expect(btn(c, "Skip").props.disabled).toBe(true);
   });
 
@@ -806,7 +806,8 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     const api = fakeApi([withPhoto(1), withPhoto(2), withPhoto(3), withPhoto(4)]);
     const tree = await render(api);
     for (const i of [1, 2, 3, 4]) await tap(btn(card(tree, P(i)), "Approve"));
-    expect(byId(tree.root, "toast").map(label)).toEqual(["Item 2: Approved — it is under Done.", "Item 3: Approved — it is under Done.", "Item 4: Approved — it is under Done."]);
+    const t = "Approved — it is under Approved. Nothing posts until you press Post all approved.";
+    expect(byId(tree.root, "toast").map(label)).toEqual([`Item 2: ${t}`, `Item 3: ${t}`, `Item 4: ${t}`]);
   });
 });
 
@@ -1095,22 +1096,20 @@ describe("the Original shown is the product's current photo — never the item's
     expect(byId(card(tree, P(1)), "main-photo")[0].findAll((n) => n.type === "img")[0].props.src).toBe("https://x/g9.jpg");
   });
 
-  it("a photo made from the OLD product photo says so on the card, in plain words — Junid never approves it without knowing", async () => {
+  it("a photo made from the OLD product photo carries a small grey note only — Approve stays on (19 Nov 2026)", async () => {
     const tree = await render(fakeApi([withPhoto(1, { sourceUrl: NEW, sourceChanged: true }), withPhoto(2, { sourceUrl: NEW })]));
-    expect(label(byId(card(tree, P(1)), "source-changed")[0]).trim()).toBe("The product's photo was changed after this photo was made. It cannot be approved — tap Regenerate to make one from the new photo.");
+    expect(label(byId(card(tree, P(1)), "source-changed")[0]).trim()).toBe("made from the old product photo");
     expect(byId(card(tree, P(2)), "source-changed")).toHaveLength(0);
-    // …and it cannot be approved until it is regenerated; the other card can.
-    expect(btn(card(tree, P(1)), "Approve").props.disabled).toBe(true);
+    expect(btn(card(tree, P(1)), "Approve").props.disabled).toBe(false);
     expect(btn(card(tree, P(1)), "Regenerate").props.disabled).toBe(false);
-    expect(btn(card(tree, P(2)), "Approve").props.disabled).toBe(false);
     await tap(btn(card(tree, P(1)), "Approve"));
-    expect(cards(tree)).toContain(P(1));
+    expect(cards(tree)).not.toContain(P(1));
   });
 
-  it("an earlier photo made from the old product photo cannot be made the main one: no 'Use this one', said in words", async () => {
+  it("an earlier photo made from the old product photo keeps 'Use this one' — the note is information only", async () => {
     const tree = await render(fakeApi([withPhoto(1, { sourceUrl: NEW, staleGens: ["g1"] })]));
     const strip = byId(card(tree, P(1)), "earlier-generations")[0];
-    expect(btn(strip, "Use this one")).toBeUndefined();
+    expect(btn(strip, "Use this one").props.disabled).toBe(false);
     expect(label(byId(strip, "stale-gen")[0])).toBe("made from the old product photo");
     // The current photo (g2) is fine: it can be approved.
     expect(btn(card(tree, P(1)), "Approve").props.disabled).toBe(false);
@@ -1162,7 +1161,7 @@ describe("the pause switches (Junid, 8 Oct)", () => {
     const switches = tree.root.findAll((n) => n.props && n.props.role === "switch");
     expect(switches.map((s) => s.props["aria-label"])).toEqual(["New Arrivals generation: resume", "WhatsApp posting: resume"]);
     // Generate shows Paused and is off.
-    const gen = btn(card(tree, P(1)), "Paused");
+    const gen = btn(card(tree, P(1)), "Generation paused");
     expect(gen.props.disabled).toBe(true);
     await tap(switches[0]);
     await settle(() => {});
@@ -1177,7 +1176,7 @@ describe("the pause switches (Junid, 8 Oct)", () => {
     expect(label(byId(tree.root, "pause-generation-state")[0])).toBe("Paused");
     expect(label(byId(tree.root, "pause-posting-state")[0])).toBe("On");
     expect(tree.root.findAll((n) => n.props && n.props.role === "switch")).toHaveLength(0);
-    expect(btn(card(tree, P(1)), "Paused").props.disabled).toBe(true);
+    expect(btn(card(tree, P(1)), "Generation paused").props.disabled).toBe(true);
     expect(api.generate).not.toHaveBeenCalled();
   });
   it("a refused flip leaves the state as it was and says why", async () => {
@@ -1187,5 +1186,43 @@ describe("the pause switches (Junid, 8 Oct)", () => {
     await settle(() => {});
     expect(label(byId(tree.root, "pause-posting-state")[0])).toBe("On");
     expect(lastToast(tree)).toMatch(/Not changed — Only Junid can pause or resume/);
+  });
+});
+
+describe("the live card (19 Nov 2026): dates, Use current photo, Approved tab, Post all", () => {
+  it("every card shows its upload date before any generation", async () => {
+    const tree = await render(fakeApi([bare(1, { uploadedAt: Date.UTC(2026, 10, 12, 9) })]));
+    expect(label(byId(card(tree, P(1)), "uploaded")[0])).toBe("Uploaded 12 Nov");
+  });
+  it("Use current photo approves at once with no generation; blocked only by no stock price, in words", async () => {
+    const useCurrent = vi.fn(async (pid) => ({ approved: [pid], skipped: [] }));
+    const api = fakeApi([bare(1, { product: { name: "Item 1", stockPrice: 300, photoUrl: "https://x/o1.jpg" } }), bare(2, { product: { name: "Item 2", photoUrl: "https://x/o2.jpg" } })], { useCurrent });
+    const tree = await render(api);
+    expect(byId(card(tree, P(2)), "use-current")[0].props.disabled).toBe(true);
+    expect(label(byId(card(tree, P(2)), "approve-note")[0])).toMatch(/No stock price on this product yet/);
+    await tap(byId(card(tree, P(1)), "use-current")[0]);
+    expect(cards(tree)).toEqual([P(2)]);
+    expect(useCurrent).toHaveBeenCalledWith(P(1));
+    expect(api.generate).not.toHaveBeenCalled();
+  });
+  it("Approved: price, Un-approve, and Post all disabled with the exact reason; Preview shows the plan", async () => {
+    const appr = withPhoto(1, { status: "approved", approvedAt: 5, product: { name: "Item 1", stockPrice: 450 } });
+    const unapprove = vi.fn(async () => ({ ok: true, status: "ready" }));
+    const postAll = vi.fn(async () => ({ dryRun: true, photos: 1, posts: [{ division: "footwear", price: 450, part: 1, of: 1, count: 1 }], skipped: [] }));
+    const list = vi.fn(async (tab) => ({ tab, items: tab === "approved" ? [appr] : [], total: 1, tabCounts: { new: 0, approved: 1, done: 0 }, canPause: true,
+      postAll: { block: "Not ready to post: macOS Accessibility is not on for MarathonPoster" } }));
+    const tree = await render(fakeApi([], { list, unapprove, postAll }), "approved");
+    expect(label(byId(card(tree, P(1)), "approved-price")[0])).toBe("R450 for the groups");
+    expect(byId(tree.root, "post-all-button")[0].props.disabled).toBe(true);
+    expect(label(byId(tree.root, "post-all-block")[0])).toBe("Not ready to post: macOS Accessibility is not on for MarathonPoster");
+    await tap(byId(tree.root, "post-preview")[0]);
+    await settle(() => {});
+    expect(postAll).toHaveBeenCalledWith({ dryRun: true });
+    expect(text(tree)).toContain("Footwear · R450 · 1 item");
+    await tap(byId(card(tree, P(1)), "unapprove")[0]);
+    expect(unapprove).toHaveBeenCalledWith(P(1));
+    expect(cards(tree)).toEqual([]);
+    // The counts move from Approved (not New) to New.
+    expect(tabLabels(tree)).toEqual(["New 1", "Approved 0", "Done 0"]);
   });
 });

@@ -1,9 +1,16 @@
 // ─── NEW ARRIVALS — the photo studio card ────────────────────────────────────
 // Tap Generate → the photo appears beside the original → tap Approve → Done.
 //
-// TWO TABS: New and Done. New shows ONE group at a time — Sneakers (all
-// footwear, slides too) or Clothing (everything else) — flipped with the
-// switcher bar; the last group is remembered on the device.
+// THREE TABS (Junid, 19 Nov 2026): New (uploaded in the last 20 days, in
+// stock, not approved — newest first, each card dated), Approved (approved,
+// not yet posted; clothing and footwear in one list; Un-approve; "Post all
+// approved") and Done (posted: where and when). New shows ONE group at a time
+// — Sneakers or Clothing — flipped with the switcher bar.
+//
+// TWO ROUTES on New: Generate (one photo per tap, manual) or "Use current
+// photo" (approve with the photo the app already has — no generation, no cost).
+// The ONLY thing that blocks Approve / Use current photo is a missing stock
+// price, said in plain words.
 //
 // GENERATE is live: the card calls the photo studio function and shows, in the
 // photo's own place, what Gemini is doing — its drafts as they arrive and its
@@ -35,7 +42,7 @@ import {
   shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, stockText,
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
   normalizeTab, canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, methodMadeText, METHOD_TABS, METHOD_CHOICES, effectiveChoice, choiceToSet, afterChoice, madeTag, howLabel,
-  foldLive, liveStart, afterPick, afterPrices, afterLove, withoutItem, withItemBack, isGenerating,
+  foldLive, liveStart, afterPick, afterPrices, afterLove, withoutItem, withItemBack, isGenerating, uploadedText, planLine,
   revertPick, revertLove, revertPrices, revertMethod, afterGenerated, named, sourceUrlOf,
 } from "./newArrivalsView";
 
@@ -188,7 +195,7 @@ function Photos({ item, tab, stats, live, busy, h }) {
   const toggleHow = (genId) => setHowOpen((cur) => (cur === genId ? null : genId));
   const mainId = currentGenId(item);
   const main = gens.find((g) => g.genId === mainId) || null;
-  const mainUrl = main?.url || item.generatedUrl || (tab === "done" ? item.product?.photoUrl : null);
+  const mainUrl = tab !== "new" && item.useCurrentPhoto ? item.generatedUrl : main?.url || item.generatedUrl || (tab !== "new" ? item.product?.photoUrl : null);
   // While a new photo is being made its place shows Gemini at work, so the
   // current photo joins the strip — it stays in sight to compare.
   const strip = live ? gens : gens.filter((g) => g !== main);
@@ -204,7 +211,7 @@ function Photos({ item, tab, stats, live, busy, h }) {
       <div style={{ display: "flex", gap: 8 }}>
         {/* The product's CURRENT photo, as the server read it just now (sourceUrl) — never a copy kept on the item. */}
         <Tile testid="original-photo" url={sourceUrlOf(item)} label="Original" />
-        {live ? <LiveTile live={live} /> : <Tile testid="main-photo" url={mainUrl} label={main ? (tab === "done" ? "Approved photo" : "Current photo") : mainUrl ? "Photo" : "No photo yet"} />}
+        {live ? <LiveTile live={live} /> : <Tile testid="main-photo" url={mainUrl} label={tab !== "new" ? (item.useCurrentPhoto ? "Approved — app photo" : "Approved photo") : main ? "Current photo" : mainUrl ? "Photo" : "No photo yet"} />}
       </div>
       {live && <LiveThoughts live={live} />}
       {!live && main && (
@@ -216,10 +223,9 @@ function Photos({ item, tab, stats, live, busy, h }) {
           {h.onLove && canLove(tab, main) && <LoveButton item={item} gen={main} onLove={h.onLove} disabled={busy} />}
         </div>
       )}
+      {/* A note only (19 Nov 2026): it never disables anything. */}
       {!live && main && item.sourceChanged && tab === "new" && (
-        <div data-testid="source-changed" style={{ color: "#fff", fontSize: 12, marginTop: 6, padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,.08)" }}>
-          The product's photo was changed after this photo was made. It cannot be approved — tap Regenerate to make one from the new photo.
-        </div>
+        <div data-testid="source-changed" style={{ color: GRAY, fontSize: 11, marginTop: 4 }}>made from the old product photo</div>
       )}
       {/* Footwear placed on the fixed backdrop by code: Gemini's own photo, before that, as a thumbnail. */}
       {!live && main?.uncorrected?.url && (
@@ -242,11 +248,11 @@ function Photos({ item, tab, stats, live, busy, h }) {
                 <GenCode gen={g} small />
                 {h.onLove && canLove(tab, g) && <LoveButton item={item} gen={g} onLove={h.onLove} disabled={busy} />}
               </div>
+              {tab === "new" && (item.staleGens || []).includes(g.genId) && (
+                <div data-testid="stale-gen" style={{ color: GRAY, fontSize: 10, marginTop: 2 }}>made from the old product photo</div>
+              )}
               {tab === "new" && h.onPick && canPick(item, g) && (
-                // A photo made from a product photo that has since been replaced cannot become the main one (it could not be approved).
-                (item.staleGens || []).includes(g.genId)
-                  ? <div data-testid="stale-gen" style={{ color: GRAY, fontSize: 10, marginTop: 4, minHeight: 40 }}>made from the old product photo</div>
-                  : <button disabled={busy} onClick={() => h.onPick(item, g.genId)} style={{ ...bBlue, width: "100%", minHeight: 40, padding: "0 4px", fontSize: 12, marginTop: 4, opacity: busy ? 0.4 : 1 }}>Use this one</button>
+                <button disabled={busy} onClick={() => h.onPick(item, g.genId)} style={{ ...bBlue, width: "100%", minHeight: 40, padding: "0 4px", fontSize: 12, marginTop: 4, opacity: busy ? 0.4 : 1 }}>Use this one</button>
               )}
               {how(g, true)}
             </div>
@@ -269,13 +275,25 @@ function ItemCard({ item, tab, live, h, stats }) {
   // reloaded mid-way, or it was started on another device): said in words.
   const elsewhere = tab === "new" && !live && isGenerating(item);
   const working = !!live || elsewhere;
-  const approveOn = acts.approveEnabled && !working;
+  // Approve is never held back by a photo being made (19 Nov 2026): only a missing stock price blocks it.
+  const approveOn = acts.approveEnabled;
+  const useCurrentOn = acts.useCurrentEnabled;
+  const uploaded = uploadedText(item.uploadedAt);
   return (
     <div data-pid={item.pid} style={{ ...GLASS, padding: 12, marginBottom: 14 }}>
+      {uploaded && <div data-testid="uploaded" style={{ color: INK, fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{uploaded}</div>}
       <Photos item={item} tab={tab} stats={stats} live={live} busy={working} h={h} />
       <div style={{ marginTop: 10, color: "#fff", fontWeight: 700, fontSize: 15 }}>{p.name || item.name}</div>
       {shopifyNameLine(item) && tab === "done" && <div style={{ color: BLUE_L, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>}
       <div data-testid="stock" style={{ color: GRAY, fontSize: 12, marginTop: 3 }}>Sizes {sizesText(p.sizes)} · {stockText(item)}</div>
+      {tab === "approved" && (
+        <>
+          <div data-testid="approved-price" style={{ color: "#fff", fontSize: 14, marginTop: 6 }}>{needsStockPrice(p) ? "No stock price" : `${priceText(p.stockPrice)} for the groups`}</div>
+          {h.onUnapprove && (
+            <button data-testid="unapprove" onClick={() => h.onUnapprove(item)} style={{ ...bGray, minHeight: 44, padding: "0 14px", marginTop: 10, fontSize: 13 }}>Un-approve — back to New</button>
+          )}
+        </>
+      )}
       {tab === "done" && (
         <>
           <div data-testid="status" style={{ color: item.status === "done" ? GREEN : INK, fontSize: 12, marginTop: 6 }}>{statusLine(item)}</div>
@@ -287,12 +305,16 @@ function ItemCard({ item, tab, live, h, stats }) {
       {tab === "new" && item.lastAttempt?.failed === true && !working && !hasPhotoNow && (
         <div data-testid="status" style={{ color: INK, fontSize: 12, marginTop: 6 }}>{statusLine(item)}</div>
       )}
-      {PRICE_TABS.includes(tab) && h.onSavePrices && <PriceFields item={item} onSavePrices={h.onSavePrices} needNote={hasPhotoNow && needsStockPrice(p)} />}
+      {PRICE_TABS.includes(tab) && h.onSavePrices && <PriceFields item={item} onSavePrices={h.onSavePrices} needNote={false} />}
+      {tab === "new" && acts.approveWhy && <div data-testid="approve-note" style={{ color: INK, fontSize: 12, marginTop: 8 }}>{acts.approveWhy}</div>}
       {tab === "new" && (
-        <div data-testid="actions" style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "stretch" }}>
-          <button disabled={working || h.generationPaused} onClick={() => h.onGenerate(item)} style={{ ...bBlue, ...big, opacity: working || h.generationPaused ? 0.5 : 1 }}>{h.generationPaused ? "Paused" : working ? "Generating…" : hasPhotoNow ? "Regenerate" : "Generate"}</button>
+        <div data-testid="actions" style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "stretch", flexWrap: "wrap" }}>
+          <button disabled={working || h.generationPaused} onClick={() => h.onGenerate(item)} style={{ ...bBlue, ...big, opacity: working || h.generationPaused ? 0.5 : 1 }}>{h.generationPaused ? "Generation paused" : working ? "Generating…" : hasPhotoNow ? "Regenerate" : "Generate"}</button>
           {hasPhotoNow && (
             <button disabled={!approveOn} onClick={() => h.onApprove(item)} style={{ ...bGreen, ...big, opacity: approveOn ? 1 : 0.4 }}>Approve</button>
+          )}
+          {acts.useCurrent && h.onUseCurrent && (
+            <button data-testid="use-current" disabled={!useCurrentOn} onClick={() => h.onUseCurrent(item)} style={{ ...bGreen, ...big, background: "transparent", border: `1px solid ${GREEN}`, color: GREEN, opacity: useCurrentOn ? 1 : 0.4 }}>Use current photo</button>
           )}
           {/* Skip sits apart and smaller: it must never be hit for Approve. */}
           <button disabled={working} onClick={() => h.onSkip(item)} style={{ ...bGray, ...big, flex: "0 0 auto", marginLeft: 10, padding: "0 14px", fontSize: 13, fontWeight: 600, background: "transparent", opacity: working ? 0.5 : 1 }}>Skip</button>
@@ -484,8 +506,9 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
           // The pause switches, as the server has them now; whether this account may flip them (Junid only).
           pause: res.pause && typeof res.pause === "object" ? { generation: res.pause.generation === true, posting: res.pause.posting === true } : dataRef.current.pause || null,
           canPause: res.canPause === true,
+          postAll: res.postAll || null, noStockPrice: res.noStockPrice || null, hidden: res.hidden || null, windowDays: res.windowDays || null,
         };
-        for (const [pid, e] of gone.current) next = withoutItem(next, pid, { group: e.group, toTab: e.toTab });
+        for (const [pid, e] of gone.current) next = withoutItem(next, pid, { group: e.group, toTab: e.toTab, fromTab: e.fromTab });
         setData(next);
         return;
       }
@@ -625,9 +648,10 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   const leave = (item, toTab) => {
     taps.current += 1;
     const index = (dataRef.current.items || []).findIndex((i) => i.pid === item.pid);
-    const entry = { item, index, toTab, view: activeView.current, group: viewRef.current.group };
+    const fromTab = viewRef.current.tab;
+    const entry = { item, index, toTab, fromTab, view: activeView.current, group: fromTab === "new" ? viewRef.current.group : null };
     gone.current.set(item.pid, entry);
-    setData((d) => withoutItem(d, item.pid, { group: entry.group, toTab }));
+    setData((d) => withoutItem(d, item.pid, { group: entry.group, toTab, fromTab }));
     return entry;
   };
   const comeBack = (entry) => {
@@ -639,10 +663,10 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
 
   // APPROVE — Junid's Approve is final, and it approves exactly the photo on the card.
   h.onApprove = (item) => {
-    if (!actionsFor(item).approveEnabled || liveRef.current[item.pid] || isGenerating(item)) return;
+    if (!actionsFor(item).approveEnabled) return;
     const genId = item.generations?.[currentGenId(item)]?.url ? currentGenId(item) : null;
-    const entry = leave(item, "done");
-    say(item, "Approved — it is under Done.");
+    const entry = leave(item, "approved");
+    say(item, "Approved — it is under Approved. Nothing posts until you press Post all approved.");
     write(item.pid, async () => {
       const out = await attempt(() => api.approve([item.pid], genId ? { genId } : {}),
         (r) => ((r?.approved || []).includes(item.pid) ? null : r?.skipped?.[0]?.why || "not approved"));
@@ -654,6 +678,53 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
       say(item, "No answer to the Approve — the list is being refreshed to show where it is.");
       reload();
     });
+  };
+
+  // USE CURRENT PHOTO — approve with the app's own photo: no generation, no cost.
+  h.onUseCurrent = api.useCurrent ? (item) => {
+    if (!actionsFor(item).useCurrentEnabled) return;
+    const entry = leave(item, "approved");
+    say(item, "Approved with its current photo — it is under Approved.");
+    write(item.pid, async () => {
+      const out = await attempt(() => api.useCurrent(item.pid), (r) => ((r?.approved || []).includes(item.pid) ? null : r?.skipped?.[0]?.why || "not approved"));
+      if (out.ok || /^it is (approved|chaining|done)\b/.test(out.refused || "")) return;
+      if (!alive.current) return;
+      if (out.refused) { comeBack(entry); say(entry.item, `Not approved — ${out.refused}. It is back on the list.`); return; }
+      say(item, "No answer — the list is being refreshed to show where it is.");
+      reload();
+    });
+  } : null;
+  // UN-APPROVE — Approved → back to New.
+  h.onUnapprove = api.unapprove ? (item) => {
+    const entry = leave(item, "new");
+    say(item, "Back on New.");
+    write(item.pid, async () => {
+      const out = await attempt(() => api.unapprove(item.pid), (r) => (r?.ok ? null : r?.why || "not moved"));
+      if (!alive.current) return;
+      if (out.ok) { if (out.res?.shopifyNote) say(item, `Back on New — ${out.res.shopifyNote}.`); return; }
+      if (out.refused) { comeBack(entry); say(entry.item, `Not un-approved — ${out.refused}.`); return; }
+      say(item, "No answer — the list is being refreshed to show where it is.");
+      reload();
+    });
+  } : null;
+
+  // POST ALL APPROVED — nothing posts until Junid presses it. "Preview" is a dry run: the plan, nothing sent.
+  const [plan, setPlan] = useState(null);
+  const [planBusy, setPlanBusy] = useState(false);
+  const onPreview = async () => {
+    if (!api.postAll || planBusy) return;
+    setPlanBusy(true);
+    try { setPlan(await api.postAll({ dryRun: true })); } catch (e) { say(null, `No plan — ${reason(e)}`); } finally { setPlanBusy(false); }
+  };
+  const onPostAll = async () => {
+    if (!api.postAll || planBusy || data.postAll?.block) return;
+    if (!ask("Post every approved item to all 14 WhatsApp groups now?")) return;
+    setPlanBusy(true);
+    try {
+      const res = await api.postAll({ dryRun: false });
+      setPlan(res);
+      say(null, `Sent to the Mac mini: ${res.photos} photo(s) in ${res.posts?.length || 0} post(s). They move to Done as each one lands.`);
+    } catch (e) { say(null, `Not posted — ${reason(e)}`); } finally { setPlanBusy(false); }
   };
 
   // SKIP — gone at once, with ONE bar for 8 seconds; Undo brings every skipped item back.
@@ -838,6 +909,28 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         </div>
         {isGroupTab(tab) && (
           <GroupSwitcher group={group} onStep={onStepGroup} count={data.groupCounts ? data.groupCounts[group] : (data.items ? data.total : null)} />
+        )}
+        {tab === "new" && data.windowDays && (
+          <div data-testid="window-line" style={{ color: GRAY, fontSize: 11, marginBottom: 10 }}>
+            Uploaded in the last {data.windowDays} days, in stock, newest first{data.noStockPrice ? ` · ${data.noStockPrice[group] || 0} with no stock price` : ""}
+          </div>
+        )}
+        {tab === "approved" && (
+          <div data-testid="post-all" style={{ ...GLASS, padding: 12, marginBottom: 14 }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button data-testid="post-all-button" disabled={!!data.postAll?.block || planBusy || !data.canPause} onClick={onPostAll}
+                style={{ ...bGreen, flex: 1, minHeight: 48, fontSize: 15, opacity: data.postAll?.block || planBusy || !data.canPause ? 0.45 : 1 }}>Post all approved</button>
+              <button data-testid="post-preview" disabled={planBusy} onClick={onPreview} style={{ ...bGray, minHeight: 48, padding: "0 14px", fontSize: 13 }}>Preview posts</button>
+            </div>
+            {data.postAll?.block && <div data-testid="post-all-block" style={{ color: INK, fontSize: 12, marginTop: 8 }}>{data.postAll.block}</div>}
+            {plan && (
+              <div data-testid="post-plan" style={{ color: GRAY, fontSize: 12, marginTop: 8 }}>
+                <div style={{ color: "#fff", marginBottom: 4 }}>{plan.dryRun ? "Preview — nothing sent:" : "Sent to the Mac mini:"} {plan.photos} photo(s) in {plan.posts?.length || 0} post(s). Footwear first, then clothing.</div>
+                {(plan.posts || []).map((p, i) => <div key={i}>{planLine(p)}</div>)}
+                {(plan.skipped || []).length > 0 && <div style={{ marginTop: 4 }}>Not in the plan: {plan.skipped.length} ({[...new Set(plan.skipped.map((x) => x.why))].join(", ")})</div>}
+              </div>
+            )}
+          </div>
         )}
         {items === null && <div style={{ color: GRAY }}>Loading…</div>}
         {items && items.length === 0 && <div style={{ color: GRAY }}>Nothing here.</div>}
