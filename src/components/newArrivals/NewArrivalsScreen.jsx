@@ -912,7 +912,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         )}
         {tab === "new" && data.windowDays && (
           <div data-testid="window-line" style={{ color: GRAY, fontSize: 11, marginBottom: 10 }}>
-            Uploaded in the last {data.windowDays} days, in stock, newest first{data.noStockPrice ? ` · ${data.noStockPrice[group] || 0} with no stock price` : ""}
+            Uploaded in the last {data.windowDays} days (plus older items with a photo waiting for you), in stock, newest first{data.noStockPrice ? ` · ${data.noStockPrice[group] || 0} with no stock price` : ""}
           </div>
         )}
         {tab === "approved" && (

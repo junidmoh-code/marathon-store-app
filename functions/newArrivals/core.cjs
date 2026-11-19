@@ -618,6 +618,8 @@ const INDEX_CEILING = 2000;
 // (items/{pid}/destinations/groups, written by the Mac mini poster).
 const LIVE_TABS = Object.freeze(["new", "approved", "done"]);
 const APPROVED_LANES = Object.freeze(["approved", "chaining", "done"]);
+// New-tab lanes whose items carry a generated photo: shown on New whatever their upload date.
+const PHOTO_LANES = Object.freeze(["ready", "rejected"]);
 const WINDOW_DAYS = 20;
 const DAY_MS = 86_400_000;
 /** "new" | "approved" | "done" | null for one item, given whether it was posted. Pure. */
@@ -711,7 +713,7 @@ function postAllBlock({ poster, pause, approvedCount }, nowMs) {
 }
 
 module.exports = {
-  LIVE_TABS, APPROVED_LANES, WINDOW_DAYS, DAY_MS, liveTabOf, normalizeLiveTab, windowStartKey, uploadedAt,
+  LIVE_TABS, APPROVED_LANES, PHOTO_LANES, WINDOW_DAYS, DAY_MS, liveTabOf, normalizeLiveTab, windowStartKey, uploadedAt,
   DIVISIONS, SEND_MAX, divisionOf, postPlan, POSTER_STALE_MS, REQUEST_EXPIRY_MS, postAllBlock, stockPriceOf,
   parseBucketCursor, bucketRank, REQUEST_STALE_MS, requestPending,
   currentGenUrl,

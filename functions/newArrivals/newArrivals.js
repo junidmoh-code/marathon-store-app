@@ -809,6 +809,14 @@ async function listLive(db, tabAsked, { cursor = null, limit, group = null, nowM
     const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().startAt(since).limitToLast(core.INDEX_CEILING).once("value");
     for (const k of Object.keys(snap.val() || {})) if (!newLaneOf.has(k)) newLaneOf.set(k, s);
   }));
+  // A PHOTO WAITING FOR JUNID STAYS, whatever its age (19 Nov 2026): an item he
+  // already has a generated photo for (lanes ready / rejected — a landed photo
+  // moves an item to ready) is his to approve, not to lose to the 20-day window.
+  // These lanes are small; read by key with the ceiling, never unbounded.
+  await Promise.all(core.PHOTO_LANES.map(async (s) => {
+    const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().limitToLast(core.INDEX_CEILING).once("value");
+    for (const k of Object.keys(snap.val() || {})) if (!newLaneOf.has(k)) newLaneOf.set(k, s);
+  }));
   const stock = await laneStock(db, [...newLaneOf.keys()], locations, nowMs);
   const hidden = { soldOut: 0, gone: 0 };
   const newKeys = [...newLaneOf.keys()].filter((k) => {
