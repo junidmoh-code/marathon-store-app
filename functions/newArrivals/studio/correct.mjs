@@ -23,7 +23,7 @@ const r3 = (x) => Math.round(x * 1000) / 1000;
  * photoBuf: Gemini's footwear photo · plate: { buffer, width, height } · spec: the footwear layout.
  * → { buffer (JPEG, the plate's size), placed, deviations, found, how, fitted } or { problem }
  */
-export async function correctFootwear({ photoBuf, plate, spec, lift = liftFromPlate, allowColourless = false }) {
+export async function correctFootwear({ photoBuf, plate, spec, lift = liftFromPlate, allowColourless = false, lossless = false }) {
   // allowColourless: only for a by-hand re-run that a person then looks at (never in the running flow).
   const lifted = await lift(photoBuf, plate, { allowColourless });
   if (lifted.problem) return { problem: lifted.problem };
@@ -42,7 +42,7 @@ export async function correctFootwear({ photoBuf, plate, spec, lift = liftFromPl
   // A shoe that only fits under the box at less than half the layout's length is not this layout's shoe
   // (the cut-out is wrong, or the box is): Gemini's photo is kept.
   if ((use.shoe.toeX - use.shoe.heelX) < MIN_FIT * (spec.shoe.toeX - spec.shoe.heelX)) return { problem: "the shoe is too tall to be placed under the box at the measured layout" };
-  const composed = await composeOnPlate({ kind: "footwear", plate, spec: use, parts: { shoe: lifted.shoe, ...(lifted.box ? { box: lifted.box } : {}) }, packagingAt: "rail" });
+  const composed = await composeOnPlate({ kind: "footwear", plate, spec: use, parts: { shoe: lifted.shoe, ...(lifted.box ? { box: lifted.box } : {}) }, packagingAt: "rail", lossless });
   for (const r of [composed.placed.shoe, composed.placed.box].filter(Boolean)) {
     if (r.left < -0.002 || r.top < -0.002 || r.right > 1.002 || r.bottom > 1.002) return { problem: "the shoe does not fit the backdrop at the measured layout" };
   }

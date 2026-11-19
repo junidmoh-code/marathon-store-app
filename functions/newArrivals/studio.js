@@ -415,4 +415,7 @@ module.exports = {
   newArrivalsStudio,
   // for tests
   _internals: { exampleFiles, studioGenerate, claim, release, landed, usdZarToday, uploadImmutable, fetchBytes, mods },
+  // The engine's pieces, shared with Black Friday's generator (functions/blackFriday/generate.js):
+  // the same plates, references, brand boxes, prompt config, rate and pause switch — one house look.
+  engine: { mods, fetchBytes, uploadImmutable, usdZarToday, atModelCall, loadRoleFile, loadExamples, libraryBox, generation, spec, prices, CONDITION_CLAUSE, BUCKET },
 };
