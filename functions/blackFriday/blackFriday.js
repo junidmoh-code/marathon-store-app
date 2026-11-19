@@ -184,6 +184,29 @@ async function many(db, action, list, uid, nowMs) {
   return { ok: true, done, refused, undo };
 }
 
+// The card's multi-select, kept on the server as Junid ticks (he lost a 574-product selection to a failed
+// bulk Approve once): a refresh, a crash or a deploy never loses it. { pid: sig } per admin; empty clears it.
+const selPath = (uid) => `${core.ROOT}/selection/${String(uid).replace(/[.#$\[\]/]/g, "_")}`;
+async function saveSelection(db, uid, sigs, nowMs, label = null) {
+  if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+  const entries = Object.entries(sigs && typeof sigs === "object" ? sigs : {});
+  if (entries.length > MANY_MAX) throw new HttpsError("invalid-argument", "Too many at once.");
+  for (const [pid, sig] of entries) {
+    if (!core.PID_RE.test(String(pid))) throw new HttpsError("invalid-argument", "Which product?");
+    if (sig !== "current" && !core.GEN_RE.test(String(sig))) throw new HttpsError("invalid-argument", "Which photo?");
+  }
+  if (!entries.length) { await db.ref(selPath(uid)).remove(); return { ok: true, saved: 0 }; }
+  // label: a selection put back for him (e.g. "Recovered selection") keeps its name while he works through it.
+  const name = typeof label === "string" && label.trim() ? label.trim().slice(0, 60) : null;
+  await db.ref(selPath(uid)).set({ at: nowMs, sigs: Object.fromEntries(entries), ...(name ? { label: name } : {}) });
+  return { ok: true, saved: entries.length };
+}
+async function loadSelection(db, uid) {
+  if (!uid) return null;
+  const s = await val(db, selPath(uid));
+  return s && s.sigs ? { at: s.at || null, sigs: s.sigs, label: s.label || null } : null;
+}
+
 /** Undo: { pid: { prev, expectAt } } — each pick back to exactly what it was, if unchanged since. */
 async function restore(db, items, uid, nowMs) {
   const entries = Object.entries(items && typeof items === "object" ? items : {});
@@ -236,7 +259,12 @@ async function clearSchedule(db, uid, nowMs) {
 
 const bfCampaignList = onCall(callableOpts, async (request) => {
   assertJunid(request);
-  return list(admin.database(), (request.data && request.data.section) || "main");
+  const db = admin.database();
+  const [v, selection] = await Promise.all([
+    list(db, (request.data && request.data.section) || "main"),
+    loadSelection(db, request.auth && request.auth.uid),
+  ]);
+  return { ...v, selection };
 });
 
 const bfCampaignSet = onCall(callableOpts, async (request) => {
@@ -251,9 +279,10 @@ const bfCampaignSet = onCall(callableOpts, async (request) => {
   if (d.action === "approveMany") return many(db, "approve", d.sigs, uid, now);
   if (d.action === "rejectMany") return many(db, "reject", d.pids, uid, now);
   if (d.action === "resetMany") return many(db, "reset", d.pids, uid, now);
+  if (d.action === "selSave") return saveSelection(db, uid, d.sigs, now, d.label);
   if (d.action === "undo") return restore(db, d.items, uid, now);
   if (d.action === "approveStyle") return approveStyle(db, d.kind, uid, now);
   return tap(db, { action: d.action, pid: d.pid, section: d.section, use: d.use, genId: d.genId, sig: d.sig }, uid, now);
 });
 
-module.exports = { bfCampaignList, bfCampaignSet, _internals: { list, tap, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
+module.exports = { bfCampaignList, bfCampaignSet, _internals: { list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };

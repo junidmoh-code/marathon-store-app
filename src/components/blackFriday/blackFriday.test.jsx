@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import BlackFridayScreen, { rowActions } from "./BlackFridayScreen";
+import { isUpdateBusy } from "../../update/updateChecker";
 
 const row = (pid, qty, over = {}) => ({ pid, name: `Item ${pid}`, price: 300, qty, sizes: "M-XL", kind: "clothing", big: qty >= 30, na: false, photo: `https://x/${pid}.jpg`, shown: `https://x/${pid}.jpg`,
   use: "current", genId: null, generatedUrl: null, generations: 0, generating: false, styleApproved: true, tab: "review", changedSinceApproval: false, posted: null, ...over });
@@ -242,5 +243,61 @@ describe("Black Friday card v3", () => {
     await act(async () => { byId(r, "failed-a").props.onClick({ stopPropagation() {} }); });
     await flush();
     expect(api.generate).toHaveBeenCalledWith("a", "main", expect.any(Object));
+  });
+});
+
+describe("Black Friday card: the selection is never lost", () => {
+  const many = (n) => Array.from({ length: n }, (_, i) => row(`p${i}`, 20));
+  it("every tick is saved; a saved selection comes back ticked on load", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const api = fakeApi({ selSave: vi.fn(async () => ({ ok: true })) });
+    const r = await mount(api);
+    await act(async () => { byId(r, "select-toggle").props.onClick(); });
+    await act(async () => { byId(r, "row-a").props.onClick(); });
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    await flush();
+    expect(api.selSave).toHaveBeenLastCalledWith({ a: "current" }, null);
+    vi.useRealTimers();
+    const api2 = fakeApi({ selSave: vi.fn(async () => ({ ok: true })), list: vi.fn(async () => ({ ...view(), selection: { at: 1, sigs: { a: "current", b: "current" } } })) });
+    const r2 = await mount(api2);
+    expect(text(byId(r2, "select-count"))).toContain("2 selected");
+    expect(byId(r2, "sel-b").props["aria-checked"]).toBe(true);
+    expect(isUpdateBusy(), "no auto-reload onto a new deploy while anything is ticked").toBe(true);
+    await act(async () => { byId(r2, "bulk-clear").props.onClick(); });
+    expect(isUpdateBusy()).toBe(false);
+  });
+
+  it("a Recovered selection shows on its own, all ticked, with one Approve all", async () => {
+    const api = fakeApi({ selSave: vi.fn(async () => ({ ok: true })), list: vi.fn(async () => ({ ...view(), selection: { at: 1, label: "Recovered selection", sigs: { a: "current", c: "current" } } })) });
+    const r = await mount(api);
+    expect(text(byId(r, "recovered"))).toContain("Recovered selection (2)");
+    expect(has(r, "row-b")).toBe(false);
+    expect(text(byId(r, "bulk-approve"))).toBe("Approve all");
+    await act(async () => { byId(r, "row-c").props.onClick(); }); // untick a mistake
+    await act(async () => { byId(r, "bulk-approve").props.onClick(); });
+    await flush();
+    expect(api.approveMany).toHaveBeenCalledWith({ a: "current" });
+  });
+
+  it("574 go in chunks with progress; a failure keeps the rest selected and says what failed; Undo covers every chunk", async () => {
+    let calls = 0;
+    const approveMany = vi.fn(async (sigs) => {
+      calls += 1;
+      if (calls === 3) throw new Error("network lost");
+      return { ok: true, done: Object.keys(sigs), refused: [], undo: Object.fromEntries(Object.keys(sigs).map((p) => [p, { prev: null, expectAt: 1 }])) };
+    });
+    const rows = many(574);
+    const api = fakeApi({ approveMany, list: vi.fn(async () => ({ ...view({ review: rows }), selection: { at: 1, sigs: Object.fromEntries(rows.map((x) => [x.pid, "current"])) } })) });
+    const r = await mount(api);
+    expect(text(byId(r, "select-count"))).toContain("574 selected");
+    await act(async () => { byId(r, "bulk-approve").props.onClick(); });
+    await flush();
+    expect(approveMany).toHaveBeenCalledTimes(3);
+    expect(Object.keys(approveMany.mock.calls[0][0]).length).toBe(100);
+    expect(text(byId(r, "select-count"))).toContain("374 selected");
+    expect(text(byId(r, "bulk-note"))).toContain("Approved 200 of 574, then it stopped: network lost");
+    await act(async () => { byId(r, "toast-undo").props.onClick(); });
+    await flush();
+    expect(Object.keys(api.undo.mock.calls[0][0]).length).toBe(200);
   });
 });

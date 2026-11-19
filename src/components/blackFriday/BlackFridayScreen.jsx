@@ -7,12 +7,15 @@
 // only when posting. NOTHING POSTS until Junid confirms a schedule ("Schedule
 // posting" on the Approved tab). Only the STOCK price is ever shown.
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { setUpdateBusy } from "../../update/updateChecker";
 import { FONT, BG, GLASS, GREEN, GRAY, AMBER, RED, BLUE_L, bGreen, bGray, bBlue } from "../stock/ui";
 
 const KIND = { sneakers: "Sneakers", clothing: "Clothing", headwear: "Caps & beanies", perfume: "Perfume", bags: "Bags", belts: "Belts", sunglasses: "Sunglasses", watches: "Watches", jewellery: "Chains & bracelets", accessories: "Accessories" };
 const PAGE = 60;
 const UNDO_MS = 6000;
 const BAR_H = 64;            // the selection bar
+const BULK_CHUNK = 100;      // a bulk action goes to the server this many at a time, with progress
+const SAVE_MS = 400;         // the selection is saved this long after the last tick
 const BOTTOM_ROOM = 64 + 80; // bar + toast: the last row always stays clear of both
 const sast = (ms) => (ms ? new Intl.DateTimeFormat("en-ZA", { timeZone: "Africa/Johannesburg", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ms)) : "");
 const rand = (n) => `R${(Number(n) || 0).toFixed(2)}`;
@@ -192,6 +195,11 @@ export default function BlackFridayScreen({ api, onExit }) {
   const [selected, setSelected] = useState(() => new Map()); // pid → row
   const [toast, setToast] = useState(null); // { text, undo }
   const [quick, setQuick] = useState(null); // the long-pressed row
+  const [progress, setProgress] = useState(null); // "Approving 230/574" while a bulk action runs
+  const [selSaved, setSelSaved] = useState(true); // false while a save is pending or failed
+  const [selLabel, setSelLabel] = useState(null); // e.g. "Recovered selection": shown on its own, pre-ticked
+  const [onlySel, setOnlySel] = useState(false);
+  const restored = useRef(false); // the saved selection has been put back (never saved over before that)
   const toastTimer = useRef(null);
   // Every Approve, Reject and bulk action: a toast with Undo for 6 seconds that fully reverses it.
   const showToast = (text, undo) => {
@@ -212,6 +220,20 @@ export default function BlackFridayScreen({ api, onExit }) {
     return api.list("under").then((d) => { if (t === underTicket.current) setUnder(d); }, (e) => setNote(e?.message || String(e)));
   }, [api]);
   useEffect(() => { load(); }, [load]);
+  // A refresh, crash or deploy never loses the ticks: the saved selection comes back on load.
+  useEffect(() => {
+    if (restored.current || !main) return;
+    restored.current = true;
+    const saved = main.selection && main.selection.sigs ? main.selection.sigs : null;
+    if (!saved || !Object.keys(saved).length) return;
+    const rows = new Map([...(main.review || []), ...(main.approved || [])].map((r) => [r.pid, { ...r, section: "main" }]));
+    const m = new Map();
+    for (const [pid, sig] of Object.entries(saved)) m.set(pid, { ...(rows.get(pid) || { pid, name: pid }), sig });
+    setSelected(m);
+    setSelectMode(true);
+    if (main.selection.label) { setSelLabel(main.selection.label); setOnlySel(true); }
+    else setNote(`${m.size} selected — your selection was kept`);
+  }, [main]);
   useEffect(() => { if (showUnder && !under) loadUnder(); }, [showUnder, under, loadUnder]);
 
   // A tap answers with the product's new row: it moves between tabs (or leaves, if rejected) at once.
@@ -249,6 +271,21 @@ export default function BlackFridayScreen({ api, onExit }) {
     run(async () => { const r = await api.undo(items); if (r && r.refused && r.refused.length) setNote(`${r.refused.length} not undone — changed since`); return { ok: true }; }, { reload: true });
   };
   const sigOfRow = (r) => r.sig || (r.use === "generated" ? r.genId : "current");
+  // Never auto-reloaded onto a new deploy while anything is ticked or a bulk action runs (a deploy once wiped 574 ticks).
+  useEffect(() => { setUpdateBusy("bf-selection", selected.size > 0 || !!progress); }, [selected, progress]);
+  useEffect(() => () => setUpdateBusy("bf-selection", false), []);
+  const saveTimer = useRef(null);
+  useEffect(() => {
+    if (!restored.current || !api.selSave) return undefined;
+    setSelSaved(false);
+    const sigs = Object.fromEntries([...selected.values()].map((r) => [r.pid, sigOfRow(r)]));
+    let stop = false;
+    const save = (wait) => { saveTimer.current = setTimeout(() => {
+      api.selSave(sigs, selected.size ? selLabel : null).then(() => { if (!stop) setSelSaved(true); }, () => { if (!stop) save(5000); });
+    }, wait); };
+    save(SAVE_MS);
+    return () => { stop = true; clearTimeout(saveTimer.current); };
+  }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
   const generate = async (r) => {
     setGens((x) => ({ ...x, [r.pid]: "Starting…" }));
     try { await api.generate(r.pid, r.section, { onEvent: (ev) => { if (ev && ev.text) setGens((x) => ({ ...x, [r.pid]: String(ev.text).slice(0, 80) })); } }); }
@@ -269,13 +306,42 @@ export default function BlackFridayScreen({ api, onExit }) {
   };
   // ── multi-select ───────────────────────────────────────────────────────────
   const picked = [...selected.values()];
-  const clearSel = () => setSelected(new Map());
-  const bulkApprove = () => run(() => api.approveMany(Object.fromEntries(picked.map((r) => [r.pid, sigOfRow(r)]))), {
-    reload: true, undo: (x) => { clearSel(); if (x && x.refused && x.refused.length) setNote(x.refused.map((y) => `${y.pid}: ${y.refusal}`).join(" · ")); return x && x.done && x.done.length ? { text: `Approved ${x.done.length}`, reverse: undoWith(x.undo || {}) } : null; },
-  });
-  const bulkReject = () => run(() => api.rejectMany(picked.map((r) => r.pid)), {
-    reload: true, undo: (x) => { clearSel(); return x && x.done && x.done.length ? { text: `Rejected ${x.done.length}`, reverse: undoWith(x.undo || {}) } : null; },
-  });
+  const clearSel = () => { setSelected(new Map()); setSelLabel(null); setOnlySel(false); };
+  useEffect(() => { if (!selected.size && selLabel && !progress) { setSelLabel(null); setOnlySel(false); } }, [selected, selLabel, progress]);
+  // A bulk action, BULK_CHUNK at a time with progress ("Approving 230/574"). Only what the server confirmed
+  // leaves the selection; on any failure the rest stays selected and the card says what failed — never silent.
+  // Undo gets every product's entry from every chunk.
+  const bulk = async ({ ing, ed, button, call }) => {
+    const rows = [...selected.values()];
+    const total = rows.length;
+    const names = new Map(rows.map((r) => [r.pid, r.name || r.pid]));
+    const undo = {}, refused = [];
+    let doneN = 0, through = 0, failure = null;
+    setBusy(true); setNote(null); setProgress(`${ing} 0/${total}`);
+    try {
+      for (let i = 0; i < total; i += BULK_CHUNK) {
+        const part = rows.slice(i, i + BULK_CHUNK);
+        let r;
+        try { r = await call(part); } catch (e) { failure = e?.message || String(e); break; }
+        if (!r || r.ok === false) { failure = (r && r.refusal) || "no answer from the server"; break; }
+        const no = new Set((r.refused || []).map((x) => x.pid));
+        refused.push(...(r.refused || []));
+        Object.assign(undo, r.undo || {});
+        doneN += (r.done || []).length;
+        through += part.length;
+        setSelected((m) => { const n = new Map(m); for (const row of part) if (!no.has(row.pid)) n.delete(row.pid); return n; });
+        setProgress(`${ing} ${through}/${total}`);
+      }
+    } finally { setBusy(false); setProgress(null); }
+    const say = [];
+    if (failure) say.push(`${ed} ${doneN} of ${total}, then it stopped: ${failure}. The other ${total - through} are still selected — tap ${button} again.`);
+    if (refused.length) say.push(`${refused.length} not ${ed.toLowerCase()} (still selected): ${refused.slice(0, 8).map((y) => `${names.get(y.pid) || y.pid}: ${y.refusal}`).join(" · ")}${refused.length > 8 ? " …" : ""}`);
+    if (say.length) setNote(say.join(" "));
+    if (Object.keys(undo).length) showToast(`${ed} ${doneN}`, undoWith(undo));
+    load(); if (showUnder) loadUnder();
+  };
+  const bulkApprove = () => bulk({ ing: "Approving", ed: "Approved", button: "Approve", call: (part) => api.approveMany(Object.fromEntries(part.map((r) => [r.pid, sigOfRow(r)]))) });
+  const bulkReject = () => bulk({ ing: "Rejecting", ed: "Rejected", button: "Reject", call: (part) => api.rejectMany(part.map((r) => r.pid)) });
   // Generate for every selected product: queued, two at a time; AI spend updates as each lands.
   const bulkGenerate = async () => {
     // Never the same product twice: skip any already queued or being made.
@@ -288,7 +354,9 @@ export default function BlackFridayScreen({ api, onExit }) {
 
   const d = main;
   const t = d?.totals || {};
-  const mainRows = d ? (tab === "review" ? d.review : d.approved).map(sec("main")) : [];
+  const allMain = d ? (tab === "review" ? d.review : d.approved).map(sec("main")) : [];
+  // The recovered selection on its own: only its rows, so mistakes are easy to untick.
+  const mainRows = onlySel && selLabel && selected.size ? allMain.filter((r) => selected.has(r.pid)) : allMain;
   // The Approved tab comes from the main view, which already carries every under-13 approval.
   const underRows = showUnder && under && tab === "review" ? under.review.map(sec("under")) : [];
   const big = mainRows.filter((r) => r.big), mid = mainRows.filter((r) => !r.big);
@@ -317,6 +385,12 @@ export default function BlackFridayScreen({ api, onExit }) {
               <button data-testid="tab-review" aria-pressed={tab === "review"} onClick={() => { setTab("review"); clearSel(); }} style={{ ...(tab === "review" ? bBlue : bGray), flex: 1 }}>To review ({nReview})</button>
               <button data-testid="tab-approved" aria-pressed={tab === "approved"} onClick={() => { setTab("approved"); clearSel(); }} style={{ ...(tab === "approved" ? bBlue : bGray), flex: 1 }}>Approved ({nApproved})</button>
             </div>
+            {selLabel && selected.size > 0 && tab === "review" && (
+              <div data-testid="recovered" style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, padding: "8px 10px", borderRadius: 10, background: "rgba(74,127,255,.14)", border: `1px solid ${BLUE_L}` }}>
+                <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{selLabel} ({selected.size}) <span style={{ display: "block", fontSize: 11, fontWeight: 400, color: GRAY }}>All ticked. Untick any mistakes, then Approve all.</span></div>
+                <button data-testid="recovered-toggle" onClick={() => setOnlySel(!onlySel)} style={{ ...bGray, padding: "6px 10px", fontSize: 12 }}>{onlySel ? "Show all" : "Show only these"}</button>
+              </div>
+            )}
             {note && <div data-testid="note" style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>{note}</div>}
             {tab === "approved" && (
               <div style={{ marginBottom: 10 }}>
@@ -360,10 +434,13 @@ export default function BlackFridayScreen({ api, onExit }) {
           <button data-testid="toast-undo" onClick={toast.undo} style={{ ...bGray, padding: "6px 12px", fontSize: 13, color: BLUE_L, fontWeight: 700 }}>Undo</button>
         </div>
       )}
+      {selectMode && selected.size > 0 && note && (
+        <div data-testid="bulk-note" style={{ position: "fixed", left: 12, right: 12, bottom: `calc(${BAR_H + (toast ? 64 : 0)}px + env(safe-area-inset-bottom) + 8px)`, margin: "0 auto", maxWidth: 520, background: "#2a2216", border: `1px solid ${AMBER}`, color: AMBER, borderRadius: 10, padding: "8px 10px", fontSize: 12, zIndex: 35 }}>{note}</div>
+      )}
       {selectMode && selected.size > 0 && (
         <div data-testid="select-bar" style={{ position: "fixed", left: 0, right: 0, bottom: 0, height: `calc(${BAR_H}px + env(safe-area-inset-bottom))`, boxSizing: "border-box", background: "#11151f", borderTop: "1px solid rgba(255,255,255,.1)", display: "flex", alignItems: "center", gap: 6, padding: "0 12px", paddingBottom: "env(safe-area-inset-bottom)", zIndex: 30 }}>
-          <div data-testid="select-count" style={{ fontSize: 13, fontWeight: 700, flex: 1 }}>{selected.size} selected</div>
-          <button data-testid="bulk-approve" disabled={busy} onClick={bulkApprove} style={{ ...bGreen, padding: "8px 10px", fontSize: 12 }}>Approve</button>
+          <div data-testid="select-count" style={{ fontSize: 13, fontWeight: 700, flex: 1 }}>{progress || `${selected.size} selected`}{!progress && !selSaved && <span data-testid="sel-saving" style={{ display: "block", fontSize: 10, fontWeight: 400, color: GRAY }}>saving…</span>}</div>
+          <button data-testid="bulk-approve" disabled={busy} onClick={bulkApprove} style={{ ...bGreen, padding: "8px 10px", fontSize: 12 }}>{selLabel ? "Approve all" : "Approve"}</button>
           <button data-testid="bulk-generate" disabled={busy || !picked.some((r) => !gens[r.pid] && !r.generating)} onClick={bulkGenerate} style={{ ...bBlue, padding: "8px 10px", fontSize: 12 }}>Generate</button>
           <button data-testid="bulk-reject" disabled={busy} onClick={bulkReject} style={{ ...bGray, padding: "8px 10px", fontSize: 12, color: RED }}>Reject</button>
           <button data-testid="bulk-clear" onClick={clearSel} style={{ ...bGray, padding: "8px 10px", fontSize: 12 }}>Clear</button>
