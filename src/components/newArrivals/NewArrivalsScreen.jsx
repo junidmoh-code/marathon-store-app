@@ -276,8 +276,8 @@ function ItemCard({ item, tab, live, h, stats }) {
   const elsewhere = tab === "new" && !live && isGenerating(item);
   const working = !!live || elsewhere;
   // Approve is never held back by a photo being made (19 Nov 2026): only a missing stock price blocks it.
-  const approveOn = acts.approveEnabled && !live;
-  const useCurrentOn = acts.useCurrentEnabled && !live;
+  const approveOn = acts.approveEnabled;
+  const useCurrentOn = acts.useCurrentEnabled;
   const uploaded = uploadedText(item.uploadedAt);
   return (
     <div data-pid={item.pid} style={{ ...GLASS, padding: 12, marginBottom: 14 }}>
@@ -508,7 +508,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
           canPause: res.canPause === true,
           postAll: res.postAll || null, noStockPrice: res.noStockPrice || null, hidden: res.hidden || null, windowDays: res.windowDays || null,
         };
-        for (const [pid, e] of gone.current) next = withoutItem(next, pid, { group: e.group, toTab: e.toTab });
+        for (const [pid, e] of gone.current) next = withoutItem(next, pid, { group: e.group, toTab: e.toTab, fromTab: e.fromTab });
         setData(next);
         return;
       }
@@ -648,9 +648,10 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   const leave = (item, toTab) => {
     taps.current += 1;
     const index = (dataRef.current.items || []).findIndex((i) => i.pid === item.pid);
-    const entry = { item, index, toTab, view: activeView.current, group: viewRef.current.group };
+    const fromTab = viewRef.current.tab;
+    const entry = { item, index, toTab, fromTab, view: activeView.current, group: fromTab === "new" ? viewRef.current.group : null };
     gone.current.set(item.pid, entry);
-    setData((d) => withoutItem(d, item.pid, { group: entry.group, toTab }));
+    setData((d) => withoutItem(d, item.pid, { group: entry.group, toTab, fromTab }));
     return entry;
   };
   const comeBack = (entry) => {
@@ -662,7 +663,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
 
   // APPROVE — Junid's Approve is final, and it approves exactly the photo on the card.
   h.onApprove = (item) => {
-    if (!actionsFor(item).approveEnabled || liveRef.current[item.pid]) return;
+    if (!actionsFor(item).approveEnabled) return;
     const genId = item.generations?.[currentGenId(item)]?.url ? currentGenId(item) : null;
     const entry = leave(item, "approved");
     say(item, "Approved — it is under Approved. Nothing posts until you press Post all approved.");
@@ -681,7 +682,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
 
   // USE CURRENT PHOTO — approve with the app's own photo: no generation, no cost.
   h.onUseCurrent = api.useCurrent ? (item) => {
-    if (!actionsFor(item).useCurrentEnabled || liveRef.current[item.pid]) return;
+    if (!actionsFor(item).useCurrentEnabled) return;
     const entry = leave(item, "approved");
     say(item, "Approved with its current photo — it is under Approved.");
     write(item.pid, async () => {

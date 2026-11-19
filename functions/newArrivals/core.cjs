@@ -675,8 +675,10 @@ function postPlan(rows, max = SEND_MAX) {
     if (price === null) { dropped.push({ pid: r.pid, why: "no stock price" }); continue; }
     if (!r.sizesText) { dropped.push({ pid: r.pid, why: "sold out" }); continue; }
     const division = DIVISIONS.includes(r.division) ? r.division : "clothing";
-    const key = `${division}|${Math.round(price)}`;
-    if (!by.has(key)) by.set(key, { division, price: Math.round(price), items: [] });
+    // The EXACT stock price (to the cent) is the group: R350.10 and R350.40 are two posts, each with its own price.
+    const exact = Math.round(price * 100) / 100;
+    const key = `${division}|${exact}`;
+    if (!by.has(key)) by.set(key, { division, price: exact, items: [] });
     by.get(key).items.push(r);
   }
   const groups = [...by.values()].sort((a, b) => DIVISIONS.indexOf(a.division) - DIVISIONS.indexOf(b.division) || a.price - b.price);

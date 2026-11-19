@@ -74,7 +74,16 @@ export async function run(db, { since = null, dryRun = false, nowMs = Date.now()
       out.scanned += 1;
       const product = page[pid];
       if (notCandidate(pid, product)) { out.notCandidate += 1; continue; }
-      if (await val(db, `${core.ITEMS}/${pid}/status`)) { out.alreadyQueued += 1; continue; }
+      const queuedAs = await val(db, `${core.ITEMS}/${pid}/status`);
+      if (queuedAs) {
+        out.alreadyQueued += 1;
+        // A crash between an earlier run's item write and its index write: re-assert the index entry (idempotent).
+        if (!dryRun && !(await val(db, `${core.BY_STATUS}/${queuedAs}/${pid}`))) {
+          await db.ref(core.ROOT).update(core.indexMove(pid, null, queuedAs, Number(await val(db, `${core.ITEMS}/${pid}/enqueuedAt`)) || nowMs));
+          out.reindexed = (out.reindexed || 0) + 1;
+        }
+        continue;
+      }
       const cells = await Promise.all(locations.map((loc) => val(db, `stock/${loc}/${pid}`)));
       const tree = {};
       locations.forEach((loc, j) => { if (cells[j]) tree[loc] = cells[j]; });

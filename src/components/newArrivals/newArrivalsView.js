@@ -437,7 +437,8 @@ export function uploadedText(at) {
 export function planLine(p) {
   const div = p.division === "footwear" ? "Footwear" : "Clothing";
   const part = p.of > 1 ? ` (part ${p.part} of ${p.of})` : "";
-  return `${div} · R${Math.round(Number(p.price))} · ${p.count} item${p.count === 1 ? "" : "s"}${part}`;
+  const n = Number(p.price);
+  return `${div} · R${Number.isInteger(n) ? n : n.toFixed(2)} · ${p.count} item${p.count === 1 ? "" : "s"}${part}`;
 }
 
 /** The tabs whose cards carry the two price fields (Done is history). */
@@ -515,10 +516,10 @@ const more = (n) => (Number.isFinite(n) ? n + 1 : n);
  * The list after an item leaves the New tab (Approve → `toTab` "done"; Skip →
  * null): the item gone, the counts moved with it. Pure.
  */
-export function withoutItem(data, pid, { group = null, toTab = null } = {}) {
+export function withoutItem(data, pid, { group = null, toTab = null, fromTab = "new" } = {}) {
   const items = data.items || [];
   if (!items.some((i) => i.pid === pid)) return data;
-  const tabCounts = { ...(data.tabCounts || {}), new: less(data.tabCounts?.new) };
+  const tabCounts = { ...(data.tabCounts || {}), [fromTab]: less(data.tabCounts?.[fromTab]) };
   if (toTab) tabCounts[toTab] = more(data.tabCounts?.[toTab]);
   return {
     ...data, items: items.filter((i) => i.pid !== pid), total: less(data.total), tabCounts,
@@ -526,11 +527,11 @@ export function withoutItem(data, pid, { group = null, toTab = null } = {}) {
   };
 }
 /** The list with a departed item back in its place, and the counts with it. Pure. */
-export function withItemBack(data, { item, index, toTab = null }, { group = null } = {}) {
+export function withItemBack(data, { item, index, toTab = null, fromTab = "new" }, { group = null } = {}) {
   const items = data.items || [];
   if (items.some((i) => i.pid === item.pid)) return data;
   const at = Math.max(0, Math.min(Number.isFinite(index) && index >= 0 ? index : 0, items.length));
-  const tabCounts = { ...(data.tabCounts || {}), new: more(data.tabCounts?.new) };
+  const tabCounts = { ...(data.tabCounts || {}), [fromTab]: more(data.tabCounts?.[fromTab]) };
   if (toTab) tabCounts[toTab] = less(data.tabCounts?.[toTab]);
   return {
     ...data, items: [...items.slice(0, at), item, ...items.slice(at)], total: more(data.total), tabCounts,

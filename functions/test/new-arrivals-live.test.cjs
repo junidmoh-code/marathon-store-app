@@ -183,3 +183,22 @@ test("uploadedAt: marker, then the attribution stamp, then the creation write (t
   assert.deepEqual(core.uploadedAt("p1790000000000", {}), { at: 1790000000000, from: "id" });
   assert.deepEqual(core.uploadedAt("-Nabc", {}), { at: null, from: null });
 });
+
+test("postPlan keeps the exact stock price: R350.10 and R350.40 are two posts", () => {
+  const { posts } = core.postPlan([
+    { pid: "p1790000000001", price: 350.1, division: "clothing", sizesText: "M" },
+    { pid: "p1790000000002", price: 350.4, division: "clothing", sizesText: "L" },
+  ]);
+  assert.deepEqual(posts.map((p) => p.price), [350.1, 350.4]);
+});
+
+test("Post all: a refused claim leaves no orphan — the request is marked refused", async () => {
+  const db = world({ items: [{ pid: pidAt(1), status: "approved", item: { approvedAt: 1, generatedUrl: "https://x/1.jpg" } }] });
+  await db.ref("new_arrivals/poster/status").set({ at: NOW, ready: true });
+  await db.ref("new_arrivals/pause/posting").set({ paused: false, at: 1, by: "x" });
+  await db.ref("new_arrivals/post_request_open").set({ key: "-held", at: NOW - 1000 });
+  await assert.rejects(na.postAll(db, { dryRun: false }, "junid", NOW), /already on its way/);
+  const reqs = Object.values(await read(db, "new_arrivals/post_requests"));
+  assert.deepEqual(reqs.map((r) => r.status), ["refused"]);
+  assert.equal((await read(db, "new_arrivals/post_request_open")).key, "-held");
+});

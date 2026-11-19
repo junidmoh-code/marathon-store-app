@@ -66,3 +66,13 @@ describe("backfillNew", () => {
     expect(notCandidate(P(1), { name: "ok" })).toBe(null);
   });
 });
+
+describe("backfillNew — rerun repair", () => {
+  it("re-asserts a missing index entry for an item an earlier run stored", async () => {
+    const db = world();
+    await db.ref(`new_arrivals/items/${P(2)}`).set({ pid: P(2), status: "new", enqueuedAt: 7 });
+    const out = await run(db, { since: P(1), nowMs: 9 });
+    expect(out.reindexed).toBe(1);
+    expect(await read(db, `new_arrivals/by_status/new/${P(2)}`)).toBe(7);
+  });
+});

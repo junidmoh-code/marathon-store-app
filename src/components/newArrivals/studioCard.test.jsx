@@ -754,7 +754,7 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     expect(lastToast(tree)).toBe("Item 1: Prices saved.");
   });
 
-  it("while a photo is being made: ❤ and Use this one wait; the current photo stays in sight in the strip", async () => {
+  it("while a photo is being made: ❤ and Use this one wait, Approve does NOT (19 Nov 2026); the current photo stays in sight", async () => {
     const api = fakeApi([withPhoto(1)], { generate: vi.fn(() => new Promise(() => {})) });
     const tree = await render(api);
     await tap(btn(card(tree, P(1)), "Regenerate"));
@@ -762,7 +762,7 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     expect(strip.findAll((n) => n.type === "img").map((i) => i.props.src)).toEqual(["https://x/g2.jpg", "https://x/g1.jpg"]);
     expect(byId(strip, "love").every((b) => b.props.disabled)).toBe(true);
     expect(btn(strip, "Use this one").props.disabled).toBe(true);
-    expect(btn(card(tree, P(1)), "Approve").props.disabled).toBe(true);
+    expect(btn(card(tree, P(1)), "Approve").props.disabled).toBe(false);
     expect(btn(card(tree, P(1)), "Skip").props.disabled).toBe(true);
   });
 
@@ -1222,5 +1222,7 @@ describe("the live card (19 Nov 2026): dates, Use current photo, Approved tab, P
     await tap(byId(card(tree, P(1)), "unapprove")[0]);
     expect(unapprove).toHaveBeenCalledWith(P(1));
     expect(cards(tree)).toEqual([]);
+    // The counts move from Approved (not New) to New.
+    expect(tabLabels(tree)).toEqual(["New 1", "Approved 0", "Done 0"]);
   });
 });

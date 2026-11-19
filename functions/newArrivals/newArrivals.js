@@ -721,24 +721,32 @@ async function postAll(db, { dryRun = true } = {}, uid, nowMs) {
   const [poster, pause] = await Promise.all([val(db, `${core.ROOT}/poster/status`), pauseSwitch.readPause(db)]);
   const block = core.postAllBlock({ poster, pause, approvedCount: photos }, nowMs);
   if (block) throw new HttpsError("failed-precondition", block);
-  // ONE open request at a time, claimed by a transaction (two taps never both pass).
-  // A request the Mac mini has not finished within REQUEST_EXPIRY_MS is closed as
-  // expired — it never posts days later at a scheduled window.
+  // THE REQUEST IS WRITTEN FIRST, THEN CLAIMED. ONE open request at a time,
+  // claimed by a transaction (two taps never both pass). A request whose claim
+  // is refused is marked "refused" — so a failure at any step never leaves a
+  // claim with no request behind it. A request the Mac mini has not finished
+  // within REQUEST_EXPIRY_MS is closed as expired: it never posts days later.
   const key = db.ref(`${core.ROOT}/post_requests`).push().key;
-  let blocked = null;
-  let expired = null;
-  const claim = await db.ref(`${core.ROOT}/post_request_open`).transaction((cur) => {
-    blocked = null; expired = null;
-    if (cur && typeof cur === "object" && Number(cur.at) > nowMs - core.REQUEST_EXPIRY_MS) { blocked = "A Post all is already on its way — wait for it to finish"; return undefined; }
-    if (cur) expired = typeof cur === "object" ? cur.key : String(cur);
-    return { key, at: nowMs };
-  });
-  if (blocked || !claim.committed) throw new HttpsError("failed-precondition", blocked || "A Post all is already on its way — wait for it to finish");
   await writeRoot(db, {
     [`post_requests/${key}`]: { at: nowMs, by: uid || "unknown", status: "queued", posts, photos },
-    ...(expired ? { [`post_requests/${expired}/status`]: "expired", [`post_requests/${expired}/endedAt`]: nowMs } : {}),
     ...await decisionPaths(db, posts[0]?.items[0]?.pid || "p0000000000", { at: nowMs, uid, item: null, action: "post-all" }),
   });
+  let blocked = null;
+  let expired = null;
+  let claim = null;
+  try {
+    claim = await db.ref(`${core.ROOT}/post_request_open`).transaction((cur) => {
+      blocked = null; expired = null;
+      if (cur && typeof cur === "object" && Number(cur.at) > nowMs - core.REQUEST_EXPIRY_MS) { blocked = "A Post all is already on its way — wait for it to finish"; return undefined; }
+      if (cur) expired = typeof cur === "object" ? cur.key : String(cur);
+      return { key, at: nowMs };
+    });
+  } catch (e) { blocked = `could not queue it (${e.message}) — press again`; }
+  if (blocked || !claim || !claim.committed) {
+    await writeRoot(db, { [`post_requests/${key}/status`]: "refused", [`post_requests/${key}/endedAt`]: nowMs }).catch(() => {});
+    throw new HttpsError("failed-precondition", blocked || "A Post all is already on its way — wait for it to finish");
+  }
+  if (expired) await writeRoot(db, { [`post_requests/${expired}/status`]: "expired", [`post_requests/${expired}/endedAt`]: nowMs }).catch(() => {});
   return { dryRun: false, queued: key, posts, photos, skipped: plan.skipped };
 }
 
@@ -842,6 +850,8 @@ async function listLive(db, tabAsked, { cursor = null, limit, group = null, nowM
     if (repair) await db.ref(core.ROOT).update(repair);
     if (core.liveTabOf(item) !== tab) return null;
     const d = await productDetail(db, pid, locations);
+    // The stock check above may be up to 3 minutes old: a card sold out or deleted since is left off New.
+    if (tab === "new" && (!d.raw || !(d.stock.totalUnits > 0))) return null;
     const up = core.uploadedAt(pid, d.raw);
     return {
       ...core.cardItem(item), ...core.sourceFields(pid, item, d.raw),
