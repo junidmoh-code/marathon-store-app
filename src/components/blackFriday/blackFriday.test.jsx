@@ -234,4 +234,13 @@ describe("Black Friday card v3", () => {
     await act(async () => { byId(r, "tab-approved").props.onClick(); });
     expect(has(r, "select-bar")).toBe(false);
   });
+
+  it("a failed generation says 'Failed, tap to retry', and the tap generates again", async () => {
+    const api = fakeApi({ list: vi.fn(async () => view({ review: [row("a", 45, { failed: { at: 1, reason: "echo" } })] })) });
+    const r = await mount(api);
+    expect(text(byId(r, "failed-a"))).toBe("Failed, tap to retry");
+    await act(async () => { byId(r, "failed-a").props.onClick({ stopPropagation() {} }); });
+    await flush();
+    expect(api.generate).toHaveBeenCalledWith("a", "main", expect.any(Object));
+  });
 });

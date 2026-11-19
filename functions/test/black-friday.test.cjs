@@ -187,6 +187,12 @@ test("UNDO never clobbers a newer change; approveMany needs the photo shown", as
   await assert.rejects(_internals.many(db, "approve", ["a"], "junid", 1), /photo the card showed/);
 });
 
+test("a failed generation shows on the row (photos/{pid}/failed)", () => {
+  const row = core.viewItem("a", it_("A", 1, 20), { photo: { failed: { at: 5, reason: "Gemini returned the original photo" }, rev: 1 } });
+  assert.deepEqual(row.failed, { at: 5, reason: "Gemini returned the original photo" });
+  assert.equal(core.viewItem("a", it_("A", 1, 20), { photo: { rev: 1 } }).failed, null);
+});
+
 test("a category's AI look: established for sneakers and clothing; new kinds need Junid's approval", async () => {
   const db = seed();
   let v = await _internals.list(db);

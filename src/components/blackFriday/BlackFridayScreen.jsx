@@ -90,6 +90,7 @@ function Row({ r, busy, gen, on, selectMode, selected }) {
         <div style={{ fontSize: 12, color: "#dfe7ff" }}>{price(r.price)} · {r.qty} on hand{r.na ? " · New" : ""}</div>
         <div style={{ fontSize: 11, color: GRAY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.sizes}</div>
         {r.changedSinceApproval && <div style={{ fontSize: 11, color: AMBER }}>Photo changed — approve again</div>}
+        {r.failed && !gen && !r.generating && <button data-testid={`failed-${r.pid}`} onClick={(e) => { e.stopPropagation(); on.generate(r); }} title={r.failed.reason} style={{ background: "none", border: "none", padding: 0, color: RED, fontSize: 11, textAlign: "left", cursor: "pointer", textDecoration: "underline" }}>Failed, tap to retry</button>}
         {r.posted && <div style={{ fontSize: 11, color: GREEN }}>Posted</div>}
         {!selectMode && <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
           {a.approve && <button data-testid={`approve-${r.pid}`} disabled={busy || a.approveDisabled} onClick={() => on.approve(r)} style={{ ...bGreen, padding: "4px 10px", fontSize: 11, minHeight: 28 }}>Approve</button>}
