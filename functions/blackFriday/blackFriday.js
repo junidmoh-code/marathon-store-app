@@ -38,9 +38,34 @@ function assertJunid(request) {
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
 
+// The card's children — never `decisions` (a log that only grows) or `sending`.
+const VIEW_CHILDREN = ["meta", "groups", "state", "photos", "posts", "schedule", "stats"];
 async function list(db) {
-  const [node, paused] = await Promise.all([val(db, core.ROOT), val(db, POSTING_PAUSE).catch(() => null)]);
+  const [vals, paused] = await Promise.all([
+    Promise.all(VIEW_CHILDREN.map((c) => val(db, `${core.ROOT}/${c}`))),
+    val(db, POSTING_PAUSE).catch(() => null),
+  ]);
+  const node = Object.fromEntries(VIEW_CHILDREN.map((c, i) => [c, vals[i]]));
   return core.viewCampaign(node, { postingPaused: paused === true });
+}
+
+/**
+ * What the plan needs, read narrowly: the small state/posts/schedule nodes,
+ * then the group and photo choices of approved groups only.
+ */
+async function queueNode(db) {
+  const [state, posts, schedule, keys] = await Promise.all(["state", "posts", "schedule", "meta/keys"].map((c) => val(db, `${core.ROOT}/${c}`)));
+  const live = (Array.isArray(keys) ? keys : Object.keys(state || {})).filter((k) => core.groupStatus((state || {})[k], (posts || {})[k]) === "approved");
+  const groups = {}, photos = {};
+  await Promise.all(live.map(async (k) => {
+    const g = await val(db, `${core.ROOT}/groups/${k}`);
+    if (!g) return;
+    groups[k] = g;
+    const pids = Object.keys(g.items || {});
+    const ph = await Promise.all(pids.map((pid) => val(db, `${core.ROOT}/photos/${pid}`)));
+    pids.forEach((pid, i) => { if (ph[i]) photos[pid] = ph[i]; });
+  }));
+  return { meta: { keys: live }, groups, state, posts, photos, schedule };
 }
 
 /**
@@ -64,10 +89,11 @@ async function revTransaction(ref, mut, out) {
 
 /** Recompute schedule/plan from the node as it is now. No schedule → no plan → nothing posts. */
 async function replan(db, nowMs) {
-  const node = await val(db, core.ROOT);
-  const s = node && node.schedule;
+  const s = await val(db, `${core.ROOT}/schedule`);
   if (!s || !s.confirmedAt) return null;
-  const plan = core.planSchedule(core.queueOf(node), s, nowMs);
+  const node = await queueNode(db);
+  // Groups already planned keep their time; only new ones are placed.
+  const plan = core.planSchedule(core.queueOf(node), s, nowMs, s.plan || {});
   await db.ref(`${core.ROOT}/schedule`).update({ plan: Object.keys(plan).length ? plan : null, planAt: nowMs });
   return plan;
 }
@@ -117,7 +143,7 @@ async function setOne(db, { action, key, pid, use, genId }, uid, nowMs, { replan
 async function schedule(db, raw, { confirm }, uid, nowMs) {
   const s = core.cleanSchedule(raw, nowMs);
   if (s.error) return { ok: false, refusal: s.error };
-  const node = await val(db, core.ROOT);
+  const node = await queueNode(db);
   const plan = core.planSchedule(core.queueOf(node), s, nowMs);
   const queued = core.queueOf(node).length;
   if (!confirm) return { ok: true, preview: true, schedule: s, plan, queued };

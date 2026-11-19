@@ -96,7 +96,8 @@ function Item({ it, g, canEdit, busy, gen, onApprove, onTick, onUse, onGenerate 
 function GroupRow({ g, filter, busy, gens, onApprove, onUndo, onItem }) {
   const [open, setOpen] = useState(false);
   const a = actionsFor(g);
-  const st = STATUS[g.status] || { text: g.status, color: GRAY };
+  const partial = g.status === "approved" && !g.complete;
+  const st = partial ? { text: "Partly approved — not queued", color: AMBER } : (STATUS[g.status] || { text: g.status, color: GRAY });
   const matching = g.items.filter((it) => itemMatches(it, filter));
   if (!matching.length) return null;
   const shown = open ? matching : matching.slice(0, 8);
@@ -111,7 +112,8 @@ function GroupRow({ g, filter, busy, gens, onApprove, onUndo, onItem }) {
       <div style={{ color: GRAY, fontSize: 12, marginBottom: 8 }}>
         {g.approvedCount} of {g.included} approved{g.count !== g.included ? ` · ${g.count - g.included} unticked` : ""}
         {g.dueAt && <span data-testid={`due-${g.key}`} style={{ color: BLUE_L }}> · posts {sast(g.dueAt)}</span>}
-        {g.status === "approved" && !g.dueAt && <span style={{ color: AMBER }}> · not scheduled yet</span>}
+        {partial && <span data-testid={`partial-${g.key}`} style={{ color: AMBER }}> · approve or untick the rest to queue it (never a partial album)</span>}
+        {g.status === "approved" && g.complete && !g.dueAt && <span style={{ color: AMBER }}> · not scheduled yet</span>}
         {g.post?.at && <span> · posted {sast(g.post.at)}</span>}
         {g.postedEarlierAt && <span style={{ color: AMBER }}> · already posted {sast(g.postedEarlierAt)} — approving again sends it once more</span>}
       </div>

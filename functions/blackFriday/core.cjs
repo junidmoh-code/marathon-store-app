@@ -72,9 +72,15 @@ function postablePids(group, state, photos) {
   const ex = (state && state.excluded) || {};
   return itemsInOrder(group).map((it) => it.pid).filter((pid) => ex[pid] !== true && itemApproved(state, pid, (photos || {})[pid]));
 }
+/** Every ticked item approved with the photo it shows — the only way a group is queued. Pure. */
+function groupComplete(group, state, photos) {
+  const ex = (state && state.excluded) || {};
+  const ticked = itemsInOrder(group).filter((it) => ex[it.pid] !== true);
+  return ticked.length > 0 && postablePids(group, state, photos).length === ticked.length;
+}
 
 /** One group as the card shows it. Pure. */
-function viewGroup(key, group, state, post, photos = {}, planDue = null) {
+function viewGroup(key, group, state, post, photos = {}, planDue = null, nowMs = Date.now()) {
   const excluded = (state && state.excluded) || {};
   const status = groupStatus(state, post);
   const items = itemsInOrder(group).map((it) => {
@@ -92,7 +98,8 @@ function viewGroup(key, group, state, post, photos = {}, planDue = null) {
       generatedUrl: latestGen ? latestGen.url : null,
       genId: ph && ph.genId ? ph.genId : null,
       generations: ph && ph.gens ? Object.keys(ph.gens).length : 0,
-      generating: !!(ph && ph.generating && ph.generating.at),
+      // A claim older than CLAIM_MS is dead (the run crashed before giving it back): not generating.
+      generating: !!(ph && ph.generating && ph.generating.at && nowMs - Number(ph.generating.at) < CLAIM_MS),
       approved,
       // Approved with a photo it no longer shows (Junid chose another or generated a new one): waiting again.
       changedSinceApproval: !approved && !!(state && state.approvedItems && state.approvedItems[it.pid]),
@@ -104,6 +111,8 @@ function viewGroup(key, group, state, post, photos = {}, planDue = null) {
     key, label: group.label || key, price: group.price, division: group.division || null,
     part: group.part || 1, parts: group.parts || 1,
     count: items.length, included: included.length, approvedCount: approvedItems.length, status,
+    // Queued to post only when EVERY ticked item is approved with the photo it shows (never a partial album).
+    complete: included.length > 0 && approvedItems.length === included.length,
     approvedAt: (state && state.approvedAt) || null,
     dueAt: status === "approved" ? planDue : null,
     caption: captionPreview(group.price, approvedItems.length ? approvedItems : included),
@@ -135,13 +144,13 @@ function totalsOf(list, stats) {
 }
 
 /** The whole card from the campaign node. Pure. */
-function viewCampaign(node, { postingPaused = false } = {}) {
+function viewCampaign(node, { postingPaused = false, nowMs = Date.now() } = {}) {
   const n = node || {};
   const groups = n.groups || {};
   const photos = n.photos || {};
   const plan = (n.schedule && n.schedule.plan) || {};
   const keys = (n.meta && Array.isArray(n.meta.keys) ? n.meta.keys : Object.keys(groups)).filter((k) => groups[k]);
-  const list = keys.map((k) => viewGroup(k, groups[k], (n.state || {})[k] || null, (n.posts || {})[k] || null, photos, plan[k] || null));
+  const list = keys.map((k) => viewGroup(k, groups[k], (n.state || {})[k] || null, (n.posts || {})[k] || null, photos, plan[k] || null, nowMs));
   const counts = {};
   for (const g of list) counts[g.status] = (counts[g.status] || 0) + 1;
   const m = n.meta || {};
@@ -236,6 +245,7 @@ const DAY_MS = 24 * 3600 * 1000;
 const CAMPAIGN_END_MS = Date.parse("2026-11-27T20:00:00+02:00");
 const HM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const NOW_GAP_MS = 3 * 60 * 1000;
+const CLAIM_MS = 10 * 60 * 1000;
 const hm = (s) => { const m = HM_RE.exec(String(s || "")); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
 const sastDayStart = (t) => Math.floor((t + SAST_MS) / DAY_MS) * DAY_MS - SAST_MS;
 
@@ -295,33 +305,52 @@ function cleanSchedule(raw, nowMs) {
 
 /**
  * Which approved group posts when. `queue`: [{ key, approvedAt, price, part }]
- * (approved, not yet posted, with something to post). → { key: dueMs }.
- * A time past the end of the campaign (27 Nov 20:00) is left out. Pure.
+ * (approved, complete, not yet posted). → { key: dueMs }.
+ * prevPlan: the plan as it stands. A group already in it KEEPS ITS TIME (a tap
+ * never pulls the next group forward); only new groups are placed, after the
+ * last kept time. A confirm passes no prevPlan: a fresh plan. A time past the
+ * end of the campaign (27 Nov 20:00) is left out. Pure.
  */
-function planSchedule(queue, schedule, nowMs) {
+function planSchedule(queue, schedule, nowMs, prevPlan = null) {
   const s = schedule;
   if (!s || !queue.length) return {};
   const order = [...queue].sort((a, b) => (a.approvedAt - b.approvedAt) || (a.price - b.price) || ((a.part || 1) - (b.part || 1)) || (a.key < b.key ? -1 : 1));
   const plan = {};
+  const prev = prevPlan || {};
+  for (const g of order) if (Number(prev[g.key]) > 0) plan[g.key] = Number(prev[g.key]);
+  const fresh = order.filter((g) => !plan[g.key]);
+  if (!fresh.length) return plan;
+  const kept = Object.values(plan);
+  const lastKept = kept.length ? Math.max(...kept) : null;
   if (s.mode === "now") {
-    order.forEach((g, i) => { plan[g.key] = Math.max(nowMs, s.start) + i * NOW_GAP_MS; });
+    const t0 = Math.max(nowMs, s.start, lastKept ? lastKept + NOW_GAP_MS : 0);
+    fresh.forEach((g, i) => { const t = t0 + i * NOW_GAP_MS; if (t < CAMPAIGN_END_MS) plan[g.key] = t; });
     return plan;
   }
   const fromMin = hm(s.from), toMin = hm(s.to);
-  const first = intoWindow(Math.max(s.start, nowMs), fromMin, toMin);
   let step;
   if (s.mode === "gap") step = s.gapMin * 60000;
   else {
-    const span = windowTimeBetween(first, Math.min(s.until, CAMPAIGN_END_MS), fromMin, toMin);
-    step = order.length > 1 ? Math.floor(span / order.length) : 0;
+    const from = intoWindow(Math.max(s.start, nowMs, lastKept || 0), fromMin, toMin);
+    const span = windowTimeBetween(from, Math.min(s.until, CAMPAIGN_END_MS), fromMin, toMin);
+    // After kept groups, the new ones share the time left after the last of them (the first one a step later);
+    // with none kept, the first posts at the start and n groups share the span in n equal steps.
+    // (One step of room is always left at the end, so the last never lands on the window's close.)
+    step = lastKept ? Math.floor(span / (fresh.length + 1)) : (fresh.length > 1 ? Math.floor(span / fresh.length) : 0);
   }
-  let t = first;
-  for (const g of order) {
+  let t = lastKept ? addWindowTime(Math.max(lastKept, nowMs), step, fromMin, toMin) : intoWindow(Math.max(s.start, nowMs), fromMin, toMin);
+  for (const g of fresh) {
     if (t >= CAMPAIGN_END_MS) break;
     plan[g.key] = t;
     t = addWindowTime(t, step, fromMin, toMin);
   }
   return plan;
+}
+
+/** Is t inside the schedule's daily window? ("now" mode has none.) Pure. */
+function inWindow(schedule, t) {
+  if (!schedule || schedule.mode === "now") return true;
+  return intoWindow(t, hm(schedule.from), hm(schedule.to)) === t;
 }
 
 /** The queue planSchedule takes, from the campaign node. Pure. */
@@ -333,7 +362,7 @@ function queueOf(node) {
   for (const k of keys) {
     const st = (n.state || {})[k] || null;
     if (groupStatus(st, (n.posts || {})[k] || null) !== "approved") continue;
-    if (!postablePids(groups[k], st, n.photos).length) continue;
+    if (!groupComplete(groups[k], st, n.photos)) continue;
     out.push({ key: k, approvedAt: st.approvedAt, price: groups[k].price, part: groups[k].part || 1 });
   }
   return out;
@@ -343,5 +372,6 @@ module.exports = {
   ROOT, KEY_RE, PID_RE, GEN_RE, DIVISIONS, DIVISION_LABEL, CAMPAIGN_END_MS,
   priceLabel, captionPreview, sigOf, itemApproved, groupStatus, postablePids, viewGroup, viewCampaign, totalsOf,
   approveMutator, unapproveMutator, tickMutator, useMutator, withRev,
+  CLAIM_MS, groupComplete, inWindow,
   cleanSchedule, planSchedule, queueOf, intoWindow, addWindowTime, windowTimeBetween,
 };

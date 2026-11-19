@@ -8,7 +8,7 @@ import BlackFridayScreen, { actionsFor, itemActions, itemMatches } from "./Black
 const item = (pid, n, over = {}) => ({ pid, n, name: `Item ${pid}`, sizes: "M-XL", qty: 13 + n, photo: `https://x/${pid}.jpg`, shown: `https://x/${pid}.jpg`, na: false,
   excluded: false, use: "current", generatedUrl: null, genId: null, generations: 0, generating: false, approved: false, changedSinceApproval: false, ...over });
 const grp = (key, status, over = {}) => ({ key, label: key.split("-")[0], price: Number(key.slice(1).split("-")[0]), division: key.includes("sneakers") ? "sneakers" : "clothing", part: 1, parts: 1,
-  count: 2, included: 2, approvedCount: status === "waiting" ? 0 : 2, status, approvedAt: status === "waiting" ? null : 5, dueAt: null,
+  count: 2, included: 2, approvedCount: status === "waiting" ? 0 : 2, complete: status !== "waiting", status, approvedAt: status === "waiting" ? null : 5, dueAt: null,
   caption: `BLACK FRIDAY 🔥 ${key.split("-")[0]} EACH\n1. Item a — sizes M-XL\nMessage us to order.`,
   items: status === "waiting" ? [item("a", 1), item("b", 2)] : [item("a", 1, { approved: true }), item("b", 2, { approved: true })], post: null, ...over });
 const view = (over = {}) => ({
@@ -108,6 +108,13 @@ describe("Black Friday card", () => {
     expect(api.generate).toHaveBeenCalledWith("R300-clothing", "a", expect.any(Object));
     await act(async () => { byId(r, "tick-a").props.onClick(); });
     expect(api.tick).toHaveBeenCalledWith("R300-clothing", "a", false);
+  });
+
+  it("a partly approved group says it is not queued", async () => {
+    const api = fakeApi({ list: vi.fn(async () => view({ groups: [grp("R300-clothing", "approved", { complete: false, approvedCount: 1, items: [item("a", 1, { approved: true }), item("b", 2)] })] })) });
+    const r = await mount(api);
+    expect(text(byId(r, "status-R300-clothing"))).toContain("not queued");
+    expect(text(byId(r, "partial-R300-clothing"))).toContain("untick the rest");
   });
 
   it("the chip hides groups with nothing matching", async () => {

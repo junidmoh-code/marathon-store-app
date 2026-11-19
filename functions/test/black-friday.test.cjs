@@ -182,6 +182,60 @@ test("no schedule, or one never confirmed: no plan at all", async () => {
   assert.equal((await db.ref("bf_campaign_2026/schedule/plan").once("value")).val(), null, "an unconfirmed schedule never gets a plan");
 });
 
+test("NEVER A PARTIAL ALBUM: a group is queued only when every ticked item is approved", async () => {
+  const db = seed({ schedule: { mode: "gap", from: "08:00", to: "20:00", start: T("2026-11-20T09:00:00"), gapMin: 60, confirmedAt: 1 } });
+  await set(db, { action: "approveItem", key: A, pid: "a" }, T("2026-11-20T07:00:00"));
+  let v = await _internals.list(db);
+  assert.equal(v.groups[0].complete, false);
+  assert.equal((await db.ref("bf_campaign_2026/schedule/plan").once("value")).val(), null, "one of two approved: not queued");
+  await set(db, { action: "exclude", key: A, pid: "b" }, T("2026-11-20T07:01:00"));
+  v = await _internals.list(db);
+  assert.equal(v.groups[0].complete, true, "the rest unticked: complete");
+  assert.ok((await db.ref(`bf_campaign_2026/schedule/plan/${A}`).once("value")).val() > 0);
+});
+
+test("A TAP NEVER PULLS THE NEXT GROUP FORWARD: planned groups keep their times; new ones go after the last", () => {
+  const q = ["a", "b", "c"].map((k, i) => ({ key: k, approvedAt: i, price: 300 }));
+  const s = { mode: "gap", from: "08:00", to: "20:00", start: T("2026-11-20T08:00:00"), gapMin: 60 };
+  const first = core.planSchedule(q.slice(0, 2), s, T("2026-11-20T07:00:00"));
+  assert.deepEqual(Object.values(first).map(fmt), ["11-20 08:00", "11-20 09:00"]);
+  // 08:20: a (posted) has left the queue; Junid approves c. b stays at 09:00, c goes an hour after it.
+  const again = core.planSchedule(q.slice(1), s, T("2026-11-20T08:20:00"), first);
+  assert.deepEqual(Object.entries(again).map(([k, t]) => [k, fmt(t)]), [["b", "11-20 09:00"], ["c", "11-20 10:00"]]);
+  // Spread: new groups share the time left after the last kept one.
+  const sp = { mode: "spread", from: "08:00", to: "20:00", start: T("2026-11-20T08:00:00"), until: T("2026-11-20T20:00:00") };
+  const p1 = core.planSchedule(q.slice(0, 1), sp, T("2026-11-20T07:00:00"));
+  assert.deepEqual(Object.values(p1).map(fmt), ["11-20 08:00"]);
+  const p2 = core.planSchedule(q, sp, T("2026-11-20T07:30:00"), p1);
+  assert.deepEqual(Object.entries(p2).map(([k, t]) => [k, fmt(t)]), [["a", "11-20 08:00"], ["b", "11-20 12:00"], ["c", "11-20 16:00"]], "a kept; b and c share the time left, before the close");
+});
+
+test("post all now is capped at the end of the campaign; inWindow", () => {
+  const q = ["a", "b"].map((k, i) => ({ key: k, approvedAt: i, price: 300 }));
+  const late = core.CAMPAIGN_END_MS - 60_000;
+  assert.deepEqual(Object.keys(core.planSchedule(q, { mode: "now", start: late }, late)), ["a"]);
+  const s = { mode: "gap", from: "08:00", to: "20:00" };
+  assert.equal(core.inWindow(s, T("2026-11-20T03:00:00")), false);
+  assert.equal(core.inWindow(s, T("2026-11-20T12:00:00")), true);
+  assert.equal(core.inWindow({ mode: "now" }, T("2026-11-20T03:00:00")), true);
+});
+
+test("a dead generation claim (older than 10 min) does not grey anything out", () => {
+  const g = group(A, 300, ["a"]);
+  const now = 1_791_000_000_000;
+  const fresh = core.viewGroup(A, g, null, null, { a: { generating: { at: now - 60_000 } } }, null, now);
+  const dead = core.viewGroup(A, g, null, null, { a: { generating: { at: now - 11 * 60_000 } } }, null, now);
+  assert.equal(fresh.items[0].generating, true);
+  assert.equal(dead.items[0].generating, false);
+});
+
+test("the card's list never reads the decisions log", async () => {
+  const reads = [];
+  const db = makeFakeDb({ bf_campaign_2026: { groups: { [A]: group(A, 300, ["a"]) }, decisions: { x: { at: 1 } } } }, { beforeRead: async (p) => { reads.push(p); } });
+  await _internals.list(db);
+  assert.ok(!reads.some((p) => p === "bf_campaign_2026" || p.includes("decisions")), reads.join());
+});
+
 test("plan: a gap walks the daily window (08:00–20:00) and skips nights", () => {
   const q = ["a", "b", "c", "d"].map((k, i) => ({ key: k, approvedAt: i, price: 300 }));
   const plan = core.planSchedule(q, { mode: "gap", from: "08:00", to: "20:00", start: T("2026-11-20T18:30:00"), gapMin: 60 }, T("2026-11-20T07:00:00"));
