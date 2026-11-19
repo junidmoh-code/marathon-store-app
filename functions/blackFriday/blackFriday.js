@@ -25,7 +25,7 @@ if (!admin.apps.length) {
 }
 
 // invoker "public": a callable's Cloud Run service must allow allUsers to invoke (auth is checked in code).
-const callableOpts = { region: "europe-west1", memory: "512MiB", timeoutSeconds: 120, invoker: "public" };
+const callableOpts = { region: "europe-west1", memory: "512MiB", timeoutSeconds: 300, invoker: "public" };
 const POSTING_PAUSE = "new_arrivals/pause/posting/paused";
 
 function assertJunid(request) {
@@ -143,7 +143,10 @@ async function approveBig(db, sigs, uid, nowMs) {
   return { ok: true, approved: approved.length, pids: approved, undo };
 }
 
-const MANY_MAX = 500;
+// Any real selection goes through in one call (Junid ticked 574; the old 500 cap refused it): the writes are
+// chunked here, one transaction per product, CHUNK at a time. The cap only stops a malformed request.
+const MANY_MAX = 20000;
+const CHUNK = 50;
 /**
  * The card's multi-select: approve (each with the photo the card showed), reject,
  * or back to review (Undo) — one transaction per product. → { ok, done: [pid], refused: [{ pid, refusal }] }
@@ -157,8 +160,8 @@ async function many(db, action, list, uid, nowMs) {
     if (sig !== null && sig !== "current" && !core.GEN_RE.test(String(sig))) throw new HttpsError("invalid-argument", "Which photo?");
   }
   const done = [], refused = [], undo = {};
-  for (let i = 0; i < entries.length; i += 25) {
-    await Promise.all(entries.slice(i, i + 25).map(async ([pid, sig]) => {
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    await Promise.all(entries.slice(i, i + CHUNK).map(async ([pid, sig]) => {
       const out = {};
       const ref = db.ref(`${core.ROOT}/picks/${pid}`);
       if (action === "reset") await revTransaction(ref, core.resetMutator(out), out);
@@ -187,8 +190,8 @@ async function restore(db, items, uid, nowMs) {
   if (entries.length > MANY_MAX) throw new HttpsError("invalid-argument", "Too many at once.");
   for (const [pid, e] of entries) if (!core.PID_RE.test(String(pid)) || !e || !Number.isFinite(Number(e.expectAt))) throw new HttpsError("invalid-argument", "Which product?");
   const done = [], refused = [];
-  for (let i = 0; i < entries.length; i += 25) {
-    await Promise.all(entries.slice(i, i + 25).map(async ([pid, e]) => {
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    await Promise.all(entries.slice(i, i + CHUNK).map(async ([pid, e]) => {
       const out = {};
       const prev = e.prev && typeof e.prev === "object" ? e.prev : null;
       if (prev && prev.state && !["approved", "rejected"].includes(prev.state)) { refused.push({ pid, refusal: "bad state" }); return; }
