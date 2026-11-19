@@ -2,23 +2,22 @@
 // bfGenerate  Junid taps Generate / Regenerate on ONE product of the Black
 //             Friday card. One tap = one photo. Never automatic, never retried.
 //
-// THE LOOK IS CHOSEN BY THE PRODUCT'S KIND (styles.cjs): sneakers (all footwear)
-// and clothing use the New Arrivals engine EXACTLY as the New Arrivals card does
-// (functions/newArrivals/studio studioGenerate): Full Gemini, New Arrivals' own
-// generation settings (2K), its own finishing (the plate canvas, JPEG q93) and,
-// for footwear, its plate-lock correction at that size. REVERT (Junid, 19 Nov
-// evening): the 4K / lossless overrides made footwear cut-outs jagged; they are
-// gone for footwear and clothing. A result that is really the original photo is
-// never shown as generated: it fails ("Failed, tap to retry"). Every other kind
-// (caps & beanies, perfume,
-// bags, belts, sunglasses, watches, chains …) gets its own staging on Junid's
-// same backdrop plates. The sneaker formula is never used for anything else.
-// The product is kept exactly as photographed.
-//
-// Highest quality: Gemini at its MAXIMUM size ("4K"); the photo kept WITHOUT
-// recompression — cropped to the plate's shape at the model's own resolution
-// and stored as PNG, or the model's bytes untouched when no crop is needed.
-// New Arrivals is not touched. The New Arrivals generation pause stops this too.
+// ONE GENERATION BRAIN (Junid, 19 Nov night): Black Friday makes its photos
+// with the New Arrivals generator itself (functions/newArrivals/studio, the
+// same module New Arrivals' Generate calls), never a copy and never its own
+// settings: the same image model (generation.json imageModel), the same size
+// (generation.json imageSize), the same finishing (the plate canvas, JPEG q93).
+//   · sneakers (all footwear) and clothing → studio.generateOne exactly as the
+//     New Arrivals card runs it (Full Gemini, its prompts, plates and footwear
+//     plate-lock correction). A clothing product is handed over with its own
+//     category; only a category New Arrivals has no plate for is framed as a
+//     set (two-piece fence) or one garment (single fence).
+//   · every other kind (caps & beanies, perfume, bags, belts, sunglasses,
+//     watches, chains …) has no New Arrivals look, so it keeps its staging
+//     prompt (styles.cjs) on Junid's same plates — but through the same model,
+//     size and finishing as New Arrivals. No Black Friday 4K or lossless override.
+// A result that is really the original photo is never shown as generated: it
+// fails ("Failed, tap to retry"). The New Arrivals generation pause stops this too.
 //
 // Writes only /bf_campaign_2026/photos/{pid} and stats; photos go to
 // products/{pid}/black_friday/. Deploy BY NAME: firebase deploy --only functions:bfGenerate
@@ -33,25 +32,10 @@ const pauseSwitch = require("../newArrivals/pause.cjs");
 const { isSuperAdminToken } = require("../lib/super-admins.cjs");
 
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
-const BF_IMAGE_SIZE = "4K";
 
 let engineP = null;
 const engine = () => (engineP ||= Promise.resolve().then(() => require("../newArrivals/studio.js").engine));
 const val = async (db, path) => (await db.ref(path).once("value")).val();
-
-/** Crop to the plate's shape at the model's own resolution, lossless; untouched bytes when the shape already matches. */
-function losslessFinish(sharp) {
-  return async (buf, plate) => {
-    const m = await sharp(buf).metadata();
-    const r = plate.width / plate.height;
-    let w = m.width, h = Math.round(m.width / r);
-    if (h > m.height) { h = m.height; w = Math.round(m.height * r); }
-    if (Math.abs(w - m.width) <= 1 && Math.abs(h - m.height) <= 1) {
-      return { buffer: buf, mime: m.format === "jpeg" ? "image/jpeg" : m.format === "webp" ? "image/webp" : "image/png" };
-    }
-    return { buffer: await sharp(buf).resize(w, h, { fit: "cover", position: "centre" }).png().toBuffer(), mime: "image/png" };
-  };
-}
 
 async function claim(db, pid, uid, nowMs) {
   const ref = db.ref(`${core.ROOT}/photos/${pid}`);
@@ -129,19 +113,20 @@ async function stagedGenerate({ kind, pid, product, genId, e, mods, deps, db, em
     gemini.textPart(styles.promptFor(kind, { hasBox: !!box, conditionClause: e.CONDITION_CLAUSE })),
     gemini.imagePart(plate.forModel), gemini.imagePart(orig), ...(box ? [gemini.imagePart(box)] : []),
   ];
-  const imageConfig = { aspectRatio: compose.closestAspect(plate.width, plate.height), imageSize: BF_IMAGE_SIZE };
+  // New Arrivals' own size (generation.json), never a Black Friday override.
+  const imageConfig = { aspectRatio: compose.closestAspect(plate.width, plate.height), imageSize: e.generation.imageSize };
   emit({ type: "status", text: "Making the photo…" });
   const image = e.atModelCall(db, deps.image || ((m, p, c, o) => gemini.streamImage(m, p, c, { ...o, apiKey: deps.apiKey })));
   const gen = await image(e.generation.imageModel, parts, imageConfig, { onEvent: (ev) => { if (ev && ev.type === "thought" && ev.text) emit({ type: "thought", text: ev.text }); } });
   try {
     const m = await sharp(gen.buffer).metadata();
     if (!m.width || !m.height) throw new Error("the image model's answer was not a readable image");
-    const fin = await losslessFinish(sharp)(gen.buffer, plate);
+    // New Arrivals' own finishing: the plate canvas, JPEG q93 (compose.toCanvas).
+    const buf = await compose.toCanvas(gen.buffer, plate);
     const stamp = (deps.now || Date.now)();
-    const ext = fin.mime === "image/jpeg" ? "jpg" : fin.mime === "image/webp" ? "webp" : "png";
-    const generated = await e.uploadImmutable(bucket, `products/${pid}/black_friday/gen_${stamp}.${ext}`, fin.buffer, fin.mime);
-    const fm = await sharp(fin.buffer).metadata();
-    return { generated, usage: gen.usage || null, kind, final: { width: fm.width, height: fm.height, mime: fin.mime, bytes: fin.buffer.length } };
+    const generated = await e.uploadImmutable(bucket, `products/${pid}/black_friday/gen_${stamp}.jpg`, buf, "image/jpeg");
+    const fm = await sharp(buf).metadata();
+    return { generated, usage: gen.usage || null, kind, final: { width: fm.width, height: fm.height, mime: "image/jpeg", bytes: buf.length } };
   } catch (err) { err.paid = true; err.usage = gen.usage || null; throw err; }
 }
 
@@ -174,7 +159,8 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
   try {
     if (styles.ESTABLISHED.includes(kind)) {
       // Sneakers (all footwear) and clothing: the New Arrivals engine exactly as the New Arrivals card runs it.
-      const asProduct = kind === "clothing" ? { ...product, categoryKey: styles.clothingKeyFor(product.categoryKey) } : product;
+      // Its own category whenever New Arrivals can frame it; only an unknown one is mapped to a plate.
+      const asProduct = kind === "clothing" && !compose.kindFor(product) ? { ...product, categoryKey: styles.clothingKeyFor(product.categoryKey) } : product;
       let shown = null;
       const upload = async (p, buf, mime) => {
         const bfPath = String(p).replace("/new_arrivals/", "/black_friday/");
@@ -183,7 +169,7 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
         return r;
       };
       res = await studio.generateOne({
-        item: { pid, categoryKey: asProduct.categoryKey || null }, product: asProduct, genId, method: "full", provider: "gemini", emit,
+        item: { pid, categoryKey: asProduct.categoryKey || null, name: product.name || null }, product: asProduct, genId, method: "full", provider: "gemini", emit,
         deps: {
           fetchBytes: deps.fetchBytes || e.fetchBytes,
           loadPlate: (k) => e.loadRoleFile(bucket, compose.ROLES[k].plate, compose.forModel),
@@ -234,8 +220,8 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
   const at = now();
   const cost = record.generationCost({ model, usage: res.usage, prices: e.prices, fx: await fxAt(at) });
   const gen = {
-    url: res.generated.url, path: res.generated.path || null, at, model, imageSize: styles.ESTABLISHED.includes(kind) ? e.generation.imageSize : BF_IMAGE_SIZE, kind,
-    ...(styles.ESTABLISHED.includes(kind) ? { pipeline: "new-arrivals" } : {}),
+    url: res.generated.url, path: res.generated.path || null, at, model, imageSize: e.generation.imageSize, kind,
+    pipeline: styles.ESTABLISHED.includes(kind) ? "new-arrivals" : "new-arrivals-settings",
     costZar: Number.isFinite(cost.zar) ? cost.zar : null, costEstimated: !!cost.estimated,
     ...(final || {}), ...(res.note ? { note: res.note } : {}),
   };
@@ -275,4 +261,4 @@ const bfGenerateFn = onCall(
   },
 );
 
-module.exports = { bfGenerate: bfGenerateFn, _internals: { bfGenerate, losslessFinish, landed, claim, release, stagedGenerate, BF_IMAGE_SIZE, picDiff, refuseEcho, ECHO_DIFF } };
+module.exports = { bfGenerate: bfGenerateFn, _internals: { bfGenerate, landed, claim, release, stagedGenerate, picDiff, refuseEcho, ECHO_DIFF } };
