@@ -73,6 +73,8 @@ function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = 
     generating: !!(photo && photo.generating && nowMs - Number(photo.generating.at) < sched.CLAIM_MS),
     // A kind whose AI look Junid has not approved yet: "Use current photo" is the safe default.
     styleApproved: ESTABLISHED_STYLES.includes(kind) || !!(styles[kind] && styles[kind].approvedAt),
+    // The last Generate failed (photos/{pid}/failed, set by bfGenerate; the next success clears it).
+    failed: photo && photo.failed && photo.failed.at ? { at: photo.failed.at, reason: String(photo.failed.reason || "") } : null,
     tab: approved ? "approved" : "review",
     changedSinceApproval: !!pick && pick.state === "approved" && !approved,
     posted: approved && postedFor(pick, posted) ? (posted.at || true) : null,
