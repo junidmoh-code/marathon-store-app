@@ -318,6 +318,7 @@ test("styles: the sneaker formula is never used for anything else; each kind its
 });
 
 // ── bfGenerate through the real engine ───────────────────────────────────────
+const NA_GENERATION = require("../newArrivals/studio/config/generation.json");
 const png = (w, h, colour) => sharp({ create: { width: w, height: h, channels: 3, background: colour } }).png().toBuffer();
 async function genWorld({ geminiW = 1728, geminiH = 2304, pid = "a", product = {} } = {}) {
   const db = seed();
@@ -383,19 +384,34 @@ test("Generate: a result that is really the original photo is never shown — 'F
   void w2image;
 });
 
-test("Generate (caps & beanies): its OWN staging on the fence plate, at 4K, lossless — never the sneaker or hanger formula", async () => {
+test("Generate (caps & beanies): its OWN staging on the fence plate, New Arrivals' model at 4K, saved as JPEG q92 — never the sneaker or hanger formula", async () => {
   const w = await genWorld({ pid: "c", product: { categoryKey: "caps-beanies", category: "Clothing" } });
   const out = await gen.bfGenerate(w.db, { pid: "c" }, "junid", w.deps);
   assert.equal(out.kind, "headwear");
   const image = w.calls.find((c) => c[0] === "image");
+  assert.equal(image[1], NA_GENERATION.imageModel, "New Arrivals' image model");
   assert.equal(image[2].imageSize, "4K");
   assert.match(image[3], /AS HEADWEAR/);
   assert.doesNotMatch(image[3], /pedestal|hanger|side-on/i);
   assert.deepEqual(w.calls.find((c) => c[0] === "plate"), ["plate", "fence-single.png"]);
-  const final = w.uploads.find((u) => /\/gen_\d+\.png$/.test(u.path));
+  const final = w.uploads.find((u) => /\/gen_\d+\.jpg$/.test(u.path));
   assert.match(final.path, /^products\/c\/black_friday\//);
   const m = await sharp(final.buf).metadata();
-  assert.deepEqual([m.width, m.height, m.format], [1728, 2304, "png"]);
+  assert.deepEqual([m.width, m.height, m.format], [1728, 2304, "jpeg"], "the model's full resolution, JPEG not PNG");
+  const ph = (await w.db.ref(`${core.ROOT}/photos/c`).once("value")).val();
+  assert.equal(ph.gens[ph.genId].imageSize, "4K");
+});
+
+test("ONE BRAIN: footwear and clothing call New Arrivals' generator with its own model and size; a known clothing category is passed unchanged", async () => {
+  const w = await genWorld({ product: { categoryKey: "t-shirts" } });
+  await gen.bfGenerate(w.db, { pid: "a" }, "junid", w.deps);
+  const image = w.calls.filter((c) => c[0] === "image");
+  assert.equal(image[0][1], NA_GENERATION.imageModel);
+  assert.equal(image[0][2].imageSize, NA_GENERATION.imageSize);
+  assert.doesNotMatch(image[0][3], /Black Friday/, "New Arrivals' own prompt, not a Black Friday one");
+  const ph = (await w.db.ref(`${core.ROOT}/photos/a`).once("value")).val();
+  assert.equal(ph.gens[ph.genId].pipeline, "new-arrivals");
+  assert.equal(ph.gens[ph.genId].model, NA_GENERATION.imageModel);
 });
 
 test("Generate (perfume): upright on the pedestal plate, with its box when it has one", async () => {
