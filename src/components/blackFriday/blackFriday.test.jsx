@@ -70,4 +70,28 @@ describe("Black Friday card", () => {
     await act(async () => { byId(r, "approve-R300").props.onClick(); });
     expect(text(byId(r, "note"))).toContain("every item is unticked");
   });
+
+  it("a failed tap shows the error AND re-reads (part of Approve All may have gone through); Refresh re-reads", async () => {
+    const api = fakeApi({ approveAll: vi.fn(async () => { throw new Error("R650: internal"); }) });
+    let r;
+    await act(async () => { r = TestRenderer.create(<BlackFridayScreen api={api} onExit={() => {}} />); });
+    await flush();
+    expect(api.list).toHaveBeenCalledTimes(1);
+    api.list.mockImplementationOnce(async () => ({ ...view(), groups: [grp("R300", "approved"), ...view().groups.slice(1)] }));
+    await act(async () => { byId(r, "approve-all").props.onClick(); });
+    await flush();
+    expect(text(byId(r, "note"))).toContain("R650: internal");
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(text(byId(r, "status-R300"))).toBe("Approved — queued");
+    await act(async () => { byId(r, "refresh").props.onClick(); });
+    await flush();
+    expect(api.list).toHaveBeenCalledTimes(3);
+  });
+
+  it("thumbnails keep the browser focus ring (no all:unset)", async () => {
+    let r;
+    await act(async () => { r = TestRenderer.create(<BlackFridayScreen api={fakeApi()} onExit={() => {}} />); });
+    await flush();
+    expect(byId(r, "item-R300-a").props.style.all).toBeUndefined();
+  });
 });

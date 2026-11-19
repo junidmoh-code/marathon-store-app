@@ -24,7 +24,7 @@ const priceLabel = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${N
 const sizesPhrase = (t) => (t === "one size" ? "one size" : `sizes ${t}`);
 function captionPreview(price, items) {
   const lines = items.map((it, i) => `${i + 1}. ${String(it.name || "").trim()} — ${sizesPhrase(it.sizes)}`);
-  return [`BLACK FRIDAY 🔥 R${Math.round(Number(price))} EACH`, ...lines, "Message us to order."].join("\n");
+  return [`BLACK FRIDAY 🔥 ${priceLabel(price)} EACH`, ...lines, "Message us to order."].join("\n");
 }
 
 function groupStatus(state, post) {
@@ -136,4 +136,12 @@ function tickMutator({ pid, include, group, post }, out = {}) {
   };
 }
 
-module.exports = { ROOT, KEY_RE, PID_RE, captionPreview, groupStatus, viewGroup, viewCampaign, approveMutator, unapproveMutator, tickMutator, priceLabel };
+/**
+ * Every state write bumps `rev`, so state/{key} is never empty and RTDB never
+ * deletes it: the cold-null transaction fallback in bfCampaignSet relies on it.
+ */
+function withRev(next, base) {
+  return { ...(next || {}), rev: ((base && base.rev) || 0) + 1 };
+}
+
+module.exports = { withRev, ROOT, KEY_RE, PID_RE, captionPreview, groupStatus, viewGroup, viewCampaign, approveMutator, unapproveMutator, tickMutator, priceLabel };

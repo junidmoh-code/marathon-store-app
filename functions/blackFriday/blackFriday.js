@@ -45,13 +45,19 @@ async function setOne(db, { action, key, pid }, uid, nowMs) {
   } else throw new HttpsError("invalid-argument", "approve, unapprove, exclude or include.");
   // A Cloud Function's first transaction callback sees null (no local cache):
   // that call works from a fresh read instead, so a refusal or no-op is never
-  // decided on a phantom empty state; the server's CAS re-runs it on the real
-  // value if they differ. `out` is reset on every call.
+  // decided on a phantom empty state. That is safe ONLY because state/{key},
+  // once written, is never deleted again: every write carries `rev`, so the
+  // node is never empty. The cold write goes out expecting null; if the node
+  // exists (or changed after `pre` — e.g. an Undo landed between), the
+  // server's CAS mismatches and re-runs the callback on the REAL value, so a
+  // stale `pre` can never bring back an approval. `out` is reset every call.
   const ref = db.ref(`${core.ROOT}/state/${key}`);
   const pre = (await ref.once("value")).val();
   const res = await ref.transaction((cur) => {
     for (const k of Object.keys(out)) delete out[k];
-    return mut(cur === null ? pre : cur);
+    const base = cur === null ? pre : cur;
+    const next = mut(base);
+    return next === undefined ? undefined : core.withRev(next, base);
   });
   if (out.refusal) return { key, ok: false, refusal: out.refusal };
   if (res.committed && !out.noop) {

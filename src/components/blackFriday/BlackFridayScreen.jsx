@@ -5,7 +5,7 @@
 // go to the 14 WhatsApp groups through the existing poster, 08:00–20:00,
 // spread evenly to Fri 27 Nov, each re-checked for stock just before it posts.
 // Only the STOCK price is ever shown.
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { FONT, BG, GLASS, GREEN, GRAY, AMBER, RED, BLUE_L, bGreen, bGray, bBlue } from "../stock/ui";
 
 export const STATUS = Object.freeze({
@@ -34,7 +34,7 @@ function Thumb({ it, gkey, canTick, onTick, busy }) {
   return (
     <button data-testid={`item-${gkey}-${it.pid}`} aria-pressed={!off} disabled={!canTick || busy} onClick={() => onTick(it, off)}
       title={`${it.name} — ${it.sizes} · ${it.qty} on hand`}
-      style={{ all: "unset", cursor: canTick ? "pointer" : "default", display: "flex", flexDirection: "column", gap: 3, minWidth: 0, opacity: off ? 0.35 : 1 }}>
+      style={{ border: "none", background: "none", padding: 0, margin: 0, font: "inherit", color: "inherit", textAlign: "left", cursor: canTick ? "pointer" : "default", display: "flex", flexDirection: "column", gap: 3, minWidth: 0, opacity: off ? 0.35 : 1 }}>
       <div style={{ position: "relative", aspectRatio: "1 / 1", borderRadius: 10, overflow: "hidden", background: "#0b0d12" }}>
         {it.photo && <img src={it.photo} alt={it.name} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
         <span style={{ position: "absolute", top: 4, left: 4, background: "rgba(0,0,0,.7)", borderRadius: 6, padding: "1px 5px", fontSize: 10 }}>{it.n}</span>
@@ -97,8 +97,22 @@ export default function BlackFridayScreen({ api, onExit }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null);
 
-  const load = useCallback(() => api.list().then((d) => { setData(d); setError(null); }, (e) => setError(e?.message || String(e))), [api]);
+  // Every list and every tap takes a ticket; an answer older than the newest
+  // ticket is ignored, so a slow list never overwrites a fresher tap result.
+  const ticket = useRef(0);
+  const load = useCallback(() => {
+    const t = ++ticket.current;
+    return api.list().then((d) => { if (t === ticket.current) { setData(d); setError(null); } }, (e) => { if (t === ticket.current) setError(e?.message || String(e)); });
+  }, [api]);
   useEffect(() => { load(); }, [load]);
+  // The poster marks groups posted and the 05:00 build replaces them: re-read
+  // when Junid comes back to the tab.
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const onVis = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [load]);
 
   const replace = (views) => setData((d) => {
     if (!d) return d;
@@ -110,13 +124,20 @@ export default function BlackFridayScreen({ api, onExit }) {
   });
   const run = async (fn) => {
     setBusy(true); setNote(null);
+    const t = ++ticket.current;
     try {
       const r = await fn();
+      if (t !== ticket.current) return;
       const results = r?.results || [r];
       replace(results.map((x) => x?.group));
       const refused = results.filter((x) => x && x.ok === false);
       if (refused.length) setNote(refused.map((x) => `${x.key}: ${x.refusal}`).join(" · "));
-    } catch (e) { setNote(e?.message || String(e)); }
+    } catch (e) {
+      // Part of Approve All (or the log write after a commit) may have gone
+      // through: show the error AND re-read, so the card matches the server.
+      setNote(e?.message || String(e));
+      load();
+    }
     finally { setBusy(false); }
   };
 
@@ -128,6 +149,7 @@ export default function BlackFridayScreen({ api, onExit }) {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <button onClick={onExit} style={{ ...bGray, minHeight: 40, padding: "0 12px" }} aria-label="Back">←</button>
           <div style={{ fontSize: 20, fontWeight: 800, flex: 1 }}>Black Friday 🔥</div>
+          <button data-testid="refresh" disabled={busy} onClick={load} style={{ ...bGray, minHeight: 40, padding: "0 12px" }} aria-label="Refresh">↻</button>
         </div>
         <div style={{ color: GRAY, fontSize: 12, marginBottom: 12 }}>
           Stock price only. Approved groups go to all 14 WhatsApp groups between 08:00 and 20:00, spread evenly until Fri 27 Nov. Each group is re-checked for stock just before it posts.

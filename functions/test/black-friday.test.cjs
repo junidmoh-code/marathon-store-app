@@ -14,7 +14,13 @@ const seed = () => makeFakeDb({ bf_campaign_2026: {
   groups: { R300: group("R300", 300, ["a", "b"]), "R650-part1": group("R650-part1", 650, ["c", "d", "e"]) },
 } });
 const set = (db, args, nowMs = 1000) => _internals.setOne(db, args, "junid", nowMs);
-const state = async (db, key) => (await db.ref(`bf_campaign_2026/state/${key}`).once("value")).val();
+// The state without its write counter (rev); null when only rev is left.
+const state = async (db, key) => {
+  const v = (await db.ref(`bf_campaign_2026/state/${key}`).once("value")).val();
+  if (!v) return v;
+  const { rev, ...rest } = v; // eslint-disable-line no-unused-vars
+  return Object.keys(rest).length ? rest : null;
+};
 
 test("only Junid (a super admin) may use the card", () => {
   assert.throws(() => _internals.assertJunid({ auth: { token: { email: "staff@x.com" } } }), /Junid/);
@@ -57,7 +63,32 @@ test("untick after approval removes it from the approval; unticking the last one
   assert.match(refused.refusal, /every item is unticked/);
   await set(db, { action: "include", key: "R300", pid: "a" });
   await set(db, { action: "include", key: "R300", pid: "b" });
-  assert.equal(await state(db, "R300"), null, "a fully ticked, unapproved group leaves no state at all (RTDB deletes the empty node)");
+  assert.equal(await state(db, "R300"), null, "a fully ticked, unapproved group leaves nothing but its write counter");
+  assert.ok((await db.ref("bf_campaign_2026/state/R300/rev").once("value")).val() > 0, "state/{key} is never deleted once written");
+});
+
+test("an untick that overlaps an Undo never brings the approval back (cold-null transaction + stale pre-read)", async () => {
+  // The untick reads state (approved), then Junid's Undo commits, then the
+  // untick's transaction runs: its cold first callback works from the stale
+  // read. Because Undo leaves state/{key} in place (rev), the server's CAS
+  // mismatches and the untick re-runs on the real, unapproved state.
+  let reads = 0, undone = false, armed = false;
+  const db = makeFakeDb({ bf_campaign_2026: { groups: { R300: group("R300", 300, ["a", "b", "c"]) } } }, {
+    beforeRead: async (path) => {
+      if (path !== "bf_campaign_2026/state/R300" || undone || !armed) return;
+      reads += 1;
+      if (reads === 2) { undone = true; await set(db, { action: "unapprove", key: "R300" }); }
+    },
+  });
+  await set(db, { action: "approve", key: "R300" }, 5000);
+  armed = true;
+  await set(db, { action: "exclude", key: "R300", pid: "a" });
+  assert.equal(undone, true, "the Undo landed between the untick's read and its transaction");
+  assert.deepEqual(await state(db, "R300"), { excluded: { a: true } }, "still unapproved: the stale approval was not restored");
+  // An ordinary untick of an approved group keeps the approval.
+  await set(db, { action: "approve", key: "R300" }, 7000);
+  await set(db, { action: "exclude", key: "R300", pid: "b" });
+  assert.deepEqual(await state(db, "R300"), { approvedAt: 7000, approvedBy: "junid", approvedItems: { c: true }, excluded: { a: true, b: true } });
 });
 
 test("posted → status from the poster's record; approving again is a NEW lap (posts once more); undo refused once posted", async () => {
@@ -96,6 +127,11 @@ test("bad input is refused before anything is written; every tap is logged", asy
   await set(db, { action: "approve", key: "R300" });
   const log = (await db.ref("bf_campaign_2026/decisions").once("value")).val();
   assert.deepEqual(Object.values(log).map((r) => [r.action, r.key, r.by]), [["approve", "R300", "junid"]]);
+});
+
+test("the caption keeps cents: R300.50 is never shown as R301", () => {
+  assert.equal(core.captionPreview(300.5, [{ name: "Tee", sizes: "M" }]), "BLACK FRIDAY 🔥 R300.50 EACH\n1. Tee — sizes M\nMessage us to order.");
+  assert.match(core.captionPreview(300, []), /R300 EACH/);
 });
 
 test("status words", () => {
