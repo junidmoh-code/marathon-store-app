@@ -51,24 +51,27 @@ function sigOf(photo) {
  * own photo must also still be the one approved (pick.shown) — a photo the
  * 05:00 rebuild brought in is never "approved" unseen.
  */
-const isApproved = (pick, photo, item = null) => !!pick && pick.state === "approved" && pick.sig === sigOf(photo)
-  && !(item && pick.sig === "current" && pick.shown && item.photo && item.photo !== pick.shown);
+// A New Arrival's pick (src "na") mirrors the New Arrivals item: approved with the photo it pins (na.cjs).
+const isApproved = (pick, photo, item = null) => !!pick && pick.state === "approved" && (pick.src === "na" ? !!pick.shown : (pick.sig === sigOf(photo)
+  && !(item && pick.sig === "current" && pick.shown && item.photo && item.photo !== pick.shown)));
 const isRejected = (pick) => !!pick && pick.state === "rejected";
 /** Posted for THIS approval (a re-approval posts again). Pure. */
 const postedFor = (pick, posted) => !!posted && !!pick && posted.approvedAt === pick.at;
 
 /** One product row as the card shows it. Pure. */
-function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = {}, nowMs = Date.now() } = {}) {
-  const sig = sigOf(photo);
-  const gen = sig !== "current" ? photo.gens[sig] : null;
+function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = {}, nowMs = Date.now(), sent = null, repost = null, na = false } = {}) {
+  const naPick = !!pick && pick.src === "na";
+  const sig = naPick ? "na" : sigOf(photo);
+  const gen = sig !== "current" && !naPick ? photo.gens[sig] : null;
   const latest = photo && photo.genId && photo.gens && photo.gens[photo.genId] ? photo.gens[photo.genId] : null;
   const approved = isApproved(pick, photo, it);
   const kind = it.kind || "clothing";
   return {
     pid, name: it.name || pid, price: it.price, qty: Number(it.qty) || 0, sizes: it.sizes || "", kind,
-    big: (Number(it.qty) || 0) >= BIG_QTY, na: it.na === true,
-    photo: it.photo || null, shown: gen ? gen.url : (it.photo || null),
-    use: sig === "current" ? "current" : "generated", genId: photo && photo.genId ? photo.genId : null, sig,
+    big: (Number(it.qty) || 0) >= BIG_QTY, na: na || it.na === true || naPick || (!!pick && pick.section === "newArrivals"),
+    ...(naPick ? { src: "na" } : {}),
+    photo: it.photo || null, shown: naPick ? pick.shown : gen ? gen.url : (it.photo || null),
+    use: naPick ? (pick.useCurrent ? "current" : "generated") : sig === "current" ? "current" : "generated", genId: photo && photo.genId ? photo.genId : null, sig,
     generatedUrl: latest ? latest.url : null, generations: photo && photo.gens ? Object.keys(photo.gens).length : 0,
     generating: !!(photo && photo.generating && nowMs - Number(photo.generating.at) < sched.CLAIM_MS),
     // A kind whose AI look Junid has not approved yet: "Use current photo" is the safe default.
@@ -78,7 +81,17 @@ function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = 
     tab: approved ? "approved" : "review",
     changedSinceApproval: !!pick && pick.state === "approved" && !approved,
     posted: approved && postedFor(pick, posted) ? (posted.at || true) : null,
+    // The permanent posting record (the brain's brain/sent/{pid}): how many times and when last; a Repost queued since.
+    ...postingOf(sent, repost, posted),
   };
+}
+/** "Posted n× · last <date>" and a Repost waiting for the next slot. Pure. */
+function postingOf(sent, repost, posted) {
+  const n = Number(sent && sent.n) || 0;
+  const last = Number(sent && sent.last) || (posted && Number(posted.at)) || null;
+  const postedN = n || (last ? 1 : 0);
+  const queued = !!(repost && Number(repost.at) > 0 && (!last || Number(repost.at) > last));
+  return { postedN, postedLast: postedN ? last : null, repostQueued: queued };
 }
 
 /** MAIN order: every 30+ product first (one block, highest first), then 13–29 (highest first). UNDER: highest first. Pure. */
@@ -90,27 +103,41 @@ function orderRows(rows) {
  * The card for one section. node: { meta, items: { [section]: … }, picks, photos, posted, styles, stats, schedule }.
  * Rejected products are never listed (only in the small "Rejected (n)" list). Pure.
  */
-function viewSection(node, section = "main", { postingPaused = false, nowMs = Date.now(), extraApproved = {} } = {}) {
+function viewSection(node, section = "main", { postingPaused = false, nowMs = Date.now(), extraApproved = {}, naSet = null, naRows = [] } = {}) {
   const n = node || {};
-  // extraApproved: the other section's APPROVED products (so the Approved tab always shows every approval).
+  // extraApproved: approved products with no row in this section (the other section's, or a New Arrival
+  // uploaded after the build) — so the Approved tab always shows every approval.
   const items = { ...extraApproved, ...(((n.items || {})[section]) || {}) };
   const picks = n.picks || {}, photos = n.photos || {}, posted = n.posted || {}, styles = n.styles || {};
+  const sent = (n.brain && n.brain.sent) || {}, reposts = n.repost || {};
+  const isNa = (pid) => !!(naSet && naSet.has(pid));
   const rows = [];
   for (const [pid, it] of Object.entries(items)) {
     if (!it || isRejected(picks[pid])) continue;
-    rows.push(viewItem(pid, it, { pick: picks[pid], photo: photos[pid], posted: posted[pid], styles, nowMs }));
+    const row = viewItem(pid, it, { pick: picks[pid], photo: photos[pid], posted: posted[pid], styles, nowMs, sent: sent[pid], repost: reposts[pid], na: isNa(pid) });
+    // A product that is both new and 13+ is reviewed ONLY on the New Arrivals tab.
+    if (row.tab === "review" && isNa(pid)) continue;
+    rows.push(row);
   }
   const ordered = orderRows(rows);
   const m = n.meta || {};
   const idx = n.idx || null;
-  const live = (pid) => !idx || !!idx[pid];
-  const rejected = Object.entries(picks).filter(([pid, p]) => isRejected(p) && live(pid)).map(([pid, p]) => ({ pid, name: p.name || pid, section: p.section || null, at: p.at || null }))
+  const live = (pid) => !idx || !!idx[pid] || isNa(pid);
+  const rejected = Object.entries(picks).filter(([pid, p]) => isRejected(p) && live(pid)).map(([pid, p]) => ({ pid, name: p.name || pid, section: p.section || null, at: p.at || null, ...(p.src === "na" ? { src: "na" } : {}) }))
     .sort((a, b) => (b.at || 0) - (a.at || 0));
+  const review = ordered.filter((r) => r.tab === "review" && !extraApproved[r.pid]);
+  const approved = ordered.filter((r) => r.tab === "approved");
+  const totals = totalsOf(n, picks, photos);
+  if (section === "main") { totals.review = review.length; totals.approved = approved.length; }
+  totals.newArrivals = naRows.length;
+  totals.approvedNa = approved.filter((r) => r.na).length;
+  totals.approvedNormal = approved.length - totals.approvedNa;
   return {
     section,
-    review: ordered.filter((r) => r.tab === "review" && !extraApproved[r.pid]),
-    approved: ordered.filter((r) => r.tab === "approved"),
-    totals: totalsOf(n, picks, photos),
+    newArrivals: naRows,
+    review,
+    approved,
+    totals,
     rejected,
     styles: Object.fromEntries(Object.entries(styles).map(([k, v]) => [k, !!(v && v.approvedAt)])),
     schedule: n.schedule && n.schedule.confirmedAt ? { start: n.schedule.start, from: n.schedule.from, to: n.schedule.to, mode: n.schedule.mode, gapMin: n.schedule.gapMin || null, until: n.schedule.until || null, confirmedAt: n.schedule.confirmedAt } : null,
@@ -203,6 +230,13 @@ function useMutator({ use, genId = null }, out = {}) {
     return { ...p, use: "generated", genId: id };
   };
 }
+/** The permanent approval record (approvals/{pid}/{at}): product, the exact photo approved, when, by whom. Pure. */
+function approvalRecord(pid, pick) {
+  if (!pick || pick.state !== "approved") return null;
+  const r = { pid, at: Number(pick.at) || null, by: pick.by || null, photo: pick.shown || null, sig: pick.sig || null, name: pick.name || "", price: pick.price ?? null, kind: pick.kind || null, section: pick.section || null, ...(pick.src ? { src: pick.src } : {}) };
+  for (const [k, v] of Object.entries(r)) if (v === null || v === undefined) delete r[k];
+  return r;
+}
 /** Every picks/photos write bumps `rev`, so the node is never empty and never deleted. */
 function withRev(next, base) {
   return { ...(next || {}), rev: ((base && base.rev) || 0) + 1 };
@@ -278,7 +312,7 @@ function planAlbums(albums, schedule, nowMs, prevPlan = null, posted = {}) {
 module.exports = {
   ROOT, PID_RE, GEN_RE, KIND_RE, SECTIONS, BIG_QTY, ALBUM_MAX, CAPTION_MAX, ESTABLISHED_STYLES, KIND_LABEL,
   priceLabel, priceKey, captionPreview, sigOf, isApproved, isRejected, postedFor,
-  viewItem, orderRows, viewSection, totalsOf, planView,
+  viewItem, postingOf, orderRows, viewSection, totalsOf, planView, approvalRecord,
   approveMutator, rejectMutator, resetMutator, restoreMutator, useMutator, withRev,
   toPost, albumsOf, planAlbums, fnv,
   ...sched,

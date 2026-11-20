@@ -1030,5 +1030,5 @@ module.exports = {
   newArrivalsHow, newArrivalsMethod, newArrivalsPause, newArrivalsUseCurrent, newArrivalsUnapprove, newArrivalsPostAll,
   // for tests
   NO_STOCK_PRICE,
-  _internals: { NO_STOCK_PRICE, listLive, laneStock, useCurrent, unapprove, postAll, buildPlan, enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, setPause, isJunid, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
+  _internals: { NO_STOCK_PRICE, productDetail, stockLocations, listLive, laneStock, useCurrent, unapprove, postAll, buildPlan, enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, setPause, isJunid, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
 };

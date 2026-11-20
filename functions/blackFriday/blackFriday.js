@@ -16,8 +16,11 @@
 "use strict";
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onValueWritten } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const core = require("./core.cjs");
+const naLib = require("./na.cjs");
+const naCore = require("../newArrivals/core.cjs");
 const { isSuperAdminToken } = require("../lib/super-admins.cjs");
 
 if (!admin.apps.length) {
@@ -33,24 +36,99 @@ function assertJunid(request) {
 }
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
+let naP = null;
+const naMod = () => (naP ||= require("../newArrivals/newArrivals.js"));
+
+/** The permanent approval record: approvals/{pid}/{at} (never overwritten, never cleared by the 05:00 build). */
+async function ledger(db, pid, pick) {
+  const r = core.approvalRecord(pid, pick);
+  if (!r || !r.at) return;
+  await db.ref(`${core.ROOT}/approvals/${pid}/${r.at}`).set(r);
+}
 
 /** One section, read narrowly: that section's products and the small decision nodes (never `decisions`). */
-async function list(db, section = "main") {
+async function list(db, section = "main", nowMs = Date.now()) {
   if (!core.SECTIONS.includes(section)) throw new HttpsError("invalid-argument", "main or under.");
-  const parts = ["meta", `items/${section}`, "picks", "photos", "posted", "styles", "stats", "schedule", "idx"];
-  const [vals, paused] = await Promise.all([
+  const parts = ["meta", `items/${section}`, "picks", "photos", "posted", "styles", "stats", "schedule", "idx", "brain/sent", "repost"];
+  const [vals, paused, lanes] = await Promise.all([
     Promise.all(parts.map((p) => val(db, `${core.ROOT}/${p}`))),
     val(db, POSTING_PAUSE).catch(() => null),
+    naLib.windowLanes(db, nowMs),
   ]);
-  const node = { meta: vals[0], items: { [section]: vals[1] }, picks: vals[2], photos: vals[3], posted: vals[4], styles: vals[5], stats: vals[6], schedule: vals[7], idx: vals[8] };
-  // The Approved tab shows EVERY approval: on the main view, the under-13 products Junid approved are read one by one.
+  const node = { meta: vals[0], items: { [section]: vals[1] }, picks: vals[2], photos: vals[3], posted: vals[4], styles: vals[5], stats: vals[6], schedule: vals[7], idx: vals[8], brain: { sent: vals[9] }, repost: vals[10] };
+  const picks = node.picks || {};
+  const naSet = new Set(lanes.keys());
+  // The Approved tab shows EVERY approval: on the main view, approvals with no main row (under-13, or a
+  // New Arrival uploaded after the build) are read one by one — or made from the pick itself.
   const extraApproved = {};
+  let naRows = [];
   if (section === "main") {
-    const other = Object.entries(node.picks || {}).filter(([pid, p]) => p && p.state === "approved" && p.section === "under" && !(node.items.main || {})[pid]);
+    const other = Object.entries(picks).filter(([pid, p]) => core.isApproved(p, (node.photos || {})[pid]) && !(node.items.main || {})[pid]);
     const rows = await Promise.all(other.map(([pid]) => val(db, `${core.ROOT}/items/under/${pid}`)));
-    other.forEach(([pid], i) => { if (rows[i]) extraApproved[pid] = rows[i]; });
+    other.forEach(([pid, p], i) => {
+      extraApproved[pid] = rows[i] || { name: p.name || pid, price: p.price, kind: p.kind || "clothing", sizes: p.sizes || "", photo: p.shown || null, qty: 0 };
+    });
+    naRows = await naLib.naTab(db, { lanes, items: { main: node.items.main || {} }, picks, nowMs, na: naMod(), underRow: (pid) => val(db, `${core.ROOT}/items/under/${pid}`) });
   }
-  return core.viewSection(node, section, { postingPaused: paused === true, extraApproved });
+  return core.viewSection(node, section, { postingPaused: paused === true, extraApproved, naSet, naRows, nowMs });
+}
+
+// ── New Arrivals: their taps go through New Arrivals' own moves; the pick mirrors the item ──
+/** Is this product handled as a New Arrival (in the New Arrivals queue, in the window or already mirrored)? → status | null */
+async function naStatus(db, pid, nowMs) {
+  const status = await val(db, `${naCore.ITEMS}/${pid}/status`);
+  if (!status) return null;
+  if (String(pid) >= naCore.windowStartKey(nowMs)) return status;
+  const pick = await val(db, `${core.ROOT}/picks/${pid}`);
+  return pick && pick.src === "na" ? status : null;
+}
+const naRefusal = (r) => (r && r.skipped && r.skipped[0] && r.skipped[0].why) || (r && r.why) || "not saved";
+/**
+ * One New Arrivals tap. action: approve (sig: "current" = the app photo, a genId = that New Arrivals photo,
+ * none = its main photo), reject (skip), reset (back to review). → { refusal } | { prev, pick, noop }
+ */
+async function naTap(db, pid, action, { sig = null, status }, uid, nowMs) {
+  const na = naMod()._internals;
+  const prev = await val(db, `${core.ROOT}/picks/${pid}`);
+  let r = null;
+  try {
+    if (action === "approve") {
+      if (naCore.APPROVED_LANES.includes(status)) return { noop: true, prev, pick: prev };
+      if (sig === "current") { r = await na.useCurrent(db, { pid }, uid, nowMs); if (!r.approved.length) return { refusal: naRefusal(r) }; }
+      else {
+        r = await na.approve(db, { pids: [pid], ...(sig && core.GEN_RE.test(String(sig)) ? { genId: sig } : {}) }, uid, nowMs);
+        if (!r.approved.length) {
+          const why = naRefusal(r);
+          return { refusal: /no generated photo/.test(why) ? "it has no AI photo yet — tap Use current photo, or Generate" : why };
+        }
+      }
+    } else if (action === "reject") {
+      if (status === "skipped") return { noop: true, prev, pick: prev };
+      if (naCore.APPROVED_LANES.includes(status)) { const u = await na.unapprove(db, { pid }, uid, nowMs); if (!u.ok) return { refusal: u.why }; }
+      r = await na.skip(db, { pids: [pid] }, uid, nowMs);
+      if (!r.skippedPids.length) return { refusal: naRefusal(r) };
+    } else {
+      if (naCore.APPROVED_LANES.includes(status)) { r = await na.unapprove(db, { pid }, uid, nowMs); if (!r.ok) return { refusal: r.why }; }
+      else if (status === "skipped") { r = await na.restore(db, { pids: [pid] }, uid, nowMs); if (!r.restored.length) return { refusal: naRefusal(r) }; }
+      else return { noop: true, prev, pick: prev };
+    }
+  } catch (e) { return { refusal: String((e && e.message) || e).replace(/^.*? — /, "") }; }
+  const m = await naLib.mirror(db, pid, nowMs, { na: naMod(), ledger });
+  return { prev, pick: m.pick, noop: false };
+}
+/** A New Arrival's row after a tap, for the card to patch in place. */
+async function naRowAfter(db, pid, pick, nowMs) {
+  if (pick && pick.state === "approved") {
+    const built = (await val(db, `${core.ROOT}/items/main/${pid}`)) || (await val(db, `${core.ROOT}/items/under/${pid}`));
+    const it = built || { name: pick.name, price: pick.price, kind: pick.kind, sizes: pick.sizes, photo: pick.shown, qty: 0 };
+    const [sent, repost] = await Promise.all([val(db, `${core.ROOT}/brain/sent/${pid}`), val(db, `${core.ROOT}/repost/${pid}`)]);
+    return core.viewItem(pid, it, { pick, photo: null, nowMs, sent, repost, na: true });
+  }
+  if (pick && pick.state === "rejected") return null;
+  const built = (await val(db, `${core.ROOT}/items/main/${pid}`)) || (await val(db, `${core.ROOT}/items/under/${pid}`));
+  const base = built || await naLib.liveRow(db, pid, nowMs, naMod());
+  if (!base) return null;
+  return naLib.viewNaRow(pid, base, await naLib.naFields(db, pid), { nowMs });
 }
 
 /** A transaction safe on a Cloud Function's cold first callback (the node is never deleted: core.withRev). */
@@ -92,6 +170,16 @@ async function tap(db, { action, pid, section, use, genId, sig }, uid, nowMs) {
   if (!["approve", "reject", "reset", "use"].includes(action)) throw new HttpsError("invalid-argument", "approve, reject, reset or use.");
   const out = {};
   const pickRef = db.ref(`${core.ROOT}/picks/${pid}`);
+  if (action !== "use") {
+    const status = await naStatus(db, pid, nowMs);
+    if (status) {
+      const r = await naTap(db, pid, action, { sig, status }, uid, nowMs);
+      if (r.refusal) return { ok: false, pid, refusal: r.refusal };
+      if (!r.noop) await log(db, { at: nowMs, by: uid || null, action, pid, src: "na" });
+      const undo = (action === "approve" || action === "reject") && !r.noop ? { [pid]: { prev: r.prev || null, expectAt: r.pick ? Number(r.pick.at) : nowMs } } : null;
+      return { ok: true, pid, noop: !!r.noop, rejected: !!(r.pick && r.pick.state === "rejected"), undo, row: await naRowAfter(db, pid, r.pick, nowMs) };
+    }
+  }
   const { item, section: sec } = await findItem(db, pid, section);
   if ((action === "use" || action === "approve") && !item) throw new HttpsError("not-found", "That product is not in the campaign.");
   if (action === "use") {
@@ -109,12 +197,13 @@ async function tap(db, { action, pid, section, use, genId, sig }, uid, nowMs) {
   }
   if (out.refusal) return { ok: false, pid, refusal: out.refusal };
   if (!out.noop) {
+    if (action === "approve") await ledger(db, pid, await val(db, `${core.ROOT}/picks/${pid}`)).catch(() => {});
     await log(db, { at: nowMs, by: uid || null, action, pid, ...(use ? { use } : {}), ...(genId ? { genId } : {}) });
     await replan(db, nowMs);
   }
-  const [pick, photo, posted, styles] = await Promise.all([`picks/${pid}`, `photos/${pid}`, `posted/${pid}`, "styles"].map((p) => val(db, `${core.ROOT}/${p}`)));
+  const [pick, photo, posted, styles, sent, repost] = await Promise.all([`picks/${pid}`, `photos/${pid}`, `posted/${pid}`, "styles", `brain/sent/${pid}`, `repost/${pid}`].map((p) => val(db, `${core.ROOT}/${p}`)));
   const undo = (action === "approve" || action === "reject") && !out.noop ? { [pid]: { prev: out.base || null, expectAt: nowMs } } : null;
-  return { ok: true, pid, noop: !!out.noop, rejected: core.isRejected(pick), undo, row: item ? core.viewItem(pid, item, { pick, photo, posted, styles: styles || {}, nowMs }) : null };
+  return { ok: true, pid, noop: !!out.noop, rejected: core.isRejected(pick), undo, row: item ? core.viewItem(pid, item, { pick, photo, posted, styles: styles || {}, nowMs, sent, repost }) : null };
 }
 
 /**
@@ -132,7 +221,7 @@ async function approveBig(db, sigs, uid, nowMs) {
       const out = {};
       const photo = await val(db, `${core.ROOT}/photos/${pid}`);
       const res = await revTransaction(db.ref(`${core.ROOT}/picks/${pid}`), core.approveMutator({ item: it, section: "main", photo, uid, nowMs, seenSig: String(asked[pid] || "current"), onlyIfUntouched: true }, out), out);
-      if (res && res.committed && !out.noop && !out.refusal) { approved.push(pid); undo[pid] = { prev: out.base || null, expectAt: nowMs }; }
+      if (res && res.committed && !out.noop && !out.refusal) { approved.push(pid); undo[pid] = { prev: out.base || null, expectAt: nowMs }; await ledger(db, pid, res.snapshot.val()).catch(() => {}); }
     }));
   }
   if (approved.length) {
@@ -164,15 +253,24 @@ async function many(db, action, list, uid, nowMs) {
     await Promise.all(entries.slice(i, i + CHUNK).map(async ([pid, sig]) => {
       const out = {};
       const ref = db.ref(`${core.ROOT}/picks/${pid}`);
+      const status = await naStatus(db, pid, nowMs);
+      if (status) {
+        const r = await naTap(db, pid, action, { sig, status }, uid, nowMs);
+        if (r.refusal) refused.push({ pid, refusal: r.refusal });
+        else if (!r.noop) { done.push(pid); if (action !== "reset") undo[pid] = { prev: r.prev || null, expectAt: r.pick ? Number(r.pick.at) : nowMs }; }
+        return;
+      }
+      let res = null;
       if (action === "reset") await revTransaction(ref, core.resetMutator(out), out);
       else {
         const { item, section } = await findItem(db, pid, null);
         if (!item && action === "approve") { refused.push({ pid, refusal: "not in the campaign" }); return; }
         if (action === "approve") {
           const photo = await val(db, `${core.ROOT}/photos/${pid}`);
-          await revTransaction(ref, core.approveMutator({ item, section, photo, uid, nowMs, seenSig: sig || null }, out), out);
+          res = await revTransaction(ref, core.approveMutator({ item, section, photo, uid, nowMs, seenSig: sig || null }, out), out);
         } else await revTransaction(ref, core.rejectMutator({ item, section, uid, nowMs }, out), out);
       }
+      if (res && res.committed && !out.noop && !out.refusal) await ledger(db, pid, res.snapshot.val()).catch(() => {});
       if (out.refusal) refused.push({ pid, refusal: out.refusal });
       else if (!out.noop) { done.push(pid); if (action !== "reset") undo[pid] = { prev: out.base || null, expectAt: nowMs }; }
     }));
@@ -216,6 +314,15 @@ async function restore(db, items, uid, nowMs) {
   for (let i = 0; i < entries.length; i += CHUNK) {
     await Promise.all(entries.slice(i, i + CHUNK).map(async ([pid, e]) => {
       const out = {};
+      const cur = await val(db, `${core.ROOT}/picks/${pid}`);
+      if (cur && cur.src === "na") {
+        // A New Arrival: undone through New Arrivals (unapprove / restore), if still what the action wrote.
+        if (Number(cur.at) !== Number(e.expectAt)) { refused.push({ pid, refusal: "it changed since — not undone" }); return; }
+        const status = await val(db, `${naCore.ITEMS}/${pid}/status`);
+        const r = await naTap(db, pid, "reset", { status }, uid, nowMs);
+        if (r.refusal) refused.push({ pid, refusal: r.refusal }); else done.push(pid);
+        return;
+      }
       const prev = e.prev && typeof e.prev === "object" ? e.prev : null;
       if (prev && prev.state && !["approved", "rejected"].includes(prev.state)) { refused.push({ pid, refusal: "bad state" }); return; }
       await revTransaction(db.ref(`${core.ROOT}/picks/${pid}`), core.restoreMutator({ prev, expectAt: Number(e.expectAt) }, out), out);
@@ -226,6 +333,28 @@ async function restore(db, items, uid, nowMs) {
     await log(db, { at: nowMs, by: uid || null, action: "undo", count: done.length });
     await replan(db, nowMs);
   }
+  return { ok: true, done, refused };
+}
+
+/**
+ * Repost: approved products Junid picks go to the next slot again (the brain posts a product once,
+ * and again only after a Repost). repost/{pid} = { at, by }. Nothing reposts by itself.
+ */
+async function repost(db, pids, uid, nowMs) {
+  const list = Array.isArray(pids) ? [...new Set(pids.map(String))] : [];
+  if (!list.length) throw new HttpsError("invalid-argument", "Nothing selected.");
+  if (list.length > MANY_MAX) throw new HttpsError("invalid-argument", "Too many at once.");
+  for (const pid of list) if (!core.PID_RE.test(pid)) throw new HttpsError("invalid-argument", "Which product?");
+  const done = [], refused = [];
+  for (let i = 0; i < list.length; i += CHUNK) {
+    await Promise.all(list.slice(i, i + CHUNK).map(async (pid) => {
+      const [pick, photo] = await Promise.all([val(db, `${core.ROOT}/picks/${pid}`), val(db, `${core.ROOT}/photos/${pid}`)]);
+      if (!core.isApproved(pick, photo)) { refused.push({ pid, refusal: "not approved" }); return; }
+      await db.ref(`${core.ROOT}/repost/${pid}`).set({ at: nowMs, by: uid || null });
+      done.push(pid);
+    }));
+  }
+  if (done.length) await log(db, { at: nowMs, by: uid || null, action: "repost", count: done.length });
   return { ok: true, done, refused };
 }
 
@@ -286,7 +415,7 @@ const bfCampaignList = onCall(callableOpts, async (request) => {
   assertJunid(request);
   const db = admin.database();
   const [v, selection, brain] = await Promise.all([
-    list(db, (request.data && request.data.section) || "main"),
+    list(db, (request.data && request.data.section) || "main", Date.now()),
     loadSelection(db, request.auth && request.auth.uid),
     brainView(db),
   ]);
@@ -310,7 +439,22 @@ const bfCampaignSet = onCall(callableOpts, async (request) => {
   if (d.action === "selSave") return saveSelection(db, uid, d.sigs, now, d.label);
   if (d.action === "undo") return restore(db, d.items, uid, now);
   if (d.action === "approveStyle") return approveStyle(db, d.kind, uid, now);
+  if (d.action === "repost") return repost(db, d.pids, uid, now);
   return tap(db, { action: d.action, pid: d.pid, section: d.section, use: d.use, genId: d.genId, sig: d.sig }, uid, now);
 });
 
-module.exports = { bfCampaignList, bfCampaignSet, _internals: { brainView, brainPause, brainSlot, list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
+// A tap on the NEW ARRIVALS card (approve, use current photo, un-approve, skip, restore) moves the item's
+// status; its Black Friday pick follows here, so approving in either place is one approval.
+const bfNaMirror = onValueWritten(
+  { ref: "/new_arrivals/items/{pid}/status", instance: "marathon-club-default-rtdb", region: "europe-west1", memory: "256MiB", timeoutSeconds: 60, retry: false },
+  async (event) => {
+    const pid = event.params.pid;
+    if (!core.PID_RE.test(String(pid || ""))) return;
+    const before = event.data.before.val(), after = event.data.after.val();
+    if (before === after) return;
+    try { await naLib.mirror(admin.database(), pid, Date.now(), { na: naMod(), ledger }); }
+    catch (e) { console.error(`bfNaMirror: ${pid} not mirrored — ${e.message}`); }
+  },
+);
+
+module.exports = { bfCampaignList, bfCampaignSet, bfNaMirror, _internals: { repost, naTap, naStatus, ledger, brainView, brainPause, brainSlot, list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };

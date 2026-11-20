@@ -1375,4 +1375,9 @@ at posting. Paper bags are never in the campaign.
 | `posted/{pid}` | Mac poster | `{ at, sig, approvedAt, album }` — posted once per approval |
 | `sending/{album}` | Mac poster | an attempt in progress / retried |
 | `decisions/{push}` | the callables | one row per tap (never read by the card) |
+| `picks/{pid}` (New Arrival) | `bfCampaignSet`, `bfNaMirror` | `{ state, src: "na", sig: "na", shown (the approved photo = the New Arrivals item's generatedUrl), at (= its approvedAt), by, section: "newArrivals", price, kind, name, sizes, useCurrent? }` — MIRRORS `new_arrivals/items/{pid}` (20 Nov): approving on either card is one approval |
+| `approvals/{pid}/{at}` | `bfCampaignSet`, `bfNaMirror` | every approval, kept for ever: `{ pid, at, by, photo, sig, name, price, kind, section, src? }` — the 05:00 build never touches it |
+| `repost/{pid}` | `bfCampaignSet` (Repost) | `{ at, by }` — post this approved product again at the next slot; nothing reposts by itself |
+| `history/{pid}/{album}` | Mac brain | every post: `{ at, album, status, groups: [name] }` |
+| `brain/sent/{pid}` | Mac brain | `{ n, last, album, perf }` — the card's "Posted n× · last …" |
 
