@@ -185,6 +185,9 @@ let signOutAudited = false;
 let signOutLineId = null;
 export function auditSignOut() {
   if (!isAwayFromHome(state)) return Promise.resolve();
+  if (signOutLineId && (inFlight.has(signOutLineId) || readQueue().some((e) => e.id === signOutLineId))) {
+    return inFlight.get(signOutLineId) || Promise.resolve();   // a second tap: same line
+  }
   signOutAudited = true;
   const p = audit(state.activeShop, state.homeShop, SWITCH_REASON.SIGN_OUT);
   signOutLineId = lastAuditId;
@@ -196,7 +199,8 @@ export function signOutFailed() {
   const id = signOutLineId;
   signOutAudited = false; signOutLineId = null;
   if (!id || !isAwayFromHome(state)) return;
-  const correct = () => { if (isAwayFromHome(state)) audit(state.homeShop, state.activeShop, SWITCH_REASON.SIGN_OUT_FAILED); };
+  const uid = state.uid;
+  const correct = () => { if (state.uid === uid && isAwayFromHome(state)) audit(state.homeShop, state.activeShop, SWITCH_REASON.SIGN_OUT_FAILED); };
   if (inFlight.has(id)) { inFlight.get(id).then((ok) => { if (ok) correct(); else unqueue(id); }); return; }
   if (readQueue().some((e) => e.id === id)) { unqueue(id); return; }
   correct();

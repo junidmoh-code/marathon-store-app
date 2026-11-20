@@ -104,3 +104,8 @@ test("a resend does not spend the daily allowance", async () => {
   await runLogStoreSwitch(db, { uid: "u1", nowMs: NOW, at: NOW, data });
   assert.equal(readAt(db.state.root, "store_switch_log_count/2026-11-20/u1"), 1);
 });
+
+test("a line claiming a future day is filed under today", () => {
+  const out = buildSwitchEntry({ uid: "u1", userRec: {}, shopIds: SHOPS, nowMs: NOW, data: { from: "trophy", to: "concrete", reason: "switch", clientAtMs: NOW + 3 * 86400000 } });
+  assert.equal(out.saDate, "2026-11-20");
+});

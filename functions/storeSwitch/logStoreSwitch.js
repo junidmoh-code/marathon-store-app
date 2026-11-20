@@ -46,7 +46,9 @@ function buildSwitchEntry({ uid, userRec, data, shopIds, nowMs }) {
   // resend lands on the same {saDate}/{id} and dedupes — unless that claims a
   // day more than 30 days from the server's, then today. `at` stays the
   // server's own time either way.
-  const dayMs = clientAtMs && Math.abs(nowMs - clientAtMs) < 30 * 86400000 ? clientAtMs : nowMs;
+  // Late by up to 30 days, early by at most 1 (only the past needs room).
+  const skew = clientAtMs ? nowMs - clientAtMs : null;
+  const dayMs = skew !== null && skew < 30 * 86400000 && skew > -86400000 ? clientAtMs : nowMs;
   return {
     ok: true,
     saDate: saDateOf(dayMs),
@@ -79,7 +81,8 @@ async function runLogStoreSwitch(db, { uid, email, data, nowMs, at }) {
     return { ok: true, id: data.id, saDate: built.saDate, duplicate: true };
   }
   // Bounded: one counter leaf per account per day, claimed in a transaction.
-  const tx = await db.ref(`store_switch_log_count/${built.saDate}/${uid}`)
+  // Counted per SERVER day, whatever day the line is filed under.
+  const tx = await db.ref(`store_switch_log_count/${saDateOf(nowMs)}/${uid}`)
     .transaction((n) => ((Number(n) || 0) >= MAX_PER_DAY ? undefined : (Number(n) || 0) + 1));
   if (!tx.committed) return { ok: false, code: "rate-limited" };
   const entry = { ...built.entry, name: built.entry.name || clip(email, 80), at };
