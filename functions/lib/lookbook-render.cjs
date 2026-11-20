@@ -444,9 +444,10 @@ async function clearGhosts(png) {
   return sharp(data, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
 }
 
-async function cutout(buffer, { mattes = [["imgly", imglyMatte], ["greyMatte", greyMatte]] } = {}) {
+// edge: the longest side the matte is made at (900 for the lookbook; the photo studio's cleaned input asks 2048).
+async function cutout(buffer, { mattes = [["imgly", imglyMatte], ["greyMatte", greyMatte]], edge = 900 } = {}) {
   const sharp = require("sharp");
-  const small = await sharp(buffer).rotate().resize(900, 900, { fit: "inside", withoutEnlargement: true }).toBuffer();
+  const small = await sharp(buffer).rotate().resize(edge, edge, { fit: "inside", withoutEnlargement: true }).toBuffer();
   const tried = [];
   for (const [method, matte] of mattes) {
     try {
