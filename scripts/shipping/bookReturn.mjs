@@ -14,7 +14,9 @@
 //                address geocoded (OpenStreetMap Nominatim, one call, the full address first, then the town), then
 //                GET /pickup-points?type=locker&order_closest=true; the closest one online, not hidden, with a
 //                compartment the parcel fits. Never a door collection.
-//   delivery     the shop: /config/shipping collectionAddress and collectionContact (where outgoing parcels leave from)
+//   delivery     the shop: /config/shipping collectionAddress (where outgoing parcels leave from) and returnContact (Junid,
+//                20 Nov 2026: Yusuf takes every incoming exchange, so The Courier Guy's OTPs and calls go to him; never
+//                collectionContact, which stays on outbound parcels only)
 //   parcels      the parcel rule over the exchange's lines (the replacement is the same kind of item as the one coming back)
 //   service      the cheapest LOCKER rate quoted (L2D* - ECO). No locker rate (too big, unplaceable) → refused: a person
 //                books it (the customer was promised a locker drop-off, never a door collection).
@@ -122,6 +124,12 @@ export function returnContact(order, email = null) {
   return { name: contact.name || str(order?.customer?.name), mobile_number: mobile, email: str(email) || contact.email };
 }
 
+/** Our side of an incoming parcel: /config/shipping returnContact (Yusuf), never collectionContact. Pure. */
+export function shopReturnContact(cfg) {
+  const c = cfg?.returnContact ?? {};
+  return { name: str(c.name), mobile_number: str(c.mobile_number), email: str(c.email) };
+}
+
 async function rates(client, body) {
   try { return { rates: normalizeRates(await client.getRates(body)) }; }
   catch (err) { return { error: String(err?.message || err).slice(0, 300), rates: [] }; }
@@ -138,13 +146,14 @@ export async function planReturn(order, { db, client, products = null, email = n
   const { address: from, missing: addrMissing } = deliveryAddress(order);
   const contact = returnContact(order, email);
   const shop = cfg.collectionAddress;
-  const shopContact = cfg.collectionContact ?? {};
+  const shopContact = shopReturnContact(cfg);
   const n = exchangeNumber(order, key);
   const missing = [
     ...addrMissing.map((m) => `customer ${m}`),
     ...(!contact.mobile_number && !contact.email ? ["customer phone or email"] : []),
     ...(!lines.length ? ["the exchange's lines"] : []),
-    ...(!shopContact.mobile_number && !shopContact.email ? ["collection_contact"] : []),
+    // The mobile is what The Courier Guy calls and sends the OTP to: an email alone is not enough on a return.
+    ...(!shopContact.name || !shopContact.mobile_number ? ["the return contact's name and mobile (/config/shipping/returnContact)"] : []),
     ...(!n ? ["order number"] : []),
   ];
   if (missing.length) return { ok: false, reason: `missing: ${missing.join(", ")}`, parcel };
@@ -187,7 +196,7 @@ export async function planReturn(order, { db, client, products = null, email = n
     ...lockerCollection(dropBox),
     collection_contact: contact,
     delivery_address: shop,
-    delivery_contact: { name: shopContact.name ?? "", mobile_number: shopContact.mobile_number ?? "", email: shopContact.email ?? "" },
+    delivery_contact: shopContact,
     parcels: tcgParcels(parcel.parcels),
     service_level_code: rate.code,
     customer_reference: `${n}-EX return`,

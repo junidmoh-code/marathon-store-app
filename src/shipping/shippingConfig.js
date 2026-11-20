@@ -39,6 +39,14 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   // purpose — this repo is public — and a live booking refuses until Junid
   // fills it in on the Shipping card. A dry run shows the gap.
   collectionContact: { name: "The Marathon", mobile_number: "", email: "" },
+  // Who TCG contacts on an INCOMING parcel: the return leg of an exchange or a
+  // customer return (scripts/shipping/bookReturn.mjs, delivery_contact). Junid,
+  // 20 Nov 2026: every incoming exchange uses Yusuf, so the OTPs and courier
+  // calls go to him, never to Junid or Yasmin. Outbound parcels keep
+  // collectionContact. Never falls back to collectionContact: the mobile lives
+  // in the live node (/config/shipping/returnContact; this repo is public) and
+  // a return booking refuses without it.
+  returnContact: { name: "Yusuf", mobile_number: "", email: "" },
 
   // TCG's doc states no divisor. Measured 21 Oct with /rates (ECO + every
   // locker service ÷4000; PRI, SDX and the local LPx/LSx ÷5000) and CONFIRMED
