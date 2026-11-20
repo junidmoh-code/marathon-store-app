@@ -184,8 +184,8 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   // A live booking refuses any order whose chosen quote is above this (rand,
   // incl. VAT); Junid gets ONE WhatsApp line with the cheaper option and a
   // person books it in the portal (Junid, 6 Nov 2026: "the R300-per-booking
-  // ceiling stays"). 0 switches the ceiling off.
-  maxChargeRand: 300,
+  // ceiling stays"). 0 switches the ceiling off. Raised to R500 by Junid, 20 Nov 2026 (urgent, no PR).
+  maxChargeRand: 500,
 });
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
