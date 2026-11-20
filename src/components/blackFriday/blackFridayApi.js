@@ -10,7 +10,17 @@ const call = (name, opts) => async (data) => (await httpsCallable(functions, nam
 const source = call("bfPhotoSource", { timeout: 180_000 });
 const set = call("bfCampaignSet");
 
+const THUMB_HOST = "firebasestorage.googleapis.com";
 export const blackFridayApi = {
+  // The list's small photo (bfThumb: a 360 px WebP made once and kept); the full photo only when opened.
+  // Anything that is not a product photo in the app's storage is shown as it is.
+  thumb: (url) => {
+    try {
+      const u = new URL(String(url));
+      if (u.hostname !== THUMB_HOST || !/\/o\/products%2F/.test(u.pathname)) return url;
+      return `https://europe-west1-${app.options.projectId}.cloudfunctions.net/bfThumb?u=${encodeURIComponent(url)}`;
+    } catch { return url; }
+  },
   // One section: "main" (13+ on hand) or "under" (Show under 13).
   // → { review: [row], approved: [row], totals, rejected, styles, schedule, plan, postingPaused, meta }
   list: (section = "main") => call("bfCampaignList")({ section }),

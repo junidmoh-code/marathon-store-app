@@ -109,6 +109,26 @@ export function isUpdateBusy() {
   return busyKeys.size > 0;
 }
 
+// ── A screen that shows its OWN "Update ready" banner ────────────────────────
+// The Black Friday card (Junid, 21 Nov 2026) is never reloaded under him: it
+// registers busy for as long as it is open (so no silent reload, not even when
+// the tab goes hidden), and draws its own banner where it does not cover its
+// selection bar. While such a screen is open the global pill stays hidden.
+const bannerHosts = new Set();
+const hostSubs = new Set();
+export function setUpdateBannerHost(key, on) {
+  const before = bannerHosts.size > 0;
+  if (on) bannerHosts.add(key); else bannerHosts.delete(key);
+  if (before !== bannerHosts.size > 0) for (const fn of hostSubs) { try { fn(bannerHosts.size > 0); } catch { /* never breaks the checker */ } }
+}
+export function isUpdateBannerHosted() {
+  return bannerHosts.size > 0;
+}
+export function onUpdateBannerHosted(fn) {
+  hostSubs.add(fn);
+  return () => hostSubs.delete(fn);
+}
+
 // ── Pure decision helpers (unit-tested) ──────────────────────────────────────
 export function isNewVersion(currentVersion, fetchedVersion) {
   return (

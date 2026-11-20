@@ -20,12 +20,22 @@
 // photo it has (the app photo is always kept) and pick the one it posts with.
 // A product with no stock price (R0) shows "No price, set price first" instead
 // of Approve, and an approved one with no price is held back from posting.
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { setUpdateBusy } from "../../update/updateChecker";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { setUpdateBusy, setUpdateBannerHost, onUpdateAvailable, applyUpdate } from "../../update/updateChecker";
+import { loadUi, saveUi, loadList, saveList, loadFind, saveFind, pickSelection, visibleAnchor, scrollToAnchor } from "./cardState";
 import { FONT, BG, GLASS, GREEN, GRAY, AMBER, RED, BLUE_L, bGreen, bGray, bBlue } from "../stock/ui";
 
 const KIND = { sneakers: "Sneakers", clothing: "Clothing", headwear: "Caps & beanies", perfume: "Perfume", bags: "Bags", belts: "Belts", sunglasses: "Sunglasses", watches: "Watches", jewellery: "Chains & bracelets", accessories: "Accessories" };
-const PAGE = 60;
+// THE CARD STAYS ALIVE ON JUNID'S IPHONE (21 Nov 2026). iOS throws away a background tab that holds too much
+// memory, and the card held 1,400+ rows with full-size photos. Now: only the rows on screen are drawn
+// (EST_ROW until measured, OVERSCAN above and below), the list shows 360 px thumbnails (api.thumb), the full
+// photo loads only in the viewer, the card is never reloaded onto a new deploy while open (a banner instead),
+// and its place — tab, row, Select mode, ticks, open photo or popup — is saved on the device and put back.
+const EST_ROW = 150;
+const OVERSCAN = 1000;
+const FIRST_ROWS = 30;        // drawn before anything can be measured (and in tests)
+const QUIET_AFTER_HIDDEN_MS = 10 * 60 * 1000; // back after this long: the list is refreshed quietly, in place
+const TAP_REFRESH_MS = 4000;  // after taps: one quiet refresh of totals, this long after the last tap
 const UNDO_MS = 6000;
 const BAR_H = 64;            // the selection bar
 const BULK_CHUNK = 100;      // a bulk action goes to the server this many at a time, with progress
@@ -97,11 +107,12 @@ export async function photoToBase64(file) {
 }
 
 /** Every photo a product has, one per screen width — swipe (or the arrows) — and "Use this photo". */
-export function PhotoViewer({ r, busy, onUse, onClose }) {
+export function PhotoViewer({ r, busy, onUse, onClose, onPlace = null }) {
   const items = r.gallery && r.gallery.length ? r.gallery : (r.shown ? [{ id: "app", url: r.shown, label: "Photo" }] : []);
   const showing = shownId(r);
   const strip = useRef(null);
-  const [i, setI] = useState(() => Math.max(0, items.findIndex((g) => g.id === showing)));
+  const [i, setI] = useState(() => Math.max(0, items.findIndex((g) => g.id === (r.startId || showing))));
+  useEffect(() => { if (onPlace) onPlace(items[i] ? items[i].id : null); }, [i]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { const el = strip.current; if (el && el.clientWidth) el.scrollLeft = i * el.clientWidth; }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const go = (n) => { const k = Math.max(0, Math.min(items.length - 1, n)); setI(k); const el = strip.current; if (el && el.scrollTo) el.scrollTo({ left: k * el.clientWidth, behavior: "smooth" }); };
   const g = items[i] || null;
@@ -119,9 +130,10 @@ export function PhotoViewer({ r, busy, onUse, onClose }) {
       </div>
       <div ref={strip} data-testid="viewer-strip" onClick={(e) => e.stopPropagation()} onScroll={(e) => { const el = e.currentTarget; if (el.clientWidth) setI(Math.round(el.scrollLeft / el.clientWidth)); }}
         style={{ flex: 1, display: "flex", overflowX: "auto", scrollSnapType: "x mandatory", WebkitOverflowScrolling: "touch", scrollbarWidth: "none" }}>
-        {items.map((x) => (
+        {items.map((x, k) => (
           <div key={x.id} style={{ flex: "0 0 100%", scrollSnapAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", padding: 8, boxSizing: "border-box" }}>
-            <img src={x.url} alt={x.label} draggable={false} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", ...NO_CALLOUT }} />
+            {/* Full resolution only for the photo on screen and its neighbours: never every 4K photo at once. */}
+            {Math.abs(k - i) <= 1 && <img src={x.url} alt={x.label} draggable={false} decoding="async" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", ...NO_CALLOUT }} />}
           </div>
         ))}
       </div>
@@ -215,12 +227,15 @@ function Row({ r, busy, gen, on, selectMode, selected }) {
   const lp = useLongPress(() => on.longPress(r));
   const { wasLong, ...press } = lp;
   return (
-    <div data-testid={`row-${r.pid}`} {...press} onClick={() => { if (selectMode && !wasLong()) on.toggle(r); }}
+    <div data-testid={`row-${r.pid}`} data-row-pid={r.pid} {...press} onClick={() => { if (selectMode && !wasLong()) on.toggle(r); }}
       style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,.06)", ...NO_CALLOUT, ...(selectMode ? { cursor: "pointer", background: selected ? "rgba(74,127,255,.18)" : "transparent" } : {}) }}>
       {selectMode && <div data-testid={`sel-${r.pid}`} aria-checked={!!selected} role="checkbox" style={{ flex: "0 0 22px", alignSelf: "center", width: 22, height: 22, borderRadius: 6, border: `2px solid ${selected ? BLUE_L : GRAY}`, background: selected ? BLUE_L : "transparent", color: "#000", textAlign: "center", lineHeight: "18px", fontWeight: 800 }}>{selected ? "✓" : ""}</div>}
       <button type="button" data-testid={`thumb-${r.pid}`} aria-label={`Photos of ${r.name}`} onClick={(e) => { if (selectMode) return; e.stopPropagation(); on.gallery(r); }}
         style={{ position: "relative", width: 72, height: 96, flex: "0 0 72px", borderRadius: 8, overflow: "hidden", background: "#0b0d12", border: "none", padding: 0, cursor: selectMode ? "inherit" : "pointer", pointerEvents: selectMode ? "none" : "auto", ...NO_CALLOUT }}>
-        {r.shown && <img src={r.shown} alt={r.name} loading="lazy" draggable={false} onContextMenu={(e) => e.preventDefault()} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none", ...NO_CALLOUT }} />}
+        {r.shown && <img src={on.thumb ? on.thumb(r.shown) : r.shown} alt={r.name} loading="lazy" decoding="async" width={72} height={96} draggable={false} onContextMenu={(e) => e.preventDefault()}
+          // No thumbnail (yet): the photo itself.
+          onError={(e) => { if (e.currentTarget.src !== r.shown) e.currentTarget.src = r.shown; }}
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none", ...NO_CALLOUT }} />}
         {r.use === "generated" && <span data-testid={`badge-${r.pid}`} style={{ position: "absolute", top: 3, right: 3, background: SOURCE_BADGE[r.shownFrom] ? AMBER : BLUE_L, color: "#000", borderRadius: 5, padding: "0 4px", fontSize: 9, fontWeight: 700 }}>{SOURCE_BADGE[r.shownFrom] || "AI"}</span>}
         {(r.gallery || []).length > 1 && <span style={{ position: "absolute", bottom: 3, left: 3, background: "rgba(0,0,0,.65)", color: "#fff", borderRadius: 5, padding: "0 4px", fontSize: 9 }}>{r.gallery.length} photos</span>}
         {gen && <div data-testid={`gen-${r.pid}`} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 4, fontSize: 10, textAlign: "center" }}>{gen}</div>}
@@ -251,17 +266,85 @@ function Row({ r, busy, gen, on, selectMode, selected }) {
   );
 }
 
-function Block({ title, rows, testid, children, ...rest }) {
-  const [n, setN] = useState(PAGE);
+/** One row, measured while it is on screen (its height is kept so the list never jumps). */
+function Measured({ pid, ro, children }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !ro) return undefined;
+    ro.observe(el);
+    return () => ro.unobserve(el);
+  }, [ro]);
+  return <div ref={ref} data-measure-pid={pid}>{children}</div>;
+}
+
+/** Which rows to draw: those within OVERSCAN of the screen, by their offsets. Pure. → [start, end) */
+export function visibleRange(offsets, n, from, to) {
+  let lo = 0, hi = n;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (offsets[mid + 1] <= from) lo = mid + 1; else hi = mid; }
+  let e = lo;
+  while (e < n && offsets[e] < to) e++;
+  return [lo, Math.max(e, Math.min(n, lo + 1))];
+}
+
+// Every product in all blocks, drawn only while it is near the screen (a virtualised list on the page's own scroll).
+function Block({ title, rows, testid, children, heights, ...rest }) {
+  const box = useRef(null);
+  const [ver, setVer] = useState(0);
+  const [range, setRange] = useState(null); // null until the page can be measured
+  const hOf = (pid) => (heights && heights.get(pid)) || EST_ROW;
+  const offsets = useMemo(() => { const o = [0]; for (const r of rows) o.push(o[o.length - 1] + hOf(r.pid)); return o; }, [rows, ver]); // eslint-disable-line react-hooks/exhaustive-deps
+  const update = useCallback(() => {
+    const el = box.current;
+    if (!el || typeof el.getBoundingClientRect !== "function" || typeof window === "undefined") return;
+    const top = el.getBoundingClientRect().top + (el.firstChild && el.firstChild.offsetHeight ? el.firstChild.offsetHeight : 0);
+    const vh = window.innerHeight || 800;
+    const next = visibleRange(offsets, rows.length, -top - OVERSCAN, -top + vh + OVERSCAN);
+    setRange((p) => (p && p[0] === next[0] && p[1] === next[1] ? p : next));
+  }, [offsets, rows.length]);
+  useEffect(() => {
+    update();
+    if (typeof window === "undefined") return undefined;
+    let raf = 0;
+    const on = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; update(); }); };
+    window.addEventListener("scroll", on, { passive: true });
+    window.addEventListener("resize", on);
+    return () => { window.removeEventListener("scroll", on); window.removeEventListener("resize", on); if (raf) cancelAnimationFrame(raf); };
+  }, [update]);
+  const ro = useMemo(() => (typeof ResizeObserver === "undefined" || !heights ? null : new ResizeObserver((entries) => {
+    let changed = false;
+    for (const en of entries) {
+      const el = en.target;
+      const pid = el.getAttribute("data-measure-pid");
+      const rect = el.getBoundingClientRect();
+      const h = Math.round(rect.height);
+      const old = heights.get(pid) || EST_ROW;
+      if (h > 0 && Math.abs(h - old) > 1) {
+        heights.set(pid, h);
+        changed = true;
+        // A row above the screen grew or shrank: the screen stays on the same row.
+        if (rect.bottom <= 0) window.scrollBy(0, h - old);
+      }
+    }
+    if (changed) setVer((v) => v + 1);
+  })), [heights]);
+  useEffect(() => () => { if (ro) ro.disconnect(); }, [ro]);
   if (!rows.length) return null;
+  const [s, e] = range ? [Math.min(range[0], rows.length), Math.min(range[1], rows.length)] : [0, Math.min(rows.length, FIRST_ROWS)];
   return (
-    <div data-testid={testid} style={{ ...GLASS, padding: "8px 12px", marginBottom: 10 }}>
+    // overflowAnchor none: the list keeps its own place (desktop browsers' scroll anchoring would correct twice).
+    <div ref={box} data-testid={testid} style={{ ...GLASS, padding: "8px 12px", marginBottom: 10, overflowAnchor: "none" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
         <div style={{ fontSize: 13, fontWeight: 800, flex: 1 }}>{title} ({rows.length})</div>
         {children}
       </div>
-      {rows.slice(0, n).map((r) => <Row key={r.pid} r={r} {...rest} gen={rest.gens[r.pid]} selected={rest.selected && rest.selected.has(r.pid)} />)}
-      {rows.length > n && <button onClick={() => setN(n + PAGE)} style={{ ...bGray, margin: "8px 0", padding: "6px 10px", fontSize: 12 }}>Show {Math.min(PAGE, rows.length - n)} more</button>}
+      <div style={{ height: offsets[s] }} />
+      {rows.slice(s, e).map((r) => (
+        <Measured key={r.pid} pid={r.pid} ro={ro}>
+          <Row r={r} {...rest} gen={rest.gens[r.pid]} selected={rest.selected && rest.selected.has(r.pid)} />
+        </Measured>
+      ))}
+      <div style={{ height: Math.max(0, offsets[rows.length] - offsets[e]) }} />
     </div>
   );
 }
@@ -321,17 +404,24 @@ export function BrainPanel({ brain, api, busy, run }) {
 }
 
 export default function BlackFridayScreen({ api, onExit }) {
-  const [main, setMain] = useState(null);
+  // Where Junid was, if iOS closed the card (cardState.js): put back before the first paint.
+  const savedUi = useRef(undefined);
+  if (savedUi.current === undefined) savedUi.current = loadUi();
+  const su = savedUi.current || {};
+  const heights = useRef(null);
+  if (!heights.current) heights.current = new Map(Object.entries(su.heights || {}).filter(([, h]) => Number(h) > 0).map(([k, h]) => [k, Number(h)]));
+  // The last list, drawn at once (then refreshed quietly in the background).
+  const [main, setMain] = useState(() => (savedUi.current ? loadList() : null));
   const [under, setUnder] = useState(null);
-  const [showUnder, setShowUnder] = useState(false);
+  const [showUnder, setShowUnder] = useState(!!su.showUnder);
   // Opens on New Arrivals when any are waiting, else on To review.
-  const [tabPicked, setTab] = useState(null);
+  const [tabPicked, setTab] = useState(su.tab || null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null);
   const [gens, setGens] = useState({});
   const [showRejected, setShowRejected] = useState(false);
-  const [selectMode, setSelectMode] = useState(false);
+  const [selectMode, setSelectMode] = useState(!!su.selectMode);
   const [selected, setSelected] = useState(() => new Map()); // pid → row
   const [toast, setToast] = useState(null); // { text, undo }
   const [quick, setQuick] = useState(null); // the long-pressed row
@@ -341,8 +431,10 @@ export default function BlackFridayScreen({ api, onExit }) {
   const replaceFor = useRef(null); // the row a picked photo is for
   const [progress, setProgress] = useState(null); // "Approving 230/574" while a bulk action runs
   const [selSaved, setSelSaved] = useState(true); // false while a save is pending or failed
-  const [selLabel, setSelLabel] = useState(null); // e.g. "Recovered selection": shown on its own, pre-ticked
-  const [onlySel, setOnlySel] = useState(false);
+  const [selLabel, setSelLabel] = useState(su.selLabel || null); // e.g. "Recovered selection": shown on its own, pre-ticked
+  const [onlySel, setOnlySel] = useState(!!su.onlySel);
+  const [updateReady, setUpdateReady] = useState(false);
+  const viewerAt = useRef(su.viewer ? su.viewer.id : null); // the photo open in the viewer
   const restored = useRef(false); // the saved selection has been put back (never saved over before that)
   const toastTimer = useRef(null);
   const tab = tabPicked || (main && main.newArrivals && main.newArrivals.length ? "newArrivals" : "review");
@@ -357,10 +449,21 @@ export default function BlackFridayScreen({ api, onExit }) {
   useEffect(() => () => clearTimeout(toastTimer.current), []);
 
   const ticket = useRef(0);
+  // Every re-read is QUIET: the rows are replaced in place and the screen stays on the same row.
+  const keepAnchor = useRef(null);
   const load = useCallback(() => {
     const t = ++ticket.current;
-    return api.list("main").then((d) => { if (t === ticket.current) { setMain(d); setError(null); } }, (e) => { if (t === ticket.current) setError(e?.message || String(e)); });
+    return api.list("main").then((d) => {
+      if (t !== ticket.current) return;
+      keepAnchor.current = visibleAnchor();
+      setMain(d); setError(null);
+    }, (e) => { if (t === ticket.current) setError(e?.message || String(e)); });
   }, [api]);
+  useLayoutEffect(() => { if (keepAnchor.current) { scrollToAnchor(keepAnchor.current); keepAnchor.current = null; } }, [main]);
+  // After taps, one quiet re-read of the totals and the Approved tab, a moment after the last tap.
+  const soonTimer = useRef(null);
+  const loadSoon = useCallback(() => { clearTimeout(soonTimer.current); soonTimer.current = setTimeout(load, TAP_REFRESH_MS); }, [load]);
+  useEffect(() => () => clearTimeout(soonTimer.current), []);
   const underTicket = useRef(0);
   const loadUnder = useCallback(() => {
     const t = ++underTicket.current;
@@ -371,20 +474,23 @@ export default function BlackFridayScreen({ api, onExit }) {
   useEffect(() => {
     if (restored.current || !main) return;
     restored.current = true;
-    const saved = main.selection && main.selection.sigs ? main.selection.sigs : null;
+    // The device's copy of the ticks when it is newer than the server's.
+    const pickedSel = pickSelection(main.selection, su.sel);
+    const saved = pickedSel ? pickedSel.sigs : null;
     if (!saved || !Object.keys(saved).length) return;
     const rows = new Map([...(main.newArrivals || []), ...(main.review || []), ...(main.approved || [])].map((r) => [r.pid, { ...r, section: "main" }]));
     const m = new Map();
     for (const [pid, sig] of Object.entries(saved)) m.set(pid, { ...(rows.get(pid) || { pid, name: pid }), sig });
     setSelected(m);
     setSelectMode(true);
-    // Back on the tab that holds the ticks (a recovered selection is shown on To review).
+    // Back on the tab that holds the ticks (a recovered selection is shown on To review) — unless the card
+    // is coming back to the exact tab he was on.
     const naPids = new Set((main.newArrivals || []).map((r) => r.pid));
     const allNa = [...m.keys()].every((pid) => naPids.has(pid));
-    setTab(allNa ? "newArrivals" : (main.approved || []).some((r) => m.has(r.pid)) && ![...m.keys()].some((pid) => (main.review || []).some((r) => r.pid === pid) || naPids.has(pid)) ? "approved" : "review");
-    if (main.selection.label) { setSelLabel(main.selection.label); setOnlySel(true); }
-    else setNote(`${m.size} selected — your selection was kept`);
-  }, [main]);
+    if (!su.tab) setTab(allNa ? "newArrivals" : (main.approved || []).some((r) => m.has(r.pid)) && ![...m.keys()].some((pid) => (main.review || []).some((r) => r.pid === pid) || naPids.has(pid)) ? "approved" : "review");
+    if (pickedSel.label) { setSelLabel(pickedSel.label); if (!savedUi.current) setOnlySel(true); }
+    else if (!savedUi.current) setNote(`${m.size} selected — your selection was kept`);
+  }, [main]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (showUnder && !under) loadUnder(); }, [showUnder, under, loadUnder]);
 
   // A tap answers with the product's new row: it moves between tabs (or leaves, if rejected) at once.
@@ -401,6 +507,8 @@ export default function BlackFridayScreen({ api, onExit }) {
       newArrivals.sort((x, y) => (y.uploadedAt || 0) - (x.uploadedAt || 0));
       return { ...d, newArrivals, review: order(review), approved: order(approved) };
     };
+    // A list read already on its way predates this tap: it must not bring the row back (review, PR #945).
+    ticket.current++; underTicket.current++;
     setMain(fix); setUnder(fix);
   };
   const run = async (fn, { reload = false, undo = null } = {}) => {
@@ -412,8 +520,9 @@ export default function BlackFridayScreen({ api, onExit }) {
         if (r && r.pid) patch(r.pid, r.row, r.rejected);
         if (undo) { const u = undo(r); if (u) showToast(u.text, u.reverse); }
       }
-      // The row was patched in place; only the main view (totals, Approved tab) is re-read — never the long under-13 list.
-      if (reload || (r && r.pid)) load();
+      // The row was patched in place; the main view (totals, Approved tab) is re-read quietly a moment after
+      // the last tap — never the long under-13 list, never a reload.
+      if (reload) load(); else if (r && r.pid) loadSoon();
       if (reload && showUnder) loadUnder();
     } catch (e) { setNote(e?.message || String(e)); load(); }
     finally { setBusy(false); }
@@ -427,6 +536,80 @@ export default function BlackFridayScreen({ api, onExit }) {
   // Never auto-reloaded onto a new deploy while anything is ticked or a bulk action runs (a deploy once wiped 574 ticks).
   useEffect(() => { setUpdateBusy("bf-selection", selected.size > 0 || !!progress); }, [selected, progress]);
   useEffect(() => () => setUpdateBusy("bf-selection", false), []);
+  // NEVER reloaded under Junid while the card is open — not on a new deploy, not when he switches apps. A new
+  // version shows "Update ready, tap to refresh" at the top instead (the app's own pill stays hidden here).
+  useEffect(() => {
+    setUpdateBusy("bf-card-open", true);
+    setUpdateBannerHost("bf-card", true);
+    const off = onUpdateAvailable(setUpdateReady);
+    return () => { off(); setUpdateBusy("bf-card-open", false); setUpdateBannerHost("bf-card", false); };
+  }, []);
+  // ── his place, kept on the device ────────────────────────────────────────
+  // The ticks' own time: stamped when the selection CHANGES (never by a scroll), so an old phone copy never
+  // beats a newer server selection after a kill (review, PR #945).
+  const selAt = useRef(su.sel ? Number(su.sel.at) || 0 : 0);
+  const selFirst = useRef(true);
+  useEffect(() => { if (selFirst.current) { selFirst.current = false; return; } selAt.current = Date.now(); }, [selected]);
+  const placeApplied = useRef(!savedUi.current); // nothing to put back: saving may start at once
+  const place = useRef({});
+  place.current = { tab, selectMode, showUnder, onlySel, selLabel, viewer, find, selected };
+  const savePlace = useCallback(() => {
+    if (!restored.current || !placeApplied.current) return; // never save over the place before it has been put back
+    const p = place.current;
+    const hs = {};
+    for (const [k, h] of heights.current) hs[k] = h;
+    saveUi({
+      tab: p.tab, scrollY: typeof window !== "undefined" ? Math.round(window.scrollY || 0) : 0, anchor: visibleAnchor(),
+      selectMode: !!p.selectMode, showUnder: !!p.showUnder, onlySel: !!p.onlySel, selLabel: p.selLabel || null,
+      sel: { at: selAt.current, sigs: Object.fromEntries([...p.selected.values()].map((r) => [r.pid, r.sig || (r.use === "generated" ? r.genId : "current")])), label: p.selLabel || null },
+      viewer: p.viewer ? { pid: p.viewer.pid, id: viewerAt.current } : null,
+      findPid: p.find && p.find.result ? p.find.r.pid : null,
+      heights: hs,
+    });
+  }, []);
+  useEffect(() => { savePlace(); }, [tab, selectMode, showUnder, onlySel, selLabel, viewer, find, selected, savePlace]);
+  useEffect(() => { if (find && find.result) saveFind(find.r.pid, find.result); }, [find]);
+  // The list the server last sent, for an instant first paint after a reload (saved a moment after it changes).
+  useEffect(() => { if (!main) return undefined; const t = setTimeout(() => saveList(main), 1500); return () => clearTimeout(t); }, [main]);
+  const hiddenAt = useRef(null);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return undefined;
+    let t = null;
+    const onScroll = () => { clearTimeout(t); t = setTimeout(savePlace, 400); };
+    const onVis = () => {
+      if (document.visibilityState === "hidden") { hiddenAt.current = Date.now(); savePlace(); return; }
+      // Back: nothing is reloaded. Only after a long time away is the list refreshed — quietly, in place.
+      const away = hiddenAt.current ? Date.now() - hiddenAt.current : 0;
+      hiddenAt.current = null;
+      if (away >= QUIET_AFTER_HIDDEN_MS) load();
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("pagehide", savePlace);
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearTimeout(t); window.removeEventListener("scroll", onScroll); window.removeEventListener("pagehide", savePlace); document.removeEventListener("visibilitychange", onVis); };
+  }, [savePlace, load]);
+  // Put him back on the same row, with the photo or popup he had open (once, on the first list).
+  const placeBack = useRef(false);
+  useEffect(() => {
+    // With "Show under 13" open the page is only full height once that list is here.
+    if (placeBack.current || !main || !savedUi.current || (su.showUnder && !under)) return;
+    placeBack.current = true;
+    const all = [...(main.newArrivals || []), ...(main.review || []), ...(main.approved || [])].map((r) => ({ ...r, section: "main" }))
+      .concat(((under && under.review) || []).map((r) => ({ ...r, section: "under" })));
+    if (su.viewer) { const r = all.find((x) => x.pid === su.viewer.pid); if (r) setViewer({ ...r, startId: su.viewer.id }); }
+    if (su.findPid) { const r = all.find((x) => x.pid === su.findPid); const res = loadFind(su.findPid); if (r && res) setFind({ r, result: res }); }
+    if (typeof window === "undefined" || typeof requestAnimationFrame === "undefined") { placeApplied.current = true; return; }
+    if (su.scrollY) window.scrollTo(0, su.scrollY);
+    // The anchored row is drawn once the list has laid out: try for a few frames, then saving resumes.
+    let tries = 0;
+    const settle = () => {
+      const found = scrollToAnchor(su.anchor);
+      if ((!found || tries < 2) && tries++ < 20) { if (!found && su.scrollY) window.scrollTo(0, su.scrollY); requestAnimationFrame(settle); return; }
+      placeApplied.current = true;
+    };
+    requestAnimationFrame(settle);
+  }, [main, under]); // eslint-disable-line react-hooks/exhaustive-deps
+  const refreshForUpdate = () => { savePlace(); saveList(main); applyUpdate(); };
   const saveTimer = useRef(null);
   useEffect(() => {
     if (!restored.current || !api.selSave) return undefined;
@@ -466,7 +649,8 @@ export default function BlackFridayScreen({ api, onExit }) {
       return run(() => api.use(r.pid, use, use === "generated" ? (r.aiGenId || r.genId) : null, r.section));
     },
     generate,
-    gallery: (r) => setViewer(r),
+    gallery: (r) => { viewerAt.current = null; setViewer(r); },
+    thumb: api.thumb,
     // Replace photo: the iPhone's own picker (Photo Library, Take Photo, Choose File).
     replace: (r) => { replaceFor.current = r; if (fileRef.current) { fileRef.current.value = ""; fileRef.current.click(); } },
     findOnline: (r) => {
@@ -572,7 +756,7 @@ export default function BlackFridayScreen({ api, onExit }) {
   const nReview = t.review ?? 0;
   const nApproved = d?.approved.length || 0;
   const nNew = t.newArrivals ?? (d?.newArrivals || []).length;
-  const shared = { busy, gens, on, selectMode, selected };
+  const shared = { busy, gens, on, selectMode, selected, heights: heights.current };
   return (
     // Bottom padding: the selection bar and the Undo toast never cover the last row.
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: `14px 14px ${BOTTOM_ROOM}px`, paddingBottom: `calc(${BOTTOM_ROOM}px + env(safe-area-inset-bottom))` }}>
@@ -582,6 +766,7 @@ export default function BlackFridayScreen({ api, onExit }) {
           <div style={{ fontSize: 20, fontWeight: 800, flex: 1 }}>Black Friday 🔥</div>
           <button data-testid="refresh" disabled={busy} onClick={() => { load(); if (showUnder) loadUnder(); }} style={{ ...bGray, minHeight: 40, padding: "0 12px" }} aria-label="Refresh">↻</button>
         </div>
+        {updateReady && <button data-testid="update-ready" onClick={refreshForUpdate} style={{ ...bGray, width: "100%", margin: "0 0 8px", padding: "6px 10px", fontSize: 12, color: BLUE_L, fontWeight: 700 }}>Update ready, tap to refresh — you come back to this exact spot</button>}
         {error && <div data-testid="error" style={{ color: RED, fontSize: 13, marginBottom: 12 }}>{error} <button onClick={load} style={{ ...bGray, padding: "4px 8px", fontSize: 12 }}>Retry</button></div>}
         {!d && !error && <div style={{ color: GRAY }}>Loading…</div>}
         {d && (
@@ -644,7 +829,7 @@ export default function BlackFridayScreen({ api, onExit }) {
         </div>
       )}
       <input ref={fileRef} data-testid="replace-input" type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => uploadPicked(e.target.files && e.target.files[0])} />
-      {viewer && <PhotoViewer r={viewer} busy={busy} onUse={useFromViewer} onClose={() => setViewer(null)} />}
+      {viewer && <PhotoViewer r={viewer} busy={busy} onUse={useFromViewer} onClose={() => setViewer(null)} onPlace={(id) => { viewerAt.current = id; savePlace(); }} />}
       {find && <FindOnline r={find.r} state={find} onPick={pickOnline} onClose={() => setFind(null)} />}
       {toast && (
         <div data-testid="toast" style={{ position: "fixed", left: 12, right: 12, bottom: `calc(${selectMode && selected.size ? BAR_H : 0}px + env(safe-area-inset-bottom) + 16px)`, margin: "0 auto", maxWidth: 520, background: "#232a3b", border: "1px solid rgba(255,255,255,.12)", borderRadius: 12, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, zIndex: 40, boxShadow: "0 6px 24px rgba(0,0,0,.4)" }}>
