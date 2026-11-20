@@ -53,13 +53,13 @@ async function ledger(db, pid, pick) {
 /** One section, read narrowly: that section's products and the small decision nodes (never `decisions`). */
 async function list(db, section = "main", nowMs = Date.now()) {
   if (!core.SECTIONS.includes(section)) throw new HttpsError("invalid-argument", "main or under.");
-  const parts = ["meta", `items/${section}`, "picks", "photos", "posted", "styles", "stats", "schedule", "idx", "brain/sent", "repost"];
+  const parts = ["meta", `items/${section}`, "picks", "photos", "posted", "styles", "stats", "schedule", "idx", "brain/sent", "repost", "web"];
   const [vals, paused, lanes] = await Promise.all([
     Promise.all(parts.map((p) => val(db, `${core.ROOT}/${p}`))),
     val(db, POSTING_PAUSE).catch(() => null),
     naLib.windowLanes(db, nowMs),
   ]);
-  const node = { meta: vals[0], items: { [section]: vals[1] }, picks: vals[2], photos: vals[3], posted: vals[4], styles: vals[5], stats: vals[6], schedule: vals[7], idx: vals[8], brain: { sent: vals[9] }, repost: vals[10] };
+  const node = { meta: vals[0], items: { [section]: vals[1] }, picks: vals[2], photos: vals[3], posted: vals[4], styles: vals[5], stats: vals[6], schedule: vals[7], idx: vals[8], brain: { sent: vals[9] }, repost: vals[10], web: vals[11] };
   const picks = node.picks || {};
   const naSet = new Set(lanes.keys());
   // The Approved tab shows EVERY approval: on the main view, approvals with no main row (under-13, or a

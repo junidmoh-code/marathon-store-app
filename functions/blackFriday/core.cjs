@@ -102,7 +102,7 @@ const isRejected = (pick) => !!pick && pick.state === "rejected";
 const postedFor = (pick, posted) => !!posted && !!pick && posted.approvedAt === pick.at;
 
 /** One product row as the card shows it. Pure. */
-function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = {}, nowMs = Date.now(), sent = null, repost = null, na = false } = {}) {
+function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = {}, nowMs = Date.now(), sent = null, repost = null, na = false, web = null } = {}) {
   const naPick = !!pick && pick.src === "na";
   const sig = naPick ? "na" : sigOf(photo);
   const gen = sig !== "current" && !naPick ? photo.gens[sig] : null;
@@ -135,7 +135,18 @@ function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = 
     posted: approved && postedFor(pick, posted) ? (posted.at || true) : null,
     // The permanent posting record (the brain's brain/sent/{pid}): how many times and when last; a Repost queued since.
     ...postingOf(sent, repost, posted),
+    // On the website (Junid, 20 Nov 2026: published there before it posts) — approved rows only.
+    web: approved ? webOf(web) : null,
   };
+}
+/**
+ * The website status a row shows. web: bf_campaign_2026/web/{pid} (the Mac mini's runner). Pure.
+ * → { s: "live" | "pub" | "fail" | "oos", why? }. No entry yet = "pub": an approval is queued at once.
+ */
+function webOf(web) {
+  const s = web && ["live", "pub", "fail", "oos"].includes(web.s) ? web.s : "pub";
+  const why = web && web.why && s !== "live" ? String(web.why).slice(0, 160) : null;
+  return why ? { s, why } : { s };
 }
 /** "Posted n× · last <date>" and a Repost waiting for the next slot. Pure. */
 function postingOf(sent, repost, posted) {
@@ -161,12 +172,12 @@ function viewSection(node, section = "main", { postingPaused = false, nowMs = Da
   // uploaded after the build) — so the Approved tab always shows every approval.
   const items = { ...extraApproved, ...(((n.items || {})[section]) || {}) };
   const picks = n.picks || {}, photos = n.photos || {}, posted = n.posted || {}, styles = n.styles || {};
-  const sent = (n.brain && n.brain.sent) || {}, reposts = n.repost || {};
+  const sent = (n.brain && n.brain.sent) || {}, reposts = n.repost || {}, webs = n.web || {};
   const isNa = (pid) => !!(naSet && naSet.has(pid));
   const rows = [];
   for (const [pid, it] of Object.entries(items)) {
     if (!it || isRejected(picks[pid])) continue;
-    const row = viewItem(pid, it, { pick: picks[pid], photo: photos[pid], posted: posted[pid], styles, nowMs, sent: sent[pid], repost: reposts[pid], na: isNa(pid) });
+    const row = viewItem(pid, it, { pick: picks[pid], photo: photos[pid], posted: posted[pid], styles, nowMs, sent: sent[pid], repost: reposts[pid], na: isNa(pid), web: webs[pid] });
     // A product that is both new and 13+ is reviewed ONLY on the New Arrivals tab.
     if (row.tab === "review" && isNa(pid)) continue;
     rows.push(row);
@@ -389,7 +400,7 @@ module.exports = {
   ROOT, PID_RE, GEN_RE, SIG_OK, KIND_RE, SECTIONS, BIG_QTY, ALBUM_MAX, CAPTION_MAX, ESTABLISHED_STYLES, KIND_LABEL,
   priceLabel, priceKey, captionPreview, sigOf, isApproved, isRejected, postedFor,
   hasPrice, NO_PRICE, isSourceGen, latestAiId, sourceOf, galleryOf, addSourceMutator,
-  viewItem, postingOf, orderRows, viewSection, totalsOf, planView, approvalRecord,
+  viewItem, webOf, postingOf, orderRows, viewSection, totalsOf, planView, approvalRecord,
   approveMutator, rejectMutator, resetMutator, restoreMutator, useMutator, withRev,
   toPost, albumsOf, planAlbums, fnv,
   ...sched,

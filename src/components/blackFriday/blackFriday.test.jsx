@@ -3,7 +3,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import BlackFridayScreen, { rowActions, shownId } from "./BlackFridayScreen";
+import BlackFridayScreen, { rowActions, shownId, webLabel } from "./BlackFridayScreen";
 import { isUpdateBusy } from "../../update/updateChecker";
 
 const row = (pid, qty, over = {}) => ({ pid, name: `Item ${pid}`, price: 300, qty, sizes: "M-XL", kind: "clothing", big: qty >= 30, na: false, photo: `https://x/${pid}.jpg`, shown: `https://x/${pid}.jpg`,
@@ -579,5 +579,23 @@ describe("Black Friday card stays alive on Junid's iPhone (21 Nov)", () => {
     expect(visibleRange(offs, 1000, -1000, 1844)).toEqual([0, 13]);
     const [s, e] = visibleRange(offs, 1000, 60000 - 1000, 60000 + 1844);
     expect([s, e]).toEqual([393, 413]);
+  });
+});
+
+describe("Black Friday card: the website status on every approved row (Junid, 20 Nov 2026)", () => {
+  it("On website ✓ / Publishing… / Website failed: <reason>; review rows show nothing", async () => {
+    expect(webLabel(row("a", 1))).toBeNull();
+    expect(webLabel(row("a", 1, { tab: "approved", web: { s: "live" } })).text).toBe("On website ✓");
+    expect(webLabel(row("a", 1, { tab: "approved", web: { s: "pub", why: "waiting for a website name" } })).text).toBe("Publishing…");
+    expect(webLabel(row("a", 1, { tab: "approved" })).text).toBe("Publishing…");
+    expect(webLabel(row("a", 1, { tab: "approved", web: { s: "fail", why: "no retail price" } })).text).toBe("Website failed: no retail price");
+    expect(webLabel(row("a", 1, { tab: "approved", web: { s: "oos", why: "out of stock — not published" } })).text).toBe("Website failed: out of stock — not published");
+    const a = fakeApi({ list: vi.fn(async () => view({ approved: [row("d", 15, { tab: "approved", web: { s: "live" } }), row("e", 15, { tab: "approved", web: { s: "fail", why: "the website name is taken" } }), row("f", 15, { tab: "approved" })] })) });
+    const r = await mount(a);
+    await act(async () => { byId(r, "tab-approved").props.onClick(); });
+    expect(text(byId(r, "web-d"))).toBe("On website ✓");
+    expect(text(byId(r, "web-e"))).toBe("Website failed: the website name is taken");
+    expect(text(byId(r, "web-f"))).toBe("Publishing…");
+    expect(has(r, "web-a")).toBe(false);
   });
 });

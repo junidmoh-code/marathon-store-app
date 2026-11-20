@@ -6735,7 +6735,11 @@ exports.insightsRollupSweep = onSchedule(
   exports.bfCardIndexSent = ci.bfCardIndexSent;
   exports.bfCardIndexPosted = ci.bfCardIndexPosted;
   exports.bfCardIndexNa = ci.bfCardIndexNa;
+  exports.bfCardIndexWeb = ci.bfCardIndexWeb;
   exports.bfCardIndexTick = ci.bfCardIndexTick;
+  // Approve = publish on the website first (Junid, 20 Nov 2026): every approval is queued for the
+  // existing Shopify publisher (the Mac mini's bf-web runner).  firebase deploy --only functions:bfWebQueue,functions:bfCardIndexWeb
+  exports.bfWebQueue = require("./blackFriday/webQueue.js").bfWebQueue;
 }
 
 // ── ALTERNATIVES: automatic enrichment + per-product profile (2026-10-09) ────
