@@ -181,6 +181,23 @@ describe("audit delivery", () => {
     expect(S.getActiveStore().activeShop).toBe("marathon-pe");
   });
 
+  it("a failed sign-out withdraws an unsent sign-out line, or corrects a delivered one", async () => {
+    S.bindActiveStore(PE_USER);
+    S.requestSwitch("concrete"); S.confirmSwitch();
+    await flush();
+    await S.auditSignOut();                         // delivered
+    S.signOutFailed();
+    await flush();
+    expect(log.mock.calls.at(-1)[0]).toMatchObject({ from: "marathon-pe", to: "concrete", reason: "sign-out-failed" });
+
+    log.mockClear();
+    log.mockImplementationOnce(() => new Promise(() => {}));   // never answers
+    S.auditSignOut();
+    await flush();
+    S.signOutFailed();
+    expect(JSON.parse(storage.getItem("mc.activeStore.pendingLog.v1") || "[]").some((e) => e.reason === "sign-out")).toBe(false);
+  });
+
   it("a line survives a reload in the middle of sending it", async () => {
     let release;
     log.mockImplementationOnce(() => new Promise((r) => { release = r; }));

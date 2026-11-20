@@ -34,7 +34,8 @@ export const SWITCH_REASON = Object.freeze({
   DAILY_RESET: "daily-reset", // a new SA day began while away
   FRESH_LOGIN: "fresh-login", // a new sign-in found an away choice on this device
   SIGN_OUT: "sign-out",       // signed out while away: the choice ends with the session
-  REHOMED: "rehomed",         // Junid changed this person's home shop: they go to it
+  REHOMED: "rehomed",
+  SIGN_OUT_FAILED: "sign-out-failed", // the sign-out line above it did not happen: still away         // Junid changed this person's home shop: they go to it
 });
 
 const blank = () => ({ uid: null, name: null, homeShop: null, activeShop: null, pending: null, saDate: null, signIn: null, deviceId: null });
@@ -73,33 +74,48 @@ const writeQueue = (list) => writeJson(PENDING_LOG_KEY, list.length ? list.slice
 function queueLog(entry) { writeQueue([...readQueue().filter((e) => e.id !== entry.id), entry]); }
 function unqueue(id) { writeQueue(readQueue().filter((e) => e.id !== id)); }
 // A refusal that will never succeed on retry is dropped, not re-queued.
-const PERMANENT = /invalid-argument|unauthenticated|permission-denied|resource-exhausted/;
+// (Not `unauthenticated`: a line sent as the session ended is retried by
+// that account's next session.)
+const PERMANENT = /invalid-argument|permission-denied|resource-exhausted/;
 const isPermanent = (err) => PERMANENT.test(String(err?.code || err?.message || ""));
 let idSeq = 0;
 const newId = (ms) => `${ms}_${Math.random().toString(36).slice(2, 8)}${(idSeq++ % 36).toString(36)}`;
 
-async function send(e) {
+// One send per line at a time: audit() and a flush can both reach a line.
+const inFlight = new Map();   // id → Promise<boolean>
+function send(e) {
+  if (inFlight.has(e.id)) return inFlight.get(e.id);
   const { uid, ...entry } = e;
-  try { await deps.log(entry); unqueue(e.id); return true; }
-  catch (err) { if (isPermanent(err)) unqueue(e.id); return false; }
+  const p = (async () => {
+    try { await deps.log(entry); unqueue(e.id); return true; }
+    catch (err) { if (isPermanent(err)) unqueue(e.id); return false; }
+  })().finally(() => inFlight.delete(e.id));
+  inFlight.set(e.id, p);
+  return p;
 }
 
 // Each queued line names the account it belongs to. The server takes the uid
 // from the caller's token, so a line is only ever sent by THAT account's
 // session; lines of another account on this shared device wait for it.
-let flushing = null;
+// Single flight PER ACCOUNT: a pass still running for a previous account is
+// waited for, then this account gets its own pass.
+let flushing = null;   // { uid, promise }
 export function flushPendingLog() {
   if (!deps.log || !state.uid) return Promise.resolve();
-  if (flushing) return flushing;
   const uid = state.uid;
-  flushing = (async () => {
+  if (flushing && flushing.uid === uid) return flushing.promise;
+  const before = flushing ? flushing.promise.catch(() => {}) : Promise.resolve();
+  const promise = before.then(async () => {
     for (const e of readQueue().filter((x) => x.uid === uid)) {
       if (state.uid !== uid) break;              // signed out mid-flush: stop
+      if (!readQueue().some((x) => x.id === e.id)) continue;   // delivered meanwhile
       await send(e);
     }
-  })().finally(() => { flushing = null; });
-  return flushing;
+  }).finally(() => { if (flushing && flushing.promise === promise) flushing = null; });
+  flushing = { uid, promise };
+  return promise;
 }
+let lastAuditId = null;
 function audit(from, to, reason) {
   const uid = state.uid;
   if (!uid) return Promise.resolve();
@@ -109,6 +125,7 @@ function audit(from, to, reason) {
     deviceId: state.deviceId || null, clientAtMs: at,
   };
   queueLog(e);
+  lastAuditId = e.id;
   if (!deps.log) return Promise.resolve();
   // Delivered → the line is clearly reachable: send anything older still queued.
   return Promise.resolve().then(() => send(e)).then((ok) => { if (ok) flushPendingLog().catch(() => {}); });
@@ -165,12 +182,23 @@ export function bindActiveStore({ uid, homeShop = null, name = null, signIn = nu
 // sign-out has actually happened (AuthGate sees no user) — so a failed
 // sign-out leaves this account fully working.
 let signOutAudited = false;
+let signOutLineId = null;
 export function auditSignOut() {
   if (!isAwayFromHome(state)) return Promise.resolve();
   signOutAudited = true;
-  return audit(state.activeShop, state.homeShop, SWITCH_REASON.SIGN_OUT);
+  const p = audit(state.activeShop, state.homeShop, SWITCH_REASON.SIGN_OUT);
+  signOutLineId = lastAuditId;
+  return p;
 }
-export function signOutFailed() { signOutAudited = false; }
+// Sign-out failed: the person is still away. A sign-out line not yet sent is
+// withdrawn; one already delivered is corrected by a line saying so.
+export function signOutFailed() {
+  const id = signOutLineId;
+  signOutAudited = false; signOutLineId = null;
+  if (!id || !isAwayFromHome(state)) return;
+  if (readQueue().some((e) => e.id === id)) { unqueue(id); return; }
+  audit(state.homeShop, state.activeShop, SWITCH_REASON.SIGN_OUT_FAILED);
+}
 
 // Signed out (or the session vanished): forget this account's choice. An
 // away choice not already audited by auditSignOut is queued under its uid —
@@ -269,5 +297,7 @@ export function __resetActiveStoreForTests() {
   listeners.clear();
   rolloverSeen = null;
   signOutAudited = false;
+  signOutLineId = null;
   flushing = null;
+  inFlight.clear();
 }

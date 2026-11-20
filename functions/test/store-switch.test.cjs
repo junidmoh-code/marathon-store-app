@@ -95,3 +95,11 @@ test("a resent queued line (same id) is written once, never overwritten", async 
   assert.deepEqual(Object.keys(day), [data.id]);
   assert.equal(day[data.id].at, NOW);
 });
+
+test("a resend does not spend the daily allowance", async () => {
+  const db = makeFakeDb({});
+  const data = { id: "1795600000000_zzz999", from: "trophy", to: "concrete", reason: "switch" };
+  await runLogStoreSwitch(db, { uid: "u1", nowMs: NOW, at: NOW, data });
+  await runLogStoreSwitch(db, { uid: "u1", nowMs: NOW, at: NOW, data });
+  assert.equal(readAt(db.state.root, "store_switch_log_count/2026-11-20/u1"), 1);
+});

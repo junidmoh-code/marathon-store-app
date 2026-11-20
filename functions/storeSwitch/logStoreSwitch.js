@@ -22,7 +22,7 @@ if (!admin.apps.length) {
   admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 }
 
-const REASONS = ["switch", "back-home", "daily-reset", "fresh-login", "sign-out", "rehomed"];
+const REASONS = ["switch", "back-home", "daily-reset", "fresh-login", "sign-out", "rehomed", "sign-out-failed"];
 // Per account per SA day. A person switches a handful of times a day; this
 // only stops a runaway or hostile client from filling the log.
 const MAX_PER_DAY = 200;
@@ -71,6 +71,11 @@ async function runLogStoreSwitch(db, { uid, email, data, nowMs, at }) {
   const shopIds = storesOf(network).map((l) => l.id);
   const built = buildSwitchEntry({ uid, userRec: { displayName, username, destShop }, data, shopIds, nowMs });
   if (!built.ok) return built;
+  // A resend of a line already written costs nothing and changes nothing.
+  const hasId = ID_RE.test(String(data?.id || ""));
+  if (hasId && (await db.ref(`store_switch_log/${built.saDate}/${data.id}`).once("value")).exists()) {
+    return { ok: true, id: data.id, saDate: built.saDate, duplicate: true };
+  }
   // Bounded: one counter leaf per account per day, claimed in a transaction.
   const tx = await db.ref(`store_switch_log_count/${built.saDate}/${uid}`)
     .transaction((n) => ((Number(n) || 0) >= MAX_PER_DAY ? undefined : (Number(n) || 0) + 1));
@@ -78,7 +83,7 @@ async function runLogStoreSwitch(db, { uid, email, data, nowMs, at }) {
   const entry = { ...built.entry, name: built.entry.name || clip(email, 80), at };
   // A client id makes a resend of a queued line idempotent: written once,
   // never overwritten. No (or a malformed) id → a fresh push key.
-  const ref = ID_RE.test(String(data?.id || ""))
+  const ref = hasId
     ? db.ref(`store_switch_log/${built.saDate}/${data.id}`)
     : db.ref(`store_switch_log/${built.saDate}`).push();
   const res = await ref.transaction((cur) => (cur ? undefined : entry));
