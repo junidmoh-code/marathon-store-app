@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue, useLayoutEffect } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt, endAt } from "firebase/database";
 import AiSpendTab from "./components/AiSpendTab";
+import { useActiveStore, requestSwitch as requestActiveStoreSwitch, activeStoreStamp } from "./utils/activeStore";
 import { ref as storageRef, uploadBytes, getDownloadURL, getBlob, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -1040,7 +1041,7 @@ function updateProductHubs(id, hubs) {
 // (independent review, 2026-09-06).
 function useOrders(scopeShop = null, enabled = true) {
   const authReady = useAuthReady() && enabled;
-  const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
+  const [orders, setOrders] = useState(() => Object.assign([], { settled: false, scope: scopeShop }));
 
   // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
   // /orders is 2.6 MB. The mirror holds the whole node, so a SCOPED caller
@@ -1052,7 +1053,7 @@ function useOrders(scopeShop = null, enabled = true) {
   useEffect(() => {
     if (liveOrders || !mirroredOrders.settled) return;
     const data = mirroredOrders.value;
-    if (!data) { setOrders(Object.assign([], { settled: true })); return; }
+    if (!data) { setOrders(Object.assign([], { settled: true, scope: scopeShop })); return; }
     const arr = Object.values(data)
       // Not just filter(Boolean). The legacy {items:[...]} shape would yield
       // ONE element that is an array, which sorts by an undefined createdAt
@@ -1062,7 +1063,7 @@ function useOrders(scopeShop = null, enabled = true) {
       .filter(o => o && typeof o === "object" && !Array.isArray(o))
       .filter(o => !scopeShop || o?.destShop === scopeShop)
       .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
-    setOrders(Object.assign(arr, { settled: true }));
+    setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
   }, [liveOrders, mirroredOrders.settled, mirroredOrders.value, scopeShop]);
 
   useEffect(() => {
@@ -1082,7 +1083,7 @@ function useOrders(scopeShop = null, enabled = true) {
     const unsub = subscribeLiveQuery(readKey, () => readRef, (snap) => {
       const data = snap.val();
       if (!data) {
-        setOrders(Object.assign([], { settled: true }));
+        setOrders(Object.assign([], { settled: true, scope: scopeShop }));
         return;
       }
       // Legacy shape detected — migrate.
@@ -1100,14 +1101,14 @@ function useOrders(scopeShop = null, enabled = true) {
         const arr = data.items.slice().sort((a, b) =>
           tsMs(b?.createdAt) - tsMs(a?.createdAt)
         );
-        setOrders(Object.assign(arr, { settled: true }));
+        setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
         return;
       }
       // Normal shape: map of id → order. Convert to sorted array.
       const arr = Object.values(data)
         .filter(Boolean)
         .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
-      setOrders(Object.assign(arr, { settled: true }));
+      setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
     }, (err) => {
       // A read ERROR leaves settled FALSE deliberately: the promise map is
       // empty for a reason that has nothing to do with the shelf.
@@ -1117,11 +1118,23 @@ function useOrders(scopeShop = null, enabled = true) {
       // as current (final gate review). The flag says so without disturbing
       // `settled`, which every other consumer reads: the display self-heal is
       // the one consumer that WRITES from this evidence, and it stops.
-      setOrders((prev) => Object.assign(prev.slice(), { settled: prev.settled === true, error: true }));
+      // A refused read for a shop just switched to (all-store access) must not
+      // leave the PREVIOUS shop's orders on screen under the new shop's name:
+      // a different scope gets an empty, unsettled, errored list instead.
+      setOrders((prev) => (prev.scope === scopeShop
+        ? Object.assign(prev.slice(), { settled: prev.settled === true, error: true, scope: scopeShop })
+        : Object.assign([], { settled: false, error: true, scope: scopeShop })));
     });
     return () => unsub();
   }, [authReady, scopeShop, liveOrders]);
 
+  // ALL-STORE ACCESS (20 Nov 2026): the scope can change in place (a confirmed
+  // switch of the active shop). Until the new scope's first answer, hand back
+  // an EMPTY UNSETTLED list — never the previous shop's orders — so every
+  // guard that waits for `settled` fails closed instead of reading the wrong
+  // shop's evidence.
+  const pendingForScope = useMemo(() => Object.assign([], { settled: false, scope: scopeShop }), [scopeShop]);
+  if (orders.scope !== scopeShop) return pendingForScope;
   return orders;
 }
 
@@ -3470,8 +3483,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // badge slot is intentionally omitted (wired to nothing yet — a later PR feeds
   // it the store's outstanding count).
   const dcVisible = displayChecksVisibleForViewer(
-    { email: homeUser?.email, permissions: homePerm?.permissions, destShop: homePerm?.destShop },
-    isSuperAdmin ? null : (homePerm?.destShop || null)
+    { email: homeUser?.email, permissions: homePerm?.permissions, destShop: homePerm?.destShop }
   );
 
   // TEMPORARY — Hub Sneaker Count card. Its own card rather than a role tile
@@ -8817,7 +8829,7 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // components/assistant/assistantOrderModel.js (shared with the sneaker wall).
 
 // Exported for orderViewRestore.render.test.jsx only.
-export function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
+export function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, confirmShopLocally = true, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
@@ -8882,6 +8894,10 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const [nameDD, setNameDD] = useState(false);
   const [phoneDD, setPhoneDD] = useState(false);
   const [pendingShop, setPendingShop] = useState(null); // shop-switch confirm
+  // ONE confirmation per switch: an account with a home shop gets the app-wide
+  // full-screen modal (onSelectShop opens it), so this screen's own confirm is
+  // only for accounts with no home shop.
+  const pickShop = (id) => { if (!id || id === effectiveShop) return; if (confirmShopLocally) setPendingShop(id); else onSelectShop(id); };
   const searchRef = useRef(null);
 
   // Catalog by MODE — the mode/hub-filtered candidate set, computed ONCE by
@@ -9137,7 +9153,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
       {wall ? (
         <SneakerWall
           availableShops={availableShops} effectiveShop={effectiveShop} shopRegistry={shopRegistry}
-          onPickShop={setPendingShop}
+          onPickShop={pickShop}
           mode={mode} setMode={setMode} onSwitchView={onSwitchView} userEmail={userEmail}
           // Anyone who arrived by a ?view=wall link can leave it too — the
           // query survives hash navigation, so a till would otherwise stay
@@ -9160,7 +9176,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
         <div className="ad-lab">Order for</div>
         {(availableShops || []).map(s => (
           <button key={s.id} className="ad-nav" aria-current={effectiveShop === s.id}
-                  onClick={() => { if (s.id !== effectiveShop) setPendingShop(s.id); }}>
+                  onClick={() => pickShop(s.id)}>
             <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
             {labelFor(s.id, shopRegistry)}
           </button>
@@ -9756,7 +9772,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               <div style={{ fontSize: 11, letterSpacing: ".18em", textTransform: "uppercase", color: "#FF6B6B", fontWeight: 800 }}>Warning · this re-routes orders</div>
               <div className="ad-svname" style={{ fontSize: 21, color: "#fff" }}>Change shop to {labelFor(pendingShop, shopRegistry)}?</div>
               <div style={{ fontSize: 13.5, color: "rgba(233,238,255,.72)", lineHeight: 1.55 }}>
-                You're ordering for <b style={{ color: "#fff" }}>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ color: "#FF8B8B" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b style={{ color: "#fff" }}>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
+                You're ordering for <b style={{ color: "#fff" }}>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ color: "#FF8B8B" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b style={{ color: "#fff" }}>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} will be removed from the cart.` : ""}
               </div>
               <div style={{ display: "flex", gap: 10, width: "100%", marginTop: 4 }}>
                 <button onClick={() => setPendingShop(null)} style={{ flex: 1, padding: 13, borderRadius: 11, border: "1px solid rgba(255,255,255,.2)", background: "rgba(255,255,255,.05)", color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
@@ -9773,7 +9789,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
 // ─── ASSISTANT LABEL FINDER — lives in components/assistant/AssistantLabelFinder.jsx
 // (lifted out 2026-08-23 so it renders in a test like every other label surface).
 
-function AssistantView({ products, onExit, orders = [] }) {
+// Exported for assistantView.allStores.render.test.jsx only.
+export function AssistantView({ products, onExit, orders = [] }) {
   // The tongue-label finder (owner fix 4): a small overlay, visually secondary
   // to search — a shortcut, not the main path.
   const [labelFinderOpen, setLabelFinderOpen] = useState(false);
@@ -9824,33 +9841,36 @@ function AssistantView({ products, onExit, orders = [] }) {
   // (isSuperAdmin/hasPermission no longer destructured here — their only
   // consumer, the "Shop stock · view only" card's canAccessStock gate, was
   // removed with the card. Owner decision 2026-07-16.)
-  const { user: assistantUser, storeIds: allowedStores, permRecord: stockPermRecord } = usePermissions();
+  const { user: assistantUser, permRecord: stockPermRecord } = usePermissions();
   // Desktop workspace kicks in at ≥1024px (laptop); phone + iPad keep tap→sheet.
   const isDesktop = !useIsNarrow(1024);
-  // Single-store assignment (destShop) locks the picker to exactly that shop — the
-  // user can only place/act on their store. Falls back to the older central/pine
-  // storeIds gating when no destShop is set (warehouse/admin/unassigned).
-  const myShop = stockPermRecord?.destShop || null;
-  // Sections: the viewer's sections narrow the picker too (a Section 1 account
-  // is never offered Marathon PE), and `sectionNet` is the registry every hub
-  // question below is asked of.
-  const { canSee: canSeeLoc, registry: sectionNet } = useMySections();
-  const availableShops = myShop
-    ? allShops.filter(s => s.id === myShop)
-    : allShops.filter(s => allowedStores.includes(shopUniverse(s.id, sectionNet)) && canSeeLoc(s.id));
+  // ALL-STORE ACCESS (Junid, 20 Nov 2026). Every account may order for every
+  // shop. The shop shown here is THE active shop (src/utils/activeStore.js),
+  // shared with every other screen: a destShop account starts at its HOME shop
+  // and leaves it only through the full-screen confirmation; an account with no
+  // home keeps its per-device choice (selectedShop) until it picks one here.
+  // Before: destShop locked the picker to that one shop, otherwise the storeIds
+  // universes and the viewer's sections narrowed it.
+  const homeShop = stockPermRecord?.destShop || null;
+  const activeStoreNow = useActiveStore();
+  const activeShopMine = activeStoreNow.uid === assistantUser?.uid ? activeStoreNow.activeShop : null;
+  const chosenShop = homeShop ? (activeShopMine || homeShop) : (activeShopMine || selectedShop);
+  // `sectionNet` is the registry every hub question below is asked of. Hubs
+  // stay behind the sections exactly as before; only the SHOP list is open.
+  const { registry: sectionNet } = useMySections();
+  const availableShops = allShops;
   const noStoreAccess = availableShops.length === 0;
   const singleShop    = availableShops.length === 1;
   useEffect(() => {
-    if (availableShops.length === 0) return;        // block screen handles this
+    if (availableShops.length === 0 || homeShop) return; // block screen / active store handle these
     if (!availableShops.some(s => s.id === selectedShop)) selectShop(availableShops[0].id);
-  }, [availableShops, selectedShop]);
+  }, [availableShops, selectedShop, homeShop]);
   // Clamp at RENDER too: the effect above persists the correction but only runs
   // after commit, so the first paint (and the product filtering / order routing it
-  // drives) must use this derived value — never a stale per-device shop the user
-  // isn't assigned to.
-  const effectiveShop = availableShops.some(s => s.id === selectedShop)
-    ? selectedShop
-    : (availableShops[0]?.id || selectedShop);
+  // drives) must use this derived value — never a stale per-device shop.
+  const effectiveShop = availableShops.some(s => s.id === chosenShop)
+    ? chosenShop
+    : (availableShops[0]?.id || chosenShop);
   // Routing universe derived from the chosen shop. THIS keeps every downstream
   // consumer keyed on central/pine unchanged.
   const effectiveStoreMode = shopUniverse(effectiveShop, sectionNet);
@@ -10199,15 +10219,28 @@ function AssistantView({ products, onExit, orders = [] }) {
   // and a hard, red confirm modal stands between the tap and the switch.
   // `pendingShopSwitch` holds the target shop id awaiting confirmation (null =
   // no prompt showing).
+  // A destShop account goes through the app-wide switch instead (its full-screen
+  // modal, banner and audit line — src/components/ActiveStoreLayer.jsx); this
+  // local modal stays for accounts with no home shop.
   const [pendingShopSwitch, setPendingShopSwitch] = useState(null);
   const requestShopSwitch = (next) => {
     if (!next || next === effectiveShop) return;   // tapping the current shop is a no-op
+    if (homeShop) { requestActiveStoreSwitch(next); return; }
     setPendingShopSwitch(next);
+  };
+  // No home shop, already confirmed on the desktop's own sheet: commit.
+  const commitShopDirect = (next) => {
+    if (!next || next === effectiveShop) return;
+    selectShop(next); setAffirmedShop(next); requestActiveStoreSwitch(next);
   };
   const confirmShopSwitch = () => {
     // An explicit, confirmed switch IS an affirmation of the destination, so the
     // placement guard below won't prompt again for the shop they just chose.
-    if (pendingShopSwitch) { selectShop(pendingShopSwitch); setAffirmedShop(pendingShopSwitch); }
+    if (pendingShopSwitch) {
+      selectShop(pendingShopSwitch);
+      setAffirmedShop(pendingShopSwitch);
+      requestActiveStoreSwitch(pendingShopSwitch); // no home: switches at once, logged
+    }
     setPendingShopSwitch(null);
   };
   // ── PLACEMENT DESTINATION GUARD ────────────────────────────────────────────
@@ -10221,7 +10254,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Single-shop-locked users can't mis-route, so they are never prompted.
   const [affirmedShop, setAffirmedShop] = useState(null);
   const [destConfirm,  setDestConfirm]  = useState(null);   // { run } — a placement awaiting affirmation
-  const needsDestConfirm = !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
+  // A destShop account confirmed any shop other than its own in the app-wide
+  // modal already, and its own shop needs no affirming — so it is never asked.
+  const needsDestConfirm = !homeShop && !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
   const runDestConfirm = () => {
     setAffirmedShop(effectiveShop);
     const pending = destConfirm;
@@ -10284,6 +10319,29 @@ function AssistantView({ products, onExit, orders = [] }) {
   const [marketingOptIn, setMarketingOptIn]             = useState(true);
   const [lastOrders, setLastOrders]                     = useState([]);
   const [submitting, setSubmitting]                     = useState(false);
+  // ── CART BELONGS TO ONE SHOP ──────────────────────────────────────────────
+  // All-store access (20 Nov 2026): the active shop can change under a full
+  // cart — a confirmed switch, the banner's "Back to …", or the automatic
+  // return home at SA midnight. Lines were priced, routed and stock-checked
+  // for the shop they were added under, so a shop change EMPTIES the cart and
+  // says so, rather than silently placing them for another shop.
+  const cartShopRef = useRef(effectiveShop);
+  const [cartClearedNote, setCartClearedNote] = useState(null);
+  // A checkout in flight finishes for the shop it started in (its lines are
+  // already captured); the cart is emptied once it is done. A destination
+  // confirmation waiting for the old shop is dropped — the next placement asks
+  // again for the current shop.
+  useEffect(() => {
+    if (submitting) return;
+    const prev = cartShopRef.current;
+    if (prev === effectiveShop) return;
+    cartShopRef.current = effectiveShop;
+    setDestConfirm(null);
+    setCart((c) => {
+      if (c.length > 0) setCartClearedNote({ from: prev, to: effectiveShop, n: c.length });
+      return c.length > 0 ? [] : c;
+    });
+  }, [effectiveShop, submitting]);
   // The submit-time stock guard's refusal, shown ON the checkout sheet (both
   // the phone sheet and the desktop panel) rather than in an alert that a tap
   // dismisses. Any cart change clears it: the assistant's next move is to drop
@@ -11346,8 +11404,10 @@ function AssistantView({ products, onExit, orders = [] }) {
       // Here it cannot arise, for two reasons that are worth naming because
       // both are load-bearing and neither is local to this line:
       //
-      //   • `availableShops` is CLAMPED to `myShop` when there is one (8878),
-      //     so a scoped user's `effectiveShop` IS the feed's scope; an unscoped
+      //   • a scoped user's `effectiveShop` and the root feed's `myShop` are
+      //     BOTH the active shop (src/utils/activeStore.js — one singleton,
+      //     all-store access 20 Nov 2026), so `effectiveShop` IS the feed's
+      //     scope; an unscoped
       //     user (super-admin, warehouse) has myShop null and sees every order.
       //     Either way the feed covers the store this guard asks about.
       //   • the other branch — `displayPairStore`, a CROSS-store target — has
@@ -11457,6 +11517,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           // The shop's section, stamped on NEW orders only. An order without
           // it is read as "derive from destShop" (utils/sectionRouting.js).
           section: sectionStamp(sectionNet, effectiveShop),
+          // All-store access: the shop this order counts for, the placer's own
+          // shop, and whether they were working away from it.
+          ...activeStoreStamp({ activeShop: effectiveShop, homeShop }),
           requestDisplay: item.requestDisplay || false,
           requestDisplayPartner: item.requestDisplayPartner || false,
           // Display-pair PULL (2026-08-26): the pair to send IS the display
@@ -11769,7 +11832,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         <AssistantDesktop
           products={browse} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
           deadForOrder={deadForOrder}
-          onSelectShop={selectShop} shopRegistry={shopRegistry}
+          onSelectShop={homeShop ? requestShopSwitch : commitShopDirect} confirmShopLocally={!homeShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
           onViewPhoto={setFullPhoto} onSwitchView={onExit}
@@ -11856,12 +11919,12 @@ function AssistantView({ products, onExit, orders = [] }) {
           (auto-selected by the clamp effect) so there's zero chance of mis-picking. */}
       {!singleShop && (
       <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
-        <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
+        <div style={{ display:"flex", flexWrap:"wrap", justifyContent:"center", maxWidth:"100%", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
           {availableShops.map((s) => {
             const on = effectiveShop === s.id;
             return (
               <button key={s.id} onClick={() => requestShopSwitch(s.id)}
-                style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
+                style={{ padding:"6px 14px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
                          background: on ? "rgba(60,110,255,.25)" : "transparent",
                          color: on ? "#fff" : "rgba(255,255,255,.5)",
                          boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
@@ -11873,6 +11936,18 @@ function AssistantView({ products, onExit, orders = [] }) {
       </div>
       )}
 
+      {cartClearedNote && (
+        <div role="status" data-testid="cart-cleared-note"
+             style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:96, zIndex:99980, width:"min(560px, calc(100vw - 28px))", boxSizing:"border-box",
+                      padding:"12px 14px", borderRadius:12, display:"flex", gap:10, alignItems:"center",
+                      background:"rgba(40,26,4,.96)", border:"1px solid rgba(255,159,10,.7)", color:"#fff", fontSize:13.5, boxShadow:"0 10px 30px rgba(0,0,0,.6)" }}>
+          <span style={{ flex:1 }}>
+            Shop changed to {labelFor(cartClearedNote.to, shopRegistry)} — the {cartClearedNote.n} item{cartClearedNote.n > 1 ? "s" : ""} in the cart for {labelFor(cartClearedNote.from, shopRegistry)} were removed. Add them again if they are for {labelFor(cartClearedNote.to, shopRegistry)}.
+          </span>
+          <button onClick={() => setCartClearedNote(null)} aria-label="Dismiss"
+                  style={{ background:"transparent", border:"none", color:"#fff", cursor:"pointer", fontSize:16 }}>✕</button>
+        </div>
+      )}
       {/* ── SHOP-SWITCH WARNING MODAL ──────────────────────────────────────────
           Red, blocking, deliberately alarming. Fires when the assistant taps a
           DIFFERENT shop on the toggle. Names the from/to shops in plain words,
@@ -11906,7 +11981,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                 <div style={{ color:"#FFD166", fontSize:12.5, fontWeight:700, marginBottom:22, lineHeight:1.5,
                               background:"rgba(245,196,81,.1)", border:"1px solid rgba(245,196,81,.35)",
                               borderRadius:10, padding:"9px 11px" }}>
-                  You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — they’ll be placed for {toLabel}.
+                  You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — switching empties it; add them again for {toLabel}.
                 </div>
               )}
               <div style={{ display:"flex", gap:10 }}>
@@ -20927,8 +21002,7 @@ function AppInner() {
   // store-scoped display_checks grant). Used both to guard a stale persisted role
   // and to mount the view. Dark by default (master flag off).
   const displayChecksRouteOpen = displayChecksVisibleForViewer(
-    { email: authUser?.email, permissions: permRecord?.permissions, destShop: permRecord?.destShop },
-    isSuperAdmin ? null : (permRecord?.destShop || null)
+    { email: authUser?.email, permissions: permRecord?.permissions, destShop: permRecord?.destShop }
   );
   // Stock access is gated by stockRole, NOT an app permission, so warehouse seed
   // counters keep it. canMint = may create NEW barcodes (writes /barcodes — any
@@ -21083,7 +21157,13 @@ function AppInner() {
   // set — e.g. "trophy") reads ONLY their shop's orders, enforced by the /orders
   // rule (an unscoped read from them is rejected). Warehouse/admin/super-admin have
   // no destShop → full read. This is the single feed for every authenticated view.
-  const myShop = isSuperAdmin ? null : (permRecord?.destShop || null);
+  //
+  // ALL-STORE ACCESS (Junid, 20 Nov 2026): the feed follows the ACTIVE shop
+  // (src/utils/activeStore.js), which is the home destShop unless this person
+  // confirmed a switch. An account with no home keeps its full, unscoped read.
+  const activeStoreState = useActiveStore();
+  const activeShopForMe = activeStoreState.uid === authUser?.uid ? activeStoreState.activeShop : null;
+  const myShop = isSuperAdmin || !permRecord?.destShop ? null : (activeShopForMe || permRecord.destShop);
   const orders = useOrders(myShop);
   // Pine and Concrete share their orders: the sibling's feed joins the three
   // screens that show a customer's order (utils/sharedOrders.js). Everything

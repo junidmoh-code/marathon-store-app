@@ -42,6 +42,8 @@ import {
 } from "../device/enrolment";
 import { serverNowMs } from "../utils/serverTime";
 import { adoptDeviceId, getDeviceId } from "../device/deviceId";
+import ActiveStoreLayer from "./ActiveStoreLayer";
+import { auditSignOut, bindActiveStore, resetActiveStore, setActiveStoreLogger, signOutFailed } from "../utils/activeStore";
 
 // The two calls the code screen makes. Module-level so the screen's props are
 // stable across renders.
@@ -61,6 +63,11 @@ const signInWithDeviceToken = async (token) => {
   try { window.location.reload(); } catch { /* no reload (tests) — AuthGate still opens the app */ }
 };
 
+// Every store switch is written to /store_switch_log by the server (who, from,
+// to, device, server time) — the client never writes the audit path itself.
+const logStoreSwitchCall = httpsCallable(functions, "logStoreSwitch");
+setActiveStoreLogger((entry) => logStoreSwitchCall(entry));
+
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 
 function LoadingScreen({ label = "Loading…" }) {
@@ -79,6 +86,9 @@ export default function AuthGate({ children, renderTv }) {
   const [user,         setUser]         = useState(null);
   const [permRecord,   setPermRecord]   = useState(null);
   const [permLoaded,   setPermLoaded]   = useState(false);
+  // Which account the loaded record belongs to — so the active shop is never
+  // bound to a new sign-in with the PREVIOUS (signed-out, null) record.
+  const [permUid,      setPermUid]      = useState(null);
   // Phase 15: a transient /users/{uid} read failure leaves permRecord null,
   // which effectiveStoreIds would treat as "legacy = all-access". For a scoped
   // user that would silently over-grant store access until the read recovers.
@@ -177,6 +187,7 @@ export default function AuthGate({ children, renderTv }) {
       (snap) => {
         setPermReadError(false);
         setPermRecord(snap.val() || null);
+        setPermUid(user.uid);
         rememberRequired(user.uid, snap.val()?.deviceCodeRequired === true);
         setPermLoaded(true);
       },
@@ -184,6 +195,20 @@ export default function AuthGate({ children, renderTv }) {
     );
     return () => off();
   }, [user]);
+
+  // The active shop (src/utils/activeStore.js): home = /users/{uid}/destShop.
+  // Bound only once the record has loaded, so a pinned user never starts
+  // "away" for a frame. A different sign-in (lastSignInTime) starts at home.
+  const realUid = user && !user.isAnonymous ? user.uid : null;
+  const homeShop = permRecord?.destShop || null;
+  const switchName = permRecord?.displayName || permRecord?.username || user?.email?.split("@")[0] || null;
+  const signInStamp = user?.metadata?.lastSignInTime || null;
+  useEffect(() => {
+    if (!authReady) return;                      // never wipe the saved choice before auth settles
+    if (!realUid) { resetActiveStore(); return; }
+    if (!permLoaded || permReadError || permUid !== realUid) return;
+    bindActiveStore({ uid: realUid, homeShop, name: switchName, signIn: signInStamp, deviceId: getDeviceId() });
+  }, [authReady, realUid, homeShop, switchName, signInStamp, permLoaded, permReadError, permUid]);
 
   // TV bypass: hand off entirely to the caller's renderTv — but only once
   // tvAuthReady is true, so the TV's data hooks always see a valid auth.
@@ -250,14 +275,19 @@ export default function AuthGate({ children, renderTv }) {
   const doSignOut     = () =>
     revokeBeforeSignOut(user && !user.isAnonymous ? user.uid : null)
       .catch(() => {})
-      .then(() => signOut(auth))
+      // Away from home → the return is audited while still signed in (≤3 s).
+      // The active shop itself is cleared only once sign-out has happened
+      // (the effect above sees no user); a failed sign-out keeps it working.
+      .then(() => Promise.race([auditSignOut(), new Promise((r) => setTimeout(r, 3000))]))
+      .catch(() => {})
+      .then(() => signOut(auth).catch((err) => { signOutFailed(); throw err; }))
       .catch((err) => console.warn("signOut failed:", err));
 
   return (
     <PermissionsContext.Provider
       value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut,
                deviceIdentity: identityFrom({ claims, permRecord, user }) }}>
-      {children}
+      <ActiveStoreLayer>{children}</ActiveStoreLayer>
     </PermissionsContext.Provider>
   );
 }

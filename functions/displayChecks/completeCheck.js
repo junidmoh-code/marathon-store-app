@@ -216,12 +216,30 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
 }
 
 // Who may complete a check for THIS store: a super admin (Junid or Jafer) with a
-// VERIFIED email, or an account holding display_checks scoped to this store.
+// VERIFIED email, or an account holding display_checks — for ANY shop (Junid,
+// 20 Nov 2026: every user works all four shops; the app confirms and banners a
+// switch away from their own). It used to also require destShop === store.
+// The shop itself is checked by the caller (enabled / website strip).
 function displayCheckAllowed({ email, emailVerified, userRec, store }) {
   const perms = Array.isArray(userRec?.permissions) ? userRec.permissions : [];
   const isSuper = isSuperAdmin(email) && emailVerified === true;
-  return isSuper || (perms.includes("display_checks") && userRec?.destShop === store);
+  return isSuper || (perms.includes("display_checks") && typeof store === "string" && store.length > 0);
 }
+
+// The completer's stamp: who, plus the shop the action counted for and their
+// own shop — read server-side, so it cannot be forged by the client.
+function completionActor({ uid, userRec, email, store }) {
+  const home = typeof userRec?.destShop === "string" && userRec.destShop ? userRec.destShop : null;
+  return {
+    uid,
+    name: userRec?.displayName || userRec?.username || (email ? email.split("@")[0] : "staff"),
+    email,
+    actingStore: store,
+    actingHomeStore: home,
+    actingAway: !!home && home !== store,
+  };
+}
+exports._completionActor = completionActor;
 exports._displayCheckAllowed = displayCheckAllowed;
 
 // Exported for the completion regression tests (write-once, no-stock soft-block,
@@ -266,7 +284,7 @@ exports.completeDisplayCheck = onCall(
 
     const db = admin.database();
 
-    // ── Authorize for THIS store: super-admin, or store-scoped display_checks
+    // ── Authorize for THIS store: super-admin, or display_checks (any shop)
     // (mirrors config/displayChecks.canUseDisplayChecks server-side). ──
     // The super-admin shortcut trusts the email claim, so it MUST be a VERIFIED
     // email — otherwise a self-signed-up account claiming a super-admin address with
@@ -280,11 +298,7 @@ exports.completeDisplayCheck = onCall(
       throw new HttpsError("permission-denied", "You can't complete checks for this store.");
     }
 
-    const actor = {
-      uid,
-      name: userRec.displayName || userRec.username || (email ? email.split("@")[0] : "staff"),
-      email,
-    };
+    const actor = completionActor({ uid, userRec, email, store });
 
     const out = await runComplete(db, {
       store, key, checkId, result, override: override === true, actor, nowMs: Date.now(), websiteOnly,

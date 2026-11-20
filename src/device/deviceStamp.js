@@ -23,8 +23,22 @@
 import { serverNowMs } from "../utils/serverTime";
 import { getDeviceIdentity } from "./enrolment";
 import { getDeviceId } from "./deviceId";
+import { getActiveStore, isAwayFromHome } from "../utils/activeStore";
 
-export function deviceStamp(action) {
+// The active-shop part of a stamp, read NOW. A transaction body can run later
+// (after an await) and again on retry; stampTxn takes this once, when the
+// action is wrapped, so every attempt names the shop the person acted in.
+export function activeShopFacts() {
+  const a = getActiveStore();
+  if (!a.uid) return null;
+  const f = {};
+  if (a.activeShop) f.store = a.activeShop;
+  if (a.homeShop) f.homeStore = a.homeShop;
+  if (isAwayFromHome(a)) f.away = true;
+  return f;
+}
+
+export function deviceStamp(action, shopFacts = activeShopFacts()) {
   const id = getDeviceIdentity() || {};
   const s = {
     deviceId: id.deviceId || getDeviceId() || null,
@@ -32,6 +46,10 @@ export function deviceStamp(action) {
     atMs: serverNowMs(),
   };
   if (action) s.action = String(action).slice(0, 40);
+  // ALL-STORE ACCESS (Junid, 20 Nov 2026): the shop this action counts for
+  // (the active shop at the moment of the action), the person's own shop, and
+  // `away: true` when those differ. Absent for an account with no shop chosen.
+  if (shopFacts) Object.assign(s, shopFacts);
   return s;
 }
 
@@ -48,8 +66,8 @@ export function stampPatch(patch, action) {
 }
 
 // For a whole record written with set() or returned from a transaction.
-export function stampRecord(record, action) {
-  const s = deviceStamp(action);
+export function stampRecord(record, action, shopFacts = activeShopFacts()) {
+  const s = deviceStamp(action, shopFacts);
   const prev = record && typeof record.stamps === "object" && record.stamps ? record.stamps : {};
   return { ...record, stamps: { ...prev, [stampKey(s)]: s } };
 }
@@ -57,9 +75,10 @@ export function stampRecord(record, action) {
 // For a transaction body: the committed record carries the stamp; an abort
 // (undefined) or a cold-cache probe (null) passes through untouched.
 export function stampTxn(fn, action) {
+  const shopFacts = activeShopFacts();   // captured when the action is taken
   return (cur) => {
     const next = fn(cur);
-    return next && typeof next === "object" ? stampRecord(next, action) : next;
+    return next && typeof next === "object" ? stampRecord(next, action, shopFacts) : next;
   };
 }
 

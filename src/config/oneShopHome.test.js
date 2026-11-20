@@ -13,6 +13,8 @@ describe("home stats for a one-shop account", () => {
   });
   it("keeps the order figures, which are already that shop's own", () => {
     expect(src).toMatch(/\{ k: "Orders today", v: assistantBadge, role: ROLES\.WAREHOUSE \}/);
-    expect(src).toMatch(/const myShop = isSuperAdmin \? null : \(permRecord\?\.destShop \|\| null\);\s*\n\s*const orders = useOrders\(myShop\)/);
+    // The feed is the account's ACTIVE shop (its destShop unless it confirmed a
+    // switch — all-store access, 20 Nov 2026); unscoped accounts read it all.
+    expect(src).toMatch(/const myShop = isSuperAdmin \|\| !permRecord\?\.destShop \? null : \(activeShopForMe \|\| permRecord\.destShop\);\s*\n\s*const orders = useOrders\(myShop\)/);
   });
 });

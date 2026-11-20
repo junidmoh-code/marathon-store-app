@@ -2,8 +2,11 @@
 // The four-tab frame (Today / Availability / Analytics / Settings). Desktop
 // (≥1024px) gets an AI-Studio sidebar; phone keeps the single-column floor
 // layout. Manager tabs (Analytics, Settings) are gated by canManageDisplayChecks
-// (super-admin today). Store scope: super-admin toggles enabled stores; scoped
-// staff are pinned to their own store.
+// (super-admin today). Store scope (Junid, 20 Nov 2026): EVERY user sees every
+// shop's chip; the shop shown is the app-wide ACTIVE shop (src/utils/
+// activeStore.js), so leaving your own shop goes through the full-screen
+// confirmation and the banner. Before, only super-admin had chips and scoped
+// staff were pinned to their own destShop.
 //
 // NAVIGATION-STABLE STATE (fix, 2026-07-21). Three things used to destroy state:
 //   1. tab switch — the old ternary UNMOUNTED the inactive tab (Today's listener
@@ -25,6 +28,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePermissions } from "../../components/PermissionsContext";
 import { SHOP_LABELS, shopLabelOf } from "../../utils/stores";
+import { useActiveStore, requestSwitch } from "../../utils/activeStore";
 import {
   displayChecksEnabledStores,
   displayChecksAllStores,
@@ -117,14 +121,17 @@ export default function DisplayChecks({ onExit, products }) {
     return off;
   }, []);
   const ENABLED_STORES = enabledStores(switches);
-  // The owner's picker lists EVERY store — one that is switched off can be
-  // opened and switched on from its Settings tab; it is marked "off".
+  // The picker lists EVERY store for EVERY user. "(off)" keeps its meaning: that
+  // shop's sale-driven Display Checks are switched off (its Settings switch /
+  // live flag) — it can still be opened (website strip, and the owner can switch
+  // it on from Settings). It never meant "you may not go there".
   const enabledIds = new Set(ENABLED_STORES.map((s) => s.id));
-  const PICKER_STORES = isSuper
-    ? displayChecksAllStores().map((id) => ({ id, label: enabledIds.has(id) ? shopLabelOf(id) : `${shopLabelOf(id)} (off)` }))
-    : ENABLED_STORES;
-  const [superStore, setSuperStore] = useState(ENABLED_STORES[0]?.id || null);
-  const store = isSuper ? superStore : (permRecord?.destShop || null);
+  const PICKER_STORES = displayChecksAllStores().map((id) => ({ id, label: enabledIds.has(id) ? shopLabelOf(id) : `${shopLabelOf(id)} (off)` }));
+  const active = useActiveStore();
+  const activeMine = active.uid === user?.uid ? active.activeShop : null;
+  // The active shop; an account with no home and no choice yet opens on the
+  // first enabled shop (what the owner's picker always defaulted to).
+  const store = activeMine || permRecord?.destShop || ENABLED_STORES[0]?.id || PICKER_STORES[0]?.id || null;
   const storeLabel = SHOP_LABELS[store] || store || "—";
   const canManage = canManageDisplayChecks(gateUser, store);
   const visibleTabs = TABS.filter((t) => !t.manager || canManage);
@@ -192,11 +199,11 @@ export default function DisplayChecks({ onExit, products }) {
   const activeLabel = visibleTabs.find((t) => t.key === tab)?.label || "Today";
 
   // Store-toggle buttons, shared by both chromes.
-  const storeToggle = isSuper && PICKER_STORES.length > 1
+  const storeToggle = PICKER_STORES.length > 1
     ? PICKER_STORES.map((s) => {
         const on = s.id === store;
         return (
-          <button key={s.id} type="button" onClick={() => setSuperStore(s.id)}
+          <button key={s.id} type="button" onClick={() => requestSwitch(s.id)} data-testid={`dc-store-${s.id}`}
                   style={{ ...META, letterSpacing: "0.08em", cursor: "pointer", padding: "6px 12px", borderRadius: 999,
                            background: on ? "rgba(74,127,255,.18)" : GLASS_BG, border: on ? `1px solid ${BLUE}` : GLASS_BORDER,
                            color: on ? BLUE_SOFT : "rgba(233,238,255,.5)" }}>

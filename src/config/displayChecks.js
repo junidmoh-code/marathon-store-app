@@ -163,12 +163,14 @@ export function isDisplayChecksSuperAdmin(user) {
 
 // BASE ACCESS — may this user see the module (card, route, Today, Availability)
 // for the store being viewed? Super-admin: always. Otherwise: holds the base
-// permission AND is scoped to THIS store. Inert today (permission unseeded).
+// permission. ANY shop (Junid, 20 Nov 2026: every user works all four shops;
+// leaving your own is confirmed and banner-marked by src/utils/activeStore.js).
+// It used to also require destShop === storeId.
 export function canUseDisplayChecks(user, storeId) {
   if (isDisplayChecksSuperAdmin(user)) return true;
-  if (!storeId) return false; // non-super-admin access is always store-scoped
+  if (!storeId) return false; // a check is always for one shop
   const perms = Array.isArray(user?.permissions) ? user.permissions : [];
-  return perms.includes(DISPLAY_CHECKS_PERMISSION) && user?.destShop === storeId;
+  return perms.includes(DISPLAY_CHECKS_PERMISSION);
 }
 
 // MANAGER TIER — may this user see Analytics + Settings for the store being
@@ -187,11 +189,16 @@ export function canManageDisplayChecks(user, storeId) {
 // Composes master flag + base access + per-store enable. Super-admin sees the
 // entry whenever the master flag is on (the store toggle lives inside the view);
 // staff see it only for their own, enabled store.
-export function displayChecksVisibleForViewer(user, storeId) {
+// Staff: the base permission and at least ONE shop with checks or its website
+// strip on — not "their" shop: the module opens for every shop, and switching
+// to a shop whose checks are off (Pine) inside it must not close the route.
+export function displayChecksVisibleForViewer(user, network = currentNetwork(), switches = currentDisplayCheckSwitches()) {
   if (!DISPLAY_CHECKS_MASTER_ENABLED) return false;
   if (isDisplayChecksSuperAdmin(user)) return true;
+  const perms = Array.isArray(user?.permissions) ? user.permissions : [];
+  if (!perms.includes(DISPLAY_CHECKS_PERMISSION)) return false;
   // The website strip lives in this module, so a store with only its strip on
   // (Pine) opens it too; its normal check list is simply empty.
-  return canUseDisplayChecks(user, storeId)
-    && (isDisplayChecksStoreEnabled(storeId) || isWebsiteStripStoreEnabled(storeId));
+  return displayChecksAllStores(network).some((id) =>
+    isDisplayChecksStoreEnabled(id, network, switches) || isWebsiteStripStoreEnabled(id, network, switches));
 }
