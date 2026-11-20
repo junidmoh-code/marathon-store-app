@@ -102,6 +102,19 @@ describe("Black Friday card v3", () => {
     expect(text(byId(r, "block-under"))).toContain("Under 13 (1)");
   });
 
+  it("the ongoing daily plan: renamed plan line, today against 120, no Held for Friday", async () => {
+    const brain = {
+      plan: "daily", target: 120, rotating: false, paused: false, approved: 633, posted: 125, remaining: 508, reserved: 0, newArrivals: 15, todayPhotos: 30, todaySent: 156, cap: 400, overrides: {},
+      days: { "2026-11-20": [{ day: "2026-11-20", i: 2, at: "16:15", size: 30, byKind: { clothing: 10, sneakers: 11, perfume: 7, accessories: 2 }, why: "set for today", status: "planned" }] }, hours: [],
+    };
+    const api = fakeApi({ list: vi.fn(async () => view({ brain })) });
+    const r = await mount(api);
+    await act(async () => { byId(r, "tab-approved").props.onClick(); });
+    expect(text(byId(r, "brain-plan"))).toContain("120 photos a day, 08:00–20:00, ongoing until Pause");
+    expect(text(byId(r, "brain-counts"))).toContain("Today 30/120 photos (safety ceiling 400)");
+    expect(text(byId(r, "brain-counts"))).not.toContain("Friday");
+  });
+
   it("the posting brain's plan on the Approved tab: slots per kind, counts, Best times chart, Pause, a slot moved", async () => {
     const brain = {
       paused: false, approved: 632, posted: 80, remaining: 552, reserved: 94, newArrivals: 15, todayPhotos: 80, cap: 400, overrides: {},
@@ -114,6 +127,7 @@ describe("Black Friday card v3", () => {
     await act(async () => { byId(r, "tab-approved").props.onClick(); });
     expect(text(byId(r, "brain-counts"))).toContain("Posted 80");
     expect(text(byId(r, "brain-day-2026-11-20"))).toContain("Clothing 7");
+    expect(text(byId(r, "brain-counts"))).toContain("Held for Friday 94"); // an old (Friday) view still reads as before
     expect(text(byId(r, "best-times"))).toContain("50% in 1 h");
     await act(async () => { byId(r, "brain-pause").props.onClick(); });
     expect(api.brainPause).toHaveBeenCalledWith(true);

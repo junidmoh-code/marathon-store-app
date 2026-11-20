@@ -278,10 +278,10 @@ export function BrainPanel({ brain, api, busy, run }) {
   return (
     <div data-testid="brain" style={{ ...GLASS, padding: 12, marginBottom: 12, fontSize: 13 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-        <div style={{ flex: 1, fontWeight: 800 }}>Posting plan {brain.paused && <span data-testid="brain-paused" style={{ color: AMBER, fontWeight: 700 }}>· paused</span>}</div>
+        <div style={{ flex: 1, fontWeight: 800 }}>{brain.plan === "daily" ? "Daily plan" : "Posting plan"}{brain.plan === "daily" && <span data-testid="brain-plan" style={{ fontWeight: 600, color: GRAY, fontSize: 12 }}> · {brain.target || 120} photos a day, 08:00–20:00, ongoing until Pause{brain.rotating ? " · rotating" : ""}</span>} {brain.paused && <span data-testid="brain-paused" style={{ color: AMBER, fontWeight: 700 }}>· paused</span>}</div>
         <button data-testid="brain-pause" disabled={busy} onClick={() => run(() => api.brainPause(!brain.paused), { reload: true })} style={{ ...(brain.paused ? bGreen : bGray), padding: "6px 12px", fontSize: 12, color: brain.paused ? undefined : AMBER }}>{brain.paused ? "Resume" : "Pause"}</button>
       </div>
-      <div data-testid="brain-counts" style={{ fontSize: 12, color: "#dfe7ff", marginBottom: 8 }}>Posted {brain.posted} · Remaining {brain.remaining} · Held for Friday {brain.reserved} · New Arrivals {brain.newArrivals} · Today {brain.todayPhotos}/{brain.cap} photos</div>
+      <div data-testid="brain-counts" style={{ fontSize: 12, color: "#dfe7ff", marginBottom: 8 }}>Posted {brain.posted} · Remaining {brain.remaining}{brain.plan === "daily" ? null : <> · Held for Friday {brain.reserved}</>} · New Arrivals {brain.newArrivals} · Today {brain.todayPhotos}/{brain.plan === "daily" ? (brain.target || 120) : brain.cap} photos{brain.plan === "daily" ? ` (safety ceiling ${brain.cap})` : ""}</div>
       {days.map(([day, slots], di) => (
         <div key={day} data-testid={`brain-day-${day}`} style={{ marginBottom: 8 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: di === 0 ? "#fff" : GRAY }}>{di === 0 ? "Today / next" : day}</div>
@@ -290,7 +290,7 @@ export function BrainPanel({ brain, api, busy, run }) {
             return (
               <div key={k} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 12, padding: "3px 0", borderBottom: "1px solid rgba(255,255,255,.06)" }}>
                 {editing === k
-                  ? <input data-testid={`slot-time-${k}`} type="time" min="07:00" max="21:30" step="900" defaultValue={sl.at} onBlur={(e) => { setEditing(null); if (e.target.value && e.target.value !== sl.at) run(() => api.brainSlot(day, sl.i, e.target.value), { reload: true }); }} style={{ width: 92 }} autoFocus />
+                  ? <input data-testid={`slot-time-${k}`} type="time" min="08:00" max="19:45" step="900" defaultValue={sl.at} onBlur={(e) => { setEditing(null); if (e.target.value && e.target.value !== sl.at) run(() => api.brainSlot(day, sl.i, e.target.value), { reload: true }); }} style={{ width: 92 }} autoFocus />
                   : <button data-testid={`slot-${k}`} disabled={busy || sl.status === "done"} onClick={() => setEditing(k)} title="Move this slot" style={{ ...bGray, padding: "2px 8px", fontSize: 12, minWidth: 64 }}>{sl.at}</button>}
                 <div style={{ flex: 1 }}>
                   <b>{sl.size}</b> photos{sl.status === "done" ? " ✓" : ""} — {Object.entries(sl.byKind || {}).map(([kk, n]) => `${KIND[kk] || kk} ${n}`).join(", ") || "nothing left"}

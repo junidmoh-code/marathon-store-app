@@ -454,8 +454,9 @@ async function brainPause(db, paused, uid, nowMs) {
   return { ok: true, paused: paused === true };
 }
 async function brainSlot(db, { day, i, at }, uid, nowMs) {
-  if (!/^2026-11-(19|2[0-7])$/.test(String(day || ""))) throw new HttpsError("invalid-argument", "A day of the campaign.");
-  if (!Number.isInteger(i) || i < 0 || i > 3) throw new HttpsError("invalid-argument", "Slot 0–3.");
+  // Ongoing daily plan (Junid, 20 Nov): any day from the start on (no end date); slot ids 0–7.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || "")) || String(day) < "2026-11-19") throw new HttpsError("invalid-argument", "A day of the plan (YYYY-MM-DD).");
+  if (!Number.isInteger(i) || i < 0 || i > 7) throw new HttpsError("invalid-argument", "Slot 0–7.");
   if (at !== null) {
     if (!/^\d{2}:\d{2}$/.test(String(at))) throw new HttpsError("invalid-argument", "A time like 09:30.");
     const [h, m] = String(at).split(":").map(Number);
