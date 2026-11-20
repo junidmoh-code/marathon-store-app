@@ -1041,7 +1041,7 @@ function updateProductHubs(id, hubs) {
 // (independent review, 2026-09-06).
 function useOrders(scopeShop = null, enabled = true) {
   const authReady = useAuthReady() && enabled;
-  const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
+  const [orders, setOrders] = useState(() => Object.assign([], { settled: false, scope: scopeShop }));
 
   // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
   // /orders is 2.6 MB. The mirror holds the whole node, so a SCOPED caller
@@ -1053,7 +1053,7 @@ function useOrders(scopeShop = null, enabled = true) {
   useEffect(() => {
     if (liveOrders || !mirroredOrders.settled) return;
     const data = mirroredOrders.value;
-    if (!data) { setOrders(Object.assign([], { settled: true })); return; }
+    if (!data) { setOrders(Object.assign([], { settled: true, scope: scopeShop })); return; }
     const arr = Object.values(data)
       // Not just filter(Boolean). The legacy {items:[...]} shape would yield
       // ONE element that is an array, which sorts by an undefined createdAt
@@ -1063,7 +1063,7 @@ function useOrders(scopeShop = null, enabled = true) {
       .filter(o => o && typeof o === "object" && !Array.isArray(o))
       .filter(o => !scopeShop || o?.destShop === scopeShop)
       .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
-    setOrders(Object.assign(arr, { settled: true }));
+    setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
   }, [liveOrders, mirroredOrders.settled, mirroredOrders.value, scopeShop]);
 
   useEffect(() => {
@@ -1083,7 +1083,7 @@ function useOrders(scopeShop = null, enabled = true) {
     const unsub = subscribeLiveQuery(readKey, () => readRef, (snap) => {
       const data = snap.val();
       if (!data) {
-        setOrders(Object.assign([], { settled: true }));
+        setOrders(Object.assign([], { settled: true, scope: scopeShop }));
         return;
       }
       // Legacy shape detected — migrate.
@@ -1101,14 +1101,14 @@ function useOrders(scopeShop = null, enabled = true) {
         const arr = data.items.slice().sort((a, b) =>
           tsMs(b?.createdAt) - tsMs(a?.createdAt)
         );
-        setOrders(Object.assign(arr, { settled: true }));
+        setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
         return;
       }
       // Normal shape: map of id → order. Convert to sorted array.
       const arr = Object.values(data)
         .filter(Boolean)
         .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
-      setOrders(Object.assign(arr, { settled: true }));
+      setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
     }, (err) => {
       // A read ERROR leaves settled FALSE deliberately: the promise map is
       // empty for a reason that has nothing to do with the shelf.
@@ -1118,11 +1118,23 @@ function useOrders(scopeShop = null, enabled = true) {
       // as current (final gate review). The flag says so without disturbing
       // `settled`, which every other consumer reads: the display self-heal is
       // the one consumer that WRITES from this evidence, and it stops.
-      setOrders((prev) => Object.assign(prev.slice(), { settled: prev.settled === true, error: true }));
+      // A refused read for a shop just switched to (all-store access) must not
+      // leave the PREVIOUS shop's orders on screen under the new shop's name:
+      // a different scope gets an empty, unsettled, errored list instead.
+      setOrders((prev) => (prev.scope === scopeShop
+        ? Object.assign(prev.slice(), { settled: prev.settled === true, error: true, scope: scopeShop })
+        : Object.assign([], { settled: false, error: true, scope: scopeShop })));
     });
     return () => unsub();
   }, [authReady, scopeShop, liveOrders]);
 
+  // ALL-STORE ACCESS (20 Nov 2026): the scope can change in place (a confirmed
+  // switch of the active shop). Until the new scope's first answer, hand back
+  // an EMPTY UNSETTLED list — never the previous shop's orders — so every
+  // guard that waits for `settled` fails closed instead of reading the wrong
+  // shop's evidence.
+  const pendingForScope = useMemo(() => Object.assign([], { settled: false, scope: scopeShop }), [scopeShop]);
+  if (orders.scope !== scopeShop) return pendingForScope;
   return orders;
 }
 
@@ -10235,6 +10247,23 @@ function AssistantView({ products, onExit, orders = [] }) {
   // A destShop account confirmed any shop other than its own in the app-wide
   // modal already, and its own shop needs no affirming — so it is never asked.
   const needsDestConfirm = !homeShop && !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
+  // ── CART BELONGS TO ONE SHOP ──────────────────────────────────────────────
+  // All-store access (20 Nov 2026): the active shop can change under a full
+  // cart — a confirmed switch, the banner's "Back to …", or the automatic
+  // return home at SA midnight. Lines were priced, routed and stock-checked
+  // for the shop they were added under, so a shop change EMPTIES the cart and
+  // says so, rather than silently placing them for another shop.
+  const cartShopRef = useRef(effectiveShop);
+  const [cartClearedNote, setCartClearedNote] = useState(null);
+  useEffect(() => {
+    const prev = cartShopRef.current;
+    cartShopRef.current = effectiveShop;
+    if (prev === effectiveShop) return;
+    setCart((c) => {
+      if (c.length > 0) setCartClearedNote({ from: prev, to: effectiveShop, n: c.length });
+      return c.length > 0 ? [] : c;
+    });
+  }, [effectiveShop]);
   const runDestConfirm = () => {
     setAffirmedShop(effectiveShop);
     const pending = destConfirm;
@@ -11891,6 +11920,17 @@ function AssistantView({ products, onExit, orders = [] }) {
       </div>
       )}
 
+      {cartClearedNote && (
+        <div role="status" data-testid="cart-cleared-note"
+             style={{ margin:"0 14px 10px", padding:"10px 12px", borderRadius:12, display:"flex", gap:10, alignItems:"center",
+                      background:"rgba(255,159,10,.12)", border:"1px solid rgba(255,159,10,.5)", color:"#fff", fontSize:13 }}>
+          <span style={{ flex:1 }}>
+            Shop changed to {labelFor(cartClearedNote.to, shopRegistry)} — the {cartClearedNote.n} item{cartClearedNote.n > 1 ? "s" : ""} in the cart for {labelFor(cartClearedNote.from, shopRegistry)} were removed. Add them again if they are for {labelFor(cartClearedNote.to, shopRegistry)}.
+          </span>
+          <button onClick={() => setCartClearedNote(null)} aria-label="Dismiss"
+                  style={{ background:"transparent", border:"none", color:"#fff", cursor:"pointer", fontSize:16 }}>✕</button>
+        </div>
+      )}
       {/* ── SHOP-SWITCH WARNING MODAL ──────────────────────────────────────────
           Red, blocking, deliberately alarming. Fires when the assistant taps a
           DIFFERENT shop on the toggle. Names the from/to shops in plain words,
@@ -11924,7 +11964,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                 <div style={{ color:"#FFD166", fontSize:12.5, fontWeight:700, marginBottom:22, lineHeight:1.5,
                               background:"rgba(245,196,81,.1)", border:"1px solid rgba(245,196,81,.35)",
                               borderRadius:10, padding:"9px 11px" }}>
-                  You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — they’ll be placed for {toLabel}.
+                  You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — switching empties it; add them again for {toLabel}.
                 </div>
               )}
               <div style={{ display:"flex", gap:10 }}>

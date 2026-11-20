@@ -99,7 +99,9 @@ describe("automatic return home", () => {
     S.bindActiveStore(PE_USER);
     S.requestSwitch("concrete"); S.confirmSwitch();
     today = "2026-11-21";
-    expect(S.checkDayRollover()).toBe(true);
+    expect(S.checkDayRollover()).toBe(false);   // first sighting: could be a clock correction
+    expect(S.getActiveStore().activeShop).toBe("concrete");
+    expect(S.checkDayRollover()).toBe(true);    // still a new day a minute later: go home
     expect(S.getActiveStore().activeShop).toBe("marathon-pe");
     await flush();
     expect(log.mock.calls.at(-1)[0]).toMatchObject({ from: "concrete", to: "marathon-pe", reason: "daily-reset" });
@@ -146,6 +148,50 @@ describe("automatic return home", () => {
 });
 
 describe("audit delivery", () => {
+  it("a day 'change' seen only once (server offset correction) does not send anyone home", () => {
+    S.bindActiveStore(PE_USER);
+    S.requestSwitch("concrete"); S.confirmSwitch();
+    today = "2026-11-21"; S.checkDayRollover();
+    today = "2026-11-20"; S.checkDayRollover();
+    today = "2026-11-21"; S.checkDayRollover();
+    expect(S.getActiveStore().activeShop).toBe("concrete");
+  });
+
+  it("signing out while away audits the return home BEFORE the session ends", async () => {
+    S.bindActiveStore(PE_USER);
+    S.requestSwitch("concrete"); S.confirmSwitch();
+    await S.resetActiveStore();
+    expect(log.mock.calls.at(-1)[0]).toMatchObject({ from: "concrete", to: "marathon-pe", reason: "sign-out" });
+  });
+
+  it("a queued line is only ever sent by the account it belongs to", async () => {
+    log.mockRejectedValueOnce(new Error("offline"));
+    S.bindActiveStore(PE_USER);
+    S.requestSwitch("concrete"); S.confirmSwitch();
+    await flush(); await flush();
+    await S.resetActiveStore();
+    log.mockClear();
+    S.bindActiveStore({ uid: "u2", homeShop: "trophy", signIn: "z" });
+    await flush(); await flush();
+    expect(log).not.toHaveBeenCalled();                       // u2 never sends u1's line
+    expect(JSON.parse(storage.getItem("mc.activeStore.pendingLog.v1"))[0].uid).toBe("u1");
+  });
+
+  it("a line the server refuses for good is dropped, not retried forever", async () => {
+    log.mockRejectedValueOnce(Object.assign(new Error("bad"), { code: "functions/invalid-argument" }));
+    S.bindActiveStore(PE_USER);
+    S.requestSwitch("concrete"); S.confirmSwitch();
+    await flush(); await flush();
+    expect(storage.getItem("mc.activeStore.pendingLog.v1")).toBe(null);
+  });
+
+  it("another tab's switch is followed, so every tab stamps the same shop", () => {
+    S.bindActiveStore(PE_USER);
+    storage.setItem(S.ACTIVE_STORE_KEY, JSON.stringify({ uid: "u1", shop: "trophy", saDate: "2026-11-20", signIn: PE_USER.signIn }));
+    S.adoptStoredChoice();
+    expect(S.getActiveStore().activeShop).toBe("trophy");
+  });
+
   it("a failed audit call is queued (bounded) and flushed on the next bind", async () => {
     log.mockRejectedValueOnce(new Error("offline"));
     S.bindActiveStore(PE_USER);

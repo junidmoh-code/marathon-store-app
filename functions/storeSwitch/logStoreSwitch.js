@@ -5,6 +5,7 @@
 //
 //   /store_switch_log/{saDate}/{pushId} =
 //     { uid, name, from, to, home, reason, deviceId, at, clientAtMs }
+//   /store_switch_log_count/{saDate}/{uid} = n   (cap MAX_PER_DAY)
 //
 // The CLIENT never writes this path (no rule grants it): the server takes the
 // uid from the auth token and the name + home shop from /users/{uid} (two leaf
@@ -21,7 +22,10 @@ if (!admin.apps.length) {
   admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 }
 
-const REASONS = ["switch", "back-home", "daily-reset", "fresh-login"];
+const REASONS = ["switch", "back-home", "daily-reset", "fresh-login", "sign-out"];
+// Per account per SA day. A person switches a handful of times a day; this
+// only stops a runaway or hostile client from filling the log.
+const MAX_PER_DAY = 200;
 const SA_OFFSET_MS = 2 * 60 * 60 * 1000;
 const saDateOf = (ms) => new Date(ms + SA_OFFSET_MS).toISOString().slice(0, 10);
 const clip = (v, n) => (typeof v === "string" && v ? v.slice(0, n) : null);
@@ -66,6 +70,10 @@ async function runLogStoreSwitch(db, { uid, email, data, nowMs, at }) {
   const shopIds = storesOf(network).map((l) => l.id);
   const built = buildSwitchEntry({ uid, userRec: { displayName, username, destShop }, data, shopIds, nowMs });
   if (!built.ok) return built;
+  // Bounded: one counter leaf per account per day, claimed in a transaction.
+  const tx = await db.ref(`store_switch_log_count/${built.saDate}/${uid}`)
+    .transaction((n) => ((Number(n) || 0) >= MAX_PER_DAY ? undefined : (Number(n) || 0) + 1));
+  if (!tx.committed) return { ok: false, code: "rate-limited" };
   const entry = { ...built.entry, name: built.entry.name || clip(email, 80), at };
   const ref = db.ref(`store_switch_log/${built.saDate}`).push();
   await ref.set(entry);
@@ -87,7 +95,7 @@ exports.logStoreSwitch = onCall(
       nowMs: Date.now(),
       at: admin.database.ServerValue.TIMESTAMP,
     });
-    if (!out.ok) throw new HttpsError("invalid-argument", out.code);
+    if (!out.ok) throw new HttpsError(out.code === "rate-limited" ? "resource-exhausted" : "invalid-argument", out.code);
     return { ok: true, id: out.id };
   }
 );

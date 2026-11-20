@@ -74,3 +74,13 @@ test("completedBy carries the shop the check counted for and the completer's own
   const owner = _completionActor({ uid: "u2", email: "o@b", store: "trophy", userRec: {} });
   assert.equal(owner.actingHomeStore, null); assert.equal(owner.actingAway, false);
 });
+
+test("runLogStoreSwitch is capped per account per SA day", async () => {
+  const db = makeFakeDb({ store_switch_log_count: { "2026-11-20": { u1: 200 } } });
+  const out = await runLogStoreSwitch(db, { uid: "u1", nowMs: NOW, at: NOW, data: { from: "trophy", to: "concrete", reason: "switch" } });
+  assert.deepEqual(out, { ok: false, code: "rate-limited" });
+  assert.equal(readAt(db.state.root, "store_switch_log"), null);
+  const other = await runLogStoreSwitch(db, { uid: "u2", nowMs: NOW, at: NOW, data: { from: "trophy", to: "concrete", reason: "sign-out" } });
+  assert.equal(other.ok, true);
+  assert.equal(readAt(db.state.root, "store_switch_log_count/2026-11-20/u2"), 1);
+});

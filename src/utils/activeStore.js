@@ -33,6 +33,7 @@ export const SWITCH_REASON = Object.freeze({
   BACK_HOME: "back-home",     // "Back to <home>" or tapping the home chip
   DAILY_RESET: "daily-reset", // a new SA day began while away
   FRESH_LOGIN: "fresh-login", // a new sign-in found an away choice on this device
+  SIGN_OUT: "sign-out",       // signed out while away: the choice ends with the session
 });
 
 const blank = () => ({ uid: null, name: null, homeShop: null, activeShop: null, pending: null, saDate: null, signIn: null, deviceId: null });
@@ -69,22 +70,33 @@ function queueLog(entry) {
   list.push(entry);
   writeJson(PENDING_LOG_KEY, list.slice(-MAX_PENDING_LOG));
 }
+// A refusal that will never succeed on retry is dropped, not re-queued.
+const PERMANENT = /invalid-argument|unauthenticated|permission-denied/;
+const isPermanent = (err) => PERMANENT.test(String(err?.code || err?.message || ""));
+
+// Each queued line names the account it belongs to. The server takes the uid
+// from the caller's token, so a line is only ever sent by THAT account's
+// session; lines of another account on this shared device wait for it.
 export async function flushPendingLog() {
-  if (!deps.log) return;
+  if (!deps.log || !state.uid) return;
   const q = readJson(PENDING_LOG_KEY);
   if (!Array.isArray(q) || q.length === 0) return;
-  writeJson(PENDING_LOG_KEY, null);
-  for (const entry of q) {
-    try { await deps.log(entry); } catch { queueLog(entry); }
+  const mine = q.filter((e) => e && e.uid === state.uid);
+  const others = q.filter((e) => e && e.uid !== state.uid);
+  writeJson(PENDING_LOG_KEY, others.length ? others : null);
+  for (const { uid, ...entry } of mine) {
+    try { await deps.log(entry); } catch (err) { if (!isPermanent(err)) queueLog({ uid, ...entry }); }
   }
 }
 function audit(from, to, reason) {
+  const uid = state.uid;
   const entry = {
     from: from || null, to: to || null, home: state.homeShop || null, reason,
     deviceId: state.deviceId || null, clientAtMs: deps.now(),
   };
-  if (!deps.log) { queueLog(entry); return; }
-  Promise.resolve().then(() => deps.log(entry)).catch(() => queueLog(entry));
+  if (!deps.log || !uid) { if (uid) queueLog({ uid, ...entry }); return Promise.resolve(); }
+  return Promise.resolve().then(() => deps.log(entry))
+    .catch((err) => { if (!isPermanent(err)) queueLog({ uid, ...entry }); });
 }
 
 function commit(to, reason) {
@@ -130,18 +142,29 @@ export function bindActiveStore({ uid, homeShop = null, name = null, signIn = nu
   flushPendingLog().catch(() => {});
 }
 
-// Sign-out on a shared tablet: forget this account's choice entirely.
+// Sign-out on a shared tablet: forget this account's choice entirely. Away at
+// that moment → the return home is audited FIRST (while still signed in); the
+// promise lets the caller wait for it (bounded) before signing out.
 export function resetActiveStore() {
+  const away = isAwayFromHome(state);
+  const done = away ? audit(state.activeShop, state.homeShop, SWITCH_REASON.SIGN_OUT) : Promise.resolve();
   writeJson(ACTIVE_STORE_KEY, null);
   state = blank();
   emit();
+  return done;
 }
 
 // Called on a timer: at SA midnight an away choice goes back home by itself.
+// A day change must be seen on TWO consecutive checks: the server clock offset
+// can land a moment after boot and shift the device's idea of the day; a real
+// midnight is still there a minute later, a correction is not.
+let rolloverSeen = null;
 export function checkDayRollover() {
   if (!state.uid) return false;
   const today = deps.today();
-  if (state.saDate === today) return false;
+  if (state.saDate === today) { rolloverSeen = null; return false; }
+  if (rolloverSeen !== today) { rolloverSeen = today; return false; }
+  rolloverSeen = null;
   const away = state.activeShop !== state.homeShop;
   if (away) { commit(state.homeShop, SWITCH_REASON.DAILY_RESET); return true; }
   state.saDate = today; persist(); emit();
@@ -185,6 +208,21 @@ export function activeStoreStamp(s = state) {
 
 export function subscribeActiveStore(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
+// Another tab of this app on the same device switched (or went home): follow
+// it, so every tab stamps its writes with the same shop.
+export function adoptStoredChoice() {
+  if (!state.uid) return;
+  const saved = readJson(ACTIVE_STORE_KEY);
+  if (!saved || saved.uid !== state.uid || saved.signIn !== state.signIn) return;
+  const shop = saved.shop || null;
+  if (shop === state.activeShop && saved.saDate === state.saDate) return;
+  state.activeShop = shop; state.saDate = saved.saDate; state.pending = null;
+  emit();
+}
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  try { window.addEventListener("storage", (e) => { if (!e || e.key === ACTIVE_STORE_KEY) adoptStoredChoice(); }); } catch { /* no storage events */ }
+}
+
 export function useActiveStore() {
   return useSyncExternalStore(subscribeActiveStore, getActiveStore, getActiveStore);
 }
@@ -196,4 +234,5 @@ export function __resetActiveStoreForTests() {
   state = blank();
   deps = { storage: null, log: null, today: () => saDateString(), now: () => serverNowMs() };
   listeners.clear();
+  rolloverSeen = null;
 }

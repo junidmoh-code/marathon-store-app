@@ -264,7 +264,10 @@ export default function AuthGate({ children, renderTv }) {
   const doSignOut     = () =>
     revokeBeforeSignOut(user && !user.isAnonymous ? user.uid : null)
       .catch(() => {})
-      .then(() => { resetActiveStore(); return signOut(auth); })
+      // Away from home → the return is audited while still signed in (≤3 s).
+      .then(() => Promise.race([resetActiveStore(), new Promise((r) => setTimeout(r, 3000))]))
+      .catch(() => {})
+      .then(() => signOut(auth))
       .catch((err) => console.warn("signOut failed:", err));
 
   return (
